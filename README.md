@@ -23,7 +23,10 @@ management, without anything specific to what PageDye used it for.
   downscaled client-side before they're ever sent or stored
 - A model shortlist per provider, with a "detect" button that asks the
   endpoint what it actually serves
-- Light / dark / system theme
+- Light / dark / system theme, with an accent color picker (10 presets or
+  any custom hex) — pick one hue and it's automatically adjusted to stay
+  readable in both light and dark mode, the same trick PageDye's own
+  interface color picker uses
 - Safe Markdown rendering with no `innerHTML` anywhere in the render path
 
 Nothing is sent anywhere until you add an API key. There is no backend: your
@@ -67,6 +70,7 @@ uses. Each file is a small UMD-style module attached to `globalThis`:
 | `src/markdown.js` | A small, XSS-safe Markdown renderer (`ObsidianMarkdown`) |
 | `src/image.js` | Downscales a picked/dropped/pasted image for attachment (`ObsidianImage`) |
 | `src/provider.js` | Talks to Anthropic / OpenAI-compatible APIs, streaming included (`ObsidianProvider`) |
+| `src/color-utils.js` | The accent-color palette and light/dark contrast math (`ObsidianColorUtils`) |
 | `src/chat.js` | The chat UI itself — history, composer, transcript (`ObsidianChat`) |
 | `src/workspace.js` | The header bar + settings drawer wrapped around `chat.js` (`ObsidianWorkspace`) |
 | `src/adapters.js` | The `localStorage`-backed storage adapter used standalone (`ObsidianAdapters`) |

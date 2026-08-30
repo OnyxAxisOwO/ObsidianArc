@@ -23,6 +23,7 @@
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const RAIL_COLLAPSED_KEY = 'obsidian-arc-rail-collapsed';
   const THEME_KEY = 'obsidian-arc-theme';
+  const ACCENT_KEY = 'obsidian-arc-accent';
 
   const ICONS = {
     menu: ['M3 6h18', 'M3 12h18', 'M3 18h18'],
@@ -46,6 +47,12 @@
       settings: 'Settings',
       theme: 'Theme',
       themeLight: 'Light', themeDark: 'Dark', themeAuto: 'Match system',
+      appearance: 'Accent color',
+      appearanceHint: "Changes Obsidian Arc's own colors only.",
+      accentCustom: 'Custom',
+      accentViolet: 'Violet', accentNeutral: 'Black & white', accentRed: 'Red', accentPink: 'Pink',
+      accentIndigo: 'Indigo', accentBlue: 'Blue', accentCyan: 'Cyan', accentTeal: 'Teal',
+      accentGreen: 'Green', accentOrange: 'Orange',
       modelNone: 'Choose a model',
       manageModels: 'Manage models…',
       settingsTitle: 'AI settings',
@@ -88,6 +95,12 @@
       settings: '设置',
       theme: '主题',
       themeLight: '浅色', themeDark: '深色', themeAuto: '跟随系统',
+      appearance: '主题色',
+      appearanceHint: '只改变 Obsidian Arc 自己的界面颜色。',
+      accentCustom: '自定义',
+      accentViolet: '紫罗兰', accentNeutral: '黑白', accentRed: '红色', accentPink: '粉色',
+      accentIndigo: '靛蓝', accentBlue: '蓝色', accentCyan: '青色', accentTeal: '蓝绿色',
+      accentGreen: '绿色', accentOrange: '橙色',
       modelNone: '选择模型',
       manageModels: '管理模型…',
       settingsTitle: 'AI 设置',
@@ -133,6 +146,7 @@
     const Provider = opts.provider || (typeof globalThis !== 'undefined' ? globalThis.ObsidianProvider : null);
     const storage = opts.storage;
     if (!Provider || !storage) throw new Error('ObsidianWorkspace.mount needs { provider, storage }.');
+    const ColorUtils = opts.colorUtils || (typeof globalThis !== 'undefined' ? globalThis.ObsidianColorUtils : null);
     const lang = STRINGS[opts.lang] ? opts.lang : 'en';
 
     function str(key, vars) {
@@ -238,6 +252,12 @@
     function currentTheme() {
       try { return localStorage.getItem(THEME_KEY) || 'auto'; } catch (_) { return 'auto'; }
     }
+    function resolvedIsDark() {
+      const mode = currentTheme();
+      if (mode === 'dark') return true;
+      if (mode === 'light') return false;
+      return !!(doc.defaultView.matchMedia && doc.defaultView.matchMedia('(prefers-color-scheme: dark)').matches);
+    }
     function applyTheme(mode) {
       const docEl = doc.documentElement;
       if (mode === 'dark') docEl.setAttribute('data-theme', 'dark');
@@ -245,12 +265,62 @@
       else docEl.removeAttribute('data-theme');
       themeBtn.textContent = '';
       themeBtn.appendChild(icon(mode === 'dark' ? ICONS.moon : (mode === 'light' ? ICONS.sun : ICONS.auto), 17));
+      // Which lightness an accent hue is clamped to (see color-utils.js)
+      // depends on the resolved scheme, not just which hue was picked, so a
+      // theme switch has to re-derive it too.
+      applyAccent();
     }
     themeBtn.addEventListener('click', () => {
       const next = { auto: 'light', light: 'dark', dark: 'auto' }[currentTheme()] || 'auto';
       try { localStorage.setItem(THEME_KEY, next); } catch (_) { /* best-effort */ }
       applyTheme(next);
     });
+    if (doc.defaultView.matchMedia) {
+      const systemScheme = doc.defaultView.matchMedia('(prefers-color-scheme: dark)');
+      const onSystemSchemeChange = () => { if (currentTheme() === 'auto') applyAccent(); };
+      if (typeof systemScheme.addEventListener === 'function') systemScheme.addEventListener('change', onSystemSchemeChange);
+    }
+
+    // --- accent color ---------------------------------------------------------
+    // A user picks one hex per accent; color-utils.js clamps its lightness per
+    // scheme so the same choice works against both a light and a near-black
+    // background. Stored separately from src/provider.js's config — this is a
+    // page-appearance preference, not part of talking to a model — using the
+    // same page-local localStorage the theme toggle above already uses.
+
+    function loadAccentPref() {
+      const fallback = { accent: (ColorUtils && ColorUtils.DEFAULT_ACCENT) || 'violet', customAccent: '' };
+      try {
+        const raw = localStorage.getItem(ACCENT_KEY);
+        return raw ? { ...fallback, ...JSON.parse(raw) } : fallback;
+      } catch (_) {
+        return fallback;
+      }
+    }
+    let accentPref = loadAccentPref();
+    // Assigned once the settings drawer builds the color grid, below; a
+    // theme or accent change before then simply has nothing to repaint yet.
+    let paintAccentGrid = () => {};
+
+    function applyAccent() {
+      if (!ColorUtils) return;
+      const base = ColorUtils.baseAccentColor(accentPref);
+      const isDark = resolvedIsDark();
+      const primary = ColorUtils.getDisplayAccentColor(base, isDark);
+      const style = doc.documentElement.style;
+      style.setProperty('--ai-primary', primary);
+      style.setProperty('--ai-focus-shadow', ColorUtils.hexToRgba(primary, isDark ? 0.28 : 0.22));
+      style.setProperty('--ai-badge-bg', ColorUtils.hexToRgba(primary, isDark ? 0.16 : 0.12));
+      style.setProperty('--ai-badge-text', primary);
+      paintAccentGrid();
+    }
+
+    function saveAccentPref(pref) {
+      accentPref = pref;
+      try { localStorage.setItem(ACCENT_KEY, JSON.stringify(pref)); } catch (_) { /* best-effort */ }
+      applyAccent();
+    }
+
     applyTheme(currentTheme());
 
     try {
@@ -567,6 +637,60 @@
     advanced.appendChild(thinkingCheck.wrap);
     advanced.appendChild(field(str('thinkingBudget'), thinkingBudgetInput));
     advanced.appendChild(field(str('extraBody'), extraBodyInput));
+
+    // --- appearance (accent color) -----------------------------------------
+
+    const ACCENT_LABEL_KEYS = {
+      violet: 'accentViolet', neutral: 'accentNeutral', red: 'accentRed', pink: 'accentPink',
+      indigo: 'accentIndigo', blue: 'accentBlue', cyan: 'accentCyan', teal: 'accentTeal',
+      green: 'accentGreen', orange: 'accentOrange'
+    };
+    const accentGrid = el('div', 'oa-color-grid');
+    const accentDots = (ColorUtils ? ColorUtils.ACCENT_NAMES : []).map((name) => {
+      const dot = button('oa-color-dot', '', () => saveAccentPref({ accent: name, customAccent: accentPref.customAccent }));
+      dot.style.backgroundColor = ColorUtils.ACCENTS[name];
+      dot.title = str(ACCENT_LABEL_KEYS[name] || name);
+      dot.setAttribute('aria-label', dot.title);
+      accentGrid.appendChild(dot);
+      return { name, dot };
+    });
+
+    const accentCustomRow = el('div', 'oa-color-custom-row oa-input-row');
+    const accentColorInput = doc.createElement('input');
+    accentColorInput.type = 'color';
+    const accentTextInput = doc.createElement('input');
+    accentTextInput.type = 'text';
+    accentTextInput.placeholder = '#6C4CD6';
+    accentTextInput.maxLength = 7;
+    accentCustomRow.appendChild(accentColorInput);
+    accentCustomRow.appendChild(accentTextInput);
+
+    function commitCustomAccent(hex) {
+      if (!ColorUtils) return;
+      const normalized = ColorUtils.normalizeHexColor(hex, null);
+      if (normalized) saveAccentPref({ accent: 'custom', customAccent: normalized });
+    }
+    accentColorInput.addEventListener('input', () => commitCustomAccent(accentColorInput.value));
+    accentTextInput.addEventListener('change', () => commitCustomAccent(accentTextInput.value));
+
+    paintAccentGrid = function () {
+      if (!ColorUtils) return;
+      const isCustom = accentPref.accent === 'custom';
+      const base = ColorUtils.baseAccentColor(accentPref);
+      accentDots.forEach(({ name, dot }) => dot.classList.toggle('active', !isCustom && accentPref.accent === name));
+      accentCustomRow.classList.toggle('active', isCustom);
+      // A dot click still updates these two so they read as "here is the hex
+      // you just picked" rather than freezing on whatever custom value was
+      // last typed.
+      accentColorInput.value = base;
+      accentTextInput.value = base;
+    };
+    applyAccent();
+
+    drawerBody.appendChild(el('h3', 'oa-drawer-subhead', str('appearance')));
+    drawerBody.appendChild(el('p', 'oa-field-hint', str('appearanceHint')));
+    drawerBody.appendChild(accentGrid);
+    drawerBody.appendChild(accentCustomRow);
 
     drawerBody.appendChild(field(str('provider'), providerSelect));
     drawerBody.appendChild(field(str('apiKey'), apiKeyRow));
