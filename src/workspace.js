@@ -306,10 +306,25 @@
       if (!ColorUtils) return;
       const base = ColorUtils.baseAccentColor(accentPref);
       const isDark = resolvedIsDark();
-      const primary = ColorUtils.getDisplayAccentColor(base, isDark);
+      // The neutral preset skips the generic dark-mode lightness lift and
+      // goes straight to white — the lift turns a true black/white pick
+      // into a dull grey, same special case PageDye's own picker makes.
+      const primary = (isDark && accentPref.accent === 'neutral')
+        ? '#FFFFFF'
+        : ColorUtils.getDisplayAccentColor(base, isDark);
+      const onPrimary = ColorUtils.colorIsLight(primary) ? '#000000' : '#FFFFFF';
+      const hover = ColorUtils.shiftHexColor(primary, ColorUtils.colorIsLight(primary) ? -32 : 24);
       const style = doc.documentElement.style;
       style.setProperty('--ai-primary', primary);
+      style.setProperty('--ai-primary-text', onPrimary);
+      style.setProperty('--ai-primary-hover', hover);
       style.setProperty('--ai-focus-shadow', ColorUtils.hexToRgba(primary, isDark ? 0.28 : 0.22));
+      // The generic hover/press layer shared by nearly every button, chip,
+      // menu item and list row in chat.css/workspace.css. Tinting this is
+      // most of what makes the interface read as "in this color" instead of
+      // "has a few colored buttons" — a plain neutral hover on an otherwise
+      // untouched grey UI was the gap the bubble-only version above had.
+      style.setProperty('--ai-state-hover', ColorUtils.hexToRgba(primary, isDark ? 0.16 : 0.08));
       style.setProperty('--ai-badge-bg', ColorUtils.hexToRgba(primary, isDark ? 0.16 : 0.12));
       style.setProperty('--ai-badge-text', primary);
       paintAccentGrid();

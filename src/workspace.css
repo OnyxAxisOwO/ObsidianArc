@@ -74,6 +74,10 @@
   color: var(--ai-primary-text);
 }
 
+.oa-btn.primary:hover {
+  background: var(--ai-primary-hover);
+}
+
 .oa-btn:disabled {
   opacity: 0.5;
   cursor: default;

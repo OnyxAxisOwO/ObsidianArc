@@ -20,6 +20,7 @@
   --ai-surface-container-high: #ece8f5;
   --ai-primary: #6c4cd6;
   --ai-primary-text: #ffffff;
+  --ai-primary-hover: #4a2fae;
   --ai-badge-bg: rgba(108, 76, 214, 0.12);
   --ai-badge-text: #5638b8;
   --ai-focus-shadow: rgba(108, 76, 214, 0.22);
@@ -40,6 +41,7 @@
     --ai-surface-container-high: #2b2836;
     --ai-primary: #a992f5;
     --ai-primary-text: #100e18;
+    --ai-primary-hover: #c7b7f9;
     --ai-badge-bg: rgba(169, 146, 245, 0.16);
     --ai-badge-text: #cabdf7;
     --ai-focus-shadow: rgba(169, 146, 245, 0.28);
@@ -60,6 +62,7 @@
   --ai-surface-container-high: #2b2836;
   --ai-primary: #a992f5;
   --ai-primary-text: #100e18;
+  --ai-primary-hover: #c7b7f9;
   --ai-badge-bg: rgba(169, 146, 245, 0.16);
   --ai-badge-text: #cabdf7;
   --ai-focus-shadow: rgba(169, 146, 245, 0.28);
@@ -523,6 +526,10 @@
   color: var(--ai-primary-text);
 }
 
+.ai-chat-mini-btn.primary:hover {
+  background: var(--ai-primary-hover);
+}
+
 .ai-msg-editor {
   width: 100%;
 }
@@ -608,6 +615,10 @@
   color: var(--ai-primary-text);
   font-size: 12px;
   cursor: pointer;
+}
+
+.ai-chat-setup-action:hover {
+  background: var(--ai-primary-hover);
 }
 
 .ai-chat-error {
@@ -845,6 +856,10 @@
   background: var(--ai-primary);
   color: var(--ai-primary-text);
   cursor: pointer;
+}
+
+.ai-chat-send:hover:not(:disabled) {
+  background: var(--ai-primary-hover);
 }
 
 .ai-chat-send:disabled {

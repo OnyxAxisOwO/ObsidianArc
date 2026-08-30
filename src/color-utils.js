@@ -105,6 +105,25 @@
     return hslToHex(h, s, targetL);
   }
 
+  function shiftHexColor(color, amount) {
+    const hex = normalizeHexColor(color, ACCENTS[DEFAULT_ACCENT]).replace('#', '');
+    const next = [0, 2, 4].map((idx) => {
+      const value = Math.max(0, Math.min(255, parseInt(hex.slice(idx, idx + 2), 16) + amount));
+      return value.toString(16).padStart(2, '0');
+    });
+    return '#' + next.join('').toUpperCase();
+  }
+
+  // Perceived-brightness threshold (ITU-R BT.601 luma), used to decide
+  // whether text/an icon painted on top of a color should be black or white.
+  function colorIsLight(color) {
+    const hex = normalizeHexColor(color, '#000000').replace('#', '');
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000 >= 150;
+  }
+
   return {
     ACCENTS,
     ACCENT_NAMES,
@@ -113,6 +132,8 @@
     hexToRgba,
     hexToHsl,
     hslToHex,
+    shiftHexColor,
+    colorIsLight,
     baseAccentColor,
     getDisplayAccentColor
   };
