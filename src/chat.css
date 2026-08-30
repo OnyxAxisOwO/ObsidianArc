@@ -1,0 +1,1145 @@
+/* Styles for src/chat.js. Defines its own color tokens (rather than assuming
+   a host page supplies them) so the component is self-contained enough to
+   drop into a different app's page and still look intentional — a host that
+   wants its own palette can simply redefine these custom properties on an
+   ancestor element.
+
+   Light values live on :root; dark values apply automatically by system
+   preference, or by force via [data-theme="dark"] / [data-theme="light"] on
+   <html>, which is what index.html's theme toggle sets. */
+
+:root {
+  --ai-text: #1c1b1f;
+  --ai-text-secondary: #5c5a63;
+  --ai-border: rgba(28, 27, 31, 0.12);
+  --ai-outline-variant: rgba(28, 27, 31, 0.16);
+  --ai-state-hover: rgba(28, 27, 31, 0.06);
+  --ai-surface-card: #ffffff;
+  --ai-surface-container: #f2effa;
+  --ai-surface-container-low: #f7f5fb;
+  --ai-surface-container-high: #ece8f5;
+  --ai-primary: #6c4cd6;
+  --ai-primary-text: #ffffff;
+  --ai-badge-bg: rgba(108, 76, 214, 0.12);
+  --ai-badge-text: #5638b8;
+  --ai-focus-shadow: rgba(108, 76, 214, 0.22);
+  --ai-shadow-md: 0 8px 24px rgba(28, 27, 31, 0.14);
+  --ai-danger: #b91c1c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ai-text: #ece8f5;
+    --ai-text-secondary: #ada8bb;
+    --ai-border: rgba(236, 232, 245, 0.12);
+    --ai-outline-variant: rgba(236, 232, 245, 0.16);
+    --ai-state-hover: rgba(236, 232, 245, 0.08);
+    --ai-surface-card: #17151f;
+    --ai-surface-container: #211f2b;
+    --ai-surface-container-low: #1a1822;
+    --ai-surface-container-high: #2b2836;
+    --ai-primary: #a992f5;
+    --ai-primary-text: #100e18;
+    --ai-badge-bg: rgba(169, 146, 245, 0.16);
+    --ai-badge-text: #cabdf7;
+    --ai-focus-shadow: rgba(169, 146, 245, 0.28);
+    --ai-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
+    --ai-danger: #ff9a9a;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ai-text: #ece8f5;
+  --ai-text-secondary: #ada8bb;
+  --ai-border: rgba(236, 232, 245, 0.12);
+  --ai-outline-variant: rgba(236, 232, 245, 0.16);
+  --ai-state-hover: rgba(236, 232, 245, 0.08);
+  --ai-surface-card: #17151f;
+  --ai-surface-container: #211f2b;
+  --ai-surface-container-low: #1a1822;
+  --ai-surface-container-high: #2b2836;
+  --ai-primary: #a992f5;
+  --ai-primary-text: #100e18;
+  --ai-badge-bg: rgba(169, 146, 245, 0.16);
+  --ai-badge-text: #cabdf7;
+  --ai-focus-shadow: rgba(169, 146, 245, 0.28);
+  --ai-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
+  --ai-danger: #ff9a9a;
+}
+
+.ai-chat {
+  position: relative;
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+  color: var(--ai-text);
+}
+
+.ai-chat-main {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* --- top bar --------------------------------------------------------------- */
+
+.ai-chat-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--ai-border);
+}
+
+.ai-chat-bar-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ai-text-secondary);
+}
+
+.ai-chat-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  cursor: pointer;
+}
+
+.ai-chat-bar-btn:hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+/* --- conversation list ------------------------------------------------------ */
+
+.ai-chat-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.ai-chat-sidebar-head {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  align-items: stretch;
+  gap: 8px;
+}
+
+/* The scrollable parts of the chat keep their scrollbars to themselves: no
+   track, no arrows, a thin thumb only while the pointer is over the list. */
+.ai-chat-list,
+.ai-chat-scroll,
+.ai-thinking-body {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.ai-chat-list:hover,
+.ai-chat-scroll:hover,
+.ai-thinking-body:hover {
+  scrollbar-color: var(--ai-outline-variant) transparent;
+}
+
+.ai-chat-sidebar-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ai-text-secondary);
+}
+
+.ai-chat-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ai-text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.ai-chat-new:hover {
+  background: var(--ai-state-hover);
+}
+
+.ai-chat-sidebar-foot {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+.ai-chat-clear-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.ai-chat-clear-all:hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-danger);
+}
+
+.ai-chat-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.ai-chat-list-empty {
+  margin: 4px 0;
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+}
+
+.ai-chat-list-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 10px;
+}
+
+.ai-chat-list-item:hover,
+.ai-chat-list-item.active {
+  background: var(--ai-state-hover);
+}
+
+.ai-chat-list-open {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-chat-list-title {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-chat-list-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.ai-chat-list-item:hover .ai-chat-list-delete,
+.ai-chat-list-delete:focus-visible {
+  opacity: 1;
+}
+
+.ai-chat-list-delete:hover {
+  color: var(--ai-danger);
+}
+
+/* --- transcript -------------------------------------------------------------- */
+
+.ai-chat-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 2px 4px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+/* Switching to another conversation, or starting a new one, swaps every
+   message at once. A short rise says "a different conversation" instead of
+   leaving the transcript to flicker into something else within one frame. */
+.ai-chat-scroll.ai-chat-switching {
+  animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes aiChatSwitch {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ai-chat-list-item.active.switched .ai-chat-list-title {
+  animation: aiChatRowMark 0.34s cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes aiChatRowMark {
+  from { opacity: 0.4; transform: translateX(-5px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.ai-msg {
+  margin-bottom: 16px;
+}
+
+.ai-msg-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.ai-msg-user.ai-msg-sent {
+  animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* The user's own words sit in a bubble; the assistant's are set as plain
+   prose on the page, so a long answer reads as a document instead of a chat
+   log. */
+.ai-bubble {
+  max-width: 86%;
+  padding: 8px 12px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.ai-answer {
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.ai-answer > *:first-child { margin-top: 0; }
+.ai-answer > *:last-child { margin-bottom: 0; }
+
+.ai-answer p {
+  margin: 0 0 8px;
+}
+
+.ai-answer h1,
+.ai-answer h2,
+.ai-answer h3,
+.ai-answer h4,
+.ai-answer h5,
+.ai-answer h6 {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-answer ul,
+.ai-answer ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.ai-answer li {
+  margin-bottom: 3px;
+}
+
+.ai-answer blockquote {
+  margin: 0 0 8px;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--ai-outline-variant);
+  color: var(--ai-text-secondary);
+}
+
+.ai-answer code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--ai-surface-container-high);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.ai-answer pre {
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 10px;
+  background: var(--ai-surface-container-low);
+  overflow-x: auto;
+}
+
+.ai-answer pre code {
+  padding: 0;
+  background: none;
+}
+
+.ai-answer a {
+  color: var(--ai-primary);
+}
+
+.ai-answer hr {
+  margin: 12px 0;
+  border: none;
+  border-top: 1px solid var(--ai-outline-variant);
+}
+
+.ai-answer table {
+  margin-bottom: 8px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ai-answer th,
+.ai-answer td {
+  padding: 4px 8px;
+  border: 1px solid var(--ai-outline-variant);
+  text-align: left;
+}
+
+/* Kept faint until the message is hovered: three buttons under every turn
+   read as clutter, but hiding them outright makes editing undiscoverable. */
+.ai-msg-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 5px;
+  opacity: 0.45;
+  transition: opacity 0.15s ease;
+}
+
+/* The model's reasoning. Quiet and boxed off: it is context for the answer,
+   never the answer, and on a thinking model it is far longer than one. */
+.ai-thinking {
+  margin: 0 0 8px;
+  border-left: 2px solid var(--ai-outline-variant);
+  padding-left: 10px;
+}
+
+.ai-thinking-head {
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.ai-thinking-head::-webkit-details-marker {
+  display: none;
+}
+
+.ai-thinking-head::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s ease;
+}
+
+.ai-thinking[open] > .ai-thinking-head::before {
+  transform: rotate(90deg);
+}
+
+.ai-thinking-body {
+  margin-top: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ai-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Measured cost of the turn. Deliberately the quietest thing in the message:
+   it is diagnostic, wanted only when the answer felt slow or expensive. */
+.ai-msg-stats {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ai-text-secondary);
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-msg-user .ai-msg-actions {
+  justify-content: flex-end;
+}
+
+.ai-msg:hover .ai-msg-actions,
+.ai-msg-actions:focus-within {
+  opacity: 1;
+}
+
+.ai-chat-mini-btn {
+  padding: 3px 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ai-chat-mini-btn:hover {
+  border-color: var(--ai-outline-variant);
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+.ai-chat-mini-btn.primary {
+  border-color: transparent;
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+}
+
+.ai-msg-editor {
+  width: 100%;
+}
+
+.ai-msg-edit-input {
+  width: 100%;
+}
+
+.ai-msg-editor-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+/* --- empty state, onboarding, errors --------------------------------------------- */
+
+.ai-chat-empty {
+  padding: 8px 4px 0;
+}
+
+.ai-chat-empty-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ai-chat-empty-body {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ai-text-secondary);
+}
+
+.ai-chat-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.ai-chat-suggestion {
+  padding: 6px 12px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ai-text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-chat-suggestion:hover {
+  background: var(--ai-state-hover);
+}
+
+.ai-chat-setup {
+  margin-bottom: 12px;
+  padding: 14px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 14px;
+  background: var(--ai-surface-container);
+}
+
+.ai-chat-setup-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-chat-setup-body {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ai-text-secondary);
+}
+
+.ai-chat-setup-action {
+  padding: 7px 14px;
+  border: none;
+  border-radius: 999px;
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-chat-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  border-radius: 12px;
+  background: rgba(185, 28, 28, 0.08);
+}
+
+.ai-chat-error-text {
+  flex: 1;
+  min-width: 140px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ai-danger);
+}
+
+/* The answer while it is still being written. The caret marks the live end
+   of the text, which is what tells a slow reply apart from a stalled one now
+   that the spinner has been replaced by the words themselves. */
+.ai-answer-streaming > *:last-child::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  border-radius: 1px;
+  background: var(--ai-primary);
+  vertical-align: text-bottom;
+  animation: aiChatCaret 1s steps(2, start) infinite;
+}
+
+@keyframes aiChatCaret {
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-answer-streaming > *:last-child::after {
+    animation: none;
+  }
+}
+
+.ai-chat-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+}
+
+.ai-chat-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--ai-outline-variant);
+  border-radius: 50%;
+  border-top-color: var(--ai-primary);
+  animation: ai-chat-spin 0.8s linear infinite;
+}
+
+@keyframes ai-chat-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ai-chat-flash {
+  display: none;
+  padding: 4px 2px 0;
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
+.ai-chat-flash.visible {
+  display: block;
+}
+
+/* --- composer ------------------------------------------------------------------- */
+
+.ai-chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ai-border);
+}
+
+.ai-chat-composer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+/* --- attachments ------------------------------------------------------------------ */
+
+.ai-chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-chat-attachments:empty {
+  display: none;
+}
+
+.ai-msg-user .ai-chat-attachments {
+  justify-content: flex-end;
+  max-width: 86%;
+  margin-bottom: 6px;
+}
+
+.ai-chat-attachment {
+  position: relative;
+  overflow: hidden;
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 10px;
+  background: var(--ai-surface-container-low);
+}
+
+.ai-chat-attachment-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ai-chat-attachment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+}
+
+.ai-chat-attachment-remove:hover {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.ai-chat-attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  cursor: pointer;
+}
+
+.ai-chat-attach:hover:not(:disabled) {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+.ai-chat-attach[hidden] {
+  display: none;
+}
+
+.ai-chat-attach:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ai-chat-drop {
+  display: none;
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--ai-primary);
+  border-radius: 14px;
+  background: var(--ai-surface-card);
+  color: var(--ai-text-secondary);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.ai-chat.dragging .ai-chat-drop {
+  display: flex;
+}
+
+.ai-chat-input {
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  max-height: 160px;
+  padding: 6px 12px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 14px;
+  background: var(--ai-surface-container-low);
+  color: var(--ai-text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: none;
+}
+
+.ai-chat-input:focus {
+  border-color: var(--ai-primary);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.ai-chat-input:disabled {
+  opacity: 0.6;
+}
+
+.ai-chat-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+  cursor: pointer;
+}
+
+.ai-chat-send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- narrow skin: a compact widget, e.g. embedded in a sidebar or popover -------- */
+
+.ai-chat-narrow .ai-chat-sidebar {
+  position: absolute;
+  z-index: 5;
+  top: 34px;
+  right: 0;
+  left: 0;
+  max-height: 260px;
+  padding: 10px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 14px;
+  background: var(--ai-surface-card);
+  box-shadow: var(--ai-shadow-md);
+}
+
+.ai-chat-narrow:not(.history-open) .ai-chat-sidebar {
+  display: none;
+}
+
+.ai-chat-narrow .ai-chat-scroll {
+  max-height: 46vh;
+  min-height: 180px;
+}
+
+/* --- wide skin: a whole page, laid out like a chat app --------------------------- */
+
+.ai-chat-wide {
+  --ai-rail-width: 260px;
+  --ai-rail-gap: 14px;
+  gap: var(--ai-rail-gap);
+  height: 100%;
+  min-height: 0;
+}
+
+.ai-chat-wide .ai-chat-sidebar {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  gap: 12px;
+  width: var(--ai-rail-width);
+  padding: 14px 12px;
+  border: none;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  /* Slid out by a negative margin rather than collapsed by width: the rail
+     keeps its own width the whole way, so its contents never reflow mid
+     animation, and the transcript widens smoothly into the space. */
+  transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+    visibility 0s linear 0s;
+}
+
+.ai-chat-wide.rail-collapsed .ai-chat-sidebar {
+  margin-left: calc(-1 * (var(--ai-rail-width) + var(--ai-rail-gap)));
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+    visibility 0s linear 0.34s;
+}
+
+.ai-chat-wide .ai-chat-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The rail is the navigation on a wide screen, so the bar's own history
+   toggle and title would only repeat it. */
+.ai-chat-wide .ai-chat-bar {
+  display: none;
+}
+
+.ai-chat-wide .ai-chat-main {
+  overflow: hidden;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+}
+
+.ai-chat-wide .ai-chat-scroll {
+  padding: 26px 14px 18px;
+  scrollbar-gutter: stable both-edges;
+}
+
+.ai-chat-wide .ai-chat-list {
+  scrollbar-width: none;
+}
+
+.ai-chat-wide .ai-chat-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* One reading column, centred: a paragraph set across the full width of a
+   wide window is not a conversation, it is a wall. */
+.ai-chat-wide .ai-msg,
+.ai-chat-wide .ai-chat-empty,
+.ai-chat-wide .ai-chat-setup,
+.ai-chat-wide .ai-chat-error,
+.ai-chat-wide .ai-chat-pending {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 680px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.ai-chat-wide .ai-chat-flash,
+.ai-chat-wide .ai-chat-composer {
+  box-sizing: border-box;
+  width: min(680px, 100% - 48px);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.ai-chat-wide .ai-msg {
+  margin-bottom: 24px;
+}
+
+.ai-chat-wide .ai-bubble,
+.ai-chat-wide .ai-answer,
+.ai-chat-wide .ai-chat-input {
+  font-size: 14px;
+}
+
+.ai-chat-wide .ai-bubble {
+  padding: 10px 14px;
+  border-radius: 18px 18px 6px 18px;
+}
+
+.ai-chat-wide.is-empty .ai-chat-scroll {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.ai-chat-wide .ai-chat-empty {
+  padding: 0;
+  text-align: center;
+}
+
+.ai-chat-wide .ai-chat-empty-title {
+  margin-bottom: 10px;
+  font-size: 22px;
+  letter-spacing: -0.2px;
+}
+
+.ai-chat-wide .ai-chat-empty-body {
+  max-width: 48ch;
+  margin: 0 auto;
+  font-size: 13.5px;
+}
+
+.ai-chat-wide .ai-chat-suggestions {
+  justify-content: center;
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.ai-chat-wide .ai-chat-suggestion {
+  padding: 9px 16px;
+  font-size: 13px;
+}
+
+.ai-chat-wide .ai-chat-setup {
+  text-align: center;
+}
+
+.ai-chat-wide .ai-chat-setup-body {
+  max-width: 48ch;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.ai-chat-wide .ai-chat-composer {
+  margin-bottom: 20px;
+  padding: 7px 7px 7px 8px;
+  border: none;
+  border-radius: 26px;
+  background: var(--ai-surface-container-high);
+}
+
+.ai-chat-wide .ai-chat-composer:focus-within {
+  box-shadow: 0 0 0 2px var(--ai-focus-shadow);
+}
+
+.ai-chat-wide .ai-chat-composer-row {
+  gap: 6px;
+}
+
+.ai-chat-wide .ai-chat-input {
+  min-height: 36px;
+  max-height: 200px;
+  padding: 7px 6px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.ai-chat-wide .ai-chat-input:focus {
+  box-shadow: none;
+}
+
+.ai-chat-wide .ai-chat-attach {
+  border: none;
+}
+
+.ai-chat-wide .ai-chat-send,
+.ai-chat-wide .ai-chat-attach {
+  width: 36px;
+  height: 36px;
+}
+
+.ai-chat-wide .ai-chat-attachments {
+  padding: 2px 4px 0;
+}
+
+.ai-chat-wide .ai-chat-flash {
+  padding-bottom: 6px;
+}
+
+.ai-chat-wide .ai-chat-drop {
+  border-radius: 18px;
+}
+
+@media (max-width: 900px) {
+  /* Too narrow for a permanent rail: it becomes the overlay the narrow skin
+     uses. The chat still fills the height, so the panel never ends partway
+     down the screen with dead space under it. */
+
+  .ai-chat-wide.rail-collapsed .ai-chat-sidebar,
+  .ai-chat-wide .ai-chat-sidebar {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    right: 0;
+    left: 0;
+    width: auto;
+    margin-left: 0;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transition: none;
+    max-height: 300px;
+    padding: 12px;
+    border: 1px solid var(--ai-outline-variant);
+    border-radius: 14px;
+    background: var(--ai-surface-card);
+    box-shadow: var(--ai-shadow-md);
+  }
+
+  .ai-chat-wide:not(.history-open) .ai-chat-sidebar {
+    display: none;
+  }
+
+  .ai-chat-wide .ai-chat-scroll {
+    padding: 18px 14px 12px;
+  }
+
+  .ai-chat-wide .ai-chat-flash,
+  .ai-chat-wide .ai-chat-composer {
+    width: calc(100% - 28px);
+  }
+
+  .ai-chat-wide .ai-chat-composer {
+    margin-bottom: 14px;
+  }
+
+  .ai-chat-wide .ai-chat-empty-title {
+    font-size: 19px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-chat-spinner {
+    animation-duration: 2.4s;
+  }
+
+  .ai-chat-scroll.ai-chat-switching,
+  .ai-chat-list-item.active.switched .ai-chat-list-title {
+    animation: none;
+  }
+
+  .ai-msg-actions,
+  .ai-chat-new {
+    transition: none;
+  }
+
+  .ai-chat-wide .ai-chat-sidebar,
+  .ai-chat-wide.rail-collapsed .ai-chat-sidebar {
+    transition: none;
+  }
+}

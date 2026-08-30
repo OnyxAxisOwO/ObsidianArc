@@ -1,0 +1,10 @@
+{
+  "name": "obsidian-arc",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A standalone, bring-your-own-key AI chat workspace. No account, no server, no build step.",
+  "scripts": {
+    "start": "python -m http.server 8080"
+  },
+  "license": "MIT"
+}

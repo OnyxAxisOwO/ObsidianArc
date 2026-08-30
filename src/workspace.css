@@ -1,0 +1,467 @@
+/* Styles for src/workspace.js: the header bar and settings drawer wrapped
+   around src/chat.js. Consumes the same --ai-* custom properties chat.css
+   defines, so the two never disagree about palette. */
+
+.oa-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.oa-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.oa-brand {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  padding-left: 2px;
+}
+
+.oa-header-spacer {
+  flex: 1;
+}
+
+.oa-chat-root {
+  flex: 1;
+  min-height: 0;
+}
+
+.oa-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  cursor: pointer;
+}
+
+.oa-icon-btn:hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+.oa-btn {
+  padding: 8px 14px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ai-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.oa-btn:hover {
+  background: var(--ai-state-hover);
+}
+
+.oa-btn.primary {
+  border-color: transparent;
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+}
+
+.oa-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- chip + dropdown menu ------------------------------------------------- */
+
+.oa-chip-group {
+  position: relative;
+}
+
+.oa-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 7px 10px 7px 12px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 999px;
+  background: var(--ai-surface-container-low);
+  color: var(--ai-text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.oa-chip:hover {
+  background: var(--ai-state-hover);
+}
+
+.oa-chip.placeholder {
+  color: var(--ai-text-secondary);
+}
+
+.oa-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 220px;
+  max-width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 14px;
+  background: var(--ai-surface-card);
+  box-shadow: var(--ai-shadow-md);
+}
+
+.oa-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ai-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.oa-menu-item:hover,
+.oa-menu-item.active {
+  background: var(--ai-state-hover);
+}
+
+.oa-menu-item-title {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-menu-item-sub {
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-menu-manage {
+  margin-top: 4px;
+  border-top: 1px solid var(--ai-outline-variant);
+  border-radius: 0;
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+  padding-top: 9px;
+}
+
+.oa-menu-empty {
+  margin: 4px 8px;
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+}
+
+/* --- settings drawer -------------------------------------------------------- */
+
+.oa-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.oa-drawer-overlay.open {
+  opacity: 1;
+}
+
+.oa-drawer {
+  position: fixed;
+  z-index: 30;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(420px, 100vw);
+  box-sizing: border-box;
+  background: var(--ai-surface-card);
+  box-shadow: var(--ai-shadow-md);
+  transform: translateX(100%);
+  transition: transform 0.24s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.oa-drawer.open {
+  transform: translateX(0);
+}
+
+.oa-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 14px 10px 14px 18px;
+  border-bottom: 1px solid var(--ai-border);
+}
+
+.oa-drawer-title {
+  flex: 1;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.oa-drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 24px;
+}
+
+.oa-drawer-subhead {
+  margin: 4px 0 -4px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ai-text-secondary);
+}
+
+.oa-drawer-flash {
+  margin: -6px 0 0;
+  font-size: 12px;
+  color: var(--ai-danger);
+  display: none;
+}
+
+.oa-drawer-flash.visible {
+  display: block;
+}
+
+.oa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.oa-field-label {
+  font-weight: 600;
+}
+
+.oa-field-hint {
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-field input[type="text"],
+.oa-field input[type="password"],
+.oa-field input[type="number"],
+.oa-field textarea,
+.oa-field select,
+.oa-input-row input[type="text"],
+.oa-input-row input[type="password"] {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 10px;
+  background: var(--ai-surface-container-low);
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.oa-field textarea {
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.oa-field input:focus,
+.oa-field textarea:focus,
+.oa-field select:focus {
+  outline: none;
+  border-color: var(--ai-primary);
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.oa-input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.oa-checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.oa-checkbox-field input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ai-primary);
+}
+
+.oa-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.oa-model-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 6px;
+  border-radius: 10px;
+}
+
+.oa-model-row.active {
+  background: var(--ai-badge-bg);
+}
+
+.oa-model-row-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 0;
+}
+
+.oa-model-row-title {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-model-row-sub {
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-detect-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: -6px;
+  padding: 10px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+}
+
+/* `display` on the class would otherwise beat the UA's [hidden] rule, which
+   has the same specificity and loses on source order (author styles always
+   win over the UA stylesheet). */
+.oa-detect-panel[hidden],
+.oa-detect-actions[hidden] {
+  display: none;
+}
+
+.oa-detect-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-detect-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.oa-detect-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.oa-detect-known {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-size: 10px;
+}
+
+.oa-detect-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.oa-advanced {
+  border-top: 1px solid var(--ai-border);
+  padding-top: 10px;
+}
+
+.oa-advanced > summary {
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.oa-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.oa-advanced > summary::before {
+  content: '▸ ';
+}
+
+.oa-advanced[open] > summary::before {
+  content: '▾ ';
+}
+
+.oa-advanced > * + * {
+  margin-top: 12px;
+}
+
+@media (max-width: 480px) {
+  .oa-brand {
+    display: none;
+  }
+  .oa-chip {
+    max-width: 140px;
+  }
+}
