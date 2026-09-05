@@ -164,6 +164,12 @@ export async function renderSettings(view: AdminView): Promise<void> {
     hint: t('instanceSystemPromptHint'),
   });
 
+  const apiEnabled = switchField({
+    label: t('apiEnabled'),
+    value: values['api.enabled'] === 'true',
+    hint: t('apiEnabledHint'),
+  });
+
   const maxTurns = numberField({
     label: t('turnsResent'),
     value: Number(values['chat.max_turns'] ?? 40),
@@ -212,6 +218,9 @@ export async function renderSettings(view: AdminView): Promise<void> {
   form.appendChild(adminBypass.element);
   form.appendChild(usageDisplay.element);
 
+  form.appendChild(section(t('apiKeys')));
+  form.appendChild(apiEnabled.element);
+
   const flash = el('p', 'oa-drawer-flash');
   form.appendChild(flash);
   view.body.appendChild(form);
@@ -253,6 +262,7 @@ export async function renderSettings(view: AdminView): Promise<void> {
         'quota.usage_display': usageDisplay.value(),
         'chat.default_system_prompt': systemPrompt.value(),
         'chat.max_turns': String(maxTurns.value() ?? 40),
+        'api.enabled': String(apiEnabled.value()),
       });
       save.textContent = t('saved');
       window.setTimeout(() => { save.textContent = t('save'); }, 1500);

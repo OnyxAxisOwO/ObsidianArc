@@ -112,6 +112,14 @@ function editGroup(
     hint: t('allowAllModelsHint'),
     onChange: () => panel.rebuild(),
   });
+  // Ticked for a new group, matching the column default: the instance-wide
+  // switch is the deliberate act, and this narrows it rather than standing in
+  // for it.
+  const apiAccess = switchField({
+    label: t('groupApiAccess'),
+    value: existing?.api_access ?? true,
+    hint: t('groupApiAccessHint'),
+  });
   const sortOrder = numberField({ label: t('sortOrder'), value: existing?.sort_order ?? 0 });
 
   const initialGrants: Record<string, 'use' | 'view'> = {};
@@ -183,6 +191,9 @@ function editGroup(
       body.appendChild(allowAll.element);
       if (!allowAll.value()) body.appendChild(allowed.element);
 
+      body.appendChild(section(t('apiKeys')));
+      body.appendChild(apiAccess.element);
+
       body.appendChild(section(t('secAllowance'), t('allowanceHint')));
       body.appendChild(rpm.element);
       body.appendChild(tpm.element);
@@ -213,6 +224,7 @@ function editGroup(
           description: description.value(),
           is_default: isDefault.value(),
           allow_all_models: allowAll.value(),
+          api_access: apiAccess.value(),
           sort_order: sortOrder.value() ?? 0,
           model_ids: modelIDs,
           model_grants: modelGrants,

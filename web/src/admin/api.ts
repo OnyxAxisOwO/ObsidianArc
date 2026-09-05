@@ -81,6 +81,7 @@ export interface Group {
   description: string;
   is_default: boolean;
   allow_all_models: boolean;
+  api_access: boolean;
   sort_order: number;
   members: number;
   model_ids: string[];

@@ -105,6 +105,15 @@ function accountMenu(account: Account) {
     }));
 
     menu.appendChild(menuItem({
+      title: t('apiKeys'),
+      leading: icon(ICONS.key, 14),
+      onSelect: () => {
+        close();
+        navigate('/keys');
+      },
+    }));
+
+    menu.appendChild(menuItem({
       title: t('about'),
       leading: icon(ICONS.info, 14),
       onSelect: () => {

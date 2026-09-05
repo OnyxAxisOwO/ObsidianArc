@@ -10,6 +10,7 @@ import { renderVerifyPage } from './auth/verify-page';
 import { renderAdminPage } from './admin/admin-page';
 import { renderChatPage } from './chat/chat-page';
 import { renderLandingPage } from './landing/landing-page';
+import { renderKeysPage } from './settings/api-keys';
 import { renderSettingsPage } from './settings/settings-page';
 import { renderShell } from './app/shell';
 import { t } from './i18n';
@@ -38,6 +39,7 @@ const routes: Route[] = [
   // a browser that has never signed in here.
   { pattern: '/verify', render: (target, ctx) => renderVerifyPage(target, ctx.query) },
   { pattern: '/settings', render: guarded(renderSettingsPage) },
+  { pattern: '/keys', render: guarded(renderKeysPage) },
   { pattern: '/about', render: guarded(renderAboutPage) },
   { pattern: '/admin/*', render: guarded(adminOnly(admin)) },
   { pattern: '/admin', render: guarded(adminOnly(admin)) },
