@@ -2,8 +2,10 @@ import './styles/base.css';
 import './styles/chat.css';
 import './styles/workspace.css';
 import './styles/app.css';
+import './styles/admin.css';
 
 import { renderAuthPage } from './auth/auth-page';
+import { renderAdminPage } from './admin/admin-page';
 import { renderChatPage } from './chat/chat-page';
 import { renderShell } from './app/shell';
 import { navigate, startRouter, type Route, type RouteContext } from './router';
@@ -28,8 +30,8 @@ const routes: Route[] = [
   { pattern: '/login', render: (target) => renderAuthPage(target, 'login') },
   { pattern: '/register', render: (target) => renderAuthPage(target, 'register') },
   { pattern: '/settings', render: guarded(renderSettings) },
-  { pattern: '/admin/*', render: guarded(adminOnly(renderAdmin)) },
-  { pattern: '/admin', render: guarded(adminOnly(renderAdmin)) },
+  { pattern: '/admin/*', render: guarded(adminOnly(admin)) },
+  { pattern: '/admin', render: guarded(adminOnly(admin)) },
 ];
 
 // Route guards live here rather than inside each screen, so "which pages need
@@ -62,9 +64,8 @@ function renderSettings(target: HTMLElement): void {
   notice(shell.body, 'Settings', 'Profile, default model and appearance settings arrive in a later phase.');
 }
 
-function renderAdmin(target: HTMLElement): void {
-  const shell = renderShell(target);
-  notice(shell.body, 'Administration', 'Users, groups, providers, models and usage arrive in a later phase.');
+function admin(target: HTMLElement, ctx: RouteContext): void {
+  renderAdminPage(target, ctx.path);
 }
 
 function notFound(target: HTMLElement, ctx: RouteContext): void {

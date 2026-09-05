@@ -145,7 +145,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	model.NewHandlers(models).Routes(mux)
 	chat.NewHandlers(chatService, conversations).Routes(mux)
 	quota.NewHandlers(quotaService).Routes(mux)
-	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService).Routes(mux)
+	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations).Routes(mux)
 
 	// Anything under /api that no module claimed is a client bug, and should
 	// read as one instead of quietly returning the SPA shell.

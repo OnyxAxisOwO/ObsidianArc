@@ -16,6 +16,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
@@ -28,15 +29,16 @@ import (
 )
 
 type Handlers struct {
-	users     *user.Store
-	groups    *group.Store
-	providers *provider.Store
-	models    *model.Store
-	settings  *settings.Service
-	registry  *adapter.Registry
-	auth      *auth.Service
-	usage     *usage.Store
-	quota     *quota.Service
+	users         *user.Store
+	groups        *group.Store
+	providers     *provider.Store
+	models        *model.Store
+	settings      *settings.Service
+	registry      *adapter.Registry
+	auth          *auth.Service
+	usage         *usage.Store
+	quota         *quota.Service
+	conversations *conversation.Store
 }
 
 func NewHandlers(
@@ -49,17 +51,19 @@ func NewHandlers(
 	authService *auth.Service,
 	usageStore *usage.Store,
 	quotaService *quota.Service,
+	conversations *conversation.Store,
 ) *Handlers {
 	return &Handlers{
-		users:     users,
-		groups:    groups,
-		providers: providers,
-		models:    models,
-		settings:  set,
-		registry:  registry,
-		auth:      authService,
-		usage:     usageStore,
-		quota:     quotaService,
+		users:         users,
+		groups:        groups,
+		providers:     providers,
+		models:        models,
+		settings:      set,
+		registry:      registry,
+		auth:          authService,
+		usage:         usageStore,
+		quota:         quotaService,
+		conversations: conversations,
 	}
 }
 
@@ -70,6 +74,24 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	protected := func(handler httpx.Handler) http.Handler {
 		return auth.RequireAdmin(httpx.Wrap(handler))
 	}
+
+	mux.Handle("GET /api/admin/dashboard", protected(h.dashboard))
+
+	mux.Handle("GET /api/admin/users", protected(h.listUsers))
+	mux.Handle("GET /api/admin/users/{id}", protected(h.showUser))
+	mux.Handle("PATCH /api/admin/users/{id}", protected(h.updateUser))
+	mux.Handle("DELETE /api/admin/users/{id}", protected(h.deleteUser))
+	mux.Handle("POST /api/admin/users/{id}/password", protected(h.resetPassword))
+	mux.Handle("GET /api/admin/users/{id}/conversations", protected(h.userConversations))
+	mux.Handle("GET /api/admin/users/{id}/conversations/{conversation}", protected(h.userTranscript))
+
+	mux.Handle("GET /api/admin/groups", protected(h.listGroups))
+	mux.Handle("POST /api/admin/groups", protected(h.createGroup))
+	mux.Handle("PATCH /api/admin/groups/{id}", protected(h.updateGroup))
+	mux.Handle("DELETE /api/admin/groups/{id}", protected(h.deleteGroup))
+
+	mux.Handle("GET /api/admin/settings", protected(h.listSettings))
+	mux.Handle("PUT /api/admin/settings", protected(h.updateSettings))
 
 	mux.Handle("GET /api/admin/providers", protected(h.listProviders))
 	mux.Handle("POST /api/admin/providers", protected(h.createProvider))
