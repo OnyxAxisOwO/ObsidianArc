@@ -13,7 +13,9 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/admin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -36,10 +38,11 @@ type Deps struct {
 // work (the janitor) and the HTTP handler share one set of stores rather than
 // each constructing its own.
 type Server struct {
-	deps     Deps
-	handler  http.Handler
-	settings *settings.Service
-	auth     *auth.Service
+	deps          Deps
+	handler       http.Handler
+	settings      *settings.Service
+	auth          *auth.Service
+	conversations *conversation.Store
 }
 
 func New(ctx context.Context, deps Deps) (*Server, error) {
@@ -68,6 +71,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	providers := provider.NewStore(db, box)
 	models := model.NewStore(db, providers)
 	registry := adapter.NewRegistry(cfg.Upstream)
+	conversations := conversation.NewStore(db)
+	chatService := chat.NewService(db, conversations, models, registry, settingsService)
 
 	if err := Bootstrap(ctx, db, groups, users, authService, cfg); err != nil {
 		return nil, err
@@ -88,6 +93,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 
 	auth.NewHandlers(authService, users, groups, preferences, settingsService, cfg.TrustProxy).Routes(mux)
 	model.NewHandlers(models).Routes(mux)
+	chat.NewHandlers(chatService, conversations).Routes(mux)
 	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService).Routes(mux)
 
 	// Anything under /api that no module claimed is a client bug, and should
@@ -116,7 +122,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		authService.Attach(),
 	)
 
-	return &Server{deps: deps, handler: handler, settings: settingsService, auth: authService}, nil
+	return &Server{
+		deps:          deps,
+		handler:       handler,
+		settings:      settingsService,
+		auth:          authService,
+		conversations: conversations,
+	}, nil
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
@@ -144,11 +156,11 @@ func (s *Server) StartJanitor(ctx context.Context) {
 func (s *Server) sweep(ctx context.Context) {
 	sweepCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if _, err := s.auth.Sessions().DeleteExpired(sweepCtx); err != nil {
-		// A failed sweep is not worth interrupting service over: the rows are
-		// already treated as expired on read.
-		return
-	}
+	// Expired sessions are already refused on read; the sweep is only about
+	// not letting the table grow forever.
+	_, _ = s.auth.Sessions().DeleteExpired(sweepCtx)
+	// Images uploaded into a composer that was never sent.
+	_, _ = s.conversations.DeleteOrphans(sweepCtx, conversation.OrphanTTL)
 }
 
 func devServerURL(cfg config.Config) string {

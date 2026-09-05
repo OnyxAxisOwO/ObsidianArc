@@ -4,6 +4,7 @@ import './styles/workspace.css';
 import './styles/app.css';
 
 import { renderAuthPage } from './auth/auth-page';
+import { renderChatPage } from './chat/chat-page';
 import { renderShell } from './app/shell';
 import { navigate, startRouter, type Route, type RouteContext } from './router';
 import { currentUser, isAdmin, start as startSession } from './session';
@@ -23,7 +24,7 @@ async function boot(): Promise<void> {
 }
 
 const routes: Route[] = [
-  { pattern: '/', render: guarded(renderChat) },
+  { pattern: '/', render: guarded(renderChatPage) },
   { pattern: '/login', render: (target) => renderAuthPage(target, 'login') },
   { pattern: '/register', render: (target) => renderAuthPage(target, 'register') },
   { pattern: '/settings', render: guarded(renderSettings) },
@@ -55,25 +56,6 @@ function adminOnly(render: Route['render']): Route['render'] {
 }
 
 // --- screens ----------------------------------------------------------------
-
-// Phase 4 replaces this with the ported chat surface. Until then the shell is
-// real and the transcript is a placeholder, so the header, account menu and
-// theme are all exercised from the start.
-function renderChat(target: HTMLElement): void {
-  const shell = renderShell(target);
-  shell.body.classList.add('ai-chat', 'ai-chat-wide');
-
-  const main = el('div', 'ai-chat-main');
-  const scroll = el('div', 'ai-chat-scroll');
-  const empty = el('div', 'ai-chat-empty');
-  empty.appendChild(el('h3', 'ai-chat-empty-title', `Hello, ${currentUser()?.nickname || currentUser()?.username}`));
-  empty.appendChild(el('p', 'ai-chat-empty-body',
-    'The chat itself arrives with providers and models, in the next phases. Signing in, the account menu and the theme already work.'));
-  scroll.appendChild(empty);
-  main.appendChild(scroll);
-  shell.body.appendChild(main);
-  shell.body.classList.add('is-empty');
-}
 
 function renderSettings(target: HTMLElement): void {
   const shell = renderShell(target);

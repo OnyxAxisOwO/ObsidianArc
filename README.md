@@ -1,124 +1,141 @@
 # Obsidian Arc
 
-> **Being rebuilt as a self-hosted server.** Obsidian Arc is becoming a
-> multi-user, multi-provider AI chat server: a single Go binary with the
-> frontend embedded, PostgreSQL or SQLite behind it, an admin backoffice,
-> chat history, and usage/quota accounting — keeping the interface described
-> below exactly as it is. The plan, the schema and the phase order are in
-> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). This README still describes
-> the standalone bring-your-own-key build and is rewritten when the migration
-> lands.
-
-A standalone, bring-your-own-key AI chat workspace. No account, no server, no
-build step — open `index.html` and talk to Anthropic or any OpenAI-compatible
-endpoint (DeepSeek, OpenRouter, Groq, a local Ollama/vLLM...) straight from
-the browser.
+A self-hosted AI chat server: multi-user, multi-provider, with an admin
+backoffice, saved conversations and usage accounting. One Go binary with the
+frontend inside it, one database, nothing else to run.
 
 It started as the AI chat component inside [PageDye](https://github.com/OnyxAxisOwO/PageDye)
-(a browser extension for theming websites), pulled out and generalized into
-its own project: the chat surface, history, streaming, editing and model
-management, without anything specific to what PageDye used it for.
+(a browser extension for theming websites), was pulled out into a standalone
+bring-your-own-key page, and is now the server that page always wanted to be.
+The interface is the same one: same layout, same message shapes, same accent
+system, same motion. What changed is everything behind it.
 
 ## What it does
 
-- Bring your own API key — Anthropic or any OpenAI-compatible base URL —
-  stored only in your browser, optionally encrypted at rest
-- Streamed responses with live "thinking" / reasoning display where the
-  model provides one
-- Full conversation history: switch, rename by first message, delete, clear
-- Edit an earlier message and resend — everything after it is regenerated
-- Regenerate any answer, copy any message, retry a failed turn
-- Image attachments (drag, drop, paste, or pick a file) for vision models,
-  downscaled client-side before they're ever sent or stored
-- A model shortlist per provider, with a "detect" button that asks the
-  endpoint what it actually serves
-- Light / dark / system theme, with an accent color picker (10 presets or
-  any custom hex) — pick one hue and it's automatically adjusted to stay
-  readable in both light and dark mode, the same trick PageDye's own
-  interface color picker uses
-- Safe Markdown rendering with no `innerHTML` anywhere in the render path
+- **Accounts and groups.** Register, sign in, sign out. Groups decide which
+  models a set of people may use and what allowance they share; nothing is
+  hard-coded, so an instance defines whatever groups it wants.
+- **Any provider.** Anthropic's Messages API and any OpenAI-compatible
+  endpoint — OpenAI, DeepSeek, xAI, OpenRouter, Groq, a local Ollama or vLLM.
+  Added from the admin backoffice at runtime, not from a config file.
+- **Providers and models are separate.** One provider serves many models, and
+  the id the provider knows a model by is not the name a user reads.
+- **Streamed answers** over Server-Sent Events, with live reasoning where the
+  model produces it. Pressing Stop cancels the upstream request, so it stops
+  generating and stops billing.
+- **Unified reasoning.** The interface offers one toggle and three levels; the
+  adapter turns that into thinking budgets, `reasoning_effort`, or whatever
+  else the endpoint wants.
+- **Saved conversations.** Switch, rename, delete. Edit an earlier message and
+  resend — everything after it is regenerated. Regenerate any answer, retry a
+  failed turn.
+- **Images and text files.** Pictures are downscaled in the browser before
+  they are uploaded; text and code files are folded into the message.
+- **Usage and quota.** Every request writes a ledger row. Limits apply per 5
+  hours, per week and per month, over requests, tokens or credits, resolved
+  global → group → user.
+- **Light / dark / system theme** with an accent picker: pick one hue and it
+  is adjusted to stay readable in both schemes.
+- **Safe Markdown rendering** with no `innerHTML` anywhere in the render path.
 
-Nothing is sent anywhere until you add an API key. There is no backend: your
-key and your conversations live in `localStorage`, in your browser, on your
-device.
-
-## Quick start
-
-No build step. Any static file server works — or just open the file:
+## Running it
 
 ```bash
-python3 -m http.server 8080   # macOS/Linux
-python -m http.server 8080    # Windows
+./obsidian-arc
 ```
 
-Then visit `http://localhost:8080`, or open `index.html` directly.
+That is the whole quick start. It creates `./data`, generates a secret key,
+runs its migrations, opens SQLite, and serves on `:8080`. The first account to
+register becomes the administrator.
 
-## How calling the API from a browser tab works
+For an unattended first boot, name the administrator instead:
 
-Anthropic's Messages API supports being called directly from a page origin
-via the `anthropic-dangerous-direct-browser-access` header — that's what
-makes a serverless bring-your-own-key tool like this possible for that
-provider. It is exactly as dangerous as it sounds: your API key is visible to
-anything else running on the page, which is the inherent trade-off of a
-client-only tool with no backend of its own. Don't paste a key you don't
-trust this browser profile with, and don't open this page somewhere a
-malicious script could run alongside it.
+```bash
+OBSIDIAN_ADMIN_USER=admin OBSIDIAN_ADMIN_PASSWORD='a good password' ./obsidian-arc
+```
 
-Most OpenAI-compatible endpoints already allow browser-origin requests with
-just a bearer token; a few (notably OpenAI's own API) do not enable CORS for
-arbitrary origins and will need a proxy of your own in front of them.
+### Configuration
+
+Every setting has a working default. These are the ones a real deployment
+tends to set:
+
+| Variable | Default | |
+| --- | --- | --- |
+| `OBSIDIAN_ADDR` | `:8080` | Listen address |
+| `OBSIDIAN_DB_DRIVER` | `sqlite` | `sqlite` or `postgres` |
+| `OBSIDIAN_DB_DSN` | `./data/obsidian.db` | Required for Postgres |
+| `OBSIDIAN_SECRET_KEY` | generated into `./data` | Encrypts provider API keys. Set it explicitly before running more than one instance against one database |
+| `OBSIDIAN_DATA_DIR` | `./data` | Database, secret key |
+| `OBSIDIAN_TRUST_PROXY` | `false` | Honour `X-Forwarded-For` |
+| `OBSIDIAN_COOKIE_SECURE` | `true` | Turn off only for plain-http local use |
+| `OBSIDIAN_SESSION_TTL` | `720h` | |
+| `OBSIDIAN_ADMIN_USER` / `_PASSWORD` | — | First administrator, on an empty database |
+
+## Building
+
+```bash
+make build     # frontend, then a binary with it embedded
+make test      # go vet, go test, tsc
+make dev       # server on :8080 proxying to Vite on :5173
+```
+
+`make dev` expects `npm --prefix web run dev` alongside it, and reverse
+proxies to it, so the frontend hot-reloads while the API stays on one origin.
+
+Requires Go 1.22+ and Node 20+.
 
 ## Architecture
 
-Plain scripts, no bundler, no framework — the same convention PageDye itself
-uses. Each file is a small UMD-style module attached to `globalThis`:
+One process. A modular monolith, not services.
 
-| File | Purpose |
-| --- | --- |
-| `src/store.js` | Conversation persistence and normalization (`ObsidianStore`) |
-| `src/markdown.js` | A small, XSS-safe Markdown renderer (`ObsidianMarkdown`) |
-| `src/image.js` | Downscales a picked/dropped/pasted image for attachment (`ObsidianImage`) |
-| `src/provider.js` | Talks to Anthropic / OpenAI-compatible APIs, streaming included (`ObsidianProvider`) |
-| `src/color-utils.js` | The accent-color palette and light/dark contrast math (`ObsidianColorUtils`) |
-| `src/chat.js` | The chat UI itself — history, composer, transcript (`ObsidianChat`) |
-| `src/workspace.js` | The header bar + settings drawer wrapped around `chat.js` (`ObsidianWorkspace`) |
-| `src/adapters.js` | The `localStorage`-backed storage adapter used standalone (`ObsidianAdapters`) |
-
-`src/chat.js` has no idea providers exist. It asks its host two things:
-
-```js
-ObsidianChat.mount({
-  root,               // an element to render into
-  storage,            // async {get(key), set(obj), onChanged?(cb)} — the exact
-                       // shape chrome.storage.local already has
-  getStatus,          // async () => ({ configured, vision, streaming })
-  send,               // async ({turns, signal, onReply, onThinking}) => ({reply, thinking, stats, streamed, streamFallback})
-  openSettings,       // () => void, called from the chat's own setup card
-  lang,               // 'en' | 'zh'
-  variant,            // 'wide' | 'narrow'
-  mainHeader          // optional element rendered above the transcript
-});
+```
+cmd/server            wire, serve, shut down
+internal/
+  config              one Config from the environment
+  database            one pool, `?` rebound per dialect, embedded migrations
+  httpx               errors, JSON, SSE, middleware
+  auth                argon2id, sessions, RBAC
+  user  group         accounts, groups, permissions
+  provider  model     upstream endpoints and the catalogue
+  adapter             OpenAI + Anthropic, behind one request shape
+  conversation        transcripts, messages, attachments
+  chat                the gateway: permission → transcript → provider → ledger
+  usage  quota        accounting and enforcement
+  admin               the administrative surface
+  settings            instance settings
+  web                 the embedded frontend
+web/                  TypeScript + Vite, zero runtime dependencies
 ```
 
-That's a small enough surface that embedding it somewhere else — a different
-backend, a browser extension's own message-passing, a different set of
-providers — means writing `getStatus`/`send` against whatever that host
-already has, not forking this file. `src/workspace.js` is what a host looks
-like when it *is* `src/provider.js`: it is the reference implementation of
-that adapter contract, plus the settings UI to go with it.
+Three direct Go dependencies: a pure-Go SQLite driver, pgx, and `x/crypto`
+for Argon2id. Routing is `net/http`. Migrations are numbered `.sql` files.
+There is no ORM, no router, no logging framework, and no config library.
 
-An embedding browser extension can pass `chrome.storage.local` straight
-through as `storage` with no adapter at all — that shape was chosen on
-purpose.
+The design, the schema and the reasoning behind both are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## What this project deliberately does not do
+### Notes on a few decisions
 
-This is the chat surface, not a specific application built on top of it. It
-doesn't know how to turn a conversation into anything other than more
-conversation — no structured output, no tool use, no domain-specific "cards"
-in the transcript. A host that wants that (PageDye's original theme
-generator being one example) builds it on top of `send()`'s response, the
-same way `workspace.js` builds a settings panel on top of `provider.js`.
+**SQLite or PostgreSQL.** Both, from one set of queries. Identifiers are
+ULIDs and timestamps are epoch milliseconds, so nothing depends on a
+sequence or a timestamp type; `?` placeholders are rebound per dialect in one
+place. SQLite is the default because a single-instance deployment does not
+need a second process to run.
+
+**Cancellation is the request context.** Stop closes the browser's
+connection, which cancels the server's request context, which cancels the
+outbound call to the provider. There is no stop endpoint and no registry of
+in-flight requests. The save afterwards runs on a detached context, so a
+stopped answer is still kept — it is what the user read, and it was paid for.
+
+**Provider keys never leave the server.** They are encrypted with a key
+derived from the instance secret, and the struct the admin API serialises has
+no field they could travel in. The administrator sees `••••1234`.
+
+**No Redis.** Quota is enforced with an atomic upsert that returns its own
+post-increment value, so the check happens after the write and two concurrent
+requests cannot both see room that only one of them has. If the counter table
+ever becomes the bottleneck, that is the moment to add a cache — not before.
 
 ## License
 
