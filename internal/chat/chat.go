@@ -476,6 +476,7 @@ func (s *Service) finishOK(ctx context.Context, f finished, emit Emit) error {
 		Content:        f.answer,
 		Reasoning:      f.reasoning,
 		ModelID:        f.resolved.Model.ID,
+		ModelName:      f.resolved.Model.DisplayName,
 		ProviderID:     f.resolved.Provider.ID,
 		Stats:          stats,
 	})
@@ -542,6 +543,7 @@ func (s *Service) finishFailed(ctx, requestCtx context.Context, f finished, chat
 		Role:           conversation.RoleAssistant,
 		Error:          friendly,
 		ModelID:        f.resolved.Model.ID,
+		ModelName:      f.resolved.Model.DisplayName,
 		ProviderID:     f.resolved.Provider.ID,
 	})
 	if err != nil {

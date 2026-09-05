@@ -199,17 +199,19 @@ library), no config library.
 Frontend runtime dependencies: **zero**. Build dependencies: `vite`,
 `typescript`.
 
-### Performance targets
+### Performance targets, and what was measured
 
-| | Target |
-| --- | --- |
-| Idle RSS (SQLite, no traffic) | < 30 MB |
-| Per streaming request | < 1 MB, one goroutine, no full-body buffering |
-| Cold start to serving | < 100 ms |
-| Binary size (with SQLite + embedded SPA) | < 30 MB |
-| Frontend bundle | < 80 KB gzipped |
-| DB connections | SQLite: 1 writer + 4 readers. Postgres: pool max 10. |
-| Background goroutines at idle | 1 (janitor) |
+| | Target | Measured |
+| --- | --- | --- |
+| Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
+| Cold start to serving | < 100 ms | 28 ms |
+| Binary (SQLite + embedded SPA) | < 30 MB | 16.3 MB (12.7 MB `-tags nosqlite`) |
+| Frontend bundle | < 80 kB gzipped | 43.5 kB (36 JS + 7.5 CSS) |
+| Background goroutines at idle | 1 | 1 |
+| Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Connection pools: SQLite 4, Postgres 10. Neither is a bottleneck at this
+scale — a turn spends its time waiting on a provider, not on the database.
 
 ---
 

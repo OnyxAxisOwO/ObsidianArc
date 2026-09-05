@@ -1,0 +1,30 @@
+# Everything the build does not need. The frontend and the binary are both
+# compiled inside the image, so no build output is copied in — a stale
+# internal/web/dist from a host build would otherwise be embedded instead of
+# the one the image just compiled.
+
+.git
+.github
+.claude
+
+bin/
+data/
+dist/
+
+web/node_modules/
+web/.vite/
+internal/web/dist/
+
+docs/
+*.md
+!README.md
+
+Makefile
+Dockerfile
+docker-compose.yml
+.dockerignore
+.gitignore
+
+*.log
+.DS_Store
+Thumbs.db

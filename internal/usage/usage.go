@@ -118,34 +118,40 @@ type Filter struct {
 	Offset     int
 }
 
-func (f Filter) where() (string, []any) {
+// where builds the filter clause. The prefix qualifies every column, which
+// matters for the one query that joins another table: `users` also has
+// `status` and `group_id`, and an unqualified reference to either is
+// ambiguous rather than merely wrong.
+func (f Filter) where(prefix string) (string, []any) {
 	conditions := []string{}
 	args := []any{}
 
-	add := func(clause string, value any) {
-		conditions = append(conditions, clause)
+	add := func(column string, value any) {
+		conditions = append(conditions, prefix+column+" = ?")
 		args = append(args, value)
 	}
 	if f.UserID != "" {
-		add("user_id = ?", f.UserID)
+		add("user_id", f.UserID)
 	}
 	if f.GroupID != "" {
-		add("group_id = ?", f.GroupID)
+		add("group_id", f.GroupID)
 	}
 	if f.ModelID != "" {
-		add("model_id = ?", f.ModelID)
+		add("model_id", f.ModelID)
 	}
 	if f.ProviderID != "" {
-		add("provider_id = ?", f.ProviderID)
+		add("provider_id", f.ProviderID)
 	}
 	if f.Status != "" {
-		add("status = ?", f.Status)
+		add("status", f.Status)
 	}
 	if f.Since > 0 {
-		add("started_at >= ?", f.Since)
+		conditions = append(conditions, prefix+"started_at >= ?")
+		args = append(args, f.Since)
 	}
 	if f.Until > 0 {
-		add("started_at < ?", f.Until)
+		conditions = append(conditions, prefix+"started_at < ?")
+		args = append(args, f.Until)
 	}
 	if len(conditions) == 0 {
 		return "", nil
@@ -164,7 +170,7 @@ const totalsSelect = `SELECT
 	FROM usage_records`
 
 func (s *Store) Totals(ctx context.Context, filter Filter) (Totals, error) {
-	where, args := filter.where()
+	where, args := filter.where("")
 
 	var totals Totals
 	err := s.db.QueryRow(ctx, totalsSelect+where, args...).Scan(
@@ -201,7 +207,7 @@ func (s *Store) GroupBy(ctx context.Context, dimension string, filter Filter) ([
 		return nil, fmt.Errorf("usage: unknown dimension %q", dimension)
 	}
 
-	where, args := filter.where()
+	where, args := filter.where("")
 	query := `SELECT ` + keyColumn + `, MAX(` + labelColumn + `),
 		COUNT(*),
 		COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
@@ -234,12 +240,16 @@ func (s *Store) GroupBy(ctx context.Context, dimension string, filter Filter) ([
 
 // List returns individual records, newest first — the admin audit view.
 func (s *Store) List(ctx context.Context, filter Filter) ([]Record, int64, error) {
-	where, args := filter.where()
+	where, args := filter.where("")
 
 	var total int64
 	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM usage_records`+where, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("usage: count: %w", err)
 	}
+
+	// The listing joins `users` for a display name, so its filter has to be
+	// qualified.
+	joinedWhere, joinedArgs := filter.where("r.")
 
 	limit := filter.Limit
 	if limit <= 0 || limit > 200 {
@@ -251,11 +261,10 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Record, int64, error
 		r.input_tokens, r.output_tokens, r.reasoning_tokens, r.total_tokens, r.credits,
 		r.status, r.error_code, r.started_at, r.finished_at, r.duration_ms
 		FROM usage_records r
-		LEFT JOIN users u ON u.id = r.user_id` +
-		strings.ReplaceAll(where, "WHERE ", "WHERE r.") +
+		LEFT JOIN users u ON u.id = r.user_id` + joinedWhere +
 		` ORDER BY r.started_at DESC, r.id DESC LIMIT ? OFFSET ?`
 
-	rows, err := s.db.Query(ctx, query, append(append([]any{}, args...), limit, max(0, filter.Offset))...)
+	rows, err := s.db.Query(ctx, query, append(append([]any{}, joinedArgs...), limit, max(0, filter.Offset))...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("usage: list: %w", err)
 	}
@@ -291,7 +300,7 @@ func (s *Store) Series(ctx context.Context, filter Filter, bucket time.Duration)
 	if bucket <= 0 {
 		bucket = time.Hour
 	}
-	where, args := filter.where()
+	where, args := filter.where("")
 
 	rows, err := s.db.Query(ctx,
 		`SELECT started_at, input_tokens, output_tokens, reasoning_tokens, total_tokens, credits, status

@@ -1,0 +1,63 @@
+# Obsidian Arc with PostgreSQL.
+#
+# The SQLite default needs none of this — `docker run` with a volume is the
+# whole deployment. This file is for an instance that wants Postgres, and it
+# is deliberately two services and nothing else: no reverse proxy, no cache,
+# no queue, no metrics sidecar. Put your own TLS terminator in front if you
+# need one.
+#
+#   OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
+
+services:
+  server:
+    build:
+      context: .
+      args:
+        # Overridden by `make docker`; the default is honest about being one.
+        VERSION: ${VERSION:-compose}
+    image: obsidian-arc:latest
+    restart: unless-stopped
+    ports:
+      - "${OBSIDIAN_PORT:-8080}:8080"
+    environment:
+      OBSIDIAN_DB_DRIVER: postgres
+      OBSIDIAN_DB_DSN: postgres://obsidian:${POSTGRES_PASSWORD:-obsidian}@db:5432/obsidian?sslmode=disable
+      # Required in this setup: with more than one instance, or a container
+      # that can be replaced, a key generated into the data volume would make
+      # every stored provider credential unreadable after a rebuild.
+      OBSIDIAN_SECRET_KEY: ${OBSIDIAN_SECRET_KEY:?set OBSIDIAN_SECRET_KEY, e.g. from `openssl rand -hex 32`}
+      # A proxy is expected in front, so forwarded addresses are honoured and
+      # the session cookie is marked Secure.
+      OBSIDIAN_TRUST_PROXY: "true"
+      OBSIDIAN_COOKIE_SECURE: "true"
+      OBSIDIAN_ADMIN_USER: ${OBSIDIAN_ADMIN_USER:-}
+      OBSIDIAN_ADMIN_PASSWORD: ${OBSIDIAN_ADMIN_PASSWORD:-}
+    volumes:
+      # Only the attachments and the generated key would live here; with
+      # Postgres the database does not. Kept so a switch back to SQLite, or a
+      # later on-disk blob store, has somewhere to go.
+      - arc-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: obsidian
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-obsidian}
+      POSTGRES_DB: obsidian
+    volumes:
+      - arc-db:/var/lib/postgresql/data
+    healthcheck:
+      # The server runs its migrations at boot and exits if it cannot connect,
+      # so it must not start before Postgres is actually accepting queries.
+      test: ["CMD-SHELL", "pg_isready -U obsidian -d obsidian"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  arc-data:
+  arc-db:

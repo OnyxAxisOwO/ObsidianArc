@@ -71,18 +71,73 @@ tends to set:
 | `OBSIDIAN_SESSION_TTL` | `720h` | |
 | `OBSIDIAN_ADMIN_USER` / `_PASSWORD` | — | First administrator, on an empty database |
 
+### Docker
+
+```bash
+docker build -t obsidian-arc .
+docker run -d -p 8080:8080 -v arc-data:/data \
+  -e OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32) \
+  obsidian-arc
+```
+
+Three stages: the frontend is compiled, embedded into the Go binary, and the
+binary is copied into a distroless image with no shell, no package manager
+and no interpreter in it. It runs as a non-root user.
+
+For PostgreSQL, `docker-compose.yml` adds one service and nothing else — no
+reverse proxy, no cache, no queue:
+
+```bash
+OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
+```
+
+Kubernetes is not assumed anywhere.
+
+> **Not yet run anywhere.** The Docker and PostgreSQL paths were written and
+> reviewed but never executed — neither Docker nor a Postgres server was
+> available on the machine this was built on. Everything else in this README
+> was verified end to end against SQLite. The Postgres schema is covered by a
+> lint that rejects engine-specific syntax in the migrations, and by an
+> integration test that runs the real migrations plus the atomic quota upsert
+> when you point it at a database:
+>
+> ```bash
+> OBSIDIAN_TEST_POSTGRES_DSN=postgres://user:pass@localhost:5432/arc_test go test ./internal/database/
+> ```
+
 ## Building
 
 ```bash
 make build     # frontend, then a binary with it embedded
-make test      # go vet, go test, tsc
+make test      # go vet, gofmt, go test, tsc
 make dev       # server on :8080 proxying to Vite on :5173
+make version   # the version this build would carry
 ```
 
-`make dev` expects `npm --prefix web run dev` alongside it, and reverse
+`make dev` expects `npm --prefix web run dev` alongside it and reverse
 proxies to it, so the frontend hot-reloads while the API stays on one origin.
 
 Requires Go 1.22+ and Node 20+.
+
+Versions are the UTC build moment — `yyyy.MM.dd.HH.mm.ss` — stamped in by the
+Makefile. Zero-padded, so they sort chronologically as plain text; unique per
+build; and needing no tag or counter to keep up to date. `/api/health`
+returns the running one, and the admin rail shows it.
+
+## What it costs to run
+
+Measured on the build in this repository, SQLite, one process:
+
+| | |
+| --- | --- |
+| Binary | 16.3 MB — 12.7 MB built `-tags nosqlite` for a Postgres-only deployment |
+| Cold start to serving | 28 ms |
+| Idle resident memory | ~16 MB |
+| After 200 streamed turns, 20 concurrent | ~54 MB peak, 11 OS threads |
+| Frontend | 36 kB of JavaScript, 7.5 kB of CSS, gzipped |
+| Background goroutines at idle | 1 — a janitor on a ten-minute tick |
+| Direct Go dependencies | 3 |
+| Runtime frontend dependencies | 0 |
 
 ## Architecture
 

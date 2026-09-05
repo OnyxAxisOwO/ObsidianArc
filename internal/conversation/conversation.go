@@ -220,7 +220,7 @@ func (s *Store) DeleteAll(ctx context.Context, userID string) (int64, error) {
 // --- messages --------------------------------------------------------------
 
 const messageColumns = `m.id, m.seq, m.role, m.content, m.reasoning, m.error, m.model_id,
-	m.stats_json, m.created_at`
+	m.model_name, m.stats_json, m.created_at`
 
 // Messages returns a conversation's transcript in order, with attachments
 // attached. Two queries rather than a join with fan-out, so a conversation
@@ -230,9 +230,8 @@ func (s *Store) Messages(ctx context.Context, q database.Queryer, userID, conver
 		q = s.db
 	}
 	rows, err := q.Query(ctx,
-		`SELECT `+messageColumns+`, COALESCE(mo.display_name, '')
+		`SELECT `+messageColumns+`
 		 FROM messages m
-		 LEFT JOIN models mo ON mo.id = m.model_id
 		 WHERE m.conversation_id = ? AND m.user_id = ?
 		 ORDER BY m.seq`,
 		conversationID, userID)
@@ -296,9 +295,12 @@ type AppendInput struct {
 	Reasoning      string
 	Error          string
 	ModelID        string
-	ProviderID     string
-	Stats          *Stats
-	AttachmentIDs  []string
+	// The model's name at the time. Stored rather than joined, so deleting a
+	// model does not unattribute every answer it ever gave.
+	ModelName     string
+	ProviderID    string
+	Stats         *Stats
+	AttachmentIDs []string
 }
 
 func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) (Message, error) {
@@ -323,6 +325,7 @@ func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) 
 		Reasoning: truncate(in.Reasoning, MaxReasoningChars),
 		Error:     truncate(in.Error, MaxErrorChars),
 		ModelID:   in.ModelID,
+		ModelName: in.ModelName,
 		Stats:     in.Stats,
 		CreatedAt: time.Now().UnixMilli(),
 	}
@@ -338,11 +341,11 @@ func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) 
 
 	_, err = q.Exec(ctx,
 		`INSERT INTO messages (id, conversation_id, user_id, seq, role, content, reasoning,
-		 error, model_id, provider_id, stats_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 error, model_id, model_name, provider_id, stats_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, in.ConversationID, in.UserID, record.Seq, record.Role, record.Content,
-		record.Reasoning, record.Error, nullable(in.ModelID), nullable(in.ProviderID),
-		stats, record.CreatedAt)
+		record.Reasoning, record.Error, nullable(in.ModelID), record.ModelName,
+		nullable(in.ProviderID), stats, record.CreatedAt)
 	if err != nil {
 		return Message{}, fmt.Errorf("conversation: append: %w", err)
 	}
@@ -459,13 +462,12 @@ func scanConversation(row rowScanner) (Conversation, error) {
 
 func scanMessage(row rowScanner) (Message, error) {
 	var (
-		record    Message
-		modelID   sql.NullString
-		stats     string
-		modelName string
+		record  Message
+		modelID sql.NullString
+		stats   string
 	)
 	err := row.Scan(&record.ID, &record.Seq, &record.Role, &record.Content, &record.Reasoning,
-		&record.Error, &modelID, &stats, &record.CreatedAt, &modelName)
+		&record.Error, &modelID, &record.ModelName, &stats, &record.CreatedAt)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Message{}, ErrMessageNotFound
@@ -473,7 +475,6 @@ func scanMessage(row rowScanner) (Message, error) {
 		return Message{}, fmt.Errorf("conversation: message scan: %w", err)
 	}
 	record.ModelID = modelID.String
-	record.ModelName = modelName
 	if stats != "" {
 		var decoded Stats
 		if json.Unmarshal([]byte(stats), &decoded) == nil {
