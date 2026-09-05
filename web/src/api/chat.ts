@@ -6,6 +6,7 @@
 // the server's request context is cancelled, and the provider stops
 // generating. Pressing Stop is one `AbortController.abort()`.
 
+import { t } from '../i18n';
 import { ApiError, api } from './client';
 
 export interface Conversation {
@@ -156,7 +157,7 @@ export async function sendTurn(
     throw new ApiError(response.status, code, message, details);
   }
 
-  if (!response.body) throw new ApiError(0, 'stream', 'The server did not return a stream.');
+  if (!response.body) throw new ApiError(0, 'stream', t('streamMissing'));
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

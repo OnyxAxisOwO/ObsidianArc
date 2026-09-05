@@ -5,6 +5,7 @@
 // log. Nothing about it is incidental to opening the account panel.
 
 import { ApiError } from '../api/client';
+import { t, tn } from '../i18n';
 import { button, clear, el } from '../ui/dom';
 import { openPanel, type PanelHandle } from '../ui/panel';
 import { numberField, section, selectField, switchField, textArea, textField } from '../ui/form';
@@ -39,7 +40,7 @@ interface Filters {
 const state: Filters = { q: '', role: '', status: '', group: '' };
 
 export async function renderUsers(view: AdminView): Promise<void> {
-  view.setTitle('Users');
+  view.setTitle(t('usersTitle'));
 
   let groups: Group[];
   try {
@@ -55,23 +56,23 @@ export async function renderUsers(view: AdminView): Promise<void> {
   const filters = el('div', 'oa-filters');
   const search = el('input');
   search.type = 'search';
-  search.placeholder = 'Search name, nickname or email';
+  search.placeholder = t('searchUsers');
   search.value = state.q;
 
   const roleSelect = filterSelect([
-    { value: '', label: 'Any role' },
-    { value: 'user', label: 'Users' },
-    { value: 'admin', label: 'Administrators' },
+    { value: '', label: t('anyRole') },
+    { value: 'user', label: t('filterUsers') },
+    { value: 'admin', label: t('filterAdmins') },
   ], state.role);
 
   const statusSelect = filterSelect([
-    { value: '', label: 'Any status' },
-    { value: 'active', label: 'Active' },
-    { value: 'disabled', label: 'Disabled' },
+    { value: '', label: t('anyStatus') },
+    { value: 'active', label: t('filterActive') },
+    { value: 'disabled', label: t('filterDisabled') },
   ], state.status);
 
   const groupSelect = filterSelect([
-    { value: '', label: 'Any group' },
+    { value: '', label: t('anyGroup') },
     ...groups.map((group) => ({ value: group.id, label: group.name })),
   ], state.group);
 
@@ -124,7 +125,7 @@ async function load(view: AdminView, groups: Group[], target: HTMLElement): Prom
   if (state.group) query.set('group_id', state.group);
 
   clear(target);
-  target.appendChild(el('p', 'oa-table-empty', 'Loading…'));
+  target.appendChild(el('p', 'oa-table-empty', t('loading')));
 
   let users: Account[];
   let total: number;
@@ -139,23 +140,23 @@ async function load(view: AdminView, groups: Group[], target: HTMLElement): Prom
   const groupName = (id: string) => groups.find((group) => group.id === id)?.name ?? '—';
 
   clear(target);
-  view.setTitle('Users', `${total} account${total === 1 ? '' : 's'}`);
+  view.setTitle(t('usersTitle'), tn(total, 'accountsCountOne', 'accountsCountOther'));
   target.appendChild(renderTable({
     columns: [
-      { header: 'Account', cell: (row) => stacked(row.nickname || row.username, `@${row.username}`) },
-      { header: 'Email', cell: (row) => row.email || '—', secondary: true },
-      { header: 'Group', cell: (row) => groupName(row.group_id) },
+      { header: t('colAccount'), cell: (row) => stacked(row.nickname || row.username, `@${row.username}`) },
+      { header: t('colEmail'), cell: (row) => row.email || '—', secondary: true },
+      { header: t('colGroup'), cell: (row) => groupName(row.group_id) },
       {
-        header: 'Role',
+        header: t('colRole'),
         cell: (row) => badges(
-          row.role === 'admin' ? badge('admin') : null,
-          row.status === 'disabled' ? badge('disabled', 'danger') : null,
+          row.role === 'admin' ? badge(t('admin')) : null,
+          row.status === 'disabled' ? badge(t('disabled'), 'danger') : null,
         ),
       },
-      { header: 'Last seen', cell: (row) => relativeTime(row.last_login_at), secondary: true },
+      { header: t('colLastSeen'), cell: (row) => relativeTime(row.last_login_at), secondary: true },
     ],
     rows: users ?? [],
-    empty: 'No accounts match.',
+    empty: t('noAccountsMatch'),
     muted: (row) => row.status === 'disabled',
     onSelect: (row) => void openUser(view, groups, row.id),
   }));
@@ -174,79 +175,86 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
   const policy = detail.policy.id ? detail.policy : emptyPolicy('user', userID);
   const self = currentUser()?.id === account.id;
 
-  const nickname = textField({ label: 'Nickname', value: account.nickname, maxLength: 32 });
-  const email = textField({ label: 'Email', value: account.email, type: 'email' });
-  const bio = textArea({ label: 'Bio', value: account.bio, rows: 2 });
+  const nickname = textField({ label: t('nickname'), value: account.nickname, maxLength: 32 });
+  const email = textField({ label: t('email'), value: account.email, type: 'email' });
+  const bio = textArea({ label: t('bio'), value: account.bio, rows: 2 });
   const avatar = textField({
-    label: 'Avatar',
+    label: t('avatar'),
     value: account.avatar,
-    placeholder: '/uploads/… or a data: URI',
-    hint: 'A same-origin path or an inline image.',
+    placeholder: t('avatarPlaceholder'),
+    hint: t('avatarHint'),
   });
 
   const role = selectField<Role>({
-    label: 'Role',
+    label: t('role'),
     value: account.role,
-    options: [{ value: 'user', label: 'User' }, { value: 'admin', label: 'Administrator' }],
-    ...(self ? { hint: 'You cannot demote yourself while you are the last administrator.' } : {}),
+    options: [{ value: 'user', label: t('roleUser') }, { value: 'admin', label: t('roleAdmin') }],
+    ...(self ? { hint: t('cannotDemoteSelf') } : {}),
   });
 
   const status = selectField<AccountStatus>({
-    label: 'Status',
+    label: t('status'),
     value: account.status,
-    options: [{ value: 'active', label: 'Active' }, { value: 'disabled', label: 'Disabled' }],
-    hint: 'Disabling signs the account out everywhere, immediately.',
+    options: [{ value: 'active', label: t('statusActive') }, { value: 'disabled', label: t('statusDisabled') }],
+    hint: t('disableHint'),
   });
 
   const group = selectField({
-    label: 'Group',
+    label: t('group'),
     value: account.group_id,
     options: groups.map((entry) => ({ value: entry.id, label: entry.name })),
   });
 
   const newPassword = textField({
-    label: 'Set a new password',
+    label: t('setNewPassword'),
     type: 'password',
-    placeholder: 'Leave empty to keep it',
-    hint: 'Setting one signs the account out everywhere.',
+    placeholder: t('keepPassword'),
+    hint: t('resetPasswordHint'),
   });
 
-  const rpm = numberField({ label: 'Requests per minute', value: policy.rpm, placeholder: 'inherit', min: 0 });
+  const rpm = numberField({ label: t('requestsPerMinute'), value: policy.rpm, placeholder: t('inherit'), min: 0 });
   const windows = (['5h', '1w', '1m'] as QuotaWindowKind[]).map((kind) => {
     const limits = policy.windows[kind];
     return {
       kind,
-      override: switchField({ label: `Override the ${kind} window`, value: limits?.enabled !== null && limits?.enabled !== undefined }),
-      enabled: switchField({ label: 'Enforce it', value: limits?.enabled === true }),
-      requests: numberField({ label: 'Requests', value: limits?.requests ?? null, placeholder: 'no limit', min: 0 }),
-      tokens: numberField({ label: 'Tokens', value: limits?.tokens ?? null, placeholder: 'no limit', min: 0 }),
-      credits: numberField({ label: 'Credits', value: limits?.credits ?? null, placeholder: 'no limit', min: 0, step: 0.1 }),
+      override: switchField({ label: t('overrideWindow', { window: kind }), value: limits?.enabled !== null && limits?.enabled !== undefined }),
+      enabled: switchField({ label: t('enforceIt'), value: limits?.enabled === true }),
+      requests: numberField({ label: t('limitRequests'), value: limits?.requests ?? null, placeholder: t('noLimit'), min: 0 }),
+      tokens: numberField({ label: t('limitTokens'), value: limits?.tokens ?? null, placeholder: t('noLimit'), min: 0 }),
+      credits: numberField({ label: t('limitCredits'), value: limits?.credits ?? null, placeholder: t('noLimit'), min: 0, step: 0.1 }),
     };
   });
 
   openPanel({
     host: view.host,
     title: account.nickname || account.username,
-    confirmLabel: 'Save',
+    confirmLabel: t('save'),
     width: 440,
-    ...(self ? {} : { destructive: { label: 'Delete', onSelect: (handle) => removeUser(view, account, handle) } }),
+    ...(self
+      ? {}
+      : {
+          destructive: {
+            label: t('deleteLabel'),
+            confirm: t('confirmDeleteUser', { name: account.username }),
+            onSelect: (handle) => removeUser(view, account, handle),
+          },
+        }),
     build: (body) => {
       body.appendChild(summary(account, detail.lifetime));
 
-      body.appendChild(section('Profile'));
+      body.appendChild(section(t('secProfile')));
       body.appendChild(nickname.element);
       body.appendChild(email.element);
       body.appendChild(bio.element);
       body.appendChild(avatar.element);
 
-      body.appendChild(section('Access'));
+      body.appendChild(section(t('secAccess')));
       body.appendChild(role.element);
       body.appendChild(status.element);
       body.appendChild(group.element);
       body.appendChild(newPassword.element);
 
-      body.appendChild(section('Allowance override',
-        'Anything set here beats the group. Leave a window un-overridden to inherit it.'));
+      body.appendChild(section(t('secAllowanceOverride'), t('allowanceOverrideHint')));
       body.appendChild(rpm.element);
       for (const window of windows) {
         body.appendChild(section(window.kind));
@@ -257,9 +265,8 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
         body.appendChild(window.credits.element);
       }
 
-      body.appendChild(section('Conversations',
-        'Reading someone else’s messages is recorded in the server log.'));
-      body.appendChild(button('oa-btn', 'View conversations', () => {
+      body.appendChild(section(t('secConversations'), t('conversationsHint')));
+      body.appendChild(button('oa-btn', t('viewConversations'), () => {
         void openConversations(view, groups, account);
       }));
     },
@@ -314,11 +321,11 @@ function summary(account: Account, lifetime: { requests: number; total_tokens: n
     if (note) card.appendChild(el('span', 'oa-stat-note', note));
     wrap.appendChild(card);
   };
-  stat('Requests', compactNumber(lifetime.requests), 'all time');
-  stat('Tokens', compactNumber(lifetime.total_tokens));
-  stat('Credits', compactNumber(lifetime.credits));
-  stat('Joined', new Date(account.created_at).toLocaleDateString(),
-    account.last_login_at ? `last seen ${relativeTime(account.last_login_at)}` : 'never signed in');
+  stat(t('statRequests'), compactNumber(lifetime.requests), t('lifetimeAllTime'));
+  stat(t('statTokens'), compactNumber(lifetime.total_tokens));
+  stat(t('statCredits'), compactNumber(lifetime.credits));
+  stat(t('joined'), new Date(account.created_at).toLocaleDateString(),
+    account.last_login_at ? t('lastSeenAt', { when: relativeTime(account.last_login_at) }) : t('neverSignedIn'));
   return wrap;
 }
 
@@ -327,12 +334,12 @@ function summary(account: Account, lifetime: { requests: number; total_tokens: n
 async function openConversations(view: AdminView, groups: Group[], account: Account): Promise<void> {
   const panel = openPanel({
     host: view.host,
-    title: `${account.nickname || account.username}'s conversations`,
+    title: t('someonesConversations', { name: account.nickname || account.username }),
     width: 440,
-    cancelLabel: 'Close',
+    cancelLabel: t('close'),
     onBack: () => void openUser(view, groups, account.id),
     build: (body) => {
-      body.appendChild(el('p', 'oa-field-hint', 'Loading…'));
+      body.appendChild(el('p', 'oa-field-hint', t('loading')));
     },
   });
 
@@ -346,18 +353,18 @@ async function openConversations(view: AdminView, groups: Group[], account: Acco
 
   clear(panel.body);
   if (!conversations.length) {
-    panel.body.appendChild(el('p', 'oa-field-hint', 'No conversations.'));
+    panel.body.appendChild(el('p', 'oa-field-hint', t('noConversations')));
     return;
   }
 
   panel.body.appendChild(renderTable({
     columns: [
-      { header: 'Title', cell: (row) => row.title || 'Untitled' },
-      { header: 'Messages', cell: (row) => String(row.message_count), numeric: true },
-      { header: 'Updated', cell: (row) => relativeTime(row.updated_at) },
+      { header: t('colTitle'), cell: (row) => row.title || t('untitled') },
+      { header: t('colMessages'), cell: (row) => String(row.message_count), numeric: true },
+      { header: t('colUpdated'), cell: (row) => relativeTime(row.updated_at) },
     ],
     rows: conversations,
-    empty: 'No conversations.',
+    empty: t('noConversations'),
     onSelect: (row) => void openTranscript(view, groups, account, row.id, row.title),
   }));
 }
@@ -371,12 +378,12 @@ async function openTranscript(
 ): Promise<void> {
   const panel = openPanel({
     host: view.host,
-    title: title || 'Conversation',
+    title: title || t('conversationFallback'),
     width: 480,
-    cancelLabel: 'Close',
+    cancelLabel: t('close'),
     onBack: () => void openConversations(view, groups, account),
     build: (body) => {
-      body.appendChild(el('p', 'oa-field-hint', 'Loading…'));
+      body.appendChild(el('p', 'oa-field-hint', t('loading')));
     },
   });
 
@@ -391,7 +398,7 @@ async function openTranscript(
         `${message.role}${message.model_name ? ` · ${message.model_name}` : ''}${message.created_at ? ` · ${absoluteTime(message.created_at)}` : ''}`));
       // Plain text, not markdown: this is an audit view of what was stored,
       // and a renderer would be interpreting it.
-      turn.appendChild(document.createTextNode(message.error || message.content || '(empty)'));
+      turn.appendChild(document.createTextNode(message.error || message.content || t('emptyMessage')));
       transcript.appendChild(turn);
     }
     panel.body.appendChild(transcript);
@@ -401,7 +408,6 @@ async function openTranscript(
 }
 
 async function removeUser(view: AdminView, account: Account, panel: PanelHandle): Promise<void> {
-  if (!window.confirm(`Delete ${account.username}? Their conversations and usage records go too.`)) return;
   panel.setBusy(true);
   try {
     await adminApi.deleteUser(account.id);

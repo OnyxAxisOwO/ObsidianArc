@@ -26,7 +26,11 @@ export const ACCENTS = {
 export type AccentName = keyof typeof ACCENTS;
 
 export const ACCENT_NAMES = Object.keys(ACCENTS) as AccentName[];
-export const DEFAULT_ACCENT: AccentName = 'violet';
+// Black and white. The accent now drives every surface, not just the buttons,
+// so the default has to be the one that imposes least on an instance that
+// never opens the picker. The :root fallbacks in chat.css are this accent's
+// own ramp — change one and the other has to follow.
+export const DEFAULT_ACCENT: AccentName = 'neutral';
 
 export interface AccentPreference {
   accent: AccentName | 'custom';
@@ -118,6 +122,76 @@ export function shiftHex(color: string, amount: number): string {
     return value.toString(16).padStart(2, '0');
   });
   return `#${next.join('')}`.toUpperCase();
+}
+
+// --- the surface ramp ------------------------------------------------------
+//
+// The violet the standalone build shipped was not one colour with a neutral
+// interface around it: every surface, border and text colour in that palette
+// is the same hue at a fixed saturation and lightness. Read the default
+// tokens back as HSL and they all land within a few degrees of #6C4CD6.
+//
+// That is why picking red used to change the buttons and leave the interface
+// violet — the ramp was baked into the stylesheet, and only --ai-primary was
+// ever recomputed. These tables are that ramp, measured off the original
+// values, so violet reproduces itself exactly and every other hue gets the
+// treatment violet always had.
+
+interface RampStop {
+  token: string;
+  s: number;
+  l: number;
+}
+
+const LIGHT_RAMP: RampStop[] = [
+  { token: '--ai-text', s: 7, l: 11.4 },
+  { token: '--ai-text-secondary', s: 5, l: 37 },
+  { token: '--ai-surface-container', s: 45, l: 95.9 },
+  { token: '--ai-surface-container-low', s: 42, l: 97.3 },
+  { token: '--ai-surface-container-high', s: 40, l: 93.5 },
+  // Deeper than any of those: a field carries no outline, so its own fill is
+  // the only thing that says where it starts.
+  { token: '--ai-field-bg', s: 44, l: 91.5 },
+  { token: '--ai-field-bg-hover', s: 44, l: 88.5 },
+];
+
+const DARK_RAMP: RampStop[] = [
+  { token: '--ai-text', s: 39, l: 93.5 },
+  { token: '--ai-text-secondary', s: 12, l: 69.6 },
+  { token: '--ai-surface-card', s: 19, l: 10.2 },
+  { token: '--ai-surface-container', s: 16, l: 14.5 },
+  { token: '--ai-surface-container-low', s: 17, l: 11.4 },
+  { token: '--ai-surface-container-high', s: 15, l: 18.4 },
+  { token: '--ai-field-bg', s: 16, l: 21 },
+  { token: '--ai-field-bg-hover', s: 16, l: 25 },
+];
+
+/**
+ * Every themed token for one hue and one scheme, as CSS custom properties.
+ *
+ * The hue comes from the accent the user picked; the saturation is scaled by
+ * how saturated that pick actually was, so a near-grey custom colour gives a
+ * near-grey interface instead of a fully tinted one in an arbitrary hue.
+ */
+export function accentPalette(accentHex: string, isDark: boolean): Record<string, string> {
+  const { h, s } = hexToHsl(accentHex);
+  // 40% is roughly the least saturated preset; at or above it the ramp runs
+  // at full strength, below it the whole interface desaturates with the pick.
+  const strength = Math.min(1, s / 40);
+
+  const palette: Record<string, string> = {};
+  for (const stop of (isDark ? DARK_RAMP : LIGHT_RAMP)) {
+    palette[stop.token] = hslToHex(h, stop.s * strength, stop.l);
+  }
+  // A light scheme's card stays paper white; tinting it as well leaves no
+  // surface for the tinted ones to read against.
+  if (!isDark) palette['--ai-surface-card'] = '#FFFFFF';
+
+  // Borders were always the text colour at low alpha, in both schemes.
+  const text = palette['--ai-text'] ?? (isDark ? '#ECE8F5' : '#1C1B1F');
+  palette['--ai-border'] = hexToRgba(text, 0.12);
+  palette['--ai-outline-variant'] = hexToRgba(text, 0.16);
+  return palette;
 }
 
 // Perceived-brightness threshold (ITU-R BT.601 luma), used to decide whether

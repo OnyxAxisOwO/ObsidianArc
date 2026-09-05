@@ -6,9 +6,15 @@
 // the chat — same radii, same hover tint, same icon weight — without any of
 // them importing each other.
 //
-// Everything here builds nodes. Nothing in this project assigns innerHTML:
-// the transcript renders model output, and a single string-building path
-// anywhere is the hole that makes the rest of the care pointless.
+// Everything here builds nodes. Nothing that renders someone else's content
+// assigns innerHTML: the transcript renders model output, and a single
+// string-building path anywhere is the hole that makes the rest of the care
+// pointless.
+//
+// There is exactly one assignment in the project — landing/landing-page.ts,
+// where an administrator's own markup is put at the front door — and it is
+// commented there with why it is contained. If a grep for innerHTML ever
+// returns a second one, that is the thing to look at.
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -74,6 +80,56 @@ export function iconButton(
   return labelled(node, label);
 }
 
+/**
+ * Makes a button its own confirmation: the first click arms it, the second
+ * acts, and it disarms itself after a few seconds or as soon as focus leaves.
+ *
+ * These used window.confirm, which was the one piece of interface here that
+ * could not be styled — and which a browser is free to suppress. An embedded
+ * view, or one where someone has ticked "prevent this page from creating more
+ * dialogs", returns false without showing anything, turning a destructive
+ * button into one that silently does nothing.
+ *
+ * Pass the button without a click handler; this attaches the only one.
+ */
+export function confirmable(
+  node: HTMLButtonElement,
+  armed: { label?: string; icon?: readonly string[]; title: string },
+  action: () => void,
+): HTMLButtonElement {
+  const resting = [...node.childNodes];
+  const restingTitle = node.title;
+  let timer = 0;
+
+  function disarm(): void {
+    if (!timer) return;
+    window.clearTimeout(timer);
+    timer = 0;
+    node.classList.remove('armed');
+    node.title = restingTitle;
+    if (restingTitle) node.setAttribute('aria-label', restingTitle);
+    node.replaceChildren(...resting);
+  }
+
+  node.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (timer) {
+      disarm();
+      action();
+      return;
+    }
+    node.classList.add('armed');
+    node.title = armed.title;
+    node.setAttribute('aria-label', armed.title);
+    if (armed.label !== undefined) node.replaceChildren(document.createTextNode(armed.label));
+    else if (armed.icon) node.replaceChildren(icon(armed.icon, 13));
+    timer = window.setTimeout(disarm, 4000);
+  });
+
+  node.addEventListener('blur', disarm);
+  return node;
+}
+
 export function clear(node: Element): void {
   node.textContent = '';
 }
@@ -127,6 +183,22 @@ export const ICONS = {
   menu: ['M3 6h18', 'M3 12h18', 'M3 18h18'],
   plus: ['M12 5v14', 'M5 12h14'],
   close: ['M18 6L6 18', 'M6 6l12 12'],
+  bell: ['M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9', 'M13.7 21a2 2 0 0 1-3.4 0'],
+  info: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z', 'M12 16v-5', 'M12 8h.01'],
+  // Zero-length segments, drawn as dots by the set's round linecap.
+  dots: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
+  expand: [
+    'M8 3H5a2 2 0 0 0-2 2v3',
+    'M16 3h3a2 2 0 0 1 2 2v3',
+    'M8 21H5a2 2 0 0 1-2-2v-3',
+    'M16 21h3a2 2 0 0 0 2-2v-3',
+  ],
+  collapse: [
+    'M3 8h3a2 2 0 0 0 2-2V3',
+    'M21 8h-3a2 2 0 0 1-2-2V3',
+    'M3 16h3a2 2 0 0 1 2 2v3',
+    'M21 16h-3a2 2 0 0 0-2 2v3',
+  ],
   check: ['M20 6 9 17l-5-5'],
   chevron: ['m6 9 6 6 6-6'],
   chevronRight: ['m9 6 6 6-6 6'],

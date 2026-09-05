@@ -159,12 +159,10 @@ export function createComposerMenu(options: ComposerMenuOptions): ComposerMenu {
     const row = el('div', 'oa-menu-quota-row');
     row.appendChild(el('span', null, t(windowLabel(window.kind))));
 
-    const figures = windowFigures(window);
-    row.appendChild(el('span', 'oa-menu-quota-value',
-      figures ? `${compact(figures.used)} / ${compact(figures.limit)}` : compact(window.used_requests)));
+    const pressure = windowPressure(window);
+    row.appendChild(el('span', 'oa-menu-quota-value', quotaValue(window, pressure)));
     wrap.appendChild(row);
 
-    const pressure = windowPressure(window);
     if (pressure !== null) {
       const meter = el('div', 'oa-meter');
       const fill = el('div', `oa-meter-fill${pressure >= 0.9 ? ' warn' : ''}`);
@@ -175,6 +173,24 @@ export function createComposerMenu(options: ComposerMenuOptions): ComposerMenu {
 
     wrap.appendChild(el('div', 'oa-menu-quota-reset', t('quotaResets', { when: untilText(window.resets_at) })));
     return wrap;
+  }
+
+  /**
+   * The figure beside a window's name, in whichever phrasing the instance
+   * chose. A percentage needs a ratio to exist; with no limit on any
+   * dimension there is nothing to be a percentage of, so those windows fall
+   * back to the count regardless of the setting.
+   */
+  function quotaValue(window: UsageWindow, pressure: number | null): string {
+    const mode = usage?.display ?? 'absolute';
+    if (mode !== 'absolute' && pressure !== null) {
+      const percent = Math.round(pressure * 100);
+      return mode === 'remaining'
+        ? t('quotaRemaining', { percent: Math.max(0, 100 - percent) })
+        : t('quotaUsed', { percent });
+    }
+    const figures = windowFigures(window);
+    return figures ? `${compact(figures.used)} / ${compact(figures.limit)}` : compact(window.used_requests);
   }
 
   function sync(): void {

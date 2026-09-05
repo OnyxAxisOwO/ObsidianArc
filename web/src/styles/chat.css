@@ -6,66 +6,79 @@
 
    Light values live on :root; dark values apply automatically by system
    preference, or by force via [data-theme="dark"] / [data-theme="light"] on
-   <html>, which is what index.html's theme toggle sets. */
+   <html>, which is what index.html's theme toggle sets.
+
+   These are the DEFAULT_ACCENT ramp, not a separate palette: theme.ts derives
+   the same tokens from whichever accent is picked and writes them as inline
+   custom properties, which win over anything here. What is left for this
+   block is the first paint of a first-ever visit, before any palette has been
+   cached — so it has to be the default accent's own output, copied from it,
+   or that first frame is in the wrong colour. */
 
 :root {
-  --ai-text: #1c1b1f;
-  --ai-text-secondary: #5c5a63;
-  --ai-border: rgba(28, 27, 31, 0.12);
-  --ai-outline-variant: rgba(28, 27, 31, 0.16);
-  --ai-state-hover: rgba(28, 27, 31, 0.06);
+  --ai-text: #1d1d1d;
+  --ai-text-secondary: #5e5e5f;
+  --ai-border: rgba(29, 29, 29, 0.12);
+  --ai-outline-variant: rgba(29, 29, 29, 0.16);
+  --ai-state-hover: rgba(24, 24, 27, 0.08);
   --ai-surface-card: #ffffff;
-  --ai-surface-container: #f2effa;
-  --ai-surface-container-low: #f7f5fb;
-  --ai-surface-container-high: #ece8f5;
-  --ai-primary: #6c4cd6;
+  --ai-surface-container: #f4f4f5;
+  --ai-surface-container-low: #f8f8f9;
+  --ai-surface-container-high: #ededef;
+  --ai-field-bg: #e8e8eb;
+  --ai-field-bg-hover: #e0e0e4;
+  --ai-primary: #18181b;
   --ai-primary-text: #ffffff;
-  --ai-primary-hover: #4a2fae;
-  --ai-badge-bg: rgba(108, 76, 214, 0.12);
-  --ai-badge-text: #5638b8;
-  --ai-focus-shadow: rgba(108, 76, 214, 0.22);
+  --ai-primary-hover: #303033;
+  --ai-badge-bg: rgba(24, 24, 27, 0.12);
+  --ai-badge-text: #18181b;
+  --ai-focus-shadow: rgba(24, 24, 27, 0.22);
   --ai-shadow-md: 0 8px 24px rgba(28, 27, 31, 0.14);
   --ai-danger: #b91c1c;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ai-text: #ece8f5;
-    --ai-text-secondary: #ada8bb;
-    --ai-border: rgba(236, 232, 245, 0.12);
-    --ai-outline-variant: rgba(236, 232, 245, 0.16);
-    --ai-state-hover: rgba(236, 232, 245, 0.08);
-    --ai-surface-card: #17151f;
-    --ai-surface-container: #211f2b;
-    --ai-surface-container-low: #1a1822;
-    --ai-surface-container-high: #2b2836;
-    --ai-primary: #a992f5;
-    --ai-primary-text: #100e18;
-    --ai-primary-hover: #c7b7f9;
-    --ai-badge-bg: rgba(169, 146, 245, 0.16);
-    --ai-badge-text: #cabdf7;
-    --ai-focus-shadow: rgba(169, 146, 245, 0.28);
+    --ai-text: #ededef;
+    --ai-text-secondary: #b0b0b3;
+    --ai-border: rgba(237, 237, 239, 0.12);
+    --ai-outline-variant: rgba(237, 237, 239, 0.16);
+    --ai-state-hover: rgba(255, 255, 255, 0.16);
+    --ai-surface-card: #19191b;
+    --ai-surface-container: #242426;
+    --ai-surface-container-low: #1c1c1e;
+    --ai-surface-container-high: #2e2e30;
+    --ai-field-bg: #343437;
+    --ai-field-bg-hover: #3e3e41;
+    --ai-primary: #ffffff;
+    --ai-primary-text: #000000;
+    --ai-primary-hover: #dfdfdf;
+    --ai-badge-bg: rgba(255, 255, 255, 0.16);
+    --ai-badge-text: #ffffff;
+    --ai-focus-shadow: rgba(255, 255, 255, 0.28);
     --ai-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
     --ai-danger: #ff9a9a;
   }
 }
 
 :root[data-theme="dark"] {
-  --ai-text: #ece8f5;
-  --ai-text-secondary: #ada8bb;
-  --ai-border: rgba(236, 232, 245, 0.12);
-  --ai-outline-variant: rgba(236, 232, 245, 0.16);
-  --ai-state-hover: rgba(236, 232, 245, 0.08);
-  --ai-surface-card: #17151f;
-  --ai-surface-container: #211f2b;
-  --ai-surface-container-low: #1a1822;
-  --ai-surface-container-high: #2b2836;
-  --ai-primary: #a992f5;
-  --ai-primary-text: #100e18;
-  --ai-primary-hover: #c7b7f9;
-  --ai-badge-bg: rgba(169, 146, 245, 0.16);
-  --ai-badge-text: #cabdf7;
-  --ai-focus-shadow: rgba(169, 146, 245, 0.28);
+  --ai-text: #ededef;
+  --ai-text-secondary: #b0b0b3;
+  --ai-border: rgba(237, 237, 239, 0.12);
+  --ai-outline-variant: rgba(237, 237, 239, 0.16);
+  --ai-state-hover: rgba(255, 255, 255, 0.16);
+  --ai-surface-card: #19191b;
+  --ai-surface-container: #242426;
+  --ai-surface-container-low: #1c1c1e;
+  --ai-surface-container-high: #2e2e30;
+  --ai-field-bg: #343437;
+  --ai-field-bg-hover: #3e3e41;
+  --ai-primary: #ffffff;
+  --ai-primary-text: #000000;
+  --ai-primary-hover: #dfdfdf;
+  --ai-badge-bg: rgba(255, 255, 255, 0.16);
+  --ai-badge-text: #ffffff;
+  --ai-focus-shadow: rgba(255, 255, 255, 0.28);
   --ai-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
   --ai-danger: #ff9a9a;
 }
@@ -76,6 +89,14 @@
   gap: 12px;
   min-height: 0;
   color: var(--ai-text);
+}
+
+/* Settings opens as a third column here, and it slides in from a negative
+   margin — which would stick out past the row and give the page a horizontal
+   scrollbar for the length of the animation. Only clipped while one is
+   actually open, so the narrow-screen overlay rail is untouched otherwise. */
+.ai-chat:has(.oa-panel) {
+  overflow: hidden;
 }
 
 .ai-chat-main {
@@ -94,7 +115,6 @@
   align-items: center;
   gap: 8px;
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--ai-border);
 }
 
 .ai-chat-bar-title {
@@ -163,9 +183,9 @@
   width: 100%;
   box-sizing: border-box;
   padding: 9px 12px;
-  border: 1px solid var(--ai-outline-variant);
+  border: none;
   border-radius: 12px;
-  background: transparent;
+  background: var(--ai-surface-container-high);
   color: var(--ai-text);
   font-size: 13px;
   font-weight: 500;
@@ -195,6 +215,21 @@
   color: var(--ai-text-secondary);
   font-size: 11.5px;
   cursor: pointer;
+}
+
+/* One click from happening. Loud on purpose: this is the state a stray second
+   click acts on, and it disarms itself after a few seconds. */
+.ai-chat-clear-all.armed,
+.ai-chat-list-delete.armed {
+  background: rgba(185, 28, 28, 0.16);
+  color: var(--ai-danger);
+  opacity: 1;
+}
+
+.ai-chat-list-delete.armed {
+  /* The row reveals this on hover; armed, it stays put while the pointer
+     travels back to it. */
+  opacity: 1;
 }
 
 .ai-chat-clear-all:hover {
@@ -386,7 +421,6 @@
 .ai-answer pre {
   margin: 0 0 8px;
   padding: 10px 12px;
-  border: 1px solid var(--ai-outline-variant);
   border-radius: 10px;
   background: var(--ai-surface-container-low);
   overflow-x: auto;
@@ -434,8 +468,9 @@
    never the answer, and on a thinking model it is far longer than one. */
 .ai-thinking {
   margin: 0 0 8px;
-  border-left: 2px solid var(--ai-outline-variant);
-  padding-left: 10px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
 }
 
 .ai-thinking-head {
@@ -504,7 +539,6 @@
 }
 
 .ai-chat-mini-btn:hover {
-  border-color: var(--ai-outline-variant);
   background: var(--ai-state-hover);
   color: var(--ai-text);
 }
@@ -561,10 +595,10 @@
 }
 
 .ai-chat-suggestion {
-  padding: 6px 12px;
-  border: 1px solid var(--ai-outline-variant);
+  padding: 7px 14px;
+  border: none;
   border-radius: 999px;
-  background: transparent;
+  background: var(--ai-surface-container-high);
   color: var(--ai-text);
   font-size: 12px;
   text-align: left;
@@ -578,7 +612,6 @@
 .ai-chat-setup {
   margin-bottom: 12px;
   padding: 14px;
-  border: 1px solid var(--ai-outline-variant);
   border-radius: 14px;
   background: var(--ai-surface-container);
 }
@@ -616,9 +649,8 @@
   align-items: center;
   gap: 8px;
   padding: 9px 12px;
-  border: 1px solid rgba(185, 28, 28, 0.35);
   border-radius: 12px;
-  background: rgba(185, 28, 28, 0.08);
+  background: rgba(185, 28, 28, 0.12);
 }
 
 .ai-chat-error-text {
@@ -693,7 +725,6 @@
   flex-direction: column;
   gap: 8px;
   padding-top: 8px;
-  border-top: 1px solid var(--ai-border);
 }
 
 .ai-chat-composer-row {
@@ -725,7 +756,6 @@
   overflow: hidden;
   width: 56px;
   height: 56px;
-  border: 1px solid var(--ai-outline-variant);
   border-radius: 10px;
   background: var(--ai-surface-container-low);
 }
@@ -766,9 +796,9 @@
   width: 34px;
   height: 34px;
   padding: 0;
-  border: 1px solid var(--ai-outline-variant);
+  border: none;
   border-radius: 50%;
-  background: transparent;
+  background: var(--ai-surface-container-high);
   color: var(--ai-text-secondary);
   cursor: pointer;
 }
@@ -816,7 +846,6 @@
   min-height: 34px;
   max-height: 160px;
   padding: 6px 12px;
-  border: 1px solid var(--ai-outline-variant);
   border-radius: 14px;
   background: var(--ai-surface-container-low);
   color: var(--ai-text);
@@ -870,7 +899,6 @@
   left: 0;
   max-height: 260px;
   padding: 10px;
-  border: 1px solid var(--ai-outline-variant);
   border-radius: 14px;
   background: var(--ai-surface-card);
   box-shadow: var(--ai-shadow-md);
@@ -1105,7 +1133,6 @@
     transition: none;
     max-height: 300px;
     padding: 12px;
-    border: 1px solid var(--ai-outline-variant);
     border-radius: 14px;
     background: var(--ai-surface-card);
     box-shadow: var(--ai-shadow-md);

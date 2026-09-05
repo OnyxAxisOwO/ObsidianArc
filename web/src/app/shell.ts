@@ -6,6 +6,8 @@
 // chatting, in settings, or in the admin backoffice.
 
 import { logout, type Account } from '../api/auth';
+import { createBell } from '../announce/announce';
+import { t } from '../i18n';
 import { navigate } from '../router';
 import { currentUser, forget, persistTheme, siteInfo } from '../session';
 import { nextThemeMode, themeMode } from '../theme/theme';
@@ -37,9 +39,12 @@ export function renderShell(root: HTMLElement): Shell {
   header.appendChild(el('span', 'oa-brand', siteInfo().name));
   header.appendChild(el('span', 'oa-header-spacer'));
   header.appendChild(headerSlot);
-  header.appendChild(themeToggle());
 
   const account = currentUser();
+  // Only for someone who has an account to have announcements read
+  // against; the sign-in page has its own corner.
+  if (account) header.appendChild(createBell().element);
+  header.appendChild(themeToggle());
   if (account) header.appendChild(accountMenu(account).group);
 
   const body = el('div', 'oa-chat-root');
@@ -57,7 +62,7 @@ function themeToggle(): HTMLButtonElement {
     target.appendChild(icon(mode === 'dark' ? ICONS.moon : mode === 'light' ? ICONS.sun : ICONS.auto, 17));
   };
 
-  const control = iconButton('oa-icon-btn', ICONS.auto, 'Theme', () => {
+  const control = iconButton('oa-icon-btn', ICONS.auto, t('theme'), () => {
     persistTheme(nextThemeMode());
     paint(control);
   }, 17);
@@ -70,7 +75,7 @@ function accountMenu(account: Account) {
   trigger.type = 'button';
   trigger.appendChild(avatar(account, false));
   trigger.appendChild(el('span', 'oa-account-name', displayName(account)));
-  trigger.title = 'Account';
+  trigger.title = t('account');
 
   return dropdown(trigger, (menu, close) => {
     const head = el('div', 'oa-menu-head');
@@ -86,12 +91,12 @@ function accountMenu(account: Account) {
       row.style.borderBottom = 'none';
       row.style.paddingTop = '0';
       row.appendChild(el('span', 'oa-badge', account.group_name));
-      if (account.role === 'admin') row.appendChild(el('span', 'oa-badge oa-badge-muted', 'Admin'));
+      if (account.role === 'admin') row.appendChild(el('span', 'oa-badge oa-badge-muted', t('admin')));
       menu.appendChild(row);
     }
 
     menu.appendChild(menuItem({
-      title: 'Settings',
+      title: t('settings'),
       leading: icon(ICONS.gear, 14),
       onSelect: () => {
         close();
@@ -99,9 +104,18 @@ function accountMenu(account: Account) {
       },
     }));
 
+    menu.appendChild(menuItem({
+      title: t('about'),
+      leading: icon(ICONS.info, 14),
+      onSelect: () => {
+        close();
+        navigate('/about');
+      },
+    }));
+
     if (account.role === 'admin') {
       menu.appendChild(menuItem({
-        title: 'Administration',
+        title: t('administration'),
         leading: icon(ICONS.sliders, 14),
         onSelect: () => {
           close();
@@ -111,7 +125,7 @@ function accountMenu(account: Account) {
     }
 
     menu.appendChild(menuItem({
-      title: 'Sign out',
+      title: t('signOut'),
       leading: icon(ICONS.logout, 14),
       onSelect: () => {
         close();

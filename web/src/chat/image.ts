@@ -6,6 +6,8 @@
 // oversized picture multiplies its cost on every message after the one that
 // attached it, as well as filling the server's database.
 
+import { t } from '../i18n';
+
 export interface PreparedImage {
   mime: string;
   /** Base64, no data: prefix — what the upload endpoint takes. */
@@ -37,7 +39,7 @@ const SUPPORTED = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 
 export async function prepareImage(file: File): Promise<PreparedImage> {
   if (!file.type.startsWith('image/')) {
-    throw new ImageError('unsupported', 'That is not an image.');
+    throw new ImageError('unsupported', t('imageNotAnImage'));
   }
 
   const bitmap = await decode(file);
@@ -47,7 +49,7 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
   if (file.type === 'image/gif') {
     if (file.size > MAX_OUTPUT_BYTES) {
       bitmap.close?.();
-      throw new ImageError('too-large', 'That image is too large.');
+      throw new ImageError('too-large', t('imageTooLarge'));
     }
     const data = await toBase64(file);
     bitmap.close?.();
@@ -63,7 +65,7 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
 
   if (!SUPPORTED.has(file.type)) {
     bitmap.close?.();
-    throw new ImageError('unsupported', 'Images must be PNG, JPEG, WebP or GIF.');
+    throw new ImageError('unsupported', t('imageFormats'));
   }
 
   const longEdge = Math.max(bitmap.width, bitmap.height);
@@ -77,7 +79,7 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
   const context = canvas.getContext('2d');
   if (!context) {
     bitmap.close?.();
-    throw new ImageError('unreadable', 'That image could not be read.');
+    throw new ImageError('unreadable', t('imageFailed'));
   }
   context.drawImage(bitmap, 0, 0, width, height);
   bitmap.close?.();
@@ -98,14 +100,14 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
       };
     }
   }
-  throw new ImageError('too-large', 'That image is too large.');
+  throw new ImageError('too-large', t('imageTooLarge'));
 }
 
 async function decode(file: File): Promise<ImageBitmap> {
   try {
     return await createImageBitmap(file);
   } catch {
-    throw new ImageError('unreadable', 'That image could not be read.');
+    throw new ImageError('unreadable', t('imageFailed'));
   }
 }
 

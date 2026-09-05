@@ -6,6 +6,7 @@
 // a separate feature.
 
 import { ApiError } from '../api/client';
+import { t, type StringKey } from '../i18n';
 import { button, clear, el } from '../ui/dom';
 import { openPanel } from '../ui/panel';
 import { numberField, section, switchField } from '../ui/form';
@@ -14,16 +15,16 @@ import { adminApi, emptyPolicy, type QuotaWindowKind, type UsagePoint } from './
 import { section as panel, statGrid, statusBadge } from './dashboard';
 import { failure, type AdminView } from './admin-page';
 
-const RANGES = [
-  { label: 'Last 24 hours', hours: 24 },
-  { label: 'Last 7 days', hours: 24 * 7 },
-  { label: 'Last 30 days', hours: 24 * 30 },
+const RANGES: Array<{ label: StringKey; hours: number }> = [
+  { label: 'rangeDay', hours: 24 },
+  { label: 'rangeWeek', hours: 24 * 7 },
+  { label: 'rangeMonth', hours: 24 * 30 },
 ];
 
 let selectedRange = 1;
 
 export async function renderUsage(view: AdminView): Promise<void> {
-  view.setTitle('Usage');
+  view.setTitle(t('usageTitle'));
 
   const since = Date.now() - RANGES[selectedRange]!.hours * 3600_000;
   const query = `?since=${since}`;
@@ -44,7 +45,7 @@ export async function renderUsage(view: AdminView): Promise<void> {
 
   const range = el('select');
   RANGES.forEach((entry, index) => {
-    const option = el('option', null, entry.label);
+    const option = el('option', null, t(entry.label));
     option.value = String(index);
     range.appendChild(option);
   });
@@ -57,57 +58,57 @@ export async function renderUsage(view: AdminView): Promise<void> {
   wrap.style.margin = '0';
   wrap.appendChild(range);
   view.actions.appendChild(wrap);
-  view.actions.appendChild(button('oa-btn', 'Default limits', () => void editGlobalPolicy(view)));
+  view.actions.appendChild(button('oa-btn', t('defaultLimits'), () => void editGlobalPolicy(view)));
 
   clear(view.body);
 
   const totals = summary.totals;
-  view.body.appendChild(panel('Totals', statGrid([
-    { label: 'Requests', value: compactNumber(totals.requests), note: totals.errors ? `${totals.errors} failed` : 'all fine' },
-    { label: 'Input tokens', value: compactNumber(totals.input_tokens) },
-    { label: 'Output tokens', value: compactNumber(totals.output_tokens) },
-    { label: 'Reasoning tokens', value: compactNumber(totals.reasoning_tokens) },
-    { label: 'Credits', value: compactNumber(totals.credits) },
+  view.body.appendChild(panel(t('secTotals'), statGrid([
+    { label: t('statRequests'), value: compactNumber(totals.requests), note: totals.errors ? t('nFailed', { count: totals.errors }) : t('allFine') },
+    { label: t('statInputTokens'), value: compactNumber(totals.input_tokens) },
+    { label: t('statOutputTokens'), value: compactNumber(totals.output_tokens) },
+    { label: t('statReasoningTokens'), value: compactNumber(totals.reasoning_tokens) },
+    { label: t('statCredits'), value: compactNumber(totals.credits) },
   ])));
 
-  view.body.appendChild(panel('Over time', chart(summary.series, summary.bucket_ms)));
+  view.body.appendChild(panel(t('secOverTime'), chart(summary.series, summary.bucket_ms)));
 
-  view.body.appendChild(panel('By model', renderTable({
+  view.body.appendChild(panel(t('secByModel'), renderTable({
     columns: [
-      { header: 'Model', cell: (row) => row.label || row.key || '—' },
-      { header: 'Requests', cell: (row) => compactNumber(row.requests), numeric: true },
-      { header: 'Tokens', cell: (row) => compactNumber(row.total_tokens), numeric: true },
-      { header: 'Credits', cell: (row) => compactNumber(row.credits), numeric: true },
-      { header: 'Failed', cell: (row) => compactNumber(row.errors), numeric: true, secondary: true },
+      { header: t('colModel'), cell: (row) => row.label || row.key || '—' },
+      { header: t('colRequests'), cell: (row) => compactNumber(row.requests), numeric: true },
+      { header: t('colTokens'), cell: (row) => compactNumber(row.total_tokens), numeric: true },
+      { header: t('colCredits'), cell: (row) => compactNumber(row.credits), numeric: true },
+      { header: t('colFailed'), cell: (row) => compactNumber(row.errors), numeric: true, secondary: true },
     ],
     rows: summary.by_model,
-    empty: 'Nothing in this period.',
+    empty: t('nothingInPeriod'),
   })));
 
-  view.body.appendChild(panel('By provider', renderTable({
+  view.body.appendChild(panel(t('secByProvider'), renderTable({
     columns: [
-      { header: 'Provider', cell: (row) => row.label || row.key || '—' },
-      { header: 'Requests', cell: (row) => compactNumber(row.requests), numeric: true },
-      { header: 'Tokens', cell: (row) => compactNumber(row.total_tokens), numeric: true },
-      { header: 'Credits', cell: (row) => compactNumber(row.credits), numeric: true },
+      { header: t('colProvider'), cell: (row) => row.label || row.key || '—' },
+      { header: t('colRequests'), cell: (row) => compactNumber(row.requests), numeric: true },
+      { header: t('colTokens'), cell: (row) => compactNumber(row.total_tokens), numeric: true },
+      { header: t('colCredits'), cell: (row) => compactNumber(row.credits), numeric: true },
     ],
     rows: summary.by_provider,
-    empty: 'Nothing in this period.',
+    empty: t('nothingInPeriod'),
   })));
 
-  view.body.appendChild(panel(`Requests (${records.total})`, renderTable({
+  view.body.appendChild(panel(t('secRequestsN', { count: records.total }), renderTable({
     columns: [
-      { header: 'When', cell: (row) => relativeTime(row.started_at) },
-      { header: 'User', cell: (row) => row.username || row.user_id },
-      { header: 'Model', cell: (row) => stacked(row.model_name || '—', row.provider_name), secondary: true },
-      { header: 'In', cell: (row) => compactNumber(row.input_tokens), numeric: true, secondary: true },
-      { header: 'Out', cell: (row) => compactNumber(row.output_tokens), numeric: true, secondary: true },
-      { header: 'Credits', cell: (row) => compactNumber(row.credits), numeric: true },
-      { header: 'Took', cell: (row) => `${(row.duration_ms / 1000).toFixed(1)}s`, numeric: true, secondary: true },
-      { header: 'Status', cell: (row) => statusBadge(row) },
+      { header: t('colWhen'), cell: (row) => relativeTime(row.started_at) },
+      { header: t('colUser'), cell: (row) => row.username || row.user_id },
+      { header: t('colModel'), cell: (row) => stacked(row.model_name || '—', row.provider_name), secondary: true },
+      { header: t('colIn'), cell: (row) => compactNumber(row.input_tokens), numeric: true, secondary: true },
+      { header: t('colOut'), cell: (row) => compactNumber(row.output_tokens), numeric: true, secondary: true },
+      { header: t('colCredits'), cell: (row) => compactNumber(row.credits), numeric: true },
+      { header: t('colTook'), cell: (row) => `${(row.duration_ms / 1000).toFixed(1)}s`, numeric: true, secondary: true },
+      { header: t('colStatus'), cell: (row) => statusBadge(row) },
     ],
     rows: records.records,
-    empty: 'No requests in this period.',
+    empty: t('noRequestsPeriod'),
     muted: (row) => row.status !== 'ok',
   })));
 }
@@ -115,17 +116,21 @@ export async function renderUsage(view: AdminView): Promise<void> {
 function chart(series: UsagePoint[], bucketMS: number): HTMLElement {
   const wrap = el('div', 'oa-spark');
   if (!series.length) {
-    wrap.appendChild(el('span', 'oa-spark-empty', 'No requests in this period.'));
+    wrap.appendChild(el('span', 'oa-spark-empty', t('noRequestsPeriod')));
     return wrap;
   }
   const peak = Math.max(...series.map((point) => point.total_tokens), 1);
   for (const point of series) {
     const bar = el('div', 'oa-spark-bar');
     bar.style.height = `${Math.max(2, Math.round((point.total_tokens / peak) * 100))}%`;
-    bar.title = `${new Date(point.at).toLocaleString()} — ${compactNumber(point.requests)} requests, ${compactNumber(point.total_tokens)} tokens`;
+    bar.title = t('chartTooltip', {
+      when: new Date(point.at).toLocaleString(),
+      requests: compactNumber(point.requests),
+      tokens: compactNumber(point.total_tokens),
+    });
     wrap.appendChild(bar);
   }
-  wrap.setAttribute('aria-label', `Token usage in ${Math.round(bucketMS / 3600000)}-hour buckets`);
+  wrap.setAttribute('aria-label', t('chartAria', { hours: Math.round(bucketMS / 3600000) }));
   return wrap;
 }
 
@@ -142,36 +147,35 @@ async function editGlobalPolicy(view: AdminView): Promise<void> {
   }
 
   const rpm = numberField({
-    label: 'Requests per minute',
+    label: t('requestsPerMinute'),
     value: policy.rpm,
-    placeholder: 'no limit',
+    placeholder: t('noLimit'),
     min: 0,
-    hint: 'Applies to everyone whose group and account do not override it.',
+    hint: t('defaultLimitsHint'),
   });
-  const tpm = numberField({ label: 'Tokens per minute', value: policy.tpm, placeholder: 'no limit', min: 0 });
+  const tpm = numberField({ label: t('tokensPerMinute'), value: policy.tpm, placeholder: t('noLimit'), min: 0 });
 
   const windows = (['5h', '1w', '1m'] as QuotaWindowKind[]).map((kind) => {
     const limits = policy.windows[kind];
     return {
       kind,
-      enabled: switchField({ label: `Enforce the ${kind} window`, value: limits?.enabled === true }),
-      requests: numberField({ label: 'Requests', value: limits?.requests ?? null, placeholder: 'no limit', min: 0 }),
-      tokens: numberField({ label: 'Tokens', value: limits?.tokens ?? null, placeholder: 'no limit', min: 0 }),
-      credits: numberField({ label: 'Credits', value: limits?.credits ?? null, placeholder: 'no limit', min: 0, step: 0.1 }),
+      enabled: switchField({ label: t('enforceTheWindow', { window: kind }), value: limits?.enabled === true }),
+      requests: numberField({ label: t('limitRequests'), value: limits?.requests ?? null, placeholder: t('noLimit'), min: 0 }),
+      tokens: numberField({ label: t('limitTokens'), value: limits?.tokens ?? null, placeholder: t('noLimit'), min: 0 }),
+      credits: numberField({ label: t('limitCredits'), value: limits?.credits ?? null, placeholder: t('noLimit'), min: 0, step: 0.1 }),
     };
   });
 
   openPanel({
     host: view.host,
-    title: 'Default limits',
-    confirmLabel: 'Save',
+    title: t('defaultLimits'),
+    confirmLabel: t('save'),
     build: (body) => {
-      body.appendChild(el('p', 'oa-field-hint',
-        'Administrators are exempt from all of this unless that is turned off in Settings.'));
+      body.appendChild(el('p', 'oa-field-hint', t('adminsExemptHint')));
       body.appendChild(rpm.element);
       body.appendChild(tpm.element);
       for (const window of windows) {
-        body.appendChild(section(`Every ${window.kind}`));
+        body.appendChild(section(t('everyWindow', { window: window.kind })));
         body.appendChild(window.enabled.element);
         body.appendChild(window.requests.element);
         body.appendChild(window.tokens.element);

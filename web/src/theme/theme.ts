@@ -11,6 +11,7 @@
 import {
   ACCENTS,
   DEFAULT_ACCENT,
+  accentPalette,
   baseAccent,
   colorIsLight,
   displayAccent,
@@ -24,6 +25,10 @@ import {
 const THEME_KEY = 'obsidian-arc-theme';
 const ACCENT_KEY = 'obsidian-arc-accent';
 const WALLPAPER_KEY = 'obsidian-arc-wallpaper';
+// The resolved palette, cached for the inline script in index.html: it has to
+// paint the accent's surfaces before the module loads, and duplicating the
+// colour maths in a blocking script would be worse than storing the answer.
+const PALETTE_KEY = 'obsidian-arc-palette';
 
 export type ThemeMode = 'light' | 'dark' | 'auto';
 
@@ -132,10 +137,11 @@ export function setAccentPreference(pref: AccentPreference): void {
   applyAccent();
 }
 
-function applyAccent(): void {
-  const pref = accentPreference();
+// Every token the accent decides, for one hue and one scheme. Returned rather
+// than applied so the same function can produce the light and dark palettes
+// the pre-paint cache needs, not just the one being shown.
+function paletteFor(pref: AccentPreference, dark: boolean): Record<string, string> {
   const base = baseAccent(pref);
-  const dark = isDark();
 
   // The neutral preset skips the generic dark-mode lightness lift and goes
   // straight to white — the lift turns a true black/white pick into a dull
@@ -144,19 +150,43 @@ function applyAccent(): void {
   const onPrimary = colorIsLight(primary) ? '#000000' : '#FFFFFF';
   const hover = shiftHex(primary, colorIsLight(primary) ? -32 : 24);
 
+  return {
+    // The surfaces, borders and text: the accent hue is the interface's hue,
+    // not a colour applied on top of a violet one.
+    ...accentPalette(base, dark),
+    '--ai-primary': primary,
+    '--ai-primary-text': onPrimary,
+    '--ai-primary-hover': hover,
+    '--ai-focus-shadow': hexToRgba(primary, dark ? 0.28 : 0.22),
+    // The generic hover/press layer shared by nearly every button, chip, menu
+    // item and list row.
+    '--ai-state-hover': hexToRgba(primary, dark ? 0.16 : 0.08),
+    '--ai-badge-bg': hexToRgba(primary, dark ? 0.16 : 0.12),
+    '--ai-badge-text': primary,
+  };
+}
+
+function applyAccent(): void {
+  const pref = accentPreference();
+  const dark = isDark();
+
   const style = document.documentElement.style;
-  style.setProperty('--ai-primary', primary);
-  style.setProperty('--ai-primary-text', onPrimary);
-  style.setProperty('--ai-primary-hover', hover);
-  style.setProperty('--ai-focus-shadow', hexToRgba(primary, dark ? 0.28 : 0.22));
-  // The generic hover/press layer shared by nearly every button, chip, menu
-  // item and list row. Tinting this is most of what makes the interface read
-  // as "in this colour" rather than "has a few coloured buttons".
-  style.setProperty('--ai-state-hover', hexToRgba(primary, dark ? 0.16 : 0.08));
-  style.setProperty('--ai-badge-bg', hexToRgba(primary, dark ? 0.16 : 0.12));
-  style.setProperty('--ai-badge-text', primary);
+  for (const [token, value] of Object.entries(paletteFor(pref, dark))) {
+    style.setProperty(token, value);
+  }
+
+  // Both schemes are cached, because which one applies on the next load
+  // depends on a system preference that can change while this tab is closed.
+  write(PALETTE_KEY, JSON.stringify({
+    light: declarations(paletteFor(pref, false)),
+    dark: declarations(paletteFor(pref, true)),
+  }));
 
   notify();
+}
+
+function declarations(palette: Record<string, string>): string {
+  return Object.entries(palette).map(([token, value]) => `${token}:${value}`).join(';');
 }
 
 // --- wallpaper -------------------------------------------------------------

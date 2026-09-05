@@ -12,8 +12,10 @@
 
 import { changePassword, updateProfile } from '../api/auth';
 import { ApiError, api } from '../api/client';
-import { renderShell } from '../app/shell';
-import { t } from '../i18n';
+import { renderChatPage } from '../chat/chat-page';
+import { navigate } from '../router';
+import { openPanel } from '../ui/panel';
+import { t, type StringKey } from '../i18n';
 import { adopt, currentPreferences, currentUser, persistTheme, syncPreferences } from '../session';
 import { ACCENTS, ACCENT_NAMES, baseAccent, normalizeHex, type AccentName } from '../theme/color-utils';
 import {
@@ -25,52 +27,135 @@ import {
   type ThemeMode,
 } from '../theme/theme';
 import { prepareImage, ImageError } from '../chat/image';
-import { button, el } from '../ui/dom';
+import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
+import { dropdown, menuItem } from '../ui/menu';
 import { numberField, selectField, textArea, textField } from '../ui/form';
 import { language, setLanguage, type Language } from '../i18n';
 
+// Five sections is more than fits a panel without scrolling past what you
+// came for, so they are grouped into three and shown one group at a time.
+// Which group is a menu rather than a row of tabs: the panel head has room
+// for one more control, not for three labels plus the two buttons beside it.
+type Category = 'appearance' | 'chat' | 'account';
+
+const CATEGORIES: Array<{ id: Category; label: StringKey }> = [
+  { id: 'appearance', label: 'secAppearance' },
+  { id: 'chat', label: 'secChat' },
+  { id: 'account', label: 'account' },
+];
+
+/**
+ * Settings is the chat with a panel over it, not a page of its own.
+ *
+ * As a full page it was a dead end — nothing on it led back, because there
+ * was nothing to lead back to that the route had not already replaced. As the
+ * same column the admin screens edit rows in, it closes: by its own button,
+ * by Escape, or by clicking away to the conversation still sitting behind it.
+ *
+ * There is no footer. Each section commits on its own — the theme the moment
+ * it is picked, the profile and the password on their own buttons — so one
+ * Save at the bottom would be claiming to commit things it has nothing to do
+ * with.
+ */
 export function renderSettingsPage(root: HTMLElement): void {
-  const shell = renderShell(root);
-  shell.body.classList.add('oa-admin');
+  const host = renderChatPage(root);
 
   const account = currentUser();
   if (!account) return;
 
-  const main = el('div', 'oa-admin-main');
-  const head = el('div', 'oa-admin-head');
-  const heading = el('div');
-  heading.appendChild(el('h1', 'oa-admin-title', t('settings')));
-  heading.appendChild(el('p', 'oa-admin-subtitle', `@${account.username}`));
-  head.appendChild(heading);
-  head.appendChild(el('span', 'oa-admin-head-spacer'));
+  let category: Category = 'appearance';
 
-  const body = el('div', 'oa-admin-body');
-  main.appendChild(head);
-  main.appendChild(body);
-  shell.body.appendChild(main);
+  const sectionsTrigger = iconButton('oa-icon-btn', ICONS.dots, t('switchSection'), undefined, 16);
+  const sections = dropdown(sectionsTrigger, (menu, close) => {
+    for (const entry of CATEGORIES) {
+      menu.appendChild(menuItem({
+        title: t(entry.label),
+        active: entry.id === category,
+        ...(entry.id === category ? { leading: icon(ICONS.check, 14) } : {}),
+        onSelect: () => {
+          close();
+          category = entry.id;
+          panel.rebuild();
+        },
+      }));
+    }
+  }, { menuClass: 'oa-menu-compact' });
 
-  const form = el('div', 'oa-settings');
-  body.appendChild(form);
+  const fullscreen = iconButton('oa-icon-btn', ICONS.expand, t('fullscreen'), () => {
+    const on = panel.toggleFullscreen();
+    clear(fullscreen);
+    fullscreen.appendChild(icon(on ? ICONS.collapse : ICONS.expand, 16));
+    fullscreen.title = t(on ? 'exitFullscreen' : 'fullscreen');
+    fullscreen.setAttribute('aria-label', fullscreen.title);
+    // Full screen has room for the sections as a rail, which is a better
+    // control than a menu; narrow does not, so the menu comes back.
+    sections.group.hidden = on;
+    panel.rebuild();
+  }, 16);
 
-  form.appendChild(appearanceSection());
-  form.appendChild(wallpaperSection());
-  form.appendChild(chatSection());
-  form.appendChild(profileSection());
-  form.appendChild(passwordSection());
+  const panel = openPanel({
+    host,
+    title: t('settings'),
+    footer: false,
+    width: 460,
+    actions: [sections.group, fullscreen],
+    build: (body, handle) => {
+      const form = el('div', 'oa-settings');
+      form.appendChild(el('p', 'oa-settings-account', `@${account.username}`));
+
+      if (category === 'appearance') {
+        form.appendChild(appearanceSection());
+        form.appendChild(wallpaperSection());
+      } else if (category === 'chat') {
+        form.appendChild(chatSection());
+      } else {
+        form.appendChild(profileSection());
+        form.appendChild(passwordSection());
+      }
+
+      if (!handle.isFullscreen()) {
+        body.appendChild(form);
+        return;
+      }
+
+      const split = el('div', 'oa-settings-split');
+      const rail = el('nav', 'oa-settings-rail');
+      for (const entry of CATEGORIES) {
+        rail.appendChild(button(
+          `oa-settings-rail-item${entry.id === category ? ' active' : ''}`,
+          t(entry.label),
+          () => {
+            category = entry.id;
+            panel.rebuild();
+          },
+        ));
+      }
+      split.appendChild(rail);
+      split.appendChild(form);
+      body.appendChild(split);
+    },
+    // Dismissing it should leave the URL on the conversation that is now in
+    // front, but only if the panel is what the URL is still describing: a
+    // click through to administration changes the route first, and following
+    // that with a navigate would send the user back out of it.
+    onClose: () => {
+      if (window.location.pathname === '/settings') navigate('/', { replace: true });
+    },
+  });
 }
 
 // --- appearance ---------------------------------------------------------------
 
 function appearanceSection(): HTMLElement {
-  const wrap = panel('Appearance');
+  const wrap = panel(t('secAppearance'));
 
   const theme = selectField<ThemeMode>({
-    label: 'Theme',
+    label: t('theme'),
     value: themeMode(),
     options: [
-      { value: 'auto', label: 'Match the system' },
-      { value: 'light', label: 'Light' },
-      { value: 'dark', label: 'Dark' },
+      { value: 'auto', label: t('themeAuto') },
+      { value: 'light', label: t('themeLight') },
+      { value: 'dark', label: t('themeDark') },
     ],
     onChange: (value) => {
       // Applied through the session, so the choice follows the account to
@@ -81,9 +166,8 @@ function appearanceSection(): HTMLElement {
   });
   wrap.appendChild(theme.element);
 
-  wrap.appendChild(el('span', 'oa-field-label', 'Accent colour'));
-  wrap.appendChild(el('span', 'oa-field-hint',
-    'One hue, adjusted per scheme so it stays readable on both a white and a near-black background.'));
+  wrap.appendChild(el('span', 'oa-field-label', t('accentColour')));
+  wrap.appendChild(el('span', 'oa-field-hint', t('accentHint')));
 
   const grid = el('div', 'oa-color-grid');
   const dots = ACCENT_NAMES.map((name) => {
@@ -113,10 +197,10 @@ function appearanceSection(): HTMLElement {
   hex.addEventListener('change', () => applyAccent('custom', hex.value));
 
   const languageField = selectField<Language>({
-    label: 'Language',
+    label: t('languageLabel'),
     value: language(),
     options: [{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }],
-    hint: 'Takes effect on the next screen you open.',
+    hint: t('languageHint'),
     onChange: (value) => {
       setLanguage(value);
       syncPreferences({ language: value });
@@ -149,41 +233,41 @@ function appearanceSection(): HTMLElement {
 }
 
 function accentLabel(name: AccentName): string {
-  const labels: Record<AccentName, string> = {
-    violet: 'Violet', neutral: 'Black & white', red: 'Red', pink: 'Pink',
-    indigo: 'Indigo', blue: 'Blue', cyan: 'Cyan', teal: 'Teal',
-    green: 'Green', orange: 'Orange',
+  const labels: Record<AccentName, StringKey> = {
+    violet: 'accentViolet', neutral: 'accentNeutral', red: 'accentRed', pink: 'accentPink',
+    indigo: 'accentIndigo', blue: 'accentBlue', cyan: 'accentCyan', teal: 'accentTeal',
+    green: 'accentGreen', orange: 'accentOrange',
   };
-  return labels[name];
+  return t(labels[name]);
 }
 
 // --- wallpaper -----------------------------------------------------------------
 
 function wallpaperSection(): HTMLElement {
-  const wrap = panel('Wallpaper', 'Sits behind the interface. Stored on your account, not in this browser.');
+  const wrap = panel(t('secWallpaper'), t('wallpaperHint'));
 
   const current = wallpaper();
-  const status = el('p', 'oa-field-hint', current ? 'A wallpaper is set.' : 'No wallpaper.');
+  const status = el('p', 'oa-field-hint', current ? t('wallpaperSet') : t('wallpaperNone'));
 
   const picker = el('input');
   picker.type = 'file';
   picker.accept = 'image/png,image/jpeg,image/webp,image/avif';
   picker.hidden = true;
 
-  const choose = button('oa-btn', 'Choose an image…', () => picker.click());
-  const remove = button('oa-btn oa-btn-danger', 'Remove', () => void clearWallpaper());
+  const choose = button('oa-btn', t('chooseImage'), () => picker.click());
+  const remove = button('oa-btn oa-btn-danger', t('remove'), () => void clearWallpaper());
   remove.hidden = !current;
 
   const dim = numberField({
-    label: 'Dim',
+    label: t('dim'),
     value: current?.dim ?? 30,
     min: 0,
     max: 100,
-    hint: 'How much to darken it, so interface text stays readable. 0–100.',
+    hint: t('dimHint'),
   });
-  const blur = numberField({ label: 'Blur', value: current?.blur ?? 0, min: 0, max: 40 });
+  const blur = numberField({ label: t('blur'), value: current?.blur ?? 0, min: 0, max: 40 });
 
-  const apply = button('oa-btn', 'Apply', () => {
+  const apply = button('oa-btn', t('apply'), () => {
     const existing = wallpaper();
     if (!existing) return;
     const next = { url: existing.url, dim: dim.value() ?? 0, blur: blur.value() ?? 0 };
@@ -209,14 +293,14 @@ function wallpaperSection(): HTMLElement {
   });
 
   async function upload(file: File): Promise<void> {
-    status.textContent = 'Preparing…';
+    status.textContent = t('preparing');
     try {
       // The same downscale the composer uses. A phone photo as a wallpaper is
       // several megabytes of picture nobody will ever look at closely.
       const prepared = await prepareImage(file);
       URL.revokeObjectURL(prepared.previewURL);
 
-      status.textContent = 'Uploading…';
+      status.textContent = t('uploading');
       const { url } = await api.put<{ url: string }>('/api/preferences/wallpaper', {
         mime: prepared.mime,
         data: prepared.data,
@@ -225,7 +309,7 @@ function wallpaperSection(): HTMLElement {
       const next = { url, dim: dim.value() ?? 30, blur: blur.value() ?? 0 };
       setWallpaper(next);
       syncPreferences({ wallpaper: next });
-      status.textContent = 'A wallpaper is set.';
+      status.textContent = t('wallpaperSet');
       remove.hidden = false;
     } catch (error) {
       status.textContent = error instanceof ImageError || error instanceof ApiError
@@ -242,7 +326,7 @@ function wallpaperSection(): HTMLElement {
     }
     setWallpaper(null);
     syncPreferences({ wallpaper: null });
-    status.textContent = 'No wallpaper.';
+    status.textContent = t('wallpaperNone');
     remove.hidden = true;
   }
 
@@ -252,16 +336,16 @@ function wallpaperSection(): HTMLElement {
 // --- chat defaults ---------------------------------------------------------------
 
 function chatSection(): HTMLElement {
-  const wrap = panel('Chat', 'What a new conversation starts with.');
+  const wrap = panel(t('secChatDefaults'), t('chatDefaultsHint'));
   const preferences = currentPreferences();
 
   const models = el('select');
-  const placeholder = el('option', null, 'The first available model');
+  const placeholder = el('option', null, t('firstAvailableModel'));
   placeholder.value = '';
   models.appendChild(placeholder);
 
   const field = el('label', 'oa-field');
-  field.appendChild(el('span', 'oa-field-label', 'Default model'));
+  field.appendChild(el('span', 'oa-field-label', t('defaultModel')));
   field.appendChild(models);
   wrap.appendChild(field);
 
@@ -276,7 +360,7 @@ function chatSection(): HTMLElement {
       if (typeof stored === 'string') models.value = stored;
     })
     .catch(() => {
-      placeholder.textContent = 'Could not load the model list.';
+      placeholder.textContent = t('couldNotLoadModels');
     });
 
   models.addEventListener('change', () => {
@@ -284,14 +368,14 @@ function chatSection(): HTMLElement {
   });
 
   const effort = selectField({
-    label: 'Default thinking effort',
+    label: t('defaultEffort'),
     value: (preferences['reasoning_effort'] as string) ?? 'medium',
     options: [
       { value: 'low', label: t('effortLow') },
       { value: 'medium', label: t('effortMedium') },
       { value: 'high', label: t('effortHigh') },
     ],
-    hint: 'Used when you turn on extended thinking. The toggle itself lives in the composer.',
+    hint: t('defaultEffortHint'),
     onChange: (value) => syncPreferences({ reasoning_effort: value }),
   });
   wrap.appendChild(effort.element);
@@ -303,26 +387,26 @@ function chatSection(): HTMLElement {
 
 function profileSection(): HTMLElement {
   const account = currentUser()!;
-  const wrap = panel('Profile');
+  const wrap = panel(t('secProfile'));
 
   const nickname = textField({
-    label: 'Nickname',
+    label: t('nickname'),
     value: account.nickname,
     placeholder: account.username,
     maxLength: 32,
-    hint: 'Shown instead of your username.',
+    hint: t('nicknameHint'),
   });
-  const email = textField({ label: 'Email', value: account.email, type: 'email' });
-  const bio = textArea({ label: 'Bio', value: account.bio, rows: 3 });
+  const email = textField({ label: t('email'), value: account.email, type: 'email' });
+  const bio = textArea({ label: t('bio'), value: account.bio, rows: 3 });
   const avatar = textField({
-    label: 'Avatar',
+    label: t('avatar'),
     value: account.avatar,
-    placeholder: 'https://… or leave empty for your initials',
-    hint: 'A same-origin path or an inline image.',
+    placeholder: t('avatarPlaceholderUser'),
+    hint: t('avatarHint'),
   });
 
   const flash = el('p', 'oa-drawer-flash');
-  const save = button('oa-btn primary', 'Save', () => void submit());
+  const save = button('oa-btn primary', t('save'), () => void submit());
 
   wrap.appendChild(nickname.element);
   wrap.appendChild(email.element);
@@ -342,8 +426,8 @@ function profileSection(): HTMLElement {
         avatar: avatar.value(),
       });
       adopt(user, currentPreferences());
-      save.textContent = 'Saved';
-      window.setTimeout(() => { save.textContent = 'Save'; }, 1500);
+      save.textContent = t('saved');
+      window.setTimeout(() => { save.textContent = t('save'); }, 1500);
     } catch (error) {
       flash.textContent = error instanceof ApiError ? error.message : String(error);
       flash.classList.add('visible');
@@ -356,12 +440,12 @@ function profileSection(): HTMLElement {
 }
 
 function passwordSection(): HTMLElement {
-  const wrap = panel('Password', 'Changing it signs you out everywhere else.');
+  const wrap = panel(t('secPassword'), t('passwordSectionHint'));
 
-  const current = textField({ label: 'Current password', type: 'password' });
-  const next = textField({ label: 'New password', type: 'password', hint: 'At least 8 characters.' });
+  const current = textField({ label: t('currentPassword'), type: 'password' });
+  const next = textField({ label: t('newPassword'), type: 'password', hint: t('newPasswordHint') });
   const flash = el('p', 'oa-drawer-flash');
-  const save = button('oa-btn', 'Change password', () => void submit());
+  const save = button('oa-btn', t('changePassword'), () => void submit());
 
   wrap.appendChild(current.element);
   wrap.appendChild(next.element);
@@ -370,7 +454,7 @@ function passwordSection(): HTMLElement {
 
   async function submit(): Promise<void> {
     if (!current.value() || !next.value()) {
-      flash.textContent = 'Fill in both fields.';
+      flash.textContent = t('fillBothFields');
       flash.classList.add('visible');
       return;
     }
@@ -380,8 +464,8 @@ function passwordSection(): HTMLElement {
       await changePassword(current.value(), next.value());
       current.set('');
       next.set('');
-      save.textContent = 'Changed';
-      window.setTimeout(() => { save.textContent = 'Change password'; }, 1500);
+      save.textContent = t('changed');
+      window.setTimeout(() => { save.textContent = t('changePassword'); }, 1500);
     } catch (error) {
       flash.textContent = error instanceof ApiError ? error.message : String(error);
       flash.classList.add('visible');

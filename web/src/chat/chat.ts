@@ -29,7 +29,7 @@ import {
 } from '../api/chat';
 import { ApiError } from '../api/client';
 import { t } from '../i18n';
-import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
+import { ICONS, button, clear, confirmable, el, icon, iconButton } from '../ui/dom';
 import { createComposerMenu, type ComposerMenu, type ReasoningState } from './composer-menu';
 import { ImageError, prepareImage, type PreparedImage } from './image';
 import { renderInto } from './markdown';
@@ -155,9 +155,14 @@ export function mountChat(options: ChatOptions): ChatHandle {
 
   const sidebarList = el('div', 'ai-chat-list');
   const sidebarFoot = el('div', 'ai-chat-sidebar-foot');
-  const clearAllBtn = button('ai-chat-clear-all', '', () => void clearEverything());
+  const clearAllBtn = button('ai-chat-clear-all', '');
   clearAllBtn.appendChild(icon(ICONS.trash, 12));
   clearAllBtn.appendChild(el('span', null, t('clearAll')));
+  confirmable(
+    clearAllBtn,
+    { label: t('clearAllConfirm'), title: t('confirmClearAll') },
+    () => void clearEverything(),
+  );
   sidebarFoot.appendChild(clearAllBtn);
 
   sidebar.appendChild(sidebarHead);
@@ -422,9 +427,11 @@ export function mountChat(options: ChatOptions): ChatHandle {
       open.addEventListener('click', () => void openConversation(conversation.id));
       open.addEventListener('dblclick', () => void rename(conversation));
 
-      const remove = iconButton('ai-chat-list-delete', ICONS.trash, t('deleteChat'), () => {
-        void removeConversation(conversation);
-      }, 13);
+      const remove = confirmable(
+        iconButton('ai-chat-list-delete', ICONS.trash, t('deleteChat'), undefined, 13),
+        { icon: ICONS.check, title: t('confirmDelete') },
+        () => void removeConversation(conversation),
+      );
 
       row.appendChild(open);
       row.appendChild(remove);
@@ -882,7 +889,6 @@ export function mountChat(options: ChatOptions): ChatHandle {
   }
 
   async function removeConversation(conversation: Conversation): Promise<void> {
-    if (!window.confirm(t('confirmDelete'))) return;
     try {
       await deleteConversation(conversation.id);
     } catch (error) {
@@ -899,7 +905,7 @@ export function mountChat(options: ChatOptions): ChatHandle {
   }
 
   async function clearEverything(): Promise<void> {
-    if (!conversations.length || !window.confirm(t('confirmClearAll'))) return;
+    if (!conversations.length) return;
     try {
       await deleteAllConversations();
     } catch (error) {

@@ -5,6 +5,7 @@
 // is a wall. The cell renderers return nodes rather than HTML strings, for
 // the same reason the transcript does.
 
+import { t } from '../i18n';
 import { el } from './dom';
 
 export interface Column<T> {
@@ -118,13 +119,13 @@ export function compactNumber(value: number): string {
 export function relativeTime(at: number): string {
   if (!at) return '—';
   const seconds = Math.round((Date.now() - at) / 1000);
-  if (seconds < 60) return 'just now';
+  if (seconds < 60) return t('timeJustNow');
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return t('timeMinutes', { count: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours}h ago`;
+  if (hours < 48) return t('timeHours', { count: hours });
   const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return t('timeDays', { count: days });
   return new Date(at).toLocaleDateString();
 }
 

@@ -23,9 +23,18 @@ export interface UsageWindow {
   resets_at: number;
 }
 
+/**
+ * How the instance wants an allowance phrased. The same numbers either way —
+ * an operator running generous limits wants "80% left" to reassure, one
+ * running tight ones wants "20% used" or the figures themselves.
+ */
+export type UsageDisplay = 'absolute' | 'remaining' | 'used';
+
 export interface UsageSummary {
   /** True when nothing constrains this account — an administrator, usually. */
   unlimited: boolean;
+  /** Older builds do not send this; absolute is what they always did. */
+  display?: UsageDisplay;
   windows: UsageWindow[];
 }
 

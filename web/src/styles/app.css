@@ -89,9 +89,8 @@
 .oa-auth-error {
   margin: 0;
   padding: 9px 12px;
-  border: 1px solid rgba(185, 28, 28, 0.35);
   border-radius: 12px;
-  background: rgba(185, 28, 28, 0.08);
+  background: rgba(185, 28, 28, 0.12);
   color: var(--ai-danger);
   font-size: 12px;
   line-height: 1.5;
@@ -193,7 +192,6 @@
   align-items: center;
   gap: 10px;
   padding: 8px 10px 10px;
-  border-bottom: 1px solid var(--ai-outline-variant);
   margin-bottom: 4px;
 }
 
@@ -309,7 +307,6 @@
   gap: 8px;
   margin-top: 6px;
   padding: 10px 10px 4px;
-  border-top: 1px solid var(--ai-outline-variant);
 }
 
 .oa-menu-section-title {
@@ -370,13 +367,24 @@
 /* --- composer menu ----------------------------------------------------------- */
 
 /* The composer's own menu opens upward: it is anchored to a control at the
-   bottom of the page, and a downward panel would fall off the viewport. */
+   bottom of the page, and a downward panel would fall off the viewport. It
+   also has to grow from its bottom-left corner rather than the top-right one
+   the other menus hang from. */
 .oa-menu-up {
   top: auto;
   right: auto;
   bottom: calc(100% + 8px);
   left: 0;
   min-width: 240px;
+  transform-origin: bottom left;
+  transform: translateY(6px) scale(0.97);
+}
+
+/* Groups are told apart by the space between them; the first one has
+   nothing above it to be told apart from. */
+.oa-menu > .oa-menu-section:first-child,
+.oa-menu > .oa-menu-quota:first-child {
+  margin-top: 0;
 }
 
 .oa-composer-menu {
@@ -397,7 +405,6 @@
   gap: 6px;
   padding: 10px;
   margin-top: 6px;
-  border-top: 1px solid var(--ai-outline-variant);
 }
 
 .oa-menu-quota-row {
@@ -514,4 +521,279 @@ body.oa-resizing * {
   .oa-resizer::before {
     transition: none;
   }
+}
+
+/* --- announcements ---------------------------------------------------------- */
+
+/* The bell carries a dot rather than a count: how many unread announcements
+   there are is not a number anyone acts on, and a badge with a digit in it
+   would be the loudest thing in the header. */
+.oa-bell {
+  position: relative;
+}
+
+.oa-bell-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ai-danger);
+}
+
+.oa-menu-announce {
+  min-width: 280px;
+}
+
+.oa-menu-head-action {
+  border: none;
+  border-radius: 999px;
+  padding: 3px 9px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.oa-menu-head-action:hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+/* An unread row is marked by a dot in the leading slot, which is where the
+   check goes on a menu that marks a current choice — same position, same
+   size, so the two menus read alike. */
+.oa-menu-unread {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--ai-primary);
+}
+
+/* The one genuinely modal thing in the interface: it appears unprompted and
+   has to be dealt with before carrying on. Everything else that could have
+   been a dialog is a column instead. */
+.oa-announce-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.oa-announce-overlay.open {
+  opacity: 1;
+}
+
+.oa-announce {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(520px, 100%);
+  max-height: min(70vh, 620px);
+  box-sizing: border-box;
+  padding: 22px 24px 18px;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  box-shadow: var(--ai-shadow-md);
+  transform: translateY(8px) scale(0.98);
+  transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.oa-announce-overlay.open .oa-announce {
+  transform: none;
+}
+
+.oa-announce-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.oa-announce-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.oa-announce-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.oa-announce-when {
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-announce-overlay,
+  .oa-announce {
+    transition: none;
+  }
+}
+
+/* --- the front door ---------------------------------------------------------- */
+
+.oa-landing {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  height: 100%;
+  min-height: 0;
+  padding: 18px 22px 22px;
+  box-sizing: border-box;
+}
+
+.oa-landing-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.oa-landing-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.oa-landing-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  justify-content: center;
+}
+
+/* The operator's own page. Their markup lands here, so this only sets the
+   measure and the rhythm and leaves the rest alone. */
+.oa-landing-intro {
+  width: min(720px, 100%);
+  overflow-y: auto;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.oa-landing-intro h1,
+.oa-landing-intro h2,
+.oa-landing-intro h3 {
+  margin: 1.4em 0 0.5em;
+  letter-spacing: -0.2px;
+}
+
+.oa-landing-intro h1:first-child {
+  margin-top: 0;
+}
+
+.oa-landing-intro a {
+  color: var(--ai-primary);
+}
+
+.oa-landing-intro img {
+  max-width: 100%;
+  border-radius: 14px;
+}
+
+.oa-landing-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(720px, 100%);
+  min-height: 0;
+}
+
+.oa-landing-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+  text-align: center;
+}
+
+.oa-landing-sub {
+  margin: 0;
+  font-size: 13px;
+  text-align: center;
+  color: var(--ai-text-secondary);
+}
+
+.oa-landing-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 2px;
+}
+
+.oa-landing-turn {
+  display: flex;
+}
+
+.oa-landing-turn.user {
+  justify-content: flex-end;
+}
+
+.oa-landing-turn.user .ai-user-bubble {
+  max-width: 78%;
+}
+
+.oa-landing-error {
+  color: var(--ai-danger);
+}
+
+.oa-landing-notice {
+  margin: 0;
+  font-size: 11.5px;
+  text-align: center;
+  color: var(--ai-text-secondary);
+}
+
+.oa-landing-composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 6px 6px 6px 16px;
+  border-radius: 999px;
+  background: var(--ai-surface-container);
+}
+
+.oa-landing-composer input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.oa-landing-composer input:focus {
+  outline: none;
+}
+
+.oa-landing-finished,
+.oa-landing-entry {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
 }

@@ -42,30 +42,53 @@ export function dropdown(
   trigger.setAttribute('aria-expanded', 'false');
   trigger.setAttribute('aria-haspopup', 'menu');
 
+  // Open is tracked here rather than read off `hidden`, because closing keeps
+  // the menu in the document until its transition has run and `hidden` is
+  // therefore false for a moment after the menu is, as far as anyone clicking
+  // is concerned, shut.
+  let open = false;
+  let hideTimer = 0;
+
+  // Long enough for the transition in the stylesheet; a few ms over, so the
+  // last frame is not cut off.
+  const CLOSE_MS = 160;
+
   const handle: Dropdown = {
     group,
     menu,
     get isOpen() {
-      return !menu.hidden;
+      return open;
     },
     open() {
       for (const other of openMenus) if (other !== handle) other.close();
+      window.clearTimeout(hideTimer);
+      open = true;
       menu.textContent = '';
       render(menu, handle.close);
       menu.hidden = false;
+      // One frame closed, so the transition has a state to move from.
+      requestAnimationFrame(() => {
+        if (open) menu.classList.add('open');
+      });
       trigger.setAttribute('aria-expanded', 'true');
       openMenus.add(handle);
     },
     close() {
-      if (menu.hidden) return;
-      menu.hidden = true;
-      menu.textContent = '';
+      if (!open) return;
+      open = false;
+      menu.classList.remove('open');
       trigger.setAttribute('aria-expanded', 'false');
       openMenus.delete(handle);
+      window.clearTimeout(hideTimer);
+      hideTimer = window.setTimeout(() => {
+        if (open) return;
+        menu.hidden = true;
+        menu.textContent = '';
+      }, CLOSE_MS);
     },
     toggle() {
-      if (menu.hidden) handle.open();
-      else handle.close();
+      if (open) handle.close();
+      else handle.open();
     },
   };
 

@@ -20,7 +20,11 @@ const RAIL_COLLAPSED_KEY = 'obsidian-arc-rail-collapsed';
 
 let live: ChatHandle | null = null;
 
-export function renderChatPage(root: HTMLElement): void {
+/**
+ * Draws the chat screen and returns the flex row it lives in, so a caller can
+ * open a side panel as a column beside it — which is how /settings is drawn.
+ */
+export function renderChatPage(root: HTMLElement): HTMLElement {
   // Leaving the page mid-generation aborts the turn; the server still saves
   // whatever streamed before that.
   live?.destroy();
@@ -110,7 +114,7 @@ export function renderChatPage(root: HTMLElement): void {
       min: 190,
       max: 460,
       fallback: 260,
-      label: 'Resize the conversation list',
+      label: t('resizeRail'),
     });
   }
 
@@ -118,6 +122,8 @@ export function renderChatPage(root: HTMLElement): void {
     chat.refreshStatus();
     chat.focus();
   });
+
+  return shell.body;
 }
 
 function readReasoning(preferences: Record<string, unknown>): ReasoningState {
