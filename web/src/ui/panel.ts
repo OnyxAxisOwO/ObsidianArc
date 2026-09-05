@@ -115,6 +115,7 @@ export function openPanel(options: PanelOptions): PanelHandle {
     },
     rebuild() {
       body.textContent = '';
+      body.scrollTop = 0;
       options.build(body, handle);
       body.appendChild(error);
     },
