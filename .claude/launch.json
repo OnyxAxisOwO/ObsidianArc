@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "obsidian-arc",
-      "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8123"],
-      "port": 8123
+      "runtimeExecutable": "C:\\Program Files\\Go\\bin\\go.exe",
+      "runtimeArgs": ["run", "./cmd/server"],
+      "port": 8080
     }
   ]
 }

@@ -1,5 +1,14 @@
 # Obsidian Arc
 
+> **Being rebuilt as a self-hosted server.** Obsidian Arc is becoming a
+> multi-user, multi-provider AI chat server: a single Go binary with the
+> frontend embedded, PostgreSQL or SQLite behind it, an admin backoffice,
+> chat history, and usage/quota accounting — keeping the interface described
+> below exactly as it is. The plan, the schema and the phase order are in
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). This README still describes
+> the standalone bring-your-own-key build and is rewritten when the migration
+> lands.
+
 A standalone, bring-your-own-key AI chat workspace. No account, no server, no
 build step — open `index.html` and talk to Anthropic or any OpenAI-compatible
 endpoint (DeepSeek, OpenRouter, Groq, a local Ollama/vLLM...) straight from

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Obsidian Arc</title>
+<meta name="description" content="A self-hosted AI chat server.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%236c4cd6' d='M12 2 3 7v10l9 5 9-5V7z'/%3E%3C/svg%3E">
+<script>
+  /* Applying the stored theme before the first paint is what prevents a
+     white flash on a dark-mode reload. It has to be inline and blocking, so
+     it stays a handful of lines with no imports. */
+  (function () {
+    try {
+      var mode = localStorage.getItem('obsidian-arc-theme');
+      if (mode === 'dark' || mode === 'light') {
+        document.documentElement.setAttribute('data-theme', mode);
+      }
+    } catch (e) { /* storage disabled: fall back to the system preference */ }
+  })();
+</script>
+</head>
+<body>
+<div id="app">
+  <div class="oa-boot"><span class="oa-boot-spinner"></span></div>
+</div>
+<noscript>Obsidian Arc needs JavaScript to run.</noscript>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

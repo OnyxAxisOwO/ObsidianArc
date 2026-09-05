@@ -1,4 +1,19 @@
-node_modules/
+# Build output
+/bin/
+/dist/
+
+# Runtime state: the database, the generated secret key, uploads.
+/data/
+
+# Frontend
+web/node_modules/
+web/.vite/
+
+# The compiled SPA is embedded by //go:embed, but it is a build artifact.
+# The marker is committed so `go build` works on a fresh clone.
+/internal/web/dist/*
+!/internal/web/dist/.gitkeep
+
 .DS_Store
 Thumbs.db
 *.log

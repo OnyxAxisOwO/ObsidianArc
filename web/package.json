@@ -1,0 +1,18 @@
+{
+  "name": "obsidian-arc-web",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Frontend for the Obsidian Arc server. Built by Vite, embedded into the Go binary.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}
