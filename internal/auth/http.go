@@ -105,7 +105,54 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// setting says; that account becomes the administrator.
 		"registration_enabled": count == 0 || h.settings.Bool(settings.RegistrationEnabled),
 		"setup_required":       count == 0,
+		// So the sign-up form can mark the field required and say which
+		// addresses will be accepted, instead of finding out on submit.
+		// Neither applies to the first account.
+		"require_email": count > 0 && h.settings.Bool(settings.RequireEmail),
+		"email_domains": emailDomains(count, h.settings.Get(settings.EmailDomains)),
+		// What a visitor with no account gets. Served here rather than
+		// from a second endpoint because the front door has to decide what
+		// to draw before it can draw anything.
+		"landing": h.landing(count == 0),
 	})
+}
+
+func emailDomains(accounts int, raw string) []string {
+	if accounts == 0 {
+		return []string{}
+	}
+	return ParseDomains(raw)
+}
+
+// landing is the front door's configuration, trimmed to what a client
+// needs. An instance with no accounts always shows the sign-in card,
+// whatever is configured: the first thing to happen has to be someone
+// becoming the administrator.
+func (h *Handlers) landing(setupRequired bool) map[string]any {
+	mode := h.settings.Get(settings.LandingMode)
+	if setupRequired || !settings.ValidLandingMode(mode) {
+		mode = settings.LandingLogin
+	}
+
+	turns := h.settings.Int(settings.TrialTurns, 3)
+	if turns < 1 {
+		turns = 1
+	}
+	if turns > settings.MaxTrialTurns {
+		turns = settings.MaxTrialTurns
+	}
+
+	// The trial only exists on the chat front door, and never during
+	// setup. The model id is deliberately absent: the trial endpoint
+	// picks it from the same setting, so a client cannot ask for one.
+	trial := mode == settings.LandingChat && h.settings.Bool(settings.TrialEnabled)
+
+	return map[string]any{
+		"mode":        mode,
+		"intro":       h.settings.Get(settings.LandingIntro),
+		"trial":       trial,
+		"trial_turns": turns,
+	}
 }
 
 type registerRequest struct {
@@ -161,8 +208,10 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 			return httpx.TooManyRequests("too_many_attempts", limited.Error()).
 				WithDetails(map[string]any{"retry_after_seconds": int(limited.RetryAfter.Seconds()) + 1})
 		}
+		// Coded, not just worded: the sign-in page says this in the reader's
+		// own language, and the server has no idea what that is.
 		if errors.Is(err, ErrAccountDisabled) {
-			return httpx.Forbidden("This account has been disabled.")
+			return httpx.ForbiddenCode("account_banned", "This account has been banned. Contact an administrator.")
 		}
 		if errors.Is(err, ErrInvalidCredentials) {
 			return httpx.Unauthorized("Incorrect username or password.").
@@ -356,7 +405,24 @@ func (h *Handlers) deleteWallpaper(w http.ResponseWriter, r *http.Request) error
 // --- error translation ------------------------------------------------------
 
 func registrationError(err error) error {
+	// Coded, so the sign-up form can word these in the reader's own
+	// language and say what would be acceptable.
+	var throttled *SignupThrottleError
+	if errors.As(err, &throttled) {
+		seconds := int(throttled.RetryAfter.Seconds()) + 1
+		return httpx.TooManyRequests("signups_throttled",
+			"Too many accounts have been created just now. Try again shortly.").
+			WithDetails(map[string]any{"retry_after_seconds": seconds})
+	}
+	var domain *EmailDomainError
+	if errors.As(err, &domain) {
+		return httpx.BadRequest("%s", domain.Error()).
+			WithDetails(map[string]any{"allowed_domains": domain.Allowed})
+	}
+
 	switch {
+	case errors.Is(err, ErrEmailRequired):
+		return httpx.BadRequest("An email address is required to register here.")
 	case errors.Is(err, ErrRegistrationClosed):
 		return httpx.Forbidden("Registration is closed on this server.")
 	case errors.Is(err, user.ErrUsernameTaken):

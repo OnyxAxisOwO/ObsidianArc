@@ -243,8 +243,13 @@ type WindowUsage struct {
 }
 
 type Summary struct {
-	Unlimited bool          `json:"unlimited"`
-	Windows   []WindowUsage `json:"windows"`
+	Unlimited bool `json:"unlimited"`
+	// How the instance wants these figures phrased: the raw pair, what is
+	// left, or what has gone. Carried on the summary rather than fetched
+	// separately, because it is only ever read alongside the numbers it
+	// describes.
+	Display string        `json:"display"`
+	Windows []WindowUsage `json:"windows"`
 }
 
 // SummaryFor is what the composer menu reads. It reports every allowance
@@ -257,7 +262,15 @@ func (s *Service) SummaryFor(ctx context.Context, account user.User) (Summary, e
 	}
 
 	now := time.Now()
-	summary := Summary{Unlimited: policy.Unlimited(), Windows: make([]WindowUsage, 0, len(AllowanceWindows))}
+	display := s.settings.Get(settings.UsageDisplay)
+	if !settings.ValidUsageDisplay(display) {
+		display = settings.UsageAbsolute
+	}
+	summary := Summary{
+		Unlimited: policy.Unlimited(),
+		Display:   display,
+		Windows:   make([]WindowUsage, 0, len(AllowanceWindows)),
+	}
 
 	for _, window := range AllowanceWindows {
 		limits := policy.Windows[window]

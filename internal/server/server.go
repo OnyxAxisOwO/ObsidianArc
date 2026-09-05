@@ -13,6 +13,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/admin"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -25,6 +26,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/trial"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/web"
@@ -76,6 +78,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	models := model.NewStore(db, providers)
 	registry := adapter.NewRegistry(cfg.Upstream)
 	conversations := conversation.NewStore(db)
+	announcements := announcement.NewStore(db)
 	usageStore := usage.NewStore(db)
 	quotaService := quota.NewService(db, quota.NewStore(db), settingsService)
 	chatService := chat.NewService(db, conversations, models, registry, settingsService)
@@ -145,7 +148,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	model.NewHandlers(models).Routes(mux)
 	chat.NewHandlers(chatService, conversations).Routes(mux)
 	quota.NewHandlers(quotaService).Routes(mux)
-	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations).Routes(mux)
+	announcement.NewHandlers(announcements).Routes(mux)
+	trial.NewHandlers(settingsService, models, registry, cfg.TrustProxy).Routes(mux)
+	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements).Routes(mux)
 
 	// Anything under /api that no module claimed is a client bug, and should
 	// read as one instead of quietly returning the SPA shell.

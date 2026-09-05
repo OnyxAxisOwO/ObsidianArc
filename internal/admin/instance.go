@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -114,7 +115,17 @@ var writableSettings = map[string]bool{
 	settings.SiteDescription:      true,
 	settings.RegistrationEnabled:  true,
 	settings.RegistrationGroup:    true,
+	settings.RequireEmail:         true,
+	settings.EmailDomains:         true,
+	settings.SignupsPerMinute:     true,
+	settings.SignupsPerHour:       true,
 	settings.AdminsBypassQuota:    true,
+	settings.UsageDisplay:         true,
+	settings.LandingMode:          true,
+	settings.LandingIntro:         true,
+	settings.TrialEnabled:         true,
+	settings.TrialTurns:           true,
+	settings.TrialModel:           true,
 	settings.DefaultSystemPrompt:  true,
 	settings.ConversationMaxTurns: true,
 }
@@ -132,6 +143,27 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		if len(value) > 8*1024 {
 			return httpx.BadRequest("Setting %q is too long.", key)
 		}
+	}
+
+	if mode, present := body[settings.LandingMode]; present && !settings.ValidLandingMode(mode) {
+		return httpx.BadRequest("Unknown landing mode %q.", mode)
+	}
+	// A trial model that does not exist would make the front door offer a
+	// conversation it cannot hold.
+	if modelID, present := body[settings.TrialModel]; present && modelID != "" {
+		if !isValidID(modelID) {
+			return httpx.BadRequest("Malformed model id.")
+		}
+		if _, err := h.models.ByID(r.Context(), modelID); err != nil {
+			return model.TranslateError(err)
+		}
+	}
+
+	// An unknown display mode would leave every user's allowance rendered as
+	// nothing at all, so it is checked here rather than guessed at in the
+	// browser.
+	if display, present := body[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
+		return httpx.BadRequest("Unknown usage display %q.", display)
 	}
 
 	// A registration group that does not exist would send every new account

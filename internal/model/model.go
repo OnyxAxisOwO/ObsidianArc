@@ -10,6 +10,7 @@ package model
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,6 +59,15 @@ type Model struct {
 	Avatar      string `json:"avatar"`
 	Enabled     bool   `json:"enabled"`
 	SortOrder   int    `json:"sort_order"`
+
+	// Where a request for this model is actually sent. Empty for the
+	// ordinary case. Administrative detail: the Public projection in
+	// http.go carries neither this nor ModelID, so a user is never told
+	// that the model they picked is served by another one.
+	RouteToID string `json:"route_to_id"`
+	// Overrides the provider's reasoning style for this model alone.
+	// Empty means whatever the provider says.
+	ReasoningStyle adapter.ReasoningStyle `json:"reasoning_style"`
 
 	Capabilities
 	Weights
@@ -114,7 +124,7 @@ const columns = `m.id, m.provider_id, m.model_id, m.display_name, m.description,
 	m.supports_reasoning, m.supports_images, m.supports_vision, m.supports_streaming,
 	m.supports_system_prompt, m.supports_tools, m.context_window, m.max_output_tokens,
 	m.request_weight, m.input_token_weight, m.output_token_weight, m.reasoning_token_weight,
-	m.created_at, m.updated_at`
+	m.created_at, m.updated_at, m.route_to_id, m.reasoning_style`
 
 const withProvider = columns + `, p.name, p.kind`
 
@@ -128,29 +138,33 @@ func NewStore(db *database.DB, providers *provider.Store) *Store {
 }
 
 type CreateInput struct {
-	ProviderID  string
-	ModelID     string
-	DisplayName string
-	Description string
-	Avatar      string
-	Enabled     bool
-	SortOrder   int
+	ProviderID     string
+	ModelID        string
+	DisplayName    string
+	Description    string
+	Avatar         string
+	Enabled        bool
+	SortOrder      int
+	RouteToID      string
+	ReasoningStyle adapter.ReasoningStyle
 	Capabilities
 	Weights
 }
 
 func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 	record := Model{
-		ID:           id.New(),
-		ProviderID:   in.ProviderID,
-		ModelID:      in.ModelID,
-		DisplayName:  in.DisplayName,
-		Description:  in.Description,
-		Avatar:       in.Avatar,
-		Enabled:      in.Enabled,
-		SortOrder:    in.SortOrder,
-		Capabilities: in.Capabilities,
-		Weights:      in.Weights,
+		ID:             id.New(),
+		ProviderID:     in.ProviderID,
+		ModelID:        in.ModelID,
+		DisplayName:    in.DisplayName,
+		Description:    in.Description,
+		Avatar:         in.Avatar,
+		Enabled:        in.Enabled,
+		SortOrder:      in.SortOrder,
+		RouteToID:      in.RouteToID,
+		ReasoningStyle: in.ReasoningStyle,
+		Capabilities:   in.Capabilities,
+		Weights:        in.Weights,
 	}
 	normalized, err := validate(record)
 	if err != nil {
@@ -166,15 +180,15 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		 supports_reasoning, supports_images, supports_vision, supports_streaming,
 		 supports_system_prompt, supports_tools, context_window, max_output_tokens,
 		 request_weight, input_token_weight, output_token_weight, reasoning_token_weight,
-		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 created_at, updated_at, route_to_id, reasoning_style)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.ProviderID, record.ModelID, record.DisplayName, record.Description,
 		record.Avatar, record.Enabled, record.SortOrder,
 		record.SupportsReasoning, record.SupportsImages, record.SupportsVision,
 		record.SupportsStreaming, record.SupportsSystemPrompt, record.SupportsTools,
 		record.ContextWindow, record.MaxOutputTokens,
 		record.Request, record.InputToken, record.OutputToken, record.ReasoningToken,
-		record.CreatedAt, record.UpdatedAt)
+		record.CreatedAt, record.UpdatedAt, routeValue(record.RouteToID), record.ReasoningStyle)
 	if err != nil {
 		if isUnique(err) {
 			return Model{}, ErrDuplicate
@@ -191,6 +205,9 @@ type Update struct {
 	Avatar      *string
 	Enabled     *bool
 	SortOrder   *int
+
+	RouteToID      *string
+	ReasoningStyle *adapter.ReasoningStyle
 
 	SupportsReasoning    *bool
 	SupportsImages       *bool
@@ -220,6 +237,8 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 	assign(&next.Avatar, in.Avatar)
 	assign(&next.Enabled, in.Enabled)
 	assign(&next.SortOrder, in.SortOrder)
+	assign(&next.RouteToID, in.RouteToID)
+	assign(&next.ReasoningStyle, in.ReasoningStyle)
 	assign(&next.SupportsReasoning, in.SupportsReasoning)
 	assign(&next.SupportsImages, in.SupportsImages)
 	assign(&next.SupportsVision, in.SupportsVision)
@@ -244,13 +263,13 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 		supports_reasoning = ?, supports_images = ?, supports_vision = ?, supports_streaming = ?,
 		supports_system_prompt = ?, supports_tools = ?, context_window = ?, max_output_tokens = ?,
 		request_weight = ?, input_token_weight = ?, output_token_weight = ?, reasoning_token_weight = ?,
-		updated_at = ?
+		route_to_id = ?, reasoning_style = ?, updated_at = ?
 		WHERE id = ?`,
 		next.ModelID, next.DisplayName, next.Description, next.Avatar, next.Enabled, next.SortOrder,
 		next.SupportsReasoning, next.SupportsImages, next.SupportsVision, next.SupportsStreaming,
 		next.SupportsSystemPrompt, next.SupportsTools, next.ContextWindow, next.MaxOutputTokens,
 		next.Request, next.InputToken, next.OutputToken, next.ReasoningToken,
-		next.UpdatedAt, modelID)
+		routeValue(next.RouteToID), next.ReasoningStyle, next.UpdatedAt, modelID)
 	if err != nil {
 		if isUnique(err) {
 			return Model{}, ErrDuplicate
@@ -319,9 +338,25 @@ func (s *Store) ListForUser(ctx context.Context, groupID string, isAdmin bool) (
 
 // Resolved is a model together with the provider credentials needed to call
 // it — the one thing the chat gateway asks for per turn.
+//
+// Model and Upstream are the same row unless a route is configured. Where
+// they differ, Model is what the user asked for and everything they can
+// observe comes from it: the picker, the transcript's attribution, the usage
+// ledger, the credit weights. Upstream is only ever used to shape the request
+// that leaves the server.
 type Resolved struct {
 	Model    Model
+	Upstream Model
 	Provider adapter.Provider
+}
+
+// routeValue writes an empty route as NULL, which is what the foreign key on
+// the column requires.
+func routeValue(routeToID string) any {
+	if routeToID == "" {
+		return nil
+	}
+	return routeToID
 }
 
 // Authorize is the gateway's gate. It resolves a model id to something
@@ -331,16 +366,11 @@ type Resolved struct {
 // The permission is part of the query rather than a check on the result:
 // there is no shape of this function where the caller can forget it.
 func (s *Store) Authorize(ctx context.Context, groupID, modelID string, isAdmin bool) (Resolved, error) {
-	query := `SELECT ` + withProvider + `,
-		p.base_url, p.api_key_enc, p.headers_json, p.anthropic_version, p.reasoning_style,
-		p.timeout_seconds, p.api_key_hint, p.sort_order, p.enabled, p.created_at, p.updated_at
-		FROM models m
-		JOIN providers p ON p.id = m.provider_id
-		WHERE m.id = ?`
+	where := `m.id = ?`
 	args := []any{modelID}
 
 	if !isAdmin {
-		query += ` AND EXISTS (
+		where += ` AND EXISTS (
 			SELECT 1 FROM user_groups g
 			WHERE g.id = ?
 			  AND (g.allow_all_models = ?
@@ -349,50 +379,103 @@ func (s *Store) Authorize(ctx context.Context, groupID, modelID string, isAdmin 
 		args = append(args, groupID, true)
 	}
 
+	record, upstream, sealed, err := s.readCallable(ctx, where, args...)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// One error for "no such model" and for "not yours": a user
+			// should not be able to discover which models exist by watching
+			// which ids come back with a different message.
+			return Resolved{}, ErrNotPermitted
+		}
+		return Resolved{}, err
+	}
+	// The catalogue entry the user picked has to be on. Its own provider need
+	// not be — routing away from a dead endpoint is one of the reasons to
+	// have routing at all.
+	if !record.Enabled {
+		return Resolved{}, ErrDisabled
+	}
+
+	// One hop, deliberately: see the migration. The permission was granted on
+	// the model the user asked for, so the target is not re-checked against
+	// the group — an operator routing A to B is saying that anyone allowed A
+	// gets B, which is the whole point.
+	target := record
+	if record.RouteToID != "" {
+		target, upstream, sealed, err = s.readCallable(ctx, `m.id = ?`, record.RouteToID)
+		if err != nil {
+			// A route pointing at nothing must fail rather than quietly fall
+			// back to the model the operator was routing away from.
+			if errors.Is(err, ErrNotFound) {
+				return Resolved{}, ErrDisabled
+			}
+			return Resolved{}, err
+		}
+	}
+	if !target.Enabled || !upstream.Enabled {
+		return Resolved{}, ErrDisabled
+	}
+
+	upstream.ID = target.ProviderID
+	upstream.Name = target.ProviderName
+	upstream.Kind = target.ProviderKind
+
+	// A per-model override beats the provider's setting: one endpoint can
+	// serve a model that wants a thinking budget beside one that wants
+	// reasoning_effort, and that is a property of the model.
+	if style := adapter.ReasoningStyle(strings.TrimSpace(string(target.ReasoningStyle))); style != "" {
+		upstream.ReasoningStyle = style
+	}
+
+	resolvedProvider, err := s.providers.ResolveFrom(upstream, sealed)
+	if err != nil {
+		return Resolved{}, err
+	}
+	return Resolved{Model: record, Upstream: target, Provider: resolvedProvider}, nil
+}
+
+// readCallable reads one model with everything needed to call its provider.
+// Shared by the authorisation query and by the route lookup that may follow
+// it, so the two cannot drift in what they select.
+func (s *Store) readCallable(
+	ctx context.Context, where string, args ...any,
+) (Model, provider.Provider, []byte, error) {
+	query := `SELECT ` + withProvider + `,
+		p.base_url, p.api_key_enc, p.headers_json, p.anthropic_version, p.reasoning_style,
+		p.timeout_seconds, p.api_key_hint, p.sort_order, p.enabled, p.created_at, p.updated_at
+		FROM models m
+		JOIN providers p ON p.id = m.provider_id
+		WHERE ` + where
+
 	var (
-		record   Model
-		upstream provider.Provider
-		sealed   []byte
-		headers  string
+		record     Model
+		upstream   provider.Provider
+		sealed     []byte
+		headerJSON string
+		route      sql.NullString
 	)
-	row := s.db.QueryRow(ctx, query, args...)
-	err := row.Scan(
+	err := s.db.QueryRow(ctx, query, args...).Scan(
 		&record.ID, &record.ProviderID, &record.ModelID, &record.DisplayName, &record.Description,
 		&record.Avatar, &record.Enabled, &record.SortOrder,
 		&record.SupportsReasoning, &record.SupportsImages, &record.SupportsVision,
 		&record.SupportsStreaming, &record.SupportsSystemPrompt, &record.SupportsTools,
 		&record.ContextWindow, &record.MaxOutputTokens,
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
-		&record.CreatedAt, &record.UpdatedAt,
+		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
 		&record.ProviderName, &record.ProviderKind,
-		&upstream.BaseURL, &sealed, &headers, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
+		&upstream.BaseURL, &sealed, &headerJSON, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
 		&upstream.TimeoutSeconds, &upstream.APIKeyHint, &upstream.SortOrder, &upstream.Enabled,
 		&upstream.CreatedAt, &upstream.UpdatedAt,
 	)
 	if err != nil {
 		if database.IsNotFound(err) {
-			// One error for "no such model" and for "not yours": a user
-			// should not be able to discover which models exist by watching
-			// which ids come back with a different message.
-			return Resolved{}, ErrNotPermitted
+			return Model{}, provider.Provider{}, nil, ErrNotFound
 		}
-		return Resolved{}, fmt.Errorf("model: authorize: %w", err)
+		return Model{}, provider.Provider{}, nil, fmt.Errorf("model: read callable: %w", err)
 	}
-
-	if !record.Enabled || !upstream.Enabled {
-		return Resolved{}, ErrDisabled
-	}
-
-	upstream.ID = record.ProviderID
-	upstream.Name = record.ProviderName
-	upstream.Kind = record.ProviderKind
-	upstream.Headers = decodeHeaders(headers)
-
-	resolvedProvider, err := s.providers.ResolveFrom(upstream, sealed)
-	if err != nil {
-		return Resolved{}, err
-	}
-	return Resolved{Model: record, Provider: resolvedProvider}, nil
+	record.RouteToID = route.String
+	upstream.Headers = decodeHeaders(headerJSON)
+	return record, upstream, sealed, nil
 }
 
 func (s *Store) Delete(ctx context.Context, modelID string) error {
@@ -508,6 +591,9 @@ type rowScanner interface{ Scan(dest ...any) error }
 
 func scan(row rowScanner, joined bool) (Model, error) {
 	var record Model
+	// NULL rather than empty, because the column carries a foreign key:
+	// deleting a route's target clears it instead of leaving a dangling id.
+	var route sql.NullString
 	targets := []any{
 		&record.ID, &record.ProviderID, &record.ModelID, &record.DisplayName, &record.Description,
 		&record.Avatar, &record.Enabled, &record.SortOrder,
@@ -515,7 +601,7 @@ func scan(row rowScanner, joined bool) (Model, error) {
 		&record.SupportsStreaming, &record.SupportsSystemPrompt, &record.SupportsTools,
 		&record.ContextWindow, &record.MaxOutputTokens,
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
-		&record.CreatedAt, &record.UpdatedAt,
+		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
 	}
 	if joined {
 		targets = append(targets, &record.ProviderName, &record.ProviderKind)
@@ -526,6 +612,7 @@ func scan(row rowScanner, joined bool) (Model, error) {
 		}
 		return Model{}, fmt.Errorf("model: scan: %w", err)
 	}
+	record.RouteToID = route.String
 	return record, nil
 }
 

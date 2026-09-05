@@ -77,6 +77,12 @@ func Forbidden(message string) *Error {
 	return newError(http.StatusForbidden, "forbidden", message)
 }
 
+// ForbiddenCode is Forbidden carrying a code the client can act on rather
+// than merely display — a refusal the interface has its own words for.
+func ForbiddenCode(code, message string) *Error {
+	return newError(http.StatusForbidden, code, message)
+}
+
 func NotFound(message string) *Error {
 	return newError(http.StatusNotFound, "not_found", message)
 }

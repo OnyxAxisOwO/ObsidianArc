@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
@@ -188,6 +189,11 @@ type modelRequest struct {
 	Enabled     *bool   `json:"enabled"`
 	SortOrder   *int    `json:"sort_order"`
 
+	// Empty clears the route. Administrative only: the model listing
+	// users see carries neither of these fields.
+	RouteToID      *string                 `json:"route_to_id"`
+	ReasoningStyle *adapter.ReasoningStyle `json:"reasoning_style"`
+
 	SupportsReasoning    *bool `json:"supports_reasoning"`
 	SupportsImages       *bool `json:"supports_images"`
 	SupportsVision       *bool `json:"supports_vision"`
@@ -227,6 +233,9 @@ func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
 	if _, err := h.providers.ByID(r.Context(), body.ProviderID); err != nil {
 		return translateProviderError(err)
 	}
+	if err := h.checkRoute(r.Context(), "", body); err != nil {
+		return err
+	}
 
 	in := model.CreateInput{
 		ProviderID: body.ProviderID,
@@ -241,6 +250,8 @@ func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
 	}
 	applyModelFields(&in.ModelID, &in.DisplayName, &in.Description, &in.Avatar,
 		&in.Enabled, &in.SortOrder, &in.Capabilities, &in.Weights, body)
+	setIf(&in.RouteToID, body.RouteToID)
+	setIf(&in.ReasoningStyle, body.ReasoningStyle)
 
 	record, err := h.models.Create(r.Context(), in)
 	if err != nil {
@@ -257,6 +268,9 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 
 	var body modelRequest
 	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+		return err
+	}
+	if err := h.checkRoute(r.Context(), modelID, body); err != nil {
 		return err
 	}
 
@@ -279,11 +293,41 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 		InputTokenWeight:     body.InputTokenWeight,
 		OutputTokenWeight:    body.OutputTokenWeight,
 		ReasoningTokenWeight: body.ReasoningTokenWeight,
+		RouteToID:            body.RouteToID,
+		ReasoningStyle:       body.ReasoningStyle,
 	})
 	if err != nil {
 		return model.TranslateError(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"model": record})
+}
+
+// checkRoute rejects the two routes that cannot work: one pointing at
+// the model itself, and one pointing at a model that is itself routed.
+// Resolution is a single hop by design, so a chain would silently do
+// something other than what the second link says.
+func (h *Handlers) checkRoute(ctx context.Context, modelID string, body modelRequest) error {
+	if body.RouteToID == nil || *body.RouteToID == "" {
+		return nil
+	}
+	targetID := *body.RouteToID
+	if !isValidID(targetID) {
+		return httpx.BadRequest("Malformed model id.")
+	}
+	if targetID == modelID {
+		return httpx.BadRequest("A model cannot route to itself.")
+	}
+	target, err := h.models.ByID(ctx, targetID)
+	if err != nil {
+		return model.TranslateError(err)
+	}
+	if target.RouteToID != "" {
+		return httpx.BadRequest("That model is itself routed elsewhere; routes are a single hop.")
+	}
+	if body.ReasoningStyle != nil && !body.ReasoningStyle.Valid() && *body.ReasoningStyle != "" {
+		return httpx.BadRequest("Unknown reasoning style.")
+	}
+	return nil
 }
 
 func (h *Handlers) deleteModel(w http.ResponseWriter, r *http.Request) error {

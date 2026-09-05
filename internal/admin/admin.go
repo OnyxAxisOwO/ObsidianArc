@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
@@ -39,6 +40,7 @@ type Handlers struct {
 	usage         *usage.Store
 	quota         *quota.Service
 	conversations *conversation.Store
+	announcements *announcement.Store
 }
 
 func NewHandlers(
@@ -52,6 +54,7 @@ func NewHandlers(
 	usageStore *usage.Store,
 	quotaService *quota.Service,
 	conversations *conversation.Store,
+	announcements *announcement.Store,
 ) *Handlers {
 	return &Handlers{
 		users:         users,
@@ -64,6 +67,7 @@ func NewHandlers(
 		usage:         usageStore,
 		quota:         quotaService,
 		conversations: conversations,
+		announcements: announcements,
 	}
 }
 
@@ -110,6 +114,11 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/quota/policies", protected(h.listPolicies))
 	mux.Handle("PUT /api/admin/quota/policies", protected(h.savePolicy))
 	mux.Handle("DELETE /api/admin/quota/policies/{scope}", protected(h.deletePolicy))
+
+	mux.Handle("GET /api/admin/announcements", protected(h.listAnnouncements))
+	mux.Handle("POST /api/admin/announcements", protected(h.createAnnouncement))
+	mux.Handle("PATCH /api/admin/announcements/{id}", protected(h.updateAnnouncement))
+	mux.Handle("DELETE /api/admin/announcements/{id}", protected(h.deleteAnnouncement))
 
 	mux.Handle("GET /api/admin/meta", protected(h.meta))
 }

@@ -25,19 +25,91 @@ const (
 	SiteDescription      = "site.description"
 	RegistrationEnabled  = "registration.enabled"
 	RegistrationGroup    = "registration.default_group"
+	RequireEmail         = "registration.require_email"
+	EmailDomains         = "registration.email_domains"
+	SignupsPerMinute     = "registration.per_minute"
+	SignupsPerHour       = "registration.per_hour"
 	AdminsBypassQuota    = "quota.admins_bypass"
+	UsageDisplay         = "quota.usage_display"
+	LandingMode          = "landing.mode"
+	LandingIntro         = "landing.intro"
+	TrialEnabled         = "landing.trial_enabled"
+	TrialTurns           = "landing.trial_turns"
+	TrialModel           = "landing.trial_model"
 	DefaultSystemPrompt  = "chat.default_system_prompt"
 	ConversationMaxTurns = "chat.max_turns"
 )
 
+// How the usage figures are phrased for a user. An operator who has set
+// generous limits usually wants a reassuring "80% left"; one running a tight
+// instance wants "20% used" or the raw numbers. It changes only the wording —
+// what is enforced is the same either way.
+const (
+	UsageAbsolute  = "absolute"
+	UsageRemaining = "remaining"
+	UsageUsed      = "used"
+)
+
+// What a visitor with no account is shown at the front door.
+const (
+	// Straight to the sign-in card. What the instance did before there
+	// was a choice, and still the default.
+	LandingLogin = "login"
+	// A page the operator writes, with a way in from it.
+	LandingIntroPage = "intro"
+	// The chat itself, read-only unless a trial is enabled.
+	LandingChat = "chat"
+)
+
+var LandingModes = []string{LandingLogin, LandingIntroPage, LandingChat}
+
+func ValidLandingMode(value string) bool {
+	for _, candidate := range LandingModes {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// The ceiling on a trial, enforced here rather than trusted from the
+// form: every trial turn is spent from the operator's own credit by
+// someone who has not identified themselves.
+const MaxTrialTurns = 20
+
+// UsageDisplays is the set the admin form offers and the only set the server
+// accepts, so a typo cannot leave every user looking at a blank figure.
+var UsageDisplays = []string{UsageAbsolute, UsageRemaining, UsageUsed}
+
+func ValidUsageDisplay(value string) bool {
+	for _, candidate := range UsageDisplays {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 // Defaults are what a fresh instance behaves like, and what a deleted row
 // falls back to. Nothing reads a setting without one.
 var Defaults = map[string]string{
-	SiteName:             "Obsidian Arc",
-	SiteDescription:      "",
-	RegistrationEnabled:  "true",
-	RegistrationGroup:    "",
+	SiteName:            "Obsidian Arc",
+	SiteDescription:     "",
+	RegistrationEnabled: "true",
+	RegistrationGroup:   "",
+	RequireEmail:        "false",
+	EmailDomains:        "",
+	// Zero means unthrottled. An instance that has closed
+	// registration needs neither, so neither is on by default.
+	SignupsPerMinute:     "0",
+	SignupsPerHour:       "0",
 	AdminsBypassQuota:    "true",
+	UsageDisplay:         UsageAbsolute,
+	LandingMode:          LandingLogin,
+	LandingIntro:         "",
+	TrialEnabled:         "false",
+	TrialTurns:           "3",
+	TrialModel:           "",
 	DefaultSystemPrompt:  "",
 	ConversationMaxTurns: "40",
 }

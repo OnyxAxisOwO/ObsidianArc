@@ -435,18 +435,31 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 	}
 
 	reasoning := req.Reasoning
-	if !resolved.Model.SupportsReasoning {
+	// Both, because they can differ under a route: the user was offered the
+	// toggle on the model they picked, but the flag is sent to whichever one
+	// actually answers, and an endpoint that has no reasoning switch will
+	// reject a request that carries one.
+	if !resolved.Model.SupportsReasoning || !resolved.Upstream.SupportsReasoning {
 		reasoning = adapter.Reasoning{}
 	}
 	if reasoning.Enabled && !reasoning.Effort.Valid() {
 		reasoning.Effort = adapter.EffortMedium
 	}
 
+	maxTokens := resolved.Upstream.MaxOutputTokens
+	if maxTokens == 0 {
+		maxTokens = resolved.Model.MaxOutputTokens
+	}
+
+	// Upstream, not Model: this is the only place the difference shows, and
+	// it is the request leaving the server. Everything the user can observe —
+	// the name on the answer, the ledger row, the credit weights — is still
+	// taken from the model they picked.
 	return adapter.ChatRequest{
-		Model:     resolved.Model.Spec(),
+		Model:     resolved.Upstream.Spec(),
 		System:    s.settings.Get(settings.DefaultSystemPrompt),
 		Messages:  out,
-		MaxTokens: resolved.Model.MaxOutputTokens,
+		MaxTokens: maxTokens,
 		Reasoning: reasoning,
 		Stream:    req.Stream,
 	}, nil

@@ -18,6 +18,7 @@ var (
 	ErrInvalidCredentials   = errors.New("auth: incorrect username or password")
 	ErrAccountDisabled      = errors.New("auth: this account has been disabled")
 	ErrRegistrationClosed   = errors.New("auth: registration is closed on this server")
+	ErrEmailRequired        = errors.New("auth: an email address is required to register here")
 	ErrPasswordUnchanged    = errors.New("auth: the new password is the same as the current one")
 	ErrCurrentPasswordWrong = errors.New("auth: current password is incorrect")
 )
@@ -31,6 +32,7 @@ type Service struct {
 	hasher   *Hasher
 	cfg      config.Session
 	limiter  *Limiter
+	signups  *signupGate
 }
 
 func NewService(
@@ -49,6 +51,7 @@ func NewService(
 		hasher:   NewHasher(cfg.Password),
 		cfg:      cfg.Session,
 		limiter:  NewLimiter(),
+		signups:  newSignupGate(),
 	}
 }
 
@@ -96,6 +99,22 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		if !first && !s.settings.Bool(settings.RegistrationEnabled) {
 			return ErrRegistrationClosed
 		}
+		// None of the registration controls apply to the first account.
+		// It is the one that turns an empty instance into an
+		// administered one, and locking someone out of that would leave
+		// a deployment with no way in at all.
+		if !first {
+			if err := checkEmail(s.settings, in.Email); err != nil {
+				return err
+			}
+			allowed, retryAfter := s.signups.allow(
+				s.settings.Int(settings.SignupsPerMinute, 0),
+				s.settings.Int(settings.SignupsPerHour, 0),
+			)
+			if !allowed {
+				return &SignupThrottleError{RetryAfter: retryAfter}
+			}
+		}
 
 		usernameTaken, emailTaken, err := s.users.Exists(ctx, tx, in.Username, in.Email)
 		if err != nil {
@@ -132,6 +151,10 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	if err != nil {
 		return user.User{}, "", err
 	}
+
+	// Counted only once the account exists, so a rejected attempt does
+	// not spend the next person's place in the window.
+	s.signups.record()
 
 	token, _, err := s.sessions.Create(ctx, created.ID, s.cfg.TTL, in.IP, in.UA)
 	if err != nil {
