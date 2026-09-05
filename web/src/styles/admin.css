@@ -64,7 +64,7 @@
   text-align: left;
   text-decoration: none;
   cursor: pointer;
-  transition: background-color 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .oa-admin-nav:hover {
@@ -131,6 +131,7 @@
   min-height: 0;
   padding: 18px 22px 24px;
   overflow-y: auto;
+  overflow-x: clip;
 }
 
 .oa-admin-section + .oa-admin-section {
@@ -687,9 +688,74 @@
 
 @media (prefers-reduced-motion: reduce) {
   .oa-admin-nav,
+  .oa-settings-rail-item,
   .oa-spark-bar {
     transition: none;
   }
+
+  .oa-settings.enter-rise,
+  .oa-settings.enter-forward,
+  .oa-settings.enter-back,
+  .oa-admin-body.enter-rise,
+  .oa-admin-body.enter-forward,
+  .oa-admin-body.enter-back {
+    animation: none;
+  }
+}
+
+/* --- animations ---------------------------------------------------------- */
+
+/* Direction-aware pane and tab transitions inspired by PageDye:
+   - Subtle rise on initial mount (sectionEnter)
+   - Forward slide from the right when navigating to a succeeding tab (paneEnterForward)
+   - Backward slide from the left when navigating to a preceding tab (paneEnterBack)
+   Tight 0.24s cubic-bezier(0.2, 0, 0, 1) decelerating curve for a responsive native feel. */
+@keyframes sectionEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes paneEnterForward {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes paneEnterBack {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.oa-settings.enter-rise,
+.oa-admin-body.enter-rise {
+  animation: sectionEnter 0.24s cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.oa-settings.enter-forward,
+.oa-admin-body.enter-forward {
+  animation: paneEnterForward 0.24s cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.oa-settings.enter-back,
+.oa-admin-body.enter-back {
+  animation: paneEnterBack 0.24s cubic-bezier(0.2, 0, 0, 1) both;
 }
 
 /* --- user settings -------------------------------------------------------- */
@@ -701,6 +767,7 @@
   flex-direction: column;
   gap: 26px;
   max-width: 560px;
+  overflow-x: clip;
 }
 
 /* Whose settings these are. The panel head says "Settings" and has no room
@@ -739,6 +806,7 @@
   font-size: 12.5px;
   text-align: left;
   cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .oa-settings-rail-item:hover {

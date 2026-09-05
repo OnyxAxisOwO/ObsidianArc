@@ -11,6 +11,7 @@ import { t, type StringKey } from '../i18n';
 import { navigate } from '../router';
 import { ICONS, button, clear, el, icon } from '../ui/dom';
 import { attachResizer } from '../ui/resizer';
+import { closePanel } from '../ui/panel';
 import { renderAnnouncements } from './announcements';
 import { renderDashboard } from './dashboard';
 import { renderGroups } from './groups';
@@ -55,14 +56,83 @@ const PAGES: AdminPage[] = [
   { slug: 'announcements', label: 'announcements', icon: ICONS.file, render: renderAnnouncements },
 ];
 
+interface ActiveAdmin {
+  root: HTMLElement;
+  host: HTMLElement;
+  main: HTMLElement;
+  title: HTMLElement;
+  subtitle: HTMLElement;
+  actions: HTMLElement;
+  body: HTMLElement;
+  navItems: Map<AdminPage, HTMLAnchorElement>;
+  currentPage: AdminPage;
+}
+
+// Reused across /admin/* routes so clicking between tabs only animates the
+// content area instead of destroying and recreating the rail and resizer.
+let activeAdmin: ActiveAdmin | null = null;
+let adminGeneration = 0;
+
 export function renderAdminPage(root: HTMLElement, path: string): void {
   const segments = path.replace(/^\/admin\/?/, '').split('/').filter(Boolean);
   const slug = segments[0] ?? '';
   const page = PAGES.find((entry) => entry.slug === slug) ?? PAGES[0]!;
 
+  if (activeAdmin && activeAdmin.root === root && activeAdmin.main.isConnected) {
+    const fromIndex = PAGES.indexOf(activeAdmin.currentPage);
+    const toIndex = PAGES.indexOf(page);
+    activeAdmin.currentPage = page;
+
+    for (const [entry, item] of activeAdmin.navItems) {
+      item.classList.toggle('active', entry === page);
+    }
+
+    // Changing views should never leave a stale edit drawer open for a
+    // record belonging to the previous section.
+    closePanel(activeAdmin.host);
+
+    activeAdmin.title.textContent = t(page.label);
+    activeAdmin.subtitle.textContent = '';
+    activeAdmin.subtitle.hidden = true;
+    clear(activeAdmin.actions);
+
+    const dirClass = toIndex > fromIndex ? 'enter-forward' : toIndex < fromIndex ? 'enter-back' : 'enter-rise';
+    // Replacing the body node ensures any pending async renders from the
+    // previous page target a detached subtree rather than leaking into this one.
+    const body = el('div', `oa-admin-body ${dirClass}`);
+    activeAdmin.main.replaceChild(body, activeAdmin.body);
+    activeAdmin.body = body;
+
+    const currentGen = ++adminGeneration;
+    const view: AdminView = {
+      body,
+      host: activeAdmin.host,
+      actions: activeAdmin.actions,
+      params: segments.slice(1),
+      setTitle(next, hint) {
+        if (currentGen !== adminGeneration) return;
+        activeAdmin!.title.textContent = next;
+        activeAdmin!.subtitle.textContent = hint ?? '';
+        activeAdmin!.subtitle.hidden = !hint;
+      },
+      reload() {
+        if (currentGen !== adminGeneration) return;
+        clear(body);
+        clear(activeAdmin!.actions);
+        body.appendChild(loading());
+        void page.render(view);
+      },
+    };
+
+    body.appendChild(loading());
+    void page.render(view);
+    return;
+  }
+
   const shell = renderShell(root);
   shell.body.classList.add('oa-admin');
 
+  const navItems = new Map<AdminPage, HTMLAnchorElement>();
   const rail = el('div', 'oa-admin-rail');
   rail.appendChild(el('span', 'oa-admin-rail-title', t('administration')));
   for (const entry of PAGES) {
@@ -71,6 +141,7 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
     item.appendChild(icon(entry.icon, 15));
     item.appendChild(el('span', null, t(entry.label)));
     rail.appendChild(item);
+    navItems.set(entry, item);
   }
 
   const foot = el('div', 'oa-admin-rail-foot');
@@ -105,7 +176,7 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
   head.appendChild(el('span', 'oa-admin-head-spacer'));
   head.appendChild(actions);
 
-  const body = el('div', 'oa-admin-body');
+  const body = el('div', 'oa-admin-body enter-rise');
   main.appendChild(head);
   main.appendChild(body);
 
@@ -124,17 +195,32 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
     label: t('resizeNav'),
   });
 
+  activeAdmin = {
+    root,
+    host: shell.body,
+    main,
+    title,
+    subtitle,
+    actions,
+    body,
+    navItems,
+    currentPage: page,
+  };
+
+  const currentGen = ++adminGeneration;
   const view: AdminView = {
     body,
     host: shell.body,
     actions,
     params: segments.slice(1),
     setTitle(next, hint) {
+      if (currentGen !== adminGeneration) return;
       title.textContent = next;
       subtitle.textContent = hint ?? '';
       subtitle.hidden = !hint;
     },
     reload() {
+      if (currentGen !== adminGeneration) return;
       clear(body);
       clear(actions);
       body.appendChild(loading());

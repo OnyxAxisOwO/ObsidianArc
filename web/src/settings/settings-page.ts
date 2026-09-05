@@ -64,6 +64,16 @@ export function renderSettingsPage(root: HTMLElement): void {
   if (!account) return;
 
   let category: Category = 'appearance';
+  let switchDirection: 'forward' | 'back' | 'rise' = 'rise';
+
+  function selectCategory(next: Category): void {
+    if (next === category) return;
+    const from = CATEGORIES.findIndex((e) => e.id === category);
+    const to = CATEGORIES.findIndex((e) => e.id === next);
+    switchDirection = to > from ? 'forward' : 'back';
+    category = next;
+    panel.rebuild();
+  }
 
   const sectionsTrigger = iconButton('oa-icon-btn', ICONS.dots, t('switchSection'), undefined, 16);
   const sections = dropdown(sectionsTrigger, (menu, close) => {
@@ -74,8 +84,7 @@ export function renderSettingsPage(root: HTMLElement): void {
         ...(entry.id === category ? { leading: icon(ICONS.check, 14) } : {}),
         onSelect: () => {
           close();
-          category = entry.id;
-          panel.rebuild();
+          selectCategory(entry.id);
         },
       }));
     }
@@ -90,6 +99,7 @@ export function renderSettingsPage(root: HTMLElement): void {
     // Full screen has room for the sections as a rail, which is a better
     // control than a menu; narrow does not, so the menu comes back.
     sections.group.hidden = on;
+    switchDirection = 'rise';
     panel.rebuild();
   }, 16);
 
@@ -100,7 +110,15 @@ export function renderSettingsPage(root: HTMLElement): void {
     width: 460,
     actions: [sections.group, fullscreen],
     build: (body, handle) => {
-      const form = el('div', 'oa-settings');
+      const animClass = switchDirection === 'forward'
+        ? 'enter-forward'
+        : switchDirection === 'back'
+          ? 'enter-back'
+          : 'enter-rise';
+      // Reset after consuming so non-navigational repaints default to rise
+      switchDirection = 'rise';
+
+      const form = el('div', `oa-settings ${animClass}`);
       form.appendChild(el('p', 'oa-settings-account', `@${account.username}`));
 
       if (category === 'appearance') {
@@ -124,10 +142,7 @@ export function renderSettingsPage(root: HTMLElement): void {
         rail.appendChild(button(
           `oa-settings-rail-item${entry.id === category ? ' active' : ''}`,
           t(entry.label),
-          () => {
-            category = entry.id;
-            panel.rebuild();
-          },
+          () => selectCategory(entry.id),
         ));
       }
       split.appendChild(rail);

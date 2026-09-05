@@ -67,6 +67,11 @@ const openPanels = new WeakMap<HTMLElement, PanelHandle>();
 
 const PANEL_WIDTH_KEY = 'obsidian-arc-panel-width';
 
+/** Dismisses whatever panel is currently open in the given host, if any. */
+export function closePanel(host: HTMLElement): void {
+  openPanels.get(host)?.close();
+}
+
 export function openPanel(options: PanelOptions): PanelHandle {
   openPanels.get(options.host)?.close();
 
