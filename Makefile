@@ -5,11 +5,17 @@
 # working on it.
 
 BINARY  := obsidian-arc
-VERSION ?= dev
+
+# The version is the moment the binary was built, in UTC:
+# yyyy.MM.dd.HH.mm.ss. Zero-padded, so every version is the same width and
+# sorts chronologically as plain text; unique per build; and needing no tag
+# or counter to maintain — which is what makes "which build is this server
+# running" answerable from the health endpoint alone.
+VERSION ?= $(shell date -u +%Y.%m.%d.%H.%M.%S)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
-.PHONY: all build web server run dev test vet fmt typecheck clean docker
+.PHONY: all build web server run dev test vet fmt typecheck clean docker version
 
 all: build
 
@@ -24,7 +30,11 @@ web:
 
 ## server: rebuild only the Go side, reusing whatever frontend is already embedded
 server:
-	go build -o bin/$(BINARY) ./cmd/server
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/$(BINARY) ./cmd/server
+
+## version: print the version this build would carry
+version:
+	@echo $(VERSION)
 
 ## run: production-shaped local run against the embedded bundle
 run: server
@@ -55,4 +65,4 @@ clean:
 	find internal/web/dist -mindepth 1 ! -name .gitkeep -delete
 
 docker:
-	docker build -t obsidian-arc:$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) -t obsidian-arc:$(VERSION) -t obsidian-arc:latest .

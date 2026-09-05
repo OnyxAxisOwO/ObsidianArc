@@ -11,6 +11,7 @@ import { navigate } from '../router';
 import { currentPreferences, isAdmin, syncPreferences } from '../session';
 import { t } from '../i18n';
 import { ICONS, iconButton } from '../ui/dom';
+import { attachResizer } from '../ui/resizer';
 import { mountChat, type ChatHandle, type ChatStatus } from './chat';
 import type { Effort, ReasoningState } from './composer-menu';
 import { createModelPicker } from './model-picker';
@@ -95,6 +96,23 @@ export function renderChatPage(root: HTMLElement): void {
     },
   });
   live = chat;
+
+  // The rail's width drives its own collapsed margin as well as its size, so
+  // the handle writes the custom property rather than a width.
+  const rail = shell.body.querySelector<HTMLElement>('.ai-chat-sidebar');
+  if (rail) {
+    attachResizer({
+      target: rail,
+      edge: 'right',
+      cssVariable: '--ai-rail-width',
+      styleTarget: shell.body,
+      storageKey: 'obsidian-arc-rail-width',
+      min: 190,
+      max: 460,
+      fallback: 260,
+      label: 'Resize the conversation list',
+    });
+  }
 
   void picker.load().then(() => {
     chat.refreshStatus();

@@ -4,13 +4,13 @@
 // source; an instance starts with one group called Default and an
 // administrator makes whatever the deployment actually needs.
 //
-// A group's quota lives in the same drawer as its permissions, because they
+// A group's quota lives in the same panel as its permissions, because they
 // are the same decision — "what does this tier get" — and splitting them
 // across two screens makes an operator hold half the answer in their head.
 
 import { ApiError } from '../api/client';
 import { button, clear, el } from '../ui/dom';
-import { openDrawer, type DrawerHandle } from '../ui/drawer';
+import { openPanel, type PanelHandle } from '../ui/panel';
 import { checkboxList, numberField, section, switchField, textArea, textField } from '../ui/form';
 import { badge, badges, renderTable, stacked } from '../ui/table';
 import {
@@ -112,7 +112,7 @@ function editGroup(
     label: 'May use every enabled model',
     value: existing?.allow_all_models ?? false,
     hint: 'A shortcut, so adding a model does not mean revisiting every group.',
-    onChange: () => drawer.rebuild(),
+    onChange: () => panel.rebuild(),
   });
   const sortOrder = numberField({ label: 'Sort order', value: existing?.sort_order ?? 0 });
 
@@ -147,7 +147,8 @@ function editGroup(
     };
   });
 
-  const drawer = openDrawer({
+  const panel = openPanel({
+    host: view.host,
     title: creating ? 'Add a group' : existing.name,
     confirmLabel: creating ? 'Add' : 'Save',
     width: 460,
@@ -218,15 +219,15 @@ function editGroup(
   name.focus();
 }
 
-async function removeGroup(view: AdminView, group: Group, drawer: DrawerHandle): Promise<void> {
+async function removeGroup(view: AdminView, group: Group, panel: PanelHandle): Promise<void> {
   if (!window.confirm(`Delete ${group.name}? Its ${group.members} member(s) move to the default group.`)) return;
-  drawer.setBusy(true);
+  panel.setBusy(true);
   try {
     await adminApi.deleteGroup(group.id);
-    drawer.close();
+    panel.close();
     view.reload();
   } catch (error) {
-    drawer.setBusy(false);
-    drawer.setError(error instanceof ApiError ? error.message : String(error));
+    panel.setBusy(false);
+    panel.setError(error instanceof ApiError ? error.message : String(error));
   }
 }

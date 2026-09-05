@@ -445,3 +445,73 @@
     transition: none;
   }
 }
+
+/* --- resizable columns ------------------------------------------------------ */
+
+/* The handle sits in the gap between two columns rather than inside either
+   of them, so it never covers a control at the edge of a list row. */
+.oa-resizer {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  cursor: col-resize;
+  /* Without this a drag on a touch screen scrolls the page instead. */
+  touch-action: none;
+}
+
+.oa-resizer.on-right {
+  right: -13px;
+}
+
+.oa-resizer.on-left {
+  left: -13px;
+}
+
+/* Invisible until it is wanted: a permanent line between every pair of
+   columns would be three more rules in a layout that reads as panels. */
+.oa-resizer::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background-color 0.15s ease;
+}
+
+.oa-resizer:hover::before,
+.oa-resizer:focus-visible::before,
+.oa-resizer.active::before {
+  background: var(--ai-primary);
+}
+
+.oa-resizer:focus-visible {
+  outline: none;
+}
+
+/* On the body, so the cursor and the selection block follow the pointer
+   everywhere it travels during a drag — not only over the handle. */
+body.oa-resizing,
+body.oa-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* Below the breakpoint where the rail becomes an overlay there is nothing to
+   resize against. */
+@media (max-width: 900px) {
+  .oa-resizer {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-resizer::before {
+    transition: none;
+  }
+}

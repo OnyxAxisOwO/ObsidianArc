@@ -7,7 +7,7 @@
 
 import { ApiError } from '../api/client';
 import { button, clear, el } from '../ui/dom';
-import { openDrawer, type DrawerHandle } from '../ui/drawer';
+import { openPanel, type PanelHandle } from '../ui/panel';
 import { numberField, section, selectField, switchField, textArea, textField } from '../ui/form';
 import { badge, badges, compactNumber, renderTable, stacked } from '../ui/table';
 import { adminApi, type AdminModel, type Provider } from './api';
@@ -155,7 +155,8 @@ function editModel(view: AdminView, providers: Provider[], existing: AdminModel 
     min: 0,
   });
 
-  const drawer = openDrawer({
+  const panel = openPanel({
+    host: view.host,
     title: creating ? 'Add a model' : existing.display_name,
     confirmLabel: creating ? 'Add' : 'Save',
     ...(existing
@@ -223,19 +224,19 @@ function editModel(view: AdminView, providers: Provider[], existing: AdminModel 
   });
 
   modelID.focus();
-  void drawer;
+  void panel;
 }
 
-async function removeModel(view: AdminView, model: AdminModel, drawer: DrawerHandle): Promise<void> {
+async function removeModel(view: AdminView, model: AdminModel, panel: PanelHandle): Promise<void> {
   if (!window.confirm(`Delete ${model.display_name}? Conversations that used it keep their messages.`)) return;
-  drawer.setBusy(true);
+  panel.setBusy(true);
   try {
     await adminApi.deleteModel(model.id);
-    drawer.close();
+    panel.close();
     view.reload();
   } catch (error) {
-    drawer.setBusy(false);
-    drawer.setError(error instanceof ApiError ? error.message : String(error));
+    panel.setBusy(false);
+    panel.setError(error instanceof ApiError ? error.message : String(error));
   }
 }
 

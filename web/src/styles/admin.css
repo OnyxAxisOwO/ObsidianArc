@@ -12,21 +12,29 @@
   gap: 14px;
   height: 100%;
   min-height: 0;
+  /* Clips the side panel while it slides in and out, so the page never grows
+     a horizontal scrollbar mid-animation. */
+  overflow: hidden;
 }
 
 /* --- rail ---------------------------------------------------------------- */
 
 .oa-admin-rail {
+  --oa-admin-rail-width: 220px;
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
   flex-shrink: 0;
   box-sizing: border-box;
-  width: 220px;
+  width: var(--oa-admin-rail-width);
   padding: 14px 12px;
   border-radius: 18px;
   background: var(--ai-surface-container);
-  overflow-y: auto;
+  /* Deliberately not scrollable: seven fixed entries always fit, and any
+     overflow rule here would clip the resize handle that sits just outside
+     the rail's right edge — or grow a scrollbar for it. */
+  overflow: visible;
 }
 
 .oa-admin-rail-title {
@@ -122,12 +130,6 @@
   min-height: 0;
   padding: 18px 22px 24px;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-.oa-admin-body:hover {
-  scrollbar-color: var(--ai-outline-variant) transparent;
 }
 
 .oa-admin-section + .oa-admin-section {
@@ -355,9 +357,70 @@
   color: var(--ai-text-secondary);
 }
 
-/* --- drawer additions ---------------------------------------------------- */
+/* --- side panel ----------------------------------------------------------- */
 
-.oa-drawer-foot {
+/* A column in the row, not a sheet over it. It slides in by margin the same
+   way the conversation rail slides out — the content beside it narrows
+   smoothly instead of being covered. */
+.oa-panel {
+  --oa-panel-width: 400px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: var(--oa-panel-width);
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  /* Slid out by a negative margin rather than collapsed by width, so its
+     contents never reflow mid-animation. */
+  margin-right: calc(-1 * (var(--oa-panel-width) + 14px));
+  opacity: 0;
+  transition: margin-right 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease;
+}
+
+.oa-panel.open {
+  margin-right: 0;
+  opacity: 1;
+}
+
+.oa-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 14px 10px 14px 18px;
+  border-bottom: 1px solid var(--ai-border);
+}
+
+.oa-panel-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The back arrow is the chevron rotated, so a panel opened from another reads
+   as one step in rather than as a different control. */
+.oa-panel-head .oa-icon-btn:first-child svg {
+  transform: rotate(90deg);
+}
+
+.oa-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 24px;
+}
+
+.oa-panel-foot {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -368,6 +431,34 @@
 
 .oa-drawer-foot-spacer {
   flex: 1;
+}
+
+/* Below three-column width it becomes an overlay, the same fallback the
+   conversation rail makes. */
+@media (max-width: 1100px) {
+  .oa-panel {
+    position: fixed;
+    z-index: 30;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(var(--oa-panel-width), 100vw);
+    margin-right: 0;
+    border-radius: 0;
+    box-shadow: var(--ai-shadow-md);
+    transform: translateX(100%);
+    transition: transform 0.24s cubic-bezier(0.2, 0, 0, 1), opacity 0.2s ease;
+  }
+
+  .oa-panel.open {
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-panel {
+    transition: none;
+  }
 }
 
 .oa-btn-danger {
@@ -502,4 +593,72 @@
   .oa-spark-bar {
     transition: none;
   }
+}
+
+/* --- user settings -------------------------------------------------------- */
+
+/* One column of panels rather than a grid: these are read top to bottom while
+   deciding something, not scanned. */
+.oa-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  max-width: 560px;
+}
+
+.oa-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.oa-settings-panel .oa-color-grid {
+  margin-top: 2px;
+}
+
+.oa-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.oa-settings-panel select,
+.oa-settings-panel input[type='text'],
+.oa-settings-panel input[type='email'],
+.oa-settings-panel input[type='password'],
+.oa-settings-panel input[type='number'],
+.oa-settings-panel textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 10px;
+  background: var(--ai-surface-container-low);
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.oa-settings-panel input:focus,
+.oa-settings-panel select:focus,
+.oa-settings-panel textarea:focus {
+  border-color: var(--ai-primary);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+/* The running build, at the foot of the rail. Quiet enough to ignore and
+   present enough to quote in a bug report. */
+.oa-admin-build {
+  display: block;
+  margin-top: 10px;
+  padding: 0 4px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ai-text-secondary);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

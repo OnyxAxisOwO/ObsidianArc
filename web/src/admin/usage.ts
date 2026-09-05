@@ -7,7 +7,7 @@
 
 import { ApiError } from '../api/client';
 import { button, clear, el } from '../ui/dom';
-import { openDrawer } from '../ui/drawer';
+import { openPanel } from '../ui/panel';
 import { numberField, section, switchField } from '../ui/form';
 import { compactNumber, relativeTime, renderTable, stacked } from '../ui/table';
 import { adminApi, emptyPolicy, type QuotaWindowKind, type UsagePoint } from './api';
@@ -161,7 +161,8 @@ async function editGlobalPolicy(view: AdminView): Promise<void> {
     };
   });
 
-  openDrawer({
+  openPanel({
+    host: view.host,
     title: 'Default limits',
     confirmLabel: 'Save',
     build: (body) => {

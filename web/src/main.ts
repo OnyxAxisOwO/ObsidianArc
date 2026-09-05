@@ -7,6 +7,7 @@ import './styles/admin.css';
 import { renderAuthPage } from './auth/auth-page';
 import { renderAdminPage } from './admin/admin-page';
 import { renderChatPage } from './chat/chat-page';
+import { renderSettingsPage } from './settings/settings-page';
 import { renderShell } from './app/shell';
 import { navigate, startRouter, type Route, type RouteContext } from './router';
 import { currentUser, isAdmin, start as startSession } from './session';
@@ -29,7 +30,7 @@ const routes: Route[] = [
   { pattern: '/', render: guarded(renderChatPage) },
   { pattern: '/login', render: (target) => renderAuthPage(target, 'login') },
   { pattern: '/register', render: (target) => renderAuthPage(target, 'register') },
-  { pattern: '/settings', render: guarded(renderSettings) },
+  { pattern: '/settings', render: guarded(renderSettingsPage) },
   { pattern: '/admin/*', render: guarded(adminOnly(admin)) },
   { pattern: '/admin', render: guarded(adminOnly(admin)) },
 ];
@@ -58,11 +59,6 @@ function adminOnly(render: Route['render']): Route['render'] {
 }
 
 // --- screens ----------------------------------------------------------------
-
-function renderSettings(target: HTMLElement): void {
-  const shell = renderShell(target);
-  notice(shell.body, 'Settings', 'Profile, default model and appearance settings arrive in a later phase.');
-}
 
 function admin(target: HTMLElement, ctx: RouteContext): void {
   renderAdminPage(target, ctx.path);

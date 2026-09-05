@@ -7,7 +7,7 @@
 
 import { ApiError } from '../api/client';
 import { button, clear, el } from '../ui/dom';
-import { openDrawer, type DrawerHandle } from '../ui/drawer';
+import { openPanel, type PanelHandle } from '../ui/panel';
 import { numberField, section, selectField, switchField, textField } from '../ui/form';
 import { badge, badges, relativeTime, renderTable, stacked } from '../ui/table';
 import { adminApi, type Meta, type Provider, type ProviderKind, type ReasoningStyle } from './api';
@@ -71,7 +71,7 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
       value,
       label: value === 'anthropic' ? 'Anthropic' : 'OpenAI-compatible',
     })),
-    onChange: () => drawer.rebuild(),
+    onChange: () => panel.rebuild(),
   });
 
   const baseURL = textField({
@@ -119,7 +119,8 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
 
   const sortOrder = numberField({ label: 'Sort order', value: existing?.sort_order ?? 0 });
 
-  const drawer = openDrawer({
+  const panel = openPanel({
+    host: view.host,
     title: creating ? 'Add a provider' : existing.name,
     confirmLabel: creating ? 'Add' : 'Save',
     ...(existing
@@ -245,16 +246,16 @@ async function detectModels(provider: Provider, trigger: HTMLButtonElement, body
   }
 }
 
-async function removeProvider(view: AdminView, provider: Provider, drawer: DrawerHandle): Promise<void> {
+async function removeProvider(view: AdminView, provider: Provider, panel: PanelHandle): Promise<void> {
   if (!window.confirm(`Delete ${provider.name}? Its ${provider.model_count} model(s) go with it.`)) return;
-  drawer.setBusy(true);
+  panel.setBusy(true);
   try {
     await adminApi.deleteProvider(provider.id);
-    drawer.close();
+    panel.close();
     view.reload();
   } catch (error) {
-    drawer.setBusy(false);
-    drawer.setError(error instanceof ApiError ? error.message : String(error));
+    panel.setBusy(false);
+    panel.setError(error instanceof ApiError ? error.message : String(error));
   }
 }
 

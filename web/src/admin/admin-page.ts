@@ -5,9 +5,11 @@
 // same radius, same surface, same hover tint — so moving between chatting and
 // administering does not feel like moving between two applications.
 
+import { health } from '../api/client';
 import { renderShell } from '../app/shell';
 import { navigate } from '../router';
 import { ICONS, button, clear, el, icon } from '../ui/dom';
+import { attachResizer } from '../ui/resizer';
 import { renderDashboard } from './dashboard';
 import { renderGroups } from './groups';
 import { renderModels } from './models';
@@ -28,6 +30,8 @@ export interface AdminPage {
 export interface AdminView {
   /** The scrolling content area. */
   body: HTMLElement;
+  /** The flex row the side panel becomes a column of. */
+  host: HTMLElement;
   /** Left of the title. */
   setTitle(title: string, subtitle?: string): void;
   /** Right of the title — "Add a provider", a filter, a refresh. */
@@ -68,7 +72,21 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
 
   const foot = el('div', 'oa-admin-rail-foot');
   foot.appendChild(button('oa-btn', 'Back to chat', () => navigate('/')));
+  // Which build is running, from the server rather than from the bundle: the
+  // two can differ behind a stale cache, and the server's answer is the one
+  // that matters.
+  const build = el('span', 'oa-admin-build', '');
+  foot.appendChild(build);
   rail.appendChild(foot);
+
+  void health()
+    .then((status) => {
+      build.textContent = status.version;
+      build.title = `Build ${status.version} · up ${formatUptime(status.uptime_sec)}`;
+    })
+    .catch(() => {
+      // A version nobody can read is not worth an error state.
+    });
 
   const main = el('div', 'oa-admin-main');
   const head = el('div', 'oa-admin-head');
@@ -91,8 +109,21 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
   shell.body.appendChild(rail);
   shell.body.appendChild(main);
 
+  attachResizer({
+    target: rail,
+    edge: 'right',
+    cssVariable: '--oa-admin-rail-width',
+    styleTarget: rail,
+    storageKey: 'obsidian-arc-admin-rail-width',
+    min: 170,
+    max: 380,
+    fallback: 220,
+    label: 'Resize the navigation',
+  });
+
   const view: AdminView = {
     body,
+    host: shell.body,
     actions,
     params: segments.slice(1),
     setTitle(next, hint) {
@@ -110,6 +141,13 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
 
   body.appendChild(loading());
   void page.render(view);
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
 }
 
 export function loading(): HTMLElement {

@@ -18,7 +18,14 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server"
 )
 
-// Overridden at release time with -ldflags "-X main.version=…".
+// The build's identity, stamped in by the Makefile as
+// `-ldflags "-X main.version=yyyy.MM.dd.HH.mm.ss"` — the UTC moment it was
+// compiled. Zero-padded, so it sorts chronologically as plain text, and
+// unique per build,
+// so "which build is this server running" is answerable from /api/health
+// without a tag or a counter to keep up to date.
+//
+// A plain `go build` leaves it as "dev", which is the honest answer for one.
 var version = "dev"
 
 func main() {

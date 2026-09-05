@@ -6,7 +6,7 @@
 
 import { ApiError } from '../api/client';
 import { button, clear, el } from '../ui/dom';
-import { openDrawer, type DrawerHandle } from '../ui/drawer';
+import { openPanel, type PanelHandle } from '../ui/panel';
 import { numberField, section, selectField, switchField, textArea, textField } from '../ui/form';
 import {
   absoluteTime,
@@ -224,10 +224,11 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
     };
   });
 
-  openDrawer({
+  openPanel({
+    host: view.host,
     title: account.nickname || account.username,
     confirmLabel: 'Save',
-    width: 460,
+    width: 440,
     ...(self ? {} : { destructive: { label: 'Delete', onSelect: (handle) => removeUser(view, account, handle) } }),
     build: (body) => {
       body.appendChild(summary(account, detail.lifetime));
@@ -258,8 +259,9 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
 
       body.appendChild(section('Conversations',
         'Reading someone else’s messages is recorded in the server log.'));
-      const open = button('oa-btn', 'View conversations', () => void openConversations(account));
-      body.appendChild(open);
+      body.appendChild(button('oa-btn', 'View conversations', () => {
+        void openConversations(view, groups, account);
+      }));
     },
     onConfirm: async (handle) => {
       handle.setBusy(true);
@@ -320,11 +322,15 @@ function summary(account: Account, lifetime: { requests: number; total_tokens: n
   return wrap;
 }
 
-async function openConversations(account: Account): Promise<void> {
-  const drawer = openDrawer({
+// Stepping in rather than stacking: the panel replaces itself and offers a
+// way back, so the layout never grows a fourth column.
+async function openConversations(view: AdminView, groups: Group[], account: Account): Promise<void> {
+  const panel = openPanel({
+    host: view.host,
     title: `${account.nickname || account.username}'s conversations`,
-    width: 520,
+    width: 440,
     cancelLabel: 'Close',
+    onBack: () => void openUser(view, groups, account.id),
     build: (body) => {
       body.appendChild(el('p', 'oa-field-hint', 'Loading…'));
     },
@@ -334,38 +340,41 @@ async function openConversations(account: Account): Promise<void> {
   try {
     ({ conversations } = await adminApi.userConversations(account.id));
   } catch (error) {
-    drawer.setError(error instanceof ApiError ? error.message : String(error));
+    panel.setError(error instanceof ApiError ? error.message : String(error));
     return;
   }
 
-  const list = conversations;
-  drawer.rebuild();
-  const body = document.querySelector('.oa-drawer.open .oa-drawer-body');
-  if (!body) return;
-  clear(body);
-
-  if (!list.length) {
-    body.appendChild(el('p', 'oa-field-hint', 'No conversations.'));
+  clear(panel.body);
+  if (!conversations.length) {
+    panel.body.appendChild(el('p', 'oa-field-hint', 'No conversations.'));
     return;
   }
 
-  body.appendChild(renderTable({
+  panel.body.appendChild(renderTable({
     columns: [
       { header: 'Title', cell: (row) => row.title || 'Untitled' },
       { header: 'Messages', cell: (row) => String(row.message_count), numeric: true },
       { header: 'Updated', cell: (row) => relativeTime(row.updated_at) },
     ],
-    rows: list,
+    rows: conversations,
     empty: 'No conversations.',
-    onSelect: (row) => void openTranscript(account, row.id, row.title),
+    onSelect: (row) => void openTranscript(view, groups, account, row.id, row.title),
   }));
 }
 
-async function openTranscript(account: Account, conversationID: string, title: string): Promise<void> {
-  const drawer = openDrawer({
+async function openTranscript(
+  view: AdminView,
+  groups: Group[],
+  account: Account,
+  conversationID: string,
+  title: string,
+): Promise<void> {
+  const panel = openPanel({
+    host: view.host,
     title: title || 'Conversation',
-    width: 560,
+    width: 480,
     cancelLabel: 'Close',
+    onBack: () => void openConversations(view, groups, account),
     build: (body) => {
       body.appendChild(el('p', 'oa-field-hint', 'Loading…'));
     },
@@ -373,35 +382,33 @@ async function openTranscript(account: Account, conversationID: string, title: s
 
   try {
     const { messages } = await adminApi.userTranscript(account.id, conversationID);
-    const body = document.querySelector('.oa-drawer.open .oa-drawer-body');
-    if (!body) return;
-    clear(body);
+    clear(panel.body);
 
     const transcript = el('div', 'oa-transcript');
     for (const message of messages) {
       const turn = el('div', 'oa-transcript-turn');
       turn.appendChild(el('span', 'oa-transcript-role',
         `${message.role}${message.model_name ? ` · ${message.model_name}` : ''}${message.created_at ? ` · ${absoluteTime(message.created_at)}` : ''}`));
-      // Rendered as plain text, not markdown: this is an audit view of what
-      // was actually stored, and a renderer would be interpreting it.
+      // Plain text, not markdown: this is an audit view of what was stored,
+      // and a renderer would be interpreting it.
       turn.appendChild(document.createTextNode(message.error || message.content || '(empty)'));
       transcript.appendChild(turn);
     }
-    body.appendChild(transcript);
+    panel.body.appendChild(transcript);
   } catch (error) {
-    drawer.setError(error instanceof ApiError ? error.message : String(error));
+    panel.setError(error instanceof ApiError ? error.message : String(error));
   }
 }
 
-async function removeUser(view: AdminView, account: Account, drawer: DrawerHandle): Promise<void> {
+async function removeUser(view: AdminView, account: Account, panel: PanelHandle): Promise<void> {
   if (!window.confirm(`Delete ${account.username}? Their conversations and usage records go too.`)) return;
-  drawer.setBusy(true);
+  panel.setBusy(true);
   try {
     await adminApi.deleteUser(account.id);
-    drawer.close();
+    panel.close();
     view.reload();
   } catch (error) {
-    drawer.setBusy(false);
-    drawer.setError(error instanceof ApiError ? error.message : String(error));
+    panel.setBusy(false);
+    panel.setError(error instanceof ApiError ? error.message : String(error));
   }
 }

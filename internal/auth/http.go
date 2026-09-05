@@ -1,10 +1,14 @@
 package auth
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -60,6 +64,9 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/profile/password", protected(h.changePassword))
 	mux.HandleFunc("GET /api/preferences", protected(h.getPreferences))
 	mux.HandleFunc("PATCH /api/preferences", protected(h.patchPreferences))
+	mux.HandleFunc("GET /api/preferences/wallpaper", protected(h.getWallpaper))
+	mux.HandleFunc("PUT /api/preferences/wallpaper", protected(h.putWallpaper))
+	mux.HandleFunc("DELETE /api/preferences/wallpaper", protected(h.deleteWallpaper))
 }
 
 // --- payloads ---------------------------------------------------------------
@@ -274,6 +281,76 @@ func (h *Handlers) patchPreferences(w http.ResponseWriter, r *http.Request) erro
 		return httpx.Internal(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"preferences": merged})
+}
+
+// --- wallpaper ----------------------------------------------------------------
+
+// The wallpaper is served rather than inlined into the preferences document
+// because that document is read on every session check, and a megabyte of
+// base64 riding along with the theme would make the cheapest request the most
+// expensive one.
+func (h *Handlers) getWallpaper(w http.ResponseWriter, r *http.Request) error {
+	account := MustUser(r.Context())
+
+	mime, data, at, err := h.preferences.Wallpaper(r.Context(), account.ID)
+	if err != nil {
+		if errors.Is(err, user.ErrNoWallpaper) {
+			return httpx.NotFound("No wallpaper set.")
+		}
+		return httpx.Internal(err)
+	}
+
+	header := w.Header()
+	header.Set("Content-Type", mime)
+	header.Set("Content-Length", strconv.Itoa(len(data)))
+	// Private, because the URL is the same for everyone and the image is not:
+	// a shared cache must not hand one person's wallpaper to another. The URL
+	// carries the version, so a long max-age is safe.
+	header.Set("Cache-Control", "private, max-age=31536000, immutable")
+	header.Set("X-Content-Type-Options", "nosniff")
+
+	http.ServeContent(w, r, "", time.UnixMilli(at), bytes.NewReader(data))
+	return nil
+}
+
+func (h *Handlers) putWallpaper(w http.ResponseWriter, r *http.Request) error {
+	account := MustUser(r.Context())
+
+	var body struct {
+		Mime string `json:"mime"`
+		Data string `json:"data"`
+	}
+	if err := httpx.DecodeJSON(w, r, &body, user.MaxWallpaperBytes*4/3+16*1024); err != nil {
+		return err
+	}
+
+	data, err := base64.StdEncoding.DecodeString(body.Data)
+	if err != nil {
+		return httpx.BadRequest("Image data is not valid base64.")
+	}
+
+	at, err := h.preferences.SetWallpaper(r.Context(), account.ID, body.Mime, data)
+	if err != nil {
+		switch {
+		case errors.Is(err, user.ErrWallpaperUnsupported):
+			return httpx.BadRequest("Wallpapers must be JPEG, PNG, WebP or AVIF.")
+		case errors.Is(err, user.ErrWallpaperTooLarge):
+			return httpx.BadRequest("That image is too large.")
+		default:
+			return httpx.Internal(err)
+		}
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"url": fmt.Sprintf("/api/preferences/wallpaper?v=%d", at),
+	})
+}
+
+func (h *Handlers) deleteWallpaper(w http.ResponseWriter, r *http.Request) error {
+	account := MustUser(r.Context())
+	if err := h.preferences.ClearWallpaper(r.Context(), account.ID); err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.NoContent(w)
 }
 
 // --- error translation ------------------------------------------------------

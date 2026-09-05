@@ -145,19 +145,8 @@
 }
 
 /* The scrollable parts of the chat keep their scrollbars to themselves: no
-   track, no arrows, a thin thumb only while the pointer is over the list. */
-.ai-chat-list,
-.ai-chat-scroll,
-.ai-thinking-body {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-.ai-chat-list:hover,
-.ai-chat-scroll:hover,
-.ai-thinking-body:hover {
-  scrollbar-color: var(--ai-outline-variant) transparent;
-}
+   track, no arrows, a thin thumb only while the pointer is over the list.
+   That treatment is now global — see styles/base.css. */
 
 .ai-chat-sidebar-title {
   font-size: 11px;
@@ -907,6 +896,8 @@
 }
 
 .ai-chat-wide .ai-chat-sidebar {
+  /* The resize handle is positioned against this element's right edge. */
+  position: relative;
   box-sizing: border-box;
   flex-shrink: 0;
   gap: 12px;
@@ -953,10 +944,8 @@
   scrollbar-gutter: stable both-edges;
 }
 
-.ai-chat-wide .ai-chat-list {
-  scrollbar-width: none;
-}
-
+/* The rail scrolls without showing anything: it is a short list beside a
+   long one, and a second bar next to the transcript's reads as clutter. */
 .ai-chat-wide .ai-chat-list::-webkit-scrollbar {
   width: 0;
   height: 0;

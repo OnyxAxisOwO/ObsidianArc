@@ -10,8 +10,10 @@ import {
   accentPreference,
   setAccentPreference,
   setThemeMode,
+  setWallpaper,
   themeMode,
   type ThemeMode,
+  type Wallpaper,
 } from './theme/theme';
 import type { AccentName } from './theme/color-utils';
 
@@ -87,6 +89,16 @@ function applyServerPreferences(prefs: Preferences): void {
       accent: accent as AccentName | 'custom',
       customAccent: typeof custom === 'string' ? custom : '',
     });
+  }
+
+  // The wallpaper itself lives on the server; the preference carries the URL
+  // it is served from, plus how it should be dimmed and blurred.
+  const paper = prefs['wallpaper'];
+  if (paper === null) {
+    setWallpaper(null);
+  } else if (paper && typeof paper === 'object' && typeof (paper as Wallpaper).url === 'string') {
+    const value = paper as Wallpaper;
+    setWallpaper({ url: value.url, dim: value.dim ?? 0, blur: value.blur ?? 0 });
   }
 }
 
