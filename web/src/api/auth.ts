@@ -19,6 +19,18 @@ export interface Account {
   last_login_at: number;
 }
 
+// What a visitor with no account is shown at the address. The server settles
+// this — an instance still being set up always gets the sign-in card, whatever
+// is configured — so the client only has to draw what it is told.
+export interface Landing {
+  mode: 'login' | 'intro' | 'chat';
+  /** HTML the operator wrote. Only meaningful in 'intro' mode. */
+  intro: string;
+  /** Whether a visitor may actually send a message in 'chat' mode. */
+  trial: boolean;
+  trial_turns: number;
+}
+
 export interface SiteInfo {
   name: string;
   description: string;
@@ -26,6 +38,14 @@ export interface SiteInfo {
   // True while the instance has no accounts at all: the first person to
   // register becomes the administrator.
   setup_required: boolean;
+  // The instance's email policy, so the sign-up form can say what is
+  // acceptable before it is submitted. Both are false/empty while the
+  // instance still has no accounts.
+  require_email?: boolean;
+  email_domains?: string[];
+  // Absent on a server older than the landing-page setting; the fallback in
+  // session.ts supplies the behaviour that server had.
+  landing?: Landing;
 }
 
 // The presentation state the server keeps for an account. Deliberately loose:

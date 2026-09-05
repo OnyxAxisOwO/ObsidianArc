@@ -1,0 +1,214 @@
+// What someone with no account sees at the address.
+//
+// Three shapes, chosen by the operator: the sign-in card (what the instance
+// always did), a page they wrote, or the chat itself — optionally live, so a
+// visitor can ask a couple of questions before deciding whether to sign up.
+//
+// The trial is the only part of this project that spends the operator's
+// provider credit for someone who has not identified themselves, so it holds
+// nothing back on the client: the turn limit here is a courtesy that stops the
+// composer, and the server counts the turns in the request and refuses on its
+// own. Losing this file entirely would cost the operator nothing.
+
+import { ApiError } from '../api/client';
+import { streamTrial } from '../api/trial';
+import { t } from '../i18n';
+import { navigate } from '../router';
+import { siteInfo } from '../session';
+import { renderInto } from '../chat/markdown';
+import { nextThemeMode, themeMode } from '../theme/theme';
+import { persistTheme } from '../session';
+import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
+
+interface Turn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export function renderLandingPage(root: HTMLElement): void {
+  clear(root);
+
+  const site = siteInfo();
+  const landing = site.landing ?? { mode: 'login' as const, intro: '', trial: false, trial_turns: 0 };
+
+  const page = el('div', 'oa-landing');
+  const head = el('div', 'oa-landing-head');
+
+  const brand = el('div', 'oa-landing-brand');
+  const mark = el('span', 'oa-auth-mark');
+  mark.appendChild(icon(ICONS.spark, 15));
+  brand.appendChild(mark);
+  brand.appendChild(el('span', null, site.name));
+  head.appendChild(brand);
+  head.appendChild(el('span', 'oa-header-spacer'));
+
+  // The same toggle the sign-in card carries, for the same reason: this may
+  // be the first thing anyone sees, and being stuck in the wrong scheme until
+  // you have an account is an odd first impression.
+  const toggle = iconButton('oa-icon-btn', themeIcon(), t('theme'), () => {
+    persistTheme(nextThemeMode());
+    clear(toggle);
+    toggle.appendChild(icon(themeIcon(), 17));
+  }, 17);
+  head.appendChild(toggle);
+
+  head.appendChild(button('oa-btn', t('landingSignIn'), () => navigate('/login')));
+  if (site.registration_enabled) {
+    head.appendChild(button('oa-btn primary', t('landingRegister'), () => navigate('/register')));
+  }
+  page.appendChild(head);
+
+  const body = el('div', 'oa-landing-body');
+  if (landing.mode === 'intro') body.appendChild(intro(landing.intro, site.description));
+  else body.appendChild(trial(landing.trial, landing.trial_turns, site.registration_enabled));
+  page.appendChild(body);
+
+  root.appendChild(page);
+}
+
+function themeIcon(): readonly string[] {
+  const mode = themeMode();
+  return mode === 'dark' ? ICONS.moon : mode === 'light' ? ICONS.sun : ICONS.auto;
+}
+
+/**
+ * The operator's own page.
+ *
+ * Their HTML, inserted as HTML — this is the one place in the project that
+ * does that, and it is a deliberate exception rather than an oversight. Only
+ * an administrator can write it, and an administrator already controls the
+ * server; nothing is escalated by letting them write markup. Script in it does
+ * not run regardless: the page's content policy allows scripts only from
+ * 'self' plus one hash, so an inline <script> here is blocked by the browser
+ * rather than by trust.
+ */
+function intro(html: string, description: string): HTMLElement {
+  const card = el('div', 'oa-landing-intro');
+  if (html.trim()) {
+    card.innerHTML = html;
+    return card;
+  }
+  // Nothing written yet: say what the instance is, from the setting the
+  // sign-in card already uses, rather than showing an empty page.
+  card.appendChild(el('h1', 'oa-landing-title', t('welcomeBack')));
+  if (description) card.appendChild(el('p', 'oa-landing-sub', description));
+  return card;
+}
+
+function trial(enabled: boolean, allowance: number, canRegister: boolean): HTMLElement {
+  const wrap = el('div', 'oa-landing-chat');
+  const site = siteInfo();
+
+  wrap.appendChild(el('h1', 'oa-landing-title', site.name));
+  if (site.description) wrap.appendChild(el('p', 'oa-landing-sub', site.description));
+
+  const thread = el('div', 'oa-landing-thread');
+  wrap.appendChild(thread);
+
+  const notice = el('p', 'oa-landing-notice');
+  wrap.appendChild(notice);
+
+  if (!enabled) {
+    // The shop window: the interface is visible, nothing can be sent. Saying
+    // so beats a composer that silently refuses.
+    notice.textContent = t('setupBodyUser');
+    wrap.appendChild(entry(canRegister));
+    return wrap;
+  }
+
+  const turns: Turn[] = [];
+  let busy = false;
+
+  const form = el('form', 'oa-landing-composer');
+  const input = el('input');
+  input.type = 'text';
+  input.placeholder = t('trialPlaceholder');
+  input.maxLength = 4000;
+  const send = iconButton('ai-chat-send', ICONS.send, t('send'), undefined, 16);
+  send.type = 'submit';
+  form.appendChild(input);
+  form.appendChild(send);
+  wrap.appendChild(form);
+
+  const finished = el('div', 'oa-landing-finished');
+  finished.hidden = true;
+  wrap.appendChild(finished);
+
+  paintNotice();
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text || busy) return;
+
+    input.value = '';
+    push('user', text);
+    const answer = push('assistant', '');
+    busy = true;
+    send.disabled = true;
+
+    // Everything but the empty assistant turn just pushed to render into.
+    // The question itself is already the last entry.
+    const sending = turns.slice(0, -1).map((entry) => ({ role: entry.role, content: entry.content }));
+
+    void streamTrial(sending, (delta) => {
+      answer.content += delta;
+      renderInto(answer.node, answer.content);
+      thread.scrollTop = thread.scrollHeight;
+    })
+      .then(() => {
+        turns[turns.length - 1]!.content = answer.content;
+      })
+      .catch((error: unknown) => {
+        answer.content = error instanceof ApiError ? error.message : t('trialFailed');
+        answer.node.textContent = answer.content;
+        answer.node.classList.add('oa-landing-error');
+      })
+      .finally(() => {
+        busy = false;
+        send.disabled = false;
+        paintNotice();
+      });
+  });
+
+  function push(role: Turn['role'], content: string): Turn & { node: HTMLElement } {
+    const turn: Turn = { role, content };
+    turns.push(turn);
+
+    const row = el('div', `oa-landing-turn ${role}`);
+    const bubble = el('div', role === 'user' ? 'ai-user-bubble' : 'ai-answer');
+    if (content) bubble.textContent = content;
+    row.appendChild(bubble);
+    thread.appendChild(row);
+    thread.scrollTop = thread.scrollHeight;
+
+    return Object.assign(turn, { node: bubble });
+  }
+
+  function paintNotice(): void {
+    const used = turns.filter((entry) => entry.role === 'user').length;
+    const left = Math.max(0, allowance - used);
+
+    if (left === 0) {
+      notice.textContent = t('trialFinished');
+      form.hidden = true;
+      finished.hidden = false;
+      clear(finished);
+      finished.appendChild(entry(canRegister));
+      return;
+    }
+    notice.textContent = left === 1 ? t('trialLastTurn') : t('trialTurnsLeft', { count: left });
+  }
+
+  return wrap;
+}
+
+/** The way in, once the trial is over or was never on offer. */
+function entry(canRegister: boolean): HTMLElement {
+  const row = el('div', 'oa-landing-entry');
+  if (canRegister) {
+    row.appendChild(button('oa-btn primary', t('trialSignUp'), () => navigate('/register')));
+  }
+  row.appendChild(button('oa-btn', t('trialSignIn'), () => navigate('/login')));
+  return row;
+}

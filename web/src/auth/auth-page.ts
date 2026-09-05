@@ -6,6 +6,7 @@
 
 import { ApiError } from '../api/client';
 import { login, register, type Account } from '../api/auth';
+import { t } from '../i18n';
 import { navigate } from '../router';
 import { adopt, siteInfo } from '../session';
 import { nextThemeMode, themeMode } from '../theme/theme';
@@ -35,41 +36,55 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
   const setup = site.setup_required;
   const registering = mode === 'register' || setup;
 
-  card.appendChild(el('h1', 'oa-auth-title', setup ? 'Create the first account' : registering ? 'Create an account' : 'Welcome back'));
+  card.appendChild(el('h1', 'oa-auth-title',
+    setup ? t('firstAccountTitle') : registering ? t('createAccountTitle') : t('welcomeBack')));
   card.appendChild(el('p', 'oa-auth-sub',
-    setup
-      ? 'This server has no accounts yet. The first one becomes the administrator.'
-      : registering
-        ? 'Pick a username and a password. An email address is optional.'
-        : 'Sign in to pick up where you left off.'));
+    setup ? t('firstAccountBody') : registering ? t('createAccountBody') : t('welcomeBackBody')));
 
   const form = el('div', 'oa-auth-form');
   const errorLine = el('p', 'oa-auth-error');
   errorLine.hidden = true;
   errorLine.setAttribute('role', 'alert');
 
+  const identityLabel = registering ? t('username') : t('usernameOrEmail');
   const identifier = textInput({
-    placeholder: registering ? 'Username' : 'Username or email',
+    placeholder: identityLabel,
     autocomplete: 'username',
     maxLength: 254,
   });
-  form.appendChild(field(registering ? 'Username' : 'Username or email', identifier));
+  form.appendChild(field(identityLabel, identifier));
+
+  const domains = site.email_domains ?? [];
+  const emailRequired = !setup && (site.require_email ?? false);
 
   let email: HTMLInputElement | null = null;
   if (registering) {
-    email = textInput({ type: 'email', placeholder: 'you@example.com', autocomplete: 'email', maxLength: 254 });
-    form.appendChild(field('Email (optional)', email));
+    email = textInput({
+      type: 'email',
+      placeholder: domains.length ? `you@${domains[0]}` : 'you@example.com',
+      autocomplete: 'email',
+      maxLength: 254,
+    });
+    email.required = emailRequired;
+    // The label carries whether it is optional; the hint carries which
+    // addresses will be taken. Both are things you want before typing,
+    // not after submitting.
+    form.appendChild(field(
+      emailRequired ? t('email') : t('emailOptional'),
+      email,
+      domains.length ? t('emailAccepted', { domains: domains.join(', ') }) : undefined,
+    ));
   }
 
   const password = textInput({
     type: 'password',
-    placeholder: registering ? 'At least 8 characters' : 'Password',
+    placeholder: registering ? t('passwordHint') : t('password'),
     autocomplete: registering ? 'new-password' : 'current-password',
     maxLength: 256,
   });
-  form.appendChild(field('Password', password));
+  form.appendChild(field(t('password'), password));
 
-  const submit = button('oa-btn primary oa-btn-block', registering ? 'Create account' : 'Sign in');
+  const submit = button('oa-btn primary oa-btn-block', registering ? t('createAccount') : t('signIn'));
   submit.type = 'submit';
   form.appendChild(errorLine);
   form.appendChild(submit);
@@ -78,13 +93,13 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
   if (!setup) {
     const switcher = el('p', 'oa-auth-switch');
     if (registering) {
-      switcher.appendChild(el('span', null, 'Already have an account? '));
-      switcher.appendChild(button(null, 'Sign in', () => navigate('/login')));
+      switcher.appendChild(el('span', null, t('haveAccount')));
+      switcher.appendChild(button(null, t('signIn'), () => navigate('/login')));
     } else if (site.registration_enabled) {
-      switcher.appendChild(el('span', null, 'No account yet? '));
-      switcher.appendChild(button(null, 'Create one', () => navigate('/register')));
+      switcher.appendChild(el('span', null, t('noAccount')));
+      switcher.appendChild(button(null, t('createOne'), () => navigate('/register')));
     } else {
-      switcher.textContent = 'Registration is closed on this server.';
+      switcher.textContent = t('registrationClosed');
     }
     card.appendChild(switcher);
   }
@@ -94,7 +109,7 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
   // The theme toggle belongs here too: the sign-in page is the first thing a
   // new user sees, and being stuck in the wrong scheme until they have an
   // account would be an odd first impression.
-  const themeToggle = iconButton('oa-icon-btn', themeIcon(), 'Theme', () => {
+  const themeToggle = iconButton('oa-icon-btn', themeIcon(), t('theme'), () => {
     persistTheme(nextThemeMode());
     clear(themeToggle);
     themeToggle.appendChild(icon(themeIcon(), 17));
@@ -116,14 +131,20 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
     const identity = identifier.value.trim();
     const secret = password.value;
     if (!identity || !secret) {
-      showError('Fill in both fields.');
+      showError(t('fillBothFields'));
+      return;
+    }
+    // Checked here as well as on the server, only so the answer is
+    // immediate. The server is the one that decides.
+    if (registering && emailRequired && !email?.value.trim()) {
+      showError(t('emailRequiredHere'));
       return;
     }
 
     busy = true;
     submit.dataset['busy'] = 'true';
     submit.disabled = true;
-    submit.textContent = registering ? 'Creating…' : 'Signing in…';
+    submit.textContent = registering ? t('creatingAccount') : t('signingIn');
     errorLine.hidden = true;
 
     try {
@@ -138,15 +159,39 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
       adopt(result.user);
       navigate('/', { replace: true });
     } catch (error) {
-      showError(error instanceof ApiError ? error.message : String(error));
+      showError(refusal(error, domains));
       busy = false;
       delete submit.dataset['busy'];
       submit.disabled = false;
-      submit.textContent = registering ? 'Create account' : 'Sign in';
+      submit.textContent = registering ? t('createAccount') : t('signIn');
       password.focus();
       password.select();
     }
   });
+
+  // The refusals worth saying in the reader's own language. Everything
+  // else is a server message with nothing to add.
+  function refusal(error: unknown, accepted: string[]): string {
+    if (!(error instanceof ApiError)) return String(error);
+    switch (error.code) {
+      case 'account_banned':
+        return t('accountBanned');
+      case 'signups_throttled': {
+        const seconds = Number(error.details['retry_after_seconds'] ?? 60);
+        return t('signupsThrottled', { count: seconds });
+      }
+      default: {
+        const allowed = error.details['allowed_domains'];
+        if (Array.isArray(allowed) && allowed.length) {
+          return t('emailDomainRejected', { domains: allowed.join(', ') });
+        }
+        if (accepted.length && error.status === 400 && /email/i.test(error.message)) {
+          return t('emailDomainRejected', { domains: accepted.join(', ') });
+        }
+        return error.message;
+      }
+    }
+  }
 
   function showError(message: string): void {
     errorLine.textContent = message;

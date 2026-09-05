@@ -6,53 +6,73 @@
 // composer stops offering attachments, or the thinking toggle disappears.
 
 import { ApiError } from '../api/client';
+import { t } from '../i18n';
 import { button, clear, el } from '../ui/dom';
 import { openPanel, type PanelHandle } from '../ui/panel';
 import { numberField, section, selectField, switchField, textArea, textField } from '../ui/form';
 import { badge, badges, compactNumber, renderTable, stacked } from '../ui/table';
-import { adminApi, type AdminModel, type Provider } from './api';
+import { adminApi, type AdminModel, type Meta, type Provider, type ReasoningStyle } from './api';
 import { failure, type AdminView } from './admin-page';
+import { reasoningLabel } from './providers';
 
 export async function renderModels(view: AdminView): Promise<void> {
-  view.setTitle('Models', 'What users can pick from, and what each one costs against their allowance.');
+  view.setTitle(t('modelsTitle'), t('modelsSubtitle'));
 
   let models: AdminModel[];
   let providers: Provider[];
+  let meta: Meta;
   try {
-    [{ models }, { providers }] = await Promise.all([adminApi.models(), adminApi.providers()]);
+    [{ models }, { providers }, meta] = await Promise.all([
+      adminApi.models(),
+      adminApi.providers(),
+      adminApi.meta(),
+    ]);
   } catch (error) {
     failure(view, error);
     return;
   }
 
+  const nameOf = (modelID: string) =>
+    models.find((entry) => entry.id === modelID)?.display_name ?? modelID;
+
   clear(view.actions);
-  const add = button('oa-btn primary', 'Add a model', () => editModel(view, providers, null));
+  const add = button('oa-btn primary', t('addModel'), () => editModel(view, providers, models, meta, null));
   add.disabled = providers.length === 0;
-  if (!providers.length) add.title = 'Add a provider first.';
+  if (!providers.length) add.title = t('addProviderFirst');
   view.actions.appendChild(add);
 
   clear(view.body);
   view.body.appendChild(renderTable({
     columns: [
-      { header: 'Model', cell: (row) => stacked(row.display_name, row.model_id) },
-      { header: 'Provider', cell: (row) => row.provider_name, secondary: true },
-      { header: 'Can', cell: (row) => capabilityBadges(row) },
-      { header: 'Weights', cell: (row) => weightLabel(row), numeric: true, secondary: true },
-      { header: 'State', cell: (row) => (row.enabled ? badge('enabled', 'muted') : badge('disabled', 'danger')) },
+      {
+        header: t('colModel'),
+        // The route belongs on the name, not in a column of its own: it
+        // is the answer to "what does this row actually do", and it is
+        // blank on nearly every row.
+        cell: (row) => stacked(
+          row.display_name,
+          row.route_to_id ? t('routedTo', { name: nameOf(row.route_to_id) }) : row.model_id,
+        ),
+      },
+      { header: t('colProvider'), cell: (row) => row.provider_name, secondary: true },
+      { header: t('colCan'), cell: (row) => capabilityBadges(row) },
+      { header: t('colWeights'), cell: (row) => weightLabel(row), numeric: true, secondary: true },
+      { header: t('colState'), cell: (row) => (row.enabled ? badge(t('enabled'), 'muted') : badge(t('disabled'), 'danger')) },
     ],
     rows: models,
-    empty: providers.length ? 'No models yet. Add one, or detect them from a provider.' : 'Add a provider first.',
+    empty: providers.length ? t('noModels') : t('addProviderFirst'),
     muted: (row) => !row.enabled,
-    onSelect: (row) => editModel(view, providers, row),
+    onSelect: (row) => editModel(view, providers, models, meta, row),
   }));
 }
 
 function capabilityBadges(model: AdminModel): HTMLElement {
   return badges(
-    model.supports_reasoning ? badge('thinks', 'muted') : null,
-    model.supports_vision ? badge('sees', 'muted') : null,
-    model.supports_images && !model.supports_vision ? badge('images', 'muted') : null,
-    model.supports_streaming ? null : badge('no stream', 'muted'),
+    model.supports_reasoning ? badge(t('canThinks'), 'muted') : null,
+    model.supports_vision ? badge(t('canSees'), 'muted') : null,
+    model.supports_images && !model.supports_vision ? badge(t('canImages'), 'muted') : null,
+    model.supports_streaming ? null : badge(t('canNoStream'), 'muted'),
+    model.route_to_id ? badge(t('routedBadge'), 'muted') : null,
   );
 }
 
@@ -62,94 +82,128 @@ function weightLabel(model: AdminModel): string {
   return `${compactNumber(input)}× / ${compactNumber(output)}×`;
 }
 
-function editModel(view: AdminView, providers: Provider[], existing: AdminModel | null): void {
+function editModel(
+  view: AdminView,
+  providers: Provider[],
+  models: AdminModel[],
+  meta: Meta,
+  existing: AdminModel | null,
+): void {
   const creating = existing === null;
 
   const providerID = selectField({
-    label: 'Provider',
+    label: t('colProvider'),
     value: existing?.provider_id ?? providers[0]?.id ?? '',
     options: providers.map((provider) => ({ value: provider.id, label: provider.name })),
   });
 
   const modelID = textField({
-    label: 'Model id',
+    label: t('modelIDLabel'),
     value: existing?.model_id ?? '',
     placeholder: 'anthropic/claude-opus-5',
-    hint: 'Exactly what the provider calls it.',
+    hint: t('modelIDHint'),
     monospace: true,
   });
 
   const displayName = textField({
-    label: 'Display name',
+    label: t('displayName'),
     value: existing?.display_name ?? '',
     placeholder: 'Claude Opus 5',
-    hint: 'What users see in the picker.',
+    hint: t('displayNameHint'),
     maxLength: 80,
   });
 
   const description = textArea({
-    label: 'Description',
+    label: t('description'),
     value: existing?.description ?? '',
-    placeholder: 'Best for long, careful answers.',
+    placeholder: t('modelDescriptionPlaceholder'),
     rows: 2,
-    hint: 'One line, shown under the name in the model menu.',
+    hint: t('modelDescriptionHint'),
   });
 
-  const enabled = switchField({ label: 'Enabled', value: existing?.enabled ?? true });
-  const sortOrder = numberField({ label: 'Sort order', value: existing?.sort_order ?? 0 });
+  const enabled = switchField({ label: t('enabled'), value: existing?.enabled ?? true });
+  const sortOrder = numberField({ label: t('sortOrder'), value: existing?.sort_order ?? 0 });
 
   const reasoning = switchField({
-    label: 'Reasons before answering',
+    label: t('capReasoning'),
     value: existing?.supports_reasoning ?? false,
-    hint: 'Turns on the extended-thinking control for this model.',
+    hint: t('capReasoningHint'),
   });
   const images = switchField({
-    label: 'Accepts images',
+    label: t('capImages'),
     value: existing?.supports_images ?? false,
-    hint: 'Enables the attach control. Turn off for text-only models.',
+    hint: t('capImagesHint'),
   });
   const vision = switchField({
-    label: 'Understands images',
+    label: t('capVision'),
     value: existing?.supports_vision ?? false,
   });
-  const streaming = switchField({ label: 'Streams', value: existing?.supports_streaming ?? true });
-  const systemPrompt = switchField({ label: 'Takes a system prompt', value: existing?.supports_system_prompt ?? true });
-  const tools = switchField({ label: 'Supports tools', value: existing?.supports_tools ?? false });
+  const streaming = switchField({ label: t('capStreams'), value: existing?.supports_streaming ?? true });
+  const systemPrompt = switchField({ label: t('capSystemPrompt'), value: existing?.supports_system_prompt ?? true });
+  const tools = switchField({ label: t('capTools'), value: existing?.supports_tools ?? false });
 
   const contextWindow = numberField({
-    label: 'Context window',
+    label: t('contextWindow'),
     value: existing?.context_window ?? null,
     placeholder: '200000',
     min: 0,
   });
   const maxOutput = numberField({
-    label: 'Max output tokens',
+    label: t('maxOutputTokens'),
     value: existing?.max_output_tokens ?? null,
     placeholder: '8192',
     min: 0,
   });
 
+  // Every other model is a candidate except this one and any that is
+  // already routed: resolution is a single hop, so a chain would not do
+  // what the second link says. The server refuses both as well.
+  const routeTo = selectField({
+    label: t('routeTo'),
+    value: existing?.route_to_id ?? '',
+    hint: t('routeToHint'),
+    options: [
+      { value: '', label: t('routeNone') },
+      ...models
+        .filter((entry) => entry.id !== existing?.id && !entry.route_to_id)
+        .map((entry) => ({
+          value: entry.id,
+          label: `${entry.display_name} \u2014 ${entry.provider_name}`,
+        })),
+    ],
+  });
+
+  const reasoningStyle = selectField<ReasoningStyle | ''>({
+    label: t('reasoningStyleModel'),
+    value: existing?.reasoning_style ?? '',
+    hint: t('reasoningStyleModelHint'),
+    options: [
+      { value: '', label: t('styleInherit') },
+      ...meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) })),
+    ],
+  });
+
   const requestWeight = numberField({
-    label: 'Per request',
+    label: t('perRequest'),
     value: existing?.request_weight ?? 0,
     step: 0.1,
     min: 0,
-    hint: 'Credits charged just for asking.',
+    hint: t('perRequestHint'),
   });
   const inputWeight = numberField({
-    label: 'Per 1k input tokens',
+    label: t('per1kInput'),
     value: existing?.input_token_weight ?? 1,
     step: 0.1,
     min: 0,
   });
   const outputWeight = numberField({
-    label: 'Per 1k output tokens',
+    label: t('per1kOutput'),
     value: existing?.output_token_weight ?? 1,
     step: 0.1,
     min: 0,
   });
   const reasoningWeight = numberField({
-    label: 'Per 1k reasoning tokens',
+    label: t('per1kReasoning'),
     value: existing?.reasoning_token_weight ?? 1,
     step: 0.1,
     min: 0,
@@ -157,21 +211,27 @@ function editModel(view: AdminView, providers: Provider[], existing: AdminModel 
 
   const panel = openPanel({
     host: view.host,
-    title: creating ? 'Add a model' : existing.display_name,
-    confirmLabel: creating ? 'Add' : 'Save',
+    title: creating ? t('addModel') : existing.display_name,
+    confirmLabel: creating ? t('add') : t('save'),
     ...(existing
-      ? { destructive: { label: 'Delete', onSelect: (handle) => removeModel(view, existing, handle) } }
+      ? {
+          destructive: {
+            label: t('deleteLabel'),
+            confirm: t('confirmDeleteModel', { name: existing.display_name }),
+            onSelect: (handle) => removeModel(view, existing, handle),
+          },
+        }
       : {}),
     build: (body) => {
       if (creating) body.appendChild(providerID.element);
-      else body.appendChild(readOnly('Provider', existing.provider_name));
+      else body.appendChild(readOnly(t('colProvider'), existing.provider_name));
       body.appendChild(modelID.element);
       body.appendChild(displayName.element);
       body.appendChild(description.element);
       body.appendChild(enabled.element);
       body.appendChild(sortOrder.element);
 
-      body.appendChild(section('Capabilities', 'No endpoint reports these, so they are declared here.'));
+      body.appendChild(section(t('secCapabilities'), t('capabilitiesHint')));
       body.appendChild(reasoning.element);
       body.appendChild(images.element);
       body.appendChild(vision.element);
@@ -181,8 +241,11 @@ function editModel(view: AdminView, providers: Provider[], existing: AdminModel 
       body.appendChild(contextWindow.element);
       body.appendChild(maxOutput.element);
 
-      body.appendChild(section('Credit weights',
-        'What a turn costs against a user allowance. Leave everything at one for a flat rate.'));
+      body.appendChild(section(t('secRouting')));
+      body.appendChild(routeTo.element);
+      body.appendChild(reasoningStyle.element);
+
+      body.appendChild(section(t('secWeights'), t('weightsHint')));
       body.appendChild(requestWeight.element);
       body.appendChild(inputWeight.element);
       body.appendChild(outputWeight.element);
@@ -190,6 +253,8 @@ function editModel(view: AdminView, providers: Provider[], existing: AdminModel 
     },
     onConfirm: async (handle) => {
       const payload: Record<string, unknown> = {
+        route_to_id: routeTo.value(),
+        reasoning_style: reasoningStyle.value(),
         model_id: modelID.value(),
         display_name: displayName.value(),
         description: description.value(),
@@ -228,7 +293,6 @@ function editModel(view: AdminView, providers: Provider[], existing: AdminModel 
 }
 
 async function removeModel(view: AdminView, model: AdminModel, panel: PanelHandle): Promise<void> {
-  if (!window.confirm(`Delete ${model.display_name}? Conversations that used it keep their messages.`)) return;
   panel.setBusy(true);
   try {
     await adminApi.deleteModel(model.id);

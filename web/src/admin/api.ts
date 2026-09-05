@@ -41,6 +41,12 @@ export interface AdminModel {
   enabled: boolean;
   sort_order: number;
 
+  // Where a request for this model actually goes, and which reasoning flag it
+  // wants. Administrative only: the model list a user is served carries
+  // neither, so a route leaves no trace anywhere they can see.
+  route_to_id: string;
+  reasoning_style: ReasoningStyle | '';
+
   supports_reasoning: boolean;
   supports_images: boolean;
   supports_vision: boolean;
@@ -148,6 +154,12 @@ export interface Meta {
   reasoning_styles: ReasoningStyle[];
 }
 
+// The reader's client already describes this shape, and one row of JSON
+// should not have two declarations that can drift apart.
+import type { Announcement, DisplayMode } from '../api/announcements';
+
+export type { Announcement, DisplayMode };
+
 // --- reads ---------------------------------------------------------------------
 
 export const adminApi = {
@@ -220,6 +232,13 @@ export const adminApi = {
   settings: () => api.get<{ settings: Record<string, string>; groups: Group[] }>('/api/admin/settings'),
   saveSettings: (values: Record<string, string>) =>
     api.put<{ settings: Record<string, string> }>('/api/admin/settings', values),
+
+  announcements: () => api.get<{ announcements: Announcement[] }>('/api/admin/announcements'),
+  createAnnouncement: (body: Record<string, unknown>) =>
+    api.post<{ announcement: Announcement }>('/api/admin/announcements', body),
+  updateAnnouncement: (id: string, body: Record<string, unknown>) =>
+    api.patch<{ announcement: Announcement }>(`/api/admin/announcements/${id}`, body),
+  deleteAnnouncement: (id: string) => api.delete<void>(`/api/admin/announcements/${id}`),
 };
 
 export type { Account, Role, AccountStatus, Conversation, Message };

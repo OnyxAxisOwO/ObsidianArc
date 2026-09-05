@@ -35,7 +35,15 @@ export function isAdmin(): boolean {
 }
 
 export function siteInfo(): SiteInfo {
-  return site ?? { name: 'Obsidian Arc', description: '', registration_enabled: false, setup_required: false };
+  return site ?? {
+    name: 'Obsidian Arc',
+    description: '',
+    registration_enabled: false,
+    setup_required: false,
+    require_email: false,
+    email_domains: [],
+    landing: { mode: 'login', intro: '', trial: false, trial_turns: 0 },
+  };
 }
 
 export function currentPreferences(): Preferences {
