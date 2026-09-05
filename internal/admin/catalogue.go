@@ -1,0 +1,361 @@
+package admin
+
+import (
+	"net/http"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
+)
+
+// Providers and models: the administrative half of the catalogue.
+
+const maxProviderBody = 32 * 1024
+
+type providerRequest struct {
+	Name             string                  `json:"name"`
+	Kind             adapter.Kind            `json:"kind"`
+	BaseURL          string                  `json:"base_url"`
+	APIKey           *string                 `json:"api_key"`
+	Headers          *map[string]string      `json:"headers"`
+	AnthropicVersion *string                 `json:"anthropic_version"`
+	ReasoningStyle   *adapter.ReasoningStyle `json:"reasoning_style"`
+	TimeoutSeconds   *int                    `json:"timeout_seconds"`
+	Enabled          *bool                   `json:"enabled"`
+	SortOrder        *int                    `json:"sort_order"`
+}
+
+func (h *Handlers) listProviders(w http.ResponseWriter, r *http.Request) error {
+	records, err := h.providers.List(r.Context())
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	// provider.Provider has no API key field at all, so this cannot leak one.
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"providers": records})
+}
+
+func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error {
+	var body providerRequest
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+		return err
+	}
+	if body.APIKey == nil {
+		return httpx.BadRequest("An API key is required.")
+	}
+
+	in := provider.CreateInput{
+		Name:    body.Name,
+		Kind:    body.Kind,
+		BaseURL: body.BaseURL,
+		APIKey:  *body.APIKey,
+		Enabled: true,
+	}
+	if body.Headers != nil {
+		in.Headers = *body.Headers
+	}
+	if body.AnthropicVersion != nil {
+		in.AnthropicVersion = *body.AnthropicVersion
+	}
+	if body.ReasoningStyle != nil {
+		in.ReasoningStyle = *body.ReasoningStyle
+	}
+	if body.TimeoutSeconds != nil {
+		in.TimeoutSeconds = *body.TimeoutSeconds
+	}
+	if body.Enabled != nil {
+		in.Enabled = *body.Enabled
+	}
+	if body.SortOrder != nil {
+		in.SortOrder = *body.SortOrder
+	}
+
+	record, err := h.providers.Create(r.Context(), in)
+	if err != nil {
+		return translateProviderError(err)
+	}
+	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"provider": record})
+}
+
+func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request) error {
+	providerID, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+
+	var body providerRequest
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+		return err
+	}
+
+	update := provider.Update{
+		APIKey:           body.APIKey,
+		Headers:          body.Headers,
+		AnthropicVersion: body.AnthropicVersion,
+		ReasoningStyle:   body.ReasoningStyle,
+		TimeoutSeconds:   body.TimeoutSeconds,
+		Enabled:          body.Enabled,
+		SortOrder:        body.SortOrder,
+	}
+	// Name, kind and base URL arrive as plain fields rather than pointers
+	// because the form always submits all three; an empty one means "unset",
+	// which validation rejects.
+	if body.Name != "" {
+		update.Name = &body.Name
+	}
+	if body.Kind != "" {
+		update.Kind = &body.Kind
+	}
+	if body.BaseURL != "" {
+		update.BaseURL = &body.BaseURL
+	}
+
+	record, err := h.providers.Update(r.Context(), providerID, update)
+	if err != nil {
+		return translateProviderError(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"provider": record})
+}
+
+func (h *Handlers) deleteProvider(w http.ResponseWriter, r *http.Request) error {
+	providerID, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+	if err := h.providers.Delete(r.Context(), providerID); err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.NoContent(w)
+}
+
+// detectModels asks the provider what it actually serves.
+//
+// This runs on the server, not in the browser, which is the whole difference
+// from the standalone build: the credential never leaves the process, and an
+// endpoint that refuses cross-origin requests works anyway.
+func (h *Handlers) detectModels(w http.ResponseWriter, r *http.Request) error {
+	providerID, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+
+	resolved, err := h.providers.Resolve(r.Context(), providerID)
+	if err != nil {
+		return translateProviderError(err)
+	}
+
+	remote, err := h.registry.ListModels(r.Context(), resolved)
+	if err != nil {
+		return translateAdapterError(err)
+	}
+
+	// Marking what is already configured lets the UI disable those rows
+	// instead of letting an administrator create a duplicate and be told off
+	// by a constraint.
+	existing, err := h.models.ListAll(r.Context(), providerID)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	known := make(map[string]bool, len(existing))
+	for _, record := range existing {
+		known[record.ModelID] = true
+	}
+
+	type detected struct {
+		ModelID     string `json:"model_id"`
+		DisplayName string `json:"display_name"`
+		Configured  bool   `json:"configured"`
+	}
+	out := make([]detected, 0, len(remote))
+	for _, entry := range remote {
+		out = append(out, detected{
+			ModelID:     entry.ID,
+			DisplayName: entry.DisplayName,
+			Configured:  known[entry.ID],
+		})
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"models": out})
+}
+
+// --- models --------------------------------------------------------------------
+
+type modelRequest struct {
+	ProviderID  string  `json:"provider_id"`
+	ModelID     *string `json:"model_id"`
+	DisplayName *string `json:"display_name"`
+	Description *string `json:"description"`
+	Avatar      *string `json:"avatar"`
+	Enabled     *bool   `json:"enabled"`
+	SortOrder   *int    `json:"sort_order"`
+
+	SupportsReasoning    *bool `json:"supports_reasoning"`
+	SupportsImages       *bool `json:"supports_images"`
+	SupportsVision       *bool `json:"supports_vision"`
+	SupportsStreaming    *bool `json:"supports_streaming"`
+	SupportsSystemPrompt *bool `json:"supports_system_prompt"`
+	SupportsTools        *bool `json:"supports_tools"`
+	ContextWindow        *int  `json:"context_window"`
+	MaxOutputTokens      *int  `json:"max_output_tokens"`
+
+	RequestWeight        *float64 `json:"request_weight"`
+	InputTokenWeight     *float64 `json:"input_token_weight"`
+	OutputTokenWeight    *float64 `json:"output_token_weight"`
+	ReasoningTokenWeight *float64 `json:"reasoning_token_weight"`
+}
+
+func (h *Handlers) listModels(w http.ResponseWriter, r *http.Request) error {
+	providerID := r.URL.Query().Get("provider_id")
+	if providerID != "" && !isValidID(providerID) {
+		return httpx.BadRequest("Malformed provider id.")
+	}
+
+	records, err := h.models.ListAll(r.Context(), providerID)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"models": records})
+}
+
+func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
+	var body modelRequest
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+		return err
+	}
+	if !isValidID(body.ProviderID) {
+		return httpx.BadRequest("A provider is required.")
+	}
+	if _, err := h.providers.ByID(r.Context(), body.ProviderID); err != nil {
+		return translateProviderError(err)
+	}
+
+	in := model.CreateInput{
+		ProviderID: body.ProviderID,
+		Enabled:    true,
+		Capabilities: model.Capabilities{
+			SupportsStreaming:    true,
+			SupportsSystemPrompt: true,
+		},
+		// Neutral by default: one credit per thousand tokens either way, and
+		// nothing charged simply for asking.
+		Weights: model.Weights{InputToken: 1, OutputToken: 1, ReasoningToken: 1},
+	}
+	applyModelFields(&in.ModelID, &in.DisplayName, &in.Description, &in.Avatar,
+		&in.Enabled, &in.SortOrder, &in.Capabilities, &in.Weights, body)
+
+	record, err := h.models.Create(r.Context(), in)
+	if err != nil {
+		return model.TranslateError(err)
+	}
+	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"model": record})
+}
+
+func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
+	modelID, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+
+	var body modelRequest
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+		return err
+	}
+
+	record, err := h.models.Update(r.Context(), modelID, model.Update{
+		ModelID:              body.ModelID,
+		DisplayName:          body.DisplayName,
+		Description:          body.Description,
+		Avatar:               body.Avatar,
+		Enabled:              body.Enabled,
+		SortOrder:            body.SortOrder,
+		SupportsReasoning:    body.SupportsReasoning,
+		SupportsImages:       body.SupportsImages,
+		SupportsVision:       body.SupportsVision,
+		SupportsStreaming:    body.SupportsStreaming,
+		SupportsSystemPrompt: body.SupportsSystemPrompt,
+		SupportsTools:        body.SupportsTools,
+		ContextWindow:        body.ContextWindow,
+		MaxOutputTokens:      body.MaxOutputTokens,
+		RequestWeight:        body.RequestWeight,
+		InputTokenWeight:     body.InputTokenWeight,
+		OutputTokenWeight:    body.OutputTokenWeight,
+		ReasoningTokenWeight: body.ReasoningTokenWeight,
+	})
+	if err != nil {
+		return model.TranslateError(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"model": record})
+}
+
+func (h *Handlers) deleteModel(w http.ResponseWriter, r *http.Request) error {
+	modelID, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+	if err := h.models.Delete(r.Context(), modelID); err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.NoContent(w)
+}
+
+func applyModelFields(
+	modelID, displayName, description, avatar *string,
+	enabled *bool, sortOrder *int,
+	capabilities *model.Capabilities, weights *model.Weights,
+	body modelRequest,
+) {
+	setIf(modelID, body.ModelID)
+	setIf(displayName, body.DisplayName)
+	setIf(description, body.Description)
+	setIf(avatar, body.Avatar)
+	setIf(enabled, body.Enabled)
+	setIf(sortOrder, body.SortOrder)
+
+	setIf(&capabilities.SupportsReasoning, body.SupportsReasoning)
+	setIf(&capabilities.SupportsImages, body.SupportsImages)
+	setIf(&capabilities.SupportsVision, body.SupportsVision)
+	setIf(&capabilities.SupportsStreaming, body.SupportsStreaming)
+	setIf(&capabilities.SupportsSystemPrompt, body.SupportsSystemPrompt)
+	setIf(&capabilities.SupportsTools, body.SupportsTools)
+	setIf(&capabilities.ContextWindow, body.ContextWindow)
+	setIf(&capabilities.MaxOutputTokens, body.MaxOutputTokens)
+
+	setIf(&weights.Request, body.RequestWeight)
+	setIf(&weights.InputToken, body.InputTokenWeight)
+	setIf(&weights.OutputToken, body.OutputTokenWeight)
+	setIf(&weights.ReasoningToken, body.ReasoningTokenWeight)
+}
+
+func setIf[T any](target *T, value *T) {
+	if value != nil {
+		*target = *value
+	}
+}
+
+func isValidID(value string) bool {
+	return value != "" && len(value) == 26
+}
+
+// translateAdapterError turns an upstream failure into a response. The
+// classification the adapter already made is what decides the status, so no
+// handler parses a provider's error text.
+func translateAdapterError(err error) error {
+	var upstream *adapter.Error
+	if !asAdapter(err, &upstream) {
+		return httpx.Internal(err)
+	}
+
+	switch upstream.Kind {
+	case adapter.ErrorAuth:
+		return httpx.BadRequest("%s", upstream.Message)
+	case adapter.ErrorRateLimit:
+		return httpx.TooManyRequests("provider_rate_limited", upstream.Message)
+	case adapter.ErrorNetwork:
+		return httpx.Unavailable(upstream.Message).WithCause(err)
+	case adapter.ErrorUpstream:
+		return httpx.Unavailable(upstream.Message).WithCause(err)
+	case adapter.ErrorCancelled:
+		return httpx.Unavailable("The request was cancelled.")
+	default:
+		return httpx.BadRequest("%s", upstream.Message)
+	}
+}
