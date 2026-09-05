@@ -21,7 +21,9 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -33,6 +35,8 @@ type Handlers struct {
 	settings  *settings.Service
 	registry  *adapter.Registry
 	auth      *auth.Service
+	usage     *usage.Store
+	quota     *quota.Service
 }
 
 func NewHandlers(
@@ -43,6 +47,8 @@ func NewHandlers(
 	set *settings.Service,
 	registry *adapter.Registry,
 	authService *auth.Service,
+	usageStore *usage.Store,
+	quotaService *quota.Service,
 ) *Handlers {
 	return &Handlers{
 		users:     users,
@@ -52,6 +58,8 @@ func NewHandlers(
 		settings:  set,
 		registry:  registry,
 		auth:      authService,
+		usage:     usageStore,
+		quota:     quotaService,
 	}
 }
 
@@ -73,6 +81,13 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/models", protected(h.createModel))
 	mux.Handle("PATCH /api/admin/models/{id}", protected(h.updateModel))
 	mux.Handle("DELETE /api/admin/models/{id}", protected(h.deleteModel))
+
+	mux.Handle("GET /api/admin/usage", protected(h.usageSummary))
+	mux.Handle("GET /api/admin/usage/records", protected(h.usageRecords))
+
+	mux.Handle("GET /api/admin/quota/policies", protected(h.listPolicies))
+	mux.Handle("PUT /api/admin/quota/policies", protected(h.savePolicy))
+	mux.Handle("DELETE /api/admin/quota/policies/{scope}", protected(h.deletePolicy))
 
 	mux.Handle("GET /api/admin/meta", protected(h.meta))
 }

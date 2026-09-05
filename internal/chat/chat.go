@@ -27,6 +27,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -87,6 +88,7 @@ type TurnRecord struct {
 	User           user.User
 	Model          model.Model
 	ProviderID     string
+	ProviderName   string
 	ConversationID string
 	MessageID      string
 	RequestID      string
@@ -194,6 +196,9 @@ func (s *Service) Prepare(ctx context.Context, req *TurnRequest) (model.Resolved
 // connection for minutes.
 func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resolved, emit Emit) error {
 	startedAt := time.Now()
+	// Identifies this turn in the usage ledger, and makes writing that row
+	// idempotent if it is ever retried.
+	requestID := id.New()
 
 	prepared, err := s.openTurn(ctx, req)
 	if err != nil {
@@ -259,6 +264,7 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 	defer cancelSave()
 
 	finish := finished{
+		requestID:  requestID,
 		request:    req,
 		resolved:   resolved,
 		prepared:   prepared,
@@ -447,6 +453,7 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 }
 
 type finished struct {
+	requestID  string
 	request    TurnRequest
 	resolved   model.Resolved
 	prepared   prepared
@@ -553,6 +560,8 @@ func (s *Service) record(ctx context.Context, f finished, messageID string, stat
 		User:           f.request.User,
 		Model:          f.resolved.Model,
 		ProviderID:     f.resolved.Provider.ID,
+		ProviderName:   f.resolved.Provider.Name,
+		RequestID:      f.requestID,
 		ConversationID: f.prepared.conversationID,
 		MessageID:      messageID,
 		Usage:          f.usage,

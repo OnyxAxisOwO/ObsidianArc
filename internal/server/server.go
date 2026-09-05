@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -21,8 +22,10 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/web"
 )
@@ -43,6 +46,7 @@ type Server struct {
 	settings      *settings.Service
 	auth          *auth.Service
 	conversations *conversation.Store
+	quota         *quota.Service
 }
 
 func New(ctx context.Context, deps Deps) (*Server, error) {
@@ -72,7 +76,53 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	models := model.NewStore(db, providers)
 	registry := adapter.NewRegistry(cfg.Upstream)
 	conversations := conversation.NewStore(db)
+	usageStore := usage.NewStore(db)
+	quotaService := quota.NewService(db, quota.NewStore(db), settingsService)
 	chatService := chat.NewService(db, conversations, models, registry, settingsService)
+
+	// The gateway calls out to accounting rather than importing it: the chat
+	// path stays readable, and usage can be swapped or disabled without the
+	// gateway knowing.
+	chatService.Authorize = func(ctx context.Context, req chat.TurnRequest) error {
+		if err := quotaService.Reserve(ctx, req.User); err != nil {
+			if translated := quota.TranslateError(err); translated != nil {
+				return translated
+			}
+			return err
+		}
+		return nil
+	}
+	chatService.OnTurn = func(ctx context.Context, record chat.TurnRecord) {
+		if err := usageStore.Write(ctx, usage.Record{
+			UserID:          record.User.ID,
+			GroupID:         record.User.GroupID,
+			ProviderID:      record.ProviderID,
+			ProviderName:    record.ProviderName,
+			ModelID:         record.Model.ID,
+			ModelName:       record.Model.DisplayName,
+			ModelRef:        record.Model.ModelID,
+			ConversationID:  record.ConversationID,
+			MessageID:       record.MessageID,
+			RequestID:       record.RequestID,
+			InputTokens:     record.Usage.InputTokens,
+			OutputTokens:    record.Usage.OutputTokens,
+			ReasoningTokens: record.Usage.ReasoningTokens,
+			Credits:         record.Credits,
+			Status:          usage.Status(record.Status),
+			ErrorCode:       record.ErrorCode,
+			StartedAt:       record.StartedAt.UnixMilli(),
+			FinishedAt:      record.FinishedAt.UnixMilli(),
+		}); err != nil {
+			slog.ErrorContext(ctx, "could not record usage", "error", err, "user", record.User.ID)
+		}
+
+		// The request itself was already counted at reservation; this adds
+		// what it turned out to cost.
+		tokens := int64(record.Usage.Total())
+		if err := quotaService.Settle(ctx, record.User.ID, tokens, record.Credits); err != nil {
+			slog.ErrorContext(ctx, "could not settle quota", "error", err, "user", record.User.ID)
+		}
+	}
 
 	if err := Bootstrap(ctx, db, groups, users, authService, cfg); err != nil {
 		return nil, err
@@ -94,7 +144,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	auth.NewHandlers(authService, users, groups, preferences, settingsService, cfg.TrustProxy).Routes(mux)
 	model.NewHandlers(models).Routes(mux)
 	chat.NewHandlers(chatService, conversations).Routes(mux)
-	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService).Routes(mux)
+	quota.NewHandlers(quotaService).Routes(mux)
+	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService).Routes(mux)
 
 	// Anything under /api that no module claimed is a client bug, and should
 	// read as one instead of quietly returning the SPA shell.
@@ -128,6 +179,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		settings:      settingsService,
 		auth:          authService,
 		conversations: conversations,
+		quota:         quotaService,
 	}, nil
 }
 
@@ -161,6 +213,9 @@ func (s *Server) sweep(ctx context.Context) {
 	_, _ = s.auth.Sessions().DeleteExpired(sweepCtx)
 	// Images uploaded into a composer that was never sent.
 	_, _ = s.conversations.DeleteOrphans(sweepCtx, conversation.OrphanTTL)
+	// Counter buckets whose window has long since rolled over. The ledger is
+	// never pruned: it is the audit trail.
+	_, _ = s.quota.PruneCounters(sweepCtx)
 }
 
 func devServerURL(cfg config.Config) string {
