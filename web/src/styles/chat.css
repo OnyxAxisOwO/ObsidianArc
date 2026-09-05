@@ -1456,48 +1456,50 @@
 
 .ai-effort {
   --effort-ratio: 0;
+  /* The thumb's size drives the geometry below, so the fill and the thumb
+     cannot disagree about where the value is however either is resized. */
+  --effort-thumb: 24px;
   position: relative;
-  height: 26px;
-  margin: 0 2px 2px;
+  height: 32px;
+  margin: 2px 2px 4px;
 }
 
 .ai-effort-track {
   position: absolute;
-  inset: 2px 0;
+  inset: 3px 0;
   border-radius: 999px;
   background: var(--ai-field-bg);
 }
 
-/* Reaches the middle of the thumb rather than the raw percentage, so the two
-   never disagree about where the value is. */
+/* Reaches the middle of the thumb, never past it and never short of it: at
+   either end the whole fill is under the thumb, which is what stops a stub
+   of colour poking out beside it at the minimum. */
 .ai-effort-fill {
   position: absolute;
   inset: 0 auto 0 0;
-  width: calc(11px + (100% - 22px) * var(--effort-ratio));
+  width: calc(var(--effort-thumb) / 2 + (100% - var(--effort-thumb)) * var(--effort-ratio));
   overflow: hidden;
   border-radius: 999px;
-  background: var(--ai-primary);
+  /* A gradient rather than one flat colour: the bar is the one place in this
+     interface that is meant to look like effort rather than like a surface. */
+  background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 55%, #a855f7 100%);
   transition: width 0.18s cubic-bezier(0.2, 0, 0, 1);
 }
 
-.ai-effort.off .ai-effort-fill {
-  opacity: 0.35;
-}
-
-/* Motes drifting along the filled part, clipped by it. Tinted with the colour
-   that sits on top of the accent rather than with white, so they stay visible
-   whichever way round the scheme puts them. */
+/* Motes drifting along the filled part, clipped by it. White, because the
+   gradient underneath is dark whichever scheme the rest of the page is in. */
 .ai-effort-sparks {
   position: absolute;
   inset: 0;
   background-image:
-    radial-gradient(circle at 12% 34%, color-mix(in srgb, var(--ai-primary-text) 90%, transparent) 0 1px, transparent 1.6px),
-    radial-gradient(circle at 38% 72%, color-mix(in srgb, var(--ai-primary-text) 65%, transparent) 0 1px, transparent 1.6px),
-    radial-gradient(circle at 61% 26%, color-mix(in srgb, var(--ai-primary-text) 80%, transparent) 0 1.2px, transparent 1.8px),
-    radial-gradient(circle at 84% 62%, color-mix(in srgb, var(--ai-primary-text) 55%, transparent) 0 1px, transparent 1.6px);
-  background-size: 54px 100%;
+    radial-gradient(circle at 12% 32%, rgba(255, 255, 255, 0.95) 0 1.1px, transparent 1.8px),
+    radial-gradient(circle at 33% 74%, rgba(255, 255, 255, 0.7) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 52% 24%, rgba(255, 255, 255, 0.85) 0 1.3px, transparent 2px),
+    radial-gradient(circle at 71% 62%, rgba(255, 255, 255, 0.6) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 88% 38%, rgba(255, 255, 255, 0.8) 0 1.1px, transparent 1.8px);
+  background-size: 62px 100%;
   background-repeat: repeat-x;
-  animation: ai-effort-drift 3.6s linear infinite;
+  animation: ai-effort-drift 4s linear infinite;
 }
 
 .ai-effort.off .ai-effort-sparks {
@@ -1512,7 +1514,7 @@
   background: linear-gradient(
     100deg,
     transparent 35%,
-    color-mix(in srgb, var(--ai-primary-text) 22%, transparent) 50%,
+    rgba(255, 255, 255, 0.3) 50%,
     transparent 65%
   );
   transform: translateX(-100%);
@@ -1528,7 +1530,7 @@
     background-position: 0 0;
   }
   to {
-    background-position: 54px 0;
+    background-position: 62px 0;
   }
 }
 
@@ -1542,22 +1544,22 @@
   }
 }
 
+/* Always white, whatever the scheme and whatever the fill is doing: it is the
+   one thing on the bar that has to be findable at a glance. */
 .ai-effort-thumb {
   position: absolute;
   top: 50%;
-  left: calc(11px + (100% - 22px) * var(--effort-ratio));
-  width: 18px;
-  height: 18px;
+  left: calc(var(--effort-thumb) / 2 + (100% - var(--effort-thumb)) * var(--effort-ratio));
+  width: var(--effort-thumb);
+  height: var(--effort-thumb);
   border-radius: 50%;
-  background: var(--ai-primary-text);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  background: #ffffff;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(0, 0, 0, 0.06);
   transform: translate(-50%, -50%);
   transition: left 0.18s cubic-bezier(0.2, 0, 0, 1);
   pointer-events: none;
-}
-
-.ai-effort.off .ai-effort-thumb {
-  background: var(--ai-text-secondary);
 }
 
 /* The real control, invisible: the drawing above is ours, the keyboard
@@ -1576,14 +1578,14 @@
 .ai-effort-range::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   opacity: 0;
 }
 
 .ai-effort-range::-moz-range-thumb {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border: none;
   opacity: 0;
 }
