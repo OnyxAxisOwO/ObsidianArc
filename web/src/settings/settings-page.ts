@@ -28,7 +28,6 @@ import {
 } from '../theme/theme';
 import { prepareImage, ImageError } from '../chat/image';
 import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
-import { dropdown, menuItem } from '../ui/menu';
 import { numberField, selectField, textArea, textField } from '../ui/form';
 import { language, setLanguage, type Language } from '../i18n';
 
@@ -66,29 +65,67 @@ export function renderSettingsPage(root: HTMLElement): void {
   let category: Category = 'appearance';
   let switchDirection: 'forward' | 'back' | 'rise' = 'rise';
 
+  // Handles for in-place tab switches so rail/tabs don't flicker or re-mount
+  let activeRailButtons: Map<Category, HTMLElement> | null = null;
+  let activeTabButtons: Map<Category, HTMLElement> | null = null;
+  let activeForm: HTMLElement | null = null;
+
+  function buildForm(dir: 'forward' | 'back' | 'rise'): HTMLElement {
+    const animClass = dir === 'forward'
+      ? 'enter-forward'
+      : dir === 'back'
+        ? 'enter-back'
+        : 'enter-rise';
+
+    const form = el('div', `oa-settings ${animClass}`);
+    form.appendChild(el('p', 'oa-settings-account', `@${account!.username}`));
+
+    if (category === 'appearance') {
+      form.appendChild(appearanceSection());
+      form.appendChild(wallpaperSection());
+    } else if (category === 'chat') {
+      form.appendChild(chatSection());
+    } else {
+      form.appendChild(profileSection());
+      form.appendChild(passwordSection());
+    }
+    return form;
+  }
+
   function selectCategory(next: Category): void {
     if (next === category) return;
     const from = CATEGORIES.findIndex((e) => e.id === category);
     const to = CATEGORIES.findIndex((e) => e.id === next);
-    switchDirection = to > from ? 'forward' : 'back';
+    const dir = to > from ? 'forward' : 'back';
     category = next;
+
+    // Fast-path in-place update: keep tabs/rail mounted, smoothly toggle
+    // .active and slide in the new form with PageDye directional animation.
+    if (activeTabButtons && activeForm && activeForm.parentElement) {
+      for (const [id, btn] of activeTabButtons) {
+        btn.classList.toggle('active', id === category);
+      }
+      const newForm = buildForm(dir);
+      activeForm.parentElement.replaceChild(newForm, activeForm);
+      activeForm = newForm;
+      panel.body.scrollTop = 0;
+      return;
+    }
+
+    if (activeRailButtons && activeForm && activeForm.parentElement) {
+      for (const [id, btn] of activeRailButtons) {
+        btn.classList.toggle('active', id === category);
+      }
+      const newForm = buildForm(dir);
+      activeForm.parentElement.replaceChild(newForm, activeForm);
+      activeForm = newForm;
+      panel.body.scrollTop = 0;
+      return;
+    }
+
+    switchDirection = dir;
     panel.rebuild();
   }
-
-  const sectionsTrigger = iconButton('oa-icon-btn', ICONS.dots, t('switchSection'), undefined, 16);
-  const sections = dropdown(sectionsTrigger, (menu, close) => {
-    for (const entry of CATEGORIES) {
-      menu.appendChild(menuItem({
-        title: t(entry.label),
-        active: entry.id === category,
-        ...(entry.id === category ? { leading: icon(ICONS.check, 14) } : {}),
-        onSelect: () => {
-          close();
-          selectCategory(entry.id);
-        },
-      }));
-    }
-  }, { menuClass: 'oa-menu-compact' });
 
   const fullscreen = iconButton('oa-icon-btn', ICONS.expand, t('fullscreen'), () => {
     const on = panel.toggleFullscreen();
@@ -96,9 +133,6 @@ export function renderSettingsPage(root: HTMLElement): void {
     fullscreen.appendChild(icon(on ? ICONS.collapse : ICONS.expand, 16));
     fullscreen.title = t(on ? 'exitFullscreen' : 'fullscreen');
     fullscreen.setAttribute('aria-label', fullscreen.title);
-    // Full screen has room for the sections as a rail, which is a better
-    // control than a menu; narrow does not, so the menu comes back.
-    sections.group.hidden = on;
     switchDirection = 'rise';
     panel.rebuild();
   }, 16);
@@ -108,43 +142,51 @@ export function renderSettingsPage(root: HTMLElement): void {
     title: t('settings'),
     footer: false,
     width: 460,
-    actions: [sections.group, fullscreen],
+    actions: [fullscreen],
     build: (body, handle) => {
-      const animClass = switchDirection === 'forward'
-        ? 'enter-forward'
-        : switchDirection === 'back'
-          ? 'enter-back'
-          : 'enter-rise';
-      // Reset after consuming so non-navigational repaints default to rise
+      const form = buildForm(switchDirection);
       switchDirection = 'rise';
-
-      const form = el('div', `oa-settings ${animClass}`);
-      form.appendChild(el('p', 'oa-settings-account', `@${account.username}`));
-
-      if (category === 'appearance') {
-        form.appendChild(appearanceSection());
-        form.appendChild(wallpaperSection());
-      } else if (category === 'chat') {
-        form.appendChild(chatSection());
-      } else {
-        form.appendChild(profileSection());
-        form.appendChild(passwordSection());
-      }
+      activeForm = form;
 
       if (!handle.isFullscreen()) {
+        activeRailButtons = null;
+
+        // Drawer view: prominent segmented tab control right at the top,
+        // matching the multi-pane navigation pattern from PageDye.
+        const tabs = el('nav', 'oa-settings-tabs');
+        const tabButtons = new Map<Category, HTMLElement>();
+        for (const entry of CATEGORIES) {
+          const btn = button(
+            `oa-settings-tab${entry.id === category ? ' active' : ''}`,
+            t(entry.label),
+            () => selectCategory(entry.id),
+          );
+          tabs.appendChild(btn);
+          tabButtons.set(entry.id, btn);
+        }
+        activeTabButtons = tabButtons;
+
+        body.appendChild(tabs);
         body.appendChild(form);
         return;
       }
 
+      activeTabButtons = null;
+
       const split = el('div', 'oa-settings-split');
       const rail = el('nav', 'oa-settings-rail');
+      const railButtons = new Map<Category, HTMLElement>();
       for (const entry of CATEGORIES) {
-        rail.appendChild(button(
+        const btn = button(
           `oa-settings-rail-item${entry.id === category ? ' active' : ''}`,
           t(entry.label),
           () => selectCategory(entry.id),
-        ));
+        );
+        rail.appendChild(btn);
+        railButtons.set(entry.id, btn);
       }
+      activeRailButtons = railButtons;
+
       split.appendChild(rail);
       split.appendChild(form);
       body.appendChild(split);
