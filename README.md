@@ -36,7 +36,19 @@ system, same motion. What changed is everything behind it.
   global → group → user.
 - **Light / dark / system theme** with an accent picker: pick one hue and it
   is adjusted to stay readable in both schemes.
-- **Safe Markdown rendering** with no `innerHTML` anywhere in the render path.
+- **Announcements** with a read state per person: a popup on every visit,
+  once until it is read, or nothing but a dot on the bell.
+- **A configurable front door.** Visitors with no account get the sign-in
+  card, a page you write, or the chat itself — optionally live, so they can
+  ask a couple of questions before signing up.
+- **Model routing.** Offer one model and serve it with another; users see the
+  model they picked, and only an administrator sees that a route exists.
+- **Registration controls**: required and verified email addresses, a domain
+  allowlist, and a ceiling on how fast accounts may appear.
+- **Safe Markdown rendering** with no `innerHTML` in any path that renders
+  someone else's content. The one assignment in the project is the
+  administrator's own landing page, and the content policy — `script-src`
+  is `'self'` plus one hash — is what contains it rather than trust.
 
 ## Running it
 
@@ -70,6 +82,11 @@ tends to set:
 | `OBSIDIAN_COOKIE_SECURE` | `true` | Turn off only for plain-http local use |
 | `OBSIDIAN_SESSION_TTL` | `720h` | |
 | `OBSIDIAN_ADMIN_USER` / `_PASSWORD` | — | First administrator, on an empty database |
+| `OBSIDIAN_PUBLIC_URL` | — | Where links in outgoing mail point. Required for email verification |
+| `OBSIDIAN_SMTP_HOST` | — | Enables mail. Without it, email verification stays inert whatever the setting says |
+| `OBSIDIAN_SMTP_PORT` | `587` | 465 turns on implicit TLS; 587 uses STARTTLS |
+| `OBSIDIAN_SMTP_FROM` | the username | Envelope and header sender |
+| `OBSIDIAN_SMTP_USERNAME` / `_PASSWORD` | — | Omit both for an unauthenticated relay |
 
 ### Docker
 
