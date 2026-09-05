@@ -48,6 +48,12 @@
   cursor: pointer;
 }
 
+/* `display` on the class would otherwise beat the UA's [hidden] rule, which
+   is the same trap the detect panel below documents. */
+.oa-icon-btn[hidden] {
+  display: none;
+}
+
 .oa-icon-btn:hover {
   background: var(--ai-state-hover);
   color: var(--ai-text);
@@ -103,15 +109,21 @@
   gap: 6px;
   max-width: 220px;
   padding: 7px 10px 7px 12px;
+  /* The only <button> in the app that nothing else reset, so it wore the
+     browser's default 2px outset border — which is what made a soft pill
+     read as a hard-edged box. */
+  border: none;
   border-radius: 999px;
   background: var(--ai-surface-container-low);
   color: var(--ai-text);
   font-size: 12.5px;
   cursor: pointer;
+  transition: background-color 0.12s ease;
 }
 
-.oa-chip:hover {
-  background: var(--ai-state-hover);
+.oa-chip:hover,
+.oa-chip[aria-expanded='true'] {
+  background-color: var(--ai-state-hover);
 }
 
 .oa-chip.placeholder {
