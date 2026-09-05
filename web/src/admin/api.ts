@@ -182,6 +182,12 @@ export type { Announcement, DisplayMode };
 
 // --- reads ---------------------------------------------------------------------
 
+/** What the retention policy is currently holding on to. */
+export interface HeldAttachments {
+  held: number;
+  bytes: number;
+}
+
 export const adminApi = {
   dashboard: () => api.get<Dashboard>('/api/admin/dashboard'),
   meta: () => api.get<Meta>('/api/admin/meta'),
@@ -256,13 +262,21 @@ export const adminApi = {
     api.delete<void>(`/api/admin/quota/policies/${scope}?scope_id=${encodeURIComponent(scopeID)}`),
 
   settings: () =>
-    api.get<{ settings: Record<string, string>; groups: Group[]; mail_configured: boolean }>(
+    api.get<{
+      settings: Record<string, string>;
+      groups: Group[];
+      mail_configured: boolean;
+      attachments: HeldAttachments;
+    }>(
       '/api/admin/settings',
     ),
   saveSettings: (values: Record<string, string>) =>
     api.put<{ settings: Record<string, string> }>('/api/admin/settings', values),
   // More forgiving than saveSettings: identifiers that mean nothing on this
   // instance are cleared and named back rather than failing the whole file.
+  // The daily purge, on demand. Same operation, without waiting for 03:00.
+  purgeAttachments: () =>
+    api.post<{ purged: number; attachments: HeldAttachments }>('/api/admin/attachments/purge'),
   importSettings: (values: Record<string, string>) =>
     api.post<{ settings: Record<string, string>; applied: number; skipped: string[] }>(
       '/api/admin/settings/import',

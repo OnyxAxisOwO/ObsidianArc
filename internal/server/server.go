@@ -9,6 +9,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
@@ -355,11 +356,54 @@ func (s *Server) sweep(ctx context.Context) {
 	// Expired sessions are already refused on read; the sweep is only about
 	// not letting the table grow forever.
 	_, _ = s.auth.Sessions().DeleteExpired(sweepCtx)
-	// Images uploaded into a composer that was never sent.
-	_, _ = s.conversations.DeleteOrphans(sweepCtx, conversation.OrphanTTL)
+	s.sweepAttachments(sweepCtx)
 	// Counter buckets whose window has long since rolled over. The ledger is
 	// never pruned: it is the audit trail.
 	_, _ = s.quota.PruneCounters(sweepCtx)
+}
+
+// sweepAttachments applies the operator's retention policy: the orphan
+// window, an optional age limit, and an optional daily purge.
+//
+// The policy is read here rather than captured at boot, so changing it takes
+// effect on the next tick instead of on the next restart.
+func (s *Server) sweepAttachments(ctx context.Context) {
+	policy := conversation.Retention{
+		AfterDays: s.settings.Int(settings.AttachmentPurgeDays, 0),
+		DailyAt:   s.settings.Get(settings.AttachmentPurgeDaily),
+		OrphanTTL: time.Duration(s.settings.Int(settings.AttachmentOrphanMins, 60)) * time.Minute,
+	}
+	lastRun := int64(s.settings.Int(settings.AttachmentPurgeLast, 0))
+
+	// Configured but never run: record the time and purge nothing this pass.
+	// An operator who sets a 03:00 cleanup at three in the afternoon did not
+	// ask for everything to vanish right then.
+	if conversation.DecidePurge(policy.DailyAt, time.Now(), lastRun) == conversation.DecisionSeed {
+		if err := s.settings.Set(ctx, settings.AttachmentPurgeLast,
+			strconv.FormatInt(time.Now().UnixMilli(), 10)); err != nil {
+			slog.ErrorContext(ctx, "could not record the attachment purge time", "error", err)
+		}
+		policy.DailyAt = ""
+	}
+
+	result, err := s.conversations.Sweep(ctx, policy, lastRun)
+	if err != nil {
+		slog.ErrorContext(ctx, "attachment sweep failed", "error", err)
+		return
+	}
+	if result.RanDaily {
+		if err := s.settings.Set(ctx, settings.AttachmentPurgeLast,
+			strconv.FormatInt(time.Now().UnixMilli(), 10)); err != nil {
+			slog.ErrorContext(ctx, "could not record the attachment purge time", "error", err)
+		}
+	}
+	// Worth a line in the log: this is the one background task that destroys
+	// something, and an operator should be able to see that it is working.
+	if result.Aged > 0 || result.Purged > 0 || result.Orphans > 0 {
+		slog.InfoContext(ctx, "swept attachments",
+			"aged_out", result.Aged, "purged", result.Purged,
+			"orphans_removed", result.Orphans, "daily_purge", result.RanDaily)
+	}
 }
 
 func devServerURL(cfg config.Config) string {

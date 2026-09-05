@@ -690,6 +690,21 @@ const en = {
   importSettingsDone: 'Applied {count} settings.',
   importSettingsPartial: 'Applied {count} settings. Skipped: {skipped}',
   importSettingsMalformed: 'That file is not a settings export.',
+
+  // --- scheduled cleanup
+  secCleanup: 'Scheduled cleanup',
+  cleanupHint: 'Two independent rules. An age limit answers "how long may a picture live"; a daily purge answers "when is this server empty". Either can be off, and both can be on.',
+  attachmentPurgeDays: 'Delete images older than (days)',
+  attachmentPurgeDaysHint: '0 means age is not a reason to delete anything. Only relevant when images are being kept in the first place.',
+  attachmentPurgeDaily: 'Delete everything daily at',
+  attachmentPurgeDailyHint: 'HH:MM in the server’s local time; empty for never. The cleanup runs on the next sweep after that moment, so within about ten minutes of it. Uploads nobody has sent yet are left alone.',
+  attachmentOrphanMinutes: 'Keep unsent uploads for (minutes)',
+  attachmentOrphanMinutesHint: 'An image chosen in the composer and then abandoned. This is the one window in which the server holds a picture it has no use for.',
+  attachmentsHeld: 'Holding {count} images, {size}.',
+  attachmentsHeldNone: 'Holding no image data.',
+  purgeNow: 'Delete all stored images now',
+  purgeNowConfirm: 'Delete them all?',
+  purgeDone: 'Deleted {count} stored images.',
 } as const;
 
 export type StringKey = keyof typeof en;
@@ -1353,6 +1368,21 @@ const zh: Record<StringKey, string> = {
   importSettingsDone: '已应用 {count} 项设置。',
   importSettingsPartial: '已应用 {count} 项设置。已跳过：{skipped}',
   importSettingsMalformed: '这个文件不是设置导出文件。',
+
+  // --- scheduled cleanup
+  secCleanup: '定时清理',
+  cleanupHint: '两条互不干扰的规则。按天数回答"一张图能活多久"，定点清空回答"服务器什么时候是空的"。可以只开一个，也可以两个都开。',
+  attachmentPurgeDays: '超过多少天就删除（天）',
+  attachmentPurgeDaysHint: '填 0 表示不按年龄删。只有在图片本来就会被保留时才有意义。',
+  attachmentPurgeDaily: '每天定点全部删除',
+  attachmentPurgeDailyHint: 'HH:MM，按服务器本地时间；留空表示不启用。清理在该时刻之后的下一次巡检执行，也就是十分钟以内。还没发出去的上传不受影响。',
+  attachmentOrphanMinutes: '未发送的上传保留（分钟）',
+  attachmentOrphanMinutesHint: '在输入框里选了图又没发出去的那些。这是服务器唯一一段捏着没用图片的时间。',
+  attachmentsHeld: '当前保留 {count} 张图，共 {size}。',
+  attachmentsHeldNone: '当前没有保留任何图片数据。',
+  purgeNow: '立刻删除全部已存图片',
+  purgeNowConfirm: '确认全部删除？',
+  purgeDone: '已删除 {count} 张已存图片。',
 };
 
 const dictionaries: Record<Language, Record<StringKey, string>> = { en, zh };

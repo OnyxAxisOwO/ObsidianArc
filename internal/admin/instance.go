@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -103,9 +104,17 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 	}
 	// The groups travel with the settings because one of the settings is
 	// which group new accounts join, and a select needs its options.
+	// What the retention policy is actually holding. Without it an operator
+	// has to trust that their cleanup is working rather than see it.
+	held, bytes, err := h.conversations.Held(r.Context())
+	if err != nil {
+		return httpx.Internal(err)
+	}
+
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"settings": h.settings.All(),
-		"groups":   groups,
+		"settings":    h.settings.All(),
+		"groups":      groups,
+		"attachments": map[string]any{"held": held, "bytes": bytes},
 		// Whether this instance can post mail at all. The verification
 		// setting is inert without it, and the form says so rather than
 		// letting an operator switch on something that does nothing.
@@ -138,6 +147,9 @@ var writableSettings = map[string]bool{
 	settings.APIEnabled:           true,
 	settings.AttachmentMaxMB:      true,
 	settings.AttachmentRetain:     true,
+	settings.AttachmentPurgeDays:  true,
+	settings.AttachmentPurgeDaily: true,
+	settings.AttachmentOrphanMins: true,
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
@@ -179,6 +191,25 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 				settings.MaxAttachmentCeilingMB)
 		}
 	}
+	// An unparseable schedule would read as "off" and quietly never run, so
+	// it is refused here rather than discovered by an operator wondering why
+	// nothing is being cleaned up.
+	if raw, present := body[settings.AttachmentPurgeDaily]; present && strings.TrimSpace(raw) != "" {
+		if _, _, ok := conversation.ParseDailyTime(raw); !ok {
+			return httpx.BadRequest("The daily cleanup time must be HH:MM, or empty for never.")
+		}
+	}
+	if raw, present := body[settings.AttachmentPurgeDays]; present {
+		if days, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || days < 0 || days > 3650 {
+			return httpx.BadRequest("Keep images for between 0 and 3650 days; 0 means no age limit.")
+		}
+	}
+	if raw, present := body[settings.AttachmentOrphanMins]; present {
+		if mins, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || mins < 5 || mins > 1440 {
+			return httpx.BadRequest("Unsent uploads must be kept for between 5 and 1440 minutes.")
+		}
+	}
+
 	if display, present := body[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
 		return httpx.BadRequest("Unknown usage display %q.", display)
 	}
@@ -241,6 +272,12 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		delete(applied, settings.UsageDisplay)
 		skipped = append(skipped, settings.UsageDisplay)
 	}
+	if raw, present := applied[settings.AttachmentPurgeDaily]; present && strings.TrimSpace(raw) != "" {
+		if _, _, ok := conversation.ParseDailyTime(raw); !ok {
+			delete(applied, settings.AttachmentPurgeDaily)
+			skipped = append(skipped, settings.AttachmentPurgeDaily)
+		}
+	}
 	if raw, present := applied[settings.AttachmentMaxMB]; present {
 		size, err := strconv.Atoi(strings.TrimSpace(raw))
 		if err != nil || size < 1 || size > settings.MaxAttachmentCeilingMB {
@@ -278,5 +315,38 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		"settings": h.settings.All(),
 		"applied":  len(applied),
 		"skipped":  skipped,
+	})
+}
+
+// purgeAttachments drops every stored image immediately.
+//
+// The same operation the daily schedule performs, on demand — because an
+// operator who has just changed the policy, or who has been asked to delete
+// something now, should not have to wait until three in the morning to find
+// out whether it works.
+//
+// It does not touch uploads nobody has sent yet: those belong to a message
+// being written, and taking them would break it mid-compose. The orphan
+// window is what governs those.
+func (h *Handlers) purgeAttachments(w http.ResponseWriter, r *http.Request) error {
+	dropped, err := h.conversations.DiscardBefore(r.Context(), time.Now().UnixMilli())
+	if err != nil {
+		return httpx.Internal(err)
+	}
+
+	// Recorded as this cycle's run, so a manual purge at 02:00 does not leave
+	// the scheduled one to repeat the same work an hour later.
+	if err := h.settings.Set(r.Context(), settings.AttachmentPurgeLast,
+		strconv.FormatInt(time.Now().UnixMilli(), 10)); err != nil {
+		return httpx.Internal(err)
+	}
+
+	held, bytes, err := h.conversations.Held(r.Context())
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"purged":      dropped,
+		"attachments": map[string]any{"held": held, "bytes": bytes},
 	})
 }

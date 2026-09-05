@@ -42,6 +42,13 @@ const (
 	APIEnabled           = "api.enabled"
 	AttachmentMaxMB      = "attachments.max_mb"
 	AttachmentRetain     = "attachments.retain"
+	AttachmentPurgeDays  = "attachments.purge_after_days"
+	AttachmentPurgeDaily = "attachments.purge_daily_at"
+	AttachmentOrphanMins = "attachments.orphan_minutes"
+	// Written by the janitor rather than by a form, so that a restart does
+	// not lose track of whether today's purge already happened. Readable in
+	// the settings response and deliberately absent from the writable set.
+	AttachmentPurgeLast = "attachments.purge_last_run"
 )
 
 // MaxAttachmentCeilingMB bounds what an operator may set. A per-file limit
@@ -133,6 +140,15 @@ var Defaults = map[string]string{
 	// which buys one thing: a model that can still see an image several
 	// turns after it was sent.
 	AttachmentRetain: "false",
+	// Zero and empty mean "no scheduled cleanup". The default policy already
+	// drops an image as soon as its turn is sent, so a fresh instance has
+	// nothing for these to do.
+	AttachmentPurgeDays:  "0",
+	AttachmentPurgeDaily: "",
+	// An upload that was never sent. Short, because it is the one window in
+	// which this server holds a picture it has no use for.
+	AttachmentOrphanMins: "60",
+	AttachmentPurgeLast:  "0",
 }
 
 type Service struct {

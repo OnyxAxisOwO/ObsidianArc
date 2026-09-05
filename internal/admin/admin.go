@@ -103,6 +103,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/settings", protected(h.listSettings))
 	mux.Handle("PUT /api/admin/settings", protected(h.updateSettings))
 	mux.Handle("POST /api/admin/settings/import", protected(h.importSettings))
+	mux.Handle("POST /api/admin/attachments/purge", protected(h.purgeAttachments))
 
 	mux.Handle("GET /api/admin/providers", protected(h.listProviders))
 	mux.Handle("POST /api/admin/providers", protected(h.createProvider))

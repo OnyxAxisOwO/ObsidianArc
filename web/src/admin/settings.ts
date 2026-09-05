@@ -7,9 +7,9 @@
 import { ApiError } from '../api/client';
 import { pickJSONFile, saveAsFile } from '../api/backup';
 import { t } from '../i18n';
-import { button, clear, el } from '../ui/dom';
+import { button, clear, confirmable, el } from '../ui/dom';
 import { numberField, section, selectField, switchField, textArea, textField } from '../ui/form';
-import { adminApi, type AdminModel } from './api';
+import { adminApi, type AdminModel, type HeldAttachments } from './api';
 import { failure, type AdminView } from './admin-page';
 
 export async function renderSettings(view: AdminView): Promise<void> {
@@ -179,6 +179,30 @@ export async function renderSettings(view: AdminView): Promise<void> {
     hint: t('attachmentRetainHint'),
   });
 
+  const purgeAfterDays = numberField({
+    label: t('attachmentPurgeDays'),
+    value: Number(values['attachments.purge_after_days'] ?? 0),
+    min: 0,
+    max: 3650,
+    hint: t('attachmentPurgeDaysHint'),
+  });
+
+  const purgeDailyAt = textField({
+    label: t('attachmentPurgeDaily'),
+    value: values['attachments.purge_daily_at'] ?? '',
+    placeholder: '03:00',
+    hint: t('attachmentPurgeDailyHint'),
+    maxLength: 5,
+  });
+
+  const orphanMinutes = numberField({
+    label: t('attachmentOrphanMinutes'),
+    value: Number(values['attachments.orphan_minutes'] ?? 60),
+    min: 5,
+    max: 1440,
+    hint: t('attachmentOrphanMinutesHint'),
+  });
+
   const apiEnabled = switchField({
     label: t('apiEnabled'),
     value: values['api.enabled'] === 'true',
@@ -278,6 +302,12 @@ export async function renderSettings(view: AdminView): Promise<void> {
   form.appendChild(attachmentMaxMB.element);
   form.appendChild(attachmentRetain.element);
 
+  form.appendChild(section(t('secCleanup'), t('cleanupHint')));
+  form.appendChild(purgeAfterDays.element);
+  form.appendChild(purgeDailyAt.element);
+  form.appendChild(orphanMinutes.element);
+  form.appendChild(heldPanel(data.attachments));
+
   form.appendChild(section(t('apiKeys')));
   form.appendChild(apiEnabled.element);
 
@@ -322,7 +352,54 @@ export async function renderSettings(view: AdminView): Promise<void> {
       'api.enabled': String(apiEnabled.value()),
       'attachments.max_mb': String(attachmentMaxMB.value() ?? 6),
       'attachments.retain': String(attachmentRetain.value()),
+      'attachments.purge_after_days': String(purgeAfterDays.value() ?? 0),
+      'attachments.purge_daily_at': purgeDailyAt.value(),
+      'attachments.orphan_minutes': String(orphanMinutes.value() ?? 60),
     };
+  }
+
+  /**
+   * What the policy is holding right now, and a way to empty it immediately.
+   *
+   * The figure matters more than it looks: without it an operator has to
+   * trust that their cleanup is working rather than watch it work. The button
+   * is the same operation the schedule performs, so someone who has just
+   * changed the policy — or been asked to delete something now — does not
+   * have to wait until three in the morning to find out.
+   */
+  function heldPanel(initial: HeldAttachments): HTMLElement {
+    const wrap = el('div', 'oa-field');
+    const figure = el('p', 'oa-field-hint');
+
+    function paint(held: number, bytes: number): void {
+      figure.textContent = held
+        ? t('attachmentsHeld', { count: held, size: megabytes(bytes) })
+        : t('attachmentsHeldNone');
+    }
+    paint(initial.held, initial.bytes);
+
+    const purge = confirmable(
+      button('oa-btn', t('purgeNow'), () => {}),
+      { label: t('purgeNowConfirm'), title: t('purgeNow') },
+      () => {
+        purge.disabled = true;
+        void adminApi.purgeAttachments()
+          .then((result) => {
+            paint(result.attachments.held, result.attachments.bytes);
+            flash.textContent = t('purgeDone', { count: result.purged });
+            flash.classList.add('visible');
+          })
+          .catch((error: unknown) => {
+            flash.textContent = error instanceof ApiError ? error.message : String(error);
+            flash.classList.add('visible');
+          })
+          .finally(() => { purge.disabled = false; });
+      },
+    );
+
+    wrap.appendChild(figure);
+    wrap.appendChild(purge);
+    return wrap;
   }
 
   async function submit(): Promise<void> {
@@ -342,4 +419,13 @@ export async function renderSettings(view: AdminView): Promise<void> {
       save.disabled = false;
     }
   }
+}
+
+/** Bytes as a figure a person reads, to one decimal below a gigabyte. */
+function megabytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  if (mb >= 10) return `${Math.round(mb)} MB`;
+  if (mb >= 0.1) return `${mb.toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
