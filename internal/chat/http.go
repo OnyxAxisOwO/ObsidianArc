@@ -14,6 +14,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -123,8 +124,19 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 
 	resolved, release, err := h.service.Prepare(r.Context(), &request)
 	if err != nil {
-		return translatePrepareError(err)
+		translated := translatePrepareError(err)
+		var decided *httpx.Error
+		if errors.As(translated, &decided) {
+			reqlog.Annotate(r.Context(), reqlog.Annotation{ErrorCode: decided.Code})
+		}
+		return translated
 	}
+	// Named for the request log, so "everything this account asked of this
+	// model" includes the attempts that never produced a ledger row.
+	reqlog.Annotate(r.Context(), reqlog.Annotation{
+		ModelID:   resolved.Model.ID,
+		ModelName: resolved.Model.DisplayName,
+	})
 	// Every path out from here, including the ones that never reach the
 	// provider: an allowance reserved and not spent has to come back, and
 	// a concurrency slot has to be freed.

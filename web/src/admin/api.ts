@@ -164,6 +164,7 @@ export interface Dashboard {
   last_24h: UsageTotals;
   last_7d: UsageTotals;
   top_models: UsageBreakdown[];
+  top_users: UsageBreakdown[];
   series: UsagePoint[];
   bucket_ms: number;
   recent: UsageRecord[];
@@ -188,8 +189,50 @@ export interface HeldAttachments {
   bytes: number;
 }
 
+/** One answered request, as the log recorded it. */
+export interface LogEntry {
+  id: string;
+  at: number;
+  method: string;
+  path: string;
+  status: number;
+  duration_ms: number;
+  bytes: number;
+  user_id?: string;
+  username?: string;
+  channel?: string;
+  ip?: string;
+  user_agent?: string;
+  request_id?: string;
+  model_id?: string;
+  model_name?: string;
+  error_code?: string;
+}
+
+export interface LogOption {
+  value: string;
+  label: string;
+  count: number;
+}
+
+/** The values actually present in the log, so the filters offer what exists. */
+export interface LogFacets {
+  users: LogOption[];
+  models: LogOption[];
+  error_codes: LogOption[];
+  statuses: LogOption[];
+  total: number;
+  /** Entries lost to a full buffer since boot: a gap the screen admits to. */
+  dropped: number;
+  oldest: number;
+}
+
+/** How a breakdown is ranked. Three defensible answers to "the most". */
+export type UsageMetric = 'requests' | 'tokens' | 'credits';
+
 export const adminApi = {
-  dashboard: () => api.get<Dashboard>('/api/admin/dashboard'),
+  dashboard: (metric: UsageMetric = 'credits') =>
+    api.get<Dashboard>(`/api/admin/dashboard?metric=${metric}`),
   meta: () => api.get<Meta>('/api/admin/meta'),
 
   users: (query: string) => api.get<{ users: Account[]; total: number }>(`/api/admin/users${query}`),
@@ -244,11 +287,20 @@ export const adminApi = {
     api.patch<{ model: AdminModel }>(`/api/admin/models/${id}`, body),
   deleteModel: (id: string) => api.delete<void>(`/api/admin/models/${id}`),
 
+  logs: (query: string) =>
+    api.get<{ entries: LogEntry[]; total: number; limit: number; offset: number }>(
+      `/api/admin/logs${query}`,
+    ),
+  logFacets: (query: string) => api.get<LogFacets>(`/api/admin/logs/facets${query}`),
+  pruneLogs: (days: number) =>
+    api.post<{ removed: number }>('/api/admin/logs/prune', { days }),
+
   usage: (query: string) =>
     api.get<{
       totals: UsageTotals;
       by_model: UsageBreakdown[];
       by_provider: UsageBreakdown[];
+      by_user: UsageBreakdown[];
       series: UsagePoint[];
       bucket_ms: number;
     }>(`/api/admin/usage${query}`),

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
@@ -29,6 +30,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/trial"
@@ -54,6 +56,7 @@ type Server struct {
 	auth          *auth.Service
 	conversations *conversation.Store
 	quota         *quota.Service
+	requests      *reqlog.Store
 }
 
 func New(ctx context.Context, deps Deps) (*Server, error) {
@@ -94,6 +97,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	conversations := conversation.NewStore(db)
 	announcements := announcement.NewStore(db)
 	usageStore := usage.NewStore(db)
+	requestLog := reqlog.NewStore(db)
 	keys := apikey.NewStore(db)
 	quotaService := quota.NewService(db, quota.NewStore(db), settingsService)
 	chatService := chat.NewService(db, conversations, models, registry, settingsService)
@@ -265,7 +269,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	compatHandlers.Routes(mux)
 	announcement.NewHandlers(announcements).Routes(mux)
 	trial.NewHandlers(settingsService, models, registry, proxyTrust, cfg.SecretKey).Routes(mux)
-	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys).Routes(mux)
+	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog).Routes(mux)
 
 	// Anything under /api that no module claimed is a client bug, and should
 	// read as one instead of quietly returning the SPA shell.
@@ -286,11 +290,27 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		httpx.RequestID(),
 		httpx.Recover(),
 		httpx.Logger(),
+		// Outside the session lookup so the duration it measures is the whole
+		// answer and a request refused before any handler is still recorded;
+		// inside the request id so both records name the same request.
+		requestLog.Middleware(
+			func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
+			skipFromLog,
+		),
 		httpx.SecurityHeaders(cfg.Dev, web.InlineScriptHashes()),
 		httpx.SameOrigin(cfg.AllowedOrigins),
 		// Last, so the session lookup only happens for requests that survived
 		// the origin check.
 		authService.Attach(),
+		// After it, because the account it names only exists in the context
+		// Attach created — which the log's own layer, further out, never sees.
+		reqlog.Identify(func(r *http.Request) (string, string) {
+			account, ok := auth.UserFrom(r.Context())
+			if !ok {
+				return "", ""
+			}
+			return account.ID, account.Username
+		}),
 	)
 
 	return &Server{
@@ -300,6 +320,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		auth:          authService,
 		conversations: conversations,
 		quota:         quotaService,
+		requests:      requestLog,
 	}, nil
 }
 
@@ -328,12 +349,27 @@ func apiAllowed(
 	return nil
 }
 
+// skipFromLog drops the requests nobody audits: the compiled frontend's own
+// assets. Everything else is recorded, including the ones that never reached
+// a handler.
+func skipFromLog(r *http.Request) bool {
+	path := r.URL.Path
+	return strings.HasPrefix(path, "/assets/") ||
+		path == "/favicon.ico" ||
+		path == "/robots.txt"
+}
+
 func (s *Server) Handler() http.Handler { return s.handler }
 
 // StartJanitor runs the one piece of periodic work this server has: expiring
 // sessions. It is a single goroutine on a ticker, not a scheduler, and it
 // stops when the context does.
+// StartJanitor also starts the request log's writer, which is a goroutine
+// with the same lifetime: it drains the queue while the context lives and
+// writes whatever is left when it ends.
 func (s *Server) StartJanitor(ctx context.Context) {
+	go s.requests.Run(ctx)
+
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()

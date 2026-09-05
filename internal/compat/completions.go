@@ -15,6 +15,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
@@ -82,6 +83,11 @@ func (h *Handlers) completions(w http.ResponseWriter, r *http.Request, who calle
 	if err != nil {
 		return translateModelError(err, body.Model)
 	}
+
+	reqlog.Annotate(r.Context(), reqlog.Annotation{
+		ModelID:   resolved.Model.ID,
+		ModelName: resolved.Model.DisplayName,
+	})
 
 	request, err := h.buildRequest(body, resolved)
 	if err != nil {

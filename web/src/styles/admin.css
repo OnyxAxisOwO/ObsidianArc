@@ -126,12 +126,29 @@
   gap: 8px;
 }
 
+.oa-admin-body-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .oa-admin-body {
   flex: 1;
   min-height: 0;
   padding: 18px 22px 24px;
   overflow-y: auto;
-  overflow-x: clip;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.oa-admin-body::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .oa-admin-section + .oa-admin-section {
@@ -406,25 +423,30 @@
   margin-right: 0;
 }
 
-/* Growing and shrinking between the two. The box is driven from script,
-   which sets left/top/width/height explicitly for both ends; all this has to
-   do is put a transition on them and hold the panel out of the flow for the
-   length of it. */
+/* Growing and shrinking between drawer and full screen. The panel stays
+   anchored to the right edge so it expands and contracts cleanly without
+   jumping across the screen or desyncing horizontal boundaries. */
 .oa-panel.zooming {
   position: absolute;
   z-index: 6;
-  inset: auto;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: auto;
   margin-right: 0;
   opacity: 1;
-  transition:
-    left 0.34s cubic-bezier(0.2, 0, 0, 1),
-    top 0.34s cubic-bezier(0.2, 0, 0, 1),
-    width 0.34s cubic-bezier(0.2, 0, 0, 1),
-    height 0.34s cubic-bezier(0.2, 0, 0, 1);
+  overflow: hidden;
+  transition: width 0.34s cubic-bezier(0.2, 0, 0, 1);
 }
 
-/* Nothing to drag when it already fills the row. */
-.oa-panel.fullscreen .oa-resizer {
+.oa-panel.fullscreen,
+.oa-panel.zooming {
+  transform: none;
+}
+
+/* Nothing to drag when it already fills the row or is mid-animation. */
+.oa-panel.fullscreen .oa-resizer,
+.oa-panel.zooming .oa-resizer {
   display: none;
 }
 
@@ -439,6 +461,14 @@
   gap: 8px;
   flex-shrink: 0;
   padding: 14px 10px 14px 18px;
+}
+
+.oa-panel.fullscreen .oa-panel-head {
+  max-width: 920px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 16px 24px 8px;
+  box-sizing: border-box;
 }
 
 .oa-panel-title {
@@ -458,6 +488,15 @@
   transform: rotate(90deg);
 }
 
+.oa-panel-body-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .oa-panel-body {
   display: flex;
   flex-direction: column;
@@ -465,9 +504,16 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  overflow-x: clip;
-  scrollbar-gutter: stable;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   padding: 16px 18px 24px;
+}
+
+.oa-panel-body::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .oa-panel-foot {
@@ -522,6 +568,13 @@
 
   .oa-panel.open {
     transform: translateX(0);
+  }
+
+  .oa-panel.fullscreen,
+  .oa-panel.zooming {
+    position: fixed;
+    z-index: 30;
+    transform: none;
   }
 }
 
@@ -769,8 +822,11 @@
   display: flex;
   flex-direction: column;
   gap: 26px;
-  max-width: 560px;
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
   overflow-x: clip;
+  box-sizing: border-box;
 }
 
 /* Whose settings these are. The panel head says "Settings" and has no room
@@ -781,23 +837,117 @@
   color: var(--ai-text-secondary);
 }
 
-/* Full screen only: the width the panel gains is spent on a rail, so the
-   sections are one click apart instead of one click behind a menu. */
-.oa-settings-split {
+/* Settings layout: drawer mode vs fullscreen mode */
+.oa-panel-body.oa-settings-body {
   display: flex;
-  gap: 26px;
-  align-items: flex-start;
+  flex-direction: column;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
 }
 
-.oa-settings-rail {
-  position: sticky;
-  top: 0;
+.oa-settings-tabs-bar {
+  padding: 2px 18px 12px;
+  flex-shrink: 0;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-tabs-bar {
+  display: block;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-rail {
+  display: none;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-split {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-scroll-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding: 0 18px 24px;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.oa-panel.fullscreen .oa-settings-tabs-bar {
+  display: none;
+}
+
+.oa-panel.fullscreen .oa-settings-split {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  gap: 32px;
+  max-width: 920px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 16px 24px 24px;
+  box-sizing: border-box;
+}
+
+.oa-panel.fullscreen .oa-settings-rail {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   gap: 2px;
-  width: 168px;
+  width: 172px;
 }
+
+.oa-panel.fullscreen .oa-settings-scroll-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.oa-panel.fullscreen .oa-settings-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding: 0 12px 24px 0;
+}
+
+.oa-panel.fullscreen .oa-settings-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 
 .oa-settings-rail-item {
   padding: 9px 12px;
@@ -826,35 +976,6 @@
 .oa-settings-split .oa-settings {
   flex: 1;
   min-width: 0;
-}
-
-.oa-panel-body.oa-settings-body {
-  padding: 0;
-  gap: 0;
-  overflow: hidden;
-}
-
-.oa-panel.fullscreen .oa-panel-body.oa-settings-body {
-  overflow-y: auto;
-  overflow-x: clip;
-  scrollbar-gutter: stable;
-  padding: 16px 24px 24px;
-}
-
-.oa-settings-tabs-bar {
-  padding: 2px 18px 12px;
-  flex-shrink: 0;
-}
-
-.oa-settings-scroll {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: clip;
-  scrollbar-gutter: stable;
-  padding: 0 18px 24px;
 }
 
 /* Category segmented tab bar for the drawer view, keeping categories prominent
@@ -1180,4 +1301,224 @@
 /* A key row whose revoke failed, so the click is not silently swallowed. */
 .oa-key-row-failed {
   opacity: 0.5;
+}
+
+/* --- charts ---------------------------------------------------------------- */
+
+.oa-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.oa-chart-svg {
+  width: 100%;
+  max-width: 340px;
+  height: auto;
+  align-self: center;
+}
+
+/* Only the slices that lead somewhere say so. */
+.oa-chart-hit {
+  cursor: pointer;
+}
+
+.oa-chart-hit:hover {
+  opacity: 0.85;
+}
+
+.oa-chart-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.oa-chart-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.oa-chart-swatch {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 3px;
+}
+
+.oa-chart-legend-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ai-text);
+}
+
+.oa-chart-legend-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--ai-text);
+}
+
+.oa-chart-legend-share {
+  width: 38px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ai-text-secondary);
+}
+
+.oa-ranking {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.oa-ranking-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.oa-ranking-controls .oa-field {
+  flex: 1;
+  min-width: 130px;
+}
+
+/* Two charts side by side while there is room, stacked when there is not. */
+.oa-ranking-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+}
+
+.oa-ranking-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* --- the request log -------------------------------------------------------- */
+
+.oa-log-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.oa-log-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.oa-log-filter-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.oa-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A row is a button because every one of them opens the whole record. */
+.oa-log-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 11px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ai-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.13s ease;
+}
+
+.oa-log-row:hover {
+  background: var(--ai-surface-container-high);
+}
+
+.oa-log-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.oa-log-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.oa-log-method {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ai-text-secondary);
+}
+
+.oa-log-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-log-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-log-error {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ai-danger);
+}
+
+.oa-log-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.oa-log-pager .oa-field-hint {
+  flex: 1;
+}
+
+.oa-log-facts {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 1fr;
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.oa-log-facts dt {
+  color: var(--ai-text-secondary);
+}
+
+.oa-log-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }

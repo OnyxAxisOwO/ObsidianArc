@@ -40,6 +40,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -120,7 +121,20 @@ func (h *Handlers) serve(next handler) http.HandlerFunc {
 			_ = h.keys.Touch(ctx, who.key.ID)
 		}()
 
+		// The session middleware saw no cookie on this request, so the log
+		// would have it as anonymous. This is the only layer that knows whose
+		// key it was.
+		reqlog.Annotate(r.Context(), reqlog.Annotation{
+			UserID:   who.account.ID,
+			Username: who.account.Username,
+			Channel:  reqlog.ChannelAPI,
+		})
+
 		if err := next(w, r, who); err != nil {
+			var rendered apiError
+			if errors.As(err, &rendered) {
+				reqlog.Annotate(r.Context(), reqlog.Annotation{ErrorCode: rendered.code})
+			}
 			writeError(w, err)
 		}
 	}

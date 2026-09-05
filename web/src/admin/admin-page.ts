@@ -5,19 +5,22 @@
 // same radius, same surface, same hover tint — so moving between chatting and
 // administering does not feel like moving between two applications.
 
-import { health } from '../api/client';
+import { ApiError, health } from '../api/client';
+import { showUnauthorizedModal } from '../auth/unauthorized-modal';
 import { renderShell } from '../app/shell';
 import { t, type StringKey } from '../i18n';
 import { navigate } from '../router';
 import { ICONS, button, clear, el, icon } from '../ui/dom';
 import { attachResizer } from '../ui/resizer';
 import { closePanel } from '../ui/panel';
+import { attachOverlayScrollbar, type OverlayScrollbarHandle } from '../ui/scrollbar';
 import { renderAnnouncements } from './announcements';
 import { renderDashboard } from './dashboard';
 import { renderGroups } from './groups';
 import { renderModels } from './models';
 import { renderProviders } from './providers';
 import { renderSettings } from './settings';
+import { renderLogs } from './logs';
 import { renderUsage } from './usage';
 import { renderUsers } from './users';
 
@@ -52,6 +55,7 @@ const PAGES: AdminPage[] = [
   { slug: 'providers', label: 'navProviders', icon: ICONS.server, render: renderProviders },
   { slug: 'models', label: 'navModels', icon: ICONS.spark, render: renderModels },
   { slug: 'usage', label: 'navUsage', icon: ICONS.chart, render: renderUsage },
+  { slug: 'logs', label: 'navLogs', icon: ICONS.file, render: renderLogs },
   { slug: 'settings', label: 'navSettings', icon: ICONS.sliders, render: renderSettings },
   { slug: 'announcements', label: 'announcements', icon: ICONS.file, render: renderAnnouncements },
 ];
@@ -63,7 +67,9 @@ interface ActiveAdmin {
   title: HTMLElement;
   subtitle: HTMLElement;
   actions: HTMLElement;
+  bodyWrap: HTMLElement;
   body: HTMLElement;
+  scrollbar: OverlayScrollbarHandle;
   navItems: Map<AdminPage, HTMLAnchorElement>;
   currentPage: AdminPage;
 }
@@ -100,8 +106,9 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
     // Replacing the body node ensures any pending async renders from the
     // previous page target a detached subtree rather than leaking into this one.
     const body = el('div', `oa-admin-body ${dirClass}`);
-    activeAdmin.main.replaceChild(body, activeAdmin.body);
+    activeAdmin.bodyWrap.replaceChild(body, activeAdmin.body);
     activeAdmin.body = body;
+    activeAdmin.scrollbar.setScrollElement(body);
 
     const currentGen = ++adminGeneration;
     const view: AdminView = {
@@ -176,9 +183,12 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
   head.appendChild(el('span', 'oa-admin-head-spacer'));
   head.appendChild(actions);
 
+  const bodyWrap = el('div', 'oa-admin-body-wrap');
   const body = el('div', 'oa-admin-body enter-rise');
+  bodyWrap.appendChild(body);
+  const scrollbar = attachOverlayScrollbar(body, bodyWrap);
   main.appendChild(head);
-  main.appendChild(body);
+  main.appendChild(bodyWrap);
 
   shell.body.appendChild(rail);
   shell.body.appendChild(main);
@@ -202,7 +212,9 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
     title,
     subtitle,
     actions,
+    bodyWrap,
     body,
+    scrollbar,
     navItems,
     currentPage: page,
   };
@@ -246,6 +258,13 @@ export function loading(): HTMLElement {
 
 /** Renders a failed load in place, with a way to try again. */
 export function failure(view: AdminView, error: unknown): void {
+  if (error instanceof ApiError && (error.status === 403 || error.code === 'forbidden')) {
+    const root = activeAdmin?.root ?? document.getElementById('app');
+    if (root) {
+      showUnauthorizedModal(root);
+      return;
+    }
+  }
   clear(view.body);
   const wrap = el('div', 'oa-notice');
   wrap.appendChild(el('h2', 'oa-notice-title', t('couldNotLoad')));
