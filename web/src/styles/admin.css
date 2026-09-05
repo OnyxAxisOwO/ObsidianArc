@@ -466,6 +466,7 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: clip;
+  scrollbar-gutter: stable;
   padding: 16px 18px 24px;
 }
 
@@ -827,6 +828,35 @@
   min-width: 0;
 }
 
+.oa-panel-body.oa-settings-body {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.oa-panel.fullscreen .oa-panel-body.oa-settings-body {
+  overflow-y: auto;
+  overflow-x: clip;
+  scrollbar-gutter: stable;
+  padding: 16px 24px 24px;
+}
+
+.oa-settings-tabs-bar {
+  padding: 2px 18px 12px;
+  flex-shrink: 0;
+}
+
+.oa-settings-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: clip;
+  scrollbar-gutter: stable;
+  padding: 0 18px 24px;
+}
+
 /* Category segmented tab bar for the drawer view, keeping categories prominent
    and providing an anchor for the sliding transition. */
 .oa-settings-tabs {
@@ -1145,4 +1175,9 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* A key row whose revoke failed, so the click is not silently swallowed. */
+.oa-key-row-failed {
+  opacity: 0.5;
 }

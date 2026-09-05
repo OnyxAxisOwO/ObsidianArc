@@ -12,6 +12,7 @@
 
 import { changePassword, updateProfile } from '../api/auth';
 import { ApiError, api } from '../api/client';
+import { exportAccount, importAccount, pickJSONFile, saveAsFile } from '../api/backup';
 import { renderChatPage } from '../chat/chat-page';
 import { navigate } from '../router';
 import { openPanel } from '../ui/panel';
@@ -69,6 +70,7 @@ export function renderSettingsPage(root: HTMLElement): void {
   let activeRailButtons: Map<Category, HTMLElement> | null = null;
   let activeTabButtons: Map<Category, HTMLElement> | null = null;
   let activeForm: HTMLElement | null = null;
+  let activeScroll: HTMLElement | null = null;
 
   function buildForm(dir: 'forward' | 'back' | 'rise'): HTMLElement {
     const animClass = dir === 'forward'
@@ -88,6 +90,7 @@ export function renderSettingsPage(root: HTMLElement): void {
     } else {
       form.appendChild(profileSection());
       form.appendChild(passwordSection());
+      form.appendChild(dataSection());
     }
     return form;
   }
@@ -108,7 +111,11 @@ export function renderSettingsPage(root: HTMLElement): void {
       const newForm = buildForm(dir);
       activeForm.parentElement.replaceChild(newForm, activeForm);
       activeForm = newForm;
-      panel.body.scrollTop = 0;
+      if (activeScroll) {
+        activeScroll.scrollTop = 0;
+      } else {
+        panel.body.scrollTop = 0;
+      }
       return;
     }
 
@@ -148,11 +155,14 @@ export function renderSettingsPage(root: HTMLElement): void {
       switchDirection = 'rise';
       activeForm = form;
 
+      body.classList.add('oa-settings-body');
+
       if (!handle.isFullscreen()) {
         activeRailButtons = null;
 
-        // Drawer view: prominent segmented tab control right at the top,
+        // Drawer view: prominent segmented tab control fixed at the top,
         // matching the multi-pane navigation pattern from PageDye.
+        const tabsBar = el('div', 'oa-settings-tabs-bar');
         const tabs = el('nav', 'oa-settings-tabs');
         const tabButtons = new Map<Category, HTMLElement>();
         for (const entry of CATEGORIES) {
@@ -165,13 +175,19 @@ export function renderSettingsPage(root: HTMLElement): void {
           tabButtons.set(entry.id, btn);
         }
         activeTabButtons = tabButtons;
+        tabsBar.appendChild(tabs);
 
-        body.appendChild(tabs);
-        body.appendChild(form);
+        const scroll = el('div', 'oa-settings-scroll');
+        scroll.appendChild(form);
+        activeScroll = scroll;
+
+        body.appendChild(tabsBar);
+        body.appendChild(scroll);
         return;
       }
 
       activeTabButtons = null;
+      activeScroll = null;
 
       const split = el('div', 'oa-settings-split');
       const rail = el('nav', 'oa-settings-rail');
@@ -532,6 +548,66 @@ function passwordSection(): HTMLElement {
     }
   }
 
+  return wrap;
+}
+
+/**
+ * The account's own data, in and out.
+ *
+ * One document holds the preferences and every conversation, because the two
+ * are what an account is: keeping them in separate files would mean restoring
+ * half of yourself and remembering to go back for the rest.
+ *
+ * Importing adds rather than replaces, which is stated on the button's hint
+ * rather than discovered afterwards — a "restore" that ate the conversations
+ * it was meant to protect is the one failure this feature cannot have.
+ */
+function dataSection(): HTMLElement {
+  const wrap = panel(t('secData'), t('dataHint'));
+  const status = el('p', 'oa-field-hint');
+
+  const save = button('oa-btn', t('exportData'), () => {
+    save.disabled = true;
+    status.textContent = t('exportWorking');
+    void exportAccount()
+      .then((document) => {
+        const stamp = new Date().toISOString().slice(0, 10);
+        saveAsFile(`obsidian-arc-${stamp}.json`, JSON.stringify(document, null, 2));
+        status.textContent = t('exportDone', { count: document.conversations.length });
+      })
+      .catch((error: unknown) => {
+        status.textContent = error instanceof ApiError ? error.message : t('failed');
+      })
+      .finally(() => { save.disabled = false; });
+  });
+
+  const load = button('oa-btn', t('importData'), () => {
+    status.textContent = '';
+    void pickJSONFile()
+      .then((document) => {
+        if (document === null) return null;
+        load.disabled = true;
+        status.textContent = t('importWorking');
+        return importAccount(document);
+      })
+      .then((result) => {
+        if (!result) return;
+        status.textContent = t('importDone', {
+          conversations: result.conversations,
+          messages: result.messages,
+        });
+        // The imported conversations are not in the list behind this panel,
+        // and the preferences may have changed the theme out from under it.
+        window.setTimeout(() => window.location.reload(), 1200);
+      })
+      .catch((error: unknown) => {
+        status.textContent = error instanceof ApiError ? error.message : t('failed');
+      })
+      .finally(() => { load.disabled = false; });
+  });
+
+  wrap.appendChild(buttonRow(save, load));
+  wrap.appendChild(status);
   return wrap;
 }
 

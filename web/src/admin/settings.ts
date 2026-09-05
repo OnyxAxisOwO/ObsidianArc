@@ -5,6 +5,7 @@
 // deployment is a constant, not a setting.
 
 import { ApiError } from '../api/client';
+import { pickJSONFile, saveAsFile } from '../api/backup';
 import { t } from '../i18n';
 import { button, clear, el } from '../ui/dom';
 import { numberField, section, selectField, switchField, textArea, textField } from '../ui/form';
@@ -164,6 +165,20 @@ export async function renderSettings(view: AdminView): Promise<void> {
     hint: t('instanceSystemPromptHint'),
   });
 
+  const attachmentMaxMB = numberField({
+    label: t('attachmentMaxMB'),
+    value: Number(values['attachments.max_mb'] ?? 6),
+    min: 1,
+    max: 64,
+    hint: t('attachmentMaxMBHint'),
+  });
+
+  const attachmentRetain = switchField({
+    label: t('attachmentRetain'),
+    value: values['attachments.retain'] === 'true',
+    hint: t('attachmentRetainHint'),
+  });
+
   const apiEnabled = switchField({
     label: t('apiEnabled'),
     value: values['api.enabled'] === 'true',
@@ -179,7 +194,48 @@ export async function renderSettings(view: AdminView): Promise<void> {
   });
 
   clear(view.actions);
+  // Export takes what the form is showing, not what was last saved: an
+  // operator who has just typed a value expects the file to contain it.
+  const download = button('oa-btn', t('exportSettings'), () => {
+    const stamp = new Date().toISOString().slice(0, 10);
+    saveAsFile(`obsidian-arc-settings-${stamp}.json`, JSON.stringify(collect(), null, 2));
+  });
+
+  const upload = button('oa-btn', t('importSettings'), () => {
+    void pickJSONFile(1024 * 1024)
+      .then((document) => {
+        if (document === null) return null;
+        if (!document || typeof document !== 'object' || Array.isArray(document)) {
+          throw new ApiError(0, 'malformed', t('importSettingsMalformed'));
+        }
+        // Everything is stored as a string; a file written by hand may well
+        // carry numbers and booleans, and refusing those would be pedantry.
+        const values: Record<string, string> = {};
+        for (const [key, value] of Object.entries(document as Record<string, unknown>)) {
+          if (value !== null && typeof value !== 'object') values[key] = String(value);
+        }
+        upload.disabled = true;
+        return adminApi.importSettings(values);
+      })
+      .then((result) => {
+        if (!result) return;
+        flash.textContent = result.skipped.length
+          ? t('importSettingsPartial', { count: result.applied, skipped: result.skipped.join(', ') })
+          : t('importSettingsDone', { count: result.applied });
+        flash.classList.add('visible');
+        // The form is now describing values that are no longer current.
+        void renderSettings(view);
+      })
+      .catch((error: unknown) => {
+        flash.textContent = error instanceof ApiError ? error.message : String(error);
+        flash.classList.add('visible');
+      })
+      .finally(() => { upload.disabled = false; });
+  });
+
   const save = button('oa-btn primary', t('save'), () => void submit());
+  view.actions.appendChild(download);
+  view.actions.appendChild(upload);
   view.actions.appendChild(save);
 
   clear(view.body);
@@ -218,6 +274,10 @@ export async function renderSettings(view: AdminView): Promise<void> {
   form.appendChild(adminBypass.element);
   form.appendChild(usageDisplay.element);
 
+  form.appendChild(section(t('secAttachments'), t('attachmentsHint')));
+  form.appendChild(attachmentMaxMB.element);
+  form.appendChild(attachmentRetain.element);
+
   form.appendChild(section(t('apiKeys')));
   form.appendChild(apiEnabled.element);
 
@@ -237,33 +297,41 @@ export async function renderSettings(view: AdminView): Promise<void> {
     trialModel.element.hidden = !live;
   }
 
+  // The one description of what this form holds, so a save and an export
+  // cannot come to disagree about it.
+  function collect(): Record<string, string> {
+    return {
+      'site.name': siteName.value(),
+      'site.description': description.value(),
+      'registration.enabled': String(registration.value()),
+      'registration.default_group': defaultGroup.value(),
+      'registration.require_email': String(requireEmail.value()),
+      'registration.verify_email': String(verifyEmail.value()),
+      'registration.email_domains': emailDomains.value(),
+      'registration.per_minute': String(perMinute.value() ?? 0),
+      'registration.per_hour': String(perHour.value() ?? 0),
+      'landing.mode': landingMode.value(),
+      'landing.intro': landingIntro.value(),
+      'landing.trial_enabled': String(trialEnabled.value()),
+      'landing.trial_turns': String(trialTurns.value() ?? 3),
+      'landing.trial_model': trialModel.value(),
+      'quota.admins_bypass': String(adminBypass.value()),
+      'quota.usage_display': usageDisplay.value(),
+      'chat.default_system_prompt': systemPrompt.value(),
+      'chat.max_turns': String(maxTurns.value() ?? 40),
+      'api.enabled': String(apiEnabled.value()),
+      'attachments.max_mb': String(attachmentMaxMB.value() ?? 6),
+      'attachments.retain': String(attachmentRetain.value()),
+    };
+  }
+
   async function submit(): Promise<void> {
     save.disabled = true;
     save.textContent = t('saving');
     flash.classList.remove('visible');
 
     try {
-      await adminApi.saveSettings({
-        'site.name': siteName.value(),
-        'site.description': description.value(),
-        'registration.enabled': String(registration.value()),
-        'registration.default_group': defaultGroup.value(),
-        'registration.require_email': String(requireEmail.value()),
-        'registration.verify_email': String(verifyEmail.value()),
-        'registration.email_domains': emailDomains.value(),
-        'registration.per_minute': String(perMinute.value() ?? 0),
-        'registration.per_hour': String(perHour.value() ?? 0),
-        'landing.mode': landingMode.value(),
-        'landing.intro': landingIntro.value(),
-        'landing.trial_enabled': String(trialEnabled.value()),
-        'landing.trial_turns': String(trialTurns.value() ?? 3),
-        'landing.trial_model': trialModel.value(),
-        'quota.admins_bypass': String(adminBypass.value()),
-        'quota.usage_display': usageDisplay.value(),
-        'chat.default_system_prompt': systemPrompt.value(),
-        'chat.max_turns': String(maxTurns.value() ?? 40),
-        'api.enabled': String(apiEnabled.value()),
-      });
+      await adminApi.saveSettings(collect());
       save.textContent = t('saved');
       window.setTimeout(() => { save.textContent = t('save'); }, 1500);
     } catch (error) {

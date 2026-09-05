@@ -16,6 +16,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
@@ -41,6 +42,7 @@ type Handlers struct {
 	quota         *quota.Service
 	conversations *conversation.Store
 	announcements *announcement.Store
+	keys          *apikey.Store
 }
 
 func NewHandlers(
@@ -55,6 +57,7 @@ func NewHandlers(
 	quotaService *quota.Service,
 	conversations *conversation.Store,
 	announcements *announcement.Store,
+	keys *apikey.Store,
 ) *Handlers {
 	return &Handlers{
 		users:         users,
@@ -68,6 +71,7 @@ func NewHandlers(
 		quota:         quotaService,
 		conversations: conversations,
 		announcements: announcements,
+		keys:          keys,
 	}
 }
 
@@ -86,6 +90,8 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("PATCH /api/admin/users/{id}", protected(h.updateUser))
 	mux.Handle("DELETE /api/admin/users/{id}", protected(h.deleteUser))
 	mux.Handle("POST /api/admin/users/{id}/password", protected(h.resetPassword))
+	mux.Handle("GET /api/admin/users/{id}/keys", protected(h.userKeys))
+	mux.Handle("DELETE /api/admin/users/{id}/keys/{key}", protected(h.revokeUserKey))
 	mux.Handle("GET /api/admin/users/{id}/conversations", protected(h.userConversations))
 	mux.Handle("GET /api/admin/users/{id}/conversations/{conversation}", protected(h.userTranscript))
 
@@ -96,6 +102,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 
 	mux.Handle("GET /api/admin/settings", protected(h.listSettings))
 	mux.Handle("PUT /api/admin/settings", protected(h.updateSettings))
+	mux.Handle("POST /api/admin/settings/import", protected(h.importSettings))
 
 	mux.Handle("GET /api/admin/providers", protected(h.listProviders))
 	mux.Handle("POST /api/admin/providers", protected(h.createProvider))

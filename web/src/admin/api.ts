@@ -6,6 +6,11 @@
 // one back, and there is no field on these types that could carry it.
 
 import { api } from '../api/client';
+import type { ApiKey } from '../api/keys';
+
+// Re-exported so an admin screen imports one module, the way every other
+// shape on this surface already does.
+export type { ApiKey };
 import type { Account, Role, AccountStatus } from '../api/auth';
 import type { Conversation, Message } from '../api/chat';
 
@@ -194,6 +199,12 @@ export const adminApi = {
   deleteUser: (id: string) => api.delete<void>(`/api/admin/users/${id}`),
   resetPassword: (id: string, newPassword: string) =>
     api.post<void>(`/api/admin/users/${id}/password`, { new_password: newPassword }),
+  // Only ever the record, never the token: the server keeps a digest, so
+  // there is nothing an administrator could be shown even in principle.
+  userKeys: (id: string) => api.get<{ keys: ApiKey[] }>(`/api/admin/users/${id}/keys`),
+  revokeUserKey: (id: string, keyID: string) =>
+    api.delete<void>(`/api/admin/users/${id}/keys/${keyID}`),
+
   userConversations: (id: string) =>
     api.get<{ conversations: Conversation[] }>(`/api/admin/users/${id}/conversations`),
   userTranscript: (id: string, conversationID: string) =>
@@ -250,6 +261,13 @@ export const adminApi = {
     ),
   saveSettings: (values: Record<string, string>) =>
     api.put<{ settings: Record<string, string> }>('/api/admin/settings', values),
+  // More forgiving than saveSettings: identifiers that mean nothing on this
+  // instance are cleared and named back rather than failing the whole file.
+  importSettings: (values: Record<string, string>) =>
+    api.post<{ settings: Record<string, string>; applied: number; skipped: string[] }>(
+      '/api/admin/settings/import',
+      values,
+    ),
 
   announcements: () => api.get<{ announcements: Announcement[] }>('/api/admin/announcements'),
   createAnnouncement: (body: Record<string, unknown>) =>

@@ -16,6 +16,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/backup"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/compat"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -230,6 +231,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 		return nil
 	}
+	// Read per request rather than captured, so raising the limit takes
+	// effect without a restart.
+	chatHandlers.MaxUploadBytes = func() int64 {
+		return int64(settingsService.Int(settings.AttachmentMaxMB, 6)) * 1024 * 1024
+	}
 	chatHandlers.Routes(mux)
 	quota.NewHandlers(quotaService).Routes(mux)
 
@@ -247,13 +253,18 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	apiKeyHandlers.Routes(mux)
 
+	// An account's own data, in and out as one document. Separate from the
+	// admin surface because it is the user's copy of their own history, not
+	// the operator's copy of the instance.
+	backup.NewHandlers(backup.NewService(db, conversations, preferences)).Routes(mux)
+
 	compatHandlers := compat.NewHandlers(settingsService, users, groups, models, keys, registry)
 	compatHandlers.Guard = guard
 	compatHandlers.OnTurn = recordTurn
 	compatHandlers.Routes(mux)
 	announcement.NewHandlers(announcements).Routes(mux)
 	trial.NewHandlers(settingsService, models, registry, proxyTrust, cfg.SecretKey).Routes(mux)
-	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements).Routes(mux)
+	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys).Routes(mux)
 
 	// Anything under /api that no module claimed is a client bug, and should
 	// read as one instead of quietly returning the SPA shell.

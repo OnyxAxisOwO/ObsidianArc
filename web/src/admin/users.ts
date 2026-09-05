@@ -6,7 +6,7 @@
 
 import { ApiError } from '../api/client';
 import { t, tn } from '../i18n';
-import { button, clear, el } from '../ui/dom';
+import { ICONS, button, clear, confirmable, el, iconButton } from '../ui/dom';
 import { openPanel, type PanelHandle } from '../ui/panel';
 import { numberField, section, selectField, switchField, textArea, textField } from '../ui/form';
 import {
@@ -23,6 +23,7 @@ import {
   adminApi,
   emptyPolicy,
   type Account,
+  type ApiKey,
   type AccountStatus,
   type Group,
   type QuotaWindowKind,
@@ -265,6 +266,9 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
         body.appendChild(window.credits.element);
       }
 
+      body.appendChild(section(t('apiKeys'), t('adminKeysHint')));
+      body.appendChild(keySection(account.id));
+
       body.appendChild(section(t('secConversations'), t('conversationsHint')));
       body.appendChild(button('oa-btn', t('viewConversations'), () => {
         void openConversations(view, groups, account);
@@ -310,6 +314,73 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
       }
     },
   });
+}
+
+/**
+ * The keys this account has issued.
+ *
+ * The list and nothing else: the server keeps a digest, so there is no token
+ * to show and no endpoint that could produce one. What an operator needs here
+ * is to see that a key exists and to be able to revoke it — which is the thing
+ * that matters when an account is compromised or someone leaves.
+ */
+function keySection(userID: string): HTMLElement {
+  const wrap = el('div', 'oa-keys-list');
+  wrap.appendChild(el('p', 'oa-menu-empty', t('loading')));
+
+  void adminApi.userKeys(userID)
+    .then(({ keys }) => {
+      clear(wrap);
+      if (!keys.length) {
+        wrap.appendChild(el('p', 'oa-menu-empty', t('keysEmpty')));
+        return;
+      }
+      for (const key of keys) wrap.appendChild(keyRow(userID, key));
+    })
+    .catch(() => {
+      clear(wrap);
+      wrap.appendChild(el('p', 'oa-menu-empty', t('failed')));
+    });
+
+  return wrap;
+}
+
+function keyRow(userID: string, key: ApiKey): HTMLElement {
+  const item = el('div', 'oa-key-row');
+
+  const info = el('div', 'oa-key-info');
+  const title = el('div', 'oa-key-title');
+  title.appendChild(el('span', 'oa-key-name', key.name));
+  if (key.expires_at > 0 && key.expires_at <= Date.now()) {
+    title.appendChild(badge(t('keyExpired'), 'danger'));
+  }
+  info.appendChild(title);
+
+  const meta = el('div', 'oa-key-meta');
+  meta.appendChild(el('code', 'oa-key-prefix', `${key.prefix}…`));
+  meta.appendChild(el('span', null, key.expires_at
+    ? t('keyExpiresAt', { when: absoluteTime(key.expires_at) })
+    : t('keyNoExpiry')));
+  meta.appendChild(el('span', null, key.last_used_at
+    ? t('keyLastUsed', { when: relativeTime(key.last_used_at) })
+    : t('keyNeverUsed')));
+  info.appendChild(meta);
+  item.appendChild(info);
+
+  // Revoking someone else's credential asks first, in place, the way every
+  // other irreversible action in this interface does.
+  const actions = el('div', 'oa-key-actions');
+  actions.appendChild(confirmable(
+    iconButton('oa-icon-btn danger', ICONS.trash, t('keyRevoke'), () => {}, 15),
+    { label: t('keyRevokeConfirm'), title: t('keyRevoke') },
+    () => {
+      void adminApi.revokeUserKey(userID, key.id)
+        .then(() => item.remove())
+        .catch(() => item.classList.add('oa-key-row-failed'));
+    },
+  ));
+  item.appendChild(actions);
+  return item;
 }
 
 function summary(account: Account, lifetime: { requests: number; total_tokens: number; credits: number }): HTMLElement {

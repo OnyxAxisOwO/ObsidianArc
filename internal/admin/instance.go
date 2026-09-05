@@ -2,6 +2,8 @@ package admin
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -134,6 +136,8 @@ var writableSettings = map[string]bool{
 	settings.DefaultSystemPrompt:  true,
 	settings.ConversationMaxTurns: true,
 	settings.APIEnabled:           true,
+	settings.AttachmentMaxMB:      true,
+	settings.AttachmentRetain:     true,
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
@@ -168,6 +172,13 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	// An unknown display mode would leave every user's allowance rendered as
 	// nothing at all, so it is checked here rather than guessed at in the
 	// browser.
+	if raw, present := body[settings.AttachmentMaxMB]; present {
+		size, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || size < 1 || size > settings.MaxAttachmentCeilingMB {
+			return httpx.BadRequest("The attachment limit must be between 1 and %d MB.",
+				settings.MaxAttachmentCeilingMB)
+		}
+	}
 	if display, present := body[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
 		return httpx.BadRequest("Unknown usage display %q.", display)
 	}
@@ -187,4 +198,85 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		return httpx.Internal(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"settings": h.settings.All()})
+}
+
+// --- settings as a document ---------------------------------------------------
+
+// importSettings applies an exported settings document.
+//
+// Deliberately more forgiving than the ordinary save above. An export usually
+// comes from another instance, where two of the values are row identifiers —
+// the default registration group and the trial model — that mean nothing
+// here. Rejecting the whole file for those would make the feature useless
+// exactly when it is wanted, so they are dropped and named in the response;
+// everything else is applied.
+//
+// Unknown keys are skipped rather than refused for the same reason: a
+// document written by a newer release should not be unusable by this one.
+func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error {
+	var body map[string]string
+	if err := httpx.DecodeJSON(w, r, &body, 256*1024); err != nil {
+		return err
+	}
+	if len(body) == 0 {
+		return httpx.BadRequest("That file contains no settings.")
+	}
+
+	applied := map[string]string{}
+	skipped := []string{}
+
+	for key, value := range body {
+		if !writableSettings[key] || len(value) > 8*1024 {
+			skipped = append(skipped, key)
+			continue
+		}
+		applied[key] = value
+	}
+
+	if mode, present := applied[settings.LandingMode]; present && !settings.ValidLandingMode(mode) {
+		delete(applied, settings.LandingMode)
+		skipped = append(skipped, settings.LandingMode)
+	}
+	if display, present := applied[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
+		delete(applied, settings.UsageDisplay)
+		skipped = append(skipped, settings.UsageDisplay)
+	}
+	if raw, present := applied[settings.AttachmentMaxMB]; present {
+		size, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || size < 1 || size > settings.MaxAttachmentCeilingMB {
+			delete(applied, settings.AttachmentMaxMB)
+			skipped = append(skipped, settings.AttachmentMaxMB)
+		}
+	}
+
+	// The two identifiers. A dangling one is cleared rather than carried, so
+	// the instance ends up in a state it can describe: "no default group"
+	// beats "a default group that does not exist".
+	if modelID, present := applied[settings.TrialModel]; present && modelID != "" {
+		if !isValidID(modelID) {
+			applied[settings.TrialModel] = ""
+			skipped = append(skipped, settings.TrialModel)
+		} else if _, err := h.models.ByID(r.Context(), modelID); err != nil {
+			applied[settings.TrialModel] = ""
+			skipped = append(skipped, settings.TrialModel)
+		}
+	}
+	if groupID, present := applied[settings.RegistrationGroup]; present && groupID != "" {
+		if !isValidID(groupID) {
+			applied[settings.RegistrationGroup] = ""
+			skipped = append(skipped, settings.RegistrationGroup)
+		} else if _, err := h.groups.ByID(r.Context(), nil, groupID); err != nil {
+			applied[settings.RegistrationGroup] = ""
+			skipped = append(skipped, settings.RegistrationGroup)
+		}
+	}
+
+	if err := h.settings.SetMany(r.Context(), applied); err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"settings": h.settings.All(),
+		"applied":  len(applied),
+		"skipped":  skipped,
+	})
 }

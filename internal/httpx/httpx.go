@@ -170,13 +170,33 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 // field checking, so a typo in a client payload is an error rather than a
 // silently ignored field.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) error {
+	return decodeJSON(w, r, dst, maxBytes, true)
+}
+
+// DecodeJSONLenient is DecodeJSON without the unknown-field check.
+//
+// For bodies this server did not design the other end of: a document written
+// by a later release, or exported from an instance running one. Refusing it
+// for carrying a field this build has not heard of would make every format
+// addition a breaking change in the wrong direction.
+//
+// Not the default, because for an ordinary request an unknown field is a
+// client sending something the server will silently ignore — usually a typo,
+// and always worth saying so.
+func DecodeJSONLenient(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) error {
+	return decodeJSON(w, r, dst, maxBytes, false)
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64, strict bool) error {
 	if maxBytes <= 0 {
 		maxBytes = 1 << 20
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 
 	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(dst); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
