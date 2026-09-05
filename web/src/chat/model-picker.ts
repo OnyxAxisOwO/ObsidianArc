@@ -265,6 +265,9 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
       const ratio = position / (STOPS.length - 1);
       slider.style.setProperty('--effort-ratio', String(ratio));
       slider.classList.toggle('off', position === 0);
+      // The top of the range gets its own colour, so "as much as it will do"
+      // is visible from the bar rather than only from the word beside it.
+      slider.classList.toggle('max', position === STOPS.length - 1);
       label.textContent = t(STOPS[position]!.label);
       range.setAttribute('aria-valuetext', t(STOPS[position]!.label));
     }
@@ -276,6 +279,22 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
       const stop = STOPS[position]!;
       options.onReasoningChange({ enabled: stop.enabled, effort: stop.effort });
       sync();
+    });
+
+    // While a finger or a pointer is on it, the fill and the thumb follow it
+    // exactly. The easing that makes a keyboard step or a click along the
+    // track look deliberate is the same easing that makes a drag feel like it
+    // is catching up, because it is: every move starts a new transition the
+    // next move interrupts.
+    range.addEventListener('pointerdown', () => {
+      slider.classList.add('dragging');
+      const release = () => {
+        slider.classList.remove('dragging');
+        window.removeEventListener('pointerup', release);
+        window.removeEventListener('pointercancel', release);
+      };
+      window.addEventListener('pointerup', release);
+      window.addEventListener('pointercancel', release);
     });
 
     return wrap;

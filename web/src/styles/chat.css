@@ -1456,41 +1456,62 @@
 
 .ai-effort {
   --effort-ratio: 0;
-  /* The thumb's size drives the geometry below, so the fill and the thumb
-     cannot disagree about where the value is however either is resized. */
-  --effort-thumb: 24px;
+  /* The thumb is deliberately taller than the track. Both the fill's width and
+     the thumb's position derive from this, so they cannot disagree about where
+     the value is — and because the thumb stands proud of the track, the fill it
+     is covering can never show as an edge around it. */
+  --effort-thumb: 28px;
   position: relative;
-  height: 32px;
+  height: 34px;
   margin: 2px 2px 4px;
 }
 
 .ai-effort-track {
   position: absolute;
-  inset: 3px 0;
+  inset: 5px 0;
   border-radius: 999px;
   background: var(--ai-field-bg);
 }
 
-/* Reaches the middle of the thumb, never past it and never short of it: at
-   either end the whole fill is under the thumb, which is what stops a stub
-   of colour poking out beside it at the minimum. */
+/* Reaches the middle of the thumb, never past it and never short of it. */
 .ai-effort-fill {
   position: absolute;
   inset: 0 auto 0 0;
   width: calc(var(--effort-thumb) / 2 + (100% - var(--effort-thumb)) * var(--effort-ratio));
   overflow: hidden;
   border-radius: 999px;
-  /* A gradient rather than one flat colour: the bar is the one place in this
-     interface that is meant to look like effort rather than like a surface. */
-  background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 55%, #a855f7 100%);
+  /* Blue for the working range. A gradient rather than one flat colour: this
+     is the only control here meant to look like effort rather than like a
+     surface. */
+  background: linear-gradient(90deg, #1d4ed8 0%, #3b82f6 55%, #60a5fa 100%);
   transition: width 0.18s cubic-bezier(0.2, 0, 0, 1);
 }
 
+/* The top of the range only. Nothing to fade between — a gradient cannot be
+   transitioned — and the step is the point: it should read as a different
+   setting, not as more of the same one. */
+.ai-effort.max .ai-effort-fill {
+  background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 55%, #a855f7 100%);
+}
+
+/* Off is an empty track with the thumb parked at its left end. The fill is
+   still half a thumb wide underneath — it has to be, for the geometry above to
+   hold at every other position — so it is hidden rather than resized. */
+.ai-effort.off .ai-effort-fill {
+  opacity: 0;
+}
+
 /* Motes drifting along the filled part, clipped by it. White, because the
-   gradient underneath is dark whichever scheme the rest of the page is in. */
+   gradient underneath is dark whichever scheme the rest of the page is in.
+   Twice as wide as the fill and moved by exactly one tile, so the loop is
+   seamless and the animation is a transform the compositor can run rather
+   than a background-position the fill has to be repainted for. */
 .ai-effort-sparks {
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 200%;
   background-image:
     radial-gradient(circle at 12% 32%, rgba(255, 255, 255, 0.95) 0 1.1px, transparent 1.8px),
     radial-gradient(circle at 33% 74%, rgba(255, 255, 255, 0.7) 0 1px, transparent 1.6px),
@@ -1527,10 +1548,10 @@
 
 @keyframes ai-effort-drift {
   from {
-    background-position: 0 0;
+    transform: translateX(0);
   }
   to {
-    background-position: 62px 0;
+    transform: translateX(-62px);
   }
 }
 
@@ -1562,6 +1583,15 @@
   pointer-events: none;
 }
 
+/* While a pointer is on it, the fill and the thumb follow it exactly. The
+   easing that makes a keyboard step look deliberate is the same easing that
+   makes a drag feel like it is lagging, because it is: each move starts a
+   transition the next move interrupts. */
+.ai-effort.dragging .ai-effort-fill,
+.ai-effort.dragging .ai-effort-thumb {
+  transition: none;
+}
+
 /* The real control, invisible: the drawing above is ours, the keyboard
    behaviour, the focus ring and the ARIA are the platform's. */
 .ai-effort-range {
@@ -1578,14 +1608,14 @@
 .ai-effort-range::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   opacity: 0;
 }
 
 .ai-effort-range::-moz-range-thumb {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border: none;
   opacity: 0;
 }
