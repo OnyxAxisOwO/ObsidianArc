@@ -117,10 +117,14 @@ export function menuItem(options: {
   leading?: Node;
   trailing?: Node;
   active?: boolean;
+  disabled?: boolean;
   onSelect: () => void;
 }): HTMLButtonElement {
   const item = el('button', `oa-menu-item${options.active ? ' active' : ''}`);
   item.type = 'button';
+  if (options.disabled) {
+    item.disabled = true;
+  }
 
   const needsRow = options.leading !== undefined || options.trailing !== undefined;
   const text = el('span', 'oa-menu-item-title', options.title);
@@ -136,7 +140,10 @@ export function menuItem(options: {
   }
 
   if (options.sub) item.appendChild(el('span', 'oa-menu-item-sub', options.sub));
-  item.addEventListener('click', options.onSelect);
+  item.addEventListener('click', () => {
+    if (item.disabled) return;
+    options.onSelect();
+  });
   return item;
 }
 

@@ -29,6 +29,16 @@ export interface Provider {
   updated_at: number;
 }
 
+export interface GroupModelGrant {
+  model_id: string;
+  access: 'use' | 'view';
+}
+
+export interface ModelGroupGrant {
+  group_id: string;
+  access: 'use' | 'view';
+}
+
 export interface AdminModel {
   id: string;
   provider_id: string;
@@ -39,6 +49,7 @@ export interface AdminModel {
   description: string;
   avatar: string;
   enabled: boolean;
+  hidden: boolean;
   sort_order: number;
 
   // Where a request for this model actually goes, and which reasoning flag it
@@ -46,6 +57,8 @@ export interface AdminModel {
   // neither, so a route leaves no trace anywhere they can see.
   route_to_id: string;
   reasoning_style: ReasoningStyle | '';
+
+  group_grants?: ModelGroupGrant[];
 
   supports_reasoning: boolean;
   supports_images: boolean;
@@ -71,6 +84,7 @@ export interface Group {
   sort_order: number;
   members: number;
   model_ids: string[];
+  model_grants?: GroupModelGrant[];
   created_at: number;
   updated_at: number;
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -317,8 +318,9 @@ func (h *Handlers) listGroups(w http.ResponseWriter, r *http.Request) error {
 	// Member counts and grants alongside, so the table needs one request.
 	type row struct {
 		group.Group
-		Members  int      `json:"members"`
-		ModelIDs []string `json:"model_ids"`
+		Members     int                `json:"members"`
+		ModelIDs    []string           `json:"model_ids"`
+		ModelGrants []model.GroupGrant `json:"model_grants"`
 	}
 	out := make([]row, 0, len(groups))
 	for _, record := range groups {
@@ -326,11 +328,17 @@ func (h *Handlers) listGroups(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return httpx.Internal(err)
 		}
-		modelIDs, err := h.models.GroupModelIDs(r.Context(), record.ID)
+		modelGrants, err := h.models.GroupModelGrants(r.Context(), record.ID)
 		if err != nil {
 			return httpx.Internal(err)
 		}
-		out = append(out, row{Group: record, Members: count, ModelIDs: modelIDs})
+		modelIDs := make([]string, 0, len(modelGrants))
+		for _, g := range modelGrants {
+			if g.Access == model.AccessUse {
+				modelIDs = append(modelIDs, g.ModelID)
+			}
+		}
+		out = append(out, row{Group: record, Members: count, ModelIDs: modelIDs, ModelGrants: modelGrants})
 	}
 
 	policies, err := h.quota.Policies().List(r.Context())
@@ -341,12 +349,13 @@ func (h *Handlers) listGroups(w http.ResponseWriter, r *http.Request) error {
 }
 
 type groupRequest struct {
-	Name           *string   `json:"name"`
-	Description    *string   `json:"description"`
-	IsDefault      *bool     `json:"is_default"`
-	AllowAllModels *bool     `json:"allow_all_models"`
-	SortOrder      *int      `json:"sort_order"`
-	ModelIDs       *[]string `json:"model_ids"`
+	Name           *string             `json:"name"`
+	Description    *string             `json:"description"`
+	IsDefault      *bool               `json:"is_default"`
+	AllowAllModels *bool               `json:"allow_all_models"`
+	SortOrder      *int                `json:"sort_order"`
+	ModelIDs       *[]string           `json:"model_ids"`
+	ModelGrants    *[]model.GroupGrant `json:"model_grants"`
 }
 
 func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
@@ -376,8 +385,12 @@ func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return translateGroupError(err)
 	}
-	if body.ModelIDs != nil {
-		if err := h.models.SetGroupModels(r.Context(), record.ID, *body.ModelIDs); err != nil {
+	if body.ModelGrants != nil {
+		if err := h.models.SetGroupModels(r.Context(), record.ID, *body.ModelGrants); err != nil {
+			return httpx.Internal(err)
+		}
+	} else if body.ModelIDs != nil {
+		if err := h.models.SetGroupModelIDs(r.Context(), record.ID, *body.ModelIDs); err != nil {
 			return httpx.Internal(err)
 		}
 	}
@@ -405,8 +418,12 @@ func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return translateGroupError(err)
 	}
-	if body.ModelIDs != nil {
-		if err := h.models.SetGroupModels(r.Context(), groupID, *body.ModelIDs); err != nil {
+	if body.ModelGrants != nil {
+		if err := h.models.SetGroupModels(r.Context(), groupID, *body.ModelGrants); err != nil {
+			return httpx.Internal(err)
+		}
+	} else if body.ModelIDs != nil {
+		if err := h.models.SetGroupModelIDs(r.Context(), groupID, *body.ModelIDs); err != nil {
 			return httpx.Internal(err)
 		}
 	}

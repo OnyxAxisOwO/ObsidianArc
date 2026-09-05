@@ -139,6 +139,7 @@ const en = {
   failed: 'Something went wrong.',
   modelNone: 'Choose a model',
   modelsEmpty: 'No models available.',
+  modelNotAllowedGroup: 'Not available to your group',
 
   // --- composer menu
   composerMenu: 'More',
@@ -326,6 +327,10 @@ const en = {
   allowAllModelsHint: 'A shortcut, so adding a model does not mean revisiting every group.',
   secModelAccess: 'Model access',
   allowedModels: 'Allowed models',
+  modelAccessTiersHint: 'Use permits chat requests. View displays the model in the menu as unselectable. None hides it completely.',
+  tierUse: 'Use',
+  tierView: 'View',
+  tierNone: 'None',
   noModelsConfigured: 'No models configured yet.',
   secAllowance: 'Allowance',
   allowanceHint: 'Empty means inherit from the instance default. A window that is not enforced is still measured.',
@@ -411,6 +416,11 @@ const en = {
   per1kInput: 'Per 1k input tokens',
   per1kOutput: 'Per 1k output tokens',
   per1kReasoning: 'Per 1k reasoning tokens',
+  modelHidden: 'Hidden from users',
+  modelHiddenHint: 'Does not appear in the model menu and cannot be called directly, but can still serve as a route target.',
+  hiddenBadge: 'hidden',
+  secGroupAccess: 'Group access',
+  groupAccessHint: 'Which user groups may use this model. Turning on “May use every model” on a group overrides this.',
   confirmDeleteModel: 'Delete {name}? Conversations that used it keep their messages.',
 
   // --- admin: usage
@@ -735,6 +745,7 @@ const zh: Record<StringKey, string> = {
   failed: '出错了。',
   modelNone: '选择模型',
   modelsEmpty: '没有可用的模型。',
+  modelNotAllowedGroup: '你的用户组不能使用这个模型',
 
   composerMenu: '更多',
   addImage: '添加图片',
@@ -914,6 +925,10 @@ const zh: Record<StringKey, string> = {
   allowAllModelsHint: '一个快捷方式，这样新增模型时不用逐个组去改。',
   secModelAccess: '模型权限',
   allowedModels: '开放的模型',
+  modelAccessTiersHint: '可用允许聊天调用；仅可见在菜单中展示但不可选；不可见完全隐藏。',
+  tierUse: '可用',
+  tierView: '仅可见',
+  tierNone: '不可见',
   noModelsConfigured: '还没有配置任何模型。',
   secAllowance: '额度',
   allowanceHint: '留空表示继承全局默认。未启用限制的窗口仍然会统计用量。',
@@ -997,6 +1012,11 @@ const zh: Record<StringKey, string> = {
   per1kInput: '每 1k 输入 Tokens',
   per1kOutput: '每 1k 输出 Tokens',
   per1kReasoning: '每 1k 思考 Tokens',
+  modelHidden: '对用户隐藏',
+  modelHiddenHint: '不出现在模型菜单中且无法直接调用，但仍可作为路由目标。',
+  hiddenBadge: '已隐藏',
+  secGroupAccess: '用户组权限',
+  groupAccessHint: '哪些用户组可以使用此模型。若用户组开启了“可以使用所有已启用的模型”则优先放行。',
   confirmDeleteModel: '删除 {name}？用过它的对话会保留消息。',
 
   usageTitle: '用量',

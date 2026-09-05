@@ -8,6 +8,7 @@
 // admin form is the same material as the one a user sees.
 
 import { el, field } from './dom';
+import { t } from '../i18n';
 
 export interface Control<T> {
   element: HTMLElement;
@@ -189,6 +190,99 @@ export function checkboxList(options: {
     value: () => [...boxes.entries()].filter(([, box]) => box.checked).map(([value]) => value),
     set: (values) => {
       for (const [value, box] of boxes) box.checked = values.includes(value);
+    },
+    focus: () => {},
+  };
+}
+
+export type AccessTier = 'use' | 'view' | 'none';
+
+export interface TierListItem {
+  value: string;
+  label: string;
+  sub?: string | undefined;
+}
+
+/** A list of items each having a 3-way tier: use, view, or none. */
+export function tierList(options: {
+  label: string;
+  hint?: string;
+  items: TierListItem[];
+  selected: Record<string, 'use' | 'view'>;
+  emptyText: string;
+}): Control<Record<string, 'use' | 'view'>> {
+  const list = el('div', 'oa-check-list');
+  const tiers = new Map<string, AccessTier>();
+  const buttonsByItem = new Map<string, Map<AccessTier, HTMLButtonElement>>();
+
+  if (!options.items.length) {
+    list.appendChild(el('p', 'oa-menu-empty', options.emptyText));
+  }
+
+  const tiersConfig: Array<{ tier: AccessTier; label: string }> = [
+    { tier: 'none', label: t('tierNone') },
+    { tier: 'view', label: t('tierView') },
+    { tier: 'use', label: t('tierUse') },
+  ];
+
+  for (const item of options.items) {
+    const row = el('div', 'oa-tier-row');
+    const text = el('span', 'oa-check-text');
+    text.appendChild(el('span', 'oa-check-title', item.label));
+    if (item.sub) text.appendChild(el('span', 'oa-check-sub', item.sub));
+    row.appendChild(text);
+
+    const initialTier: AccessTier = options.selected[item.value] ?? 'none';
+    tiers.set(item.value, initialTier);
+
+    const segmented = el('div', 'oa-segmented');
+    const itemButtons = new Map<AccessTier, HTMLButtonElement>();
+
+    for (const { tier, label } of tiersConfig) {
+      const btn = el('button', `oa-segmented-option${tier === initialTier ? ' active' : ''}`, label);
+      btn.type = 'button';
+      btn.addEventListener('click', () => {
+        tiers.set(item.value, tier);
+        for (const [tKey, b] of itemButtons) {
+          b.classList.toggle('active', tKey === tier);
+        }
+      });
+      itemButtons.set(tier, btn);
+      segmented.appendChild(btn);
+    }
+
+    buttonsByItem.set(item.value, itemButtons);
+    row.appendChild(segmented);
+    list.appendChild(row);
+  }
+
+  const element = el('div', 'oa-field');
+  element.appendChild(el('span', 'oa-field-label', options.label));
+  element.appendChild(list);
+  if (options.hint) element.appendChild(el('span', 'oa-field-hint', options.hint));
+
+  return {
+    element,
+    value: () => {
+      const out: Record<string, 'use' | 'view'> = {};
+      for (const [id, tier] of tiers) {
+        if (tier === 'use' || tier === 'view') {
+          out[id] = tier;
+        }
+      }
+      return out;
+    },
+    set: (values) => {
+      for (const item of options.items) {
+        const nextTier: AccessTier = values[item.value] ?? 'none';
+        tiers.set(item.value, nextTier);
+        const itemButtons = buttonsByItem.get(item.value);
+        if (itemButtons) {
+          for (const [tKey, b] of itemButtons) {
+            b.classList.toggle('active', tKey === nextTier);
+          }
+        }
+      }
     },
     focus: () => {},
   };

@@ -58,6 +58,7 @@ type Model struct {
 	Description string `json:"description"`
 	Avatar      string `json:"avatar"`
 	Enabled     bool   `json:"enabled"`
+	Hidden      bool   `json:"hidden"`
 	SortOrder   int    `json:"sort_order"`
 
 	// Where a request for this model is actually sent. Empty for the
@@ -78,6 +79,14 @@ type Model struct {
 	// Joined for display. Empty on a bare row read.
 	ProviderName string       `json:"provider_name,omitempty"`
 	ProviderKind adapter.Kind `json:"provider_kind,omitempty"`
+
+	// Usable indicates whether the user's group permits querying this model
+	// (true for 'use' or admin/allow_all_models, false for 'view').
+	Usable bool `json:"usable,omitempty"`
+
+	// GroupGrants lists the explicit group grants for this model. Populated in
+	// administrative listings.
+	GroupGrants []ModelGroupGrant `json:"group_grants,omitempty"`
 }
 
 // DefaultMaxOutput is what a turn is assumed capable of costing when a
@@ -141,7 +150,7 @@ const columns = `m.id, m.provider_id, m.model_id, m.display_name, m.description,
 	m.supports_reasoning, m.supports_images, m.supports_vision, m.supports_streaming,
 	m.supports_system_prompt, m.supports_tools, m.context_window, m.max_output_tokens,
 	m.request_weight, m.input_token_weight, m.output_token_weight, m.reasoning_token_weight,
-	m.created_at, m.updated_at, m.route_to_id, m.reasoning_style`
+	m.created_at, m.updated_at, m.route_to_id, m.reasoning_style, m.hidden`
 
 const withProvider = columns + `, p.name, p.kind`
 
@@ -161,6 +170,7 @@ type CreateInput struct {
 	Description    string
 	Avatar         string
 	Enabled        bool
+	Hidden         bool
 	SortOrder      int
 	RouteToID      string
 	ReasoningStyle adapter.ReasoningStyle
@@ -177,6 +187,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		Description:    in.Description,
 		Avatar:         in.Avatar,
 		Enabled:        in.Enabled,
+		Hidden:         in.Hidden,
 		SortOrder:      in.SortOrder,
 		RouteToID:      in.RouteToID,
 		ReasoningStyle: in.ReasoningStyle,
@@ -193,14 +204,14 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 	record.CreatedAt, record.UpdatedAt = now, now
 
 	_, err = s.db.Exec(ctx, `INSERT INTO models
-		(id, provider_id, model_id, display_name, description, avatar, enabled, sort_order,
+		(id, provider_id, model_id, display_name, description, avatar, enabled, hidden, sort_order,
 		 supports_reasoning, supports_images, supports_vision, supports_streaming,
 		 supports_system_prompt, supports_tools, context_window, max_output_tokens,
 		 request_weight, input_token_weight, output_token_weight, reasoning_token_weight,
 		 created_at, updated_at, route_to_id, reasoning_style)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.ProviderID, record.ModelID, record.DisplayName, record.Description,
-		record.Avatar, record.Enabled, record.SortOrder,
+		record.Avatar, record.Enabled, record.Hidden, record.SortOrder,
 		record.SupportsReasoning, record.SupportsImages, record.SupportsVision,
 		record.SupportsStreaming, record.SupportsSystemPrompt, record.SupportsTools,
 		record.ContextWindow, record.MaxOutputTokens,
@@ -221,6 +232,7 @@ type Update struct {
 	Description *string
 	Avatar      *string
 	Enabled     *bool
+	Hidden      *bool
 	SortOrder   *int
 
 	RouteToID      *string
@@ -253,6 +265,7 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 	assign(&next.Description, in.Description)
 	assign(&next.Avatar, in.Avatar)
 	assign(&next.Enabled, in.Enabled)
+	assign(&next.Hidden, in.Hidden)
 	assign(&next.SortOrder, in.SortOrder)
 	assign(&next.RouteToID, in.RouteToID)
 	assign(&next.ReasoningStyle, in.ReasoningStyle)
@@ -276,13 +289,13 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 	next.UpdatedAt = time.Now().UnixMilli()
 
 	_, err = s.db.Exec(ctx, `UPDATE models SET
-		model_id = ?, display_name = ?, description = ?, avatar = ?, enabled = ?, sort_order = ?,
+		model_id = ?, display_name = ?, description = ?, avatar = ?, enabled = ?, hidden = ?, sort_order = ?,
 		supports_reasoning = ?, supports_images = ?, supports_vision = ?, supports_streaming = ?,
 		supports_system_prompt = ?, supports_tools = ?, context_window = ?, max_output_tokens = ?,
 		request_weight = ?, input_token_weight = ?, output_token_weight = ?, reasoning_token_weight = ?,
 		route_to_id = ?, reasoning_style = ?, updated_at = ?
 		WHERE id = ?`,
-		next.ModelID, next.DisplayName, next.Description, next.Avatar, next.Enabled, next.SortOrder,
+		next.ModelID, next.DisplayName, next.Description, next.Avatar, next.Enabled, next.Hidden, next.SortOrder,
 		next.SupportsReasoning, next.SupportsImages, next.SupportsVision, next.SupportsStreaming,
 		next.SupportsSystemPrompt, next.SupportsTools, next.ContextWindow, next.MaxOutputTokens,
 		next.Request, next.InputToken, next.OutputToken, next.ReasoningToken,
@@ -299,7 +312,7 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 func (s *Store) ByID(ctx context.Context, modelID string) (Model, error) {
 	return scan(s.db.QueryRow(ctx,
 		`SELECT `+withProvider+` FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?`,
-		modelID), true)
+		modelID), true, false)
 }
 
 // ListAll is the administrator's view: every model, enabled or not, across
@@ -318,39 +331,50 @@ func (s *Store) ListAll(ctx context.Context, providerID string) ([]Model, error)
 		return nil, fmt.Errorf("model: list: %w", err)
 	}
 	defer rows.Close()
-	return collect(rows, true)
+	return collect(rows, true, false)
 }
 
-// ListForUser is what the model picker shows: enabled models, from enabled
-// providers, that this user's group permits.
+// ListForUser is what the model picker shows: enabled, non-hidden models from
+// enabled providers that this user's group may either use or view.
 //
-// The group's allow_all_models shortcut and its explicit grants are one query
-// rather than two code paths, so the picker and the gateway cannot disagree
-// about what is allowed.
+// Models with 'view' access appear in the returned slice with Usable=false,
+// so the UI can draw them as disabled / upgrade prompts.
 func (s *Store) ListForUser(ctx context.Context, groupID string, isAdmin bool) ([]Model, error) {
-	query := `SELECT ` + withProvider + `
-		FROM models m
-		JOIN providers p ON p.id = m.provider_id
-		WHERE m.enabled = ? AND p.enabled = ?`
-	args := []any{true, true}
+	var (
+		query string
+		args  []any
+	)
 
-	if !isAdmin {
-		query += ` AND EXISTS (
-			SELECT 1 FROM user_groups g
-			WHERE g.id = ?
-			  AND (g.allow_all_models = ?
-			       OR EXISTS (SELECT 1 FROM group_models gm WHERE gm.group_id = g.id AND gm.model_id = m.id))
-		)`
-		args = append(args, groupID, true)
+	if isAdmin {
+		query = `SELECT ` + withProvider + `, 1 AS usable
+			FROM models m
+			JOIN providers p ON p.id = m.provider_id
+			WHERE m.enabled = ? AND p.enabled = ? AND m.hidden = ?
+			ORDER BY m.sort_order, m.display_name`
+		args = []any{true, true, false}
+	} else {
+		query = `SELECT ` + withProvider + `,
+			CASE
+				WHEN g.allow_all_models = ? THEN 1
+				WHEN gm.access = ? THEN 1
+				ELSE 0
+			END AS usable
+			FROM models m
+			JOIN providers p ON p.id = m.provider_id
+			JOIN user_groups g ON g.id = ?
+			LEFT JOIN group_models gm ON gm.group_id = g.id AND gm.model_id = m.id
+			WHERE m.enabled = ? AND p.enabled = ? AND m.hidden = ?
+			  AND (g.allow_all_models = ? OR gm.group_id IS NOT NULL)
+			ORDER BY m.sort_order, m.display_name`
+		args = []any{true, AccessUse, groupID, true, true, false, true}
 	}
-	query += ` ORDER BY m.sort_order, m.display_name`
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("model: list for user: %w", err)
 	}
 	defer rows.Close()
-	return collect(rows, true)
+	return collect(rows, true, true)
 }
 
 // Resolved is a model together with the provider credentials needed to call
@@ -380,28 +404,29 @@ func routeValue(routeToID string) any {
 // callable only if this user is actually allowed to call it, and only if
 // both the model and its provider are enabled.
 //
-// The permission is part of the query rather than a check on the result:
-// there is no shape of this function where the caller can forget it.
+// Hidden models are refused at this first gate with ErrNotPermitted (the same
+// error as an unknown or forbidden model, preventing enumeration), but may
+// still be resolved on the subsequent hop if a permitted model routes to them.
 func (s *Store) Authorize(ctx context.Context, groupID, modelID string, isAdmin bool) (Resolved, error) {
-	where := `m.id = ?`
-	args := []any{modelID}
+	where := `m.id = ? AND m.hidden = ?`
+	args := []any{modelID, false}
 
 	if !isAdmin {
 		where += ` AND EXISTS (
 			SELECT 1 FROM user_groups g
 			WHERE g.id = ?
 			  AND (g.allow_all_models = ?
-			       OR EXISTS (SELECT 1 FROM group_models gm WHERE gm.group_id = g.id AND gm.model_id = m.id))
+			       OR EXISTS (SELECT 1 FROM group_models gm WHERE gm.group_id = g.id AND gm.model_id = m.id AND gm.access = ?))
 		)`
-		args = append(args, groupID, true)
+		args = append(args, groupID, true, AccessUse)
 	}
 
 	record, upstream, sealed, err := s.readCallable(ctx, where, args...)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			// One error for "no such model" and for "not yours": a user
-			// should not be able to discover which models exist by watching
-			// which ids come back with a different message.
+			// One error for "no such model", "not yours", and "hidden": a
+			// user should not be able to discover which models exist by
+			// watching which ids come back with a different message.
 			return Resolved{}, ErrNotPermitted
 		}
 		return Resolved{}, err
@@ -479,6 +504,7 @@ func (s *Store) readCallable(
 		&record.ContextWindow, &record.MaxOutputTokens,
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
 		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
+		&record.Hidden,
 		&record.ProviderName, &record.ProviderKind,
 		&upstream.BaseURL, &sealed, &headerJSON, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
 		&upstream.TimeoutSeconds, &upstream.APIKeyHint, &upstream.SortOrder, &upstream.Enabled,
@@ -504,45 +530,165 @@ func (s *Store) Delete(ctx context.Context, modelID string) error {
 
 // --- group permissions --------------------------------------------------------
 
-func (s *Store) GroupModelIDs(ctx context.Context, groupID string) ([]string, error) {
-	rows, err := s.db.Query(ctx, `SELECT model_id FROM group_models WHERE group_id = ?`, groupID)
+const (
+	AccessUse  = "use"
+	AccessView = "view"
+)
+
+type GroupGrant struct {
+	ModelID string `json:"model_id"`
+	Access  string `json:"access"`
+}
+
+type ModelGroupGrant struct {
+	GroupID string `json:"group_id"`
+	Access  string `json:"access"`
+}
+
+func (s *Store) GroupModelGrants(ctx context.Context, groupID string) ([]GroupGrant, error) {
+	rows, err := s.db.Query(ctx, `SELECT model_id, access FROM group_models WHERE group_id = ?`, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("model: group models: %w", err)
 	}
 	defer rows.Close()
 
-	out := []string{}
+	out := []GroupGrant{}
 	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
+		var g GroupGrant
+		if err := rows.Scan(&g.ModelID, &g.Access); err != nil {
 			return nil, fmt.Errorf("model: group models scan: %w", err)
 		}
-		out = append(out, value)
+		out = append(out, g)
 	}
 	return out, rows.Err()
 }
 
+func (s *Store) GroupModelIDs(ctx context.Context, groupID string) ([]string, error) {
+	grants, err := s.GroupModelGrants(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(grants))
+	for _, g := range grants {
+		if g.Access == AccessUse {
+			out = append(out, g.ModelID)
+		}
+	}
+	return out, nil
+}
+
 // SetGroupModels replaces a group's grants wholesale, in one transaction, so
 // a half-applied permission change cannot exist.
-func (s *Store) SetGroupModels(ctx context.Context, groupID string, modelIDs []string) error {
+func (s *Store) SetGroupModels(ctx context.Context, groupID string, grants []GroupGrant) error {
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		if _, err := tx.Exec(ctx, `DELETE FROM group_models WHERE group_id = ?`, groupID); err != nil {
 			return fmt.Errorf("model: clear group models: %w", err)
 		}
 		seen := map[string]bool{}
-		for _, modelID := range modelIDs {
-			if modelID == "" || seen[modelID] {
+		for _, g := range grants {
+			if g.ModelID == "" || seen[g.ModelID] {
 				continue
 			}
-			seen[modelID] = true
+			access := normalizeAccess(g.Access)
+			if access == "" {
+				continue
+			}
+			seen[g.ModelID] = true
 			if _, err := tx.Exec(ctx,
-				`INSERT INTO group_models (group_id, model_id) VALUES (?, ?)`,
-				groupID, modelID); err != nil {
-				return fmt.Errorf("model: grant %s: %w", modelID, err)
+				`INSERT INTO group_models (group_id, model_id, access) VALUES (?, ?, ?)`,
+				groupID, g.ModelID, access); err != nil {
+				return fmt.Errorf("model: grant %s: %w", g.ModelID, err)
 			}
 		}
 		return nil
 	})
+}
+
+// SetGroupModelIDs is a convenience wrapper for callers specifying only IDs.
+func (s *Store) SetGroupModelIDs(ctx context.Context, groupID string, modelIDs []string) error {
+	grants := make([]GroupGrant, len(modelIDs))
+	for i, id := range modelIDs {
+		grants[i] = GroupGrant{ModelID: id, Access: AccessUse}
+	}
+	return s.SetGroupModels(ctx, groupID, grants)
+}
+
+// ModelGroupGrants returns which groups are granted access to a specific model.
+func (s *Store) ModelGroupGrants(ctx context.Context, modelID string) ([]ModelGroupGrant, error) {
+	rows, err := s.db.Query(ctx, `SELECT group_id, access FROM group_models WHERE model_id = ?`, modelID)
+	if err != nil {
+		return nil, fmt.Errorf("model: model group grants: %w", err)
+	}
+	defer rows.Close()
+
+	out := []ModelGroupGrant{}
+	for rows.Next() {
+		var g ModelGroupGrant
+		if err := rows.Scan(&g.GroupID, &g.Access); err != nil {
+			return nil, fmt.Errorf("model: model group grant scan: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// SetModelGroups replaces a model's grants across all groups in one transaction.
+func (s *Store) SetModelGroups(ctx context.Context, modelID string, grants []ModelGroupGrant) error {
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM group_models WHERE model_id = ?`, modelID); err != nil {
+			return fmt.Errorf("model: clear model groups: %w", err)
+		}
+		seen := map[string]bool{}
+		for _, g := range grants {
+			if g.GroupID == "" || seen[g.GroupID] {
+				continue
+			}
+			access := normalizeAccess(g.Access)
+			if access == "" {
+				continue
+			}
+			seen[g.GroupID] = true
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO group_models (group_id, model_id, access) VALUES (?, ?, ?)`,
+				g.GroupID, modelID, access); err != nil {
+				return fmt.Errorf("model: grant group %s: %w", g.GroupID, err)
+			}
+		}
+		return nil
+	})
+}
+
+// AllModelGrants returns all group grants indexed by model id.
+func (s *Store) AllModelGrants(ctx context.Context) (map[string][]ModelGroupGrant, error) {
+	rows, err := s.db.Query(ctx, `SELECT model_id, group_id, access FROM group_models`)
+	if err != nil {
+		return nil, fmt.Errorf("model: all model grants: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string][]ModelGroupGrant{}
+	for rows.Next() {
+		var modelID string
+		var g ModelGroupGrant
+		if err := rows.Scan(&modelID, &g.GroupID, &g.Access); err != nil {
+			return nil, fmt.Errorf("model: all model grants scan: %w", err)
+		}
+		out[modelID] = append(out[modelID], g)
+	}
+	return out, rows.Err()
+}
+
+func normalizeAccess(access string) string {
+	switch strings.TrimSpace(strings.ToLower(access)) {
+	case AccessView:
+		return AccessView
+	case AccessUse:
+		return AccessUse
+	case "none", "":
+		return ""
+	default:
+		return AccessUse
+	}
 }
 
 // --- helpers -------------------------------------------------------------------
@@ -606,7 +752,7 @@ func truncateRunes(value string, limit int) string {
 
 type rowScanner interface{ Scan(dest ...any) error }
 
-func scan(row rowScanner, joined bool) (Model, error) {
+func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
 	var record Model
 	// NULL rather than empty, because the column carries a foreign key:
 	// deleting a route's target clears it instead of leaving a dangling id.
@@ -619,9 +765,13 @@ func scan(row rowScanner, joined bool) (Model, error) {
 		&record.ContextWindow, &record.MaxOutputTokens,
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
 		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
+		&record.Hidden,
 	}
 	if joined {
 		targets = append(targets, &record.ProviderName, &record.ProviderKind)
+	}
+	if withUsable {
+		targets = append(targets, &record.Usable)
 	}
 	if err := row.Scan(targets...); err != nil {
 		if database.IsNotFound(err) {
@@ -639,10 +789,10 @@ type rowsScanner interface {
 	Err() error
 }
 
-func collect(rows rowsScanner, joined bool) ([]Model, error) {
+func collect(rows rowsScanner, joined bool, withUsable bool) ([]Model, error) {
 	out := []Model{}
 	for rows.Next() {
-		record, err := scan(rows, joined)
+		record, err := scan(rows, joined, withUsable)
 		if err != nil {
 			return nil, err
 		}

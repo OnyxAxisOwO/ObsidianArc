@@ -34,6 +34,7 @@ type Public struct {
 	Description  string `json:"description"`
 	Avatar       string `json:"avatar"`
 	ProviderName string `json:"provider_name"`
+	Usable       bool   `json:"usable"`
 	Capabilities
 }
 
@@ -44,6 +45,7 @@ func toPublic(record Model) Public {
 		Description:  record.Description,
 		Avatar:       record.Avatar,
 		ProviderName: record.ProviderName,
+		Usable:       record.Usable,
 		Capabilities: record.Capabilities,
 	}
 }

@@ -194,6 +194,15 @@
   background: var(--ai-surface-container-high);
 }
 
+.oa-menu-item:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.oa-menu-item:disabled:hover {
+  background: transparent;
+}
+
 .oa-menu-item.active {
   background: var(--ai-surface-container-high);
 }

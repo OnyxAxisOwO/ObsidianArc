@@ -585,6 +585,23 @@
   background: var(--ai-state-hover);
 }
 
+.oa-tier-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 9px;
+}
+
+.oa-tier-row:hover {
+  background: var(--ai-state-hover);
+}
+
+.oa-tier-row .oa-segmented {
+  flex-shrink: 0;
+}
+
 .oa-check-row input {
   width: 15px;
   height: 15px;

@@ -9,9 +9,9 @@ import { ApiError } from '../api/client';
 import { t } from '../i18n';
 import { button, clear, el } from '../ui/dom';
 import { openPanel, type PanelHandle } from '../ui/panel';
-import { numberField, section, selectField, switchField, textArea, textField } from '../ui/form';
+import { numberField, section, selectField, switchField, textArea, textField, tierList } from '../ui/form';
 import { badge, badges, compactNumber, renderTable, stacked } from '../ui/table';
-import { adminApi, type AdminModel, type Meta, type Provider, type ReasoningStyle } from './api';
+import { adminApi, type AdminModel, type Group, type Meta, type Provider, type ReasoningStyle } from './api';
 import { failure, type AdminView } from './admin-page';
 import { reasoningLabel } from './providers';
 
@@ -20,11 +20,13 @@ export async function renderModels(view: AdminView): Promise<void> {
 
   let models: AdminModel[];
   let providers: Provider[];
+  let groups: Group[];
   let meta: Meta;
   try {
-    [{ models }, { providers }, meta] = await Promise.all([
+    [{ models }, { providers }, { groups }, meta] = await Promise.all([
       adminApi.models(),
       adminApi.providers(),
+      adminApi.groups(),
       adminApi.meta(),
     ]);
   } catch (error) {
@@ -36,7 +38,7 @@ export async function renderModels(view: AdminView): Promise<void> {
     models.find((entry) => entry.id === modelID)?.display_name ?? modelID;
 
   clear(view.actions);
-  const add = button('oa-btn primary', t('addModel'), () => editModel(view, providers, models, meta, null));
+  const add = button('oa-btn primary', t('addModel'), () => editModel(view, providers, models, groups, meta, null));
   add.disabled = providers.length === 0;
   if (!providers.length) add.title = t('addProviderFirst');
   view.actions.appendChild(add);
@@ -57,12 +59,18 @@ export async function renderModels(view: AdminView): Promise<void> {
       { header: t('colProvider'), cell: (row) => row.provider_name, secondary: true },
       { header: t('colCan'), cell: (row) => capabilityBadges(row) },
       { header: t('colWeights'), cell: (row) => weightLabel(row), numeric: true, secondary: true },
-      { header: t('colState'), cell: (row) => (row.enabled ? badge(t('enabled'), 'muted') : badge(t('disabled'), 'danger')) },
+      {
+        header: t('colState'),
+        cell: (row) => badges(
+          row.enabled ? badge(t('enabled'), 'muted') : badge(t('disabled'), 'danger'),
+          row.hidden ? badge(t('hiddenBadge'), 'muted') : null,
+        ),
+      },
     ],
     rows: models,
     empty: providers.length ? t('noModels') : t('addProviderFirst'),
     muted: (row) => !row.enabled,
-    onSelect: (row) => editModel(view, providers, models, meta, row),
+    onSelect: (row) => editModel(view, providers, models, groups, meta, row),
   }));
 }
 
@@ -86,6 +94,7 @@ function editModel(
   view: AdminView,
   providers: Provider[],
   models: AdminModel[],
+  groups: Group[],
   meta: Meta,
   existing: AdminModel | null,
 ): void {
@@ -122,7 +131,33 @@ function editModel(
   });
 
   const enabled = switchField({ label: t('enabled'), value: existing?.enabled ?? true });
+  const hidden = switchField({
+    label: t('modelHidden'),
+    value: existing?.hidden ?? false,
+    hint: t('modelHiddenHint'),
+  });
   const sortOrder = numberField({ label: t('sortOrder'), value: existing?.sort_order ?? 0 });
+
+  const initialGroupGrants: Record<string, 'use' | 'view'> = {};
+  if (existing?.group_grants) {
+    for (const grant of existing.group_grants) {
+      if (grant.access === 'use' || grant.access === 'view') {
+        initialGroupGrants[grant.group_id] = grant.access;
+      }
+    }
+  }
+
+  const groupAccess = tierList({
+    label: t('groupsTitle'),
+    hint: t('groupAccessHint'),
+    items: groups.map((group) => ({
+      value: group.id,
+      label: group.name,
+      sub: group.description || undefined,
+    })),
+    selected: initialGroupGrants,
+    emptyText: t('noGroups'),
+  });
 
   const reasoning = switchField({
     label: t('capReasoning'),
@@ -229,7 +264,11 @@ function editModel(
       body.appendChild(displayName.element);
       body.appendChild(description.element);
       body.appendChild(enabled.element);
+      body.appendChild(hidden.element);
       body.appendChild(sortOrder.element);
+
+      body.appendChild(section(t('secGroupAccess')));
+      body.appendChild(groupAccess.element);
 
       body.appendChild(section(t('secCapabilities'), t('capabilitiesHint')));
       body.appendChild(reasoning.element);
@@ -252,6 +291,12 @@ function editModel(
       body.appendChild(reasoningWeight.element);
     },
     onConfirm: async (handle) => {
+      const grantsRecord = groupAccess.value();
+      const groupGrants = Object.entries(grantsRecord).map(([group_id, access]) => ({
+        group_id,
+        access,
+      }));
+
       const payload: Record<string, unknown> = {
         route_to_id: routeTo.value(),
         reasoning_style: reasoningStyle.value(),
@@ -259,6 +304,7 @@ function editModel(
         display_name: displayName.value(),
         description: description.value(),
         enabled: enabled.value(),
+        hidden: hidden.value(),
         sort_order: sortOrder.value() ?? 0,
         supports_reasoning: reasoning.value(),
         supports_images: images.value(),
@@ -272,6 +318,7 @@ function editModel(
         input_token_weight: inputWeight.value() ?? 1,
         output_token_weight: outputWeight.value() ?? 1,
         reasoning_token_weight: reasoningWeight.value() ?? 1,
+        group_grants: groupGrants,
       };
       if (creating) payload['provider_id'] = providerID.value();
 

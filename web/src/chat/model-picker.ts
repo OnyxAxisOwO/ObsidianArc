@@ -32,6 +32,7 @@ export interface AvailableModel extends ModelCapabilities {
   description: string;
   avatar: string;
   provider_name: string;
+  usable?: boolean;
 }
 
 export interface ModelPickerOptions {
@@ -72,11 +73,18 @@ export function createModelPicker(options: ModelPickerOptions): ModelPicker {
     }
 
     for (const model of models) {
+      const isUnusable = model.usable === false;
+      const sub = isUnusable
+        ? `${model.description ? model.description + ' · ' : ''}${t('modelNotAllowedGroup')}`
+        : (model.description || model.provider_name);
+
       panel.appendChild(menuItem({
         title: model.display_name,
-        sub: model.description || model.provider_name,
+        sub,
+        disabled: isUnusable,
         active: model.id === selectedID,
         onSelect: () => {
+          if (isUnusable) return;
           close();
           select(model.id);
         },
@@ -100,6 +108,8 @@ export function createModelPicker(options: ModelPickerOptions): ModelPicker {
   }
 
   function select(modelID: string): void {
+    const target = models.find((model) => model.id === modelID);
+    if (target && target.usable === false) return;
     if (selectedID === modelID) return;
     selectedID = modelID;
     paint();
@@ -115,10 +125,12 @@ export function createModelPicker(options: ModelPickerOptions): ModelPicker {
       models = [];
     }
 
-    // The remembered model may have been disabled, deleted, or taken away
-    // from this group since it was chosen.
-    if (!models.some((model) => model.id === selectedID)) {
-      selectedID = models[0]?.id ?? '';
+    // The remembered model may have been disabled, deleted, taken away
+    // from this group, or demoted to view-only access.
+    const currentModel = models.find((model) => model.id === selectedID);
+    if (!currentModel || currentModel.usable === false) {
+      const firstUsable = models.find((model) => model.usable !== false);
+      selectedID = firstUsable?.id ?? '';
     }
     paint();
     options.onChange();

@@ -187,12 +187,16 @@ type modelRequest struct {
 	Description *string `json:"description"`
 	Avatar      *string `json:"avatar"`
 	Enabled     *bool   `json:"enabled"`
+	Hidden      *bool   `json:"hidden"`
 	SortOrder   *int    `json:"sort_order"`
 
 	// Empty clears the route. Administrative only: the model listing
 	// users see carries neither of these fields.
 	RouteToID      *string                 `json:"route_to_id"`
 	ReasoningStyle *adapter.ReasoningStyle `json:"reasoning_style"`
+
+	// Group access grants configured from the model editor.
+	GroupGrants *[]model.ModelGroupGrant `json:"group_grants"`
 
 	SupportsReasoning    *bool `json:"supports_reasoning"`
 	SupportsImages       *bool `json:"supports_images"`
@@ -219,6 +223,15 @@ func (h *Handlers) listModels(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
+
+	allGrants, err := h.models.AllModelGrants(r.Context())
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	for i := range records {
+		records[i].GroupGrants = allGrants[records[i].ID]
+	}
+
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"models": records})
 }
 
@@ -240,6 +253,7 @@ func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
 	in := model.CreateInput{
 		ProviderID: body.ProviderID,
 		Enabled:    true,
+		Hidden:     body.Hidden != nil && *body.Hidden,
 		Capabilities: model.Capabilities{
 			SupportsStreaming:    true,
 			SupportsSystemPrompt: true,
@@ -256,6 +270,12 @@ func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
 	record, err := h.models.Create(r.Context(), in)
 	if err != nil {
 		return model.TranslateError(err)
+	}
+	if body.GroupGrants != nil {
+		if err := h.models.SetModelGroups(r.Context(), record.ID, *body.GroupGrants); err != nil {
+			return httpx.Internal(err)
+		}
+		record.GroupGrants = *body.GroupGrants
 	}
 	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"model": record})
 }
@@ -280,6 +300,7 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 		Description:          body.Description,
 		Avatar:               body.Avatar,
 		Enabled:              body.Enabled,
+		Hidden:               body.Hidden,
 		SortOrder:            body.SortOrder,
 		SupportsReasoning:    body.SupportsReasoning,
 		SupportsImages:       body.SupportsImages,
@@ -298,6 +319,12 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 	})
 	if err != nil {
 		return model.TranslateError(err)
+	}
+	if body.GroupGrants != nil {
+		if err := h.models.SetModelGroups(r.Context(), modelID, *body.GroupGrants); err != nil {
+			return httpx.Internal(err)
+		}
+		record.GroupGrants = *body.GroupGrants
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"model": record})
 }

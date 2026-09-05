@@ -349,9 +349,10 @@ function chatSection(): HTMLElement {
   field.appendChild(models);
   wrap.appendChild(field);
 
-  void api.get<{ models: Array<{ id: string; display_name: string; provider_name: string }> }>('/api/models')
+  void api.get<{ models: Array<{ id: string; display_name: string; provider_name: string; usable?: boolean }> }>('/api/models')
     .then(({ models: list }) => {
       for (const model of list) {
+        if (model.usable === false) continue;
         const option = el('option', null, `${model.display_name} — ${model.provider_name}`);
         option.value = model.id;
         models.appendChild(option);

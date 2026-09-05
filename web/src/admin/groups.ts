@@ -12,7 +12,7 @@ import { ApiError } from '../api/client';
 import { t, tn } from '../i18n';
 import { button, clear, el } from '../ui/dom';
 import { openPanel, type PanelHandle } from '../ui/panel';
-import { checkboxList, numberField, section, switchField, textArea, textField } from '../ui/form';
+import { numberField, section, switchField, textArea, textField, tierList } from '../ui/form';
 import { badge, badges, renderTable, stacked } from '../ui/table';
 import {
   adminApi,
@@ -114,14 +114,28 @@ function editGroup(
   });
   const sortOrder = numberField({ label: t('sortOrder'), value: existing?.sort_order ?? 0 });
 
-  const allowed = checkboxList({
+  const initialGrants: Record<string, 'use' | 'view'> = {};
+  if (existing?.model_grants && existing.model_grants.length > 0) {
+    for (const grant of existing.model_grants) {
+      if (grant.access === 'use' || grant.access === 'view') {
+        initialGrants[grant.model_id] = grant.access;
+      }
+    }
+  } else if (existing?.model_ids) {
+    for (const id of existing.model_ids) {
+      initialGrants[id] = 'use';
+    }
+  }
+
+  const allowed = tierList({
     label: t('allowedModels'),
+    hint: t('modelAccessTiersHint'),
     items: models.map((model) => ({
       value: model.id,
       label: model.display_name,
       sub: `${model.provider_name} · ${model.model_id}`,
     })),
-    selected: existing?.model_ids ?? [],
+    selected: initialGrants,
     emptyText: t('noModelsConfigured'),
   });
 
@@ -184,13 +198,24 @@ function editGroup(
     onConfirm: async (handle) => {
       handle.setBusy(true);
       try {
+        const grantsRecord = allowed.value();
+        const modelGrants = allowAll.value()
+          ? []
+          : Object.entries(grantsRecord).map(([model_id, access]) => ({ model_id, access }));
+        const modelIDs = allowAll.value()
+          ? []
+          : Object.entries(grantsRecord)
+              .filter(([, access]) => access === 'use')
+              .map(([model_id]) => model_id);
+
         const payload: Record<string, unknown> = {
           name: name.value(),
           description: description.value(),
           is_default: isDefault.value(),
           allow_all_models: allowAll.value(),
           sort_order: sortOrder.value() ?? 0,
-          model_ids: allowAll.value() ? [] : allowed.value(),
+          model_ids: modelIDs,
+          model_grants: modelGrants,
         };
 
         const saved = creating

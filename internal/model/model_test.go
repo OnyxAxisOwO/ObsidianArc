@@ -169,7 +169,7 @@ func TestListForUserRespectsGroupGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.models.SetGroupModels(ctx, restricted.ID, []string{allowed.ID}); err != nil {
+	if err := f.models.SetGroupModelIDs(ctx, restricted.ID, []string{allowed.ID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,7 +202,7 @@ func TestAuthorizeRefusesModelsOutsideTheGroup(t *testing.T) {
 	forbidden := f.model(t, upstream.ID, "forbidden-model")
 
 	restricted, _ := f.groups.Create(ctx, nil, group.CreateInput{Name: "Restricted"})
-	if err := f.models.SetGroupModels(ctx, restricted.ID, []string{allowed.ID}); err != nil {
+	if err := f.models.SetGroupModelIDs(ctx, restricted.ID, []string{allowed.ID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -282,7 +282,7 @@ func TestDeletingProviderCascades(t *testing.T) {
 	upstream := f.provider(t, "Example")
 	record := f.model(t, upstream.ID, "some-model")
 	open, _ := f.groups.Create(ctx, nil, group.CreateInput{Name: "Open"})
-	if err := f.models.SetGroupModels(ctx, open.ID, []string{record.ID}); err != nil {
+	if err := f.models.SetGroupModelIDs(ctx, open.ID, []string{record.ID}); err != nil {
 		t.Fatal(err)
 	}
 
