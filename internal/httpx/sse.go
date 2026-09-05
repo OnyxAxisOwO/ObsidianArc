@@ -51,6 +51,13 @@ func (s *SSE) Event(name string, payload any) error {
 	return s.raw(name, body)
 }
 
+// Literal writes one data line exactly as given, with no JSON encoding.
+//
+// It exists for protocols whose stream is not entirely JSON — OpenAI's
+// completion stream ends with a bare `data: [DONE]`, which a marshalled
+// string would render as a quoted one.
+func (s *SSE) Literal(data string) error { return s.raw("", []byte(data)) }
+
 // Comment writes a `:` line. Used as a keepalive: it costs three bytes and
 // keeps an idle proxy from closing a connection that is waiting on a slow
 // first token.

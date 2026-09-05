@@ -14,8 +14,10 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/admin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/compat"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -90,27 +92,26 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	conversations := conversation.NewStore(db)
 	announcements := announcement.NewStore(db)
 	usageStore := usage.NewStore(db)
+	keys := apikey.NewStore(db)
 	quotaService := quota.NewService(db, quota.NewStore(db), settingsService)
 	chatService := chat.NewService(db, conversations, models, registry, settingsService)
 
-	// The gateway calls out to accounting rather than importing it: the chat
-	// path stays readable, and usage can be swapped or disabled without the
-	// gateway knowing.
-	chatService.Authorize = func(
-		ctx context.Context, req chat.TurnRequest, resolved model.Resolved,
-	) (chat.Release, error) {
+	// The one check that decides whether an account may spend anything, and
+	// the release that undoes what it claimed. Shared with the API surface
+	// rather than written twice: two copies of a limit are two limits.
+	guard := func(ctx context.Context, account user.User, chosen model.Model) (func(), error) {
 		// An unconfirmed address is checked here rather than at sign-in: the
 		// point is that it must not spend anything, and locking someone out
 		// of the interface entirely would leave them nowhere to press
 		// resend from.
-		if !req.User.EmailVerified && authService.VerificationRequired() {
+		if !account.EmailVerified && authService.VerificationRequired() {
 			return nil, httpx.ForbiddenCode("email_unverified",
 				"Confirm your email address before sending a message.")
 		}
 
 		// One account, a bounded number of open generations. Claimed before
 		// the allowance so a refusal here costs nothing to undo.
-		freeSlot, err := quotaService.Begin(req.User.ID)
+		freeSlot, err := quotaService.Begin(account.ID)
 		if err != nil {
 			return nil, httpx.TooManyRequests("too_many_in_flight",
 				"Too many answers are already being generated for this account.")
@@ -118,13 +119,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 
 		// The worst case, not nothing. Reserving it is what makes the
 		// allowance hold while several turns are streaming at once; the
-		// release below gives back the whole reservation, and OnTurn adds
-		// what the turn really cost. Both are deltas, so their order does
-		// not matter.
-		tokens, credits := resolved.Model.WorstCase()
+		// release below gives back the whole reservation, and the turn record
+		// adds what the turn really cost. Both are deltas, so their order
+		// does not matter.
+		tokens, credits := chosen.WorstCase()
 		reserved := quota.Estimate{Tokens: tokens, Credits: credits}
 
-		if err := quotaService.Reserve(ctx, req.User, reserved); err != nil {
+		if err := quotaService.Reserve(ctx, account, reserved); err != nil {
 			freeSlot()
 			if translated := quota.TranslateError(err); translated != nil {
 				return nil, translated
@@ -132,7 +133,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			return nil, err
 		}
 
-		userID := req.User.ID
+		userID := account.ID
 		return func() {
 			freeSlot()
 			// Detached: the request context is cancelled the moment the
@@ -146,7 +147,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			}
 		}, nil
 	}
-	chatService.OnTurn = func(ctx context.Context, record chat.TurnRecord) {
+
+	// The gateway calls out to accounting rather than importing it: the chat
+	// path stays readable, and usage can be swapped or disabled without the
+	// gateway knowing.
+	chatService.Authorize = func(
+		ctx context.Context, req chat.TurnRequest, resolved model.Resolved,
+	) (chat.Release, error) {
+		return guard(ctx, req.User, resolved.Model)
+	}
+	recordTurn := func(ctx context.Context, record chat.TurnRecord) {
 		if err := usageStore.Write(ctx, usage.Record{
 			UserID:          record.User.ID,
 			GroupID:         record.User.GroupID,
@@ -178,6 +188,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			slog.ErrorContext(ctx, "could not settle quota", "error", err, "user", record.User.ID)
 		}
 	}
+	chatService.OnTurn = recordTurn
 
 	if err := Bootstrap(ctx, db, groups, users, authService, cfg); err != nil {
 		return nil, err
@@ -221,6 +232,25 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	chatHandlers.Routes(mux)
 	quota.NewHandlers(quotaService).Routes(mux)
+
+	// Programmatic access. The key store is what an account manages from the
+	// interface; the compatibility surface is what the key is then presented
+	// to, and the two are separate because one is a browser screen and the
+	// other is not a browser at all.
+	apiKeyHandlers := apikey.NewHandlers(keys)
+	apiKeyHandlers.Allowed = func(r *http.Request) error {
+		account, ok := auth.UserFrom(r.Context())
+		if !ok {
+			return httpx.Unauthorized("Sign in to continue.")
+		}
+		return apiAllowed(r.Context(), settingsService, groups, account)
+	}
+	apiKeyHandlers.Routes(mux)
+
+	compatHandlers := compat.NewHandlers(settingsService, users, groups, models, keys, registry)
+	compatHandlers.Guard = guard
+	compatHandlers.OnTurn = recordTurn
+	compatHandlers.Routes(mux)
 	announcement.NewHandlers(announcements).Routes(mux)
 	trial.NewHandlers(settingsService, models, registry, proxyTrust, cfg.SecretKey).Routes(mux)
 	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements).Routes(mux)
@@ -259,6 +289,31 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		conversations: conversations,
 		quota:         quotaService,
 	}, nil
+}
+
+// apiAllowed reports whether this account may use the API: the instance-wide
+// switch, then the grant on their group. Administrators bypass the second the
+// way they bypass every other group restriction, but not the first — a
+// disabled API is disabled for everyone.
+//
+// It backs the interface's "you cannot create a key" state. The /v1 surface
+// checks the same two conditions itself rather than calling this, because a
+// screen wants to know why and a stranger with a token must not be told.
+func apiAllowed(
+	ctx context.Context, set *settings.Service, groups *group.Store, account user.User,
+) error {
+	if !set.Bool(settings.APIEnabled) {
+		return httpx.ForbiddenCode("api_disabled", "The API is not enabled on this instance.")
+	}
+	if account.IsAdmin() {
+		return nil
+	}
+	membership, err := groups.ByID(ctx, nil, account.GroupID)
+	if err != nil || !membership.APIAccess {
+		return httpx.ForbiddenCode("api_not_permitted",
+			"Your group does not have API access.")
+	}
+	return nil
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }

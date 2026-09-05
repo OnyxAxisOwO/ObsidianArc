@@ -566,7 +566,7 @@ func (s *Service) finishFailed(ctx, requestCtx context.Context, f finished, chat
 		return nil
 	}
 
-	code, friendly := describe(chatErr)
+	code, friendly := Describe(chatErr)
 
 	message, err := s.conversations.Append(ctx, nil, conversation.AppendInput{
 		ConversationID: f.prepared.conversationID,
@@ -659,10 +659,14 @@ func isCancelled(err error) bool {
 	return false
 }
 
-// describe turns an adapter failure into the code and sentence the client
+// Describe turns an adapter failure into the code and sentence the client
 // gets. The classification was already made in the adapter; nothing here
 // parses a provider's error text.
-func describe(err error) (code, message string) {
+//
+// Exported because the API surface answers for the same provider failures and
+// must say the same things about them — in particular it must keep saying
+// nothing about the endpoint or the key behind an auth error.
+func Describe(err error) (code, message string) {
 	var upstream *adapter.Error
 	if !errors.As(err, &upstream) {
 		return "internal", "Something went wrong on our side."
