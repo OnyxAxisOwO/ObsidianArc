@@ -12,6 +12,7 @@
 import { t } from '../i18n';
 import { ICONS, button, el, iconButton } from './dom';
 import { attachResizer, storedWidth } from './resizer';
+import { attachOverlayScrollbar } from './scrollbar';
 
 export interface PanelHandle {
   /** The scrolling content area, so a caller can repaint part of it. */
@@ -23,7 +24,7 @@ export interface PanelHandle {
   setError(message: string): void;
   setTitle(title: string): void;
   /** Covers the whole row instead of being a column of it. Returns the new state. */
-  toggleFullscreen(): boolean;
+  toggleFullscreen(onDone?: () => void): boolean;
   /** Whether it is currently covering the row — build() reads this to lay itself out. */
   isFullscreen(): boolean;
 }
@@ -73,7 +74,28 @@ export function closePanel(host: HTMLElement): void {
 }
 
 export function openPanel(options: PanelOptions): PanelHandle {
-  openPanels.get(options.host)?.close();
+  // A panel already standing at full width means one record is being swapped
+  // for another. Read that before closing it, which takes the class away: the
+  // new panel then takes the old one's place without animating, instead of
+  // flashing the list wide for the length of a slide out and a slide back in.
+  const replacing = Array.from(options.host.children).some(
+    (child) => child instanceof HTMLElement && child.classList.contains('oa-panel') && child.classList.contains('open'),
+  );
+
+  const existing = openPanels.get(options.host);
+  if (existing) {
+    existing.close();
+  }
+  // Immediately clean up any previous panel element so two panel columns never coexist in flex
+  for (const child of Array.from(options.host.children)) {
+    if (child instanceof HTMLElement && child.classList.contains('oa-panel')) {
+      child.remove();
+    }
+  }
+
+  if (window.getComputedStyle(options.host).position === 'static') {
+    options.host.style.position = 'relative';
+  }
 
   // A width the user has dragged to wins over the caller's suggestion: they
   // set it while looking at one of these panels, and they are all the same
@@ -91,7 +113,10 @@ export function openPanel(options: PanelOptions): PanelHandle {
   for (const action of options.actions ?? []) head.appendChild(action);
   head.appendChild(iconButton('oa-icon-btn', ICONS.close, t('close'), () => handle.close(), 16));
 
+  const bodyWrap = el('div', 'oa-panel-body-wrap');
   const body = el('div', 'oa-panel-body');
+  bodyWrap.appendChild(body);
+  const scrollbar = attachOverlayScrollbar(body, bodyWrap);
   const error = el('p', 'oa-drawer-flash');
 
   const footer = el('div', 'oa-panel-foot');
@@ -105,6 +130,7 @@ export function openPanel(options: PanelOptions): PanelHandle {
     close() {
       if (closed) return;
       closed = true;
+      scrollbar.destroy();
       openPanels.delete(options.host);
       document.removeEventListener('keydown', onKey);
       // Slide out before removing, so the column is seen leaving rather than
@@ -118,6 +144,7 @@ export function openPanel(options: PanelOptions): PanelHandle {
       body.scrollTop = 0;
       options.build(body, handle);
       body.appendChild(error);
+      scrollbar.update();
     },
     setBusy(busy) {
       confirmButton.disabled = busy;
@@ -135,8 +162,8 @@ export function openPanel(options: PanelOptions): PanelHandle {
     setTitle(next) {
       title.textContent = next;
     },
-    toggleFullscreen() {
-      return zoom(!fullscreen);
+    toggleFullscreen(onDone?: () => void) {
+      return zoom(!fullscreen, onDone);
     },
     isFullscreen() {
       return fullscreen;
@@ -145,30 +172,32 @@ export function openPanel(options: PanelOptions): PanelHandle {
 
   // --- full screen ----------------------------------------------------------
   //
-  // Full screen means absolute over the row, not a wider column: the list
-  // beside it has nowhere left to shrink to. But absolute is not a state CSS
-  // can transition into from a flex child, so the box is measured on both
-  // sides of the switch and animated between the two by hand — the same
-  // first/last trick a layout animation always comes down to.
+  // Full screen means absolute over the row, expanding smoothly from the right
+  // edge of the host. The right boundary remains anchored (right: 0, left: auto)
+  // while width transitions between the drawer width and 100%, avoiding any
+  // coordinate drift or sudden horizontal shifts across the screen.
 
   let fullscreen = false;
   let zoomTimer = 0;
+  let swapTimer = 0;
 
   const ZOOM_MS = 340;
-
-  /** The panel's box in the host's own coordinates, which is what left/top mean here. */
-  function panelBox(): { left: number; top: number; width: number; height: number } {
-    const host = options.host.getBoundingClientRect();
-    const box = panel.getBoundingClientRect();
-    return { left: box.left - host.left, top: box.top - host.top, width: box.width, height: box.height };
-  }
-
-  function applyBox(box: { left: number; top: number; width: number; height: number }): void {
-    panel.style.left = `${box.left}px`;
-    panel.style.top = `${box.top}px`;
-    panel.style.width = `${box.width}px`;
-    panel.style.height = `${box.height}px`;
-  }
+  /**
+   * When the interior swaps layouts, partway through the frame's travel.
+   *
+   * The panel's contents are laid out by `.fullscreen` — drawer gets tabs
+   * across the top, full screen gets a rail down the side — and a class
+   * cannot be interpolated, so that swap is always one frame. Doing it at the
+   * end meant the frame glided open and then the inside of it jumped, which
+   * is the worst place to put it: the eye has just finished following a
+   * smooth movement and is looking straight at the thing that snaps.
+   *
+   * So it happens early, while the frame is still visibly moving and the
+   * contents are faded out for it. What is left to see is one continuous
+   * movement with the contents dissolving from one arrangement to the other
+   * inside it.
+   */
+  const SWAP_AT_MS = 130;
 
   /**
    * Pins the other columns at the width they have while the panel is one of
@@ -188,38 +217,121 @@ export function openPanel(options: PanelOptions): PanelHandle {
     };
   }
 
-  function zoom(next: boolean): boolean {
-    if (next === fullscreen) return fullscreen;
-    const from = panelBox();
+  /**
+   * Freezes siblings at their target drawer width while the panel shrinks back
+   * to a drawer column, so the content behind it is already at its final width
+   * and does not reflow or snap when the animation finishes.
+   */
+  function freezeSiblingsForDrawer(drawerWidth: number): () => void {
+    const pinned: Array<[HTMLElement, string]> = [];
+    const children = Array.from(options.host.children).filter(
+      (c): c is HTMLElement => c !== panel && c instanceof HTMLElement,
+    );
+    if (children.length === 0) return () => {};
 
-    // Freeze while the panel is still a column, whichever way it is going:
-    // entering, that is now; leaving, that is after the class comes off.
-    let release: () => void;
-    if (next) {
-      release = freezeSiblings();
-      panel.classList.add('fullscreen');
-    } else {
-      panel.classList.remove('fullscreen');
-      release = freezeSiblings();
+    const hostStyle = window.getComputedStyle(options.host);
+    const gap = parseFloat(hostStyle.gap) || 0;
+    const hostWidth = options.host.getBoundingClientRect().width;
+
+    let fixedTotal = 0;
+    const flexible: HTMLElement[] = [];
+    for (const child of children) {
+      pinned.push([child, child.style.flex]);
+      const style = window.getComputedStyle(child);
+      if (parseFloat(style.flexGrow) > 0) {
+        flexible.push(child);
+      } else {
+        fixedTotal += child.getBoundingClientRect().width;
+      }
     }
-    fullscreen = next;
 
-    const to = panelBox();
+    const totalGaps = children.length * gap;
+    const remaining = Math.max(0, hostWidth - drawerWidth - fixedTotal - totalGaps);
+    const perFlex = flexible.length > 0 ? remaining / flexible.length : remaining;
 
-    panel.classList.add('zooming');
-    applyBox(from);
-    void panel.offsetWidth; // a start value for the transition to leave from
-    applyBox(to);
+    for (const child of children) {
+      if (flexible.includes(child)) {
+        child.style.flex = `0 0 ${perFlex}px`;
+      } else {
+        child.style.flex = `0 0 ${child.getBoundingClientRect().width}px`;
+      }
+    }
+
+    return () => {
+      for (const [node, previous] of pinned) node.style.flex = previous;
+    };
+  }
+
+  function zoom(next: boolean, onDone?: () => void): boolean {
+    if (next === fullscreen) return fullscreen;
 
     window.clearTimeout(zoomTimer);
-    zoomTimer = window.setTimeout(() => {
-      panel.classList.remove('zooming');
-      panel.style.left = '';
+    window.clearTimeout(swapTimer);
+    const drawerWidth = storedWidth(PANEL_WIDTH_KEY, options.width ?? 400);
+
+    // The frame's own geometry is pinned inline for the whole animation, so
+    // adding or removing `.fullscreen` partway through cannot disturb it:
+    // inline styles outrank the class either way. That is what lets the
+    // contents change over while the frame is still travelling.
+    const clearGeometry = (): void => {
       panel.style.top = '';
+      panel.style.bottom = '';
+      panel.style.right = '';
+      panel.style.left = '';
       panel.style.width = '';
-      panel.style.height = '';
-      release();
-    }, ZOOM_MS + 20);
+    };
+    const pinGeometry = (width: string): void => {
+      panel.style.top = '0';
+      panel.style.bottom = '0';
+      panel.style.right = '0';
+      panel.style.left = 'auto';
+      panel.style.width = width;
+    };
+
+    if (next) {
+      const release = freezeSiblings();
+      const currentWidth = panel.getBoundingClientRect().width || drawerWidth;
+
+      panel.classList.add('zooming', 'swapping');
+      pinGeometry(`${currentWidth}px`);
+
+      void panel.offsetWidth; // Force reflow to commit initial width
+      panel.style.width = '100%';
+      fullscreen = true;
+
+      swapTimer = window.setTimeout(() => {
+        panel.classList.add('fullscreen');
+        panel.classList.remove('swapping');
+      }, SWAP_AT_MS);
+
+      zoomTimer = window.setTimeout(() => {
+        panel.classList.remove('zooming');
+        clearGeometry();
+        release();
+        onDone?.();
+      }, ZOOM_MS + 20);
+    } else {
+      const release = freezeSiblingsForDrawer(drawerWidth);
+
+      panel.classList.add('zooming', 'swapping');
+      pinGeometry('100%');
+
+      void panel.offsetWidth; // Force reflow to commit 100% width
+      panel.style.width = `${drawerWidth}px`;
+      fullscreen = false;
+
+      swapTimer = window.setTimeout(() => {
+        panel.classList.remove('fullscreen');
+        panel.classList.remove('swapping');
+      }, SWAP_AT_MS);
+
+      zoomTimer = window.setTimeout(() => {
+        panel.classList.remove('zooming');
+        clearGeometry();
+        release();
+        onDone?.();
+      }, ZOOM_MS + 20);
+    }
 
     return fullscreen;
   }
@@ -301,12 +413,20 @@ export function openPanel(options: PanelOptions): PanelHandle {
 
   handle.rebuild();
   panel.appendChild(head);
-  panel.appendChild(body);
+  panel.appendChild(bodyWrap);
   if (wantsFooter) panel.appendChild(footer);
   options.host.appendChild(panel);
   openPanels.set(options.host, handle);
 
-  // One frame closed, so the transition has a starting state to move from.
-  requestAnimationFrame(() => panel.classList.add('open'));
+  if (replacing) {
+    // The column it is taking over is already at full width, so it opens where
+    // that one stood — before anything is painted, and therefore without a
+    // frame in which the list behind it is briefly wide again.
+    panel.classList.add('open');
+  } else {
+    // Force reflow so the starting state is committed before the transition begins.
+    void panel.offsetWidth;
+    requestAnimationFrame(() => panel.classList.add('open'));
+  }
   return handle;
 }

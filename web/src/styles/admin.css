@@ -15,8 +15,11 @@
   height: 100%;
   min-height: 0;
   /* Clips the side panel while it slides in and out, so the page never grows
-     a horizontal scrollbar mid-animation. */
-  overflow: hidden;
+     a horizontal scrollbar mid-animation. `clip` rather than `hidden`, because
+     a hidden box is still a scroll container: focusing a field in a panel that
+     had not slid in yet made the browser scroll the whole row across to find
+     it, so the panel appeared to jump rather than arrive. */
+  overflow: clip;
 }
 
 /* --- rail ---------------------------------------------------------------- */
@@ -93,6 +96,7 @@
   border-radius: 18px;
   background: var(--ai-surface-container);
   overflow: hidden;
+  isolation: isolate;
 }
 
 .oa-admin-head {
@@ -218,11 +222,17 @@
    sideways. */
 .oa-table-wrap {
   overflow-x: auto;
+  scrollbar-width: none;
   border-radius: 14px;
+}
+
+.oa-table-wrap::-webkit-scrollbar {
+  display: none;
 }
 
 .oa-table {
   width: 100%;
+  table-layout: fixed;
   /* Separate rather than collapsed so a cell's corners can be rounded: with
      collapsed borders the radius is ignored, and a striped row would end in
      square corners against everything else here. Spacing is zero, so nothing
@@ -250,6 +260,8 @@
   text-align: left;
   color: var(--ai-text-secondary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .oa-table th:first-child {
@@ -267,6 +279,9 @@
 .oa-table td {
   padding: 10px 12px;
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Every other row is filled, so a row reads as a band rather than as text
@@ -333,6 +348,7 @@
   flex-direction: column;
   gap: 1px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .oa-cell-title {
@@ -458,6 +474,7 @@
   margin-right: calc(-1 * (var(--oa-panel-width) + 14px));
   opacity: 0;
   transition: margin-right 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease;
+  will-change: margin-right, opacity;
 }
 
 .oa-panel.open {
@@ -494,6 +511,19 @@
 .oa-panel.fullscreen,
 .oa-panel.zooming {
   transform: none;
+}
+
+/* The frame's travel is continuous; the arrangement inside it cannot be —
+   drawer and full screen are two layouts, and a class does not interpolate.
+   So the contents dissolve out, change over, and dissolve back in while the
+   frame is still moving, instead of snapping into place after it stops. */
+.oa-panel.zooming > * {
+  transition: opacity 0.2s ease;
+}
+
+.oa-panel.swapping > * {
+  opacity: 0;
+  transition: opacity 0.11s ease;
 }
 
 /* Nothing to drag when it already fills the row or is mid-animation. */
@@ -825,7 +855,7 @@
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
@@ -836,7 +866,7 @@
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: none;
   }
 }
 
@@ -847,7 +877,7 @@
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: none;
   }
 }
 
