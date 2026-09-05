@@ -1,10 +1,13 @@
 // The composer's `+` menu.
 //
-// One control at the left of the composer holds everything that modifies the
-// next message rather than sending it: how hard the model should think, what
-// to attach, and how much allowance is left. Putting them behind a single
-// button keeps the composer to two visible controls — the pill and send —
-// which is what the standalone build's proportions depended on.
+// What goes with the next message: what to attach, and how much allowance is
+// left to send it with.
+//
+// Reasoning used to live here too, which was the wrong place for it. How hard
+// a model thinks is part of choosing the model, not part of attaching a file,
+// and having it here meant the state was set in one menu and displayed in a
+// chip on the other side of the screen. It moved into the model control,
+// beside send.
 
 import { fetchUsage, windowFigures, windowPressure, type UsageSummary, type UsageWindow } from '../api/usage';
 import { t } from '../i18n';
@@ -19,10 +22,6 @@ export interface ReasoningState {
 }
 
 export interface ComposerMenuOptions {
-  /** Hidden entirely when the selected model cannot reason. */
-  reasoningAvailable(): boolean;
-  reasoning(): ReasoningState;
-  onReasoningChange(next: ReasoningState): void;
   onPickImages(): void;
   onPickFiles(): void;
   /** False while a turn is running, or before a model is available. */
@@ -32,7 +31,7 @@ export interface ComposerMenuOptions {
 
 export interface ComposerMenu {
   element: HTMLElement;
-  /** Repaints the trigger after the model or the reasoning state changed. */
+  /** Re-reads whether the composer is accepting input. */
   sync(): void;
 }
 
@@ -46,10 +45,6 @@ export function createComposerMenu(options: ComposerMenuOptions): ComposerMenu {
   let usageLoaded = false;
 
   const menu = dropdown(trigger, (panel, close) => {
-    if (options.reasoningAvailable()) {
-      panel.appendChild(reasoningSection());
-    }
-
     panel.appendChild(menuItem({
       title: t('addImage'),
       leading: icon(ICONS.image, 14),
@@ -86,48 +81,6 @@ export function createComposerMenu(options: ComposerMenuOptions): ComposerMenu {
         });
     }
   }, { groupClass: 'oa-composer-menu', menuClass: 'oa-menu-up' });
-
-  function reasoningSection(): HTMLElement {
-    const state = options.reasoning();
-
-    const section = el('div', 'oa-menu-section');
-    section.appendChild(el('span', 'oa-menu-section-title', t('reasoningToggle')));
-
-    const toggle = el('label', 'oa-checkbox-field oa-menu-toggle');
-    const box = el('input');
-    box.type = 'checkbox';
-    box.checked = state.enabled;
-    box.addEventListener('change', () => {
-      const next = { ...options.reasoning(), enabled: box.checked };
-      options.onReasoningChange(next);
-      efforts.hidden = !next.enabled;
-      sync();
-    });
-    toggle.appendChild(box);
-    toggle.appendChild(el('span', null, t('reasoningToggle')));
-    section.appendChild(toggle);
-
-    const efforts = el('div', 'oa-segmented');
-    efforts.hidden = !state.enabled;
-    const levels: Array<[Effort, string]> = [
-      ['low', t('effortLow')],
-      ['medium', t('effortMedium')],
-      ['high', t('effortHigh')],
-    ];
-    for (const [value, label] of levels) {
-      const option = el('button', `oa-segmented-option${state.effort === value ? ' active' : ''}`, label);
-      option.type = 'button';
-      option.addEventListener('click', () => {
-        options.onReasoningChange({ ...options.reasoning(), effort: value });
-        for (const sibling of efforts.children) sibling.classList.remove('active');
-        option.classList.add('active');
-        sync();
-      });
-      efforts.appendChild(option);
-    }
-    section.appendChild(efforts);
-    return section;
-  }
 
   function paintQuota(container: HTMLElement): void {
     container.textContent = '';
@@ -194,11 +147,7 @@ export function createComposerMenu(options: ComposerMenuOptions): ComposerMenu {
   }
 
   function sync(): void {
-    const state = options.reasoning();
-    const on = options.reasoningAvailable() && state.enabled;
-    trigger.classList.toggle('active', on);
     trigger.disabled = !options.enabled();
-    trigger.title = on ? `${t('composerMenu')} · ${t('reasoningToggle')}` : t('composerMenu');
   }
 
   sync();

@@ -656,6 +656,18 @@ const en = {
   keyDays30: 'In 30 days',
   keyDays90: 'In 90 days',
   keyDays365: 'In a year',
+  keyPaused: 'Paused',
+  keyActive: 'Active',
+  keyPause: 'Pause',
+  keyResume: 'Resume',
+  keyStatus: 'Status',
+  keyStatusActive: 'Active (ready to use)',
+  keyStatusPaused: 'Paused (refuse requests)',
+  keyModel: 'Model restriction',
+  keyModelAll: 'All models (unrestricted)',
+  keyModelHint: 'Optionally restrict this key so it can only be used with a single model.',
+  keyOnlyModel: 'Only: {model}',
+  keyAllModels: 'All models',
 
   // --- the API, from administration
   apiEnabled: 'Enable the API',
@@ -763,6 +775,11 @@ const en = {
   chartPie: 'A pie',
   chartOther: 'Everything else',
   secTopUsers: 'Busiest accounts',
+
+  // --- the model control
+  effortOff: 'Off',
+  reasoningUnavailable: 'This model answers without a thinking step.',
+  chooseModel: 'Choose a model',
 } as const;
 
 export type StringKey = keyof typeof en;
@@ -1392,6 +1409,18 @@ const zh: Record<StringKey, string> = {
   keyDays30: '30 天后',
   keyDays90: '90 天后',
   keyDays365: '一年后',
+  keyPaused: '已暂停',
+  keyActive: '正常',
+  keyPause: '暂停',
+  keyResume: '恢复',
+  keyStatus: '状态',
+  keyStatusActive: '正常启用（允许调用）',
+  keyStatusPaused: '暂停使用（拒绝调用）',
+  keyModel: '限制模型',
+  keyModelAll: '全部模型（无限制）',
+  keyModelHint: '可选限制此密钥仅可调用指定的特定模型。',
+  keyOnlyModel: '限用: {model}',
+  keyAllModels: '全部模型',
 
   // --- the API, from administration
   apiEnabled: '开启 API',
@@ -1499,6 +1528,11 @@ const zh: Record<StringKey, string> = {
   chartPie: '饼图',
   chartOther: '其余全部',
   secTopUsers: '用量最多的账户',
+
+  // --- the model control
+  effortOff: '关闭',
+  reasoningUnavailable: '这个模型没有思考步骤。',
+  chooseModel: '选择模型',
 };
 
 const dictionaries: Record<Language, Record<StringKey, string>> = { en, zh };

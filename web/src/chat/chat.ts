@@ -30,9 +30,10 @@ import {
 import { ApiError } from '../api/client';
 import { t } from '../i18n';
 import { ICONS, button, clear, confirmable, el, icon, iconButton } from '../ui/dom';
-import { createComposerMenu, type ComposerMenu, type ReasoningState } from './composer-menu';
+import { createComposerMenu, type ComposerMenu } from './composer-menu';
 import { ImageError, prepareImage, type PreparedImage } from './image';
 import { renderInto } from './markdown';
+import { attachOverlayScrollbar } from '../ui/scrollbar';
 
 const MAX_MESSAGE_CHARS = 32000;
 const MAX_IMAGES = 6;
@@ -95,8 +96,14 @@ export interface ChatOptions {
   root: HTMLElement;
   getStatus(): ChatStatus;
   onOpenSetup(): void;
-  /** Applied to the next turn, and persisted by the host. */
-  onReasoningChange(next: ReasoningState): void;
+  /**
+   * The model-and-effort control, placed in the composer beside send.
+   *
+   * Built by the host rather than here, because what models exist and which
+   * one is remembered is the host's business; this file only knows where the
+   * control belongs on screen.
+   */
+  composerControl?: HTMLElement;
   /** Told which conversation is open, so the shell can reflect it. */
   onConversationChange?(conversation: Conversation | null): void;
 }
@@ -153,7 +160,11 @@ export function mountChat(options: ChatOptions): ChatHandle {
   sidebarHead.appendChild(el('span', 'ai-chat-sidebar-title', t('history')));
   sidebarHead.appendChild(newChatBtn);
 
+  const sidebarListWrap = el('div', 'ai-chat-list-wrap');
   const sidebarList = el('div', 'ai-chat-list');
+  sidebarListWrap.appendChild(sidebarList);
+  attachOverlayScrollbar(sidebarList, sidebarListWrap);
+
   const sidebarFoot = el('div', 'ai-chat-sidebar-foot');
   const clearAllBtn = button('ai-chat-clear-all', '');
   clearAllBtn.appendChild(icon(ICONS.trash, 12));
@@ -166,7 +177,7 @@ export function mountChat(options: ChatOptions): ChatHandle {
   sidebarFoot.appendChild(clearAllBtn);
 
   sidebar.appendChild(sidebarHead);
-  sidebar.appendChild(sidebarList);
+  sidebar.appendChild(sidebarListWrap);
   sidebar.appendChild(sidebarFoot);
 
   const main = el('div', 'ai-chat-main');
@@ -184,7 +195,10 @@ export function mountChat(options: ChatOptions): ChatHandle {
   bar.appendChild(barTitle);
   bar.appendChild(barNewBtn);
 
+  const scrollWrap = el('div', 'ai-chat-scroll-wrap');
   const scroll = el('div', 'ai-chat-scroll');
+  scrollWrap.appendChild(scroll);
+  attachOverlayScrollbar(scroll, scrollWrap);
   const flashLine = el('div', 'ai-chat-flash');
   flashLine.setAttribute('role', 'status');
   flashLine.setAttribute('aria-live', 'polite');
@@ -213,17 +227,10 @@ export function mountChat(options: ChatOptions): ChatHandle {
   docInput.multiple = true;
   docInput.hidden = true;
 
-  // Everything that changes the next message, rather than sending it, lives
-  // behind this one control: thinking, attachments, and what is left of the
-  // allowance.
+  // What goes with the next message: attachments, and what is left of the
+  // allowance. How hard the model thinks is not here — that belongs with the
+  // model, in the control beside send.
   const menu: ComposerMenu = createComposerMenu({
-    reasoningAvailable: () => status.reasoningAvailable,
-    reasoning: () => ({ enabled: status.reasoningEnabled, effort: status.reasoningEffort as ReasoningState['effort'] }),
-    onReasoningChange: (next) => {
-      options.onReasoningChange(next);
-      status = options.getStatus();
-      menu.sync();
-    },
     onPickImages: () => fileInput.click(),
     onPickFiles: () => docInput.click(),
     enabled: () => !busy && status.configured,
@@ -241,6 +248,9 @@ export function mountChat(options: ChatOptions): ChatHandle {
 
   composerRow.appendChild(menu.element);
   composerRow.appendChild(input);
+  // What answers and how hard it thinks, beside the button that sends it —
+  // the decision and the act in the same place.
+  if (options.composerControl) composerRow.appendChild(options.composerControl);
   composerRow.appendChild(sendBtn);
   composer.appendChild(pendingStrip);
   composer.appendChild(composerRow);
@@ -250,7 +260,7 @@ export function mountChat(options: ChatOptions): ChatHandle {
   const dropHint = el('div', 'ai-chat-drop', t('dropHint'));
 
   main.appendChild(bar);
-  main.appendChild(scroll);
+  main.appendChild(scrollWrap);
   main.appendChild(flashLine);
   main.appendChild(composer);
   main.appendChild(dropHint);

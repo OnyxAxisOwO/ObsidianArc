@@ -15,7 +15,7 @@ import { ICONS, iconButton } from '../ui/dom';
 import { attachResizer } from '../ui/resizer';
 import { mountChat, type ChatHandle, type ChatStatus } from './chat';
 import type { Effort, ReasoningState } from './composer-menu';
-import { createModelPicker } from './model-picker';
+import { createModelControl } from './model-picker';
 
 const RAIL_COLLAPSED_KEY = 'obsidian-arc-rail-collapsed';
 
@@ -44,16 +44,19 @@ export function renderChatPage(root: HTMLElement): HTMLElement {
   // whether it applies at all.
   let reasoning: ReasoningState = readReasoning(preferences);
 
-  const picker = createModelPicker({
+  const picker = createModelControl({
     ...(typeof preferences['default_model_id'] === 'string'
       ? { initialModelID: preferences['default_model_id'] }
       : {}),
-    reasoningActive: () => reasoning.enabled,
+    reasoning: () => reasoning,
+    onReasoningChange: (next) => {
+      reasoning = next;
+      chat?.refreshStatus();
+      syncPreferences({ reasoning_enabled: next.enabled, reasoning_effort: next.effort });
+    },
     onChange: () => chat?.refreshStatus(),
-    onPersist: (modelID) => syncPreferences({ default_model_id: modelID }),
+    onPersist: (modelID: string) => syncPreferences({ default_model_id: modelID }),
   });
-
-  shell.headerSlot.appendChild(picker.element);
 
   // Two affordances on one button: on a wide screen the rail is a permanent
   // column and this slides it away; below the breakpoint where the rail
@@ -99,11 +102,7 @@ export function renderChatPage(root: HTMLElement): HTMLElement {
     root: shell.body,
     getStatus: status,
     onOpenSetup: () => navigate('/admin/providers'),
-    onReasoningChange: (next) => {
-      reasoning = next;
-      picker.sync();
-      syncPreferences({ reasoning_enabled: next.enabled, reasoning_effort: next.effort });
-    },
+    composerControl: picker.element,
   });
   live = chat;
 

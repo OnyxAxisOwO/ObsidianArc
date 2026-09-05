@@ -237,6 +237,15 @@
   color: var(--ai-danger);
 }
 
+.ai-chat-list-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .ai-chat-list {
   display: flex;
   flex: 1;
@@ -244,6 +253,15 @@
   gap: 2px;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.ai-chat-list::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .ai-chat-list-empty {
@@ -313,12 +331,30 @@
 
 /* --- transcript -------------------------------------------------------------- */
 
+.ai-chat-scroll-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .ai-chat-scroll {
   flex: 1;
   min-height: 0;
   padding: 12px 2px 4px;
   overflow-y: auto;
+  overflow-x: hidden;
   overflow-wrap: anywhere;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.ai-chat-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 /* Switching to another conversation, or starting a new one, swaps every
@@ -969,7 +1005,6 @@
 
 .ai-chat-wide .ai-chat-scroll {
   padding: 26px 14px 18px;
-  scrollbar-gutter: stable both-edges;
 }
 
 /* The rail scrolls without showing anything: it is a short list beside a
@@ -1189,4 +1224,388 @@
   justify-content: center;
   background: var(--ai-field-bg);
   color: var(--ai-text-secondary);
+}
+
+/* --- the model + effort control ------------------------------------------------ */
+
+.ai-model-control {
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* Sits in the composer beside send, so it is sized to that row rather than to
+   a header: small enough not to compete with the text, large enough to read
+   the model's name at a glance. */
+.ai-model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 200px;
+  height: 34px;
+  padding: 0 9px 0 11px;
+  border: none;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.ai-model-chip:hover,
+.ai-model-chip.open {
+  background: var(--ai-field-bg-hover);
+}
+
+.ai-model-chip.placeholder {
+  color: var(--ai-text-secondary);
+}
+
+.ai-model-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The effort rides on the chip, so the state is legible without opening
+   anything — which is the reason the two controls became one. */
+.ai-model-chip-effort {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--ai-state-hover);
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+}
+
+.ai-model-chip-spark {
+  flex-shrink: 0;
+  color: var(--ai-primary);
+}
+
+/* --- the popover ---------------------------------------------------------------- */
+
+.ai-model-pop {
+  position: absolute;
+  z-index: 30;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: 290px;
+  max-width: min(290px, calc(100vw - 32px));
+  padding: 8px;
+  box-sizing: border-box;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  box-shadow: var(--ai-shadow-md);
+  /* Grows out of the chip it hangs from rather than appearing whole. */
+  transform-origin: bottom right;
+  opacity: 0;
+  transform: translateY(6px) scale(0.96);
+  transition:
+    opacity 0.14s ease,
+    transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.ai-model-pop.open {
+  opacity: 1;
+  transform: none;
+}
+
+/* The height is animated here, so one face can be swapped for another without
+   the popover jumping to its new size. */
+.ai-model-pop-body {
+  overflow: hidden;
+  transition: height 0.22s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.ai-pop-face {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-pop-model,
+.ai-pop-back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 12px;
+  background: var(--ai-surface-container-high);
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.13s ease;
+}
+
+.ai-pop-model:hover,
+.ai-pop-back:hover {
+  background: var(--ai-field-bg);
+}
+
+.ai-pop-model-mark {
+  flex-shrink: 0;
+  color: var(--ai-primary);
+}
+
+.ai-pop-model-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* The back arrow is the same chevron the chip uses, turned to point away. */
+.ai-pop-back svg {
+  transform: rotate(90deg);
+}
+
+.ai-pop-effort-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.ai-pop-effort-title {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ai-text-secondary);
+}
+
+.ai-pop-effort-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ai-text);
+}
+
+.ai-pop-note {
+  margin: 0;
+  padding: 2px 4px 4px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ai-text-secondary);
+}
+
+.ai-pop-models {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.ai-pop-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ai-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.13s ease;
+}
+
+.ai-pop-model-row:hover:not(:disabled) {
+  background: var(--ai-surface-container-high);
+}
+
+.ai-pop-model-row:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ai-pop-model-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ai-pop-model-title {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-pop-model-sub {
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- the effort slider ----------------------------------------------------------- */
+
+.ai-effort {
+  --effort-ratio: 0;
+  position: relative;
+  height: 26px;
+  margin: 0 2px 2px;
+}
+
+.ai-effort-track {
+  position: absolute;
+  inset: 2px 0;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+}
+
+/* Reaches the middle of the thumb rather than the raw percentage, so the two
+   never disagree about where the value is. */
+.ai-effort-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(11px + (100% - 22px) * var(--effort-ratio));
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--ai-primary);
+  transition: width 0.18s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.ai-effort.off .ai-effort-fill {
+  opacity: 0.35;
+}
+
+/* Motes drifting along the filled part, clipped by it. Tinted with the colour
+   that sits on top of the accent rather than with white, so they stay visible
+   whichever way round the scheme puts them. */
+.ai-effort-sparks {
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 12% 34%, color-mix(in srgb, var(--ai-primary-text) 90%, transparent) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 38% 72%, color-mix(in srgb, var(--ai-primary-text) 65%, transparent) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 61% 26%, color-mix(in srgb, var(--ai-primary-text) 80%, transparent) 0 1.2px, transparent 1.8px),
+    radial-gradient(circle at 84% 62%, color-mix(in srgb, var(--ai-primary-text) 55%, transparent) 0 1px, transparent 1.6px);
+  background-size: 54px 100%;
+  background-repeat: repeat-x;
+  animation: ai-effort-drift 3.6s linear infinite;
+}
+
+.ai-effort.off .ai-effort-sparks {
+  display: none;
+}
+
+/* One slow pass of light, so the fill reads as active rather than painted. */
+.ai-effort-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 35%,
+    color-mix(in srgb, var(--ai-primary-text) 22%, transparent) 50%,
+    transparent 65%
+  );
+  transform: translateX(-100%);
+  animation: ai-effort-sheen 3.2s ease-in-out infinite;
+}
+
+.ai-effort.off .ai-effort-fill::after {
+  animation: none;
+}
+
+@keyframes ai-effort-drift {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 54px 0;
+  }
+}
+
+@keyframes ai-effort-sheen {
+  0%,
+  55% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.ai-effort-thumb {
+  position: absolute;
+  top: 50%;
+  left: calc(11px + (100% - 22px) * var(--effort-ratio));
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ai-primary-text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transform: translate(-50%, -50%);
+  transition: left 0.18s cubic-bezier(0.2, 0, 0, 1);
+  pointer-events: none;
+}
+
+.ai-effort.off .ai-effort-thumb {
+  background: var(--ai-text-secondary);
+}
+
+/* The real control, invisible: the drawing above is ours, the keyboard
+   behaviour, the focus ring and the ARIA are the platform's. */
+.ai-effort-range {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ai-effort-range::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+}
+
+.ai-effort-range::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border: none;
+  opacity: 0;
+}
+
+.ai-effort-range:focus-visible {
+  outline: none;
+}
+
+.ai-effort:has(.ai-effort-range:focus-visible) .ai-effort-thumb {
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-effort-sparks,
+  .ai-effort-fill::after {
+    animation: none;
+  }
+
+  .ai-effort-fill,
+  .ai-effort-thumb,
+  .ai-model-pop,
+  .ai-model-pop-body {
+    transition: none;
+  }
 }
