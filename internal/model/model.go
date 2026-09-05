@@ -80,6 +80,23 @@ type Model struct {
 	ProviderKind adapter.Kind `json:"provider_kind,omitempty"`
 }
 
+// DefaultMaxOutput is what a turn is assumed capable of costing when a
+// model declares no ceiling of its own. Generous enough not to refuse
+// ordinary use, small enough that reserving it means something.
+const DefaultMaxOutput = 4096
+
+// WorstCase is the most one turn on this model could cost, used to
+// reserve against an allowance before the answer exists. Output only:
+// what the prompt costs is not known until it has been assembled, and
+// output is the term that runs away.
+func (m Model) WorstCase() (tokens int64, credits float64) {
+	ceiling := m.MaxOutputTokens
+	if ceiling <= 0 {
+		ceiling = DefaultMaxOutput
+	}
+	return int64(ceiling), m.Request + float64(ceiling)/1000*m.OutputToken
+}
+
 // Spec is what the adapter layer needs. Derived here so the gateway does not
 // hand-copy fields.
 func (m Model) Spec() adapter.ModelSpec {

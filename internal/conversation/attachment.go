@@ -19,6 +19,10 @@ var (
 	ErrAttachmentNotFound = errors.New("conversation: no such attachment")
 	ErrUnsupportedMedia   = errors.New("conversation: unsupported image type")
 	ErrAttachmentTooLarge = errors.New("conversation: image is too large")
+	// Both are account-level: a signed-in caller that can repeat an upload
+	// indefinitely is a way to fill the operator's disk.
+	ErrTooManyPending      = errors.New("conversation: too many images are waiting to be sent")
+	ErrAttachmentQuotaFull = errors.New("conversation: this account is holding as many images as it may")
 )
 
 const (
@@ -30,6 +34,19 @@ const (
 	// How long an uploaded image that was never attached to a message is
 	// kept before the janitor removes it.
 	OrphanTTL = 6 * time.Hour
+
+	// What one account may be holding at once.
+	//
+	// A per-file ceiling alone bounds nothing: uploading is a write to the
+	// database that any signed-in account can repeat, and six megabytes at a
+	// time fills a disk quickly. These are the account-level bounds — how
+	// many pictures may be waiting for a message, and how many bytes an
+	// account may occupy in total.
+	//
+	// Generous for a person: nobody attaches twenty images to one unsent
+	// message, and nobody's saved conversations hold a gigabyte of pictures.
+	MaxPendingAttachments     = 24
+	MaxAttachmentBytesPerUser = 512 * 1024 * 1024
 )
 
 // What both provider protocols accept, and nothing else. An image type the
@@ -60,6 +77,26 @@ func (s *Store) Upload(ctx context.Context, in UploadInput) (Attachment, error) 
 		return Attachment{}, ErrAttachmentTooLarge
 	}
 
+	// Checked before the insert rather than after, because the point is not
+	// to store the row at all. Two counts in one statement: how many are
+	// unattached, and how much the account holds altogether.
+	var pending int
+	var held int64
+	err := s.db.QueryRow(ctx,
+		`SELECT
+		   COUNT(CASE WHEN message_id IS NULL THEN 1 END),
+		   COALESCE(SUM(size), 0)
+		 FROM attachments WHERE user_id = ?`, in.UserID).Scan(&pending, &held)
+	if err != nil {
+		return Attachment{}, fmt.Errorf("conversation: attachment usage: %w", err)
+	}
+	if pending >= MaxPendingAttachments {
+		return Attachment{}, ErrTooManyPending
+	}
+	if held+int64(len(in.Data)) > MaxAttachmentBytesPerUser {
+		return Attachment{}, ErrAttachmentQuotaFull
+	}
+
 	record := Attachment{
 		ID:     id.New(),
 		Mime:   in.Mime,
@@ -68,7 +105,7 @@ func (s *Store) Upload(ctx context.Context, in UploadInput) (Attachment, error) 
 		Size:   len(in.Data),
 	}
 
-	_, err := s.db.Exec(ctx,
+	_, err = s.db.Exec(ctx,
 		`INSERT INTO attachments (id, user_id, message_id, mime, width, height, size, data, created_at)
 		 VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
 		record.ID, in.UserID, record.Mime, record.Width, record.Height, record.Size,

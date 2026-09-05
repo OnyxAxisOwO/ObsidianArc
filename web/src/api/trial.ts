@@ -20,14 +20,25 @@ export interface TrialMessage {
  * chat is: the request is a POST carrying the exchange, and aborting a fetch
  * is what cancels the whole chain.
  */
+export interface TrialResult {
+  /**
+   * The server's signed count of turns used. Opaque here: it exists so the
+   * limit is enforced against a number the server wrote rather than one this
+   * page could edit. Send it back with the next question.
+   */
+  continuation: string;
+  turnsLeft: number;
+}
+
 export async function streamTrial(
   messages: TrialMessage[],
+  continuation: string,
   onDelta: (text: string) => void,
-): Promise<void> {
+): Promise<TrialResult> {
   const response = await fetch('/api/trial/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, continuation }),
   });
 
   if (!response.ok) {
@@ -45,6 +56,7 @@ export async function streamTrial(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let result: TrialResult = { continuation, turnsLeft: 0 };
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -55,14 +67,24 @@ export async function streamTrial(
     // is a partial frame and waits for the next chunk.
     let boundary = buffer.indexOf('\n\n');
     while (boundary !== -1) {
-      handleFrame(buffer.slice(0, boundary), onDelta);
+      const finished = handleFrame(buffer.slice(0, boundary), onDelta);
+      if (finished) result = finished;
       buffer = buffer.slice(boundary + 2);
       boundary = buffer.indexOf('\n\n');
     }
   }
+  return result;
 }
 
-function handleFrame(frame: string, onDelta: (text: string) => void): void {
+interface Frame {
+  text?: string;
+  message?: string;
+  continuation?: string;
+  turns_left?: number;
+}
+
+/** Returns the result when this frame was the closing one. */
+function handleFrame(frame: string, onDelta: (text: string) => void): TrialResult | null {
   let event = 'message';
   const data: string[] = [];
 
@@ -70,15 +92,19 @@ function handleFrame(frame: string, onDelta: (text: string) => void): void {
     if (line.startsWith('event:')) event = line.slice(6).trim();
     else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
   }
-  if (!data.length) return;
+  if (!data.length) return null;
 
-  let payload: { text?: string; message?: string } | null = null;
+  let payload: Frame | null = null;
   try {
-    payload = JSON.parse(data.join('\n')) as { text?: string; message?: string };
+    payload = JSON.parse(data.join('\n')) as Frame;
   } catch {
-    return;
+    return null;
   }
 
   if (event === 'delta' && payload?.text) onDelta(payload.text);
   else if (event === 'error') throw new ApiError(502, 'upstream', payload?.message ?? t('trialFailed'));
+  else if (event === 'done') {
+    return { continuation: payload?.continuation ?? '', turnsLeft: payload?.turns_left ?? 0 };
+  }
+  return null;
 }

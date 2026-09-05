@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -13,12 +14,17 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 // Handlers is the transport for chatting and for the transcript behind it.
 type Handlers struct {
 	service       *Service
 	conversations *conversation.Store
+	// Consulted before an upload is stored. Optional; nil means every
+	// signed-in account may upload. Wired to the same check that gates
+	// sending, because this endpoint writes too.
+	Uploadable func(context.Context, user.User) error
 }
 
 func NewHandlers(service *Service, conversations *conversation.Store) *Handlers {
@@ -112,10 +118,14 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		},
 	}
 
-	resolved, err := h.service.Prepare(r.Context(), &request)
+	resolved, release, err := h.service.Prepare(r.Context(), &request)
 	if err != nil {
 		return translatePrepareError(err)
 	}
+	// Every path out from here, including the ones that never reach the
+	// provider: an allowance reserved and not spent has to come back, and
+	// a concurrency slot has to be freed.
+	defer release()
 
 	sse, err := httpx.NewSSE(w)
 	if err != nil {
@@ -251,6 +261,15 @@ type uploadRequest struct {
 func (h *Handlers) uploadAttachment(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
 
+	// An account that cannot send a message has no reason to be filling the
+	// database with pictures for one. The same gate as the chat itself,
+	// applied here because this endpoint also writes.
+	if h.Uploadable != nil {
+		if err := h.Uploadable(r.Context(), account); err != nil {
+			return err
+		}
+	}
+
 	var body uploadRequest
 	// Base64 is a third larger than the bytes it carries, plus room for the
 	// envelope.
@@ -279,6 +298,12 @@ func (h *Handlers) uploadAttachment(w http.ResponseWriter, r *http.Request) erro
 			return httpx.BadRequest("Images must be PNG, JPEG, WebP or GIF.")
 		case errors.Is(err, conversation.ErrAttachmentTooLarge):
 			return httpx.BadRequest("That image is too large.")
+		case errors.Is(err, conversation.ErrTooManyPending):
+			return httpx.TooManyRequests("too_many_pending_images",
+				"Too many images are waiting to be sent. Send or discard some first.")
+		case errors.Is(err, conversation.ErrAttachmentQuotaFull):
+			return httpx.ForbiddenCode("attachment_quota_full",
+				"This account is holding as many images as it may. Delete some conversations first.")
 		default:
 			return httpx.Internal(err)
 		}

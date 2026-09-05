@@ -38,6 +38,24 @@ const (
 	// out uses a handful; anything past this is not evaluating the product.
 	burstPerAddress = 20
 	budgetWindow    = time.Hour
+
+	// The whole front door's spend per window, across every address.
+	//
+	// The per-address budget assumes an address means something. Behind a
+	// misconfigured proxy, or against a botnet, it does not — so this is the
+	// number that actually bounds what the front door can cost, and it holds
+	// however many addresses show up.
+	burstPerInstance = 240
+
+	// Concurrent generations the trial may hold open at once. Not a cost
+	// bound — that is the two above — but a bound on upstream connections, so
+	// a burst cannot starve the accounts that are paying for this instance.
+	maxConcurrent = 6
+
+	// A trial answer is a sample, not a document. Independent of what the
+	// model declares, because the model is the operator's choice and this
+	// ceiling is about what a stranger may ask them to buy.
+	MaxTrialOutputTokens = 600
 	// How often dead entries are swept. Bounded work on the write path, so
 	// there is no timer goroutine for it.
 	sweepInterval = 10 * time.Minute
@@ -53,6 +71,10 @@ type budget struct {
 	mu        sync.Mutex
 	windows   map[string]*window
 	lastSwept time.Time
+	// Every address together. Kept in the same lock as the per-address
+	// windows so the two cannot disagree about what has been spent.
+	instance *window
+	inFlight int
 }
 
 type window struct {
@@ -61,7 +83,12 @@ type window struct {
 }
 
 func newBudget() *budget {
-	return &budget{windows: map[string]*window{}, lastSwept: time.Now()}
+	now := time.Now()
+	return &budget{
+		windows:   map[string]*window{},
+		lastSwept: now,
+		instance:  &window{startAt: now},
+	}
 }
 
 // take records one turn against an address and reports whether it was within
@@ -93,9 +120,38 @@ func (b *budget) take(address string) (bool, time.Duration) {
 		b.windows[key] = entry
 	}
 
+	if now.Sub(b.instance.startAt) > budgetWindow {
+		b.instance = &window{startAt: now}
+	}
+	// Checked before the per-address one: when the instance ceiling is
+	// reached, whose turn it was does not matter.
+	if b.instance.spent >= burstPerInstance {
+		return false, budgetWindow - now.Sub(b.instance.startAt)
+	}
 	if entry.spent >= burstPerAddress {
 		return false, budgetWindow - now.Sub(entry.startAt)
 	}
+
 	entry.spent++
+	b.instance.spent++
 	return true, 0
+}
+
+// enter claims one of the concurrent slots. The release is idempotent.
+func (b *budget) enter() (func(), bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.inFlight >= maxConcurrent {
+		return nil, false
+	}
+	b.inFlight++
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			b.mu.Lock()
+			b.inFlight--
+			b.mu.Unlock()
+		})
+	}, true
 }

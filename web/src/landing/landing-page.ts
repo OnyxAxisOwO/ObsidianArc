@@ -6,9 +6,10 @@
 //
 // The trial is the only part of this project that spends the operator's
 // provider credit for someone who has not identified themselves, so it holds
-// nothing back on the client: the turn limit here is a courtesy that stops the
-// composer, and the server counts the turns in the request and refuses on its
-// own. Losing this file entirely would cost the operator nothing.
+// nothing back on the client. The turn count is the server's, signed, and
+// simply carried back and forth by this page; the per-address and
+// instance-wide ceilings behind it are what hold when a client throws the
+// token away. Losing this file entirely would cost the operator nothing.
 
 import { ApiError } from '../api/client';
 import { streamTrial } from '../api/trial';
@@ -118,6 +119,11 @@ function trial(enabled: boolean, allowance: number, canRegister: boolean): HTMLE
 
   const turns: Turn[] = [];
   let busy = false;
+  // The server's signed count of turns used. Opaque, and the only thing
+  // that makes the limit mean anything: the exchange itself is written
+  // here, so a page that simply forgot the earlier turns would otherwise
+  // look like a first-time visitor forever.
+  let continuation = '';
 
   const form = el('form', 'oa-landing-composer');
   const input = el('input');
@@ -151,13 +157,15 @@ function trial(enabled: boolean, allowance: number, canRegister: boolean): HTMLE
     // The question itself is already the last entry.
     const sending = turns.slice(0, -1).map((entry) => ({ role: entry.role, content: entry.content }));
 
-    void streamTrial(sending, (delta) => {
+    void streamTrial(sending, continuation, (delta) => {
       answer.content += delta;
       renderInto(answer.node, answer.content);
       thread.scrollTop = thread.scrollHeight;
     })
-      .then(() => {
+      .then((result) => {
         turns[turns.length - 1]!.content = answer.content;
+        continuation = result.continuation;
+        left = result.turnsLeft;
       })
       .catch((error: unknown) => {
         answer.content = error instanceof ApiError ? error.message : t('trialFailed');
@@ -185,10 +193,11 @@ function trial(enabled: boolean, allowance: number, canRegister: boolean): HTMLE
     return Object.assign(turn, { node: bubble });
   }
 
-  function paintNotice(): void {
-    const used = turns.filter((entry) => entry.role === 'user').length;
-    const left = Math.max(0, allowance - used);
+  // What the server said is left after the last answer. Before the first,
+  // the configured allowance is the honest guess.
+  let left = allowance;
 
+  function paintNotice(): void {
     if (left === 0) {
       notice.textContent = t('trialFinished');
       form.hidden = true;

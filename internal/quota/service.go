@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -31,6 +32,10 @@ type Service struct {
 	db       *database.DB
 	policies *Store
 	settings *settings.Service
+
+	// Generations in flight per account. See Begin.
+	mu       sync.Mutex
+	inFlight map[string]int
 }
 
 func NewService(db *database.DB, policies *Store, set *settings.Service) *Service {
@@ -73,25 +78,47 @@ func (s *Service) exempt(account user.User) bool {
 	return account.IsAdmin() && s.settings.Bool(settings.AdminsBypassQuota)
 }
 
-// Reserve claims one request against every window that applies, and fails if
-// any of them is already spent.
+// Estimate is the most a turn could cost. Reserve takes it up front and
+// Settle gives back whatever was not used.
+//
+// Output only. What the prompt costs is not known until the transcript has
+// been assembled, which happens after this; it is trued up at settle like
+// everything else. Output is the term that can run away, and the term an
+// attacker controls by asking for more.
+type Estimate struct {
+	Tokens  int64
+	Credits float64
+}
+
+func (e Estimate) empty() bool { return e.Tokens <= 0 && e.Credits <= 0 }
+
+// Reserve claims one request and the turn's worst case against every window
+// that applies, and fails if any of them is already spent.
 //
 // The whole thing runs in one transaction. Each window's counter is
 // incremented and read back in a single statement, so the check sees a value
 // no concurrent request can have moved underneath it; if any window is over,
 // the transaction rolls back and every increment goes with it.
 //
-// Token and credit ceilings are checked against what has already been spent
-// rather than predicted: the cost of a turn is not knowable until it is over,
-// and refusing to start when the allowance is already gone is the honest
-// approximation.
-func (s *Service) Reserve(ctx context.Context, account user.User) error {
+// The estimate is what makes that true across requests rather than only
+// within one. Charging nothing until a turn finished meant ten long
+// generations started together all saw the same untouched counter and all
+// passed; the allowance was only enforced against turns that had already
+// ended. Reserving the ceiling means the tenth is refused while the first
+// nine are still streaming, and Settle hands back the difference.
+func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estimate) error {
 	policy, err := s.PolicyFor(ctx, nil, account)
 	if err != nil {
 		return err
 	}
 	if policy.Unlimited() {
 		return nil
+	}
+	if estimate.Tokens < 0 {
+		estimate.Tokens = 0
+	}
+	if estimate.Credits < 0 {
+		estimate.Credits = 0
 	}
 
 	now := time.Now()
@@ -113,11 +140,12 @@ func (s *Service) Reserve(ctx context.Context, account user.User) error {
 		}
 
 		if policy.TPM != nil && *policy.TPM > 0 {
-			counter, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, now), 0, 0, 0)
+			counter, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, now),
+				0, estimate.Tokens, 0)
 			if err != nil {
 				return err
 			}
-			if counter.Tokens >= *policy.TPM {
+			if counter.Tokens > *policy.TPM {
 				return &ExceededError{
 					Window: WindowTPM, Dimension: "tokens",
 					Used: float64(counter.Tokens), Limit: float64(*policy.TPM),
@@ -133,7 +161,7 @@ func (s *Service) Reserve(ctx context.Context, account user.User) error {
 			}
 
 			start := bucketStart(window, now)
-			counter, err := bump(ctx, tx, key, window, start, 1, 0, 0)
+			counter, err := bump(ctx, tx, key, window, start, 1, estimate.Tokens, estimate.Credits)
 			if err != nil {
 				return err
 			}
@@ -145,15 +173,17 @@ func (s *Service) Reserve(ctx context.Context, account user.User) error {
 					Used: float64(counter.Requests), Limit: float64(*limits.Requests), ResetsAt: resets,
 				}
 			}
-			// Already-spent comparisons: this request has not cost anything
-			// yet, so exceeding is "there was nothing left before you asked".
-			if limits.Tokens != nil && *limits.Tokens > 0 && counter.Tokens >= *limits.Tokens {
+			// The counter now includes this turn's worst case, so the
+			// comparison is "would finishing this put you over" rather than
+			// "were you already over" — which is the question that has an
+			// answer while ten turns are in flight at once.
+			if limits.Tokens != nil && *limits.Tokens > 0 && counter.Tokens > *limits.Tokens {
 				return &ExceededError{
 					Window: window, Dimension: "tokens",
 					Used: float64(counter.Tokens), Limit: float64(*limits.Tokens), ResetsAt: resets,
 				}
 			}
-			if limits.Credits != nil && *limits.Credits > 0 && counter.Credits >= *limits.Credits {
+			if limits.Credits != nil && *limits.Credits > 0 && counter.Credits > *limits.Credits {
 				return &ExceededError{
 					Window: window, Dimension: "credits",
 					Used: counter.Credits, Limit: *limits.Credits, ResetsAt: resets,
@@ -164,15 +194,22 @@ func (s *Service) Reserve(ctx context.Context, account user.User) error {
 	})
 }
 
-// Settle adds what a finished turn actually consumed. It runs after the
+// Settle corrects a finished turn to what it actually cost. It runs after the
 // answer, on a detached context, so a cancelled turn is still accounted for.
+//
+// The delta is signed: whatever Reserve took and the turn did not spend comes
+// back, which is what stops a generous ceiling from being a real charge. A
+// turn that overshot its estimate — the model ignored max_tokens, say —
+// settles upward instead.
 //
 // It touches every window unconditionally rather than only the enforced ones:
 // the counters are also what the usage display reads, and a limit turned on
 // tomorrow should not start from zero for someone who has been using the
 // server all week.
-func (s *Service) Settle(ctx context.Context, userID string, tokens int64, credits float64) error {
-	if tokens <= 0 && credits <= 0 {
+func (s *Service) Settle(ctx context.Context, userID string, reserved, actual Estimate) error {
+	tokens := actual.Tokens - reserved.Tokens
+	credits := actual.Credits - reserved.Credits
+	if tokens == 0 && credits == 0 {
 		return nil
 	}
 	now := time.Now()
@@ -186,6 +223,15 @@ func (s *Service) Settle(ctx context.Context, userID string, tokens int64, credi
 		}
 		return nil
 	})
+}
+
+// Release gives back a reservation for a turn that never ran — refused after
+// Reserve, or abandoned before the provider was called.
+func (s *Service) Release(ctx context.Context, userID string, reserved Estimate) error {
+	if reserved.empty() {
+		return nil
+	}
+	return s.Settle(ctx, userID, reserved, Estimate{})
 }
 
 // RecordRejection counts a refused request against the rate window only, so a
@@ -213,8 +259,15 @@ func bump(ctx context.Context, q database.Queryer, key string, window Window, st
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (scope_key, window_kind, window_start) DO UPDATE SET
 		   requests = usage_counters.requests + excluded.requests,
-		   tokens   = usage_counters.tokens   + excluded.tokens,
-		   credits  = usage_counters.credits  + excluded.credits
+		   -- Refunds arrive here as negative deltas. Clamped, because two
+		   -- settles racing on the same row must not leave a counter below
+		   -- zero and hand out free allowance. CASE rather than GREATEST or
+		   -- MAX: one of those is Postgres-only and the other is an aggregate
+		   -- there.
+		   tokens   = CASE WHEN usage_counters.tokens + excluded.tokens < 0
+		                   THEN 0 ELSE usage_counters.tokens + excluded.tokens END,
+		   credits  = CASE WHEN usage_counters.credits + excluded.credits < 0
+		                   THEN 0 ELSE usage_counters.credits + excluded.credits END
 		 RETURNING requests, tokens, credits`,
 		key, window, start, requests, tokens, credits).
 		Scan(&out.Requests, &out.Tokens, &out.Credits)
@@ -366,4 +419,50 @@ func AsExceeded(err error) (*ExceededError, bool) {
 		return exceeded, true
 	}
 	return nil, false
+}
+
+// --- concurrency --------------------------------------------------------------
+
+// How many generations one account may have running at once.
+//
+// Reserving the ceiling already bounds what concurrent turns can spend, but
+// only for an account that has a limit at all; an unlimited one, or a window
+// that is measured and not enforced, would still let a script hold open as
+// many upstream connections as it likes. This is the backstop on connections
+// rather than on cost, and it is small because a person cannot read four
+// answers at once.
+const MaxConcurrentPerUser = 4
+
+var ErrTooManyInFlight = errors.New("quota: too many generations in flight for this account")
+
+// Begin claims a slot and returns the release. The release is idempotent, so
+// a caller may defer it and still call it early.
+//
+// In memory, like the other counters that exist only to shape one process's
+// behaviour: two instances behind a load balancer each enforce their own, and
+// the cost ceiling above is what holds in that case.
+func (s *Service) Begin(userID string) (func(), error) {
+	s.mu.Lock()
+	if s.inFlight == nil {
+		s.inFlight = map[string]int{}
+	}
+	if s.inFlight[userID] >= MaxConcurrentPerUser {
+		s.mu.Unlock()
+		return nil, ErrTooManyInFlight
+	}
+	s.inFlight[userID]++
+	s.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			if s.inFlight[userID] <= 1 {
+				delete(s.inFlight, userID)
+			} else {
+				s.inFlight[userID]--
+			}
+			s.mu.Unlock()
+		})
+	}, nil
 }

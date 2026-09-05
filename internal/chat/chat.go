@@ -42,9 +42,11 @@ type Service struct {
 	// Called once per completed turn, whatever its outcome. Phase 5 hangs the
 	// usage ledger here; nil until then.
 	OnTurn func(context.Context, TurnRecord)
-	// Consulted before a turn starts. Returning an error refuses it. Phase 5
-	// hangs quota enforcement here.
-	Authorize func(context.Context, TurnRequest) error
+	// Authorize runs once a turn is resolved and before anything is
+	// written. The release it hands back is called when the turn is over,
+	// however it ends — that is where a reservation is given back and a
+	// concurrency slot freed.
+	Authorize func(context.Context, TurnRequest, model.Resolved) (Release, error)
 }
 
 func NewService(
@@ -166,25 +168,41 @@ var (
 	ErrNoModel   = errors.New("chat: no model selected")
 )
 
+// Release undoes what Prepare claimed. Always non-nil, so a caller can
+// defer it without checking.
+type Release func()
+
 // Prepare resolves and authorises everything a turn needs before any of it is
 // written, so a rejected turn leaves the transcript untouched.
-func (s *Service) Prepare(ctx context.Context, req *TurnRequest) (model.Resolved, error) {
+//
+// The release it returns must be called when the turn is over. It is what
+// gives back the allowance reserved for a turn that overestimated, and
+// the concurrency slot for one that never ran; deferring it in the caller
+// is what makes both leak-free on every path out, including the ones that
+// fail between here and the first token.
+func (s *Service) Prepare(ctx context.Context, req *TurnRequest) (model.Resolved, Release, error) {
+	noop := Release(func() {})
 	if req.ModelID == "" {
-		return model.Resolved{}, ErrNoModel
+		return model.Resolved{}, noop, ErrNoModel
 	}
 
 	resolved, err := s.models.Authorize(ctx, req.User.GroupID, req.ModelID, req.User.IsAdmin())
 	if err != nil {
-		return model.Resolved{}, err
+		return model.Resolved{}, noop, err
 	}
 	req.Model = resolved.Model
 
-	if s.Authorize != nil {
-		if err := s.Authorize(ctx, *req); err != nil {
-			return model.Resolved{}, err
-		}
+	if s.Authorize == nil {
+		return resolved, noop, nil
 	}
-	return resolved, nil
+	release, err := s.Authorize(ctx, *req, resolved)
+	if err != nil {
+		return model.Resolved{}, noop, err
+	}
+	if release == nil {
+		release = noop
+	}
+	return resolved, release, nil
 }
 
 // Run executes one turn. It writes the user's message, streams the answer,

@@ -27,11 +27,17 @@ const envPrefix = "OBSIDIAN_"
 const SecretKeyFile = "secret.key"
 
 type Config struct {
-	Addr       string
-	DataDir    string
-	Dev        bool
-	LogLevel   string
+	Addr     string
+	DataDir  string
+	Dev      bool
+	LogLevel string
+	// Whose forwarded headers are believed. Every rate limit is keyed on
+	// the address this produces, so a caller able to choose it has no
+	// limits at all.
 	TrustProxy bool
+	// Exact peers, when the proxy's address is known. Empty with
+	// TrustProxy set falls back to the private ranges.
+	TrustedProxies []string
 	// Extra origins accepted on state-changing requests, beyond the request's
 	// own Host. Only needed when the SPA is served from somewhere else.
 	AllowedOrigins []string
@@ -169,6 +175,7 @@ func Load() (Config, error) {
 		Dev:            dev,
 		LogLevel:       strings.ToLower(env("LOG_LEVEL", "info")),
 		TrustProxy:     envBool("TRUST_PROXY", false),
+		TrustedProxies: envList("TRUSTED_PROXIES"),
 		AllowedOrigins: envList("ALLOWED_ORIGINS"),
 		SecretKey:      secret,
 

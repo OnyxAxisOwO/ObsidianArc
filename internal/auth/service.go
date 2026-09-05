@@ -95,6 +95,36 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		return user.User{}, "", err
 	}
 
+	// Everything cheap happens before the expensive thing.
+	//
+	// Argon2id is deliberately costly — 19 MiB and a slot in a bounded
+	// semaphore per call — which makes it a resource an anonymous caller
+	// should not be able to spend on a request that was never going to
+	// succeed. Hashing first meant a closed instance still paid full price
+	// for every attempt, and the signup throttle only started counting
+	// after the work was already done.
+	//
+	// The tx below repeats these checks. This pass is about not doing work;
+	// that one is the decision, taken with the row lock that makes it true.
+	total, err := s.users.Count(ctx, nil)
+	if err != nil {
+		return user.User{}, "", err
+	}
+	if total > 0 {
+		if !s.settings.Bool(settings.RegistrationEnabled) {
+			return user.User{}, "", ErrRegistrationClosed
+		}
+		if err := checkEmail(s.settings, in.Email); err != nil {
+			return user.User{}, "", err
+		}
+		if allowed, retryAfter := s.signups.allow(
+			s.settings.Int(settings.SignupsPerMinute, 0),
+			s.settings.Int(settings.SignupsPerHour, 0),
+		); !allowed {
+			return user.User{}, "", &SignupThrottleError{RetryAfter: retryAfter}
+		}
+	}
+
 	hash, err := s.hasher.Hash(ctx, in.Password)
 	if err != nil {
 		return user.User{}, "", err

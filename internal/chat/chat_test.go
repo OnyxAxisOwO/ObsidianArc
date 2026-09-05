@@ -243,10 +243,11 @@ func (f *fixture) turn(t *testing.T, ctx context.Context, req TurnRequest) (*col
 	req.ModelID = f.model.ID
 	req.Stream = true
 
-	resolved, err := f.service.Prepare(ctx, &req)
+	resolved, release, err := f.service.Prepare(ctx, &req)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 
 	out := &collected{}
 	err = f.service.Run(ctx, req, resolved, func(event string, payload any) error {
@@ -540,10 +541,11 @@ func TestConversationsAreScopedToTheirOwner(t *testing.T) {
 	stranger := TurnRequest{
 		User: f.other, ModelID: f.model.ID, ConversationID: conversationID, Content: "who is there",
 	}
-	resolved, err := f.service.Prepare(ctx, &stranger)
+	resolved, release, err := f.service.Prepare(ctx, &stranger)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer release()
 	err = f.service.Run(ctx, stranger, resolved, func(string, any) error { return nil })
 	if !errors.Is(err, conversation.ErrNotFound) {
 		t.Errorf("a turn into another user's conversation was accepted: %v", err)
@@ -753,7 +755,9 @@ func TestEveryTurnIsReported(t *testing.T) {
 func TestRejectedTurnWritesNothing(t *testing.T) {
 	f := newFixture(t)
 	refusal := errors.New("over quota")
-	f.service.Authorize = func(context.Context, TurnRequest) error { return refusal }
+	f.service.Authorize = func(context.Context, TurnRequest, model.Resolved) (Release, error) {
+		return nil, refusal
+	}
 
 	_, err := f.turn(t, context.Background(), TurnRequest{Content: "hello"})
 	if !errors.Is(err, refusal) {

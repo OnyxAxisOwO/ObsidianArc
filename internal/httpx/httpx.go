@@ -15,9 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"strings"
 )
 
 // Error is the only failure a handler should return when it wants to control
@@ -199,29 +197,6 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64)
 		return BadRequest("Request body must contain a single JSON object.")
 	}
 	return nil
-}
-
-// ClientIP resolves the caller's address. Forwarded headers are honoured only
-// when the operator has said a proxy is in front, because anyone can send
-// them otherwise and rate limiting keyed on a spoofable value is worse than
-// none.
-func ClientIP(r *http.Request, trustProxy bool) string {
-	if trustProxy {
-		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-			if first, _, ok := strings.Cut(forwarded, ","); ok {
-				return strings.TrimSpace(first)
-			}
-			return strings.TrimSpace(forwarded)
-		}
-		if real := strings.TrimSpace(r.Header.Get("X-Real-Ip")); real != "" {
-			return real
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 type contextKey string

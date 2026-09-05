@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -13,25 +14,28 @@ import (
 )
 
 type Handlers struct {
-	settings   *settings.Service
-	models     *model.Store
-	registry   *adapter.Registry
-	trustProxy bool
-	budget     *budget
+	settings *settings.Service
+	models   *model.Store
+	registry *adapter.Registry
+	trust    httpx.ProxyTrust
+	budget   *budget
+	signer   *signer
 }
 
 func NewHandlers(
 	set *settings.Service,
 	models *model.Store,
 	registry *adapter.Registry,
-	trustProxy bool,
+	trust httpx.ProxyTrust,
+	secret []byte,
 ) *Handlers {
 	return &Handlers{
-		settings:   set,
-		models:     models,
-		registry:   registry,
-		trustProxy: trustProxy,
-		budget:     newBudget(),
+		settings: set,
+		models:   models,
+		registry: registry,
+		trust:    trust,
+		budget:   newBudget(),
+		signer:   newSigner(secret),
 	}
 }
 
@@ -49,6 +53,8 @@ type message struct {
 
 type request struct {
 	Messages []message `json:"messages"`
+	// Handed back by the previous turn, signed. Absent on the first.
+	Continuation string `json:"continuation"`
 }
 
 func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
@@ -70,12 +76,21 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	address := httpx.ClientIP(r, h.trustProxy)
+	address := httpx.ClientIP(r, h.trust)
 	if ok, retryAfter := h.budget.take(address); !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
 		return httpx.TooManyRequests("trial_exhausted",
 			"You have used the trial for now. Create an account to keep going.")
 	}
+
+	// A bound on open upstream connections rather than on cost, so a burst at
+	// the front door cannot starve the accounts paying for this instance.
+	done, ok := h.budget.enter()
+	if !ok {
+		return httpx.TooManyRequests("trial_busy",
+			"The trial is busy right now. Try again in a moment.")
+	}
+	defer done()
 
 	resolved, err := h.resolveModel(r)
 	if err != nil {
@@ -114,10 +129,13 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 	// No reasoning, no system prompt beyond the instance's own, no images:
 	// the trial is the narrowest request this server knows how to make.
 	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, adapter.ChatRequest{
-		Model:     resolved.Upstream.Spec(),
-		System:    h.settings.Get(settings.DefaultSystemPrompt),
-		Messages:  messages,
-		MaxTokens: resolved.Upstream.MaxOutputTokens,
+		Model:    resolved.Upstream.Spec(),
+		System:   h.settings.Get(settings.DefaultSystemPrompt),
+		Messages: messages,
+		// The trial's own ceiling, not the model's: the model is the
+		// operator's choice, and how much of it a stranger may ask them to buy
+		// is a different question.
+		MaxTokens: trialMaxTokens(resolved.Upstream.MaxOutputTokens),
 		Stream:    true,
 	}, sink)
 
@@ -143,19 +161,42 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		})
 		return nil
 	}
-	return sse.Event("done", map[string]any{"turns_left": h.remaining(turns)})
+	// The count goes back signed, and comes back with the next question. It
+	// is the only reason the turn limit means anything: the exchange itself
+	// is written by the client, so a client that simply forgets the earlier
+	// turns would otherwise look like a first-time visitor forever.
+	return sse.Event("done", map[string]any{
+		"turns_left":   h.remaining(turns),
+		"continuation": h.signer.issue(turns, time.Now()),
+	})
 }
 
-// validate enforces the shape and the turn cap. The cap is counted from the
-// request rather than trusted from a field, because the client sends the
-// whole exchange and is therefore free to lie about how far into it we are.
+func trialMaxTokens(modelCeiling int) int {
+	if modelCeiling > 0 && modelCeiling < MaxTrialOutputTokens {
+		return modelCeiling
+	}
+	return MaxTrialOutputTokens
+}
+
+// validate enforces the shape and the turn cap.
+//
+// The count comes from the signed continuation, not from the messages: the
+// client writes the exchange, so counting what it sent would count a number
+// it chose. What the messages are still checked for is size — a trial must
+// not be a way to post a megabyte of prompt.
 func (h *Handlers) validate(body request) (int, error) {
 	if len(body.Messages) == 0 {
 		return 0, httpx.BadRequest("Nothing to send.")
 	}
 
+	previous, err := h.signer.verify(body.Continuation)
+	if err != nil {
+		return 0, httpx.ForbiddenCode("trial_finished",
+			"That is the end of the trial. Create an account to keep going.")
+	}
+	turns := previous + 1
+
 	total := 0
-	turns := 0
 	for _, entry := range body.Messages {
 		if strings.TrimSpace(entry.Content) == "" {
 			return 0, httpx.BadRequest("Nothing to send.")
@@ -164,9 +205,6 @@ func (h *Handlers) validate(body request) (int, error) {
 			return 0, httpx.BadRequest("Message must be %d characters or fewer.", MaxMessageChars)
 		}
 		total += len([]rune(entry.Content))
-		if entry.Role != string(adapter.RoleAssistant) {
-			turns++
-		}
 	}
 	if total > MaxTotalChars {
 		return 0, httpx.BadRequest("That conversation is too long for a trial.")

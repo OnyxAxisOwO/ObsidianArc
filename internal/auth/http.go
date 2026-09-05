@@ -25,7 +25,7 @@ type Handlers struct {
 	groups      *group.Store
 	preferences *user.PreferenceStore
 	settings    *settings.Service
-	trustProxy  bool
+	trust       httpx.ProxyTrust
 }
 
 func NewHandlers(
@@ -34,7 +34,7 @@ func NewHandlers(
 	groups *group.Store,
 	preferences *user.PreferenceStore,
 	set *settings.Service,
-	trustProxy bool,
+	trust httpx.ProxyTrust,
 ) *Handlers {
 	return &Handlers{
 		service:     service,
@@ -42,7 +42,7 @@ func NewHandlers(
 		groups:      groups,
 		preferences: preferences,
 		settings:    set,
-		trustProxy:  trustProxy,
+		trust:       trust,
 	}
 }
 
@@ -226,7 +226,7 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 		Email:    body.Email,
 		Password: body.Password,
 		Nickname: body.Nickname,
-		IP:       httpx.ClientIP(r, h.trustProxy),
+		IP:       httpx.ClientIP(r, h.trust),
 		UA:       r.UserAgent(),
 	})
 	if err != nil {
@@ -251,7 +251,7 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 	account, token, err := h.service.Login(r.Context(), LoginInput{
 		Identifier: body.Identifier,
 		Password:   body.Password,
-		IP:         httpx.ClientIP(r, h.trustProxy),
+		IP:         httpx.ClientIP(r, h.trust),
 		UA:         r.UserAgent(),
 	})
 	if err != nil {

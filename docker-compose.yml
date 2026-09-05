@@ -17,8 +17,16 @@ services:
         VERSION: ${VERSION:-compose}
     image: obsidian-arc:latest
     restart: unless-stopped
+    # Loopback on purpose. This file expects a TLS terminator in front, and
+    # the environment below tells the server to believe forwarded addresses —
+    # which is only safe while the port itself is not reachable. Publishing it
+    # on 0.0.0.0 with that setting on lets anyone forge their own address and
+    # walk past every rate limit here.
+    #
+    # Put your proxy in front of 127.0.0.1:8080, or set OBSIDIAN_BIND=0.0.0.0
+    # and OBSIDIAN_TRUST_PROXY=false if you really want it exposed directly.
     ports:
-      - "${OBSIDIAN_PORT:-8080}:8080"
+      - "${OBSIDIAN_BIND:-127.0.0.1}:${OBSIDIAN_PORT:-8080}:8080"
     environment:
       OBSIDIAN_DB_DRIVER: postgres
       OBSIDIAN_DB_DSN: postgres://obsidian:${POSTGRES_PASSWORD:-obsidian}@db:5432/obsidian?sslmode=disable
@@ -27,8 +35,13 @@ services:
       # every stored provider credential unreadable after a rebuild.
       OBSIDIAN_SECRET_KEY: ${OBSIDIAN_SECRET_KEY:?set OBSIDIAN_SECRET_KEY, e.g. from `openssl rand -hex 32`}
       # A proxy is expected in front, so forwarded addresses are honoured and
-      # the session cookie is marked Secure.
+      # the session cookie is marked Secure. Honoured only from the addresses
+      # named below: without that, the header is written by whoever sent the
+      # request, and every limit keyed on an address stops meaning anything.
       OBSIDIAN_TRUST_PROXY: "true"
+      # The Docker bridge network your proxy sits on. Narrow it to the
+      # proxy's own address if you know it.
+      OBSIDIAN_TRUSTED_PROXIES: "${OBSIDIAN_TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,127.0.0.1/32}"
       OBSIDIAN_COOKIE_SECURE: "true"
       OBSIDIAN_ADMIN_USER: ${OBSIDIAN_ADMIN_USER:-}
       OBSIDIAN_ADMIN_PASSWORD: ${OBSIDIAN_ADMIN_PASSWORD:-}

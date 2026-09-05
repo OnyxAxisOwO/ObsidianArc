@@ -78,7 +78,8 @@ tends to set:
 | `OBSIDIAN_DB_DSN` | `./data/obsidian.db` | Required for Postgres |
 | `OBSIDIAN_SECRET_KEY` | generated into `./data` | Encrypts provider API keys. Set it explicitly before running more than one instance against one database |
 | `OBSIDIAN_DATA_DIR` | `./data` | Database, secret key |
-| `OBSIDIAN_TRUST_PROXY` | `false` | Honour `X-Forwarded-For` |
+| `OBSIDIAN_TRUST_PROXY` | `false` | Honour forwarded addresses. Only from the peers below |
+| `OBSIDIAN_TRUSTED_PROXIES` | private ranges | Exact proxy addresses or CIDRs. Everything else has its forwarded headers ignored |
 | `OBSIDIAN_COOKIE_SECURE` | `true` | Turn off only for plain-http local use |
 | `OBSIDIAN_SESSION_TTL` | `720h` | |
 | `OBSIDIAN_ADMIN_USER` / `_PASSWORD` | — | First administrator, on an empty database |

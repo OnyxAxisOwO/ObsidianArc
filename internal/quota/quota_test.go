@@ -113,12 +113,12 @@ func TestReserveStopsAtTheRequestLimit(t *testing.T) {
 
 	person := account("user-1", "")
 	for attempt := 1; attempt <= 3; attempt++ {
-		if err := service.Reserve(ctx, person); err != nil {
+		if err := service.Reserve(ctx, person, Estimate{}); err != nil {
 			t.Fatalf("request %d was refused: %v", attempt, err)
 		}
 	}
 
-	err := service.Reserve(ctx, person)
+	err := service.Reserve(ctx, person, Estimate{})
 	exceeded, ok := AsExceeded(err)
 	if !ok {
 		t.Fatalf("the fourth request was allowed: %v", err)
@@ -143,10 +143,10 @@ func TestLimitsAreScopedToTheAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := service.Reserve(ctx, account("user-1", "")); err != nil {
+	if err := service.Reserve(ctx, account("user-1", ""), Estimate{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Reserve(ctx, account("user-2", "")); err != nil {
+	if err := service.Reserve(ctx, account("user-2", ""), Estimate{}); err != nil {
 		t.Errorf("a second account was blocked by the first's usage: %v", err)
 	}
 }
@@ -168,10 +168,10 @@ func TestRejectedReservationRollsBack(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	if err := service.Reserve(ctx, person); err != nil {
+	if err := service.Reserve(ctx, person, Estimate{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Reserve(ctx, person); err == nil {
+	if err := service.Reserve(ctx, person, Estimate{}); err == nil {
 		t.Fatal("the second request was allowed")
 	}
 
@@ -215,7 +215,7 @@ func TestConcurrentReservationsCannotOverspend(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := service.Reserve(ctx, person); err == nil {
+			if err := service.Reserve(ctx, person, Estimate{}); err == nil {
 				mu.Lock()
 				accepted++
 				mu.Unlock()
@@ -241,17 +241,17 @@ func TestTokenCeilingRefusesOnceSpent(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	if err := service.Reserve(ctx, person); err != nil {
+	if err := service.Reserve(ctx, person, Estimate{}); err != nil {
 		t.Fatalf("the first request was refused with nothing spent: %v", err)
 	}
 
 	// A turn's cost is only known once it is over, so the ceiling is applied
 	// to what has already been consumed.
-	if err := service.Settle(ctx, person.ID, 1200, 1.2); err != nil {
+	if err := service.Settle(ctx, person.ID, Estimate{}, Estimate{Tokens: 1200, Credits: 1.2}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := service.Reserve(ctx, person)
+	err := service.Reserve(ctx, person, Estimate{})
 	exceeded, ok := AsExceeded(err)
 	if !ok {
 		t.Fatalf("a request was allowed after the token allowance was spent: %v", err)
@@ -273,14 +273,14 @@ func TestCreditCeiling(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	if err := service.Reserve(ctx, person); err != nil {
+	if err := service.Reserve(ctx, person, Estimate{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Settle(ctx, person.ID, 0, 5.5); err != nil {
+	if err := service.Settle(ctx, person.ID, Estimate{}, Estimate{Tokens: 0, Credits: 5.5}); err != nil {
 		t.Fatal(err)
 	}
 
-	exceeded, ok := AsExceeded(service.Reserve(ctx, person))
+	exceeded, ok := AsExceeded(service.Reserve(ctx, person, Estimate{}))
 	if !ok || exceeded.Dimension != "credits" {
 		t.Fatalf("the credit ceiling did not apply: %+v", exceeded)
 	}
@@ -301,7 +301,7 @@ func TestAdministratorsBypassByDefault(t *testing.T) {
 
 	admin := user.User{ID: "admin-1", Role: user.RoleAdmin, Status: user.StatusActive}
 	for attempt := 0; attempt < 5; attempt++ {
-		if err := service.Reserve(ctx, admin); err != nil {
+		if err := service.Reserve(ctx, admin, Estimate{}); err != nil {
 			t.Fatalf("an administrator was rate limited: %v", err)
 		}
 	}
@@ -321,10 +321,10 @@ func TestSummaryReportsEveryWindow(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	if err := service.Reserve(ctx, person); err != nil {
+	if err := service.Reserve(ctx, person, Estimate{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Settle(ctx, person.ID, 350, 0.35); err != nil {
+	if err := service.Settle(ctx, person.ID, Estimate{}, Estimate{Tokens: 350, Credits: 0.35}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -369,10 +369,10 @@ func TestUnenforcedAccountStillReportsUsage(t *testing.T) {
 	ctx := context.Background()
 
 	person := account("user-1", "")
-	if err := service.Reserve(ctx, person); err != nil {
+	if err := service.Reserve(ctx, person, Estimate{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Settle(ctx, person.ID, 42, 0.042); err != nil {
+	if err := service.Settle(ctx, person.ID, Estimate{}, Estimate{Tokens: 42, Credits: 0.042}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -424,7 +424,7 @@ func TestPruneRemovesRolledOverBuckets(t *testing.T) {
 	service, db := newService(t)
 	ctx := context.Background()
 
-	if err := service.Settle(ctx, "user-1", 10, 0.01); err != nil {
+	if err := service.Settle(ctx, "user-1", Estimate{}, Estimate{Tokens: 10, Credits: 0.01}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(ctx, `UPDATE usage_counters SET window_start = ?`,
@@ -438,5 +438,152 @@ func TestPruneRemovesRolledOverBuckets(t *testing.T) {
 	}
 	if removed == 0 {
 		t.Error("no stale buckets were pruned")
+	}
+}
+
+// --- reservations ------------------------------------------------------------
+
+// The hole this was written for: charging nothing until a turn finished meant
+// concurrent turns all saw the same untouched counter and all passed. The
+// allowance was only ever enforced against turns that had already ended.
+func TestConcurrentTurnsCannotOverspendTokens(t *testing.T) {
+	service, _ := newService(t)
+	ctx := context.Background()
+
+	const limit = 10000
+	const perTurn = 4000
+	if _, err := service.Policies().Save(ctx, Policy{
+		Scope:   ScopeGlobal,
+		Windows: map[Window]Limits{Window5H: limits(true, nil, ptrInt(limit), nil)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	person := account("user-1", "")
+	estimate := Estimate{Tokens: perTurn}
+
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		accepted int
+	)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := service.Reserve(ctx, person, estimate); err == nil {
+				mu.Lock()
+				accepted++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Three fit; the fourth would have taken the total past the limit.
+	if accepted != limit/perTurn {
+		t.Fatalf("%d turns of %d tokens were accepted against a limit of %d",
+			accepted, perTurn, limit)
+	}
+}
+
+// A reservation is a hold, not a charge: what the turn did not spend has to
+// come back, or a generous ceiling silently becomes the price of every turn.
+func TestReleaseGivesBackTheReservation(t *testing.T) {
+	service, db := newService(t)
+	ctx := context.Background()
+
+	if _, err := service.Policies().Save(ctx, Policy{
+		Scope:   ScopeGlobal,
+		Windows: map[Window]Limits{Window5H: limits(true, nil, ptrInt(10000), nil)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	person := account("user-1", "")
+	reserved := Estimate{Tokens: 4000, Credits: 4}
+	if err := service.Reserve(ctx, person, reserved); err != nil {
+		t.Fatal(err)
+	}
+
+	// What it really cost, then the hold coming back. Both are deltas, so the
+	// order genuinely does not matter — which is why the gateway can settle
+	// from one goroutine and release from another.
+	actual := Estimate{Tokens: 120, Credits: 0.12}
+	if err := service.Settle(ctx, person.ID, Estimate{}, actual); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Release(ctx, person.ID, reserved); err != nil {
+		t.Fatal(err)
+	}
+
+	var tokens int64
+	var credits float64
+	err := db.QueryRow(ctx,
+		`SELECT tokens, credits FROM usage_counters WHERE scope_key = ? AND window_kind = ?`,
+		"u:user-1", Window5H).Scan(&tokens, &credits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens != actual.Tokens {
+		t.Errorf("tokens = %d, want the %d actually spent", tokens, actual.Tokens)
+	}
+	if credits < actual.Credits-0.001 || credits > actual.Credits+0.001 {
+		t.Errorf("credits = %v, want %v", credits, actual.Credits)
+	}
+}
+
+// Two refunds racing must not drive a counter below zero and hand out free
+// allowance.
+func TestCountersNeverGoNegative(t *testing.T) {
+	service, db := newService(t)
+	ctx := context.Background()
+
+	person := account("user-1", "")
+	if err := service.Settle(ctx, person.ID, Estimate{}, Estimate{Tokens: 100, Credits: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// Far more than was ever taken.
+	if err := service.Release(ctx, person.ID, Estimate{Tokens: 5000, Credits: 50}); err != nil {
+		t.Fatal(err)
+	}
+
+	var tokens int64
+	var credits float64
+	err := db.QueryRow(ctx,
+		`SELECT tokens, credits FROM usage_counters WHERE scope_key = ? AND window_kind = ?`,
+		"u:user-1", Window5H).Scan(&tokens, &credits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens < 0 || credits < 0 {
+		t.Fatalf("counter went negative: %d tokens, %v credits", tokens, credits)
+	}
+}
+
+func TestConcurrencyCapIsPerAccount(t *testing.T) {
+	service, _ := newService(t)
+
+	releases := make([]func(), 0, MaxConcurrentPerUser)
+	for i := 0; i < MaxConcurrentPerUser; i++ {
+		release, err := service.Begin("user-1")
+		if err != nil {
+			t.Fatalf("slot %d of an allowed %d was refused", i+1, MaxConcurrentPerUser)
+		}
+		releases = append(releases, release)
+	}
+
+	if _, err := service.Begin("user-1"); err != ErrTooManyInFlight {
+		t.Fatalf("err = %v, want ErrTooManyInFlight", err)
+	}
+	// Another account is unaffected.
+	if _, err := service.Begin("user-2"); err != nil {
+		t.Fatalf("a second account was blocked by the first: %v", err)
+	}
+
+	releases[0]()
+	releases[0]() // idempotent: a deferred release may also be called early
+	if _, err := service.Begin("user-1"); err != nil {
+		t.Fatalf("a freed slot was not reusable: %v", err)
 	}
 }
