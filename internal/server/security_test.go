@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -160,6 +161,9 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodPost, "/api/admin/models", map[string]any{"provider_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}},
 		{http.MethodGet, "/api/admin/usage", nil},
 		{http.MethodGet, "/api/admin/usage/records", nil},
+		{http.MethodGet, "/api/admin/logs", nil},
+		{http.MethodGet, "/api/admin/logs/facets", nil},
+		{http.MethodPost, "/api/admin/logs/prune", map[string]any{"days": 30}},
 		{http.MethodGet, "/api/admin/quota/policies", nil},
 		{http.MethodPut, "/api/admin/quota/policies", map[string]any{"scope": "global"}},
 		{http.MethodGet, "/api/admin/settings", nil},
@@ -320,7 +324,8 @@ func TestSecurityHeadersArePresent(t *testing.T) {
 	for header, want := range map[string]string{
 		"X-Content-Type-Options": "nosniff",
 		"X-Frame-Options":        "DENY",
-		"Referrer-Policy":        "same-origin",
+		"Referrer-Policy":        "no-referrer",
+		"Cache-Control":          "no-store",
 	} {
 		if got := response.Header().Get(header); got != want {
 			t.Errorf("%s = %q, want %q", header, got, want)
@@ -412,6 +417,53 @@ func TestTheLastAdministratorCannotBeRemoved(t *testing.T) {
 	remove := in.do(http.MethodDelete, "/api/admin/users/"+admin.userID, nil, admin)
 	if remove.Code == http.StatusNoContent {
 		t.Error("the last administrator deleted themselves")
+	}
+}
+
+// The last-admin check is a read followed by a write. Two simultaneous
+// demotions must be serialised or each administrator can observe the other
+// and both writes will succeed, permanently locking the instance out.
+func TestConcurrentAdminDemotionsCannotRemoveEveryAdministrator(t *testing.T) {
+	in := newInstance(t)
+	first := in.register("founder", "a-good-password")
+	second := in.register("second-admin", "another-password")
+
+	promote := in.do(http.MethodPatch, "/api/admin/users/"+second.userID,
+		map[string]any{"role": "admin"}, first)
+	if promote.Code != http.StatusOK {
+		t.Fatalf("promote second admin: %d %s", promote.Code, promote.Body.String())
+	}
+
+	start := make(chan struct{})
+	responses := make(chan int, 2)
+	var workers sync.WaitGroup
+	for _, candidate := range []*session{first, second} {
+		candidate := candidate
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			responses <- in.do(http.MethodPatch, "/api/admin/users/"+candidate.userID,
+				map[string]any{"role": "user"}, candidate).Code
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(responses)
+
+	succeeded, refused := 0, 0
+	for code := range responses {
+		switch code {
+		case http.StatusOK:
+			succeeded++
+		case http.StatusConflict:
+			refused++
+		default:
+			t.Fatalf("concurrent demotion returned %d", code)
+		}
+	}
+	if succeeded != 1 || refused != 1 {
+		t.Fatalf("demotions: %d succeeded and %d refused; want one of each", succeeded, refused)
 	}
 }
 

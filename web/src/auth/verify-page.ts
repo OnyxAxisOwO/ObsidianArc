@@ -12,6 +12,17 @@ import { siteInfo } from '../session';
 import { ICONS, button, clear, el, icon } from '../ui/dom';
 
 export function renderVerifyPage(root: HTMLElement, query: URLSearchParams): void {
+  const token = query.get('token') ?? '';
+  if (query.has('token')) {
+    const cleanURL = new URL(window.location.href);
+    cleanURL.searchParams.delete('token');
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${cleanURL.pathname}${cleanURL.search}${cleanURL.hash}`,
+    );
+  }
+
   clear(root);
 
   const page = el('div', 'oa-auth');
@@ -38,7 +49,7 @@ export function renderVerifyPage(root: HTMLElement, query: URLSearchParams): voi
   page.appendChild(card);
   root.appendChild(page);
 
-  void verifyEmail(query.get('token') ?? '')
+  void verifyEmail(token)
     .then(() => {
       title.textContent = t('verifyPageDone');
       body.textContent = '';

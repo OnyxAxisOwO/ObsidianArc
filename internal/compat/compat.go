@@ -30,6 +30,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -164,6 +165,14 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 
 	key, err := h.keys.Resolve(r.Context(), token)
 	if err != nil {
+		if errors.Is(err, apikey.ErrPaused) {
+			return caller{}, apiError{
+				status:  http.StatusUnauthorized,
+				kind:    "invalid_request_error",
+				code:    "api_key_paused",
+				message: "This API key has been paused. Resume it in your account settings to continue.",
+			}
+		}
 		return caller{}, invalidKey()
 	}
 
@@ -265,7 +274,8 @@ func describeModel(record model.Model) modelObject {
 }
 
 // available is what this caller may actually send to: the same listing the
-// model picker gets, minus the entries their group can see but not use.
+// model picker gets, minus the entries their group can see but not use,
+// and filtered by any model restriction configured on the API key.
 func (h *Handlers) available(ctx context.Context, who caller) ([]model.Model, error) {
 	listed, err := h.models.ListForUser(ctx, who.account.GroupID, who.account.IsAdmin())
 	if err != nil {
@@ -276,9 +286,13 @@ func (h *Handlers) available(ctx context.Context, who caller) ([]model.Model, er
 		// A model the group may see but not query would be a listing entry
 		// that fails on use. The picker shows those to advertise an upgrade;
 		// an API client has nobody to advertise to.
-		if record.Usable {
-			usable = append(usable, record)
+		if !record.Usable {
+			continue
 		}
+		if who.key.ModelID != "" && record.ID != who.key.ModelID && !strings.EqualFold(record.DisplayName, who.key.ModelID) {
+			continue
+		}
+		usable = append(usable, record)
 	}
 	return usable, nil
 }
@@ -295,14 +309,35 @@ func (h *Handlers) resolveModel(ctx context.Context, who caller, wanted string) 
 	if wanted == "" {
 		return "", badRequest("model", "No model was specified.")
 	}
-	if id.Valid(wanted) {
-		return wanted, nil
-	}
 
 	available, err := h.available(ctx, who)
 	if err != nil {
 		return "", err
 	}
+
+	// When the key is locked to a specific model, reject any request for another model.
+	if who.key.ModelID != "" {
+		for _, record := range available {
+			if strings.EqualFold(record.ID, wanted) || strings.EqualFold(record.DisplayName, wanted) {
+				return record.ID, nil
+			}
+		}
+		return "", apiError{
+			status:  http.StatusForbidden,
+			kind:    "invalid_request_error",
+			code:    "model_not_permitted",
+			message: fmt.Sprintf("This API key is restricted to model '%s'.", who.key.ModelID),
+		}
+	}
+
+	if id.Valid(wanted) {
+		for _, record := range available {
+			if record.ID == wanted {
+				return wanted, nil
+			}
+		}
+	}
+
 	for _, record := range available {
 		if strings.EqualFold(record.DisplayName, wanted) {
 			return record.ID, nil

@@ -35,17 +35,18 @@ export async function renderProviders(view: AdminView): Promise<void> {
   view.body.appendChild(renderTable({
     columns: [
       { header: t('colName'), cell: (row) => stacked(row.name, row.base_url) },
-      { header: t('colType'), cell: (row) => badge(row.kind === 'anthropic' ? t('protocolAnthropic') : t('protocolOpenAI'), 'muted') },
-      { header: t('colKey'), cell: (row) => row.api_key_hint || '—', secondary: true },
-      { header: t('colModels'), cell: (row) => String(row.model_count), numeric: true },
+      { header: t('colType'), cell: (row) => badge(row.kind === 'anthropic' ? t('protocolAnthropic') : t('protocolOpenAI'), 'muted'), width: '110px' },
+      { header: t('colKey'), cell: (row) => row.api_key_hint || '—', secondary: true, width: '130px' },
+      { header: t('colModels'), cell: (row) => String(row.model_count), numeric: true, width: '80px' },
       {
         header: t('colState'),
         cell: (row) => badges(
           row.enabled ? badge(t('enabled'), 'muted') : badge(t('disabled'), 'danger'),
           row.reasoning_style !== 'auto' ? badge(row.reasoning_style, 'muted') : null,
         ),
+        width: '130px',
       },
-      { header: t('colUpdated'), cell: (row) => relativeTime(row.updated_at), secondary: true },
+      { header: t('colUpdated'), cell: (row) => relativeTime(row.updated_at), secondary: true, width: '110px' },
     ],
     rows: providers,
     empty: t('noProviders'),
@@ -182,7 +183,7 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
     },
   });
 
-  name.focus();
+  name.focus({ preventScroll: true });
 }
 
 async function detectModels(provider: Provider, trigger: HTMLButtonElement, body: HTMLElement): Promise<void> {

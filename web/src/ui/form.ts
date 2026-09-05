@@ -14,7 +14,12 @@ export interface Control<T> {
   element: HTMLElement;
   value(): T;
   set(value: T): void;
-  focus(): void;
+  /**
+   * Puts the caret here. Pass `{ preventScroll: true }` for a control in a
+   * panel that has not slid in yet: the browser would otherwise scroll the
+   * whole row sideways to reveal a field that is about to arrive on its own.
+   */
+  focus(options?: FocusOptions): void;
 }
 
 export function textField(options: {
@@ -38,7 +43,7 @@ export function textField(options: {
     element: field(options.label, input, options.hint),
     value: () => input.value.trim(),
     set: (value) => { input.value = value; },
-    focus: () => input.focus(),
+    focus: (options) => input.focus(options),
   };
 }
 
@@ -59,7 +64,7 @@ export function textArea(options: {
     element: field(options.label, area, options.hint),
     value: () => area.value.trim(),
     set: (value) => { area.value = value; },
-    focus: () => area.focus(),
+    focus: (options) => area.focus(options),
   };
 }
 
@@ -94,7 +99,7 @@ export function numberField(options: {
       return Number.isFinite(parsed) ? parsed : null;
     },
     set: (value) => { input.value = value === null ? '' : String(value); },
-    focus: () => input.focus(),
+    focus: (options) => input.focus(options),
   };
 }
 
@@ -120,7 +125,7 @@ export function selectField<T extends string>(options: {
     element: field(options.label, select, options.hint),
     value: () => select.value as T,
     set: (value) => { select.value = value; },
-    focus: () => select.focus(),
+    focus: (options) => select.focus(options),
   };
 }
 
@@ -146,7 +151,7 @@ export function switchField(options: {
     element,
     value: () => box.checked,
     set: (value) => { box.checked = value; },
-    focus: () => box.focus(),
+    focus: (options) => box.focus(options),
   };
 }
 

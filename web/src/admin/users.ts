@@ -145,16 +145,17 @@ async function load(view: AdminView, groups: Group[], target: HTMLElement): Prom
   target.appendChild(renderTable({
     columns: [
       { header: t('colAccount'), cell: (row) => stacked(row.nickname || row.username, `@${row.username}`) },
-      { header: t('colEmail'), cell: (row) => row.email || '—', secondary: true },
-      { header: t('colGroup'), cell: (row) => groupName(row.group_id) },
+      { header: t('colEmail'), cell: (row) => row.email || '—', secondary: true, width: '160px' },
+      { header: t('colGroup'), cell: (row) => groupName(row.group_id), width: '120px' },
       {
         header: t('colRole'),
         cell: (row) => badges(
           row.role === 'admin' ? badge(t('admin')) : null,
           row.status === 'disabled' ? badge(t('disabled'), 'danger') : null,
         ),
+        width: '120px',
       },
-      { header: t('colLastSeen'), cell: (row) => relativeTime(row.last_login_at), secondary: true },
+      { header: t('colLastSeen'), cell: (row) => relativeTime(row.last_login_at), secondary: true, width: '110px' },
     ],
     rows: users ?? [],
     empty: t('noAccountsMatch'),

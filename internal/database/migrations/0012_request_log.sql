@@ -10,9 +10,9 @@
 -- model each attempt was for" is one query against one table rather than a
 -- join an operator has to know to write.
 --
--- Nothing prunes this by default. It is the audit trail, and an audit trail
--- with a retention policy nobody chose is an audit trail with a hole in it.
--- An operator who needs the space can set one.
+-- The application keeps the newest 200,000 rows. Without a hard ceiling this
+-- public-facing audit feature would let an anonymous caller fill the database
+-- simply by generating distinct failed requests forever.
 CREATE TABLE request_log (
     id          TEXT PRIMARY KEY,
     at          BIGINT NOT NULL,

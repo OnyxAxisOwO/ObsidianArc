@@ -32,8 +32,11 @@ type Key struct {
 	UserID string `json:"-"`
 	// The opening characters of the token, so the owner can tell which row is
 	// the key in a given config file.
-	Prefix string `json:"prefix"`
-	Name   string `json:"name"`
+	Prefix   string `json:"prefix"`
+	Name     string `json:"name"`
+	Disabled bool   `json:"disabled"`
+	// Restricts this key to a specific model. Empty string means any permitted model.
+	ModelID string `json:"model_id"`
 	// Epoch millis; zero means it never expires.
 	ExpiresAt  int64 `json:"expires_at"`
 	LastUsedAt int64 `json:"last_used_at"`
@@ -46,8 +49,14 @@ func (k Key) Expired(t time.Time) bool {
 	return k.ExpiresAt > 0 && k.ExpiresAt <= t.UnixMilli()
 }
 
+// IsActive reports whether the key is currently active and not expired.
+func (k Key) IsActive(t time.Time) bool {
+	return !k.Disabled && !k.Expired(t)
+}
+
 var (
 	ErrNotFound    = errors.New("apikey: not found")
+	ErrPaused      = errors.New("apikey: paused")
 	ErrInvalidName = errors.New("apikey: name must be 1-60 characters")
 	ErrPastExpiry  = errors.New("apikey: expiry is in the past")
 	ErrTooMany     = errors.New("apikey: this account already has the maximum number of keys")
@@ -73,7 +82,7 @@ const (
 	prefixChars = len(tokenPrefix) + 6
 )
 
-const columns = `id, user_id, prefix, name, expires_at, last_used_at, created_at, updated_at`
+const columns = `id, user_id, prefix, name, disabled, model_id, expires_at, last_used_at, created_at, updated_at`
 
 type Store struct{ db *database.DB }
 
@@ -81,7 +90,7 @@ func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
 // Issue creates a key and returns it together with the token, which the
 // caller must hand to the user immediately: this is the only time it exists.
-func (s *Store) Issue(ctx context.Context, userID, name string, expiresAt int64) (Key, string, error) {
+func (s *Store) Issue(ctx context.Context, userID, name, modelID string, expiresAt int64) (Key, string, error) {
 	clean, err := checkName(name)
 	if err != nil {
 		return Key{}, "", err
@@ -91,31 +100,52 @@ func (s *Store) Issue(ctx context.Context, userID, name string, expiresAt int64)
 		return Key{}, "", ErrPastExpiry
 	}
 
-	count, err := s.count(ctx, userID)
-	if err != nil {
-		return Key{}, "", err
-	}
-	if count >= MaxPerUser {
-		return Key{}, "", ErrTooMany
-	}
-
 	token := tokenPrefix + id.Secret(tokenBytes)
 	record := Key{
 		ID:        id.New(),
 		UserID:    userID,
 		Prefix:    token[:prefixChars],
 		Name:      clean,
+		Disabled:  false,
+		ModelID:   strings.TrimSpace(modelID),
 		ExpiresAt: expiresAt,
 		CreatedAt: now.UnixMilli(),
 		UpdatedAt: now.UnixMilli(),
 	}
 
-	_, err = s.db.Exec(ctx,
-		`INSERT INTO api_keys (id, user_id, token_hash, prefix, name, expires_at, last_used_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.UserID, Digest(token), record.Prefix, record.Name,
-		record.ExpiresAt, record.LastUsedAt, record.CreatedAt, record.UpdatedAt)
+	// Serialise the cap check per owner. A count followed by a standalone
+	// insert lets parallel requests all observe the same free slot and grow
+	// the table past its documented bound.
+	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		locked, err := tx.Exec(ctx,
+			`UPDATE users SET updated_at = updated_at WHERE id = ?`, userID)
+		if err != nil {
+			return fmt.Errorf("apikey: lock owner: %w", err)
+		}
+		if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
+			return ErrNotFound
+		}
+
+		var count int
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM api_keys WHERE user_id = ?`, userID).Scan(&count); err != nil {
+			return fmt.Errorf("apikey: count: %w", err)
+		}
+		if count >= MaxPerUser {
+			return ErrTooMany
+		}
+
+		_, err = tx.Exec(ctx,
+			`INSERT INTO api_keys (id, user_id, token_hash, prefix, name, disabled, model_id, expires_at, last_used_at, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			record.ID, record.UserID, Digest(token), record.Prefix, record.Name,
+			record.Disabled, record.ModelID, record.ExpiresAt, record.LastUsedAt, record.CreatedAt, record.UpdatedAt)
+		return err
+	})
 	if err != nil {
+		if errors.Is(err, ErrTooMany) || errors.Is(err, ErrNotFound) {
+			return Key{}, "", err
+		}
 		return Key{}, "", fmt.Errorf("apikey: issue: %w", err)
 	}
 	return record, token, nil
@@ -129,6 +159,7 @@ func Digest(token string) string {
 
 // Resolve looks a presented token up. An expired key is reported as absent:
 // the caller has no use for the difference, and neither does the client.
+// A paused key returns ErrPaused so callers can distinguish it.
 //
 // It does not touch last_used_at. Recording that on the read path would turn
 // every API request into a write; Touch is called separately, and only when
@@ -142,6 +173,9 @@ func (s *Store) Resolve(ctx context.Context, token string) (Key, error) {
 		`SELECT `+columns+` FROM api_keys WHERE token_hash = ?`, Digest(token)))
 	if err != nil {
 		return Key{}, err
+	}
+	if record.Disabled {
+		return Key{}, ErrPaused
 	}
 	if record.Expired(time.Now()) {
 		return Key{}, ErrNotFound
@@ -190,14 +224,16 @@ func (s *Store) List(ctx context.Context, userID string) ([]Key, error) {
 	return out, nil
 }
 
-// Update is what the owner may change after the fact: what the key is called
-// and when it stops working. Not who it belongs to, and not the token.
+// Update is what the owner may change after the fact: what the key is called,
+// whether it is paused, which model it may query, and when it stops working.
 type Update struct {
 	Name      *string
+	Disabled  *bool
+	ModelID   *string
 	ExpiresAt *int64
 }
 
-// Rename and re-expire, scoped to the owner.
+// Rename, toggle pause, restrict model, and re-expire, scoped to the owner.
 //
 // The user id is part of the WHERE clause rather than checked beforehand:
 // that is what makes guessing another account's key id useless instead of
@@ -213,6 +249,14 @@ func (s *Store) Update(ctx context.Context, userID, keyID string, in Update) (Ke
 		}
 		sets = append(sets, "name = ?")
 		args = append(args, clean)
+	}
+	if in.Disabled != nil {
+		sets = append(sets, "disabled = ?")
+		args = append(args, *in.Disabled)
+	}
+	if in.ModelID != nil {
+		sets = append(sets, "model_id = ?")
+		args = append(args, strings.TrimSpace(*in.ModelID))
 	}
 	if in.ExpiresAt != nil {
 		expiry := *in.ExpiresAt
@@ -262,20 +306,12 @@ func (s *Store) byID(ctx context.Context, userID, keyID string) (Key, error) {
 		`SELECT `+columns+` FROM api_keys WHERE id = ? AND user_id = ?`, keyID, userID))
 }
 
-func (s *Store) count(ctx context.Context, userID string) (int, error) {
-	var total int
-	err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM api_keys WHERE user_id = ?`, userID).Scan(&total)
-	if err != nil {
-		return 0, fmt.Errorf("apikey: count: %w", err)
-	}
-	return total, nil
-}
-
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scan(row rowScanner) (Key, error) {
 	var record Key
 	err := row.Scan(&record.ID, &record.UserID, &record.Prefix, &record.Name,
+		&record.Disabled, &record.ModelID,
 		&record.ExpiresAt, &record.LastUsedAt, &record.CreatedAt, &record.UpdatedAt)
 	if err != nil {
 		if database.IsNotFound(err) {

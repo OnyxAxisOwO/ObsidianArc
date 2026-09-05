@@ -13,6 +13,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
@@ -45,6 +46,11 @@ type Handlers struct {
 	announcements *announcement.Store
 	keys          *apikey.Store
 	requests      *reqlog.Store
+	// Serialises changes that can remove an active administrator. The
+	// invariant is checked before the write; without this lock, two admins
+	// can both observe the other and concurrently demote or remove themselves,
+	// leaving the instance with nobody able to administer it.
+	accountMutations sync.Mutex
 }
 
 func NewHandlers(

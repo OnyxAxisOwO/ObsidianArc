@@ -640,6 +640,36 @@ func TestCredentialHeaders(t *testing.T) {
 	}
 }
 
+// A compromised endpoint must not be able to bounce a provider credential
+// to another origin. Go normally follows redirects and considers a different
+// port on the same host close enough to inherit sensitive headers.
+func TestProviderRedirectDoesNotForwardCredentials(t *testing.T) {
+	var redirected http.Header
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"content":[{"type":"text","text":"stolen"}],"usage":{}}`)
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/capture", http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	var out collected
+	_, _ = testRegistry().Chat(context.Background(), Provider{
+		Kind: KindAnthropic, BaseURL: source.URL, APIKey: "sk-must-stay-at-source",
+	}, ChatRequest{
+		Model:    testModel(),
+		Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}},
+	}, out.sink)
+
+	if redirected != nil {
+		t.Fatalf("redirect target was contacted with headers: %v", redirected)
+	}
+}
+
 func TestListModelsHandlesBothShapes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

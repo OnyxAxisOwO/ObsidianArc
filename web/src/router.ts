@@ -68,6 +68,7 @@ export function currentPath(): string {
 
 async function render(): Promise<void> {
   if (!rootElement) return;
+  document.querySelector('.oa-modal-overlay')?.remove();
   const mine = ++generation;
 
   const path = currentPath();

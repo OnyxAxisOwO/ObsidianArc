@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -68,6 +69,48 @@ func TestPendingUploadsAreCapped(t *testing.T) {
 	}
 	if err := upload(t, store, account.ID, 32); err != ErrTooManyPending {
 		t.Fatalf("err = %v, want ErrTooManyPending", err)
+	}
+}
+
+func TestParallelUploadsCannotRacePastThePendingCap(t *testing.T) {
+	store, _, account := attachmentFixture(t)
+
+	const attempts = MaxPendingAttachments * 2
+	start := make(chan struct{})
+	errorsByAttempt := make(chan error, attempts)
+	var workers sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			_, err := store.Upload(context.Background(), UploadInput{
+				UserID: account.ID,
+				Mime:   "image/png",
+				Data:   bytes.Repeat([]byte{1}, 32),
+			})
+			errorsByAttempt <- err
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(errorsByAttempt)
+
+	accepted := 0
+	refused := 0
+	for err := range errorsByAttempt {
+		switch err {
+		case nil:
+			accepted++
+		case ErrTooManyPending:
+			refused++
+		default:
+			t.Fatalf("parallel upload returned %v", err)
+		}
+	}
+	if accepted != MaxPendingAttachments || refused != attempts-MaxPendingAttachments {
+		t.Fatalf("accepted %d and refused %d; want %d and %d",
+			accepted, refused, MaxPendingAttachments, attempts-MaxPendingAttachments)
 	}
 }
 

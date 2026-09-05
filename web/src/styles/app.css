@@ -132,6 +132,50 @@
   right: 12px;
 }
 
+/* --- modal overlay for auth / permission dialogs ---------------------------- */
+
+.oa-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.oa-modal-overlay.open {
+  opacity: 1;
+}
+
+.oa-modal-card {
+  position: relative;
+  box-shadow: var(--ai-shadow-md), 0 20px 48px rgba(0, 0, 0, 0.25);
+  transform: translateY(12px) scale(0.97);
+  transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
+  animation: none;
+}
+
+.oa-modal-overlay.open .oa-modal-card {
+  transform: none;
+}
+
+.oa-modal-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-modal-close:hover {
+  color: var(--ai-text-primary);
+}
+
 /* --- account menu ----------------------------------------------------------- */
 
 .oa-avatar {
@@ -247,6 +291,23 @@
 .oa-badge-danger {
   background: rgba(185, 28, 28, 0.12);
   color: var(--ai-danger);
+}
+
+.oa-badge-warning {
+  background: rgba(217, 119, 6, 0.15);
+  color: #b45309;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .oa-badge-warning {
+    background: rgba(245, 158, 11, 0.22);
+    color: #fbbf24;
+  }
+}
+
+:root[data-theme="dark"] .oa-badge-warning {
+  background: rgba(245, 158, 11, 0.22);
+  color: #fbbf24;
 }
 
 /* --- centred notice --------------------------------------------------------- */

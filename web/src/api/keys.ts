@@ -12,6 +12,8 @@ export interface ApiKey {
   /** The opening characters, so two keys can be told apart in a list. */
   prefix: string;
   name: string;
+  disabled: boolean;
+  model_id: string;
   /** Epoch millis; zero means it never expires. */
   expires_at: number;
   last_used_at: number;
@@ -36,11 +38,18 @@ export function listKeys(): Promise<KeyList> {
  * The token in the result is the only copy that will ever exist. Show it
  * immediately; there is no endpoint that can produce it again.
  */
-export function createKey(name: string, expiresAt: number): Promise<{ key: ApiKey; token: string }> {
-  return api.post<{ key: ApiKey; token: string }>('/api/keys', { name, expires_at: expiresAt });
+export function createKey(name: string, expiresAt: number, modelId = ''): Promise<{ key: ApiKey; token: string }> {
+  return api.post<{ key: ApiKey; token: string }>('/api/keys', {
+    name,
+    expires_at: expiresAt,
+    model_id: modelId,
+  });
 }
 
-export function updateKey(id: string, changes: { name?: string; expires_at?: number }): Promise<ApiKey> {
+export function updateKey(
+  id: string,
+  changes: { name?: string; disabled?: boolean; model_id?: string; expires_at?: number },
+): Promise<ApiKey> {
   return api.patch<ApiKey>(`/api/keys/${id}`, changes);
 }
 

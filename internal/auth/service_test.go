@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -97,6 +99,91 @@ func TestFirstRegistrationBecomesAdmin(t *testing.T) {
 	}
 	if second.Role != user.RoleUser {
 		t.Errorf("second account role = %q, want user", second.Role)
+	}
+}
+
+func TestParallelFirstRegistrationsCreateOnlyOneAdmin(t *testing.T) {
+	f := newFixture(t)
+	start := make(chan struct{})
+	errorsByAttempt := make(chan error, 8)
+	var workers sync.WaitGroup
+
+	for i := 0; i < 8; i++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			<-start
+			_, _, err := f.auth.Register(context.Background(), RegisterInput{
+				Username: fmt.Sprintf("user-%d", index),
+				Password: "a-good-password",
+			})
+			errorsByAttempt <- err
+		}(i)
+	}
+	close(start)
+	workers.Wait()
+	close(errorsByAttempt)
+
+	for err := range errorsByAttempt {
+		if err != nil {
+			t.Fatalf("parallel registration: %v", err)
+		}
+	}
+	admins, err := f.users.CountActiveAdmins(context.Background(), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admins != 1 {
+		t.Fatalf("parallel first registrations created %d administrators, want 1", admins)
+	}
+}
+
+func TestParallelRegistrationsCannotRacePastTheSignupLimit(t *testing.T) {
+	f := newFixture(t)
+	if _, _, err := f.auth.Register(context.Background(), RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The first account is counted too, leaving two places in this minute.
+	if err := f.settings.Set(context.Background(), settings.SignupsPerMinute, "3"); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	errorsByAttempt := make(chan error, 8)
+	var workers sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			<-start
+			_, _, err := f.auth.Register(context.Background(), RegisterInput{
+				Username: fmt.Sprintf("guest-%d", index),
+				Password: "a-good-password",
+			})
+			errorsByAttempt <- err
+		}(i)
+	}
+	close(start)
+	workers.Wait()
+	close(errorsByAttempt)
+
+	created := 0
+	throttled := 0
+	for err := range errorsByAttempt {
+		var limited *SignupThrottleError
+		switch {
+		case err == nil:
+			created++
+		case errors.As(err, &limited):
+			throttled++
+		default:
+			t.Fatalf("parallel registration returned %v", err)
+		}
+	}
+	if created != 2 || throttled != 6 {
+		t.Fatalf("created %d and throttled %d; want 2 and 6", created, throttled)
 	}
 }
 
@@ -334,6 +421,34 @@ func TestLoginRateLimiterBlocksAfterRepeatedFailures(t *testing.T) {
 		Identifier: "arc", Password: "a-good-password", IP: "203.0.113.7",
 	}); !errors.As(err, &limited) {
 		t.Errorf("a blocked address was allowed to log in: %v", err)
+	}
+}
+
+func TestLoginRateLimiterBoundsAParallelBurstBeforeHashing(t *testing.T) {
+	limiter := NewLimiter()
+	attempts := make([]*loginAttempt, 0, freeAttempts+1)
+
+	for i := 0; i < 100; i++ {
+		attempt, err := limiter.Begin("203.0.113.9", "target")
+		if err != nil {
+			var limited *RateLimitError
+			if !errors.As(err, &limited) || limited.RetryAfter <= 0 {
+				t.Fatalf("attempt %d: %v", i+1, err)
+			}
+			continue
+		}
+		attempts = append(attempts, attempt)
+	}
+
+	if len(attempts) != freeAttempts+1 {
+		t.Fatalf("%d simultaneous attempts passed, want %d", len(attempts), freeAttempts+1)
+	}
+	for _, attempt := range attempts {
+		attempt.finish(attemptFailed)
+	}
+	if attempt, err := limiter.Begin("203.0.113.9", "target"); err == nil {
+		attempt.finish(attemptCancelled)
+		t.Fatal("a failed parallel burst did not block the next attempt")
 	}
 }
 

@@ -150,6 +150,9 @@ type Facets struct {
 	// Entries lost to a full buffer since boot. Shown so a gap in the log is
 	// visible rather than inferred.
 	Dropped int64 `json:"dropped"`
+	// Old rows removed by the hard storage ceiling since boot. Distinct from
+	// queue drops: these entries were recorded, then aged out under pressure.
+	Evicted int64 `json:"evicted"`
 	Oldest  int64 `json:"oldest"`
 }
 
@@ -167,7 +170,7 @@ type Option struct {
 func (s *Store) Facets(ctx context.Context, since int64) (Facets, error) {
 	out := Facets{
 		Users: []Option{}, Models: []Option{}, ErrorCodes: []Option{}, Statuses: []Option{},
-		Dropped: s.Dropped(),
+		Dropped: s.Dropped(), Evicted: s.Evicted(),
 	}
 
 	window := ""

@@ -115,6 +115,10 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, user.MaxAvatarChars+16*1024); err != nil {
 		return err
 	}
+	if body.Role != nil || body.Status != nil {
+		h.accountMutations.Lock()
+		defer h.accountMutations.Unlock()
+	}
 
 	target, err := h.users.ByID(r.Context(), nil, userID)
 	if err != nil {
@@ -223,6 +227,9 @@ func (h *Handlers) deleteUser(w http.ResponseWriter, r *http.Request) error {
 	if userID == actor.ID {
 		return httpx.BadRequest("You cannot delete your own account.")
 	}
+
+	h.accountMutations.Lock()
+	defer h.accountMutations.Unlock()
 
 	target, err := h.users.ByID(r.Context(), nil, userID)
 	if err != nil {

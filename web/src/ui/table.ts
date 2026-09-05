@@ -91,10 +91,11 @@ export function stacked(title: string, sub?: string): HTMLElement {
   return wrap;
 }
 
-export function badge(text: string, tone: 'default' | 'muted' | 'danger' = 'default'): HTMLElement {
+export function badge(text: string, tone: 'default' | 'muted' | 'danger' | 'warning' = 'default'): HTMLElement {
   const classes = ['oa-badge'];
   if (tone === 'muted') classes.push('oa-badge-muted');
   if (tone === 'danger') classes.push('oa-badge-danger');
+  if (tone === 'warning') classes.push('oa-badge-warning');
   return el('span', classes.join(' '), text);
 }
 

@@ -201,7 +201,7 @@ func verificationError(err error) error {
 	case errors.Is(err, ErrResendTooSoon):
 		return httpx.TooManyRequests("resend_too_soon",
 			"A link was just sent. Check the address before asking for another.")
-	case errors.Is(err, mail.ErrNotConfigured):
+	case errors.Is(err, mail.ErrNotConfigured), errors.Is(err, mail.ErrTLSRequired):
 		return httpx.Unavailable("This server cannot send mail.")
 	default:
 		return httpx.Internal(err)

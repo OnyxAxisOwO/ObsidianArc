@@ -56,15 +56,16 @@ export async function renderModels(view: AdminView): Promise<void> {
           row.route_to_id ? t('routedTo', { name: nameOf(row.route_to_id) }) : row.model_id,
         ),
       },
-      { header: t('colProvider'), cell: (row) => row.provider_name, secondary: true },
-      { header: t('colCan'), cell: (row) => capabilityBadges(row) },
-      { header: t('colWeights'), cell: (row) => weightLabel(row), numeric: true, secondary: true },
+      { header: t('colProvider'), cell: (row) => row.provider_name, secondary: true, width: '130px' },
+      { header: t('colCan'), cell: (row) => capabilityBadges(row), width: '140px' },
+      { header: t('colWeights'), cell: (row) => weightLabel(row), numeric: true, secondary: true, width: '80px' },
       {
         header: t('colState'),
         cell: (row) => badges(
           row.enabled ? badge(t('enabled'), 'muted') : badge(t('disabled'), 'danger'),
           row.hidden ? badge(t('hiddenBadge'), 'muted') : null,
         ),
+        width: '110px',
       },
     ],
     rows: models,
@@ -335,7 +336,7 @@ function editModel(
     },
   });
 
-  modelID.focus();
+  modelID.focus({ preventScroll: true });
   void panel;
 }
 

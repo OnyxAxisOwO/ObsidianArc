@@ -92,26 +92,6 @@ func (s *Store) Upload(ctx context.Context, in UploadInput) (Attachment, error) 
 		return Attachment{}, ErrAttachmentTooLarge
 	}
 
-	// Checked before the insert rather than after, because the point is not
-	// to store the row at all. Two counts in one statement: how many are
-	// unattached, and how much the account holds altogether.
-	var pending int
-	var held int64
-	err := s.db.QueryRow(ctx,
-		`SELECT
-		   COUNT(CASE WHEN message_id IS NULL THEN 1 END),
-		   COALESCE(SUM(size), 0)
-		 FROM attachments WHERE user_id = ?`, in.UserID).Scan(&pending, &held)
-	if err != nil {
-		return Attachment{}, fmt.Errorf("conversation: attachment usage: %w", err)
-	}
-	if pending >= MaxPendingAttachments {
-		return Attachment{}, ErrTooManyPending
-	}
-	if held+int64(len(in.Data)) > MaxAttachmentBytesPerUser {
-		return Attachment{}, ErrAttachmentQuotaFull
-	}
-
 	record := Attachment{
 		ID:     id.New(),
 		Mime:   in.Mime,
@@ -120,13 +100,52 @@ func (s *Store) Upload(ctx context.Context, in UploadInput) (Attachment, error) 
 		Size:   len(in.Data),
 	}
 
-	_, err = s.db.Exec(ctx,
-		`INSERT INTO attachments (id, user_id, message_id, mime, width, height, size, data, created_at)
-		 VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
-		record.ID, in.UserID, record.Mime, record.Width, record.Height, record.Size,
-		in.Data, time.Now().UnixMilli())
+	// The limit check and insert must be one serialised operation. Without
+	// the account-row lock, a burst of parallel uploads can all observe the
+	// same old totals and each insert, bypassing both caps. A no-op UPDATE is
+	// portable between SQLite and Postgres and takes the per-account write
+	// lock until this transaction commits; unrelated users remain independent
+	// on Postgres, while SQLite already serialises writers at database level.
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		locked, err := tx.Exec(ctx,
+			`UPDATE users SET updated_at = updated_at WHERE id = ?`, in.UserID)
+		if err != nil {
+			return fmt.Errorf("conversation: lock attachment owner: %w", err)
+		}
+		if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
+			return fmt.Errorf("conversation: attachment owner does not exist")
+		}
+
+		// Checked before the insert rather than after, because the point is not
+		// to store the row at all. Two counts in one statement: how many are
+		// unattached, and how much the account holds altogether.
+		var pending int
+		var held int64
+		if err := tx.QueryRow(ctx,
+			`SELECT
+			   COUNT(CASE WHEN message_id IS NULL THEN 1 END),
+			   COALESCE(SUM(size), 0)
+			 FROM attachments WHERE user_id = ?`, in.UserID).Scan(&pending, &held); err != nil {
+			return fmt.Errorf("conversation: attachment usage: %w", err)
+		}
+		if pending >= MaxPendingAttachments {
+			return ErrTooManyPending
+		}
+		if held+int64(len(in.Data)) > MaxAttachmentBytesPerUser {
+			return ErrAttachmentQuotaFull
+		}
+
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO attachments (id, user_id, message_id, mime, width, height, size, data, created_at)
+			 VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+			record.ID, in.UserID, record.Mime, record.Width, record.Height, record.Size,
+			in.Data, time.Now().UnixMilli()); err != nil {
+			return fmt.Errorf("conversation: upload attachment: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return Attachment{}, fmt.Errorf("conversation: upload attachment: %w", err)
+		return Attachment{}, err
 	}
 	return record, nil
 }

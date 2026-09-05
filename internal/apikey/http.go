@@ -58,7 +58,8 @@ func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 }
 
 type createRequest struct {
-	Name string `json:"name"`
+	Name    string `json:"name"`
+	ModelID string `json:"model_id"`
 	// Epoch millis; zero or absent means the key does not expire.
 	ExpiresAt int64 `json:"expires_at"`
 }
@@ -84,7 +85,7 @@ func (h *Handlers) create(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	record, token, err := h.keys.Issue(r.Context(), account.ID, body.Name, body.ExpiresAt)
+	record, token, err := h.keys.Issue(r.Context(), account.ID, body.Name, body.ModelID, body.ExpiresAt)
 	if err != nil {
 		return translate(err)
 	}
@@ -93,6 +94,8 @@ func (h *Handlers) create(w http.ResponseWriter, r *http.Request) error {
 
 type updateRequest struct {
 	Name      *string `json:"name"`
+	Disabled  *bool   `json:"disabled"`
+	ModelID   *string `json:"model_id"`
 	ExpiresAt *int64  `json:"expires_at"`
 }
 
@@ -111,6 +114,8 @@ func (h *Handlers) update(w http.ResponseWriter, r *http.Request) error {
 
 	record, err := h.keys.Update(r.Context(), account.ID, keyID, Update{
 		Name:      body.Name,
+		Disabled:  body.Disabled,
+		ModelID:   body.ModelID,
 		ExpiresAt: body.ExpiresAt,
 	})
 	if err != nil {
@@ -143,6 +148,8 @@ func translate(err error) error {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return httpx.NotFound("No such key.")
+	case errors.Is(err, ErrPaused):
+		return httpx.Forbidden("This key is paused.")
 	case errors.Is(err, ErrInvalidName):
 		return httpx.BadRequest("Give the key a name of %d characters or fewer.", MaxNameChars)
 	case errors.Is(err, ErrPastExpiry):

@@ -12,9 +12,9 @@
 // pointless.
 //
 // There is exactly one assignment in the project — landing/landing-page.ts,
-// where an administrator's own markup is put at the front door — and it is
-// commented there with why it is contained. If a grep for innerHTML ever
-// returns a second one, that is the thing to look at.
+// where operator markup is parsed inside a detached template and rebuilt
+// from a strict allowlist before anything is attached. If a grep for
+// innerHTML ever returns a second one, that is the thing to look at.
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -204,12 +204,18 @@ export const ICONS = {
   chevronRight: ['m9 6 6 6-6 6'],
   trash: ['M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 14H6L5 6', 'M10 11v6', 'M14 11v6'],
   key: ['M15 7a5 5 0 1 1-4.5 7.2L9 15.7V18H6.5v2.5H3v-3.2l6.5-6.5A5 5 0 0 1 15 7Z', 'M16.5 10.5h.01'],
+  lock: [
+    'M19 11H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2Z',
+    'M7 11V7a5 5 0 0 1 10 0v4',
+  ],
   copy: ['M9 9h10v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V9Z', 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1'],
   paperclip: [
     'M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48',
   ],
   send: ['M12 19V5', 'M5 12l7-7 7 7'],
   stop: ['M7 7h10v10H7z'],
+  play: ['M5 3l14 9-14 9V3z'],
+  pause: ['M6 4h4v16H6z', 'M14 4h4v16h-4z'],
   sun: [
     'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z', 'M12 1v2', 'M12 21v2',
     'M4.22 4.22l1.42 1.42', 'M18.36 18.36l1.42 1.42', 'M1 12h2', 'M21 12h2',

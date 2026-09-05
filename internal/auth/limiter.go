@@ -27,6 +27,10 @@ type Limiter struct {
 
 type bucket struct {
 	failures int
+	// Attempts that passed the gate but have not finished password hashing.
+	// Counting them closes the burst where many requests all call Allow
+	// before any one of them has had time to call Fail.
+	inFlight int
 	// When the next attempt is permitted. Zero means "now".
 	blockedUntil time.Time
 	lastFailure  time.Time
@@ -49,6 +53,63 @@ func NewLimiter() *Limiter {
 	return &Limiter{buckets: map[string]*bucket{}, lastSwept: time.Now()}
 }
 
+type attemptOutcome int
+
+const (
+	attemptCancelled attemptOutcome = iota
+	attemptFailed
+	attemptSucceeded
+)
+
+// loginAttempt is the reservation made before password hashing begins.
+// finish is idempotent so an explicit outcome and a deferred cancellation can
+// safely coexist on every return path through Login.
+type loginAttempt struct {
+	limiter *Limiter
+	keys    []string
+	once    sync.Once
+}
+
+func (a *loginAttempt) finish(outcome attemptOutcome) {
+	if a == nil || a.limiter == nil {
+		return
+	}
+	a.once.Do(func() {
+		now := time.Now()
+		a.limiter.mu.Lock()
+		defer a.limiter.mu.Unlock()
+
+		for _, key := range a.keys {
+			entry := a.limiter.buckets[key]
+			if entry == nil {
+				continue
+			}
+			if entry.inFlight > 0 {
+				entry.inFlight--
+			}
+
+			switch outcome {
+			case attemptFailed:
+				entry.failures++
+				entry.lastFailure = now
+				if entry.failures > freeAttempts {
+					entry.blockedUntil = now.Add(backoff(entry.failures - freeAttempts))
+				}
+			case attemptSucceeded:
+				// A successful credential clears old failures, but attempts that
+				// are still running keep the bucket alive and will record their
+				// own result afterwards.
+				entry.failures = 0
+				entry.blockedUntil = time.Time{}
+			}
+
+			if entry.inFlight == 0 && entry.failures == 0 {
+				delete(a.limiter.buckets, key)
+			}
+		}
+	})
+}
+
 // RateLimitError carries how long the caller must wait, so the handler can
 // send a Retry-After the client can act on.
 type RateLimitError struct{ RetryAfter time.Duration }
@@ -57,54 +118,43 @@ func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("too many attempts; try again in %s", e.RetryAfter.Round(time.Second))
 }
 
-// Allow reports whether an attempt may proceed.
-func (l *Limiter) Allow(ip, identifier string) error {
+// Begin reports whether an attempt may proceed and, when it may, reserves a
+// place before the expensive password verification starts.
+func (l *Limiter) Begin(ip, identifier string) (*loginAttempt, error) {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.sweepLocked(now)
 
-	for _, key := range keys(ip, identifier) {
+	attemptKeys := keys(ip, identifier)
+	for _, key := range attemptKeys {
 		entry := l.buckets[key]
 		if entry == nil {
 			continue
 		}
 		if wait := entry.blockedUntil.Sub(now); wait > 0 {
-			return &RateLimitError{RetryAfter: wait}
+			return nil, &RateLimitError{RetryAfter: wait}
+		}
+		// Sequential behaviour permits the sixth try and blocks after it
+		// fails. Parallel requests get the same allowance, not an unlimited
+		// wave that happened to arrive before the first hash completed.
+		if entry.failures+entry.inFlight > freeAttempts {
+			return nil, &RateLimitError{RetryAfter: time.Second}
 		}
 	}
-	return nil
-}
 
-// Fail records a rejected attempt and lengthens the wait for the next one.
-func (l *Limiter) Fail(ip, identifier string) {
-	now := time.Now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.sweepLocked(now)
-
-	for _, key := range keys(ip, identifier) {
+	for _, key := range attemptKeys {
 		entry := l.buckets[key]
 		if entry == nil {
 			entry = &bucket{}
 			l.buckets[key] = entry
 		}
-		entry.failures++
+		entry.inFlight++
+		// Also serves as last activity for the sweeper while this attempt is
+		// waiting for an Argon2 slot.
 		entry.lastFailure = now
-		if entry.failures > freeAttempts {
-			entry.blockedUntil = now.Add(backoff(entry.failures - freeAttempts))
-		}
 	}
-}
-
-// Reset clears the counters after a successful login, so a person who
-// eventually remembers their password is not still serving a penalty.
-func (l *Limiter) Reset(ip, identifier string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, key := range keys(ip, identifier) {
-		delete(l.buckets, key)
-	}
+	return &loginAttempt{limiter: l, keys: attemptKeys}, nil
 }
 
 // 1s, 2s, 4s, 8s … capped. Doubling is what makes an online guessing attack
@@ -123,7 +173,7 @@ func (l *Limiter) sweepLocked(now time.Time) {
 	}
 	l.lastSwept = now
 	for key, entry := range l.buckets {
-		if now.Sub(entry.lastFailure) > bucketTTL && now.After(entry.blockedUntil) {
+		if entry.inFlight == 0 && now.Sub(entry.lastFailure) > bucketTTL && now.After(entry.blockedUntil) {
 			delete(l.buckets, key)
 		}
 	}

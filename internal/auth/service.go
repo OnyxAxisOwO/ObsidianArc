@@ -135,6 +135,19 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		verification string
 	)
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		// Serialise the decision about who is first across processes as well
+		// as goroutines. Under Postgres' default isolation, two fresh-instance
+		// registrations can otherwise both count zero users and both become
+		// administrators. Upserting one known settings row takes the same row
+		// lock on both supported databases without changing its value.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+			 ON CONFLICT (key) DO UPDATE SET updated_at = settings.updated_at`,
+			settings.RegistrationEnabled, settings.Defaults[settings.RegistrationEnabled],
+			time.Now().UnixMilli()); err != nil {
+			return fmt.Errorf("auth: lock registration: %w", err)
+		}
+
 		total, err := s.users.Count(ctx, tx)
 		if err != nil {
 			return err
@@ -205,15 +218,15 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 				return err
 			}
 		}
+		// Record while the registration lock is still held. Putting this
+		// after commit leaves a scheduling gap in which the next queued
+		// registration can pass the throttle before this one is visible.
+		s.signups.record()
 		return nil
 	})
 	if err != nil {
 		return user.User{}, "", err
 	}
-
-	// Counted only once the account exists, so a rejected attempt does
-	// not spend the next person's place in the window.
-	s.signups.record()
 
 	// Mailed on a detached context: a briefly unreachable SMTP server must
 	// not fail a registration that has already been written, and the person
@@ -273,15 +286,19 @@ type LoginInput struct {
 // pays for a full Argon2id verification, so neither the message nor the
 // timing distinguishes "no such user" from "wrong password".
 func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, error) {
-	if err := s.limiter.Allow(in.IP, in.Identifier); err != nil {
+	attempt, err := s.limiter.Begin(in.IP, in.Identifier)
+	if err != nil {
 		return user.User{}, "", err
 	}
+	// Internal errors and cancellation are neither a wrong password nor a
+	// success. Explicit outcomes below win because finish is idempotent.
+	defer attempt.finish(attemptCancelled)
 
 	account, hash, err := s.users.CredentialsByLogin(ctx, in.Identifier)
 	if err != nil {
 		if errors.Is(err, user.ErrNotFound) {
 			s.hasher.DummyVerify(ctx, in.Password)
-			s.limiter.Fail(in.IP, in.Identifier)
+			attempt.finish(attemptFailed)
 			return user.User{}, "", ErrInvalidCredentials
 		}
 		return user.User{}, "", err
@@ -292,7 +309,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 		return user.User{}, "", err
 	}
 	if !ok {
-		s.limiter.Fail(in.IP, in.Identifier)
+		attempt.finish(attemptFailed)
 		return user.User{}, "", ErrInvalidCredentials
 	}
 
@@ -302,7 +319,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 		return user.User{}, "", ErrAccountDisabled
 	}
 
-	s.limiter.Reset(in.IP, in.Identifier)
+	attempt.finish(attemptSucceeded)
 
 	if needsRehash {
 		if upgraded, hashErr := s.hasher.Hash(ctx, in.Password); hashErr == nil {

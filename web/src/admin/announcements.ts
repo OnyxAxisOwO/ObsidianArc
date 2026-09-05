@@ -33,15 +33,16 @@ export async function renderAnnouncements(view: AdminView): Promise<void> {
   view.body.appendChild(renderTable({
     columns: [
       { header: t('colTitle'), cell: (row) => stacked(row.title, bodyPreview(row.body)) },
-      { header: t('colAppears'), cell: (row) => badge(displayModeLabel(row.display_mode), 'muted') },
+      { header: t('colAppears'), cell: (row) => badge(displayModeLabel(row.display_mode), 'muted'), width: '130px' },
       {
         header: t('colState2'),
         cell: (row) => badges(
           !row.published ? badge(t('draftBadge'), 'danger') : null,
           row.pinned ? badge(t('pinnedBadge'), 'muted') : null,
         ),
+        width: '120px',
       },
-      { header: t('colUpdated'), cell: (row) => relativeTime(row.updated_at), secondary: true },
+      { header: t('colUpdated'), cell: (row) => relativeTime(row.updated_at), secondary: true, width: '110px' },
     ],
     rows: announcements,
     empty: t('announcementsEmpty'),
@@ -154,7 +155,7 @@ function editAnnouncement(view: AdminView, existing: Announcement | null): void 
     },
   });
 
-  title.focus();
+  title.focus({ preventScroll: true });
 }
 
 async function removeAnnouncement(view: AdminView, announcement: Announcement, panel: PanelHandle): Promise<void> {

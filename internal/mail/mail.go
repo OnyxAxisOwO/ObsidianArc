@@ -22,7 +22,10 @@ import (
 	"time"
 )
 
-var ErrNotConfigured = errors.New("mail: no SMTP host is configured")
+var (
+	ErrNotConfigured = errors.New("mail: no SMTP host is configured")
+	ErrTLSRequired   = errors.New("mail: SMTP server does not offer STARTTLS")
+)
 
 // Config is what an operator supplies through the environment. Credentials do
 // not belong in the settings table: it is served to the admin screen, and a
@@ -126,10 +129,15 @@ func (s *Sender) Send(ctx context.Context, message Message) error {
 	defer func() { _ = client.Close() }()
 
 	if !s.cfg.ImplicitTLS {
-		if ok, _ := client.Extension("STARTTLS"); ok {
-			if err := client.StartTLS(&tls.Config{ServerName: s.cfg.Host}); err != nil {
-				return fmt.Errorf("mail: starttls: %w", err)
-			}
+		// Verification links and SMTP credentials are secrets in transit.
+		// Silently continuing when a relay omits STARTTLS turns a downgrade or
+		// a configuration mistake into plaintext mail. Port 465 is protected
+		// from the first byte above; every other connection must upgrade.
+		if ok, _ := client.Extension("STARTTLS"); !ok {
+			return ErrTLSRequired
+		}
+		if err := client.StartTLS(&tls.Config{ServerName: s.cfg.Host}); err != nil {
+			return fmt.Errorf("mail: starttls: %w", err)
 		}
 	}
 

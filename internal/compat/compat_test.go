@@ -188,11 +188,11 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	keys := apikey.NewStore(db)
-	_, token, err := keys.Issue(ctx, account.ID, "test", 0)
+	_, token, err := keys.Issue(ctx, account.ID, "test", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, adminToken, err := keys.Issue(ctx, administrator.ID, "root", 0)
+	_, adminToken, err := keys.Issue(ctx, administrator.ID, "root", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -878,5 +878,89 @@ func TestReasoningEffortMapsOntoTheNeutralControl(t *testing.T) {
 	}
 	if _, ok := parseEffort("enormous"); ok {
 		t.Error("an unknown effort was accepted")
+	}
+}
+
+func TestPausedKeyIsRefused(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	keyRecord, pausedToken, err := f.keys.Issue(ctx, f.account.ID, "paused-key", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paused := true
+	if _, err := f.keys.Update(ctx, f.account.ID, keyRecord.ID, apikey.Update{Disabled: &paused}); err != nil {
+		t.Fatal(err)
+	}
+
+	res := f.do(t, http.MethodPost, "/v1/chat/completions", pausedToken,
+		`{"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}`)
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 Unauthorized", res.Code)
+	}
+	var errResp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&errResp); err != nil {
+		t.Fatal(err)
+	}
+	if errResp.Error.Code != "api_key_paused" {
+		t.Errorf("error.code = %q, want api_key_paused", errResp.Error.Code)
+	}
+}
+
+func TestKeyModelRestrictionEnforced(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	_, restrictedToken, err := f.keys.Issue(ctx, f.account.ID, "restricted-key", f.model.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Calling with the allowed model succeeds
+	res := f.do(t, http.MethodPost, "/v1/chat/completions", restrictedToken,
+		fmt.Sprintf(`{"model": "%s", "messages": [{"role": "user", "content": "hi"}]}`, f.model.ID))
+	if res.Code != http.StatusOK {
+		t.Fatalf("request with allowed model failed: code = %d, body = %s", res.Code, res.Body.String())
+	}
+
+	// 2. Calling with an unauthorized model fails with 403 model_not_permitted
+	res2 := f.do(t, http.MethodPost, "/v1/chat/completions", restrictedToken,
+		`{"model": "other-model", "messages": [{"role": "user", "content": "hi"}]}`)
+	if res2.Code != http.StatusForbidden {
+		t.Fatalf("request with unauthorized model gave code = %d, want 403 Forbidden", res2.Code)
+	}
+	var errResp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res2.Body).Decode(&errResp); err != nil {
+		t.Fatal(err)
+	}
+	if errResp.Error.Code != "model_not_permitted" {
+		t.Errorf("error.code = %q, want model_not_permitted", errResp.Error.Code)
+	}
+
+	// 3. Listing models returns only the restricted model
+	res3 := f.do(t, http.MethodGet, "/v1/models", restrictedToken, "")
+	if res3.Code != http.StatusOK {
+		t.Fatalf("list models failed: code = %d, body = %s", res3.Code, res3.Body.String())
+	}
+	var modelsResp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(res3.Body).Decode(&modelsResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(modelsResp.Data) != 1 || modelsResp.Data[0].ID != f.model.ID {
+		t.Errorf("got models %v, want exactly 1 model with ID %q", modelsResp.Data, f.model.ID)
 	}
 }

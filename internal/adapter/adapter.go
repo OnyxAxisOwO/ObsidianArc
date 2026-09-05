@@ -250,6 +250,15 @@ func NewRegistry(cfg config.Upstream) *Registry {
 	return &Registry{
 		client: &http.Client{
 			Transport: transport,
+			// A provider request carries a bearer credential. Following a
+			// redirect would copy it to the redirect target when Go considers
+			// the hosts related (and non-standard credentials such as X-Api-Key
+			// have even fewer built-in protections). Provider API endpoints are
+			// expected to be final URLs, so make every redirect an ordinary
+			// upstream response instead of a credential-forwarding hop.
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 			// No client-level Timeout: it would cut a long streamed answer
 			// off mid-sentence. The request context is the deadline, and it
 			// is cancelled when the browser goes away.

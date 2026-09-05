@@ -72,21 +72,11 @@ function themeIcon(): readonly string[] {
   return mode === 'dark' ? ICONS.moon : mode === 'light' ? ICONS.sun : ICONS.auto;
 }
 
-/**
- * The operator's own page.
- *
- * Their HTML, inserted as HTML — this is the one place in the project that
- * does that, and it is a deliberate exception rather than an oversight. Only
- * an administrator can write it, and an administrator already controls the
- * server; nothing is escalated by letting them write markup. Script in it does
- * not run regardless: the page's content policy allows scripts only from
- * 'self' plus one hash, so an inline <script> here is blocked by the browser
- * rather than by trust.
- */
+/** The operator's page, reduced to inert formatting before it reaches DOM. */
 function intro(html: string, description: string): HTMLElement {
   const card = el('div', 'oa-landing-intro');
   if (html.trim()) {
-    card.innerHTML = html;
+    card.appendChild(safeIntro(html));
     return card;
   }
   // Nothing written yet: say what the instance is, from the setting the
@@ -94,6 +84,71 @@ function intro(html: string, description: string): HTMLElement {
   card.appendChild(el('h1', 'oa-landing-title', t('welcomeBack')));
   if (description) card.appendChild(el('p', 'oa-landing-sub', description));
   return card;
+}
+
+// An administrator can manage accounts but is not necessarily the machine's
+// owner. Raw HTML would let a compromised admin account persist a fake login
+// form or full-page <style> overlay even though CSP blocks script. Parse it in
+// a detached template and rebuild only ordinary document structure, with no
+// style, event, form, media, id, class, or data-bearing attributes.
+const introTags = new Set([
+  'A', 'ABBR', 'ARTICLE', 'ASIDE', 'B', 'BLOCKQUOTE', 'BR', 'CODE', 'DD',
+  'DEL', 'DETAILS', 'DIV', 'DL', 'DT', 'EM', 'FIGCAPTION', 'FIGURE', 'FOOTER',
+  'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER', 'HR', 'I', 'INS', 'KBD', 'LI',
+  'MAIN', 'MARK', 'NAV', 'OL', 'P', 'PRE', 'Q', 'S', 'SAMP', 'SECTION', 'SMALL',
+  'SPAN', 'STRONG', 'SUB', 'SUMMARY', 'SUP', 'TABLE', 'TBODY', 'TD', 'TFOOT',
+  'TH', 'THEAD', 'TIME', 'TR', 'U', 'UL', 'VAR',
+]);
+
+const droppedIntroTrees = new Set([
+  'AUDIO', 'BASE', 'BUTTON', 'CANVAS', 'EMBED', 'FORM', 'IFRAME', 'IMG', 'INPUT',
+  'LINK', 'MATH', 'META', 'NOSCRIPT', 'OBJECT', 'OPTION', 'SCRIPT', 'SELECT',
+  'SOURCE', 'STYLE', 'SVG', 'TEMPLATE', 'TEXTAREA', 'TRACK', 'VIDEO',
+]);
+
+function safeIntro(html: string): DocumentFragment {
+  const source = document.createElement('template');
+  source.innerHTML = html;
+  const result = document.createDocumentFragment();
+  copySafeIntroChildren(source.content, result);
+  return result;
+}
+
+function copySafeIntroChildren(source: Node, target: Node): void {
+  for (const child of source.childNodes) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      target.appendChild(document.createTextNode(child.textContent ?? ''));
+      continue;
+    }
+    if (!(child instanceof Element)) continue;
+    if (droppedIntroTrees.has(child.tagName)) continue;
+    if (!introTags.has(child.tagName)) {
+      copySafeIntroChildren(child, target);
+      continue;
+    }
+
+    const clean = document.createElement(child.tagName.toLowerCase());
+    if (child.tagName === 'A') copySafeLink(child, clean);
+    copySafeIntroChildren(child, clean);
+    target.appendChild(clean);
+  }
+}
+
+function copySafeLink(source: Element, target: HTMLElement): void {
+  const href = source.getAttribute('href');
+  if (href) {
+    try {
+      const protocol = new URL(href, window.location.href).protocol;
+      if (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:' || protocol === 'tel:') {
+        target.setAttribute('href', href);
+      }
+    } catch {
+      // A malformed link remains text.
+    }
+  }
+  const title = source.getAttribute('title');
+  if (title) target.setAttribute('title', title);
+  target.setAttribute('rel', 'noopener noreferrer');
 }
 
 function trial(enabled: boolean, allowance: number, canRegister: boolean): HTMLElement {

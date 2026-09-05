@@ -100,7 +100,10 @@ func run() error {
 		ReadHeaderTimeout: 15 * time.Second,
 		ReadTimeout:       5 * time.Minute,
 		IdleTimeout:       120 * time.Second,
-		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
+		// The default is 1 MiB, far beyond every credential and header this
+		// API accepts. A smaller ceiling bounds anonymous header-memory abuse.
+		MaxHeaderBytes: 64 << 10,
+		ErrorLog:       slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
 	}
 
 	shutdown := make(chan os.Signal, 1)

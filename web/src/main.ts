@@ -6,6 +6,7 @@ import './styles/admin.css';
 
 import { renderAboutPage } from './about/about-page';
 import { renderAuthPage } from './auth/auth-page';
+import { showUnauthorizedModal } from './auth/unauthorized-modal';
 import { renderVerifyPage } from './auth/verify-page';
 import { renderAdminPage } from './admin/admin-page';
 import { renderChatPage } from './chat/chat-page';
@@ -80,7 +81,7 @@ function frontDoor(target: HTMLElement): void {
 function adminOnly(render: Route['render']): Route['render'] {
   return (target, ctx) => {
     if (!isAdmin()) {
-      notice(target, t('notAvailable'), t('noAdminAccess'));
+      showUnauthorizedModal(target);
       return;
     }
     return render(target, ctx);

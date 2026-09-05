@@ -125,35 +125,48 @@ func (s *Store) Middleware(clientIP func(*http.Request) string, skip func(*http.
 			ctx := context.WithValue(r.Context(), noteKey, current)
 			rec := &recorder{ResponseWriter: w, status: http.StatusOK}
 
+			// A panic unwinds through this layer before the outer recovery
+			// middleware renders its 500. Recording in a defer keeps the audit
+			// trail complete and marks the response as failed rather than losing
+			// precisely the request most worth investigating.
+			defer func() {
+				panicked := recover()
+				if panicked != nil {
+					rec.status = http.StatusInternalServerError
+				}
+
+				address := ""
+				if clientIP != nil {
+					address = clientIP(r)
+				}
+
+				current.mu.Lock()
+				annotated := current.Annotation
+				current.mu.Unlock()
+
+				s.Record(Entry{
+					At:         started.UnixMilli(),
+					Method:     r.Method,
+					Path:       r.URL.Path,
+					Status:     rec.status,
+					DurationMS: time.Since(started).Milliseconds(),
+					Bytes:      rec.written,
+					UserID:     annotated.UserID,
+					Username:   annotated.Username,
+					Channel:    annotated.Channel,
+					IP:         address,
+					UserAgent:  r.UserAgent(),
+					RequestID:  httpx.RequestIDFrom(ctx),
+					ModelID:    annotated.ModelID,
+					ModelName:  annotated.ModelName,
+					ErrorCode:  annotated.ErrorCode,
+				})
+				if panicked != nil {
+					panic(panicked)
+				}
+			}()
+
 			next.ServeHTTP(rec, r.WithContext(ctx))
-
-			address := ""
-			if clientIP != nil {
-				address = clientIP(r)
-			}
-
-			current.mu.Lock()
-			annotated := current.Annotation
-			current.mu.Unlock()
-
-			entry := Entry{
-				At:         started.UnixMilli(),
-				Method:     r.Method,
-				Path:       r.URL.Path,
-				Status:     rec.status,
-				DurationMS: time.Since(started).Milliseconds(),
-				Bytes:      rec.written,
-				UserID:     annotated.UserID,
-				Username:   annotated.Username,
-				Channel:    annotated.Channel,
-				IP:         address,
-				UserAgent:  r.UserAgent(),
-				RequestID:  httpx.RequestIDFrom(ctx),
-				ModelID:    annotated.ModelID,
-				ModelName:  annotated.ModelName,
-				ErrorCode:  annotated.ErrorCode,
-			}
-			s.Record(entry)
 		})
 	}
 }

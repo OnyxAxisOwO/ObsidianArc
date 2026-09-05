@@ -55,15 +55,16 @@ export async function renderGroups(view: AdminView): Promise<void> {
   view.body.appendChild(renderTable({
     columns: [
       { header: t('colGroup'), cell: (row) => stacked(row.name, row.description || undefined) },
-      { header: t('colMembers'), cell: (row) => String(row.members), numeric: true },
+      { header: t('colMembers'), cell: (row) => String(row.members), numeric: true, width: '80px' },
       {
         header: t('colModels'),
         cell: (row) => (row.allow_all_models
           ? badge(t('allModels'), 'muted')
           : badge(t('nAllowed', { count: row.model_ids.length }), 'muted')),
+        width: '130px',
       },
-      { header: t('colLimits'), cell: (row) => limitSummary(policyFor(row.id)), secondary: true },
-      { header: '', cell: (row) => (row.is_default ? badge(t('defaultBadge')) : el('span')) },
+      { header: t('colLimits'), cell: (row) => limitSummary(policyFor(row.id)), secondary: true, width: '130px' },
+      { header: '', cell: (row) => (row.is_default ? badge(t('defaultBadge')) : el('span')), width: '90px' },
     ],
     rows: groups,
     empty: t('noGroups'),
@@ -256,7 +257,7 @@ function editGroup(
     },
   });
 
-  name.focus();
+  name.focus({ preventScroll: true });
 }
 
 async function removeGroup(view: AdminView, group: Group, panel: PanelHandle): Promise<void> {

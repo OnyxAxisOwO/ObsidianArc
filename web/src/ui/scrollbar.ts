@@ -144,7 +144,7 @@ export function attachOverlayScrollbar(
     if (target.firstElementChild) {
       resizeObserver?.observe(target.firstElementChild);
     }
-    mutationObserver?.observe(target, { childList: true, subtree: true, attributes: true });
+    mutationObserver?.observe(target, { childList: true, subtree: true });
   }
 
   observeTarget(scrollEl);

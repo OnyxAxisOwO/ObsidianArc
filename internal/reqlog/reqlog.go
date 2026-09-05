@@ -70,6 +70,15 @@ const (
 	// How long a partial batch waits for company before being written. Short
 	// enough that the log is current when an operator looks at it.
 	flushEvery = 2 * time.Second
+	// An audit trail must not be an unauthenticated disk-filling primitive.
+	// The newest entries are retained and older ones are evicted once this
+	// ceiling is reached. At the current row shape this keeps the log in the
+	// low hundreds of megabytes even under sustained hostile traffic.
+	MaxStoredEntries = 200_000
+	// Checking the cap requires walking the time index to its boundary. Do it
+	// on the first write after boot, then once per several thousand rows rather
+	// than turning every batch into a full-cap scan.
+	trimEveryBatches = 50
 
 	MaxPathChars      = 300
 	MaxUserAgentChars = 200
@@ -82,10 +91,17 @@ type Store struct {
 	// administration screen rather than hidden: a log with a gap in it should
 	// say so.
 	dropped atomic.Int64
+	// Old entries deliberately removed to hold MaxStoredEntries. Kept apart
+	// from dropped: one is backpressure, the other is retention.
+	evicted atomic.Int64
+	writes  atomic.Int64
+	// Overridden only by tests so the cap can be exercised without creating
+	// hundreds of thousands of rows.
+	maxEntries int
 }
 
 func NewStore(db *database.DB) *Store {
-	return &Store{db: db, entries: make(chan Entry, bufferSize)}
+	return &Store{db: db, entries: make(chan Entry, bufferSize), maxEntries: MaxStoredEntries}
 }
 
 // Record queues an entry. It never blocks and never fails: a request must not
@@ -104,6 +120,10 @@ func (s *Store) Record(entry Entry) {
 
 // Dropped is how many entries were lost to a full buffer since boot.
 func (s *Store) Dropped() int64 { return s.dropped.Load() }
+
+// Evicted is how many old rows were removed by the hard storage ceiling
+// since boot. The administration API exposes it so retention is never silent.
+func (s *Store) Evicted() int64 { return s.evicted.Load() }
 
 // Run drains the queue until the context ends, then writes whatever is left.
 //
@@ -180,10 +200,43 @@ func (s *Store) write(ctx context.Context, batch []Entry) error {
 			entry.ModelID, entry.ModelName, entry.ErrorCode)
 	}
 
-	_, err := s.db.Exec(ctx,
-		`INSERT INTO request_log (`+columns+`) VALUES `+strings.Join(placeholders, ", "), args...)
+	trim := s.writes.Add(1)%trimEveryBatches == 1
+	var evicted int64
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO request_log (`+columns+`) VALUES `+strings.Join(placeholders, ", "), args...); err != nil {
+			return fmt.Errorf("reqlog: write %d entries: %w", len(batch), err)
+		}
+
+		if !trim || s.maxEntries <= 0 {
+			return nil
+		}
+
+		// The row just beyond the retained window gives a timestamp cutoff.
+		// Removing the whole timestamp may retain slightly fewer than the cap
+		// when many requests land in one millisecond, but can never retain more.
+		var cutoff int64
+		err := tx.QueryRow(ctx,
+			`SELECT at FROM request_log ORDER BY at DESC LIMIT 1 OFFSET ?`,
+			s.maxEntries).Scan(&cutoff)
+		if database.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("reqlog: find retention boundary: %w", err)
+		}
+		result, err := tx.Exec(ctx, `DELETE FROM request_log WHERE at <= ?`, cutoff)
+		if err != nil {
+			return fmt.Errorf("reqlog: enforce storage ceiling: %w", err)
+		}
+		evicted, _ = result.RowsAffected()
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("reqlog: write %d entries: %w", len(batch), err)
+		return err
+	}
+	if evicted > 0 {
+		s.evicted.Add(evicted)
 	}
 	return nil
 }

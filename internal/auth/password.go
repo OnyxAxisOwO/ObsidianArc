@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 
@@ -24,8 +25,10 @@ import (
 // the process down, turning the password defence into a denial-of-service
 // vector. Hashes queue instead.
 type Hasher struct {
-	params config.Password
-	slots  chan struct{}
+	params     config.Password
+	slots      chan struct{}
+	dummyOnce  sync.Once
+	dummyValue string
 }
 
 func NewHasher(params config.Password) *Hasher {
@@ -130,26 +133,20 @@ func (h *Hasher) DummyVerify(ctx context.Context, password string) {
 	_, _, _ = h.Verify(ctx, h.dummy(), password)
 }
 
-// Generated once, lazily, so the cost is paid on the first failed login
-// rather than at every boot.
-var dummyOnce struct {
-	value string
-	done  bool
-}
-
 func (h *Hasher) dummy() string {
-	if dummyOnce.done {
-		return dummyOnce.value
-	}
-	value, err := h.Hash(context.Background(), "obsidian-arc-timing-equaliser")
-	if err != nil {
-		// Cannot happen with a fixed valid password; fall back to a shape
-		// that parses so Verify still does the work.
-		value = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-	}
-	dummyOnce.value = value
-	dummyOnce.done = true
-	return value
+	// Per hasher, not package-global: concurrent unknown-user attempts must
+	// not race while initialising it, and a second service with different
+	// Argon2 parameters must not inherit a cheaper timing equaliser.
+	h.dummyOnce.Do(func() {
+		value, err := h.Hash(context.Background(), "obsidian-arc-timing-equaliser")
+		if err != nil {
+			// Cannot happen with a fixed valid password; fall back to a shape
+			// that parses so Verify still does the work.
+			value = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+		}
+		h.dummyValue = value
+	})
+	return h.dummyValue
 }
 
 func (h *Hasher) acquire(ctx context.Context) error {

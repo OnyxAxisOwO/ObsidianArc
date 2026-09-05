@@ -2,6 +2,7 @@ package reqlog
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -229,6 +230,31 @@ func TestPruneOnlyRemovesWhatIsAskedFor(t *testing.T) {
 	}
 }
 
+func TestStorageCeilingKeepsNewestEntries(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	store.maxEntries = 3
+
+	for i := 1; i <= 5; i++ {
+		store.Record(Entry{At: int64(i), Method: "GET", Path: fmt.Sprintf("/%d", i), Status: 200})
+	}
+	store.drain(t)
+
+	entries, total, err := store.List(ctx, Filter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(entries) != 3 {
+		t.Fatalf("retained %d rows (%d returned), want 3", total, len(entries))
+	}
+	if entries[0].Path != "/5" || entries[2].Path != "/3" {
+		t.Fatalf("retained wrong side of the log: %+v", entries)
+	}
+	if store.Evicted() != 2 {
+		t.Fatalf("reported %d evictions, want 2", store.Evicted())
+	}
+}
+
 // --- the middleware ------------------------------------------------------------
 
 func TestMiddlewareRecordsWhatHappened(t *testing.T) {
@@ -332,5 +358,28 @@ func TestTheWrapperStaysFlushable(t *testing.T) {
 
 	if !flushed {
 		t.Error("the wrapped writer could not be flushed, which would break streaming")
+	}
+}
+
+func TestMiddlewareRecordsPanicsBeforeRecovery(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	panicHandler := store.Middleware(nil, nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("simulated handler failure")
+	}))
+	recovered := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() { _ = recover() }()
+		panicHandler.ServeHTTP(w, r)
+	})
+	recovered.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/explode", nil))
+	store.drain(t)
+
+	entries, _, err := store.List(ctx, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Status != http.StatusInternalServerError {
+		t.Fatalf("panic entry = %+v, want one 500", entries)
 	}
 }

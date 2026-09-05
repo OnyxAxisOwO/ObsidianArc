@@ -205,9 +205,19 @@ func SecurityHeaders(dev bool, scriptHashes []string) Middleware {
 			header := w.Header()
 			header.Set("Content-Security-Policy", policy)
 			header.Set("X-Content-Type-Options", "nosniff")
-			header.Set("Referrer-Policy", "same-origin")
+			// Verification links carry a one-time secret in their query string.
+			// Never copy the current URL into a Referer header, even for a
+			// same-origin asset or API request.
+			header.Set("Referrer-Policy", "no-referrer")
 			header.Set("X-Frame-Options", "DENY")
 			header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+			// Cookie-authenticated GET responses are not protected by the
+			// Authorization-header cache rules. Make the default safe for
+			// conversations, account details, admin data, and generated output.
+			// File handlers that intentionally permit private caching overwrite it.
+			if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/v1/") {
+				header.Set("Cache-Control", "no-store")
+			}
 			if !dev {
 				header.Set("Strict-Transport-Security", "max-age=31536000")
 			}

@@ -8,11 +8,12 @@
 // and no way to recover one that was not copied. That makes the moment of
 // creation the whole design: the new token is shown in a panel of its own,
 // selected and ready to copy, with the warning next to it rather than after
-// it. Everything else here — renaming, re-expiring, revoking — is
-// housekeeping on rows that no longer contain a secret.
+// it. Everything else here — renaming, re-expiring, pausing, model restrictions,
+// revoking — is housekeeping on rows that no longer contain a secret.
 
-import { ApiError } from '../api/client';
+import { api, ApiError } from '../api/client';
 import { createKey, deleteKey, listKeys, updateKey, type ApiKey } from '../api/keys';
+import type { AvailableModel } from '../chat/model-picker';
 import { renderChatPage } from '../chat/chat-page';
 import { t } from '../i18n';
 import { navigate } from '../router';
@@ -41,6 +42,7 @@ export function renderKeysPage(root: HTMLElement): void {
   const host = renderChatPage(root);
 
   let keys: ApiKey[] = [];
+  let models: AvailableModel[] = [];
   let enabled = false;
   let max = 0;
   let loaded = false;
@@ -78,16 +80,26 @@ export function renderKeysPage(root: HTMLElement): void {
 
   async function refresh(): Promise<void> {
     try {
-      const result = await listKeys();
+      const [result, modelsRes] = await Promise.all([
+        listKeys(),
+        api.get<{ models: AvailableModel[] }>('/api/models').catch(() => ({ models: [] })),
+      ]);
       keys = result.keys;
       enabled = result.enabled;
       max = result.max;
+      models = modelsRes.models ?? [];
     } catch (error) {
       panel.setError(error instanceof ApiError ? error.message : t('failed'));
     } finally {
       loaded = true;
       panel.rebuild();
     }
+  }
+
+  function getModelName(id: string): string {
+    const found = models.find((m) => m.id === id);
+    if (found) return found.display_name || found.id;
+    return id;
   }
 
   // --- sections ---------------------------------------------------------------
@@ -108,18 +120,32 @@ export function renderKeysPage(root: HTMLElement): void {
       options: LIFETIMES.map((entry) => ({ value: String(entry.days), label: t(entry.label) })),
     });
 
+    const modelOptions = [
+      { value: '', label: t('keyModelAll') },
+      ...models.map((m) => ({
+        value: m.id,
+        label: m.display_name ? `${m.display_name} (${m.provider_name})` : m.id,
+      })),
+    ];
+    const modelSelect = selectField({
+      label: t('keyModel'),
+      value: '',
+      options: modelOptions,
+    });
+
     const submit = button('oa-btn primary', t('keyCreate'), () => {
-      const label = name.value();
+      const label = name.value().trim();
       if (!label) {
         handle.setError(t('keyNameRequired'));
         name.focus();
         return;
       }
       const days = Number(lifetime.value());
+      const modelId = modelSelect.value();
       submit.disabled = true;
       handle.setBusy(true);
 
-      void createKey(label, days > 0 ? Date.now() + days * DAY_MS : 0)
+      void createKey(label, days > 0 ? Date.now() + days * DAY_MS : 0, modelId)
         .then((result) => {
           issued = result;
           return refresh();
@@ -133,6 +159,8 @@ export function renderKeysPage(root: HTMLElement): void {
 
     wrap.appendChild(name.element);
     wrap.appendChild(lifetime.element);
+    wrap.appendChild(modelSelect.element);
+    wrap.appendChild(el('p', 'oa-field-hint oa-key-field-hint', t('keyModelHint')));
     wrap.appendChild(submit);
     return wrap;
   }
@@ -147,22 +175,37 @@ export function renderKeysPage(root: HTMLElement): void {
     }
 
     const list = el('div', 'oa-keys-list');
-    for (const row of rows) list.appendChild(keyRow(handle, row));
+    rows.forEach((row, index) => {
+      list.appendChild(keyRow(handle, row, index));
+    });
     wrap.appendChild(list);
     return wrap;
   }
 
-  function keyRow(handle: PanelHandle, row: ApiKey): HTMLElement {
-    const item = el('div', 'oa-key-row');
+  function keyRow(handle: PanelHandle, row: ApiKey, index: number): HTMLElement {
+    const item = el('div', row.disabled ? 'oa-key-row oa-key-row-paused' : 'oa-key-row');
+    item.style.setProperty('--item-idx', String(index));
 
     const info = el('div', 'oa-key-info');
     const title = el('div', 'oa-key-title');
     title.appendChild(el('span', 'oa-key-name', row.name));
-    if (expired(row)) title.appendChild(badge(t('keyExpired'), 'danger'));
+    if (row.disabled) {
+      title.appendChild(badge(t('keyPaused'), 'warning'));
+    }
+    if (expired(row)) {
+      title.appendChild(badge(t('keyExpired'), 'danger'));
+    }
     info.appendChild(title);
 
     const meta = el('div', 'oa-key-meta');
     meta.appendChild(el('code', 'oa-key-prefix', `${row.prefix}…`));
+    if (row.model_id) {
+      const modelPill = el('span', 'oa-key-model-pill', t('keyOnlyModel', { model: getModelName(row.model_id) }));
+      modelPill.title = row.model_id;
+      meta.appendChild(modelPill);
+    } else {
+      meta.appendChild(el('span', 'oa-key-model-all', t('keyAllModels')));
+    }
     meta.appendChild(el('span', null, expiryLabel(row)));
     meta.appendChild(el('span', null, row.last_used_at
       ? t('keyLastUsed', { when: relativeTime(row.last_used_at) })
@@ -171,6 +214,26 @@ export function renderKeysPage(root: HTMLElement): void {
     item.appendChild(info);
 
     const actions = el('div', 'oa-key-actions');
+
+    const toggle = iconButton(
+      row.disabled ? 'oa-icon-btn active oa-key-toggle-btn' : 'oa-icon-btn oa-key-toggle-btn',
+      row.disabled ? ICONS.play : ICONS.pause,
+      row.disabled ? t('keyResume') : t('keyPause'),
+      () => {
+        toggle.disabled = true;
+        handle.setBusy(true);
+        void updateKey(row.id, { disabled: !row.disabled })
+          .then(refresh)
+          .catch((error: unknown) => {
+            handle.setError(error instanceof ApiError ? error.message : t('failed'));
+            toggle.disabled = false;
+          })
+          .finally(() => handle.setBusy(false));
+      },
+      15,
+    );
+    actions.appendChild(toggle);
+
     const edit = iconButton('oa-icon-btn', ICONS.gear, t('edit'), () => {
       editKey(handle, row);
     }, 15);
@@ -186,13 +249,12 @@ export function renderKeysPage(root: HTMLElement): void {
         armed = true;
         clear(remove);
         remove.appendChild(el('span', 'oa-key-confirm', t('keyRevokeConfirm')));
-        // The question needs the width the edit button was using, and a
-        // second click landing on Edit while aiming at Revoke would be a
-        // confusing way to lose the confirmation.
+        toggle.hidden = true;
         edit.hidden = true;
         window.setTimeout(() => {
           if (!armed) return;
           armed = false;
+          toggle.hidden = false;
           edit.hidden = false;
           clear(remove);
           remove.appendChild(icon(ICONS.trash, 15));
@@ -217,7 +279,7 @@ export function renderKeysPage(root: HTMLElement): void {
     const body = handle.body;
     clear(body);
 
-    const wrap = el('section', 'oa-keys-create');
+    const wrap = el('section', 'oa-keys-create oa-keys-edit-animated');
     wrap.appendChild(el('h3', 'oa-panel-section-title', t('keyEdit')));
 
     const name = textField({ label: t('keyName'), value: row.name, maxLength: 60 });
@@ -232,9 +294,47 @@ export function renderKeysPage(root: HTMLElement): void {
       ],
     });
 
+    const statusField = selectField({
+      label: t('keyStatus'),
+      value: row.disabled ? 'paused' : 'active',
+      options: [
+        { value: 'active', label: t('keyStatusActive') },
+        { value: 'paused', label: t('keyStatusPaused') },
+      ],
+    });
+
+    const modelOptions = [
+      { value: '', label: t('keyModelAll') },
+      ...models.map((m) => ({
+        value: m.id,
+        label: m.display_name ? `${m.display_name} (${m.provider_name})` : m.id,
+      })),
+    ];
+    if (row.model_id && !models.some((m) => m.id === row.model_id)) {
+      modelOptions.splice(1, 0, {
+        value: row.model_id,
+        label: row.model_id,
+      });
+    }
+    const modelSelect = selectField({
+      label: t('keyModel'),
+      value: row.model_id || '',
+      options: modelOptions,
+    });
+
     const save = button('oa-btn primary', t('save'), () => {
+      const label = name.value().trim();
+      if (!label) {
+        handle.setError(t('keyNameRequired'));
+        name.focus();
+        return;
+      }
       const choice = lifetime.value();
-      const changes: { name?: string; expires_at?: number } = { name: name.value() };
+      const changes: { name?: string; expires_at?: number; disabled?: boolean; model_id?: string } = {
+        name: label,
+        disabled: statusField.value() === 'paused',
+        model_id: modelSelect.value(),
+      };
       if (choice !== 'keep') {
         const days = Number(choice);
         changes.expires_at = days > 0 ? Date.now() + days * DAY_MS : 0;
@@ -255,7 +355,10 @@ export function renderKeysPage(root: HTMLElement): void {
     row2.appendChild(save);
 
     wrap.appendChild(name.element);
+    wrap.appendChild(statusField.element);
     wrap.appendChild(lifetime.element);
+    wrap.appendChild(modelSelect.element);
+    wrap.appendChild(el('p', 'oa-field-hint oa-key-field-hint', t('keyModelHint')));
     wrap.appendChild(row2);
     body.appendChild(wrap);
   }
@@ -264,14 +367,14 @@ export function renderKeysPage(root: HTMLElement): void {
 // --- the one moment the token exists ---------------------------------------------
 
 function issuedSection(result: { key: ApiKey; token: string }, done: () => void): HTMLElement {
-  const wrap = el('section', 'oa-key-issued');
+  const wrap = el('section', 'oa-key-issued oa-key-issued-animated');
   wrap.appendChild(el('h3', 'oa-panel-section-title', t('keyCreated', { name: result.key.name })));
   wrap.appendChild(el('p', 'oa-key-warning', t('keyShownOnce')));
 
   // An input rather than a block of text: it can be selected with one
   // gesture, and copied by a keyboard on a browser whose clipboard API is
   // unavailable or refused.
-  const box = el('div', 'oa-key-token');
+  const box = el('div', 'oa-key-token oa-key-token-pulse');
   const value = el('input', 'oa-key-token-input');
   value.type = 'text';
   value.readOnly = true;
@@ -279,13 +382,15 @@ function issuedSection(result: { key: ApiKey; token: string }, done: () => void)
   value.addEventListener('focus', () => value.select());
   box.appendChild(value);
 
-  const copy = iconButton('oa-icon-btn', ICONS.copy, t('copy'), () => {
+  const copy = iconButton('oa-icon-btn oa-key-copy-btn', ICONS.copy, t('copy'), () => {
     value.select();
     void navigator.clipboard?.writeText(result.token)
       .then(() => {
+        copy.classList.add('copied');
         clear(copy);
         copy.appendChild(icon(ICONS.check, 15));
         window.setTimeout(() => {
+          copy.classList.remove('copied');
           clear(copy);
           copy.appendChild(icon(ICONS.copy, 15));
         }, 1600);

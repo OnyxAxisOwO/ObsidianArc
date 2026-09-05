@@ -16,6 +16,7 @@ import { exportAccount, importAccount, pickJSONFile, saveAsFile } from '../api/b
 import { renderChatPage } from '../chat/chat-page';
 import { navigate } from '../router';
 import { openPanel } from '../ui/panel';
+import { attachOverlayScrollbar, type OverlayScrollbarHandle } from '../ui/scrollbar';
 import { t, type StringKey } from '../i18n';
 import { adopt, currentPreferences, currentUser, persistTheme, syncPreferences } from '../session';
 import { ACCENTS, ACCENT_NAMES, baseAccent, normalizeHex, type AccentName } from '../theme/color-utils';
@@ -71,6 +72,7 @@ export function renderSettingsPage(root: HTMLElement): void {
   let activeTabButtons: Map<Category, HTMLElement> | null = null;
   let activeForm: HTMLElement | null = null;
   let activeScroll: HTMLElement | null = null;
+  let scrollbarHandle: OverlayScrollbarHandle | null = null;
 
   function buildForm(dir: 'forward' | 'back' | 'rise'): HTMLElement {
     const animClass = dir === 'forward'
@@ -102,36 +104,28 @@ export function renderSettingsPage(root: HTMLElement): void {
     const dir = to > from ? 'forward' : 'back';
     category = next;
 
-    // Fast-path in-place update: keep tabs/rail mounted, smoothly toggle
-    // .active and slide in the new form with PageDye directional animation.
-    if (activeTabButtons && activeForm && activeForm.parentElement) {
+    if (activeTabButtons) {
       for (const [id, btn] of activeTabButtons) {
         btn.classList.toggle('active', id === category);
       }
-      const newForm = buildForm(dir);
-      activeForm.parentElement.replaceChild(newForm, activeForm);
-      activeForm = newForm;
-      if (activeScroll) {
-        activeScroll.scrollTop = 0;
-      } else {
-        panel.body.scrollTop = 0;
-      }
-      return;
     }
-
-    if (activeRailButtons && activeForm && activeForm.parentElement) {
+    if (activeRailButtons) {
       for (const [id, btn] of activeRailButtons) {
         btn.classList.toggle('active', id === category);
       }
-      const newForm = buildForm(dir);
-      activeForm.parentElement.replaceChild(newForm, activeForm);
-      activeForm = newForm;
-      panel.body.scrollTop = 0;
-      return;
     }
 
-    switchDirection = dir;
-    panel.rebuild();
+    const newForm = buildForm(dir);
+    if (activeForm && activeForm.parentElement) {
+      activeForm.parentElement.replaceChild(newForm, activeForm);
+    } else if (activeScroll) {
+      activeScroll.appendChild(newForm);
+    }
+    activeForm = newForm;
+    if (activeScroll) {
+      activeScroll.scrollTop = 0;
+    }
+    scrollbarHandle?.update();
   }
 
   const fullscreen = iconButton('oa-icon-btn', ICONS.expand, t('fullscreen'), () => {
@@ -140,8 +134,6 @@ export function renderSettingsPage(root: HTMLElement): void {
     fullscreen.appendChild(icon(on ? ICONS.collapse : ICONS.expand, 16));
     fullscreen.title = t(on ? 'exitFullscreen' : 'fullscreen');
     fullscreen.setAttribute('aria-label', fullscreen.title);
-    switchDirection = 'rise';
-    panel.rebuild();
   }, 16);
 
   const panel = openPanel({
@@ -150,45 +142,30 @@ export function renderSettingsPage(root: HTMLElement): void {
     footer: false,
     width: 460,
     actions: [fullscreen],
-    build: (body, handle) => {
+    build: (body) => {
       const form = buildForm(switchDirection);
       switchDirection = 'rise';
       activeForm = form;
 
       body.classList.add('oa-settings-body');
 
-      if (!handle.isFullscreen()) {
-        activeRailButtons = null;
-
-        // Drawer view: prominent segmented tab control fixed at the top,
-        // matching the multi-pane navigation pattern from PageDye.
-        const tabsBar = el('div', 'oa-settings-tabs-bar');
-        const tabs = el('nav', 'oa-settings-tabs');
-        const tabButtons = new Map<Category, HTMLElement>();
-        for (const entry of CATEGORIES) {
-          const btn = button(
-            `oa-settings-tab${entry.id === category ? ' active' : ''}`,
-            t(entry.label),
-            () => selectCategory(entry.id),
-          );
-          tabs.appendChild(btn);
-          tabButtons.set(entry.id, btn);
-        }
-        activeTabButtons = tabButtons;
-        tabsBar.appendChild(tabs);
-
-        const scroll = el('div', 'oa-settings-scroll');
-        scroll.appendChild(form);
-        activeScroll = scroll;
-
-        body.appendChild(tabsBar);
-        body.appendChild(scroll);
-        return;
+      // Drawer view: segmented tab control fixed at the top
+      const tabsBar = el('div', 'oa-settings-tabs-bar');
+      const tabs = el('nav', 'oa-settings-tabs');
+      const tabButtons = new Map<Category, HTMLElement>();
+      for (const entry of CATEGORIES) {
+        const btn = button(
+          `oa-settings-tab${entry.id === category ? ' active' : ''}`,
+          t(entry.label),
+          () => selectCategory(entry.id),
+        );
+        tabs.appendChild(btn);
+        tabButtons.set(entry.id, btn);
       }
+      activeTabButtons = tabButtons;
+      tabsBar.appendChild(tabs);
 
-      activeTabButtons = null;
-      activeScroll = null;
-
+      // Fullscreen view: side rail navigation beside the scrollable form
       const split = el('div', 'oa-settings-split');
       const rail = el('nav', 'oa-settings-rail');
       const railButtons = new Map<Category, HTMLElement>();
@@ -203,8 +180,18 @@ export function renderSettingsPage(root: HTMLElement): void {
       }
       activeRailButtons = railButtons;
 
+      const scrollWrap = el('div', 'oa-settings-scroll-wrap');
+      const scroll = el('div', 'oa-settings-scroll');
+      scroll.appendChild(form);
+      activeScroll = scroll;
+      scrollWrap.appendChild(scroll);
+
+      scrollbarHandle = attachOverlayScrollbar(scroll, scrollWrap);
+
       split.appendChild(rail);
-      split.appendChild(form);
+      split.appendChild(scrollWrap);
+
+      body.appendChild(tabsBar);
       body.appendChild(split);
     },
     // Dismissing it should leave the URL on the conversation that is now in
@@ -212,6 +199,8 @@ export function renderSettingsPage(root: HTMLElement): void {
     // click through to administration changes the route first, and following
     // that with a navigate would send the user back out of it.
     onClose: () => {
+      scrollbarHandle?.destroy();
+      scrollbarHandle = null;
       if (window.location.pathname === '/settings') navigate('/', { replace: true });
     },
   });

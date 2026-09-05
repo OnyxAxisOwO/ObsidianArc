@@ -154,3 +154,47 @@ noscript {
     transition: none;
   }
 }
+
+/* --- floating overlay scrollbar --------------------------------------------
+ *
+ * Provides a visible, draggable scrollbar that floats inside padding without
+ * consuming layout space (0px layout footprint). Used across all panels,
+ * chat transcript, sidebar, and admin pages.
+ */
+
+.oa-overlay-track {
+  position: absolute;
+  top: 4px;
+  bottom: 12px;
+  right: 4px;
+  width: 6px;
+  z-index: 20;
+  pointer-events: auto;
+  opacity: 0.6;
+  transition: opacity 0.15s ease, width 0.15s ease;
+  user-select: none;
+}
+
+.oa-overlay-track:hover,
+.oa-overlay-track.scrolling,
+.oa-overlay-track.dragging {
+  opacity: 1;
+  width: 8px;
+}
+
+.oa-overlay-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  border-radius: 999px;
+  background-color: var(--ai-outline-variant);
+  transition: background-color 0.15s ease;
+  cursor: pointer;
+}
+
+.oa-overlay-thumb:hover,
+.oa-overlay-track.dragging .oa-overlay-thumb {
+  background-color: var(--ai-text-secondary);
+}
+

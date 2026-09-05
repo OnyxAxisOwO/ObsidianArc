@@ -3,10 +3,31 @@ package auth
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 )
+
+func TestDummyHashIsSafeUnderConcurrentUnknownLogins(t *testing.T) {
+	hasher := NewHasher(testParams())
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			hasher.DummyVerify(context.Background(), "not-the-password")
+		}()
+	}
+	close(start)
+	workers.Wait()
+
+	if hasher.dummyValue == "" {
+		t.Fatal("concurrent dummy verification did not initialise the timing hash")
+	}
+}
 
 // Cheap parameters: these tests exercise the encoding and the comparison, not
 // the cost function, and running the production settings dozens of times
