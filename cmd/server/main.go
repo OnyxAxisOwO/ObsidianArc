@@ -69,7 +69,7 @@ func run() error {
 		slog.Info("applied migrations", "count", len(applied), "versions", applied)
 	}
 
-	handler, err := server.New(server.Deps{
+	app, err := server.New(bootCtx, server.Deps{
 		Config:  cfg,
 		DB:      db,
 		Version: version,
@@ -79,9 +79,14 @@ func run() error {
 		return err
 	}
 
+	// Cancelled by the shutdown path below, which is what stops the janitor.
+	backgroundCtx, stopBackground := context.WithCancel(context.Background())
+	defer stopBackground()
+	app.StartJanitor(backgroundCtx)
+
 	srv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: handler,
+		Handler: app.Handler(),
 		// No WriteTimeout: a streamed answer legitimately takes minutes, and
 		// a global write deadline would sever it mid-sentence. Streaming
 		// handlers set their own deadlines through http.ResponseController.

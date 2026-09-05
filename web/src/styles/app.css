@@ -1,0 +1,291 @@
+/* Screens the standalone build never had — sign in, the account menu, the
+   admin backoffice — drawn from the same tokens chat.css defines, so they
+   read as one product rather than as a chat app with an admin panel bolted
+   to the side. Nothing here introduces a new colour, radius or easing. */
+
+/* --- auth ------------------------------------------------------------------ */
+
+.oa-auth {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+
+.oa-auth-card {
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  padding: 28px 26px 26px;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  /* The same rise the transcript uses when a conversation is switched, so
+     arriving at this page feels like the rest of the interface. */
+  animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.oa-auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.oa-auth-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+}
+
+.oa-auth-title {
+  margin: 0 0 6px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.oa-auth-sub {
+  margin: 0 0 20px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ai-text-secondary);
+}
+
+.oa-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.oa-auth-form .oa-field input {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.oa-btn-block {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+/* Holds the button's width while it is working, so the card does not twitch
+   between "Sign in" and "Signing in…". */
+.oa-btn-block[data-busy='true'] {
+  opacity: 0.75;
+  cursor: progress;
+}
+
+.oa-auth-error {
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  border-radius: 12px;
+  background: rgba(185, 28, 28, 0.08);
+  color: var(--ai-danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.oa-auth-switch {
+  margin: 18px 0 0;
+  font-size: 12px;
+  text-align: center;
+  color: var(--ai-text-secondary);
+}
+
+.oa-auth-switch button {
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--ai-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.oa-auth-switch button:hover {
+  text-decoration: underline;
+}
+
+.oa-auth-note {
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.oa-auth-corner {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+}
+
+/* --- account menu ----------------------------------------------------------- */
+
+.oa-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.oa-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.oa-avatar-lg {
+  width: 44px;
+  height: 44px;
+  font-size: 16px;
+}
+
+.oa-account-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 190px;
+  padding: 4px 10px 4px 5px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ai-text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.oa-account-btn:hover {
+  background: var(--ai-state-hover);
+}
+
+.oa-account-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--ai-outline-variant);
+  margin-bottom: 4px;
+}
+
+.oa-menu-head-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.oa-menu-head-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-menu-head-sub {
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.oa-menu-row .oa-menu-item-title {
+  flex: 1;
+}
+
+.oa-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.oa-badge-muted {
+  background: var(--ai-state-hover);
+  color: var(--ai-text-secondary);
+}
+
+.oa-badge-danger {
+  background: rgba(185, 28, 28, 0.12);
+  color: var(--ai-danger);
+}
+
+/* --- centred notice --------------------------------------------------------- */
+
+.oa-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 100%;
+  padding: 40px 20px;
+  box-sizing: border-box;
+  text-align: center;
+}
+
+.oa-notice-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.oa-notice-body {
+  margin: 0;
+  max-width: 44ch;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ai-text-secondary);
+}
+
+/* --- header slots ----------------------------------------------------------- */
+
+/* Placeholders the shell fills per screen (the rail toggle, the model chip).
+   `display: contents` keeps an empty slot from claiming one of the header's
+   6px gaps, so a screen that uses neither looks exactly as it did before the
+   slots existed. */
+.oa-header-leading,
+.oa-header-slot {
+  display: contents;
+}
