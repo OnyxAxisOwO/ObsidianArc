@@ -223,12 +223,26 @@
 
 .oa-table {
   width: 100%;
-  border-collapse: collapse;
+  /* Separate rather than collapsed so a cell's corners can be rounded: with
+     collapsed borders the radius is ignored, and a striped row would end in
+     square corners against everything else here. Spacing is zero, so nothing
+     else about the layout changes. */
+  border-collapse: separate;
+  /* A hair of vertical space, so each row reads as its own band rather than
+     as a block of colour that happens to change every other line. */
+  border-spacing: 0 2px;
   font-size: 12.5px;
 }
 
+/* The header and the striped rows are tints of the text colour rather than
+   surface tokens, for the reason --ai-state-hover is: the surface ramp runs
+   light-to-dark one way and dark-to-light the other, so a token that sits
+   above the panel in one scheme sits below it in the other. A tint of the
+   text is always the contrasting direction, because the text always is.
+   Two strengths, so the header is not one of the rows. */
 .oa-table th {
-  padding: 0 12px 8px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--ai-text) 9%, transparent);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.03em;
@@ -238,9 +252,47 @@
   white-space: nowrap;
 }
 
+.oa-table th:first-child {
+  border-radius: 9px 0 0 9px;
+}
+
+.oa-table th:last-child {
+  border-radius: 0 9px 9px 0;
+}
+
+.oa-table th:only-child {
+  border-radius: 9px;
+}
+
 .oa-table td {
   padding: 10px 12px;
   vertical-align: middle;
+}
+
+/* Every other row is filled, so a row reads as a band rather than as text
+   floating between its neighbours. A fill rather than a rule between rows,
+   for the reason the buttons here are filled and not outlined: a line and a
+   fill say the same thing, and the fill is the one that survives being put
+   on a tinted surface. Weaker than the header above and than the hover
+   below, so all three stay tellable apart. */
+.oa-table tbody tr:nth-child(odd) td {
+  background: color-mix(in srgb, var(--ai-text) 4%, transparent);
+}
+
+/* The band is a shape, so it ends the way everything else here does. Applied
+   to every row rather than only the filled ones, so hovering an unfilled row
+   is the same shape as hovering a filled one. */
+.oa-table td:first-child {
+  border-radius: 9px 0 0 9px;
+}
+
+.oa-table td:last-child {
+  border-radius: 0 9px 9px 0;
+}
+
+/* A single-column table is one cell that is both ends at once. */
+.oa-table td:only-child {
+  border-radius: 9px;
 }
 
 .oa-table tr.selectable {
@@ -1202,9 +1254,48 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 11px;
+  padding: 9px 12px;
   border-radius: 12px;
   background: var(--ai-surface-container-low);
+  border: 1px solid var(--ai-border);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              background-color 0.2s ease,
+              border-color 0.2s ease,
+              box-shadow 0.2s ease,
+              opacity 0.25s ease;
+  animation: oaKeyRowFadeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--item-idx, 0) * 40ms);
+}
+
+.oa-key-row:hover {
+  background: var(--ai-surface-container);
+  border-color: var(--ai-outline-variant);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.oa-key-row-paused {
+  opacity: 0.65;
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.oa-key-row-paused:hover {
+  opacity: 0.9;
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.oa-key-row-paused .oa-key-name {
+  color: var(--ai-text-secondary);
+}
+
+@keyframes oaKeyRowFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .oa-key-info {
@@ -1232,8 +1323,9 @@
 
 .oa-key-meta {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: 5px 10px;
   font-size: 11.5px;
   color: var(--ai-text-secondary);
 }
@@ -1242,11 +1334,54 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+.oa-key-model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  border: 1px solid var(--ai-border);
+  line-height: 1.5;
+}
+
+.oa-key-model-all {
+  color: var(--ai-text-secondary);
+}
+
+.oa-key-field-hint {
+  margin-top: -2px;
+  margin-bottom: 8px;
+}
+
 .oa-key-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   flex-shrink: 0;
+}
+
+.oa-key-toggle-btn {
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), color 0.18s ease, background-color 0.18s ease;
+}
+
+.oa-key-toggle-btn:hover {
+  transform: scale(1.12);
+}
+
+.oa-key-toggle-btn:active {
+  transform: scale(0.94);
+}
+
+.oa-key-toggle-btn.active {
+  color: #10b981;
+}
+
+.oa-key-toggle-btn.active:hover {
+  background: rgba(16, 185, 129, 0.14);
 }
 
 /* Widens to hold the question when armed, so the row does not jump. */
@@ -1275,6 +1410,30 @@
   padding: 4px 4px 4px 10px;
   border-radius: 10px;
   background: var(--ai-field-bg);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.oa-key-token-pulse {
+  border: 1px solid var(--ai-outline-variant);
+  animation: oaKeyTokenGlow 2.4s ease-in-out infinite;
+}
+
+@keyframes oaKeyTokenGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 var(--ai-focus-shadow);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--ai-focus-shadow);
+  }
+}
+
+.oa-key-copy-btn {
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), color 0.18s ease;
+}
+
+.oa-key-copy-btn.copied {
+  color: #10b981;
+  transform: scale(1.15);
 }
 
 .oa-key-token-input {
@@ -1296,6 +1455,22 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.oa-keys-edit-animated,
+.oa-key-issued-animated {
+  animation: oaKeyFormFadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes oaKeyFormFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* A key row whose revoke failed, so the click is not silently swallowed. */
