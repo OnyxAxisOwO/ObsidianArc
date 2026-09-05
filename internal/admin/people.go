@@ -353,6 +353,7 @@ type groupRequest struct {
 	Description    *string             `json:"description"`
 	IsDefault      *bool               `json:"is_default"`
 	AllowAllModels *bool               `json:"allow_all_models"`
+	APIAccess      *bool               `json:"api_access"`
 	SortOrder      *int                `json:"sort_order"`
 	ModelIDs       *[]string           `json:"model_ids"`
 	ModelGrants    *[]model.GroupGrant `json:"model_grants"`
@@ -377,6 +378,10 @@ func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 	if body.AllowAllModels != nil {
 		in.AllowAllModels = *body.AllowAllModels
 	}
+	// Ticked unless the form said otherwise, matching the column default: a
+	// group made while the API is on should work like the ones that predate
+	// it being turned on.
+	in.APIAccess = body.APIAccess == nil || *body.APIAccess
 	if body.SortOrder != nil {
 		in.SortOrder = *body.SortOrder
 	}
@@ -413,6 +418,7 @@ func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
 		Description:    body.Description,
 		IsDefault:      body.IsDefault,
 		AllowAllModels: body.AllowAllModels,
+		APIAccess:      body.APIAccess,
 		SortOrder:      body.SortOrder,
 	})
 	if err != nil {

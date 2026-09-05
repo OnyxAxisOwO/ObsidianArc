@@ -39,6 +39,7 @@ const (
 	TrialModel           = "landing.trial_model"
 	DefaultSystemPrompt  = "chat.default_system_prompt"
 	ConversationMaxTurns = "chat.max_turns"
+	APIEnabled           = "api.enabled"
 )
 
 // How the usage figures are phrased for a user. An operator who has set
@@ -115,6 +116,10 @@ var Defaults = map[string]string{
 	TrialModel:           "",
 	DefaultSystemPrompt:  "",
 	ConversationMaxTurns: "40",
+	// Off until an operator says otherwise: it opens a second way to spend
+	// the instance's provider credit, one that no longer goes through a
+	// browser session.
+	APIEnabled: "false",
 }
 
 type Service struct {

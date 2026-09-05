@@ -133,6 +133,7 @@ var writableSettings = map[string]bool{
 	settings.TrialModel:           true,
 	settings.DefaultSystemPrompt:  true,
 	settings.ConversationMaxTurns: true,
+	settings.APIEnabled:           true,
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
