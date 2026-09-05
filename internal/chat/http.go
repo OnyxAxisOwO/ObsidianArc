@@ -25,6 +25,9 @@ type Handlers struct {
 	// signed-in account may upload. Wired to the same check that gates
 	// sending, because this endpoint writes too.
 	Uploadable func(context.Context, user.User) error
+	// The operator's per-file ceiling, read per request so a change takes
+	// effect without a restart. Optional; nil means the package default.
+	MaxUploadBytes func() int64
 }
 
 func NewHandlers(service *Service, conversations *conversation.Store) *Handlers {
@@ -270,10 +273,25 @@ func (h *Handlers) uploadAttachment(w http.ResponseWriter, r *http.Request) erro
 		}
 	}
 
+	ceiling := int64(conversation.MaxAttachmentBytes)
+	if h.MaxUploadBytes != nil {
+		if configured := h.MaxUploadBytes(); configured > 0 {
+			ceiling = configured
+		}
+	}
+
 	var body uploadRequest
 	// Base64 is a third larger than the bytes it carries, plus room for the
 	// envelope.
-	if err := httpx.DecodeJSON(w, r, &body, conversation.MaxAttachmentBytes*4/3+16*1024); err != nil {
+	if err := httpx.DecodeJSON(w, r, &body, ceiling*4/3+16*1024); err != nil {
+		// The body guard trips before the image is decoded, and its message
+		// talks about encoded request bytes — a number that has nothing to do
+		// with the picture the person chose. Say the limit they were given.
+		var decided *httpx.Error
+		if errors.As(err, &decided) && decided.Status == http.StatusRequestEntityTooLarge {
+			return httpx.BadRequest("That image is larger than the %d MB this server accepts.",
+				ceiling/(1024*1024))
+		}
 		return err
 	}
 
@@ -286,18 +304,20 @@ func (h *Handlers) uploadAttachment(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	record, err := h.conversations.Upload(r.Context(), conversation.UploadInput{
-		UserID: account.ID,
-		Mime:   body.Mime,
-		Width:  body.Width,
-		Height: body.Height,
-		Data:   data,
+		UserID:   account.ID,
+		Mime:     body.Mime,
+		Width:    body.Width,
+		Height:   body.Height,
+		Data:     data,
+		MaxBytes: ceiling,
 	})
 	if err != nil {
 		switch {
 		case errors.Is(err, conversation.ErrUnsupportedMedia):
 			return httpx.BadRequest("Images must be PNG, JPEG, WebP or GIF.")
 		case errors.Is(err, conversation.ErrAttachmentTooLarge):
-			return httpx.BadRequest("That image is too large.")
+			return httpx.BadRequest("That image is larger than the %d MB this server accepts.",
+				ceiling/(1024*1024))
 		case errors.Is(err, conversation.ErrTooManyPending):
 			return httpx.TooManyRequests("too_many_pending_images",
 				"Too many images are waiting to be sent. Send or discard some first.")
@@ -320,7 +340,13 @@ func (h *Handlers) getAttachment(w http.ResponseWriter, r *http.Request) error {
 
 	mime, data, err := h.conversations.Blob(r.Context(), account.ID, attachmentID)
 	if err != nil {
-		if errors.Is(err, conversation.ErrAttachmentNotFound) {
+		switch {
+		case errors.Is(err, conversation.ErrAttachmentDiscarded):
+			// Distinct from "no such image": the picture was sent, and this
+			// server simply no longer holds it. The transcript already shows
+			// a placeholder, so this is the answer to a stale request.
+			return httpx.NotFound("This image is no longer held on the server.")
+		case errors.Is(err, conversation.ErrAttachmentNotFound):
 			return httpx.NotFound("No such image.")
 		}
 		return httpx.Internal(err)

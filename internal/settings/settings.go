@@ -40,7 +40,14 @@ const (
 	DefaultSystemPrompt  = "chat.default_system_prompt"
 	ConversationMaxTurns = "chat.max_turns"
 	APIEnabled           = "api.enabled"
+	AttachmentMaxMB      = "attachments.max_mb"
+	AttachmentRetain     = "attachments.retain"
 )
+
+// MaxAttachmentCeilingMB bounds what an operator may set. A per-file limit
+// larger than this is not a policy, it is a way to run out of memory: an
+// upload is read into a buffer before it is stored.
+const MaxAttachmentCeilingMB = 64
 
 // How the usage figures are phrased for a user. An operator who has set
 // generous limits usually wants a reassuring "80% left"; one running a tight
@@ -119,7 +126,13 @@ var Defaults = map[string]string{
 	// Off until an operator says otherwise: it opens a second way to spend
 	// the instance's provider credit, one that no longer goes through a
 	// browser session.
-	APIEnabled: "false",
+	APIEnabled:      "false",
+	AttachmentMaxMB: "6",
+	// Off, so an image reaches the provider and is then dropped. Turning it
+	// on makes this server the durable home of every picture anyone sends,
+	// which buys one thing: a model that can still see an image several
+	// turns after it was sent.
+	AttachmentRetain: "false",
 }
 
 type Service struct {

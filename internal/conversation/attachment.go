@@ -17,8 +17,12 @@ import (
 
 var (
 	ErrAttachmentNotFound = errors.New("conversation: no such attachment")
-	ErrUnsupportedMedia   = errors.New("conversation: unsupported image type")
-	ErrAttachmentTooLarge = errors.New("conversation: image is too large")
+	// The row is still there; its bytes are not. Distinct from "no such
+	// attachment" so the interface can say what happened rather than
+	// pretending the picture was never sent.
+	ErrAttachmentDiscarded = errors.New("conversation: this image is no longer held")
+	ErrUnsupportedMedia    = errors.New("conversation: unsupported image type")
+	ErrAttachmentTooLarge  = errors.New("conversation: image is too large")
 	// Both are account-level: a signed-in caller that can repeat an upload
 	// indefinitely is a way to fill the operator's disk.
 	ErrTooManyPending      = errors.New("conversation: too many images are waiting to be sent")
@@ -26,14 +30,19 @@ var (
 )
 
 const (
+	// The default per-file ceiling, used when the operator has not set one.
 	// The client downscales to roughly this before uploading (see the image
-	// module in the frontend). The cap here is the backstop, and it is what
-	// bounds how large a row — and therefore a re-sent turn — can get.
+	// module in the frontend); the cap here is the backstop.
 	MaxAttachmentBytes       = 6 * 1024 * 1024
 	MaxAttachmentsPerMessage = 6
 	// How long an uploaded image that was never attached to a message is
 	// kept before the janitor removes it.
-	OrphanTTL = 6 * time.Hour
+	//
+	// Short, because it is the one window in which this server holds a
+	// picture it has no use for: the composer uploads before the message is
+	// sent, so an image chosen and then abandoned has nothing to discard it.
+	// Nobody spends an hour composing one message.
+	OrphanTTL = time.Hour
 
 	// What one account may be holding at once.
 	//
@@ -67,13 +76,19 @@ type UploadInput struct {
 	Width  int
 	Height int
 	Data   []byte
+	// The operator's per-file ceiling in bytes. Zero means the default.
+	MaxBytes int64
 }
 
 func (s *Store) Upload(ctx context.Context, in UploadInput) (Attachment, error) {
 	if !allowedMedia[in.Mime] {
 		return Attachment{}, ErrUnsupportedMedia
 	}
-	if len(in.Data) == 0 || len(in.Data) > MaxAttachmentBytes {
+	ceiling := in.MaxBytes
+	if ceiling <= 0 {
+		ceiling = MaxAttachmentBytes
+	}
+	if len(in.Data) == 0 || int64(len(in.Data)) > ceiling {
 		return Attachment{}, ErrAttachmentTooLarge
 	}
 
@@ -120,16 +135,41 @@ func (s *Store) Upload(ctx context.Context, in UploadInput) (Attachment, error) 
 // is in the query, so serving someone else's image is not a check that could
 // be skipped.
 func (s *Store) Blob(ctx context.Context, userID, attachmentID string) (mime string, data []byte, err error) {
+	var discardedAt int64
 	err = s.db.QueryRow(ctx,
-		`SELECT mime, data FROM attachments WHERE id = ? AND user_id = ?`,
-		attachmentID, userID).Scan(&mime, &data)
+		`SELECT mime, data, discarded_at FROM attachments WHERE id = ? AND user_id = ?`,
+		attachmentID, userID).Scan(&mime, &data, &discardedAt)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return "", nil, ErrAttachmentNotFound
 		}
 		return "", nil, fmt.Errorf("conversation: read attachment: %w", err)
 	}
+	if discardedAt > 0 {
+		return "", nil, ErrAttachmentDiscarded
+	}
 	return mime, data, nil
+}
+
+// Discard drops the bytes of every attachment in a conversation, keeping the
+// rows as a record that something was sent.
+//
+// Called once a turn has been dispatched, which is the moment the bytes stop
+// having a use: by then they have reached the provider, and the policy is
+// that this server is not where a user's pictures live. The row keeps its
+// mime, size and dimensions so the transcript can still show that an image
+// was part of the message.
+func (s *Store) Discard(ctx context.Context, conversationID string) (int64, error) {
+	result, err := s.db.Exec(ctx,
+		`UPDATE attachments SET data = ?, discarded_at = ?
+		 WHERE discarded_at = 0
+		   AND message_id IN (SELECT id FROM messages WHERE conversation_id = ?)`,
+		[]byte{}, time.Now().UnixMilli(), conversationID)
+	if err != nil {
+		return 0, fmt.Errorf("conversation: discard attachments: %w", err)
+	}
+	dropped, _ := result.RowsAffected()
+	return dropped, nil
 }
 
 // LoadForMessages fetches the bytes of every image in a transcript, keyed by
@@ -156,7 +196,7 @@ func (s *Store) LoadForMessages(ctx context.Context, q database.Queryer, userID 
 
 	rows, err := q.Query(ctx,
 		`SELECT message_id, mime, data FROM attachments
-		 WHERE message_id IN (`+string(placeholders)+`) AND user_id = ?
+		 WHERE message_id IN (`+string(placeholders)+`) AND user_id = ? AND discarded_at = 0
 		 ORDER BY created_at`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("conversation: load attachment data: %w", err)

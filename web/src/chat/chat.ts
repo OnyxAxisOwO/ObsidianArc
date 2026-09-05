@@ -468,9 +468,23 @@ export function mountChat(options: ChatOptions): ChatHandle {
   function renderAttachmentStrip(list: AttachmentRef[]): HTMLElement {
     const strip = el('div', 'ai-chat-attachments');
     for (const attachment of list) {
-      strip.appendChild(thumbnail(attachmentURL(attachment.id), ''));
+      // A discarded image has no URL to load. Fetching it would produce a
+      // broken thumbnail and a 404 in the console, which reads as a fault
+      // rather than as the retention policy working.
+      strip.appendChild(attachment.discarded
+        ? discardedThumbnail()
+        : thumbnail(attachmentURL(attachment.id), ''));
     }
     return strip;
+  }
+
+  /** Stands in for a picture the server no longer holds. */
+  function discardedThumbnail(): HTMLElement {
+    const chip = el('div', 'ai-chat-attachment ai-chat-attachment-gone');
+    chip.appendChild(icon(ICONS.image, 16));
+    chip.title = t('imageDiscarded');
+    chip.setAttribute('aria-label', t('imageDiscarded'));
+    return chip;
   }
 
   function renderUserMessage(message: Message): HTMLElement {

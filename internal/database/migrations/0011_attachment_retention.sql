@@ -1,0 +1,16 @@
+-- Attachments stop being storage.
+--
+-- A picture sent to a model was being kept as a BLOB for the life of the
+-- conversation, so that a later turn could re-send it as context. That makes
+-- the database the durable home of every image any user ever sent, which is
+-- not a thing this server should be.
+--
+-- The bytes now live only between the upload and the turn that dispatches
+-- them. What survives is the row without its payload: mime, size and
+-- dimensions, so the transcript can still say an image was here and the
+-- account's history is not silently rewritten.
+--
+-- Nothing is backfilled. Existing attachments keep their bytes until the
+-- conversation they belong to is used again, at which point the same rule
+-- applies to them.
+ALTER TABLE attachments ADD COLUMN discarded_at BIGINT NOT NULL DEFAULT 0;

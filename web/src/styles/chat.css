@@ -1180,3 +1180,13 @@
     transition: none;
   }
 }
+
+/* A picture the server no longer holds. Same footprint as a thumbnail, so a
+   transcript that had images does not reflow once they are dropped. */
+.ai-chat-attachment-gone {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ai-field-bg);
+  color: var(--ai-text-secondary);
+}

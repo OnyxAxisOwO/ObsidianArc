@@ -35,6 +35,12 @@ export interface AttachmentRef {
   width: number;
   height: number;
   size: number;
+  /**
+   * The bytes are no longer held: the picture reached the model and the
+   * server dropped it. Only the record that it was sent survives, so the
+   * transcript draws a placeholder rather than a broken image.
+   */
+  discarded?: boolean;
 }
 
 export interface Message {

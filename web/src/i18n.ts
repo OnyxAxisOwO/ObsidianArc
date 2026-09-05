@@ -171,6 +171,9 @@ const en = {
   noSuchPageBody: 'No page matches {path}.',
   notAvailable: 'Not available',
   noAdminAccess: 'You do not have access to the administration area.',
+  accessDenied: 'Access denied',
+  switchAccount: 'Switch account',
+  needDifferentAccount: 'Need to use a different account?',
 
   // --- admin: navigation
   navDashboard: 'Dashboard',
@@ -660,6 +663,33 @@ const en = {
   groupApiAccess: 'May use the API',
   groupApiAccessHint: 'Members can create keys and call /v1. Administrators may regardless.',
   groupApiOff: 'No API',
+
+  // --- attachments and retention
+  secAttachments: 'Images',
+  attachmentsHint: 'What a message may carry, and how long this server keeps it.',
+  attachmentMaxMB: 'Largest image (MB)',
+  attachmentMaxMBHint: 'Per file. The browser downscales before uploading, so this is the backstop rather than the usual size.',
+  attachmentRetain: 'Keep images after sending',
+  attachmentRetainHint: 'Off, an image reaches the model and is then dropped: this server stops being where your users’ pictures live. On, images are kept so a model can still see one several turns later — at the cost of storing every picture anyone sends.',
+  imageDiscarded: 'This image was sent to the model and is no longer kept on the server.',
+
+  // --- keys, from administration
+  adminKeysHint: 'What this account has issued. The key itself was shown once at creation and cannot be recovered — only revoking is possible from here.',
+
+  // --- taking data in and out
+  secData: 'Your data',
+  dataHint: 'One file holding your settings and every conversation. Importing adds to what is here; it never replaces it.',
+  exportData: 'Export everything',
+  exportWorking: 'Gathering…',
+  exportDone: 'Saved {count} conversations.',
+  importData: 'Import a file',
+  importWorking: 'Importing…',
+  importDone: 'Added {conversations} conversations and {messages} messages.',
+  exportSettings: 'Export',
+  importSettings: 'Import',
+  importSettingsDone: 'Applied {count} settings.',
+  importSettingsPartial: 'Applied {count} settings. Skipped: {skipped}',
+  importSettingsMalformed: 'That file is not a settings export.',
 } as const;
 
 export type StringKey = keyof typeof en;
@@ -814,6 +844,9 @@ const zh: Record<StringKey, string> = {
   noSuchPageBody: '找不到 {path}。',
   notAvailable: '无法访问',
   noAdminAccess: '你没有管理后台的访问权限。',
+  accessDenied: '无权访问',
+  switchAccount: '切换账号',
+  needDifferentAccount: '需要使用其他账号？',
 
   navDashboard: '概览',
   navUsers: '用户',
@@ -1293,6 +1326,33 @@ const zh: Record<StringKey, string> = {
   groupApiAccess: '可以使用 API',
   groupApiAccessHint: '该组成员可以创建密钥并调用 /v1。管理员不受此限制。',
   groupApiOff: '禁用 API',
+
+  // --- attachments and retention
+  secAttachments: '图片',
+  attachmentsHint: '一条消息能带多大的图，以及服务器保留多久。',
+  attachmentMaxMB: '单张图片上限（MB）',
+  attachmentMaxMBHint: '按单个文件计。浏览器上传前会先压缩，所以这是兜底线而不是常见尺寸。',
+  attachmentRetain: '发送后保留图片',
+  attachmentRetainHint: '关闭时，图片发给模型后就丢弃，服务器不再是用户图片的存放地。开启后会保留，模型在几轮之后仍能看到这张图——代价是每一张图都存在服务器上。',
+  imageDiscarded: '这张图已发送给模型，服务器不再保留。',
+
+  // --- keys, from administration
+  adminKeysHint: '该账户创建的密钥。密钥本身只在创建时显示过一次，无法找回——这里只能吊销。',
+
+  // --- taking data in and out
+  secData: '你的数据',
+  dataHint: '一个文件，包含你的设置和全部对话。导入是追加，不会覆盖现有内容。',
+  exportData: '导出全部',
+  exportWorking: '正在收集…',
+  exportDone: '已保存 {count} 个对话。',
+  importData: '导入文件',
+  importWorking: '正在导入…',
+  importDone: '已添加 {conversations} 个对话，{messages} 条消息。',
+  exportSettings: '导出',
+  importSettings: '导入',
+  importSettingsDone: '已应用 {count} 项设置。',
+  importSettingsPartial: '已应用 {count} 项设置。已跳过：{skipped}',
+  importSettingsMalformed: '这个文件不是设置导出文件。',
 };
 
 const dictionaries: Record<Language, Record<StringKey, string>> = { en, zh };

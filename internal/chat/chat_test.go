@@ -28,6 +28,7 @@ import (
 
 type fixture struct {
 	db            *database.DB
+	settings      *settings.Service
 	conversations *conversation.Store
 	models        *model.Store
 	users         *user.Store
@@ -217,6 +218,7 @@ func newFixture(t *testing.T) *fixture {
 
 	return &fixture{
 		db:            db,
+		settings:      set,
 		conversations: conversations,
 		models:        models,
 		users:         users,
@@ -597,8 +599,75 @@ func TestAttachmentsAreLinkedAndSentOnce(t *testing.T) {
 		t.Fatalf("the image was not linked to the message: %+v", messages[0])
 	}
 
-	// A second turn re-sends the transcript, and the same picture must travel
-	// once rather than being billed twice.
+	// A second turn re-sends the transcript. By default the picture is no
+	// longer there to re-send: it reached the provider on the turn that
+	// carried it, and this server does not keep it.
+	if _, err := f.turn(t, ctx, TurnRequest{
+		ConversationID: out.start.ConversationID,
+		Content:        "and now",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	images := 0
+	sent, _ := f.upstream.lastRequest()["messages"].([]any)
+	for _, entry := range sent {
+		message, _ := entry.(map[string]any)
+		parts, ok := message["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			block, _ := part.(map[string]any)
+			if block["type"] == "image_url" {
+				images++
+			}
+		}
+	}
+	if images != 0 {
+		t.Errorf("the transcript carried the image %d times after it was discarded, want 0", images)
+	}
+
+	// The record of it survives; only the payload is gone, so the transcript
+	// can still show that a picture was part of the message.
+	messages = f.messages(t, out.start.ConversationID)
+	if len(messages[0].Attachments) != 1 {
+		t.Fatalf("discarding removed the record too: %+v", messages[0])
+	}
+	if !messages[0].Attachments[0].Discarded {
+		t.Error("the attachment is not marked as discarded")
+	}
+	if _, _, err := f.conversations.Blob(ctx, f.account.ID, uploaded.ID); !errors.Is(err, conversation.ErrAttachmentDiscarded) {
+		t.Errorf("the bytes are still readable: %v", err)
+	}
+}
+
+// With retention on, the picture stays and a later turn still sees it — and
+// still travels once rather than being billed for every turn since.
+func TestRetainedAttachmentIsSentOnce(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if err := f.settings.Set(ctx, settings.AttachmentRetain, "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	pixel := []byte{0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4}
+	uploaded, err := f.conversations.Upload(ctx, conversation.UploadInput{
+		UserID: f.account.ID, Mime: "image/png", Width: 2, Height: 2, Data: pixel,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.upstream.script(`{"choices":[{"delta":{"content":"I see it"}}]}`)
+	out, err := f.turn(t, ctx, TurnRequest{
+		Content:       "what is this",
+		AttachmentIDs: []string{uploaded.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.turn(t, ctx, TurnRequest{
 		ConversationID: out.start.ConversationID,
 		Content:        "and now",
@@ -622,7 +691,7 @@ func TestAttachmentsAreLinkedAndSentOnce(t *testing.T) {
 		}
 	}
 	if images != 1 {
-		t.Errorf("the transcript carried the image %d times, want 1", images)
+		t.Errorf("the retained transcript carried the image %d times, want 1", images)
 	}
 }
 

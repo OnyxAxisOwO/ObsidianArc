@@ -73,6 +73,9 @@ type Attachment struct {
 	Width  int    `json:"width"`
 	Height int    `json:"height"`
 	Size   int    `json:"size"`
+	// The bytes are gone; only this record of them remains. The interface
+	// draws a placeholder rather than a broken image.
+	Discarded bool `json:"discarded,omitempty"`
 }
 
 var (
@@ -258,7 +261,7 @@ func (s *Store) Messages(ctx context.Context, q database.Queryer, userID, conver
 	}
 
 	attachments, err := q.Query(ctx,
-		`SELECT a.id, a.message_id, a.mime, a.width, a.height, a.size
+		`SELECT a.id, a.message_id, a.mime, a.width, a.height, a.size, a.discarded_at
 		 FROM attachments a
 		 JOIN messages m ON m.id = a.message_id
 		 WHERE m.conversation_id = ? AND a.user_id = ?
@@ -271,13 +274,15 @@ func (s *Store) Messages(ctx context.Context, q database.Queryer, userID, conver
 
 	for attachments.Next() {
 		var (
-			record    Attachment
-			messageID string
+			record      Attachment
+			messageID   string
+			discardedAt int64
 		)
 		if err := attachments.Scan(&record.ID, &messageID, &record.Mime,
-			&record.Width, &record.Height, &record.Size); err != nil {
+			&record.Width, &record.Height, &record.Size, &discardedAt); err != nil {
 			return nil, fmt.Errorf("conversation: attachment scan: %w", err)
 		}
+		record.Discarded = discardedAt > 0
 		if position, ok := index[messageID]; ok {
 			messages[position].Attachments = append(messages[position].Attachments, record)
 		}

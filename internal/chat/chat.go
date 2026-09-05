@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -221,6 +222,22 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 	prepared, err := s.openTurn(ctx, req)
 	if err != nil {
 		return err
+	}
+
+	// The pictures in this conversation stop being ours the moment the turn
+	// carrying them has been dispatched. Deferred rather than placed after
+	// the provider call so that it also covers the paths that never get
+	// there, and detached because the request context is cancelled the
+	// instant the browser goes away.
+	if !s.settings.Bool(settings.AttachmentRetain) {
+		defer func() {
+			dropCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			defer cancel()
+			if _, err := s.conversations.Discard(dropCtx, prepared.conversationID); err != nil {
+				slog.ErrorContext(dropCtx, "could not discard attachment data",
+					"error", err, "conversation", prepared.conversationID)
+			}
+		}()
 	}
 
 	if err := emit(EventStart, StartPayload{
