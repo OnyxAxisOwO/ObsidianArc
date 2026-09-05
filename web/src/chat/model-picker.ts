@@ -246,55 +246,110 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
     track.appendChild(thumb);
     slider.appendChild(track);
 
-    // A real range input on top, invisible: the visual is ours, the keyboard
-    // behaviour, the focus ring and the ARIA are the platform's.
+    // A real range input on top, invisible: the visual is ours, the focus
+    // ring and the ARIA are the platform's.
+    //
+    // Its step is continuous even though the setting has four values. A range
+    // that steps in quarters jumps the thumb between four places while your
+    // finger is somewhere else, which is what makes a slider feel broken. The
+    // thumb follows the pointer exactly, and the value snaps when you let go.
+    const last = STOPS.length - 1;
     const range = el('input', 'ai-effort-range');
     range.type = 'range';
     range.min = '0';
-    range.max = String(STOPS.length - 1);
-    range.step = '1';
+    range.max = String(last);
+    range.step = '0.001';
     range.value = String(position);
     range.setAttribute('aria-label', t('reasoningToggle'));
     slider.appendChild(range);
     wrap.appendChild(slider);
 
-    function paintSlider(): void {
+    /**
+     * Draws the bar at an arbitrary point, labelled with the stop it is
+     * nearest.
+     *
+     * `at` is where the thumb sits — a fraction while a finger is on it — and
+     * `stop` is what that would commit to. They are the same everywhere
+     * except mid-drag.
+     */
+    function paintSlider(at: number, stop: number): void {
       // Unitless, because the stylesheet uses it inside a calc that mixes
       // pixels and percentages to keep the fill and the thumb agreeing about
       // where the value is.
-      const ratio = position / (STOPS.length - 1);
-      slider.style.setProperty('--effort-ratio', String(ratio));
-      slider.classList.toggle('off', position === 0);
+      slider.style.setProperty('--effort-ratio', String(at / last));
+      slider.classList.toggle('off', stop === 0);
       // The top of the range gets its own colour, so "as much as it will do"
       // is visible from the bar rather than only from the word beside it.
-      slider.classList.toggle('max', position === STOPS.length - 1);
-      label.textContent = t(STOPS[position]!.label);
-      range.setAttribute('aria-valuetext', t(STOPS[position]!.label));
+      slider.classList.toggle('max', stop === last);
+      label.textContent = t(STOPS[stop]!.label);
+      range.setAttribute('aria-valuetext', t(STOPS[stop]!.label));
     }
-    paintSlider();
+    paintSlider(position, position);
 
-    range.addEventListener('input', () => {
-      position = Number(range.value);
-      paintSlider();
+    /**
+     * Settles on a stop and tells the rest of the app.
+     *
+     * Only ever on release or a keypress, never per pointer move: the host
+     * persists this to the account, so committing continuously would be a
+     * request for every pixel dragged — which is most of what made the old
+     * one feel slow.
+     */
+    function commit(next: number): void {
+      const settled = Math.min(last, Math.max(0, next));
+      range.value = String(settled);
+      paintSlider(settled, settled);
+      if (settled === position) return;
+      position = settled;
       const stop = STOPS[position]!;
       options.onReasoningChange({ enabled: stop.enabled, effort: stop.effort });
       sync();
+    }
+
+    let pressed = false;
+
+    range.addEventListener('input', () => {
+      const raw = Number(range.value);
+      const nearest = Math.round(raw);
+      // Under a finger the thumb goes where the finger is. Otherwise the
+      // input moved by itself and there is a value to commit.
+      if (pressed) paintSlider(raw, nearest);
+      else commit(nearest);
     });
 
-    // While a finger or a pointer is on it, the fill and the thumb follow it
-    // exactly. The easing that makes a keyboard step or a click along the
-    // track look deliberate is the same easing that makes a drag feel like it
-    // is catching up, because it is: every move starts a new transition the
-    // next move interrupts.
     range.addEventListener('pointerdown', () => {
-      slider.classList.add('dragging');
+      pressed = true;
+
+      // The class comes on the first move, not the press: a click on the
+      // track should glide to where it landed, and only a drag needs the
+      // easing out of the way.
+      const move = () => slider.classList.add('dragging');
       const release = () => {
+        pressed = false;
         slider.classList.remove('dragging');
+        window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', release);
         window.removeEventListener('pointercancel', release);
+        // The easing is back on before this runs, so the thumb travels the
+        // last fraction to its stop rather than teleporting.
+        commit(Math.round(Number(range.value)));
       };
+      window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', release);
       window.addEventListener('pointercancel', release);
+    });
+
+    // A continuous range would step by a thousandth on an arrow key. The
+    // stops are what the keyboard moves between.
+    range.addEventListener('keydown', (event) => {
+      let next: number | null = null;
+      if (event.key === 'ArrowRight' || event.key === 'ArrowUp') next = position + 1;
+      else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') next = position - 1;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = last;
+      if (next === null) return;
+
+      event.preventDefault();
+      commit(next);
     });
 
     return wrap;

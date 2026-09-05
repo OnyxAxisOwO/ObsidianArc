@@ -94,9 +94,11 @@
 /* Settings opens as a third column here, and it slides in from a negative
    margin — which would stick out past the row and give the page a horizontal
    scrollbar for the length of the animation. Only clipped while one is
-   actually open, so the narrow-screen overlay rail is untouched otherwise. */
+   actually open, so the narrow-screen overlay rail is untouched otherwise.
+   `clip` and not `hidden` so it never becomes a scroll container the browser
+   can slide sideways to reveal a field in a panel that is still arriving. */
 .ai-chat:has(.oa-panel) {
-  overflow: hidden;
+  overflow: clip;
 }
 
 .ai-chat-main {
@@ -1461,6 +1463,7 @@
      the value is — and because the thumb stands proud of the track, the fill it
      is covering can never show as an edge around it. */
   --effort-thumb: 28px;
+  --effort-glow: rgba(74, 108, 240, 0.5);
   position: relative;
   height: 34px;
   margin: 2px 2px 4px;
@@ -1473,25 +1476,36 @@
   background: var(--ai-field-bg);
 }
 
-/* Reaches the middle of the thumb, never past it and never short of it. */
+/* Reaches the middle of the thumb, never past it and never short of it.
+ *
+ * Two backgrounds, not one: the colour along the bar, and a light falling on
+ * it from above. The second is what stops it reading as a flat swatch — it is
+ * the difference between a coloured rectangle and something with a surface.
+ */
 .ai-effort-fill {
   position: absolute;
   inset: 0 auto 0 0;
   width: calc(var(--effort-thumb) / 2 + (100% - var(--effort-thumb)) * var(--effort-ratio));
   overflow: hidden;
   border-radius: 999px;
-  /* Blue for the working range. A gradient rather than one flat colour: this
-     is the only control here meant to look like effort rather than like a
-     surface. */
-  background: linear-gradient(90deg, #1d4ed8 0%, #3b82f6 55%, #60a5fa 100%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 58%),
+    linear-gradient(90deg, #2b5fd9 0%, #4a6cf0 50%, #6f7ff5 100%);
+  box-shadow: 0 0 14px -3px var(--effort-glow);
   transition: width 0.18s cubic-bezier(0.2, 0, 0, 1);
 }
 
 /* The top of the range only. Nothing to fade between — a gradient cannot be
    transitioned — and the step is the point: it should read as a different
    setting, not as more of the same one. */
+.ai-effort.max {
+  --effort-glow: rgba(139, 92, 246, 0.55);
+}
+
 .ai-effort.max .ai-effort-fill {
-  background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 55%, #a855f7 100%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 58%),
+    linear-gradient(90deg, #4338ca 0%, #6d4aef 50%, #a259f7 100%);
 }
 
 /* Off is an empty track with the thumb parked at its left end. The fill is
@@ -1501,26 +1515,48 @@
   opacity: 0;
 }
 
-/* Motes drifting along the filled part, clipped by it. White, because the
-   gradient underneath is dark whichever scheme the rest of the page is in.
-   Twice as wide as the fill and moved by exactly one tile, so the loop is
-   seamless and the animation is a transform the compositor can run rather
-   than a background-position the fill has to be repainted for. */
-.ai-effort-sparks {
+/* Motes drifting along the filled part, clipped by it.
+ *
+ * Two layers rather than one, at different tile widths and different speeds.
+ * A single tiled layer reads as wallpaper: the eye finds the repeat in a
+ * second and the bar stops looking like anything. Two coprime tiles moving at
+ * different rates have a combined period far longer than the bar is wide, and
+ * the speed difference reads as depth.
+ *
+ * Each mote is a soft falloff rather than a hard disc, so it blooms into the
+ * colour underneath instead of sitting on top of it as a dot.
+ */
+.ai-effort-sparks,
+.ai-effort-sparks::before {
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
   width: 200%;
-  background-image:
-    radial-gradient(circle at 12% 32%, rgba(255, 255, 255, 0.95) 0 1.1px, transparent 1.8px),
-    radial-gradient(circle at 33% 74%, rgba(255, 255, 255, 0.7) 0 1px, transparent 1.6px),
-    radial-gradient(circle at 52% 24%, rgba(255, 255, 255, 0.85) 0 1.3px, transparent 2px),
-    radial-gradient(circle at 71% 62%, rgba(255, 255, 255, 0.6) 0 1px, transparent 1.6px),
-    radial-gradient(circle at 88% 38%, rgba(255, 255, 255, 0.8) 0 1.1px, transparent 1.8px);
-  background-size: 62px 100%;
   background-repeat: repeat-x;
-  animation: ai-effort-drift 4s linear infinite;
+}
+
+.ai-effort-sparks {
+  background-image:
+    radial-gradient(circle 1.4px at 8% 30%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.28) 45%, transparent 100%),
+    radial-gradient(circle 1px at 26% 68%, rgba(255, 255, 255, 0.6), transparent 100%),
+    radial-gradient(circle 1.6px at 47% 22%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.3) 45%, transparent 100%),
+    radial-gradient(circle 1px at 63% 78%, rgba(255, 255, 255, 0.5), transparent 100%),
+    radial-gradient(circle 1.2px at 81% 44%, rgba(255, 255, 255, 0.75), transparent 100%);
+  background-size: 97px 100%;
+  animation: ai-effort-drift-far 6.5s linear infinite;
+}
+
+.ai-effort-sparks::before {
+  content: '';
+  background-image:
+    radial-gradient(circle 0.9px at 15% 58%, rgba(255, 255, 255, 0.55), transparent 100%),
+    radial-gradient(circle 1.3px at 38% 34%, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.2) 50%, transparent 100%),
+    radial-gradient(circle 0.8px at 58% 72%, rgba(255, 255, 255, 0.45), transparent 100%),
+    radial-gradient(circle 1.1px at 74% 26%, rgba(255, 255, 255, 0.7), transparent 100%),
+    radial-gradient(circle 0.9px at 92% 62%, rgba(255, 255, 255, 0.5), transparent 100%);
+  background-size: 61px 100%;
+  animation: ai-effort-drift-near 4s linear infinite;
 }
 
 .ai-effort.off .ai-effort-sparks {
@@ -1535,29 +1571,40 @@
   background: linear-gradient(
     100deg,
     transparent 35%,
-    rgba(255, 255, 255, 0.3) 50%,
+    rgba(255, 255, 255, 0.26) 50%,
     transparent 65%
   );
   transform: translateX(-100%);
-  animation: ai-effort-sheen 3.2s ease-in-out infinite;
+  animation: ai-effort-sheen 3.6s ease-in-out infinite;
 }
 
 .ai-effort.off .ai-effort-fill::after {
   animation: none;
 }
 
-@keyframes ai-effort-drift {
+/* Moved by exactly one tile, so the loop is seamless — and by transform, so
+   it runs on the compositor rather than repainting the fill every frame. */
+@keyframes ai-effort-drift-far {
   from {
     transform: translateX(0);
   }
   to {
-    transform: translateX(-62px);
+    transform: translateX(-97px);
+  }
+}
+
+@keyframes ai-effort-drift-near {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-61px);
   }
 }
 
 @keyframes ai-effort-sheen {
   0%,
-  55% {
+  58% {
     transform: translateX(-100%);
   }
   100% {
@@ -1576,8 +1623,8 @@
   border-radius: 50%;
   background: #ffffff;
   box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.3),
-    0 0 0 1px rgba(0, 0, 0, 0.06);
+    0 2px 5px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(0, 0, 0, 0.05);
   transform: translate(-50%, -50%);
   transition: left 0.18s cubic-bezier(0.2, 0, 0, 1);
   pointer-events: none;
@@ -1592,8 +1639,8 @@
   transition: none;
 }
 
-/* The real control, invisible: the drawing above is ours, the keyboard
-   behaviour, the focus ring and the ARIA are the platform's. */
+/* The real control, invisible: the drawing above is ours, the focus ring and
+   the ARIA are the platform's. */
 .ai-effort-range {
   position: absolute;
   inset: 0;
@@ -1630,6 +1677,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ai-effort-sparks,
+  .ai-effort-sparks::before,
   .ai-effort-fill::after {
     animation: none;
   }
