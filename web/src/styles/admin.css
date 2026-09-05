@@ -819,8 +819,9 @@
 .oa-about {
   display: flex;
   flex-direction: column;
-  gap: 22px;
-  max-width: 560px;
+  gap: 20px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .oa-about-head {
