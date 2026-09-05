@@ -65,7 +65,12 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	topModels, err := h.usage.GroupBy(ctx, "model", week)
+	metric := r.URL.Query().Get("metric")
+	topModels, err := h.usage.GroupBy(ctx, "model", metric, week)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	topUsers, err := h.usage.GroupBy(ctx, "user", metric, week)
 	if err != nil {
 		return httpx.Internal(err)
 	}
@@ -91,6 +96,7 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 		"last_24h":     today,
 		"last_7d":      thisWeek,
 		"top_models":   topModels,
+		"top_users":    topUsers,
 		"series":       series,
 		"bucket_ms":    (6 * time.Hour).Milliseconds(),
 		"recent":       recent,

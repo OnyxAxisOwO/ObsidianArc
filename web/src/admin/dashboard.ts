@@ -7,8 +7,16 @@
 
 import { t } from '../i18n';
 import { clear, el } from '../ui/dom';
+import { selectField } from '../ui/form';
 import { badge, badges, compactNumber, relativeTime, renderTable, stacked } from '../ui/table';
-import { adminApi, type UsagePoint, type UsageRecord, type UsageTotals } from './api';
+import { renderChart, type ChartShape } from '../ui/chart';
+import {
+  adminApi,
+  type UsageBreakdown,
+  type UsagePoint,
+  type UsageRecord,
+  type UsageTotals,
+} from './api';
 import { failure, type AdminView } from './admin-page';
 
 export async function renderDashboard(view: AdminView): Promise<void> {
@@ -33,6 +41,14 @@ export async function renderDashboard(view: AdminView): Promise<void> {
 
   view.body.appendChild(section(t('secLast24h'), statGrid(usageStats(data.last_24h))));
   view.body.appendChild(section(t('secLast7d'), spark(data.series, data.bucket_ms)));
+
+  // Which models are popular and which accounts are heavy, side by side and
+  // in whichever shape reads better. The dashboard is where an operator asks
+  // that question first; the usage screen is where they go to break it down.
+  if (data.top_models.length || data.top_users.length) {
+    view.body.appendChild(section(t('secRanking'),
+      popularity(data.top_models, data.top_users)));
+  }
 
   if (data.top_models.length) {
     view.body.appendChild(section(t('secBusiestModels'), renderTable({
@@ -142,5 +158,63 @@ function spark(series: UsagePoint[], bucketMS: number): HTMLElement {
   // Referenced so the bucket size is visibly part of the contract rather than
   // an unused field on the response.
   wrap.setAttribute('aria-label', t('chartAria', { hours: Math.round(bucketMS / 3600000) }));
+  return wrap;
+}
+
+// Remembered across visits, so an operator who prefers a pie gets one.
+let dashboardShape: ChartShape = 'bar';
+
+/**
+ * Models and accounts, ranked, in one panel.
+ *
+ * Both charts share a shape control rather than having one each: they are two
+ * views of the same question — where is the usage going — and letting them
+ * disagree about how to draw it would be a choice with no meaning behind it.
+ */
+function popularity(models: UsageBreakdown[], users: UsageBreakdown[]): HTMLElement {
+  const wrap = el('div', 'oa-ranking');
+  const charts = el('div', 'oa-ranking-pair');
+
+  const shape = selectField<ChartShape>({
+    label: t('chartShape'),
+    value: dashboardShape,
+    options: [
+      { value: 'bar', label: t('chartBar') },
+      { value: 'pie', label: t('chartPie') },
+    ],
+    onChange: (value) => { dashboardShape = value; paint(); },
+  });
+
+  function one(title: string, rows: UsageBreakdown[]): HTMLElement {
+    const column = el('div', 'oa-ranking-column');
+    column.appendChild(el('h4', 'oa-panel-section-title', title));
+    column.appendChild(renderChart({
+      shape: dashboardShape,
+      // The dashboard ranks by credits: it is the figure an operator is
+      // watching when they open this page at all.
+      data: rows.map((row) => ({
+        key: row.key,
+        label: row.label || row.key || '—',
+        value: row.credits,
+      })),
+      format: (value) => value.toFixed(2),
+      emptyText: t('nothingYet'),
+      max: 6,
+      otherLabel: t('chartOther'),
+    }));
+    return column;
+  }
+
+  function paint(): void {
+    clear(charts);
+    charts.appendChild(one(t('secBusiestModels'), models));
+    charts.appendChild(one(t('secTopUsers'), users));
+  }
+  paint();
+
+  const controls = el('div', 'oa-ranking-controls');
+  controls.appendChild(shape.element);
+  wrap.appendChild(controls);
+  wrap.appendChild(charts);
   return wrap;
 }

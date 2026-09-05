@@ -9,9 +9,17 @@ import { ApiError } from '../api/client';
 import { t, type StringKey } from '../i18n';
 import { button, clear, el } from '../ui/dom';
 import { openPanel } from '../ui/panel';
-import { numberField, section, switchField } from '../ui/form';
+import { numberField, section, selectField, switchField } from '../ui/form';
 import { compactNumber, relativeTime, renderTable, stacked } from '../ui/table';
-import { adminApi, emptyPolicy, type QuotaWindowKind, type UsagePoint } from './api';
+import { renderChart, type ChartShape } from '../ui/chart';
+import {
+  adminApi,
+  emptyPolicy,
+  type QuotaWindowKind,
+  type UsageBreakdown,
+  type UsageMetric,
+  type UsagePoint,
+} from './api';
 import { section as panel, statGrid, statusBadge } from './dashboard';
 import { failure, type AdminView } from './admin-page';
 
@@ -23,11 +31,20 @@ const RANGES: Array<{ label: StringKey; hours: number }> = [
 
 let selectedRange = 1;
 
+// Remembered across visits: an operator who looks at credits by user does it
+// again next time, and having to choose twice is friction with no benefit.
+let selectedMetric: UsageMetric = 'credits';
+let selectedShape: ChartShape = 'bar';
+let selectedDimension: 'model' | 'user' | 'provider' = 'model';
+
 export async function renderUsage(view: AdminView): Promise<void> {
   view.setTitle(t('usageTitle'));
 
   const since = Date.now() - RANGES[selectedRange]!.hours * 3600_000;
-  const query = `?since=${since}`;
+  // The ranking is done in SQL, so which metric is being asked for has to go
+  // with the request: the top fifty by credits is not the top fifty by
+  // request count.
+  const query = `?since=${since}&metric=${selectedMetric}`;
 
   let summary;
   let records;
@@ -73,6 +90,12 @@ export async function renderUsage(view: AdminView): Promise<void> {
 
   view.body.appendChild(panel(t('secOverTime'), chart(summary.series, summary.bucket_ms)));
 
+  view.body.appendChild(panel(t('secRanking'), ranking({
+    model: summary.by_model,
+    user: summary.by_user,
+    provider: summary.by_provider,
+  })));
+
   view.body.appendChild(panel(t('secByModel'), renderTable({
     columns: [
       { header: t('colModel'), cell: (row) => row.label || row.key || '—' },
@@ -95,6 +118,82 @@ export async function renderUsage(view: AdminView): Promise<void> {
     rows: summary.by_provider,
     empty: t('nothingInPeriod'),
   })));
+
+  /**
+   * The same numbers as the tables below, as a shape.
+   *
+   * Three choices rather than one, because "who used the most" has three
+   * defensible answers and a chart that picks silently is a chart that
+   * misleads. Shape and dimension repaint from what is already loaded;
+   * changing the metric refetches, because the ranking is the server's.
+   */
+  function ranking(sets: Record<'model' | 'user' | 'provider', UsageBreakdown[]>): HTMLElement {
+    const wrap = el('div', 'oa-ranking');
+    const canvas = el('div', 'oa-ranking-canvas');
+
+    const dimension = selectField<'model' | 'user' | 'provider'>({
+      label: t('rankBy'),
+      value: selectedDimension,
+      options: [
+        { value: 'model', label: t('rankModels') },
+        { value: 'user', label: t('rankUsers') },
+        { value: 'provider', label: t('rankProviders') },
+      ],
+      onChange: (value) => { selectedDimension = value; paint(); },
+    });
+
+    const metric = selectField<UsageMetric>({
+      label: t('rankMetric'),
+      value: selectedMetric,
+      options: [
+        { value: 'credits', label: t('metricCredits') },
+        { value: 'tokens', label: t('metricTokens') },
+        { value: 'requests', label: t('metricRequests') },
+      ],
+      // A different ranking is a different query, not a different view of
+      // the same fifty rows.
+      onChange: (value) => { selectedMetric = value; void renderUsage(view); },
+    });
+
+    const shape = selectField<ChartShape>({
+      label: t('chartShape'),
+      value: selectedShape,
+      options: [
+        { value: 'bar', label: t('chartBar') },
+        { value: 'pie', label: t('chartPie') },
+      ],
+      onChange: (value) => { selectedShape = value; paint(); },
+    });
+
+    const controls = el('div', 'oa-ranking-controls');
+    controls.appendChild(dimension.element);
+    controls.appendChild(metric.element);
+    controls.appendChild(shape.element);
+
+    function paint(): void {
+      const rows = sets[selectedDimension];
+
+      clear(canvas);
+      canvas.appendChild(renderChart({
+        shape: selectedShape,
+        data: rows.map((row) => ({
+          key: row.key,
+          label: row.label || row.key || '—',
+          value: metricValue(row),
+        })),
+        format: (value) => selectedMetric === 'credits'
+          ? value.toFixed(2)
+          : compactNumber(value),
+        emptyText: t('nothingInPeriod'),
+        otherLabel: t('chartOther'),
+      }));
+    }
+    paint();
+
+    wrap.appendChild(controls);
+    wrap.appendChild(canvas);
+    return wrap;
+  }
 
   view.body.appendChild(panel(t('secRequestsN', { count: records.total }), renderTable({
     columns: [
@@ -205,4 +304,16 @@ async function editGlobalPolicy(view: AdminView): Promise<void> {
       }
     },
   });
+}
+
+/** The figure the current metric ranks by, for the chart's own arithmetic. */
+function metricValue(row: UsageBreakdown): number {
+  switch (selectedMetric) {
+    case 'requests':
+      return row.requests;
+    case 'tokens':
+      return row.total_tokens;
+    default:
+      return row.credits;
+  }
 }

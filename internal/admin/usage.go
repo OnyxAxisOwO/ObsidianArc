@@ -63,11 +63,20 @@ func (h *Handlers) usageSummary(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 
-	byModel, err := h.usage.GroupBy(r.Context(), "model", filter)
+	// What "the most" means is the caller's to choose: the most requests, the
+	// most tokens, or the most money. The ranking happens in SQL, so a top
+	// fifty is the top fifty of the thing that was asked for.
+	metric := r.URL.Query().Get("metric")
+
+	byModel, err := h.usage.GroupBy(r.Context(), "model", metric, filter)
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	byProvider, err := h.usage.GroupBy(r.Context(), "provider", filter)
+	byProvider, err := h.usage.GroupBy(r.Context(), "provider", metric, filter)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	byUser, err := h.usage.GroupBy(r.Context(), "user", metric, filter)
 	if err != nil {
 		return httpx.Internal(err)
 	}
@@ -87,6 +96,7 @@ func (h *Handlers) usageSummary(w http.ResponseWriter, r *http.Request) error {
 		"totals":      totals,
 		"by_model":    byModel,
 		"by_provider": byProvider,
+		"by_user":     byUser,
 		"series":      series,
 		"bucket_ms":   bucket.Milliseconds(),
 	})

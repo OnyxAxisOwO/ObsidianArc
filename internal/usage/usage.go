@@ -192,31 +192,65 @@ type Breakdown struct {
 // GroupBy aggregates over one dimension. The column and label are chosen from
 // a fixed set rather than interpolated from a caller's string, so no request
 // parameter reaches the query text.
-func (s *Store) GroupBy(ctx context.Context, dimension string, filter Filter) ([]Breakdown, error) {
-	var keyColumn, labelColumn string
+// Metrics a breakdown can be ranked by. "Who used the most" has three
+// defensible answers — the most requests, the most tokens, the most money —
+// and which one an operator means depends on what they are worried about.
+const (
+	MetricRequests = "requests"
+	MetricTokens   = "tokens"
+	MetricCredits  = "credits"
+)
+
+// rankBy maps a metric onto the expression a breakdown is ordered by. An
+// unknown metric ranks by credits, which is the one that costs something.
+func rankBy(metric string) string {
+	switch metric {
+	case MetricRequests:
+		return "COUNT(*)"
+	case MetricTokens:
+		return "COALESCE(SUM(total_tokens), 0)"
+	default:
+		return "COALESCE(SUM(credits), 0)"
+	}
+}
+
+// GroupBy totals the ledger along one dimension, ranked by one metric.
+//
+// The ranking happens in SQL rather than in the caller because the result is
+// capped: taking the top fifty by credits and then re-sorting them by request
+// count would be the top fifty of the wrong thing.
+func (s *Store) GroupBy(ctx context.Context, dimension, metric string, filter Filter) ([]Breakdown, error) {
+	var keyColumn, labelExpr, from, prefix string
+
 	switch dimension {
 	case "model":
-		keyColumn, labelColumn = "model_id", "model_name"
+		keyColumn, labelExpr, from = "model_id", "MAX(model_name)", "usage_records"
 	case "provider":
-		keyColumn, labelColumn = "provider_id", "provider_name"
-	case "user":
-		keyColumn, labelColumn = "user_id", "user_id"
+		keyColumn, labelExpr, from = "provider_id", "MAX(provider_name)", "usage_records"
 	case "status":
-		keyColumn, labelColumn = "status", "status"
+		keyColumn, labelExpr, from = "status", "MAX(status)", "usage_records"
+	case "user":
+		// Joined for the name: the ledger stores the id, and a list of ULIDs
+		// answers "who used the most" only in principle.
+		keyColumn = "r.user_id"
+		labelExpr = "MAX(COALESCE(u.username, r.user_id))"
+		from = "usage_records r LEFT JOIN users u ON u.id = r.user_id"
+		prefix = "r."
 	default:
 		return nil, fmt.Errorf("usage: unknown dimension %q", dimension)
 	}
 
-	where, args := filter.where("")
-	query := `SELECT ` + keyColumn + `, MAX(` + labelColumn + `),
+	where, args := filter.where(prefix)
+	rank := rankBy(metric)
+	query := `SELECT ` + keyColumn + `, ` + labelExpr + `,
 		COUNT(*),
-		COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
-		COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(total_tokens), 0),
-		COALESCE(SUM(credits), 0),
-		COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0)
-		FROM usage_records` + where + `
+		COALESCE(SUM(` + prefix + `input_tokens), 0), COALESCE(SUM(` + prefix + `output_tokens), 0),
+		COALESCE(SUM(` + prefix + `reasoning_tokens), 0), COALESCE(SUM(` + prefix + `total_tokens), 0),
+		COALESCE(SUM(` + prefix + `credits), 0),
+		COALESCE(SUM(CASE WHEN ` + prefix + `status = 'error' THEN 1 ELSE 0 END), 0)
+		FROM ` + from + where + `
 		GROUP BY ` + keyColumn + `
-		ORDER BY COALESCE(SUM(credits), 0) DESC, COUNT(*) DESC
+		ORDER BY ` + rank + ` DESC, COUNT(*) DESC
 		LIMIT 50`
 
 	rows, err := s.db.Query(ctx, query, args...)
@@ -232,6 +266,9 @@ func (s *Store) GroupBy(ctx context.Context, dimension string, filter Filter) ([
 			&entry.InputTokens, &entry.OutputTokens, &entry.ReasoningTokens,
 			&entry.TotalTokens, &entry.Credits, &entry.Errors); err != nil {
 			return nil, fmt.Errorf("usage: group scan: %w", err)
+		}
+		if entry.Label == "" {
+			entry.Label = entry.Key
 		}
 		out = append(out, entry)
 	}
