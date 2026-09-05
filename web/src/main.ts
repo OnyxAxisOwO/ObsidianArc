@@ -6,6 +6,7 @@ import './styles/admin.css';
 
 import { renderAboutPage } from './about/about-page';
 import { renderAuthPage } from './auth/auth-page';
+import { renderVerifyPage } from './auth/verify-page';
 import { renderAdminPage } from './admin/admin-page';
 import { renderChatPage } from './chat/chat-page';
 import { renderLandingPage } from './landing/landing-page';
@@ -33,6 +34,9 @@ const routes: Route[] = [
   { pattern: '/', render: frontDoor },
   { pattern: '/login', render: (target) => renderAuthPage(target, 'login') },
   { pattern: '/register', render: (target) => renderAuthPage(target, 'register') },
+  // Public: the link is opened out of a mail client, quite possibly in
+  // a browser that has never signed in here.
+  { pattern: '/verify', render: (target, ctx) => renderVerifyPage(target, ctx.query) },
   { pattern: '/settings', render: guarded(renderSettingsPage) },
   { pattern: '/about', render: guarded(renderAboutPage) },
   { pattern: '/admin/*', render: guarded(adminOnly(admin)) },

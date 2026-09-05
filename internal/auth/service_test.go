@@ -10,6 +10,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -66,7 +67,7 @@ func newFixture(t *testing.T) *fixture {
 		users:    users,
 		groups:   groups,
 		settings: set,
-		auth:     NewService(db, users, groups, set, cfg),
+		auth:     NewService(db, users, groups, set, mail.New(mail.Config{}), cfg),
 	}
 }
 

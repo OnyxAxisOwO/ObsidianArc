@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -33,6 +35,10 @@ type Service struct {
 	cfg      config.Session
 	limiter  *Limiter
 	signups  *signupGate
+	// Optional. Nil, or configured with no host, means every feature
+	// that needs mail reports itself as unavailable rather than
+	// failing halfway through.
+	mailer *mail.Sender
 }
 
 func NewService(
@@ -40,6 +46,7 @@ func NewService(
 	users *user.Store,
 	groups *group.Store,
 	set *settings.Service,
+	mailer *mail.Sender,
 	cfg config.Config,
 ) *Service {
 	return &Service{
@@ -52,6 +59,7 @@ func NewService(
 		cfg:      cfg.Session,
 		limiter:  NewLimiter(),
 		signups:  newSignupGate(),
+		mailer:   mailer,
 	}
 }
 
@@ -72,6 +80,10 @@ type RegisterInput struct {
 // instance becomes an administrator regardless of whether registration is
 // otherwise open, which is what makes a fresh deployment usable without
 // environment variables.
+// VerificationToken is returned by Register when the new account has to
+// confirm its address. Empty otherwise. The mail is sent by the handler,
+// so a briefly unreachable SMTP server does not fail a registration that
+// has already been written.
 func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, string, error) {
 	if err := user.ValidateUsername(in.Username); err != nil {
 		return user.User{}, "", err
@@ -88,7 +100,10 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		return user.User{}, "", err
 	}
 
-	var created user.User
+	var (
+		created      user.User
+		verification string
+	)
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
 		total, err := s.users.Count(ctx, tx)
 		if err != nil {
@@ -137,6 +152,10 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			role = user.RoleAdmin
 		}
 
+		// The first account is never held back: it is the one that turns
+		// an empty instance into an administered one.
+		unverified := !first && s.VerificationRequired()
+
 		created, err = s.users.Create(ctx, tx, user.CreateInput{
 			Username:     in.Username,
 			Email:        in.Email,
@@ -145,8 +164,18 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			Role:         role,
 			GroupID:      groupID,
 			Status:       user.StatusActive,
+			Unverified:   unverified,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		if !created.EmailVerified {
+			verification, err = s.issueVerification(ctx, tx, created.ID, created.Email)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return user.User{}, "", err
@@ -155,6 +184,22 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	// Counted only once the account exists, so a rejected attempt does
 	// not spend the next person's place in the window.
 	s.signups.record()
+
+	// Mailed on a detached context: a briefly unreachable SMTP server must
+	// not fail a registration that has already been written, and the person
+	// registering should not wait on an SMTP handshake. If it never arrives
+	// there is a resend button behind the banner.
+	if verification != "" {
+		siteName := s.settings.Get(settings.SiteName)
+		email := created.Email
+		go func() {
+			sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if err := s.SendVerification(sendCtx, siteName, email, verification); err != nil {
+				slog.ErrorContext(sendCtx, "could not send verification mail", "error", err)
+			}
+		}()
+	}
 
 	token, _, err := s.sessions.Create(ctx, created.ID, s.cfg.TTL, in.IP, in.UA)
 	if err != nil {

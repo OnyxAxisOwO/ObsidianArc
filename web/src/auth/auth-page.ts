@@ -72,7 +72,7 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
     form.appendChild(field(
       emailRequired ? t('email') : t('emailOptional'),
       email,
-      domains.length ? t('emailAccepted', { domains: domains.join(', ') }) : undefined,
+      emailHint(domains, !setup && (site.verify_email ?? false)),
     ));
   }
 
@@ -197,6 +197,15 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
     errorLine.textContent = message;
     errorLine.hidden = false;
   }
+}
+
+// What to say under the address field: which domains are taken, that a
+// link is coming, or both. Nothing when neither applies.
+function emailHint(domains: string[], verifying: boolean): string | undefined {
+  const parts: string[] = [];
+  if (domains.length) parts.push(t('emailAccepted', { domains: domains.join(', ') }));
+  if (verifying) parts.push(t('verifySignupNote'));
+  return parts.length ? parts.join(' ') : undefined;
 }
 
 function themeIcon(): readonly string[] {

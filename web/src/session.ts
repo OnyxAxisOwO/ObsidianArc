@@ -42,6 +42,7 @@ export function siteInfo(): SiteInfo {
     setup_required: false,
     require_email: false,
     email_domains: [],
+    verify_email: false,
     landing: { mode: 'login', intro: '', trial: false, trial_turns: 0 },
   };
 }

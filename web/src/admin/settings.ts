@@ -79,6 +79,16 @@ export async function renderSettings(view: AdminView): Promise<void> {
     hint: t('requireEmailHint'),
   });
 
+  const verifyEmail = switchField({
+    label: t('verifyEmail'),
+    value: values['registration.verify_email'] === 'true',
+    hint: data.mail_configured ? t('verifyEmailHint') : t('verifyEmailNoMail'),
+  });
+  // Offered but inert without SMTP, and the hint above says so. The
+  // server ignores it in that state too, so an operator cannot lock
+  // every new account out of an instance that cannot send the link.
+  verifyEmail.element.classList.toggle('oa-field-inert', !data.mail_configured);
+
   const emailDomains = textArea({
     label: t('emailDomains'),
     value: values['registration.email_domains'] ?? '',
@@ -181,6 +191,7 @@ export async function renderSettings(view: AdminView): Promise<void> {
 
   form.appendChild(section(t('secRegistration')));
   form.appendChild(requireEmail.element);
+  form.appendChild(verifyEmail.element);
   form.appendChild(emailDomains.element);
   form.appendChild(perMinute.element);
   form.appendChild(perHour.element);
@@ -229,6 +240,7 @@ export async function renderSettings(view: AdminView): Promise<void> {
         'registration.enabled': String(registration.value()),
         'registration.default_group': defaultGroup.value(),
         'registration.require_email': String(requireEmail.value()),
+        'registration.verify_email': String(verifyEmail.value()),
         'registration.email_domains': emailDomains.value(),
         'registration.per_minute': String(perMinute.value() ?? 0),
         'registration.per_hour': String(perHour.value() ?? 0),

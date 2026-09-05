@@ -21,6 +21,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
@@ -66,7 +67,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	groups := group.NewStore(db)
 	users := user.NewStore(db)
 	preferences := user.NewPreferenceStore(db)
-	authService := auth.NewService(db, users, groups, settingsService, cfg)
+	mailer := mail.New(mail.Config{
+		Host:        cfg.Mail.Host,
+		Port:        cfg.Mail.Port,
+		Username:    cfg.Mail.Username,
+		Password:    cfg.Mail.Password,
+		From:        cfg.Mail.From,
+		ImplicitTLS: cfg.Mail.ImplicitTLS,
+		PublicURL:   cfg.Mail.PublicURL,
+	})
+	authService := auth.NewService(db, users, groups, settingsService, mailer, cfg)
 
 	// Provider API keys are encrypted with a key derived from the instance
 	// secret; the box is the only thing that can read them back.
@@ -87,6 +97,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// path stays readable, and usage can be swapped or disabled without the
 	// gateway knowing.
 	chatService.Authorize = func(ctx context.Context, req chat.TurnRequest) error {
+		// An unconfirmed address is checked here rather than at sign-in: the
+		// point is that it must not spend anything, and locking someone out
+		// of the interface entirely would leave them nowhere to press
+		// resend from.
+		if !req.User.EmailVerified && authService.VerificationRequired() {
+			return httpx.ForbiddenCode("email_unverified",
+				"Confirm your email address before sending a message.")
+		}
 		if err := quotaService.Reserve(ctx, req.User); err != nil {
 			if translated := quota.TranslateError(err); translated != nil {
 				return translated

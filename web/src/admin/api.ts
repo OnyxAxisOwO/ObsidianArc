@@ -229,7 +229,10 @@ export const adminApi = {
   deletePolicy: (scope: string, scopeID: string) =>
     api.delete<void>(`/api/admin/quota/policies/${scope}?scope_id=${encodeURIComponent(scopeID)}`),
 
-  settings: () => api.get<{ settings: Record<string, string>; groups: Group[] }>('/api/admin/settings'),
+  settings: () =>
+    api.get<{ settings: Record<string, string>; groups: Group[]; mail_configured: boolean }>(
+      '/api/admin/settings',
+    ),
   saveSettings: (values: Record<string, string>) =>
     api.put<{ settings: Record<string, string> }>('/api/admin/settings', values),
 

@@ -39,18 +39,22 @@ const (
 // it can only be obtained through CredentialsByLogin, which is called from
 // exactly one place.
 type User struct {
-	ID          string `json:"id"`
-	Username    string `json:"username"`
-	Email       string `json:"email"`
-	Nickname    string `json:"nickname"`
-	Avatar      string `json:"avatar"`
-	Bio         string `json:"bio"`
-	Role        Role   `json:"role"`
-	GroupID     string `json:"group_id"`
-	Status      Status `json:"status"`
-	CreatedAt   int64  `json:"created_at"`
-	UpdatedAt   int64  `json:"updated_at"`
-	LastLoginAt int64  `json:"last_login_at"`
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Nickname string `json:"nickname"`
+	Avatar   string `json:"avatar"`
+	Bio      string `json:"bio"`
+	Role     Role   `json:"role"`
+	GroupID  string `json:"group_id"`
+	Status   Status `json:"status"`
+	// Whether the address above has been confirmed. True for every
+	// account that predates verification, and for one with no address:
+	// there is nothing to confirm and nothing to hold back.
+	EmailVerified bool  `json:"email_verified"`
+	CreatedAt     int64 `json:"created_at"`
+	UpdatedAt     int64 `json:"updated_at"`
+	LastLoginAt   int64 `json:"last_login_at"`
 }
 
 func (u User) IsAdmin() bool  { return u.Role == RoleAdmin }
@@ -118,7 +122,7 @@ type Store struct{ db *database.DB }
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
 const columns = `id, username, email, nickname, avatar, bio, role, group_id, status,
-	created_at, updated_at, last_login_at`
+	email_verified, created_at, updated_at, last_login_at`
 
 type CreateInput struct {
 	Username     string
@@ -126,8 +130,11 @@ type CreateInput struct {
 	PasswordHash string
 	Nickname     string
 	Role         Role
-	GroupID      string
-	Status       Status
+	// Set false only when this account must confirm its address before
+	// it can spend anything.
+	Unverified bool
+	GroupID    string
+	Status     Status
 }
 
 func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) (User, error) {
@@ -149,24 +156,28 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 
 	now := time.Now().UnixMilli()
 	record := User{
-		ID:        id.New(),
-		Username:  username,
-		Email:     email,
-		Nickname:  nickname,
-		Role:      orDefault(in.Role, RoleUser),
-		GroupID:   in.GroupID,
-		Status:    orDefault(in.Status, StatusActive),
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:       id.New(),
+		Username: username,
+		Email:    email,
+		Nickname: nickname,
+		Role:     orDefault(in.Role, RoleUser),
+		GroupID:  in.GroupID,
+		Status:   orDefault(in.Status, StatusActive),
+		// An account with no address has nothing to confirm, so it is
+		// never held back for not having confirmed it.
+		EmailVerified: !in.Unverified || email == "",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	_, err = q.Exec(ctx, `INSERT INTO users
 		(id, username, username_lower, email, email_lower, password_hash, nickname, avatar, bio,
-		 role, group_id, status, created_at, updated_at, last_login_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, 0)`,
+		 role, group_id, status, email_verified, created_at, updated_at, last_login_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0)`,
 		record.ID, record.Username, strings.ToLower(record.Username),
 		record.Email, strings.ToLower(record.Email), in.PasswordHash, record.Nickname,
-		record.Role, nullable(record.GroupID), record.Status, record.CreatedAt, record.UpdatedAt)
+		record.Role, nullable(record.GroupID), record.Status, record.EmailVerified,
+		record.CreatedAt, record.UpdatedAt)
 	if err != nil {
 		// Both engines report a violated unique index without naming a
 		// portable error code, so the message is matched instead. The check
@@ -199,8 +210,8 @@ func (s *Store) CredentialsByLogin(ctx context.Context, identifier string) (User
 		group  sql.NullString
 	)
 	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.Nickname, &record.Avatar,
-		&record.Bio, &record.Role, &group, &record.Status, &record.CreatedAt, &record.UpdatedAt,
-		&record.LastLoginAt, &hash)
+		&record.Bio, &record.Role, &group, &record.Status, &record.EmailVerified,
+		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &hash)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return User{}, "", ErrNotFound
@@ -501,8 +512,8 @@ func scanUser(row rowScanner) (User, error) {
 		group  sql.NullString
 	)
 	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.Nickname, &record.Avatar,
-		&record.Bio, &record.Role, &group, &record.Status, &record.CreatedAt, &record.UpdatedAt,
-		&record.LastLoginAt)
+		&record.Bio, &record.Role, &group, &record.Status, &record.EmailVerified,
+		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return User{}, ErrNotFound

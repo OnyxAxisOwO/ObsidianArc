@@ -26,6 +26,7 @@ const (
 	RegistrationEnabled  = "registration.enabled"
 	RegistrationGroup    = "registration.default_group"
 	RequireEmail         = "registration.require_email"
+	VerifyEmail          = "registration.verify_email"
 	EmailDomains         = "registration.email_domains"
 	SignupsPerMinute     = "registration.per_minute"
 	SignupsPerHour       = "registration.per_hour"
@@ -98,7 +99,9 @@ var Defaults = map[string]string{
 	RegistrationEnabled: "true",
 	RegistrationGroup:   "",
 	RequireEmail:        "false",
-	EmailDomains:        "",
+	// Inert without SMTP, whatever it says: see auth.VerificationRequired.
+	VerifyEmail:  "false",
+	EmailDomains: "",
 	// Zero means unthrottled. An instance that has closed
 	// registration needs neither, so neither is on by default.
 	SignupsPerMinute:     "0",

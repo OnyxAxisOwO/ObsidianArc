@@ -17,6 +17,9 @@ export interface Account {
   created_at: number;
   updated_at: number;
   last_login_at: number;
+  // False only while an unconfirmed address is holding the account
+  // back. True for everyone else, including accounts with no address.
+  email_verified: boolean;
 }
 
 // What a visitor with no account is shown at the address. The server settles
@@ -43,6 +46,10 @@ export interface SiteInfo {
   // instance still has no accounts.
   require_email?: boolean;
   email_domains?: string[];
+  // Whether a new account has to confirm its address before it can
+  // send anything. False whenever the server cannot post mail,
+  // whatever the setting says.
+  verify_email?: boolean;
   // Absent on a server older than the landing-page setting; the fallback in
   // session.ts supplies the behaviour that server had.
   landing?: Landing;
@@ -52,6 +59,14 @@ export interface SiteInfo {
 // the server stores what it is given and does not interpret most of it, so
 // adding a preference is a frontend-only change.
 export type Preferences = Record<string, unknown>;
+
+export function verifyEmail(token: string): Promise<void> {
+  return api.post<void>('/api/auth/verify', { token });
+}
+
+export function resendVerification(): Promise<void> {
+  return api.post<void>('/api/profile/verify/resend', {});
+}
 
 export function fetchSite(): Promise<SiteInfo> {
   return api.get<SiteInfo>('/api/site');

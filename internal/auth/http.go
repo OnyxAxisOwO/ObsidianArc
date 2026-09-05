@@ -12,6 +12,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -54,6 +55,10 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/login", httpx.Wrap(h.login))
 	mux.HandleFunc("POST /api/auth/logout", httpx.Wrap(h.logout))
 	mux.HandleFunc("GET /api/auth/me", httpx.Wrap(h.me))
+	// Public: whoever opens the link out of their mail has no session
+	// here, and requiring one would send them to a sign-in page that
+	// then loses the token.
+	mux.HandleFunc("POST /api/auth/verify", httpx.Wrap(h.verifyEmail))
 
 	protected := func(handler httpx.Handler) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +67,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("PATCH /api/profile", protected(h.updateProfile))
 	mux.HandleFunc("POST /api/profile/password", protected(h.changePassword))
+	mux.HandleFunc("POST /api/profile/verify/resend", protected(h.resendVerification))
 	mux.HandleFunc("GET /api/preferences", protected(h.getPreferences))
 	mux.HandleFunc("PATCH /api/preferences", protected(h.patchPreferences))
 	mux.HandleFunc("GET /api/preferences/wallpaper", protected(h.getWallpaper))
@@ -109,6 +115,9 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// addresses will be accepted, instead of finding out on submit.
 		// Neither applies to the first account.
 		"require_email": count > 0 && h.settings.Bool(settings.RequireEmail),
+		// So the sign-up card can say a link is coming, rather than the
+		// banner being the first anyone hears of it.
+		"verify_email":  count > 0 && h.service.VerificationRequired(),
 		"email_domains": emailDomains(count, h.settings.Get(settings.EmailDomains)),
 		// What a visitor with no account gets. Served here rather than
 		// from a second endpoint because the front door has to decide what
@@ -152,6 +161,50 @@ func (h *Handlers) landing(setupRequired bool) map[string]any {
 		"intro":       h.settings.Get(settings.LandingIntro),
 		"trial":       trial,
 		"trial_turns": turns,
+	}
+}
+
+type verifyRequest struct {
+	Token string `json:"token"`
+}
+
+func (h *Handlers) verifyEmail(w http.ResponseWriter, r *http.Request) error {
+	var body verifyRequest
+	if err := httpx.DecodeJSON(w, r, &body, 4*1024); err != nil {
+		return err
+	}
+	if _, err := h.service.Verify(r.Context(), body.Token); err != nil {
+		return verificationError(err)
+	}
+	return httpx.NoContent(w)
+}
+
+func (h *Handlers) resendVerification(w http.ResponseWriter, r *http.Request) error {
+	account := MustUser(r.Context())
+	err := h.service.Resend(r.Context(), h.settings.Get(settings.SiteName), account.ID)
+	if err != nil {
+		return verificationError(err)
+	}
+	return httpx.NoContent(w)
+}
+
+func verificationError(err error) error {
+	switch {
+	case errors.Is(err, ErrVerificationInvalid):
+		return httpx.BadRequest("That verification link is not valid.")
+	case errors.Is(err, ErrVerificationExpired):
+		return httpx.BadRequest("That verification link has expired. Ask for a new one.")
+	case errors.Is(err, ErrAlreadyVerified):
+		return httpx.Conflict("already_verified", "That address is already verified.")
+	case errors.Is(err, ErrNoAddress):
+		return httpx.BadRequest("This account has no email address to verify.")
+	case errors.Is(err, ErrResendTooSoon):
+		return httpx.TooManyRequests("resend_too_soon",
+			"A link was just sent. Check the address before asking for another.")
+	case errors.Is(err, mail.ErrNotConfigured):
+		return httpx.Unavailable("This server cannot send mail.")
+	default:
+		return httpx.Internal(err)
 	}
 }
 

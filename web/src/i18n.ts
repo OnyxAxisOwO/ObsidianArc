@@ -595,6 +595,21 @@ const en = {
   emailDomainRejected: 'Use an address at {domains}.',
   signupsThrottled: 'Too many accounts have just been created. Try again in about {count} seconds.',
   emailAccepted: 'Accepted: {domains}',
+
+  // --- email verification
+  verifyEmail: 'Require a confirmed email address',
+  verifyEmailHint: 'A new account can sign in but cannot send a message until it opens the link. This is what makes the domain list mean something — without it, anyone can type any address.',
+  verifyEmailNoMail: 'Needs SMTP. Set OBSIDIAN_SMTP_HOST, OBSIDIAN_SMTP_FROM and OBSIDIAN_PUBLIC_URL, then restart. Until then this setting does nothing.',
+  verifyBannerTitle: 'Confirm your email address',
+  verifyBannerBody: 'We sent a link to {email}. Open it to start chatting.',
+  verifyBannerNoAddress: 'Add an email address in settings, then ask for a link.',
+  verifyResend: 'Send it again',
+  verifyResendSent: 'Sent',
+  verifySignupNote: 'A confirmation link will be sent to this address.',
+  verifyPageChecking: 'Confirming…',
+  verifyPageDone: 'Your address is confirmed.',
+  verifyPageContinue: 'Continue',
+  verifyPageFailedTitle: 'That link did not work',
 } as const;
 
 export type StringKey = keyof typeof en;
@@ -1163,6 +1178,21 @@ const zh: Record<StringKey, string> = {
   emailDomainRejected: '请使用 {domains} 的邮箱。',
   signupsThrottled: '刚刚注册的账户太多了，大约 {count} 秒后再试。',
   emailAccepted: '可用邮箱：{domains}',
+
+  // --- email verification
+  verifyEmail: '必须验证邮箱',
+  verifyEmailHint: '新账户可以登录，但在打开验证链接之前不能发消息。这才让域名白名单真正生效——否则谁都能随便填一个地址。',
+  verifyEmailNoMail: '需要先配置 SMTP：设置 OBSIDIAN_SMTP_HOST、OBSIDIAN_SMTP_FROM 和 OBSIDIAN_PUBLIC_URL 后重启。在那之前这个开关不起作用。',
+  verifyBannerTitle: '请验证你的邮箱',
+  verifyBannerBody: '验证链接已发送到 {email}，打开它就可以开始对话了。',
+  verifyBannerNoAddress: '先在设置里填写邮箱，然后申请验证链接。',
+  verifyResend: '重新发送',
+  verifyResendSent: '已发送',
+  verifySignupNote: '验证链接会发到这个地址。',
+  verifyPageChecking: '正在验证…',
+  verifyPageDone: '邮箱已验证。',
+  verifyPageContinue: '继续',
+  verifyPageFailedTitle: '这个链接无效',
 };
 
 const dictionaries: Record<Language, Record<StringKey, string>> = { en, zh };

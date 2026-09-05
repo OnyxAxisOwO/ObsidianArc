@@ -104,6 +104,10 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"settings": h.settings.All(),
 		"groups":   groups,
+		// Whether this instance can post mail at all. The verification
+		// setting is inert without it, and the form says so rather than
+		// letting an operator switch on something that does nothing.
+		"mail_configured": h.auth.MailConfigured(),
 	})
 }
 
@@ -116,6 +120,7 @@ var writableSettings = map[string]bool{
 	settings.RegistrationEnabled:  true,
 	settings.RegistrationGroup:    true,
 	settings.RequireEmail:         true,
+	settings.VerifyEmail:          true,
 	settings.EmailDomains:         true,
 	settings.SignupsPerMinute:     true,
 	settings.SignupsPerHour:       true,

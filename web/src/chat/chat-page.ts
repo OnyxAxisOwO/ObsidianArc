@@ -6,6 +6,7 @@
 // and knew nothing about providers. It still does; the host is just a
 // different one.
 
+import { createVerifyBanner } from '../announce/verify-banner';
 import { renderShell } from '../app/shell';
 import { navigate } from '../router';
 import { currentPreferences, isAdmin, syncPreferences } from '../session';
@@ -32,6 +33,11 @@ export function renderChatPage(root: HTMLElement): HTMLElement {
 
   const shell = renderShell(root);
   const preferences = currentPreferences();
+
+  // Above the chat, not instead of it: this account can still read and
+  // still change its address, it just cannot send anything yet.
+  const banner = createVerifyBanner();
+  if (banner) shell.root.insertBefore(banner, shell.body);
 
   // Reasoning is the page's state rather than either menu's: the composer
   // menu edits it, the model chip displays it, and the model in play decides
