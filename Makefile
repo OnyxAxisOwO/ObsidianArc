@@ -52,7 +52,7 @@ test: vet
 
 vet:
 	go vet ./...
-	gofmt -l cmd internal
+	@test -z "$$(gofmt -l cmd internal)" || { echo "gofmt would rewrite:"; gofmt -l cmd internal; echo "run: make fmt"; exit 1; }
 
 fmt:
 	gofmt -w cmd internal

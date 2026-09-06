@@ -1,0 +1,23 @@
+# Source is LF everywhere, on every platform.
+#
+# Without this, core.autocrlf=true writes CRLF into a Windows working tree
+# while the agents and editors that touch these files write LF. gofmt reads
+# CRLF as unformatted, so `gofmt -l` lights up the entire tree and stops
+# being a signal — which is how a genuinely misformatted file goes unnoticed
+# inside sixty false ones.
+* text=auto eol=lf
+
+*.go     text eol=lf diff=golang
+*.ts     text eol=lf
+*.css    text eol=lf
+*.sql    text eol=lf
+*.md     text eol=lf
+*.json   text eol=lf
+*.html   text eol=lf
+Makefile text eol=lf
+Dockerfile text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
