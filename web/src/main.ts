@@ -2,7 +2,7 @@ import './styles/base.css';
 import './styles/chat.css';
 import './styles/workspace.css';
 import './styles/app.css';
-import './styles/admin.css';
+import './styles/surfaces.css';
 
 import { renderAboutPage } from './about/about-page';
 import { renderAuthPage } from './auth/auth-page';

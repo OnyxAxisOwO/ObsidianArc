@@ -1,4 +1,13 @@
-/* The administration backoffice.
+/* Every surface that is not the chat: panels, fields, forms, tables, charts,
+ * and the screens built out of them — settings, the API keys page, About, and
+ * the administration backoffice.
+ *
+ * It was called admin.css, which was true when it was written and stopped
+ * being true as the backoffice's parts turned out to be the application's
+ * parts. .oa-panel, .oa-icon-btn, .oa-field, .oa-table and .oa-settings-* are
+ * all in here and all used from screens a regular account reaches, so the old
+ * name told you to look in the wrong file, or to leave a shared rule out of
+ * the right one.
  *
  * Same material as the chat: the rail is the conversation rail, the drawer is
  * the settings drawer, the badges are the model-list badges. Nothing here

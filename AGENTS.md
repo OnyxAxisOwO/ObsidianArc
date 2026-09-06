@@ -26,17 +26,27 @@ stop and say so, not the moment to run `go get` or `npm install`.
 make test     # go vet, gofmt, go test ./..., tsc --noEmit
 ```
 
-All four must pass. `make test` is the only reviewer that reads every agent's
-output, so it is not optional and it is not something to work around:
+All four must pass, and `.github/workflows/ci.yml` runs them again on every
+push — on Linux, against a real PostgreSQL, and building the Docker image. It
+is the only reviewer that reads every agent's output, so it is not optional and
+it is not something to work around:
 
 - `gofmt` **fails the build** now. Run `make fmt`, do not hand-edit alignment.
 - Source is **LF**, enforced by `.gitattributes`. `core.autocrlf` on Windows
   used to rewrite the tree to CRLF, gofmt read that as unformatted, and the
   gate lit up on sixty files at once — which is how a genuinely misformatted
   file went unnoticed inside the noise. Do not reintroduce CRLF.
-- A new feature ships with tests. This repository has ~260 of them and every
+- A new feature ships with tests. This repository has ~280 of them and every
   concurrency fix carries a test that actually reproduces the race with real
   goroutines. Match that bar.
+- A new `/api/admin` endpoint must be added to the route list in
+  `TestAdminRoutesRequireAnAdministrator`. That test counts the table in
+  `admin.Routes` and fails when the two disagree, so it will tell you.
+
+The stylesheet for everything that is not the chat is `web/src/styles/
+surfaces.css`. It was called admin.css; it holds `.oa-panel`, `.oa-field`,
+`.oa-table` and `.oa-icon-btn`, which the settings, keys and About screens all
+use, so do not treat it as the backoffice's private file.
 
 ## Conventions that are already true
 
@@ -191,13 +201,17 @@ way.
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 16.9 MB binary; 58.7 kB gzipped to open the chat, against a target of
-80. The backoffice, the Chinese dictionary and the LaTeX renderer are separate
-chunks, fetched only by the readers who need them — so a static import reaching
-into `admin/`, `i18n.zh` or `chat/math` from the main graph silently undoes one
-of those splits. `web/src/ui/table.ts` holds `formatUptime` for exactly that
-reason: one import of one four-line helper used to pull the whole backoffice
-back into the main bundle.
+Current: 16.9 MB binary; 59.5 kB on the wire to open the chat, against a
+target of 80. The backoffice, the Chinese dictionary and the LaTeX renderer are
+separate chunks, fetched only by the readers who need them — so a static import
+reaching into `admin/`, `i18n.zh` or `chat/math` from the main graph silently
+undoes one of those splits. `web/src/ui/table.ts` holds `formatUptime` for
+exactly that reason: one import of one four-line helper used to pull the whole
+backoffice back into the main bundle.
+
+Responses are compressed by `httpx.Compress`, on an allowlist of content
+types. Adding `text/event-stream` to it would buffer streamed answers into
+silence, so the list is the one place to be careful.
 
 ## Versions
 
