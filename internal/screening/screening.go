@@ -156,12 +156,9 @@ func (r Reviewer) Review(ctx context.Context, facts Facts) (Verdict, error) {
 	// is the same string either way.
 	var answer strings.Builder
 	result, err := r.Registry.Chat(ctx, upstream, adapter.ChatRequest{
-		Model:  spec,
-		System: instruction,
-		Messages: []adapter.Message{{
-			Role:  adapter.RoleUser,
-			Parts: []adapter.Part{{Text: describe(facts)}},
-		}},
+		Model:    spec,
+		System:   instruction,
+		Messages: []adapter.Message{question(facts)},
 		// Enough for the object and a sentence. A model that wants to write an
 		// essay is cut off, and a cut-off answer parses as nothing, which
 		// fails open like every other failure here.
@@ -192,6 +189,20 @@ func (r Reviewer) Review(ctx context.Context, facts Facts) (Verdict, error) {
 			fmt.Errorf("screening: unusable answer: %q", clip(said, 200))
 	}
 	return verdict, nil
+}
+
+// question is the message the facts travel in.
+//
+// Kind, not just Text: a part with the zero Kind is not a text part and the
+// adapters drop it. Without it the model received the instruction and no
+// details, and answered — correctly — that it had nothing to judge, which
+// this read as an unusable answer and allowed. A whole feature switched on
+// and doing nothing, for one missing field.
+func question(facts Facts) adapter.Message {
+	return adapter.Message{
+		Role:  adapter.RoleUser,
+		Parts: []adapter.Part{{Kind: adapter.PartText, Text: describe(facts)}},
+	}
 }
 
 // describe lays the facts out one per line, labelled, with nothing else in

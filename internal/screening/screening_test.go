@@ -1,6 +1,11 @@
 package screening
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
+)
 
 // Everything that can go wrong lets the registration through. A model that
 // answers with prose, an empty body, an object about something else — none of
@@ -101,5 +106,38 @@ func splitLines(text string) []string {
 func TestAnEmptyAnswerIsReportedRatherThanPassedOver(t *testing.T) {
 	if _, ok := parse(""); ok {
 		t.Error("an empty answer was read as a verdict")
+	}
+}
+
+// The message the facts travel in has to be a text part, and has to carry
+// them. A part with the zero Kind is dropped by the adapters, so the model
+// got the instruction and nothing to judge — and said so, which read as an
+// unusable answer and allowed the registration. The feature was switched on
+// and doing nothing, for one missing field.
+func TestTheFactsActuallyTravelInTheMessage(t *testing.T) {
+	message := question(Facts{Username: "123123123123", Email: "123123123123@qq.com"})
+
+	if message.Role != adapter.RoleUser {
+		t.Errorf("role = %q, want user", message.Role)
+	}
+	if len(message.Parts) != 1 {
+		t.Fatalf("%d parts, want 1", len(message.Parts))
+	}
+	part := message.Parts[0]
+	if part.Kind != adapter.PartText {
+		t.Errorf("kind = %q, want %q — a zero kind is dropped in transit", part.Kind, adapter.PartText)
+	}
+	for _, wanted := range []string{"123123123123", "123123123123@qq.com", "Username", "Email"} {
+		if !strings.Contains(part.Text, wanted) {
+			t.Errorf("the message does not carry %q:\n%s", wanted, part.Text)
+		}
+	}
+}
+
+// A verdict of null is not a verdict. It is what a model answers when it was
+// given nothing to judge, and reading it either way would be guessing.
+func TestANullVerdictIsNotAnAnswer(t *testing.T) {
+	if _, ok := parse(`{"allow": null, "reason": "No user details provided to evaluate."}`); ok {
+		t.Error("a null verdict was read as a decision")
 	}
 }
