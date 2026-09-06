@@ -63,6 +63,7 @@ const (
 	// runs, which model answers, and what a refusal says.
 	SignupReview         = "security.signup_review"
 	SignupReviewModel    = "security.signup_review_model"
+	SignupReviewMode     = "security.signup_review_mode"
 	SignupReviewRefusal  = "security.signup_review_refusal"
 	AdminsBypassQuota    = "quota.admins_bypass"
 	UsageDisplay         = "quota.usage_display"
@@ -210,6 +211,10 @@ var Defaults = map[string]string{
 	TurnstileOnAPIKey: "false",
 	SignupReview:      "false",
 	SignupReviewModel: "",
+	// Loose, normal or strict. Normal refuses what reads as generated and
+	// allows what reads as chosen; the other two move the line, and strict
+	// also refuses when the model cannot answer at all.
+	SignupReviewMode: "normal",
 	// What a refused person reads. Empty means the sentence built into the
 	// client, which says only that the sign-up was not accepted — an operator
 	// who wants to offer a way to appeal writes it here.

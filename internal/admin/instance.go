@@ -154,6 +154,7 @@ var writableSettings = map[string]bool{
 	settings.TurnstileOnAPIKey:     true,
 	settings.SignupReview:          true,
 	settings.SignupReviewModel:     true,
+	settings.SignupReviewMode:      true,
 	settings.SignupReviewRefusal:   true,
 	settings.AdminsBypassQuota:     true,
 	settings.HealthProbe:           true,

@@ -362,16 +362,17 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			return nil
 		}
 
-		verdict, err := reviewer.Review(ctx, screening.Facts{
+		mode := screening.ParseMode(settingsService.Get(settings.SignupReviewMode))
+		verdict, err := reviewer.Review(ctx, mode, screening.Facts{
 			Username: in.Username, Email: in.Email, QQ: in.QQ, Nickname: in.Nickname,
 			IP: in.IP, UserAgent: in.UA, FromThisAddress: fromAddress,
 		})
 		if err != nil {
-			// Logged, not returned: an operator needs to know their reviewer
-			// is broken, and the person registering must not pay for it.
-			slog.WarnContext(ctx, "signup review unavailable, allowing",
-				"username", in.Username, "error", err)
-			return nil
+			// Always worth saying: an operator needs to know their reviewer is
+			// broken. Whether it also refuses is the mode's decision, made in
+			// the verdict, and strict is the one that says yes.
+			slog.WarnContext(ctx, "signup review could not answer",
+				"username", in.Username, "mode", mode, "allowed", verdict.Allow, "error", err)
 		}
 		if verdict.Allow {
 			return nil
@@ -385,10 +386,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 
 	adminTryReview := func(ctx context.Context, in admin.ReviewTrial) (bool, string, error) {
-		verdict, err := reviewer.Review(ctx, screening.Facts{
-			Username: in.Username, Email: in.Email, QQ: in.QQ, Nickname: in.Nickname,
-			UserAgent: in.UserAgent, FromThisAddress: in.FromThisAddress,
-		})
+		verdict, err := reviewer.Review(ctx,
+			screening.ParseMode(settingsService.Get(settings.SignupReviewMode)),
+			screening.Facts{
+				Username: in.Username, Email: in.Email, QQ: in.QQ, Nickname: in.Nickname,
+				UserAgent: in.UserAgent, FromThisAddress: in.FromThisAddress,
+			})
 		return verdict.Allow, verdict.Reason, err
 	}
 

@@ -156,6 +156,17 @@ export async function renderSecurity(view: AdminView): Promise<void> {
     hint: t('signupReviewModelHint'),
   });
 
+  const reviewMode = selectField({
+    label: t('signupReviewMode'),
+    value: values['security.signup_review_mode'] ?? 'normal',
+    options: [
+      { value: 'loose', label: t('reviewModeLoose') },
+      { value: 'normal', label: t('reviewModeNormal') },
+      { value: 'strict', label: t('reviewModeStrict') },
+    ],
+    hint: t('signupReviewModeHint'),
+  });
+
   const reviewRefusal = textArea({
     label: t('signupReviewRefusal'),
     value: values['security.signup_review_refusal'] ?? '',
@@ -189,6 +200,7 @@ export async function renderSecurity(view: AdminView): Promise<void> {
   form.appendChild(section(t('secSignupReview'), t('signupReviewIntro')));
   form.appendChild(reviewEnabled.element);
   form.appendChild(reviewModel.element);
+  form.appendChild(reviewMode.element);
   form.appendChild(reviewRefusal.element);
   form.appendChild(trial());
 
@@ -227,6 +239,7 @@ export async function renderSecurity(view: AdminView): Promise<void> {
       'turnstile.on_api_key': String(turnstileOnAPIKey.value()),
       'security.signup_review': String(reviewEnabled.value()),
       'security.signup_review_model': reviewModel.value(),
+      'security.signup_review_mode': reviewMode.value(),
       'security.signup_review_refusal': reviewRefusal.value(),
     };
   }
