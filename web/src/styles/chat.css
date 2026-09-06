@@ -1568,6 +1568,41 @@
   gap: 1px;
 }
 
+/* Quiet, and above the box it is about. A model that is shaky is worth a
+   sentence before somebody types a long question into it, and worth nothing
+   more than that: it still works, most of the time. */
+.ai-chat-unstable {
+  margin: 0 0 6px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  color: var(--ai-danger);
+}
+
+/* The name and, where the operator publishes one, the figure beside it. The
+   name still takes the ellipsis; the tag is small and never shrinks, because
+   a truncated percentage is worse than none. */
+.ai-pop-model-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-pop-model-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--ai-surface-container-high);
+  color: var(--ai-text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-pop-model-tag.warn {
+  background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
+  color: var(--ai-danger);
+}
+
 .ai-pop-model-title {
   font-size: 12.5px;
   overflow: hidden;

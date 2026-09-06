@@ -66,6 +66,14 @@ const (
 	HealthWindowMins   = "health.window_minutes"
 	HealthDisableAfter = "health.disable_after"
 	HealthRetainDays   = "health.retain_days"
+	// A second way to disable: not "it failed three times running" but "it
+	// has been failing one turn in four all afternoon". A model can be badly
+	// broken without ever failing twice in a row.
+	HealthDisableBelow = "health.disable_below"
+	// What readers are told. Off by default: an availability figure is an
+	// operator's own record of their instance, and publishing it is a choice.
+	HealthShowUsers = "health.show_users"
+	HealthWarnBelow = "health.warn_below"
 	// Written by the janitor rather than by a form, so that a restart does
 	// not lose track of whether today's purge already happened. Readable in
 	// the settings response and deliberately absent from the writable set.
@@ -186,6 +194,12 @@ var Defaults = map[string]string{
 	// instance that quietly stops offering the model everyone uses.
 	HealthDisableAfter: "0",
 	HealthRetainDays:   "14",
+	HealthDisableBelow: "0",
+	HealthShowUsers:    "false",
+	// A model failing one turn in ten is worth warning about before somebody
+	// types a long question into it. Off would be the safer default and a
+	// worse one: nobody switches on a warning they have not been bitten by.
+	HealthWarnBelow: "90",
 	// Off until an operator says otherwise: it opens a second way to spend
 	// the instance's provider credit, one that no longer goes through a
 	// browser session.

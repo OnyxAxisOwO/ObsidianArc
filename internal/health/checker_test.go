@@ -146,3 +146,70 @@ func TestWithoutAThresholdNothingIsEverDisabled(t *testing.T) {
 		t.Error("a model was disabled with the policy switched off")
 	}
 }
+
+// A model can be badly broken without ever failing twice in a row: one turn
+// in four, all afternoon. The consecutive-failure rule never sees that, which
+// is why there is a second rule counting the rate.
+func TestASteadyFailureRateIsCaughtWithoutTwoInARow(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	ctx := context.Background()
+
+	// Alternating, so the run of failures is never longer than one.
+	interleaved := []Sample{}
+	for i := range 10 {
+		at := int64(1000 - i*10)
+		if i%2 == 0 {
+			interleaved = append(interleaved, fail(at, "upstream_error", "user"))
+		} else {
+			interleaved = append(interleaved, pass(at, "user"))
+		}
+	}
+	status := Summarise(record.ID, interleaved)
+	if status.FailuresInARow > 1 {
+		t.Fatalf("the fixture is wrong: %d in a row", status.FailuresInARow)
+	}
+
+	// The counting rule does not fire, however low the threshold.
+	checker.apply(ctx, record, status, Policy{DisableAfter: 2})
+	if !reload(t, models, record.ID).Enabled {
+		t.Fatal("the consecutive rule fired on an alternating record")
+	}
+
+	// The rate rule does: 50% is under 80%.
+	checker.apply(ctx, record, status, Policy{DisableBelow: 80})
+	after := reload(t, models, record.ID)
+	if after.Enabled {
+		t.Error("a model failing half its requests stayed on")
+	}
+	if !after.AutoDisabled {
+		t.Error("it was disabled without the flag that lets it come back")
+	}
+}
+
+// The floor under the percentage rule. One failed probe is 0%, and without a
+// minimum this would turn off every model on the first bad minute after a
+// restart — the worst possible reading of a rule meant to catch a slow bleed.
+func TestAPercentageNeedsEnoughEvidenceToMeanAnything(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	ctx := context.Background()
+	policy := Policy{DisableBelow: 90}
+
+	thin := []Sample{fail(300, "timeout", "system"), fail(200, "timeout", "system")}
+	if Summarise(record.ID, thin).Samples >= MinSamplesToJudge {
+		t.Fatal("the fixture is not thin enough to test the floor")
+	}
+	checker.apply(ctx, record, Summarise(record.ID, thin), policy)
+	if !reload(t, models, record.ID).Enabled {
+		t.Error("two samples were enough to turn a model off on a percentage")
+	}
+
+	// With the floor met, the same rate does decide.
+	enough := []Sample{}
+	for i := range MinSamplesToJudge {
+		enough = append(enough, fail(int64(500-i), "timeout", "system"))
+	}
+	checker.apply(ctx, record, Summarise(record.ID, enough), policy)
+	if reload(t, models, record.ID).Enabled {
+		t.Error("a model failing every request stayed on once there was evidence")
+	}
+}

@@ -30,7 +30,7 @@ func TestPublicModelDoesNotNameTheUpstream(t *testing.T) {
 		},
 	}
 
-	encoded, err := json.Marshal(toPublic(record))
+	encoded, err := json.Marshal(toPublic(record, Liveness{}))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -48,5 +48,44 @@ func TestPublicModelDoesNotNameTheUpstream(t *testing.T) {
 		if !strings.Contains(body, shown) {
 			t.Errorf("the public model lost %q: %s", shown, body)
 		}
+	}
+}
+
+// Silence by default. An availability figure is the operator's own record of
+// their instance, and it reaches a reader only where they have said so — a
+// field that is absent from the JSON cannot be read off it by accident.
+func TestLivenessIsAbsentUnlessTheOperatorPublishedIt(t *testing.T) {
+	record := Model{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", DisplayName: "One"}
+
+	quiet, err := json.Marshal(toPublic(record, Liveness{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"uptime", "unstable"} {
+		if strings.Contains(string(quiet), field) {
+			t.Errorf("%q appeared with nothing to publish: %s", field, quiet)
+		}
+	}
+
+	// A warning without a number, which is the more common thing to want:
+	// readers are told the model is shaky, not how shaky.
+	warned, err := json.Marshal(toPublic(record, Liveness{Unstable: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(warned), `"unstable":true`) {
+		t.Errorf("the warning did not travel: %s", warned)
+	}
+	if strings.Contains(string(warned), "uptime") {
+		t.Errorf("a warning leaked the figure: %s", warned)
+	}
+
+	share := 0.973
+	published, err := json.Marshal(toPublic(record, Liveness{Uptime: &share}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(published), `"uptime":0.973`) {
+		t.Errorf("the figure did not travel: %s", published)
 	}
 }

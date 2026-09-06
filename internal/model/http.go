@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -16,9 +17,28 @@ import (
 // admin one: no upstream model id, no provider id, no weights.
 type Handlers struct {
 	models *Store
+	// Set by the wiring when the operator has something to publish. Nil is
+	// the ordinary case and costs nothing.
+	Liveness func(ctx context.Context) map[string]Liveness
 }
 
 func NewHandlers(models *Store) *Handlers { return &Handlers{models: models} }
+
+// Liveness is what a reader may be told about a model's health.
+//
+// Both fields have already been through the operator's settings by the time
+// they arrive: an empty value means there is nothing to say. This package
+// does not decide what may be said, and does not import the one that measures
+// it — internal/health already knows about models, and a module knowing about
+// both would close the loop.
+type Liveness struct {
+	// Present only where the operator has chosen to publish the figure.
+	Uptime *float64
+	// Set where the operator has a warning threshold and this model is under
+	// it. Independent of Uptime: an instance can warn without publishing a
+	// number, which is the more common thing to want.
+	Unstable bool
+}
 
 func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/models", auth.RequireUser(httpx.Wrap(h.list)))
@@ -45,6 +65,13 @@ type Public struct {
 	// client name those itself and keep them translated. A configured list
 	// arrives named by the administrator and is shown as written.
 	ReasoningTiers []PublicTier `json:"reasoning_tiers,omitempty"`
+
+	// Absent unless the operator publishes it. A share of 1, not a
+	// percentage: the client decides how many digits are worth showing.
+	Uptime *float64 `json:"uptime,omitempty"`
+	// The model has been failing often enough that somebody deserves to know
+	// before they type a long question into it.
+	Unstable bool `json:"unstable,omitempty"`
 }
 
 // PublicTier is a tier without its budget: how much thinking a name buys is
@@ -54,7 +81,7 @@ type PublicTier struct {
 	Name string `json:"name"`
 }
 
-func toPublic(record Model) Public {
+func toPublic(record Model, live Liveness) Public {
 	out := Public{
 		ID:           record.ID,
 		DisplayName:  record.DisplayName,
@@ -62,6 +89,8 @@ func toPublic(record Model) Public {
 		Avatar:       record.Avatar,
 		Usable:       record.Usable,
 		Capabilities: record.Capabilities,
+		Uptime:       live.Uptime,
+		Unstable:     live.Unstable,
 	}
 	for _, tier := range record.ReasoningTiers {
 		out.ReasoningTiers = append(out.ReasoningTiers, PublicTier{ID: tier.ID, Name: tier.Name})
@@ -77,9 +106,16 @@ func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 
+	// One lookup for the whole listing, and nothing at all when the operator
+	// has neither published a figure nor asked for a warning.
+	var live map[string]Liveness
+	if h.Liveness != nil {
+		live = h.Liveness(r.Context())
+	}
+
 	models := make([]Public, 0, len(records))
 	for _, record := range records {
-		models = append(models, toPublic(record))
+		models = append(models, toPublic(record, live[record.ID]))
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"models": models})
 }

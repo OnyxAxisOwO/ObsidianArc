@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
@@ -231,7 +232,64 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}))
 
 	auth.NewHandlers(authService, users, groups, preferences, settingsService, proxyTrust).Routes(mux)
-	model.NewHandlers(models).Routes(mux)
+	modelHandlers := model.NewHandlers(models)
+	// What readers are told about liveness, decided here because it is the
+	// operator's policy and neither the model package nor the health one has
+	// any business reading settings.
+	//
+	// Cached for half a minute: this runs on every model listing, which the
+	// chat asks for on load, and the underlying figure moves on a ten-minute
+	// sweep. Thirty seconds is far fresher than the data behind it.
+	var (
+		livenessMu   sync.Mutex
+		livenessAt   time.Time
+		livenessSeen map[string]model.Liveness
+	)
+	modelHandlers.Liveness = func(ctx context.Context) map[string]model.Liveness {
+		show := settingsService.Bool(settings.HealthShowUsers)
+		warnBelow := settingsService.Int(settings.HealthWarnBelow, 0)
+		if !show && warnBelow <= 0 {
+			return nil
+		}
+
+		livenessMu.Lock()
+		defer livenessMu.Unlock()
+		if time.Since(livenessAt) < 30*time.Second {
+			return livenessSeen
+		}
+
+		window := time.Duration(settingsService.Int(settings.HealthWindowMins, 30)) * time.Minute
+		// A reader's window is the day, not the sweep's: "unstable" should
+		// mean the model has been unreliable, not that it missed once in the
+		// last half hour.
+		if window < 24*time.Hour {
+			window = 24 * time.Hour
+		}
+		rates, err := healthStore.Rates(ctx, time.Now().Add(-window).UnixMilli())
+		if err != nil {
+			slog.ErrorContext(ctx, "liveness for readers", "error", err)
+			return livenessSeen
+		}
+
+		seen := make(map[string]model.Liveness, len(rates))
+		for modelID, rate := range rates {
+			// Too little evidence to say anything with. Silence is the
+			// honest answer, and a warning nobody can act on is worse.
+			if rate.Total < health.MinSamplesToJudge {
+				continue
+			}
+			share := rate.Share()
+			entry := model.Liveness{Unstable: warnBelow > 0 && share*100 < float64(warnBelow)}
+			if show {
+				value := share
+				entry.Uptime = &value
+			}
+			seen[modelID] = entry
+		}
+		livenessSeen, livenessAt = seen, time.Now()
+		return seen
+	}
+	modelHandlers.Routes(mux)
 	chatHandlers := chat.NewHandlers(chatService, conversations)
 	// The one condition that must hold for an account to spend anything,
 	// shared by the turn and by the upload that precedes it.

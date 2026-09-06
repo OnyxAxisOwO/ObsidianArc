@@ -230,6 +230,26 @@ export async function renderSettings(view: AdminView): Promise<void> {
     hint: t('healthRetainDaysHint'),
   });
 
+  const healthDisableBelow = numberField({
+    label: t('healthDisableBelow'),
+    value: Number(values['health.disable_below'] ?? 0),
+    min: 0,
+    max: 100,
+    hint: t('healthDisableBelowHint'),
+  });
+  const healthShowUsers = switchField({
+    label: t('healthShowUsers'),
+    value: values['health.show_users'] === 'true',
+    hint: t('healthShowUsersHint'),
+  });
+  const healthWarnBelow = numberField({
+    label: t('healthWarnBelow'),
+    value: Number(values['health.warn_below'] ?? 90),
+    min: 0,
+    max: 100,
+    hint: t('healthWarnBelowHint'),
+  });
+
   const attachmentMaxMB = numberField({
     label: t('attachmentMaxMB'),
     value: Number(values['attachments.max_mb'] ?? 6),
@@ -382,6 +402,9 @@ export async function renderSettings(view: AdminView): Promise<void> {
   form.appendChild(healthProbe.element);
   form.appendChild(healthWindow.element);
   form.appendChild(healthDisableAfter.element);
+  form.appendChild(healthDisableBelow.element);
+  form.appendChild(healthWarnBelow.element);
+  form.appendChild(healthShowUsers.element);
   form.appendChild(healthRetainDays.element);
 
   form.appendChild(section(t('apiKeys')));
@@ -440,6 +463,9 @@ export async function renderSettings(view: AdminView): Promise<void> {
       'health.window_minutes': String(healthWindow.value() ?? 30),
       'health.disable_after': String(healthDisableAfter.value() ?? 0),
       'health.retain_days': String(healthRetainDays.value() ?? 14),
+      'health.disable_below': String(healthDisableBelow.value() ?? 0),
+      'health.show_users': String(healthShowUsers.value()),
+      'health.warn_below': String(healthWarnBelow.value() ?? 0),
     };
   }
 

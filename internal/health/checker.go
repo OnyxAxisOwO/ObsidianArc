@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -22,6 +23,11 @@ type Policy struct {
 	// Turn a model off after this many failures in a row, and on again when
 	// it answers. Zero means never.
 	DisableAfter int
+	// Turn a model off when its success rate over the window falls below this
+	// percentage. Zero means never. Separate from DisableAfter because a
+	// model can be badly broken without ever failing twice in a row — one
+	// turn in four, all afternoon, is an outage nobody's counter catches.
+	DisableBelow int
 	// How long probe rows are kept.
 	Retain time.Duration
 }
@@ -152,10 +158,21 @@ func (c *Checker) apply(ctx context.Context, record model.Model, status Status, 
 		return
 	}
 
-	if policy.DisableAfter <= 0 || !record.Enabled {
+	if !record.Enabled {
 		return
 	}
-	if status.FailuresInARow < policy.DisableAfter {
+
+	reason, why := "", ""
+	switch {
+	case policy.DisableAfter > 0 && status.FailuresInARow >= policy.DisableAfter:
+		reason = "failures in a row"
+		why = fmt.Sprintf("%d in a row", status.FailuresInARow)
+	case policy.DisableBelow > 0 &&
+		status.Samples >= MinSamplesToJudge &&
+		status.Uptime*100 < float64(policy.DisableBelow):
+		reason = "success rate"
+		why = fmt.Sprintf("%.0f%% of %d", status.Uptime*100, status.Samples)
+	default:
 		return
 	}
 
@@ -165,7 +182,7 @@ func (c *Checker) apply(ctx context.Context, record model.Model, status Status, 
 		slog.ErrorContext(ctx, "health: disable", "model", record.ID, "error", err)
 		return
 	}
-	slog.WarnContext(ctx, "model disabled after repeated failures",
+	slog.WarnContext(ctx, "model disabled",
 		"model", record.ID, "name", record.DisplayName,
-		"failures", status.FailuresInARow, "code", status.LastCode)
+		"reason", reason, "detail", why, "code", status.LastCode)
 }

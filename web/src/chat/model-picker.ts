@@ -47,6 +47,17 @@ export interface AvailableModel extends ModelCapabilities {
   usable?: boolean;
   /** Absent for a model using the built-in three. */
   reasoning_tiers?: ReasoningTier[];
+  /**
+   * The share of recent requests this model answered, 0 to 1. Absent unless
+   * the operator publishes it — most instances do not.
+   */
+  uptime?: number;
+  /**
+   * Set when it has been failing often enough to be worth saying so before
+   * somebody types a long question into it. Independent of `uptime`: an
+   * instance can warn without publishing a figure.
+   */
+  unstable?: boolean;
 }
 
 export interface ModelControlOptions {
@@ -428,7 +439,11 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
       row.disabled = unusable;
 
       const text = el('span', 'ai-pop-model-text');
-      text.appendChild(el('span', 'ai-pop-model-title', model.display_name));
+      const title = el('span', 'ai-pop-model-title-row');
+      title.appendChild(el('span', 'ai-pop-model-title', model.display_name));
+      const tag = uptimeTag(model);
+      if (tag) title.appendChild(tag);
+      text.appendChild(title);
       // No description means no description. Falling back to the provider's
       // name answered a question nobody asked, and read as if it were one.
       const sub = unusable ? t('modelNotAllowedGroup') : model.description;
@@ -512,4 +527,22 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
     sync,
     select,
   };
+}
+
+/**
+ * The small figure beside a model's name.
+ *
+ * Only what the operator published: a number when they publish one, the word
+ * alone when they only asked for a warning, and nothing at all otherwise —
+ * which is every instance that has not turned this on.
+ */
+function uptimeTag(model: AvailableModel): HTMLElement | null {
+  if (model.uptime === undefined) {
+    return model.unstable ? el('span', 'ai-pop-model-tag warn', t('modelUnstableTag')) : null;
+  }
+  const share = model.uptime;
+  const tag = el('span', `ai-pop-model-tag${model.unstable ? ' warn' : ''}`,
+    `${(share * 100).toFixed(share >= 0.995 ? 0 : 1)}%`);
+  tag.title = t('modelUptimeTitle');
+  return tag;
 }

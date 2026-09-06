@@ -85,6 +85,13 @@ type ErrorCount struct {
 	LastAt  int64  `json:"last_at"`
 }
 
+// How much evidence a percentage needs before anything is decided on it.
+//
+// Without a floor, one failed probe is 0% and the model is gone — which is
+// the worst possible reading of a rule meant to catch a model that has been
+// quietly failing all afternoon.
+const MinSamplesToJudge = 5
+
 type Store struct{ db *database.DB }
 
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
@@ -326,4 +333,59 @@ func truncate(value string, limit int) string {
 		return value
 	}
 	return value[:limit] + "…"
+}
+
+// Rate is how often one model answered, over some window.
+type Rate struct {
+	OK    int `json:"ok"`
+	Total int `json:"total"`
+}
+
+// Share is the success rate, 0 to 1. Meaningless at zero samples, which the
+// caller has to check for itself — there is no honest number to return.
+func (r Rate) Share() float64 {
+	if r.Total == 0 {
+		return 0
+	}
+	return float64(r.OK) / float64(r.Total)
+}
+
+// Rates is every model's success rate in one query.
+//
+// Separate from Samples because the two questions have different shapes: the
+// model list needs one number for each of thirty models and nothing else,
+// where the backoffice needs every sample for one model. Asking the
+// per-model question thirty times on an endpoint the chat hits at load would
+// be thirty round trips for two integers each.
+func (s *Store) Rates(ctx context.Context, since int64) (map[string]Rate, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT model_id, SUM(ok) AS answered, COUNT(*) AS total FROM (
+			SELECT model_id, CASE WHEN status = ? THEN 1 ELSE 0 END AS ok
+			FROM usage_records
+			WHERE started_at >= ? AND status IN (?, ?)
+			UNION ALL
+			SELECT model_id, CASE WHEN ok THEN 1 ELSE 0 END AS ok
+			FROM model_probes
+			WHERE at >= ?
+		) AS evidence
+		GROUP BY model_id`,
+		statusOK, since, statusOK, statusError, since)
+	if err != nil {
+		return nil, fmt.Errorf("health: rates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	rates := map[string]Rate{}
+	for rows.Next() {
+		var modelID string
+		var rate Rate
+		if err := rows.Scan(&modelID, &rate.OK, &rate.Total); err != nil {
+			return nil, fmt.Errorf("health: rates: %w", err)
+		}
+		rates[modelID] = rate
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("health: rates: %w", err)
+	}
+	return rates, nil
 }

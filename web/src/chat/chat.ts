@@ -89,6 +89,8 @@ export interface ChatStatus {
   reasoningEnabled: boolean;
   reasoningEffort: string;
   modelID: string;
+  /** The selected model has been failing often enough to say so. */
+  modelUnstable: boolean;
   /** True for an administrator, who is offered the setup shortcut. */
   canAdminister: boolean;
 }
@@ -271,6 +273,13 @@ export function mountChat(options: ChatOptions): ChatHandle {
   // the decision and the act in the same place.
   if (options.composerControl) composerRow.appendChild(options.composerControl);
   composerRow.appendChild(sendBtn);
+  // Above the box rather than over the transcript: it is about what is about
+  // to be sent, and it should be read while typing, not after.
+  const unstableNotice = el('p', 'ai-chat-unstable', t('modelUnstableNotice'));
+  unstableNotice.hidden = true;
+  unstableNotice.setAttribute('role', 'status');
+
+  composer.appendChild(unstableNotice);
   composer.appendChild(pendingStrip);
   composer.appendChild(composerRow);
   composer.appendChild(fileInput);
@@ -803,6 +812,7 @@ export function mountChat(options: ChatOptions): ChatHandle {
     host.classList.toggle('is-empty', empty);
     input.placeholder = t(messages.length ? 'placeholder' : 'placeholderFirst');
     input.disabled = busy || !status.configured;
+    unstableNotice.hidden = !status.modelUnstable || !status.configured;
     syncSendButton();
     renderComposerAttachments();
   }

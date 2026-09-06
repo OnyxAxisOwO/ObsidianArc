@@ -109,6 +109,7 @@ export function renderChatPage(root: HTMLElement): HTMLElement {
       reasoningEnabled: canReason && reasoning.enabled,
       reasoningEffort: reasoning.effort,
       modelID: model?.id ?? '',
+      modelUnstable: !!model?.unstable,
       canAdminister: isAdmin(),
     };
   };
