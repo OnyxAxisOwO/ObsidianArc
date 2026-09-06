@@ -213,6 +213,11 @@ post-increment value, so the check happens after the write and two concurrent
 requests cannot both see room that only one of them has. If the counter table
 ever becomes the bottleneck, that is the moment to add a cache — not before.
 
+## Contributors
+
+- [OnyxAxisOwO](https://github.com/OnyxAxisOwO) — creator and maintainer
+- [abloom25](https://github.com/abloom25) — optimization and improvements
+
 ## License
 
 [MIT](LICENSE)
