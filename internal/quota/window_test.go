@@ -9,14 +9,14 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
-func counterAt(t *testing.T, service *Service, userID string, window Window, at time.Time) (int64, float64) {
+func counterAt(t *testing.T, service *Service, userID string, window Window, at time.Time, anchor int64) (int64, float64) {
 	t.Helper()
 	var tokens int64
 	var credits float64
 	err := service.db.QueryRow(context.Background(),
 		`SELECT tokens, credits FROM usage_counters
 		 WHERE scope_key = ? AND window_kind = ? AND window_start = ?`,
-		scopeKey(userID), window, bucketStart(window, at)).Scan(&tokens, &credits)
+		scopeKey(userID), window, bucketStart(window, at, anchor)).Scan(&tokens, &credits)
 	if err != nil {
 		return 0, 0
 	}
@@ -45,31 +45,31 @@ func TestAHoldIsGivenBackToTheCounterItCharged(t *testing.T) {
 	// Charged there, exactly as Reserve would have.
 	for _, window := range []Window{WindowTPM, Window5H} {
 		if _, err := bump(ctx, db, scopeKey(person.ID), window,
-			bucketStart(window, started), 0, held.Tokens, held.Credits); err != nil {
+			bucketStart(window, started, person.CreatedAt), 0, held.Tokens, held.Credits); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// The turn finishes now, in the next minute, and costs a fraction of it.
 	actual := Estimate{Tokens: 120, Credits: 0.12}
-	if err := service.Settle(ctx, person.ID, Estimate{}, actual); err != nil {
+	if err := service.Settle(ctx, person, Estimate{}, actual); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Release(ctx, person.ID, Reservation{at: started, estimate: held, taken: true}); err != nil {
+	if err := service.Release(ctx, person.ID, Reservation{at: started, estimate: held, taken: true, anchor: person.CreatedAt}); err != nil {
 		t.Fatal(err)
 	}
 
 	// The minute it started in is square again.
-	if tokens, credits := counterAt(t, service, person.ID, WindowTPM, started); tokens != 0 || credits > 0.001 {
+	if tokens, credits := counterAt(t, service, person.ID, WindowTPM, started, person.CreatedAt); tokens != 0 || credits > 0.001 {
 		t.Errorf("the bucket that was charged still holds %d tokens and %v credits", tokens, credits)
 	}
 	// And the minute it finished in carries the turn, not a zero left behind
 	// by a refund that landed in the wrong place.
-	if tokens, _ := counterAt(t, service, person.ID, WindowTPM, time.Now()); tokens != actual.Tokens {
+	if tokens, _ := counterAt(t, service, person.ID, WindowTPM, time.Now(), person.CreatedAt); tokens != actual.Tokens {
 		t.Errorf("the bucket the turn ran in holds %d tokens, want the %d it spent", tokens, actual.Tokens)
 	}
 	// The five-hour window saw both in one bucket, so it nets to the truth.
-	if tokens, _ := counterAt(t, service, person.ID, Window5H, time.Now()); tokens != actual.Tokens {
+	if tokens, _ := counterAt(t, service, person.ID, Window5H, time.Now(), person.CreatedAt); tokens != actual.Tokens {
 		t.Errorf("the five-hour counter holds %d tokens, want %d", tokens, actual.Tokens)
 	}
 }
@@ -99,7 +99,7 @@ func TestAnExemptAccountKeepsItsReading(t *testing.T) {
 
 	// Two turns, each settled at what it really cost. The reading is the sum.
 	for range 2 {
-		if err := service.Settle(ctx, admin.ID, Estimate{}, Estimate{Tokens: 100, Credits: 1}); err != nil {
+		if err := service.Settle(ctx, admin, Estimate{}, Estimate{Tokens: 100, Credits: 1}); err != nil {
 			t.Fatal(err)
 		}
 		if err := service.Release(ctx, admin.ID, held); err != nil {
@@ -107,7 +107,7 @@ func TestAnExemptAccountKeepsItsReading(t *testing.T) {
 		}
 	}
 
-	tokens, credits := counterAt(t, service, admin.ID, Window5H, time.Now())
+	tokens, credits := counterAt(t, service, admin.ID, Window5H, time.Now(), admin.CreatedAt)
 	if tokens != 200 {
 		t.Errorf("tokens = %d after two turns of 100, want 200", tokens)
 	}

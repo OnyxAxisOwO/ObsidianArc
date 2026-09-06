@@ -123,6 +123,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/models", protected(h.createModel))
 	mux.Handle("PATCH /api/admin/models/{id}", protected(h.updateModel))
 	mux.Handle("DELETE /api/admin/models/{id}", protected(h.deleteModel))
+	mux.Handle("PUT /api/admin/models/order", protected(h.reorderModels))
 
 	mux.Handle("GET /api/admin/logs", protected(h.listLogs))
 	mux.Handle("GET /api/admin/logs/facets", protected(h.logFacets))
@@ -130,6 +131,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 
 	mux.Handle("GET /api/admin/usage", protected(h.usageSummary))
 	mux.Handle("GET /api/admin/usage/records", protected(h.usageRecords))
+	mux.Handle("POST /api/admin/usage/reset", protected(h.resetQuota))
 
 	mux.Handle("GET /api/admin/quota/policies", protected(h.listPolicies))
 	mux.Handle("PUT /api/admin/quota/policies", protected(h.savePolicy))

@@ -82,36 +82,43 @@ func sseServer(t *testing.T, frames []string, capture *map[string]any) *httptest
 
 func TestNormalizeBaseURL(t *testing.T) {
 	cases := []struct {
-		in   string
-		want string
-		ok   bool
+		in       string
+		insecure bool
+		want     string
+		ok       bool
 	}{
-		{"https://api.anthropic.com", "https://api.anthropic.com", true},
-		{"api.openai.com/v1", "https://api.openai.com/v1", true},
-		{"https://example.com/v1/", "https://example.com/v1", true},
-		{"http://localhost:11434/v1", "http://localhost:11434/v1", true},
-		{"http://127.0.0.1:8000", "http://127.0.0.1:8000", true},
-		// A key sent over plain http to a remote host is a key on the wire.
-		{"http://api.example.com", "", false},
-		{"https://user:pass@api.example.com", "", false},
-		{"", "", false},
-		{"://nope", "", false},
+		{in: "https://api.anthropic.com", want: "https://api.anthropic.com", ok: true},
+		{in: "api.openai.com/v1", want: "https://api.openai.com/v1", ok: true},
+		{in: "https://example.com/v1/", want: "https://example.com/v1", ok: true},
+		{in: "http://localhost:11434/v1", want: "http://localhost:11434/v1", ok: true},
+		{in: "http://127.0.0.1:8000", want: "http://127.0.0.1:8000", ok: true},
+		// A key sent over plain http to a remote host is a key on the wire,
+		// so that host needs the provider's opt-in and localhost does not.
+		{in: "http://api.example.com", want: "", ok: false},
+		{in: "http://198.51.100.7:8000/v1", insecure: true, want: "http://198.51.100.7:8000/v1", ok: true},
+		// The opt-in widens http only: it does not make a bare address
+		// default to http, and it does not admit some third scheme.
+		{in: "api.example.com/v1", insecure: true, want: "https://api.example.com/v1", ok: true},
+		{in: "ftp://api.example.com", insecure: true, want: "", ok: false},
+		{in: "https://user:pass@api.example.com", want: "", ok: false},
+		{in: "", want: "", ok: false},
+		{in: "://nope", want: "", ok: false},
 	}
 
 	for _, tc := range cases {
-		got, err := NormalizeBaseURL(tc.in)
+		got, err := NormalizeBaseURL(tc.in, tc.insecure)
 		if tc.ok && err != nil {
-			t.Errorf("NormalizeBaseURL(%q) failed: %v", tc.in, err)
+			t.Errorf("NormalizeBaseURL(%q, %v) failed: %v", tc.in, tc.insecure, err)
 			continue
 		}
 		if !tc.ok {
 			if err == nil {
-				t.Errorf("NormalizeBaseURL(%q) accepted an unsafe URL", tc.in)
+				t.Errorf("NormalizeBaseURL(%q, %v) accepted an unsafe URL", tc.in, tc.insecure)
 			}
 			continue
 		}
 		if got != tc.want {
-			t.Errorf("NormalizeBaseURL(%q) = %q, want %q", tc.in, got, tc.want)
+			t.Errorf("NormalizeBaseURL(%q, %v) = %q, want %q", tc.in, tc.insecure, got, tc.want)
 		}
 	}
 }

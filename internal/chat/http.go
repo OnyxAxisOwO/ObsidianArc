@@ -28,6 +28,12 @@ type Handlers struct {
 	// signed-in account may upload. Wired to the same check that gates
 	// sending, because this endpoint writes too.
 	Uploadable func(context.Context, user.User) error
+	// Consulted before a conversation is removed. Optional; nil means every
+	// signed-in account may delete their own. Wired the same way as
+	// Uploadable, and for the same reason: whether a group permits something
+	// is the server's business, and this package does not know what a group
+	// is.
+	Deletable func(context.Context, user.User) error
 	// The operator's per-file ceiling, read per request so a change takes
 	// effect without a restart. Optional; nil means the package default.
 	MaxUploadBytes func() int64
@@ -247,6 +253,9 @@ func (h *Handlers) updateConversation(w http.ResponseWriter, r *http.Request) er
 
 func (h *Handlers) deleteConversation(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
+	if err := h.mayDelete(r.Context(), account); err != nil {
+		return err
+	}
 	conversationID, err := pathID(r)
 	if err != nil {
 		return err
@@ -259,11 +268,24 @@ func (h *Handlers) deleteConversation(w http.ResponseWriter, r *http.Request) er
 
 func (h *Handlers) deleteAllConversations(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
+	if err := h.mayDelete(r.Context(), account); err != nil {
+		return err
+	}
 	removed, err := h.conversations.DeleteAll(r.Context(), account.ID)
 	if err != nil {
 		return httpx.Internal(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"deleted": removed})
+}
+
+// Checked on both delete endpoints rather than in one place the client calls,
+// because the client is not what enforces this: a hidden button is a courtesy
+// and the refusal is the rule.
+func (h *Handlers) mayDelete(ctx context.Context, account user.User) error {
+	if h.Deletable == nil {
+		return nil
+	}
+	return h.Deletable(ctx, account)
 }
 
 func (h *Handlers) updateMessage(w http.ResponseWriter, r *http.Request) error {

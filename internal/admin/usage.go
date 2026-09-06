@@ -9,10 +9,84 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 // Usage and quota, for administrators: what has been spent, and the limits
 // that constrain it.
+
+// resetRequest names whose allowance to put back to full.
+//
+// Three scopes rather than one endpoint per scope: they differ only in which
+// accounts are named, and splitting them would be three routes that have to
+// agree about what a reset is.
+type resetRequest struct {
+	// "all" | "group" | "user"
+	Scope string `json:"scope"`
+	// The group or the account, when the scope names one.
+	ID string `json:"id"`
+}
+
+// resetQuota puts an allowance back to its full amount.
+//
+// It answers with how many accounts it touched, because "reset everything" is
+// the kind of thing somebody wants told back to them in numbers — and because
+// resetting a group nobody is in should say so rather than look like success.
+func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
+	var body resetRequest
+	if err := httpx.DecodeJSON(w, r, &body, 4*1024); err != nil {
+		return err
+	}
+
+	switch body.Scope {
+	case "all":
+		total, err := h.users.Count(r.Context(), nil)
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		if err := h.quota.ResetAll(r.Context()); err != nil {
+			return httpx.Internal(err)
+		}
+		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": total})
+
+	case "group":
+		if !isValidID(body.ID) {
+			return httpx.BadRequest("A group is required.")
+		}
+		// Limit 0 would be the store's default page. Every member has to be
+		// named, so the count comes first and asks for exactly that many.
+		_, total, err := h.users.List(r.Context(), user.ListFilter{GroupID: body.ID, Limit: 1})
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		members, _, err := h.users.List(r.Context(), user.ListFilter{GroupID: body.ID, Limit: total})
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		ids := make([]string, 0, len(members))
+		for _, member := range members {
+			ids = append(ids, member.ID)
+		}
+		if err := h.quota.Reset(r.Context(), ids); err != nil {
+			return httpx.Internal(err)
+		}
+		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": len(ids)})
+
+	case "user":
+		if !isValidID(body.ID) {
+			return httpx.BadRequest("An account is required.")
+		}
+		if _, err := h.users.ByID(r.Context(), nil, body.ID); err != nil {
+			return translateUserError(err)
+		}
+		if err := h.quota.Reset(r.Context(), []string{body.ID}); err != nil {
+			return httpx.Internal(err)
+		}
+		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": 1})
+	}
+
+	return httpx.BadRequest("Reset everyone, a group, or one account.")
+}
 
 // filterFrom builds a ledger filter from the query string. Every value is
 // validated here rather than in the store, so a malformed parameter is a 400

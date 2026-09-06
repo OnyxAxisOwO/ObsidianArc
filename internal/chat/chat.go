@@ -477,8 +477,11 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 	if !resolved.Model.SupportsReasoning || !resolved.Upstream.SupportsReasoning {
 		reasoning = adapter.Reasoning{}
 	}
-	if reasoning.Enabled && !reasoning.Effort.Valid() {
-		reasoning.Effort = adapter.EffortMedium
+	if reasoning.Enabled {
+		// Against the model the reader picked, not the one that answers: the
+		// tiers on the slider were that model's, and a route's target has a
+		// list of its own that nobody was offered.
+		reasoning.Effort, reasoning.Budget = resolved.Model.ResolveTier(reasoning.Effort)
 	}
 
 	maxTokens := resolved.Upstream.MaxOutputTokens

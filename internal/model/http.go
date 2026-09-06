@@ -28,26 +28,45 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 // identifier is left out on purpose: it is an implementation detail of how
 // this instance is wired, and nothing in the interface needs it — the client
 // selects by our row id.
+//
+// So is the provider's name. It used to be here, and three screens printed
+// it beside the model, which told every reader which company actually serves
+// the answer — the one fact this indirection exists to keep. Removed rather
+// than hidden at each call site: a field that is not in the struct cannot be
+// printed by the next screen somebody adds.
 type Public struct {
-	ID           string `json:"id"`
-	DisplayName  string `json:"display_name"`
-	Description  string `json:"description"`
-	Avatar       string `json:"avatar"`
-	ProviderName string `json:"provider_name"`
-	Usable       bool   `json:"usable"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	Avatar      string `json:"avatar"`
+	Usable      bool   `json:"usable"`
 	Capabilities
+	// Absent when the model uses the built-in three, which is what lets the
+	// client name those itself and keep them translated. A configured list
+	// arrives named by the administrator and is shown as written.
+	ReasoningTiers []PublicTier `json:"reasoning_tiers,omitempty"`
+}
+
+// PublicTier is a tier without its budget: how much thinking a name buys is
+// this instance's wiring, and the client only ever sends the id back.
+type PublicTier struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 func toPublic(record Model) Public {
-	return Public{
+	out := Public{
 		ID:           record.ID,
 		DisplayName:  record.DisplayName,
 		Description:  record.Description,
 		Avatar:       record.Avatar,
-		ProviderName: record.ProviderName,
 		Usable:       record.Usable,
 		Capabilities: record.Capabilities,
 	}
+	for _, tier := range record.ReasoningTiers {
+		out.ReasoningTiers = append(out.ReasoningTiers, PublicTier{ID: tier.ID, Name: tier.Name})
+	}
+	return out
 }
 
 func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {

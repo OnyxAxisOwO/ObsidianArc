@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -128,10 +129,11 @@ func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estim
 
 	now := time.Now()
 	key := scopeKey(account.ID)
+	anchor := account.CreatedAt
 
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
 		if policy.RPM != nil && *policy.RPM > 0 {
-			counter, err := bump(ctx, tx, key, WindowRPM, bucketStart(WindowRPM, now), 1, 0, 0)
+			counter, err := bump(ctx, tx, key, WindowRPM, bucketStart(WindowRPM, now, anchor), 1, 0, 0)
 			if err != nil {
 				return err
 			}
@@ -139,13 +141,13 @@ func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estim
 				return &ExceededError{
 					Window: WindowRPM, Dimension: "requests",
 					Used: float64(counter.Requests), Limit: float64(*policy.RPM),
-					ResetsAt: bucketEnd(WindowRPM, now),
+					ResetsAt: bucketEnd(WindowRPM, now, anchor),
 				}
 			}
 		}
 
 		if policy.TPM != nil && *policy.TPM > 0 {
-			counter, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, now),
+			counter, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, now, anchor),
 				0, estimate.Tokens, 0)
 			if err != nil {
 				return err
@@ -154,7 +156,7 @@ func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estim
 				return &ExceededError{
 					Window: WindowTPM, Dimension: "tokens",
 					Used: float64(counter.Tokens), Limit: float64(*policy.TPM),
-					ResetsAt: bucketEnd(WindowTPM, now),
+					ResetsAt: bucketEnd(WindowTPM, now, anchor),
 				}
 			}
 		}
@@ -165,12 +167,12 @@ func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estim
 				continue
 			}
 
-			start := bucketStart(window, now)
+			start := bucketStart(window, now, anchor)
 			counter, err := bump(ctx, tx, key, window, start, 1, estimate.Tokens, estimate.Credits)
 			if err != nil {
 				return err
 			}
-			resets := bucketEnd(window, now)
+			resets := bucketEnd(window, now, anchor)
 
 			if limits.Requests != nil && *limits.Requests > 0 && counter.Requests > *limits.Requests {
 				return &ExceededError{
@@ -201,7 +203,7 @@ func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estim
 		// The transaction rolled back, so nothing is outstanding.
 		return Reservation{}, err
 	}
-	return Reservation{at: now, estimate: estimate, taken: true}, nil
+	return Reservation{at: now, estimate: estimate, taken: true, anchor: anchor}, nil
 }
 
 // Reservation is what Reserve charged, and the moment it charged it.
@@ -219,6 +221,10 @@ type Reservation struct {
 	at       time.Time
 	estimate Estimate
 	taken    bool
+	// The account's created_at, carried so the release lands in the same
+	// bucket the reservation came out of. The windows are per account now,
+	// so the moment alone no longer identifies one.
+	anchor int64
 }
 
 // Settle corrects a finished turn to what it actually cost. It runs after the
@@ -233,18 +239,18 @@ type Reservation struct {
 // the counters are also what the usage display reads, and a limit turned on
 // tomorrow should not start from zero for someone who has been using the
 // server all week.
-func (s *Service) Settle(ctx context.Context, userID string, reserved, actual Estimate) error {
+func (s *Service) Settle(ctx context.Context, account user.User, reserved, actual Estimate) error {
 	tokens := actual.Tokens - reserved.Tokens
 	credits := actual.Credits - reserved.Credits
 	if tokens == 0 && credits == 0 {
 		return nil
 	}
 	now := time.Now()
-	key := scopeKey(userID)
+	key := scopeKey(account.ID)
 
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
-			if _, err := bump(ctx, tx, key, window, bucketStart(window, now), 0, tokens, credits); err != nil {
+			if _, err := bump(ctx, tx, key, window, bucketStart(window, now, account.CreatedAt), 0, tokens, credits); err != nil {
 				return err
 			}
 		}
@@ -266,7 +272,7 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 	key := scopeKey(userID)
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
-			if _, err := bump(ctx, tx, key, window, bucketStart(window, reserved.at),
+			if _, err := bump(ctx, tx, key, window, bucketStart(window, reserved.at, reserved.anchor),
 				0, -reserved.estimate.Tokens, -reserved.estimate.Credits); err != nil {
 				return err
 			}
@@ -280,7 +286,8 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 // free to hammer the endpoint.
 func (s *Service) RecordRejection(ctx context.Context, userID string) {
 	now := time.Now()
-	_, _ = bump(ctx, s.db, scopeKey(userID), WindowRPM, bucketStart(WindowRPM, now), 1, 0, 0)
+	// The rate window only, which is wall-clock, so this one needs no anchor.
+	_, _ = bump(ctx, s.db, scopeKey(userID), WindowRPM, bucketStart(WindowRPM, now, 0), 1, 0, 0)
 }
 
 type counter struct {
@@ -368,7 +375,7 @@ func (s *Service) SummaryFor(ctx context.Context, account user.User) (Summary, e
 
 	for _, window := range AllowanceWindows {
 		limits := policy.Windows[window]
-		start := bucketStart(window, now)
+		start := bucketStart(window, now, account.CreatedAt)
 
 		var used counter
 		err := s.db.QueryRow(ctx,
@@ -389,7 +396,7 @@ func (s *Service) SummaryFor(ctx context.Context, account user.User) (Summary, e
 			LimitRequests: limits.Requests,
 			LimitTokens:   limits.Tokens,
 			LimitCredits:  limits.Credits,
-			ResetsAt:      bucketEnd(window, now).UnixMilli(),
+			ResetsAt:      bucketEnd(window, now, account.CreatedAt).UnixMilli(),
 		})
 	}
 	return summary, nil
@@ -409,32 +416,130 @@ func (s *Service) PruneCounters(ctx context.Context) (int64, error) {
 
 func scopeKey(userID string) string { return "u:" + userID }
 
+// ResetAll puts every account's allowance back to its full amount.
+//
+// The counters are deleted rather than zeroed. An absent row and a row at
+// zero read the same to everything above this — bump() upserts, SummaryFor
+// treats a missing row as nothing spent — and deleting leaves nothing behind
+// to go stale when the window it belonged to rolls over.
+//
+// The ledger is deliberately untouched. What was spent is still what was
+// spent; this is a decision about what may be spent next, and rewriting the
+// record to agree with it would destroy the only account of either.
+func (s *Service) ResetAll(ctx context.Context) error {
+	if _, err := s.db.Exec(ctx, `DELETE FROM usage_counters`); err != nil {
+		return fmt.Errorf("quota: reset all: %w", err)
+	}
+	return nil
+}
+
+// Reset does the same for named accounts.
+//
+// In batches, because the caller may hand it every member of a group and one
+// statement with ten thousand placeholders is a statement no database wants.
+func (s *Service) Reset(ctx context.Context, userIDs []string) error {
+	const batch = 200
+	for start := 0; start < len(userIDs); start += batch {
+		end := min(start+batch, len(userIDs))
+		chunk := userIDs[start:end]
+
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for i, userID := range chunk {
+			placeholders[i] = "?"
+			args[i] = scopeKey(userID)
+		}
+		query := `DELETE FROM usage_counters WHERE scope_key IN (` +
+			strings.Join(placeholders, ", ") + `)`
+		if _, err := s.db.Exec(ctx, query, args...); err != nil {
+			return fmt.Errorf("quota: reset: %w", err)
+		}
+	}
+	return nil
+}
+
 // Windows are fixed and aligned rather than rolling, so "when does this
 // reset" has an answer the interface can show. Minutes and five-hour blocks
 // align to the epoch; weeks to Monday and months to the first, both in UTC,
 // so an instance behaves the same wherever it runs.
-func bucketStart(window Window, now time.Time) int64 {
+// bucketStart is the moment the window a turn falls in began.
+//
+// The rate windows stay on the wall clock: a minute is a minute, and giving
+// each account its own would only make two accounts disagree about when one
+// ends.
+//
+// The allowance windows are anchored to the account, and run from the moment
+// it registered. They used to roll over at the same instant for everybody,
+// which is two problems in one: somebody who signed up on the 28th got three
+// days of a "month", and every allowance on the instance came back at
+// midnight on the 1st, which is when everyone arrives at once.
+//
+// `anchor` is the account's created_at in epoch milliseconds. Zero — an
+// account with no creation time, which no live row has — falls back to the
+// epoch, so the arithmetic below is still well defined.
+func bucketStart(window Window, now time.Time, anchor int64) int64 {
 	switch window {
 	case WindowRPM, WindowTPM:
 		return now.Truncate(time.Minute).UnixMilli()
 	case Window5H:
-		return now.Truncate(5 * time.Hour).UnixMilli()
+		return periodStart(now, anchor, 5*time.Hour)
 	case WindowWeek:
-		utc := now.UTC()
-		// Go's Weekday starts at Sunday; the week here starts on Monday.
-		offset := (int(utc.Weekday()) + 6) % 7
-		day := time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
-		return day.AddDate(0, 0, -offset).UnixMilli()
+		return periodStart(now, anchor, 7*24*time.Hour)
 	case WindowMonth:
-		utc := now.UTC()
-		return time.Date(utc.Year(), utc.Month(), 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+		from := time.UnixMilli(anchor).UTC()
+		return addMonths(from, monthsSince(now, from)).UnixMilli()
 	default:
 		return now.UnixMilli()
 	}
 }
 
-func bucketEnd(window Window, now time.Time) time.Time {
-	start := time.UnixMilli(bucketStart(window, now)).UTC()
+// periodStart walks whole periods from the anchor to the one `now` is in.
+func periodStart(now time.Time, anchor int64, period time.Duration) int64 {
+	elapsed := now.UnixMilli() - anchor
+	if elapsed <= 0 {
+		// A clock behind the account's own creation. There is nothing to
+		// have spent yet, so it counts as the first period.
+		return anchor
+	}
+	size := period.Milliseconds()
+	return anchor + (elapsed/size)*size
+}
+
+// monthsSince is how many whole calendar months have passed since the anchor,
+// so a monthly allowance renews on the day of the month somebody signed up on
+// rather than every thirty days, drifting backwards through the year.
+func monthsSince(now time.Time, from time.Time) int {
+	utc := now.UTC()
+	if !utc.After(from) {
+		return 0
+	}
+	months := (utc.Year()-from.Year())*12 + int(utc.Month()) - int(from.Month())
+	if addMonths(from, months).After(utc) {
+		// The day of the month has not come round yet this month.
+		months--
+	}
+	if months < 0 {
+		return 0
+	}
+	return months
+}
+
+// addMonths keeps the day of the month, clamped to the length of the target
+// one: an account created on the 31st renews on the 28th in February rather
+// than sliding into March, which is what AddDate would do with it.
+func addMonths(from time.Time, months int) time.Time {
+	year, month, day := from.Date()
+	hour, minute, second := from.Clock()
+	target := time.Date(year, month+time.Month(months), 1, 0, 0, 0, 0, time.UTC)
+	last := time.Date(target.Year(), target.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	if day > last {
+		day = last
+	}
+	return time.Date(target.Year(), target.Month(), day, hour, minute, second, 0, time.UTC)
+}
+
+func bucketEnd(window Window, now time.Time, anchor int64) time.Time {
+	start := time.UnixMilli(bucketStart(window, now, anchor)).UTC()
 	switch window {
 	case WindowRPM, WindowTPM:
 		return start.Add(time.Minute)
@@ -443,7 +548,11 @@ func bucketEnd(window Window, now time.Time) time.Time {
 	case WindowWeek:
 		return start.AddDate(0, 0, 7)
 	case WindowMonth:
-		return start.AddDate(0, 1, 0)
+		// Not start.AddDate(0, 1, 0): the anchor's day of the month is what
+		// the next one lands on, and adding a month to a clamped 28th would
+		// walk the renewal backwards a day at a time.
+		from := time.UnixMilli(anchor).UTC()
+		return addMonths(from, monthsSince(now, from)+1)
 	default:
 		return start
 	}

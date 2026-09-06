@@ -17,6 +17,8 @@ const (
 	budgetLow    = 2048
 	budgetMedium = 8192
 	budgetHigh   = 24576
+	// The smallest budget the API accepts.
+	budgetMin = 1024
 	// The API requires max_tokens to exceed the thinking budget, and an
 	// answer needs room after the reasoning.
 	budgetHeadroom = 1024
@@ -66,7 +68,15 @@ func (a anthropicAdapter) buildBody(p Provider, req ChatRequest) (map[string]any
 	}
 
 	if thinking {
-		budget := reasoningBudget(req.Reasoning.Effort)
+		budget := req.Reasoning.Budget
+		if budget <= 0 {
+			budget = reasoningBudget(req.Reasoning.Effort)
+		}
+		if budget < budgetMin {
+			// The API refuses anything smaller, and a tier configured below
+			// the floor should still think rather than fail the turn.
+			budget = budgetMin
+		}
 		if budget+budgetHeadroom > maxTokens {
 			// Prefer keeping the requested budget and raising the ceiling;
 			// shrinking the budget instead would quietly downgrade what the

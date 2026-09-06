@@ -28,10 +28,15 @@ import (
 // field that does not exist cannot be leaked by a future handler that
 // forgets to strip it.
 type Provider struct {
-	ID               string                 `json:"id"`
-	Name             string                 `json:"name"`
-	Kind             adapter.Kind           `json:"kind"`
-	BaseURL          string                 `json:"base_url"`
+	ID      string       `json:"id"`
+	Name    string       `json:"name"`
+	Kind    adapter.Kind `json:"kind"`
+	BaseURL string       `json:"base_url"`
+	// Sends this provider's key over plain http to a host that is not
+	// loopback. Stored rather than checked once on entry, because every later
+	// edit revalidates the whole row: without it, changing a timeout would
+	// fail on the address that was already accepted.
+	AllowInsecure    bool                   `json:"allow_insecure"`
 	APIKeyHint       string                 `json:"api_key_hint"`
 	Headers          map[string]string      `json:"headers"`
 	AnthropicVersion string                 `json:"anthropic_version"`
@@ -77,7 +82,7 @@ var reservedHeaders = map[string]bool{
 	"host":              true,
 }
 
-const columns = `id, name, kind, base_url, api_key_hint, headers_json, anthropic_version,
+const columns = `id, name, kind, base_url, allow_insecure, api_key_hint, headers_json, anthropic_version,
 	reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at`
 
 type Store struct {
@@ -93,6 +98,7 @@ type CreateInput struct {
 	Name             string
 	Kind             adapter.Kind
 	BaseURL          string
+	AllowInsecure    bool
 	APIKey           string
 	Headers          map[string]string
 	AnthropicVersion string
@@ -108,6 +114,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
 		Name:             in.Name,
 		Kind:             in.Kind,
 		BaseURL:          in.BaseURL,
+		AllowInsecure:    in.AllowInsecure,
 		Headers:          in.Headers,
 		AnthropicVersion: in.AnthropicVersion,
 		ReasoningStyle:   in.ReasoningStyle,
@@ -137,10 +144,10 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
 	}
 
 	_, err = s.db.Exec(ctx, `INSERT INTO providers
-		(id, name, kind, base_url, api_key_enc, api_key_hint, headers_json, anthropic_version,
-		 reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.Name, record.Kind, record.BaseURL, sealed, record.APIKeyHint,
+		(id, name, kind, base_url, allow_insecure, api_key_enc, api_key_hint, headers_json,
+		 anthropic_version, reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.ID, record.Name, record.Kind, record.BaseURL, record.AllowInsecure, sealed, record.APIKeyHint,
 		string(headers), record.AnthropicVersion, record.ReasoningStyle, record.TimeoutSeconds,
 		record.Enabled, record.SortOrder, record.CreatedAt, record.UpdatedAt)
 	if err != nil {
@@ -156,6 +163,7 @@ type Update struct {
 	Name             *string
 	Kind             *adapter.Kind
 	BaseURL          *string
+	AllowInsecure    *bool
 	APIKey           *string
 	Headers          *map[string]string
 	AnthropicVersion *string
@@ -183,6 +191,9 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update) (Provi
 	}
 	if in.BaseURL != nil {
 		next.BaseURL = *in.BaseURL
+	}
+	if in.AllowInsecure != nil {
+		next.AllowInsecure = *in.AllowInsecure
 	}
 	if in.Headers != nil {
 		next.Headers = *in.Headers
@@ -214,10 +225,11 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update) (Provi
 		return Provider{}, fmt.Errorf("provider: encode headers: %w", err)
 	}
 
-	sets := `name = ?, kind = ?, base_url = ?, headers_json = ?, anthropic_version = ?,
+	sets := `name = ?, kind = ?, base_url = ?, allow_insecure = ?, headers_json = ?, anthropic_version = ?,
 		reasoning_style = ?, timeout_seconds = ?, enabled = ?, sort_order = ?, updated_at = ?`
-	args := []any{next.Name, next.Kind, next.BaseURL, string(headers), next.AnthropicVersion,
-		next.ReasoningStyle, next.TimeoutSeconds, next.Enabled, next.SortOrder, next.UpdatedAt}
+	args := []any{next.Name, next.Kind, next.BaseURL, next.AllowInsecure, string(headers),
+		next.AnthropicVersion, next.ReasoningStyle, next.TimeoutSeconds, next.Enabled,
+		next.SortOrder, next.UpdatedAt}
 
 	if in.APIKey != nil {
 		key := strings.TrimSpace(*in.APIKey)
@@ -287,9 +299,10 @@ func (s *Store) Resolve(ctx context.Context, providerID string) (adapter.Provide
 	row := s.db.QueryRow(ctx, `SELECT `+columns+`, api_key_enc FROM providers WHERE id = ?`, providerID)
 
 	var headers string
-	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.APIKeyHint,
-		&headers, &record.AnthropicVersion, &record.ReasoningStyle, &record.TimeoutSeconds,
-		&record.Enabled, &record.SortOrder, &record.CreatedAt, &record.UpdatedAt, &sealed)
+	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.AllowInsecure,
+		&record.APIKeyHint, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
+		&record.TimeoutSeconds, &record.Enabled, &record.SortOrder, &record.CreatedAt,
+		&record.UpdatedAt, &sealed)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return adapter.Provider{}, ErrNotFound
@@ -357,7 +370,7 @@ func validate(record Provider) (Provider, error) {
 		return Provider{}, ErrInvalidKind
 	}
 
-	normalized, err := adapter.NormalizeBaseURL(record.BaseURL)
+	normalized, err := adapter.NormalizeBaseURL(record.BaseURL, record.AllowInsecure)
 	if err != nil {
 		return Provider{}, fmt.Errorf("provider: %w", err)
 	}
@@ -430,9 +443,10 @@ func scan(row rowScanner) (Provider, error) {
 		record  Provider
 		headers string
 	)
-	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.APIKeyHint,
-		&headers, &record.AnthropicVersion, &record.ReasoningStyle, &record.TimeoutSeconds,
-		&record.Enabled, &record.SortOrder, &record.CreatedAt, &record.UpdatedAt)
+	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.AllowInsecure,
+		&record.APIKeyHint, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
+		&record.TimeoutSeconds, &record.Enabled, &record.SortOrder, &record.CreatedAt,
+		&record.UpdatedAt)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Provider{}, ErrNotFound
@@ -449,9 +463,10 @@ func scanWithCount(row rowScanner) (Provider, int, error) {
 		headers string
 		count   int
 	)
-	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.APIKeyHint,
-		&headers, &record.AnthropicVersion, &record.ReasoningStyle, &record.TimeoutSeconds,
-		&record.Enabled, &record.SortOrder, &record.CreatedAt, &record.UpdatedAt, &count)
+	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.AllowInsecure,
+		&record.APIKeyHint, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
+		&record.TimeoutSeconds, &record.Enabled, &record.SortOrder, &record.CreatedAt,
+		&record.UpdatedAt, &count)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Provider{}, 0, ErrNotFound

@@ -31,10 +31,17 @@ type Group struct {
 	// Whether members may reach the instance over the API rather than the
 	// browser. Meaningless while the operator has the API switched off
 	// instance-wide; this narrows that switch, it does not stand in for it.
-	APIAccess bool  `json:"api_access"`
-	SortOrder int   `json:"sort_order"`
-	CreatedAt int64 `json:"created_at"`
-	UpdatedAt int64 `json:"updated_at"`
+	APIAccess bool `json:"api_access"`
+	// Whether members may switch on the timing line under an answer. It gates
+	// the switch, not the measurement: the figures are recorded either way,
+	// because the usage ledger is built from them.
+	AllowStats bool `json:"allow_stats"`
+	// Whether members may delete their own conversations. Off is for an
+	// instance that has to be able to answer for what was said on it.
+	AllowDeleteConversations bool  `json:"allow_delete_conversations"`
+	SortOrder                int   `json:"sort_order"`
+	CreatedAt                int64 `json:"created_at"`
+	UpdatedAt                int64 `json:"updated_at"`
 }
 
 var (
@@ -50,7 +57,8 @@ const (
 	MaxDescriptionChars = 200
 )
 
-const columns = `id, name, description, is_default, allow_all_models, api_access, sort_order, created_at, updated_at`
+const columns = `id, name, description, is_default, allow_all_models, api_access,
+	allow_stats, allow_delete_conversations, sort_order, created_at, updated_at`
 
 type Store struct{ db *database.DB }
 
@@ -67,7 +75,12 @@ type CreateInput struct {
 	// says so explicitly, and the admin form ticks the box by default to
 	// match.
 	APIAccess bool
-	SortOrder int
+	// Both default to true on the column, so a group created by an older
+	// path keeps every capability. A group created through this struct says
+	// what it means, and the admin form ticks both to match.
+	AllowStats               bool
+	AllowDeleteConversations bool
+	SortOrder                int
 }
 
 func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) (Group, error) {
@@ -87,14 +100,19 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		IsDefault:      in.IsDefault,
 		AllowAllModels: in.AllowAllModels,
 		APIAccess:      in.APIAccess,
-		SortOrder:      in.SortOrder,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+
+		AllowStats:               in.AllowStats,
+		AllowDeleteConversations: in.AllowDeleteConversations,
+
+		SortOrder: in.SortOrder,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
-	_, err = q.Exec(ctx, `INSERT INTO user_groups (`+columns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = q.Exec(ctx, `INSERT INTO user_groups (`+columns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.Name, record.Description, record.IsDefault, record.AllowAllModels,
-		record.APIAccess, record.SortOrder, record.CreatedAt, record.UpdatedAt)
+		record.APIAccess, record.AllowStats, record.AllowDeleteConversations,
+		record.SortOrder, record.CreatedAt, record.UpdatedAt)
 	if err != nil {
 		if isUnique(err) {
 			return Group{}, ErrNameTaken
@@ -165,12 +183,14 @@ func (s *Store) Count(ctx context.Context, q database.Queryer) (int, error) {
 }
 
 type Update struct {
-	Name           *string
-	Description    *string
-	IsDefault      *bool
-	AllowAllModels *bool
-	APIAccess      *bool
-	SortOrder      *int
+	Name                     *string
+	Description              *string
+	IsDefault                *bool
+	AllowAllModels           *bool
+	APIAccess                *bool
+	AllowStats               *bool
+	AllowDeleteConversations *bool
+	SortOrder                *int
 }
 
 func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, in Update) (Group, error) {
@@ -203,6 +223,14 @@ func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, 
 	if in.APIAccess != nil {
 		sets = append(sets, "api_access = ?")
 		args = append(args, *in.APIAccess)
+	}
+	if in.AllowStats != nil {
+		sets = append(sets, "allow_stats = ?")
+		args = append(args, *in.AllowStats)
+	}
+	if in.AllowDeleteConversations != nil {
+		sets = append(sets, "allow_delete_conversations = ?")
+		args = append(args, *in.AllowDeleteConversations)
 	}
 	if in.SortOrder != nil {
 		sets = append(sets, "sort_order = ?")
@@ -256,7 +284,8 @@ type rowScanner interface{ Scan(dest ...any) error }
 func scan(row rowScanner) (Group, error) {
 	var record Group
 	err := row.Scan(&record.ID, &record.Name, &record.Description, &record.IsDefault,
-		&record.AllowAllModels, &record.APIAccess, &record.SortOrder, &record.CreatedAt, &record.UpdatedAt)
+		&record.AllowAllModels, &record.APIAccess, &record.AllowStats,
+		&record.AllowDeleteConversations, &record.SortOrder, &record.CreatedAt, &record.UpdatedAt)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Group{}, ErrNotFound

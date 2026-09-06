@@ -133,9 +133,18 @@ func (e Effort) Valid() bool { return e == EffortLow || e == EffortMedium || e =
 
 // Reasoning is the unified control. The frontend sends only this; it has no
 // idea that budget_tokens or reasoning_effort exist.
+//
+// Effort is not necessarily one of the three above: a model may define its
+// own tiers under its own names, and the gateway resolves what the client
+// asked for against that model's list before handing it here. Whatever
+// arrives has already been checked against the tiers the reader was offered.
 type Reasoning struct {
 	Enabled bool
 	Effort  Effort
+	// Anthropic's thinking budget, in tokens, when the model's tier names
+	// one. Zero derives it from Effort, which is what an endpoint that only
+	// understands reasoning_effort needs anyway.
+	Budget int
 }
 
 type ChatRequest struct {

@@ -192,7 +192,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// before it started is given back separately by the release, so this
 		// is a plain addition and the two can happen in either order.
 		actual := quota.Estimate{Tokens: int64(record.Usage.Total()), Credits: record.Credits}
-		if err := quotaService.Settle(ctx, record.User.ID, quota.Estimate{}, actual); err != nil {
+		if err := quotaService.Settle(ctx, record.User, quota.Estimate{}, actual); err != nil {
 			slog.ErrorContext(ctx, "could not settle quota", "error", err, "user", record.User.ID)
 		}
 	}
@@ -237,6 +237,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 				"Confirm your email address first.")
 		}
 		return nil
+	}
+	chatHandlers.Deletable = func(ctx context.Context, account user.User) error {
+		return deleteAllowed(ctx, groups, account)
 	}
 	// Read per request rather than captured, so raising the limit takes
 	// effect without a restart.
@@ -355,6 +358,25 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 // It backs the interface's "you cannot create a key" state. The /v1 surface
 // checks the same two conditions itself rather than calling this, because a
 // screen wants to know why and a stranger with a token must not be told.
+// deleteAllowed answers whether this account's group lets it remove its own
+// conversations. An administrator always may: the capability exists to hold
+// an instance's members to a record, not to lock its operator out of one.
+//
+// A group that cannot be read grants it, matching what the account payload
+// tells the client, so a failed lookup does not silently take away something
+// somebody has.
+func deleteAllowed(ctx context.Context, groups *group.Store, account user.User) error {
+	if account.IsAdmin() {
+		return nil
+	}
+	membership, err := groups.ByID(ctx, nil, account.GroupID)
+	if err != nil || membership.AllowDeleteConversations {
+		return nil
+	}
+	return httpx.ForbiddenCode("delete_not_permitted",
+		"Your group cannot delete conversations.")
+}
+
 func apiAllowed(
 	ctx context.Context, set *settings.Service, groups *group.Store, account user.User,
 ) error {

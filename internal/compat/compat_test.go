@@ -376,7 +376,9 @@ func TestModelListingCarriesNoUpstreamDetail(t *testing.T) {
 	}
 
 	raw := w.Body.String()
-	for _, secret := range []string{"upstream-real-name", "Secret Upstream", "sk-provider-secret"} {
+	// The provider and its credential, never. The model id is deliberately
+	// here: it is the string a client is expected to send back.
+	for _, secret := range []string{"Secret Upstream", "sk-provider-secret"} {
 		if strings.Contains(raw, secret) {
 			t.Errorf("the listing leaked %q: %s", secret, raw)
 		}
@@ -388,11 +390,72 @@ func TestModelListingCarriesNoUpstreamDetail(t *testing.T) {
 		t.Fatalf("listed %d models, want 1: %s", len(data), raw)
 	}
 	entry, _ := data[0].(map[string]any)
-	if entry["id"] != f.model.ID {
-		t.Errorf("id = %v, want the row id %s", entry["id"], f.model.ID)
+	// The model id, which is what an OpenAI-compatible client sends back.
+	if entry["id"] != f.model.ModelID {
+		t.Errorf("id = %v, want the model id %s", entry["id"], f.model.ModelID)
 	}
 	if entry["owned_by"] != ownedBy {
 		t.Errorf("owned_by = %v, want the constant %q", entry["owned_by"], ownedBy)
+	}
+}
+
+// The listing gives out a readable identifier now, but nothing that was
+// written into a config file before it stopped working: the row id and the
+// display name resolve to the same model.
+func TestEverySpellingOfAModelResolves(t *testing.T) {
+	f := newFixture(t)
+
+	for _, wanted := range []string{"upstream-real-name", "UPSTREAM-REAL-NAME", f.model.ID, "Mock Fast"} {
+		f.upstream.reply(answer)
+		w := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, completionBody(wanted))
+		if w.Code != http.StatusOK {
+			t.Errorf("%q: status = %d, want 200: %s", wanted, w.Code, w.Body.String())
+		}
+	}
+
+	// A name nothing answers to is refused exactly the way a model somebody
+	// may not use is, so the two cannot be told apart.
+	if w := f.do(t, http.MethodGet, "/v1/models/nothing-by-that-name", f.token, ""); w.Code != http.StatusNotFound {
+		t.Errorf("an imaginary model: status = %d, want 404", w.Code)
+	}
+	if w := f.do(t, http.MethodGet, "/v1/models/upstream-real-name", f.token, ""); w.Code != http.StatusOK {
+		t.Errorf("the model id did not fetch: status = %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// One upstream model reached through two providers is two rows under one
+// model id. They cannot share an identifier, or one becomes unreachable —
+// and both are qualified, not just the second, because which one is "second"
+// depends on a sort order an administrator can change.
+func TestTwoRowsUnderOneModelIDGetDistinctRefs(t *testing.T) {
+	first := model.Model{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", ModelID: "openai/gpt-oss-120b"}
+	second := model.Model{ID: "01BRZ3NDEKTSV4RRFFQ69G5FBW", ModelID: "openai/gpt-oss-120b"}
+	alone := model.Model{ID: "01CRZ3NDEKTSV4RRFFQ69G5FCX", ModelID: "qwen/qwen3-235b"}
+
+	refs := publicRefs([]model.Model{first, second, alone})
+	if refs[first.ID] == refs[second.ID] {
+		t.Fatalf("both rows answer to %q", refs[first.ID])
+	}
+	for _, row := range []model.Model{first, second} {
+		if !strings.HasPrefix(refs[row.ID], "openai/gpt-oss-120b-") {
+			t.Errorf("ref %q is not the qualified model id", refs[row.ID])
+		}
+	}
+	// The one that shares its id with nobody is left exactly as entered.
+	if refs[alone.ID] != alone.ModelID {
+		t.Errorf("ref = %q, want the model id %q unchanged", refs[alone.ID], alone.ModelID)
+	}
+}
+
+// The model id is entered by an administrator and stored as typed, so it
+// reaches the listing as typed — slashes, dots and capitals included, which
+// is what makes it match what the upstream's own documentation says.
+func TestRefIsTheModelIDVerbatim(t *testing.T) {
+	for _, modelID := range []string{"openai/gpt-oss-120b", "Qwen3-235B-A22B", "gemini-2.5-pro"} {
+		record := model.Model{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", ModelID: modelID}
+		if got := publicRefs([]model.Model{record})[record.ID]; got != modelID {
+			t.Errorf("ref = %q, want %q", got, modelID)
+		}
 	}
 }
 
@@ -1052,7 +1115,8 @@ func TestKeyModelRestrictionEnforced(t *testing.T) {
 	for _, entry := range modelsResp.Data {
 		seen[entry.ID] = true
 	}
-	if !seen[f.model.ID] || !seen[second.ID] {
-		t.Errorf("got models %v, want IDs %q and %q", modelsResp.Data, f.model.ID, second.ID)
+	if !seen[f.model.ModelID] || !seen[second.ModelID] {
+		t.Errorf("got models %v, want the model ids %q and %q",
+			modelsResp.Data, f.model.ModelID, second.ModelID)
 	}
 }

@@ -18,6 +18,7 @@ type providerRequest struct {
 	Name             string                  `json:"name"`
 	Kind             adapter.Kind            `json:"kind"`
 	BaseURL          string                  `json:"base_url"`
+	AllowInsecure    *bool                   `json:"allow_insecure"`
 	APIKey           *string                 `json:"api_key"`
 	Headers          *map[string]string      `json:"headers"`
 	AnthropicVersion *string                 `json:"anthropic_version"`
@@ -51,6 +52,9 @@ func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error 
 		BaseURL: body.BaseURL,
 		APIKey:  *body.APIKey,
 		Enabled: true,
+	}
+	if body.AllowInsecure != nil {
+		in.AllowInsecure = *body.AllowInsecure
 	}
 	if body.Headers != nil {
 		in.Headers = *body.Headers
@@ -90,6 +94,7 @@ func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	update := provider.Update{
+		AllowInsecure:    body.AllowInsecure,
 		APIKey:           body.APIKey,
 		Headers:          body.Headers,
 		AnthropicVersion: body.AnthropicVersion,
@@ -194,6 +199,7 @@ type modelRequest struct {
 	// users see carries neither of these fields.
 	RouteToID      *string                 `json:"route_to_id"`
 	ReasoningStyle *adapter.ReasoningStyle `json:"reasoning_style"`
+	ReasoningTiers *[]model.ReasoningTier  `json:"reasoning_tiers"`
 
 	// Group access grants configured from the model editor.
 	GroupGrants *[]model.ModelGroupGrant `json:"group_grants"`
@@ -266,6 +272,7 @@ func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
 		&in.Enabled, &in.SortOrder, &in.Capabilities, &in.Weights, body)
 	setIf(&in.RouteToID, body.RouteToID)
 	setIf(&in.ReasoningStyle, body.ReasoningStyle)
+	setIf(&in.ReasoningTiers, body.ReasoningTiers)
 
 	record, err := h.models.Create(r.Context(), in)
 	if err != nil {
@@ -316,6 +323,7 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 		ReasoningTokenWeight: body.ReasoningTokenWeight,
 		RouteToID:            body.RouteToID,
 		ReasoningStyle:       body.ReasoningStyle,
+		ReasoningTiers:       body.ReasoningTiers,
 	})
 	if err != nil {
 		return model.TranslateError(err)
@@ -355,6 +363,35 @@ func (h *Handlers) checkRoute(ctx context.Context, modelID string, body modelReq
 		return httpx.BadRequest("Unknown reasoning style.")
 	}
 	return nil
+}
+
+// reorderModels takes the listing in the order it should be read.
+//
+// Every id is checked before anything is written: a list with one typo in it
+// would otherwise reorder most of the catalogue and silently drop the row
+// that was actually being moved.
+func (h *Handlers) reorderModels(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(body.IDs))
+	for _, modelID := range body.IDs {
+		if !isValidID(modelID) {
+			return httpx.BadRequest("Malformed model id.")
+		}
+		if seen[modelID] {
+			return httpx.BadRequest("The same model appears twice in the order.")
+		}
+		seen[modelID] = true
+	}
+
+	if err := h.models.Reorder(r.Context(), body.IDs); err != nil {
+		return model.TranslateError(err)
+	}
+	return httpx.NoContent(w)
 }
 
 func (h *Handlers) deleteModel(w http.ResponseWriter, r *http.Request) error {

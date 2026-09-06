@@ -38,7 +38,6 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -238,9 +237,10 @@ func (h *Handlers) listModels(w http.ResponseWriter, r *http.Request, who caller
 		return err
 	}
 
+	refs := publicRefs(available)
 	data := make([]modelObject, 0, len(available))
 	for _, record := range available {
-		data = append(data, describeModel(record))
+		data = append(data, describeModel(record, refs[record.ID]))
 	}
 	return writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
@@ -251,23 +251,88 @@ func (h *Handlers) getModel(w http.ResponseWriter, r *http.Request, who caller) 
 		return err
 	}
 	wanted := r.PathValue("id")
+	refs := publicRefs(available)
 	for _, record := range available {
-		if record.ID == wanted || strings.EqualFold(record.DisplayName, wanted) {
-			return writeJSON(w, http.StatusOK, describeModel(record))
+		if matchesRef(record, refs[record.ID], wanted) {
+			return writeJSON(w, http.StatusOK, describeModel(record, refs[record.ID]))
 		}
 	}
 	return unknownModel(wanted)
 }
 
-func describeModel(record model.Model) modelObject {
+func describeModel(record model.Model, ref string) modelObject {
 	return modelObject{
-		ID:          record.ID,
+		ID:          ref,
 		Object:      "model",
 		Created:     record.CreatedAt / 1000,
 		OwnedBy:     ownedBy,
 		DisplayName: record.DisplayName,
 		Description: record.Description,
 	}
+}
+
+// --- what a model is called from outside ---------------------------------------
+
+// publicRefs assigns each available model the identifier these endpoints
+// advertise it under: the model id an administrator entered, which is the
+// name the upstream itself knows it by.
+//
+// It used to be the row id, which is a ULID — permanent, correct, and
+// unusable. Somebody filling in a config file, or reading a dropdown their
+// client built from /v1/models, was handed twenty-six random characters and
+// no way to tell one model from another. The model id is the string people
+// already expect to type into an OpenAI-compatible client, so it is the one
+// this instance answers to.
+//
+// That does mean the listing names the upstream model, and often its vendor
+// with it. That is the operator's call, and here it has been made: being
+// callable beats being opaque. The provider's own name is still not served
+// anywhere a user can read it.
+//
+// The row id and the display name keep resolving too, so a client configured
+// before this goes on working.
+func publicRefs(records []model.Model) map[string]string {
+	claims := make(map[string]int, len(records))
+	for _, record := range records {
+		if record.ModelID != "" {
+			claims[record.ModelID]++
+		}
+	}
+
+	refs := make(map[string]string, len(records))
+	for _, record := range records {
+		switch {
+		case record.ModelID == "":
+			refs[record.ID] = record.ID
+		case claims[record.ModelID] > 1:
+			// One upstream model reached through two providers — a primary
+			// and a fallback — is two rows under one id. Handing both the
+			// same identifier would make one unreachable, so both are
+			// qualified: both, not the second, because which one is "second"
+			// depends on a sort order an administrator can change.
+			refs[record.ID] = record.ModelID + "-" + tail(record.ID)
+		default:
+			refs[record.ID] = record.ModelID
+		}
+	}
+	return refs
+}
+
+// The last few characters of a ULID: the random tail, so two rows created in
+// the same millisecond still differ here.
+func tail(rowID string) string {
+	lowered := strings.ToLower(rowID)
+	if len(lowered) <= 6 {
+		return lowered
+	}
+	return lowered[len(lowered)-6:]
+}
+
+// The three spellings every endpoint accepts for one model.
+func matchesRef(record model.Model, ref, wanted string) bool {
+	return record.ID == wanted ||
+		strings.EqualFold(ref, wanted) ||
+		strings.EqualFold(record.DisplayName, wanted)
 }
 
 // available is what this caller may actually send to: the same listing the
@@ -313,10 +378,12 @@ func (h *Handlers) resolveModel(ctx context.Context, who caller, wanted string) 
 		return "", err
 	}
 
+	refs := publicRefs(available)
+
 	// When the key is locked to a set of models, reject any request for another model.
 	if len(keyModelIDs(who.key)) > 0 {
 		for _, record := range available {
-			if strings.EqualFold(record.ID, wanted) || strings.EqualFold(record.DisplayName, wanted) {
+			if matchesRef(record, refs[record.ID], wanted) {
 				return record.ID, nil
 			}
 		}
@@ -328,16 +395,8 @@ func (h *Handlers) resolveModel(ctx context.Context, who caller, wanted string) 
 		}
 	}
 
-	if id.Valid(wanted) {
-		for _, record := range available {
-			if record.ID == wanted {
-				return wanted, nil
-			}
-		}
-	}
-
 	for _, record := range available {
-		if strings.EqualFold(record.DisplayName, wanted) {
+		if matchesRef(record, refs[record.ID], wanted) {
 			return record.ID, nil
 		}
 	}

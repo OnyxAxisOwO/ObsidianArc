@@ -26,9 +26,11 @@ const MaxErrorBodyBytes = 32 * 1024
 // It is validated rather than interpolated as typed because it is the
 // destination of a credential: a mistyped scheme downgrades the key to
 // plaintext on the wire, and embedded credentials in the URL would end up in
-// logs. Plain http is allowed only for loopback, which is how a local Ollama
-// or vLLM is reached.
-func NormalizeBaseURL(raw string) (string, error) {
+// logs. Plain http is allowed for loopback, which is how a local Ollama or
+// vLLM is reached, and otherwise only when the administrator has opted that
+// one provider into it: a self-hosted endpoint on a public address with no
+// certificate is a real deployment, but not one to arrive at by typo.
+func NormalizeBaseURL(raw string, allowInsecure bool) (string, error) {
 	candidate := strings.TrimSpace(raw)
 	if candidate == "" {
 		return "", fmt.Errorf("base URL is required")
@@ -50,8 +52,10 @@ func NormalizeBaseURL(raw string) (string, error) {
 
 	host := parsed.Hostname()
 	loopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
-	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && loopback) {
-		return "", fmt.Errorf("base URL must use https (http is allowed only for localhost)")
+	// The opt-in widens http and nothing else: any other scheme is still a
+	// mistake, and an address typed without one still defaults to https.
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && (loopback || allowInsecure)) {
+		return "", fmt.Errorf("base URL must use https (plain http needs the provider's own opt-in, and is always allowed for localhost)")
 	}
 
 	parsed.Path = strings.TrimRight(parsed.Path, "/")

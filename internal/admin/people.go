@@ -440,14 +440,18 @@ func (h *Handlers) listGroups(w http.ResponseWriter, r *http.Request) error {
 }
 
 type groupRequest struct {
-	Name           *string             `json:"name"`
-	Description    *string             `json:"description"`
-	IsDefault      *bool               `json:"is_default"`
-	AllowAllModels *bool               `json:"allow_all_models"`
-	APIAccess      *bool               `json:"api_access"`
-	SortOrder      *int                `json:"sort_order"`
-	ModelIDs       *[]string           `json:"model_ids"`
-	ModelGrants    *[]model.GroupGrant `json:"model_grants"`
+	Name           *string `json:"name"`
+	Description    *string `json:"description"`
+	IsDefault      *bool   `json:"is_default"`
+	AllowAllModels *bool   `json:"allow_all_models"`
+	APIAccess      *bool   `json:"api_access"`
+
+	AllowStats               *bool `json:"allow_stats"`
+	AllowDeleteConversations *bool `json:"allow_delete_conversations"`
+
+	SortOrder   *int                `json:"sort_order"`
+	ModelIDs    *[]string           `json:"model_ids"`
+	ModelGrants *[]model.GroupGrant `json:"model_grants"`
 }
 
 func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
@@ -473,6 +477,10 @@ func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 	// group made while the API is on should work like the ones that predate
 	// it being turned on.
 	in.APIAccess = body.APIAccess == nil || *body.APIAccess
+	// Same reasoning, and the same default as the columns: a new group can
+	// do what every existing group can until somebody says otherwise.
+	in.AllowStats = body.AllowStats == nil || *body.AllowStats
+	in.AllowDeleteConversations = body.AllowDeleteConversations == nil || *body.AllowDeleteConversations
 	if body.SortOrder != nil {
 		in.SortOrder = *body.SortOrder
 	}
@@ -505,12 +513,14 @@ func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	record, err := h.groups.Update(r.Context(), nil, groupID, group.Update{
-		Name:           body.Name,
-		Description:    body.Description,
-		IsDefault:      body.IsDefault,
-		AllowAllModels: body.AllowAllModels,
-		APIAccess:      body.APIAccess,
-		SortOrder:      body.SortOrder,
+		Name:                     body.Name,
+		Description:              body.Description,
+		IsDefault:                body.IsDefault,
+		AllowAllModels:           body.AllowAllModels,
+		APIAccess:                body.APIAccess,
+		AllowStats:               body.AllowStats,
+		AllowDeleteConversations: body.AllowDeleteConversations,
+		SortOrder:                body.SortOrder,
 	})
 	if err != nil {
 		return translateGroupError(err)

@@ -50,6 +50,27 @@ type Weights struct {
 	ReasoningToken float64 `json:"reasoning_token_weight"`
 }
 
+// ReasoningTier is one named amount of thinking, as the reader meets it in
+// the composer.
+//
+// A model with no tiers of its own uses the three the client has built in.
+// The point of the list is that three English words are one endpoint's
+// vocabulary: a local server may offer four levels, and an instance read in
+// Chinese should be able to name them in Chinese without waiting for a
+// release.
+type ReasoningTier struct {
+	// What travels as reasoning_effort and what the account remembers, so
+	// renaming a tier does not silently move everyone to a different one.
+	ID string `json:"id"`
+	// What the reader sees. Written by an administrator in whatever language
+	// this instance is run in, so it never passes through the dictionary.
+	Name string `json:"name"`
+	// Anthropic's thinking budget in tokens. Zero derives it from the id the
+	// way the built-in three do, which is all an OpenAI-compatible endpoint
+	// ever needs.
+	Budget int `json:"budget"`
+}
+
 type Model struct {
 	ID         string `json:"id"`
 	ProviderID string `json:"provider_id"`
@@ -70,6 +91,9 @@ type Model struct {
 	// Overrides the provider's reasoning style for this model alone.
 	// Empty means whatever the provider says.
 	ReasoningStyle adapter.ReasoningStyle `json:"reasoning_style"`
+	// The amounts of thinking this model offers. Empty is the built-in
+	// three, which is what every model configured before tiers existed has.
+	ReasoningTiers []ReasoningTier `json:"reasoning_tiers"`
 
 	Capabilities
 	Weights
@@ -144,6 +168,12 @@ const (
 	MaxDisplayNameChars = 80
 	MaxDescriptionChars = 300
 	MaxAvatarChars      = 8 * 1024
+
+	// A slider with more stops than this stops being a slider. The cap is
+	// on the control, not on any storage limit.
+	MaxReasoningTiers = 8
+	MaxTierIDChars    = 32
+	MaxTierNameChars  = 40
 )
 
 const columns = `m.id, m.provider_id, m.model_id, m.display_name, m.description, m.avatar,
@@ -151,7 +181,8 @@ const columns = `m.id, m.provider_id, m.model_id, m.display_name, m.description,
 	m.supports_reasoning, m.supports_images, m.supports_vision, m.supports_streaming,
 	m.supports_system_prompt, m.supports_tools, m.context_window, m.max_output_tokens,
 	m.request_weight, m.input_token_weight, m.output_token_weight, m.reasoning_token_weight,
-	m.created_at, m.updated_at, m.route_to_id, m.reasoning_style, m.hidden`
+	m.created_at, m.updated_at, m.route_to_id, m.reasoning_style, m.hidden,
+	m.reasoning_tiers`
 
 const withProvider = columns + `, p.name, p.kind`
 
@@ -175,6 +206,7 @@ type CreateInput struct {
 	SortOrder      int
 	RouteToID      string
 	ReasoningStyle adapter.ReasoningStyle
+	ReasoningTiers []ReasoningTier
 	Capabilities
 	Weights
 }
@@ -192,6 +224,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		SortOrder:      in.SortOrder,
 		RouteToID:      in.RouteToID,
 		ReasoningStyle: in.ReasoningStyle,
+		ReasoningTiers: in.ReasoningTiers,
 		Capabilities:   in.Capabilities,
 		Weights:        in.Weights,
 	}
@@ -209,15 +242,16 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		 supports_reasoning, supports_images, supports_vision, supports_streaming,
 		 supports_system_prompt, supports_tools, context_window, max_output_tokens,
 		 request_weight, input_token_weight, output_token_weight, reasoning_token_weight,
-		 created_at, updated_at, route_to_id, reasoning_style)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 created_at, updated_at, route_to_id, reasoning_style, reasoning_tiers)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.ProviderID, record.ModelID, record.DisplayName, record.Description,
 		record.Avatar, record.Enabled, record.Hidden, record.SortOrder,
 		record.SupportsReasoning, record.SupportsImages, record.SupportsVision,
 		record.SupportsStreaming, record.SupportsSystemPrompt, record.SupportsTools,
 		record.ContextWindow, record.MaxOutputTokens,
 		record.Request, record.InputToken, record.OutputToken, record.ReasoningToken,
-		record.CreatedAt, record.UpdatedAt, routeValue(record.RouteToID), record.ReasoningStyle)
+		record.CreatedAt, record.UpdatedAt, routeValue(record.RouteToID), record.ReasoningStyle,
+		encodeTiers(record.ReasoningTiers))
 	if err != nil {
 		if isUnique(err) {
 			return Model{}, ErrDuplicate
@@ -238,6 +272,7 @@ type Update struct {
 
 	RouteToID      *string
 	ReasoningStyle *adapter.ReasoningStyle
+	ReasoningTiers *[]ReasoningTier
 
 	SupportsReasoning    *bool
 	SupportsImages       *bool
@@ -270,6 +305,7 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 	assign(&next.SortOrder, in.SortOrder)
 	assign(&next.RouteToID, in.RouteToID)
 	assign(&next.ReasoningStyle, in.ReasoningStyle)
+	assign(&next.ReasoningTiers, in.ReasoningTiers)
 	assign(&next.SupportsReasoning, in.SupportsReasoning)
 	assign(&next.SupportsImages, in.SupportsImages)
 	assign(&next.SupportsVision, in.SupportsVision)
@@ -294,13 +330,14 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 		supports_reasoning = ?, supports_images = ?, supports_vision = ?, supports_streaming = ?,
 		supports_system_prompt = ?, supports_tools = ?, context_window = ?, max_output_tokens = ?,
 		request_weight = ?, input_token_weight = ?, output_token_weight = ?, reasoning_token_weight = ?,
-		route_to_id = ?, reasoning_style = ?, updated_at = ?
+		route_to_id = ?, reasoning_style = ?, reasoning_tiers = ?, updated_at = ?
 		WHERE id = ?`,
 		next.ModelID, next.DisplayName, next.Description, next.Avatar, next.Enabled, next.Hidden, next.SortOrder,
 		next.SupportsReasoning, next.SupportsImages, next.SupportsVision, next.SupportsStreaming,
 		next.SupportsSystemPrompt, next.SupportsTools, next.ContextWindow, next.MaxOutputTokens,
 		next.Request, next.InputToken, next.OutputToken, next.ReasoningToken,
-		routeValue(next.RouteToID), next.ReasoningStyle, next.UpdatedAt, modelID)
+		routeValue(next.RouteToID), next.ReasoningStyle, encodeTiers(next.ReasoningTiers),
+		next.UpdatedAt, modelID)
 	if err != nil {
 		if isUnique(err) {
 			return Model{}, ErrDuplicate
@@ -325,7 +362,11 @@ func (s *Store) ListAll(ctx context.Context, providerID string) ([]Model, error)
 		query += ` WHERE m.provider_id = ?`
 		args = append(args, providerID)
 	}
-	query += ` ORDER BY p.sort_order, p.name, m.sort_order, m.display_name`
+	// The same order ListForUser serves, and deliberately not grouped by
+	// provider: this table is where the order is arranged, so what an
+	// administrator drags to the top has to be what a reader is offered
+	// first. Grouping by provider is a click on the column header away.
+	query += ` ORDER BY m.sort_order, m.display_name`
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
@@ -495,6 +536,7 @@ func (s *Store) readCallable(
 		upstream   provider.Provider
 		sealed     []byte
 		headerJSON string
+		tiers      string
 		route      sql.NullString
 	)
 	err := s.db.QueryRow(ctx, query, args...).Scan(
@@ -505,7 +547,7 @@ func (s *Store) readCallable(
 		&record.ContextWindow, &record.MaxOutputTokens,
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
 		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
-		&record.Hidden,
+		&record.Hidden, &tiers,
 		&record.ProviderName, &record.ProviderKind,
 		&upstream.BaseURL, &sealed, &headerJSON, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
 		&upstream.TimeoutSeconds, &upstream.APIKeyHint, &upstream.SortOrder, &upstream.Enabled,
@@ -520,6 +562,31 @@ func (s *Store) readCallable(
 	record.RouteToID = route.String
 	upstream.Headers = decodeHeaders(headerJSON)
 	return record, upstream, sealed, nil
+}
+
+// Reorder writes a whole listing's order in one go.
+//
+// Positions rather than a nudge: the client sends the list as the reader will
+// see it, so there is no arithmetic on this side that could disagree with
+// what was on screen, and no gaps to run out of after enough moves.
+//
+// One transaction, because a half-applied order is a listing in an order
+// nobody chose.
+func (s *Store) Reorder(ctx context.Context, modelIDs []string) error {
+	if len(modelIDs) == 0 {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		for position, modelID := range modelIDs {
+			if _, err := tx.Exec(ctx,
+				`UPDATE models SET sort_order = ?, updated_at = ? WHERE id = ?`,
+				position, now, modelID); err != nil {
+				return fmt.Errorf("model: reorder: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Store) Delete(ctx context.Context, modelID string) error {
@@ -718,6 +785,7 @@ func validate(record Model) (Model, error) {
 
 	record.ContextWindow = max(0, record.ContextWindow)
 	record.MaxOutputTokens = max(0, record.MaxOutputTokens)
+	record.ReasoningTiers = normalizeTiers(record.ReasoningTiers)
 
 	// Negative weights would let a model earn a user credits back.
 	record.Request = clampWeight(record.Request)
@@ -725,6 +793,89 @@ func validate(record Model) (Model, error) {
 	record.OutputToken = clampWeight(record.OutputToken)
 	record.ReasoningToken = clampWeight(record.ReasoningToken)
 	return record, nil
+}
+
+// ResolveTier answers what a request that asked for `effort` should actually
+// be sent with.
+//
+// An unknown tier lands on the middle one rather than failing: the id comes
+// from a preference a browser has been carrying since before an administrator
+// last edited this list, and a stale choice is not a reason to refuse a turn.
+func (m Model) ResolveTier(effort adapter.Effort) (adapter.Effort, int) {
+	if len(m.ReasoningTiers) == 0 {
+		// No list of its own: the three the client has built in, and the
+		// budget the adapter derives from them.
+		if effort.Valid() {
+			return effort, 0
+		}
+		return adapter.EffortMedium, 0
+	}
+	for _, tier := range m.ReasoningTiers {
+		if tier.ID == string(effort) {
+			return effort, tier.Budget
+		}
+	}
+	middle := m.ReasoningTiers[len(m.ReasoningTiers)/2]
+	return adapter.Effort(middle.ID), middle.Budget
+}
+
+// normalizeTiers keeps the list to what the slider can show and what the
+// gateway can resolve: named, identified, and no two tiers answering to the
+// same id — a duplicate would make the second one unreachable, since lookup
+// stops at the first match.
+func normalizeTiers(in []ReasoningTier) []ReasoningTier {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ReasoningTier, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, tier := range in {
+		tier.ID = strings.TrimSpace(tier.ID)
+		tier.Name = text.TrimAndTruncate(tier.Name, MaxTierNameChars)
+		if tier.ID == "" || tier.Name == "" || len(tier.ID) > MaxTierIDChars {
+			// Half a tier is not a tier: it would show a blank stop, or one
+			// the account could never name again.
+			continue
+		}
+		if seen[tier.ID] {
+			continue
+		}
+		seen[tier.ID] = true
+		tier.Budget = max(0, tier.Budget)
+		out = append(out, tier)
+		if len(out) == MaxReasoningTiers {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// The column holds ” for a model using the built-in three, so a row written
+// before tiers existed decodes to the same nil the editor writes back when
+// the list is emptied.
+func encodeTiers(tiers []ReasoningTier) string {
+	if len(tiers) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(tiers)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func decodeTiers(raw string) []ReasoningTier {
+	if raw == "" {
+		return nil
+	}
+	var out []ReasoningTier
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func clampWeight(value float64) float64 {
@@ -747,6 +898,7 @@ type rowScanner interface{ Scan(dest ...any) error }
 
 func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
 	var record Model
+	var tiers string
 	// NULL rather than empty, because the column carries a foreign key:
 	// deleting a route's target clears it instead of leaving a dangling id.
 	var route sql.NullString
@@ -758,7 +910,7 @@ func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
 		&record.ContextWindow, &record.MaxOutputTokens,
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
 		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
-		&record.Hidden,
+		&record.Hidden, &tiers,
 	}
 	if joined {
 		targets = append(targets, &record.ProviderName, &record.ProviderKind)
@@ -773,6 +925,7 @@ func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
 		return Model{}, fmt.Errorf("model: scan: %w", err)
 	}
 	record.RouteToID = route.String
+	record.ReasoningTiers = decodeTiers(tiers)
 	return record, nil
 }
 

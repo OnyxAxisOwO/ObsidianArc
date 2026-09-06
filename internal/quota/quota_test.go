@@ -247,7 +247,7 @@ func TestTokenCeilingRefusesOnceSpent(t *testing.T) {
 
 	// A turn's cost is only known once it is over, so the ceiling is applied
 	// to what has already been consumed.
-	if err := service.Settle(ctx, person.ID, Estimate{}, Estimate{Tokens: 1200, Credits: 1.2}); err != nil {
+	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 1200, Credits: 1.2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -276,7 +276,7 @@ func TestCreditCeiling(t *testing.T) {
 	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Settle(ctx, person.ID, Estimate{}, Estimate{Tokens: 0, Credits: 5.5}); err != nil {
+	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 0, Credits: 5.5}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -325,7 +325,7 @@ func TestSummaryReportsEveryWindow(t *testing.T) {
 	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Settle(ctx, person.ID, Estimate{}, Estimate{Tokens: 350, Credits: 0.35}); err != nil {
+	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 350, Credits: 0.35}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -373,7 +373,7 @@ func TestUnenforcedAccountStillReportsUsage(t *testing.T) {
 	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Settle(ctx, person.ID, Estimate{}, Estimate{Tokens: 42, Credits: 0.042}); err != nil {
+	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 42, Credits: 0.042}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -394,30 +394,84 @@ func TestUnenforcedAccountStillReportsUsage(t *testing.T) {
 	}
 }
 
-// Windows are aligned rather than rolling, so "when does this reset" has an
-// answer the interface can show.
-func TestWindowAlignment(t *testing.T) {
-	// A Wednesday.
-	now := time.Date(2026, 3, 18, 14, 37, 12, 0, time.UTC)
+// An allowance runs from the account's own registration, so "when does this
+// reset" is answered per account rather than by a calendar everybody shares.
+func TestAllowanceWindowsRunFromRegistration(t *testing.T) {
+	// Registered on a Thursday, mid-afternoon.
+	anchor := time.Date(2026, 1, 15, 14, 30, 0, 0, time.UTC).UnixMilli()
 
-	week := time.UnixMilli(bucketStart(WindowWeek, now)).UTC()
-	if week.Weekday() != time.Monday || week.Hour() != 0 {
-		t.Errorf("the week starts at %v, want Monday 00:00", week)
+	// Four days later: still inside the first week, which began at signup.
+	now := time.Date(2026, 1, 19, 9, 0, 0, 0, time.UTC)
+	week := time.UnixMilli(bucketStart(WindowWeek, now, anchor)).UTC()
+	if week.UnixMilli() != anchor {
+		t.Errorf("week start = %v, want the moment of registration", week)
 	}
-	if week.Day() != 16 {
-		t.Errorf("week start = %v, want 16 March", week)
-	}
-
-	month := time.UnixMilli(bucketStart(WindowMonth, now)).UTC()
-	if month.Day() != 1 || month.Month() != time.March {
-		t.Errorf("month start = %v", month)
+	if end := bucketEnd(WindowWeek, now, anchor); end.Day() != 22 {
+		t.Errorf("week end = %v, want 22 January", end)
 	}
 
-	if end := bucketEnd(WindowMonth, now); end.Month() != time.April || end.Day() != 1 {
-		t.Errorf("month end = %v", end)
+	// Nine days later: the second week, still starting at the same time of
+	// day rather than at midnight on a Monday.
+	now = time.Date(2026, 1, 24, 9, 0, 0, 0, time.UTC)
+	week = time.UnixMilli(bucketStart(WindowWeek, now, anchor)).UTC()
+	if week.Day() != 22 || week.Hour() != 14 || week.Minute() != 30 {
+		t.Errorf("second week start = %v, want 22 January 14:30", week)
 	}
-	if end := bucketEnd(WindowWeek, now); end.Day() != 23 {
-		t.Errorf("week end = %v, want 23 March", end)
+
+	// The month renews on the 15th, not the 1st.
+	now = time.Date(2026, 3, 2, 8, 0, 0, 0, time.UTC)
+	month := time.UnixMilli(bucketStart(WindowMonth, now, anchor)).UTC()
+	if month.Month() != time.February || month.Day() != 15 {
+		t.Errorf("month start = %v, want 15 February", month)
+	}
+	if end := bucketEnd(WindowMonth, now, anchor); end.Month() != time.March || end.Day() != 15 {
+		t.Errorf("month end = %v, want 15 March", end)
+	}
+
+	// The rate windows are still the wall clock's: a minute is a minute, and
+	// the anchor has nothing to say about it.
+	minute := time.UnixMilli(bucketStart(WindowRPM, now, anchor)).UTC()
+	if minute.Second() != 0 || minute.Minute() != 0 || minute.Hour() != 8 {
+		t.Errorf("rate window start = %v, want 08:00:00", minute)
+	}
+}
+
+// An account created on a day that not every month has renews on the last day
+// of the short ones, rather than sliding forward into the next month and
+// taking the renewal date with it.
+func TestMonthlyWindowClampsToShortMonths(t *testing.T) {
+	anchor := time.Date(2026, 1, 31, 6, 0, 0, 0, time.UTC).UnixMilli()
+
+	now := time.Date(2026, 2, 28, 12, 0, 0, 0, time.UTC)
+	start := time.UnixMilli(bucketStart(WindowMonth, now, anchor)).UTC()
+	if start.Month() != time.February || start.Day() != 28 {
+		t.Errorf("month start = %v, want 28 February", start)
+	}
+
+	// March has a 31st again, so the renewal comes back to it rather than
+	// staying on the 28th for good.
+	now = time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC)
+	start = time.UnixMilli(bucketStart(WindowMonth, now, anchor)).UTC()
+	if start.Month() != time.March || start.Day() != 31 {
+		t.Errorf("month start = %v, want 31 March", start)
+	}
+}
+
+// Two accounts registered a fortnight apart never share a bucket, which is
+// the whole point: one running out does not tell the other anything, and
+// they do not all come back at midnight together.
+func TestTwoAccountsGetDifferentWindows(t *testing.T) {
+	// Not a whole number of weeks apart, or the two would align again by
+	// arithmetic and this would be testing nothing.
+	early := time.Date(2026, 1, 3, 10, 0, 0, 0, time.UTC).UnixMilli()
+	late := time.Date(2026, 1, 18, 16, 0, 0, 0, time.UTC).UnixMilli()
+	now := time.Date(2026, 2, 20, 15, 0, 0, 0, time.UTC)
+
+	if bucketStart(WindowWeek, now, early) == bucketStart(WindowWeek, now, late) {
+		t.Error("two accounts registered a fortnight apart share a week bucket")
+	}
+	if bucketStart(WindowMonth, now, early) == bucketStart(WindowMonth, now, late) {
+		t.Error("two accounts registered a fortnight apart share a month bucket")
 	}
 }
 
@@ -425,7 +479,7 @@ func TestPruneRemovesRolledOverBuckets(t *testing.T) {
 	service, db := newService(t)
 	ctx := context.Background()
 
-	if err := service.Settle(ctx, "user-1", Estimate{}, Estimate{Tokens: 10, Credits: 0.01}); err != nil {
+	if err := service.Settle(ctx, account("user-1", ""), Estimate{}, Estimate{Tokens: 10, Credits: 0.01}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(ctx, `UPDATE usage_counters SET window_start = ?`,
@@ -511,7 +565,7 @@ func TestReleaseGivesBackTheReservation(t *testing.T) {
 	// order genuinely does not matter — which is why the gateway can settle
 	// from one goroutine and release from another.
 	actual := Estimate{Tokens: 120, Credits: 0.12}
-	if err := service.Settle(ctx, person.ID, Estimate{}, actual); err != nil {
+	if err := service.Settle(ctx, person, Estimate{}, actual); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.Release(ctx, person.ID, reserved); err != nil {
@@ -551,7 +605,7 @@ func TestCountersNeverGoNegative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Settle(ctx, person.ID, Estimate{}, Estimate{Tokens: 100, Credits: 1}); err != nil {
+	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 100, Credits: 1}); err != nil {
 		t.Fatal(err)
 	}
 	// The same hold handed back twice, which is what a retry of the deferred
