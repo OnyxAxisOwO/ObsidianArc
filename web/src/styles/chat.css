@@ -481,8 +481,11 @@
   margin: 0;
 }
 
-/* Same shape as the delete button in the conversation list: out of the way
-   until the block is hovered, and a fill rather than an outline once it is. */
+/* Always visible rather than hover-revealed: a control a reader has to
+   discover by hovering is a control most readers never find, and the button
+   is the only way to lift a block's code without dragging a selection across
+   a scrolled <pre>. The pill is small and filled, so it stays readable over
+   the code without an outline. */
 .ai-code-copy {
   position: absolute;
   top: 6px;
@@ -493,15 +496,7 @@
   background: var(--ai-surface-container-high);
   color: var(--ai-text-secondary);
   font-size: 11px;
-  opacity: 0;
   cursor: pointer;
-  transition: opacity 0.15s ease;
-}
-
-.ai-code:hover .ai-code-copy,
-.ai-code-copy:focus-visible,
-.ai-code-copy.copied {
-  opacity: 1;
 }
 
 .ai-code-copy:hover {
@@ -517,14 +512,6 @@
 .ai-code-copy:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-}
-
-/* A touch pointer has no hover to reveal it with, so on those screens the
-   button is simply always there. */
-@media (hover: none) {
-  .ai-code-copy {
-    opacity: 1;
-  }
 }
 
 .ai-answer a {
