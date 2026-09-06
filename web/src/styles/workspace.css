@@ -308,7 +308,10 @@
   left: 0;
   right: auto;
   z-index: 55;
-  max-height: min(320px, 60vh);
+  /* No max-height here: the script sets one from the room actually left
+     beside the trigger. A static cap is how a list ends up hanging off the
+     bottom of a short window, and a body-fixed node scrolls with nothing, so
+     the rows past the fold cannot be reached at all. */
 }
 
 /* Open is a class, and it arrives a frame after the node does and leaves

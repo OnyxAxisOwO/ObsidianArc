@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { select } from '../src/ui/select';
+import { select, placeList } from '../src/ui/select';
 
 // jsdom has no layout, so neither of these exists. The control calls both
 // while opening; what is under test is everything around them.
@@ -173,6 +173,50 @@ describe('select', () => {
     vi.restoreAllMocks();
   });
 
+  // Reproduced against the shipped file: open, walk down, replace the list
+  // with a shorter one, press Enter. It threw on choices[active].value, and
+  // the throw left aria-expanded true with the document listener still on.
+  it('survives Enter after the list shrank under the walk', () => {
+    const control = mount();
+    control.element.click();
+    key(control.element, 'ArrowDown');
+    key(control.element, 'ArrowDown');
+
+    control.setChoices([{ value: 'red', label: 'Red' }]);
+    expect(() => key(control.element, 'Enter')).not.toThrow();
+    expect(control.element.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  // A rebuild while open leaves a list with new ids and a possibly shorter
+  // walk. Nothing highlighted, or a highlight naming a row that is gone, is
+  // how the arrow keys resume from an index that means nothing.
+  it('re-marks the value after the list is replaced under it', () => {
+    const control = mount({ choices: COLOURS, value: 'blue' });
+    control.element.click();
+
+    control.setChoices([...COLOURS, { value: 'white', label: 'White' }]);
+    const marked = Array.from(list()!.children).filter((row) => row.classList.contains('active'));
+    expect(marked.length).toBe(1);
+    expect(marked[0]!.id).toBe(control.element.getAttribute('aria-activedescendant'));
+    expect(marked[0]!.textContent).toBe('Blue');
+  });
+
+  // Four teardown paths in this app destroy a screen without a router render
+  // — ui/panel.ts empties its body, the admin rail swaps the whole body node.
+  // The list is on <body> and hears about none of them, so it watches.
+  it('closes itself when its trigger is taken out of the document', async () => {
+    const control = mount();
+    control.element.click();
+    expect(control.element.getAttribute('aria-expanded')).toBe('true');
+
+    control.element.remove();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    expect(control.element.getAttribute('aria-expanded')).toBe('false');
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(list()).toBeNull();
+  });
+
   // A press outside is a dismissal, but the <label> that wraps the control
   // forwards a click on its own text to it — reading that as outside would
   // shut the list in the same gesture that opened it.
@@ -190,5 +234,40 @@ describe('select', () => {
 
     document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
     expect(control.element.getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+describe('placeList', () => {
+  const box = { top: 250, bottom: 282, left: 100, width: 400 };
+  const view = { width: 1000, height: 560 };
+
+  // The bug this function was extracted to make testable: a 320px list under
+  // a trigger 282px down a 560px window used to be placed below anyway,
+  // because the flip only asked which side was bigger and never asked whether
+  // either side fitted. 48px of rows ended up past the bottom edge of a node
+  // that scrolls with nothing.
+  it('never reaches past the bottom of the window', () => {
+    const spot = placeList(box, 320, 400, view);
+    expect(spot.top + spot.maxHeight).toBeLessThanOrEqual(view.height);
+    expect(spot.maxHeight).toBeLessThan(320);
+  });
+
+  it('hangs below when the list fits there', () => {
+    const spot = placeList(box, 120, 400, view);
+    expect(spot.top).toBe(box.bottom + 6);
+    expect(spot.origin).toBe('top left');
+  });
+
+  it('flips above only when there is more room above', () => {
+    const low = { top: 480, bottom: 512, left: 100, width: 400 };
+    const spot = placeList(low, 320, 400, view);
+    expect(spot.origin).toBe('bottom left');
+    expect(spot.top).toBeGreaterThanOrEqual(8);
+    expect(spot.top + spot.maxHeight).toBeLessThanOrEqual(low.top - 6);
+  });
+
+  it('keeps a wide list inside the right edge', () => {
+    const far = { top: 100, bottom: 132, left: 900, width: 90 };
+    expect(placeList(far, 100, 300, view).left).toBe(1000 - 8 - 300);
   });
 });

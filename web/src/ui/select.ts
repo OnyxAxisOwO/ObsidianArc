@@ -1,14 +1,12 @@
-// The option list, drawn by this stylesheet instead of by the operating
-// system.
+// The option list, drawn here instead of by the operating system.
 //
 // A native <select> hands its popup to the platform. That is why every
 // dropdown here used to open a grey OS list with a blue bar through it, in
 // the middle of a rounded translucent panel. The stylesheet did try: there
-// was a `appearance: base-select` block that restyles the native picker. It
-// sits behind @supports and Chromium is the only engine that has it, so on
-// anything else the whole block was skipped and the OS list came back — the
-// feature looked finished to whoever had the right browser and had never
-// shipped for anybody else.
+// was an `appearance: base-select` block restyling the native picker. Chromium
+// is the only engine that has that property, and it sat behind @supports — so
+// the work looked finished to anyone with the right browser and had never
+// once shipped for anybody else.
 //
 // What makes this harder than the menu in menu.ts: a select appears inside
 // something that clips, every time. The settings body and the admin body
@@ -19,6 +17,14 @@
 // trapped by an ancestor whether it is absolute or fixed. The list is
 // therefore appended to <body>, out of every one of them, and placed from the
 // trigger's rectangle.
+//
+// That portal is also the cost: a node on <body> has no idea its trigger has
+// been thrown away. Screens here are torn down in four ways that are not a
+// router render — panel.ts empties its body, the admin rail swaps its whole
+// body node, settings replaces a pane, the log filters clear their row — and
+// none of them announce it. So while a list is open one frame callback
+// watches the trigger: it closes when the trigger leaves the document or the
+// window, and re-places when it moves.
 
 import { el } from './dom';
 import { onBeforeRender } from '../router';
@@ -42,6 +48,8 @@ export interface SelectControl<T extends string> {
 const GAP = 6;
 // Room kept between the list and the edge of the window.
 const MARGIN = 8;
+// The tallest a list gets before it scrolls, matching .oa-menu.
+const MAX_HEIGHT = 320;
 // Long enough for the transition in the stylesheet.
 const CLOSE_MS = 160;
 
@@ -52,7 +60,7 @@ let sequence = 0;
 /**
  * The list that is open, if any. Only one can be: opening a second closes the
  * first, which is what stops two lists overlapping when somebody clicks
- * straight from one control to another.
+ * straight from one trigger to another.
  */
 let openList: { close(): void } | null = null;
 
@@ -63,6 +71,56 @@ let openList: { close(): void } | null = null;
  * bug that registry exists to prevent is exactly this kind of leftover.
  */
 onBeforeRender(() => openList?.close());
+
+export interface TriggerBox {
+  top: number;
+  bottom: number;
+  left: number;
+  width: number;
+}
+
+export interface Placement {
+  top: number;
+  left: number;
+  maxHeight: number;
+  origin: 'top left' | 'bottom left';
+}
+
+/**
+ * Where the list goes, given the trigger's rectangle and the height the list
+ * would like to be.
+ *
+ * Pure, and exported, because it is the part with the arithmetic in it and
+ * jsdom reports every rectangle as zero — a browser is needed to see this
+ * happen but not to check that it is right.
+ *
+ * The clamp is the point. A list is capped at the room on the side it ends up
+ * on, and the flip is then decided against those clamped heights: a static
+ * cap would let a 320px list hang off the bottom of a short window, where a
+ * body-fixed node scrolls with nothing and the rows below the fold are simply
+ * unreachable.
+ */
+export function placeList(
+  box: TriggerBox,
+  natural: number,
+  width: number,
+  view: { width: number; height: number },
+): Placement {
+  const below = Math.max(0, view.height - box.bottom - GAP - MARGIN);
+  const above = Math.max(0, box.top - GAP - MARGIN);
+  // Above only when it buys room. Both sides clamp, so the question is which
+  // one fits more of the list, not which one fits all of it.
+  const flip = natural > below && above > below;
+  const room = Math.min(MAX_HEIGHT, flip ? above : below);
+  const height = Math.min(natural, room);
+
+  return {
+    top: flip ? Math.max(MARGIN, box.top - GAP - height) : box.bottom + GAP,
+    left: Math.max(MARGIN, Math.min(box.left, view.width - MARGIN - width)),
+    maxHeight: room,
+    origin: flip ? 'bottom left' : 'top left',
+  };
+}
 
 export function select<T extends string>(config: {
   choices: Array<Choice<T>>;
@@ -94,6 +152,13 @@ export function select<T extends string>(config: {
   let open = false;
   let active = 0;
   let hideTimer = 0;
+  let frame = 0;
+  // The list's height and width with nothing capping them, measured once per
+  // build rather than once per frame: reading either forces a layout of the
+  // whole list, and the watch below runs sixty times a second.
+  let natural = 0;
+  let width = 0;
+  let anchor = '';
   // Type-ahead: the letters typed so far and when the last one arrived, so a
   // pause starts a new word the way a native select does.
   let typed = '';
@@ -114,9 +179,14 @@ export function select<T extends string>(config: {
     items.forEach((row, i) => row.classList.toggle('active', i === active));
     const row = items[active]!;
     trigger.setAttribute('aria-activedescendant', row.id);
-    // block: 'nearest' so opening a list whose selection is already in view
-    // does not jump it to the middle.
-    row.scrollIntoView({ block: 'nearest' });
+
+    // The list's own scrollTop rather than scrollIntoView: the list is a
+    // child of <body>, and scrollIntoView on one of those is entitled to
+    // scroll the document under the reader to reveal it.
+    const top = row.offsetTop;
+    const bottom = top + row.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
   }
 
   function build(): void {
@@ -134,34 +204,36 @@ export function select<T extends string>(config: {
       // mousedown rather than click, and prevented, so the press does not
       // move focus off the trigger before the click lands.
       row.addEventListener('mousedown', (event) => event.preventDefault());
-      row.addEventListener('click', () => {
-        commit(choice.value);
-        close();
-      });
+      row.addEventListener('click', () => choose(choice.value));
       list.appendChild(row);
     });
+    // A rebuilt list has a new height, a new set of ids, and possibly fewer
+    // rows than the arrow keys had walked to.
+    measure();
+    place();
+    markActive(Math.max(0, choices.findIndex((choice) => choice.value === current)));
+  }
+
+  function measure(): void {
+    list.style.maxHeight = '';
+    list.style.top = '0px';
+    list.style.left = '0px';
+    natural = list.offsetHeight;
+    width = list.offsetWidth;
   }
 
   function place(): void {
     const box = trigger.getBoundingClientRect();
     // Never narrower than the control, so the list reads as belonging to it.
     list.style.minWidth = `${box.width}px`;
-    list.style.left = '0px';
-    list.style.top = '0px';
-
-    const height = list.offsetHeight;
-    const width = list.offsetWidth;
-    const below = window.innerHeight - box.bottom - GAP;
-    const above = box.top - GAP;
-    // Above only when there is genuinely more room there: a list that flips
-    // for the sake of a few pixels is worse than one that scrolls.
-    const flip = below < height && above > below;
-
-    list.style.top = flip
-      ? `${Math.max(MARGIN, box.top - GAP - height)}px`
-      : `${box.bottom + GAP}px`;
-    list.style.transformOrigin = flip ? 'bottom left' : 'top left';
-    list.style.left = `${Math.max(MARGIN, Math.min(box.left, window.innerWidth - MARGIN - width))}px`;
+    const spot = placeList(box, natural, width, {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    });
+    list.style.top = `${spot.top}px`;
+    list.style.left = `${spot.left}px`;
+    list.style.maxHeight = `${spot.maxHeight}px`;
+    list.style.transformOrigin = spot.origin;
   }
 
   function commit(value: T): void {
@@ -171,15 +243,65 @@ export function select<T extends string>(config: {
     config.onChange?.(current);
   }
 
+  /**
+   * Shut first, then report. Two live callers rebuild the panel they are in
+   * from onChange — admin/providers.ts and admin/usage.ts — which destroys
+   * this trigger underneath an open list. Closing first means the listeners
+   * are already off and the node already going when that happens, rather than
+   * it working by accident because remove() tolerates a detached parent.
+   */
+  function choose(value: T): void {
+    close();
+    commit(value);
+  }
+
   // Listeners live only while the list is open. menu.ts adds its outside-click
   // and Escape handlers to `document` once per dropdown and never removes
   // them; with a control this common that is a handler per control per render.
   function watch(on: boolean): void {
-    const method = on ? 'addEventListener' : 'removeEventListener';
-    document[method]('pointerdown', outside, true);
-    // Capture, so the panel's own scroller is heard and not just the window.
-    window[method]('scroll', reposition, true);
-    window[method]('resize', reposition);
+    if (on) {
+      document.addEventListener('pointerdown', outside, true);
+      anchor = '';
+      frame = requestAnimationFrame(follow);
+      return;
+    }
+    document.removeEventListener('pointerdown', outside, true);
+    cancelAnimationFrame(frame);
+    frame = 0;
+  }
+
+  /**
+   * One read a frame, and a write only when the trigger has actually moved.
+   *
+   * This is scroll, resize, an animating panel and a torn-down screen in one
+   * mechanism, rather than a listener for each and nothing at all for the
+   * last — which is the case that leaves a list on <body> over an unrelated
+   * screen with its handlers still attached.
+   */
+  function follow(): void {
+    if (!open) return;
+    frame = requestAnimationFrame(follow);
+
+    if (!trigger.isConnected) {
+      close();
+      return;
+    }
+    const box = trigger.getBoundingClientRect();
+    // Scrolled out of the window, usually because the panel behind it
+    // scrolled. A list hanging in the middle of the screen with nothing to
+    // belong to is worse than one that shuts.
+    if (box.bottom < 0 || box.top > window.innerHeight) {
+      close();
+      return;
+    }
+
+    const key = `${box.top}|${box.left}|${box.width}`;
+    if (key === anchor) return;
+    // A trigger that changed width changes the list's width with it, which is
+    // the one move that needs the size measured again.
+    if (anchor.split('|')[2] !== String(box.width)) measure();
+    anchor = key;
+    place();
   }
 
   function outside(event: Event): void {
@@ -193,19 +315,6 @@ export function select<T extends string>(config: {
     close();
   }
 
-  function reposition(): void {
-    if (!open) return;
-    const box = trigger.getBoundingClientRect();
-    // Scrolled out of the window entirely — usually because the panel behind
-    // it scrolled. A list still hanging in the middle of the screen with
-    // nothing to belong to is worse than one that shuts.
-    if (box.bottom < 0 || box.top > window.innerHeight) {
-      close();
-      return;
-    }
-    place();
-  }
-
   function openMenu(): void {
     if (open) return;
     openList?.close();
@@ -213,13 +322,17 @@ export function select<T extends string>(config: {
     open = true;
     openList = { close };
 
-    build();
     list.hidden = false;
     document.body.appendChild(list);
-    place();
+    // Before build(), which measures: a hidden node has no height.
+    build();
     trigger.setAttribute('aria-expanded', 'true');
     trigger.setAttribute('aria-controls', id);
-    markActive(Math.max(0, choices.findIndex((choice) => choice.value === current)));
+    // WebKit does not focus a button on click, and every key this control
+    // reads arrives on the trigger. Without this the arrows, Enter and Escape
+    // are all inert there for a list opened with the mouse — and Escape falls
+    // through to the panel, which closes underneath the open list.
+    trigger.focus({ preventScroll: true });
     watch(true);
     // One frame closed, so the transition has a state to move from.
     requestAnimationFrame(() => {
@@ -244,11 +357,11 @@ export function select<T extends string>(config: {
     }, CLOSE_MS);
   }
 
-  /** The first choice after `from` whose label starts with what was typed. */
+  /** The first choice after the active one whose label starts with the typing. */
   function search(): void {
+    const from = typed.length > 1 ? active - 1 : active;
     const at = choices.findIndex((choice, index) =>
-      index > (typed.length > 1 ? active - 1 : active)
-      && choice.label.toLowerCase().startsWith(typed));
+      index > from && choice.label.toLowerCase().startsWith(typed));
     const found = at >= 0
       ? at
       : choices.findIndex((choice) => choice.label.toLowerCase().startsWith(typed));
@@ -267,12 +380,11 @@ export function select<T extends string>(config: {
       case 'ArrowDown':
       case 'ArrowUp': {
         event.preventDefault();
-        const step = event.key === 'ArrowDown' ? 1 : -1;
         if (!open) {
           openMenu();
           return;
         }
-        markActive(active + step);
+        markActive(active + (event.key === 'ArrowDown' ? 1 : -1));
         return;
       }
       case 'Home':
@@ -282,15 +394,21 @@ export function select<T extends string>(config: {
         markActive(event.key === 'Home' ? 0 : choices.length - 1);
         return;
       case 'Enter':
-      case ' ':
+      case ' ': {
         event.preventDefault();
         if (!open) {
           openMenu();
           return;
         }
-        commit(choices[active]!.value);
-        close();
+        // The list can have been rebuilt from under the walk — the default
+        // model picker fills itself from a request — so there may be nothing
+        // at this index. Throwing here would leave the list open with its
+        // listeners attached, which is the leak this file is careful about.
+        const picked = choices[active];
+        if (picked) choose(picked.value);
+        else close();
         return;
+      }
       case 'Escape':
         if (!open) return;
         event.preventDefault();
@@ -304,7 +422,7 @@ export function select<T extends string>(config: {
     }
 
     // A single printable character, so a shortcut with a modifier is left
-    // alone. Date.now is fine here: this is the interface, not a workflow.
+    // alone.
     if (event.key.length !== 1 || event.ctrlKey || event.metaKey || event.altKey) return;
     const now = Date.now();
     typed = now - typedAt > 900 ? event.key.toLowerCase() : typed + event.key.toLowerCase();
