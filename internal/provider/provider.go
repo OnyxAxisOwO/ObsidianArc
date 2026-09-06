@@ -20,6 +20,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
 // Provider is the administrator-facing view. There is deliberately no APIKey
@@ -402,10 +403,11 @@ func sanitizeHeaders(in map[string]string) (map[string]string, error) {
 		// A newline in a header value is request splitting. Both are stripped
 		// rather than rejected: the operator typed a value, not an attack.
 		clean := strings.NewReplacer("\r", "", "\n", "").Replace(value)
-		if len(clean) > MaxHeaderChars {
-			clean = clean[:MaxHeaderChars]
-		}
-		out[trimmed] = clean
+		// By characters, not bytes. A multi-byte one cut in half here does not
+		// reach a database — json.Marshal substitutes U+FFFD on the way out —
+		// so it corrupts an operator's header quietly rather than loudly,
+		// which is the worse of the two ways to be wrong.
+		out[trimmed] = text.Truncate(clean, MaxHeaderChars)
 	}
 	return out, nil
 }

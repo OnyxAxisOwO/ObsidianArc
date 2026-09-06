@@ -21,6 +21,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
 // Capabilities is what the interface needs in order to decide what to offer:
@@ -709,7 +710,7 @@ func validate(record Model) (Model, error) {
 		return Model{}, ErrInvalidName
 	}
 
-	record.Description = truncateRunes(strings.TrimSpace(record.Description), MaxDescriptionChars)
+	record.Description = text.TrimAndTruncate(record.Description, MaxDescriptionChars)
 	record.Avatar = strings.TrimSpace(record.Avatar)
 	if len(record.Avatar) > MaxAvatarChars {
 		record.Avatar = ""
@@ -740,14 +741,6 @@ func assign[T any](target *T, value *T) {
 	if value != nil {
 		*target = *value
 	}
-}
-
-func truncateRunes(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
-	}
-	return string(runes[:limit])
 }
 
 type rowScanner interface{ Scan(dest ...any) error }

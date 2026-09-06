@@ -10,6 +10,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
 // Session is a row in the sessions table. Its ID is the SHA-256 of the cookie
@@ -61,7 +62,7 @@ func (s *SessionStore) Create(ctx context.Context, userID string, ttl time.Durat
 		ExpiresAt:  now.Add(ttl).UnixMilli(),
 		LastSeenAt: now.UnixMilli(),
 		IP:         ip,
-		UserAgent:  truncate(userAgent, MaxUserAgentChars),
+		UserAgent:  text.Truncate(userAgent, MaxUserAgentChars),
 	}
 
 	_, err := s.db.Exec(ctx,
@@ -149,11 +150,4 @@ func (s *SessionStore) DeleteExpired(ctx context.Context) (int64, error) {
 		return 0, nil
 	}
 	return removed, nil
-}
-
-func truncate(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-	return value[:limit]
 }

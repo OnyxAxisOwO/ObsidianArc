@@ -19,6 +19,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
 type Role string
@@ -111,7 +112,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, userID, title, m
 	now := time.Now().UnixMilli()
 	record := Conversation{
 		ID:        id.New(),
-		Title:     truncate(title, MaxTitleChars),
+		Title:     text.TrimAndTruncate(title, MaxTitleChars),
 		ModelID:   modelID,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -326,9 +327,9 @@ func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) 
 		ID:        id.New(),
 		Seq:       next,
 		Role:      in.Role,
-		Content:   truncate(in.Content, MaxContentChars),
-		Reasoning: truncate(in.Reasoning, MaxReasoningChars),
-		Error:     truncate(in.Error, MaxErrorChars),
+		Content:   text.TrimAndTruncate(in.Content, MaxContentChars),
+		Reasoning: text.TrimAndTruncate(in.Reasoning, MaxReasoningChars),
+		Error:     text.TrimAndTruncate(in.Error, MaxErrorChars),
 		ModelID:   in.ModelID,
 		ModelName: in.ModelName,
 		Stats:     in.Stats,
@@ -441,7 +442,7 @@ func (s *Store) UpdateMessage(ctx context.Context, q database.Queryer, userID, c
 	if q == nil {
 		q = s.db
 	}
-	trimmed := truncate(content, MaxContentChars)
+	trimmed := text.TrimAndTruncate(content, MaxContentChars)
 	result, err := q.Exec(ctx,
 		`UPDATE messages SET content = ? WHERE id = ? AND conversation_id = ? AND user_id = ?`,
 		trimmed, messageID, conversationID, userID)
@@ -491,7 +492,7 @@ func (s *Store) SetTitle(ctx context.Context, q database.Queryer, userID, conver
 		q = s.db
 	}
 	_, err := q.Exec(ctx, `UPDATE conversations SET title = ? WHERE id = ? AND user_id = ? AND title = ''`,
-		truncate(title, MaxTitleChars), conversationID, userID)
+		text.TrimAndTruncate(title, MaxTitleChars), conversationID, userID)
 	if err != nil {
 		return fmt.Errorf("conversation: set title: %w", err)
 	}
@@ -502,7 +503,7 @@ func (s *Store) SetTitle(ctx context.Context, q database.Queryer, userID, conver
 // recognises it by. Stored rather than derived on read, so a rename sticks.
 func DeriveTitle(content string) string {
 	collapsed := strings.Join(strings.Fields(content), " ")
-	return truncate(collapsed, 60)
+	return text.TrimAndTruncate(collapsed, 60)
 }
 
 // --- scanning ---------------------------------------------------------------
@@ -555,13 +556,4 @@ func nullable(value string) any {
 		return nil
 	}
 	return value
-}
-
-func truncate(value string, limit int) string {
-	trimmed := strings.TrimSpace(value)
-	runes := []rune(trimmed)
-	if len(runes) <= limit {
-		return trimmed
-	}
-	return string(runes[:limit])
 }

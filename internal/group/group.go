@@ -16,6 +16,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
 type Group struct {
@@ -82,7 +83,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 	record := Group{
 		ID:             id.New(),
 		Name:           name,
-		Description:    trimTo(in.Description, MaxDescriptionChars),
+		Description:    text.TrimAndTruncate(in.Description, MaxDescriptionChars),
 		IsDefault:      in.IsDefault,
 		AllowAllModels: in.AllowAllModels,
 		APIAccess:      in.APIAccess,
@@ -189,7 +190,7 @@ func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, 
 	}
 	if in.Description != nil {
 		sets = append(sets, "description = ?")
-		args = append(args, trimTo(*in.Description, MaxDescriptionChars))
+		args = append(args, text.TrimAndTruncate(*in.Description, MaxDescriptionChars))
 	}
 	if in.IsDefault != nil {
 		sets = append(sets, "is_default = ?")
@@ -272,14 +273,6 @@ func checkName(value string) (string, error) {
 		return "", ErrInvalidName
 	}
 	return trimmed, nil
-}
-
-func trimTo(value string, limit int) string {
-	trimmed := strings.TrimSpace(value)
-	if utf8.RuneCountInString(trimmed) <= limit {
-		return trimmed
-	}
-	return string([]rune(trimmed)[:limit])
 }
 
 func isUnique(err error) bool {

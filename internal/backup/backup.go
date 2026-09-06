@@ -27,6 +27,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -224,7 +225,7 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 		return 0, nil
 	}
 
-	title := trimTo(thread.Title, MaxTitleChars)
+	title := text.TrimAndTruncate(thread.Title, MaxTitleChars)
 	if title == "" {
 		title = conversation.DeriveTitle(usable[0].Content)
 	}
@@ -246,10 +247,10 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 				ConversationID: created.ID,
 				UserID:         account.ID,
 				Role:           role,
-				Content:        trimTo(turn.Content, MaxImportContentChars),
-				Reasoning:      trimTo(turn.Reasoning, MaxImportContentChars),
-				Error:          trimTo(turn.Error, 500),
-				ModelName:      trimTo(turn.ModelName, 80),
+				Content:        text.TrimAndTruncate(turn.Content, MaxImportContentChars),
+				Reasoning:      text.TrimAndTruncate(turn.Reasoning, MaxImportContentChars),
+				Error:          text.TrimAndTruncate(turn.Error, 500),
+				ModelName:      text.TrimAndTruncate(turn.ModelName, 80),
 			}); err != nil {
 				return err
 			}
@@ -273,13 +274,4 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 		}
 	}
 	return written, nil
-}
-
-func trimTo(value string, limit int) string {
-	value = strings.TrimSpace(value)
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
-	}
-	return string(runes[:limit])
 }

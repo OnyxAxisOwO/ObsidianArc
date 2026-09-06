@@ -27,6 +27,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
 // Entry is one answered request.
@@ -108,8 +109,8 @@ func NewStore(db *database.DB) *Store {
 // be held up, or made to fail, by the recording of it.
 func (s *Store) Record(entry Entry) {
 	entry.ID = id.New()
-	entry.Path = trimTo(entry.Path, MaxPathChars)
-	entry.UserAgent = trimTo(entry.UserAgent, MaxUserAgentChars)
+	entry.Path = text.Truncate(entry.Path, MaxPathChars)
+	entry.UserAgent = text.Truncate(entry.UserAgent, MaxUserAgentChars)
 
 	select {
 	case s.entries <- entry:
@@ -239,12 +240,4 @@ func (s *Store) write(ctx context.Context, batch []Entry) error {
 		s.evicted.Add(evicted)
 	}
 	return nil
-}
-
-func trimTo(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
-	}
-	return string(runes[:limit])
 }

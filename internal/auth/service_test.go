@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -322,6 +324,41 @@ func TestSessionTokenIsStoredHashed(t *testing.T) {
 	}
 	if stored != HashToken(token) {
 		t.Fatalf("stored id %q is not the token's hash", stored)
+	}
+}
+
+// A User-Agent that puts a multi-byte character right on the
+// MaxUserAgentChars boundary used to come back corrupted: the stored value
+// was cut by byte offset, which can slice a UTF-8 character in half. SQLite
+// stores the resulting bytes without complaint, so this only ever showed up
+// against PostgreSQL, which rejects the insert outright. Reproduce the exact
+// byte shape from the bug report — ASCII up to the boundary, then a 3-byte
+// CJK character, then more data past the limit — so a regression here fails
+// on this fixture's SQLite database too, not only in CI's Postgres run.
+func TestUserAgentSurvivesAMultiByteCharacterAtTheTruncationBoundary(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	ua := strings.Repeat("M", MaxUserAgentChars-1) + "中" + strings.Repeat("N", 50)
+
+	_, token, err := f.auth.Register(ctx, RegisterInput{
+		Username: "arc", Password: "a-good-password", UA: ua,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+
+	if !utf8.ValidString(session.UserAgent) {
+		t.Fatalf("stored user agent %q (% x) is not valid UTF-8", session.UserAgent, session.UserAgent)
+	}
+	want := strings.Repeat("M", MaxUserAgentChars-1) + "中"
+	if session.UserAgent != want {
+		t.Fatalf("stored user agent = %q, want %q", session.UserAgent, want)
 	}
 }
 
