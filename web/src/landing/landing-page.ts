@@ -113,7 +113,7 @@ const droppedIntroTrees = new Set([
   'SOURCE', 'STYLE', 'SVG', 'TEMPLATE', 'TEXTAREA', 'TRACK', 'VIDEO',
 ]);
 
-function safeIntro(html: string): DocumentFragment {
+export function safeIntro(html: string): DocumentFragment {
   const source = document.createElement('template');
   source.innerHTML = html;
   const result = document.createDocumentFragment();
@@ -128,14 +128,17 @@ function copySafeIntroChildren(source: Node, target: Node): void {
       continue;
     }
     if (!(child instanceof Element)) continue;
-    if (droppedIntroTrees.has(child.tagName)) continue;
-    if (!introTags.has(child.tagName)) {
+    // Foreign elements (SVG, MathML) have lowercase tagNames in the HTML DOM.
+    // Uppercasing keeps allowlist lookups namespace-agnostic.
+    const tag = child.tagName.toUpperCase();
+    if (droppedIntroTrees.has(tag)) continue;
+    if (!introTags.has(tag)) {
       copySafeIntroChildren(child, target);
       continue;
     }
 
-    const clean = document.createElement(child.tagName.toLowerCase());
-    if (child.tagName === 'A') copySafeLink(child, clean);
+    const clean = document.createElement(tag.toLowerCase());
+    if (tag === 'A') copySafeLink(child, clean);
     copySafeIntroChildren(child, clean);
     target.appendChild(clean);
   }
