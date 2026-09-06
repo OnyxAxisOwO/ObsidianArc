@@ -232,6 +232,7 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
         }),
     build: (body) => {
       body.appendChild(summary(account, detail.lifetime));
+      body.appendChild(identity(account));
 
       // The same bars the account sees in its own composer, from the same
       // summary: an administrator answering "why can this person not send
@@ -561,5 +562,33 @@ function cardHolding(held: CardHolding): HTMLElement {
     list.appendChild(row);
   }
   wrap.appendChild(list);
+  return wrap;
+}
+
+/**
+ * The facts about an account that are read rather than edited.
+ *
+ * The id first, because it is the one an operator has to paste somewhere: a
+ * log line, a support thread, a URL. Monospace and selectable — a ULID that
+ * has to be transcribed by eye is a ULID that gets transcribed wrong.
+ */
+function identity(account: Account): HTMLElement {
+  const wrap = el('div', 'oa-facts');
+
+  const rows: Array<[string, string, boolean]> = [
+    [t('colUID'), account.id, true],
+    [t('colRegistered'), absoluteTime(account.created_at), false],
+    [t('colLastSeen'), account.last_login_at ? absoluteTime(account.last_login_at) : t('neverSignedIn'), false],
+  ];
+  // Only where it was recorded: accounts predating the column have none, and
+  // an empty row reads as a missing value rather than an absent one.
+  if (account.signup_ip) rows.push([t('colSignupIP'), account.signup_ip, true]);
+
+  for (const [label, value, mono] of rows) {
+    const row = el('div', 'oa-fact');
+    row.appendChild(el('span', 'oa-fact-label', label));
+    row.appendChild(el('span', `oa-fact-value${mono ? ' mono' : ''}`, value));
+    wrap.appendChild(row);
+  }
   return wrap;
 }

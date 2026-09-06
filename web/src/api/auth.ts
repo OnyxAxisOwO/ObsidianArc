@@ -25,6 +25,9 @@ export interface Account {
   // endpoints that act; these decide only what is worth drawing.
   allow_stats: boolean;
   allow_delete_conversations: boolean;
+  /** Where the account registered from. Administrators only; '' where it
+   *  could not be resolved, and on accounts created before it was recorded. */
+  signup_ip?: string;
 }
 
 // What a visitor with no account is shown at the address. The server settles

@@ -2084,6 +2084,40 @@
   margin: 2px 0 4px;
 }
 
+/* The facts about a record that are read, not edited: a label on the left and
+   the value on the right, so a column of them scans without the eye tracking
+   two different left edges. */
+.oa-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: -4px 0 4px;
+}
+
+.oa-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.oa-fact-label {
+  color: var(--ai-text-secondary);
+  flex: none;
+}
+
+.oa-fact-value {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+/* An identifier is copied by eye or by selection, and both go wrong in a
+   proportional face. */
+.oa-fact-value.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  user-select: all;
+}
+
 /* A minted batch, listed once. Monospace and one per line so it can be
    selected, copied, or read aloud without a character being in doubt. */
 .oa-code-list {

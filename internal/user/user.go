@@ -56,6 +56,10 @@ type User struct {
 	CreatedAt     int64 `json:"created_at"`
 	UpdatedAt     int64 `json:"updated_at"`
 	LastLoginAt   int64 `json:"last_login_at"`
+	// Where this account was created from. Read by the backoffice, which is
+	// where the per-address registration limit is configured and therefore
+	// where "why was this address refused" gets asked.
+	SignupIP string `json:"signup_ip"`
 }
 
 func (u User) IsAdmin() bool  { return u.Role == RoleAdmin }
@@ -137,7 +141,7 @@ type Store struct{ db *database.DB }
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
 const columns = `id, username, email, qq, nickname, avatar, bio, role, group_id, status,
-	email_verified, created_at, updated_at, last_login_at`
+	email_verified, created_at, updated_at, last_login_at, signup_ip`
 
 type CreateInput struct {
 	Username     string
@@ -235,7 +239,7 @@ func (s *Store) CredentialsByLogin(ctx context.Context, identifier string) (User
 	)
 	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.QQ, &record.Nickname, &record.Avatar,
 		&record.Bio, &record.Role, &group, &record.Status, &record.EmailVerified,
-		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &hash)
+		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP, &hash)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return User{}, "", ErrNotFound
@@ -560,7 +564,7 @@ func scanUser(row rowScanner) (User, error) {
 	)
 	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.QQ, &record.Nickname, &record.Avatar,
 		&record.Bio, &record.Role, &group, &record.Status, &record.EmailVerified,
-		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt)
+		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return User{}, ErrNotFound
