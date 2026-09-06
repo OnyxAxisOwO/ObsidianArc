@@ -111,7 +111,13 @@ function applyServerPreferences(prefs: Preferences): void {
     setWallpaper(null);
   } else if (paper && typeof paper === 'object' && typeof (paper as Wallpaper).url === 'string') {
     const value = paper as Wallpaper;
-    setWallpaper({ url: value.url, dim: value.dim ?? 0, blur: value.blur ?? 0 });
+    setWallpaper({
+      url: value.url,
+      dim: value.dim ?? 0,
+      blur: value.blur ?? 0,
+      translucency: value.translucency ?? 0,
+      panelBlur: value.panelBlur ?? 0,
+    });
   }
 }
 

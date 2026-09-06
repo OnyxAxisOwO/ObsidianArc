@@ -84,6 +84,12 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
     monospace: true,
   });
 
+  const allowInsecure = switchField({
+    label: t('allowInsecure'),
+    value: existing?.allow_insecure ?? false,
+    hint: t('allowInsecureHint'),
+  });
+
   const apiKey = textField({
     label: creating ? t('apiKey') : t('replaceAPIKey'),
     placeholder: creating ? 'sk-…' : t('apiKeyKeepHint', { hint: existing.api_key_hint }),
@@ -138,6 +144,7 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
       body.appendChild(name.element);
       body.appendChild(kind.element);
       body.appendChild(baseURL.element);
+      body.appendChild(allowInsecure.element);
       body.appendChild(apiKey.element);
 
       body.appendChild(section(t('secBehaviour')));
@@ -160,6 +167,7 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
         name: name.value(),
         kind: kind.value(),
         base_url: baseURL.value(),
+        allow_insecure: allowInsecure.value(),
         reasoning_style: reasoning.value(),
         timeout_seconds: timeout.value() ?? 120,
         enabled: enabled.value(),

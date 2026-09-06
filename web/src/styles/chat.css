@@ -585,6 +585,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The clock while an answer is being written. Same line as the finished
+   figures it is replaced by, so nothing shifts at the moment the turn ends. */
+.ai-msg-timer {
+  font-variant-numeric: tabular-nums;
+}
+
 .ai-msg-user .ai-msg-actions {
   justify-content: flex-end;
 }

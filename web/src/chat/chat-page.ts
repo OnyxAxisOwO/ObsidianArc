@@ -10,7 +10,7 @@ import { createHomeNotice } from '../announce/home-notice';
 import { createVerifyBanner } from '../announce/verify-banner';
 import { renderShell } from '../app/shell';
 import { navigate } from '../router';
-import { currentPreferences, isAdmin, syncPreferences } from '../session';
+import { currentPreferences, currentUser, isAdmin, syncPreferences } from '../session';
 import { t } from '../i18n';
 import { ICONS, iconButton } from '../ui/dom';
 import { attachResizer } from '../ui/resizer';
@@ -65,6 +65,14 @@ export function renderChatPage(root: HTMLElement): HTMLElement {
     onPersist: (modelID: string) => syncPreferences({ default_model_id: modelID }),
   });
 
+  // Read at render rather than captured: the settings panel can flip the
+  // preference while the transcript is on screen, and the group's permission
+  // is the ceiling over it — a stored `true` from before a group lost the
+  // capability must not keep showing the line.
+  const showStats = (): boolean =>
+    currentUser()?.allow_stats !== false && currentPreferences()['show_stats'] === true;
+  const canDelete = (): boolean => currentUser()?.allow_delete_conversations !== false;
+
   // Two affordances on one button: on a wide screen the rail is a permanent
   // column and this slides it away; below the breakpoint where the rail
   // becomes an overlay, sliding it would do nothing useful, so it defers to
@@ -110,6 +118,8 @@ export function renderChatPage(root: HTMLElement): HTMLElement {
     getStatus: status,
     onOpenSetup: () => navigate('/admin/providers'),
     composerControl: picker.element,
+    showStats,
+    canDelete,
   });
   live = chat;
 
@@ -155,6 +165,9 @@ function readReasoning(preferences: Record<string, unknown>): ReasoningState {
   const effort = preferences['reasoning_effort'];
   return {
     enabled: preferences['reasoning_enabled'] === true,
-    effort: effort === 'low' || effort === 'high' ? (effort as Effort) : 'medium',
+    // Any remembered tier, not just the built-in three: a model may name its
+    // own, and the picker resolves an id the current model does not offer
+    // back to its middle tier anyway.
+    effort: typeof effort === 'string' && effort !== '' ? (effort as Effort) : 'medium',
   };
 }

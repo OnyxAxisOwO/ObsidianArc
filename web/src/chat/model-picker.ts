@@ -33,13 +33,20 @@ export interface ModelCapabilities {
   max_output_tokens: number;
 }
 
+/** One amount of thinking this model offers, named by an administrator. */
+export interface ReasoningTier {
+  id: string;
+  name: string;
+}
+
 export interface AvailableModel extends ModelCapabilities {
   id: string;
   display_name: string;
   description: string;
   avatar: string;
-  provider_name: string;
   usable?: boolean;
+  /** Absent for a model using the built-in three. */
+  reasoning_tiers?: ReasoningTier[];
 }
 
 export interface ModelControlOptions {
@@ -64,22 +71,49 @@ export interface ModelControl {
 }
 
 /**
- * The slider's stops.
+ * One position on the slider.
+ *
+ * The label is a finished string rather than a dictionary key, because a
+ * model may carry tiers of its own and those are named by an administrator —
+ * in whatever language this instance is run in, so they never pass through
+ * t(). The built-in three still do.
+ */
+interface Stop {
+  enabled: boolean;
+  effort: Effort;
+  label: string;
+}
+
+/** What a model with no tiers of its own offers, and what it always did. */
+const BUILT_IN: Array<{ effort: Effort; label: StringKey }> = [
+  { effort: 'low', label: 'effortLow' },
+  { effort: 'medium', label: 'effortMedium' },
+  { effort: 'high', label: 'effortHigh' },
+];
+
+/**
+ * The slider's stops for one model.
  *
  * Off is a position on the same track rather than a switch beside it: the
  * question is how much thinking, and none is an amount.
  */
-const STOPS: Array<{ enabled: boolean; effort: Effort; label: StringKey }> = [
-  { enabled: false, effort: 'medium', label: 'effortOff' },
-  { enabled: true, effort: 'low', label: 'effortLow' },
-  { enabled: true, effort: 'medium', label: 'effortMedium' },
-  { enabled: true, effort: 'high', label: 'effortHigh' },
-];
+function stopsFor(model: AvailableModel | null): Stop[] {
+  const tiers: Stop[] = model?.reasoning_tiers?.length
+    ? model.reasoning_tiers.map((tier) => ({ enabled: true, effort: tier.id, label: tier.name }))
+    : BUILT_IN.map((stop) => ({ enabled: true, effort: stop.effort, label: t(stop.label) }));
+  // Off carries the middle tier's value, so sliding away and back lands
+  // where it used to rather than on a value this model never offered.
+  const middle = tiers[Math.floor(tiers.length / 2)]!;
+  return [{ enabled: false, effort: middle.effort, label: t('effortOff') }, ...tiers];
+}
 
-function stopFor(state: ReasoningState): number {
+function stopFor(state: ReasoningState, stops: Stop[]): number {
   if (!state.enabled) return 0;
-  const found = STOPS.findIndex((stop) => stop.enabled && stop.effort === state.effort);
-  return found === -1 ? 2 : found;
+  const found = stops.findIndex((stop) => stop.enabled && stop.effort === state.effort);
+  // An effort this model does not offer — a preference remembered from
+  // another model, or from before its tiers were edited — reads as the
+  // middle one, which is the same tier the server resolves it to.
+  return found === -1 ? 1 + Math.floor((stops.length - 1) / 2) : found;
 }
 
 /** How long the popover takes to settle into a new height. */
@@ -226,10 +260,11 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
     }
 
     const state = options.reasoning();
-    let position = stopFor(state);
+    const stops = stopsFor(model);
+    let position = stopFor(state, stops);
 
     const head = el('div', 'ai-pop-effort-head');
-    const label = el('span', 'ai-pop-effort-label', t(STOPS[position]!.label));
+    const label = el('span', 'ai-pop-effort-label', stops[position]!.label);
     head.appendChild(el('span', 'ai-pop-effort-title', t('reasoningToggle')));
     head.appendChild(el('span', 'oa-header-spacer'));
     head.appendChild(label);
@@ -253,7 +288,7 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
     // that steps in quarters jumps the thumb between four places while your
     // finger is somewhere else, which is what makes a slider feel broken. The
     // thumb follows the pointer exactly, and the value snaps when you let go.
-    const last = STOPS.length - 1;
+    const last = stops.length - 1;
     const range = el('input', 'ai-effort-range');
     range.type = 'range';
     range.min = '0';
@@ -281,8 +316,8 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
       // The top of the range gets its own colour, so "as much as it will do"
       // is visible from the bar rather than only from the word beside it.
       slider.classList.toggle('max', stop === last);
-      label.textContent = t(STOPS[stop]!.label);
-      range.setAttribute('aria-valuetext', t(STOPS[stop]!.label));
+      label.textContent = stops[stop]!.label;
+      range.setAttribute('aria-valuetext', stops[stop]!.label);
     }
     paintSlider(position, position);
 
@@ -300,7 +335,7 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
       paintSlider(settled, settled);
       if (settled === position) return;
       position = settled;
-      const stop = STOPS[position]!;
+      const stop = stops[position]!;
       options.onReasoningChange({ enabled: stop.enabled, effort: stop.effort });
       sync();
     }
@@ -387,9 +422,9 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
 
       const text = el('span', 'ai-pop-model-text');
       text.appendChild(el('span', 'ai-pop-model-title', model.display_name));
-      const sub = unusable
-        ? t('modelNotAllowedGroup')
-        : (model.description || model.provider_name);
+      // No description means no description. Falling back to the provider's
+      // name answered a question nobody asked, and read as if it were one.
+      const sub = unusable ? t('modelNotAllowedGroup') : model.description;
       if (sub) text.appendChild(el('span', 'ai-pop-model-sub', sub));
       row.appendChild(text);
 
@@ -421,11 +456,12 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
     // anything — which is the whole reason the two controls became one.
     const state = options.reasoning();
     const thinking = !!model?.supports_reasoning && state.enabled;
+    const stops = stopsFor(model);
     chipSpark.style.display = thinking ? '' : 'none';
-    chipEffort.textContent = thinking ? t(STOPS[stopFor(state)]!.label) : '';
+    chipEffort.textContent = thinking ? stops[stopFor(state, stops)]!.label : '';
     chipEffort.hidden = !thinking;
 
-    chip.title = model ? `${model.display_name} · ${model.provider_name}` : t('modelNone');
+    chip.title = model ? model.display_name : t('modelNone');
   }
 
   function current(): AvailableModel | null {

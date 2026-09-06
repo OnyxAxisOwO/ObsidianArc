@@ -9,19 +9,20 @@ import { ApiError } from '../api/client';
 import { t, type StringKey } from '../i18n';
 import { button, clear, el } from '../ui/dom';
 import { openPanel } from '../ui/panel';
-import { numberField, section, selectField, switchField } from '../ui/form';
+import { numberField, section, selectField, switchField, textField } from '../ui/form';
 import { compactNumber, relativeTime, renderTable, stacked } from '../ui/table';
 import { renderChart, type ChartShape } from '../ui/chart';
 import {
   adminApi,
   emptyPolicy,
+  type Group,
   type QuotaWindowKind,
   type UsageBreakdown,
   type UsageMetric,
   type UsagePoint,
 } from './api';
 import { section as panel, statGrid, statusBadge } from './dashboard';
-import { failure, type AdminView } from './admin-page';
+import { creditsField, failure, type AdminView } from './admin-page';
 
 const RANGES: Array<{ label: StringKey; hours: number }> = [
   { label: 'rangeDay', hours: 24 },
@@ -36,6 +37,92 @@ let selectedRange = 1;
 let selectedMetric: UsageMetric = 'credits';
 let selectedShape: ChartShape = 'bar';
 let selectedDimension: 'model' | 'user' | 'provider' = 'model';
+
+/**
+ * Putting an allowance back to full, deliberately.
+ *
+ * The scope is chosen before the button that does it appears, and the button
+ * says how many accounts it is about to touch — because "reset" with no
+ * number beside it is the same word whether it means one person or everyone,
+ * and the difference is the entire decision.
+ */
+async function openReset(view: AdminView): Promise<void> {
+  let groups: Group[] = [];
+  try {
+    ({ groups } = await adminApi.groups());
+  } catch {
+    // The group option simply will not be offered. Everyone and one account
+    // still work, and refusing to open at all would be worse.
+  }
+
+  const scope = selectField<'all' | 'group' | 'user'>({
+    label: t('resetScope'),
+    value: 'all',
+    options: [
+      { value: 'all', label: t('resetScopeAll') },
+      { value: 'group', label: t('resetScopeGroup') },
+      { value: 'user', label: t('resetScopeUser') },
+    ],
+    onChange: () => panel.rebuild(),
+  });
+
+  const group = selectField({
+    label: t('groupsTitle'),
+    value: groups[0]?.id ?? '',
+    options: groups.map((entry) => ({ value: entry.id, label: entry.name })),
+  });
+
+  const account = textField({
+    label: t('resetAccountID'),
+    placeholder: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    hint: t('resetAccountIDHint'),
+    monospace: true,
+  });
+
+  const panel = openPanel({
+    host: view.host,
+    title: t('resetQuota'),
+    cancelLabel: t('close'),
+    destructive: {
+      label: t('resetConfirmLabel'),
+      // The second click is the act. The first only arms it, which is the
+      // last moment anyone reads the scope they picked.
+      confirm: t('resetConfirm'),
+      onSelect: async (handle) => {
+        const chosen = scope.value();
+        if (chosen === 'group' && !group.value()) {
+          handle.setError(t('resetNoGroup'));
+          return;
+        }
+        if (chosen === 'user' && !account.value()) {
+          handle.setError(t('resetNoAccount'));
+          return;
+        }
+
+        handle.setBusy(true);
+        try {
+          const body = chosen === 'all'
+            ? { scope: chosen } as const
+            : { scope: chosen, id: chosen === 'group' ? group.value() : account.value() };
+          const { accounts } = await adminApi.resetQuota(body);
+          handle.setBusy(false);
+          handle.setTitle(t('resetDone', { count: accounts }));
+          handle.setError('');
+          view.reload();
+        } catch (error) {
+          handle.setBusy(false);
+          handle.setError(error instanceof ApiError ? error.message : String(error));
+        }
+      },
+    },
+    build: (body) => {
+      body.appendChild(el('p', 'oa-field-hint', t('resetExplain')));
+      body.appendChild(scope.element);
+      if (scope.value() === 'group') body.appendChild(group.element);
+      if (scope.value() === 'user') body.appendChild(account.element);
+    },
+  });
+}
 
 export async function renderUsage(view: AdminView): Promise<void> {
   view.setTitle(t('usageTitle'));
@@ -76,6 +163,7 @@ export async function renderUsage(view: AdminView): Promise<void> {
   wrap.appendChild(range);
   view.actions.appendChild(wrap);
   view.actions.appendChild(button('oa-btn', t('defaultLimits'), () => void editGlobalPolicy(view)));
+  view.actions.appendChild(button('oa-btn oa-btn-danger', t('resetQuota'), () => void openReset(view)));
 
   clear(view.body);
 
@@ -261,7 +349,7 @@ async function editGlobalPolicy(view: AdminView): Promise<void> {
       enabled: switchField({ label: t('enforceTheWindow', { window: kind }), value: limits?.enabled === true }),
       requests: numberField({ label: t('limitRequests'), value: limits?.requests ?? null, placeholder: t('noLimit'), min: 0 }),
       tokens: numberField({ label: t('limitTokens'), value: limits?.tokens ?? null, placeholder: t('noLimit'), min: 0 }),
-      credits: numberField({ label: t('limitCredits'), value: limits?.credits ?? null, placeholder: t('noLimit'), min: 0, step: 0.1 }),
+      credits: creditsField(limits?.credits ?? null),
     };
   });
 

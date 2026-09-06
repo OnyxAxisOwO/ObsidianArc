@@ -23,7 +23,7 @@ import {
   type QuotaPolicy,
   type QuotaWindowKind,
 } from './api';
-import { failure, type AdminView } from './admin-page';
+import { creditsField, failure, type AdminView } from './admin-page';
 
 function windowLabel(kind: QuotaWindowKind): string {
   return kind === '5h' ? t('every5h') : kind === '1w' ? t('everyWeek') : t('everyMonth');
@@ -121,6 +121,20 @@ function editGroup(
     value: existing?.api_access ?? true,
     hint: t('groupApiAccessHint'),
   });
+  // What members may do with the interface, as opposed to which models they
+  // may reach. Both default to on, so a new group can do everything an
+  // existing one can until somebody takes it away.
+  const allowStats = switchField({
+    label: t('groupAllowStats'),
+    value: existing?.allow_stats ?? true,
+    hint: t('groupAllowStatsHint'),
+  });
+  const allowDelete = switchField({
+    label: t('groupAllowDelete'),
+    value: existing?.allow_delete_conversations ?? true,
+    hint: t('groupAllowDeleteHint'),
+  });
+
   const sortOrder = numberField({ label: t('sortOrder'), value: existing?.sort_order ?? 0 });
 
   const initialGrants: Record<string, 'use' | 'view'> = {};
@@ -164,7 +178,7 @@ function editGroup(
       enabled: switchField({ label: t('enforceWindow', { window: windowLabel(kind).toLowerCase() }), value: limits.enabled === true }),
       requests: numberField({ label: t('limitRequests'), value: limits.requests, placeholder: t('noLimit'), min: 0 }),
       tokens: numberField({ label: t('limitTokens'), value: limits.tokens, placeholder: t('noLimit'), min: 0 }),
-      credits: numberField({ label: t('limitCredits'), value: limits.credits, placeholder: t('noLimit'), min: 0, step: 0.1 }),
+      credits: creditsField(limits.credits),
     };
   });
 
@@ -194,6 +208,10 @@ function editGroup(
 
       body.appendChild(section(t('apiKeys')));
       body.appendChild(apiAccess.element);
+
+      body.appendChild(section(t('secGroupAbilities')));
+      body.appendChild(allowStats.element);
+      body.appendChild(allowDelete.element);
 
       body.appendChild(section(t('secAllowance'), t('allowanceHint')));
       body.appendChild(rpm.element);
@@ -226,6 +244,8 @@ function editGroup(
           is_default: isDefault.value(),
           allow_all_models: allowAll.value(),
           api_access: apiAccess.value(),
+          allow_stats: allowStats.value(),
+          allow_delete_conversations: allowDelete.value(),
           sort_order: sortOrder.value() ?? 0,
           model_ids: modelIDs,
           model_grants: modelGrants,

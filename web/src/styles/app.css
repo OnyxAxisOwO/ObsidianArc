@@ -398,6 +398,10 @@
 
 .oa-segmented-option {
   flex: 1;
+  /* One word per segment, whatever the language. Three options broken across
+     two lines each is what this control looked like in Chinese, where the
+     labels are short enough to fit and long enough to wrap. */
+  white-space: nowrap;
   padding: 5px 8px;
   border: none;
   border-radius: 999px;
@@ -468,7 +472,7 @@
   margin-top: 6px;
 }
 
-.oa-menu-quota-row {
+.oa-usage-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -477,7 +481,7 @@
   color: var(--ai-text-secondary);
 }
 
-.oa-menu-quota-value {
+.oa-usage-value {
   font-variant-numeric: tabular-nums;
   color: var(--ai-text);
 }
@@ -502,7 +506,7 @@
   background: var(--ai-danger);
 }
 
-.oa-menu-quota-reset {
+.oa-usage-reset {
   font-size: 10.5px;
   color: var(--ai-text-secondary);
   opacity: 0.8;

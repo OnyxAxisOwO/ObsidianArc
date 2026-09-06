@@ -362,6 +362,32 @@
   font-weight: 600;
 }
 
+/* A quantity you push until the screen looks right, with the number beside
+   the label rather than under the track: the value is a readout, not a field,
+   and putting it below would move the hint every time it changed width. */
+.oa-range-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.oa-range-value {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ai-text-secondary);
+}
+
+.oa-range-field input[type="range"] {
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  accent-color: var(--ai-primary);
+  cursor: pointer;
+}
+
 .oa-field-hint {
   font-size: 11px;
   color: var(--ai-text-secondary);
@@ -542,6 +568,55 @@
   background: var(--ai-badge-bg);
   color: var(--ai-badge-text);
   font-size: 10px;
+}
+
+/* The same row as a button, for the model editor, where a row is picked
+   rather than ticked. */
+button.oa-detect-row {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+button.oa-detect-row:disabled {
+  cursor: default;
+  color: var(--ai-text-secondary);
+}
+
+button.oa-detect-row:not(:disabled):hover {
+  background: var(--ai-surface-container);
+}
+
+/* Reasoning tiers: a name, the value that goes on the wire, and a budget.
+   Three inputs on one line rather than three stacked fields, because the list
+   is read down its first column — the names — and stacking would bury
+   that under a label for every cell. */
+.oa-thinking-tiers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oa-thinking-tier {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oa-thinking-tier input {
+  min-width: 0;
+}
+
+.oa-thinking-name {
+  flex: 3 1 0;
+}
+
+.oa-thinking-value,
+.oa-thinking-budget {
+  flex: 2 1 0;
 }
 
 .oa-detect-actions {

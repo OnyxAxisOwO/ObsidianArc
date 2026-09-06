@@ -38,11 +38,66 @@ body {
   background: rgba(0, 0, 0, var(--ai-wallpaper-dim, 0));
 }
 
-/* The surfaces sit on the wallpaper rather than hiding it, so the panels
-   pick up a little translucency only in this mode. */
+/* The surfaces sit on the wallpaper rather than hiding it. */
 .has-wallpaper body {
   background: transparent;
 }
+
+/* The panels, seen through.
+
+   These five are the whole interface's top-level cards: the ones sitting
+   directly on the page in the flex row. Naming them here rather than editing
+   each of their own rules is deliberate — this is one feature, and it is the
+   wallpaper's, so it lives beside the wallpaper. Naming them is also the
+   point: making the surface *tokens* translucent instead would have every
+   nested panel, field and badge multiply its parent's alpha, and the
+   interface would go to mud.
+
+   Only under .has-wallpaper. With none there is nothing behind a card but
+   the page's own background, so translucency would show the same colour
+   back — and a backdrop filter would cost a compositing layer per card for
+   an effect nobody can see. */
+/* The rail is matched through .ai-chat-wide, like the transcript beside it.
+   Not because the narrow layout needs excluding — though it does, since there
+   the rail is an overlay over content rather than a card on the wallpaper —
+   but because chat.css redeclares its background at the same weight this
+   selector would otherwise have, and wins on being the later file. */
+.has-wallpaper .ai-chat-wide .ai-chat-sidebar,
+.has-wallpaper .ai-chat-wide .ai-chat-main,
+.has-wallpaper .oa-panel,
+.has-wallpaper .oa-admin-rail,
+.has-wallpaper .oa-admin-main {
+  background: color-mix(in srgb, var(--ai-surface-container) var(--ai-surface-opacity, 100%), transparent);
+  /* A whole filter rather than a length, so that "no blur" is `none` and not
+     `blur(0px)`: the second one still promotes the card to its own layer. */
+  -webkit-backdrop-filter: var(--ai-surface-filter, none);
+  backdrop-filter: var(--ai-surface-filter, none);
+}
+
+/* The header's own controls, which sit on the wallpaper rather than on a card.
+
+   Only the controls: the header itself stays the bare row it is everywhere
+   else. A large card can be seen through because it still leaves a field of
+   colour behind its text; a bell on a photograph has nothing, so these keep a
+   pill of their own. Deliberately more opaque than the cards and not tied to
+   the slider — pushing translucency up is a choice about the panels, not a
+   choice to make the buttons unreadable. */
+.has-wallpaper .oa-header .oa-icon-btn,
+.has-wallpaper .oa-header .oa-brand,
+.has-wallpaper .oa-header .oa-account-btn {
+  background: color-mix(in srgb, var(--ai-surface-container) 72%, transparent);
+  -webkit-backdrop-filter: var(--ai-surface-filter, none);
+  backdrop-filter: var(--ai-surface-filter, none);
+}
+
+/* There is deliberately no prefers-reduced-transparency rule here.
+
+   There was one, and it was wrong: that hint is for decoration a reader never
+   asked for, and this is a number somebody typed into their own settings.
+   Windows reports it for its "transparency effects" switch, so the effect
+   silently refused to appear for anyone who had that off — including the
+   person who had just set it. An explicit choice outranks an ambient one, and
+   the way to turn this off is to put the slider back to zero. */
 
 #app {
   box-sizing: border-box;

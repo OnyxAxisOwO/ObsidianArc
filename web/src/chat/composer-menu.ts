@@ -9,12 +9,20 @@
 // chip on the other side of the screen. It moved into the model control,
 // beside send.
 
-import { fetchUsage, windowFigures, windowPressure, type UsageSummary, type UsageWindow } from '../api/usage';
+import { fetchUsage, type UsageSummary } from '../api/usage';
 import { t } from '../i18n';
 import { ICONS, el, icon, iconButton } from '../ui/dom';
 import { dropdown, menuItem } from '../ui/menu';
+import { usageWindow } from '../ui/usage-meter';
 
-export type Effort = 'low' | 'medium' | 'high';
+/**
+ * Which amount of thinking, by the id of the tier that names it.
+ *
+ * A plain string rather than the three words it used to be: a model may
+ * define its own tiers, so what is valid here is decided per model — by the
+ * list the reader was offered, which the gateway checks the value against.
+ */
+export type Effort = string;
 
 export interface ReasoningState {
   enabled: boolean;
@@ -102,56 +110,8 @@ export function createComposerMenu(options: ComposerMenuOptions): ComposerMenu {
 
     for (const window of usage.windows) {
       if (!window.enforced) continue;
-      container.appendChild(quotaRow(window));
+      container.appendChild(usageWindow(window, usage.display ?? 'absolute'));
     }
-  }
-
-  function quotaRow(window: UsageWindow): HTMLElement {
-    const wrap = el('div');
-
-    const row = el('div', 'oa-menu-quota-row');
-    row.appendChild(el('span', null, t(windowLabel(window.kind))));
-
-    const pressure = windowPressure(window);
-    row.appendChild(el('span', 'oa-menu-quota-value', quotaValue(window, pressure)));
-    wrap.appendChild(row);
-
-    if (pressure !== null) {
-      // The bar has to travel the way the figure beside it reads. A track
-      // filled a tenth under the words "90% left" is two answers to one
-      // question, and at a glance the shape is the one believed. So an
-      // allowance phrased as what remains drains as it is spent; used, and the
-      // raw figures, fill up.
-      const draining = (usage?.display ?? 'absolute') === 'remaining';
-      const meter = el('div', 'oa-meter');
-      // Keyed to pressure rather than to the width: nearly gone is nearly gone
-      // whichever direction the bar happens to be travelling.
-      const fill = el('div', `oa-meter-fill${pressure >= 0.9 ? ' warn' : ''}`);
-      fill.style.width = `${Math.round((draining ? 1 - pressure : pressure) * 100)}%`;
-      meter.appendChild(fill);
-      wrap.appendChild(meter);
-    }
-
-    wrap.appendChild(el('div', 'oa-menu-quota-reset', t('quotaResets', { when: untilText(window.resets_at) })));
-    return wrap;
-  }
-
-  /**
-   * The figure beside a window's name, in whichever phrasing the instance
-   * chose. A percentage needs a ratio to exist; with no limit on any
-   * dimension there is nothing to be a percentage of, so those windows fall
-   * back to the count regardless of the setting.
-   */
-  function quotaValue(window: UsageWindow, pressure: number | null): string {
-    const mode = usage?.display ?? 'absolute';
-    if (mode !== 'absolute' && pressure !== null) {
-      const percent = Math.round(pressure * 100);
-      return mode === 'remaining'
-        ? t('quotaRemaining', { percent: Math.max(0, 100 - percent) })
-        : t('quotaUsed', { percent });
-    }
-    const figures = windowFigures(window);
-    return figures ? `${compact(figures.used)} / ${compact(figures.limit)}` : compact(window.used_requests);
   }
 
   function sync(): void {
@@ -160,26 +120,4 @@ export function createComposerMenu(options: ComposerMenuOptions): ComposerMenu {
 
   sync();
   return { element: menu.group, sync };
-}
-
-function windowLabel(kind: UsageWindow['kind']): 'quota5h' | 'quotaWeek' | 'quotaMonth' {
-  if (kind === '5h') return 'quota5h';
-  if (kind === '1w') return 'quotaWeek';
-  return 'quotaMonth';
-}
-
-// Thousands as "1.2k": a menu row has no space for six digits, and the exact
-// figure is not what anyone reads here.
-function compact(value: number): string {
-  if (value < 1000) return String(Math.round(value * 10) / 10);
-  if (value < 1_000_000) return `${Math.round(value / 100) / 10}k`;
-  return `${Math.round(value / 100_000) / 10}M`;
-}
-
-function untilText(at: number): string {
-  const minutes = Math.max(0, Math.round((at - Date.now()) / 60000));
-  if (minutes < 60) return t('inMinutes', { count: minutes });
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return t('inHours', { count: hours });
-  return t('inDays', { count: Math.round(hours / 24) });
 }

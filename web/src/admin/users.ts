@@ -29,7 +29,9 @@ import {
   type QuotaWindowKind,
   type Role,
 } from './api';
-import { failure, type AdminView } from './admin-page';
+import { creditsField, failure, filterSelect, type AdminView } from './admin-page';
+import { usageWindow } from '../ui/usage-meter';
+import type { UsageSummary } from '../api/usage';
 
 interface Filters {
   q: string;
@@ -105,17 +107,6 @@ export async function renderUsers(view: AdminView): Promise<void> {
   }
 
   await load(view, groups, results);
-}
-
-function filterSelect(options: Array<{ value: string; label: string }>, value: string): HTMLSelectElement {
-  const select = el('select');
-  for (const option of options) {
-    const node = el('option', null, option.label);
-    node.value = option.value;
-    select.appendChild(node);
-  }
-  select.value = value;
-  return select;
 }
 
 async function load(view: AdminView, groups: Group[], target: HTMLElement): Promise<void> {
@@ -224,7 +215,7 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
       enabled: switchField({ label: t('enforceIt'), value: limits?.enabled === true }),
       requests: numberField({ label: t('limitRequests'), value: limits?.requests ?? null, placeholder: t('noLimit'), min: 0 }),
       tokens: numberField({ label: t('limitTokens'), value: limits?.tokens ?? null, placeholder: t('noLimit'), min: 0 }),
-      credits: numberField({ label: t('limitCredits'), value: limits?.credits ?? null, placeholder: t('noLimit'), min: 0, step: 0.1 }),
+      credits: creditsField(limits?.credits ?? null),
     };
   });
 
@@ -244,6 +235,16 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
         }),
     build: (body) => {
       body.appendChild(summary(account, detail.lifetime));
+
+      // The same bars the account sees in its own composer, from the same
+      // summary: an administrator answering "why can this person not send
+      // anything" should be reading the figure the person is up against, not
+      // a second calculation of it.
+      const allowance = usageBars(detail.usage);
+      if (allowance) {
+        body.appendChild(section(t('secAllowance')));
+        body.appendChild(allowance);
+      }
 
       body.appendChild(section(t('secProfile')));
       body.appendChild(nickname.element);
@@ -385,6 +386,26 @@ function keyRow(userID: string, key: ApiKey): HTMLElement {
   ));
   item.appendChild(actions);
   return item;
+}
+
+/**
+ * Returns null when there is nothing to draw at all, so the caller leaves the
+ * section out rather than framing an empty box. An account under no limits
+ * still gets a line: "no limits" is an answer, and a missing section reads as
+ * a screen that failed to load.
+ */
+function usageBars(usage: UsageSummary | undefined): HTMLElement | null {
+  if (!usage) return null;
+  const wrap = el('div', 'oa-usage-list');
+  const enforced = usage.windows.filter((window) => window.enforced);
+  if (usage.unlimited || !enforced.length) {
+    wrap.appendChild(el('span', 'oa-usage-reset', t('quotaUnlimited')));
+    return wrap;
+  }
+  for (const window of enforced) {
+    wrap.appendChild(usageWindow(window, usage.display ?? 'absolute'));
+  }
+  return wrap;
 }
 
 function summary(account: Account, lifetime: { requests: number; total_tokens: number; credits: number }): HTMLElement {

@@ -7,6 +7,7 @@
 
 import { api } from '../api/client';
 import type { ApiKey } from '../api/keys';
+import type { UsageSummary } from '../api/usage';
 
 // Re-exported so an admin screen imports one module, the way every other
 // shape on this surface already does.
@@ -22,6 +23,7 @@ export interface Provider {
   name: string;
   kind: ProviderKind;
   base_url: string;
+  allow_insecure: boolean;
   api_key_hint: string;
   headers: Record<string, string>;
   anthropic_version: string;
@@ -32,6 +34,16 @@ export interface Provider {
   model_count: number;
   created_at: number;
   updated_at: number;
+}
+
+/** One named amount of thinking a model offers. See ReasoningTier in Go. */
+export interface ReasoningTier {
+  /** Sent to the endpoint as reasoning_effort, and remembered by the account. */
+  id: string;
+  /** Shown to the reader as written: administrator's words, not the dictionary's. */
+  name: string;
+  /** Anthropic thinking tokens. Zero derives it from the id. */
+  budget: number;
 }
 
 export interface GroupModelGrant {
@@ -62,6 +74,8 @@ export interface AdminModel {
   // neither, so a route leaves no trace anywhere they can see.
   route_to_id: string;
   reasoning_style: ReasoningStyle | '';
+  /** Empty means the three the client has built in. */
+  reasoning_tiers: ReasoningTier[];
 
   group_grants?: ModelGroupGrant[];
 
@@ -87,6 +101,8 @@ export interface Group {
   is_default: boolean;
   allow_all_models: boolean;
   api_access: boolean;
+  allow_stats: boolean;
+  allow_delete_conversations: boolean;
   sort_order: number;
   members: number;
   model_ids: string[];
@@ -239,7 +255,7 @@ export const adminApi = {
   user: (id: string) =>
     api.get<{
       user: Account;
-      usage: { unlimited: boolean; windows: unknown[] };
+      usage: UsageSummary;
       lifetime: UsageTotals;
       policy: QuotaPolicy;
     }>(`/api/admin/users/${id}`),
@@ -285,6 +301,10 @@ export const adminApi = {
   createModel: (body: Record<string, unknown>) => api.post<{ model: AdminModel }>('/api/admin/models', body),
   updateModel: (id: string, body: Record<string, unknown>) =>
     api.patch<{ model: AdminModel }>(`/api/admin/models/${id}`, body),
+  reorderModels: (ids: string[]) =>
+    api.put<void>('/api/admin/models/order', { ids }),
+  resetQuota: (body: { scope: 'all' | 'group' | 'user'; id?: string }) =>
+    api.post<{ accounts: number }>('/api/admin/usage/reset', body),
   deleteModel: (id: string) => api.delete<void>(`/api/admin/models/${id}`),
 
   logs: (query: string) =>

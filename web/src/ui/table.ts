@@ -17,6 +17,18 @@ export interface Column<T> {
   /** Hidden below 720px, for the columns a phone has no room for. */
   secondary?: boolean;
   width?: string;
+  /**
+   * Makes the header clickable, and says what to order rows by. Separate
+   * from `cell` because what a cell shows is rarely what it sorts by: a
+   * state column shows two badges, and a weight column shows "1×".
+   */
+  sort?(row: T): string | number;
+}
+
+/** Which column the rows are ordered by, and which way. */
+export interface SortState {
+  column: number;
+  descending: boolean;
 }
 
 export interface TableOptions<T> {
@@ -26,6 +38,23 @@ export interface TableOptions<T> {
   onSelect?(row: T): void;
   /** Marks a row as inactive — a disabled account, a switched-off model. */
   muted?(row: T): boolean;
+  /**
+   * Held by the caller rather than by the table, so that a re-render for
+   * some other reason — a filter changing, a row being edited — does not
+   * throw away the order the reader chose. Absent leaves the rows in the
+   * order they arrived, which is the order the server sorted them in.
+   */
+  sort?: SortState | null;
+  onSort?(next: SortState): void;
+  /**
+   * Makes the rows draggable, and hands back the whole list in the order they
+   * were left in.
+   *
+   * Ignored while a column sort is on: the rows would be showing an order
+   * nobody stored, and dropping one into it would be writing down a position
+   * the reader never actually chose.
+   */
+  onReorder?(rows: T[]): void;
 }
 
 export function renderTable<T>(options: TableOptions<T>): HTMLElement {
@@ -39,17 +68,80 @@ export function renderTable<T>(options: TableOptions<T>): HTMLElement {
   const table = el('table', 'oa-table');
   const thead = el('thead');
   const headRow = el('tr');
-  for (const column of options.columns) {
+  options.columns.forEach((column, index) => {
     const th = el('th', columnClass(column), column.header);
     if (column.width) th.style.width = column.width;
+    if (column.sort && options.onSort) {
+      const active = options.sort?.column === index;
+      th.classList.add('sortable');
+      if (active) th.classList.add(options.sort!.descending ? 'desc' : 'asc');
+      // aria-sort rather than a marker in the text: the arrow is decoration
+      // and a screen reader should hear the state, not read an arrow.
+      th.setAttribute('aria-sort', active ? (options.sort!.descending ? 'descending' : 'ascending') : 'none');
+      th.tabIndex = 0;
+      // The same column again reverses; a different one starts ascending,
+      // because arriving at a column already reversed reads as a bug.
+      const toggle = () => options.onSort!({ column: index, descending: active && !options.sort!.descending });
+      th.addEventListener('click', toggle);
+      th.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          toggle();
+        }
+      });
+    }
     headRow.appendChild(th);
-  }
+  });
   thead.appendChild(headRow);
   table.appendChild(thead);
 
+  const ordered = sortRows(options);
+  const draggable = !!options.onReorder && !options.sort;
+  let dragging: number | null = null;
+
   const tbody = el('tbody');
-  for (const row of options.rows) {
+  ordered.forEach((row, index) => {
     const tr = el('tr', options.muted?.(row) ? 'muted' : null);
+    if (draggable) {
+      tr.draggable = true;
+      tr.classList.add('draggable');
+
+      tr.addEventListener('dragstart', (event) => {
+        dragging = index;
+        tr.classList.add('dragging');
+        // Firefox starts no drag at all without a payload on the transfer.
+        event.dataTransfer?.setData('text/plain', String(index));
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+      });
+
+      tr.addEventListener('dragover', (event) => {
+        if (dragging === null || dragging === index) return;
+        // Without preventDefault the browser refuses the drop, which reads as
+        // the row springing back for no reason.
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        clearMarks();
+        tr.classList.add(index > dragging ? 'drop-after' : 'drop-before');
+      });
+
+      tr.addEventListener('drop', (event) => {
+        event.preventDefault();
+        const from = dragging;
+        clearMarks();
+        dragging = null;
+        if (from === null || from === index) return;
+        const next = [...ordered];
+        const [moved] = next.splice(from, 1);
+        next.splice(index, 0, moved!);
+        options.onReorder!(next);
+      });
+
+      tr.addEventListener('dragend', () => {
+        dragging = null;
+        tr.classList.remove('dragging');
+        clearMarks();
+      });
+    }
     if (options.onSelect) {
       tr.classList.add('selectable');
       tr.tabIndex = 0;
@@ -69,11 +161,40 @@ export function renderTable<T>(options: TableOptions<T>): HTMLElement {
       tr.appendChild(td);
     }
     tbody.appendChild(tr);
-  }
+  });
   table.appendChild(tbody);
+
+  // Only the two marks, not the row being carried: that one keeps its class
+  // until the drag ends, so it stays faded the whole way across.
+  function clearMarks(): void {
+    for (const node of tbody.children) {
+      node.classList.remove('drop-before', 'drop-after');
+    }
+  }
 
   wrap.appendChild(table);
   return wrap;
+}
+
+/**
+ * A copy, never the caller's array: the caller is holding the unsorted list
+ * to filter and re-render from, and reordering it under them would make the
+ * order depend on how many times the table happened to be drawn.
+ */
+function sortRows<T>(options: TableOptions<T>): T[] {
+  const state = options.sort;
+  const by = state ? options.columns[state.column]?.sort : undefined;
+  if (!state || !by) return options.rows;
+
+  const direction = state.descending ? -1 : 1;
+  return [...options.rows].sort((left, right) => {
+    const a = by(left);
+    const b = by(right);
+    if (typeof a === 'number' && typeof b === 'number') return (a - b) * direction;
+    // localeCompare, not <: the names in this interface are as often Chinese
+    // as English, and code-point order puts every Han character after Z.
+    return String(a).localeCompare(String(b)) * direction;
+  });
 }
 
 function columnClass<T>(column: Column<T>): string {

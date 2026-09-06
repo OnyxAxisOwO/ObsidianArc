@@ -259,6 +259,68 @@
    above the panel in one scheme sits below it in the other. A tint of the
    text is always the contrasting direction, because the text always is.
    Two strengths, so the header is not one of the rows. */
+/* A sortable header is a control, so it says so on hover and takes focus.
+   The arrow is two triangles from gradients, the way the filter selects draw
+   theirs, rather than a glyph: a character would sit on the text baseline and
+   move the header every time the direction changed. */
+/* Dragging a row to reorder it. The cursor is the only affordance: a grip
+   column would be a column of grips on every table that never reorders. */
+.oa-table tr.draggable {
+  cursor: grab;
+}
+
+.oa-table tr.dragging {
+  opacity: 0.4;
+}
+
+/* Where it would land, drawn on the row it is over rather than as a floating
+   line, so nothing has to be positioned against a scrolling container. */
+.oa-table tr.drop-before td {
+  box-shadow: inset 0 2px 0 var(--ai-primary);
+}
+
+.oa-table tr.drop-after td {
+  box-shadow: inset 0 -2px 0 var(--ai-primary);
+}
+
+.oa-filter-note {
+  align-self: center;
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  padding-right: 18px;
+}
+
+.oa-table th.sortable:hover,
+.oa-table th.sortable:focus-visible {
+  color: var(--ai-text);
+}
+
+.oa-table th.sortable.asc,
+.oa-table th.sortable.desc {
+  background-repeat: no-repeat;
+  background-position: calc(100% - 10px) center, calc(100% - 6px) center;
+  background-size: 4px 4px, 4px 4px;
+}
+
+/* Ascending points up, descending points down. The pair of half-filled boxes
+   meet to make one triangle; reversing which half of each is filled is what
+   turns it over, rather than a transform, which would flip the header text
+   with it. */
+.oa-table th.sortable.asc {
+  background-image: linear-gradient(135deg, transparent 50%, currentColor 50%),
+    linear-gradient(45deg, currentColor 50%, transparent 50%);
+}
+
+.oa-table th.sortable.desc {
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+}
+
 .oa-table th {
   padding: 8px 12px;
   background: color-mix(in srgb, var(--ai-text) 9%, transparent);
@@ -388,6 +450,15 @@
 }
 
 /* --- statistics ---------------------------------------------------------- */
+
+/* The allowance bars in the account drawer. The rows are the same ones the
+   composer menu draws; only the spacing between them is this screen's
+   business. */
+.oa-usage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 
 .oa-stat-grid {
   display: grid;

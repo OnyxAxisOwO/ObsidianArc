@@ -353,7 +353,7 @@ export function renderKeysPage(root: HTMLElement): void {
 function modelItems(models: AvailableModel[]): Array<{ value: string; label: string }> {
   return modelsForSelection(models).map((m) => ({
     value: m.id,
-    label: m.display_name ? `${m.display_name} (${m.provider_name})` : m.id,
+    label: m.display_name || m.id,
   }));
 }
 

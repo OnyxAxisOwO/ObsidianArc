@@ -81,6 +81,8 @@ export function numberField(options: {
   min?: number;
   max?: number;
   step?: number;
+  /** Fires on every keystroke, for a readout that has to keep up. */
+  onInput?(value: number | null): void;
 }): Control<number | null> {
   const input = el('input');
   input.type = 'number';
@@ -90,16 +92,81 @@ export function numberField(options: {
   if (options.max !== undefined) input.max = String(options.max);
   if (options.step !== undefined) input.step = String(options.step);
 
+  const read = (): number | null => {
+    const raw = input.value.trim();
+    if (raw === '') return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  if (options.onInput) input.addEventListener('input', () => options.onInput!(read()));
+
   return {
     element: field(options.label, input, options.hint),
-    value: () => {
-      const raw = input.value.trim();
-      if (raw === '') return null;
-      const parsed = Number(raw);
-      return Number.isFinite(parsed) ? parsed : null;
-    },
+    value: read,
     set: (value) => { input.value = value === null ? '' : String(value); },
     focus: (options) => input.focus(options),
+  };
+}
+
+/**
+ * A slider with its value beside the label.
+ *
+ * For the settings that are a quantity rather than a figure: nobody knows
+ * what "35% translucent" looks like, so the useful control is the one you can
+ * push until the screen looks right. `onInput` fires all the way through the
+ * drag so the change can be shown live; `onCommit` fires once, on release,
+ * for whatever should not run per pixel — persisting it, usually.
+ */
+export function rangeField(options: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  hint?: string;
+  format?(value: number): string;
+  onInput?(value: number): void;
+  onCommit?(value: number): void;
+}): Control<number> {
+  const input = el('input');
+  input.type = 'range';
+  input.min = String(options.min);
+  input.max = String(options.max);
+  input.step = String(options.step ?? 1);
+  input.value = String(options.value);
+
+  const readout = el('span', 'oa-range-value');
+  const show = (value: number) => {
+    readout.textContent = options.format ? options.format(value) : String(value);
+  };
+  show(options.value);
+
+  const head = el('div', 'oa-range-head');
+  head.appendChild(el('span', 'oa-field-label', options.label));
+  head.appendChild(readout);
+
+  input.addEventListener('input', () => {
+    const value = Number(input.value);
+    show(value);
+    options.onInput?.(value);
+  });
+  // change, not pointerup: it also covers the keyboard, and a slider that
+  // only saved when a mouse let go of it would quietly lose an arrow key.
+  input.addEventListener('change', () => options.onCommit?.(Number(input.value)));
+
+  const element = el('div', 'oa-field oa-range-field');
+  element.appendChild(head);
+  element.appendChild(input);
+  if (options.hint) element.appendChild(el('span', 'oa-field-hint', options.hint));
+
+  return {
+    element,
+    value: () => Number(input.value),
+    set: (value) => {
+      input.value = String(value);
+      show(value);
+    },
+    focus: (focusOptions) => input.focus(focusOptions),
   };
 }
 

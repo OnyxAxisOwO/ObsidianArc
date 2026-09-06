@@ -15,6 +15,8 @@ import { attachResizer } from '../ui/resizer';
 import { closePanel } from '../ui/panel';
 import { attachOverlayScrollbar, type OverlayScrollbarHandle } from '../ui/scrollbar';
 import { formatUptime } from '../ui/table';
+import { numberField, type Control } from '../ui/form';
+import { adminApi, type AdminModel } from './api';
 import { renderAnnouncements } from './announcements';
 import { renderDashboard } from './dashboard';
 import { renderGroups } from './groups';
@@ -243,6 +245,113 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
 
   body.appendChild(loading());
   void page.render(view);
+}
+
+/**
+ * One dropdown in an `.oa-filters` bar.
+ *
+ * Not `selectField` from ui/form.ts: that is a labelled row inside a form,
+ * and this is a pill sitting in a row of pills above a table. Shared by the
+ * users screen and the models screen so the two bars cannot drift apart, and
+ * kept here rather than in ui/form.ts because that file is in the main
+ * bundle and nothing outside the backoffice has a filter bar.
+ */
+export function filterSelect(
+  options: Array<{ value: string; label: string }>,
+  value: string,
+): HTMLSelectElement {
+  const select = el('select');
+  for (const option of options) {
+    const node = el('option', null, option.label);
+    node.value = option.value;
+    select.appendChild(node);
+  }
+  select.value = value;
+  return select;
+}
+
+/**
+ * The models an allowance is actually spent on. Fetched once per visit and
+ * shared by every policy form, because three screens ask the same question
+ * and none of them is worth a request of its own.
+ */
+let pricing: Promise<AdminModel[]> | null = null;
+
+function pricedModels(): Promise<AdminModel[]> {
+  if (!pricing) {
+    pricing = adminApi.models()
+      .then(({ models }) => models.filter((entry) => entry.enabled))
+      // A failed lookup costs the note, not the form.
+      .catch((): AdminModel[] => []);
+  }
+  return pricing;
+}
+
+/**
+ * What one turn reserves before it runs, mirroring Model.WorstCase in Go.
+ *
+ * The reservation, not the average cost: it is what the limit is actually
+ * compared against, so it is what decides whether an allowance can pay for
+ * anything at all. A ceiling under one turn's reservation refuses the first
+ * message rather than running out partway through the day, and that is worth
+ * being told before saving rather than after a user complains.
+ */
+function worstCase(entry: AdminModel): number {
+  const ceiling = entry.max_output_tokens > 0 ? entry.max_output_tokens : 4096;
+  return entry.request_weight + (ceiling / 1000) * entry.output_token_weight;
+}
+
+/**
+ * A credits limit with a live readout of what it buys.
+ *
+ * Credits are a unit this instance invents: how much one is worth is the
+ * model weights, which are on another screen. A number with no idea attached
+ * is the reason this setting was unreadable, so the field carries the
+ * conversion instead of the operator having to do it.
+ *
+ * Priced against the most expensive model, because that is the one that
+ * decides when somebody is cut off.
+ */
+export function creditsField(value: number | null): Control<number | null> {
+  const note = el('span', 'oa-field-hint');
+  let priciest: AdminModel | null = null;
+
+  const paint = (): void => {
+    const limit = control.value();
+    if (!priciest || limit === null || limit <= 0) {
+      note.textContent = '';
+      return;
+    }
+    const cost = worstCase(priciest);
+    const name = priciest.display_name;
+    note.textContent = limit < cost
+      ? t('creditsTooSmall', { name, cost: round(cost) })
+      : t('creditsBuys', { turns: Math.floor(limit / cost), name, cost: round(cost) });
+  };
+
+  const control = numberField({
+    label: t('limitCredits'),
+    value,
+    placeholder: t('noLimit'),
+    min: 0,
+    step: 0.1,
+    onInput: paint,
+  });
+  control.element.appendChild(note);
+
+  void pricedModels().then((models) => {
+    priciest = models.reduce<AdminModel | null>(
+      (worst, entry) => (worst === null || worstCase(entry) > worstCase(worst) ? entry : worst),
+      null,
+    );
+    paint();
+  });
+
+  return control;
+}
+
+function round(value: number): string {
+  return String(Math.round(value * 10) / 10);
 }
 
 export function loading(): HTMLElement {

@@ -21,6 +21,10 @@ export interface Account {
   // False only while an unconfirmed address is holding the account
   // back. True for everyone else, including accounts with no address.
   email_verified: boolean;
+  // What this account's group permits. The server checks both again on the
+  // endpoints that act; these decide only what is worth drawing.
+  allow_stats: boolean;
+  allow_delete_conversations: boolean;
 }
 
 // What a visitor with no account is shown at the address. The server settles

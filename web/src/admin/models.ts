@@ -7,13 +7,59 @@
 
 import { ApiError } from '../api/client';
 import { t } from '../i18n';
-import { button, clear, el } from '../ui/dom';
+import { ICONS, button, clear, el, iconButton } from '../ui/dom';
 import { openPanel, type PanelHandle } from '../ui/panel';
 import { numberField, section, selectField, switchField, textArea, textField, tierList } from '../ui/form';
-import { badge, badges, compactNumber, renderTable, stacked } from '../ui/table';
-import { adminApi, type AdminModel, type Group, type Meta, type Provider, type ReasoningStyle } from './api';
-import { failure, type AdminView } from './admin-page';
+import { badge, badges, compactNumber, renderTable, stacked, type SortState } from '../ui/table';
+import { adminApi, type AdminModel, type Group, type Meta, type Provider, type ReasoningStyle, type ReasoningTier } from './api';
+import { failure, filterSelect, type AdminView } from './admin-page';
 import { reasoningLabel } from './providers';
+
+/**
+ * What the table is narrowed to, kept out here so that editing a model and
+ * coming back does not silently reset the filter the administrator was
+ * reading through. The users screen keeps its own the same way.
+ */
+interface ModelFilters {
+  q: string;
+  provider: string;
+  state: '' | 'enabled' | 'disabled' | 'hidden' | 'routed';
+}
+
+const filters: ModelFilters = { q: '', provider: '', state: '' };
+
+/**
+ * Null is the order the server sent, which is sort_order then name — the
+ * order an administrator arranged by hand. That is the right thing to come
+ * back to, so no column is sorted until one is clicked.
+ */
+let order: SortState | null = null;
+
+/**
+ * One dropdown rather than one per axis.
+ *
+ * Enabled/disabled, hidden and routed are three independent properties, so a
+ * strict reading wants three controls. But the question actually being asked
+ * of this table is "show me the X ones", one X at a time, and three dropdowns
+ * to answer it is two more than the question needs.
+ */
+function matches(row: AdminModel): boolean {
+  if (filters.provider && row.provider_id !== filters.provider) return false;
+  switch (filters.state) {
+    case 'enabled': if (!row.enabled) return false; break;
+    case 'disabled': if (row.enabled) return false; break;
+    case 'hidden': if (!row.hidden) return false; break;
+    case 'routed': if (!row.route_to_id) return false; break;
+  }
+  if (filters.q) {
+    // The upstream id as well as the name: an administrator hunting for a
+    // model usually has the id in hand, and it is the half the reader never
+    // sees.
+    const haystack = `${row.display_name} ${row.model_id} ${row.provider_name}`.toLowerCase();
+    if (!haystack.includes(filters.q.toLowerCase())) return false;
+  }
+  return true;
+}
 
 export async function renderModels(view: AdminView): Promise<void> {
   view.setTitle(t('modelsTitle'), t('modelsSubtitle'));
@@ -44,7 +90,76 @@ export async function renderModels(view: AdminView): Promise<void> {
   view.actions.appendChild(add);
 
   clear(view.body);
-  view.body.appendChild(renderTable({
+
+  // Filtered here rather than by the server: this screen already holds every
+  // model in memory to resolve route targets and to name them, so a query
+  // would be a round trip for a list that is already on the page.
+  const bar = el('div', 'oa-filters');
+  const search = el('input');
+  search.type = 'search';
+  search.placeholder = t('searchModels');
+  search.value = filters.q;
+
+  const providerSelect = filterSelect([
+    { value: '', label: t('anyProvider') },
+    ...providers.map((provider) => ({ value: provider.id, label: provider.name })),
+  ], filters.provider);
+
+  const stateSelect = filterSelect([
+    { value: '', label: t('anyStatus') },
+    { value: 'enabled', label: t('enabled') },
+    { value: 'disabled', label: t('disabled') },
+    { value: 'hidden', label: t('filterHidden') },
+    { value: 'routed', label: t('filterRouted') },
+  ], filters.state);
+
+  bar.appendChild(search);
+  bar.appendChild(providerSelect);
+  bar.appendChild(stateSelect);
+  bar.appendChild(el('span', 'oa-filter-note', t('dragToOrder')));
+  bar.hidden = models.length === 0;
+  view.body.appendChild(bar);
+
+  const results = el('div');
+  view.body.appendChild(results);
+
+  const paint = (): void => {
+    clear(results);
+    results.appendChild(table(view, providers, models, groups, meta, nameOf, paint));
+  };
+
+  search.addEventListener('input', () => {
+    filters.q = search.value.trim();
+    paint();
+  });
+  for (const select of [providerSelect, stateSelect]) {
+    select.addEventListener('change', () => {
+      filters.provider = providerSelect.value;
+      filters.state = stateSelect.value as ModelFilters['state'];
+      paint();
+    });
+  }
+
+  paint();
+}
+
+function table(
+  view: AdminView,
+  providers: Provider[],
+  models: AdminModel[],
+  groups: Group[],
+  meta: Meta,
+  nameOf: (modelID: string) => string,
+  repaint: () => void,
+): HTMLElement {
+  const visible = models.filter(matches);
+  return renderTable({
+    sort: order,
+    onReorder: (rows) => void applyOrder(view, models, rows),
+    onSort: (next) => {
+      order = next;
+      repaint();
+    },
     columns: [
       {
         header: t('colModel'),
@@ -55,10 +170,29 @@ export async function renderModels(view: AdminView): Promise<void> {
           row.display_name,
           row.route_to_id ? t('routedTo', { name: nameOf(row.route_to_id) }) : row.model_id,
         ),
+        sort: (row) => row.display_name,
       },
-      { header: t('colProvider'), cell: (row) => row.provider_name, secondary: true, width: '130px' },
+      {
+        header: t('colProvider'),
+        cell: (row) => row.provider_name,
+        secondary: true,
+        width: '130px',
+        // The provider first, then the name, so the models of one provider
+        // arrive together and in a readable order rather than in whatever
+        // order the rows happened to be in.
+        sort: (row) => `${row.provider_name}\u0000${row.display_name}`,
+      },
       { header: t('colCan'), cell: (row) => capabilityBadges(row), width: '140px' },
-      { header: t('colWeights'), cell: (row) => weightLabel(row), numeric: true, secondary: true, width: '80px' },
+      {
+        header: t('colWeights'),
+        cell: (row) => weightLabel(row),
+        numeric: true,
+        secondary: true,
+        width: '80px',
+        // What the cell prints is a pair; what anyone sorts by is the
+        // output rate, which is the half that dominates a bill.
+        sort: (row) => row.output_token_weight,
+      },
       {
         header: t('colState'),
         cell: (row) => badges(
@@ -66,13 +200,21 @@ export async function renderModels(view: AdminView): Promise<void> {
           row.hidden ? badge(t('hiddenBadge'), 'muted') : null,
         ),
         width: '110px',
+        // Ascending walks from most available to least: on, on but hidden,
+        // off. That is the order the column is scanned in.
+        sort: (row) => (row.enabled ? 0 : 2) + (row.hidden ? 1 : 0),
       },
     ],
-    rows: models,
-    empty: providers.length ? t('noModels') : t('addProviderFirst'),
+    rows: visible,
+    // Three different empty tables: nothing configured, nothing to configure
+    // it with, and a filter that happens to exclude everything. Saying "no
+    // models yet" to the third is how someone concludes their work is gone.
+    empty: !providers.length
+      ? t('addProviderFirst')
+      : models.length ? t('noModelsMatch') : t('noModels'),
     muted: (row) => !row.enabled,
     onSelect: (row) => editModel(view, providers, models, groups, meta, row),
-  }));
+  });
 }
 
 function capabilityBadges(model: AdminModel): HTMLElement {
@@ -209,6 +351,8 @@ function editModel(
     ],
   });
 
+  const tiers = reasoningTiersField(existing?.reasoning_tiers ?? []);
+
   const reasoningStyle = selectField<ReasoningStyle | ''>({
     label: t('reasoningStyleModel'),
     value: existing?.reasoning_style ?? '',
@@ -259,8 +403,22 @@ function editModel(
         }
       : {}),
     build: (body) => {
-      if (creating) body.appendChild(providerID.element);
-      else body.appendChild(readOnly(t('colProvider'), existing.provider_name));
+      if (creating) {
+        body.appendChild(providerID.element);
+        // Detect belongs here as well as on the provider screen: this is the
+        // form where an upstream id has to be typed exactly, so it is where
+        // being handed the list saves the typing. The provider editor still
+        // has the bulk add, which is a different job.
+        const host = el('div', 'oa-field');
+        const detect = button('oa-btn', t('detect'), () => {
+          void pickDetected(providerID.value(), detect, host, modelID, displayName);
+        });
+        host.appendChild(detect);
+        host.appendChild(el('span', 'oa-field-hint', t('detectPickHint')));
+        body.appendChild(host);
+      } else {
+        body.appendChild(readOnly(t('colProvider'), existing.provider_name));
+      }
       body.appendChild(modelID.element);
       body.appendChild(displayName.element);
       body.appendChild(description.element);
@@ -283,7 +441,13 @@ function editModel(
 
       body.appendChild(section(t('secRouting')));
       body.appendChild(routeTo.element);
+
+      // The style and the tiers are one subject — how this model is asked to
+      // think — and they used to sit under Routing, which is a different
+      // one.
+      body.appendChild(section(t('secThinking')));
       body.appendChild(reasoningStyle.element);
+      body.appendChild(tiers.element);
 
       body.appendChild(section(t('secWeights'), t('weightsHint')));
       body.appendChild(requestWeight.element);
@@ -301,6 +465,7 @@ function editModel(
       const payload: Record<string, unknown> = {
         route_to_id: routeTo.value(),
         reasoning_style: reasoningStyle.value(),
+        reasoning_tiers: tiers.value(),
         model_id: modelID.value(),
         display_name: displayName.value(),
         description: description.value(),
@@ -338,6 +503,158 @@ function editModel(
 
   modelID.focus({ preventScroll: true });
   void panel;
+}
+
+/**
+ * Asks the provider what it serves and lets one row fill the form.
+ *
+ * The provider editor's version of this adds every ticked row at once. This
+ * one is a picker: the panel it opens into is already creating exactly one
+ * model, and the two fields it fills are the two nobody can guess.
+ */
+async function pickDetected(
+  providerID: string,
+  trigger: HTMLButtonElement,
+  host: HTMLElement,
+  modelID: { set(value: string): void },
+  displayName: { set(value: string): void },
+): Promise<void> {
+  if (!providerID) return;
+  trigger.disabled = true;
+  trigger.textContent = t('detecting');
+  host.querySelector('.oa-detect-panel')?.remove();
+
+  const panel = el('div', 'oa-detect-panel');
+  host.appendChild(panel);
+
+  try {
+    const { models } = await adminApi.detect(providerID);
+    panel.appendChild(el('p', 'oa-detect-status', t('nModelsFound', { count: models.length })));
+
+    const list = el('div', 'oa-detect-list');
+    for (const entry of models) {
+      const row = el('button', 'oa-detect-row');
+      row.type = 'button';
+      row.disabled = entry.configured;
+      row.appendChild(el('span', null,
+        entry.display_name ? `${entry.display_name} — ${entry.model_id}` : entry.model_id));
+      if (entry.configured) row.appendChild(el('span', 'oa-detect-known', t('alreadyAdded')));
+      row.addEventListener('click', () => {
+        modelID.set(entry.model_id);
+        displayName.set(entry.display_name || entry.model_id);
+        panel.remove();
+      });
+      list.appendChild(row);
+    }
+    panel.appendChild(list);
+  } catch (error) {
+    panel.appendChild(el('p', 'oa-detect-status', error instanceof ApiError ? error.message : String(error)));
+  } finally {
+    trigger.disabled = false;
+    trigger.textContent = t('detect');
+  }
+}
+
+/**
+ * The rows that say how many amounts of thinking a model offers.
+ *
+ * Not `tierList` from ui/form.ts, which grants a group access to a model:
+ * the two words only collide in English.
+ *
+ * An empty list is the built-in three, so deleting the last row is how an
+ * administrator goes back to them rather than a state to be guarded against.
+ */
+function reasoningTiersField(initial: ReasoningTier[]): {
+  element: HTMLElement;
+  value(): ReasoningTier[];
+} {
+  const rows: Array<{ node: HTMLElement; read(): ReasoningTier }> = [];
+  const list = el('div', 'oa-thinking-tiers');
+
+  const element = el('div', 'oa-field');
+  element.appendChild(el('span', 'oa-field-label', t('reasoningTiers')));
+  element.appendChild(list);
+  const add = button('oa-btn', t('addTier'), () => {
+    addRow({ id: '', name: '', budget: 0 });
+  });
+  element.appendChild(add);
+  element.appendChild(el('span', 'oa-field-hint', t('reasoningTiersHint')));
+
+  function cell(label: string, value: string, className: string): HTMLInputElement {
+    const node = el('input', className);
+    node.type = 'text';
+    node.spellcheck = false;
+    node.value = value;
+    node.placeholder = label;
+    // The column headers are the placeholders, which disappear the moment a
+    // row is filled in, so the name has to survive somewhere a screen reader
+    // can still reach.
+    node.setAttribute('aria-label', label);
+    return node;
+  }
+
+  function addRow(tier: ReasoningTier): void {
+    const node = el('div', 'oa-thinking-tier');
+    const name = cell(t('tierName'), tier.name, 'oa-thinking-name');
+    const value = cell(t('tierValue'), tier.id, 'oa-thinking-value');
+    const budget = cell(t('tierBudget'), tier.budget ? String(tier.budget) : '', 'oa-thinking-budget');
+    budget.inputMode = 'numeric';
+
+    const entry = {
+      node,
+      read: (): ReasoningTier => ({
+        id: value.value.trim(),
+        name: name.value.trim(),
+        budget: Math.max(0, Math.trunc(Number(budget.value.trim()) || 0)),
+      }),
+    };
+    const remove = iconButton('oa-icon-btn', ICONS.close, t('removeTier'), () => {
+      const at = rows.indexOf(entry);
+      if (at !== -1) rows.splice(at, 1);
+      node.remove();
+    }, 14);
+
+    node.appendChild(name);
+    node.appendChild(value);
+    node.appendChild(budget);
+    node.appendChild(remove);
+    list.appendChild(node);
+    rows.push(entry);
+  }
+
+  for (const tier of initial) addRow(tier);
+
+  return {
+    element,
+    // Half-filled rows are dropped here as well as on the server: a tier with
+    // no name would be a blank stop on the slider, and one with no value
+    // could never be told apart from its neighbour.
+    value: () => rows.map((row) => row.read()).filter((tier) => tier.id !== '' && tier.name !== ''),
+  };
+}
+
+/**
+ * Writes back an order a row was dragged into.
+ *
+ * `reordered` is only what was on screen, which may be a filtered subset. The
+ * rows that were filtered out keep the positions they had: the visible ones
+ * are dealt back into the slots they occupied, in their new sequence. Moving
+ * a row you can see must not move a row you cannot.
+ */
+async function applyOrder(view: AdminView, all: AdminModel[], reordered: AdminModel[]): Promise<void> {
+  const moved = new Set(reordered.map((row) => row.id));
+  const queue = [...reordered];
+  const next = all.map((row) => (moved.has(row.id) ? queue.shift()! : row));
+
+  try {
+    await adminApi.reorderModels(next.map((row) => row.id));
+  } catch (error) {
+    window.alert(error instanceof ApiError ? error.message : String(error));
+  }
+  // Either way: on success to show the stored order, and on failure to snap
+  // back to it rather than leaving the screen claiming a move that was never
+  // written.
+  view.reload();
 }
 
 async function removeModel(view: AdminView, model: AdminModel, panel: PanelHandle): Promise<void> {

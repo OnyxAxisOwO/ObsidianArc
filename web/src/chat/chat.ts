@@ -107,6 +107,16 @@ export interface ChatOptions {
   composerControl?: HTMLElement;
   /** Told which conversation is open, so the shell can reflect it. */
   onConversationChange?(conversation: Conversation | null): void;
+  /**
+   * Whether to show the timing line under an answer, and the timer that runs
+   * while one is being written.
+   *
+   * A function rather than a flag: it is a preference the settings panel can
+   * change while this is mounted, and it is read again on every render.
+   */
+  showStats?(): boolean;
+  /** False hides the delete controls. The server refuses them regardless. */
+  canDelete?(): boolean;
 }
 
 export interface ChatHandle {
@@ -122,6 +132,8 @@ export interface ChatHandle {
 interface Pending {
   answer: string;
   reasoning: string;
+  /** When the turn was sent, so the timer under it counts from the send. */
+  startedAt: number;
 }
 
 export function mountChat(options: ChatOptions): ChatHandle {
@@ -143,6 +155,9 @@ export function mountChat(options: ChatOptions): ChatHandle {
   let historyOpen = false;
   let flash = '';
   let pending: Pending | null = null;
+  // The one running timer. Cleared at the top of every render, because the
+  // node it was writing into is about to be replaced.
+  let ticking = 0;
   let pendingNodes: { reasoning: HTMLElement | null; answer: HTMLElement | null } | null = null;
   let lastRenderedID: string | null = null;
   let destroyed = false;
@@ -166,6 +181,8 @@ export function mountChat(options: ChatOptions): ChatHandle {
   sidebarListWrap.appendChild(sidebarList);
   attachOverlayScrollbar(sidebarList, sidebarListWrap);
 
+  const deletable = (): boolean => options.canDelete?.() ?? true;
+
   const sidebarFoot = el('div', 'ai-chat-sidebar-foot');
   const clearAllBtn = button('ai-chat-clear-all', '');
   clearAllBtn.appendChild(icon(ICONS.trash, 12));
@@ -175,6 +192,7 @@ export function mountChat(options: ChatOptions): ChatHandle {
     { label: t('clearAllConfirm'), title: t('confirmClearAll') },
     () => void clearEverything(),
   );
+  clearAllBtn.hidden = !deletable();
   sidebarFoot.appendChild(clearAllBtn);
 
   sidebar.appendChild(sidebarHead);
@@ -438,14 +456,14 @@ export function mountChat(options: ChatOptions): ChatHandle {
       open.addEventListener('click', () => void openConversation(conversation.id));
       open.addEventListener('dblclick', () => void rename(conversation));
 
-      const remove = confirmable(
-        iconButton('ai-chat-list-delete', ICONS.trash, t('deleteChat'), undefined, 13),
-        { icon: ICONS.check, title: t('confirmDelete') },
-        () => void removeConversation(conversation),
-      );
-
       row.appendChild(open);
-      row.appendChild(remove);
+      if (deletable()) {
+        row.appendChild(confirmable(
+          iconButton('ai-chat-list-delete', ICONS.trash, t('deleteChat'), undefined, 13),
+          { icon: ICONS.check, title: t('confirmDelete') },
+          () => void removeConversation(conversation),
+        ));
+      }
       sidebarList.appendChild(row);
     }
   }
@@ -573,6 +591,30 @@ export function mountChat(options: ChatOptions): ChatHandle {
     return box;
   }
 
+  function statsWanted(): boolean {
+    return options.showStats?.() ?? false;
+  }
+
+  /**
+   * The seconds ticking up under an answer that is still being written.
+   *
+   * It stops by being thrown away: the turn ends, the transcript is rendered
+   * from the server's copy, and this node goes with it — replaced by the
+   * finished line, which carries the same elapsed time measured server-side.
+   */
+  function renderTimer(startedAt: number): HTMLElement {
+    const node = el('div', 'ai-msg-stats ai-msg-timer');
+    const paint = () => {
+      const elapsed = Math.max(0, Date.now() - startedAt);
+      node.textContent = `${(Math.round(elapsed / 100) / 10).toFixed(1)}s`;
+    };
+    paint();
+    // Ten times a second: fast enough that it reads as running, slow enough
+    // that it is not competing with the stream for frames.
+    ticking = window.setInterval(paint, 100);
+    return node;
+  }
+
   function renderStats(stats: MessageStats): HTMLElement {
     const seconds = (ms: number) => (ms >= 10000 ? String(Math.round(ms / 1000)) : (Math.round(ms / 100) / 10).toFixed(1));
     const parts = [`${seconds(stats.ms)}s`];
@@ -670,7 +712,7 @@ export function mountChat(options: ChatOptions): ChatHandle {
     actions.appendChild(button('ai-chat-mini-btn', t('copy'), () => void copyText(message.content)));
     row.appendChild(actions);
 
-    if (message.stats) row.appendChild(renderStats(message.stats));
+    if (message.stats && statsWanted()) row.appendChild(renderStats(message.stats));
     return row;
   }
 
@@ -688,13 +730,18 @@ export function mountChat(options: ChatOptions): ChatHandle {
       renderInto(answer, pending.answer);
       pendingNodes.answer = answer;
       row.appendChild(answer);
-      return row;
+    } else {
+      // Still nothing to read, whether or not it is thinking out loud.
+      const spinner = el('div', 'ai-chat-pending');
+      spinner.appendChild(el('span', 'ai-chat-spinner'));
+      spinner.appendChild(el('span', null, t('thinking')));
+      row.appendChild(spinner);
     }
 
-    const spinner = el('div', 'ai-chat-pending');
-    spinner.appendChild(el('span', 'ai-chat-spinner'));
-    spinner.appendChild(el('span', null, t('thinking')));
-    row.appendChild(spinner);
+    // Under the answer, and under the spinner before there is one: the clock
+    // is running either way, and the wait before the first token is the part
+    // of it worth watching.
+    if (pending && statsWanted()) row.appendChild(renderTimer(pending.startedAt));
     return row;
   }
 
@@ -720,6 +767,8 @@ export function mountChat(options: ChatOptions): ChatHandle {
   function render(): void {
     if (destroyed) return;
     pendingNodes = null;
+    window.clearInterval(ticking);
+    ticking = 0;
 
     const conversation = active();
     const switched = activeID !== lastRenderedID;
@@ -801,7 +850,7 @@ export function mountChat(options: ChatOptions): ChatHandle {
     }
 
     busy = true;
-    pending = { answer: '', reasoning: '' };
+    pending = { answer: '', reasoning: '', startedAt: Date.now() };
     setFlash('');
     render();
     scrollToEnd();

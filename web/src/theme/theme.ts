@@ -39,6 +39,12 @@ export interface Wallpaper {
   // 0-100. Dims the wallpaper so interface text stays readable over it.
   dim: number;
   blur: number;
+  // 0-90. How far the interface's own panels are seen through. Capped short
+  // of 100 because a card at nothing is text lying loose on a photograph.
+  translucency: number;
+  // 0-40px, behind those panels rather than over the wallpaper itself: it is
+  // what keeps the picture from competing with the words on top of it.
+  panelBlur: number;
 }
 
 type Listener = () => void;
@@ -201,6 +207,10 @@ export function wallpaper(): Wallpaper | null {
       url: parsed.url,
       dim: clamp(parsed.dim ?? 0, 0, 100),
       blur: clamp(parsed.blur ?? 0, 0, 40),
+      // Zero for a wallpaper stored before these existed, which is the look
+      // it already has.
+      translucency: clamp(parsed.translucency ?? 0, 0, 90),
+      panelBlur: clamp(parsed.panelBlur ?? 0, 0, 40),
     };
   } catch {
     return null;
@@ -229,11 +239,18 @@ function applyWallpaper(): void {
     style.removeProperty('--ai-wallpaper');
     style.removeProperty('--ai-wallpaper-dim');
     style.removeProperty('--ai-wallpaper-blur');
+    style.removeProperty('--ai-surface-opacity');
+    style.removeProperty('--ai-surface-filter');
     return;
   }
   style.setProperty('--ai-wallpaper', `url("${cssEscape(current.url)}")`);
   style.setProperty('--ai-wallpaper-dim', String(current.dim / 100));
   style.setProperty('--ai-wallpaper-blur', `${current.blur}px`);
+  // Opacity rather than translucency, as a percentage the stylesheet can
+  // hand straight to color-mix: the setting reads "how far through", the
+  // paint needs "how much is left".
+  style.setProperty('--ai-surface-opacity', `${100 - current.translucency}%`);
+  style.setProperty('--ai-surface-filter', current.panelBlur > 0 ? `blur(${current.panelBlur}px)` : 'none');
 }
 
 function cssEscape(value: string): string {

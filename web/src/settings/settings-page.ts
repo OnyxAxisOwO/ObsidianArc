@@ -27,10 +27,11 @@ import {
   themeMode,
   wallpaper,
   type ThemeMode,
+  type Wallpaper,
 } from '../theme/theme';
 import { prepareImage, ImageError } from '../chat/image';
 import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
-import { numberField, selectField, textArea, textField } from '../ui/form';
+import { rangeField, selectField, switchField, textArea, textField } from '../ui/form';
 import { language, setLanguage, type Language } from '../i18n';
 
 // Five sections is more than fits a panel without scrolling past what you
@@ -320,32 +321,90 @@ function wallpaperSection(): HTMLElement {
   const remove = button('oa-btn oa-btn-danger', t('remove'), () => void clearWallpaper());
   remove.hidden = !current;
 
-  const dim = numberField({
+  // Sliders, and live.
+  //
+  // Nobody knows what "35" looks like on any of these, so the control that
+  // works is the one you push until the screen is right — which means the
+  // screen has to change while you push it. They used to be number boxes
+  // behind an Apply button, and a number typed into a box that does nothing
+  // until a button somewhere else is pressed reads, correctly, as broken.
+  const readSliders = (): Wallpaper | null => {
+    const existing = wallpaper();
+    if (!existing) return null;
+    return {
+      url: existing.url,
+      dim: dim.value(),
+      blur: blur.value(),
+      translucency: translucency.value(),
+      panelBlur: panelBlur.value(),
+    };
+  };
+
+  // On every move of the slider: local only, so the change is on screen at
+  // once and no request goes out per pixel.
+  const preview = (): void => {
+    const next = readSliders();
+    if (next) setWallpaper(next);
+  };
+
+  // On release: the same value, this time remembered by the account.
+  const persist = (): void => {
+    const next = readSliders();
+    if (next) syncPreferences({ wallpaper: next });
+  };
+
+  const dim = rangeField({
     label: t('dim'),
     value: current?.dim ?? 30,
     min: 0,
     max: 100,
     hint: t('dimHint'),
+    onInput: preview,
+    onCommit: persist,
   });
-  const blur = numberField({ label: t('blur'), value: current?.blur ?? 0, min: 0, max: 40 });
+  const blur = rangeField({
+    label: t('blur'),
+    value: current?.blur ?? 0,
+    min: 0,
+    max: 40,
+    format: (value) => `${value}px`,
+    onInput: preview,
+    onCommit: persist,
+  });
 
-  const apply = button('oa-btn', t('apply'), () => {
-    const existing = wallpaper();
-    if (!existing) return;
-    const next = { url: existing.url, dim: dim.value() ?? 0, blur: blur.value() ?? 0 };
-    setWallpaper(next);
-    syncPreferences({ wallpaper: next });
+  // About the interface rather than the picture, but they belong here: they
+  // do nothing without a wallpaper, and they are how one becomes visible
+  // through the panels instead of only around them.
+  const translucency = rangeField({
+    label: t('panelTranslucency'),
+    value: current?.translucency ?? 0,
+    min: 0,
+    max: 90,
+    hint: t('panelTranslucencyHint'),
+    onInput: preview,
+    onCommit: persist,
+  });
+  const panelBlur = rangeField({
+    label: t('panelBlur'),
+    value: current?.panelBlur ?? 0,
+    min: 0,
+    max: 40,
+    format: (value) => `${value}px`,
+    hint: t('panelBlurHint'),
+    onInput: preview,
+    onCommit: persist,
   });
 
   const row = el('div', 'oa-button-row');
   row.appendChild(choose);
-  row.appendChild(apply);
   row.appendChild(remove);
 
   wrap.appendChild(status);
   wrap.appendChild(row);
   wrap.appendChild(dim.element);
   wrap.appendChild(blur.element);
+  wrap.appendChild(translucency.element);
+  wrap.appendChild(panelBlur.element);
   wrap.appendChild(picker);
 
   picker.addEventListener('change', () => {
@@ -368,7 +427,13 @@ function wallpaperSection(): HTMLElement {
         data: prepared.data,
       });
 
-      const next = { url, dim: dim.value() ?? 30, blur: blur.value() ?? 0 };
+      const next = {
+        url,
+        dim: dim.value(),
+        blur: blur.value(),
+        translucency: translucency.value(),
+        panelBlur: panelBlur.value(),
+      };
       setWallpaper(next);
       syncPreferences({ wallpaper: next });
       status.textContent = t('wallpaperSet');
@@ -411,11 +476,11 @@ function chatSection(): HTMLElement {
   field.appendChild(models);
   wrap.appendChild(field);
 
-  void api.get<{ models: Array<{ id: string; display_name: string; provider_name: string; usable?: boolean }> }>('/api/models')
+  void api.get<{ models: Array<{ id: string; display_name: string; usable?: boolean }> }>('/api/models')
     .then(({ models: list }) => {
       for (const model of list) {
         if (model.usable === false) continue;
-        const option = el('option', null, `${model.display_name} — ${model.provider_name}`);
+        const option = el('option', null, model.display_name);
         option.value = model.id;
         models.appendChild(option);
       }
@@ -442,6 +507,19 @@ function chatSection(): HTMLElement {
     onChange: (value) => syncPreferences({ reasoning_effort: value }),
   });
   wrap.appendChild(effort.element);
+
+  // Only offered where the group allows it. Hiding it is not the enforcement
+  // — the chat checks the same permission before drawing the line — it is so
+  // nobody is shown a switch that would do nothing.
+  if (currentUser()?.allow_stats !== false) {
+    const stats = switchField({
+      label: t('showStats'),
+      value: preferences['show_stats'] === true,
+      hint: t('showStatsHint'),
+      onChange: (value) => syncPreferences({ show_stats: value }),
+    });
+    wrap.appendChild(stats.element);
+  }
 
   return wrap;
 }

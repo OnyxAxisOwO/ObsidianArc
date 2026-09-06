@@ -39,12 +39,27 @@ export function createBell(): Bell {
   trigger.appendChild(dot);
 
   const menu = dropdown(trigger, (panel, close) => {
+    fill(panel, close);
+
+    // The feed is fetched once when the header is built. A tab left open
+    // since before an announcement was written would otherwise say there are
+    // none for as long as it stays open — which is exactly when somebody
+    // opens the bell to check. Opening it is the moment the answer is wanted,
+    // so that is when it is asked for.
+    void refresh({ popup: false }).then(() => {
+      if (!menu.isOpen) return;
+      panel.textContent = '';
+      fill(panel, close);
+    });
+  }, { menuClass: 'oa-menu-announce' });
+
+  function fill(panel: HTMLElement, close: () => void): void {
     const head = el('div', 'oa-menu-head');
     head.appendChild(el('span', 'oa-menu-head-name', t('announcements')));
     if (feed.unread > 0) {
       head.appendChild(button('oa-menu-head-action', t('markAllRead'), () => {
         close();
-        void markAllRead().then(refresh);
+        void markAllRead().then(() => refresh());
       }));
     }
     panel.appendChild(head);
@@ -65,7 +80,7 @@ export function createBell(): Bell {
         },
       }));
     }
-  }, { menuClass: 'oa-menu-announce' });
+  }
 
   function paint(): void {
     dot.hidden = feed.unread === 0;
@@ -75,11 +90,19 @@ export function createBell(): Bell {
     trigger.setAttribute('aria-label', trigger.title);
   }
 
-  function refresh(): void {
-    void fetchAnnouncements()
+  /**
+   * Re-reads the feed.
+   *
+   * `popup: false` for the refresh that happens because the reader opened the
+   * bell: they are already looking at the list, and throwing a sheet over it
+   * at that moment would cover the thing they asked to see.
+   */
+  function refresh(options: { popup?: boolean } = {}): Promise<void> {
+    return fetchAnnouncements()
       .then((next) => {
         feed = next;
         paint();
+        if (options.popup === false) return;
         // Only on the first read of a given announcement per visit. An
         // "every visit" one that has just been dismissed must not come
         // straight back when something else refreshes the feed.
@@ -90,13 +113,13 @@ export function createBell(): Bell {
       });
   }
 
-  refresh();
-  return { element: menu.group, refresh };
+  void refresh();
+  return { element: menu.group, refresh: () => void refresh() };
 
   function show(record: Announcement): void {
     shownThisVisit.add(record.id);
     openAnnouncement(record, () => {
-      void markRead(record.id).then(refresh).catch(refresh);
+      void markRead(record.id).then(() => refresh()).catch(() => refresh());
     });
   }
 }
