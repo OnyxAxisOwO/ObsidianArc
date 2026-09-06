@@ -2162,9 +2162,14 @@
   --cap-lit: #ff7a70;
   --cap-rim: #7e1512;
 
-  display: flex;
-  justify-content: center;
-  margin: 22px 0 4px;
+  /* Sized to the ring, which is the outermost part. The plate and the cap are
+     centred inside it. */
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 208px;
+  height: 208px;
+  margin: 22px auto 4px;
 }
 
 /* The plate. Its inner shadow is what the cap appears to sit in, and it
@@ -2192,18 +2197,17 @@
 .oa-bigbutton-ring {
   --hold: 0;
   position: absolute;
-  /* Out at the rim of the plate, with the cap a clear twenty pixels inside
-     it. That gap is the whole point: a light hugging the cap turns a six
-     pixel press into a visibly uneven circle, which is what the first
-     version did. */
-  inset: 9px;
+  /* Around everything, not inside the plate: the outermost circle of the
+     three. Nothing it encloses touches it, so nothing that moves can make it
+     look off centre. */
+  inset: 0;
   border-radius: 50%;
   background: conic-gradient(
     from 0deg,
     var(--cap-lit) calc(var(--hold) * 360deg),
     transparent 0);
-  -webkit-mask: radial-gradient(closest-side, transparent 88%, #000 89%);
-  mask: radial-gradient(closest-side, transparent 88%, #000 89%);
+  -webkit-mask: radial-gradient(closest-side, transparent 90%, #000 91%);
+  mask: radial-gradient(closest-side, transparent 90%, #000 91%);
   pointer-events: none;
 }
 

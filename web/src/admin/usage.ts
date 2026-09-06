@@ -158,11 +158,11 @@ function holdButton(label: string, holdingLabel: string, done: () => void): HTML
   const text = el('span', 'oa-bigbutton-label', label);
   cap.appendChild(text);
 
-  // The ring belongs to the plate, not to the cap: it is the light around the
-  // housing, and it does not move. Alignment then cannot go wrong, because
-  // the only thing that travels is the cap, well inside it.
-  base.appendChild(ring);
+  // Outermost: the ring goes around the whole assembly, not inside the plate.
+  // It is the light on the housing and it does not move, so the only thing
+  // that travels is the cap, two circles in from it.
   base.appendChild(cap);
+  wrap.appendChild(ring);
   wrap.appendChild(base);
 
   let timer = 0;
