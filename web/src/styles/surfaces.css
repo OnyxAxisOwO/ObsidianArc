@@ -2142,64 +2142,180 @@
 /* Held, not clicked. The fill is the only moving part: it says how much
    longer, and it is the reason letting go early reads as "nothing happened"
    rather than "did that work?". */
-.oa-hold {
+/* The reset button: a cap on a plate.
+   
+   Deliberately unlike everything else here. The language elsewhere — flat
+   fills, no outlines, nothing pretending to be an object — is right for
+   controls somebody uses all day and wrong for the one control that empties
+   a number for every account at once. This one should read as a thing you
+   press and hold, and should be obviously not the button you meant to click
+   on the way past.
+   
+   The one place in this stylesheet with a colour of its own, and the reason
+   is that this is an object rather than a control. The palette exists so the
+   accent colours the interface; a button you push is not part of that system,
+   and --ai-danger is a text and badge colour — pale by design, so that a
+   warning reads on a dark panel. Mixed into a dome it comes out pink. This is
+   red because the thing it is imitating is red. */
+.oa-bigbutton {
+  --cap: #d92b26;
+  --cap-lit: #ff7a70;
+  --cap-rim: #7e1512;
+
+  display: flex;
+  justify-content: center;
+  margin: 22px 0 4px;
+}
+
+/* The plate. Its inner shadow is what the cap appears to sit in, and it
+   deepens as the cap goes down. */
+.oa-bigbutton-base {
   position: relative;
-  display: block;
-  width: 100%;
-  margin-top: 18px;
-  padding: 14px 18px;
-  border: none;
-  border-radius: 999px;
-  background: var(--ai-danger);
-  color: var(--ai-surface-card);
-  font: inherit;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  cursor: pointer;
-  overflow: hidden;
-  user-select: none;
-  touch-action: none;
-  box-shadow: 0 6px 18px -8px var(--ai-danger), inset 0 1px 0 rgba(255, 255, 255, 0.22);
-  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  display: grid;
+  place-items: center;
+  width: 172px;
+  height: 172px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 42%,
+      var(--ai-surface-container-high) 58%,
+      var(--ai-surface-container-low) 100%);
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.34),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  transition: box-shadow 0.16s ease;
 }
 
-.oa-hold:hover {
-  box-shadow: 0 10px 24px -10px var(--ai-danger), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+/* Ring and cap travel together. The plate is the fixed part; everything that
+   moves when the button is pressed is in here, which is what keeps the two
+   circles concentric in every state. */
+.oa-bigbutton-stack {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 152px;
+  height: 152px;
+  transition: transform 0.09s cubic-bezier(0.2, 0, 0, 1);
 }
 
-/* Pressed in, which is what makes it read as a thing being held down rather
-   than a thing that has been clicked. */
-.oa-hold.holding {
-  transform: translateY(1px) scale(0.995);
-  box-shadow: 0 2px 8px -6px var(--ai-danger), inset 0 2px 6px rgba(0, 0, 0, 0.28);
-}
-
-.oa-hold-fill {
+/* The hold, closing clockwise from the top. The mask is what turns a filled
+   pie into a ring; both spellings, because one engine still wants the
+   prefixed one. */
+.oa-bigbutton-ring {
+  --hold: 0;
   position: absolute;
-  inset: 0 auto 0 0;
-  width: 0%;
-  background: rgba(0, 0, 0, 0.24);
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    var(--cap-lit) calc(var(--hold) * 360deg),
+    transparent 0);
+  -webkit-mask: radial-gradient(closest-side, transparent 88%, #000 89%);
+  mask: radial-gradient(closest-side, transparent 88%, #000 89%);
   pointer-events: none;
 }
 
-.oa-hold-label {
+/* The cap. A dome rather than a disc: the highlight sits above the middle,
+   which is where a light source would put it on something convex. */
+.oa-bigbutton-cap {
   position: relative;
+  width: 118px;
+  height: 118px;
+  border: none;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 32%,
+      var(--cap-lit) 0%,
+      var(--cap) 40%,
+      color-mix(in srgb, var(--cap) 82%, black) 76%,
+      color-mix(in srgb, var(--cap) 58%, black) 100%);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  /* The stack that makes it stand up: a rim of its own darker colour, the
+     shadow it casts on the plate, and a highlight along the top edge. */
+  box-shadow:
+    0 8px 0 var(--cap-rim),
+    0 14px 20px -8px rgba(0, 0, 0, 0.55),
+    inset 0 2px 1px rgba(255, 255, 255, 0.34);
+  transition: box-shadow 0.09s cubic-bezier(0.2, 0, 0, 1);
 }
 
-.oa-hold:focus-visible {
+.oa-bigbutton-cap:hover {
+  background:
+    radial-gradient(circle at 50% 32%,
+      color-mix(in srgb, var(--cap-lit) 88%, white) 0%,
+      color-mix(in srgb, var(--cap) 92%, white) 40%,
+      color-mix(in srgb, var(--cap) 88%, black) 76%,
+      color-mix(in srgb, var(--cap) 62%, black) 100%);
+}
+
+.oa-bigbutton-cap:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  box-shadow:
+    0 8px 0 var(--cap-rim),
+    0 14px 20px -8px rgba(0, 0, 0, 0.55),
+    inset 0 2px 1px rgba(255, 255, 255, 0.34),
+    0 0 0 4px var(--ai-focus-shadow);
 }
 
-.oa-hold-note {
-  margin-top: 8px;
-  text-align: center;
+/* Down. The rim collapses to almost nothing and the cap travels the distance
+   the rim used to hold it up, so the two read as one movement. */
+.oa-bigbutton.holding .oa-bigbutton-stack {
+  transform: translateY(6px);
+}
+
+.oa-bigbutton.holding .oa-bigbutton-cap {
+  box-shadow:
+    0 1px 0 var(--cap-rim),
+    0 3px 8px -6px rgba(0, 0, 0, 0.55),
+    inset 0 3px 8px rgba(0, 0, 0, 0.32);
+}
+
+.oa-bigbutton.holding .oa-bigbutton-base {
+  box-shadow:
+    inset 0 3px 10px rgba(0, 0, 0, 0.46),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* It happened. One flash on the plate, so the moment has a mark of its own
+   rather than being the absence of a press. */
+.oa-bigbutton.fired .oa-bigbutton-base {
+  animation: bigbuttonFired 0.42s ease-out;
+}
+
+@keyframes bigbuttonFired {
+  0% {
+    box-shadow:
+      inset 0 2px 6px rgba(0, 0, 0, 0.34),
+      0 0 0 0 color-mix(in srgb, var(--cap) 55%, transparent);
+  }
+  100% {
+    box-shadow:
+      inset 0 2px 6px rgba(0, 0, 0, 0.34),
+      0 0 0 26px transparent;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .oa-hold {
+  .oa-bigbutton-cap {
     transition: none;
   }
+  .oa-bigbutton.fired .oa-bigbutton-base {
+    animation: none;
+  }
+}
+
+
+/* The line under it. Centred, because the button is. */
+.oa-hold-note {
+  margin-top: 10px;
+  text-align: center;
 }
 

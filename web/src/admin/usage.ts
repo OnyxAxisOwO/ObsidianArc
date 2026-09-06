@@ -138,12 +138,34 @@ async function openReset(view: AdminView): Promise<void> {
 function holdButton(label: string, holdingLabel: string, done: () => void): HTMLElement {
   const HOLD_MS = 1200;
 
-  const node = el('button', 'oa-hold');
-  node.type = 'button';
-  const fill = el('span', 'oa-hold-fill');
-  const text = el('span', 'oa-hold-label', label);
-  node.appendChild(fill);
-  node.appendChild(text);
+  // A real button on a plate, rather than a pill that happens to be red.
+  //
+  // This is the one control in the interface that empties a number for
+  // everybody at once, and the rest of the language here — flat fills, no
+  // outlines, nothing skeuomorphic — is right for controls somebody uses all
+  // day and wrong for this one. A thing you press and hold should look like a
+  // thing you press and hold, and should be obviously not the button you
+  // meant to click on the way past.
+  const wrap = el('div', 'oa-bigbutton');
+  const base = el('div', 'oa-bigbutton-base');
+  // The hold, drawn as a ring closing around the cap. A conic gradient with a
+  // radial mask rather than an SVG arc: one custom property to update per
+  // frame, and no second element to keep in sync with the first.
+  const ring = el('div', 'oa-bigbutton-ring');
+
+  const cap = el('button', 'oa-bigbutton-cap');
+  cap.type = 'button';
+  const text = el('span', 'oa-bigbutton-label', label);
+  cap.appendChild(text);
+
+  // Ring and cap in one layer, so the press moves both and the two stay
+  // concentric. Moving the cap alone put it four pixels above the ring at
+  // rest and five below it while held — the gap read as a badly drawn circle.
+  const stack = el('div', 'oa-bigbutton-stack');
+  stack.appendChild(ring);
+  stack.appendChild(cap);
+  base.appendChild(stack);
+  wrap.appendChild(base);
 
   let timer = 0;
   let started = 0;
@@ -151,7 +173,7 @@ function holdButton(label: string, holdingLabel: string, done: () => void): HTML
 
   const paint = () => {
     const ratio = Math.min(1, (Date.now() - started) / HOLD_MS);
-    fill.style.width = `${Math.round(ratio * 100)}%`;
+    ring.style.setProperty('--hold', String(ratio));
     if (ratio < 1) frame = requestAnimationFrame(paint);
   };
 
@@ -159,8 +181,8 @@ function holdButton(label: string, holdingLabel: string, done: () => void): HTML
     window.clearTimeout(timer);
     cancelAnimationFrame(frame);
     timer = 0;
-    node.classList.remove('holding');
-    fill.style.width = '0%';
+    wrap.classList.remove('holding');
+    ring.style.setProperty('--hold', '0');
     text.textContent = label;
   };
 
@@ -168,29 +190,34 @@ function holdButton(label: string, holdingLabel: string, done: () => void): HTML
     event.preventDefault();
     if (timer) return;
     started = Date.now();
-    node.classList.add('holding');
+    wrap.classList.add('holding');
     text.textContent = holdingLabel;
     frame = requestAnimationFrame(paint);
     timer = window.setTimeout(() => {
       stop();
+      // The cap comes back up and the plate flashes once, so the moment the
+      // thing actually happened has a mark of its own rather than being the
+      // absence of a press.
+      wrap.classList.add('fired');
+      window.setTimeout(() => wrap.classList.remove('fired'), 420);
       done();
     }, HOLD_MS);
   };
 
-  node.addEventListener('pointerdown', begin);
-  node.addEventListener('pointerup', stop);
-  node.addEventListener('pointerleave', stop);
-  node.addEventListener('pointercancel', stop);
+  cap.addEventListener('pointerdown', begin);
+  cap.addEventListener('pointerup', stop);
+  cap.addEventListener('pointerleave', stop);
+  cap.addEventListener('pointercancel', stop);
   // The keyboard has no press-and-hold, so it gets the same delay from the
   // key going down to the key coming up rather than being locked out of the
   // one action on the screen.
-  node.addEventListener('keydown', (event) => {
+  cap.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ' ') begin(event);
   });
-  node.addEventListener('keyup', stop);
-  node.addEventListener('blur', stop);
+  cap.addEventListener('keyup', stop);
+  cap.addEventListener('blur', stop);
 
-  return node;
+  return wrap;
 }
 
 export async function renderUsage(view: AdminView): Promise<void> {
