@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
@@ -184,6 +186,37 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 			}
 			if remaining == 0 {
 				return errLastAdmin
+			}
+		}
+
+		// An address an administrator typed is not one its owner proved. The
+		// owner's own form withdraws the confirmation and drops whatever links
+		// are outstanding when the address moves; this one reaches the store
+		// directly and used to do neither, so an administrator could hand any
+		// account a confirmed address it had never seen, and a link issued for
+		// the address being left stayed open behind it.
+		//
+		// Folded the same way the store folds it — see the note in
+		// auth.Service.UpdateProfile about why EqualFold is the wrong
+		// alphabet for this comparison.
+		//
+		// No allowlist check: an administrator setting an address is a
+		// deliberate act rather than a claim, and no new link is posted
+		// either. The account asks for one itself, through the resend button
+		// and its throttle.
+		if body.Email != nil &&
+			strings.ToLower(strings.TrimSpace(*body.Email)) != strings.ToLower(target.Email) {
+			// Nothing to confirm and nothing to hold back when there is no
+			// address, which is the rule user.Store.Create keeps.
+			confirmed := strings.TrimSpace(*body.Email) == "" || !h.auth.VerificationRequired()
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
+				confirmed, time.Now().UnixMilli(), userID); err != nil {
+				return httpx.Internal(err)
+			}
+			if _, err := tx.Exec(r.Context(),
+				`DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
+				return httpx.Internal(err)
 			}
 		}
 

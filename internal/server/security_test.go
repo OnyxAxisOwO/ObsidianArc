@@ -31,7 +31,9 @@ type instance struct {
 	handler http.Handler
 }
 
-func newInstance(t *testing.T) *instance {
+// tweak lets one test ask for an instance that differs in a single respect —
+// mail configured, say — without every other test paying for it.
+func newInstance(t *testing.T, tweak ...func(*config.Config)) *instance {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -49,6 +51,10 @@ func newInstance(t *testing.T) *instance {
 		Password:  config.Password{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32, MaxParallel: 4},
 		Upstream:  config.Upstream{DialTimeout: time.Second, ResponseHeaderTimeout: 2 * time.Second, MaxIdleConns: 2, IdleConnTimeout: time.Second},
 		SecretKey: []byte("a-test-instance-secret-value-here"),
+	}
+
+	for _, apply := range tweak {
+		apply(&cfg)
 	}
 
 	ctx := context.Background()

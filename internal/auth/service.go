@@ -289,9 +289,16 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 		moved := false
 		if in.Email != nil {
 			address = strings.TrimSpace(*in.Email)
-			// Case is not a move: email_lower is the identity both the login
-			// query and the uniqueness index work in.
-			moved = !strings.EqualFold(address, current.Email)
+			// Folded the same way the store folds it, which is not the same
+			// way EqualFold does. EqualFold applies Unicode simple case
+			// folding: it reads "boſs@example.com" and "boss@example.com" as
+			// one address, because U+017F folds to 's'. ToLower does not touch
+			// U+017F, so the store would have written a different email_lower
+			// — a different identity, since that column is what login and the
+			// uniqueness index read — while this decided nothing had moved and
+			// skipped the allowlist, the withdrawal and the outstanding links.
+			// The comparison has to be in the same alphabet as the write.
+			moved = strings.ToLower(address) != strings.ToLower(current.Email)
 		}
 		// Only when it moves. An operator who narrows the allowlist after
 		// accounts exist has not asked for those accounts to be frozen out
@@ -310,22 +317,72 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 
 		if moved {
 			// Whatever is outstanding was issued for the address being left
-			// behind, and Verify writes the address on the row: opening an
-			// old link would put the previous address back and mark it
-			// confirmed. issueVerification drops them too, so this is the
-			// branch where no new link supersedes them.
-			if s.VerificationRequired() {
+			// behind. Verify no longer writes an address, so an old link can
+			// only fail to match — but it is still a link to somewhere this
+			// account has been, and there is no reason to leave it open.
+			confirmed := address == "" || !s.VerificationRequired()
+			if confirmed {
+				// An account with no address has nothing to confirm and
+				// nothing to hold back — the rule registration keeps in
+				// user.Store.Create, and the one this branch used to break:
+				// clearing the address marked the account unconfirmed, issued
+				// a link for the empty string, tried to post it there, and
+				// then refused the resend because there was no address, so the
+				// owner was shut out of sending anything until they typed one
+				// back in.
+				if _, err := tx.Exec(ctx,
+					`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
+					true, time.Now().UnixMilli(), userID); err != nil {
+					return fmt.Errorf("auth: settle confirmation: %w", err)
+				}
+				if _, err := tx.Exec(ctx,
+					`DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
+					return fmt.Errorf("auth: clear verifications: %w", err)
+				}
+			} else {
+				// One posted link every couple of minutes, counted the same way
+				// and for the same reason as the resend button: without it this
+				// form is a way to have the server post mail to a stranger as
+				// fast as requests can be made, and the default allowlist is
+				// empty, so the stranger can be anyone.
+				//
+				// The limit is on the sending, not on the move. Registration
+				// posts a link of its own, so refusing the change instead would
+				// mean nobody could correct an address they had just mistyped
+				// into the sign-up form.
+				var issuedAt int64
+				throttled := false
+				switch err := tx.QueryRow(ctx,
+					`SELECT created_at FROM email_verifications WHERE user_id = ?`, userID).
+					Scan(&issuedAt); {
+				case err == nil:
+					throttled = time.Since(time.UnixMilli(issuedAt)) < maxOutstandingResend
+				case !database.IsNotFound(err):
+					return fmt.Errorf("auth: read verification: %w", err)
+				}
+
 				if _, err := tx.Exec(ctx,
 					`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
 					false, time.Now().UnixMilli(), userID); err != nil {
 					return fmt.Errorf("auth: withdraw confirmation: %w", err)
 				}
-				if verification, err = s.issueVerification(ctx, tx, userID, address); err != nil {
+				token, err := s.issueVerification(ctx, tx, userID, address)
+				if err != nil {
 					return err
 				}
-			} else if _, err := tx.Exec(ctx,
-				`DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
-				return fmt.Errorf("auth: clear verifications: %w", err)
+				if throttled {
+					// The new link is the only valid one, so it is written
+					// either way — but it keeps the clock the one before it
+					// started, or moving address would be a way to reset the
+					// resend limit and post again immediately.
+					if _, err := tx.Exec(ctx,
+						`UPDATE email_verifications SET created_at = ? WHERE user_id = ?`,
+						issuedAt, userID); err != nil {
+						return fmt.Errorf("auth: hold the resend window: %w", err)
+					}
+				} else {
+					verification = token
+				}
 			}
 		}
 
