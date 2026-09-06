@@ -146,6 +146,11 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"turnstile_site_key":   h.turnstileSiteKey(count == 0),
 		"turnstile_on_signup":  count > 0 && h.settings.Bool(settings.TurnstileOnSignup),
 		"turnstile_on_api_key": h.settings.Bool(settings.TurnstileOnAPIKey),
+		// So the sign-up button can say what it is waiting for. A review
+		// takes seconds, and a button that only says "creating account" for
+		// that long reads as a form that has hung.
+		"signup_review": count > 0 && h.settings.Bool(settings.SignupReview) &&
+			h.settings.Get(settings.SignupReviewModel) != "",
 		// What a visitor with no account gets. Served here rather than
 		// from a second endpoint because the front door has to decide what
 		// to draw before it can draw anything.
@@ -289,7 +294,7 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 		UA:        r.UserAgent(),
 	})
 	if err != nil {
-		return registrationError(err)
+		return h.registrationError(err)
 	}
 
 	h.service.SetCookie(w, token)
@@ -521,7 +526,7 @@ func (h *Handlers) deleteWallpaper(w http.ResponseWriter, r *http.Request) error
 
 // --- error translation ------------------------------------------------------
 
-func registrationError(err error) error {
+func (h *Handlers) registrationError(err error) error {
 	// Coded, so the sign-up form can word these in the reader's own
 	// language and say what would be acceptable.
 	var throttled *SignupThrottleError
@@ -543,6 +548,12 @@ func registrationError(err error) error {
 		// tell an outage at Cloudflare from a wave of bots.
 		return httpx.UnavailableCode("challenge_unavailable",
 			"Verification is unavailable right now. Try again shortly.")
+	case errors.Is(err, ErrSignupRefused):
+		// The operator's own words travel in the details, because the client
+		// falls back to its own sentence when they have not written any and
+		// a server string would be English on a Chinese screen.
+		return httpx.ForbiddenCode("signup_refused", "This registration was not accepted.").
+			WithDetails(map[string]any{"notice": h.settings.Get(settings.SignupReviewRefusal)})
 	case errors.Is(err, ErrSignupIPBlocked):
 		// A code rather than a sentence, because the client says this one in
 		// the reader's own language. Deliberately says nothing about the

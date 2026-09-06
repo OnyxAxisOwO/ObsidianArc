@@ -51,10 +51,19 @@ const (
 	// Cloudflare Turnstile. The site key is public — it is in the page's
 	// markup — and the secret is write-only: it is redacted out of every
 	// response, the way a provider's API key is.
-	TurnstileSiteKey     = "turnstile.site_key"
-	TurnstileSecretKey   = "turnstile.secret_key"
-	TurnstileOnSignup    = "turnstile.on_signup"
-	TurnstileOnAPIKey    = "turnstile.on_api_key"
+	TurnstileSiteKey   = "turnstile.site_key"
+	TurnstileSecretKey = "turnstile.secret_key"
+	TurnstileOnSignup  = "turnstile.on_signup"
+	TurnstileOnAPIKey  = "turnstile.on_api_key"
+
+	// Asking a model whether a sign-up looks like a person. The prompt is not
+	// a setting: one that could be edited could be turned into "refuse
+	// everybody from this domain", and this runs before an account exists,
+	// where a mistake has no appeal. What an operator chooses is whether it
+	// runs, which model answers, and what a refusal says.
+	SignupReview         = "security.signup_review"
+	SignupReviewModel    = "security.signup_review_model"
+	SignupReviewRefusal  = "security.signup_review_refusal"
 	AdminsBypassQuota    = "quota.admins_bypass"
 	UsageDisplay         = "quota.usage_display"
 	LandingMode          = "landing.mode"
@@ -197,8 +206,14 @@ var Defaults = map[string]string{
 	// is configuring, not yet switching on, and a challenge that appeared the
 	// moment a key was saved would lock out the half-finished setup it was
 	// saved during.
-	TurnstileOnSignup:    "false",
-	TurnstileOnAPIKey:    "false",
+	TurnstileOnSignup: "false",
+	TurnstileOnAPIKey: "false",
+	SignupReview:      "false",
+	SignupReviewModel: "",
+	// What a refused person reads. Empty means the sentence built into the
+	// client, which says only that the sign-up was not accepted — an operator
+	// who wants to offer a way to appeal writes it here.
+	SignupReviewRefusal:  "",
 	AdminsBypassQuota:    "true",
 	UsageDisplay:         UsageAbsolute,
 	LandingMode:          LandingLogin,

@@ -27,6 +27,7 @@ import { renderProviders } from './providers';
 import { renderSettings } from './settings';
 import { renderLogs } from './logs';
 import { renderResources } from './resources';
+import { renderSecurity } from './security';
 import { renderUsage } from './usage';
 import { renderUsers } from './users';
 
@@ -64,6 +65,7 @@ const PAGES: AdminPage[] = [
   { slug: 'resources', label: 'navResources', icon: ICONS.pulse, render: renderResources },
   { slug: 'codes', label: 'navCodes', icon: ICONS.key, render: renderCodes },
   { slug: 'logs', label: 'navLogs', icon: ICONS.file, render: renderLogs },
+  { slug: 'security', label: 'navSecurity', icon: ICONS.lock, render: renderSecurity },
   { slug: 'settings', label: 'navSettings', icon: ICONS.sliders, render: renderSettings },
   { slug: 'announcements', label: 'announcements', icon: ICONS.file, render: renderAnnouncements },
 ];

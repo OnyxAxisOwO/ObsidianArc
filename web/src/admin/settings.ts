@@ -72,21 +72,6 @@ export async function renderSettings(view: AdminView): Promise<void> {
     hint: t('homeNoticeDismissibleHint'),
   });
 
-  const registration = switchField({
-    label: t('anyoneCanRegister'),
-    value: values['registration.enabled'] === 'true',
-    hint: t('anyoneCanRegisterHint'),
-  });
-
-  const defaultGroup = selectField({
-    label: t('newAccountsJoin'),
-    value: values['registration.default_group'] ?? '',
-    options: [
-      { value: '', label: t('theDefaultGroup') },
-      ...data.groups.map((group) => ({ value: group.id, label: group.name })),
-    ],
-  });
-
   const adminBypass = switchField({
     label: t('adminsIgnoreLimits'),
     value: values['quota.admins_bypass'] === 'true',
@@ -102,56 +87,6 @@ export async function renderSettings(view: AdminView): Promise<void> {
       { value: 'remaining', label: t('usageDisplayRemaining') },
       { value: 'used', label: t('usageDisplayUsed') },
     ],
-  });
-
-  const requireEmail = switchField({
-    label: t('requireEmail'),
-    value: values['registration.require_email'] === 'true',
-    hint: t('requireEmailHint'),
-  });
-
-  const verifyEmail = switchField({
-    label: t('verifyEmail'),
-    value: values['registration.verify_email'] === 'true',
-    hint: data.mail_configured ? t('verifyEmailHint') : t('verifyEmailNoMail'),
-  });
-  // Offered but inert without SMTP, and the hint above says so. The
-  // server ignores it in that state too, so an operator cannot lock
-  // every new account out of an instance that cannot send the link.
-  verifyEmail.element.classList.toggle('oa-field-inert', !data.mail_configured);
-
-  const emailDomains = textArea({
-    label: t('emailDomains'),
-    value: values['registration.email_domains'] ?? '',
-    rows: 2,
-    placeholder: t('emailDomainsPlaceholder'),
-    hint: t('emailDomainsHint'),
-  });
-
-  const qqRequirement = selectField({
-    label: t('qqRequirement'),
-    value: values['registration.qq_requirement'] ?? 'off',
-    hint: t('qqRequirementHint'),
-    options: [
-      { value: 'off', label: t('qqRequirementOff') },
-      { value: 'optional', label: t('qqRequirementOptional') },
-      { value: 'required', label: t('qqRequirementRequired') },
-    ],
-  });
-
-  const perMinute = numberField({
-    label: t('signupsPerMinute'),
-    value: Number(values['registration.per_minute'] ?? 0),
-    min: 0,
-    max: 1000,
-  });
-
-  const perHour = numberField({
-    label: t('signupsPerHour'),
-    value: Number(values['registration.per_hour'] ?? 0),
-    min: 0,
-    max: 10000,
-    hint: t('signupThrottleHint'),
   });
 
   const landingMode = selectField({
@@ -248,44 +183,6 @@ export async function renderSettings(view: AdminView): Promise<void> {
     min: 0,
     max: 100,
     hint: t('healthWarnBelowHint'),
-  });
-
-  const signupsPerIP = numberField({
-    label: t('signupsPerIP'),
-    value: Number(values['registration.per_ip'] ?? 0),
-    min: 0,
-    hint: t('signupsPerIPHint'),
-  });
-  const signupsIPWindow = numberField({
-    label: t('signupsIPWindow'),
-    value: Number(values['registration.per_ip_window_minutes'] ?? 60),
-    min: 1,
-    hint: t('signupsIPWindowHint'),
-  });
-
-  const turnstileSiteKey = textField({
-    label: t('turnstileSiteKey'),
-    value: values['turnstile.site_key'] ?? '',
-    placeholder: '0x4AAAAAAA…',
-    hint: t('turnstileSiteKeyHint'),
-    monospace: true,
-  });
-  const turnstileSecret = textField({
-    label: t('turnstileSecretKey'),
-    value: '',
-    placeholder: values['turnstile.secret_key'] ? values['turnstile.secret_key'] : '0x4AAAAAAA…',
-    hint: t('turnstileSecretHint'),
-    monospace: true,
-  });
-  const turnstileOnSignup = switchField({
-    label: t('turnstileOnSignup'),
-    value: values['turnstile.on_signup'] === 'true',
-    hint: t('turnstileOnSignupHint'),
-  });
-  const turnstileOnAPIKey = switchField({
-    label: t('turnstileOnAPIKey'),
-    value: values['turnstile.on_api_key'] === 'true',
-    hint: t('turnstileOnAPIKeyHint'),
   });
 
   const attachmentMaxMB = numberField({
@@ -398,26 +295,6 @@ export async function renderSettings(view: AdminView): Promise<void> {
   form.appendChild(homeNotice.element);
   form.appendChild(homeNoticeDismissible.element);
 
-  form.appendChild(section(t('secAccounts')));
-  form.appendChild(registration.element);
-  form.appendChild(defaultGroup.element);
-
-  form.appendChild(section(t('secRegistration')));
-  form.appendChild(requireEmail.element);
-  form.appendChild(verifyEmail.element);
-  form.appendChild(emailDomains.element);
-  form.appendChild(qqRequirement.element);
-  form.appendChild(perMinute.element);
-  form.appendChild(perHour.element);
-  form.appendChild(signupsPerIP.element);
-  form.appendChild(signupsIPWindow.element);
-
-  form.appendChild(section(t('secTurnstile'), t('turnstileHint')));
-  form.appendChild(turnstileSiteKey.element);
-  form.appendChild(turnstileSecret.element);
-  form.appendChild(turnstileOnSignup.element);
-  form.appendChild(turnstileOnAPIKey.element);
-
   form.appendChild(section(t('secLanding')));
   form.appendChild(landingMode.element);
   form.appendChild(landingIntro.element);
@@ -482,14 +359,6 @@ export async function renderSettings(view: AdminView): Promise<void> {
       'about.body': aboutText.value(),
       'home.notice': homeNotice.value(),
       'home.notice_dismissible': String(homeNoticeDismissible.value()),
-      'registration.enabled': String(registration.value()),
-      'registration.default_group': defaultGroup.value(),
-      'registration.require_email': String(requireEmail.value()),
-      'registration.verify_email': String(verifyEmail.value()),
-      'registration.email_domains': emailDomains.value(),
-      'registration.qq_requirement': qqRequirement.value(),
-      'registration.per_minute': String(perMinute.value() ?? 0),
-      'registration.per_hour': String(perHour.value() ?? 0),
       'landing.mode': landingMode.value(),
       'landing.intro': landingIntro.value(),
       'landing.trial_enabled': String(trialEnabled.value()),
@@ -500,14 +369,8 @@ export async function renderSettings(view: AdminView): Promise<void> {
       'chat.default_system_prompt': systemPrompt.value(),
       'chat.max_turns': String(maxTurns.value() ?? 40),
       'api.enabled': String(apiEnabled.value()),
-      'turnstile.site_key': turnstileSiteKey.value(),
       // Empty keeps what is stored: the field was never shown the secret, so
       // sending its emptiness back would erase it.
-      'turnstile.secret_key': turnstileSecret.value(),
-      'turnstile.on_signup': String(turnstileOnSignup.value()),
-      'turnstile.on_api_key': String(turnstileOnAPIKey.value()),
-      'registration.per_ip': String(signupsPerIP.value() ?? 0),
-      'registration.per_ip_window_minutes': String(signupsIPWindow.value() ?? 60),
       'attachments.max_mb': String(attachmentMaxMB.value() ?? 6),
       'attachments.retain': String(attachmentRetain.value()),
       'attachments.purge_after_days': String(purgeAfterDays.value() ?? 0),

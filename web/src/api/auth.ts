@@ -60,6 +60,8 @@ export interface SiteInfo {
   turnstile_site_key?: string;
   turnstile_on_signup?: boolean;
   turnstile_on_api_key?: boolean;
+  /** Whether a model reads each sign-up, so the button can say it is happening. */
+  signup_review?: boolean;
   // Whether a new account has to confirm its address before it can
   // send anything. False whenever the server cannot post mail,
   // whatever the setting says.

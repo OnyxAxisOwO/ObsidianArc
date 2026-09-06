@@ -19,10 +19,13 @@ import (
 )
 
 var (
-	ErrInvalidCredentials   = errors.New("auth: incorrect username or password")
-	ErrAccountDisabled      = errors.New("auth: this account has been disabled")
-	ErrRegistrationClosed   = errors.New("auth: registration is closed on this server")
-	ErrSignupIPBlocked      = errors.New("auth: too many accounts have been created from this address")
+	ErrInvalidCredentials = errors.New("auth: incorrect username or password")
+	ErrAccountDisabled    = errors.New("auth: this account has been disabled")
+	ErrRegistrationClosed = errors.New("auth: registration is closed on this server")
+	ErrSignupIPBlocked    = errors.New("auth: too many accounts have been created from this address")
+	// The review said no. The words a visitor sees are the operator's, set in
+	// the security screen; this only carries the fact.
+	ErrSignupRefused        = errors.New("auth: this registration was not accepted")
 	ErrEmailRequired        = errors.New("auth: an email address is required to register here")
 	ErrPasswordUnchanged    = errors.New("auth: the new password is the same as the current one")
 	ErrCurrentPasswordWrong = errors.New("auth: current password is incorrect")
@@ -42,6 +45,13 @@ type Service struct {
 	// zero value is off, so a build that never wires it up simply has no
 	// challenge rather than a broken one.
 	Challenge turnstile.Gate
+	// Asks a model whether a sign-up looks like a person. Nil is off.
+	//
+	// A function rather than the reviewer itself: the review needs a model,
+	// a provider and an adapter registry, and auth has no business knowing
+	// about any of them. It returns an error only to be refused — anything
+	// that went wrong on the way is the wiring's to log and to allow.
+	ReviewSignup func(ctx context.Context, in RegisterInput, fromAddress int) error
 	// Optional. Nil, or configured with no host, means every feature
 	// that needs mail reports itself as unavailable rather than
 	// failing halfway through.
@@ -151,6 +161,19 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	if total > 0 {
 		if err := s.Challenge.Check(ctx, in.Turnstile, in.IP); err != nil {
 			return user.User{}, "", err
+		}
+
+		// Last of the gates and outside the transaction, for the same two
+		// reasons: it is a call to a provider, and it is the slowest thing
+		// here. Everything cheap has already had its chance to refuse.
+		if s.ReviewSignup != nil {
+			seen, err := s.countRecentFromIP(ctx, in.IP)
+			if err != nil {
+				return user.User{}, "", err
+			}
+			if err := s.ReviewSignup(ctx, in, seen); err != nil {
+				return user.User{}, "", err
+			}
 		}
 	}
 
@@ -697,4 +720,17 @@ func (s *Service) checkSignupIP(ctx context.Context, q database.Queryer, ip stri
 		return ErrSignupIPBlocked
 	}
 	return nil
+}
+
+// countRecentFromIP is the one piece of context the reviewer cannot see in
+// the request: how many accounts this address has already made. The window is
+// the operator's per-address one, or an hour where they have not set one —
+// the number is context for a judgement, not a limit being enforced.
+func (s *Service) countRecentFromIP(ctx context.Context, ip string) (int, error) {
+	minutes := s.settings.Int(settings.SignupsIPWindowMin, 60)
+	if minutes <= 0 {
+		minutes = 60
+	}
+	since := time.Now().Add(-time.Duration(minutes) * time.Minute).UnixMilli()
+	return s.users.CountFromIP(ctx, nil, ip, since)
 }

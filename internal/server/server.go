@@ -35,6 +35,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/screening"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/trial"
@@ -333,6 +334,54 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Client:  challengeClient,
 		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnSignup) },
 		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
+	}
+
+	// Asking a model whether a sign-up looks like a person.
+	//
+	// Everything that can go wrong here lets the registration through: a
+	// model that was deleted, a provider that is down, an answer that will
+	// not parse. Refusing everybody because an upstream hiccuped turns a spam
+	// filter into an outage of the front door.
+	reviewer := screening.Reviewer{
+		Registry: registry,
+		Resolve: func(ctx context.Context) (adapter.Provider, adapter.ModelSpec, error) {
+			record, err := models.ByID(ctx, settingsService.Get(settings.SignupReviewModel))
+			if err != nil {
+				return adapter.Provider{}, adapter.ModelSpec{}, err
+			}
+			upstream, err := providers.Resolve(ctx, record.ProviderID)
+			if err != nil {
+				return adapter.Provider{}, adapter.ModelSpec{}, err
+			}
+			return upstream, record.Spec(), nil
+		},
+	}
+	authService.ReviewSignup = func(ctx context.Context, in auth.RegisterInput, fromAddress int) error {
+		if !settingsService.Bool(settings.SignupReview) ||
+			settingsService.Get(settings.SignupReviewModel) == "" {
+			return nil
+		}
+
+		verdict, err := reviewer.Review(ctx, screening.Facts{
+			Username: in.Username, Email: in.Email, QQ: in.QQ, Nickname: in.Nickname,
+			IP: in.IP, UserAgent: in.UA, FromThisAddress: fromAddress,
+		})
+		if err != nil {
+			// Logged, not returned: an operator needs to know their reviewer
+			// is broken, and the person registering must not pay for it.
+			slog.WarnContext(ctx, "signup review unavailable, allowing",
+				"username", in.Username, "error", err)
+			return nil
+		}
+		if verdict.Allow {
+			return nil
+		}
+		// The model's own words go here and nowhere else. What the visitor
+		// sees is the operator's message: a model's reasoning about somebody
+		// is not a thing to hand them.
+		slog.InfoContext(ctx, "signup refused by review",
+			"username", in.Username, "ip", in.IP, "reason", verdict.Reason)
+		return auth.ErrSignupRefused
 	}
 
 	apiKeyHandlers := apikey.NewHandlers(keys)

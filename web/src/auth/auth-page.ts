@@ -182,6 +182,11 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
     submit.dataset['busy'] = 'true';
     submit.disabled = true;
     submit.textContent = registering ? t('creatingAccount') : t('signingIn');
+    // A review takes seconds. Saying so beats a button that sits on
+    // "creating account" long enough to read as a form that has hung.
+    const reviewNote = registering && site.signup_review
+      ? window.setTimeout(() => { submit.textContent = t('signupReviewing'); }, 900)
+      : 0;
     errorLine.hidden = true;
 
     try {
@@ -198,7 +203,9 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
       adopt(result.user);
       navigate('/', { replace: true });
       guard?.reset();
+      window.clearTimeout(reviewNote);
     } catch (error) {
+      window.clearTimeout(reviewNote);
       // A token is good for one submission, so a refusal for any reason —
       // a taken username as much as a failed challenge — leaves a spent
       // token behind that would fail the next attempt on its own.
@@ -222,6 +229,12 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
         return t('accountBanned');
       case 'signup_ip_blocked':
         return t('signupBlocked');
+      case 'signup_refused': {
+        // The operator's own words when they wrote any — a way to appeal is
+        // the whole reason to write them — and a plain sentence otherwise.
+        const notice = error.details['notice'];
+        return typeof notice === 'string' && notice.trim() ? notice : t('signupRefused');
+      }
       case 'challenge_failed':
         return t('challengeFailed');
       case 'challenge_unavailable':
