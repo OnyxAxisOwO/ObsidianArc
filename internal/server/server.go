@@ -315,6 +315,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
 			skipFromLog,
 		),
+		// Inside the log, so the byte count it records is what actually went
+		// on the wire rather than what the handler produced. Outside
+		// everything that writes a body, so there is one place that decides.
+		httpx.Compress(),
 		httpx.SecurityHeaders(cfg.Dev, web.InlineScriptHashes()),
 		httpx.SameOrigin(cfg.AllowedOrigins),
 		// Last, so the session lookup only happens for requests that survived

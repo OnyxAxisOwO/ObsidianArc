@@ -206,7 +206,7 @@ Frontend runtime dependencies: **zero**. Build dependencies: `vite`,
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 16.9 MB (13.3 MB `-tags nosqlite`) |
-| Frontend bundle | < 80 kB gzipped | 58.7 kB to open the chat (46.7 JS + 12.1 CSS) |
+| Frontend, on the wire | < 80 kB | 59.5 kB to open the chat (46.8 JS + 12.7 CSS) |
 | Background goroutines at idle | 1 | 1 |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
@@ -227,12 +227,13 @@ The stylesheet is not split: `admin.css` carries the shared design system —
 panels, fields, tables, the About screen — and separating the part that is
 genuinely admin-only is a different, more careful job.
 
-These are gzipped sizes, and **the server does not gzip**. Behind no reverse
-proxy — which is the deployment this document assumes — the transfer is the
-uncompressed 136 kB of JavaScript and 70 kB of CSS. Compressing at the origin
-would be worth more than every split above put together, and it needs one
-piece of care rather than a library: the event stream must be left alone, or
-the compressor buffers a streamed answer into silence.
+These are transferred sizes. The server compresses its own responses, because
+the deployment this document assumes has nothing in front of it to do that
+instead: 136 kB of JavaScript leaves as 47, and 70 kB of CSS as 13. The
+allowlist in `httpx.Compress` is what keeps the event stream out of it — a
+streamed answer pushed through a compressor arrives when the buffer fills
+rather than when the model produced a word, and nothing in any log would say
+so.
 
 Connection pools: SQLite 4, Postgres 10. Neither is a bottleneck at this
 scale — a turn spends its time waiting on a provider, not on the database.
