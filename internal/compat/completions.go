@@ -324,7 +324,7 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 	// a specific persona is being explicit about it.
 	prompt := system.String()
 	if prompt == "" {
-		prompt = h.settings.Get(settings.DefaultSystemPrompt)
+		prompt = resolved.Model.Prompt(h.settings.Get(settings.DefaultSystemPrompt))
 	}
 
 	// Upstream, not Model — this is the request leaving the server, and it is

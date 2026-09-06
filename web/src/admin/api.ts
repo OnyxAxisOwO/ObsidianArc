@@ -74,6 +74,8 @@ export interface AdminModel {
   provider_kind: ProviderKind;
   model_id: string;
   api_name: string;
+  system_prompt: string;
+  auto_disabled: boolean;
   display_name: string;
   description: string;
   avatar: string;
@@ -293,10 +295,39 @@ export interface Resources {
   sampled_at: number;
 }
 
+/** One model's liveness, as the backoffice reads it. */
+export interface ModelHealth {
+  model_id: string;
+  name: string;
+  provider: string;
+  enabled: boolean;
+  /** True when the system turned it off, which is the only kind it turns on. */
+  auto_disabled: boolean;
+  status: {
+    state: 'up' | 'down' | 'unknown';
+    uptime: number;
+    samples: number;
+    user_samples: number;
+    system_samples: number;
+    failures_in_a_row: number;
+    last_ok_at: number;
+    last_error_at: number;
+    last_code: string;
+    last_message: string;
+    errors: Array<{ code: string; message: string; count: number; last_at: number }>;
+  };
+}
+
 export const adminApi = {
   dashboard: (metric: UsageMetric = 'credits') =>
     api.get<Dashboard>(`/api/admin/dashboard?metric=${metric}`),
   meta: () => api.get<Meta>('/api/admin/meta'),
+  health: (hours = 24) =>
+    api.get<{
+      hours: number;
+      models: ModelHealth[];
+      policy: { probe: boolean; window_mins: number; disable_after: number };
+    }>(`/api/admin/health?hours=${hours}`),
   resources: () => api.get<Resources>('/api/admin/resources'),
 
   users: (query: string) => api.get<{ users: Account[]; total: number }>(`/api/admin/users${query}`),

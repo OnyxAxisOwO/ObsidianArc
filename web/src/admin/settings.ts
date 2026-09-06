@@ -206,6 +206,30 @@ export async function renderSettings(view: AdminView): Promise<void> {
     hint: t('instanceSystemPromptHint'),
   });
 
+  const healthProbe = switchField({
+    label: t('healthProbe'),
+    value: values['health.probe'] !== 'false',
+    hint: t('healthProbeHint'),
+  });
+  const healthWindow = numberField({
+    label: t('healthWindow'),
+    value: Number(values['health.window_minutes'] ?? 30),
+    min: 1,
+    hint: t('healthWindowHint'),
+  });
+  const healthDisableAfter = numberField({
+    label: t('healthDisableAfter'),
+    value: Number(values['health.disable_after'] ?? 0),
+    min: 0,
+    hint: t('healthDisableAfterHint'),
+  });
+  const healthRetainDays = numberField({
+    label: t('healthRetainDays'),
+    value: Number(values['health.retain_days'] ?? 14),
+    min: 1,
+    hint: t('healthRetainDaysHint'),
+  });
+
   const attachmentMaxMB = numberField({
     label: t('attachmentMaxMB'),
     value: Number(values['attachments.max_mb'] ?? 6),
@@ -354,6 +378,12 @@ export async function renderSettings(view: AdminView): Promise<void> {
   form.appendChild(orphanMinutes.element);
   form.appendChild(heldPanel(data.attachments));
 
+  form.appendChild(section(t('secLiveness'), t('livenessHint')));
+  form.appendChild(healthProbe.element);
+  form.appendChild(healthWindow.element);
+  form.appendChild(healthDisableAfter.element);
+  form.appendChild(healthRetainDays.element);
+
   form.appendChild(section(t('apiKeys')));
   form.appendChild(apiEnabled.element);
 
@@ -406,6 +436,10 @@ export async function renderSettings(view: AdminView): Promise<void> {
       'attachments.purge_after_days': String(purgeAfterDays.value() ?? 0),
       'attachments.purge_daily_at': purgeDailyAt.value(),
       'attachments.orphan_minutes': String(orphanMinutes.value() ?? 60),
+      'health.probe': String(healthProbe.value()),
+      'health.window_minutes': String(healthWindow.value() ?? 30),
+      'health.disable_after': String(healthDisableAfter.value() ?? 0),
+      'health.retain_days': String(healthRetainDays.value() ?? 14),
     };
   }
 

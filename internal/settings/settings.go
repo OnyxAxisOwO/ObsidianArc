@@ -58,6 +58,14 @@ const (
 	AttachmentPurgeDays   = "attachments.purge_after_days"
 	AttachmentPurgeDaily  = "attachments.purge_daily_at"
 	AttachmentOrphanMins  = "attachments.orphan_minutes"
+
+	// Liveness. The window is both "how far back counts as evidence" and
+	// "how quiet a model has to be before the system asks it directly",
+	// because those are the same question asked from two sides.
+	HealthProbe        = "health.probe"
+	HealthWindowMins   = "health.window_minutes"
+	HealthDisableAfter = "health.disable_after"
+	HealthRetainDays   = "health.retain_days"
 	// Written by the janitor rather than by a form, so that a restart does
 	// not lose track of whether today's purge already happened. Readable in
 	// the settings response and deliberately absent from the writable set.

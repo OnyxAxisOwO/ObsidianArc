@@ -34,15 +34,16 @@ type grantImport struct {
 }
 
 type modelImport struct {
-	Provider    string `json:"provider"`
-	ModelID     string `json:"model_id"`
-	APIName     string `json:"api_name"`
-	DisplayName string `json:"display_name"`
-	Description string `json:"description"`
-	Avatar      string `json:"avatar"`
-	Enabled     bool   `json:"enabled"`
-	Hidden      bool   `json:"hidden"`
-	SortOrder   int    `json:"sort_order"`
+	Provider     string `json:"provider"`
+	ModelID      string `json:"model_id"`
+	APIName      string `json:"api_name"`
+	SystemPrompt string `json:"system_prompt"`
+	DisplayName  string `json:"display_name"`
+	Description  string `json:"description"`
+	Avatar       string `json:"avatar"`
+	Enabled      bool   `json:"enabled"`
+	Hidden       bool   `json:"hidden"`
+	SortOrder    int    `json:"sort_order"`
 
 	ReasoningStyle adapter.ReasoningStyle `json:"reasoning_style"`
 	ReasoningTiers []model.ReasoningTier  `json:"reasoning_tiers"`
@@ -141,6 +142,7 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 				ProviderID:     providerID,
 				ModelID:        entry.ModelID,
 				APIName:        entry.APIName,
+				SystemPrompt:   entry.SystemPrompt,
 				DisplayName:    entry.DisplayName,
 				Description:    entry.Description,
 				Avatar:         entry.Avatar,
@@ -227,6 +229,7 @@ func updateFromImport(entry modelImport) model.Update {
 	return model.Update{
 		ModelID:              &entry.ModelID,
 		APIName:              &entry.APIName,
+		SystemPrompt:         &entry.SystemPrompt,
 		DisplayName:          &entry.DisplayName,
 		Description:          &entry.Description,
 		Avatar:               &entry.Avatar,

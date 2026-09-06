@@ -27,6 +27,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/health"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
@@ -59,6 +60,7 @@ type Server struct {
 	conversations *conversation.Store
 	quota         *quota.Service
 	requests      *reqlog.Store
+	health        *health.Checker
 }
 
 func New(ctx context.Context, deps Deps) (*Server, error) {
@@ -96,6 +98,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	providers := provider.NewStore(db, box)
 	models := model.NewStore(db, providers)
 	registry := adapter.NewRegistry(cfg.Upstream)
+	healthStore := health.NewStore(db)
 	conversations := conversation.NewStore(db)
 	announcements := announcement.NewStore(db)
 	usageStore := usage.NewStore(db)
@@ -302,7 +305,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	compatHandlers.Routes(mux)
 	announcement.NewHandlers(announcements).Routes(mux)
 	trial.NewHandlers(settingsService, models, registry, proxyTrust, cfg.SecretKey).Routes(mux)
-	admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, cards).Routes(mux)
+	admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, cards, healthStore).Routes(mux)
 
 	// Anything under /api that no module claimed is a client bug, and should
 	// read as one instead of quietly returning the SPA shell.
@@ -358,6 +361,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		conversations: conversations,
 		quota:         quotaService,
 		requests:      requestLog,
+		health: &health.Checker{
+			Store: healthStore, Models: models, Providers: providers, Registry: registry,
+		},
 	}, nil
 }
 
@@ -452,6 +458,29 @@ func (s *Server) sweep(ctx context.Context) {
 	// Counter buckets whose window has long since rolled over. The ledger is
 	// never pruned: it is the audit trail.
 	_, _ = s.quota.PruneCounters(sweepCtx)
+	s.sweepHealth(ctx)
+}
+
+// sweepHealth asks the models nobody has used lately whether they still work,
+// and acts on the answer.
+//
+// Its own context, not the 30-second one above: a pass talks to every
+// provider an instance has, and one slow upstream must not cut the pass short
+// for the models after it. The policy is read here rather than captured at
+// boot, so a change in the settings screen lands on the next pass.
+func (s *Server) sweepHealth(ctx context.Context) {
+	if s.health == nil {
+		return
+	}
+	healthCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	s.health.Run(healthCtx, health.Policy{
+		Probe:        s.settings.Bool(settings.HealthProbe),
+		Window:       time.Duration(s.settings.Int(settings.HealthWindowMins, 30)) * time.Minute,
+		DisableAfter: s.settings.Int(settings.HealthDisableAfter, 0),
+		Retain:       time.Duration(s.settings.Int(settings.HealthRetainDays, 14)) * 24 * time.Hour,
+	})
 }
 
 // sweepAttachments applies the operator's retention policy: the orphan

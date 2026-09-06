@@ -1,0 +1,11 @@
+-- A prompt for one model rather than for the instance.
+--
+-- chat.default_system_prompt is the instance's voice and stays the default.
+-- This is for the model that needs something said to it specifically — a
+-- format it gets wrong without being told, a persona that only makes sense
+-- for one of them — which an instance-wide prompt cannot express without
+-- being wrong for every other model.
+--
+-- Empty means "use the instance's", which is what every model configured
+-- before this had.
+ALTER TABLE models ADD COLUMN system_prompt TEXT NOT NULL DEFAULT '';

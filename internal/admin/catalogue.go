@@ -201,15 +201,16 @@ func (h *Handlers) detectModels(w http.ResponseWriter, r *http.Request) error {
 // --- models --------------------------------------------------------------------
 
 type modelRequest struct {
-	ProviderID  string  `json:"provider_id"`
-	ModelID     *string `json:"model_id"`
-	APIName     *string `json:"api_name"`
-	DisplayName *string `json:"display_name"`
-	Description *string `json:"description"`
-	Avatar      *string `json:"avatar"`
-	Enabled     *bool   `json:"enabled"`
-	Hidden      *bool   `json:"hidden"`
-	SortOrder   *int    `json:"sort_order"`
+	ProviderID   string  `json:"provider_id"`
+	ModelID      *string `json:"model_id"`
+	APIName      *string `json:"api_name"`
+	SystemPrompt *string `json:"system_prompt"`
+	DisplayName  *string `json:"display_name"`
+	Description  *string `json:"description"`
+	Avatar       *string `json:"avatar"`
+	Enabled      *bool   `json:"enabled"`
+	Hidden       *bool   `json:"hidden"`
+	SortOrder    *int    `json:"sort_order"`
 
 	// Empty clears the route. Administrative only: the model listing
 	// users see carries neither of these fields.
@@ -287,6 +288,7 @@ func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
 	applyModelFields(&in.ModelID, &in.DisplayName, &in.Description, &in.Avatar,
 		&in.Enabled, &in.SortOrder, &in.Capabilities, &in.Weights, body)
 	setIf(&in.APIName, body.APIName)
+	setIf(&in.SystemPrompt, body.SystemPrompt)
 	setIf(&in.RouteToID, body.RouteToID)
 	setIf(&in.ReasoningStyle, body.ReasoningStyle)
 	setIf(&in.ReasoningTiers, body.ReasoningTiers)
@@ -321,6 +323,7 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 	record, err := h.models.Update(r.Context(), modelID, model.Update{
 		ModelID:              body.ModelID,
 		APIName:              body.APIName,
+		SystemPrompt:         body.SystemPrompt,
 		DisplayName:          body.DisplayName,
 		Description:          body.Description,
 		Avatar:               body.Avatar,

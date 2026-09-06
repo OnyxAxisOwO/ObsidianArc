@@ -181,3 +181,26 @@ func TestTheGatewaysReadCarriesTheAPIName(t *testing.T) {
 		t.Errorf("the request would go out as %q", resolved.Model.ModelID)
 	}
 }
+
+// A model with nothing to say about how it is talked to gets the instance's
+// prompt. One that does gets its own, and the instance's is not appended:
+// two voices in one system prompt is how a model ends up ignoring both.
+func TestAModelsOwnPromptReplacesTheInstances(t *testing.T) {
+	const house = "You are the house assistant."
+
+	if got := (Model{}).Prompt(house); got != house {
+		t.Errorf("a model with no prompt got %q", got)
+	}
+	if got := (Model{SystemPrompt: "   "}).Prompt(house); got != house {
+		t.Errorf("a prompt of spaces is not a prompt: %q", got)
+	}
+
+	own := "Answer only in valid JSON."
+	if got := (Model{SystemPrompt: own}).Prompt(house); got != own {
+		t.Errorf("got %q, want the model's own", got)
+	}
+	// And with no instance prompt either, its own still stands.
+	if got := (Model{SystemPrompt: own}).Prompt(""); got != own {
+		t.Errorf("got %q", got)
+	}
+}

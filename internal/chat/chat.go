@@ -495,7 +495,7 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 	// taken from the model they picked.
 	return adapter.ChatRequest{
 		Model:     resolved.Upstream.Spec(),
-		System:    s.settings.Get(settings.DefaultSystemPrompt),
+		System:    resolved.Model.Prompt(s.settings.Get(settings.DefaultSystemPrompt)),
 		Messages:  out,
 		MaxTokens: maxTokens,
 		Reasoning: reasoning,

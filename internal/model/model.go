@@ -94,6 +94,13 @@ type Model struct {
 	// http.go carries neither this nor ModelID, so a user is never told
 	// that the model they picked is served by another one.
 	RouteToID string `json:"route_to_id"`
+	// Given to this model instead of the instance-wide prompt. Empty means
+	// the instance's, which is what most models want.
+	SystemPrompt string `json:"system_prompt"`
+	// Set when the liveness checker turned this model off because it had
+	// stopped answering. It exists so switching one back on is only ever
+	// undoing the system's own decision, never an operator's.
+	AutoDisabled bool `json:"auto_disabled"`
 	// Overrides the provider's reasoning style for this model alone.
 	// Empty means whatever the provider says.
 	ReasoningStyle adapter.ReasoningStyle `json:"reasoning_style"`
@@ -150,6 +157,19 @@ func (m Model) Spec() adapter.ModelSpec {
 	}
 }
 
+// Prompt is the system prompt this model should be given: its own when it has
+// one, and the instance's otherwise.
+//
+// The model the reader picked, not the one a route sends the request to — the
+// same rule as the name on the answer, the ledger row and the credit weights.
+// A route is about where the request goes, not about what the reader chose.
+func (m Model) Prompt(instanceDefault string) string {
+	if strings.TrimSpace(m.SystemPrompt) != "" {
+		return m.SystemPrompt
+	}
+	return instanceDefault
+}
+
 // Credits prices one completed request. Token weights are per thousand
 // tokens, so a weight of 1 means "one credit per 1000 tokens" and the numbers
 // an administrator types stay human-sized.
@@ -193,7 +213,7 @@ const columns = `m.id, m.provider_id, m.model_id, m.display_name, m.description,
 	m.supports_system_prompt, m.supports_tools, m.context_window, m.max_output_tokens,
 	m.request_weight, m.input_token_weight, m.output_token_weight, m.reasoning_token_weight,
 	m.created_at, m.updated_at, m.route_to_id, m.reasoning_style, m.hidden,
-	m.reasoning_tiers, m.api_name`
+	m.reasoning_tiers, m.api_name, m.auto_disabled, m.system_prompt`
 
 const withProvider = columns + `, p.name, p.kind`
 
@@ -210,6 +230,7 @@ type CreateInput struct {
 	ProviderID     string
 	ModelID        string
 	APIName        string
+	SystemPrompt   string
 	DisplayName    string
 	Description    string
 	Avatar         string
@@ -229,6 +250,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		ProviderID:     in.ProviderID,
 		ModelID:        in.ModelID,
 		APIName:        in.APIName,
+		SystemPrompt:   in.SystemPrompt,
 		DisplayName:    in.DisplayName,
 		Description:    in.Description,
 		Avatar:         in.Avatar,
@@ -255,8 +277,8 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		 supports_reasoning, supports_images, supports_vision, supports_streaming,
 		 supports_system_prompt, supports_tools, context_window, max_output_tokens,
 		 request_weight, input_token_weight, output_token_weight, reasoning_token_weight,
-		 created_at, updated_at, route_to_id, reasoning_style, reasoning_tiers, api_name)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 created_at, updated_at, route_to_id, reasoning_style, reasoning_tiers, api_name, auto_disabled, system_prompt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.ProviderID, record.ModelID, record.DisplayName, record.Description,
 		record.Avatar, record.Enabled, record.Hidden, record.SortOrder,
 		record.SupportsReasoning, record.SupportsImages, record.SupportsVision,
@@ -264,7 +286,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		record.ContextWindow, record.MaxOutputTokens,
 		record.Request, record.InputToken, record.OutputToken, record.ReasoningToken,
 		record.CreatedAt, record.UpdatedAt, routeValue(record.RouteToID), record.ReasoningStyle,
-		encodeTiers(record.ReasoningTiers), record.APIName)
+		encodeTiers(record.ReasoningTiers), record.APIName, record.AutoDisabled, record.SystemPrompt)
 	if err != nil {
 		if isUnique(err) {
 			return Model{}, s.whichDuplicate(ctx, record.APIName, record.ID)
@@ -275,14 +297,16 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 }
 
 type Update struct {
-	ModelID     *string
-	APIName     *string
-	DisplayName *string
-	Description *string
-	Avatar      *string
-	Enabled     *bool
-	Hidden      *bool
-	SortOrder   *int
+	ModelID      *string
+	APIName      *string
+	SystemPrompt *string
+	AutoDisabled *bool
+	DisplayName  *string
+	Description  *string
+	Avatar       *string
+	Enabled      *bool
+	Hidden       *bool
+	SortOrder    *int
 
 	RouteToID      *string
 	ReasoningStyle *adapter.ReasoningStyle
@@ -312,6 +336,8 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 	next := current
 	assign(&next.ModelID, in.ModelID)
 	assign(&next.APIName, in.APIName)
+	assign(&next.SystemPrompt, in.SystemPrompt)
+	assign(&next.AutoDisabled, in.AutoDisabled)
 	assign(&next.DisplayName, in.DisplayName)
 	assign(&next.Description, in.Description)
 	assign(&next.Avatar, in.Avatar)
@@ -345,14 +371,14 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 		supports_reasoning = ?, supports_images = ?, supports_vision = ?, supports_streaming = ?,
 		supports_system_prompt = ?, supports_tools = ?, context_window = ?, max_output_tokens = ?,
 		request_weight = ?, input_token_weight = ?, output_token_weight = ?, reasoning_token_weight = ?,
-		route_to_id = ?, reasoning_style = ?, reasoning_tiers = ?, api_name = ?, updated_at = ?
+		route_to_id = ?, reasoning_style = ?, reasoning_tiers = ?, api_name = ?, auto_disabled = ?, system_prompt = ?, updated_at = ?
 		WHERE id = ?`,
 		next.ModelID, next.DisplayName, next.Description, next.Avatar, next.Enabled, next.Hidden, next.SortOrder,
 		next.SupportsReasoning, next.SupportsImages, next.SupportsVision, next.SupportsStreaming,
 		next.SupportsSystemPrompt, next.SupportsTools, next.ContextWindow, next.MaxOutputTokens,
 		next.Request, next.InputToken, next.OutputToken, next.ReasoningToken,
 		routeValue(next.RouteToID), next.ReasoningStyle, encodeTiers(next.ReasoningTiers),
-		next.APIName, next.UpdatedAt, modelID)
+		next.APIName, next.AutoDisabled, next.SystemPrompt, next.UpdatedAt, modelID)
 	if err != nil {
 		if isUnique(err) {
 			return Model{}, s.whichDuplicate(ctx, next.APIName, modelID)
@@ -579,7 +605,7 @@ func (s *Store) readCallable(
 		&record.ContextWindow, &record.MaxOutputTokens,
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
 		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
-		&record.Hidden, &tiers, &record.APIName,
+		&record.Hidden, &tiers, &record.APIName, &record.AutoDisabled, &record.SystemPrompt,
 		&record.ProviderName, &record.ProviderKind,
 		&upstream.BaseURL, &sealed, &headerJSON, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
 		&upstream.TimeoutSeconds, &upstream.APIKeyHint, &upstream.SortOrder, &upstream.Enabled,
@@ -952,7 +978,7 @@ func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
 		&record.ContextWindow, &record.MaxOutputTokens,
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
 		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
-		&record.Hidden, &tiers, &record.APIName,
+		&record.Hidden, &tiers, &record.APIName, &record.AutoDisabled, &record.SystemPrompt,
 	}
 	if joined {
 		targets = append(targets, &record.ProviderName, &record.ProviderKind)

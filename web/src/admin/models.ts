@@ -12,7 +12,7 @@ import { ICONS, button, clear, el, iconButton } from '../ui/dom';
 import { openPanel, type PanelHandle } from '../ui/panel';
 import { numberField, section, selectField, switchField, textArea, textField, tierList } from '../ui/form';
 import { badge, badges, compactNumber, renderTable, stacked, type SortState } from '../ui/table';
-import { adminApi, type AdminModel, type Group, type Meta, type Provider, type ReasoningStyle, type ReasoningTier } from './api';
+import { adminApi, type AdminModel, type ModelHealth, type Group, type Meta, type Provider, type ReasoningStyle, type ReasoningTier } from './api';
 import { failure, filterSelect, type AdminView } from './admin-page';
 import { reasoningLabel } from './providers';
 
@@ -69,6 +69,10 @@ export async function renderModels(view: AdminView): Promise<void> {
   let providers: Provider[];
   let groups: Group[];
   let meta: Meta;
+  // Liveness is read beside the catalogue rather than as part of it: it is a
+  // different question with a different shape, and a failure to answer it
+  // must not take the models screen down with it.
+  let health = new Map<string, ModelHealth>();
   try {
     [{ models }, { providers }, { groups }, meta] = await Promise.all([
       adminApi.models(),
@@ -80,12 +84,18 @@ export async function renderModels(view: AdminView): Promise<void> {
     failure(view, error);
     return;
   }
+  try {
+    const report = await adminApi.health();
+    health = new Map(report.models.map((entry) => [entry.model_id, entry]));
+  } catch {
+    // The column simply says nothing. An operator came here to edit models.
+  }
 
   const nameOf = (modelID: string) =>
     models.find((entry) => entry.id === modelID)?.display_name ?? modelID;
 
   clear(view.actions);
-  const add = button('oa-btn primary', t('addModel'), () => editModel(view, providers, models, groups, meta, null));
+  const add = button('oa-btn primary', t('addModel'), () => editModel(view, providers, models, groups, meta, null, undefined));
   add.disabled = providers.length === 0;
   if (!providers.length) add.title = t('addProviderFirst');
 
@@ -158,7 +168,7 @@ export async function renderModels(view: AdminView): Promise<void> {
 
   const paint = (): void => {
     clear(results);
-    results.appendChild(table(view, providers, models, groups, meta, nameOf, paint));
+    results.appendChild(table(view, providers, models, groups, meta, health, nameOf, paint));
   };
 
   search.addEventListener('input', () => {
@@ -180,6 +190,7 @@ function table(
   models: AdminModel[],
   groups: Group[],
   meta: Meta,
+  health: Map<string, ModelHealth>,
   nameOf: (modelID: string) => string,
   repaint: () => void,
 ): HTMLElement {
@@ -202,6 +213,18 @@ function table(
           row.route_to_id ? t('routedTo', { name: nameOf(row.route_to_id) }) : row.model_id,
         ),
         sort: (row) => row.display_name,
+      },
+      {
+        header: t('colUptime'),
+        cell: (row) => uptimeCell(health.get(row.id)),
+        width: '104px',
+        // Worst first when sorted: the reason to sort this column is to find
+        // what is broken, and unknown is not broken.
+        sort: (row) => {
+          const status = health.get(row.id)?.status;
+          if (!status || status.samples === 0) return 2;
+          return status.uptime;
+        },
       },
       {
         header: t('colProvider'),
@@ -244,7 +267,7 @@ function table(
       ? t('addProviderFirst')
       : models.length ? t('noModelsMatch') : t('noModels'),
     muted: (row) => !row.enabled,
-    onSelect: (row) => editModel(view, providers, models, groups, meta, row),
+    onSelect: (row) => editModel(view, providers, models, groups, meta, row, health.get(row.id)),
   });
 }
 
@@ -271,6 +294,8 @@ function editModel(
   groups: Group[],
   meta: Meta,
   existing: AdminModel | null,
+  /** This model's liveness, when it has any. Absent on the create form. */
+  status: ModelHealth | undefined = undefined,
   /**
    * Values to start from when creating. A copy of a model is the create form
    * with somebody else's answers already in it: the operator changes what
@@ -304,6 +329,13 @@ function editModel(
     placeholder: source?.model_id || 'gpt-5.6-sol',
     hint: t('apiNameHint'),
     monospace: true,
+  });
+
+  const modelPrompt = textArea({
+    label: t('modelPromptLabel'),
+    value: source?.system_prompt ?? '',
+    rows: 4,
+    hint: t('modelPromptHint'),
   });
 
   const displayName = textField({
@@ -450,7 +482,7 @@ function editModel(
               // The API name is dropped rather than suffixed: it is unique
               // across the instance, and a guessed one would be a second
               // public name nobody asked for.
-              editModel(view, providers, models, groups, meta, null, {
+              editModel(view, providers, models, groups, meta, null, undefined, {
                 ...existing,
                 api_name: '',
                 display_name: t('copyOfName', { name: existing.display_name }),
@@ -489,9 +521,13 @@ function editModel(
       body.appendChild(apiName.element);
       body.appendChild(displayName.element);
       body.appendChild(description.element);
+      body.appendChild(modelPrompt.element);
       body.appendChild(enabled.element);
       body.appendChild(hidden.element);
       body.appendChild(sortOrder.element);
+
+      const liveness = healthSection(status);
+      if (liveness) body.appendChild(liveness);
 
       body.appendChild(section(t('secGroupAccess')));
       body.appendChild(groupAccess.element);
@@ -535,6 +571,7 @@ function editModel(
         reasoning_tiers: tiers.value(),
         model_id: modelID.value(),
         api_name: apiName.value(),
+        system_prompt: modelPrompt.value(),
         display_name: displayName.value(),
         description: description.value(),
         enabled: enabled.value(),
@@ -760,6 +797,7 @@ function portable(row: AdminModel, all: AdminModel[], groups: Group[]): Record<s
     provider: row.provider_name,
     model_id: row.model_id,
     api_name: row.api_name,
+    system_prompt: row.system_prompt,
     display_name: row.display_name,
     description: row.description,
     avatar: row.avatar,
@@ -804,4 +842,53 @@ function report(view: AdminView, headline: string, skipped: string[]): void {
       body.appendChild(list);
     },
   });
+}
+
+/** A light and a number. Nothing at all when there is no evidence either way. */
+function uptimeCell(entry: ModelHealth | undefined): Node {
+  const status = entry?.status;
+  if (!status || status.samples === 0) {
+    return badges(badge(t('healthUnknown'), 'muted'));
+  }
+  // Down is danger; up but not clean is a warning, because a model at 96%
+  // is failing one turn in twenty and that is worth a colour.
+  const tone = status.state !== 'up' ? 'danger' : status.uptime >= 0.99 ? 'default' : 'warning';
+  const share = `${(status.uptime * 100).toFixed(status.uptime >= 0.995 ? 0 : 1)}%`;
+  const wrap = badges(badge(share, tone));
+  // The reason, without opening anything: an operator scanning the column for
+  // what is broken should not have to click to learn it is the API key.
+  if (status.last_code) wrap.title = `${status.last_code}: ${status.last_message || ''}`.trim();
+  return wrap;
+}
+
+/** Why a model is down, in the panel where somebody is about to act on it. */
+function healthSection(entry: ModelHealth | undefined): HTMLElement | null {
+  const status = entry?.status;
+  if (!status) return null;
+
+  const wrap = el('div', 'oa-form-section');
+  wrap.appendChild(el('h3', 'oa-drawer-subhead', t('secHealth')));
+
+  if (status.samples === 0) {
+    wrap.appendChild(el('p', 'oa-field-hint', t('healthNoEvidence')));
+    return wrap;
+  }
+
+  wrap.appendChild(el('p', 'oa-field-hint', t('healthSummary', {
+    uptime: (status.uptime * 100).toFixed(1),
+    users: status.user_samples,
+    system: status.system_samples,
+  })));
+  if (entry?.auto_disabled) {
+    wrap.appendChild(el('p', 'oa-field-hint', t('healthAutoDisabled')));
+  }
+  if (!status.errors.length) return wrap;
+
+  const list = el('div', 'oa-code-list');
+  for (const failure of status.errors) {
+    list.appendChild(el('code', 'oa-code-line',
+      `${failure.count}x  ${failure.code}${failure.message ? '  ' + failure.message : ''}`));
+  }
+  wrap.appendChild(list);
+  return wrap;
 }
