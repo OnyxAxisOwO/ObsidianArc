@@ -58,7 +58,7 @@ jobs:
       # Before anything Go: the binary embeds this directory, and the content
       # policy's script hash is computed from the shell that lands in it.
       - name: Build the frontend
-        run: make web
+        run: make web-ci
 
       - name: go vet, gofmt, go test, tsc
         run: make test
@@ -67,8 +67,10 @@ jobs:
 
       # Line endings are the reason the formatting gate was blind for a while.
       # A Linux runner checking out through .gitattributes is what keeps it
-      # honest whatever the machine a change was written on.
-      - name: The tree is unchanged by its own formatter
+      # honest whatever the machine a change was written on. The build itself
+      # must leave nothing behind either, which is why the install above comes
+      # from the lockfile rather than rewriting it.
+      - name: The tree is unchanged by its own build
         run: git diff --exit-code
 
   docker:

@@ -15,7 +15,7 @@ VERSION ?= $(shell date -u +%Y.%m.%d.%H.%M.%S)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
-.PHONY: all build web server run dev test vet fmt typecheck clean docker version
+.PHONY: all build web web-ci server run dev test vet fmt typecheck clean docker version
 
 all: build
 
@@ -26,6 +26,15 @@ build: web
 ## web: compile the SPA into internal/web/dist, where //go:embed picks it up
 web:
 	npm --prefix web install --no-fund --no-audit
+	npm --prefix web run build
+
+## web-ci: the same, installed from the lockfile exactly and without rewriting
+## it. `npm install` will happily rewrite the lock to match whatever npm is
+## running — a different version records different optional-dependency
+## metadata — and a build machine has no business editing the tree it was
+## handed.
+web-ci:
+	npm --prefix web ci --no-fund --no-audit
 	npm --prefix web run build
 
 ## server: rebuild only the Go side, reusing whatever frontend is already embedded
