@@ -26,6 +26,10 @@ type providerRequest struct {
 	TimeoutSeconds   *int                    `json:"timeout_seconds"`
 	Enabled          *bool                   `json:"enabled"`
 	SortOrder        *int                    `json:"sort_order"`
+	// A provider to take the API key from, set when this request is a
+	// duplicate of an existing one. The key itself is never sent here — the
+	// browser has never had it.
+	CopyKeyFrom *string `json:"copy_key_from"`
 }
 
 func (h *Handlers) listProviders(w http.ResponseWriter, r *http.Request) error {
@@ -42,16 +46,27 @@ func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error 
 	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
 		return err
 	}
-	if body.APIKey == nil {
+	// One or the other: a key typed into the form, or the id of the provider
+	// this one is a copy of. A duplicate arrives with neither a key nor a way
+	// to get one, which is the whole reason the second spelling exists.
+	if (body.APIKey == nil || *body.APIKey == "") && body.CopyKeyFrom == nil {
 		return httpx.BadRequest("An API key is required.")
+	}
+	if body.CopyKeyFrom != nil && !isValidID(*body.CopyKeyFrom) {
+		return httpx.BadRequest("Malformed provider id.")
 	}
 
 	in := provider.CreateInput{
 		Name:    body.Name,
 		Kind:    body.Kind,
 		BaseURL: body.BaseURL,
-		APIKey:  *body.APIKey,
 		Enabled: true,
+	}
+	if body.APIKey != nil {
+		in.APIKey = *body.APIKey
+	}
+	if body.CopyKeyFrom != nil {
+		in.CopyKeyFrom = *body.CopyKeyFrom
 	}
 	if body.AllowInsecure != nil {
 		in.AllowInsecure = *body.AllowInsecure

@@ -133,6 +133,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("PATCH /api/admin/models/{id}", protected(h.updateModel))
 	mux.Handle("DELETE /api/admin/models/{id}", protected(h.deleteModel))
 	mux.Handle("PUT /api/admin/models/order", protected(h.reorderModels))
+	mux.Handle("POST /api/admin/models/import", protected(h.importModels))
 
 	mux.Handle("GET /api/admin/logs", protected(h.listLogs))
 	mux.Handle("GET /api/admin/logs/facets", protected(h.logFacets))

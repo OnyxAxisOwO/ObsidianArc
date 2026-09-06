@@ -168,6 +168,7 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodPost, "/api/admin/providers", map[string]any{"name": "P", "kind": "openai", "base_url": "https://x.example.com/v1", "api_key": "k"}},
 		{http.MethodGet, "/api/admin/models", nil},
 		{http.MethodPost, "/api/admin/models", map[string]any{"provider_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}},
+		{http.MethodPost, "/api/admin/models/import", map[string]any{"models": []any{}}},
 		{http.MethodGet, "/api/admin/usage", nil},
 		{http.MethodGet, "/api/admin/usage/records", nil},
 		{http.MethodPost, "/api/admin/usage/reset", map[string]any{"scope": "user", "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}},

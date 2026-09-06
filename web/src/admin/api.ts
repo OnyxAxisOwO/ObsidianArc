@@ -347,6 +347,9 @@ export const adminApi = {
       `/api/admin/models${providerID ? `?provider_id=${providerID}` : ''}`,
     ),
   createModel: (body: Record<string, unknown>) => api.post<{ model: AdminModel }>('/api/admin/models', body),
+  importModels: (models: unknown[]) =>
+    api.post<{ created: number; updated: number; skipped: string[] }>(
+      '/api/admin/models/import', { models }),
   updateModel: (id: string, body: Record<string, unknown>) =>
     api.patch<{ model: AdminModel }>(`/api/admin/models/${id}`, body),
   codes: () => api.get<{ codes: RedemptionCode[] }>('/api/admin/codes'),

@@ -106,6 +106,12 @@ type CreateInput struct {
 	TimeoutSeconds   int
 	Enabled          bool
 	SortOrder        int
+	// The provider to take the API key from, for a duplicate. The key is
+	// copied inside the database as ciphertext and never unsealed: carrying
+	// the credentials is most of the reason to duplicate a provider, and the
+	// browser asking for one has never been given them. Ignored when APIKey
+	// is set.
+	CopyKeyFrom string
 }
 
 func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
@@ -125,15 +131,10 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
 	if err != nil {
 		return Provider{}, err
 	}
-	if strings.TrimSpace(in.APIKey) == "" {
+	copying := strings.TrimSpace(in.APIKey) == "" && in.CopyKeyFrom != ""
+	if strings.TrimSpace(in.APIKey) == "" && !copying {
 		return Provider{}, ErrKeyRequired
 	}
-
-	sealed, err := s.box.Seal(strings.TrimSpace(in.APIKey))
-	if err != nil {
-		return Provider{}, err
-	}
-	record.APIKeyHint = secret.Hint(strings.TrimSpace(in.APIKey))
 
 	now := time.Now().UnixMilli()
 	record.CreatedAt, record.UpdatedAt = now, now
@@ -143,18 +144,52 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
 		return Provider{}, fmt.Errorf("provider: encode headers: %w", err)
 	}
 
-	_, err = s.db.Exec(ctx, `INSERT INTO providers
+	const columns = `INSERT INTO providers
 		(id, name, kind, base_url, allow_insecure, api_key_enc, api_key_hint, headers_json,
-		 anthropic_version, reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.Name, record.Kind, record.BaseURL, record.AllowInsecure, sealed, record.APIKeyHint,
-		string(headers), record.AnthropicVersion, record.ReasoningStyle, record.TimeoutSeconds,
-		record.Enabled, record.SortOrder, record.CreatedAt, record.UpdatedAt)
+		 anthropic_version, reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at)`
+
+	identity := []any{record.ID, record.Name, record.Kind, record.BaseURL, record.AllowInsecure}
+	rest := []any{string(headers), record.AnthropicVersion, record.ReasoningStyle,
+		record.TimeoutSeconds, record.Enabled, record.SortOrder, record.CreatedAt, record.UpdatedAt}
+
+	var (
+		query string
+		args  []any
+	)
+	if copying {
+		// The two key columns come from the source row rather than from Go,
+		// so the ciphertext is moved by the database and the plaintext is
+		// never anywhere. Everything else is what the caller asked for.
+		query = columns + `
+		SELECT ?, ?, ?, ?, ?, api_key_enc, api_key_hint, ?, ?, ?, ?, ?, ?, ?, ?
+		FROM providers WHERE id = ?`
+		args = append(append(identity, rest...), in.CopyKeyFrom)
+	} else {
+		sealed, sealErr := s.box.Seal(strings.TrimSpace(in.APIKey))
+		if sealErr != nil {
+			return Provider{}, sealErr
+		}
+		record.APIKeyHint = secret.Hint(strings.TrimSpace(in.APIKey))
+		query = columns + `
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		args = append(append(identity, sealed, record.APIKeyHint), rest...)
+	}
+
+	result, err := s.db.Exec(ctx, query, args...)
 	if err != nil {
 		if isUnique(err) {
 			return Provider{}, ErrNameTaken
 		}
 		return Provider{}, fmt.Errorf("provider: create: %w", err)
+	}
+	if copying {
+		// A SELECT that matched nothing inserts nothing and reports no error.
+		if written, _ := result.RowsAffected(); written == 0 {
+			return Provider{}, ErrNotFound
+		}
+		// The hint travelled with the key, so it has to be read back rather
+		// than derived from a plaintext this path never saw.
+		return s.ByID(ctx, record.ID)
 	}
 	return record, nil
 }

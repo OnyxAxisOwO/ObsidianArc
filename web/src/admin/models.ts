@@ -6,6 +6,7 @@
 // composer stops offering attachments, or the thinking toggle disappears.
 
 import { ApiError } from '../api/client';
+import { pickJSONFile, saveAsFile } from '../api/backup';
 import { t } from '../i18n';
 import { ICONS, button, clear, el, iconButton } from '../ui/dom';
 import { openPanel, type PanelHandle } from '../ui/panel';
@@ -87,6 +88,38 @@ export async function renderModels(view: AdminView): Promise<void> {
   const add = button('oa-btn primary', t('addModel'), () => editModel(view, providers, models, groups, meta, null));
   add.disabled = providers.length === 0;
   if (!providers.length) add.title = t('addProviderFirst');
+
+  const download = button('oa-btn', t('exportModels'), () => {
+    const stamp = new Date().toISOString().slice(0, 10);
+    saveAsFile(`obsidian-arc-models-${stamp}.json`,
+      JSON.stringify({ version: 1, models: models.map((row) => portable(row, models, groups)) }, null, 2));
+  });
+  download.disabled = models.length === 0;
+
+  const upload = button('oa-btn', t('importModels'), () => {
+    void pickJSONFile(4 * 1024 * 1024)
+      .then((file) => {
+        if (file === null) return null;
+        const listed = (file as { models?: unknown }).models;
+        if (!Array.isArray(listed)) throw new ApiError(0, 'malformed', t('importModelsMalformed'));
+        upload.disabled = true;
+        return adminApi.importModels(listed);
+      })
+      .then((result) => {
+        if (!result) return;
+        // Every refusal, not a count of them: "3 skipped" sends an operator
+        // back to the file with nothing to look for.
+        const note = t('importModelsDone', { created: result.created, updated: result.updated });
+        view.reload();
+        if (result.skipped.length) window.setTimeout(() => report(view, note, result.skipped), 60);
+        else window.setTimeout(() => report(view, note, []), 60);
+      })
+      .catch((error: unknown) => report(view, error instanceof ApiError ? error.message : String(error), []))
+      .finally(() => { upload.disabled = false; });
+  });
+
+  view.actions.appendChild(download);
+  view.actions.appendChild(upload);
   view.actions.appendChild(add);
 
   clear(view.body);
@@ -238,18 +271,28 @@ function editModel(
   groups: Group[],
   meta: Meta,
   existing: AdminModel | null,
+  /**
+   * Values to start from when creating. A copy of a model is the create form
+   * with somebody else's answers already in it: the operator changes what
+   * makes this one different — which is at least the provider or the model
+   * id, because a provider cannot list one upstream model twice — and saves.
+   */
+  template: AdminModel | null = null,
 ): void {
   const creating = existing === null;
+  // Where the fields start. `existing` still decides everything else: the
+  // title, the delete button, and whether saving is a POST or a PATCH.
+  const source = existing ?? template;
 
   const providerID = selectField({
     label: t('colProvider'),
-    value: existing?.provider_id ?? providers[0]?.id ?? '',
+    value: source?.provider_id ?? providers[0]?.id ?? '',
     options: providers.map((provider) => ({ value: provider.id, label: provider.name })),
   });
 
   const modelID = textField({
     label: t('modelIDLabel'),
-    value: existing?.model_id ?? '',
+    value: source?.model_id ?? '',
     placeholder: 'anthropic/claude-opus-5',
     hint: t('modelIDHint'),
     monospace: true,
@@ -258,14 +301,14 @@ function editModel(
   const apiName = textField({
     label: t('apiNameLabel'),
     value: existing?.api_name ?? '',
-    placeholder: existing?.model_id || 'gpt-5.6-sol',
+    placeholder: source?.model_id || 'gpt-5.6-sol',
     hint: t('apiNameHint'),
     monospace: true,
   });
 
   const displayName = textField({
     label: t('displayName'),
-    value: existing?.display_name ?? '',
+    value: source?.display_name ?? '',
     placeholder: 'Claude Opus 5',
     hint: t('displayNameHint'),
     maxLength: 80,
@@ -273,23 +316,23 @@ function editModel(
 
   const description = textArea({
     label: t('description'),
-    value: existing?.description ?? '',
+    value: source?.description ?? '',
     placeholder: t('modelDescriptionPlaceholder'),
     rows: 2,
     hint: t('modelDescriptionHint'),
   });
 
-  const enabled = switchField({ label: t('enabled'), value: existing?.enabled ?? true });
+  const enabled = switchField({ label: t('enabled'), value: source?.enabled ?? true });
   const hidden = switchField({
     label: t('modelHidden'),
-    value: existing?.hidden ?? false,
+    value: source?.hidden ?? false,
     hint: t('modelHiddenHint'),
   });
-  const sortOrder = numberField({ label: t('sortOrder'), value: existing?.sort_order ?? 0 });
+  const sortOrder = numberField({ label: t('sortOrder'), value: source?.sort_order ?? 0 });
 
   const initialGroupGrants: Record<string, 'use' | 'view'> = {};
-  if (existing?.group_grants) {
-    for (const grant of existing.group_grants) {
+  if (source?.group_grants) {
+    for (const grant of source.group_grants) {
       if (grant.access === 'use' || grant.access === 'view') {
         initialGroupGrants[grant.group_id] = grant.access;
       }
@@ -310,31 +353,31 @@ function editModel(
 
   const reasoning = switchField({
     label: t('capReasoning'),
-    value: existing?.supports_reasoning ?? false,
+    value: source?.supports_reasoning ?? false,
     hint: t('capReasoningHint'),
   });
   const images = switchField({
     label: t('capImages'),
-    value: existing?.supports_images ?? false,
+    value: source?.supports_images ?? false,
     hint: t('capImagesHint'),
   });
   const vision = switchField({
     label: t('capVision'),
-    value: existing?.supports_vision ?? false,
+    value: source?.supports_vision ?? false,
   });
-  const streaming = switchField({ label: t('capStreams'), value: existing?.supports_streaming ?? true });
-  const systemPrompt = switchField({ label: t('capSystemPrompt'), value: existing?.supports_system_prompt ?? true });
-  const tools = switchField({ label: t('capTools'), value: existing?.supports_tools ?? false });
+  const streaming = switchField({ label: t('capStreams'), value: source?.supports_streaming ?? true });
+  const systemPrompt = switchField({ label: t('capSystemPrompt'), value: source?.supports_system_prompt ?? true });
+  const tools = switchField({ label: t('capTools'), value: source?.supports_tools ?? false });
 
   const contextWindow = numberField({
     label: t('contextWindow'),
-    value: existing?.context_window ?? null,
+    value: source?.context_window ?? null,
     placeholder: '200000',
     min: 0,
   });
   const maxOutput = numberField({
     label: t('maxOutputTokens'),
-    value: existing?.max_output_tokens ?? null,
+    value: source?.max_output_tokens ?? null,
     placeholder: '8192',
     min: 0,
   });
@@ -344,7 +387,7 @@ function editModel(
   // what the second link says. The server refuses both as well.
   const routeTo = selectField({
     label: t('routeTo'),
-    value: existing?.route_to_id ?? '',
+    value: source?.route_to_id ?? '',
     hint: t('routeToHint'),
     options: [
       { value: '', label: t('routeNone') },
@@ -357,11 +400,11 @@ function editModel(
     ],
   });
 
-  const tiers = reasoningTiersField(existing?.reasoning_tiers ?? []);
+  const tiers = reasoningTiersField(source?.reasoning_tiers ?? []);
 
   const reasoningStyle = selectField<ReasoningStyle | ''>({
     label: t('reasoningStyleModel'),
-    value: existing?.reasoning_style ?? '',
+    value: source?.reasoning_style ?? '',
     hint: t('reasoningStyleModelHint'),
     options: [
       { value: '', label: t('styleInherit') },
@@ -371,26 +414,26 @@ function editModel(
 
   const requestWeight = numberField({
     label: t('perRequest'),
-    value: existing?.request_weight ?? 0,
+    value: source?.request_weight ?? 0,
     step: 0.1,
     min: 0,
     hint: t('perRequestHint'),
   });
   const inputWeight = numberField({
     label: t('per1kInput'),
-    value: existing?.input_token_weight ?? 1,
+    value: source?.input_token_weight ?? 1,
     step: 0.1,
     min: 0,
   });
   const outputWeight = numberField({
     label: t('per1kOutput'),
-    value: existing?.output_token_weight ?? 1,
+    value: source?.output_token_weight ?? 1,
     step: 0.1,
     min: 0,
   });
   const reasoningWeight = numberField({
     label: t('per1kReasoning'),
-    value: existing?.reasoning_token_weight ?? 1,
+    value: source?.reasoning_token_weight ?? 1,
     step: 0.1,
     min: 0,
   });
@@ -399,6 +442,23 @@ function editModel(
     host: view.host,
     title: creating ? t('addModel') : existing.display_name,
     confirmLabel: creating ? t('add') : t('save'),
+    ...(existing
+      ? {
+          actions: [
+            iconButton('oa-icon-btn', ICONS.copy, t('duplicate'), () => {
+              panel.close();
+              // The API name is dropped rather than suffixed: it is unique
+              // across the instance, and a guessed one would be a second
+              // public name nobody asked for.
+              editModel(view, providers, models, groups, meta, null, {
+                ...existing,
+                api_name: '',
+                display_name: t('copyOfName', { name: existing.display_name }),
+              });
+            }),
+          ],
+        }
+      : {}),
     ...(existing
       ? {
           destructive: {
@@ -495,6 +555,9 @@ function editModel(
         group_grants: groupGrants,
       };
       if (creating) payload['provider_id'] = providerID.value();
+      // The avatar has no field in this form, so a copy would silently lose
+      // one that had been set through the API.
+      if (template) payload['avatar'] = template.avatar;
 
       handle.setBusy(true);
       try {
@@ -683,4 +746,62 @@ export function readOnly(label: string, value: string): HTMLElement {
   wrap.appendChild(el('span', 'oa-field-label', label));
   wrap.appendChild(el('span', 'oa-field-hint', value));
   return wrap;
+}
+
+/**
+ * One model as a file can carry it: names where the database has ids, because
+ * a ULID means nothing on the instance this is being taken to.
+ */
+function portable(row: AdminModel, all: AdminModel[], groups: Group[]): Record<string, unknown> {
+  const target = row.route_to_id ? all.find((entry) => entry.id === row.route_to_id) : undefined;
+  const groupName = (id: string) => groups.find((group) => group.id === id)?.name ?? '';
+
+  return {
+    provider: row.provider_name,
+    model_id: row.model_id,
+    api_name: row.api_name,
+    display_name: row.display_name,
+    description: row.description,
+    avatar: row.avatar,
+    enabled: row.enabled,
+    hidden: row.hidden,
+    sort_order: row.sort_order,
+    reasoning_style: row.reasoning_style,
+    reasoning_tiers: row.reasoning_tiers,
+    route_to: target ? { provider: target.provider_name, model_id: target.model_id } : null,
+    supports_reasoning: row.supports_reasoning,
+    supports_images: row.supports_images,
+    supports_vision: row.supports_vision,
+    supports_streaming: row.supports_streaming,
+    supports_system_prompt: row.supports_system_prompt,
+    supports_tools: row.supports_tools,
+    context_window: row.context_window,
+    max_output_tokens: row.max_output_tokens,
+    request_weight: row.request_weight,
+    input_token_weight: row.input_token_weight,
+    output_token_weight: row.output_token_weight,
+    reasoning_token_weight: row.reasoning_token_weight,
+    groups: (row.group_grants ?? [])
+      .map((grant) => ({ group: groupName(grant.group_id), access: grant.access }))
+      .filter((grant) => grant.group),
+  };
+}
+
+/** What an import did, and every entry it would not take. */
+function report(view: AdminView, headline: string, skipped: string[]): void {
+  openPanel({
+    host: view.host,
+    title: headline,
+    footer: false,
+    build: (body) => {
+      if (!skipped.length) {
+        body.appendChild(el('p', 'oa-field-hint', t('importModelsClean')));
+        return;
+      }
+      body.appendChild(el('p', 'oa-field-hint', t('importModelsSkipped', { count: skipped.length })));
+      const list = el('div', 'oa-code-list');
+      for (const line of skipped) list.appendChild(el('code', 'oa-code-line', line));
+      body.appendChild(list);
+    },
+  });
 }

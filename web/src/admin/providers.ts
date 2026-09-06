@@ -7,7 +7,7 @@
 
 import { ApiError } from '../api/client';
 import { t, tn } from '../i18n';
-import { button, clear, el } from '../ui/dom';
+import { ICONS, button, clear, el, iconButton } from '../ui/dom';
 import { openPanel, type PanelHandle } from '../ui/panel';
 import { numberField, section, selectField, switchField, textField } from '../ui/form';
 import { badge, badges, relativeTime, renderTable, stacked } from '../ui/table';
@@ -55,19 +55,31 @@ export async function renderProviders(view: AdminView): Promise<void> {
   }));
 }
 
-function editProvider(view: AdminView, meta: Meta, existing: Provider | null): void {
+function editProvider(
+  view: AdminView,
+  meta: Meta,
+  existing: Provider | null,
+  /**
+   * Values to start from when creating. A copy of a provider is the create
+   * form with somebody else's answers in it — except the API key, which the
+   * browser has never been given: the payload names the provider to take it
+   * from and the server moves the ciphertext without opening it.
+   */
+  template: Provider | null = null,
+): void {
   const creating = existing === null;
+  const source = existing ?? template;
 
   const name = textField({
     label: t('name'),
-    value: existing?.name ?? '',
+    value: source?.name ?? '',
     placeholder: 'OpenRouter',
     hint: t('providerNameHint'),
   });
 
   const kind = selectField<ProviderKind>({
     label: t('protocol'),
-    value: existing?.kind ?? 'openai',
+    value: source?.kind ?? 'openai',
     hint: t('protocolHint'),
     options: meta.provider_kinds.map((value) => ({
       value,
@@ -78,7 +90,7 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
 
   const baseURL = textField({
     label: t('baseURL'),
-    value: existing?.base_url ?? '',
+    value: source?.base_url ?? '',
     placeholder: 'https://openrouter.ai/api/v1',
     hint: t('baseURLHint'),
     monospace: true,
@@ -86,7 +98,7 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
 
   const allowInsecure = switchField({
     label: t('allowInsecure'),
-    value: existing?.allow_insecure ?? false,
+    value: source?.allow_insecure ?? false,
     hint: t('allowInsecureHint'),
   });
 
@@ -99,21 +111,21 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
 
   const reasoning = selectField<ReasoningStyle>({
     label: t('reasoningStyle'),
-    value: existing?.reasoning_style ?? 'auto',
+    value: source?.reasoning_style ?? 'auto',
     hint: t('reasoningStyleHint'),
     options: meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) })),
   });
 
   const timeout = numberField({
     label: t('timeoutSeconds'),
-    value: existing?.timeout_seconds ?? 120,
+    value: source?.timeout_seconds ?? 120,
     min: 5,
     max: 900,
   });
 
   const anthropicVersion = textField({
     label: t('anthropicVersion'),
-    value: existing?.anthropic_version ?? '',
+    value: source?.anthropic_version ?? '',
     placeholder: '2023-06-01',
     hint: t('anthropicVersionHint'),
     monospace: true,
@@ -121,16 +133,29 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
 
   const enabled = switchField({
     label: t('enabled'),
-    value: existing?.enabled ?? true,
+    value: source?.enabled ?? true,
     hint: t('providerEnabledHint'),
   });
 
-  const sortOrder = numberField({ label: t('sortOrder'), value: existing?.sort_order ?? 0 });
+  const sortOrder = numberField({ label: t('sortOrder'), value: source?.sort_order ?? 0 });
 
   const panel = openPanel({
     host: view.host,
     title: creating ? t('addProvider') : existing.name,
     confirmLabel: creating ? t('add') : t('save'),
+    ...(existing
+      ? {
+          actions: [
+            iconButton('oa-icon-btn', ICONS.copy, t('duplicate'), () => {
+              panel.close();
+              editProvider(view, meta, null, {
+                ...existing,
+                name: t('copyOfName', { name: existing.name }),
+              });
+            }),
+          ],
+        }
+      : {}),
     ...(existing
       ? {
           destructive: {
@@ -177,6 +202,12 @@ function editProvider(view: AdminView, meta: Meta, existing: Provider | null): v
       // An empty key on an edit keeps the stored one; on a create there is
       // nothing to keep.
       if (apiKey.value() || creating) payload['api_key'] = apiKey.value();
+      if (template) {
+        // Headers have no field in this form, and the key is not something
+        // this page could send even if it wanted to.
+        payload['headers'] = template.headers;
+        if (!apiKey.value()) payload['copy_key_from'] = template.id;
+      }
 
       handle.setBusy(true);
       try {

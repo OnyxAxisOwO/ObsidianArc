@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -99,5 +100,96 @@ func TestPlainHTTPNeedsThatProvidersOptIn(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("a second provider inherited the first one's opt-in")
+	}
+}
+
+// Duplicating a provider carries its credentials. That is most of the reason
+// to duplicate one — the same account reached at a second base URL, or a
+// second entry for the same endpoint — and the browser asking for the copy
+// has never been given the key, so it cannot send one.
+func TestACopyCarriesTheKeyWithoutEverUnsealingIt(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	source, err := store.Create(ctx, CreateInput{
+		Name: "Primary", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value",
+		Headers: map[string]string{"X-Title": "Arc"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The shape the admin handler builds for a duplicate: every field the
+	// form carried, no key, and the row to take one from.
+	copied, err := store.Create(ctx, CreateInput{
+		Name: "Primary 2", Kind: source.Kind,
+		BaseURL: "https://backup.example.com/v1", CopyKeyFrom: source.ID,
+		Headers: source.Headers, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("duplicate: %v", err)
+	}
+	if copied.ID == source.ID {
+		t.Fatal("the copy reused the source's id")
+	}
+	if copied.BaseURL != "https://backup.example.com/v1" {
+		t.Errorf("the copy took the source's base URL: %q", copied.BaseURL)
+	}
+	// The hint travels with the key, so the form can say which key this is
+	// rather than showing an empty field beside a working provider.
+	if copied.APIKeyHint == "" || copied.APIKeyHint != source.APIKeyHint {
+		t.Errorf("hint = %q, want the source's %q", copied.APIKeyHint, source.APIKeyHint)
+	}
+
+	// The proof is that it still opens: the ciphertext was moved by the
+	// database, and a byte wrong anywhere in that path fails here rather than
+	// on the first request an operator makes in production.
+	resolved, err := store.Resolve(ctx, copied.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.APIKey != "sk-the-real-secret-value" {
+		t.Errorf("the copy's key opened as %q", resolved.APIKey)
+	}
+}
+
+// A copy of a provider that is not there must not become a provider with no
+// key: an INSERT ... SELECT that matches nothing inserts nothing and reports
+// no error, so the row count is the only thing that notices.
+func TestCopyingFromAProviderThatIsGoneIsRefused(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	_, err := store.Create(ctx, CreateInput{
+		Name: "Orphan", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", CopyKeyFrom: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Enabled: true,
+	})
+	if err == nil {
+		t.Fatal("a copy of nothing was created")
+	}
+
+	listed, err := store.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 0 {
+		t.Errorf("it left a row behind: %+v", listed)
+	}
+}
+
+// Neither a key nor a source is still an error: the two spellings are an
+// either/or, not a way to make the key optional.
+func TestAProviderStillNeedsAKeyFromSomewhere(t *testing.T) {
+	store := newStore(t)
+
+	_, err := store.Create(context.Background(), CreateInput{
+		Name: "Keyless", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", Enabled: true,
+	})
+	if !errors.Is(err, ErrKeyRequired) {
+		t.Errorf("gave %v, want ErrKeyRequired", err)
 	}
 }
