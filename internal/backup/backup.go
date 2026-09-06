@@ -38,9 +38,23 @@ const Format = 1
 // Bounds on what an import may carry. An account can already create this much
 // by hand; the point is that one request cannot.
 const (
-	MaxDocumentBytes      = 32 << 20
-	MaxConversations      = 2000
-	MaxMessagesPerImport  = 50000
+	MaxDocumentBytes     = 32 << 20
+	MaxConversations     = 2000
+	MaxMessagesPerImport = 50000
+	// What one account may be storing in total.
+	//
+	// The three limits above bound one request. None of them bounds the
+	// account: importing writes new conversations rather than replacing what
+	// is there, so the same document sent twenty times is twenty copies, and
+	// a signed-in caller that can repeat a write indefinitely is a way to
+	// fill the operator's disk — the same reasoning as the attachment bounds
+	// in internal/conversation, which this had no equivalent of.
+	//
+	// Messages rather than conversations, because one conversation may hold
+	// fifty thousand of them: a ceiling on the count of threads bounds
+	// almost nothing. Generous for a person — a heavy year of daily use is
+	// some thousands — and reached only by somebody trying.
+	MaxStoredMessages     = 200000
 	MaxTitleChars         = 200
 	MaxImportContentChars = conversation.MaxContentChars
 )
@@ -48,6 +62,10 @@ const (
 var (
 	ErrWrongFormat = errors.New("backup: not an Obsidian Arc export")
 	ErrTooLarge    = errors.New("backup: this export is larger than the server will import")
+	// Distinct from ErrTooLarge: the document is fine, the account is full.
+	// Told apart because "make a smaller export" and "delete some
+	// conversations first" are different instructions.
+	ErrStorageFull = errors.New("backup: this account is storing as many messages as it may")
 )
 
 // Document is the file itself.
@@ -88,6 +106,10 @@ type Service struct {
 	db            *database.DB
 	conversations *conversation.Store
 	preferences   *user.PreferenceStore
+	// The account-wide ceiling. Zero means MaxStoredMessages, which is what
+	// every deployment uses; it is a field so a test can reach the boundary
+	// without writing two hundred thousand rows to get there.
+	MaxStoredMessages int
 }
 
 func NewService(db *database.DB, conversations *conversation.Store, preferences *user.PreferenceStore) *Service {
@@ -175,6 +197,21 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	}
 	if total > MaxMessagesPerImport {
 		return Result{}, ErrTooLarge
+	}
+
+	// And what the account already holds, checked before anything is
+	// written: the per-request limits above say nothing about the twentieth
+	// request.
+	ceiling := s.MaxStoredMessages
+	if ceiling <= 0 {
+		ceiling = MaxStoredMessages
+	}
+	stored, err := s.conversations.CountMessages(ctx, account.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	if stored+total > ceiling {
+		return Result{}, ErrStorageFull
 	}
 
 	var result Result

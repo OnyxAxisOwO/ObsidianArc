@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -295,5 +296,54 @@ func TestFilenameIsSafeForAnyUsername(t *testing.T) {
 		if got := safeName(username); got != want {
 			t.Errorf("safeName(%q) = %q, want %q", username, got, want)
 		}
+	}
+}
+
+// The per-request limits say nothing about the twentieth request. Importing
+// writes new conversations rather than replacing what is there, so the same
+// document sent again is another copy — and a signed-in caller who can repeat
+// a write indefinitely is a way to fill the operator's disk.
+func TestAnAccountCannotImportItselfPastTheStorageCeiling(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	// A low ceiling, so this reaches the boundary in three imports rather
+	// than a hundred. The rule under test is the comparison, not the number.
+	f.service.MaxStoredMessages = 6000
+	const perImport = 2000
+	document := func() Document {
+		messages := make([]Turn, perImport)
+		for i := range messages {
+			messages[i] = Turn{Role: "user", Content: "x"}
+		}
+		return Document{Format: Format, Conversations: []Thread{{Title: "t", Messages: messages}}}
+	}
+
+	stored := 0
+	for stored+perImport <= f.service.MaxStoredMessages {
+		result, err := f.service.Import(ctx, f.account, document())
+		if err != nil {
+			t.Fatalf("import at %d stored messages: %v", stored, err)
+		}
+		stored += result.Messages
+	}
+
+	// The account is now within one import of the ceiling.
+	before, err := f.conversations.CountMessages(ctx, f.account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.Import(ctx, f.account, document()); !errors.Is(err, ErrStorageFull) {
+		t.Fatalf("gave %v, want ErrStorageFull", err)
+	}
+
+	// Refused before writing, not halfway through: a partial import would
+	// leave the account over a ceiling the next attempt is measured against.
+	after, err := f.conversations.CountMessages(ctx, f.account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Errorf("a refused import wrote %d messages", after-before)
 	}
 }

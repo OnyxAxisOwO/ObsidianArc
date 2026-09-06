@@ -557,3 +557,17 @@ func nullable(value string) any {
 	}
 	return value
 }
+
+// CountMessages is how many messages one account is storing.
+//
+// user_id is denormalised onto the row precisely so a question like this is
+// one indexed count rather than a join through every conversation.
+func (s *Store) CountMessages(ctx context.Context, userID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM messages WHERE user_id = ?`, userID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("conversation: count messages: %w", err)
+	}
+	return count, nil
+}

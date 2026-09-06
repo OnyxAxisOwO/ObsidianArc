@@ -59,6 +59,11 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 			return httpx.BadRequest(
 				"That export is larger than this server will import: at most %d conversations and %d messages.",
 				MaxConversations, MaxMessagesPerImport)
+		case errors.Is(err, ErrStorageFull):
+			// 409 rather than 400: the document is fine and sending it again
+			// will not help. Something has to be deleted first.
+			return httpx.Conflict("storage_full",
+				"This account is already storing as many messages as it may. Delete some conversations and try again.")
 		}
 		return httpx.Internal(err)
 	}

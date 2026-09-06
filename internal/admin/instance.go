@@ -266,7 +266,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	if err := h.settings.SetMany(r.Context(), body); err != nil {
 		return httpx.Internal(err)
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"settings": h.settings.All()})
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"settings": redacted(h.settings.All())})
 }
 
 // --- settings as a document ---------------------------------------------------
@@ -350,7 +350,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		return httpx.Internal(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"settings": h.settings.All(),
+		"settings": redacted(h.settings.All()),
 		"applied":  len(applied),
 		"skipped":  skipped,
 	})
