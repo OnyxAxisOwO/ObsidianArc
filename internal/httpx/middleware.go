@@ -165,7 +165,16 @@ func Logger() Middleware {
 // scriptHashes carries the digests of the shell's own inline scripts (see
 // internal/web.InlineScriptHashes), which is what keeps 'unsafe-inline' out
 // of script-src entirely.
-func SecurityHeaders(dev bool, scriptHashes []string) Middleware {
+// Cloudflare Turnstile needs three of the directives widened: the script it
+// loads, the iframe it draws the challenge in, and the origin that iframe
+// reports the result to. Nothing else is relaxed, and none of it is relaxed
+// on an instance that has not configured a challenge — which is why this
+// takes a function rather than a flag: the widening follows the setting, and
+// switching the challenge off takes the exception away with it.
+const challengeOrigin = "https://challenges.cloudflare.com"
+
+// challenging reports whether a challenge is configured. Nil means never.
+func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool) Middleware {
 	scriptSrc := "script-src 'self'"
 	if len(scriptHashes) > 0 {
 		scriptSrc += " " + strings.Join(scriptHashes, " ")
@@ -178,6 +187,22 @@ func SecurityHeaders(dev bool, scriptHashes []string) Middleware {
 		"img-src 'self' data: blob:",
 		"font-src 'self' data:",
 		"connect-src 'self'",
+		"base-uri 'none'",
+		"form-action 'self'",
+		"frame-ancestors 'none'",
+		"object-src 'none'",
+	}, "; ")
+
+	// Built once rather than per request: the only thing that varies is which
+	// of the two strings gets written.
+	withChallenge := strings.Join([]string{
+		"default-src 'self'",
+		scriptSrc + " " + challengeOrigin,
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data: blob:",
+		"font-src 'self' data:",
+		"connect-src 'self' " + challengeOrigin,
+		"frame-src " + challengeOrigin,
 		"base-uri 'none'",
 		"form-action 'self'",
 		"frame-ancestors 'none'",
@@ -203,7 +228,11 @@ func SecurityHeaders(dev bool, scriptHashes []string) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := w.Header()
-			header.Set("Content-Security-Policy", policy)
+			active := policy
+			if challenging != nil && challenging() {
+				active = withChallenge
+			}
+			header.Set("Content-Security-Policy", active)
 			header.Set("X-Content-Type-Options", "nosniff")
 			// Verification links carry a one-time secret in their query string.
 			// Never copy the current URL into a Referer header, even for a

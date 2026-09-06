@@ -411,7 +411,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// on the wire rather than what the handler produced. Outside
 		// everything that writes a body, so there is one place that decides.
 		httpx.Compress(),
-		httpx.SecurityHeaders(cfg.Dev, web.InlineScriptHashes()),
+		httpx.SecurityHeaders(cfg.Dev, web.InlineScriptHashes(), func() bool {
+			// Exactly when a widget can appear. A key with both switches off
+			// draws nothing, and an instance that draws nothing keeps the
+			// policy it had before this feature existed.
+			return settingsService.Get(settings.TurnstileSiteKey) != "" &&
+				(settingsService.Bool(settings.TurnstileOnSignup) ||
+					settingsService.Bool(settings.TurnstileOnAPIKey))
+		}),
 		httpx.SameOrigin(cfg.AllowedOrigins),
 		// Last, so the session lookup only happens for requests that survived
 		// the origin check.
