@@ -467,6 +467,228 @@ func TestConcurrentAdminDemotionsCannotRemoveEveryAdministrator(t *testing.T) {
 	}
 }
 
+// Deleting the last administrator goes through the same read-then-write as
+// demoting one, and needs the same lock: two deletions that each see the
+// other's administrator would both proceed and leave nobody.
+func TestConcurrentAdminDeletionsCannotRemoveEveryAdministrator(t *testing.T) {
+	in := newInstance(t)
+	first := in.register("founder", "a-good-password")
+	second := in.register("second-admin", "another-password")
+	third := in.register("third-admin", "third-password")
+
+	for _, target := range []*session{second, third} {
+		promote := in.do(http.MethodPatch, "/api/admin/users/"+target.userID,
+			map[string]any{"role": "admin"}, first)
+		if promote.Code != http.StatusOK {
+			t.Fatalf("promote: %d %s", promote.Code, promote.Body.String())
+		}
+	}
+
+	// Each administrator deletes one of the others, so neither request is the
+	// self-deletion the handler refuses outright. Only one may win.
+	start := make(chan struct{})
+	responses := make(chan int, 2)
+	var workers sync.WaitGroup
+	for _, pair := range [][2]*session{{second, third}, {third, second}} {
+		actor, target := pair[0], pair[1]
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			responses <- in.do(http.MethodDelete, "/api/admin/users/"+target.userID, nil, actor).Code
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(responses)
+
+	// Whatever the interleaving, an administrator must remain.
+	for code := range responses {
+		if code != http.StatusNoContent && code != http.StatusConflict &&
+			code != http.StatusNotFound && code != http.StatusUnauthorized {
+			t.Fatalf("concurrent deletion returned %d", code)
+		}
+	}
+	remaining := in.do(http.MethodGet, "/api/admin/users", nil, first)
+	if remaining.Code != http.StatusOK {
+		t.Fatalf("the founding administrator lost access: %d %s",
+			remaining.Code, remaining.Body.String())
+	}
+}
+
+// A key pinned to a model its owner cannot use would be issued happily and
+// then refuse every request made with it. The restriction is checked against
+// the same catalogue the turn is checked against, at the moment it is set.
+func TestKeyCannotBePinnedToAnUnavailableModel(t *testing.T) {
+	in := newInstance(t)
+	// The first account is the administrator, which is what lets it turn the
+	// API on; the switch is off by default and would refuse before the model
+	// restriction is ever looked at.
+	owner := in.register("keyholder", "a-good-password")
+	enabled := in.do(http.MethodPut, "/api/admin/settings",
+		map[string]string{"api.enabled": "true"}, owner)
+	if enabled.Code != http.StatusOK {
+		t.Fatalf("enable the API: %d %s", enabled.Code, enabled.Body.String())
+	}
+
+	created := in.do(http.MethodPost, "/api/keys",
+		map[string]any{"name": "pinned", "model_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}, owner)
+	if created.Code != http.StatusBadRequest {
+		t.Fatalf("pinning to an unknown model gave %d %s, want 400",
+			created.Code, created.Body.String())
+	}
+
+	// The unrestricted key is still allowed, so the check has not simply
+	// broken key creation.
+	free := in.do(http.MethodPost, "/api/keys", map[string]any{"name": "open"}, owner)
+	if free.Code != http.StatusCreated {
+		t.Fatalf("unrestricted key was refused: %d %s", free.Code, free.Body.String())
+	}
+
+	var issued struct {
+		Key struct{ ID string } `json:"key"`
+	}
+	if err := json.Unmarshal(free.Body.Bytes(), &issued); err != nil {
+		t.Fatal(err)
+	}
+	patched := in.do(http.MethodPatch, "/api/keys/"+issued.Key.ID,
+		map[string]any{"model_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}, owner)
+	if patched.Code != http.StatusBadRequest {
+		t.Fatalf("pinning an existing key to an unknown model gave %d %s, want 400",
+			patched.Code, patched.Body.String())
+	}
+}
+
+// The About panel is the operator's to write. Empty means "keep the built-in
+// wording", which is what a fresh instance serves, so the panel is never blank
+// just because nobody has been to the settings screen.
+func TestAboutTextIsOperatorWritableAndOptional(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("founder", "a-good-password")
+
+	readAbout := func() (string, string) {
+		t.Helper()
+		response := in.do(http.MethodGet, "/api/site", nil, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/site: %d %s", response.Code, response.Body.String())
+		}
+		var payload struct {
+			About struct {
+				Title string `json:"title"`
+				Body  string `json:"body"`
+			} `json:"about"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.About.Title, payload.About.Body
+	}
+
+	// A fresh instance says nothing, and the client reads that as "use yours".
+	if title, body := readAbout(); title != "" || body != "" {
+		t.Fatalf("a fresh instance served about = %q / %q, want both empty", title, body)
+	}
+
+	saved := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"about.title": "ACME Chat",
+		"about.body":  "Internal assistant. Ask #it-help before filing a ticket.",
+	}, admin)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("save about text: %d %s", saved.Code, saved.Body.String())
+	}
+
+	title, body := readAbout()
+	if title != "ACME Chat" {
+		t.Errorf("about title = %q, want ACME Chat", title)
+	}
+	if body != "Internal assistant. Ask #it-help before filing a ticket." {
+		t.Errorf("about body = %q", body)
+	}
+
+	// Signed out too: the panel is reachable without an account.
+	anonymous := in.do(http.MethodGet, "/api/site", nil, nil)
+	if anonymous.Code != http.StatusOK {
+		t.Fatalf("anonymous GET /api/site: %d", anonymous.Code)
+	}
+
+	// And clearing it returns to the built-in wording rather than sticking.
+	cleared := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"about.title": "", "about.body": "",
+	}, admin)
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear about text: %d %s", cleared.Code, cleared.Body.String())
+	}
+	if title, body := readAbout(); title != "" || body != "" {
+		t.Fatalf("cleared about = %q / %q, want both empty", title, body)
+	}
+}
+
+// The standing notice above the chat. Unlike an announcement it carries no
+// read state and no date, so the only two things to get right are that it is
+// served to everyone — including a visitor who has not signed in, since the
+// front door draws it too — and that an operator can say it may not be put
+// away.
+func TestHomeNoticeIsServedToEveryoneAndCanBeMadePermanent(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("founder", "a-good-password")
+
+	read := func(as *session) (string, bool) {
+		t.Helper()
+		response := in.do(http.MethodGet, "/api/site", nil, as)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/site: %d %s", response.Code, response.Body.String())
+		}
+		var payload struct {
+			HomeNotice struct {
+				Text        string `json:"text"`
+				Dismissible bool   `json:"dismissible"`
+			} `json:"home_notice"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.HomeNotice.Text, payload.HomeNotice.Dismissible
+	}
+
+	// A fresh instance has nothing to say, and what it has to say is closable.
+	if text, dismissible := read(nil); text != "" || !dismissible {
+		t.Fatalf("fresh instance served %q / dismissible=%v, want empty and true", text, dismissible)
+	}
+
+	saved := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"home.notice":             "Maintenance 02:00–03:00 UTC on Sunday.",
+		"home.notice_dismissible": "false",
+	}, admin)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("save the notice: %d %s", saved.Code, saved.Body.String())
+	}
+
+	// Signed out, because the front door renders it before anyone has an
+	// account to read it with.
+	text, dismissible := read(nil)
+	if text != "Maintenance 02:00–03:00 UTC on Sunday." {
+		t.Errorf("anonymous notice = %q", text)
+	}
+	if dismissible {
+		t.Error("the notice is closable although the operator said it is not")
+	}
+
+	if signedIn, _ := read(admin); signedIn != text {
+		t.Errorf("signed-in notice = %q, want the same %q", signedIn, text)
+	}
+
+	// Clearing it takes the strip down rather than leaving an empty bar; the
+	// client reads an empty string as "render nothing".
+	cleared := in.do(http.MethodPut, "/api/admin/settings",
+		map[string]string{"home.notice": ""}, admin)
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear the notice: %d %s", cleared.Code, cleared.Body.String())
+	}
+	if text, _ := read(nil); text != "" {
+		t.Fatalf("cleared notice = %q, want empty", text)
+	}
+}
+
 // A malformed identifier must be refused before it reaches a query.
 func TestMalformedIdentifiersAreRejected(t *testing.T) {
 	in := newInstance(t)

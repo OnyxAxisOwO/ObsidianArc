@@ -460,6 +460,12 @@ function profileSection(): HTMLElement {
     hint: t('nicknameHint'),
   });
   const email = textField({ label: t('email'), value: account.email, type: 'email' });
+  const qq = textField({
+    label: t('qq'),
+    value: account.qq ?? '',
+    placeholder: t('qqPlaceholder'),
+    maxLength: 15,
+  });
   const bio = textArea({ label: t('bio'), value: account.bio, rows: 3 });
   const avatar = textField({
     label: t('avatar'),
@@ -473,18 +479,27 @@ function profileSection(): HTMLElement {
 
   wrap.appendChild(nickname.element);
   wrap.appendChild(email.element);
+  wrap.appendChild(qq.element);
   wrap.appendChild(bio.element);
   wrap.appendChild(avatar.element);
   wrap.appendChild(flash);
   wrap.appendChild(buttonRow(save));
 
   async function submit(): Promise<void> {
+    const qqVal = qq.value().trim();
+    if (qqVal && !/^[1-9][0-9]{4,14}$/.test(qqVal)) {
+      flash.textContent = t('qqInvalid');
+      flash.classList.add('visible');
+      return;
+    }
+
     save.disabled = true;
     flash.classList.remove('visible');
     try {
       const { user } = await updateProfile({
         nickname: nickname.value(),
         email: email.value(),
+        qq: qqVal,
         bio: bio.value(),
         avatar: avatar.value(),
       });
@@ -492,7 +507,17 @@ function profileSection(): HTMLElement {
       save.textContent = t('saved');
       window.setTimeout(() => { save.textContent = t('save'); }, 1500);
     } catch (error) {
-      flash.textContent = error instanceof ApiError ? error.message : String(error);
+      if (error instanceof ApiError) {
+        if (error.code === 'invalid_qq') {
+          flash.textContent = t('qqInvalid');
+        } else if (error.code === 'qq_taken') {
+          flash.textContent = t('qqTaken');
+        } else {
+          flash.textContent = error.message;
+        }
+      } else {
+        flash.textContent = String(error);
+      }
       flash.classList.add('visible');
     } finally {
       save.disabled = false;

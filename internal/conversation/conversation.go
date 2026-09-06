@@ -396,6 +396,67 @@ func (s *Store) TruncateFrom(ctx context.Context, q database.Queryer, userID, co
 	return s.touch(ctx, q, conversationID, userID)
 }
 
+// Message returns a single message with its attachments.
+func (s *Store) Message(ctx context.Context, q database.Queryer, userID, conversationID, messageID string) (Message, error) {
+	if q == nil {
+		q = s.db
+	}
+	record, err := scanMessage(q.QueryRow(ctx,
+		`SELECT `+messageColumns+`
+		 FROM messages m
+		 WHERE m.id = ? AND m.conversation_id = ? AND m.user_id = ?`,
+		messageID, conversationID, userID))
+	if err != nil {
+		return Message{}, err
+	}
+
+	rows, err := q.Query(ctx,
+		`SELECT a.id, a.message_id, a.mime, a.width, a.height, a.size, a.discarded_at
+		 FROM attachments a
+		 WHERE a.message_id = ? AND a.user_id = ?
+		 ORDER BY a.created_at`,
+		messageID, userID)
+	if err != nil {
+		return Message{}, fmt.Errorf("conversation: message attachments: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			att         Attachment
+			msgID       string
+			discardedAt int64
+		)
+		if err := rows.Scan(&att.ID, &msgID, &att.Mime, &att.Width, &att.Height, &att.Size, &discardedAt); err != nil {
+			return Message{}, fmt.Errorf("conversation: attachment scan: %w", err)
+		}
+		att.Discarded = discardedAt > 0
+		record.Attachments = append(record.Attachments, att)
+	}
+	return record, rows.Err()
+}
+
+// UpdateMessage replaces the content of an existing message.
+func (s *Store) UpdateMessage(ctx context.Context, q database.Queryer, userID, conversationID, messageID, content string) (Message, error) {
+	if q == nil {
+		q = s.db
+	}
+	trimmed := truncate(content, MaxContentChars)
+	result, err := q.Exec(ctx,
+		`UPDATE messages SET content = ? WHERE id = ? AND conversation_id = ? AND user_id = ?`,
+		trimmed, messageID, conversationID, userID)
+	if err != nil {
+		return Message{}, fmt.Errorf("conversation: update message: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return Message{}, ErrMessageNotFound
+	}
+	if err := s.touch(ctx, q, conversationID, userID); err != nil {
+		return Message{}, err
+	}
+	return s.Message(ctx, q, userID, conversationID, messageID)
+}
+
 // touch keeps message_count and updated_at correct after any change. Counting
 // rather than incrementing, because a truncate removes an unknown number.
 func (s *Store) touch(ctx context.Context, q database.Queryer, conversationID, userID string) error {

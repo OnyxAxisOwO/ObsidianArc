@@ -21,6 +21,7 @@ import {
   listConversations,
   renameConversation,
   sendTurn,
+  updateMessage,
   uploadAttachment,
   type AttachmentRef,
   type Conversation,
@@ -511,12 +512,11 @@ export function mountChat(options: ChatOptions): ChatHandle {
       area.value = message.content;
       area.rows = Math.min(8, Math.max(2, message.content.split('\n').length + 1));
 
-      const actions = el('div', 'ai-msg-editor-actions');
-      actions.appendChild(button('ai-chat-mini-btn', t('cancel'), () => {
+      const cancel = () => {
         editingID = '';
         render();
-      }));
-      actions.appendChild(button('ai-chat-mini-btn primary', t('saveAndResend'), () => {
+      };
+      const submit = () => {
         const text = area.value.trim();
         editingID = '';
         // Editing rewrites history from this point: everything after it was
@@ -526,7 +526,21 @@ export function mountChat(options: ChatOptions): ChatHandle {
           truncateFrom: message.id,
           attachmentIDs: images.map((image) => image.id),
         });
-      }));
+      };
+
+      const actions = el('div', 'ai-msg-editor-actions');
+      actions.appendChild(button('ai-chat-mini-btn', t('cancel'), cancel));
+      actions.appendChild(button('ai-chat-mini-btn primary', t('saveAndResend'), submit));
+
+      area.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          cancel();
+        } else if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+          event.preventDefault();
+          submit();
+        }
+      });
 
       editor.appendChild(area);
       editor.appendChild(actions);
@@ -590,11 +604,66 @@ export function mountChat(options: ChatOptions): ChatHandle {
 
     if (message.reasoning) row.appendChild(renderThinking(message.reasoning, false));
 
+    if (editingID === message.id) {
+      const editor = el('div', 'ai-msg-editor');
+      const area = el('textarea', 'ai-chat-input ai-msg-edit-input');
+      area.maxLength = MAX_MESSAGE_CHARS;
+      area.value = message.content;
+      area.rows = Math.min(16, Math.max(3, message.content.split('\n').length + 1));
+
+      const cancel = () => {
+        editingID = '';
+        render();
+      };
+
+      const actions = el('div', 'ai-msg-editor-actions');
+      actions.appendChild(button('ai-chat-mini-btn', t('cancel'), cancel));
+
+      const saveBtn = button('ai-chat-mini-btn primary', t('save'), async () => {
+        const text = area.value.trim();
+        if (!text) return;
+        saveBtn.disabled = true;
+        try {
+          await updateMessage(activeID, message.id, text);
+          message.content = text;
+          editingID = '';
+          render();
+        } catch (err) {
+          setFlash(err instanceof Error ? err.message : t('failed'));
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+      actions.appendChild(saveBtn);
+
+      area.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          cancel();
+        } else if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+          event.preventDefault();
+          saveBtn.click();
+        }
+      });
+
+      editor.appendChild(area);
+      editor.appendChild(actions);
+      row.appendChild(editor);
+      requestAnimationFrame(() => area.focus());
+      return row;
+    }
+
     const answer = el('div', 'ai-answer');
     renderInto(answer, message.content);
     row.appendChild(answer);
 
     const actions = el('div', 'ai-msg-actions');
+    if (!busy) {
+      actions.appendChild(button('ai-chat-mini-btn', t('edit'), () => {
+        editingID = message.id;
+        render();
+      }));
+    }
     actions.appendChild(button('ai-chat-mini-btn', t('regenerate'), () => {
       void runTurn({ truncateFrom: message.id });
     }));

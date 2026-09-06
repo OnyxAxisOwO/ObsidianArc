@@ -76,6 +76,25 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
     ));
   }
 
+  const qqRequirement = site.qq_requirement ?? (site.require_qq ? 'required' : 'off');
+  const qqRequired = !setup && qqRequirement === 'required';
+  const qqEnabled = !setup && qqRequirement !== 'off';
+
+  let qqInput: HTMLInputElement | null = null;
+  if (registering && qqEnabled) {
+    qqInput = textInput({
+      type: 'text',
+      placeholder: t('qqPlaceholder'),
+      autocomplete: 'off',
+      maxLength: 15,
+    });
+    qqInput.required = qqRequired;
+    form.appendChild(field(
+      qqRequired ? t('qq') : t('qqOptional'),
+      qqInput,
+    ));
+  }
+
   const password = textInput({
     type: 'password',
     placeholder: registering ? t('passwordHint') : t('password'),
@@ -141,6 +160,16 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
       return;
     }
 
+    const qqVal = qqInput ? qqInput.value.trim() : '';
+    if (registering && qqRequired && !qqVal) {
+      showError(t('qqRequiredHere'));
+      return;
+    }
+    if (registering && qqVal && !/^[1-9][0-9]{4,14}$/.test(qqVal)) {
+      showError(t('qqInvalid'));
+      return;
+    }
+
     busy = true;
     submit.dataset['busy'] = 'true';
     submit.disabled = true;
@@ -153,6 +182,7 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
             username: identity,
             password: secret,
             email: email?.value.trim() ?? '',
+            qq: qqVal,
           })
         : await login(identity, secret);
 
@@ -176,6 +206,12 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
     switch (error.code) {
       case 'account_banned':
         return t('accountBanned');
+      case 'qq_required':
+        return t('qqRequiredHere');
+      case 'invalid_qq':
+        return t('qqInvalid');
+      case 'qq_taken':
+        return t('qqTaken');
       case 'signups_throttled': {
         const seconds = Number(error.details['retry_after_seconds'] ?? 60);
         return t('signupsThrottled', { count: seconds });

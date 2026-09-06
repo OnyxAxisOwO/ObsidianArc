@@ -102,6 +102,11 @@ func MustUser(ctx context.Context) user.User {
 	return account
 }
 
+// WithUser attaches a user to the context, primarily for testing.
+func WithUser(ctx context.Context, account user.User) context.Context {
+	return context.WithValue(ctx, userContextKey, account)
+}
+
 func SessionFrom(ctx context.Context) (Session, bool) {
 	session, ok := ctx.Value(sessionContextKey).(Session)
 	return session, ok

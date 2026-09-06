@@ -131,7 +131,10 @@ func (s *Store) Middleware(clientIP func(*http.Request) string, skip func(*http.
 			// precisely the request most worth investigating.
 			defer func() {
 				panicked := recover()
-				if panicked != nil {
+				// A client that went away mid-write surfaces as this sentinel.
+				// The handler did not fail, and recording it as a 500 would put
+				// an error rate in the audit trail that nobody can act on.
+				if panicked != nil && panicked != http.ErrAbortHandler {
 					rec.status = http.StatusInternalServerError
 				}
 

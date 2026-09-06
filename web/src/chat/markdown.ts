@@ -19,8 +19,13 @@
 //     data:, bare relative paths that mean nothing here — renders as its own
 //     literal text.
 
-const ESCAPABLE = '\\`*_{}[]()#+-.!~>|';
+import { renderMathBlock, renderMathInline } from './math';
+
+const ESCAPABLE = '\\`*_{}[]()#+-.!~>|$';
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})[ \t]*([^`\s]*)[ \t]*$/;
+const MATH_BLOCK_FENCE = /^ {0,3}(?:\$\$|\\\[)[ \t]*$/;
+const MATH_BLOCK_CLOSE = /^ {0,3}(?:\$\$|\\\])[ \t]*$/;
+const MATH_SINGLE_RE = /^ {0,3}(?:\$\$([^\n]+?)\$\$|\\\[([^\n]+?)\\\])[ \t]*$/;
 const HR_RE = /^ {0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$/;
 const HEADING_RE = /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/;
 const QUOTE_RE = /^ {0,3}> ?(.*)$/;
@@ -33,7 +38,8 @@ type Inline =
   | { type: 'br' }
   | { type: 'codespan'; value: string }
   | { type: 'link'; href: string; children: Inline[] }
-  | { type: 'strong' | 'em' | 'del' | 'span'; children: Inline[] };
+  | { type: 'strong' | 'em' | 'del' | 'span'; children: Inline[] }
+  | { type: 'math'; value: string; display: boolean };
 
 type Block =
   | { type: 'paragraph'; children: Inline[] }
@@ -42,7 +48,8 @@ type Block =
   | { type: 'blockquote'; children: Block[] }
   | { type: 'list'; ordered: boolean; start: number; items: Block[][] }
   | { type: 'table'; align: string[]; header: Inline[][]; rows: Inline[][][] }
-  | { type: 'hr' };
+  | { type: 'hr' }
+  | { type: 'math'; text: string };
 
 // --- inline ------------------------------------------------------------------
 
@@ -94,6 +101,15 @@ export function parseInline(text: string): Inline[] {
   while (index < source.length) {
     const char = source[index]!;
     const rest = source.slice(index);
+
+    if (rest.startsWith('\\(')) {
+      const mathParen = /^\\\(((?:[^\\]|\\.)+?)\\\)/.exec(rest);
+      if (mathParen) {
+        push({ type: 'math', value: mathParen[1]!.trim(), display: false });
+        index += mathParen[0].length;
+        continue;
+      }
+    }
 
     if (char === '\\' && ESCAPABLE.includes(source[index + 1] ?? '')) {
       buffer += source[index + 1];
@@ -163,6 +179,24 @@ export function parseInline(text: string): Inline[] {
       }
     }
 
+    if (rest.startsWith('$$')) {
+      const mathBlock = /^\$\$((?:[^\\]|\\.)+?)\$\$/.exec(rest);
+      if (mathBlock) {
+        push({ type: 'math', value: mathBlock[1]!.trim(), display: true });
+        index += mathBlock[0].length;
+        continue;
+      }
+    }
+
+    if (char === '$') {
+      const mathInline = /^\$((?!\s)(?:[^\$\\\n]|\\.)*?(?<!\s))\$(?!\d)/.exec(rest);
+      if (mathInline && mathInline[1]) {
+        push({ type: 'math', value: mathInline[1], display: false });
+        index += mathInline[0].length;
+        continue;
+      }
+    }
+
     buffer += char;
     index += 1;
   }
@@ -216,6 +250,26 @@ export function parse(text: string): Block[] {
       }
       index += 1; // the closing fence, or the end of the input
       blocks.push({ type: 'code', lang: fence[2] ?? '', text: body.join('\n') });
+      continue;
+    }
+
+    const mathSingle = MATH_SINGLE_RE.exec(line);
+    if (mathSingle) {
+      const content = (mathSingle[1] ?? mathSingle[2] ?? '').trim();
+      blocks.push({ type: 'math', text: content });
+      index += 1;
+      continue;
+    }
+
+    if (MATH_BLOCK_FENCE.test(line)) {
+      const body: string[] = [];
+      index += 1;
+      while (index < lines.length && !MATH_BLOCK_CLOSE.test(lines[index]!)) {
+        body.push(lines[index]!);
+        index += 1;
+      }
+      index += 1; // the closing fence, or the end of the input
+      blocks.push({ type: 'math', text: body.join('\n') });
       continue;
     }
 
@@ -297,6 +351,8 @@ export function parse(text: string): Block[] {
       index < lines.length &&
       lines[index]!.trim() &&
       !FENCE_RE.test(lines[index]!) &&
+      !MATH_SINGLE_RE.test(lines[index]!) &&
+      !MATH_BLOCK_FENCE.test(lines[index]!) &&
       !HR_RE.test(lines[index]!) &&
       !HEADING_RE.test(lines[index]!) &&
       !QUOTE_RE.test(lines[index]!) &&
@@ -328,6 +384,9 @@ function renderInline(nodes: Inline[], parent: Node): void {
         parent.appendChild(code);
         break;
       }
+      case 'math':
+        parent.appendChild(renderMathInline(node.value, node.display));
+        break;
       case 'link': {
         const link = document.createElement('a');
         link.href = node.href;
@@ -350,6 +409,9 @@ function renderBlock(block: Block): Node {
   switch (block.type) {
     case 'hr':
       return document.createElement('hr');
+
+    case 'math':
+      return renderMathBlock(block.text);
 
     case 'heading': {
       const level = Math.min(6, Math.max(1, block.level));

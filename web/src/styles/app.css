@@ -874,6 +874,34 @@ body.oa-resizing * {
   font-size: 12.5px;
 }
 
+/* The instance's standing notice. Quieter than the verification strip above
+   it — that one is a thing to do, this one is a thing to know — so it takes
+   the plain container fill rather than the badge's. */
+.oa-home-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 10px 16px;
+  border-radius: 14px;
+  background: var(--ai-surface-container);
+  font-size: 12.5px;
+}
+
+.oa-home-notice-text {
+  flex: 1;
+  min-width: 0;
+  /* Written in a plain textarea, so the line breaks the operator typed are
+     the ones they meant. Still text: nothing here parses markup. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.oa-home-notice-close {
+  flex-shrink: 0;
+  margin-top: -2px;
+}
+
 .oa-verify-text {
   display: flex;
   flex-direction: column;

@@ -144,7 +144,7 @@ async function load(view: AdminView, groups: Group[], target: HTMLElement): Prom
   view.setTitle(t('usersTitle'), tn(total, 'accountsCountOne', 'accountsCountOther'));
   target.appendChild(renderTable({
     columns: [
-      { header: t('colAccount'), cell: (row) => stacked(row.nickname || row.username, `@${row.username}`) },
+      { header: t('colAccount'), cell: (row) => stacked(row.nickname || row.username, row.qq ? `@${row.username} · QQ ${row.qq}` : `@${row.username}`) },
       { header: t('colEmail'), cell: (row) => row.email || '—', secondary: true, width: '160px' },
       { header: t('colGroup'), cell: (row) => groupName(row.group_id), width: '120px' },
       {
@@ -179,6 +179,7 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
 
   const nickname = textField({ label: t('nickname'), value: account.nickname, maxLength: 32 });
   const email = textField({ label: t('email'), value: account.email, type: 'email' });
+  const qq = textField({ label: t('qq'), value: account.qq || '', placeholder: t('qqPlaceholder'), maxLength: 15 });
   const bio = textArea({ label: t('bio'), value: account.bio, rows: 2 });
   const avatar = textField({
     label: t('avatar'),
@@ -247,6 +248,7 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
       body.appendChild(section(t('secProfile')));
       body.appendChild(nickname.element);
       body.appendChild(email.element);
+      body.appendChild(qq.element);
       body.appendChild(bio.element);
       body.appendChild(avatar.element);
 
@@ -281,6 +283,7 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
         await adminApi.updateUser(account.id, {
           nickname: nickname.value(),
           email: email.value(),
+          qq: qq.value(),
           bio: bio.value(),
           avatar: avatar.value(),
           role: role.value(),

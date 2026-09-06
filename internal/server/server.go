@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -256,6 +257,23 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 		return apiAllowed(r.Context(), settingsService, groups, account)
 	}
+	// Pinning a key to a model is checked against the same catalogue the turn
+	// itself is checked against, so a key cannot be pinned to something its
+	// owner could not have sent to anyway.
+	apiKeyHandlers.ModelAllowed = func(r *http.Request, modelID string) error {
+		account, ok := auth.UserFrom(r.Context())
+		if !ok {
+			return httpx.Unauthorized("Sign in to continue.")
+		}
+		_, err := models.Authorize(r.Context(), account.GroupID, modelID, account.IsAdmin())
+		if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrNotPermitted) {
+			return httpx.BadRequest("That model is not available to this account.")
+		}
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		return nil
+	}
 	apiKeyHandlers.Routes(mux)
 
 	// An account's own data, in and out as one document. Separate from the
@@ -269,7 +287,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	compatHandlers.Routes(mux)
 	announcement.NewHandlers(announcements).Routes(mux)
 	trial.NewHandlers(settingsService, models, registry, proxyTrust, cfg.SecretKey).Routes(mux)
-	admin.NewHandlers(users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog).Routes(mux)
+	admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog).Routes(mux)
 
 	// Anything under /api that no module claimed is a client bug, and should
 	// read as one instead of quietly returning the SPA shell.

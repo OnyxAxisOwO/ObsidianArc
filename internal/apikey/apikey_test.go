@@ -353,3 +353,35 @@ func TestKeyModelRestriction(t *testing.T) {
 		t.Errorf("ModelID = %q, want gpt-4o", updated.ModelID)
 	}
 }
+
+func TestKeyCanRestrictSeveralModelsAndClearTheRestriction(t *testing.T) {
+	ctx := context.Background()
+	store, owner, _ := newStore(t)
+
+	created, _, err := store.IssueModels(ctx, owner, "multi-model", []string{
+		" model-a ", "model-b", "model-a", " ",
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(created.ModelIDs, ","), "model-a,model-b"; got != want {
+		t.Fatalf("ModelIDs = %q, want %q", got, want)
+	}
+
+	listed, err := store.List(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(listed[0].ModelIDs, ","), "model-a,model-b"; got != want {
+		t.Fatalf("listed ModelIDs = %q, want %q", got, want)
+	}
+
+	cleared := []string{}
+	updated, err := store.Update(ctx, owner, created.ID, Update{ModelIDs: &cleared})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.ModelIDs) != 0 || updated.ModelID != "" {
+		t.Errorf("cleared restriction = %+v, want no models", updated)
+	}
+}

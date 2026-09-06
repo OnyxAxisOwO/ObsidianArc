@@ -530,6 +530,17 @@ const en = {
   aboutRuntime: 'Running for',
   aboutBuiltWith: 'Built with',
   aboutBuiltWithBody: 'Go on the server, TypeScript in the browser, no runtime dependencies on either side.',
+  // The instance can be renamed; the software underneath cannot. This label
+  // carries the product name so a rebranded deployment still says what it is.
+  aboutVersionOf: '{product} version',
+  aboutHeading: 'About heading',
+  aboutHeadingHint: 'Shown at the top of the About panel. Empty uses the instance name.',
+  aboutText: 'About text',
+  aboutTextHint: 'What this instance is, in your words. Empty uses the built-in description.',
+  homeNotice: 'Home notice',
+  homeNoticeHint: 'A standing strip above the chat, for everyone. Empty means none. Unlike an announcement it has no read state and stays until you clear it.',
+  homeNoticeDismissible: 'Readers may close it',
+  homeNoticeDismissibleHint: 'Off for a notice that has to keep saying itself. Editing the text brings it back for people who had closed it, either way.',
 
   // --- announcements
   announcements: 'Announcements',
@@ -608,6 +619,17 @@ const en = {
   emailDomainRejected: 'Use an address at {domains}.',
   signupsThrottled: 'Too many accounts have just been created. Try again in about {count} seconds.',
   emailAccepted: 'Accepted: {domains}',
+  qqRequirement: 'QQ number',
+  qqRequirementHint: 'Whether new accounts must provide a QQ number upon registration.',
+  qqRequirementOff: 'Not required',
+  qqRequirementOptional: 'Optional',
+  qqRequirementRequired: 'Required',
+  qq: 'QQ',
+  qqOptional: 'QQ (optional)',
+  qqPlaceholder: 'e.g. 10001',
+  qqRequiredHere: 'A QQ number is required to register here.',
+  qqInvalid: 'QQ number must be 5\u201315 digits.',
+  qqTaken: 'That QQ number is already registered.',
 
   // --- email verification
   verifyEmail: 'Require a confirmed email address',
@@ -665,7 +687,8 @@ const en = {
   keyStatusPaused: 'Paused (refuse requests)',
   keyModel: 'Model restriction',
   keyModelAll: 'All models (unrestricted)',
-  keyModelHint: 'Optionally restrict this key so it can only be used with a single model.',
+  keyModelHint: 'Select one or more models to restrict this key. Leave all unchecked for unrestricted access.',
+  keyNoModels: 'No usable models are available.',
   keyOnlyModel: 'Only: {model}',
   keyAllModels: 'All models',
 
@@ -1283,6 +1306,15 @@ const zh: Record<StringKey, string> = {
   aboutRuntime: '已运行',
   aboutBuiltWith: '技术栈',
   aboutBuiltWithBody: '服务端 Go，浏览器端 TypeScript，两边都没有运行时依赖。',
+  aboutVersionOf: '{product} 版本',
+  aboutHeading: '关于页标题',
+  aboutHeadingHint: '显示在关于面板顶部。留空则使用实例名称。',
+  aboutText: '关于页正文',
+  aboutTextHint: '用你自己的话描述这个实例。留空则使用内置说明。',
+  homeNotice: '主页公告',
+  homeNoticeHint: '常驻在聊天上方,对所有人显示。留空表示没有。它和普通公告不同:没有已读状态,一直显示到你清空为止。',
+  homeNoticeDismissible: '允许关闭',
+  homeNoticeDismissibleHint: '关掉之后它会一直显示,无法被读者收起。无论哪种,改动公告内容后,已经关闭过的人都会重新看到。',
 
   // --- announcements
   announcements: '公告',
@@ -1361,6 +1393,17 @@ const zh: Record<StringKey, string> = {
   emailDomainRejected: '请使用 {domains} 的邮箱。',
   signupsThrottled: '刚刚注册的账户太多了，大约 {count} 秒后再试。',
   emailAccepted: '可用邮箱：{domains}',
+  qqRequirement: 'QQ 号',
+  qqRequirementHint: '新账户注册时是否必须填写 QQ 号。',
+  qqRequirementOff: '不要求',
+  qqRequirementOptional: '选填',
+  qqRequirementRequired: '必填',
+  qq: 'QQ 号',
+  qqOptional: 'QQ 号（选填）',
+  qqPlaceholder: '例如 10001',
+  qqRequiredHere: '这台服务器要求填写 QQ 号。',
+  qqInvalid: 'QQ 号格式不正确，应为 5–15 位数字。',
+  qqTaken: '该 QQ 号已被注册。',
 
   // --- email verification
   verifyEmail: '必须验证邮箱',
@@ -1418,7 +1461,8 @@ const zh: Record<StringKey, string> = {
   keyStatusPaused: '暂停使用（拒绝调用）',
   keyModel: '限制模型',
   keyModelAll: '全部模型（无限制）',
-  keyModelHint: '可选限制此密钥仅可调用指定的特定模型。',
+  keyModelHint: '选择一个或多个模型来限制此密钥；全部不选表示不限制。',
+  keyNoModels: '暂无可用模型。',
   keyOnlyModel: '限用: {model}',
   keyAllModels: '全部模型',
 

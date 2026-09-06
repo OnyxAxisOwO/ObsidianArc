@@ -917,16 +917,33 @@ func TestKeyModelRestrictionEnforced(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 
-	_, restrictedToken, err := f.keys.Issue(ctx, f.account.ID, "restricted-key", f.model.ID, 0)
+	second, err := f.models.Create(ctx, model.CreateInput{
+		ProviderID: f.model.ProviderID, ModelID: "second-upstream-name",
+		DisplayName: "Mock Second", Enabled: true,
+		Capabilities: model.Capabilities{
+			SupportsStreaming: true, SupportsSystemPrompt: true,
+		},
+		Weights: model.Weights{InputToken: 1, OutputToken: 1},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	_, restrictedToken, err := f.keys.IssueModels(ctx, f.account.ID, "restricted-key",
+		[]string{f.model.ID, second.ID}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// 1. Calling with the allowed model succeeds
 	res := f.do(t, http.MethodPost, "/v1/chat/completions", restrictedToken,
 		fmt.Sprintf(`{"model": "%s", "messages": [{"role": "user", "content": "hi"}]}`, f.model.ID))
 	if res.Code != http.StatusOK {
 		t.Fatalf("request with allowed model failed: code = %d, body = %s", res.Code, res.Body.String())
+	}
+	resSecond := f.do(t, http.MethodPost, "/v1/chat/completions", restrictedToken,
+		fmt.Sprintf(`{"model": "%s", "messages": [{"role": "user", "content": "hi"}]}`, second.ID))
+	if resSecond.Code != http.StatusOK {
+		t.Fatalf("request with second allowed model failed: code = %d, body = %s", resSecond.Code, resSecond.Body.String())
 	}
 
 	// 2. Calling with an unauthorized model fails with 403 model_not_permitted
@@ -960,7 +977,14 @@ func TestKeyModelRestrictionEnforced(t *testing.T) {
 	if err := json.NewDecoder(res3.Body).Decode(&modelsResp); err != nil {
 		t.Fatal(err)
 	}
-	if len(modelsResp.Data) != 1 || modelsResp.Data[0].ID != f.model.ID {
-		t.Errorf("got models %v, want exactly 1 model with ID %q", modelsResp.Data, f.model.ID)
+	if len(modelsResp.Data) != 2 {
+		t.Fatalf("got models %v, want exactly 2 restricted models", modelsResp.Data)
+	}
+	seen := map[string]bool{}
+	for _, entry := range modelsResp.Data {
+		seen[entry.ID] = true
+	}
+	if !seen[f.model.ID] || !seen[second.ID] {
+		t.Errorf("got models %v, want IDs %q and %q", modelsResp.Data, f.model.ID, second.ID)
 	}
 }

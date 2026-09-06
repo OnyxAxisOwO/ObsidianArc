@@ -117,9 +117,17 @@ export function createComposerMenu(options: ComposerMenuOptions): ComposerMenu {
     wrap.appendChild(row);
 
     if (pressure !== null) {
+      // The bar has to travel the way the figure beside it reads. A track
+      // filled a tenth under the words "90% left" is two answers to one
+      // question, and at a glance the shape is the one believed. So an
+      // allowance phrased as what remains drains as it is spent; used, and the
+      // raw figures, fill up.
+      const draining = (usage?.display ?? 'absolute') === 'remaining';
       const meter = el('div', 'oa-meter');
+      // Keyed to pressure rather than to the width: nearly gone is nearly gone
+      // whichever direction the bar happens to be travelling.
       const fill = el('div', `oa-meter-fill${pressure >= 0.9 ? ' warn' : ''}`);
-      fill.style.width = `${Math.round(pressure * 100)}%`;
+      fill.style.width = `${Math.round((draining ? 1 - pressure : pressure) * 100)}%`;
       meter.appendChild(fill);
       wrap.appendChild(meter);
     }

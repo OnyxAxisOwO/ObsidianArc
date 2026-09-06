@@ -7,6 +7,7 @@ export interface Account {
   id: string;
   username: string;
   email: string;
+  qq: string;
   nickname: string;
   avatar: string;
   bio: string;
@@ -46,6 +47,8 @@ export interface SiteInfo {
   // instance still has no accounts.
   require_email?: boolean;
   email_domains?: string[];
+  require_qq?: boolean;
+  qq_requirement?: 'off' | 'optional' | 'required';
   // Whether a new account has to confirm its address before it can
   // send anything. False whenever the server cannot post mail,
   // whatever the setting says.
@@ -53,6 +56,12 @@ export interface SiteInfo {
   // Absent on a server older than the landing-page setting; the fallback in
   // session.ts supplies the behaviour that server had.
   landing?: Landing;
+  // The About panel as the operator wrote it. Either field may be empty, which
+  // means "use the built-in wording" rather than "render nothing".
+  about?: { title: string; body: string };
+  // The standing notice above the chat. Not an announcement: no read state,
+  // no date, and it stays until an operator clears it.
+  home_notice?: { text: string; dismissible: boolean };
 }
 
 // The presentation state the server keeps for an account. Deliberately loose:
@@ -84,6 +93,7 @@ export interface RegisterInput {
   username: string;
   password: string;
   email?: string;
+  qq?: string;
   nickname?: string;
 }
 
@@ -92,6 +102,7 @@ export function register(input: RegisterInput): Promise<{ user: Account }> {
     username: input.username,
     password: input.password,
     email: input.email ?? '',
+    qq: input.qq ?? '',
     nickname: input.nickname ?? '',
   });
 }
@@ -105,6 +116,7 @@ export interface ProfilePatch {
   avatar?: string;
   bio?: string;
   email?: string;
+  qq?: string;
 }
 
 export function updateProfile(patch: ProfilePatch): Promise<{ user: Account }> {

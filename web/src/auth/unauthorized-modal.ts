@@ -1,31 +1,39 @@
 import { logout } from '../api/auth';
 import { renderChatPage } from '../chat/chat-page';
 import { t } from '../i18n';
-import { navigate } from '../router';
+import { navigate, onBeforeRender } from '../router';
 import { forget, siteInfo } from '../session';
 import { ICONS, button, el, icon, iconButton } from '../ui/dom';
 
-let activeClose: (() => void) | null = null;
+let activeClose: ((navBack?: boolean) => void) | null = null;
+
+// A navigation takes the modal with it. Registered rather than left to the
+// router, which would only be able to remove the node: the document-level key
+// handler and the reference above are the other half of this modal, and an
+// Escape that outlives its card navigates from whatever screen is up instead.
+onBeforeRender(() => closeUnauthorizedModal());
 
 export function showUnauthorizedModal(root: HTMLElement): void {
-  // If the root doesn't contain an active workspace (e.g. boot spinner or blank screen on direct load),
-  // render the chat shell in the background so there is no stuck loading state.
+  // Reached directly rather than from inside the app: draw the chat behind it
+  // so the refusal sits over the product rather than over a boot spinner that
+  // will now never resolve.
   if (!root.querySelector('.oa-workspace')) {
     renderChatPage(root);
   }
 
-  // Remove any previously open modal
-  activeClose?.();
+  // Close whatever is up first — listeners and module state included — then
+  // drop its node, so the two cards do not overlap for the length of a fade.
+  closeUnauthorizedModal();
   document.querySelector('.oa-modal-overlay')?.remove();
 
   const overlay = el('div', 'oa-modal-overlay');
   const card = el('div', 'oa-auth-card oa-modal-card');
 
-  // Close button in upper right corner
   const closeBtn = iconButton('oa-icon-btn oa-modal-close', ICONS.close, t('close'), () => close(), 16);
   card.appendChild(closeBtn);
 
-  // Brand header matching the login card
+  // The same mark, title and switcher as the sign-in card: this is the same
+  // door, answering differently.
   const site = siteInfo();
   const brand = el('div', 'oa-auth-brand');
   const mark = el('span', 'oa-auth-mark');
@@ -34,17 +42,14 @@ export function showUnauthorizedModal(root: HTMLElement): void {
   brand.appendChild(el('span', null, site.name));
   card.appendChild(brand);
 
-  // Title and subtitle
   card.appendChild(el('h1', 'oa-auth-title', t('accessDenied')));
   card.appendChild(el('p', 'oa-auth-sub', t('noAdminAccess')));
 
-  // Main action
   const form = el('div', 'oa-auth-form');
   const backBtn = button('oa-btn primary oa-btn-block', t('backToChat'), () => close());
   form.appendChild(backBtn);
   card.appendChild(form);
 
-  // Switcher matching the login card switcher
   const switcher = el('p', 'oa-auth-switch');
   switcher.appendChild(el('span', null, t('needDifferentAccount')));
   switcher.appendChild(button(null, t('switchAccount'), () => {
@@ -85,6 +90,7 @@ export function showUnauthorizedModal(root: HTMLElement): void {
   backBtn.focus();
 }
 
+/** Dismisses it without moving anywhere: the caller decides where next. */
 export function closeUnauthorizedModal(): void {
-  activeClose?.();
+  activeClose?.(false);
 }

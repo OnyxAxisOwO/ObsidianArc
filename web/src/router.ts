@@ -29,6 +29,19 @@ let rootElement: HTMLElement | null = null;
 // can notice and stop before it paints over the newer screen.
 let generation = 0;
 
+// Screens draw into the root element, which the next render replaces. Anything
+// that lives outside it — a modal on document.body — has to be told to go.
+//
+// It registers its own dismissal rather than having this file remove its node:
+// the node is only half of such a thing, and dropping it without the document
+// listeners and module state behind it leaves a handler that fires from an
+// unrelated screen.
+const dismissers = new Set<() => void>();
+
+export function onBeforeRender(dismiss: () => void): void {
+  dismissers.add(dismiss);
+}
+
 export function startRouter(root: HTMLElement, table: Route[], notFound: Route['render']): void {
   rootElement = root;
   routes = table.map((route) => ({ ...route, segments: split(route.pattern) }));
@@ -68,7 +81,7 @@ export function currentPath(): string {
 
 async function render(): Promise<void> {
   if (!rootElement) return;
-  document.querySelector('.oa-modal-overlay')?.remove();
+  for (const dismiss of dismissers) dismiss();
   const mine = ++generation;
 
   const path = currentPath();

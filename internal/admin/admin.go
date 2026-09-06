@@ -13,13 +13,13 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
@@ -33,6 +33,7 @@ import (
 )
 
 type Handlers struct {
+	db            *database.DB
 	users         *user.Store
 	groups        *group.Store
 	providers     *provider.Store
@@ -46,14 +47,10 @@ type Handlers struct {
 	announcements *announcement.Store
 	keys          *apikey.Store
 	requests      *reqlog.Store
-	// Serialises changes that can remove an active administrator. The
-	// invariant is checked before the write; without this lock, two admins
-	// can both observe the other and concurrently demote or remove themselves,
-	// leaving the instance with nobody able to administer it.
-	accountMutations sync.Mutex
 }
 
 func NewHandlers(
+	db *database.DB,
 	users *user.Store,
 	groups *group.Store,
 	providers *provider.Store,
@@ -69,6 +66,7 @@ func NewHandlers(
 	requests *reqlog.Store,
 ) *Handlers {
 	return &Handlers{
+		db:            db,
 		users:         users,
 		groups:        groups,
 		providers:     providers,

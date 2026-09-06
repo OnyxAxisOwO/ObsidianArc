@@ -43,7 +43,11 @@ export function siteInfo(): SiteInfo {
     require_email: false,
     email_domains: [],
     verify_email: false,
+    require_qq: false,
+    qq_requirement: 'off',
     landing: { mode: 'login', intro: '', trial: false, trial_turns: 0 },
+    about: { title: '', body: '' },
+    home_notice: { text: '', dismissible: true },
   };
 }
 

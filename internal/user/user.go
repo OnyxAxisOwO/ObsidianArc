@@ -42,6 +42,7 @@ type User struct {
 	ID       string `json:"id"`
 	Username string `json:"username"`
 	Email    string `json:"email"`
+	QQ       string `json:"qq"`
 	Nickname string `json:"nickname"`
 	Avatar   string `json:"avatar"`
 	Bio      string `json:"bio"`
@@ -74,8 +75,11 @@ var (
 	ErrNotFound          = errors.New("user: not found")
 	ErrUsernameTaken     = errors.New("user: username already taken")
 	ErrEmailTaken        = errors.New("user: email already registered")
+	ErrQQTaken           = errors.New("user: QQ number already registered")
 	ErrInvalidUsername   = errors.New("user: username must be 3-32 characters of letters, digits, dot, dash or underscore")
 	ErrInvalidEmail      = errors.New("user: email address is not valid")
+	ErrInvalidQQ         = errors.New("user: QQ number must be 5-15 digits")
+	ErrQQRequired        = errors.New("user: QQ number is required")
 	ErrNicknameTooLong   = errors.New("user: nickname must be 32 characters or fewer")
 	ErrBioTooLong        = errors.New("user: bio must be 500 characters or fewer")
 	ErrAvatarTooLong     = errors.New("user: avatar is too large")
@@ -98,6 +102,7 @@ var (
 	// perfectly valid, and this server never sends mail, so the address is
 	// an identifier rather than a delivery route.
 	emailRE = regexp.MustCompile(`^[^@\s]+@[^@\s.]+\.[^@\s]+$`)
+	qqRE    = regexp.MustCompile(`^[1-9][0-9]{4,14}$`)
 )
 
 func ValidateUsername(value string) error {
@@ -117,16 +122,27 @@ func ValidateEmail(value string) error {
 	return nil
 }
 
+func ValidateQQ(value string) error {
+	if value == "" {
+		return nil
+	}
+	if !qqRE.MatchString(value) {
+		return ErrInvalidQQ
+	}
+	return nil
+}
+
 type Store struct{ db *database.DB }
 
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
-const columns = `id, username, email, nickname, avatar, bio, role, group_id, status,
+const columns = `id, username, email, qq, nickname, avatar, bio, role, group_id, status,
 	email_verified, created_at, updated_at, last_login_at`
 
 type CreateInput struct {
 	Username     string
 	Email        string
+	QQ           string
 	PasswordHash string
 	Nickname     string
 	Role         Role
@@ -149,6 +165,10 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 	if err := ValidateEmail(email); err != nil {
 		return User{}, err
 	}
+	qq := strings.TrimSpace(in.QQ)
+	if err := ValidateQQ(qq); err != nil {
+		return User{}, err
+	}
 	nickname, err := checkNickname(in.Nickname)
 	if err != nil {
 		return User{}, err
@@ -159,6 +179,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		ID:       id.New(),
 		Username: username,
 		Email:    email,
+		QQ:       qq,
 		Nickname: nickname,
 		Role:     orDefault(in.Role, RoleUser),
 		GroupID:  in.GroupID,
@@ -171,11 +192,11 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 	}
 
 	_, err = q.Exec(ctx, `INSERT INTO users
-		(id, username, username_lower, email, email_lower, password_hash, nickname, avatar, bio,
+		(id, username, username_lower, email, email_lower, qq, password_hash, nickname, avatar, bio,
 		 role, group_id, status, email_verified, created_at, updated_at, last_login_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0)`,
 		record.ID, record.Username, strings.ToLower(record.Username),
-		record.Email, strings.ToLower(record.Email), in.PasswordHash, record.Nickname,
+		record.Email, strings.ToLower(record.Email), record.QQ, in.PasswordHash, record.Nickname,
 		record.Role, nullable(record.GroupID), record.Status, record.EmailVerified,
 		record.CreatedAt, record.UpdatedAt)
 	if err != nil {
@@ -209,7 +230,7 @@ func (s *Store) CredentialsByLogin(ctx context.Context, identifier string) (User
 		hash   string
 		group  sql.NullString
 	)
-	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.Nickname, &record.Avatar,
+	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.QQ, &record.Nickname, &record.Avatar,
 		&record.Bio, &record.Role, &group, &record.Status, &record.EmailVerified,
 		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &hash)
 	if err != nil {
@@ -225,25 +246,27 @@ func (s *Store) CredentialsByLogin(ctx context.Context, identifier string) (User
 // Exists answers the availability check the registration form makes before it
 // attempts an insert, so the common "that name is taken" case is a friendly
 // message rather than a constraint error.
-func (s *Store) Exists(ctx context.Context, q database.Queryer, username, email string) (usernameTaken, emailTaken bool, err error) {
+func (s *Store) Exists(ctx context.Context, q database.Queryer, username, email, qq string) (usernameTaken, emailTaken, qqTaken bool, err error) {
 	if q == nil {
 		q = s.db
 	}
+	wantUser := strings.ToLower(strings.TrimSpace(username))
+	wantMail := strings.ToLower(strings.TrimSpace(email))
+	wantQQ := strings.TrimSpace(qq)
+
 	rows, err := q.Query(ctx,
-		`SELECT username_lower, email_lower FROM users
-		 WHERE username_lower = ? OR (email_lower <> '' AND email_lower = ?)`,
-		strings.ToLower(strings.TrimSpace(username)), strings.ToLower(strings.TrimSpace(email)))
+		`SELECT username_lower, email_lower, qq FROM users
+		 WHERE username_lower = ? OR (email_lower <> '' AND email_lower = ?) OR (qq <> '' AND qq = ?)`,
+		wantUser, wantMail, wantQQ)
 	if err != nil {
-		return false, false, fmt.Errorf("user: availability check: %w", err)
+		return false, false, false, fmt.Errorf("user: availability check: %w", err)
 	}
 	defer rows.Close()
 
-	wantUser := strings.ToLower(strings.TrimSpace(username))
-	wantMail := strings.ToLower(strings.TrimSpace(email))
 	for rows.Next() {
-		var haveUser, haveMail string
-		if err := rows.Scan(&haveUser, &haveMail); err != nil {
-			return false, false, fmt.Errorf("user: availability scan: %w", err)
+		var haveUser, haveMail, haveQQ string
+		if err := rows.Scan(&haveUser, &haveMail, &haveQQ); err != nil {
+			return false, false, false, fmt.Errorf("user: availability scan: %w", err)
 		}
 		if haveUser == wantUser {
 			usernameTaken = true
@@ -251,8 +274,11 @@ func (s *Store) Exists(ctx context.Context, q database.Queryer, username, email 
 		if wantMail != "" && haveMail == wantMail {
 			emailTaken = true
 		}
+		if wantQQ != "" && haveQQ == wantQQ {
+			qqTaken = true
+		}
 	}
-	return usernameTaken, emailTaken, rows.Err()
+	return usernameTaken, emailTaken, qqTaken, rows.Err()
 }
 
 // ProfileUpdate carries only the fields a user may change about themselves. A
@@ -263,6 +289,7 @@ type ProfileUpdate struct {
 	Avatar   *string
 	Bio      *string
 	Email    *string
+	QQ       *string
 }
 
 func (s *Store) UpdateProfile(ctx context.Context, q database.Queryer, userID string, in ProfileUpdate) (User, error) {
@@ -304,6 +331,14 @@ func (s *Store) UpdateProfile(ctx context.Context, q database.Queryer, userID st
 		sets = append(sets, "email = ?", "email_lower = ?")
 		args = append(args, value, strings.ToLower(value))
 	}
+	if in.QQ != nil {
+		value := strings.TrimSpace(*in.QQ)
+		if err := ValidateQQ(value); err != nil {
+			return User{}, err
+		}
+		sets = append(sets, "qq = ?")
+		args = append(args, value)
+	}
 
 	if len(sets) == 0 {
 		return s.ByID(ctx, q, userID)
@@ -324,6 +359,7 @@ type AdminUpdate struct {
 	Role    *Role
 	GroupID *string
 	Status  *Status
+	QQ      *string
 }
 
 func (s *Store) UpdateAdminFields(ctx context.Context, q database.Queryer, userID string, in AdminUpdate) (User, error) {
@@ -344,6 +380,14 @@ func (s *Store) UpdateAdminFields(ctx context.Context, q database.Queryer, userI
 	if in.Status != nil {
 		sets = append(sets, "status = ?")
 		args = append(args, orDefault(*in.Status, StatusActive))
+	}
+	if in.QQ != nil {
+		value := strings.TrimSpace(*in.QQ)
+		if err := ValidateQQ(value); err != nil {
+			return User{}, err
+		}
+		sets = append(sets, "qq = ?")
+		args = append(args, value)
 	}
 	if len(sets) == 0 {
 		return s.ByID(ctx, q, userID)
@@ -430,8 +474,8 @@ func (filter ListFilter) clauses() (string, []any) {
 		// Postgres-only, and the folded columns already exist for login.
 		pattern := "%" + strings.ToLower(search) + "%"
 		conditions = append(conditions,
-			"(username_lower LIKE ? OR email_lower LIKE ? OR LOWER(nickname) LIKE ?)")
-		args = append(args, pattern, pattern, pattern)
+			"(username_lower LIKE ? OR email_lower LIKE ? OR LOWER(nickname) LIKE ? OR qq LIKE ?)")
+		args = append(args, pattern, pattern, pattern, pattern)
 	}
 	if filter.Role != "" {
 		conditions = append(conditions, "role = ?")
@@ -511,7 +555,7 @@ func scanUser(row rowScanner) (User, error) {
 		record User
 		group  sql.NullString
 	)
-	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.Nickname, &record.Avatar,
+	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.QQ, &record.Nickname, &record.Avatar,
 		&record.Bio, &record.Role, &group, &record.Status, &record.EmailVerified,
 		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt)
 	if err != nil {
@@ -558,6 +602,8 @@ func translateUniqueViolation(err error, hadEmail bool) error {
 		return fmt.Errorf("user: write: %w", err)
 	}
 	switch {
+	case strings.Contains(message, "qq"):
+		return ErrQQTaken
 	case strings.Contains(message, "email"):
 		return ErrEmailTaken
 	case strings.Contains(message, "username"):

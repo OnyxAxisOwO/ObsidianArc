@@ -18,7 +18,7 @@ import { renderChatPage } from '../chat/chat-page';
 import { t } from '../i18n';
 import { navigate } from '../router';
 import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
-import { selectField, textField } from '../ui/form';
+import { checkboxList, selectField, textField } from '../ui/form';
 import { openPanel, type PanelHandle } from '../ui/panel';
 import { absoluteTime, badge, relativeTime } from '../ui/table';
 
@@ -120,17 +120,12 @@ export function renderKeysPage(root: HTMLElement): void {
       options: LIFETIMES.map((entry) => ({ value: String(entry.days), label: t(entry.label) })),
     });
 
-    const modelOptions = [
-      { value: '', label: t('keyModelAll') },
-      ...models.map((m) => ({
-        value: m.id,
-        label: m.display_name ? `${m.display_name} (${m.provider_name})` : m.id,
-      })),
-    ];
-    const modelSelect = selectField({
+    const modelChecks = checkboxList({
       label: t('keyModel'),
-      value: '',
-      options: modelOptions,
+      hint: t('keyModelHint'),
+      items: modelItems(models),
+      selected: [],
+      emptyText: t('keyNoModels'),
     });
 
     const submit = button('oa-btn primary', t('keyCreate'), () => {
@@ -141,11 +136,11 @@ export function renderKeysPage(root: HTMLElement): void {
         return;
       }
       const days = Number(lifetime.value());
-      const modelId = modelSelect.value();
+      const modelIDs = modelChecks.value();
       submit.disabled = true;
       handle.setBusy(true);
 
-      void createKey(label, days > 0 ? Date.now() + days * DAY_MS : 0, modelId)
+      void createKey(label, days > 0 ? Date.now() + days * DAY_MS : 0, modelIDs)
         .then((result) => {
           issued = result;
           return refresh();
@@ -159,8 +154,7 @@ export function renderKeysPage(root: HTMLElement): void {
 
     wrap.appendChild(name.element);
     wrap.appendChild(lifetime.element);
-    wrap.appendChild(modelSelect.element);
-    wrap.appendChild(el('p', 'oa-field-hint oa-key-field-hint', t('keyModelHint')));
+    wrap.appendChild(modelChecks.element);
     wrap.appendChild(submit);
     return wrap;
   }
@@ -199,9 +193,11 @@ export function renderKeysPage(root: HTMLElement): void {
 
     const meta = el('div', 'oa-key-meta');
     meta.appendChild(el('code', 'oa-key-prefix', `${row.prefix}…`));
-    if (row.model_id) {
-      const modelPill = el('span', 'oa-key-model-pill', t('keyOnlyModel', { model: getModelName(row.model_id) }));
-      modelPill.title = row.model_id;
+    const rowModelIDs = modelIDsFor(row);
+    if (rowModelIDs.length) {
+      const modelNames = rowModelIDs.map(getModelName).join(', ');
+      const modelPill = el('span', 'oa-key-model-pill', t('keyOnlyModel', { model: modelNames }));
+      modelPill.title = rowModelIDs.join(', ');
       meta.appendChild(modelPill);
     } else {
       meta.appendChild(el('span', 'oa-key-model-all', t('keyAllModels')));
@@ -303,23 +299,14 @@ export function renderKeysPage(root: HTMLElement): void {
       ],
     });
 
-    const modelOptions = [
-      { value: '', label: t('keyModelAll') },
-      ...models.map((m) => ({
-        value: m.id,
-        label: m.display_name ? `${m.display_name} (${m.provider_name})` : m.id,
-      })),
-    ];
-    if (row.model_id && !models.some((m) => m.id === row.model_id)) {
-      modelOptions.splice(1, 0, {
-        value: row.model_id,
-        label: row.model_id,
-      });
-    }
-    const modelSelect = selectField({
+    const selectedModelIDs = modelIDsFor(row);
+    const modelItems = modelItemsFor(models, selectedModelIDs);
+    const modelChecks = checkboxList({
       label: t('keyModel'),
-      value: row.model_id || '',
-      options: modelOptions,
+      hint: t('keyModelHint'),
+      items: modelItems,
+      selected: selectedModelIDs,
+      emptyText: t('keyNoModels'),
     });
 
     const save = button('oa-btn primary', t('save'), () => {
@@ -330,10 +317,10 @@ export function renderKeysPage(root: HTMLElement): void {
         return;
       }
       const choice = lifetime.value();
-      const changes: { name?: string; expires_at?: number; disabled?: boolean; model_id?: string } = {
+      const changes: { name?: string; expires_at?: number; disabled?: boolean; model_ids?: string[] } = {
         name: label,
         disabled: statusField.value() === 'paused',
-        model_id: modelSelect.value(),
+        model_ids: modelChecks.value(),
       };
       if (choice !== 'keep') {
         const days = Number(choice);
@@ -357,11 +344,35 @@ export function renderKeysPage(root: HTMLElement): void {
     wrap.appendChild(name.element);
     wrap.appendChild(statusField.element);
     wrap.appendChild(lifetime.element);
-    wrap.appendChild(modelSelect.element);
-    wrap.appendChild(el('p', 'oa-field-hint oa-key-field-hint', t('keyModelHint')));
+    wrap.appendChild(modelChecks.element);
     wrap.appendChild(row2);
     body.appendChild(wrap);
   }
+}
+
+function modelItems(models: AvailableModel[]): Array<{ value: string; label: string }> {
+  return modelsForSelection(models).map((m) => ({
+    value: m.id,
+    label: m.display_name ? `${m.display_name} (${m.provider_name})` : m.id,
+  }));
+}
+
+function modelItemsFor(models: AvailableModel[], selected: string[]): Array<{ value: string; label: string }> {
+  const items = modelItems(models);
+  const known = new Set(items.map((item) => item.value));
+  for (const modelID of selected) {
+    if (!known.has(modelID)) items.unshift({ value: modelID, label: modelID });
+  }
+  return items;
+}
+
+function modelsForSelection(models: AvailableModel[]): AvailableModel[] {
+  return models.filter((model) => model.usable !== false);
+}
+
+function modelIDsFor(row: ApiKey): string[] {
+  if (row.model_ids?.length) return row.model_ids;
+  return row.model_id ? [row.model_id] : [];
 }
 
 // --- the one moment the token exists ---------------------------------------------

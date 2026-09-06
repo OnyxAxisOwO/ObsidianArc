@@ -42,6 +42,36 @@ export async function renderSettings(view: AdminView): Promise<void> {
     hint: t('signInNoteHint'),
   });
 
+  // The About panel, in the operator's own words. Both empty is the normal
+  // state and means the panel keeps its built-in wording.
+  const aboutHeading = textField({
+    label: t('aboutHeading'),
+    value: values['about.title'] ?? '',
+    hint: t('aboutHeadingHint'),
+    maxLength: 60,
+  });
+
+  const aboutText = textArea({
+    label: t('aboutText'),
+    value: values['about.body'] ?? '',
+    rows: 4,
+    hint: t('aboutTextHint'),
+  });
+
+  // The standing strip above the chat. Empty is the normal state.
+  const homeNotice = textArea({
+    label: t('homeNotice'),
+    value: values['home.notice'] ?? '',
+    rows: 3,
+    hint: t('homeNoticeHint'),
+  });
+
+  const homeNoticeDismissible = switchField({
+    label: t('homeNoticeDismissible'),
+    value: (values['home.notice_dismissible'] ?? 'true') === 'true',
+    hint: t('homeNoticeDismissibleHint'),
+  });
+
   const registration = switchField({
     label: t('anyoneCanRegister'),
     value: values['registration.enabled'] === 'true',
@@ -96,6 +126,17 @@ export async function renderSettings(view: AdminView): Promise<void> {
     rows: 2,
     placeholder: t('emailDomainsPlaceholder'),
     hint: t('emailDomainsHint'),
+  });
+
+  const qqRequirement = selectField({
+    label: t('qqRequirement'),
+    value: values['registration.qq_requirement'] ?? 'off',
+    hint: t('qqRequirementHint'),
+    options: [
+      { value: 'off', label: t('qqRequirementOff') },
+      { value: 'optional', label: t('qqRequirementOptional') },
+      { value: 'required', label: t('qqRequirementRequired') },
+    ],
   });
 
   const perMinute = numberField({
@@ -270,6 +311,10 @@ export async function renderSettings(view: AdminView): Promise<void> {
   form.appendChild(section(t('secIdentity')));
   form.appendChild(siteName.element);
   form.appendChild(description.element);
+  form.appendChild(aboutHeading.element);
+  form.appendChild(aboutText.element);
+  form.appendChild(homeNotice.element);
+  form.appendChild(homeNoticeDismissible.element);
 
   form.appendChild(section(t('secAccounts')));
   form.appendChild(registration.element);
@@ -279,6 +324,7 @@ export async function renderSettings(view: AdminView): Promise<void> {
   form.appendChild(requireEmail.element);
   form.appendChild(verifyEmail.element);
   form.appendChild(emailDomains.element);
+  form.appendChild(qqRequirement.element);
   form.appendChild(perMinute.element);
   form.appendChild(perHour.element);
 
@@ -333,11 +379,16 @@ export async function renderSettings(view: AdminView): Promise<void> {
     return {
       'site.name': siteName.value(),
       'site.description': description.value(),
+      'about.title': aboutHeading.value(),
+      'about.body': aboutText.value(),
+      'home.notice': homeNotice.value(),
+      'home.notice_dismissible': String(homeNoticeDismissible.value()),
       'registration.enabled': String(registration.value()),
       'registration.default_group': defaultGroup.value(),
       'registration.require_email': String(requireEmail.value()),
       'registration.verify_email': String(verifyEmail.value()),
       'registration.email_domains': emailDomains.value(),
+      'registration.qq_requirement': qqRequirement.value(),
       'registration.per_minute': String(perMinute.value() ?? 0),
       'registration.per_hour': String(perHour.value() ?? 0),
       'landing.mode': landingMode.value(),

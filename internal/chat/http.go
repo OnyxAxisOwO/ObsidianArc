@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
@@ -47,6 +49,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("PATCH /api/conversations/{id}", protected(h.updateConversation))
 	mux.Handle("DELETE /api/conversations/{id}", protected(h.deleteConversation))
 	mux.Handle("DELETE /api/conversations", protected(h.deleteAllConversations))
+	mux.Handle("PATCH /api/conversations/{id}/messages/{message_id}", protected(h.updateMessage))
 
 	mux.Handle("POST /api/attachments", protected(h.uploadAttachment))
 	mux.Handle("GET /api/attachments/{id}", protected(h.getAttachment))
@@ -261,6 +264,39 @@ func (h *Handlers) deleteAllConversations(w http.ResponseWriter, r *http.Request
 		return httpx.Internal(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"deleted": removed})
+}
+
+func (h *Handlers) updateMessage(w http.ResponseWriter, r *http.Request) error {
+	account := auth.MustUser(r.Context())
+	conversationID, err := pathID(r)
+	if err != nil {
+		return err
+	}
+	messageID := r.PathValue("message_id")
+	if !id.Valid(messageID) {
+		return httpx.BadRequest("Malformed message id.")
+	}
+
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := httpx.DecodeJSON(w, r, &body, 256*1024); err != nil {
+		return err
+	}
+
+	content := strings.TrimSpace(body.Content)
+	if content == "" {
+		return httpx.BadRequest("Message content cannot be empty.")
+	}
+	if utf8.RuneCountInString(content) > conversation.MaxContentChars {
+		return httpx.BadRequest("Message must be %d characters or fewer.", conversation.MaxContentChars)
+	}
+
+	record, err := h.conversations.UpdateMessage(r.Context(), nil, account.ID, conversationID, messageID, content)
+	if err != nil {
+		return translateConversationError(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"message": record})
 }
 
 // --- attachments ------------------------------------------------------------------

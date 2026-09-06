@@ -492,6 +492,34 @@
   text-align: left;
 }
 
+.ai-math-inline {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  font-family: 'Cambria Math', 'STIX Two Math', 'KaTeX_Math', math, serif;
+  font-size: 1.05em;
+  line-height: normal;
+  margin: 0 1px;
+}
+
+.ai-math-block {
+  display: block;
+  margin: 10px 0;
+  padding: 10px 14px;
+  overflow-x: auto;
+  text-align: center;
+  font-family: 'Cambria Math', 'STIX Two Math', 'KaTeX_Math', math, serif;
+  font-size: 1.1em;
+  line-height: normal;
+  background: var(--ai-surface-container-low);
+  border-radius: 10px;
+}
+
+.ai-math-block math {
+  display: inline-block;
+  margin: 0 auto;
+}
+
 /* Kept faint until the message is hovered: three buttons under every turn
    read as clutter, but hiding them outright makes editing undiscoverable. */
 .ai-msg-actions {

@@ -19,6 +19,7 @@ import { siteInfo } from '../session';
 import { renderInto } from '../chat/markdown';
 import { nextThemeMode, themeMode } from '../theme/theme';
 import { persistTheme } from '../session';
+import { createHomeNotice } from '../announce/home-notice';
 import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
 
 interface Turn {
@@ -58,6 +59,12 @@ export function renderLandingPage(root: HTMLElement): void {
     head.appendChild(button('oa-btn primary', t('landingRegister'), () => navigate('/register')));
   }
   page.appendChild(head);
+
+  // The same standing notice the chat carries. "Above the home page" has to
+  // mean the page a visitor actually lands on, and for an instance with a
+  // public front door that is this one rather than the chat behind it.
+  const notice = createHomeNotice();
+  if (notice) page.appendChild(notice);
 
   const body = el('div', 'oa-landing-body');
   if (landing.mode === 'intro') body.appendChild(intro(landing.intro, site.description));

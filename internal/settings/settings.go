@@ -21,30 +21,43 @@ import (
 // Known keys. Anything not listed here is still storable — the admin UI only
 // offers these, and a future module can add its own without a migration.
 const (
-	SiteName             = "site.name"
-	SiteDescription      = "site.description"
-	RegistrationEnabled  = "registration.enabled"
-	RegistrationGroup    = "registration.default_group"
-	RequireEmail         = "registration.require_email"
-	VerifyEmail          = "registration.verify_email"
-	EmailDomains         = "registration.email_domains"
-	SignupsPerMinute     = "registration.per_minute"
-	SignupsPerHour       = "registration.per_hour"
-	AdminsBypassQuota    = "quota.admins_bypass"
-	UsageDisplay         = "quota.usage_display"
-	LandingMode          = "landing.mode"
-	LandingIntro         = "landing.intro"
-	TrialEnabled         = "landing.trial_enabled"
-	TrialTurns           = "landing.trial_turns"
-	TrialModel           = "landing.trial_model"
-	DefaultSystemPrompt  = "chat.default_system_prompt"
-	ConversationMaxTurns = "chat.max_turns"
-	APIEnabled           = "api.enabled"
-	AttachmentMaxMB      = "attachments.max_mb"
-	AttachmentRetain     = "attachments.retain"
-	AttachmentPurgeDays  = "attachments.purge_after_days"
-	AttachmentPurgeDaily = "attachments.purge_daily_at"
-	AttachmentOrphanMins = "attachments.orphan_minutes"
+	SiteName        = "site.name"
+	SiteDescription = "site.description"
+	// The About panel's heading and body. Empty is the normal state and means
+	// "use the instance name and the built-in description", so an operator who
+	// never opens this screen still gets a sensible page.
+	AboutTitle = "about.title"
+	AboutBody  = "about.body"
+	// A standing notice above the chat. Unlike an announcement, which is a
+	// dated thing someone reads once, this is a property of the instance: it
+	// stays until an operator takes it down. Empty means there is none.
+	HomeNotice = "home.notice"
+	// Whether a reader may put it away. Off is for a notice that has to keep
+	// saying itself — a maintenance window, a policy nobody may miss.
+	HomeNoticeDismissible = "home.notice_dismissible"
+	RegistrationEnabled   = "registration.enabled"
+	RegistrationGroup     = "registration.default_group"
+	RequireEmail          = "registration.require_email"
+	QQRequirement         = "registration.qq_requirement"
+	VerifyEmail           = "registration.verify_email"
+	EmailDomains          = "registration.email_domains"
+	SignupsPerMinute      = "registration.per_minute"
+	SignupsPerHour        = "registration.per_hour"
+	AdminsBypassQuota     = "quota.admins_bypass"
+	UsageDisplay          = "quota.usage_display"
+	LandingMode           = "landing.mode"
+	LandingIntro          = "landing.intro"
+	TrialEnabled          = "landing.trial_enabled"
+	TrialTurns            = "landing.trial_turns"
+	TrialModel            = "landing.trial_model"
+	DefaultSystemPrompt   = "chat.default_system_prompt"
+	ConversationMaxTurns  = "chat.max_turns"
+	APIEnabled            = "api.enabled"
+	AttachmentMaxMB       = "attachments.max_mb"
+	AttachmentRetain      = "attachments.retain"
+	AttachmentPurgeDays   = "attachments.purge_after_days"
+	AttachmentPurgeDaily  = "attachments.purge_daily_at"
+	AttachmentOrphanMins  = "attachments.orphan_minutes"
 	// Written by the janitor rather than by a form, so that a restart does
 	// not lose track of whether today's purge already happened. Readable in
 	// the settings response and deliberately absent from the writable set.
@@ -106,14 +119,39 @@ func ValidUsageDisplay(value string) bool {
 	return false
 }
 
+// What new accounts are required to provide regarding QQ numbers.
+const (
+	QQDisabled = "off"
+	QQOptional = "optional"
+	QQRequired = "required"
+)
+
+var QQRequirements = []string{QQDisabled, QQOptional, QQRequired}
+
+func ValidQQRequirement(value string) bool {
+	for _, candidate := range QQRequirements {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 // Defaults are what a fresh instance behaves like, and what a deleted row
 // falls back to. Nothing reads a setting without one.
 var Defaults = map[string]string{
-	SiteName:            "Obsidian Arc",
-	SiteDescription:     "",
-	RegistrationEnabled: "true",
-	RegistrationGroup:   "",
-	RequireEmail:        "false",
+	SiteName:        "Obsidian Arc",
+	SiteDescription: "",
+	AboutTitle:      "",
+	AboutBody:       "",
+	HomeNotice:      "",
+	// Dismissible unless an operator says otherwise: a strip that cannot be
+	// put away is the exception, and defaults should not be the exception.
+	HomeNoticeDismissible: "true",
+	RegistrationEnabled:   "true",
+	RegistrationGroup:     "",
+	RequireEmail:          "false",
+	QQRequirement:         QQDisabled,
 	// Inert without SMTP, whatever it says: see auth.VerificationRequired.
 	VerifyEmail:  "false",
 	EmailDomains: "",

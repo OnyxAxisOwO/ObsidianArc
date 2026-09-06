@@ -17,18 +17,41 @@ import (
 // 'unsafe-inline' for the whole application.
 //
 // The hash is computed from the file that is actually served, so it stays
-// correct across edits and across whatever the bundler did to the markup.
+// correct across edits and across whatever the bundler did to the markup —
+// and from the script the *parser* produces rather than from the file's raw
+// bytes. Those two differ whenever the checkout has CRLF in it, and the
+// failure is silent in every test that does not drive a browser: the policy
+// advertises a hash the browser never asks for, so the one inline script here
+// is blocked and the theme it applies before first paint never runs. The white
+// flash it exists to prevent comes back, and nothing on the server says so.
 func InlineScriptHashes() []string {
 	index, err := fs.ReadFile(distFS, "dist/index.html")
 	if err != nil {
 		return nil
 	}
+	return inlineScriptHashes(string(index))
+}
+
+// inlineScriptHashes is everything above except finding the file, so a test can
+// hand it a shell instead of needing a built frontend on disk — and so the
+// test exercises this hashing rather than a copy of it.
+func inlineScriptHashes(html string) []string {
 	var out []string
-	for _, body := range inlineScripts(string(index)) {
-		sum := sha256.Sum256([]byte(body))
+	for _, body := range inlineScripts(html) {
+		sum := sha256.Sum256([]byte(normalizeNewlines(body)))
 		out = append(out, "'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'")
 	}
 	return out
+}
+
+// normalizeNewlines does to a script body what the HTML parser does to the
+// document before any script inside it is seen: CRLF and a lone CR both
+// become LF.
+func normalizeNewlines(s string) string {
+	if !strings.ContainsRune(s, '\r') {
+		return s
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
 }
 
 // inlineScripts returns the body of every <script> element that has no src

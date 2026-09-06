@@ -123,7 +123,8 @@ func TestPostgresMigrations(t *testing.T) {
 	for _, table := range []string{
 		"schema_migrations", "usage_counters", "usage_records", "quota_policies",
 		"attachments", "messages", "conversations", "group_models", "models",
-		"providers", "user_preferences", "settings", "sessions", "users", "user_groups",
+		"api_key_models", "api_keys", "providers", "user_preferences", "settings",
+		"sessions", "users", "user_groups",
 	} {
 		if _, err := db.Exec(ctx, `DROP TABLE IF EXISTS `+table+` CASCADE`); err != nil {
 			t.Fatalf("drop %s: %v", table, err)

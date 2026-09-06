@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -19,6 +20,11 @@ type Handlers struct {
 	// say why the list is disabled rather than offering a key that would be
 	// refused on first use. Optional; nil means always allowed.
 	Allowed func(*http.Request) error
+	// Reports whether this account may pin a key to the named model. A key
+	// naming a model its owner cannot reach is issued happily and then refuses
+	// every request it is ever used for, which reads as a broken server rather
+	// than as the mistake it is. Optional; nil accepts anything.
+	ModelAllowed func(*http.Request, string) error
 }
 
 func NewHandlers(keys *Store) *Handlers { return &Handlers{keys: keys} }
@@ -58,8 +64,9 @@ func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 }
 
 type createRequest struct {
-	Name    string `json:"name"`
-	ModelID string `json:"model_id"`
+	Name     string   `json:"name"`
+	ModelID  string   `json:"model_id"` // Deprecated: use model_ids.
+	ModelIDs []string `json:"model_ids"`
 	// Epoch millis; zero or absent means the key does not expire.
 	ExpiresAt int64 `json:"expires_at"`
 }
@@ -85,7 +92,14 @@ func (h *Handlers) create(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	record, token, err := h.keys.Issue(r.Context(), account.ID, body.Name, body.ModelID, body.ExpiresAt)
+	modelIDs := requestModelIDs(body.ModelIDs, body.ModelID)
+	for _, modelID := range modelIDs {
+		if err := h.modelAllowed(r, modelID); err != nil {
+			return err
+		}
+	}
+
+	record, token, err := h.keys.IssueModels(r.Context(), account.ID, body.Name, modelIDs, body.ExpiresAt)
 	if err != nil {
 		return translate(err)
 	}
@@ -93,10 +107,11 @@ func (h *Handlers) create(w http.ResponseWriter, r *http.Request) error {
 }
 
 type updateRequest struct {
-	Name      *string `json:"name"`
-	Disabled  *bool   `json:"disabled"`
-	ModelID   *string `json:"model_id"`
-	ExpiresAt *int64  `json:"expires_at"`
+	Name      *string   `json:"name"`
+	Disabled  *bool     `json:"disabled"`
+	ModelID   *string   `json:"model_id"` // Deprecated: use model_ids.
+	ModelIDs  *[]string `json:"model_ids"`
+	ExpiresAt *int64    `json:"expires_at"`
 }
 
 func (h *Handlers) update(w http.ResponseWriter, r *http.Request) error {
@@ -112,16 +127,49 @@ func (h *Handlers) update(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	var modelIDs *[]string
+	if body.ModelIDs != nil || body.ModelID != nil {
+		ids := requestModelIDs(pointerValue(body.ModelIDs), pointerString(body.ModelID))
+		modelIDs = &ids
+		for _, modelID := range ids {
+			if err := h.modelAllowed(r, modelID); err != nil {
+				return err
+			}
+		}
+	}
+
 	record, err := h.keys.Update(r.Context(), account.ID, keyID, Update{
 		Name:      body.Name,
 		Disabled:  body.Disabled,
-		ModelID:   body.ModelID,
+		ModelIDs:  modelIDs,
 		ExpiresAt: body.ExpiresAt,
 	})
 	if err != nil {
 		return translate(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, record)
+}
+
+func pointerValue(value *[]string) []string {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func pointerString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func requestModelIDs(modelIDs []string, legacyModelID string) []string {
+	ids := append([]string{}, modelIDs...)
+	if legacyModelID != "" {
+		ids = append(ids, legacyModelID)
+	}
+	return normalizeModelIDs(ids)
 }
 
 func (h *Handlers) delete(w http.ResponseWriter, r *http.Request) error {
@@ -142,6 +190,14 @@ func (h *Handlers) allowed(r *http.Request) error {
 		return nil
 	}
 	return h.Allowed(r)
+}
+
+func (h *Handlers) modelAllowed(r *http.Request, modelID string) error {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" || h.ModelAllowed == nil {
+		return nil
+	}
+	return h.ModelAllowed(r, modelID)
 }
 
 func translate(err error) error {

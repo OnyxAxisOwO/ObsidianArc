@@ -13,7 +13,10 @@ export interface ApiKey {
   prefix: string;
   name: string;
   disabled: boolean;
-  model_id: string;
+  /** Empty means the key may use every model the account may use. */
+  model_ids?: string[];
+  /** Compatibility field for clients that predate multi-model restrictions. */
+  model_id?: string;
   /** Epoch millis; zero means it never expires. */
   expires_at: number;
   last_used_at: number;
@@ -38,17 +41,17 @@ export function listKeys(): Promise<KeyList> {
  * The token in the result is the only copy that will ever exist. Show it
  * immediately; there is no endpoint that can produce it again.
  */
-export function createKey(name: string, expiresAt: number, modelId = ''): Promise<{ key: ApiKey; token: string }> {
+export function createKey(name: string, expiresAt: number, modelIDs: string[] = []): Promise<{ key: ApiKey; token: string }> {
   return api.post<{ key: ApiKey; token: string }>('/api/keys', {
     name,
     expires_at: expiresAt,
-    model_id: modelId,
+    model_ids: modelIDs,
   });
 }
 
 export function updateKey(
   id: string,
-  changes: { name?: string; disabled?: boolean; model_id?: string; expires_at?: number },
+  changes: { name?: string; disabled?: boolean; model_ids?: string[]; expires_at?: number },
 ): Promise<ApiKey> {
   return api.patch<ApiKey>(`/api/keys/${id}`, changes);
 }

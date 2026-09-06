@@ -70,6 +70,7 @@ func (s *Service) Hasher() *Hasher         { return s.hasher }
 type RegisterInput struct {
 	Username string
 	Email    string
+	QQ       string
 	Password string
 	Nickname string
 	IP       string
@@ -89,6 +90,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		return user.User{}, "", err
 	}
 	if err := user.ValidateEmail(in.Email); err != nil {
+		return user.User{}, "", err
+	}
+	if err := user.ValidateQQ(in.QQ); err != nil {
 		return user.User{}, "", err
 	}
 	if err := ValidatePassword(in.Password); err != nil {
@@ -115,6 +119,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			return user.User{}, "", ErrRegistrationClosed
 		}
 		if err := checkEmail(s.settings, in.Email); err != nil {
+			return user.User{}, "", err
+		}
+		if err := checkQQ(s.settings, in.QQ); err != nil {
 			return user.User{}, "", err
 		}
 		if allowed, retryAfter := s.signups.allow(
@@ -165,6 +172,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			if err := checkEmail(s.settings, in.Email); err != nil {
 				return err
 			}
+			if err := checkQQ(s.settings, in.QQ); err != nil {
+				return err
+			}
 			allowed, retryAfter := s.signups.allow(
 				s.settings.Int(settings.SignupsPerMinute, 0),
 				s.settings.Int(settings.SignupsPerHour, 0),
@@ -174,7 +184,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			}
 		}
 
-		usernameTaken, emailTaken, err := s.users.Exists(ctx, tx, in.Username, in.Email)
+		usernameTaken, emailTaken, qqTaken, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.QQ)
 		if err != nil {
 			return err
 		}
@@ -183,6 +193,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		}
 		if emailTaken {
 			return user.ErrEmailTaken
+		}
+		if qqTaken {
+			return user.ErrQQTaken
 		}
 
 		groupID, err := s.registrationGroup(ctx, tx)
@@ -202,6 +215,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		created, err = s.users.Create(ctx, tx, user.CreateInput{
 			Username:     in.Username,
 			Email:        in.Email,
+			QQ:           in.QQ,
 			PasswordHash: hash,
 			Nickname:     in.Nickname,
 			Role:         role,

@@ -114,7 +114,9 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// So the sign-up form can mark the field required and say which
 		// addresses will be accepted, instead of finding out on submit.
 		// Neither applies to the first account.
-		"require_email": count > 0 && h.settings.Bool(settings.RequireEmail),
+		"require_email":  count > 0 && h.settings.Bool(settings.RequireEmail),
+		"require_qq":     count > 0 && h.settings.Get(settings.QQRequirement) == settings.QQRequired,
+		"qq_requirement": h.qqRequirement(count == 0),
 		// So the sign-up card can say a link is coming, rather than the
 		// banner being the first anyone hears of it.
 		"verify_email":  count > 0 && h.service.VerificationRequired(),
@@ -123,7 +125,34 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// from a second endpoint because the front door has to decide what
 		// to draw before it can draw anything.
 		"landing": h.landing(count == 0),
+		// The About panel, as the operator has written it. Both may be empty,
+		// which is what the client reads as "use your own wording": the panel
+		// falls back to the instance name and its built-in description rather
+		// than rendering a blank card.
+		"about": map[string]any{
+			"title": h.settings.Get(settings.AboutTitle),
+			"body":  h.settings.Get(settings.AboutBody),
+		},
+		// The standing notice above the chat. Served here rather than from the
+		// announcements endpoint because it is not an announcement: nobody has
+		// a read state for it, it is not dated, and the front door needs it
+		// before anyone has signed in.
+		"home_notice": map[string]any{
+			"text":        h.settings.Get(settings.HomeNotice),
+			"dismissible": h.settings.Bool(settings.HomeNoticeDismissible),
+		},
 	})
+}
+
+func (h *Handlers) qqRequirement(first bool) string {
+	if first {
+		return settings.QQDisabled
+	}
+	val := h.settings.Get(settings.QQRequirement)
+	if val == settings.QQOptional || val == settings.QQRequired {
+		return val
+	}
+	return settings.QQDisabled
 }
 
 func emailDomains(accounts int, raw string) []string {
@@ -211,6 +240,7 @@ func verificationError(err error) error {
 type registerRequest struct {
 	Username string `json:"username"`
 	Email    string `json:"email"`
+	QQ       string `json:"qq"`
 	Password string `json:"password"`
 	Nickname string `json:"nickname"`
 }
@@ -224,6 +254,7 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 	account, token, err := h.service.Register(r.Context(), RegisterInput{
 		Username: body.Username,
 		Email:    body.Email,
+		QQ:       body.QQ,
 		Password: body.Password,
 		Nickname: body.Nickname,
 		IP:       httpx.ClientIP(r, h.trust),
@@ -305,6 +336,7 @@ type profileRequest struct {
 	Avatar   *string `json:"avatar"`
 	Bio      *string `json:"bio"`
 	Email    *string `json:"email"`
+	QQ       *string `json:"qq"`
 }
 
 func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
@@ -322,6 +354,7 @@ func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
 		Avatar:   body.Avatar,
 		Bio:      body.Bio,
 		Email:    body.Email,
+		QQ:       body.QQ,
 	})
 	if err != nil {
 		return profileError(err)
@@ -476,12 +509,16 @@ func registrationError(err error) error {
 	switch {
 	case errors.Is(err, ErrEmailRequired):
 		return httpx.BadRequest("An email address is required to register here.")
+	case errors.Is(err, user.ErrQQRequired):
+		return httpx.BadRequest("A QQ number is required to register here.")
 	case errors.Is(err, ErrRegistrationClosed):
 		return httpx.Forbidden("Registration is closed on this server.")
 	case errors.Is(err, user.ErrUsernameTaken):
 		return httpx.Conflict("username_taken", "That username is already taken.")
 	case errors.Is(err, user.ErrEmailTaken):
 		return httpx.Conflict("email_taken", "That email address is already registered.")
+	case errors.Is(err, user.ErrQQTaken):
+		return httpx.Conflict("qq_taken", "That QQ number is already registered.")
 	default:
 		return profileError(err)
 	}
@@ -491,6 +528,7 @@ func profileError(err error) error {
 	switch {
 	case errors.Is(err, user.ErrInvalidUsername),
 		errors.Is(err, user.ErrInvalidEmail),
+		errors.Is(err, user.ErrInvalidQQ),
 		errors.Is(err, user.ErrNicknameTooLong),
 		errors.Is(err, user.ErrBioTooLong),
 		errors.Is(err, user.ErrAvatarTooLong),
@@ -499,6 +537,8 @@ func profileError(err error) error {
 		return httpx.BadRequest("%s", trimPackagePrefix(err.Error()))
 	case errors.Is(err, user.ErrEmailTaken):
 		return httpx.Conflict("email_taken", "That email address is already registered.")
+	case errors.Is(err, user.ErrQQTaken):
+		return httpx.Conflict("qq_taken", "That QQ number is already registered.")
 	case errors.Is(err, user.ErrNotFound):
 		return httpx.NotFound("No such account.")
 	default:

@@ -148,11 +148,11 @@ Measured on the build in this repository, SQLite, one process:
 
 | | |
 | --- | --- |
-| Binary | 16.3 MB — 12.7 MB built `-tags nosqlite` for a Postgres-only deployment |
+| Binary | 16.9 MB — 13.3 MB built `-tags nosqlite` for a Postgres-only deployment |
 | Cold start to serving | 28 ms |
 | Idle resident memory | ~16 MB |
 | After 200 streamed turns, 20 concurrent | ~54 MB peak, 11 OS threads |
-| Frontend | 36 kB of JavaScript, 7.5 kB of CSS, gzipped |
+| Frontend | 77 kB of JavaScript, 12 kB of CSS, gzipped — one bundle, no code splitting |
 | Background goroutines at idle | 1 — a janitor on a ten-minute tick |
 | Direct Go dependencies | 3 |
 | Runtime frontend dependencies | 0 |

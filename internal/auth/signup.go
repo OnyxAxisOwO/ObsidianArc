@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 // Registration controls: who may hold an account here, and how fast accounts
@@ -122,6 +123,22 @@ func checkEmail(set *settings.Service, email string) error {
 		}
 	}
 	return &EmailDomainError{Allowed: allowed}
+}
+
+// checkQQ applies the QQ setting: whether one is needed at all,
+// and ensures it has a valid format when provided.
+func checkQQ(set *settings.Service, qq string) error {
+	number := strings.TrimSpace(qq)
+	req := set.Get(settings.QQRequirement)
+
+	if number == "" {
+		if req == settings.QQRequired {
+			return user.ErrQQRequired
+		}
+		return nil
+	}
+
+	return user.ValidateQQ(number)
 }
 
 // parseDomains reads the setting's comma- or newline-separated list. A stray

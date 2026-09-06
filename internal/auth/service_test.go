@@ -473,3 +473,84 @@ func TestExpiredSessionsArePruned(t *testing.T) {
 		t.Errorf("pruned %d sessions, want 1", removed)
 	}
 }
+
+func TestRegisterQQRequirement(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// Initial admin account setup passes without requirement.
+	admin, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admin.Role != user.RoleAdmin {
+		t.Fatalf("first account role = %q, want admin", admin.Role)
+	}
+
+	// 1. By default QQ is disabled (off)
+	// Empty QQ succeeds
+	user1, _, err := f.auth.Register(ctx, RegisterInput{Username: "user1", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("register with empty QQ when off: %v", err)
+	}
+	if user1.QQ != "" {
+		t.Errorf("user1 QQ = %q, want empty", user1.QQ)
+	}
+
+	// Invalid QQ format is rejected
+	_, _, err = f.auth.Register(ctx, RegisterInput{Username: "user-invalid-qq", Password: "a-good-password", QQ: "123"})
+	if !errors.Is(err, user.ErrInvalidQQ) {
+		t.Fatalf("expected ErrInvalidQQ, got %v", err)
+	}
+
+	// Valid QQ succeeds
+	user2, _, err := f.auth.Register(ctx, RegisterInput{Username: "user2", Password: "a-good-password", QQ: "10001"})
+	if err != nil {
+		t.Fatalf("register with valid QQ when off: %v", err)
+	}
+	if user2.QQ != "10001" {
+		t.Errorf("user2 QQ = %q, want 10001", user2.QQ)
+	}
+
+	// Duplicate QQ is rejected
+	_, _, err = f.auth.Register(ctx, RegisterInput{Username: "user-dup-qq", Password: "a-good-password", QQ: "10001"})
+	if !errors.Is(err, user.ErrQQTaken) {
+		t.Fatalf("expected ErrQQTaken, got %v", err)
+	}
+
+	// 2. Set QQRequirement to optional
+	if err := f.settings.Set(ctx, settings.QQRequirement, settings.QQOptional); err != nil {
+		t.Fatal(err)
+	}
+	user3, _, err := f.auth.Register(ctx, RegisterInput{Username: "user3", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("register with empty QQ when optional: %v", err)
+	}
+	if user3.QQ != "" {
+		t.Errorf("user3 QQ = %q, want empty", user3.QQ)
+	}
+	user4, _, err := f.auth.Register(ctx, RegisterInput{Username: "user4", Password: "a-good-password", QQ: "123456789"})
+	if err != nil {
+		t.Fatalf("register with valid QQ when optional: %v", err)
+	}
+	if user4.QQ != "123456789" {
+		t.Errorf("user4 QQ = %q, want 123456789", user4.QQ)
+	}
+
+	// 3. Set QQRequirement to required
+	if err := f.settings.Set(ctx, settings.QQRequirement, settings.QQRequired); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = f.auth.Register(ctx, RegisterInput{Username: "user-no-qq", Password: "a-good-password"})
+	if !errors.Is(err, user.ErrQQRequired) {
+		t.Fatalf("expected ErrQQRequired, got %v", err)
+	}
+
+	user5, _, err := f.auth.Register(ctx, RegisterInput{Username: "user5", Password: "a-good-password", QQ: "987654321"})
+	if err != nil {
+		t.Fatalf("register with valid QQ when required: %v", err)
+	}
+	if user5.QQ != "987654321" {
+		t.Errorf("user5 QQ = %q, want 987654321", user5.QQ)
+	}
+}

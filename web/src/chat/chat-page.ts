@@ -6,6 +6,7 @@
 // and knew nothing about providers. It still does; the host is just a
 // different one.
 
+import { createHomeNotice } from '../announce/home-notice';
 import { createVerifyBanner } from '../announce/verify-banner';
 import { renderShell } from '../app/shell';
 import { navigate } from '../router';
@@ -38,6 +39,12 @@ export function renderChatPage(root: HTMLElement): HTMLElement {
   // still change its address, it just cannot send anything yet.
   const banner = createVerifyBanner();
   if (banner) shell.root.insertBefore(banner, shell.body);
+
+  // Under the verification strip when both are up: that one is about this
+  // account and is something to act on, this one is about the instance and is
+  // something to know.
+  const notice = createHomeNotice();
+  if (notice) shell.root.insertBefore(notice, shell.body);
 
   // Reasoning is the page's state rather than either menu's: the composer
   // menu edits it, the model chip displays it, and the model in play decides

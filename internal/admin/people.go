@@ -1,17 +1,22 @@
 package admin
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -25,6 +30,34 @@ import (
 // owner-scoped queries everything else does: the handler resolves whose
 // transcript it is and passes that id down, so there is no unscoped read path
 // to leave lying around.
+
+// Returned from inside a transaction so the check and the refusal are not
+// separated by a commit boundary.
+var errLastAdmin = errors.New("admin: that is the last administrator")
+
+// lockAdminPopulation takes the row lock every change to the set of active
+// administrators must hold.
+//
+// The invariant — never zero administrators — is a read followed by a write,
+// and two of those running at once each see the other's administrator and both
+// proceed, leaving nobody able to administer the instance. A mutex would only
+// cover one process; this covers the database, which is what the deployment
+// notes promise when they allow a second instance against one of them.
+//
+// It is the same row auth takes when it decides who the first administrator
+// is, so a registration and a demotion serialise against each other too.
+// Upserting a known settings key without changing its value is what takes the
+// lock on both supported engines.
+func lockAdminPopulation(ctx context.Context, tx *database.Tx) error {
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT (key) DO UPDATE SET updated_at = settings.updated_at`,
+		settings.RegistrationEnabled, settings.Defaults[settings.RegistrationEnabled],
+		time.Now().UnixMilli()); err != nil {
+		return fmt.Errorf("admin: lock administrator population: %w", err)
+	}
+	return nil
+}
 
 func (h *Handlers) listUsers(w http.ResponseWriter, r *http.Request) error {
 	query := r.URL.Query()
@@ -98,6 +131,7 @@ type userRequest struct {
 	Avatar   *string `json:"avatar"`
 	Bio      *string `json:"bio"`
 	Email    *string `json:"email"`
+	QQ       *string `json:"qq"`
 
 	Role    *user.Role   `json:"role"`
 	GroupID *string      `json:"group_id"`
@@ -115,30 +149,15 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, user.MaxAvatarChars+16*1024); err != nil {
 		return err
 	}
-	if body.Role != nil || body.Status != nil {
-		h.accountMutations.Lock()
-		defer h.accountMutations.Unlock()
-	}
 
-	target, err := h.users.ByID(r.Context(), nil, userID)
-	if err != nil {
-		return translateUserError(err)
+	// Shape first, and outside the transaction: a malformed request should be
+	// refused without taking a lock the rest of the instance queues behind.
+	if body.Role != nil && *body.Role != user.RoleUser && *body.Role != user.RoleAdmin {
+		return httpx.BadRequest("Role must be user or admin.")
 	}
-
-	// Losing the last administrator locks everyone out of the instance for
-	// good, so the two changes that could cause it are checked first.
-	losingAdmin := (body.Role != nil && *body.Role != user.RoleAdmin && target.IsAdmin()) ||
-		(body.Status != nil && *body.Status != user.StatusActive && target.IsAdmin())
-	if losingAdmin {
-		remaining, err := h.users.CountActiveAdmins(r.Context(), nil, userID)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-		if remaining == 0 {
-			return httpx.Conflict("last_admin", "This is the last administrator; promote someone else first.")
-		}
+	if body.Status != nil && *body.Status != user.StatusActive && *body.Status != user.StatusDisabled {
+		return httpx.BadRequest("Status must be active or disabled.")
 	}
-
 	if body.GroupID != nil && *body.GroupID != "" {
 		if !isValidID(*body.GroupID) {
 			return httpx.BadRequest("Malformed group id.")
@@ -147,39 +166,73 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 			return translateGroupError(err)
 		}
 	}
-	if body.Role != nil && *body.Role != user.RoleUser && *body.Role != user.RoleAdmin {
-		return httpx.BadRequest("Role must be user or admin.")
-	}
-	if body.Status != nil && *body.Status != user.StatusActive && *body.Status != user.StatusDisabled {
-		return httpx.BadRequest("Status must be active or disabled.")
-	}
 
-	updated, err := h.users.UpdateProfile(r.Context(), nil, userID, user.ProfileUpdate{
-		Nickname: body.Nickname,
-		Avatar:   body.Avatar,
-		Bio:      body.Bio,
-		Email:    body.Email,
-	})
-	if err != nil {
-		return translateUserError(err)
-	}
+	var updated user.User
+	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
+		// Only the two changes that can cost the instance its last way in need
+		// to serialise; a nickname does not.
+		if body.Role != nil || body.Status != nil {
+			if err := lockAdminPopulation(r.Context(), tx); err != nil {
+				return err
+			}
+		}
 
-	if body.Role != nil || body.GroupID != nil || body.Status != nil {
-		updated, err = h.users.UpdateAdminFields(r.Context(), nil, userID, user.AdminUpdate{
-			Role:    body.Role,
-			GroupID: body.GroupID,
-			Status:  body.Status,
+		target, err := h.users.ByID(r.Context(), tx, userID)
+		if err != nil {
+			return err
+		}
+
+		// Losing the last administrator locks everyone out of the instance for
+		// good, so the two changes that could cause it are checked first.
+		losingAdmin := (body.Role != nil && *body.Role != user.RoleAdmin && target.IsAdmin()) ||
+			(body.Status != nil && *body.Status != user.StatusActive && target.IsAdmin())
+		if losingAdmin {
+			remaining, err := h.users.CountActiveAdmins(r.Context(), tx, userID)
+			if err != nil {
+				return err
+			}
+			if remaining == 0 {
+				return errLastAdmin
+			}
+		}
+
+		updated, err = h.users.UpdateProfile(r.Context(), tx, userID, user.ProfileUpdate{
+			Nickname: body.Nickname,
+			Avatar:   body.Avatar,
+			Bio:      body.Bio,
+			Email:    body.Email,
+			QQ:       body.QQ,
 		})
 		if err != nil {
-			return translateUserError(err)
+			return err
 		}
-	}
 
-	// A disabled account must stop working now, not at its next expiry.
-	if body.Status != nil && *body.Status == user.StatusDisabled {
-		if err := h.auth.Sessions().DeleteByUser(r.Context(), nil, userID); err != nil {
-			return httpx.Internal(err)
+		if body.Role != nil || body.GroupID != nil || body.Status != nil {
+			updated, err = h.users.UpdateAdminFields(r.Context(), tx, userID, user.AdminUpdate{
+				Role:    body.Role,
+				GroupID: body.GroupID,
+				Status:  body.Status,
+			})
+			if err != nil {
+				return err
+			}
 		}
+
+		// A disabled account must stop working now, not at its next expiry.
+		// Inside the transaction, so an account is never left disabled with a
+		// session still good because the delete failed after the commit.
+		if body.Status != nil && *body.Status == user.StatusDisabled {
+			if err := h.auth.Sessions().DeleteByUser(r.Context(), tx, userID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errLastAdmin) {
+			return httpx.Conflict("last_admin", "This is the last administrator; promote someone else first.")
+		}
+		return translateUserError(err)
 	}
 
 	slog.InfoContext(r.Context(), "administrator changed an account",
@@ -228,28 +281,35 @@ func (h *Handlers) deleteUser(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("You cannot delete your own account.")
 	}
 
-	h.accountMutations.Lock()
-	defer h.accountMutations.Unlock()
-
-	target, err := h.users.ByID(r.Context(), nil, userID)
-	if err != nil {
-		return translateUserError(err)
-	}
-	if target.IsAdmin() {
-		remaining, err := h.users.CountActiveAdmins(r.Context(), nil, userID)
-		if err != nil {
-			return httpx.Internal(err)
+	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
+		if err := lockAdminPopulation(r.Context(), tx); err != nil {
+			return err
 		}
-		if remaining == 0 {
+
+		target, err := h.users.ByID(r.Context(), tx, userID)
+		if err != nil {
+			return err
+		}
+		if target.IsAdmin() {
+			remaining, err := h.users.CountActiveAdmins(r.Context(), tx, userID)
+			if err != nil {
+				return err
+			}
+			if remaining == 0 {
+				return errLastAdmin
+			}
+		}
+
+		// Conversations, messages, attachments, sessions and preferences all
+		// cascade. The usage ledger cascades too: a deleted account should not
+		// leave rows nobody can attribute.
+		return h.users.Delete(r.Context(), tx, userID)
+	})
+	if err != nil {
+		if errors.Is(err, errLastAdmin) {
 			return httpx.Conflict("last_admin", "This is the last administrator; promote someone else first.")
 		}
-	}
-
-	// Conversations, messages, attachments, sessions and preferences all
-	// cascade. The usage ledger cascades too: a deleted account should not
-	// leave rows nobody can attribute.
-	if err := h.users.Delete(r.Context(), nil, userID); err != nil {
-		return httpx.Internal(err)
+		return translateUserError(err)
 	}
 	slog.WarnContext(r.Context(), "administrator deleted an account", "actor", actor.ID, "target", userID)
 	return httpx.NoContent(w)

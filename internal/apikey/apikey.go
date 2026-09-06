@@ -35,8 +35,11 @@ type Key struct {
 	Prefix   string `json:"prefix"`
 	Name     string `json:"name"`
 	Disabled bool   `json:"disabled"`
-	// Restricts this key to a specific model. Empty string means any permitted model.
+	// ModelID is retained for clients that still read the original single-model
+	// response. New callers should use ModelIDs.
 	ModelID string `json:"model_id"`
+	// Empty means any model the account itself may use.
+	ModelIDs []string `json:"model_ids"`
 	// Epoch millis; zero means it never expires.
 	ExpiresAt  int64 `json:"expires_at"`
 	LastUsedAt int64 `json:"last_used_at"`
@@ -88,9 +91,14 @@ type Store struct{ db *database.DB }
 
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
-// Issue creates a key and returns it together with the token, which the
-// caller must hand to the user immediately: this is the only time it exists.
+// Issue is the compatibility wrapper for callers that still pin one model.
 func (s *Store) Issue(ctx context.Context, userID, name, modelID string, expiresAt int64) (Key, string, error) {
+	return s.IssueModels(ctx, userID, name, []string{modelID}, expiresAt)
+}
+
+// IssueModels creates a key and returns it together with the token, which the
+// caller must hand to the user immediately: this is the only time it exists.
+func (s *Store) IssueModels(ctx context.Context, userID, name string, modelIDs []string, expiresAt int64) (Key, string, error) {
 	clean, err := checkName(name)
 	if err != nil {
 		return Key{}, "", err
@@ -100,6 +108,7 @@ func (s *Store) Issue(ctx context.Context, userID, name, modelID string, expires
 		return Key{}, "", ErrPastExpiry
 	}
 
+	modelIDs = normalizeModelIDs(modelIDs)
 	token := tokenPrefix + id.Secret(tokenBytes)
 	record := Key{
 		ID:        id.New(),
@@ -107,7 +116,8 @@ func (s *Store) Issue(ctx context.Context, userID, name, modelID string, expires
 		Prefix:    token[:prefixChars],
 		Name:      clean,
 		Disabled:  false,
-		ModelID:   strings.TrimSpace(modelID),
+		ModelID:   firstModelID(modelIDs),
+		ModelIDs:  modelIDs,
 		ExpiresAt: expiresAt,
 		CreatedAt: now.UnixMilli(),
 		UpdatedAt: now.UnixMilli(),
@@ -140,7 +150,17 @@ func (s *Store) Issue(ctx context.Context, userID, name, modelID string, expires
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			record.ID, record.UserID, Digest(token), record.Prefix, record.Name,
 			record.Disabled, record.ModelID, record.ExpiresAt, record.LastUsedAt, record.CreatedAt, record.UpdatedAt)
-		return err
+		if err != nil {
+			return err
+		}
+		for _, modelID := range modelIDs {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO api_key_models (api_key_id, model_id) VALUES (?, ?)`,
+				record.ID, modelID); err != nil {
+				return fmt.Errorf("apikey: restrict model %s: %w", modelID, err)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		if errors.Is(err, ErrTooMany) || errors.Is(err, ErrNotFound) {
@@ -180,7 +200,7 @@ func (s *Store) Resolve(ctx context.Context, token string) (Key, error) {
 	if record.Expired(time.Now()) {
 		return Key{}, ErrNotFound
 	}
-	return record, nil
+	return s.withModels(ctx, record)
 }
 
 // Touch records that a key was used. Best-effort by design: the caller
@@ -221,14 +241,22 @@ func (s *Store) List(ctx context.Context, userID string) ([]Key, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("apikey: list: %w", err)
 	}
+	for i := range out {
+		out[i], err = s.withModels(ctx, out[i])
+		if err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
 
 // Update is what the owner may change after the fact: what the key is called,
-// whether it is paused, which model it may query, and when it stops working.
+// whether it is paused, which models it may query, and when it stops working.
 type Update struct {
-	Name      *string
-	Disabled  *bool
+	Name     *string
+	Disabled *bool
+	ModelIDs *[]string
+	// ModelID is retained for callers using the original single-model API.
 	ModelID   *string
 	ExpiresAt *int64
 }
@@ -254,9 +282,18 @@ func (s *Store) Update(ctx context.Context, userID, keyID string, in Update) (Ke
 		sets = append(sets, "disabled = ?")
 		args = append(args, *in.Disabled)
 	}
-	if in.ModelID != nil {
+	var modelIDs []string
+	changeModels := in.ModelIDs != nil || in.ModelID != nil
+	if changeModels {
+		if in.ModelIDs != nil {
+			modelIDs = append(modelIDs, (*in.ModelIDs)...)
+		}
+		if in.ModelID != nil {
+			modelIDs = append(modelIDs, *in.ModelID)
+		}
+		modelIDs = normalizeModelIDs(modelIDs)
 		sets = append(sets, "model_id = ?")
-		args = append(args, strings.TrimSpace(*in.ModelID))
+		args = append(args, firstModelID(modelIDs))
 	}
 	if in.ExpiresAt != nil {
 		expiry := *in.ExpiresAt
@@ -274,14 +311,32 @@ func (s *Store) Update(ctx context.Context, userID, keyID string, in Update) (Ke
 
 	sets = append(sets, "updated_at = ?")
 	args = append(args, time.Now().UnixMilli(), keyID, userID)
-
-	result, err := s.db.Exec(ctx,
-		`UPDATE api_keys SET `+strings.Join(sets, ", ")+` WHERE id = ? AND user_id = ?`, args...)
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		result, err := tx.Exec(ctx,
+			`UPDATE api_keys SET `+strings.Join(sets, ", ")+` WHERE id = ? AND user_id = ?`, args...)
+		if err != nil {
+			return fmt.Errorf("apikey: update: %w", err)
+		}
+		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+			return ErrNotFound
+		}
+		if !changeModels {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM api_key_models WHERE api_key_id = ?`, keyID); err != nil {
+			return fmt.Errorf("apikey: clear models: %w", err)
+		}
+		for _, modelID := range modelIDs {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO api_key_models (api_key_id, model_id) VALUES (?, ?)`,
+				keyID, modelID); err != nil {
+				return fmt.Errorf("apikey: restrict model %s: %w", modelID, err)
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		return Key{}, fmt.Errorf("apikey: update: %w", err)
-	}
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
-		return Key{}, ErrNotFound
+		return Key{}, err
 	}
 	return s.byID(ctx, userID, keyID)
 }
@@ -302,8 +357,12 @@ func (s *Store) Delete(ctx context.Context, userID, keyID string) error {
 }
 
 func (s *Store) byID(ctx context.Context, userID, keyID string) (Key, error) {
-	return scan(s.db.QueryRow(ctx,
+	record, err := scan(s.db.QueryRow(ctx,
 		`SELECT `+columns+` FROM api_keys WHERE id = ? AND user_id = ?`, keyID, userID))
+	if err != nil {
+		return Key{}, err
+	}
+	return s.withModels(ctx, record)
 }
 
 type rowScanner interface{ Scan(dest ...any) error }
@@ -319,7 +378,61 @@ func scan(row rowScanner) (Key, error) {
 		}
 		return Key{}, fmt.Errorf("apikey: scan: %w", err)
 	}
+	record.ModelIDs = normalizeModelIDs([]string{record.ModelID})
 	return record, nil
+}
+
+func (s *Store) withModels(ctx context.Context, record Key) (Key, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT model_id FROM api_key_models WHERE api_key_id = ? ORDER BY model_id`, record.ID)
+	if err != nil {
+		return Key{}, fmt.Errorf("apikey: read models: %w", err)
+	}
+	defer rows.Close()
+
+	modelIDs := []string{}
+	for rows.Next() {
+		var modelID string
+		if err := rows.Scan(&modelID); err != nil {
+			return Key{}, fmt.Errorf("apikey: scan model: %w", err)
+		}
+		modelIDs = append(modelIDs, modelID)
+	}
+	if err := rows.Err(); err != nil {
+		return Key{}, fmt.Errorf("apikey: read models: %w", err)
+	}
+	if len(modelIDs) == 0 && record.ModelID != "" {
+		// This fallback keeps a row readable during an upgrade from a database
+		// created before the join table existed.
+		modelIDs = []string{record.ModelID}
+	}
+	record.ModelIDs = normalizeModelIDs(modelIDs)
+	record.ModelID = firstModelID(record.ModelIDs)
+	return record, nil
+}
+
+func normalizeModelIDs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func firstModelID(modelIDs []string) string {
+	if len(modelIDs) == 0 {
+		return ""
+	}
+	return modelIDs[0]
 }
 
 func checkName(value string) (string, error) {

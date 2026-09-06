@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -839,5 +840,90 @@ func TestRejectedTurnWritesNothing(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Errorf("a rejected turn created %d conversations", len(list))
+	}
+}
+
+func TestUpdateMessage(t *testing.T) {
+	f := newFixture(t)
+
+	conv, err := f.conversations.Create(context.Background(), nil, f.account.ID, "Test", f.model.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg, err := f.conversations.Append(context.Background(), nil, conversation.AppendInput{
+		ConversationID: conv.ID,
+		UserID:         f.account.ID,
+		Role:           conversation.RoleAssistant,
+		Content:        "Original answer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Update own message
+	updated, err := f.conversations.UpdateMessage(context.Background(), nil, f.account.ID, conv.ID, msg.ID, "Edited answer")
+	if err != nil {
+		t.Fatalf("UpdateMessage failed: %v", err)
+	}
+	if updated.Content != "Edited answer" {
+		t.Errorf("content = %q, want %q", updated.Content, "Edited answer")
+	}
+
+	// Another user cannot update it
+	_, err = f.conversations.UpdateMessage(context.Background(), nil, f.other.ID, conv.ID, msg.ID, "Hacked")
+	if !errors.Is(err, conversation.ErrMessageNotFound) {
+		t.Errorf("expected ErrMessageNotFound for stranger, got %v", err)
+	}
+}
+
+func TestUpdateMessageHandler(t *testing.T) {
+	f := newFixture(t)
+	handlers := NewHandlers(f.service, f.conversations)
+	mux := http.NewServeMux()
+	handlers.Routes(mux)
+
+	conv, err := f.conversations.Create(context.Background(), nil, f.account.ID, "Test", f.model.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := f.conversations.Append(context.Background(), nil, conversation.AppendInput{
+		ConversationID: conv.ID,
+		UserID:         f.account.ID,
+		Role:           conversation.RoleAssistant,
+		Content:        "Hello world",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// PATCH /api/conversations/{id}/messages/{message_id}
+	body := strings.NewReader(`{"content":"Updated message"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/conversations/"+conv.ID+"/messages/"+msg.ID, body)
+	req = req.WithContext(auth.WithUser(req.Context(), f.account))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH returned status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Message conversation.Message `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Message.Content != "Updated message" {
+		t.Errorf("got %q, want 'Updated message'", resp.Message.Content)
+	}
+
+	// Empty content should return 400 Bad Request
+	reqEmpty := httptest.NewRequest(http.MethodPatch, "/api/conversations/"+conv.ID+"/messages/"+msg.ID, strings.NewReader(`{"content":"   "}`))
+	reqEmpty = reqEmpty.WithContext(auth.WithUser(reqEmpty.Context(), f.account))
+	recEmpty := httptest.NewRecorder()
+	mux.ServeHTTP(recEmpty, reqEmpty)
+	if recEmpty.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty content, got %d", recEmpty.Code)
 	}
 }

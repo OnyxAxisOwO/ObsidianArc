@@ -74,10 +74,10 @@ export function closePanel(host: HTMLElement): void {
 }
 
 export function openPanel(options: PanelOptions): PanelHandle {
-  // A panel already standing at full width means one record is being swapped
-  // for another. Read that before closing it, which takes the class away: the
-  // new panel then takes the old one's place without animating, instead of
-  // flashing the list wide for the length of a slide out and a slide back in.
+  // A panel already open means one record is being swapped for another rather
+  // than a column arriving. Read that before closing it, which takes the class
+  // away: the new panel then takes the old one's place without animating,
+  // instead of flashing the list wide for a slide out and a slide back in.
   const replacing = Array.from(options.host.children).some(
     (child) => child instanceof HTMLElement && child.classList.contains('oa-panel') && child.classList.contains('open'),
   );

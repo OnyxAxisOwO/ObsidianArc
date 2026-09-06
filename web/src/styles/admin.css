@@ -1723,7 +1723,14 @@
   color: var(--ai-text-secondary);
 }
 
+/* The values are data, not prose — a status code, a duration, an address, a
+   ULID, a user agent — and most of them are read by holding them against
+   another record. Monospace is what makes two ids differ in a visible place
+   rather than in an overall length, and what stops the columns of digits from
+   shifting as they change. The labels beside them stay proportional: those are
+   words, and reading them is not the same job. */
 .oa-log-facts dd {
   margin: 0;
   overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }

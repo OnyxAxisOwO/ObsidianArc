@@ -30,7 +30,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -282,6 +281,7 @@ func (h *Handlers) available(ctx context.Context, who caller) ([]model.Model, er
 		return nil, internalError(err)
 	}
 	usable := make([]model.Model, 0, len(listed))
+	restrictions := keyModelIDs(who.key)
 	for _, record := range listed {
 		// A model the group may see but not query would be a listing entry
 		// that fails on use. The picker shows those to advertise an upgrade;
@@ -289,7 +289,7 @@ func (h *Handlers) available(ctx context.Context, who caller) ([]model.Model, er
 		if !record.Usable {
 			continue
 		}
-		if who.key.ModelID != "" && record.ID != who.key.ModelID && !strings.EqualFold(record.DisplayName, who.key.ModelID) {
+		if len(restrictions) > 0 && !matchesRestriction(record, restrictions) {
 			continue
 		}
 		usable = append(usable, record)
@@ -315,8 +315,8 @@ func (h *Handlers) resolveModel(ctx context.Context, who caller, wanted string) 
 		return "", err
 	}
 
-	// When the key is locked to a specific model, reject any request for another model.
-	if who.key.ModelID != "" {
+	// When the key is locked to a set of models, reject any request for another model.
+	if len(keyModelIDs(who.key)) > 0 {
 		for _, record := range available {
 			if strings.EqualFold(record.ID, wanted) || strings.EqualFold(record.DisplayName, wanted) {
 				return record.ID, nil
@@ -326,7 +326,7 @@ func (h *Handlers) resolveModel(ctx context.Context, who caller, wanted string) 
 			status:  http.StatusForbidden,
 			kind:    "invalid_request_error",
 			code:    "model_not_permitted",
-			message: fmt.Sprintf("This API key is restricted to model '%s'.", who.key.ModelID),
+			message: "This API key is restricted to the selected models.",
 		}
 	}
 
@@ -344,6 +344,25 @@ func (h *Handlers) resolveModel(ctx context.Context, who caller, wanted string) 
 		}
 	}
 	return "", unknownModel(wanted)
+}
+
+func keyModelIDs(key apikey.Key) []string {
+	if len(key.ModelIDs) > 0 {
+		return key.ModelIDs
+	}
+	if key.ModelID != "" {
+		return []string{key.ModelID}
+	}
+	return nil
+}
+
+func matchesRestriction(record model.Model, restrictions []string) bool {
+	for _, restriction := range restrictions {
+		if strings.EqualFold(record.ID, restriction) || strings.EqualFold(record.DisplayName, restriction) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- errors -------------------------------------------------------------------

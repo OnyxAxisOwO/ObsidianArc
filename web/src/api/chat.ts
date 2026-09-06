@@ -73,6 +73,14 @@ export function deleteConversation(id: string): Promise<void> {
   return api.delete<void>(`/api/conversations/${id}`);
 }
 
+export function updateMessage(
+  conversationID: string,
+  messageID: string,
+  content: string,
+): Promise<{ message: Message }> {
+  return api.patch<{ message: Message }>(`/api/conversations/${conversationID}/messages/${messageID}`, { content });
+}
+
 export function deleteAllConversations(): Promise<{ deleted: number }> {
   return api.delete<{ deleted: number }>('/api/conversations');
 }

@@ -205,10 +205,15 @@ Frontend runtime dependencies: **zero**. Build dependencies: `vite`,
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 16.3 MB (12.7 MB `-tags nosqlite`) |
-| Frontend bundle | < 80 kB gzipped | 43.5 kB (36 JS + 7.5 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 16.9 MB (13.3 MB `-tags nosqlite`) |
+| Frontend bundle | < 80 kB gzipped | **89.0 kB (77 JS + 12.1 CSS) — over** |
 | Background goroutines at idle | 1 | 1 |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+The bundle is the one target currently missed. It is a single chunk with no
+dynamic imports, so an anonymous visitor on the front door downloads the whole
+administration backoffice and both language tables before seeing a sign-in
+card. Splitting `admin/` and the `zh` table off is where the weight is.
 
 Connection pools: SQLite 4, Postgres 10. Neither is a bottleneck at this
 scale — a turn spends its time waiting on a provider, not on the database.

@@ -132,30 +132,35 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 // administrator invent settings nothing reads, and would let a typo silently
 // replace a real one.
 var writableSettings = map[string]bool{
-	settings.SiteName:             true,
-	settings.SiteDescription:      true,
-	settings.RegistrationEnabled:  true,
-	settings.RegistrationGroup:    true,
-	settings.RequireEmail:         true,
-	settings.VerifyEmail:          true,
-	settings.EmailDomains:         true,
-	settings.SignupsPerMinute:     true,
-	settings.SignupsPerHour:       true,
-	settings.AdminsBypassQuota:    true,
-	settings.UsageDisplay:         true,
-	settings.LandingMode:          true,
-	settings.LandingIntro:         true,
-	settings.TrialEnabled:         true,
-	settings.TrialTurns:           true,
-	settings.TrialModel:           true,
-	settings.DefaultSystemPrompt:  true,
-	settings.ConversationMaxTurns: true,
-	settings.APIEnabled:           true,
-	settings.AttachmentMaxMB:      true,
-	settings.AttachmentRetain:     true,
-	settings.AttachmentPurgeDays:  true,
-	settings.AttachmentPurgeDaily: true,
-	settings.AttachmentOrphanMins: true,
+	settings.SiteName:              true,
+	settings.SiteDescription:       true,
+	settings.AboutTitle:            true,
+	settings.AboutBody:             true,
+	settings.HomeNotice:            true,
+	settings.HomeNoticeDismissible: true,
+	settings.RegistrationEnabled:   true,
+	settings.RegistrationGroup:     true,
+	settings.RequireEmail:          true,
+	settings.QQRequirement:         true,
+	settings.VerifyEmail:           true,
+	settings.EmailDomains:          true,
+	settings.SignupsPerMinute:      true,
+	settings.SignupsPerHour:        true,
+	settings.AdminsBypassQuota:     true,
+	settings.UsageDisplay:          true,
+	settings.LandingMode:           true,
+	settings.LandingIntro:          true,
+	settings.TrialEnabled:          true,
+	settings.TrialTurns:            true,
+	settings.TrialModel:            true,
+	settings.DefaultSystemPrompt:   true,
+	settings.ConversationMaxTurns:  true,
+	settings.APIEnabled:            true,
+	settings.AttachmentMaxMB:       true,
+	settings.AttachmentRetain:      true,
+	settings.AttachmentPurgeDays:   true,
+	settings.AttachmentPurgeDaily:  true,
+	settings.AttachmentOrphanMins:  true,
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
@@ -175,6 +180,9 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 
 	if mode, present := body[settings.LandingMode]; present && !settings.ValidLandingMode(mode) {
 		return httpx.BadRequest("Unknown landing mode %q.", mode)
+	}
+	if req, present := body[settings.QQRequirement]; present && !settings.ValidQQRequirement(req) {
+		return httpx.BadRequest("Unknown QQ requirement %q.", req)
 	}
 	// A trial model that does not exist would make the front door offer a
 	// conversation it cannot hold.
