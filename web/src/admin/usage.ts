@@ -158,13 +158,11 @@ function holdButton(label: string, holdingLabel: string, done: () => void): HTML
   const text = el('span', 'oa-bigbutton-label', label);
   cap.appendChild(text);
 
-  // Ring and cap in one layer, so the press moves both and the two stay
-  // concentric. Moving the cap alone put it four pixels above the ring at
-  // rest and five below it while held — the gap read as a badly drawn circle.
-  const stack = el('div', 'oa-bigbutton-stack');
-  stack.appendChild(ring);
-  stack.appendChild(cap);
-  base.appendChild(stack);
+  // The ring belongs to the plate, not to the cap: it is the light around the
+  // housing, and it does not move. Alignment then cannot go wrong, because
+  // the only thing that travels is the cap, well inside it.
+  base.appendChild(ring);
+  base.appendChild(cap);
   wrap.appendChild(base);
 
   let timer = 0;

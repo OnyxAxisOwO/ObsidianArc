@@ -2186,25 +2186,17 @@
   transition: box-shadow 0.16s ease;
 }
 
-/* Ring and cap travel together. The plate is the fixed part; everything that
-   moves when the button is pressed is in here, which is what keeps the two
-   circles concentric in every state. */
-.oa-bigbutton-stack {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 152px;
-  height: 152px;
-  transition: transform 0.09s cubic-bezier(0.2, 0, 0, 1);
-}
-
 /* The hold, closing clockwise from the top. The mask is what turns a filled
    pie into a ring; both spellings, because one engine still wants the
    prefixed one. */
 .oa-bigbutton-ring {
   --hold: 0;
   position: absolute;
-  inset: 0;
+  /* Out at the rim of the plate, with the cap a clear twenty pixels inside
+     it. That gap is the whole point: a light hugging the cap turns a six
+     pixel press into a visibly uneven circle, which is what the first
+     version did. */
+  inset: 9px;
   border-radius: 50%;
   background: conic-gradient(
     from 0deg,
@@ -2244,7 +2236,9 @@
     0 8px 0 var(--cap-rim),
     0 14px 20px -8px rgba(0, 0, 0, 0.55),
     inset 0 2px 1px rgba(255, 255, 255, 0.34);
-  transition: box-shadow 0.09s cubic-bezier(0.2, 0, 0, 1);
+  transition:
+    transform 0.09s cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 0.09s cubic-bezier(0.2, 0, 0, 1);
 }
 
 .oa-bigbutton-cap:hover {
@@ -2267,11 +2261,8 @@
 
 /* Down. The rim collapses to almost nothing and the cap travels the distance
    the rim used to hold it up, so the two read as one movement. */
-.oa-bigbutton.holding .oa-bigbutton-stack {
-  transform: translateY(6px);
-}
-
 .oa-bigbutton.holding .oa-bigbutton-cap {
+  transform: translateY(6px);
   box-shadow:
     0 1px 0 var(--cap-rim),
     0 3px 8px -6px rgba(0, 0, 0, 0.55),
