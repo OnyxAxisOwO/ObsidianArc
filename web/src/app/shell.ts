@@ -111,6 +111,15 @@ function accountMenu(account: Account) {
     }));
 
     menu.appendChild(menuItem({
+      title: t('navUsage'),
+      leading: icon(ICONS.chart, 14),
+      onSelect: () => {
+        close();
+        navigate('/usage');
+      },
+    }));
+
+    menu.appendChild(menuItem({
       title: t('apiKeys'),
       leading: icon(ICONS.key, 14),
       onSelect: () => {

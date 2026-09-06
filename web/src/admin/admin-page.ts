@@ -10,7 +10,7 @@ import { showUnauthorizedModal } from '../auth/unauthorized-modal';
 import { renderShell } from '../app/shell';
 import { t, type StringKey } from '../i18n';
 import { navigate } from '../router';
-import { ICONS, button, clear, el, icon } from '../ui/dom';
+import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
 import { attachResizer } from '../ui/resizer';
 import { closePanel } from '../ui/panel';
 import { attachOverlayScrollbar, type OverlayScrollbarHandle } from '../ui/scrollbar';
@@ -18,6 +18,7 @@ import { formatUptime } from '../ui/table';
 import { numberField, type Control } from '../ui/form';
 import { adminApi, type AdminModel } from './api';
 import { renderAnnouncements } from './announcements';
+import { renderCodes } from './codes';
 import { renderDashboard } from './dashboard';
 import { renderGroups } from './groups';
 import { renderModels } from './models';
@@ -58,6 +59,7 @@ const PAGES: AdminPage[] = [
   { slug: 'providers', label: 'navProviders', icon: ICONS.server, render: renderProviders },
   { slug: 'models', label: 'navModels', icon: ICONS.spark, render: renderModels },
   { slug: 'usage', label: 'navUsage', icon: ICONS.chart, render: renderUsage },
+  { slug: 'codes', label: 'navCodes', icon: ICONS.key, render: renderCodes },
   { slug: 'logs', label: 'navLogs', icon: ICONS.file, render: renderLogs },
   { slug: 'settings', label: 'navSettings', icon: ICONS.sliders, render: renderSettings },
   { slug: 'announcements', label: 'announcements', icon: ICONS.file, render: renderAnnouncements },
@@ -144,7 +146,15 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
 
   const navItems = new Map<AdminPage, HTMLAnchorElement>();
   const rail = el('div', 'oa-admin-rail');
-  rail.appendChild(el('span', 'oa-admin-rail-title', t('administration')));
+  // The way out sits beside the heading rather than at the foot of the rail.
+  // It is the one control here that leaves the backoffice, and the bottom of
+  // a list of destinations is the last place anybody looks for it.
+  const railHead = el('div', 'oa-admin-rail-head');
+  railHead.appendChild(el('span', 'oa-admin-rail-title', t('administration')));
+  railHead.appendChild(el('span', 'oa-header-spacer'));
+  railHead.appendChild(iconButton('oa-icon-btn oa-admin-back', ICONS.chevron, t('backToChat'),
+    () => navigate('/'), 16));
+  rail.appendChild(railHead);
   for (const entry of PAGES) {
     const item = el('a', `oa-admin-nav${entry === page ? ' active' : ''}`);
     item.href = entry.slug ? `/admin/${entry.slug}` : '/admin';
@@ -155,7 +165,6 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
   }
 
   const foot = el('div', 'oa-admin-rail-foot');
-  foot.appendChild(button('oa-btn', t('backToChat'), () => navigate('/')));
   // Which build is running, from the server rather than from the bundle: the
   // two can differ behind a stale cache, and the server's answer is the one
   // that matters.

@@ -83,7 +83,6 @@ export function renderSettingsPage(root: HTMLElement): void {
         : 'enter-rise';
 
     const form = el('div', `oa-settings ${animClass}`);
-    form.appendChild(el('p', 'oa-settings-account', `@${account!.username}`));
 
     if (category === 'appearance') {
       form.appendChild(appearanceSection());
@@ -307,10 +306,13 @@ function accentLabel(name: AccentName): string {
 // --- wallpaper -----------------------------------------------------------------
 
 function wallpaperSection(): HTMLElement {
-  const wrap = panel(t('secWallpaper'), t('wallpaperHint'));
+  const wrap = panel(t('secWallpaper'));
 
   const current = wallpaper();
-  const status = el('p', 'oa-field-hint', current ? t('wallpaperSet') : t('wallpaperNone'));
+  // Empty until it has something to report. "A wallpaper is set" is a
+  // sentence about a picture the reader can already see behind the panel;
+  // this line is here for the upload, and for when one fails.
+  const status = el('p', 'oa-field-hint');
 
   const picker = el('input');
   picker.type = 'file';
@@ -436,7 +438,7 @@ function wallpaperSection(): HTMLElement {
       };
       setWallpaper(next);
       syncPreferences({ wallpaper: next });
-      status.textContent = t('wallpaperSet');
+      status.textContent = '';
       remove.hidden = false;
     } catch (error) {
       status.textContent = error instanceof ImageError || error instanceof ApiError
@@ -453,7 +455,7 @@ function wallpaperSection(): HTMLElement {
     }
     setWallpaper(null);
     syncPreferences({ wallpaper: null });
-    status.textContent = t('wallpaperNone');
+    status.textContent = '';
     remove.hidden = true;
   }
 

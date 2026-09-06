@@ -253,7 +253,14 @@ export function createModelControl(options: ModelControlOptions): ModelControl {
     });
     wrap.appendChild(modelRow);
 
-    if (!model?.supports_reasoning) {
+    if (!model) {
+      // No model yet, so there is nothing whose thinking this could be about.
+      // Saying "this model has no thinking steps" about a model nobody has
+      // chosen is an answer to a question that was not asked.
+      wrap.appendChild(el('p', 'ai-pop-note', t('reasoningPickFirst')));
+      return wrap;
+    }
+    if (!model.supports_reasoning) {
       // Nothing to set: saying so beats a slider that would be ignored.
       wrap.appendChild(el('p', 'ai-pop-note', t('reasoningUnavailable')));
       return wrap;

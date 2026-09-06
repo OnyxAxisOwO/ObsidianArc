@@ -108,9 +108,29 @@ export function nextThemeMode(mode: ThemeMode = themeMode()): ThemeMode {
   return ({ auto: 'light', light: 'dark', dark: 'auto' } as const)[mode];
 }
 
+// Cleared and reset rather than stacked: switching twice quickly should end
+// with one timer, not two racing to take the class off.
+let switching = 0;
+
+/**
+ * Marks the root for the length of a theme change, so the stylesheet can
+ * animate every colour at once instead of the handful of rules that happen to
+ * carry a transition of their own.
+ *
+ * Not applied on the first paint: the class is only added once a theme is
+ * already on screen, so a page loading dark does not fade into itself.
+ */
+function markSwitching(root: HTMLElement): void {
+  if (!started) return;
+  root.classList.add('theme-switching');
+  window.clearTimeout(switching);
+  switching = window.setTimeout(() => root.classList.remove('theme-switching'), 240);
+}
+
 function applyTheme(): void {
   const root = document.documentElement;
   const mode = themeMode();
+  markSwitching(root);
   if (mode === 'auto') root.removeAttribute('data-theme');
   else root.setAttribute('data-theme', mode);
   // Which lightness the accent hue is clamped to depends on the resolved

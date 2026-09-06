@@ -46,6 +46,17 @@ export interface ReasoningTier {
   budget: number;
 }
 
+export interface RedemptionCode {
+  id: string;
+  code: string;
+  cards: number;
+  claimed: number;
+  card_days: number;
+  expires_at: number;
+  note: string;
+  created_at: number;
+}
+
 export interface GroupModelGrant {
   model_id: string;
   access: 'use' | 'view';
@@ -301,6 +312,12 @@ export const adminApi = {
   createModel: (body: Record<string, unknown>) => api.post<{ model: AdminModel }>('/api/admin/models', body),
   updateModel: (id: string, body: Record<string, unknown>) =>
     api.patch<{ model: AdminModel }>(`/api/admin/models/${id}`, body),
+  codes: () => api.get<{ codes: RedemptionCode[] }>('/api/admin/codes'),
+  createCode: (body: Record<string, unknown>) =>
+    api.post<{ codes: RedemptionCode[] }>('/api/admin/codes', body),
+  deleteCode: (id: string) => api.delete<void>(`/api/admin/codes/${id}`),
+  grantCards: (userID: string, body: { cards: number; card_days: number }) =>
+    api.post<void>(`/api/admin/users/${userID}/cards`, body),
   reorderModels: (ids: string[]) =>
     api.put<void>('/api/admin/models/order', { ids }),
   resetQuota: (body: { scope: 'all' | 'group' | 'user'; id?: string }) =>

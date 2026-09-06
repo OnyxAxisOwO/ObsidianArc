@@ -246,6 +246,22 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
         body.appendChild(allowance);
       }
 
+      // Straight to this account, without a code in between. Beside the
+      // figures it changes, because "why does this person have no allowance
+      // left" and "give them another" are one thought.
+      const grant = numberField({ label: t('grantCards'), value: 1, min: 1, hint: t('grantCardsHint') });
+      const grantBtn = button('oa-btn', t('grantCards'), () => {
+        grantBtn.disabled = true;
+        void adminApi.grantCards(account.id, { cards: grant.value() ?? 1, card_days: 30 })
+          .then(() => { grantBtn.textContent = t('granted', { count: grant.value() ?? 1 }); })
+          .catch((error: unknown) => {
+            grantBtn.disabled = false;
+            window.alert(error instanceof ApiError ? error.message : String(error));
+          });
+      });
+      body.appendChild(grant.element);
+      body.appendChild(grantBtn);
+
       body.appendChild(section(t('secProfile')));
       body.appendChild(nickname.element);
       body.appendChild(email.element);

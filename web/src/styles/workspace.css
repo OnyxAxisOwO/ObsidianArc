@@ -658,6 +658,11 @@ button.oa-detect-row:not(:disabled):hover {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  /* The selected dot draws its ring 4px outside itself, which the first one
+     in the row had nowhere to put. Padding gives it the room and the negative
+     margin gives the row its alignment back. */
+  padding: 4px;
+  margin: -4px;
 }
 
 .oa-color-dot {
@@ -699,14 +704,33 @@ button.oa-detect-row:not(:disabled):hover {
   padding: 0;
 }
 
+/* Round, like the ten beside it. It was the one square swatch in a row of
+   circles, and its selected state was a border thickening rather than the
+   ring the others grow — two different answers to "this is the one". */
 .oa-color-custom-row input[type="color"]::-webkit-color-swatch {
   border: 1px solid var(--ai-outline-variant);
-  border-radius: 8px;
+  border-radius: 50%;
 }
 
-.oa-color-custom-row.active input[type="color"]::-webkit-color-swatch {
-  border-color: var(--ai-primary);
-  box-shadow: 0 0 0 1px var(--ai-primary);
+.oa-color-custom-row input[type="color"]::-moz-color-swatch {
+  border: 1px solid var(--ai-outline-variant);
+  border-radius: 50%;
+}
+
+.oa-color-custom-row input[type="color"] {
+  position: relative;
+  border-radius: 50%;
+  transition: transform 0.14s ease;
+}
+
+.oa-color-custom-row input[type="color"]:hover {
+  transform: scale(1.06);
+}
+
+/* The same ring the dots use, drawn outside the swatch rather than eating
+   into it. */
+.oa-color-custom-row.active input[type="color"] {
+  box-shadow: 0 0 0 2px var(--ai-primary);
 }
 
 .oa-color-custom-row input[type="text"] {

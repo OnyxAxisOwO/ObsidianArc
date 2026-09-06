@@ -12,6 +12,7 @@ import { renderChatPage } from './chat/chat-page';
 import { renderLandingPage } from './landing/landing-page';
 import { renderKeysPage } from './settings/api-keys';
 import { renderSettingsPage } from './settings/settings-page';
+import { renderUsagePage } from './usage/usage-page';
 import { renderShell } from './app/shell';
 import { loadLanguage, t } from './i18n';
 import { navigate, startRouter, type Route, type RouteContext } from './router';
@@ -43,6 +44,7 @@ const routes: Route[] = [
   { pattern: '/verify', render: (target, ctx) => renderVerifyPage(target, ctx.query) },
   { pattern: '/settings', render: guarded(renderSettingsPage) },
   { pattern: '/keys', render: guarded(renderKeysPage) },
+  { pattern: '/usage', render: guarded(renderUsagePage) },
   { pattern: '/about', render: guarded(renderAboutPage) },
   { pattern: '/admin/*', render: guarded(adminOnly(admin)) },
   { pattern: '/admin', render: guarded(adminOnly(admin)) },

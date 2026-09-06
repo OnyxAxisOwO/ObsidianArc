@@ -12,6 +12,7 @@ import { openPanel } from '../ui/panel';
 import { numberField, section, selectField, switchField, textField } from '../ui/form';
 import { compactNumber, relativeTime, renderTable, stacked } from '../ui/table';
 import { renderChart, type ChartShape } from '../ui/chart';
+import { celebrate } from '../ui/confetti';
 import {
   adminApi,
   emptyPolicy,
@@ -83,12 +84,19 @@ async function openReset(view: AdminView): Promise<void> {
     host: view.host,
     title: t('resetQuota'),
     cancelLabel: t('close'),
-    destructive: {
-      label: t('resetConfirmLabel'),
-      // The second click is the act. The first only arms it, which is the
-      // last moment anyone reads the scope they picked.
-      confirm: t('resetConfirm'),
-      onSelect: async (handle) => {
+    footer: false,
+    build: (body) => {
+      body.appendChild(el('p', 'oa-field-hint', t('resetExplain')));
+      body.appendChild(scope.element);
+      if (scope.value() === 'group') body.appendChild(group.element);
+      if (scope.value() === 'user') body.appendChild(account.element);
+      body.appendChild(holdButton(t('resetConfirmLabel'), t('resetHolding'), () => void run()));
+      body.appendChild(el('p', 'oa-field-hint oa-hold-note', t('resetHoldHint')));
+    },
+  });
+
+  async function run(): Promise<void> {
+        const handle = panel;
         const chosen = scope.value();
         if (chosen === 'group' && !group.value()) {
           handle.setError(t('resetNoGroup'));
@@ -108,20 +116,80 @@ async function openReset(view: AdminView): Promise<void> {
           handle.setBusy(false);
           handle.setTitle(t('resetDone', { count: accounts }));
           handle.setError('');
+          celebrate();
           view.reload();
         } catch (error) {
           handle.setBusy(false);
           handle.setError(error instanceof ApiError ? error.message : String(error));
         }
-      },
-    },
-    build: (body) => {
-      body.appendChild(el('p', 'oa-field-hint', t('resetExplain')));
-      body.appendChild(scope.element);
-      if (scope.value() === 'group') body.appendChild(group.element);
-      if (scope.value() === 'user') body.appendChild(account.element);
-    },
+  }
+}
+
+/**
+ * A button that has to be held down.
+ *
+ * Resetting everybody's usage is the largest thing this screen does and it
+ * was a small red word in a footer, the same size and shape as Cancel. A hold
+ * cannot be hit by accident, it shows how far along it is while it fills, and
+ * letting go early leaves nothing changed — which is the difference between
+ * a confirmation somebody read and one they clicked through.
+ */
+function holdButton(label: string, holdingLabel: string, done: () => void): HTMLElement {
+  const HOLD_MS = 1200;
+
+  const node = el('button', 'oa-hold');
+  node.type = 'button';
+  const fill = el('span', 'oa-hold-fill');
+  const text = el('span', 'oa-hold-label', label);
+  node.appendChild(fill);
+  node.appendChild(text);
+
+  let timer = 0;
+  let started = 0;
+  let frame = 0;
+
+  const paint = () => {
+    const ratio = Math.min(1, (Date.now() - started) / HOLD_MS);
+    fill.style.width = `${Math.round(ratio * 100)}%`;
+    if (ratio < 1) frame = requestAnimationFrame(paint);
+  };
+
+  const stop = () => {
+    window.clearTimeout(timer);
+    cancelAnimationFrame(frame);
+    timer = 0;
+    node.classList.remove('holding');
+    fill.style.width = '0%';
+    text.textContent = label;
+  };
+
+  const begin = (event: Event) => {
+    event.preventDefault();
+    if (timer) return;
+    started = Date.now();
+    node.classList.add('holding');
+    text.textContent = holdingLabel;
+    frame = requestAnimationFrame(paint);
+    timer = window.setTimeout(() => {
+      stop();
+      done();
+    }, HOLD_MS);
+  };
+
+  node.addEventListener('pointerdown', begin);
+  node.addEventListener('pointerup', stop);
+  node.addEventListener('pointerleave', stop);
+  node.addEventListener('pointercancel', stop);
+  // The keyboard has no press-and-hold, so it gets the same delay from the
+  // key going down to the key coming up rather than being locked out of the
+  // one action on the screen.
+  node.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') begin(event);
   });
+  node.addEventListener('keyup', stop);
+  node.addEventListener('blur', stop);
+
+  return node;
 }
 
 export async function renderUsage(view: AdminView): Promise<void> {

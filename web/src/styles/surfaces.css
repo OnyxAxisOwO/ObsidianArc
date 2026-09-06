@@ -51,8 +51,22 @@
   overflow: visible;
 }
 
+.oa-admin-rail-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 8px;
+}
+
+/* Points back the way the chat is, which is left. */
+.oa-admin-back svg {
+  transform: rotate(90deg);
+}
+
 .oa-admin-rail-title {
-  padding: 0 8px 8px;
+  /* The same 10px the entries below use. The heading was two pixels short of
+     the list it heads, which is the kind of thing you only see once. */
+  padding: 0 10px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -423,6 +437,7 @@
 }
 
 .oa-cell-title {
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -458,6 +473,71 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* The same rows, drawn for a screen somebody opened on purpose rather than a
+   menu they are passing through. */
+.oa-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Layout only. The look comes from .oa-input-row, which is where every other
+   inline field in this interface already gets it. */
+.oa-redeem-row {
+  margin-top: 8px;
+}
+
+.oa-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.oa-card-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-low);
+}
+
+.oa-card-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.oa-card-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-usage-large {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-low);
+}
+
+.oa-usage-large .oa-usage-row {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.oa-usage-large .oa-usage-value {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.oa-usage-large .oa-usage-reset {
+  display: block;
+  margin-top: 8px;
+  font-size: 11.5px;
 }
 
 .oa-stat-grid {
@@ -591,6 +671,25 @@
 .oa-panel.fullscreen,
 .oa-panel.zooming {
   transform: none;
+}
+
+/* While a panel covers the row, the columns behind it stop being painted.
+   
+   They were still there, and once the panels became translucent that stopped
+   being invisible: the blur was sampling a rail and a transcript nobody was
+   looking at, and two ghost cards showed through the sheet. Hidden rather
+   than removed, so the row keeps its shape and nothing reflows on the way
+   back — and delayed by the length of the zoom, so they leave after the
+   panel has finished growing over them rather than blinking out first. */
+.ai-chat > :not(.oa-panel),
+.oa-admin > :not(.oa-panel) {
+  transition: visibility 0s;
+}
+
+.ai-chat:has(> .oa-panel.fullscreen) > :not(.oa-panel),
+.oa-admin:has(> .oa-panel.fullscreen) > :not(.oa-panel) {
+  visibility: hidden;
+  transition: visibility 0s linear 0.34s;
 }
 
 /* The frame's travel is continuous; the arrangement inside it cannot be —
@@ -778,6 +877,77 @@
   gap: 4px;
 }
 
+/* A real switch, not a tick box.
+   
+   Scoped to .oa-switch-field so the checkbox lists elsewhere — which are a
+   set of things to pick, not a thing to turn on — keep their boxes. The
+   input is still the input: appearance is dropped and a track and knob drawn
+   in its place, so the label, the keyboard and the form value all still work
+   without a second element pretending to be one. */
+.oa-switch-field .oa-checkbox-field {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.oa-switch-field .oa-checkbox-field > span {
+  order: 1;
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"] {
+  order: 2;
+  position: relative;
+  flex-shrink: 0;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  appearance: none;
+  background: var(--ai-outline-variant);
+  cursor: pointer;
+  transition: background-color 0.18s ease;
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  /* White in both themes on purpose: the track carries the colour, and a knob
+     that followed the surface token would disappear into a dark one. */
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked {
+  background: var(--ai-primary);
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked::after {
+  transform: translateX(16px);
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-switch-field .oa-checkbox-field input[type="checkbox"],
+  .oa-switch-field .oa-checkbox-field input[type="checkbox"]::after {
+    transition: none;
+  }
+}
+
+/* Slimmer and fully rounded, closer to a media scrubber than to a gauge. The
+   fill keeps the accent: no token here hardcodes a hue, and the accent is
+   what colours the interface. */
+.oa-usage-large .oa-meter {
+  height: 8px;
+}
+
 .oa-check-list {
   display: flex;
   flex-direction: column;
@@ -818,12 +988,6 @@
 
 .oa-tier-row .oa-segmented {
   flex-shrink: 0;
-}
-
-.oa-check-row input {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--ai-primary);
 }
 
 .oa-check-text {
@@ -1340,11 +1504,69 @@
    to read and copy rather than buried in prose. */
 .oa-key-endpoint {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: center;
+  gap: 10px;
   padding: 9px 11px;
   border-radius: 10px;
   background: var(--ai-surface-container-low);
+}
+
+.oa-key-endpoint-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Rows that are chosen rather than ticked.
+   
+   The native box was the only outline left in this interface, and three of
+   them stacked in a filled well read as a form inside a form. The row itself
+   is the control now: a fill says it is chosen, which is what a fill means
+   everywhere else here. */
+.oa-check-row input[type="checkbox"] {
+  appearance: none;
+  position: relative;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  background: var(--ai-state-hover);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.oa-check-row input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 3px;
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid var(--ai-primary-text);
+  border-bottom: 2px solid var(--ai-primary-text);
+  transform: rotate(-45deg) scale(0.6);
+  opacity: 0;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.oa-check-row input[type="checkbox"]:checked {
+  background: var(--ai-primary);
+}
+
+.oa-check-row input[type="checkbox"]:checked::after {
+  opacity: 1;
+  transform: rotate(-45deg) scale(1);
+}
+
+.oa-check-row input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-check-row:has(input:checked) {
+  background: var(--ai-state-hover);
 }
 
 .oa-key-endpoint code {
@@ -1814,3 +2036,142 @@
   overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+
+/* --- the select's own popup --------------------------------------------- */
+
+/* A browser draws the option list, not this stylesheet: it cannot be given a
+   radius, a fill, or the gap under the control that every other menu here
+   has. Chromium hands it back through base-select, so where that exists the
+   picker becomes an ordinary surface and looks like the rest of the
+   interface.
+
+   Behind @supports rather than replaced with a custom control in
+   JavaScript. A hand-built dropdown is a keyboard map, a focus trap and a
+   positioning problem — in every browser — to fix the appearance in one. */
+@supports (appearance: base-select) {
+  select,
+  ::picker(select) {
+    appearance: base-select;
+  }
+
+  ::picker(select) {
+    /* The gap the native popup has no way to leave. */
+    margin-top: 6px;
+    padding: 6px;
+    border: none;
+    border-radius: 14px;
+    background: var(--ai-surface-card);
+    box-shadow: var(--ai-shadow-md);
+  }
+
+  select option {
+    padding: 8px 10px;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--ai-text);
+    font-size: 12.5px;
+  }
+
+  select option:hover {
+    background: var(--ai-state-hover);
+  }
+
+  select option:checked {
+    background: var(--ai-primary);
+    color: var(--ai-primary-text);
+  }
+
+  /* Both marks the picker would add of its own: the tick in front of the
+     selected row, which shifts every other row sideways, and a second arrow
+     on the control, which already draws one. */
+  select option::checkmark,
+  select::picker-icon {
+    display: none;
+  }
+}
+
+/* A minted batch, listed once. Monospace and one per line so it can be
+   selected, copied, or read aloud without a character being in doubt. */
+.oa-code-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.oa-code-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--ai-text);
+}
+
+/* Held, not clicked. The fill is the only moving part: it says how much
+   longer, and it is the reason letting go early reads as "nothing happened"
+   rather than "did that work?". */
+.oa-hold {
+  position: relative;
+  display: block;
+  width: 100%;
+  margin-top: 18px;
+  padding: 14px 18px;
+  border: none;
+  border-radius: 999px;
+  background: var(--ai-danger);
+  color: var(--ai-surface-card);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  box-shadow: 0 6px 18px -8px var(--ai-danger), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.oa-hold:hover {
+  box-shadow: 0 10px 24px -10px var(--ai-danger), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+/* Pressed in, which is what makes it read as a thing being held down rather
+   than a thing that has been clicked. */
+.oa-hold.holding {
+  transform: translateY(1px) scale(0.995);
+  box-shadow: 0 2px 8px -6px var(--ai-danger), inset 0 2px 6px rgba(0, 0, 0, 0.28);
+}
+
+.oa-hold-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: rgba(0, 0, 0, 0.24);
+  pointer-events: none;
+}
+
+.oa-hold-label {
+  position: relative;
+}
+
+.oa-hold:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-hold-note {
+  margin-top: 8px;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-hold {
+    transition: none;
+  }
+}
+

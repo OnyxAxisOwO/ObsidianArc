@@ -136,8 +136,14 @@ export function openPanel(options: PanelOptions): PanelHandle {
       // Slide out before removing, so the column is seen leaving rather than
       // vanishing and snapping the content wider.
       panel.classList.remove('open');
-      window.setTimeout(() => panel.remove(), 340);
-      options.onClose?.();
+      window.setTimeout(() => {
+        panel.remove();
+        // After it has gone, not when it was asked to go. Every caller here
+        // navigates in this callback, and a navigation replaces the whole
+        // root — which took the panel with it before it had moved a pixel,
+        // and made the animation above look like it did not exist.
+        options.onClose?.();
+      }, 340);
     },
     rebuild() {
       body.textContent = '';

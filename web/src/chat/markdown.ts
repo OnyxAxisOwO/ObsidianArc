@@ -19,6 +19,8 @@
 //     data:, bare relative paths that mean nothing here — renders as its own
 //     literal text.
 
+import { t } from '../i18n';
+
 // The LaTeX renderer is a fifth of this file's weight and most conversations
 // never contain a formula, so it arrives as a chunk of its own, requested by
 // the first math node anyone actually renders.
@@ -450,6 +452,76 @@ function renderInline(nodes: Inline[], parent: Node): void {
   }
 }
 
+// Long enough for the word to be read, short enough that a reader copying two
+// blocks in a row is not left wondering which one the label belongs to.
+const COPIED_SHOWN_MS = 1500;
+
+/**
+ * Writes text to the clipboard, reporting whether it landed.
+ *
+ * It lives here, next to the code block that needed it first, rather than in
+ * a file of its own: the transcript's own copy buttons call it too, and one
+ * implementation that both share is the point — two would drift apart on the
+ * fallback, which is the half nobody exercises.
+ */
+export async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // navigator.clipboard does not exist on a plain-http origin and its
+    // permission can be refused outright, so without the path below the copy
+    // control would silently do nothing on exactly the deployments that have
+    // no TLS in front of them.
+  }
+
+  const staging = document.createElement('textarea');
+  staging.value = text;
+  staging.readOnly = true;
+  // Off-screen rather than hidden: execCommand copies a selection, and an
+  // element that is not rendered cannot hold one. Fixed positioning keeps the
+  // page from scrolling to it.
+  staging.style.position = 'fixed';
+  staging.style.top = '-1000px';
+  staging.style.opacity = '0';
+  document.body.appendChild(staging);
+  try {
+    staging.select();
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    staging.remove();
+  }
+}
+
+function copyControl(text: string): HTMLButtonElement {
+  const control = document.createElement('button');
+  control.type = 'button';
+  control.className = 'ai-code-copy';
+  control.textContent = t('copy');
+
+  // renderInto rebuilds the transcript on every streamed delta, so this button
+  // is thrown away and made again constantly. Everything it owns — the
+  // listener and the revert timer — is held on the element itself; nothing is
+  // registered on document, and a detached button's pending timer only ever
+  // writes to the node that is already gone.
+  let revert = 0;
+  control.addEventListener('click', () => {
+    void copyToClipboard(text).then((copied) => {
+      if (!copied) return;
+      control.textContent = t('copied');
+      control.classList.add('copied');
+      window.clearTimeout(revert);
+      revert = window.setTimeout(() => {
+        control.textContent = t('copy');
+        control.classList.remove('copied');
+      }, COPIED_SHOWN_MS);
+    });
+  });
+  return control;
+}
+
 function renderBlock(block: Block): Node {
   switch (block.type) {
     case 'hr':
@@ -474,7 +546,15 @@ function renderBlock(block: Block): Node {
       const lang = SAFE_LANG_RE.test(block.lang) ? block.lang.toLowerCase() : '';
       if (lang) code.className = `language-${lang}`;
       pre.appendChild(code);
-      return pre;
+
+      // The wrapper anchors the copy button, not the <pre>: the <pre> scrolls
+      // horizontally, and a control positioned inside it would slide away with
+      // the long line the reader scrolled to see.
+      const wrap = document.createElement('div');
+      wrap.className = 'ai-code';
+      wrap.appendChild(pre);
+      wrap.appendChild(copyControl(block.text));
+      return wrap;
     }
 
     case 'blockquote': {

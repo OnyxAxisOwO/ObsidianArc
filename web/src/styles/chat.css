@@ -469,6 +469,64 @@
   background: none;
 }
 
+/* The wrapper the renderer puts around a fenced block, so the copy button has
+   something to be positioned against that does not scroll sideways with a long
+   line. It inherits the margin the <pre> used to carry. */
+.ai-code {
+  position: relative;
+  margin: 0 0 8px;
+}
+
+.ai-code pre {
+  margin: 0;
+}
+
+/* Same shape as the delete button in the conversation list: out of the way
+   until the block is hovered, and a fill rather than an outline once it is. */
+.ai-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 3px 9px;
+  border: none;
+  border-radius: 999px;
+  background: var(--ai-surface-container-high);
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.ai-code:hover .ai-code-copy,
+.ai-code-copy:focus-visible,
+.ai-code-copy.copied {
+  opacity: 1;
+}
+
+.ai-code-copy:hover {
+  background: var(--ai-field-bg-hover);
+  color: var(--ai-text);
+}
+
+.ai-code-copy.copied {
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+}
+
+.ai-code-copy:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+/* A touch pointer has no hover to reveal it with, so on those screens the
+   button is simply always there. */
+@media (hover: none) {
+  .ai-code-copy {
+    opacity: 1;
+  }
+}
+
 .ai-answer a {
   color: var(--ai-primary);
 }
@@ -629,8 +687,21 @@
   width: 100%;
 }
 
+/* The composer's textarea is transparent because the pill around it carries
+   the fill. Reused on its own in the transcript it had nothing behind it, so
+   it gets its own surface here rather than a second class doing half a job. */
 .ai-msg-edit-input {
   width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text);
+}
+
+.ai-msg-edit-input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 .ai-msg-editor-actions {
@@ -1018,6 +1089,12 @@
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
+  /* Feathered on the trailing edge while it leaves. A card sliding out from
+     under another one meets it as a hard vertical line, which reads as two
+     surfaces colliding rather than one going away. Applied with the class, so
+     on the way back it is gone before the rail is visible enough to notice. */
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 28px);
+  mask-image: linear-gradient(to left, transparent 0, #000 28px);
   transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
     visibility 0s linear 0.34s;
 }
@@ -1314,6 +1391,24 @@
   color: var(--ai-text-secondary);
 }
 
+/* The popover opens upward, so the chevron points the way it will go: up
+   while it is shut, down once it is open and the way back is down. A chip
+   that always points down is telling you the panel is below it. */
+.ai-model-chip > svg:last-child {
+  transform: rotate(180deg);
+  transition: transform 0.18s ease;
+}
+
+.ai-model-chip.open > svg:last-child {
+  transform: rotate(0deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-model-chip > svg:last-child {
+    transition: none;
+  }
+}
+
 .ai-model-chip-spark {
   flex-shrink: 0;
   color: var(--ai-primary);
@@ -1521,11 +1616,17 @@
   inset: 0 auto 0 0;
   width: calc(var(--effort-thumb) / 2 + (100% - var(--effort-thumb)) * var(--effort-ratio));
   overflow: hidden;
-  border-radius: 999px;
+  /* Rounded only where it starts. Its right end is always under the thumb, so
+     a radius there draws a curve inside a circle — two arcs meeting at
+     nothing, which is what makes the join look broken rather than seamless. */
+  border-radius: 999px 0 0 999px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 58%),
     linear-gradient(90deg, #2b5fd9 0%, #4a6cf0 50%, #6f7ff5 100%);
-  box-shadow: 0 0 14px -3px var(--effort-glow);
+  /* Sized to the room it has, not to what looks best on its own. The
+     popover's body clips — it animates its own height — and the fill starts
+     10px from that edge, so a wider halo is a halo with a flat side. */
+  box-shadow: 0 0 9px -3px var(--effort-glow);
   transition: width 0.18s cubic-bezier(0.2, 0, 0, 1);
 }
 

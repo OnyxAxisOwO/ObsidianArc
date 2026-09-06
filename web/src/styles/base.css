@@ -94,6 +94,25 @@ body {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 }
 
+/* The pieces inside a card.
+   
+   Only these, and only at a fixed alpha: they are already sitting on a
+   translucent surface, so letting them follow the same slider would multiply
+   one alpha by another and the reader would be looking at a photograph with
+   some text floating in it. Half-transparent over a card that is itself
+   half-transparent is as far as this goes. */
+.has-wallpaper .oa-stat,
+.has-wallpaper .oa-spark,
+.has-wallpaper .oa-usage-large,
+.has-wallpaper .oa-card-row {
+  background: color-mix(in srgb, var(--ai-surface-container-low) 55%, transparent);
+}
+
+.has-wallpaper .oa-filters select,
+.has-wallpaper .oa-filters input {
+  background-color: color-mix(in srgb, var(--ai-field-bg) 55%, transparent);
+}
+
 /* There is deliberately no prefers-reduced-transparency rule here.
 
    There was one, and it was wrong: that hint is for decoration a reader never
@@ -255,5 +274,34 @@ noscript {
 .oa-overlay-thumb:hover,
 .oa-overlay-track.dragging .oa-overlay-thumb {
   background-color: var(--ai-text-secondary);
+}
+
+/* Changing theme, for the length of the change only.
+
+   Some surfaces already animated their colour and most did not, so switching
+   looked like half the interface arriving late. Rather than add a transition
+   to sixty rules and keep them in step, the class is put on the root for the
+   length of the swap and taken off again — which is also why !important is
+   defensible here: it is deliberately overriding every element's own idea of
+   what to animate, for a fifth of a second, and then it is gone. */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    fill 0.2s ease,
+    stroke 0.2s ease !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-switching,
+  .theme-switching *,
+  .theme-switching *::before,
+  .theme-switching *::after {
+    transition: none !important;
+  }
 }
 

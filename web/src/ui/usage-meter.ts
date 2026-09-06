@@ -19,8 +19,12 @@ import { el } from './dom';
  * it to be a fraction of, and a full-width track would say "at the ceiling"
  * about an account that has none.
  */
-export function usageWindow(window: UsageWindow, display: UsageDisplay = 'absolute'): HTMLElement {
-  const wrap = el('div');
+export function usageWindow(
+  window: UsageWindow,
+  display: UsageDisplay = 'absolute',
+  size: 'compact' | 'large' = 'compact',
+): HTMLElement {
+  const wrap = el('div', size === 'large' ? 'oa-usage-large' : null);
 
   const row = el('div', 'oa-usage-row');
   row.appendChild(el('span', null, t(windowLabel(window.kind))));

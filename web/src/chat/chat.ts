@@ -33,7 +33,7 @@ import { t } from '../i18n';
 import { ICONS, button, clear, confirmable, el, icon, iconButton } from '../ui/dom';
 import { createComposerMenu, type ComposerMenu } from './composer-menu';
 import { ImageError, prepareImage, type PreparedImage } from './image';
-import { renderInto } from './markdown';
+import { copyToClipboard, renderInto } from './markdown';
 import { attachOverlayScrollbar } from '../ui/scrollbar';
 
 const MAX_MESSAGE_CHARS = 32000;
@@ -303,13 +303,11 @@ export function mountChat(options: ChatOptions): ChatHandle {
   }
 
   async function copyText(text: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(text);
-      setFlash(t('copied'));
-    } catch {
-      // Clipboard permission is not guaranteed in every browser, and a failed
-      // copy is not worth an error state in the transcript.
-    }
+    // Shared with the copy button on every fenced code block, so both reach
+    // the clipboard the same way. A refusal stays silent: the clipboard is not
+    // guaranteed in every browser, and a failed copy is not worth an error
+    // state in the transcript.
+    if (await copyToClipboard(text)) setFlash(t('copied'));
   }
 
   // --- attachments ----------------------------------------------------------

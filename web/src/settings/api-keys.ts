@@ -15,6 +15,7 @@ import { api, ApiError } from '../api/client';
 import { createKey, deleteKey, listKeys, updateKey, type ApiKey } from '../api/keys';
 import type { AvailableModel } from '../chat/model-picker';
 import { renderChatPage } from '../chat/chat-page';
+import { copyToClipboard } from '../chat/markdown';
 import { t } from '../i18n';
 import { navigate } from '../router';
 import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
@@ -432,9 +433,24 @@ function introSection(enabled: boolean): HTMLElement {
 
 /** The base URL to paste into a client, which is the other half of a key. */
 function usageHint(): HTMLElement {
+  const endpoint = `${window.location.origin}/v1`;
+
   const wrap = el('div', 'oa-key-endpoint');
-  wrap.appendChild(el('span', 'oa-field-label', t('apiBaseUrl')));
-  wrap.appendChild(el('code', null, `${window.location.origin}/v1`));
+  const text = el('div', 'oa-key-endpoint-text');
+  text.appendChild(el('span', 'oa-field-label', t('apiBaseUrl')));
+  text.appendChild(el('code', null, endpoint));
+  wrap.appendChild(text);
+
+  // It exists to be pasted somewhere else, and selecting monospace text out
+  // of a rounded box by hand is the part nobody enjoys.
+  const copy = iconButton('oa-icon-btn', ICONS.copy, t('copy'), () => {
+    void copyToClipboard(endpoint).then((ok) => {
+      if (!ok) return;
+      copy.title = t('copied');
+      window.setTimeout(() => { copy.title = t('copy'); }, 1500);
+    });
+  }, 15);
+  wrap.appendChild(copy);
   return wrap;
 }
 

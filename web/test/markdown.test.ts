@@ -137,4 +137,38 @@ describe('markdown renderer', () => {
       expect(Date.now() - start).toBeLessThan(500);
     });
   });
+
+  describe('code blocks', () => {
+    it('wraps a fenced block so the copy control has somewhere to sit', () => {
+      const host = document.createElement('div');
+      renderInto(host, '```js\nconst a = 1;\n```');
+
+      const wrap = host.querySelector('.ai-code');
+      expect(wrap).not.toBeNull();
+      // The wrapper, not the <pre>: the <pre> scrolls sideways, and a control
+      // positioned inside it would ride away with a long line.
+      expect(wrap?.querySelector('pre > code')?.textContent).toBe('const a = 1;');
+      expect(wrap?.querySelector('code')?.className).toBe('language-js');
+
+      const button = wrap?.querySelector('button.ai-code-copy');
+      expect(button).not.toBeNull();
+      expect(button?.getAttribute('type')).toBe('button');
+    });
+
+    it('leaves inline code alone, which has nothing worth a control', () => {
+      const host = document.createElement('div');
+      renderInto(host, 'a `const a = 1;` b');
+      expect(host.querySelector('.ai-code')).toBeNull();
+      expect(host.querySelector('button.ai-code-copy')).toBeNull();
+      expect(host.querySelector('code')?.textContent).toBe('const a = 1;');
+    });
+
+    it('re-renders without leaving a second control behind', () => {
+      const host = document.createElement('div');
+      renderInto(host, '```\nfirst\n```');
+      renderInto(host, '```\nsecond\n```');
+      expect(host.querySelectorAll('button.ai-code-copy').length).toBe(1);
+      expect(host.querySelector('pre > code')?.textContent).toBe('second');
+    });
+  });
 });

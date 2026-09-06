@@ -942,3 +942,42 @@ body.oa-resizing * {
 .oa-field-inert {
   opacity: 0.6;
 }
+
+/* --- confetti ----------------------------------------------------------- */
+
+/* Above everything, touchable by nothing. The layer is removed by the code
+   that made it; the pointer-events rule is what stops it swallowing a click
+   in the two seconds it exists. */
+.oa-confetti {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.oa-confetti-piece {
+  position: absolute;
+  top: -14px;
+  width: 8px;
+  height: 12px;
+  border-radius: 2px;
+  animation-name: oa-confetti-fall;
+  animation-timing-function: cubic-bezier(0.25, 0.6, 0.4, 1);
+  animation-fill-mode: forwards;
+}
+
+@keyframes oa-confetti-fall {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(var(--drift, 0), 105vh, 0) rotate(var(--spin, 360deg));
+    opacity: 0;
+  }
+}
+
