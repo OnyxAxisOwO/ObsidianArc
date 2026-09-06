@@ -108,7 +108,7 @@ body {
   background: color-mix(in srgb, var(--ai-surface-container-low) 55%, transparent);
 }
 
-.has-wallpaper .oa-filters select,
+.has-wallpaper .oa-filter-select,
 .has-wallpaper .oa-filters input {
   background-color: color-mix(in srgb, var(--ai-field-bg) 55%, transparent);
 }

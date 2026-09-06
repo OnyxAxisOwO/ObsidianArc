@@ -10,6 +10,7 @@ import { t, type StringKey } from '../i18n';
 import { button, clear, el } from '../ui/dom';
 import { openPanel } from '../ui/panel';
 import { numberField, section, selectField, switchField, textField } from '../ui/form';
+import { select } from '../ui/select';
 import { compactNumber, relativeTime, renderTable, stacked } from '../ui/table';
 import { renderChart, type ChartShape } from '../ui/chart';
 import { celebrate } from '../ui/confetti';
@@ -215,20 +216,18 @@ export async function renderUsage(view: AdminView): Promise<void> {
 
   clear(view.actions);
 
-  const range = el('select');
-  RANGES.forEach((entry, index) => {
-    const option = el('option', null, t(entry.label));
-    option.value = String(index);
-    range.appendChild(option);
-  });
-  range.value = String(selectedRange);
-  range.addEventListener('change', () => {
-    selectedRange = Number(range.value);
-    view.reload();
+  const range = select({
+    choices: RANGES.map((entry, index) => ({ value: String(index), label: t(entry.label) })),
+    value: String(selectedRange),
+    className: 'oa-filter-select',
+    onChange: (value) => {
+      selectedRange = Number(value);
+      view.reload();
+    },
   });
   const wrap = el('div', 'oa-filters');
   wrap.style.margin = '0';
-  wrap.appendChild(range);
+  wrap.appendChild(range.element);
   view.actions.appendChild(wrap);
   view.actions.appendChild(button('oa-btn', t('defaultLimits'), () => void editGlobalPolicy(view)));
   view.actions.appendChild(button('oa-btn oa-btn-danger', t('resetQuota'), () => void openReset(view)));

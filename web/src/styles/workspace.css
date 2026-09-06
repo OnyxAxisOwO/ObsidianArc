@@ -271,6 +271,62 @@
   color: var(--ai-text-secondary);
 }
 
+/* --- the select, and the list it opens -------------------------------------- */
+
+/* The trigger wears the clothes of the field it replaced: .oa-field
+   .oa-select, .oa-filter-select and .oa-settings-panel .oa-select each hand
+   it the fill, radius and chevron the <select> had, so a form looks the same
+   as it did. What is here is only what a <button> needs and an <input> did
+   not. */
+.oa-select {
+  display: block;
+  text-align: left;
+  cursor: pointer;
+}
+
+.oa-select-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Placed by script, from the trigger's rectangle, because the list is
+   appended to <body> — every ancestor a select sits under either scrolls,
+   carries a backdrop-filter or keeps a transform, and each of those clips it
+   or captures its positioning. ui/select.ts carries the full reason.
+
+   Above .oa-modal-overlay at 50, because a select can be inside a modal, and
+   below the confetti at 60, which has no pointer events and is over
+   everything by design. Everything else comes from .oa-menu. */
+.oa-select-menu {
+  position: fixed;
+  /* So the min-width script sets from the trigger is the width the list ends
+     up, rather than that plus .oa-menu's padding. */
+  box-sizing: border-box;
+  top: 0;
+  left: 0;
+  right: auto;
+  z-index: 55;
+  max-height: min(320px, 60vh);
+}
+
+/* Open is a class, and it arrives a frame after the node does and leaves
+   160ms before it. In both of those windows the list is invisible and still
+   in the document, which is long enough to swallow a click aimed at what is
+   behind it. */
+.oa-select-menu:not(.open) {
+  pointer-events: none;
+}
+
+/* The row that is the value. .oa-menu-item.active is a different question —
+   the row the arrow keys are resting on — and stays the quieter fill. */
+.oa-select-menu [aria-selected='true'],
+.oa-select-menu [aria-selected='true']:hover {
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+}
+
 /* --- settings drawer -------------------------------------------------------- */
 
 .oa-drawer-overlay {
@@ -400,7 +456,7 @@
 .oa-field input[type="password"],
 .oa-field input[type="number"],
 .oa-field textarea,
-.oa-field select,
+.oa-field .oa-select,
 .oa-input-row input[type="text"],
 .oa-input-row input[type="password"] {
   box-sizing: border-box;
@@ -422,17 +478,18 @@
   opacity: 0.75;
 }
 
-/* background-color, not the shorthand: the shorthand would clear the select's
+/* background-color, not the shorthand: the shorthand would clear the
    chevron, which is a background image. */
 .oa-field input:hover,
 .oa-field textarea:hover,
-.oa-field select:hover {
+.oa-field .oa-select:hover {
   background-color: var(--ai-field-bg-hover);
 }
 
-.oa-field select {
-  /* The native arrow is the one part of a select a browser will not let go
-     of, so the chevron is drawn here and room is left for it. */
+.oa-field .oa-select {
+  /* Two gradients rather than a glyph, so the arrow takes the text colour and
+     needs no font. It used to be drawn beside a native select's own arrow;
+     it is now the only arrow there is. */
   appearance: none;
   padding-right: 30px;
   background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
@@ -449,7 +506,7 @@
 
 .oa-field input:focus,
 .oa-field textarea:focus,
-.oa-field select:focus {
+.oa-field .oa-select:focus-visible {
   outline: none;
   background-color: var(--ai-field-bg-hover);
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);

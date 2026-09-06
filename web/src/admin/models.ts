@@ -103,7 +103,7 @@ export async function renderModels(view: AdminView): Promise<void> {
   const providerSelect = filterSelect([
     { value: '', label: t('anyProvider') },
     ...providers.map((provider) => ({ value: provider.id, label: provider.name })),
-  ], filters.provider);
+  ], filters.provider, () => applyFilters());
 
   const stateSelect = filterSelect([
     { value: '', label: t('anyStatus') },
@@ -111,11 +111,11 @@ export async function renderModels(view: AdminView): Promise<void> {
     { value: 'disabled', label: t('disabled') },
     { value: 'hidden', label: t('filterHidden') },
     { value: 'routed', label: t('filterRouted') },
-  ], filters.state);
+  ], filters.state, () => applyFilters());
 
   bar.appendChild(search);
-  bar.appendChild(providerSelect);
-  bar.appendChild(stateSelect);
+  bar.appendChild(providerSelect.element);
+  bar.appendChild(stateSelect.element);
   bar.appendChild(el('span', 'oa-filter-note', t('dragToOrder')));
   bar.hidden = models.length === 0;
   view.body.appendChild(bar);
@@ -132,12 +132,10 @@ export async function renderModels(view: AdminView): Promise<void> {
     filters.q = search.value.trim();
     paint();
   });
-  for (const select of [providerSelect, stateSelect]) {
-    select.addEventListener('change', () => {
-      filters.provider = providerSelect.value;
-      filters.state = stateSelect.value as ModelFilters['state'];
-      paint();
-    });
+  function applyFilters(): void {
+    filters.provider = providerSelect.value();
+    filters.state = stateSelect.value() as ModelFilters['state'];
+    paint();
   }
 
   paint();

@@ -32,6 +32,7 @@ import {
 import { prepareImage, ImageError } from '../chat/image';
 import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
 import { rangeField, selectField, switchField, textArea, textField } from '../ui/form';
+import { select } from '../ui/select';
 import { language, setLanguage, type Language } from '../i18n';
 
 // Five sections is more than fits a panel without scrolling past what you
@@ -468,34 +469,37 @@ function chatSection(): HTMLElement {
   const wrap = panel(t('secChatDefaults'), t('chatDefaultsHint'));
   const preferences = currentPreferences();
 
-  const models = el('select');
-  const placeholder = el('option', null, t('firstAvailableModel'));
-  placeholder.value = '';
-  models.appendChild(placeholder);
+  // The empty value is a real choice, not a prompt to pick one: it means
+  // whichever model the account can reach first, which is what a new account
+  // already gets.
+  const firstAvailable = { value: '', label: t('firstAvailableModel') };
+  const models = select({
+    choices: [firstAvailable],
+    onChange: (value) => syncPreferences({ default_model_id: value }),
+  });
 
   const field = el('label', 'oa-field');
   field.appendChild(el('span', 'oa-field-label', t('defaultModel')));
-  field.appendChild(models);
+  field.appendChild(models.element);
   wrap.appendChild(field);
 
   void api.get<{ models: Array<{ id: string; display_name: string; usable?: boolean }> }>('/api/models')
     .then(({ models: list }) => {
-      for (const model of list) {
-        if (model.usable === false) continue;
-        const option = el('option', null, model.display_name);
-        option.value = model.id;
-        models.appendChild(option);
-      }
+      const usable = list.filter((model) => model.usable !== false);
+      models.setChoices([
+        firstAvailable,
+        ...usable.map((model) => ({ value: model.id, label: model.display_name })),
+      ]);
+      // Only if it is still on the list: a model that has since been
+      // withdrawn would otherwise leave the control naming nothing.
       const stored = preferences['default_model_id'];
-      if (typeof stored === 'string') models.value = stored;
+      if (typeof stored === 'string' && usable.some((model) => model.id === stored)) {
+        models.set(stored);
+      }
     })
     .catch(() => {
-      placeholder.textContent = t('couldNotLoadModels');
+      models.setChoices([{ value: '', label: t('couldNotLoadModels') }]);
     });
-
-  models.addEventListener('change', () => {
-    syncPreferences({ default_model_id: models.value });
-  });
 
   const effort = selectField({
     label: t('defaultEffort'),

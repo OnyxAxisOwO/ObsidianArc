@@ -11,6 +11,7 @@ import { renderShell } from '../app/shell';
 import { t, type StringKey } from '../i18n';
 import { navigate } from '../router';
 import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
+import { select, type SelectControl } from '../ui/select';
 import { attachResizer } from '../ui/resizer';
 import { closePanel } from '../ui/panel';
 import { attachOverlayScrollbar, type OverlayScrollbarHandle } from '../ui/scrollbar';
@@ -268,15 +269,9 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
 export function filterSelect(
   options: Array<{ value: string; label: string }>,
   value: string,
-): HTMLSelectElement {
-  const select = el('select');
-  for (const option of options) {
-    const node = el('option', null, option.label);
-    node.value = option.value;
-    select.appendChild(node);
-  }
-  select.value = value;
-  return select;
+  onChange: () => void,
+): SelectControl<string> {
+  return select({ choices: options, value, className: 'oa-filter-select', onChange });
 }
 
 /**

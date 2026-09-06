@@ -8,6 +8,7 @@
 // admin form is the same material as the one a user sees.
 
 import { el, field } from './dom';
+import { select } from './select';
 import { t } from '../i18n';
 
 export interface Control<T> {
@@ -177,22 +178,17 @@ export function selectField<T extends string>(options: {
   options: Array<{ value: T; label: string }>;
   onChange?(value: T): void;
 }): Control<T> {
-  const select = el('select');
-  for (const entry of options.options) {
-    const option = el('option', null, entry.label);
-    option.value = entry.value;
-    select.appendChild(option);
-  }
-  if (options.value !== undefined) select.value = options.value;
-  if (options.onChange) {
-    select.addEventListener('change', () => options.onChange!(select.value as T));
-  }
+  const control = select<T>({
+    choices: options.options,
+    ...(options.value !== undefined ? { value: options.value } : {}),
+    ...(options.onChange ? { onChange: options.onChange } : {}),
+  });
 
   return {
-    element: field(options.label, select, options.hint),
-    value: () => select.value as T,
-    set: (value) => { select.value = value; },
-    focus: (options) => select.focus(options),
+    element: field(options.label, control.element, options.hint),
+    value: control.value,
+    set: control.set,
+    focus: control.focus,
   };
 }
 

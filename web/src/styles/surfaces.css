@@ -202,7 +202,7 @@
 
 .oa-filters input[type='search'],
 .oa-filters input[type='text'],
-.oa-filters select {
+.oa-filter-select {
   padding: 8px 14px;
   border: none;
   border-radius: 999px;
@@ -213,7 +213,7 @@
   transition: background-color 0.15s ease;
 }
 
-.oa-filters select {
+.oa-filter-select {
   appearance: none;
   padding-right: 30px;
   background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
@@ -224,12 +224,12 @@
 }
 
 .oa-filters input:hover,
-.oa-filters select:hover {
+.oa-filter-select:hover {
   background-color: var(--ai-field-bg-hover);
 }
 
 .oa-filters input:focus,
-.oa-filters select:focus {
+.oa-filter-select:focus-visible {
   outline: none;
   background-color: var(--ai-field-bg-hover);
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
@@ -1363,7 +1363,7 @@
   align-items: center;
 }
 
-.oa-settings-panel select,
+.oa-settings-panel .oa-select,
 .oa-settings-panel input[type='text'],
 .oa-settings-panel input[type='email'],
 .oa-settings-panel input[type='password'],
@@ -1381,7 +1381,7 @@
   transition: background-color 0.15s ease;
 }
 
-.oa-settings-panel select {
+.oa-settings-panel .oa-select {
   appearance: none;
   padding-right: 30px;
   background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
@@ -1392,13 +1392,13 @@
 }
 
 .oa-settings-panel input:hover,
-.oa-settings-panel select:hover,
+.oa-settings-panel .oa-select:hover,
 .oa-settings-panel textarea:hover {
   background-color: var(--ai-field-bg-hover);
 }
 
 .oa-settings-panel input:focus,
-.oa-settings-panel select:focus,
+.oa-settings-panel .oa-select:focus-visible,
 .oa-settings-panel textarea:focus {
   outline: none;
   background-color: var(--ai-field-bg-hover);
@@ -2041,59 +2041,6 @@
   margin: 0;
   overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-/* --- the select's own popup --------------------------------------------- */
-
-/* A browser draws the option list, not this stylesheet: it cannot be given a
-   radius, a fill, or the gap under the control that every other menu here
-   has. Chromium hands it back through base-select, so where that exists the
-   picker becomes an ordinary surface and looks like the rest of the
-   interface.
-
-   Behind @supports rather than replaced with a custom control in
-   JavaScript. A hand-built dropdown is a keyboard map, a focus trap and a
-   positioning problem — in every browser — to fix the appearance in one. */
-@supports (appearance: base-select) {
-  select,
-  ::picker(select) {
-    appearance: base-select;
-  }
-
-  ::picker(select) {
-    /* The gap the native popup has no way to leave. */
-    margin-top: 6px;
-    padding: 6px;
-    border: none;
-    border-radius: 14px;
-    background: var(--ai-surface-card);
-    box-shadow: var(--ai-shadow-md);
-  }
-
-  select option {
-    padding: 8px 10px;
-    border-radius: 9px;
-    background: transparent;
-    color: var(--ai-text);
-    font-size: 12.5px;
-  }
-
-  select option:hover {
-    background: var(--ai-state-hover);
-  }
-
-  select option:checked {
-    background: var(--ai-primary);
-    color: var(--ai-primary-text);
-  }
-
-  /* Both marks the picker would add of its own: the tick in front of the
-     selected row, which shifts every other row sideways, and a second arrow
-     on the control, which already draws one. */
-  select option::checkmark,
-  select::picker-icon {
-    display: none;
-  }
 }
 
 /* A minted batch, listed once. Monospace and one per line so it can be

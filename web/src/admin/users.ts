@@ -66,23 +66,23 @@ export async function renderUsers(view: AdminView): Promise<void> {
     { value: '', label: t('anyRole') },
     { value: 'user', label: t('filterUsers') },
     { value: 'admin', label: t('filterAdmins') },
-  ], state.role);
+  ], state.role, () => refresh());
 
   const statusSelect = filterSelect([
     { value: '', label: t('anyStatus') },
     { value: 'active', label: t('filterActive') },
     { value: 'disabled', label: t('filterDisabled') },
-  ], state.status);
+  ], state.status, () => refresh());
 
   const groupSelect = filterSelect([
     { value: '', label: t('anyGroup') },
     ...groups.map((group) => ({ value: group.id, label: group.name })),
-  ], state.group);
+  ], state.group, () => refresh());
 
   filters.appendChild(search);
-  filters.appendChild(roleSelect);
-  filters.appendChild(statusSelect);
-  filters.appendChild(groupSelect);
+  filters.appendChild(roleSelect.element);
+  filters.appendChild(statusSelect.element);
+  filters.appendChild(groupSelect.element);
   view.body.appendChild(filters);
 
   const results = el('div');
@@ -93,19 +93,15 @@ export async function renderUsers(view: AdminView): Promise<void> {
   let debounce = 0;
   const refresh = () => {
     state.q = search.value.trim();
-    state.role = roleSelect.value;
-    state.status = statusSelect.value;
-    state.group = groupSelect.value;
+    state.role = roleSelect.value();
+    state.status = statusSelect.value();
+    state.group = groupSelect.value();
     void load(view, groups, results);
   };
   search.addEventListener('input', () => {
     window.clearTimeout(debounce);
     debounce = window.setTimeout(refresh, 250);
   });
-  for (const select of [roleSelect, statusSelect, groupSelect]) {
-    select.addEventListener('change', refresh);
-  }
-
   await load(view, groups, results);
 }
 
