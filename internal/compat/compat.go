@@ -274,8 +274,8 @@ func describeModel(record model.Model, ref string) modelObject {
 // --- what a model is called from outside ---------------------------------------
 
 // publicRefs assigns each available model the identifier these endpoints
-// advertise it under: the model id an administrator entered, which is the
-// name the upstream itself knows it by.
+// advertise it under: the API name an administrator set, or failing that the
+// model id they entered, which is the name the upstream itself knows it by.
 //
 // It used to be the row id, which is a ULID — permanent, correct, and
 // unusable. Somebody filling in a config file, or reading a dropdown their
@@ -285,37 +285,53 @@ func describeModel(record model.Model, ref string) modelObject {
 // this instance answers to.
 //
 // That does mean the listing names the upstream model, and often its vendor
-// with it. That is the operator's call, and here it has been made: being
-// callable beats being opaque. The provider's own name is still not served
-// anywhere a user can read it.
+// with it. An operator who would rather it did not sets an API name on the
+// model, and that is what is offered and accepted instead — the request still
+// goes upstream under the model id. The provider's own name is not served
+// anywhere either way.
 //
 // The row id and the display name keep resolving too, so a client configured
-// before this goes on working.
+// before this goes on working. The upstream id does not, once an API name is
+// set: leaving it live would be a second, unadvertised name for the thing the
+// operator had just renamed.
 func publicRefs(records []model.Model) map[string]string {
 	claims := make(map[string]int, len(records))
 	for _, record := range records {
-		if record.ModelID != "" {
-			claims[record.ModelID]++
+		if name := publicName(record); name != "" {
+			claims[name]++
 		}
 	}
 
 	refs := make(map[string]string, len(records))
 	for _, record := range records {
+		name := publicName(record)
 		switch {
-		case record.ModelID == "":
+		case name == "":
 			refs[record.ID] = record.ID
-		case claims[record.ModelID] > 1:
+		case record.APIName != "":
+			// Somebody chose this one and a unique index keeps it theirs.
+			// Qualifying a chosen name would defeat choosing it.
+			refs[record.ID] = record.APIName
+		case claims[name] > 1:
 			// One upstream model reached through two providers — a primary
 			// and a fallback — is two rows under one id. Handing both the
 			// same identifier would make one unreachable, so both are
 			// qualified: both, not the second, because which one is "second"
 			// depends on a sort order an administrator can change.
-			refs[record.ID] = record.ModelID + "-" + tail(record.ID)
+			refs[record.ID] = name + "-" + tail(record.ID)
 		default:
-			refs[record.ID] = record.ModelID
+			refs[record.ID] = name
 		}
 	}
 	return refs
+}
+
+// The name this instance answers to for a model, before any qualifying.
+func publicName(record model.Model) string {
+	if record.APIName != "" {
+		return record.APIName
+	}
+	return record.ModelID
 }
 
 // The last few characters of a ULID: the random tail, so two rows created in
@@ -328,7 +344,9 @@ func tail(rowID string) string {
 	return lowered[len(lowered)-6:]
 }
 
-// The three spellings every endpoint accepts for one model.
+// The three spellings every endpoint accepts for one model. `ref` is what the
+// listing gave out — the API name where one is set, and only that: the
+// upstream id is not a fourth spelling.
 func matchesRef(record model.Model, ref, wanted string) bool {
 	return record.ID == wanted ||
 		strings.EqualFold(ref, wanted) ||

@@ -255,6 +255,14 @@ function editModel(
     monospace: true,
   });
 
+  const apiName = textField({
+    label: t('apiNameLabel'),
+    value: existing?.api_name ?? '',
+    placeholder: existing?.model_id || 'gpt-5.6-sol',
+    hint: t('apiNameHint'),
+    monospace: true,
+  });
+
   const displayName = textField({
     label: t('displayName'),
     value: existing?.display_name ?? '',
@@ -418,6 +426,7 @@ function editModel(
         body.appendChild(readOnly(t('colProvider'), existing.provider_name));
       }
       body.appendChild(modelID.element);
+      body.appendChild(apiName.element);
       body.appendChild(displayName.element);
       body.appendChild(description.element);
       body.appendChild(enabled.element);
@@ -465,6 +474,7 @@ function editModel(
         reasoning_style: reasoningStyle.value(),
         reasoning_tiers: tiers.value(),
         model_id: modelID.value(),
+        api_name: apiName.value(),
         display_name: displayName.value(),
         description: description.value(),
         enabled: enabled.value(),

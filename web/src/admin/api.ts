@@ -73,6 +73,7 @@ export interface AdminModel {
   provider_name: string;
   provider_kind: ProviderKind;
   model_id: string;
+  api_name: string;
   display_name: string;
   description: string;
   avatar: string;

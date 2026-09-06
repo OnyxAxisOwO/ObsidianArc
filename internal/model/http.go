@@ -95,6 +95,10 @@ func TranslateError(err error) error {
 		return httpx.Forbidden("That model is currently unavailable.")
 	case errors.Is(err, ErrDuplicate):
 		return httpx.Conflict("model_exists", "That model is already configured for this provider.")
+	case errors.Is(err, ErrDuplicateAPIName):
+		return httpx.Conflict("api_name_taken", "Another model already answers to that API name.")
+	case errors.Is(err, ErrInvalidAPIName):
+		return httpx.BadRequest("An API name cannot contain spaces or a slash.")
 	case errors.Is(err, ErrInvalidModelID):
 		return httpx.BadRequest("A model id is required.")
 	case errors.Is(err, ErrInvalidName):

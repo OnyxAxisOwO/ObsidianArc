@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -75,7 +76,12 @@ type Model struct {
 	ID         string `json:"id"`
 	ProviderID string `json:"provider_id"`
 	// The upstream identifier. Shown to administrators, never to users.
-	ModelID     string `json:"model_id"`
+	ModelID string `json:"model_id"`
+	// What the OpenAI-compatible API offers and accepts for this model, when
+	// that should not be the upstream's own name. Empty is the ordinary case
+	// and means ModelID. The request still goes out under ModelID: this
+	// renames the model at the edge, it does not reach the provider.
+	APIName     string `json:"api_name"`
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
 	Avatar      string `json:"avatar"`
@@ -155,12 +161,17 @@ func (m Model) Credits(usage adapter.Usage) float64 {
 }
 
 var (
-	ErrNotFound       = errors.New("model: not found")
-	ErrDuplicate      = errors.New("model: that model is already configured for this provider")
-	ErrInvalidModelID = errors.New("model: model id is required")
-	ErrInvalidName    = errors.New("model: display name must be 1-80 characters")
-	ErrNotPermitted   = errors.New("model: not available to this account")
-	ErrDisabled       = errors.New("model: this model is currently unavailable")
+	ErrNotFound  = errors.New("model: not found")
+	ErrDuplicate = errors.New("model: that model is already configured for this provider")
+	// Separate from ErrDuplicate: both come back from the same unique-index
+	// failure, and "already configured for this provider" would be the wrong
+	// thing to tell somebody who picked a public name that is taken.
+	ErrDuplicateAPIName = errors.New("model: another model already answers to that API name")
+	ErrInvalidAPIName   = errors.New("model: an API name cannot contain spaces")
+	ErrInvalidModelID   = errors.New("model: model id is required")
+	ErrInvalidName      = errors.New("model: display name must be 1-80 characters")
+	ErrNotPermitted     = errors.New("model: not available to this account")
+	ErrDisabled         = errors.New("model: this model is currently unavailable")
 )
 
 const (
@@ -182,7 +193,7 @@ const columns = `m.id, m.provider_id, m.model_id, m.display_name, m.description,
 	m.supports_system_prompt, m.supports_tools, m.context_window, m.max_output_tokens,
 	m.request_weight, m.input_token_weight, m.output_token_weight, m.reasoning_token_weight,
 	m.created_at, m.updated_at, m.route_to_id, m.reasoning_style, m.hidden,
-	m.reasoning_tiers`
+	m.reasoning_tiers, m.api_name`
 
 const withProvider = columns + `, p.name, p.kind`
 
@@ -198,6 +209,7 @@ func NewStore(db *database.DB, providers *provider.Store) *Store {
 type CreateInput struct {
 	ProviderID     string
 	ModelID        string
+	APIName        string
 	DisplayName    string
 	Description    string
 	Avatar         string
@@ -216,6 +228,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		ID:             id.New(),
 		ProviderID:     in.ProviderID,
 		ModelID:        in.ModelID,
+		APIName:        in.APIName,
 		DisplayName:    in.DisplayName,
 		Description:    in.Description,
 		Avatar:         in.Avatar,
@@ -242,8 +255,8 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		 supports_reasoning, supports_images, supports_vision, supports_streaming,
 		 supports_system_prompt, supports_tools, context_window, max_output_tokens,
 		 request_weight, input_token_weight, output_token_weight, reasoning_token_weight,
-		 created_at, updated_at, route_to_id, reasoning_style, reasoning_tiers)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 created_at, updated_at, route_to_id, reasoning_style, reasoning_tiers, api_name)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.ProviderID, record.ModelID, record.DisplayName, record.Description,
 		record.Avatar, record.Enabled, record.Hidden, record.SortOrder,
 		record.SupportsReasoning, record.SupportsImages, record.SupportsVision,
@@ -251,10 +264,10 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		record.ContextWindow, record.MaxOutputTokens,
 		record.Request, record.InputToken, record.OutputToken, record.ReasoningToken,
 		record.CreatedAt, record.UpdatedAt, routeValue(record.RouteToID), record.ReasoningStyle,
-		encodeTiers(record.ReasoningTiers))
+		encodeTiers(record.ReasoningTiers), record.APIName)
 	if err != nil {
 		if isUnique(err) {
-			return Model{}, ErrDuplicate
+			return Model{}, s.whichDuplicate(ctx, record.APIName, record.ID)
 		}
 		return Model{}, fmt.Errorf("model: create: %w", err)
 	}
@@ -263,6 +276,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 
 type Update struct {
 	ModelID     *string
+	APIName     *string
 	DisplayName *string
 	Description *string
 	Avatar      *string
@@ -297,6 +311,7 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 
 	next := current
 	assign(&next.ModelID, in.ModelID)
+	assign(&next.APIName, in.APIName)
 	assign(&next.DisplayName, in.DisplayName)
 	assign(&next.Description, in.Description)
 	assign(&next.Avatar, in.Avatar)
@@ -330,21 +345,38 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 		supports_reasoning = ?, supports_images = ?, supports_vision = ?, supports_streaming = ?,
 		supports_system_prompt = ?, supports_tools = ?, context_window = ?, max_output_tokens = ?,
 		request_weight = ?, input_token_weight = ?, output_token_weight = ?, reasoning_token_weight = ?,
-		route_to_id = ?, reasoning_style = ?, reasoning_tiers = ?, updated_at = ?
+		route_to_id = ?, reasoning_style = ?, reasoning_tiers = ?, api_name = ?, updated_at = ?
 		WHERE id = ?`,
 		next.ModelID, next.DisplayName, next.Description, next.Avatar, next.Enabled, next.Hidden, next.SortOrder,
 		next.SupportsReasoning, next.SupportsImages, next.SupportsVision, next.SupportsStreaming,
 		next.SupportsSystemPrompt, next.SupportsTools, next.ContextWindow, next.MaxOutputTokens,
 		next.Request, next.InputToken, next.OutputToken, next.ReasoningToken,
 		routeValue(next.RouteToID), next.ReasoningStyle, encodeTiers(next.ReasoningTiers),
-		next.UpdatedAt, modelID)
+		next.APIName, next.UpdatedAt, modelID)
 	if err != nil {
 		if isUnique(err) {
-			return Model{}, ErrDuplicate
+			return Model{}, s.whichDuplicate(ctx, next.APIName, modelID)
 		}
 		return Model{}, fmt.Errorf("model: update: %w", err)
 	}
 	return next, nil
+}
+
+// Two unique indexes guard this table — one on the provider and its upstream
+// id, one on the public API name — and both come back as the same driver
+// error. The write has already been refused by the time this runs, so asking
+// which name is taken races with nothing; it only decides what to say.
+func (s *Store) whichDuplicate(ctx context.Context, apiName, exceptID string) error {
+	if apiName == "" {
+		return ErrDuplicate
+	}
+	var other string
+	err := s.db.QueryRow(ctx,
+		`SELECT id FROM models WHERE api_name = ? AND id <> ?`, apiName, exceptID).Scan(&other)
+	if err == nil {
+		return ErrDuplicateAPIName
+	}
+	return ErrDuplicate
 }
 
 func (s *Store) ByID(ctx context.Context, modelID string) (Model, error) {
@@ -547,7 +579,7 @@ func (s *Store) readCallable(
 		&record.ContextWindow, &record.MaxOutputTokens,
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
 		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
-		&record.Hidden, &tiers,
+		&record.Hidden, &tiers, &record.APIName,
 		&record.ProviderName, &record.ProviderKind,
 		&upstream.BaseURL, &sealed, &headerJSON, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
 		&upstream.TimeoutSeconds, &upstream.APIKeyHint, &upstream.SortOrder, &upstream.Enabled,
@@ -777,6 +809,16 @@ func validate(record Model) (Model, error) {
 		return Model{}, ErrInvalidName
 	}
 
+	// An API name goes in a URL path and into a client's configuration file,
+	// so it is held to the shape of the identifiers around it. Empty is not a
+	// failure — it means the upstream id is the public one.
+	record.APIName = strings.TrimSpace(record.APIName)
+	if len(record.APIName) > MaxModelIDChars ||
+		strings.ContainsFunc(record.APIName, unicode.IsSpace) ||
+		strings.ContainsAny(record.APIName, "/?#") {
+		return Model{}, ErrInvalidAPIName
+	}
+
 	record.Description = text.TrimAndTruncate(record.Description, MaxDescriptionChars)
 	record.Avatar = strings.TrimSpace(record.Avatar)
 	if len(record.Avatar) > MaxAvatarChars {
@@ -910,7 +952,7 @@ func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
 		&record.ContextWindow, &record.MaxOutputTokens,
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
 		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
-		&record.Hidden, &tiers,
+		&record.Hidden, &tiers, &record.APIName,
 	}
 	if joined {
 		targets = append(targets, &record.ProviderName, &record.ProviderKind)

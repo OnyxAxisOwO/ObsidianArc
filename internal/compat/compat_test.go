@@ -1120,3 +1120,77 @@ func TestKeyModelRestrictionEnforced(t *testing.T) {
 			modelsResp.Data, f.model.ModelID, second.ModelID)
 	}
 }
+
+// The name the API offers is the operator's, not the vendor's. Setting one
+// renames the model at the edge — the listing and every endpoint answer to it
+// — while the request upstream still goes out under the model id.
+//
+// The upstream id stops resolving, deliberately: leaving it live would be a
+// second, unadvertised name for the thing that was just renamed.
+func TestAnAPINameIsTheNameOutside(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	name := "gpt-5.6-sol"
+	if _, err := f.models.Update(ctx, f.model.ID, model.Update{APIName: &name}); err != nil {
+		t.Fatal(err)
+	}
+
+	listing := f.do(t, http.MethodGet, "/v1/models", f.token, "")
+	if raw := listing.Body.String(); strings.Contains(raw, "upstream-real-name") {
+		t.Errorf("the listing still names the upstream model: %s", raw)
+	}
+	data, _ := decodeJSON(t, listing)["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("listed %d models, want 1", len(data))
+	}
+	entry, _ := data[0].(map[string]any)
+	if entry["id"] != name {
+		t.Errorf("listed as %v, want %q", entry["id"], name)
+	}
+
+	if w := f.do(t, http.MethodGet, "/v1/models/"+name, f.token, ""); w.Code != http.StatusOK {
+		t.Errorf("fetching by the API name: status = %d: %s", w.Code, w.Body.String())
+	}
+
+	f.upstream.reply(answer)
+	if w := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, completionBody(name)); w.Code != http.StatusOK {
+		t.Errorf("a completion by the API name: status = %d: %s", w.Code, w.Body.String())
+	}
+
+	// The upstream id is refused exactly the way an imaginary model is.
+	if w := f.do(t, http.MethodPost, "/v1/chat/completions", f.token,
+		completionBody("upstream-real-name")); w.Code != http.StatusNotFound {
+		t.Errorf("the upstream id still answered: status = %d", w.Code)
+	}
+
+	// The row id and the display name go on resolving, so a client
+	// configured against either keeps working across the rename.
+	for _, wanted := range []string{f.model.ID, "Mock Fast"} {
+		f.upstream.reply(answer)
+		if w := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, completionBody(wanted)); w.Code != http.StatusOK {
+			t.Errorf("%q: status = %d: %s", wanted, w.Code, w.Body.String())
+		}
+	}
+}
+
+// A name somebody chose is used as written, even where an unnamed row's
+// upstream id claims the same string. The unique index keeps the name theirs;
+// it is the row without a chosen name that yields and gets qualified.
+func TestAChosenAPINameIsNeverQualified(t *testing.T) {
+	named := model.Model{
+		ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", ModelID: "openai/gpt-oss-120b", APIName: "house-large",
+	}
+	unnamed := model.Model{ID: "01BRZ3NDEKTSV4RRFFQ69G5FBW", ModelID: "house-large"}
+
+	refs := publicRefs([]model.Model{named, unnamed})
+	if refs[named.ID] != "house-large" {
+		t.Errorf("the chosen name came out as %q", refs[named.ID])
+	}
+	if refs[unnamed.ID] == "house-large" {
+		t.Error("both rows answer to the same name")
+	}
+	if !strings.HasPrefix(refs[unnamed.ID], "house-large-") {
+		t.Errorf("the unnamed row got %q, want the qualified id", refs[unnamed.ID])
+	}
+}
