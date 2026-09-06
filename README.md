@@ -111,17 +111,20 @@ OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
 
 Kubernetes is not assumed anywhere.
 
-> **Not yet run anywhere.** The Docker and PostgreSQL paths were written and
-> reviewed but never executed — neither Docker nor a Postgres server was
-> available on the machine this was built on. Everything else in this README
-> was verified end to end against SQLite. The Postgres schema is covered by a
-> lint that rejects engine-specific syntax in the migrations, and by an
-> integration test that runs the real migrations plus the atomic quota upsert
-> when you point it at a database:
+> **Both are run on every push.** Neither Docker nor a Postgres server was
+> available on the machine this was written on, so for a while these two paths
+> were reviewed and never executed. They are now: CI builds the image, starts
+> it, and waits for it to migrate and answer, and runs the whole suite against
+> a real PostgreSQL 16 — which is when `TestPostgresMigrations` stops skipping
+> itself and applies the actual schema plus the atomic quota upsert. Point it
+> at your own database to do the same locally:
 >
 > ```bash
 > OBSIDIAN_TEST_POSTGRES_DSN=postgres://user:pass@localhost:5432/arc_test go test ./internal/database/
 > ```
+>
+> Still unproven: a long-lived deployment. Nothing here has carried real
+> traffic for a week.
 
 ## Building
 

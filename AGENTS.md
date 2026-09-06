@@ -187,13 +187,13 @@ modal subscribes to, so each thing dismisses *itself*. Prefer that shape.
 
 ## Known unverified ground
 
-**Docker and PostgreSQL have never been run.** Neither is installed on the
-build machine. Both paths were written and reviewed, and the Postgres schema is
-covered by the portability lint plus an integration test that runs when
-`OBSIDIAN_TEST_POSTGRES_DSN` is set — but nothing has executed them.
+**Docker and PostgreSQL now run on every push**, in CI, on Linux — the image is
+built and started and asked for its health, and the suite runs against a real
+PostgreSQL 16. Neither is installed on the machine most of this was written on,
+so locally they are still unexercised; trust the CI run, not your laptop.
 
-Do not quietly claim either works. The README says so explicitly; keep it that
-way.
+What remains genuinely unproven is time. Nothing here has carried real traffic
+for a week. Do not write anything into the README that claims otherwise.
 
 ## Measurements are claims
 
