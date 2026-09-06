@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -169,6 +171,31 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodGet, "/api/admin/settings", nil},
 		{http.MethodPut, "/api/admin/settings", map[string]any{"site.name": "x"}},
 		{http.MethodGet, "/api/admin/meta", nil},
+		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/conversations/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/keys", nil},
+		{http.MethodDelete, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/keys/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodPatch, "/api/admin/groups/01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{"name": "x"}},
+		{http.MethodDelete, "/api/admin/groups/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodPatch, "/api/admin/providers/01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{"name": "x"}},
+		{http.MethodDelete, "/api/admin/providers/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodPost, "/api/admin/providers/01ARZ3NDEKTSV4RRFFQ69G5FAV/detect", nil},
+		{http.MethodPatch, "/api/admin/models/01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{"display_name": "x"}},
+		{http.MethodDelete, "/api/admin/models/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodGet, "/api/admin/announcements", nil},
+		{http.MethodPost, "/api/admin/announcements", map[string]any{"title": "x", "body": "y"}},
+		{http.MethodPatch, "/api/admin/announcements/01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{"title": "x"}},
+		{http.MethodDelete, "/api/admin/announcements/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodDelete, "/api/admin/quota/policies/global", nil},
+		{http.MethodPost, "/api/admin/settings/import", map[string]any{"settings": map[string]string{}}},
+		{http.MethodPost, "/api/admin/attachments/purge", nil},
+	}
+
+	// The list above is the whole route table, not a sample of it. A new
+	// endpoint is protected by being mounted in admin.Routes, so the thing
+	// worth failing on is one that was added there and never checked here.
+	if mounted := adminRoutes(t); len(mounted) != len(routes) {
+		t.Errorf("admin.Routes mounts %d endpoints and this test covers %d; "+
+			"add the new one here", len(mounted), len(routes))
 	}
 
 	for _, route := range routes {
@@ -557,6 +584,27 @@ func TestKeyCannotBePinnedToAnUnavailableModel(t *testing.T) {
 		t.Fatalf("pinning an existing key to an unknown model gave %d %s, want 400",
 			patched.Code, patched.Body.String())
 	}
+}
+
+// adminRoutes reads the route table out of the source rather than the router,
+// because net/http's mux will not enumerate itself. It is a regex over one
+// file in this repository, which is enough to answer "did somebody add an
+// endpoint" and nothing more.
+func adminRoutes(t *testing.T) []string {
+	t.Helper()
+	source, err := os.ReadFile(filepath.Join("..", "admin", "admin.go"))
+	if err != nil {
+		t.Fatalf("read the admin route table: %v", err)
+	}
+	pattern := regexp.MustCompile(`mux\.Handle\("((?:GET|POST|PATCH|PUT|DELETE) /api/admin/[^"]*)"`)
+	var out []string
+	for _, match := range pattern.FindAllStringSubmatch(string(source), -1) {
+		out = append(out, match[1])
+	}
+	if len(out) == 0 {
+		t.Fatal("found no admin routes; the scanner has drifted from the source")
+	}
+	return out
 }
 
 // The About panel is the operator's to write. Empty means "keep the built-in
