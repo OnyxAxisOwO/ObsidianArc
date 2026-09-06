@@ -1,0 +1,106 @@
+# The gate, run by something other than the person who wrote the change.
+#
+# `make test` is the only reviewer that reads every agent's output, and until
+# now it only ran when somebody remembered to type it. Several agents work in
+# this repository at once; this is what notices when two of them disagree.
+#
+# It also executes the two paths nothing had ever executed. The Postgres schema
+# was covered by a lint and by a test that skipped itself without a database,
+# and the Dockerfile had been written and reviewed but never built. Both run
+# here, on every push, against the real thing.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Gate
+    runs-on: ubuntu-latest
+
+    services:
+      # The Postgres half of "one set of queries, two engines". Without this the
+      # dialect is checked by a lint that reads SQL and never runs it.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: arc
+          POSTGRES_PASSWORD: arc
+          POSTGRES_DB: arc_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U arc -d arc_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Before anything Go: the binary embeds this directory, and the content
+      # policy's script hash is computed from the shell that lands in it.
+      - name: Build the frontend
+        run: make web
+
+      - name: go vet, gofmt, go test, tsc
+        run: make test
+        env:
+          OBSIDIAN_TEST_POSTGRES_DSN: postgres://arc:arc@localhost:5432/arc_test?sslmode=disable
+
+      # Line endings are the reason the formatting gate was blind for a while.
+      # A Linux runner checking out through .gitattributes is what keeps it
+      # honest whatever the machine a change was written on.
+      - name: The tree is unchanged by its own formatter
+        run: git diff --exit-code
+
+  docker:
+    name: Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t obsidian-arc:ci .
+
+      # Reviewed but never run, until now. A distroless image with no shell
+      # cannot be inspected from inside, so the check is the one thing that
+      # matters: it starts, it migrates, and it answers.
+      - name: It starts, migrates and serves
+        run: |
+          docker run -d --name arc -p 8080:8080 \
+            -e OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32) \
+            obsidian-arc:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/api/health; then
+              echo
+              echo "served after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "never answered; container log follows"
+          docker logs arc
+          exit 1
+
+      - name: Stop it
+        if: always()
+        run: docker rm -f arc || true
