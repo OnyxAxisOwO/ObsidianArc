@@ -57,7 +57,7 @@ const en = {
   welcomeBack: 'Welcome back',
   welcomeBackBody: 'Sign in to pick up where you left off.',
   createAccountTitle: 'Create an account',
-  createAccountBody: 'Pick a username and a password. An email address is optional.',
+  createAccountBody: 'Pick a username and a password.',
   firstAccountTitle: 'Create the first account',
   firstAccountBody: 'This server has no accounts yet. The first one becomes the administrator.',
   username: 'Username',

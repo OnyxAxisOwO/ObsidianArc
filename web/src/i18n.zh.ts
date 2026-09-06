@@ -51,7 +51,7 @@ export const zh: Record<StringKey, string> = {
   welcomeBack: '欢迎回来',
   welcomeBackBody: '登录后继续之前的对话。',
   createAccountTitle: '创建账户',
-  createAccountBody: '设置用户名和密码，邮箱可以不填。',
+  createAccountBody: '设置用户名和密码。',
   firstAccountTitle: '创建第一个账户',
   firstAccountBody: '这台服务器还没有任何账户，第一个注册的人将成为管理员。',
   username: '用户名',
