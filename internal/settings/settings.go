@@ -176,6 +176,16 @@ var Defaults = map[string]string{
 	TrialModel:           "",
 	DefaultSystemPrompt:  "",
 	ConversationMaxTurns: "40",
+	// On: asking a model nobody has used costs one token and answers the
+	// question the liveness column exists for. Off, a quiet model reads as
+	// "no data" forever, which is the state this feature was built to end.
+	HealthProbe:      "true",
+	HealthWindowMins: "30",
+	// Off. Turning a model off on the system's own judgement is a decision an
+	// operator has to make deliberately — the failure mode of guessing is an
+	// instance that quietly stops offering the model everyone uses.
+	HealthDisableAfter: "0",
+	HealthRetainDays:   "14",
 	// Off until an operator says otherwise: it opens a second way to spend
 	// the instance's provider credit, one that no longer goes through a
 	// browser session.
