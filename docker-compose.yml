@@ -13,8 +13,9 @@ services:
     build:
       context: .
       args:
-        # Overridden by `make docker`; the default is honest about being one.
-        VERSION: ${VERSION:-compose}
+        # Left empty when nothing is passed: the Dockerfile then stamps the
+        # moment of the build, which is more use than the word "compose".
+        VERSION: ${VERSION:-}
     image: obsidian-arc:latest
     restart: unless-stopped
     # Loopback on purpose. This file expects a TLS terminator in front, and
@@ -38,11 +39,11 @@ services:
       # the session cookie is marked Secure. Honoured only from the addresses
       # named below: without that, the header is written by whoever sent the
       # request, and every limit keyed on an address stops meaning anything.
-      OBSIDIAN_TRUST_PROXY: "true"
+      OBSIDIAN_TRUST_PROXY: "${OBSIDIAN_TRUST_PROXY:-true}"
       # The Docker bridge network your proxy sits on. Narrow it to the
       # proxy's own address if you know it.
       OBSIDIAN_TRUSTED_PROXIES: "${OBSIDIAN_TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,127.0.0.1/32}"
-      OBSIDIAN_COOKIE_SECURE: "true"
+      OBSIDIAN_COOKIE_SECURE: "${OBSIDIAN_COOKIE_SECURE:-true}"
       OBSIDIAN_ADMIN_USER: ${OBSIDIAN_ADMIN_USER:-}
       OBSIDIAN_ADMIN_PASSWORD: ${OBSIDIAN_ADMIN_PASSWORD:-}
     volumes:

@@ -215,5 +215,6 @@ silence, so the list is the one place to be careful.
 
 ## Versions
 
-`yyyy.MM.dd.HH.mm.ss`, UTC, zero-padded, stamped by the Makefile. They sort
-chronologically as plain text and need no tag or counter.
+`vyyyy.MM.dd.HH.mm.ss`, UTC, zero-padded, stamped by the Makefile. They sort
+chronologically as plain text and need no tag or counter. The `v` is there so
+a version reads as one anywhere it appears on its own.

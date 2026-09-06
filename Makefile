@@ -11,7 +11,7 @@ BINARY  := obsidian-arc
 # sorts chronologically as plain text; unique per build; and needing no tag
 # or counter to maintain — which is what makes "which build is this server
 # running" answerable from the health endpoint alone.
-VERSION ?= $(shell date -u +%Y.%m.%d.%H.%M.%S)
+VERSION ?= v$(shell date -u +%Y.%m.%d.%H.%M.%S)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 

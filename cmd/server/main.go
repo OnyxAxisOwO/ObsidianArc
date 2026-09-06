@@ -19,7 +19,7 @@ import (
 )
 
 // The build's identity, stamped in by the Makefile as
-// `-ldflags "-X main.version=yyyy.MM.dd.HH.mm.ss"` — the UTC moment it was
+// `-ldflags "-X main.version=vyyyy.MM.dd.HH.mm.ss"` — the UTC moment it was
 // compiled. Zero-padded, so it sorts chronologically as plain text, and
 // unique per build,
 // so "which build is this server running" is answerable from /api/health

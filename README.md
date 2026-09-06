@@ -155,7 +155,7 @@ Measured on the build in this repository, SQLite, one process:
 | Cold start to serving | 28 ms |
 | Idle resident memory | ~16 MB |
 | After 200 streamed turns, 20 concurrent | ~54 MB peak, 11 OS threads |
-| Frontend | 59 kB on the wire to open the chat — 47 kB of JavaScript and 13 kB of CSS. The server compresses, so that is what is actually transferred, not what a proxy might have managed. The Chinese dictionary (12 kB), the backoffice (18 kB) and the formula renderer (4 kB) are separate, and are fetched only by the readers who need them |
+| Frontend | 60 kB on the wire to open the chat — 48 kB of JavaScript and 12 kB of CSS. The server compresses, so that is what is actually transferred, not what a proxy might have managed. The Chinese dictionary (13 kB), the backoffice (19 kB) and the formula renderer (4 kB) are separate, and are fetched only by the readers who need them |
 | Background goroutines at idle | 1 — a janitor on a ten-minute tick |
 | Direct Go dependencies | 3 |
 | Runtime frontend dependencies | 0 |

@@ -35,7 +35,10 @@ COPY --from=web /src/internal/web/dist/ ./internal/web/dist/
 
 # yyyy.MM.dd.HH.mm.ss, supplied by `make docker`. The default is what a bare
 # `docker build` gets.
-ARG VERSION=docker
+# Empty rather than a word: the build below stamps the same kind of version
+# the Makefile does when nothing was passed in, so an image built straight
+# from `docker compose up --build` still says when it was built.
+ARG VERSION=
 ARG TARGETARCH
 
 # CGO_ENABLED=0 because the SQLite driver is pure Go: that is what allows a
@@ -43,7 +46,7 @@ ARG TARGETARCH
 ENV CGO_ENABLED=0
 RUN GOARCH=${TARGETARCH:-amd64} go build \
       -trimpath \
-      -ldflags "-s -w -X main.version=${VERSION}" \
+      -ldflags "-s -w -X main.version=${VERSION:-v$(date -u +%Y.%m.%d.%H.%M.%S)}" \
       -o /out/obsidian-arc ./cmd/server
 
 # --- the image ------------------------------------------------------------------
