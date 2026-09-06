@@ -241,6 +241,12 @@ export function compactNumber(value: number): string {
 export function relativeTime(at: number): string {
   if (!at) return '—';
   const seconds = Math.round((Date.now() - at) / 1000);
+  // Every phrase below is in the past tense, so a moment that has not
+  // happened yet came out as "just now" — a card expiring in a month read as
+  // one expiring this second. There is no future vocabulary here to reach
+  // for, and inventing one is a set of strings this has never needed, so a
+  // future moment is given as the date it is.
+  if (seconds < 0) return new Date(at).toLocaleString();
   if (seconds < 60) return t('timeJustNow');
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return t('timeMinutes', { count: minutes });

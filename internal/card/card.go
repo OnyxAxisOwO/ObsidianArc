@@ -101,6 +101,47 @@ func (s *Store) Available(ctx context.Context, userID string) ([]Card, error) {
 	return out, rows.Err()
 }
 
+// Holding is what an account has, at a glance.
+//
+// Counts and not just the list, because "none left" and "never had any" are
+// different answers to "why can this person not reset", and the available
+// list alone cannot tell them apart.
+type Holding struct {
+	Available int `json:"available"`
+	Used      int `json:"used"`
+	Expired   int `json:"expired"`
+	Total     int `json:"total"`
+	// The unused, unexpired ones, soonest to expire first — the ones an
+	// operator might actually be asked about.
+	Cards []Card `json:"cards"`
+}
+
+// Held summarises one account's cards.
+func (s *Store) Held(ctx context.Context, userID string) (Holding, error) {
+	now := time.Now().UnixMilli()
+
+	var holding Holding
+	err := s.db.QueryRow(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN used_at = ? AND expires_at > ? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN used_at <> ? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN used_at = ? AND expires_at <= ? THEN 1 ELSE 0 END), 0),
+			COUNT(*)
+		FROM usage_cards WHERE user_id = ?`,
+		0, now, 0, 0, now, userID).
+		Scan(&holding.Available, &holding.Used, &holding.Expired, &holding.Total)
+	if err != nil {
+		return Holding{}, fmt.Errorf("card: held: %w", err)
+	}
+
+	cards, err := s.Available(ctx, userID)
+	if err != nil {
+		return Holding{}, err
+	}
+	holding.Cards = cards
+	return holding, nil
+}
+
 // Spend marks one card used and reports whether it was this call that did it.
 //
 // The condition is in the UPDATE rather than in a read followed by a write:

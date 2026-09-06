@@ -2043,6 +2043,35 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* The count first and large, because it is the one number an operator came
+   to read; the breakdown under it in the ordinary hint voice. */
+.oa-card-count {
+  margin: 0 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.oa-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.oa-card-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 11px;
+  background: var(--ai-surface-container-low);
+  font-size: 12px;
+}
+
+.oa-card-expiry {
+  color: var(--ai-text-secondary);
+}
+
 /* A minted batch, listed once. Monospace and one per line so it can be
    selected, copied, or read aloud without a character being in doubt. */
 .oa-code-list {

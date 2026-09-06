@@ -314,3 +314,50 @@ func TestANamedBatchIsRefused(t *testing.T) {
 		t.Errorf("minted %+v, want the name that was asked for", minted)
 	}
 }
+
+// The panel needs the counts, not just the list. "None left" and "never had
+// any" are different answers to why somebody cannot reset, and the available
+// list alone reads the same for both.
+func TestHeldSeparatesSpentFromExpiredFromLeft(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	person := f.reader(t, "holder")
+
+	granted, err := f.store.Grant(ctx, person.ID, 4, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One spent.
+	if err := f.store.Spend(ctx, person.ID, granted[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	// One expired without ever being used.
+	if _, err := f.db.Exec(ctx, `UPDATE usage_cards SET expires_at = ? WHERE id = ?`,
+		time.Now().Add(-time.Hour).UnixMilli(), granted[1].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	held, err := f.store.Held(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held.Total != 4 || held.Available != 2 || held.Used != 1 || held.Expired != 1 {
+		t.Errorf("held = %+v, want 4 total / 2 left / 1 used / 1 expired", held)
+	}
+	if len(held.Cards) != 2 {
+		t.Errorf("listed %d cards, want the 2 that can still be spent", len(held.Cards))
+	}
+	// Soonest to expire first: that is the one somebody will ask about.
+	if len(held.Cards) == 2 && held.Cards[0].ExpiresAt > held.Cards[1].ExpiresAt {
+		t.Error("the list is not ordered by expiry")
+	}
+
+	// An account with nothing is zeros, not an error and not a nil list.
+	empty, err := f.store.Held(ctx, f.reader(t, "nobody").ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Total != 0 || empty.Cards == nil || len(empty.Cards) != 0 {
+		t.Errorf("an account with no cards gave %+v", empty)
+	}
+}

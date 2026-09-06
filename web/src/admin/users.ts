@@ -23,6 +23,7 @@ import {
   adminApi,
   emptyPolicy,
   type Account,
+  type CardHolding,
   type ApiKey,
   type AccountStatus,
   type Group,
@@ -241,6 +242,12 @@ async function openUser(view: AdminView, groups: Group[], userID: string): Promi
         body.appendChild(section(t('secAllowance')));
         body.appendChild(allowance);
       }
+
+      // What they are holding, before the control that adds more: an operator
+      // is usually here because somebody asked, and "you already have two"
+      // is the answer more often than a third card is.
+      body.appendChild(section(t('secHeldCards')));
+      body.appendChild(cardHolding(detail.cards));
 
       // Straight to this account, without a code in between. Beside the
       // figures it changes, because "why does this person have no allowance
@@ -525,4 +532,34 @@ async function removeUser(view: AdminView, account: Account, panel: PanelHandle)
     panel.setBusy(false);
     panel.setError(error instanceof ApiError ? error.message : String(error));
   }
+}
+
+/** How many resets an account is holding, and when they run out. */
+function cardHolding(held: CardHolding): HTMLElement {
+  const wrap = el('div');
+
+  if (held.total === 0) {
+    wrap.appendChild(el('p', 'oa-field-hint', t('cardsNone')));
+    return wrap;
+  }
+
+  wrap.appendChild(el('p', 'oa-card-count', t('cardsAvailable', { count: held.available })));
+  // The three together, because "none left" and "never had any" are
+  // different answers and the first number alone cannot tell them apart.
+  wrap.appendChild(el('p', 'oa-field-hint',
+    t('cardsBreakdown', { used: held.used, expired: held.expired, total: held.total })));
+
+  if (!held.cards.length) return wrap;
+
+  const list = el('div', 'oa-card-list');
+  for (const card of held.cards) {
+    const row = el('div', 'oa-card-row');
+    row.appendChild(el('span', 'oa-card-source',
+      card.source === 'grant' ? t('cardFromAdmin') : t('cardFromCode')));
+    row.appendChild(el('span', 'oa-card-expiry',
+      card.expires_at > 0 ? t('cardExpires', { when: relativeTime(card.expires_at) }) : t('noLimit')));
+    list.appendChild(row);
+  }
+  wrap.appendChild(list);
+  return wrap;
 }

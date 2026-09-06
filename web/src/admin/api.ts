@@ -318,6 +318,16 @@ export interface ModelHealth {
   };
 }
 
+/** What one account is holding in reset cards. */
+export interface CardHolding {
+  available: number;
+  used: number;
+  expired: number;
+  total: number;
+  /** The unused, unexpired ones, soonest to expire first. */
+  cards: Array<{ id: string; source: string; expires_at: number; created_at: number }>;
+}
+
 export const adminApi = {
   dashboard: (metric: UsageMetric = 'credits') =>
     api.get<Dashboard>(`/api/admin/dashboard?metric=${metric}`),
@@ -337,6 +347,7 @@ export const adminApi = {
       usage: UsageSummary;
       lifetime: UsageTotals;
       policy: QuotaPolicy;
+      cards: CardHolding;
     }>(`/api/admin/users/${id}`),
   updateUser: (id: string, patch: Record<string, unknown>) =>
     api.patch<{ user: Account }>(`/api/admin/users/${id}`, patch),

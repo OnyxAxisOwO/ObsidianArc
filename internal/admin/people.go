@@ -111,11 +111,20 @@ func (h *Handlers) showUser(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 
+	// Beside the allowance rather than behind a second request: "why has this
+	// person no allowance left" and "how many resets are they holding" are
+	// one thought, and the panel already asks for everything else at once.
+	held, err := h.cards.Held(r.Context(), userID)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"user":     account,
 		"usage":    summary,
 		"lifetime": totals,
 		"policy":   policy,
+		"cards":    held,
 	})
 }
 
