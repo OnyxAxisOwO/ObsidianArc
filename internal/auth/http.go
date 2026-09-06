@@ -349,7 +349,10 @@ func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	updated, err := h.users.UpdateProfile(r.Context(), nil, account.ID, user.ProfileUpdate{
+	// Through the service rather than straight to the store: an address
+	// changed here has to clear the same registration controls as one typed
+	// into the sign-up form, and withdraw the confirmation it is leaving.
+	updated, err := h.service.UpdateProfile(r.Context(), account.ID, user.ProfileUpdate{
 		Nickname: body.Nickname,
 		Avatar:   body.Avatar,
 		Bio:      body.Bio,
@@ -500,17 +503,8 @@ func registrationError(err error) error {
 			"Too many accounts have been created just now. Try again shortly.").
 			WithDetails(map[string]any{"retry_after_seconds": seconds})
 	}
-	var domain *EmailDomainError
-	if errors.As(err, &domain) {
-		return httpx.BadRequest("%s", domain.Error()).
-			WithDetails(map[string]any{"allowed_domains": domain.Allowed})
-	}
 
 	switch {
-	case errors.Is(err, ErrEmailRequired):
-		return httpx.BadRequest("An email address is required to register here.")
-	case errors.Is(err, user.ErrQQRequired):
-		return httpx.BadRequest("A QQ number is required to register here.")
 	case errors.Is(err, ErrRegistrationClosed):
 		return httpx.Forbidden("Registration is closed on this server.")
 	case errors.Is(err, user.ErrUsernameTaken):
@@ -525,7 +519,19 @@ func registrationError(err error) error {
 }
 
 func profileError(err error) error {
+	// Coded and carrying the list, so the form can word it in the reader's
+	// own language and say what would be acceptable instead.
+	var domain *EmailDomainError
+	if errors.As(err, &domain) {
+		return httpx.BadRequest("%s", domain.Error()).
+			WithDetails(map[string]any{"allowed_domains": domain.Allowed})
+	}
+
 	switch {
+	case errors.Is(err, ErrEmailRequired):
+		return httpx.BadRequest("An email address is required on this server.")
+	case errors.Is(err, user.ErrQQRequired):
+		return httpx.BadRequest("A QQ number is required on this server.")
 	case errors.Is(err, user.ErrInvalidUsername),
 		errors.Is(err, user.ErrInvalidEmail),
 		errors.Is(err, user.ErrInvalidQQ),

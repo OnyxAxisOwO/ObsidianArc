@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -81,10 +82,10 @@ type RegisterInput struct {
 // instance becomes an administrator regardless of whether registration is
 // otherwise open, which is what makes a fresh deployment usable without
 // environment variables.
-// VerificationToken is returned by Register when the new account has to
-// confirm its address. Empty otherwise. The mail is sent by the handler,
-// so a briefly unreachable SMTP server does not fail a registration that
-// has already been written.
+//
+// The second return is the session token, not the verification one: the link
+// is mailed from here, off the request, so a briefly unreachable SMTP server
+// does not fail a registration that has already been written.
 func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, string, error) {
 	if err := user.ValidateUsername(in.Username); err != nil {
 		return user.User{}, "", err
@@ -242,20 +243,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		return user.User{}, "", err
 	}
 
-	// Mailed on a detached context: a briefly unreachable SMTP server must
-	// not fail a registration that has already been written, and the person
-	// registering should not wait on an SMTP handshake. If it never arrives
-	// there is a resend button behind the banner.
 	if verification != "" {
-		siteName := s.settings.Get(settings.SiteName)
-		email := created.Email
-		go func() {
-			sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			defer cancel()
-			if err := s.SendVerification(sendCtx, siteName, email, verification); err != nil {
-				slog.ErrorContext(sendCtx, "could not send verification mail", "error", err)
-			}
-		}()
+		s.mailVerification(ctx, created.Email, verification)
 	}
 
 	token, _, err := s.sessions.Create(ctx, created.ID, s.cfg.TTL, in.IP, in.UA)
@@ -266,6 +255,110 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	_ = s.users.MarkLogin(ctx, created.ID, now)
 	created.LastLoginAt = now
 	return created, token, nil
+}
+
+// UpdateProfile applies the fields an account owns about itself.
+//
+// It lives here rather than going straight to the store because changing an
+// address has to pass the same gate registering with it does. Handing the
+// store a new address let a signed-in user walk around both registration
+// controls: the domain allowlist an operator had configured, and — worse —
+// the confirmation itself, because `email_verified` stayed true for an
+// address its owner had never proved they could read.
+func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.ProfileUpdate) (user.User, error) {
+	var (
+		updated      user.User
+		verification string
+		address      string
+	)
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		// Whether the address is new is read here and written below, so the
+		// owner's row is locked across both: two updates racing would each
+		// compare against the address the other is replacing, and the one
+		// that commits second could leave the account verified for an
+		// address nobody confirmed.
+		if _, err := tx.Exec(ctx,
+			`UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
+			return fmt.Errorf("auth: lock account: %w", err)
+		}
+		current, err := s.users.ByID(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+
+		moved := false
+		if in.Email != nil {
+			address = strings.TrimSpace(*in.Email)
+			// Case is not a move: email_lower is the identity both the login
+			// query and the uniqueness index work in.
+			moved = !strings.EqualFold(address, current.Email)
+		}
+		// Only when it moves. An operator who narrows the allowlist after
+		// accounts exist has not asked for those accounts to be frozen out
+		// of their own profile form; they have asked that nobody take an
+		// address outside it from now on.
+		if moved {
+			if err := checkEmail(s.settings, address); err != nil {
+				return err
+			}
+		}
+		if in.QQ != nil && strings.TrimSpace(*in.QQ) != current.QQ {
+			if err := checkQQ(s.settings, *in.QQ); err != nil {
+				return err
+			}
+		}
+
+		if moved {
+			// Whatever is outstanding was issued for the address being left
+			// behind, and Verify writes the address on the row: opening an
+			// old link would put the previous address back and mark it
+			// confirmed. issueVerification drops them too, so this is the
+			// branch where no new link supersedes them.
+			if s.VerificationRequired() {
+				if _, err := tx.Exec(ctx,
+					`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
+					false, time.Now().UnixMilli(), userID); err != nil {
+					return fmt.Errorf("auth: withdraw confirmation: %w", err)
+				}
+				if verification, err = s.issueVerification(ctx, tx, userID, address); err != nil {
+					return err
+				}
+			} else if _, err := tx.Exec(ctx,
+				`DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
+				return fmt.Errorf("auth: clear verifications: %w", err)
+			}
+		}
+
+		// Last, so the record it reads back already carries the withdrawn
+		// confirmation.
+		updated, err = s.users.UpdateProfile(ctx, tx, userID, in)
+		return err
+	})
+	if err != nil {
+		return user.User{}, err
+	}
+	if verification != "" {
+		s.mailVerification(ctx, address, verification)
+	}
+	return updated, nil
+}
+
+// mailVerification sends the link without the caller waiting for it.
+//
+// Detached, because the write it belongs to is already committed: an SMTP
+// server that is briefly unreachable must not turn a successful registration
+// or profile change into a failure, and nobody should sit through a mail
+// handshake to find out their nickname was saved. If it never arrives there
+// is a resend button behind the banner.
+func (s *Service) mailVerification(ctx context.Context, email, token string) {
+	siteName := s.settings.Get(settings.SiteName)
+	go func() {
+		sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if err := s.SendVerification(sendCtx, siteName, email, token); err != nil {
+			slog.ErrorContext(sendCtx, "could not send verification mail", "error", err)
+		}
+	}()
 }
 
 // The configured registration group when it still exists, the instance

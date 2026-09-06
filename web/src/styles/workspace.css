@@ -18,11 +18,28 @@
 }
 
 .oa-brand {
+  display: inline-flex;
+  align-items: center;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: -0.01em;
-  padding-left: 2px;
+  padding: 4px 6px;
+  margin-left: -4px;
+  border-radius: 8px;
   color: var(--ai-text);
+  text-decoration: none;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.oa-brand:hover {
+  background: var(--ai-state-hover);
+}
+
+.oa-brand:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 .oa-header-spacer {

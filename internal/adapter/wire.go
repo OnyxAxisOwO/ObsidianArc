@@ -232,18 +232,63 @@ const (
 // of its answer, which is what several reasoning models do on an
 // OpenAI-compatible endpoint instead of using a dedicated field.
 //
-// It has to work on a partial buffer, because it runs on every delta: a
-// stream can stop anywhere, including inside the tag. Everything after an
-// unclosed <think> is reasoning — the answer has not started yet.
+// One shot, for a response that arrived whole. A stream uses inlineThinking
+// below, which is the same rule with a memory of where it has already looked.
 func splitThinking(buffer string) (reasoning, answer string) {
-	open := strings.Index(buffer, thinkOpen)
-	if open < 0 {
-		return "", buffer
+	var once inlineThinking
+	return once.split(buffer)
+}
+
+// inlineThinking is that split, kept across the deltas of one answer.
+//
+// It has to be re-derived on every delta because a stream can stop anywhere,
+// including inside the tag — but re-deriving it from the top each time makes
+// the *ordinary* answer the most expensive case there is. A buffer with no
+// tag in it cannot be ruled out until it has been read to the end, so every
+// delta rescans everything received so far, and the cost is quadratic in the
+// length of the answer. Measured on a 256 kB answer arriving four bytes at a
+// time: 159 ms of scanning with no tag present, against 3 ms with one, where
+// the search stops at the first byte.
+//
+// So each scan resumes where the last one stopped, backing off by one tag's
+// width because a tag can straddle two deltas, and each offset is kept once
+// it is known.
+type inlineThinking struct {
+	openAt      int
+	openFound   bool
+	openScanned int
+
+	// Measured from the end of the opening tag rather than from the buffer,
+	// which is where the closing one is looked for.
+	closeAt      int
+	closeFound   bool
+	closeScanned int
+}
+
+// Enough to cover a tag split across two deltas: the longer of the two is
+// eight bytes, so resuming that far back cannot step over one.
+const tagStraddle = len(thinkClose)
+
+func (s *inlineThinking) split(buffer string) (reasoning, answer string) {
+	if !s.openFound {
+		from := min(max(0, s.openScanned-tagStraddle), len(buffer))
+		index := strings.Index(buffer[from:], thinkOpen)
+		if index < 0 {
+			s.openScanned = len(buffer)
+			return "", buffer
+		}
+		s.openAt, s.openFound = from+index, true
 	}
-	rest := buffer[open+len(thinkOpen):]
-	close := strings.Index(rest, thinkClose)
-	if close < 0 {
-		return rest, buffer[:open]
+
+	rest := buffer[s.openAt+len(thinkOpen):]
+	if !s.closeFound {
+		from := min(max(0, s.closeScanned-tagStraddle), len(rest))
+		index := strings.Index(rest[from:], thinkClose)
+		if index < 0 {
+			s.closeScanned = len(rest)
+			return rest, buffer[:s.openAt]
+		}
+		s.closeAt, s.closeFound = from+index, true
 	}
-	return rest[:close], buffer[:open] + rest[close+len(thinkClose):]
+	return rest[:s.closeAt], buffer[:s.openAt] + rest[s.closeAt+len(thinkClose):]
 }

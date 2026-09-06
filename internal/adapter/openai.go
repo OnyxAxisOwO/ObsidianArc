@@ -298,10 +298,12 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		fieldReasoning strings.Builder
 		emittedAnswer  int
 		emittedInline  int
+		// Kept across deltas rather than rebuilt per delta: see inlineThinking.
+		thinking inlineThinking
 	)
 
 	flushContent := func(final bool) error {
-		inline, answer := splitThinking(content.String())
+		inline, answer := thinking.split(content.String())
 
 		// A trailing `<th` is not yet text — it may be the start of a tag.
 		// Holding it back until the next delta is what stops a stray `<th`

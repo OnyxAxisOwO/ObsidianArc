@@ -113,6 +113,19 @@ export function renderChatPage(root: HTMLElement): HTMLElement {
   });
   live = chat;
 
+  // The router ignores a navigation whose destination matches the current
+  // path. Clicking the brand while already on the chat root resets to an empty
+  // conversation rather than doing nothing, matching the behavior from every
+  // other screen.
+  shell.brand.addEventListener('click', (event) => {
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (window.location.pathname === '/' && !window.location.search) {
+      event.preventDefault();
+      chat.newConversation();
+    }
+  });
+
   // The rail's width drives its own collapsed margin as well as its size, so
   // the handle writes the custom property rather than a width.
   const rail = shell.body.querySelector<HTMLElement>('.ai-chat-sidebar');

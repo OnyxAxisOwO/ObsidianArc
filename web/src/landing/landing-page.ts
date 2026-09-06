@@ -36,7 +36,8 @@ export function renderLandingPage(root: HTMLElement): void {
   const page = el('div', 'oa-landing');
   const head = el('div', 'oa-landing-head');
 
-  const brand = el('div', 'oa-landing-brand');
+  const brand = el('a', 'oa-landing-brand');
+  brand.href = '/';
   const mark = el('span', 'oa-auth-mark');
   mark.appendChild(icon(ICONS.spark, 15));
   brand.appendChild(mark);

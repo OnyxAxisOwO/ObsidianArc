@@ -24,6 +24,8 @@ export interface Shell {
   headerSlot: HTMLElement;
   /** Before the brand — the conversation rail toggle lives here. */
   leadingSlot: HTMLElement;
+  /** The brand link in the header. */
+  brand: HTMLAnchorElement;
 }
 
 export function renderShell(root: HTMLElement): Shell {
@@ -35,8 +37,12 @@ export function renderShell(root: HTMLElement): Shell {
   const leadingSlot = el('span', 'oa-header-leading');
   const headerSlot = el('span', 'oa-header-slot');
 
+  const brand = el('a', 'oa-brand', siteInfo().name);
+  brand.href = '/';
+  brand.title = t('backToChat');
+
   header.appendChild(leadingSlot);
-  header.appendChild(el('span', 'oa-brand', siteInfo().name));
+  header.appendChild(brand);
   header.appendChild(el('span', 'oa-header-spacer'));
   header.appendChild(headerSlot);
 
@@ -52,7 +58,7 @@ export function renderShell(root: HTMLElement): Shell {
   workspace.appendChild(body);
   root.appendChild(workspace);
 
-  return { root: workspace, header, body, headerSlot, leadingSlot };
+  return { root: workspace, header, body, headerSlot, leadingSlot, brand };
 }
 
 function themeToggle(): HTMLButtonElement {

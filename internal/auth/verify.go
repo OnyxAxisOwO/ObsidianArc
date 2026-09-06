@@ -132,9 +132,14 @@ func (s *Service) Verify(ctx context.Context, token string) (string, error) {
 	}
 
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		// email_lower travels with email or it does not travel at all: it is
+		// what the login query and the uniqueness index read, so a row where
+		// the two disagree is an account that cannot sign in with the address
+		// it is showing its owner.
 		if _, err := tx.Exec(ctx,
-			`UPDATE users SET email = ?, email_verified = ?, updated_at = ? WHERE id = ?`,
-			email, true, time.Now().UnixMilli(), userID); err != nil {
+			`UPDATE users SET email = ?, email_lower = ?, email_verified = ?, updated_at = ?
+			 WHERE id = ?`,
+			email, strings.ToLower(email), true, time.Now().UnixMilli(), userID); err != nil {
 			return fmt.Errorf("auth: mark verified: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
