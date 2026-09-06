@@ -15,7 +15,7 @@ VERSION ?= $(shell date -u +%Y.%m.%d.%H.%M.%S)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
-.PHONY: all build web web-ci server run dev test vet fmt typecheck clean docker version
+.PHONY: all build web web-ci server run dev test vet fmt typecheck web-test clean docker version
 
 all: build
 
@@ -58,6 +58,7 @@ dev:
 test: vet
 	go test ./...
 	npm --prefix web run typecheck
+	npm --prefix web run test
 
 vet:
 	go vet ./...
@@ -68,6 +69,9 @@ fmt:
 
 typecheck:
 	npm --prefix web run typecheck
+
+web-test:
+	npm --prefix web run test
 
 clean:
 	rm -rf bin
