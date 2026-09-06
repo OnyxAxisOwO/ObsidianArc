@@ -198,11 +198,11 @@ func (s *Store) ListAll(ctx context.Context) ([]Announcement, error) {
 func (s *Store) ListFor(ctx context.Context, userID string) ([]Announcement, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT `+columns+`,
-		 CASE WHEN r.user_id IS NULL THEN ? ELSE ? END
+		 CASE WHEN r.user_id IS NULL THEN false ELSE true END
 		 FROM announcements a
 		 LEFT JOIN announcement_reads r ON r.announcement_id = a.id AND r.user_id = ?
 		 WHERE a.published = ?`+ordering,
-		false, true, userID, true)
+		userID, true)
 	if err != nil {
 		return nil, fmt.Errorf("announcement: list for user: %w", err)
 	}

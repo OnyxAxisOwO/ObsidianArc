@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -119,5 +121,37 @@ func TestGroupCapabilitiesRoundTrip(t *testing.T) {
 	}
 	if !back.AllowDeleteConversations {
 		t.Error("granting the capability back did not take")
+	}
+}
+
+// A user's own usage history is their own. The endpoint takes no parameter
+// that says whose rows these are — the account comes from the session — and
+// this is what stops somebody adding one later.
+func TestUsageHistoryIsScopedToTheCaller(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	visitor := in.register("visitor", "another-password")
+
+	// Whatever a caller sends, the answer is about them. The ids below are
+	// the other account's, in every shape the handler could plausibly read.
+	for _, query := range []string{
+		"",
+		"?user_id=" + founder.userID,
+		"?userID=" + founder.userID,
+		"?id=" + founder.userID,
+		"?limit=10&user_id=" + founder.userID,
+	} {
+		response := in.do(http.MethodGet, "/api/usage/me/history"+query, nil, visitor)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%q: status = %d: %s", query, response.Code, response.Body.String())
+		}
+		if body := response.Body.String(); strings.Contains(body, founder.userID) {
+			t.Errorf("%q: the other account's id came back: %s", query, body)
+		}
+	}
+
+	// And signing out is the end of it.
+	if response := in.do(http.MethodGet, "/api/usage/me/history", nil, nil); response.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous: status = %d, want 401", response.Code)
 	}
 }

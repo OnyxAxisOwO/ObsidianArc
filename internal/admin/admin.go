@@ -18,6 +18,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
@@ -47,6 +48,7 @@ type Handlers struct {
 	announcements *announcement.Store
 	keys          *apikey.Store
 	requests      *reqlog.Store
+	cards         *card.Store
 }
 
 func NewHandlers(
@@ -64,6 +66,7 @@ func NewHandlers(
 	announcements *announcement.Store,
 	keys *apikey.Store,
 	requests *reqlog.Store,
+	cards *card.Store,
 ) *Handlers {
 	return &Handlers{
 		db:            db,
@@ -80,6 +83,7 @@ func NewHandlers(
 		announcements: announcements,
 		keys:          keys,
 		requests:      requests,
+		cards:         cards,
 	}
 }
 
@@ -132,6 +136,10 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/usage", protected(h.usageSummary))
 	mux.Handle("GET /api/admin/usage/records", protected(h.usageRecords))
 	mux.Handle("POST /api/admin/usage/reset", protected(h.resetQuota))
+	mux.Handle("GET /api/admin/codes", protected(h.listCodes))
+	mux.Handle("POST /api/admin/codes", protected(h.createCode))
+	mux.Handle("DELETE /api/admin/codes/{id}", protected(h.deleteCode))
+	mux.Handle("POST /api/admin/users/{id}/cards", protected(h.grantCards))
 
 	mux.Handle("GET /api/admin/quota/policies", protected(h.listPolicies))
 	mux.Handle("PUT /api/admin/quota/policies", protected(h.savePolicy))

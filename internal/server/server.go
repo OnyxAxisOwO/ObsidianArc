@@ -20,6 +20,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/backup"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/compat"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -248,6 +249,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	chatHandlers.Routes(mux)
 	quota.NewHandlers(quotaService).Routes(mux)
+	usage.NewHandlers(usageStore).Routes(mux)
+
+	cards := card.NewStore(db)
+	cardHandlers := card.NewHandlers(cards)
+	// What spending a card actually buys. The card package does not know the
+	// counters exist; this is the one line that connects the two.
+	cardHandlers.OnSpend = func(ctx context.Context, account user.User) error {
+		return quotaService.Reset(ctx, []string{account.ID})
+	}
+	cardHandlers.Routes(mux)
 
 	// Programmatic access. The key store is what an account manages from the
 	// interface; the compatibility surface is what the key is then presented
@@ -291,7 +302,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	compatHandlers.Routes(mux)
 	announcement.NewHandlers(announcements).Routes(mux)
 	trial.NewHandlers(settingsService, models, registry, proxyTrust, cfg.SecretKey).Routes(mux)
-	admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog).Routes(mux)
+	admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, cards).Routes(mux)
 
 	// Anything under /api that no module claimed is a client bug, and should
 	// read as one instead of quietly returning the SPA shell.
