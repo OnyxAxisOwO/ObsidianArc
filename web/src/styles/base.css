@@ -74,20 +74,24 @@ body {
   backdrop-filter: var(--ai-surface-filter, none);
 }
 
-/* The header's own controls, which sit on the wallpaper rather than on a card.
+/* The header's controls sit on the wallpaper rather than on a card, so each
+   one carries its own surface: a frosted fill over a real blur, the way a
+   material works, rather than a shadow smeared around the glyph.
 
-   Only the controls: the header itself stays the bare row it is everywhere
-   else. A large card can be seen through because it still leaves a field of
-   colour behind its text; a bell on a photograph has nothing, so these keep a
-   pill of their own. Deliberately more opaque than the cards and not tied to
-   the slider — pushing translucency up is a choice about the panels, not a
-   choice to make the buttons unreadable. */
+   The wordmark is not one of them. It is a name, not a control, and a chip
+   drawn around a name is the thing that made this row look cheap. It keeps
+   its own shape and takes a small shadow instead. */
 .has-wallpaper .oa-header .oa-icon-btn,
-.has-wallpaper .oa-header .oa-brand,
 .has-wallpaper .oa-header .oa-account-btn {
-  background: color-mix(in srgb, var(--ai-surface-container) 72%, transparent);
-  -webkit-backdrop-filter: var(--ai-surface-filter, none);
-  backdrop-filter: var(--ai-surface-filter, none);
+  background: color-mix(in srgb, var(--ai-surface-container) 38%, transparent);
+  /* Saturation back up after the blur washes it out — without it a material
+     is a sheet of grey plastic instead of the colour behind it, softened. */
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  backdrop-filter: blur(20px) saturate(1.6);
+}
+
+.has-wallpaper .oa-header .oa-brand {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 }
 
 /* There is deliberately no prefers-reduced-transparency rule here.
