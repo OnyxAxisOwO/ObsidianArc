@@ -411,7 +411,7 @@ export const zh: Record<StringKey, string> = {
   codeCardDaysHint: '兑换到手的卡多久之后过期作废。',
   codeExpiresDays: '兑换码有效期（天）',
   codeExpiresHint: '超过这个时间就没人能兑了。留空表示永不过期。',
-  codeClaimedSoFar: '已兑换 {claimed} / {cards}。兑换码建好之后不能改——已经发出去的卡收不回来——所以只能作废。',
+  codeClaimedSoFar: '已兑换 {claimed} / {cards}',
   confirmDeleteCode: '作废 {code}？已经从它兑出去的卡不受影响。',
   nDays: '{count} 天',
   grantCards: '发放重置卡',

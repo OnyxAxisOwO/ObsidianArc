@@ -1151,9 +1151,15 @@
   width: 100%;
   max-width: 640px;
   margin: 0 auto;
-  overflow-x: clip;
   box-sizing: border-box;
 }
+
+/* No overflow-x here, deliberately. The selected accent dot draws its ring
+   4px outside itself and the first dot in the row sits against this edge, so
+   a clip on this box shaves the ring — twice reported, twice from here. The
+   18px gutter of .oa-settings-scroll is the room it is drawn into, and that
+   scroller is already overflow-x: hidden, so nothing can escape sideways
+   anyway. */
 
 /* Whose settings these are. The panel head says "Settings" and has no room
    for a second line, so the account goes at the top of the body. */

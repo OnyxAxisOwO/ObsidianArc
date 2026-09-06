@@ -428,7 +428,7 @@ const en = {
   codeCardDaysHint: 'How long a redeemed card stays usable before it expires unspent.',
   codeExpiresDays: 'Code expires in (days)',
   codeExpiresHint: 'After this nobody may redeem it. Empty means it never stops.',
-  codeClaimedSoFar: '{claimed} of {cards} redeemed. A code cannot be edited after it exists — the cards already handed out do not come back — so it can only be withdrawn.',
+  codeClaimedSoFar: '{claimed} of {cards} redeemed',
   confirmDeleteCode: 'Withdraw {code}? Cards already redeemed from it are unaffected.',
   nDays: '{count} days',
   grantCards: 'Give reset cards',
