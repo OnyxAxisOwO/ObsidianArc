@@ -206,14 +206,33 @@ Frontend runtime dependencies: **zero**. Build dependencies: `vite`,
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 16.9 MB (13.3 MB `-tags nosqlite`) |
-| Frontend bundle | < 80 kB gzipped | **89.0 kB (77 JS + 12.1 CSS) — over** |
+| Frontend bundle | < 80 kB gzipped | 58.7 kB to open the chat (46.7 JS + 12.1 CSS) |
 | Background goroutines at idle | 1 | 1 |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
-The bundle is the one target currently missed. It is a single chunk with no
-dynamic imports, so an anonymous visitor on the front door downloads the whole
-administration backoffice and both language tables before seeing a sign-in
-card. Splitting `admin/` and the `zh` table off is where the weight is.
+It was 89.0 kB and over the target until the three pieces most people never
+need were split off it: the administration backoffice, the Chinese dictionary,
+and the LaTeX renderer. What each reader actually downloads:
+
+| | gzipped |
+| --- | --- |
+| English, not an administrator | 58.7 kB |
+| Chinese, not an administrator | 71.1 kB |
+| …and a conversation containing a formula | 74.8 kB |
+| Chinese administrator, backoffice open | 92.4 kB |
+
+Only the last is heavier than the single bundle was, and only once the
+backoffice has actually been opened — the first paint is 71.1 kB either way.
+The stylesheet is not split: `admin.css` carries the shared design system —
+panels, fields, tables, the About screen — and separating the part that is
+genuinely admin-only is a different, more careful job.
+
+These are gzipped sizes, and **the server does not gzip**. Behind no reverse
+proxy — which is the deployment this document assumes — the transfer is the
+uncompressed 136 kB of JavaScript and 70 kB of CSS. Compressing at the origin
+would be worth more than every split above put together, and it needs one
+piece of care rather than a library: the event stream must be left alone, or
+the compressor buffers a streamed answer into silence.
 
 Connection pools: SQLite 4, Postgres 10. Neither is a bottleneck at this
 scale — a turn spends its time waiting on a provider, not on the database.

@@ -191,10 +191,13 @@ way.
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 16.9 MB binary, 89.0 kB gzipped frontend — the bundle is **over** its
-stated < 80 kB target and still growing, because there is no code splitting and
-the front door ships the whole admin backoffice, both language tables, and now
-a LaTeX renderer.
+Current: 16.9 MB binary; 58.7 kB gzipped to open the chat, against a target of
+80. The backoffice, the Chinese dictionary and the LaTeX renderer are separate
+chunks, fetched only by the readers who need them — so a static import reaching
+into `admin/`, `i18n.zh` or `chat/math` from the main graph silently undoes one
+of those splits. `web/src/ui/table.ts` holds `formatUptime` for exactly that
+reason: one import of one four-line helper used to pull the whole backoffice
+back into the main bundle.
 
 ## Versions
 

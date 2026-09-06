@@ -19,7 +19,48 @@
 //     data:, bare relative paths that mean nothing here — renders as its own
 //     literal text.
 
-import { renderMathBlock, renderMathInline } from './math';
+// The LaTeX renderer is a fifth of this file's weight and most conversations
+// never contain a formula, so it arrives as a chunk of its own, requested by
+// the first math node anyone actually renders.
+//
+// Until it lands, a formula renders as its own source text — which is exactly
+// what math.ts falls back to for a formula it cannot parse — and every element
+// that drew one is painted again once it is here. renderInto is the only way
+// in, so remembering which elements those were costs one map entry for the
+// length of a single round trip.
+type MathRenderer = typeof import('./math');
+
+let math: MathRenderer | null = null;
+let arriving: Promise<void> | null = null;
+const awaitingMath = new Map<Element, string>();
+let drewPlaceholder = false;
+
+function mathRenderer(): MathRenderer | null {
+  if (math) return math;
+  arriving ??= import('./math')
+    .then((module) => {
+      math = module;
+      const pending = [...awaitingMath];
+      awaitingMath.clear();
+      for (const [element, text] of pending) renderInto(element, text);
+    })
+    // A chunk that did not arrive leaves the formula as its own source text,
+    // which is readable. Clearing the handle either way is what lets the next
+    // formula ask again, instead of one failed fetch deciding for the rest of
+    // the page's life.
+    .catch(() => undefined)
+    .finally(() => {
+      arriving = null;
+    });
+  return null;
+}
+
+function mathSource(latex: string, display: boolean): HTMLElement {
+  drewPlaceholder = true;
+  const node = document.createElement(display ? 'div' : 'span');
+  node.textContent = latex;
+  return node;
+}
 
 const ESCAPABLE = '\\`*_{}[]()#+-.!~>|$';
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})[ \t]*([^`\s]*)[ \t]*$/;
@@ -384,9 +425,13 @@ function renderInline(nodes: Inline[], parent: Node): void {
         parent.appendChild(code);
         break;
       }
-      case 'math':
-        parent.appendChild(renderMathInline(node.value, node.display));
+      case 'math': {
+        const renderer = mathRenderer();
+        parent.appendChild(renderer
+          ? renderer.renderMathInline(node.value, node.display)
+          : mathSource(node.value, node.display));
         break;
+      }
       case 'link': {
         const link = document.createElement('a');
         link.href = node.href;
@@ -410,8 +455,10 @@ function renderBlock(block: Block): Node {
     case 'hr':
       return document.createElement('hr');
 
-    case 'math':
-      return renderMathBlock(block.text);
+    case 'math': {
+      const renderer = mathRenderer();
+      return renderer ? renderer.renderMathBlock(block.text) : mathSource(block.text, true);
+    }
 
     case 'heading': {
       const level = Math.min(6, Math.max(1, block.level));
@@ -503,6 +550,11 @@ export function render(text: string): DocumentFragment {
 // for the same reason the renderer avoids innerHTML everywhere else.
 export function renderInto(element: Element, text: string): Element {
   element.textContent = '';
+  drewPlaceholder = false;
   element.appendChild(render(text));
+  // Only while the renderer is still in flight. Once it is here nothing draws
+  // a placeholder again, so the map empties and stays empty.
+  if (drewPlaceholder) awaitingMath.set(element, text);
+  else awaitingMath.delete(element);
   return element;
 }

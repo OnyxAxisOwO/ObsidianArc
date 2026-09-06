@@ -134,3 +134,15 @@ export function absoluteTime(at: number): string {
   if (!at) return '—';
   return new Date(at).toLocaleString();
 }
+
+/**
+ * Beside the other two rather than in the admin screens, where it used to
+ * live: the About panel needs it, and one import of one four-line helper was
+ * enough to pull the whole backoffice into the main bundle with it.
+ */
+export function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}

@@ -264,7 +264,7 @@ function appearanceSection(): HTMLElement {
     options: [{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }],
     hint: t('languageHint'),
     onChange: (value) => {
-      setLanguage(value);
+      void setLanguage(value);
       syncPreferences({ language: value });
     },
   });

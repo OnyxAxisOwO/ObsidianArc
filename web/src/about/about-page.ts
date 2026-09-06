@@ -4,7 +4,6 @@
 // matching the settings panel. Closing it returns to the conversation still
 // sitting behind it.
 
-import { formatUptime } from '../admin/admin-page';
 import { health } from '../api/client';
 import { renderChatPage } from '../chat/chat-page';
 import { t } from '../i18n';
@@ -13,6 +12,7 @@ import { siteInfo } from '../session';
 import { el } from '../ui/dom';
 import { section } from '../ui/form';
 import { openPanel } from '../ui/panel';
+import { formatUptime } from '../ui/table';
 
 // An instance can be renamed and can describe itself however its operator
 // wants, and the heading and body above honour that. These two do not: they

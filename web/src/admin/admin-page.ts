@@ -14,6 +14,7 @@ import { ICONS, button, clear, el, icon } from '../ui/dom';
 import { attachResizer } from '../ui/resizer';
 import { closePanel } from '../ui/panel';
 import { attachOverlayScrollbar, type OverlayScrollbarHandle } from '../ui/scrollbar';
+import { formatUptime } from '../ui/table';
 import { renderAnnouncements } from './announcements';
 import { renderDashboard } from './dashboard';
 import { renderGroups } from './groups';
@@ -242,13 +243,6 @@ export function renderAdminPage(root: HTMLElement, path: string): void {
 
   body.appendChild(loading());
   void page.render(view);
-}
-
-export function formatUptime(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
-  return `${Math.round(seconds / 86400)}d`;
 }
 
 export function loading(): HTMLElement {

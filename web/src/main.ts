@@ -8,13 +8,12 @@ import { renderAboutPage } from './about/about-page';
 import { renderAuthPage } from './auth/auth-page';
 import { showUnauthorizedModal } from './auth/unauthorized-modal';
 import { renderVerifyPage } from './auth/verify-page';
-import { renderAdminPage } from './admin/admin-page';
 import { renderChatPage } from './chat/chat-page';
 import { renderLandingPage } from './landing/landing-page';
 import { renderKeysPage } from './settings/api-keys';
 import { renderSettingsPage } from './settings/settings-page';
 import { renderShell } from './app/shell';
-import { t } from './i18n';
+import { loadLanguage, t } from './i18n';
 import { navigate, startRouter, type Route, type RouteContext } from './router';
 import { currentUser, isAdmin, siteInfo, start as startSession } from './session';
 import { startTheme } from './theme/theme';
@@ -28,7 +27,10 @@ if (!root) throw new Error('missing #app');
 void boot();
 
 async function boot(): Promise<void> {
-  await startSession();
+  // The dictionary before the session: a slow or refused /api/auth/me must not
+  // decide whether the sign-in card is in the reader's language. Both are one
+  // round trip and they run together.
+  await Promise.all([loadLanguage(), startSession()]);
   startRouter(root!, routes, notFound);
 }
 
@@ -90,8 +92,15 @@ function adminOnly(render: Route['render']): Route['render'] {
 
 // --- screens ----------------------------------------------------------------
 
-function admin(target: HTMLElement, ctx: RouteContext): void {
-  renderAdminPage(target, ctx.path);
+// Fetched when an administrator first opens the backoffice, rather than by
+// everyone who loads the chat. It is a quarter of the application's code and
+// most people can never reach it, so it is the one screen worth paying a
+// round trip for. The router already awaits a render, so nothing else has to
+// know this one arrives late.
+function admin(target: HTMLElement, ctx: RouteContext): Promise<void> {
+  return import('./admin/admin-page').then((screen) => {
+    screen.renderAdminPage(target, ctx.path);
+  });
 }
 
 function notFound(target: HTMLElement, ctx: RouteContext): void {
