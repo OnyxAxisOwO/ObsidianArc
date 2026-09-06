@@ -105,9 +105,25 @@ func (s *Service) SendVerification(ctx context.Context, siteName, email, token s
 	})
 }
 
-// Verify consumes a token. The address on the row is what gets verified, not
-// whatever the account says now: someone who changed their address after the
-// link was sent has not confirmed the new one.
+// Verify consumes a token. It confirms the address the link was issued for,
+// and only while the account still has it.
+//
+// It used to write that address onto the row, which is a different thing and
+// the source of three faults at once. A link opened while a profile change was
+// committing put the old address back and marked it confirmed — the read of
+// the token happens before the transaction, so the deletion that was supposed
+// to withdraw the link came too late to stop it, and the change the owner had
+// just made was silently undone. Where somebody else had since registered the
+// old address, the write hit the uniqueness index on email_lower instead, and
+// the error had no case in verificationError: a 500, with the token's deletion
+// rolled back beside it, so the same link failed the same way for a full day.
+//
+// Confirming rather than assigning removes all of it. The address is already
+// on the row — registration and the profile form both put it there — so there
+// is nothing here to write but the flag, and a link for an address the account
+// has moved off simply matches no row. That is also why this needs no lock:
+// whichever way the two transactions interleave, the value the WHERE reads is
+// the one the other would have changed.
 func (s *Service) Verify(ctx context.Context, token string) (string, error) {
 	if strings.TrimSpace(token) == "" {
 		return "", ErrVerificationInvalid
@@ -131,24 +147,47 @@ func (s *Service) Verify(ctx context.Context, token string) (string, error) {
 		return "", ErrVerificationExpired
 	}
 
+	confirmed := false
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
-		// email_lower travels with email or it does not travel at all: it is
-		// what the login query and the uniqueness index read, so a row where
-		// the two disagree is an account that cannot sign in with the address
-		// it is showing its owner.
-		if _, err := tx.Exec(ctx,
-			`UPDATE users SET email = ?, email_lower = ?, email_verified = ?, updated_at = ?
-			 WHERE id = ?`,
-			email, strings.ToLower(email), true, time.Now().UnixMilli(), userID); err != nil {
+		// email_lower rather than email: it is what the login query and the
+		// uniqueness index work in, so it is the account's identity, and the
+		// display spelling is the owner's to change without unconfirming
+		// themselves.
+		marked, err := tx.Exec(ctx,
+			`UPDATE users SET email_verified = ?, updated_at = ?
+			 WHERE id = ? AND email_lower = ?`,
+			true, time.Now().UnixMilli(), userID, strings.ToLower(email))
+		if err != nil {
 			return fmt.Errorf("auth: mark verified: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
+		// No row means the account is no longer at the address this link was
+		// issued for. The link is spent either way — leaving it usable is what
+		// would let it be opened again after the next move.
+		affected, err := marked.RowsAffected()
+		if err != nil {
+			// Whether the link matched is the whole answer here, and a driver
+			// that cannot say must not be read as a yes.
+			return fmt.Errorf("auth: mark verified: %w", err)
+		}
+		confirmed = affected > 0
+
+		// Spent either way. Returning the refusal from inside here would roll
+		// this back with it, and the link would still be open for the next
+		// attempt — so the transaction commits and the caller is told after.
+		scope, args := "user_id = ?", []any{userID}
+		if !confirmed {
+			scope, args = "id = ?", []any{digest(token)}
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM email_verifications WHERE `+scope, args...); err != nil {
 			return fmt.Errorf("auth: clear verifications: %w", err)
 		}
 		return nil
 	})
 	if err != nil {
 		return "", err
+	}
+	if !confirmed {
+		return "", ErrVerificationInvalid
 	}
 	return userID, nil
 }

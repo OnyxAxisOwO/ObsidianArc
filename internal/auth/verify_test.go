@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -207,44 +208,70 @@ func TestIssuingSupersedesTheOutstandingToken(t *testing.T) {
 	}
 }
 
-// The link verifies the address it was sent to, not whatever the account says
-// by the time it is opened.
-func TestVerifyConfirmsTheAddressTheLinkWasSentTo(t *testing.T) {
+// A link sent to one address must never confirm another. That is the property
+// this has always protected; what changed is how.
+//
+// It used to be held by writing the link's address back onto the account, so
+// opening a stale link moved the owner somewhere they had left. Now the link
+// simply does not match: confirming an address the account no longer has is
+// not something to do quietly, and reverting them to it is worse.
+func TestAStaleLinkConfirmsNothingAndMovesNobody(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	verifying(t, f)
 
+	// Not the first account: that one is never held back, so it would arrive
+	// already confirmed and the assertions below would pass for the wrong
+	// reason.
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "first", Password: "a-good-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	account, _, err := f.auth.Register(ctx, RegisterInput{
 		Username: "founder", Email: "first@example.com", Password: "a-good-password",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if account.EmailVerified {
+		t.Fatal("the account arrived confirmed; this test would prove nothing")
+	}
 	token, err := f.auth.issueVerification(ctx, f.db, account.ID, "first@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Changed after the link went out.
-	newAddress := "second@example.com"
-	if _, err := f.users.UpdateProfile(ctx, nil, account.ID, user.ProfileUpdate{
-		Email: &newAddress,
-	}); err != nil {
+	// Moved by a path that does not withdraw the link — which is what the
+	// administrator's form still does.
+	moved := "second@example.com"
+	if _, err := f.users.UpdateProfile(ctx, nil, account.ID, user.ProfileUpdate{Email: &moved}); err != nil {
 		t.Fatalf("change address: %v", err)
 	}
 
-	if _, err := f.auth.Verify(ctx, token); err != nil {
-		t.Fatalf("verify: %v", err)
+	if _, err := f.auth.Verify(ctx, token); !errors.Is(err, ErrVerificationInvalid) {
+		t.Fatalf("verify returned %v, want ErrVerificationInvalid", err)
 	}
 
 	after, err := f.users.ByID(ctx, nil, account.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Email != "first@example.com" {
-		t.Errorf("address = %q, want the one the link confirmed", after.Email)
+	if after.Email != moved {
+		t.Errorf("address = %q; a stale link moved the account off %q", after.Email, moved)
 	}
-	if !after.EmailVerified {
-		t.Error("account is still unverified")
+	if after.EmailVerified {
+		t.Error("an address nobody confirmed is marked confirmed")
+	}
+
+	// Spent either way, so it cannot be opened again after the next move.
+	var outstanding int
+	if err := f.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM email_verifications WHERE user_id = ?`, account.ID).Scan(&outstanding); err != nil {
+		t.Fatal(err)
+	}
+	if outstanding != 0 {
+		t.Errorf("%d links still outstanding", outstanding)
 	}
 }
 

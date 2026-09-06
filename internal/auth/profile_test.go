@@ -185,20 +185,39 @@ func TestALinkDoesNotSurviveTheAddressItWasIssuedFor(t *testing.T) {
 	}
 }
 
-// email and email_lower are two halves of one address. Verify wrote only the
-// first half, so an account that confirmed a link could no longer sign in
-// with the address it was showing its owner.
-func TestVerifyingKeepsTheFoldedAddressInStep(t *testing.T) {
+// The display spelling and the folded one are the same fact stored twice, and
+// the folded one is what login and the uniqueness index read. Registering with
+// capitals and then confirming has to leave an account that can sign in.
+func TestConfirmingLeavesTheFoldedAddressUsable(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	verifying(t, f)
 
+	// Not the first account: that one is never held back, so it would have
+	// nothing to confirm.
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "first", Password: "a-good-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	account, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
+		Username: "founder", Email: "Founder.Mixed@Example.com", Password: "a-good-password",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := f.auth.issueVerification(ctx, f.db, account.ID, "Founder.Moved@Example.com")
+	if account.EmailVerified {
+		t.Fatal("the account was confirmed without opening anything")
+	}
+
+	var token string
+	if err := f.db.QueryRow(ctx,
+		`SELECT id FROM email_verifications WHERE user_id = ?`, account.ID).Scan(&token); err != nil {
+		t.Fatalf("registration issued no link: %v", err)
+	}
+	// The row keeps the digest, so the link itself has to be reissued to be
+	// opened here.
+	token, err = f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,12 +225,15 @@ func TestVerifyingKeepsTheFoldedAddressInStep(t *testing.T) {
 		t.Fatalf("verify: %v", err)
 	}
 
-	found, _, err := f.users.CredentialsByLogin(ctx, "founder.moved@example.com")
+	found, _, err := f.users.CredentialsByLogin(ctx, "founder.mixed@example.com")
 	if err != nil {
-		t.Fatalf("sign in with the confirmed address: %v", err)
+		t.Fatalf("sign in with the folded address: %v", err)
 	}
 	if found.ID != account.ID {
 		t.Errorf("resolved %q, want the account that confirmed the link", found.ID)
+	}
+	if !found.EmailVerified {
+		t.Error("the account is still unconfirmed after opening its own link")
 	}
 }
 
