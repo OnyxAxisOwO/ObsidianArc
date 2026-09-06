@@ -8,19 +8,31 @@ import path from 'node:path';
 describe('code splitting invariants in production bundle', () => {
   const assetsDir = path.resolve(__dirname, '../../internal/web/dist/assets');
 
-  // Verify whether build output is available.
-  const hasDist = fs.existsSync(assetsDir);
+  // These two assertions are about what the bundler produced, so they are
+  // meaningless without a build — and a check that quietly passes when it
+  // cannot run is not a check. It says what to do instead.
+  //
+  // CI builds before it tests, so this only ever fires on a working copy that
+  // has not run `make web` yet.
+  function builtAssets(): string[] {
+    if (!fs.existsSync(assetsDir)) {
+      throw new Error(
+        'no build to inspect at ' + assetsDir + ' — run `make web` first. ' +
+        'These assertions are the only thing holding the code splitting in ' +
+        'place, and skipping them would report a green that checked nothing.',
+      );
+    }
+    return fs.readdirSync(assetsDir);
+  }
 
   it('contains the expected chunk files without extra fragments', () => {
-    if (!hasDist) {
-      // If tests are executed before build, skip gracefully.
-      return;
-    }
+    const files = builtAssets();
 
-    const files = fs.readdirSync(assetsDir);
-
-    // Exactly 5 files: index CSS, index JS, admin-page JS, i18n.zh JS, math JS.
-    expect(files.length).toBe(5);
+    // Exactly five, and deliberately exact: the project ships no fonts, no
+    // images and no other chunks, so a sixth file is either a split that was
+    // not meant to happen or an asset nobody decided to ship. Either is worth
+    // stopping for and updating this number on purpose.
+    expect(files, `unexpected build output: ${files.join(', ')}`).toHaveLength(5);
 
     const indexJs = files.filter((f) => /^index-[^.]+\.js$/.test(f));
     const indexCss = files.filter((f) => /^index-[^.]+\.css$/.test(f));
@@ -36,9 +48,7 @@ describe('code splitting invariants in production bundle', () => {
   });
 
   it('keeps admin, Chinese translation, and math renderer out of the main bundle', () => {
-    if (!hasDist) return;
-
-    const files = fs.readdirSync(assetsDir);
+    const files = builtAssets();
     const indexJsFile = files.find((f) => /^index-[^.]+\.js$/.test(f))!;
     const adminJsFile = files.find((f) => /^admin-page-[^.]+\.js$/.test(f))!;
     const zhJsFile = files.find((f) => /^i18n\.zh-[^.]+\.js$/.test(f))!;

@@ -55,7 +55,15 @@ dev:
 	OBSIDIAN_DEV=1 OBSIDIAN_LOG_LEVEL=debug go run ./cmd/server
 
 ## test: everything the phase gate checks
+##
+## The frontend tests include assertions about the built bundle — that the
+## backoffice, the Chinese dictionary and the maths renderer are still in
+## chunks of their own. Those need something to look at, and a check that
+## quietly passes when it cannot run is not a check, so build first if there
+## is nothing there. CI has already built by this point, so this does not fire
+## there and cannot rewrite the lockfile behind its back.
 test: vet
+	@test -d internal/web/dist/assets || $(MAKE) web
 	go test ./...
 	npm --prefix web run typecheck
 	npm --prefix web run test
