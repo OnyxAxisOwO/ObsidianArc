@@ -258,10 +258,46 @@ export interface LogFacets {
 /** How a breakdown is ranked. Three defensible answers to "the most". */
 export type UsageMetric = 'requests' | 'tokens' | 'credits';
 
+export interface UserStorage {
+  user_id: string;
+  name: string;
+  count: number;
+  bytes: number;
+}
+
+export interface Resources {
+  storage: {
+    held_bytes: number;
+    held_count: number;
+    discarded_count: number;
+    by_user: UserStorage[];
+  };
+  memory: {
+    heap_bytes: number;
+    heap_sys_bytes: number;
+    sys_bytes: number;
+    gc_count: number;
+    gc_pause_ms: number;
+    goroutines: number;
+  };
+  // percent, window_sec and process_sec are absent where the platform has no
+  // answer, and percent is absent on the first read of a process: a rate
+  // needs two samples and there has only been one.
+  cpu: {
+    cores: number;
+    gomaxprocs: number;
+    process_sec?: number;
+    percent?: number;
+    window_sec?: number;
+  };
+  sampled_at: number;
+}
+
 export const adminApi = {
   dashboard: (metric: UsageMetric = 'credits') =>
     api.get<Dashboard>(`/api/admin/dashboard?metric=${metric}`),
   meta: () => api.get<Meta>('/api/admin/meta'),
+  resources: () => api.get<Resources>('/api/admin/resources'),
 
   users: (query: string) => api.get<{ users: Account[]; total: number }>(`/api/admin/users${query}`),
   user: (id: string) =>

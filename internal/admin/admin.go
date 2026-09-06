@@ -49,6 +49,10 @@ type Handlers struct {
 	keys          *apikey.Store
 	requests      *reqlog.Store
 	cards         *card.Store
+
+	// Not injected: it is two fields of state that only the resources page
+	// has any use for, and it is meaningless before the first request.
+	cpu cpuSampler
 }
 
 func NewHandlers(
@@ -96,6 +100,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	}
 
 	mux.Handle("GET /api/admin/dashboard", protected(h.dashboard))
+	mux.Handle("GET /api/admin/resources", protected(h.resources))
 
 	mux.Handle("GET /api/admin/users", protected(h.listUsers))
 	mux.Handle("GET /api/admin/users/{id}", protected(h.showUser))

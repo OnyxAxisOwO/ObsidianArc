@@ -206,7 +206,7 @@ Frontend runtime dependencies: **zero**. Build dependencies: `vite`,
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 16.9 MB (13.3 MB `-tags nosqlite`) |
-| Frontend, on the wire | < 80 kB | 67.5 kB to open the chat (52.6 JS + 13.8 CSS) |
+| Frontend, on the wire | < 80 kB | 68.2 kB to open the chat (53.4 JS + 13.8 CSS) |
 | Background goroutines at idle | 1 | 1 |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 

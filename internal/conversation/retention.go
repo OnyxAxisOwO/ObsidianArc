@@ -178,3 +178,62 @@ func (s *Store) Held(ctx context.Context) (count int64, bytes int64, err error) 
 	}
 	return count, bytes, nil
 }
+
+// UserStorage is one account's share of what the instance is holding.
+type UserStorage struct {
+	UserID string `json:"user_id"`
+	Name   string `json:"name"`
+	Count  int64  `json:"count"`
+	Bytes  int64  `json:"bytes"`
+}
+
+// HeldByUser is Held, broken down by whose files they are.
+//
+// Ranked and capped in SQL for the reason usage.GroupBy gives: taking the top
+// twenty by size and then re-sorting them by count would be the top twenty of
+// the wrong thing. The username is joined here rather than resolved by the
+// caller because a column of ULIDs answers "who is filling the disk" only in
+// principle.
+func (s *Store) HeldByUser(ctx context.Context, limit int) ([]UserStorage, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT a.user_id, MAX(COALESCE(u.username, a.user_id)), COUNT(*), COALESCE(SUM(a.size), 0)
+		FROM attachments a
+		LEFT JOIN users u ON u.id = a.user_id
+		WHERE a.discarded_at = 0
+		GROUP BY a.user_id
+		ORDER BY COALESCE(SUM(a.size), 0) DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("conversation: held by user: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	held := make([]UserStorage, 0, limit)
+	for rows.Next() {
+		var entry UserStorage
+		if err := rows.Scan(&entry.UserID, &entry.Name, &entry.Count, &entry.Bytes); err != nil {
+			return nil, fmt.Errorf("conversation: held by user: %w", err)
+		}
+		held = append(held, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("conversation: held by user: %w", err)
+	}
+	return held, nil
+}
+
+// Discarded counts the rows whose bytes retention has already dropped. They
+// still cost a row and still name a message; what they no longer cost is the
+// storage, which is the number beside them on the page.
+func (s *Store) Discarded(ctx context.Context) (int64, error) {
+	var count int64
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM attachments WHERE discarded_at <> 0`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("conversation: discarded attachments: %w", err)
+	}
+	return count, nil
+}

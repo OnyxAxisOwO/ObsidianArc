@@ -26,6 +26,7 @@ import { renderModels } from './models';
 import { renderProviders } from './providers';
 import { renderSettings } from './settings';
 import { renderLogs } from './logs';
+import { renderResources } from './resources';
 import { renderUsage } from './usage';
 import { renderUsers } from './users';
 
@@ -60,6 +61,7 @@ const PAGES: AdminPage[] = [
   { slug: 'providers', label: 'navProviders', icon: ICONS.server, render: renderProviders },
   { slug: 'models', label: 'navModels', icon: ICONS.spark, render: renderModels },
   { slug: 'usage', label: 'navUsage', icon: ICONS.chart, render: renderUsage },
+  { slug: 'resources', label: 'navResources', icon: ICONS.pulse, render: renderResources },
   { slug: 'codes', label: 'navCodes', icon: ICONS.key, render: renderCodes },
   { slug: 'logs', label: 'navLogs', icon: ICONS.file, render: renderLogs },
   { slug: 'settings', label: 'navSettings', icon: ICONS.sliders, render: renderSettings },
