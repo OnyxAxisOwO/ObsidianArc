@@ -128,11 +128,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// allowance hold while several turns are streaming at once; the
 		// release below gives back the whole reservation, and the turn record
 		// adds what the turn really cost. Both are deltas, so their order
-		// does not matter.
+		// does not matter — but which counter each lands in does, so the
+		// reservation carries the moment it was charged and is given back
+		// there rather than wherever the answer happened to finish.
 		tokens, credits := chosen.WorstCase()
-		reserved := quota.Estimate{Tokens: tokens, Credits: credits}
-
-		if err := quotaService.Reserve(ctx, account, reserved); err != nil {
+		reserved, err := quotaService.Reserve(ctx, account, quota.Estimate{Tokens: tokens, Credits: credits})
+		if err != nil {
 			freeSlot()
 			if translated := quota.TranslateError(err); translated != nil {
 				return nil, translated

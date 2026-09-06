@@ -106,13 +106,18 @@ func (e Estimate) empty() bool { return e.Tokens <= 0 && e.Credits <= 0 }
 // passed; the allowance was only enforced against turns that had already
 // ended. Reserving the ceiling means the tenth is refused while the first
 // nine are still streaming, and Settle hands back the difference.
-func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estimate) error {
+func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estimate) (Reservation, error) {
 	policy, err := s.PolicyFor(ctx, nil, account)
 	if err != nil {
-		return err
+		return Reservation{}, err
 	}
 	if policy.Unlimited() {
-		return nil
+		// Nothing was charged, so there is nothing to give back. Saying so is
+		// what stops the release from subtracting a reservation that was never
+		// taken: the counters are what the usage screen reads, and an account
+		// exempt from the limits was having its own reading wiped to zero on
+		// every turn.
+		return Reservation{}, nil
 	}
 	if estimate.Tokens < 0 {
 		estimate.Tokens = 0
@@ -124,7 +129,7 @@ func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estim
 	now := time.Now()
 	key := scopeKey(account.ID)
 
-	return s.db.Tx(ctx, func(tx *database.Tx) error {
+	err = s.db.Tx(ctx, func(tx *database.Tx) error {
 		if policy.RPM != nil && *policy.RPM > 0 {
 			counter, err := bump(ctx, tx, key, WindowRPM, bucketStart(WindowRPM, now), 1, 0, 0)
 			if err != nil {
@@ -192,6 +197,28 @@ func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estim
 		}
 		return nil
 	})
+	if err != nil {
+		// The transaction rolled back, so nothing is outstanding.
+		return Reservation{}, err
+	}
+	return Reservation{at: now, estimate: estimate, taken: true}, nil
+}
+
+// Reservation is what Reserve charged, and the moment it charged it.
+//
+// Release needs both. The counters are bucketed by window, and a generation
+// that runs for a minute — or for five hours, at the edge of that window — can
+// finish in a later bucket than it started in. Giving the reservation back at
+// the time of release put a negative delta into a bucket that had never been
+// charged, where the floor at zero swallowed it: the old bucket kept a charge
+// that was never spent, and the new one lost the turn that was.
+//
+// The zero value means nothing was reserved, which is what an account exempt
+// from the limits gets, and releasing it does nothing at all.
+type Reservation struct {
+	at       time.Time
+	estimate Estimate
+	taken    bool
 }
 
 // Settle corrects a finished turn to what it actually cost. It runs after the
@@ -225,13 +252,27 @@ func (s *Service) Settle(ctx context.Context, userID string, reserved, actual Es
 	})
 }
 
-// Release gives back a reservation for a turn that never ran — refused after
-// Reserve, or abandoned before the provider was called.
-func (s *Service) Release(ctx context.Context, userID string, reserved Estimate) error {
-	if reserved.empty() {
+// Release gives a reservation back — for a turn that never ran, and for the
+// part of one that was reserved and not spent.
+//
+// Into the bucket it came out of, not the current one. What the turn really
+// cost is settled separately, at the time it finished, which is where that
+// cost belongs; the two together leave the old bucket even and the new one
+// carrying the turn.
+func (s *Service) Release(ctx context.Context, userID string, reserved Reservation) error {
+	if !reserved.taken || reserved.estimate.empty() {
 		return nil
 	}
-	return s.Settle(ctx, userID, reserved, Estimate{})
+	key := scopeKey(userID)
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
+			if _, err := bump(ctx, tx, key, window, bucketStart(window, reserved.at),
+				0, -reserved.estimate.Tokens, -reserved.estimate.Credits); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // RecordRejection counts a refused request against the rate window only, so a
