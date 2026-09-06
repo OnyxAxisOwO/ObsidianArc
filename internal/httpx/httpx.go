@@ -97,6 +97,12 @@ func Unavailable(message string) *Error {
 	return newError(http.StatusServiceUnavailable, "unavailable", message)
 }
 
+// UnavailableCode is Unavailable where the client has something specific to
+// say about this particular outage.
+func UnavailableCode(code, message string) *Error {
+	return newError(http.StatusServiceUnavailable, code, message)
+}
+
 // Internal wraps a failure the client should learn nothing about.
 func Internal(err error) *Error {
 	return (&Error{

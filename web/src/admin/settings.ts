@@ -263,6 +263,31 @@ export async function renderSettings(view: AdminView): Promise<void> {
     hint: t('signupsIPWindowHint'),
   });
 
+  const turnstileSiteKey = textField({
+    label: t('turnstileSiteKey'),
+    value: values['turnstile.site_key'] ?? '',
+    placeholder: '0x4AAAAAAA…',
+    hint: t('turnstileSiteKeyHint'),
+    monospace: true,
+  });
+  const turnstileSecret = textField({
+    label: t('turnstileSecretKey'),
+    value: '',
+    placeholder: values['turnstile.secret_key'] ? values['turnstile.secret_key'] : '0x4AAAAAAA…',
+    hint: t('turnstileSecretHint'),
+    monospace: true,
+  });
+  const turnstileOnSignup = switchField({
+    label: t('turnstileOnSignup'),
+    value: values['turnstile.on_signup'] === 'true',
+    hint: t('turnstileOnSignupHint'),
+  });
+  const turnstileOnAPIKey = switchField({
+    label: t('turnstileOnAPIKey'),
+    value: values['turnstile.on_api_key'] === 'true',
+    hint: t('turnstileOnAPIKeyHint'),
+  });
+
   const attachmentMaxMB = numberField({
     label: t('attachmentMaxMB'),
     value: Number(values['attachments.max_mb'] ?? 6),
@@ -387,6 +412,12 @@ export async function renderSettings(view: AdminView): Promise<void> {
   form.appendChild(signupsPerIP.element);
   form.appendChild(signupsIPWindow.element);
 
+  form.appendChild(section(t('secTurnstile'), t('turnstileHint')));
+  form.appendChild(turnstileSiteKey.element);
+  form.appendChild(turnstileSecret.element);
+  form.appendChild(turnstileOnSignup.element);
+  form.appendChild(turnstileOnAPIKey.element);
+
   form.appendChild(section(t('secLanding')));
   form.appendChild(landingMode.element);
   form.appendChild(landingIntro.element);
@@ -469,6 +500,12 @@ export async function renderSettings(view: AdminView): Promise<void> {
       'chat.default_system_prompt': systemPrompt.value(),
       'chat.max_turns': String(maxTurns.value() ?? 40),
       'api.enabled': String(apiEnabled.value()),
+      'turnstile.site_key': turnstileSiteKey.value(),
+      // Empty keeps what is stored: the field was never shown the secret, so
+      // sending its emptiness back would erase it.
+      'turnstile.secret_key': turnstileSecret.value(),
+      'turnstile.on_signup': String(turnstileOnSignup.value()),
+      'turnstile.on_api_key': String(turnstileOnAPIKey.value()),
       'registration.per_ip': String(signupsPerIP.value() ?? 0),
       'registration.per_ip_window_minutes': String(signupsIPWindow.value() ?? 60),
       'attachments.max_mb': String(attachmentMaxMB.value() ?? 6),

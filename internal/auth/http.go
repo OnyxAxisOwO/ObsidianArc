@@ -14,6 +14,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -135,6 +136,16 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// banner being the first anyone hears of it.
 		"verify_email":  count > 0 && h.service.VerificationRequired(),
 		"email_domains": emailDomains(count, h.settings.Get(settings.EmailDomains)),
+		// The site key is public — it is in the page's markup wherever the
+		// widget renders — and the secret it pairs with never leaves the
+		// server. Served only where a challenge is actually switched on, so
+		// a page that has no widget to draw is not handed a key for one.
+		//
+		// Never for the first account: an empty instance must not be locked
+		// out of its own setup by a challenge nobody has configured yet.
+		"turnstile_site_key":   h.turnstileSiteKey(count == 0),
+		"turnstile_on_signup":  count > 0 && h.settings.Bool(settings.TurnstileOnSignup),
+		"turnstile_on_api_key": h.settings.Bool(settings.TurnstileOnAPIKey),
 		// What a visitor with no account gets. Served here rather than
 		// from a second endpoint because the front door has to decide what
 		// to draw before it can draw anything.
@@ -252,11 +263,13 @@ func verificationError(err error) error {
 }
 
 type registerRequest struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	QQ       string `json:"qq"`
-	Password string `json:"password"`
-	Nickname string `json:"nickname"`
+	// The Turnstile token, where the operator has switched the challenge on.
+	Turnstile string `json:"turnstile"`
+	Username  string `json:"username"`
+	Email     string `json:"email"`
+	QQ        string `json:"qq"`
+	Password  string `json:"password"`
+	Nickname  string `json:"nickname"`
 }
 
 func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
@@ -266,13 +279,14 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	account, token, err := h.service.Register(r.Context(), RegisterInput{
-		Username: body.Username,
-		Email:    body.Email,
-		QQ:       body.QQ,
-		Password: body.Password,
-		Nickname: body.Nickname,
-		IP:       httpx.ClientIP(r, h.trust),
-		UA:       r.UserAgent(),
+		Turnstile: body.Turnstile,
+		Username:  body.Username,
+		Email:     body.Email,
+		QQ:        body.QQ,
+		Password:  body.Password,
+		Nickname:  body.Nickname,
+		IP:        httpx.ClientIP(r, h.trust),
+		UA:        r.UserAgent(),
 	})
 	if err != nil {
 		return registrationError(err)
@@ -521,6 +535,14 @@ func registrationError(err error) error {
 	switch {
 	case errors.Is(err, ErrRegistrationClosed):
 		return httpx.Forbidden("Registration is closed on this server.")
+	case errors.Is(err, turnstile.ErrFailed):
+		return httpx.ForbiddenCode("challenge_failed",
+			"The verification could not be completed. Try again.")
+	case errors.Is(err, turnstile.ErrUnavailable):
+		// Not the visitor's fault, and a different status so a monitor can
+		// tell an outage at Cloudflare from a wave of bots.
+		return httpx.UnavailableCode("challenge_unavailable",
+			"Verification is unavailable right now. Try again shortly.")
 	case errors.Is(err, ErrSignupIPBlocked):
 		// A code rather than a sentence, because the client says this one in
 		// the reader's own language. Deliberately says nothing about the
@@ -593,4 +615,17 @@ func capitalise(value string) string {
 		return string(value[0]-32) + value[1:]
 	}
 	return value
+}
+
+// turnstileSiteKey is the key the widget needs, and only where one will be
+// drawn: a key served to a page with no challenge on it is a key in the
+// markup for nothing.
+func (h *Handlers) turnstileSiteKey(firstAccount bool) string {
+	if firstAccount {
+		return ""
+	}
+	if !h.settings.Bool(settings.TurnstileOnSignup) && !h.settings.Bool(settings.TurnstileOnAPIKey) {
+		return ""
+	}
+	return h.settings.Get(settings.TurnstileSiteKey)
 }

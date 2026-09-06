@@ -38,6 +38,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/trial"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/web"
@@ -325,7 +326,22 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// interface; the compatibility surface is what the key is then presented
 	// to, and the two are separate because one is a browser screen and the
 	// other is not a browser at all.
+	// One client for both challenges, so a burst of registrations reuses the
+	// connection to Cloudflare rather than opening one per attempt.
+	challengeClient := &http.Client{}
+	authService.Challenge = turnstile.Gate{
+		Client:  challengeClient,
+		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnSignup) },
+		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
+	}
+
 	apiKeyHandlers := apikey.NewHandlers(keys)
+	apiKeyHandlers.Challenge = turnstile.Gate{
+		Client:  challengeClient,
+		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnAPIKey) },
+		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
+	}
+	apiKeyHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	apiKeyHandlers.Allowed = func(r *http.Request) error {
 		account, ok := auth.UserFrom(r.Context())
 		if !ok {

@@ -5,6 +5,7 @@
 // navigation or re-render the card.
 
 import { ApiError } from '../api/client';
+import { challenge } from '../ui/turnstile';
 import { login, register, type Account } from '../api/auth';
 import { t } from '../i18n';
 import { navigate } from '../router';
@@ -105,6 +106,13 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
 
   const submit = button('oa-btn primary oa-btn-block', registering ? t('createAccount') : t('signIn'));
   submit.type = 'submit';
+  // Only on the sign-up half, and only where the operator switched it on:
+  // signing in is not the door bots are trying.
+  const guard = registering && site.turnstile_on_signup
+    ? challenge(site.turnstile_site_key ?? '')
+    : null;
+  if (guard) form.appendChild(guard.element);
+
   form.appendChild(errorLine);
   form.appendChild(submit);
   card.appendChild(form);
@@ -183,12 +191,18 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
             password: secret,
             email: email?.value.trim() ?? '',
             qq: qqVal,
+            turnstile: guard?.token() ?? '',
           })
         : await login(identity, secret);
 
       adopt(result.user);
       navigate('/', { replace: true });
+      guard?.reset();
     } catch (error) {
+      // A token is good for one submission, so a refusal for any reason —
+      // a taken username as much as a failed challenge — leaves a spent
+      // token behind that would fail the next attempt on its own.
+      guard?.reset();
       showError(refusal(error, domains));
       busy = false;
       delete submit.dataset['busy'];
@@ -208,6 +222,10 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
         return t('accountBanned');
       case 'signup_ip_blocked':
         return t('signupBlocked');
+      case 'challenge_failed':
+        return t('challengeFailed');
+      case 'challenge_unavailable':
+        return t('challengeUnavailable');
       case 'qq_required':
         return t('qqRequiredHere');
       case 'invalid_qq':

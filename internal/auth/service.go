@@ -14,6 +14,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -37,6 +38,10 @@ type Service struct {
 	cfg      config.Session
 	limiter  *Limiter
 	signups  *signupGate
+	// Set by the wiring when the operator has switched a challenge on. The
+	// zero value is off, so a build that never wires it up simply has no
+	// challenge rather than a broken one.
+	Challenge turnstile.Gate
 	// Optional. Nil, or configured with no host, means every feature
 	// that needs mail reports itself as unavailable rather than
 	// failing halfway through.
@@ -77,6 +82,8 @@ type RegisterInput struct {
 	Nickname string
 	IP       string
 	UA       string
+	// Turnstile's token, when the operator has switched the challenge on.
+	Turnstile string
 }
 
 // Register creates an account and signs it in. The first account on an empty
@@ -131,6 +138,19 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			s.settings.Int(settings.SignupsPerHour, 0),
 		); !allowed {
 			return user.User{}, "", &SignupThrottleError{RetryAfter: retryAfter}
+		}
+	}
+
+	// Before the transaction, and before hashing: this is a call to
+	// Cloudflare, and a transaction never spans a network round trip to
+	// somebody else's server. Hashing is deliberate work and there is no
+	// reason to do it for a request that has already failed.
+	//
+	// After the first-account check above, so a fresh instance is never
+	// locked out of its own setup by a challenge nobody could pass yet.
+	if total > 0 {
+		if err := s.Challenge.Check(ctx, in.Turnstile, in.IP); err != nil {
+			return user.User{}, "", err
 		}
 	}
 

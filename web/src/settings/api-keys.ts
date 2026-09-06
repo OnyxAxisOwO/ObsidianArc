@@ -17,6 +17,8 @@ import type { AvailableModel } from '../chat/model-picker';
 import { renderChatPage } from '../chat/chat-page';
 import { copyToClipboard } from '../chat/markdown';
 import { t } from '../i18n';
+import { challenge } from '../ui/turnstile';
+import { siteInfo } from '../session';
 import { navigate } from '../router';
 import { ICONS, button, clear, el, icon, iconButton } from '../ui/dom';
 import { checkboxList, selectField, textField } from '../ui/form';
@@ -129,6 +131,13 @@ export function renderKeysPage(root: HTMLElement): void {
       emptyText: t('keyNoModels'),
     });
 
+    // Where the operator asked for one. A key outlives the session that
+    // asked for it, which is the thing a stolen cookie would rather turn into.
+    const site = siteInfo();
+    const guard = site.turnstile_on_api_key
+      ? challenge(site.turnstile_site_key ?? '')
+      : null;
+
     const submit = button('oa-btn primary', t('keyCreate'), () => {
       const label = name.value().trim();
       if (!label) {
@@ -141,7 +150,7 @@ export function renderKeysPage(root: HTMLElement): void {
       submit.disabled = true;
       handle.setBusy(true);
 
-      void createKey(label, days > 0 ? Date.now() + days * DAY_MS : 0, modelIDs)
+      void createKey(label, days > 0 ? Date.now() + days * DAY_MS : 0, modelIDs, guard?.token() ?? '')
         .then((result) => {
           issued = result;
           return refresh();
@@ -156,6 +165,7 @@ export function renderKeysPage(root: HTMLElement): void {
     wrap.appendChild(name.element);
     wrap.appendChild(lifetime.element);
     wrap.appendChild(modelChecks.element);
+    if (guard) wrap.appendChild(guard.element);
     wrap.appendChild(submit);
     return wrap;
   }

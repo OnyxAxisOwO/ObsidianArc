@@ -9,6 +9,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 )
 
 // Handlers is where an account manages its own keys. Every route is scoped to
@@ -16,6 +17,13 @@ import (
 // administrator, because a key is a credential rather than a setting.
 type Handlers struct {
 	keys *Store
+	// Set by the wiring when the operator has switched a challenge on for
+	// key creation. The zero value is off.
+	Challenge turnstile.Gate
+	// Resolves the caller's address for the challenge, which binds a token
+	// to whoever solved it. Injected because which proxies to trust is
+	// configuration this package has no other reason to know. Optional.
+	ClientIP func(*http.Request) string
 	// Reports whether this account may use the API at all, so the screen can
 	// say why the list is disabled rather than offering a key that would be
 	// refused on first use. Optional; nil means always allowed.
@@ -64,9 +72,12 @@ func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 }
 
 type createRequest struct {
-	Name     string   `json:"name"`
-	ModelID  string   `json:"model_id"` // Deprecated: use model_ids.
-	ModelIDs []string `json:"model_ids"`
+	// The Turnstile token, where the operator has switched the challenge on
+	// for key creation.
+	Turnstile string   `json:"turnstile"`
+	Name      string   `json:"name"`
+	ModelID   string   `json:"model_id"` // Deprecated: use model_ids.
+	ModelIDs  []string `json:"model_ids"`
 	// Epoch millis; zero or absent means the key does not expire.
 	ExpiresAt int64 `json:"expires_at"`
 }
@@ -90,6 +101,17 @@ func (h *Handlers) create(w http.ResponseWriter, r *http.Request) error {
 	var body createRequest
 	if err := httpx.DecodeJSON(w, r, &body, 8*1024); err != nil {
 		return err
+	}
+
+	// A key is a credential that outlives the session that asked for it, and
+	// a stolen session cookie turning into a permanent token is the shape
+	// this challenge is here to interrupt.
+	address := ""
+	if h.ClientIP != nil {
+		address = h.ClientIP(r)
+	}
+	if err := h.Challenge.Check(r.Context(), body.Turnstile, address); err != nil {
+		return challengeError(err)
 	}
 
 	modelIDs := requestModelIDs(body.ModelIDs, body.ModelID)
@@ -215,4 +237,19 @@ func translate(err error) error {
 			fmt.Sprintf("You already have the maximum of %d keys. Delete one first.", MaxPerUser))
 	}
 	return httpx.Internal(err)
+}
+
+// challengeError says the same two things the sign-up page says, in the same
+// codes, so one string in the client covers both screens.
+func challengeError(err error) error {
+	switch {
+	case errors.Is(err, turnstile.ErrFailed):
+		return httpx.ForbiddenCode("challenge_failed",
+			"The verification could not be completed. Try again.")
+	case errors.Is(err, turnstile.ErrUnavailable):
+		return httpx.UnavailableCode("challenge_unavailable",
+			"Verification is unavailable right now. Try again shortly.")
+	default:
+		return httpx.Internal(err)
+	}
 }

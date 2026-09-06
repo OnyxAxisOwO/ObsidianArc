@@ -118,7 +118,7 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"settings":    h.settings.All(),
+		"settings":    redacted(h.settings.All()),
 		"groups":      groups,
 		"attachments": map[string]any{"held": held, "bytes": bytes},
 		// Whether this instance can post mail at all. The verification
@@ -148,6 +148,10 @@ var writableSettings = map[string]bool{
 	settings.SignupsPerHour:        true,
 	settings.SignupsPerIP:          true,
 	settings.SignupsIPWindowMin:    true,
+	settings.TurnstileSiteKey:      true,
+	settings.TurnstileSecretKey:    true,
+	settings.TurnstileOnSignup:     true,
+	settings.TurnstileOnAPIKey:     true,
 	settings.AdminsBypassQuota:     true,
 	settings.HealthProbe:           true,
 	settings.HealthWindowMins:      true,
@@ -184,6 +188,17 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 		if len(value) > 8*1024 {
 			return httpx.BadRequest("Setting %q is too long.", key)
+		}
+	}
+
+	// The form was shown a mask, so saving it unchanged sends the mask back.
+	// Writing that would replace the secret with a row of dots, and the first
+	// challenge after would fail for everybody with nothing on screen to say
+	// why. An empty value keeps what is stored, the way a provider's API key
+	// field does; clearing one is done by switching the challenge off.
+	for _, key := range secretSettings {
+		if value, present := body[key]; present && (value == "" || value == secretMask) {
+			delete(body, key)
 		}
 	}
 
@@ -372,4 +387,34 @@ func (h *Handlers) purgeAttachments(w http.ResponseWriter, r *http.Request) erro
 		"purged":      dropped,
 		"attachments": map[string]any{"held": held, "bytes": bytes},
 	})
+}
+
+// Settings that are credentials. They are written through this endpoint and
+// never read back out of it.
+var secretSettings = []string{settings.TurnstileSecretKey}
+
+// Enough to show a field is filled in and nothing an attacker could use. A
+// provider's API key carries a four-character hint for the same job; a
+// Turnstile secret is short enough that even four characters is more than the
+// screen needs.
+const secretMask = "••••••••"
+
+// redacted copies the settings with every credential masked.
+//
+// A copy, because All() hands back the live map and masking it in place would
+// blank the running configuration. This is the endpoint an administrator
+// reads, so the mask is not about them — it is about the response existing at
+// all: a secret in a JSON body is a secret in a proxy log, a browser cache
+// and whatever the operator pasted the response into.
+func redacted(all map[string]string) map[string]string {
+	out := make(map[string]string, len(all))
+	for key, value := range all {
+		out[key] = value
+	}
+	for _, key := range secretSettings {
+		if out[key] != "" {
+			out[key] = secretMask
+		}
+	}
+	return out
 }

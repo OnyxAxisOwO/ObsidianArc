@@ -45,8 +45,16 @@ const (
 	SignupsPerHour        = "registration.per_hour"
 	// Per address, unlike the two above, which are one counter for the whole
 	// instance: a flood from one place should not lock out everybody else.
-	SignupsPerIP         = "registration.per_ip"
-	SignupsIPWindowMin   = "registration.per_ip_window_minutes"
+	SignupsPerIP       = "registration.per_ip"
+	SignupsIPWindowMin = "registration.per_ip_window_minutes"
+
+	// Cloudflare Turnstile. The site key is public — it is in the page's
+	// markup — and the secret is write-only: it is redacted out of every
+	// response, the way a provider's API key is.
+	TurnstileSiteKey     = "turnstile.site_key"
+	TurnstileSecretKey   = "turnstile.secret_key"
+	TurnstileOnSignup    = "turnstile.on_signup"
+	TurnstileOnAPIKey    = "turnstile.on_api_key"
 	AdminsBypassQuota    = "quota.admins_bypass"
 	UsageDisplay         = "quota.usage_display"
 	LandingMode          = "landing.mode"
@@ -181,8 +189,16 @@ var Defaults = map[string]string{
 	SignupsPerHour:   "0",
 	// Off until an operator sets it. A limit guessed on their behalf is a
 	// limit that locks out a university or an office behind one address.
-	SignupsPerIP:         "0",
-	SignupsIPWindowMin:   "60",
+	SignupsPerIP:       "0",
+	SignupsIPWindowMin: "60",
+	TurnstileSiteKey:   "",
+	TurnstileSecretKey: "",
+	// Off, and off even once the keys are filled in: an operator pasting keys
+	// is configuring, not yet switching on, and a challenge that appeared the
+	// moment a key was saved would lock out the half-finished setup it was
+	// saved during.
+	TurnstileOnSignup:    "false",
+	TurnstileOnAPIKey:    "false",
 	AdminsBypassQuota:    "true",
 	UsageDisplay:         UsageAbsolute,
 	LandingMode:          LandingLogin,

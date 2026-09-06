@@ -2072,6 +2072,18 @@
   color: var(--ai-text-secondary);
 }
 
+/* The challenge widget's own iframe carries its size and its look; all this
+   owes it is somewhere to sit that is not flush against the button below. */
+.oa-challenge {
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+}
+
+.oa-challenge:not(:empty) {
+  margin: 2px 0 4px;
+}
+
 /* A minted batch, listed once. Monospace and one per line so it can be
    selected, copied, or read aloud without a character being in doubt. */
 .oa-code-list {

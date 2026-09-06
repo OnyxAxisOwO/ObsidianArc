@@ -41,11 +41,17 @@ export function listKeys(): Promise<KeyList> {
  * The token in the result is the only copy that will ever exist. Show it
  * immediately; there is no endpoint that can produce it again.
  */
-export function createKey(name: string, expiresAt: number, modelIDs: string[] = []): Promise<{ key: ApiKey; token: string }> {
+export function createKey(
+  name: string,
+  expiresAt: number,
+  modelIDs: string[] = [],
+  turnstileToken = '',
+): Promise<{ key: ApiKey; token: string }> {
   return api.post<{ key: ApiKey; token: string }>('/api/keys', {
     name,
     expires_at: expiresAt,
     model_ids: modelIDs,
+    turnstile: turnstileToken,
   });
 }
 
