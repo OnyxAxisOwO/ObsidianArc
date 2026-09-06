@@ -36,6 +36,7 @@ type fixture struct {
 	models   *model.Store
 	groups   *group.Store
 	keys     *apikey.Store
+	users    *user.Store
 	upstream *stubUpstream
 
 	openGroup group.Group
@@ -198,7 +199,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	f := &fixture{
-		settings: set, models: models, groups: groups, keys: keys,
+		settings: set, models: models, groups: groups, keys: keys, users: users,
 		upstream: upstream, openGroup: openGroup, account: account,
 		token: token, admin: adminToken, model: modelRecord,
 	}
@@ -878,6 +879,73 @@ func TestReasoningEffortMapsOntoTheNeutralControl(t *testing.T) {
 	}
 	if _, ok := parseEffort("enormous"); ok {
 		t.Error("an unknown effort was accepted")
+	}
+}
+
+// An account can be unverified on an instance that cannot post mail at all —
+// a setting turned on and then off, or a server that never had SMTP. The
+// browser lets such an account read, and leaves what it may spend to the
+// guard, which asks whether verification is in force before it refuses.
+//
+// This surface used to ask a shorter question of its own, on every route
+// including the listing, so the account was refused everywhere and the resend
+// that would have been the way out could never work. There is one copy of the
+// condition now, and it is the one that is right.
+func TestAnUnverifiedAccountIsNotLockedOutOfTheAPI(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	unconfirmed, err := f.users.Create(ctx, nil, user.CreateInput{
+		Username: "unconfirmed", Email: "someone@example.com",
+		PasswordHash: "x", GroupID: f.openGroup.ID, Unverified: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unconfirmed.EmailVerified {
+		t.Fatal("the fixture account is confirmed; this test proves nothing")
+	}
+	_, token, err := f.keys.Issue(ctx, unconfirmed.ID, "unconfirmed key", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No guard, which is what an instance that does not require verification
+	// amounts to: nothing refuses, so nothing should.
+	f.handlers.Guard = nil
+	if res := f.do(t, http.MethodGet, "/v1/models", token, ""); res.Code != http.StatusOK {
+		t.Fatalf("listing models: %d %s", res.Code, res.Body.String())
+	}
+	res := f.do(t, http.MethodPost, "/v1/chat/completions", token,
+		fmt.Sprintf(`{"model": %q, "messages": [{"role": "user", "content": "hi"}]}`, f.model.ID))
+	if res.Code != http.StatusOK {
+		t.Fatalf("sending a turn: %d %s", res.Code, res.Body.String())
+	}
+
+	// And where verification IS in force, the guard is what says so — with the
+	// code a client can act on.
+	f.handlers.Guard = func(context.Context, user.User, model.Model) (func(), error) {
+		return nil, httpx.ForbiddenCode("email_unverified", "Confirm your email address first.")
+	}
+	refused := f.do(t, http.MethodPost, "/v1/chat/completions", token,
+		fmt.Sprintf(`{"model": %q, "messages": [{"role": "user", "content": "hi"}]}`, f.model.ID))
+	if refused.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", refused.Code)
+	}
+	var payload struct {
+		Error struct{ Code string } `json:"error"`
+	}
+	if err := json.NewDecoder(refused.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Code != "email_unverified" {
+		t.Errorf("error.code = %q, want email_unverified", payload.Error.Code)
+	}
+
+	// Listing is still allowed even then: it spends nothing, and refusing it
+	// is what left the account with no way back.
+	if res := f.do(t, http.MethodGet, "/v1/models", token, ""); res.Code != http.StatusOK {
+		t.Fatalf("listing while unconfirmed: %d %s", res.Code, res.Body.String())
 	}
 }
 

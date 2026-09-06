@@ -3,11 +3,9 @@ package admin
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
@@ -49,14 +47,7 @@ var errLastAdmin = errors.New("admin: that is the last administrator")
 // Upserting a known settings key without changing its value is what takes the
 // lock on both supported engines.
 func lockAdminPopulation(ctx context.Context, tx *database.Tx) error {
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-		 ON CONFLICT (key) DO UPDATE SET updated_at = settings.updated_at`,
-		settings.RegistrationEnabled, settings.Defaults[settings.RegistrationEnabled],
-		time.Now().UnixMilli()); err != nil {
-		return fmt.Errorf("admin: lock administrator population: %w", err)
-	}
-	return nil
+	return settings.Lock(ctx, tx)
 }
 
 func (h *Handlers) listUsers(w http.ResponseWriter, r *http.Request) error {

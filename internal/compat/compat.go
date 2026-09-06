@@ -180,16 +180,14 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 		return caller{}, invalidKey()
 	}
 
-	// An unconfirmed address must not spend anything, here for the same
-	// reason as in the browser gateway.
-	if !account.EmailVerified {
-		return caller{}, apiError{
-			status:  http.StatusForbidden,
-			kind:    "invalid_request_error",
-			code:    "email_unverified",
-			message: "Confirm your email address before using the API.",
-		}
-	}
+	// No confirmation check here. It used to be a third copy of one — the
+	// gateway's guard has it, and so does the upload path — and it was the
+	// copy that was wrong: it left out whether verification is in force at
+	// all, so an instance with no SMTP server refused every API request from
+	// an account that predated the setting, and refused the resend that would
+	// have fixed it. Guard runs before anything is spent and has the whole
+	// condition; listing what a key may use costs nothing and is the same
+	// thing the browser lets an unconfirmed account do.
 
 	// Administrators bypass the per-group grant, the way they bypass every
 	// other group restriction — but not the instance-wide switch above.
