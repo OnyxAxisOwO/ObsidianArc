@@ -332,6 +332,9 @@ export const adminApi = {
   dashboard: (metric: UsageMetric = 'credits') =>
     api.get<Dashboard>(`/api/admin/dashboard?metric=${metric}`),
   meta: () => api.get<Meta>('/api/admin/meta'),
+  tryReview: (body: Record<string, unknown>) =>
+    api.post<{ ran: boolean; allow: boolean; reason: string }>(
+      '/api/admin/security/review', body),
   health: (hours = 24) =>
     api.get<{
       hours: number;

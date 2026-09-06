@@ -10,6 +10,7 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -51,6 +52,9 @@ type Handlers struct {
 	requests      *reqlog.Store
 	cards         *card.Store
 	health        *health.Store
+	// Runs the sign-up reviewer on a hypothetical account. Set by the wiring;
+	// nil where no reviewer exists.
+	TryReview func(ctx context.Context, in ReviewTrial) (bool, string, error)
 
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
@@ -106,6 +110,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/dashboard", protected(h.dashboard))
 	mux.Handle("GET /api/admin/resources", protected(h.resources))
 	mux.Handle("GET /api/admin/health", protected(h.modelHealth))
+	mux.Handle("POST /api/admin/security/review", protected(h.trialReview))
 
 	mux.Handle("GET /api/admin/users", protected(h.listUsers))
 	mux.Handle("GET /api/admin/users/{id}", protected(h.showUser))

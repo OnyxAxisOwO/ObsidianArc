@@ -190,6 +190,7 @@ export async function renderSecurity(view: AdminView): Promise<void> {
   form.appendChild(reviewEnabled.element);
   form.appendChild(reviewModel.element);
   form.appendChild(reviewRefusal.element);
+  form.appendChild(trial());
 
   const flash = el('p', 'oa-drawer-flash');
   form.appendChild(flash);
@@ -228,6 +229,53 @@ export async function renderSecurity(view: AdminView): Promise<void> {
       'security.signup_review_model': reviewModel.value(),
       'security.signup_review_refusal': reviewRefusal.value(),
     };
+  }
+
+  /**
+   * Trying the reviewer on an account that is not being created.
+   *
+   * It exists because "the review is not working" and "the review is working
+   * and being generous" look identical from outside: both are a registration
+   * that went through. Type the account that got past it and read what the
+   * model actually said — including that it could not be reached, which is
+   * the state in which everything is allowed.
+   */
+  function trial(): HTMLElement {
+    const wrap = el('div', 'oa-field');
+    wrap.appendChild(el('span', 'oa-field-label', t('reviewTry')));
+    wrap.appendChild(el('span', 'oa-field-hint', t('reviewTryHint')));
+
+    const username = textField({ label: t('username'), placeholder: '123123123123' });
+    const email = textField({ label: t('email'), placeholder: '123123123123@qq.com' });
+    const qq = textField({ label: t('qq'), placeholder: '123123123123' });
+    const answer = el('p', 'oa-field-hint');
+
+    const run = button('oa-btn', t('reviewTryRun'), () => {
+      run.disabled = true;
+      answer.textContent = t('reviewTrying');
+      void adminApi.tryReview({
+        username: username.value(), email: email.value(), qq: qq.value(),
+        // What a browser would have sent, so the answer is about the details
+        // and not about a missing user agent.
+        user_agent: navigator.userAgent,
+      })
+        .then((result) => {
+          answer.textContent = !result.ran
+            ? t('reviewTryBroken', { reason: result.reason })
+            : t(result.allow ? 'reviewTryAllowed' : 'reviewTryRefused', { reason: result.reason });
+        })
+        .catch((error: unknown) => {
+          answer.textContent = error instanceof ApiError ? error.message : String(error);
+        })
+        .finally(() => { run.disabled = false; });
+    });
+
+    wrap.appendChild(username.element);
+    wrap.appendChild(email.element);
+    wrap.appendChild(qq.element);
+    wrap.appendChild(run);
+    wrap.appendChild(answer);
+    return wrap;
   }
 
   async function submit(): Promise<void> {

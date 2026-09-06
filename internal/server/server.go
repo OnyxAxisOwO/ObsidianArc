@@ -384,6 +384,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return auth.ErrSignupRefused
 	}
 
+	adminTryReview := func(ctx context.Context, in admin.ReviewTrial) (bool, string, error) {
+		verdict, err := reviewer.Review(ctx, screening.Facts{
+			Username: in.Username, Email: in.Email, QQ: in.QQ, Nickname: in.Nickname,
+			UserAgent: in.UserAgent, FromThisAddress: in.FromThisAddress,
+		})
+		return verdict.Allow, verdict.Reason, err
+	}
+
 	apiKeyHandlers := apikey.NewHandlers(keys)
 	apiKeyHandlers.Challenge = turnstile.Gate{
 		Client:  challengeClient,
@@ -428,7 +436,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	compatHandlers.Routes(mux)
 	announcement.NewHandlers(announcements).Routes(mux)
 	trial.NewHandlers(settingsService, models, registry, proxyTrust, cfg.SecretKey).Routes(mux)
-	admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, cards, healthStore).Routes(mux)
+	adminHandlers := admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, cards, healthStore)
+	adminHandlers.TryReview = adminTryReview
+	adminHandlers.Routes(mux)
 
 	// Anything under /api that no module claimed is a client bug, and should
 	// read as one instead of quietly returning the SPA shell.
