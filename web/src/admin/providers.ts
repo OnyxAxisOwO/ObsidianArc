@@ -245,7 +245,6 @@ async function detectModels(provider: Provider, trigger: HTMLButtonElement, body
       const row = el('label', 'oa-detect-row');
       const box = el('input');
       box.type = 'checkbox';
-      box.disabled = model.configured;
       row.appendChild(box);
       row.appendChild(el('span', null, model.display_name ? `${model.display_name} — ${model.model_id}` : model.model_id));
       if (model.configured) row.appendChild(el('span', 'oa-detect-known', t('alreadyAdded')));

@@ -643,7 +643,6 @@ async function pickDetected(
     for (const entry of models) {
       const row = el('button', 'oa-detect-row');
       row.type = 'button';
-      row.disabled = entry.configured;
       row.appendChild(el('span', null,
         entry.display_name ? `${entry.display_name} — ${entry.model_id}` : entry.model_id));
       if (entry.configured) row.appendChild(el('span', 'oa-detect-known', t('alreadyAdded')));

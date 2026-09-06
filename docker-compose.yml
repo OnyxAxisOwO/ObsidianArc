@@ -46,10 +46,13 @@ services:
       OBSIDIAN_COOKIE_SECURE: "${OBSIDIAN_COOKIE_SECURE:-true}"
       OBSIDIAN_ADMIN_USER: ${OBSIDIAN_ADMIN_USER:-}
       OBSIDIAN_ADMIN_PASSWORD: ${OBSIDIAN_ADMIN_PASSWORD:-}
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
       # Only the attachments and the generated key would live here; with
       # Postgres the database does not. Kept so a switch back to SQLite, or a
       # later on-disk blob store, has somewhere to go.
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
       - arc-data:/data
     depends_on:
       db:
@@ -59,10 +62,13 @@ services:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
       POSTGRES_USER: obsidian
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-obsidian}
       POSTGRES_DB: obsidian
     volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
       - arc-db:/var/lib/postgresql/data
     healthcheck:
       # The server runs its migrations at boot and exits if it cannot connect,

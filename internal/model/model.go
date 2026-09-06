@@ -388,19 +388,16 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 	return next, nil
 }
 
-// Two unique indexes guard this table — one on the provider and its upstream
-// id, one on the public API name — and both come back as the same driver
-// error. The write has already been refused by the time this runs, so asking
-// which name is taken races with nothing; it only decides what to say.
+// The public API name has a unique index (idx_models_api_name). Multiple
+// entries for the same model_id under a provider are permitted.
 func (s *Store) whichDuplicate(ctx context.Context, apiName, exceptID string) error {
-	if apiName == "" {
-		return ErrDuplicate
-	}
-	var other string
-	err := s.db.QueryRow(ctx,
-		`SELECT id FROM models WHERE api_name = ? AND id <> ?`, apiName, exceptID).Scan(&other)
-	if err == nil {
-		return ErrDuplicateAPIName
+	if apiName != "" {
+		var other string
+		err := s.db.QueryRow(ctx,
+			`SELECT id FROM models WHERE api_name = ? AND id <> ?`, apiName, exceptID).Scan(&other)
+		if err == nil {
+			return ErrDuplicateAPIName
+		}
 	}
 	return ErrDuplicate
 }

@@ -298,25 +298,30 @@ func TestDeletingProviderCascades(t *testing.T) {
 	}
 }
 
-func TestDuplicateModelPerProviderIsRejected(t *testing.T) {
+func TestDuplicateModelPerProviderIsAllowed(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
 	first := f.provider(t, "First")
 	second := f.provider(t, "Second")
-	f.model(t, first.ID, "shared-model")
+	m1 := f.model(t, first.ID, "shared-model")
 
 	// The same upstream model behind a second provider is legitimate: a
 	// primary and a fallback.
 	f.model(t, second.ID, "shared-model")
 
-	_, err := f.models.Create(ctx, CreateInput{
+	// Multiple entries for the same model under the same provider are also
+	// allowed (e.g. different system prompts, reasoning tiers, or weights).
+	m2, err := f.models.Create(ctx, CreateInput{
 		ProviderID:  first.ID,
 		ModelID:     "shared-model",
 		DisplayName: "Duplicate",
 	})
-	if !errors.Is(err, ErrDuplicate) {
-		t.Fatalf("want ErrDuplicate, got %v", err)
+	if err != nil {
+		t.Fatalf("creating duplicate model under same provider: %v", err)
+	}
+	if m2.ID == m1.ID {
+		t.Fatalf("expected different IDs for duplicate model entries, got %q", m2.ID)
 	}
 }
 

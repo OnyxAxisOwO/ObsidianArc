@@ -46,7 +46,7 @@ ARG TARGETARCH
 ENV CGO_ENABLED=0
 RUN GOARCH=${TARGETARCH:-amd64} go build \
       -trimpath \
-      -ldflags "-s -w -X main.version=${VERSION:-v$(date -u +%Y.%m.%d.%H.%M.%S)}" \
+      -ldflags "-s -w -X main.version=${VERSION:-v$(TZ=CST-8 date +%Y.%m.%d.%H.%M.%S)}" \
       -o /out/obsidian-arc ./cmd/server
 
 # --- the image ------------------------------------------------------------------
