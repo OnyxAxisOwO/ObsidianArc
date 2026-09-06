@@ -146,6 +146,8 @@ var writableSettings = map[string]bool{
 	settings.EmailDomains:          true,
 	settings.SignupsPerMinute:      true,
 	settings.SignupsPerHour:        true,
+	settings.SignupsPerIP:          true,
+	settings.SignupsIPWindowMin:    true,
 	settings.AdminsBypassQuota:     true,
 	settings.HealthProbe:           true,
 	settings.HealthWindowMins:      true,

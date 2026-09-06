@@ -250,6 +250,19 @@ export async function renderSettings(view: AdminView): Promise<void> {
     hint: t('healthWarnBelowHint'),
   });
 
+  const signupsPerIP = numberField({
+    label: t('signupsPerIP'),
+    value: Number(values['registration.per_ip'] ?? 0),
+    min: 0,
+    hint: t('signupsPerIPHint'),
+  });
+  const signupsIPWindow = numberField({
+    label: t('signupsIPWindow'),
+    value: Number(values['registration.per_ip_window_minutes'] ?? 60),
+    min: 1,
+    hint: t('signupsIPWindowHint'),
+  });
+
   const attachmentMaxMB = numberField({
     label: t('attachmentMaxMB'),
     value: Number(values['attachments.max_mb'] ?? 6),
@@ -371,6 +384,8 @@ export async function renderSettings(view: AdminView): Promise<void> {
   form.appendChild(qqRequirement.element);
   form.appendChild(perMinute.element);
   form.appendChild(perHour.element);
+  form.appendChild(signupsPerIP.element);
+  form.appendChild(signupsIPWindow.element);
 
   form.appendChild(section(t('secLanding')));
   form.appendChild(landingMode.element);
@@ -454,6 +469,8 @@ export async function renderSettings(view: AdminView): Promise<void> {
       'chat.default_system_prompt': systemPrompt.value(),
       'chat.max_turns': String(maxTurns.value() ?? 40),
       'api.enabled': String(apiEnabled.value()),
+      'registration.per_ip': String(signupsPerIP.value() ?? 0),
+      'registration.per_ip_window_minutes': String(signupsIPWindow.value() ?? 60),
       'attachments.max_mb': String(attachmentMaxMB.value() ?? 6),
       'attachments.retain': String(attachmentRetain.value()),
       'attachments.purge_after_days': String(purgeAfterDays.value() ?? 0),

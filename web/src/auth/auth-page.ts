@@ -206,6 +206,8 @@ export function renderAuthPage(root: HTMLElement, mode: Mode): void {
     switch (error.code) {
       case 'account_banned':
         return t('accountBanned');
+      case 'signup_ip_blocked':
+        return t('signupBlocked');
       case 'qq_required':
         return t('qqRequiredHere');
       case 'invalid_qq':

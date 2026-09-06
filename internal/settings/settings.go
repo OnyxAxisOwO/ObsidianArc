@@ -43,21 +43,25 @@ const (
 	EmailDomains          = "registration.email_domains"
 	SignupsPerMinute      = "registration.per_minute"
 	SignupsPerHour        = "registration.per_hour"
-	AdminsBypassQuota     = "quota.admins_bypass"
-	UsageDisplay          = "quota.usage_display"
-	LandingMode           = "landing.mode"
-	LandingIntro          = "landing.intro"
-	TrialEnabled          = "landing.trial_enabled"
-	TrialTurns            = "landing.trial_turns"
-	TrialModel            = "landing.trial_model"
-	DefaultSystemPrompt   = "chat.default_system_prompt"
-	ConversationMaxTurns  = "chat.max_turns"
-	APIEnabled            = "api.enabled"
-	AttachmentMaxMB       = "attachments.max_mb"
-	AttachmentRetain      = "attachments.retain"
-	AttachmentPurgeDays   = "attachments.purge_after_days"
-	AttachmentPurgeDaily  = "attachments.purge_daily_at"
-	AttachmentOrphanMins  = "attachments.orphan_minutes"
+	// Per address, unlike the two above, which are one counter for the whole
+	// instance: a flood from one place should not lock out everybody else.
+	SignupsPerIP         = "registration.per_ip"
+	SignupsIPWindowMin   = "registration.per_ip_window_minutes"
+	AdminsBypassQuota    = "quota.admins_bypass"
+	UsageDisplay         = "quota.usage_display"
+	LandingMode          = "landing.mode"
+	LandingIntro         = "landing.intro"
+	TrialEnabled         = "landing.trial_enabled"
+	TrialTurns           = "landing.trial_turns"
+	TrialModel           = "landing.trial_model"
+	DefaultSystemPrompt  = "chat.default_system_prompt"
+	ConversationMaxTurns = "chat.max_turns"
+	APIEnabled           = "api.enabled"
+	AttachmentMaxMB      = "attachments.max_mb"
+	AttachmentRetain     = "attachments.retain"
+	AttachmentPurgeDays  = "attachments.purge_after_days"
+	AttachmentPurgeDaily = "attachments.purge_daily_at"
+	AttachmentOrphanMins = "attachments.orphan_minutes"
 
 	// Liveness. The window is both "how far back counts as evidence" and
 	// "how quiet a model has to be before the system asks it directly",
@@ -173,8 +177,12 @@ var Defaults = map[string]string{
 	EmailDomains: "",
 	// Zero means unthrottled. An instance that has closed
 	// registration needs neither, so neither is on by default.
-	SignupsPerMinute:     "0",
-	SignupsPerHour:       "0",
+	SignupsPerMinute: "0",
+	SignupsPerHour:   "0",
+	// Off until an operator sets it. A limit guessed on their behalf is a
+	// limit that locks out a university or an office behind one address.
+	SignupsPerIP:         "0",
+	SignupsIPWindowMin:   "60",
 	AdminsBypassQuota:    "true",
 	UsageDisplay:         UsageAbsolute,
 	LandingMode:          LandingLogin,

@@ -151,6 +151,9 @@ type CreateInput struct {
 	Unverified bool
 	GroupID    string
 	Status     Status
+	// The address this account was created from, for the per-address
+	// registration limit. Empty where it could not be resolved.
+	SignupIP string
 }
 
 func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) (User, error) {
@@ -193,12 +196,12 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 
 	_, err = q.Exec(ctx, `INSERT INTO users
 		(id, username, username_lower, email, email_lower, qq, password_hash, nickname, avatar, bio,
-		 role, group_id, status, email_verified, created_at, updated_at, last_login_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0)`,
+		 role, group_id, status, email_verified, created_at, updated_at, last_login_at, signup_ip)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?)`,
 		record.ID, record.Username, strings.ToLower(record.Username),
 		record.Email, strings.ToLower(record.Email), record.QQ, in.PasswordHash, record.Nickname,
 		record.Role, nullable(record.GroupID), record.Status, record.EmailVerified,
-		record.CreatedAt, record.UpdatedAt)
+		record.CreatedAt, record.UpdatedAt, in.SignupIP)
 	if err != nil {
 		// Both engines report a violated unique index without naming a
 		// portable error code, so the message is matched instead. The check
@@ -613,4 +616,32 @@ func translateUniqueViolation(err error, hadEmail bool) error {
 	default:
 		return ErrUsernameTaken
 	}
+}
+
+// CountFromIP is how many accounts one address has created since a moment.
+//
+// The registration limit is checked against this and enforced by it, and both
+// halves are the database rather than a counter in memory: a process restart
+// must not hand an attacker a fresh allowance, and two instances against one
+// database have to agree on the number.
+//
+// An empty address is never counted. Where the client address could not be
+// resolved the honest answer is that there is nothing to attribute, and
+// attributing it to "" would put every such account in one bucket and lock
+// the instance out on the operator's first misconfigured proxy.
+func (s *Store) CountFromIP(ctx context.Context, q database.Queryer, ip string, since int64) (int, error) {
+	if q == nil {
+		q = s.db
+	}
+	if strings.TrimSpace(ip) == "" {
+		return 0, nil
+	}
+
+	var count int
+	err := q.QueryRow(ctx,
+		`SELECT COUNT(*) FROM users WHERE signup_ip = ? AND created_at >= ?`, ip, since).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("user: count from ip: %w", err)
+	}
+	return count, nil
 }

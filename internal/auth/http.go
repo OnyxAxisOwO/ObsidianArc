@@ -521,6 +521,14 @@ func registrationError(err error) error {
 	switch {
 	case errors.Is(err, ErrRegistrationClosed):
 		return httpx.Forbidden("Registration is closed on this server.")
+	case errors.Is(err, ErrSignupIPBlocked):
+		// A code rather than a sentence, because the client says this one in
+		// the reader's own language. Deliberately says nothing about the
+		// limit or the window: the number is the operator's, and telling
+		// somebody exactly how long to wait is telling them exactly when to
+		// come back.
+		return httpx.ForbiddenCode("signup_ip_blocked",
+			"You have been blocked from registering.")
 	case errors.Is(err, user.ErrUsernameTaken):
 		return httpx.Conflict("username_taken", "That username is already taken.")
 	case errors.Is(err, user.ErrEmailTaken):
