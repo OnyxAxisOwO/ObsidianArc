@@ -1,0 +1,2359 @@
+/* Every surface that is not the chat: panels, fields, forms, tables, charts,
+ * and the screens built out of them — settings, the API keys page, About, and
+ * the administration backoffice.
+ *
+ * It was called admin.css, which was true when it was written and stopped
+ * being true as the backoffice's parts turned out to be the application's
+ * parts. .oa-panel, .oa-icon-btn, .oa-field, .oa-table and .oa-settings-* are
+ * all in here and all used from screens a regular account reaches, so the old
+ * name told you to look in the wrong file, or to leave a shared rule out of
+ * the right one.
+ *
+ * Same material as the chat: the rail is the conversation rail, the drawer is
+ * the settings drawer, the badges are the model-list badges. Nothing here
+ * introduces a colour, a radius or an easing that was not already in use —
+ * an admin page should look like the same product with a different job, not
+ * like a dashboard bolted to the side of one.
+ */
+
+.oa-admin {
+  /* The containing block for a full-screen panel. */
+  position: relative;
+  display: flex;
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+  /* Clips the side panel while it slides in and out, so the page never grows
+     a horizontal scrollbar mid-animation. `clip` rather than `hidden`, because
+     a hidden box is still a scroll container: focusing a field in a panel that
+     had not slid in yet made the browser scroll the whole row across to find
+     it, so the panel appeared to jump rather than arrive. */
+  overflow: clip;
+}
+
+/* --- rail ---------------------------------------------------------------- */
+
+.oa-admin-rail {
+  --oa-admin-rail-width: 220px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: var(--oa-admin-rail-width);
+  padding: 14px 12px;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  /* Deliberately not scrollable: seven fixed entries always fit, and any
+     overflow rule here would clip the resize handle that sits just outside
+     the rail's right edge — or grow a scrollbar for it. */
+  overflow: visible;
+  /* Slid out by a negative margin rather than collapsed by width: the rail
+     keeps its own width the whole way, so its entries never reflow mid
+     animation and the screen beside it widens smoothly into the space. The
+     conversation rail moves exactly like this, and for the same reason. */
+  transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+    visibility 0s linear 0s;
+}
+
+.oa-admin.rail-collapsed .oa-admin-rail {
+  margin-left: calc(-1 * (var(--oa-admin-rail-width) + 14px));
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  /* Feathered on the trailing edge while it leaves, so a card sliding out
+     from under another one does not meet it as a hard vertical line. */
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 28px);
+  mask-image: linear-gradient(to left, transparent 0, #000 28px);
+  transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+    visibility 0s linear 0.34s;
+}
+
+.oa-admin-rail-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 8px;
+}
+
+/* Points back the way the chat is, which is left. */
+.oa-admin-back svg {
+  transform: rotate(90deg);
+}
+
+.oa-admin-rail-title {
+  /* The same 10px the entries below use. The heading was two pixels short of
+     the list it heads, which is the kind of thing you only see once. */
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ai-text-secondary);
+}
+
+.oa-admin-nav {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.oa-admin-nav:hover {
+  background: var(--ai-state-hover);
+}
+
+.oa-admin-nav.active {
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-weight: 600;
+}
+
+.oa-admin-rail-foot {
+  margin-top: auto;
+  padding-top: 10px;
+}
+
+/* --- content ------------------------------------------------------------- */
+
+.oa-admin-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.oa-admin-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 20px 22px 14px;
+}
+
+.oa-admin-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.oa-admin-subtitle {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-admin-head-spacer {
+  flex: 1;
+}
+
+.oa-admin-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.oa-admin-body-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.oa-admin-body {
+  flex: 1;
+  min-height: 0;
+  padding: 18px 22px 24px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.oa-admin-body::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.oa-admin-section + .oa-admin-section {
+  margin-top: 26px;
+}
+
+.oa-admin-section-title {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ai-text-secondary);
+}
+
+/* --- filters ------------------------------------------------------------- */
+
+.oa-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.oa-filters input[type='search'],
+.oa-filters input[type='text'],
+.oa-filter-select {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 999px;
+  background-color: var(--ai-field-bg);
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 12.5px;
+  transition: background-color 0.15s ease;
+}
+
+.oa-filter-select {
+  appearance: none;
+  padding-right: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 16px) calc(50% + 1px), calc(100% - 11px) calc(50% + 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.oa-filters input:hover,
+.oa-filter-select:hover {
+  background-color: var(--ai-field-bg-hover);
+}
+
+.oa-filters input:focus,
+.oa-filter-select:focus-visible {
+  outline: none;
+  background-color: var(--ai-field-bg-hover);
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-filters input[type='search'] {
+  min-width: 220px;
+}
+
+/* --- table --------------------------------------------------------------- */
+
+/* Wide tables scroll inside their own box; the page itself never scrolls
+   sideways. */
+.oa-table-wrap {
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-radius: 14px;
+}
+
+.oa-table-wrap::-webkit-scrollbar {
+  display: none;
+}
+
+.oa-table {
+  width: 100%;
+  table-layout: fixed;
+  /* Separate rather than collapsed so a cell's corners can be rounded: with
+     collapsed borders the radius is ignored, and a striped row would end in
+     square corners against everything else here. Spacing is zero, so nothing
+     else about the layout changes. */
+  border-collapse: separate;
+  /* A hair of vertical space, so each row reads as its own band rather than
+     as a block of colour that happens to change every other line. */
+  border-spacing: 0 2px;
+  font-size: 12.5px;
+}
+
+/* The header and the striped rows are tints of the text colour rather than
+   surface tokens, for the reason --ai-state-hover is: the surface ramp runs
+   light-to-dark one way and dark-to-light the other, so a token that sits
+   above the panel in one scheme sits below it in the other. A tint of the
+   text is always the contrasting direction, because the text always is.
+   Two strengths, so the header is not one of the rows. */
+/* A sortable header is a control, so it says so on hover and takes focus.
+   The arrow is two triangles from gradients, the way the filter selects draw
+   theirs, rather than a glyph: a character would sit on the text baseline and
+   move the header every time the direction changed. */
+/* Dragging a row to reorder it. The cursor is the only affordance: a grip
+   column would be a column of grips on every table that never reorders. */
+.oa-table tr.draggable {
+  cursor: grab;
+}
+
+.oa-table tr.dragging {
+  opacity: 0.4;
+}
+
+/* Where it would land, drawn on the row it is over rather than as a floating
+   line, so nothing has to be positioned against a scrolling container. */
+.oa-table tr.drop-before td {
+  box-shadow: inset 0 2px 0 var(--ai-primary);
+}
+
+.oa-table tr.drop-after td {
+  box-shadow: inset 0 -2px 0 var(--ai-primary);
+}
+
+.oa-filter-note {
+  align-self: center;
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  padding-right: 18px;
+}
+
+.oa-table th.sortable:hover,
+.oa-table th.sortable:focus-visible {
+  color: var(--ai-text);
+}
+
+.oa-table th.sortable.asc,
+.oa-table th.sortable.desc {
+  background-repeat: no-repeat;
+  background-position: calc(100% - 10px) center, calc(100% - 6px) center;
+  background-size: 4px 4px, 4px 4px;
+}
+
+/* Ascending points up, descending points down. The pair of half-filled boxes
+   meet to make one triangle; reversing which half of each is filled is what
+   turns it over, rather than a transform, which would flip the header text
+   with it. */
+.oa-table th.sortable.asc {
+  background-image: linear-gradient(135deg, transparent 50%, currentColor 50%),
+    linear-gradient(45deg, currentColor 50%, transparent 50%);
+}
+
+.oa-table th.sortable.desc {
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+}
+
+.oa-table th {
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--ai-text) 9%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--ai-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oa-table th:first-child {
+  border-radius: 9px 0 0 9px;
+}
+
+.oa-table th:last-child {
+  border-radius: 0 9px 9px 0;
+}
+
+.oa-table th:only-child {
+  border-radius: 9px;
+}
+
+.oa-table td {
+  padding: 10px 12px;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Every other row is filled, so a row reads as a band rather than as text
+   floating between its neighbours. A fill rather than a rule between rows,
+   for the reason the buttons here are filled and not outlined: a line and a
+   fill say the same thing, and the fill is the one that survives being put
+   on a tinted surface. Weaker than the header above and than the hover
+   below, so all three stay tellable apart. */
+.oa-table tbody tr:nth-child(odd) td {
+  background: color-mix(in srgb, var(--ai-text) 4%, transparent);
+}
+
+/* The band is a shape, so it ends the way everything else here does. Applied
+   to every row rather than only the filled ones, so hovering an unfilled row
+   is the same shape as hovering a filled one. */
+.oa-table td:first-child {
+  border-radius: 9px 0 0 9px;
+}
+
+.oa-table td:last-child {
+  border-radius: 0 9px 9px 0;
+}
+
+/* A single-column table is one cell that is both ends at once. */
+.oa-table td:only-child {
+  border-radius: 9px;
+}
+
+.oa-table tr.selectable {
+  cursor: pointer;
+}
+
+.oa-table tr.selectable:hover td,
+.oa-table tr.selectable:focus-visible td {
+  background: var(--ai-state-hover);
+}
+
+.oa-table tr.selectable:focus-visible {
+  outline: none;
+}
+
+/* Switched off, not broken: dimmed rather than coloured, because a red row
+   for "disabled" reads as an error. */
+.oa-table tr.muted td {
+  opacity: 0.55;
+}
+
+.oa-table th.numeric,
+.oa-table td.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.oa-table-empty {
+  margin: 0;
+  padding: 32px 12px;
+  font-size: 12.5px;
+  text-align: center;
+  color: var(--ai-text-secondary);
+}
+
+.oa-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.oa-cell-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-cell-sub {
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+@media (max-width: 720px) {
+  .oa-table th.secondary,
+  .oa-table td.secondary {
+    display: none;
+  }
+}
+
+/* --- statistics ---------------------------------------------------------- */
+
+/* The allowance bars in the account drawer. The rows are the same ones the
+   composer menu draws; only the spacing between them is this screen's
+   business. */
+.oa-usage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* The same rows, drawn for a screen somebody opened on purpose rather than a
+   menu they are passing through. */
+.oa-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Layout only. The look comes from .oa-input-row, which is where every other
+   inline field in this interface already gets it. */
+.oa-redeem-row {
+  margin-top: 8px;
+}
+
+.oa-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.oa-card-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-low);
+}
+
+.oa-card-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.oa-card-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-usage-large {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-low);
+}
+
+.oa-usage-large .oa-usage-row {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.oa-usage-large .oa-usage-value {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.oa-usage-large .oa-usage-reset {
+  display: block;
+  margin-top: 8px;
+  font-size: 11.5px;
+}
+
+.oa-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 10px;
+}
+
+.oa-stat {
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-low);
+}
+
+.oa-stat-label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ai-text-secondary);
+}
+
+.oa-stat-value {
+  display: block;
+  margin-top: 6px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.oa-stat-note {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
+/* A bar chart drawn with divs. A charting library would be twenty times the
+   size of the thing it draws, for one chart. */
+.oa-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 84px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-low);
+}
+
+/* Capped, so a series with two buckets reads as two bars rather than as a
+   solid block of colour. */
+.oa-spark-bar {
+  flex: 1 1 0;
+  min-width: 2px;
+  max-width: 28px;
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--ai-primary);
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+}
+
+.oa-spark-bar:hover {
+  opacity: 1;
+}
+
+.oa-spark-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+}
+
+/* --- side panel ----------------------------------------------------------- */
+
+/* A column in the row, not a sheet over it. It slides in by margin the same
+   way the conversation rail slides out — the content beside it narrows
+   smoothly instead of being covered. */
+.oa-panel {
+  --oa-panel-width: 400px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: var(--oa-panel-width);
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  /* Slid out by a negative margin rather than collapsed by width, so its
+     contents never reflow mid-animation. */
+  margin-right: calc(-1 * (var(--oa-panel-width) + 14px));
+  opacity: 0;
+  transition: margin-right 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease;
+  will-change: margin-right, opacity;
+}
+
+.oa-panel.open {
+  margin-right: 0;
+  opacity: 1;
+}
+
+/* Full screen: over the row rather than a column of it, so nothing beside it
+   has to be squeezed to nothing to make room. */
+.oa-panel.fullscreen {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  width: auto;
+  margin-right: 0;
+}
+
+/* Growing and shrinking between drawer and full screen. The panel stays
+   anchored to the right edge so it expands and contracts cleanly without
+   jumping across the screen or desyncing horizontal boundaries. */
+.oa-panel.zooming {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: auto;
+  margin-right: 0;
+  opacity: 1;
+  overflow: hidden;
+  transition: width 0.34s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.oa-panel.fullscreen,
+.oa-panel.zooming {
+  transform: none;
+}
+
+/* While a panel covers the row, the columns behind it stop being painted.
+   
+   They were still there, and once the panels became translucent that stopped
+   being invisible: the blur was sampling a rail and a transcript nobody was
+   looking at, and two ghost cards showed through the sheet. Hidden rather
+   than removed, so the row keeps its shape and nothing reflows on the way
+   back — and delayed by the length of the zoom, so they leave after the
+   panel has finished growing over them rather than blinking out first.
+
+   Only the hiding half is declared. There used to be a resting rule here as
+   well — `.ai-chat > :not(.oa-panel) { transition: visibility 0s }` — to make
+   the return trip instant, and it did far more than that: `transition` is a
+   shorthand, so it reset every other transition on every direct child of the
+   row. `.ai-chat > :not(.oa-panel)` and `.ai-chat-wide .ai-chat-sidebar` are
+   worth the same specificity, this file loads after _chat.scss, and ties go
+   to the later rule — so the conversation rail lost its `margin-left`
+   transition in exactly one of its two states. Collapsing it animated (that
+   state carries a third class and outranks this), expanding it snapped. The
+   rule is not needed either: a property with no transition declared already
+   changes instantly, which is all the return trip wanted. */
+.ai-chat:has(> .oa-panel.fullscreen) > :not(.oa-panel),
+.oa-admin:has(> .oa-panel.fullscreen) > :not(.oa-panel) {
+  visibility: hidden;
+  transition: visibility 0s linear 0.34s;
+}
+
+/* The frame's travel is continuous; the arrangement inside it cannot be —
+   drawer and full screen are two layouts, and a class does not interpolate.
+   So the contents dissolve out, change over, and dissolve back in while the
+   frame is still moving, instead of snapping into place after it stops. */
+.oa-panel.zooming > * {
+  transition: opacity 0.2s ease;
+}
+
+.oa-panel.swapping > * {
+  opacity: 0;
+  transition: opacity 0.11s ease;
+}
+
+/* Nothing to drag when it already fills the row or is mid-animation. */
+.oa-panel.fullscreen .oa-resizer,
+.oa-panel.zooming .oa-resizer {
+  display: none;
+}
+
+/* The head's controls sit tight together; only the title takes the slack. */
+.oa-panel-head .oa-chip-group {
+  flex-shrink: 0;
+}
+
+.oa-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 14px 10px 14px 18px;
+}
+
+.oa-panel.fullscreen .oa-panel-head {
+  max-width: 920px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 16px 24px 8px;
+  box-sizing: border-box;
+}
+
+.oa-panel-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The back arrow is the chevron rotated, so a panel opened from another reads
+   as one step in rather than as a different control. */
+.oa-panel-head .oa-icon-btn:first-child svg {
+  transform: rotate(90deg);
+}
+
+.oa-panel-body-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.oa-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding: 16px 18px 24px;
+}
+
+.oa-panel-body::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.oa-panel-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 12px 18px;
+}
+
+/* Asking, rather than acting. The question needs a line of its own — it names
+   what goes with the thing being deleted, which is the part worth reading. */
+.oa-panel-foot.confirming {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.oa-panel-confirm {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ai-text);
+}
+
+.oa-panel-confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.oa-drawer-foot-spacer {
+  flex: 1;
+}
+
+/* Below three-column width it becomes an overlay, the same fallback the
+   conversation rail makes. */
+@media (max-width: 1100px) {
+  .oa-panel {
+    position: fixed;
+    z-index: 30;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(var(--oa-panel-width), 100vw);
+    margin-right: 0;
+    border-radius: 0;
+    box-shadow: var(--ai-shadow-md);
+    transform: translateX(100%);
+    transition: transform 0.24s cubic-bezier(0.2, 0, 0, 1), opacity 0.2s ease;
+  }
+
+  .oa-panel.open {
+    transform: translateX(0);
+  }
+
+  .oa-panel.fullscreen,
+  .oa-panel.zooming {
+    position: fixed;
+    z-index: 30;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-panel,
+  .oa-panel.zooming {
+    transition: none;
+  }
+}
+
+.oa-btn-danger {
+  background: rgba(185, 28, 28, 0.12);
+  color: var(--ai-danger);
+}
+
+.oa-btn-danger:hover {
+  background: rgba(185, 28, 28, 0.2);
+}
+
+/* The second click, where the tint is no longer enough of a warning. */
+.oa-btn-danger-solid {
+  background: var(--ai-danger);
+  color: var(--ai-surface-card);
+  font-weight: 600;
+}
+
+.oa-btn-danger-solid:hover {
+  background: var(--ai-danger);
+  filter: brightness(1.1);
+}
+
+.oa-form-section {
+  margin-top: 6px;
+}
+
+.oa-switch-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A real switch, not a tick box.
+   
+   Scoped to .oa-switch-field so the checkbox lists elsewhere — which are a
+   set of things to pick, not a thing to turn on — keep their boxes. The
+   input is still the input: appearance is dropped and a track and knob drawn
+   in its place, so the label, the keyboard and the form value all still work
+   without a second element pretending to be one. */
+.oa-switch-field .oa-checkbox-field {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.oa-switch-field .oa-checkbox-field > span {
+  order: 1;
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"] {
+  order: 2;
+  position: relative;
+  flex-shrink: 0;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  appearance: none;
+  background: var(--ai-outline-variant);
+  cursor: pointer;
+  transition: background-color 0.18s ease;
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  /* White in both themes on purpose: the track carries the colour, and a knob
+     that followed the surface token would disappear into a dark one. */
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked {
+  background: var(--ai-primary);
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked::after {
+  transform: translateX(16px);
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-switch-field .oa-checkbox-field input[type="checkbox"],
+  .oa-switch-field .oa-checkbox-field input[type="checkbox"]::after {
+    transition: none;
+  }
+}
+
+/* Slimmer and fully rounded, closer to a media scrubber than to a gauge. The
+   fill keeps the accent: no token here hardcodes a hue, and the accent is
+   what colours the interface. */
+.oa-usage-large .oa-meter {
+  height: 8px;
+}
+
+.oa-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 6px;
+  border: none;
+  border-radius: 12px;
+  background: var(--ai-field-bg);
+}
+
+.oa-check-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.oa-check-row:hover {
+  background: var(--ai-state-hover);
+}
+
+.oa-tier-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 9px;
+}
+
+.oa-tier-row:hover {
+  background: var(--ai-state-hover);
+}
+
+.oa-tier-row .oa-segmented {
+  flex-shrink: 0;
+}
+
+.oa-check-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.oa-check-title {
+  font-size: 12.5px;
+}
+
+.oa-check-sub {
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+}
+
+/* --- transcript viewer ---------------------------------------------------- */
+
+.oa-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.oa-transcript-turn {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.oa-transcript-role {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ai-text-secondary);
+}
+
+/* --- responsive ----------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  .oa-admin {
+    flex-direction: column;
+  }
+
+  .oa-admin-rail {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    width: auto;
+    padding: 8px;
+    overflow-x: auto;
+  }
+
+  .oa-admin-rail-title,
+  .oa-admin-rail-foot {
+    display: none;
+  }
+
+  /* At this width the rail is already a strip of tabs across the top, so
+     there is nothing for a collapse control to do and nothing to collapse. */
+  .oa-admin-rail-toggle {
+    display: none;
+  }
+
+  .oa-admin.rail-collapsed .oa-admin-rail {
+    margin-left: 0;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+
+  .oa-admin-nav {
+    width: auto;
+    white-space: nowrap;
+  }
+
+  .oa-admin-head {
+    padding: 16px 16px 12px;
+  }
+
+  .oa-admin-body {
+    padding: 14px 16px 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-admin-rail,
+  .oa-admin.rail-collapsed .oa-admin-rail,
+  .oa-admin-nav,
+  .oa-settings-rail-item,
+  .oa-settings-tab,
+  .oa-spark-bar {
+    transition: none;
+  }
+
+  .oa-settings.enter-rise,
+  .oa-settings.enter-forward,
+  .oa-settings.enter-back,
+  .oa-admin-body.enter-rise,
+  .oa-admin-body.enter-forward,
+  .oa-admin-body.enter-back {
+    animation: none;
+  }
+}
+
+/* --- animations ---------------------------------------------------------- */
+
+/* Direction-aware pane and tab transitions inspired by PageDye:
+   - Subtle rise on initial mount (sectionEnter)
+   - Forward slide from the right when navigating to a succeeding tab (paneEnterForward)
+   - Backward slide from the left when navigating to a preceding tab (paneEnterBack)
+   Tight 0.24s cubic-bezier(0.2, 0, 0, 1) decelerating curve for a responsive native feel. */
+@keyframes sectionEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes paneEnterForward {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes paneEnterBack {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.oa-settings.enter-rise,
+.oa-admin-body.enter-rise {
+  animation: sectionEnter 0.24s cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.oa-settings.enter-forward,
+.oa-admin-body.enter-forward {
+  animation: paneEnterForward 0.24s cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.oa-settings.enter-back,
+.oa-admin-body.enter-back {
+  animation: paneEnterBack 0.24s cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+/* --- user settings -------------------------------------------------------- */
+
+/* One column of panels rather than a grid: these are read top to bottom while
+   deciding something, not scanned. */
+.oa-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+/* No overflow-x here, deliberately. The selected accent dot draws its ring
+   4px outside itself and the first dot in the row sits against this edge, so
+   a clip on this box shaves the ring — twice reported, twice from here. The
+   18px gutter of .oa-settings-scroll is the room it is drawn into, and that
+   scroller is already overflow-x: hidden, so nothing can escape sideways
+   anyway. */
+
+/* Whose settings these are. The panel head says "Settings" and has no room
+   for a second line, so the account goes at the top of the body. */
+.oa-settings-account {
+  margin: -4px 0 0;
+  font-size: 11.5px;
+  color: var(--ai-text-secondary);
+}
+
+/* Settings layout: drawer mode vs fullscreen mode */
+.oa-panel-body.oa-settings-body {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.oa-settings-tabs-bar {
+  padding: 2px 18px 12px;
+  flex-shrink: 0;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-tabs-bar {
+  display: block;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-rail {
+  display: none;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-split {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-scroll-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding: 0 18px 24px;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.oa-panel.fullscreen .oa-settings-tabs-bar {
+  display: none;
+}
+
+.oa-panel.fullscreen .oa-settings-split {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  gap: 32px;
+  max-width: 920px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 16px 24px 24px;
+  box-sizing: border-box;
+}
+
+.oa-panel.fullscreen .oa-settings-rail {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 2px;
+  width: 172px;
+}
+
+.oa-panel.fullscreen .oa-settings-scroll-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.oa-panel.fullscreen .oa-settings-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding: 0 12px 24px 0;
+}
+
+.oa-panel.fullscreen .oa-settings-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+
+.oa-settings-rail-item {
+  padding: 9px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.oa-settings-rail-item:hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+.oa-settings-rail-item.active {
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-weight: 600;
+}
+
+.oa-settings-split .oa-settings {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Category segmented tab bar for the drawer view, keeping categories prominent
+   and providing an anchor for the sliding transition. */
+.oa-settings-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--ai-field-bg);
+  flex-shrink: 0;
+}
+
+.oa-settings-tab {
+  flex: 1;
+  padding: 7px 12px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.oa-settings-tab:hover {
+  color: var(--ai-text);
+}
+
+.oa-settings-tab.active {
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-weight: 600;
+}
+
+.oa-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.oa-settings-panel .oa-color-grid {
+  margin-top: 2px;
+}
+
+.oa-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.oa-settings-panel .oa-select,
+.oa-settings-panel input[type='text'],
+.oa-settings-panel input[type='email'],
+.oa-settings-panel input[type='password'],
+.oa-settings-panel input[type='number'],
+.oa-settings-panel textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 11px;
+  background-color: var(--ai-field-bg);
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 12.5px;
+  transition: background-color 0.15s ease;
+}
+
+.oa-settings-panel .oa-select {
+  appearance: none;
+  padding-right: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 16px) calc(50% + 1px), calc(100% - 11px) calc(50% + 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.oa-settings-panel input:hover,
+.oa-settings-panel .oa-select:hover,
+.oa-settings-panel textarea:hover {
+  background-color: var(--ai-field-bg-hover);
+}
+
+.oa-settings-panel input:focus,
+.oa-settings-panel .oa-select:focus-visible,
+.oa-settings-panel textarea:focus {
+  outline: none;
+  background-color: var(--ai-field-bg-hover);
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+/* The running build, at the foot of the rail. Quiet enough to ignore and
+   present enough to quote in a bug report. */
+.oa-admin-build {
+  display: block;
+  margin-top: 10px;
+  padding: 0 4px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ai-text-secondary);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- about ----------------------------------------------------------------- */
+
+.oa-about {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.oa-about-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oa-about-name {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.oa-about-lede {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ai-text-secondary);
+}
+
+.oa-about-link {
+  color: var(--ai-primary);
+  text-decoration: none;
+}
+
+.oa-about-link:hover {
+  text-decoration: underline;
+}
+
+.oa-about-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-low);
+}
+
+.oa-about-fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+}
+
+.oa-about-fact-label {
+  color: var(--ai-text-secondary);
+}
+
+.oa-about-fact-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- API keys ------------------------------------------------------------- */
+
+.oa-keys-intro,
+.oa-keys-create,
+.oa-keys-list-wrap,
+.oa-key-issued {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.oa-panel-section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ai-text-secondary);
+}
+
+/* The base URL is half of what a client needs, so it is shown as something
+   to read and copy rather than buried in prose. */
+.oa-key-endpoint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--ai-surface-container-low);
+}
+
+.oa-key-endpoint-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Rows that are chosen rather than ticked.
+   
+   The native box was the only outline left in this interface, and three of
+   them stacked in a filled well read as a form inside a form. The row itself
+   is the control now: a fill says it is chosen, which is what a fill means
+   everywhere else here. */
+.oa-check-row input[type="checkbox"] {
+  appearance: none;
+  position: relative;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  background: var(--ai-state-hover);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.oa-check-row input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 3px;
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid var(--ai-primary-text);
+  border-bottom: 2px solid var(--ai-primary-text);
+  transform: rotate(-45deg) scale(0.6);
+  opacity: 0;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.oa-check-row input[type="checkbox"]:checked {
+  background: var(--ai-primary);
+}
+
+.oa-check-row input[type="checkbox"]:checked::after {
+  opacity: 1;
+  transform: rotate(-45deg) scale(1);
+}
+
+.oa-check-row input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-check-row:has(input:checked) {
+  background: var(--ai-state-hover);
+}
+
+.oa-key-endpoint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--ai-text);
+  overflow-wrap: anywhere;
+}
+
+.oa-keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oa-key-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+  border: 1px solid var(--ai-border);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              background-color 0.2s ease,
+              border-color 0.2s ease,
+              box-shadow 0.2s ease,
+              opacity 0.25s ease;
+  animation: oaKeyRowFadeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--item-idx, 0) * 40ms);
+}
+
+.oa-key-row:hover {
+  background: var(--ai-surface-container);
+  border-color: var(--ai-outline-variant);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.oa-key-row-paused {
+  opacity: 0.65;
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.oa-key-row-paused:hover {
+  opacity: 0.9;
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.oa-key-row-paused .oa-key-name {
+  color: var(--ai-text-secondary);
+}
+
+@keyframes oaKeyRowFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.oa-key-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.oa-key-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.oa-key-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ai-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-key-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  font-size: 11.5px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-key-prefix {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.oa-key-model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  border: 1px solid var(--ai-border);
+  line-height: 1.5;
+}
+
+.oa-key-model-all {
+  color: var(--ai-text-secondary);
+}
+
+.oa-key-field-hint {
+  margin-top: -2px;
+  margin-bottom: 8px;
+}
+
+.oa-key-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.oa-key-toggle-btn {
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), color 0.18s ease, background-color 0.18s ease;
+}
+
+.oa-key-toggle-btn:hover {
+  transform: scale(1.12);
+}
+
+.oa-key-toggle-btn:active {
+  transform: scale(0.94);
+}
+
+.oa-key-toggle-btn.active {
+  color: #10b981;
+}
+
+.oa-key-toggle-btn.active:hover {
+  background: rgba(16, 185, 129, 0.14);
+}
+
+/* Widens to hold the question when armed, so the row does not jump. */
+.oa-key-confirm {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 0 4px;
+  white-space: nowrap;
+  color: var(--ai-danger, #e5484d);
+}
+
+.oa-key-warning {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ai-text);
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--ai-field-bg);
+}
+
+.oa-key-token {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 10px;
+  border-radius: 10px;
+  background: var(--ai-field-bg);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.oa-key-token-pulse {
+  border: 1px solid var(--ai-outline-variant);
+  animation: oaKeyTokenGlow 2.4s ease-in-out infinite;
+}
+
+@keyframes oaKeyTokenGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 var(--ai-focus-shadow);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--ai-focus-shadow);
+  }
+}
+
+.oa-key-copy-btn {
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), color 0.18s ease;
+}
+
+.oa-key-copy-btn.copied {
+  color: #10b981;
+  transform: scale(1.15);
+}
+
+.oa-key-token-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--ai-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 6px 0;
+}
+
+.oa-key-token-input:focus {
+  outline: none;
+}
+
+.oa-key-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.oa-keys-edit-animated,
+.oa-key-issued-animated {
+  animation: oaKeyFormFadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes oaKeyFormFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* A key row whose revoke failed, so the click is not silently swallowed. */
+.oa-key-row-failed {
+  opacity: 0.5;
+}
+
+/* --- charts ---------------------------------------------------------------- */
+
+.oa-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.oa-chart-svg {
+  width: 100%;
+  max-width: 340px;
+  height: auto;
+  align-self: center;
+}
+
+/* Only the slices that lead somewhere say so. */
+.oa-chart-hit {
+  cursor: pointer;
+}
+
+.oa-chart-hit:hover {
+  opacity: 0.85;
+}
+
+.oa-chart-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.oa-chart-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.oa-chart-swatch {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 3px;
+}
+
+.oa-chart-legend-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ai-text);
+}
+
+.oa-chart-legend-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--ai-text);
+}
+
+.oa-chart-legend-share {
+  width: 38px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ai-text-secondary);
+}
+
+.oa-ranking {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.oa-ranking-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.oa-ranking-controls .oa-field {
+  flex: 1;
+  min-width: 130px;
+}
+
+/* Two charts side by side while there is room, stacked when there is not. */
+.oa-ranking-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+}
+
+.oa-ranking-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* --- the request log -------------------------------------------------------- */
+
+.oa-log-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.oa-log-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.oa-log-filter-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.oa-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A row is a button because every one of them opens the whole record. */
+.oa-log-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 11px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ai-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.13s ease;
+}
+
+.oa-log-row:hover {
+  background: var(--ai-surface-container-high);
+}
+
+.oa-log-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.oa-log-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.oa-log-method {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ai-text-secondary);
+}
+
+.oa-log-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-log-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-log-error {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ai-danger);
+}
+
+.oa-log-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.oa-log-pager .oa-field-hint {
+  flex: 1;
+}
+
+.oa-log-facts {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 1fr;
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.oa-log-facts dt {
+  color: var(--ai-text-secondary);
+}
+
+/* The values are data, not prose — a status code, a duration, an address, a
+   ULID, a user agent — and most of them are read by holding them against
+   another record. Monospace is what makes two ids differ in a visible place
+   rather than in an overall length, and what stops the columns of digits from
+   shifting as they change. The labels beside them stay proportional: those are
+   words, and reading them is not the same job. */
+.oa-log-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* The count first and large, because it is the one number an operator came
+   to read; the breakdown under it in the ordinary hint voice. */
+.oa-card-count {
+  margin: 0 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.oa-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.oa-card-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 11px;
+  background: var(--ai-surface-container-low);
+  font-size: 12px;
+}
+
+.oa-card-expiry {
+  color: var(--ai-text-secondary);
+}
+
+/* The challenge widget's own iframe carries its size and its look; all this
+   owes it is somewhere to sit that is not flush against the button below. */
+.oa-challenge {
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+}
+
+.oa-challenge:not(:empty) {
+  margin: 2px 0 4px;
+}
+
+/* The facts about a record that are read, not edited: a label on the left and
+   the value on the right, so a column of them scans without the eye tracking
+   two different left edges. */
+.oa-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: -4px 0 4px;
+}
+
+.oa-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.oa-fact-label {
+  color: var(--ai-text-secondary);
+  flex: none;
+}
+
+.oa-fact-value {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+/* An identifier is copied by eye or by selection, and both go wrong in a
+   proportional face. */
+.oa-fact-value.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  user-select: all;
+}
+
+/* A minted batch, listed once. Monospace and one per line so it can be
+   selected, copied, or read aloud without a character being in doubt. */
+.oa-code-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.oa-code-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--ai-text);
+}
+
+/* Held, not clicked. The fill is the only moving part: it says how much
+   longer, and it is the reason letting go early reads as "nothing happened"
+   rather than "did that work?". */
+/* The reset button: a cap on a plate.
+   
+   Deliberately unlike everything else here. The language elsewhere — flat
+   fills, no outlines, nothing pretending to be an object — is right for
+   controls somebody uses all day and wrong for the one control that empties
+   a number for every account at once. This one should read as a thing you
+   press and hold, and should be obviously not the button you meant to click
+   on the way past.
+   
+   The one place in this stylesheet with a colour of its own, and the reason
+   is that this is an object rather than a control. The palette exists so the
+   accent colours the interface; a button you push is not part of that system,
+   and --ai-danger is a text and badge colour — pale by design, so that a
+   warning reads on a dark panel. Mixed into a dome it comes out pink. This is
+   red because the thing it is imitating is red. */
+.oa-bigbutton {
+  --cap: #d92b26;
+  --cap-lit: #ff7a70;
+  --cap-rim: #7e1512;
+
+  /* Sized to the ring, which is the outermost part. The plate and the cap are
+     centred inside it. */
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 208px;
+  height: 208px;
+  margin: 22px auto 4px;
+}
+
+/* The plate. Its inner shadow is what the cap appears to sit in, and it
+   deepens as the cap goes down. */
+.oa-bigbutton-base {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 172px;
+  height: 172px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 42%,
+      var(--ai-surface-container-high) 58%,
+      var(--ai-surface-container-low) 100%);
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.34),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  transition: box-shadow 0.16s ease;
+}
+
+/* The hold, closing clockwise from the top. The mask is what turns a filled
+   pie into a ring; both spellings, because one engine still wants the
+   prefixed one. */
+.oa-bigbutton-ring {
+  --hold: 0;
+  position: absolute;
+  /* Around everything, not inside the plate: the outermost circle of the
+     three. Nothing it encloses touches it, so nothing that moves can make it
+     look off centre. */
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    var(--cap-lit) calc(var(--hold) * 360deg),
+    transparent 0);
+  -webkit-mask: radial-gradient(closest-side, transparent 90%, #000 91%);
+  mask: radial-gradient(closest-side, transparent 90%, #000 91%);
+  pointer-events: none;
+}
+
+/* The cap. A dome rather than a disc: the highlight sits above the middle,
+   which is where a light source would put it on something convex. */
+.oa-bigbutton-cap {
+  position: relative;
+  width: 118px;
+  height: 118px;
+  border: none;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 32%,
+      var(--cap-lit) 0%,
+      var(--cap) 40%,
+      color-mix(in srgb, var(--cap) 82%, black) 76%,
+      color-mix(in srgb, var(--cap) 58%, black) 100%);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  /* The stack that makes it stand up: a rim of its own darker colour, the
+     shadow it casts on the plate, and a highlight along the top edge. */
+  box-shadow:
+    0 8px 0 var(--cap-rim),
+    0 14px 20px -8px rgba(0, 0, 0, 0.55),
+    inset 0 2px 1px rgba(255, 255, 255, 0.34);
+  transition:
+    transform 0.09s cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 0.09s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.oa-bigbutton-cap:hover {
+  background:
+    radial-gradient(circle at 50% 32%,
+      color-mix(in srgb, var(--cap-lit) 88%, white) 0%,
+      color-mix(in srgb, var(--cap) 92%, white) 40%,
+      color-mix(in srgb, var(--cap) 88%, black) 76%,
+      color-mix(in srgb, var(--cap) 62%, black) 100%);
+}
+
+.oa-bigbutton-cap:focus-visible {
+  outline: none;
+  box-shadow:
+    0 8px 0 var(--cap-rim),
+    0 14px 20px -8px rgba(0, 0, 0, 0.55),
+    inset 0 2px 1px rgba(255, 255, 255, 0.34),
+    0 0 0 4px var(--ai-focus-shadow);
+}
+
+/* Down. The rim collapses to almost nothing and the cap travels the distance
+   the rim used to hold it up, so the two read as one movement. */
+.oa-bigbutton.holding .oa-bigbutton-cap {
+  transform: translateY(6px);
+  box-shadow:
+    0 1px 0 var(--cap-rim),
+    0 3px 8px -6px rgba(0, 0, 0, 0.55),
+    inset 0 3px 8px rgba(0, 0, 0, 0.32);
+}
+
+.oa-bigbutton.holding .oa-bigbutton-base {
+  box-shadow:
+    inset 0 3px 10px rgba(0, 0, 0, 0.46),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* It happened. One flash on the plate, so the moment has a mark of its own
+   rather than being the absence of a press. */
+.oa-bigbutton.fired .oa-bigbutton-base {
+  animation: bigbuttonFired 0.42s ease-out;
+}
+
+@keyframes bigbuttonFired {
+  0% {
+    box-shadow:
+      inset 0 2px 6px rgba(0, 0, 0, 0.34),
+      0 0 0 0 color-mix(in srgb, var(--cap) 55%, transparent);
+  }
+  100% {
+    box-shadow:
+      inset 0 2px 6px rgba(0, 0, 0, 0.34),
+      0 0 0 26px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-bigbutton-cap {
+    transition: none;
+  }
+  .oa-bigbutton.fired .oa-bigbutton-base {
+    animation: none;
+  }
+}
+
+
+/* The line under it. Centred, because the button is. */
+.oa-hold-note {
+  margin-top: 10px;
+  text-align: center;
+}
+

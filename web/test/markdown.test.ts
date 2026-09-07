@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { safeHref, parse, parseInline, render, renderInto } from '../src/chat/markdown';
 
+/** Polls until a condition holds, or gives up loudly rather than silently. */
+async function waitFor(condition: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for the maths renderer');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe('markdown renderer', () => {
   describe('safeHref', () => {
     it('permits valid http, https, and mailto links', () => {
@@ -82,8 +91,11 @@ describe('markdown renderer', () => {
       renderInto(container, text);
       expect(container.textContent).toContain('E = mc^2');
 
-      // Allow the dynamic import microtasks to settle and trigger awaitingMath re-render.
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      // Wait for the chunk rather than for a stopwatch. A fixed delay here is
+      // a test that passes on an idle machine and fails on a loaded one: the
+      // renderer arrives when the import resolves, and how long that takes is
+      // whatever the rest of the suite is doing at the time.
+      await waitFor(() => container.querySelectorAll('math, .ai-math').length > 0);
 
       // After arrival, rendered math formulas should contain MathML or ai-math classes.
       expect(container.querySelectorAll('math, .ai-math').length).toBeGreaterThan(0);

@@ -1,21 +1,30 @@
 {
   "name": "obsidian-arc-web",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Frontend for the Obsidian Arc server. Built by Vite, embedded into the Go binary.",
+  "description": "Frontend for the Obsidian Arc server. Vue 3 + SCSS, built by Vite, embedded into the Go binary.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
     "preview": "vite preview"
   },
+  "dependencies": {
+    "@vueuse/core": "^12.8.2",
+    "lucide-vue-next": "^0.469.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "^5.2.1",
     "jsdom": "^30.0.1",
+    "sass": "^1.83.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.5",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "vue-tsc": "^2.2.0"
   }
 }

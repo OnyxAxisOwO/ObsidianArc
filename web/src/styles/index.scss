@@ -1,0 +1,19 @@
+// The whole stylesheet, in the order the cascade needs it.
+//
+// The five partials below are the standalone build's stylesheets carried over
+// unchanged rather than rewritten into nested Sass. That is deliberate: this
+// port is meant to be pixel-for-pixel identical to what it replaces, and
+// re-indenting five thousand declarations into `&`-nesting is a change with
+// thousands of chances to move something by a pixel and no way to see that it
+// did. Sass is used where it earns its place — the split into partials, the
+// mixins in `_mixins.scss` — and not as a reformatting exercise.
+//
+// The order matters. `_chat` defines the `--ai-*` tokens every other file
+// consumes, `_base` paints the page behind them, and `_surfaces` comes last
+// because its panels sit over everything.
+
+@use 'base';
+@use 'chat';
+@use 'workspace';
+@use 'app';
+@use 'surfaces';

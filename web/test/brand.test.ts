@@ -1,96 +1,91 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderShell } from '../src/app/shell';
-import { renderLandingPage } from '../src/landing/landing-page';
-import { t } from '../src/i18n';
+import { createApp, h, type App } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
+import AppShell from '../src/layouts/AppShell.vue';
+import LandingView from '../src/views/LandingView.vue';
+import { t } from '../src/composables/useI18n';
+
+// The brand is the way back to the conversation from every other screen, and
+// it has to stay an ordinary link: a <button> would not open in a new tab,
+// would not show its destination on hover, and would not be copyable. These
+// assertions exist because it has been a button twice.
+
+let app: App | null = null;
+let host: HTMLElement;
+
+function mount(component: Parameters<typeof createApp>[0], props: Record<string, unknown> = {}): void {
+  app = createApp({ render: () => h(component, props) });
+  app.use(createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/:all(.*)*', component: { render: () => null } }],
+  }));
+  app.mount(host);
+}
+
+function brand(): HTMLAnchorElement {
+  const node = host.querySelector<HTMLAnchorElement>('a.oa-brand');
+  if (!node) throw new Error('no brand rendered');
+  return node;
+}
+
+beforeEach(() => {
+  host = document.createElement('div');
+  document.body.appendChild(host);
+});
+
+afterEach(() => {
+  app?.unmount();
+  app = null;
+  host.remove();
+});
 
 describe('brand home navigation', () => {
-  let root: HTMLElement;
-
-  beforeEach(() => {
-    root = document.createElement('div');
-    document.body.appendChild(root);
+  it('renders the brand as an anchor to / carrying the back-to-chat title', () => {
+    mount(AppShell);
+    expect(brand().getAttribute('href')).toBe('/');
+    expect(brand().title).toBe(t('backToChat'));
   });
 
-  afterEach(() => {
-    root.remove();
+  it('renders the landing page brand as an anchor to /', () => {
+    mount(LandingView);
+    const link = host.querySelector<HTMLAnchorElement>('a.oa-landing-brand');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('href')).toBe('/');
   });
 
-  it('renders brand as an anchor link to / with backToChat title', () => {
-    const shell = renderShell(root);
-    expect(shell.brand.tagName).toBe('A');
-    expect(shell.brand.getAttribute('href')).toBe('/');
-    expect(shell.brand.title).toBe(t('backToChat'));
-    expect(shell.brand.classList.contains('oa-brand')).toBe(true);
-  });
+  it('claims a plain left click and hands it to the screen around it', () => {
+    const onBrand = vi.fn();
+    mount(AppShell, { onBrand });
 
-  it('renders landing page brand as an anchor link to /', () => {
-    renderLandingPage(root);
-    const brand = root.querySelector<HTMLAnchorElement>('a.oa-landing-brand');
-    expect(brand).not.toBeNull();
-    expect(brand?.getAttribute('href')).toBe('/');
-  });
-
-  it('triggers new conversation when clicked while already on /', () => {
-    const shell = renderShell(root);
-    const newConversation = vi.fn();
-
-    // Replicate the listener attached in chat-page.ts
-    shell.brand.addEventListener('click', (event) => {
-      if (event.defaultPrevented || event.button !== 0) return;
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      if (window.location.pathname === '/' && !window.location.search) {
-        event.preventDefault();
-        newConversation();
-      }
-    });
-
-    window.history.pushState(null, '', '/');
     const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
-    shell.brand.dispatchEvent(event);
+    brand().dispatchEvent(event);
 
-    expect(newConversation).toHaveBeenCalledOnce();
+    expect(onBrand).toHaveBeenCalledOnce();
+    // Claimed, so the browser does not also follow the href and reload.
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('allows default navigation when clicked while on another path', () => {
-    const shell = renderShell(root);
-    const newConversation = vi.fn();
+  it('leaves a modified click alone, so open-in-new-tab still works', () => {
+    const onBrand = vi.fn();
+    mount(AppShell, { onBrand });
 
-    shell.brand.addEventListener('click', (event) => {
-      if (event.defaultPrevented || event.button !== 0) return;
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      if (window.location.pathname === '/' && !window.location.search) {
-        event.preventDefault();
-        newConversation();
-      }
+    const event = new MouseEvent('click', {
+      bubbles: true, cancelable: true, button: 0, ctrlKey: true,
     });
+    brand().dispatchEvent(event);
 
-    window.history.pushState(null, '', '/settings');
-    const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
-    shell.brand.dispatchEvent(event);
-
-    expect(newConversation).not.toHaveBeenCalled();
+    expect(onBrand).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it('allows default navigation when clicked with modifier key', () => {
-    const shell = renderShell(root);
-    const newConversation = vi.fn();
+  it('leaves a middle click alone, which is the other way to open a tab', () => {
+    const onBrand = vi.fn();
+    mount(AppShell, { onBrand });
 
-    shell.brand.addEventListener('click', (event) => {
-      if (event.defaultPrevented || event.button !== 0) return;
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      if (window.location.pathname === '/' && !window.location.search) {
-        event.preventDefault();
-        newConversation();
-      }
-    });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 1 });
+    brand().dispatchEvent(event);
 
-    window.history.pushState(null, '', '/');
-    const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ctrlKey: true });
-    shell.brand.dispatchEvent(event);
-
-    expect(newConversation).not.toHaveBeenCalled();
+    expect(onBrand).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });
 });

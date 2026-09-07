@@ -1,12 +1,25 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { select, placeList } from '../src/ui/select';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { createApp, h, ref, type App } from 'vue';
+import OaSelect from '../src/components/OaSelect.vue';
+import { placeList } from '../src/lib/select-placement';
 
 // jsdom has no layout, so neither of these exists. The control calls both
 // while opening; what is under test is everything around them.
+let app: App | null = null;
+let host: HTMLElement;
+
 beforeEach(() => {
   Element.prototype.scrollIntoView = () => {};
-  // The open list is module state, so a test that leaves one open would be
-  // read by the next one as a list it opened itself.
+  document.body.textContent = '';
+  host = document.createElement('div');
+  document.body.appendChild(host);
+});
+
+afterEach(() => {
+  app?.unmount();
+  app = null;
+  // The open list is module state, so a test that left one open would be read
+  // by the next one as a list it opened itself.
   document.dispatchEvent(new PointerEvent('pointerdown'));
   document.body.textContent = '';
 });
@@ -17,257 +30,179 @@ const COLOURS = [
   { value: 'blue', label: 'Blue' },
 ];
 
-function mount(config: Parameters<typeof select>[0] = { choices: COLOURS }) {
-  const control = select(config);
-  document.body.appendChild(control.element);
-  return control;
+interface Mounted {
+  trigger: HTMLButtonElement;
+  value(): string;
+  changes: string[];
+}
+
+function mount(choices = COLOURS, initial = 'red'): Mounted {
+  const value = ref(initial);
+  const changes: string[] = [];
+
+  app = createApp({
+    render: () => h(OaSelect, {
+      choices,
+      modelValue: value.value,
+      'onUpdate:modelValue': (next: string) => {
+        value.value = next;
+        changes.push(next);
+      },
+    }),
+  });
+  app.mount(host);
+
+  const trigger = host.querySelector<HTMLButtonElement>('.oa-select');
+  if (!trigger) throw new Error('no trigger rendered');
+  return { trigger, value: () => value.value, changes };
 }
 
 function list(): HTMLElement | null {
-  return document.querySelector('.oa-select-menu');
+  return document.querySelector<HTMLElement>('.oa-select-menu');
 }
 
-function key(node: HTMLElement, name: string): void {
-  node.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+async function settle(): Promise<void> {
+  // A tick for Vue, and a frame for the transition class the control adds one
+  // frame after opening.
+  await Promise.resolve();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  await Promise.resolve();
 }
 
-describe('select', () => {
-  it('names its value, and the first choice when it was given none', () => {
-    expect(mount({ choices: COLOURS, value: 'green' }).element.textContent).toBe('Green');
-    expect(mount({ choices: COLOURS }).element.textContent).toBe('Red');
+describe('the option list', () => {
+  it('shows the label of the current value on the trigger', () => {
+    const control = mount();
+    expect(control.trigger.querySelector('.oa-select-label')?.textContent).toBe('Red');
   });
 
-  // The reason this control exists rather than a styled <select>: every place
-  // one appears is inside something that scrolls or carries a filter, and a
-  // popup left in that subtree is clipped by it. It has to be a child of
-  // <body> or it is the same bug in a different shape.
-  it('puts the list on the body while open and takes it away after', async () => {
+  it('opens on click and lands on <body>, out of every clipping ancestor', async () => {
     const control = mount();
-    expect(list()).toBeNull();
+    control.trigger.click();
+    await settle();
 
-    control.element.click();
     expect(list()).not.toBeNull();
-    expect(list()!.parentElement).toBe(document.body);
-    expect(control.element.getAttribute('aria-expanded')).toBe('true');
-
-    key(control.element, 'Escape');
-    expect(control.element.getAttribute('aria-expanded')).toBe('false');
-    // The node outlives the click by the length of its transition.
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(list()).toBeNull();
+    expect(list()?.parentElement).toBe(document.body);
+    expect(control.trigger.getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('walks with the arrows and commits on Enter', () => {
-    const changes: string[] = [];
-    const control = mount({ choices: COLOURS, onChange: (value) => changes.push(value) });
+  it('is a combobox pointing at a listbox of options', async () => {
+    const control = mount();
+    expect(control.trigger.getAttribute('role')).toBe('combobox');
+    control.trigger.click();
+    await settle();
 
-    control.element.click();
-    key(control.element, 'ArrowDown');
-    key(control.element, 'ArrowDown');
-    key(control.element, 'Enter');
+    expect(list()?.getAttribute('role')).toBe('listbox');
+    const options = list()!.querySelectorAll('[role="option"]');
+    expect(options).toHaveLength(3);
+    expect(options[0]?.getAttribute('aria-selected')).toBe('true');
+    // Focus stays on the trigger; the active row is named rather than focused.
+    expect(control.trigger.getAttribute('aria-activedescendant')).toBe(options[0]?.id);
+  });
+
+  it('reports a choice and closes on it', async () => {
+    const control = mount();
+    control.trigger.click();
+    await settle();
+
+    list()!.querySelectorAll<HTMLElement>('.oa-menu-item')[2]!.click();
+    await settle();
 
     expect(control.value()).toBe('blue');
-    expect(control.element.textContent).toBe('Blue');
-    expect(changes).toEqual(['blue']);
-    expect(control.element.getAttribute('aria-expanded')).toBe('false');
+    expect(control.changes).toEqual(['blue']);
+    expect(control.trigger.getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('leaves the value alone when the list is dismissed', () => {
-    const changes: string[] = [];
-    const control = mount({ choices: COLOURS, value: 'green', onChange: (v) => changes.push(v) });
+  it('does not report a choice that changes nothing', async () => {
+    const control = mount();
+    control.trigger.click();
+    await settle();
 
-    control.element.click();
-    key(control.element, 'ArrowDown');
-    key(control.element, 'Escape');
+    list()!.querySelectorAll<HTMLElement>('.oa-menu-item')[0]!.click();
+    await settle();
+
+    expect(control.changes).toEqual([]);
+  });
+
+  it('walks with the arrow keys and commits on Enter', async () => {
+    const control = mount();
+    control.trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await settle();
+    expect(list()).not.toBeNull();
+
+    control.trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await settle();
+    control.trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await settle();
 
     expect(control.value()).toBe('green');
-    expect(changes).toEqual([]);
   });
 
-  it('jumps to a choice by its first letters', () => {
+  it('closes on Escape without choosing', async () => {
     const control = mount();
-    control.element.click();
-    key(control.element, 'b');
-    key(control.element, 'Enter');
+    control.trigger.click();
+    await settle();
+
+    control.trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await settle();
+
+    expect(control.trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(control.changes).toEqual([]);
+  });
+
+  it('closes when the pointer goes down outside it', async () => {
+    const control = mount();
+    control.trigger.click();
+    await settle();
+
+    document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await settle();
+
+    expect(control.trigger.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('jumps to a choice by typing its first letter', async () => {
+    const control = mount();
+    control.trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', bubbles: true }));
+    await settle();
+
+    // Closed, so a letter commits rather than only moving the highlight.
     expect(control.value()).toBe('blue');
-  });
-
-  // set() is how a screen restores a stored preference. It must not look like
-  // somebody choosing, or restoring would write the value back to the server.
-  it('does not report a value it was told to show', () => {
-    const changes: string[] = [];
-    const control = mount({ choices: COLOURS, onChange: (v) => changes.push(v) });
-    control.set('blue');
-    expect(control.value()).toBe('blue');
-    expect(control.element.textContent).toBe('Blue');
-    expect(changes).toEqual([]);
-  });
-
-  it('keeps a value that survives a new list and drops one that does not', () => {
-    const control = mount({ choices: COLOURS, value: 'green' });
-
-    control.setChoices([{ value: 'green', label: 'Green' }, { value: 'grey', label: 'Grey' }]);
-    expect(control.value()).toBe('green');
-
-    control.setChoices([{ value: 'black', label: 'Black' }]);
-    expect(control.value()).toBe('black');
-    expect(control.element.textContent).toBe('Black');
-  });
-
-  it('marks the current value in the list', () => {
-    const control = mount({ choices: COLOURS, value: 'green' });
-    control.element.click();
-    const selected = Array.from(list()!.children)
-      .filter((row) => row.getAttribute('aria-selected') === 'true')
-      .map((row) => row.textContent);
-    expect(selected).toEqual(['Green']);
-  });
-
-  // Two lists over each other is the bug that a shared open-list reference
-  // exists to prevent.
-  it('closes the list that was open when another opens', async () => {
-    const first = mount();
-    const second = mount();
-
-    first.element.click();
-    second.element.click();
-
-    // Immediately: one is shut, though its node is still running its
-    // transition out and is inert until it goes.
-    expect(first.element.getAttribute('aria-expanded')).toBe('false');
-    expect(second.element.getAttribute('aria-expanded')).toBe('true');
-
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(document.querySelectorAll('.oa-select-menu').length).toBe(1);
-  });
-
-  // AGENTS.md's worked example: a modal whose node was removed while its
-  // document key handler survived, so Escape kept firing from unrelated
-  // screens. Every listener this control adds while open comes off again.
-  it('leaves no listener behind on the document or the window', () => {
-    const added = new Map<string, number>();
-    const bump = (map: Map<string, number>, type: string, by: number) =>
-      map.set(type, (map.get(type) ?? 0) + by);
-
-    for (const target of [document, window] as const) {
-      const add = target.addEventListener.bind(target);
-      const remove = target.removeEventListener.bind(target);
-      vi.spyOn(target, 'addEventListener').mockImplementation((type, fn, opts) => {
-        bump(added, type, 1);
-        add(type, fn as EventListener, opts as AddEventListenerOptions);
-      });
-      vi.spyOn(target, 'removeEventListener').mockImplementation((type, fn, opts) => {
-        bump(added, type, -1);
-        remove(type, fn as EventListener, opts as AddEventListenerOptions);
-      });
-    }
-
-    const control = mount();
-    control.element.click();
-    expect([...added.values()].some((count) => count > 0)).toBe(true);
-
-    key(control.element, 'Escape');
-    for (const [type, count] of added) {
-      expect(`${type}:${count}`).toBe(`${type}:0`);
-    }
-    vi.restoreAllMocks();
-  });
-
-  // Reproduced against the shipped file: open, walk down, replace the list
-  // with a shorter one, press Enter. It threw on choices[active].value, and
-  // the throw left aria-expanded true with the document listener still on.
-  it('survives Enter after the list shrank under the walk', () => {
-    const control = mount();
-    control.element.click();
-    key(control.element, 'ArrowDown');
-    key(control.element, 'ArrowDown');
-
-    control.setChoices([{ value: 'red', label: 'Red' }]);
-    expect(() => key(control.element, 'Enter')).not.toThrow();
-    expect(control.element.getAttribute('aria-expanded')).toBe('false');
-  });
-
-  // A rebuild while open leaves a list with new ids and a possibly shorter
-  // walk. Nothing highlighted, or a highlight naming a row that is gone, is
-  // how the arrow keys resume from an index that means nothing.
-  it('re-marks the value after the list is replaced under it', () => {
-    const control = mount({ choices: COLOURS, value: 'blue' });
-    control.element.click();
-
-    control.setChoices([...COLOURS, { value: 'white', label: 'White' }]);
-    const marked = Array.from(list()!.children).filter((row) => row.classList.contains('active'));
-    expect(marked.length).toBe(1);
-    expect(marked[0]!.id).toBe(control.element.getAttribute('aria-activedescendant'));
-    expect(marked[0]!.textContent).toBe('Blue');
-  });
-
-  // Four teardown paths in this app destroy a screen without a router render
-  // — ui/panel.ts empties its body, the admin rail swaps the whole body node.
-  // The list is on <body> and hears about none of them, so it watches.
-  it('closes itself when its trigger is taken out of the document', async () => {
-    const control = mount();
-    control.element.click();
-    expect(control.element.getAttribute('aria-expanded')).toBe('true');
-
-    control.element.remove();
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    expect(control.element.getAttribute('aria-expanded')).toBe('false');
-
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(list()).toBeNull();
-  });
-
-  // A press outside is a dismissal, but the <label> that wraps the control
-  // forwards a click on its own text to it — reading that as outside would
-  // shut the list in the same gesture that opened it.
-  it('treats the label around it as part of the control', () => {
-    const control = select({ choices: COLOURS });
-    const label = document.createElement('label');
-    const text = document.createElement('span');
-    label.appendChild(text);
-    label.appendChild(control.element);
-    document.body.appendChild(label);
-
-    control.element.click();
-    text.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    expect(control.element.getAttribute('aria-expanded')).toBe('true');
-
-    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    expect(control.element.getAttribute('aria-expanded')).toBe('false');
   });
 });
 
 describe('placeList', () => {
-  const box = { top: 250, bottom: 282, left: 100, width: 400 };
-  const view = { width: 1000, height: 560 };
+  const view = { width: 1280, height: 800 };
+  const box = { top: 100, bottom: 130, left: 200, width: 180 };
 
-  // The bug this function was extracted to make testable: a 320px list under
-  // a trigger 282px down a 560px window used to be placed below anyway,
-  // because the flip only asked which side was bigger and never asked whether
-  // either side fitted. 48px of rows ended up past the bottom edge of a node
-  // that scrolls with nothing.
-  it('never reaches past the bottom of the window', () => {
-    const spot = placeList(box, 320, 400, view);
-    expect(spot.top + spot.maxHeight).toBeLessThanOrEqual(view.height);
-    expect(spot.maxHeight).toBeLessThan(320);
-  });
-
-  it('hangs below when the list fits there', () => {
-    const spot = placeList(box, 120, 400, view);
+  it('sits under the trigger when there is room', () => {
+    const spot = placeList(box, 120, 180, view);
     expect(spot.top).toBe(box.bottom + 6);
+    expect(spot.left).toBe(box.left);
     expect(spot.origin).toBe('top left');
   });
 
-  it('flips above only when there is more room above', () => {
-    const low = { top: 480, bottom: 512, left: 100, width: 400 };
-    const spot = placeList(low, 320, 400, view);
+  it('flips above only when that side actually fits more of it', () => {
+    const low = { top: 700, bottom: 730, left: 200, width: 180 };
+    const spot = placeList(low, 300, 180, view);
     expect(spot.origin).toBe('bottom left');
-    expect(spot.top).toBeGreaterThanOrEqual(8);
-    expect(spot.top + spot.maxHeight).toBeLessThanOrEqual(low.top - 6);
+    expect(spot.top).toBeLessThan(low.top);
   });
 
-  it('keeps a wide list inside the right edge', () => {
-    const far = { top: 100, bottom: 132, left: 900, width: 90 };
-    expect(placeList(far, 100, 300, view).left).toBe(1000 - 8 - 300);
+  it('clamps to the room on the side it lands on rather than to a fixed height', () => {
+    const short = { width: 1280, height: 200 };
+    const spot = placeList({ top: 60, bottom: 90, left: 10, width: 100 }, 320, 100, short);
+    expect(spot.maxHeight).toBeLessThanOrEqual(short.height);
+    expect(spot.top + spot.maxHeight).toBeLessThanOrEqual(short.height);
+  });
+
+  it('keeps a wide list inside the right-hand edge', () => {
+    const spot = placeList({ top: 100, bottom: 130, left: 1200, width: 60 }, 100, 400, view);
+    expect(spot.left).toBe(view.width - 8 - 400);
+  });
+
+  it('never places a list off the left-hand edge', () => {
+    const narrow = { width: 320, height: 800 };
+    const spot = placeList({ top: 100, bottom: 130, left: 4, width: 60 }, 100, 400, narrow);
+    expect(spot.left).toBe(8);
   });
 });

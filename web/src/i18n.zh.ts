@@ -20,6 +20,7 @@ export const zh: Record<StringKey, string> = {
   signOut: '退出登录',
   admin: '管理员',
   railToggle: '对话列表',
+  navToggle: '功能导航',
 
   save: '保存',
   saving: '正在保存…',

@@ -25,6 +25,7 @@ const en = {
   signOut: 'Sign out',
   admin: 'Admin',
   railToggle: 'Conversation list',
+  navToggle: 'Sections',
 
   save: 'Save',
   saving: 'Saving…',
