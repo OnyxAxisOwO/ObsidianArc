@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { relativeTime } from '../src/ui/table';
+import { relativeTime } from '../src/lib/format';
 
 describe('relativeTime', () => {
   // Every phrase it can produce is past tense, so a moment that has not

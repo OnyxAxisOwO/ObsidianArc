@@ -174,7 +174,7 @@ internal/
   settings/    global key/value settings
   admin/       admin-only handlers over the modules above
   web/         embed.FS of the built frontend + SPA fallback
-web/           Vite + TypeScript frontend source
+web/           Vue 3 + SCSS frontend source, built by Vite
 ```
 
 Handlers live with their module. There is no `handlers/` dump and no
@@ -196,8 +196,19 @@ wildcard patterns). Migrations are a 60-line runner over an `embed.FS`. No
 ORM, no query builder, no logging framework (`log/slog` is in the standard
 library), no config library.
 
-Frontend runtime dependencies: **zero**. Build dependencies: `vite`,
-`typescript`.
+Frontend, runtime:
+
+| Package | For | Why this one |
+| --- | --- | --- |
+| `vue` | The interface | The screens are a graph of small components with a lot of shared state — a model picker the composer reads, an allowance the composer and the backoffice both draw. The hand-written version redrew whole screens on every change and had a hand-rolled fast path in the transcript to survive it; that fast path is the part that kept going subtly wrong, and it is gone. |
+| `vue-router` | Routing | The five panel routes are children of the chat, which is exactly what nested routes are. The hand-written router could not express that and each of those screens re-created the chat behind it instead. |
+| `@vueuse/core` | Composables | Listeners, observers and timers that are torn down with the component that made them. Most of the leaks the old code documented in comments are this package's default behaviour. |
+| `lucide-vue-next` | Icons | The icon factory and default attributes; the glyphs themselves are still this project's own paths, so the port did not silently redraw forty icons. See `web/src/icons/index.ts`. |
+
+Build: `vite`, `@vitejs/plugin-vue`, `typescript`, `vue-tsc`, `sass`. No
+component library, no CSS framework, no state-management library: the
+stylesheets are the same hand-written `--ai-*` tokens, and the two stores are
+a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 
 ### Performance targets, and what was measured
 
@@ -205,24 +216,34 @@ Frontend runtime dependencies: **zero**. Build dependencies: `vite`,
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 16.9 MB (13.3 MB `-tags nosqlite`) |
-| Frontend, on the wire | < 80 kB | 71.6 kB to open the chat (56.2 JS + 14.3 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 17.4 MB (13.8 MB `-tags nosqlite`) |
+| Frontend, on the wire | < 130 kB | 117.1 kB to open the chat (102.0 JS + 15.1 CSS) |
 | Background goroutines at idle | 1 | 1 |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
-It was 89.0 kB and over the target until the three pieces most people never
-need were split off it: the administration backoffice, the Chinese dictionary,
-and the LaTeX renderer. What each reader actually downloads:
+The target moved with the interface. It was < 80 kB while the frontend was
+hand-written DOM calls, and 71.6 kB against it; adopting Vue put roughly 45 kB
+of framework on the first paint and no amount of splitting takes that back,
+because it is needed to draw anything at all. Naming the new figure is more
+honest than leaving a target the build cannot meet — the number to watch now
+is whether this project's own code grows, not whether the framework does.
+
+The three pieces most people never need are still split off: the
+administration backoffice, the Chinese dictionary, and the LaTeX renderer.
+What each reader actually downloads:
 
 | | gzipped |
 | --- | --- |
-| English, not an administrator | 58.7 kB |
-| Chinese, not an administrator | 71.1 kB |
-| …and a conversation containing a formula | 74.8 kB |
-| Chinese administrator, backoffice open | 92.4 kB |
+| English, not an administrator | 117.1 kB |
+| Chinese, not an administrator | 134.5 kB |
+| …and a conversation containing a formula | 138.2 kB |
+| Chinese administrator, backoffice open | 168.0 kB |
 
-Only the last is heavier than the single bundle was, and only once the
-backoffice has actually been opened — the first paint is 71.1 kB either way.
+Route-level splitting would shave the first paint further and is deliberately
+switched off for everything but the backoffice: /settings, /keys, /usage and
+/about are columns over a chat that is already on screen, so a chunk each buys
+a round trip in the middle of a click to defer bytes the reader was going to
+fetch anyway.
 The stylesheet is not split: `admin.css` carries the shared design system —
 panels, fields, tables, the About screen — and separating the part that is
 genuinely admin-only is a different, more careful job.
@@ -555,28 +576,38 @@ HTML, the JS bundle, any network response, or `localStorage`.
 
 ## 11. Frontend
 
-TypeScript, built by Vite, output embedded into the Go binary via `embed.FS`
-and served with an SPA fallback. No framework runtime.
+Vue 3 with `<script setup>`, SCSS, built by Vite, output embedded into the Go
+binary via `embed.FS` and served with an SPA fallback.
 
 ```
 web/src/
-  main.ts          boot: session check → route
-  router.ts        hash-free history router, ~60 lines
+  main.ts          boot: dictionary + session, then mount
+  router/          the table, and the guards that decide what is drawn
   api/             typed fetch client, SSE reader, error normalisation
-  ui/              el/button/icon/field/checkbox/table/dialog/toast primitives
+  stores/          session.ts — who is signed in, as refs
+  composables/     i18n, theme, panel host, turnstile, confetti, stored widths
+  components/      Oa* — panel, select, menu, table, fields, chart, scroll area
+  layouts/         AppShell, ChatLayout, AccountMenu
+  icons/           the glyph set, on lucide's factory
+  lib/             pure helpers: formats, chart geometry, list placement, sanitiser
   theme/           color-utils.ts, theme.ts (light/dark/auto), accent, wallpaper
-  chat/            chat.ts (ported), markdown.ts, image.ts, conversations.ts
-  workspace/       header, model chip menu, settings drawer
-  admin/           dashboard, users, groups, providers, models, usage, settings
-  auth/            login, register
-  styles/          chat.css, workspace.css (ported), admin.css (new, same tokens)
+  chat/            the surface, its store, markdown.ts, math.ts, image.ts
+  announce/        the bell, the sheet, the two banners
+  views/           one screen each, admin/ under it
+  styles/          _chat, _workspace, _app, _surfaces, _base — carried over
 ```
 
-The `ui/` primitives are the existing `el()` / `button()` / `icon()` /
-`field()` / `checkboxField()` helpers from `chat.js` and `workspace.js`,
-lifted into one module instead of being defined twice. The admin backoffice is
-built from those plus a generic table — same tokens, same radii, same hover
-tint, so it reads as one product.
+The `components/` primitives are the interface's whole vocabulary: the
+backoffice is built from the same panel, table, fields and select the chat and
+the settings screen use, so it reads as one product rather than a dashboard
+bolted to the side of one.
+
+The stylesheets arrived as the previous build's, byte for byte, renamed to
+`.scss` partials. That was deliberate — the port was meant to be
+pixel-for-pixel identical to what it replaced, and re-indenting five thousand
+declarations into nested Sass is a change with thousands of chances to move
+something by a pixel and no way to see that it did. What has changed since is
+a short list of deliberate rules, each with its reason beside it.
 
 ### Route map
 

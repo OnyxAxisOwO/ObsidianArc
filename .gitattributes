@@ -9,6 +9,8 @@
 
 *.go     text eol=lf diff=golang
 *.ts     text eol=lf
+*.vue    text eol=lf
+*.scss   text eol=lf
 *.css    text eol=lf
 *.sql    text eol=lf
 *.md     text eol=lf

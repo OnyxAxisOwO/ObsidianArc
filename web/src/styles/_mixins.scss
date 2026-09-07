@@ -1,0 +1,40 @@
+// SCSS-level shorthands for the patterns this interface repeats.
+//
+// Deliberately few, and none of them invents a value. Every colour, radius
+// and easing in this project is a `--ai-*` custom property, because the
+// accent recolours the whole interface at runtime and a Sass variable is
+// resolved at build time — baking one in would produce a surface that
+// ignores the colour the user picked. So these mixins carry structure
+// (how a pill is shaped, how a column scrolls) and never palette.
+
+// A pill. Buttons here are 999px and carry no outline; a fill is what marks
+// a control.
+@mixin pill($padding: 7px 14px) {
+  padding: $padding;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+// A flex column that scrolls its overflow rather than growing the page.
+// `min-height: 0` is the half everyone forgets: without it a flex child
+// refuses to shrink below its content and the scroll never engages.
+@mixin scroll-column {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+// The rounded 18px card every surface in this product is made of — the rail,
+// the transcript, the side panel and the sign-in box are all one of these.
+@mixin card($radius: 18px) {
+  border-radius: $radius;
+  background: var(--ai-surface-container);
+}
+
+// Centres a box in whatever it is given.
+@mixin centre {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { safeIntro } from '../src/landing/landing-page';
+import { safeIntro } from '../src/lib/safe-intro';
 
 // Turns a fragment into an inspectable element hierarchy without attaching
 // to the live document.

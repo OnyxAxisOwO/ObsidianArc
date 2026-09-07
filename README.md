@@ -151,14 +151,14 @@ Measured on the build in this repository, SQLite, one process:
 
 | | |
 | --- | --- |
-| Binary | 16.9 MB — 13.3 MB built `-tags nosqlite` for a Postgres-only deployment |
+| Binary | 17.4 MB — 13.8 MB built `-tags nosqlite` for a Postgres-only deployment |
 | Cold start to serving | 28 ms |
 | Idle resident memory | ~16 MB |
 | After 200 streamed turns, 20 concurrent | ~54 MB peak, 11 OS threads |
-| Frontend | 71 kB on the wire to open the chat — 56 kB of JavaScript and 14 kB of CSS. The server compresses, so that is what is actually transferred, not what a proxy might have managed. The Chinese dictionary (14 kB), the backoffice (24 kB) and the formula renderer (4 kB) are separate, and are fetched only by the readers who need them |
+| Frontend | 117 kB on the wire to open the chat — 102 kB of JavaScript and 15 kB of CSS. The server compresses, so that is what is actually transferred, not what a proxy might have managed. The Chinese dictionary (17 kB), the backoffice (33 kB) and the formula renderer (4 kB) are separate, and are fetched only by the readers who need them |
 | Background goroutines at idle | 1 — a janitor on a ten-minute tick |
 | Direct Go dependencies | 3 |
-| Runtime frontend dependencies | 0 |
+| Runtime frontend dependencies | 4 — Vue, Vue Router, VueUse, Lucide |
 
 ## Architecture
 
@@ -180,12 +180,18 @@ internal/
   admin               the administrative surface
   settings            instance settings
   web                 the embedded frontend
-web/                  TypeScript + Vite, zero runtime dependencies
+web/                  Vue 3 + SCSS, built by Vite
 ```
 
 Three direct Go dependencies: a pure-Go SQLite driver, pgx, and `x/crypto`
 for Argon2id. Routing is `net/http`. Migrations are numbered `.sql` files.
-There is no ORM, no router, no logging framework, and no config library.
+There is no ORM, no server-side router, no logging framework, and no config
+library.
+
+The frontend has four: Vue, Vue Router, VueUse and Lucide. There is no
+component library, no CSS framework and no state-management library — the
+stylesheets are the same hand-written `--ai-*` tokens they always were, and
+the two stores are a handful of `ref`s.
 
 The design, the schema and the reasoning behind both are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

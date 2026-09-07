@@ -60,7 +60,7 @@ jobs:
       - name: Build the frontend
         run: make web-ci
 
-      - name: go vet, gofmt, go test, tsc, web test
+      - name: go vet, gofmt, go test, vue-tsc, web test
         run: make test
         env:
           OBSIDIAN_TEST_POSTGRES_DSN: postgres://arc:arc@localhost:5432/arc_test?sslmode=disable

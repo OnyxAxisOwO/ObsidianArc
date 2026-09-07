@@ -1,0 +1,308 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createApp, nextTick, type App as VueApp } from 'vue';
+import App from '../src/App.vue';
+import { router } from '../src/router';
+import { adopt, forget, site, siteInfo } from '../src/stores/session';
+import type { Account } from '../src/api/auth';
+
+// The whole application, mounted.
+//
+// Every other test here checks one unit; this one checks that they are wired
+// together — that the router resolves, that the layouts provide what the
+// panels inject, and that the screens a reader actually lands on render
+// without throwing. A component graph this size fails by exploding at mount,
+// which no amount of unit testing catches.
+
+const ACCOUNT: Account = {
+  id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+  username: 'ada',
+  email: 'ada@example.com',
+  qq: '',
+  nickname: 'Ada',
+  avatar: '',
+  bio: '',
+  role: 'user',
+  group_id: 'g1',
+  group_name: 'Default',
+  status: 'active',
+  created_at: Date.now(),
+  updated_at: Date.now(),
+  last_login_at: Date.now(),
+  email_verified: true,
+  allow_stats: true,
+  allow_delete_conversations: true,
+};
+
+/**
+ * Every endpoint the screens under test reach for, answered with an empty but
+ * well-shaped payload.
+ *
+ * The shapes matter as much as the emptiness: a screen handed `{}` where it
+ * expected `{ providers: [] }` fails in a way no real server would produce,
+ * and the test would then be measuring the stub.
+ */
+const EMPTY_BODIES: Array<[RegExp, unknown]> = [
+  [/\/api\/health/, { status: 'ok', version: 'vtest', uptime_sec: 1 }],
+  [/\/api\/announcements/, { announcements: [], unread: 0, popup: null }],
+  [/\/api\/conversations/, { conversations: [] }],
+  [/\/api\/keys/, { keys: [], enabled: false, max: 0 }],
+  [/\/api\/admin\/providers/, { providers: [] }],
+  [/\/api\/admin\/models/, { models: [] }],
+  [/\/api\/admin\/groups/, { groups: [], policies: [] }],
+  [/\/api\/admin\/meta/, { provider_kinds: ['openai', 'anthropic'], reasoning_styles: ['auto'] }],
+  [/\/api\/admin\/health/, { hours: 24, models: [], policy: { probe: true, window_mins: 30, disable_after: 0 } }],
+  [/\/api\/admin\/usage\/records/, { records: [], total: 0 }],
+  [/\/api\/admin\/usage/, {
+    totals: {
+      requests: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0,
+      total_tokens: 0, credits: 0, errors: 0,
+    },
+    by_model: [], by_provider: [], by_user: [], series: [], bucket_ms: 3600000,
+  }],
+  [/\/api\/admin\/quota\/policies/, { policies: [] }],
+  [/\/api\/admin\/codes/, { codes: [] }],
+  [/\/api\/admin\/announcements/, { announcements: [] }],
+  [/\/api\/admin\/logs\/facets/, {
+    users: [], models: [], error_codes: [], statuses: [], total: 0, dropped: 0, oldest: 0,
+  }],
+  [/\/api\/admin\/logs/, { entries: [], total: 0, limit: 50, offset: 0 }],
+  [/\/api\/admin\/users/, { users: [], total: 0 }],
+  [/\/api\/admin\/settings/, {
+    settings: {}, groups: [], mail_configured: false, attachments: { held: 0, bytes: 0 },
+  }],
+  [/\/api\/admin\/resources/, {
+    storage: { held_bytes: 0, held_count: 0, discarded_count: 0, by_user: [] },
+    memory: { heap_bytes: 0, heap_sys_bytes: 0, sys_bytes: 0, gc_count: 0, gc_pause_ms: 0, goroutines: 0 },
+    cpu: { cores: 1, gomaxprocs: 1 },
+    sampled_at: 0,
+  }],
+  [/\/api\/admin\/dashboard/, {
+    counts: {
+      users: 0, active_users: 0, providers: 0, enabled_providers: 0, models: 0, enabled_models: 0,
+    },
+    newest_users: [],
+    last_24h: {
+      requests: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0,
+      total_tokens: 0, credits: 0, errors: 0,
+    },
+    last_7d: {
+      requests: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0,
+      total_tokens: 0, credits: 0, errors: 0,
+    },
+    top_models: [], top_users: [], series: [], bucket_ms: 3600000, recent: [],
+  }],
+  [/\/api\/models/, { models: [] }],
+];
+
+function stubServer(): void {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    const match = EMPTY_BODIES.find(([pattern]) => pattern.test(url));
+    return new Response(JSON.stringify(match?.[1] ?? {}), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }));
+}
+
+let app: VueApp | null = null;
+let host: HTMLElement;
+
+async function mountAt(path: string): Promise<void> {
+  await router.replace(path);
+  await router.isReady();
+  app = createApp(App);
+  app.use(router);
+  app.mount(host);
+  // Long enough for the route component to mount and for whatever it asked
+  // the server for to come back, so nothing is torn down mid-flight.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+beforeEach(() => {
+  stubServer();
+  host = document.createElement('div');
+  document.body.appendChild(host);
+});
+
+afterEach(() => {
+  site.value = null;
+  app?.unmount();
+  app = null;
+  host.remove();
+  document.body.textContent = '';
+  forget();
+  vi.unstubAllGlobals();
+});
+
+describe('the application, mounted', () => {
+  it('shows the sign-in card to a visitor', async () => {
+    await mountAt('/login');
+    expect(host.querySelector('.oa-auth-card')).not.toBeNull();
+    expect(host.querySelector('input[type="password"]')).not.toBeNull();
+  });
+
+  it('shows the chat to a signed-in account', async () => {
+    adopt(ACCOUNT);
+    await mountAt('/');
+
+    expect(host.querySelector('.oa-workspace')).not.toBeNull();
+    expect(host.querySelector('.ai-chat-sidebar')).not.toBeNull();
+    expect(host.querySelector('.ai-chat-composer')).not.toBeNull();
+    // No model is configured in this stub, so the surface says so rather than
+    // offering a composer that would refuse.
+    expect(host.querySelector('.ai-chat-setup')).not.toBeNull();
+  });
+
+  it('opens a panel beside the chat rather than replacing it', async () => {
+    adopt(ACCOUNT);
+    await mountAt('/settings');
+
+    // The chat is still mounted behind the column.
+    expect(host.querySelector('.ai-chat-sidebar')).not.toBeNull();
+    // The panel teleports into the row, which is inside the mount point.
+    const panel = host.querySelector('.oa-panel');
+    expect(panel).not.toBeNull();
+    expect(panel?.parentElement?.classList.contains('oa-chat-root')).toBe(true);
+    expect(host.querySelector('.oa-settings-tabs')).not.toBeNull();
+  });
+
+  it('sends a visitor asking for a panel to the sign-in card', async () => {
+    await mountAt('/keys');
+    expect(router.currentRoute.value.path).toBe('/login');
+  });
+
+  it('refuses the backoffice to an ordinary account, over the chat', async () => {
+    adopt(ACCOUNT);
+    await mountAt('/admin');
+
+    expect(host.querySelector('.ai-chat-sidebar')).not.toBeNull();
+    expect(document.querySelector('.oa-modal-overlay')).not.toBeNull();
+    // The rail of an administration screen it may not see is not drawn at all.
+    expect(host.querySelector('.oa-admin-rail')).toBeNull();
+  });
+
+  it('draws the backoffice for an administrator', async () => {
+    adopt({ ...ACCOUNT, role: 'admin' });
+    await mountAt('/admin/providers');
+
+    expect(host.querySelector('.oa-admin-rail')).not.toBeNull();
+    expect(document.querySelector('.oa-modal-overlay')).toBeNull();
+  });
+
+  it('names an address that resolves to nothing', async () => {
+    await mountAt('/nowhere');
+    expect(host.querySelector('.oa-notice-title')).not.toBeNull();
+  });
+});
+
+describe('what moves, and what does not', () => {
+  it('swaps one panel for another without letting the chat reflow wide', async () => {
+    adopt(ACCOUNT);
+    await mountAt('/settings');
+    expect(host.querySelector('.oa-panel')?.classList.contains('open')).toBe(true);
+
+    // Sibling routes, so the outgoing panel unmounts and the incoming one
+    // mounts inside a single flush. The new one has to arrive already open:
+    // entering from the right would show the conversation at full width for
+    // the frame in between, then narrow it again.
+    await router.push('/keys');
+    await nextTick();
+
+    const panel = host.querySelector('.oa-panel');
+    expect(panel).not.toBeNull();
+    expect(panel?.classList.contains('open')).toBe(true);
+  });
+
+  it('gives each backoffice section a fresh body, so its entry actually plays', async () => {
+    adopt({ ...ACCOUNT, role: 'admin' });
+    await mountAt('/admin/providers');
+
+    const first = host.querySelector('.oa-admin-body');
+    expect(first).not.toBeNull();
+
+    // Two steps in the same direction. A CSS animation runs when its class
+    // arrives, so `enter-forward` landing on a node that already carries it
+    // is not an arrival — the element itself has to be new.
+    await router.push('/admin/models');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const second = host.querySelector('.oa-admin-body');
+
+    await router.push('/admin/usage');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const third = host.querySelector('.oa-admin-body');
+
+    expect(second).not.toBe(first);
+    expect(third).not.toBe(second);
+    expect(third?.classList.contains('enter-forward')).toBe(true);
+  });
+
+  it('leaves out the trial transcript when there is no trial', async () => {
+    // `.oa-landing-thread` is `flex: 1`, so an empty one absorbs the column
+    // and pushes the notice and the way in to the bottom of the window.
+    site.value = {
+      ...siteInfo.value,
+      registration_enabled: true,
+      landing: { mode: 'chat', intro: '', trial: false, trial_turns: 0 },
+    };
+    await mountAt('/');
+
+    expect(host.querySelector('.oa-landing-chat')).not.toBeNull();
+    expect(host.querySelector('.oa-landing-thread')).toBeNull();
+    expect(host.querySelector('.oa-landing-entry')).not.toBeNull();
+  });
+
+  it('collapses the conversation rail from the header, and remembers nothing else', async () => {
+    adopt(ACCOUNT);
+    await mountAt('/');
+
+    const row = host.querySelector('.ai-chat')!;
+    const toggle = host.querySelector<HTMLButtonElement>('.oa-header-leading .oa-icon-btn')!;
+    const before = row.classList.contains('rail-collapsed');
+
+    toggle.click();
+    await nextTick();
+    expect(row.classList.contains('rail-collapsed')).toBe(!before);
+
+    toggle.click();
+    await nextTick();
+    expect(row.classList.contains('rail-collapsed')).toBe(before);
+  });
+
+  it('gives the backoffice the same pair of controls, beside the title', async () => {
+    adopt({ ...ACCOUNT, role: 'admin' });
+    await mountAt('/admin');
+
+    // Both live in the header now. The way out used to sit inside the rail,
+    // which is the one place it could not be reached from once the rail could
+    // be slid away.
+    const leading = host.querySelector('.oa-header-leading')!;
+    expect(leading.querySelector('.oa-admin-rail-toggle')).not.toBeNull();
+    expect(leading.querySelector('.oa-admin-back')).not.toBeNull();
+    expect(host.querySelector('.oa-admin-rail-head .oa-admin-back')).toBeNull();
+
+    const row = host.querySelector('.oa-admin')!;
+    const toggle = host.querySelector<HTMLButtonElement>('.oa-admin-rail-toggle')!;
+    const before = row.classList.contains('rail-collapsed');
+
+    toggle.click();
+    await nextTick();
+    expect(row.classList.contains('rail-collapsed')).toBe(!before);
+
+    toggle.click();
+    await nextTick();
+    expect(row.classList.contains('rail-collapsed')).toBe(before);
+  });
+
+  it('still draws the transcript when the trial is live', async () => {
+    site.value = {
+      ...siteInfo.value,
+      landing: { mode: 'chat', intro: '', trial: true, trial_turns: 3 },
+    };
+    await mountAt('/');
+
+    expect(host.querySelector('.oa-landing-thread')).not.toBeNull();
+    expect(host.querySelector('.oa-landing-composer')).not.toBeNull();
+  });
+});

@@ -5,6 +5,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "types": ["vite/client", "node"],
+    "jsx": "preserve",
 
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -19,7 +20,10 @@
     "skipLibCheck": true,
     "noEmit": true,
     "allowJs": false,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] }
   },
-  "include": ["src", "test", "vite.config.ts", "vitest.config.ts"]
+  "include": ["src", "test", "env.d.ts", "vite.config.ts", "vitest.config.ts"]
 }
