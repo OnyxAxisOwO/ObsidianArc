@@ -26,6 +26,10 @@ import { useEventListener, useRafFn } from '@vueuse/core';
 import { placeList } from '@/lib/select-placement';
 import type { Choice } from './choice';
 
+defineOptions({
+  inheritAttrs: false,
+});
+
 const props = defineProps<{
   choices: ReadonlyArray<Choice<T>>;
   modelValue: T;
@@ -317,6 +321,7 @@ function nextSequence(): number {
 <template>
   <button
     ref="trigger"
+    v-bind="$attrs"
     type="button"
     class="oa-select"
     role="combobox"

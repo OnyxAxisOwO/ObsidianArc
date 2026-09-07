@@ -118,6 +118,7 @@ async function mountAt(path: string): Promise<void> {
   // the server for to come back, so nothing is torn down mid-flight.
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => requestAnimationFrame(resolve));
 }
 
 beforeEach(() => {

@@ -168,6 +168,21 @@ describe('the option list', () => {
     // Closed, so a letter commits rather than only moving the highlight.
     expect(control.value()).toBe('blue');
   });
+
+  it('forwards caller classes to the trigger button', () => {
+    app?.unmount();
+    app = createApp({
+      render: () => h(OaSelect, {
+        choices: COLOURS,
+        modelValue: 'red',
+        class: 'oa-filter-select',
+      }),
+    });
+    app.mount(host);
+
+    const trigger = host.querySelector<HTMLButtonElement>('.oa-select');
+    expect(trigger?.classList.contains('oa-filter-select')).toBe(true);
+  });
 });
 
 describe('placeList', () => {
