@@ -150,6 +150,7 @@ var writableSettings = map[string]bool{
 	settings.SignupsIPWindowMin:    true,
 	settings.TurnstileSiteKey:      true,
 	settings.TurnstileSecretKey:    true,
+	settings.TurnstileOnLogin:      true,
 	settings.TurnstileOnSignup:     true,
 	settings.TurnstileOnAPIKey:     true,
 	settings.SignupReview:          true,

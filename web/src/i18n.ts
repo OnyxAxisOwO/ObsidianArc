@@ -896,6 +896,8 @@ const en = {
   turnstileSiteKeyHint: 'Public. It appears in the page wherever the widget is drawn.',
   turnstileSecretKey: 'Secret key',
   turnstileSecretHint: 'Never sent to a browser and never read back out of this form. Leave it empty to keep the one already saved.',
+  turnstileOnLogin: 'Challenge on sign-in',
+  turnstileOnLoginHint: 'Require passing a challenge before signing in, mitigating credential-stuffing and brute-force attacks.',
   turnstileOnSignup: 'Challenge on sign-up',
   turnstileOnSignupHint: 'Never applies to the first account on an empty instance, which would otherwise be locked out of its own setup.',
   turnstileOnAPIKey: 'Challenge on new API keys',

@@ -58,6 +58,7 @@ export interface SiteInfo {
   qq_requirement?: 'off' | 'optional' | 'required';
   /** Served only where a challenge is actually switched on. */
   turnstile_site_key?: string;
+  turnstile_on_login?: boolean;
   turnstile_on_signup?: boolean;
   turnstile_on_api_key?: boolean;
   /** Whether a model reads each sign-up, so the button can say it is happening. */
@@ -98,8 +99,12 @@ export function fetchMe(): Promise<{ user: Account; preferences: Preferences }> 
   return api.get<{ user: Account; preferences: Preferences }>('/api/auth/me');
 }
 
-export function login(identifier: string, password: string): Promise<{ user: Account }> {
-  return api.post<{ user: Account }>('/api/auth/login', { identifier, password });
+export function login(identifier: string, password: string, turnstile?: string): Promise<{ user: Account }> {
+  return api.post<{ user: Account }>('/api/auth/login', {
+    identifier,
+    password,
+    ...(turnstile ? { turnstile } : {}),
+  });
 }
 
 export interface RegisterInput {

@@ -44,7 +44,8 @@ type Service struct {
 	// Set by the wiring when the operator has switched a challenge on. The
 	// zero value is off, so a build that never wires it up simply has no
 	// challenge rather than a broken one.
-	Challenge turnstile.Gate
+	Challenge      turnstile.Gate
+	LoginChallenge turnstile.Gate
 	// Asks a model whether a sign-up looks like a person. Nil is off.
 	//
 	// A function rather than the reviewer itself: the review needs a model,
@@ -495,6 +496,7 @@ func (s *Service) registrationGroup(ctx context.Context, q database.Queryer) (st
 }
 
 type LoginInput struct {
+	Turnstile  string
 	Identifier string
 	Password   string
 	IP         string
@@ -507,6 +509,10 @@ type LoginInput struct {
 // pays for a full Argon2id verification, so neither the message nor the
 // timing distinguishes "no such user" from "wrong password".
 func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, error) {
+	if err := s.LoginChallenge.Check(ctx, in.Turnstile, in.IP); err != nil {
+		return user.User{}, "", err
+	}
+
 	attempt, err := s.limiter.Begin(in.IP, in.Identifier)
 	if err != nil {
 		return user.User{}, "", err

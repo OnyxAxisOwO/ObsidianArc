@@ -335,6 +335,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnSignup) },
 		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
 	}
+	authService.LoginChallenge = turnstile.Gate{
+		Client:  challengeClient,
+		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnLogin) },
+		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
+	}
 
 	// Asking a model whether a sign-up looks like a person.
 	//
@@ -479,6 +484,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			// policy it had before this feature existed.
 			return settingsService.Get(settings.TurnstileSiteKey) != "" &&
 				(settingsService.Bool(settings.TurnstileOnSignup) ||
+					settingsService.Bool(settings.TurnstileOnLogin) ||
 					settingsService.Bool(settings.TurnstileOnAPIKey))
 		}),
 		httpx.SameOrigin(cfg.AllowedOrigins),

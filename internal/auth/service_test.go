@@ -16,6 +16,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -259,6 +260,25 @@ func TestLoginRejectsWrongPasswordAndUnknownUserIdentically(t *testing.T) {
 	// accounts either.
 	if wrongPassword.Error() != unknownUser.Error() {
 		t.Errorf("messages differ:\n %q\n %q", wrongPassword, unknownUser)
+	}
+}
+
+func TestLoginEnforcesTurnstileChallenge(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.auth.LoginChallenge = turnstile.Gate{
+		Enabled: func() bool { return true },
+		Secret:  func() string { return "test-secret" },
+	}
+
+	_, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"})
+	if !errors.Is(err, turnstile.ErrFailed) {
+		t.Fatalf("login without challenge token = %v, want turnstile.ErrFailed", err)
 	}
 }
 

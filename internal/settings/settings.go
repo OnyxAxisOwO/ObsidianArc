@@ -53,6 +53,7 @@ const (
 	// response, the way a provider's API key is.
 	TurnstileSiteKey   = "turnstile.site_key"
 	TurnstileSecretKey = "turnstile.secret_key"
+	TurnstileOnLogin   = "turnstile.on_login"
 	TurnstileOnSignup  = "turnstile.on_signup"
 	TurnstileOnAPIKey  = "turnstile.on_api_key"
 
@@ -207,6 +208,7 @@ var Defaults = map[string]string{
 	// is configuring, not yet switching on, and a challenge that appeared the
 	// moment a key was saved would lock out the half-finished setup it was
 	// saved during.
+	TurnstileOnLogin:  "false",
 	TurnstileOnSignup: "false",
 	TurnstileOnAPIKey: "false",
 	SignupReview:      "false",

@@ -46,6 +46,7 @@ const form = ref({
   turnstileSiteKey: '',
   turnstileSecret: '',
   turnstileSecretHint: '',
+  turnstileOnLogin: false,
   turnstileOnSignup: false,
   turnstileOnAPIKey: false,
   reviewEnabled: false,
@@ -80,6 +81,7 @@ function collect(): Record<string, string> {
     // Empty keeps what is stored: the field was never shown the secret, so
     // sending its emptiness back would erase it.
     'turnstile.secret_key': form.value.turnstileSecret.trim(),
+    'turnstile.on_login': String(form.value.turnstileOnLogin),
     'turnstile.on_signup': String(form.value.turnstileOnSignup),
     'turnstile.on_api_key': String(form.value.turnstileOnAPIKey),
     'security.signup_review': String(form.value.reviewEnabled),
@@ -160,6 +162,7 @@ async function load(): Promise<void> {
       turnstileSiteKey: values['turnstile.site_key'] ?? '',
       turnstileSecret: '',
       turnstileSecretHint: values['turnstile.secret_key'] ?? '',
+      turnstileOnLogin: values['turnstile.on_login'] === 'true',
       turnstileOnSignup: values['turnstile.on_signup'] === 'true',
       turnstileOnAPIKey: values['turnstile.on_api_key'] === 'true',
       reviewEnabled: values['security.signup_review'] === 'true',
@@ -262,6 +265,11 @@ onMounted(load);
       :placeholder="form.turnstileSecretHint || '0x4AAAAAAA…'"
       :hint="t('turnstileSecretHint')"
       monospace
+    />
+    <OaSwitchField
+      v-model="form.turnstileOnLogin"
+      :label="t('turnstileOnLogin')"
+      :hint="t('turnstileOnLoginHint')"
     />
     <OaSwitchField
       v-model="form.turnstileOnSignup"

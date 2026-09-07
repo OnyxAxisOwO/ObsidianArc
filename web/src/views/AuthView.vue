@@ -57,9 +57,13 @@ const identifierField = ref<HTMLInputElement | null>(null);
 const passwordField = ref<HTMLInputElement | null>(null);
 const guard = ref<InstanceType<typeof OaTurnstile> | null>(null);
 
-// Only on the sign-up half, and only where the operator switched it on:
-// signing in is not the door bots are trying.
-const guarded = computed(() => registering.value && !!site.value.turnstile_on_signup);
+// Challenged on sign-up or sign-in when the operator switched them on.
+// Never during first-run setup, where no challenge has been configured yet.
+const guarded = computed(() =>
+  registering.value
+    ? !setup.value && !!site.value.turnstile_on_signup
+    : !setup.value && !!site.value.turnstile_on_login,
+);
 
 onMounted(() => void nextTick(() => identifierField.value?.focus()));
 
@@ -106,7 +110,7 @@ async function onSubmit(): Promise<void> {
           qq: qqValue,
           turnstile: guard.value?.token() ?? '',
         })
-      : await login(identity, secret);
+      : await login(identity, secret, guard.value?.token() ?? '');
 
     window.clearTimeout(reviewNote);
     adopt(result.user);

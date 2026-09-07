@@ -874,6 +874,8 @@ export const zh: Record<StringKey, string> = {
   turnstileSiteKeyHint: '公开的。widget 画在哪里，它就出现在哪里的页面源码里。',
   turnstileSecretKey: 'Secret key',
   turnstileSecretHint: '不会下发到浏览器，也不会从这个表单里读回来。留空表示沿用已保存的那个。',
+  turnstileOnLogin: '登录时验证',
+  turnstileOnLoginHint: '在用户登录时要求通过人机验证，防止撞库或暴力破解攻击。',
   turnstileOnSignup: '注册时验证',
   turnstileOnSignupHint: '永远不会作用于空实例的第一个账户，否则会把自己锁在初始化外面。',
   turnstileOnAPIKey: '创建 API 密钥时验证',
