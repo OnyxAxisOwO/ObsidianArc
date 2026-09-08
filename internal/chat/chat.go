@@ -19,9 +19,12 @@ package chat
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -240,6 +243,10 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 		}()
 	}
 
+	if resolved.Model.SupportsImageGen {
+		return s.runImageGen(ctx, req, resolved, prepared, startedAt, requestID, emit)
+	}
+
 	if err := emit(EventStart, StartPayload{
 		ConversationID: prepared.conversationID,
 		Title:          prepared.title,
@@ -321,6 +328,115 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 		finish.reasoning = result.Reasoning
 	}
 	return s.finishOK(saveCtx, finish, emit)
+}
+
+func (s *Service) runImageGen(
+	ctx context.Context,
+	req TurnRequest,
+	resolved model.Resolved,
+	prepared prepared,
+	startedAt time.Time,
+	requestID string,
+	emit Emit,
+) error {
+	if err := emit(EventStart, StartPayload{
+		ConversationID: prepared.conversationID,
+		Title:          prepared.title,
+		UserMessageID:  prepared.userMessageID,
+		ModelID:        resolved.Model.ID,
+		ModelName:      resolved.Model.DisplayName,
+	}); err != nil {
+		return err
+	}
+
+	imageReq := adapter.ImageRequest{
+		Model:          resolved.Upstream.ModelID,
+		Prompt:         req.Content,
+		N:              1,
+		Size:           "1024x1024",
+		ResponseFormat: "b64_json",
+	}
+
+	result, imgErr := s.registry.GenerateImage(ctx, resolved.Provider, imageReq)
+
+	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancelSave()
+
+	finish := finished{
+		requestID:  requestID,
+		request:    req,
+		resolved:   resolved,
+		prepared:   prepared,
+		startedAt:  startedAt,
+		firstToken: time.Now(),
+		streamed:   false,
+	}
+
+	if imgErr != nil {
+		return s.finishFailed(saveCtx, ctx, finish, imgErr, emit)
+	}
+
+	var attachmentIDs []string
+	var answer string
+
+	for _, img := range result.Data {
+		if img.RevisedPrompt != "" && answer == "" {
+			answer = img.RevisedPrompt
+		}
+		var data []byte
+		if img.B64JSON != "" {
+			decoded, err := base64.StdEncoding.DecodeString(img.B64JSON)
+			if err == nil {
+				data = decoded
+			}
+		}
+		if len(data) == 0 && img.URL != "" {
+			fetchReq, err := http.NewRequestWithContext(saveCtx, http.MethodGet, img.URL, nil)
+			if err == nil {
+				client := s.registry.Client()
+				if client == nil {
+					client = http.DefaultClient
+				}
+				resp, err := client.Do(fetchReq)
+				if err == nil {
+					defer resp.Body.Close()
+					if resp.StatusCode == http.StatusOK {
+						bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, conversation.MaxAttachmentBytes))
+						if err == nil {
+							data = bodyBytes
+						}
+					}
+				}
+			}
+		}
+		if len(data) > 0 {
+			att, err := s.conversations.Upload(saveCtx, conversation.UploadInput{
+				UserID: req.User.ID,
+				Mime:   "image/png",
+				Data:   data,
+			})
+			if err == nil {
+				attachmentIDs = append(attachmentIDs, att.ID)
+			} else {
+				slog.ErrorContext(saveCtx, "could not save generated image attachment",
+					"error", err, "conversation", prepared.conversationID)
+			}
+		}
+	}
+
+	if answer == "" {
+		answer = req.Content
+	}
+	finish.answer = answer
+	finish.attachmentIDs = attachmentIDs
+
+	_ = emit(EventDelta, TextPayload{Text: answer})
+
+	return s.finishOK(saveCtx, finish, emit)
+}
+
+func (s *Service) GenerateImage(ctx context.Context, resolved model.Resolved, req adapter.ImageRequest) (adapter.ImageResult, error) {
+	return s.registry.GenerateImage(ctx, resolved.Provider, req)
 }
 
 // prepared is what openTurn established: which conversation this is, and
@@ -504,17 +620,18 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 }
 
 type finished struct {
-	requestID  string
-	request    TurnRequest
-	resolved   model.Resolved
-	prepared   prepared
-	answer     string
-	reasoning  string
-	usage      adapter.Usage
-	startedAt  time.Time
-	firstToken time.Time
-	streamed   bool
-	fallback   string
+	requestID     string
+	request       TurnRequest
+	resolved      model.Resolved
+	prepared      prepared
+	answer        string
+	reasoning     string
+	usage         adapter.Usage
+	startedAt     time.Time
+	firstToken    time.Time
+	streamed      bool
+	fallback      string
+	attachmentIDs []string
 }
 
 func (s *Service) finishOK(ctx context.Context, f finished, emit Emit) error {
@@ -530,6 +647,7 @@ func (s *Service) finishOK(ctx context.Context, f finished, emit Emit) error {
 		ModelName:      f.resolved.Model.DisplayName,
 		ProviderID:     f.resolved.Provider.ID,
 		Stats:          stats,
+		AttachmentIDs:  f.attachmentIDs,
 	})
 	if err != nil {
 		return err

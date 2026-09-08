@@ -23,7 +23,7 @@
 // never the accessible name of anything — the control around it carries that.
 
 import { h, type FunctionalComponent } from 'vue';
-import { Check as LucideCheck, ChevronDown as LucideChevronDown, createLucideIcon } from 'lucide-vue-next';
+import { Check as LucideCheck, ChevronDown as LucideChevronDown, Download as LucideDownload, createLucideIcon } from 'lucide-vue-next';
 
 /** One [tag, attributes] pair, as lucide's factory takes them. */
 type IconNode = Array<[string, Record<string, string>]>;
@@ -80,6 +80,7 @@ export const IconCollapse = draw('Minimize', [
 // Identical to lucide's own drawing, so it is lucide's own drawing.
 export const IconCheck = wrap(LucideCheck as unknown as AnyComponent);
 export const IconChevron = wrap(LucideChevronDown as unknown as AnyComponent);
+export const IconDownload = wrap(LucideDownload as unknown as AnyComponent);
 export const IconChevronRight = draw('ChevronRight', ['m9 6 6 6-6 6']);
 export const IconTrash = draw('Trash', ['M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 14H6L5 6', 'M10 11v6', 'M14 11v6']);
 export const IconKey = draw('Key', [

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -59,6 +60,8 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 
 	mux.Handle("POST /api/attachments", protected(h.uploadAttachment))
 	mux.Handle("GET /api/attachments/{id}", protected(h.getAttachment))
+
+	mux.Handle("POST /api/images/generate", protected(h.generateImage))
 }
 
 // --- chat ---------------------------------------------------------------------
@@ -455,4 +458,142 @@ func translateConversationError(err error) error {
 	default:
 		return httpx.Internal(err)
 	}
+}
+
+// --- image generation ---------------------------------------------------------
+
+type imageGenRequest struct {
+	ModelID string `json:"model_id"`
+	Prompt  string `json:"prompt"`
+	Size    string `json:"size"`
+	Style   string `json:"style"`
+	Quality string `json:"quality"`
+	N       int    `json:"n"`
+}
+
+type imageGenItem struct {
+	AttachmentID  string `json:"attachment_id,omitempty"`
+	URL           string `json:"url,omitempty"`
+	B64JSON       string `json:"b64_json,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}
+
+func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
+	account := auth.MustUser(r.Context())
+
+	var body imageGenRequest
+	if err := httpx.DecodeJSON(w, r, &body, 256*1024); err != nil {
+		return err
+	}
+
+	body.Prompt = strings.TrimSpace(body.Prompt)
+	if body.Prompt == "" {
+		return httpx.BadRequest("Prompt is required.")
+	}
+	if body.ModelID == "" {
+		return httpx.BadRequest("Model is required.")
+	}
+
+	resolved, err := h.service.models.Authorize(r.Context(), account.GroupID, body.ModelID, account.IsAdmin())
+	if err != nil {
+		return translatePrepareError(err)
+	}
+
+	reqlog.Annotate(r.Context(), reqlog.Annotation{
+		ModelID:   resolved.Model.ID,
+		ModelName: resolved.Model.DisplayName,
+	})
+
+	if h.service.Authorize != nil {
+		release, err := h.service.Authorize(r.Context(), TurnRequest{
+			User:    account,
+			ModelID: body.ModelID,
+			Model:   resolved.Model,
+		}, resolved)
+		if err != nil {
+			return translatePrepareError(err)
+		}
+		defer release()
+	}
+
+	n := body.N
+	if n <= 0 {
+		n = 1
+	}
+
+	imgReq := adapter.ImageRequest{
+		Model:          resolved.Upstream.ModelID,
+		Prompt:         body.Prompt,
+		Size:           body.Size,
+		Style:          body.Style,
+		Quality:        body.Quality,
+		N:              n,
+		ResponseFormat: "b64_json",
+	}
+
+	result, err := h.service.GenerateImage(r.Context(), resolved, imgReq)
+	if err != nil {
+		code, friendly := Describe(err)
+		return httpx.BadRequest("%s: %s", code, friendly)
+	}
+
+	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+	defer cancelSave()
+
+	var images []imageGenItem
+	for _, img := range result.Data {
+		item := imageGenItem{
+			B64JSON:       img.B64JSON,
+			RevisedPrompt: img.RevisedPrompt,
+		}
+
+		var data []byte
+		if img.B64JSON != "" {
+			decoded, err := base64.StdEncoding.DecodeString(img.B64JSON)
+			if err == nil {
+				data = decoded
+			}
+		}
+		if len(data) == 0 && img.URL != "" {
+			fetchReq, err := http.NewRequestWithContext(saveCtx, http.MethodGet, img.URL, nil)
+			if err == nil {
+				client := h.service.registry.Client()
+				if client == nil {
+					client = http.DefaultClient
+				}
+				resp, err := client.Do(fetchReq)
+				if err == nil {
+					defer resp.Body.Close()
+					if resp.StatusCode == http.StatusOK {
+						bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, conversation.MaxAttachmentBytes))
+						if err == nil {
+							data = bodyBytes
+						}
+					}
+				}
+			}
+		}
+
+		if len(data) > 0 {
+			att, err := h.conversations.Upload(saveCtx, conversation.UploadInput{
+				UserID: account.ID,
+				Mime:   "image/png",
+				Data:   data,
+			})
+			if err == nil {
+				item.AttachmentID = att.ID
+				item.URL = "/api/attachments/" + att.ID
+			}
+		}
+		if item.URL == "" && img.URL != "" {
+			item.URL = img.URL
+		}
+
+		images = append(images, item)
+	}
+
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"created": result.Created,
+		"images":  images,
+	})
 }

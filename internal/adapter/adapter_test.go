@@ -699,3 +699,62 @@ func TestListModelsHandlesBothShapes(t *testing.T) {
 		t.Errorf("models = %+v", models)
 	}
 }
+
+func TestImagesEndpointResolution(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"https://api.openai.com", "https://api.openai.com/v1/images/generations"},
+		{"https://api.openai.com/v1", "https://api.openai.com/v1/images/generations"},
+		{"https://api.openai.com/v1/chat/completions", "https://api.openai.com/v1/images/generations"},
+		{"https://api.openai.com/v1/images/generations", "https://api.openai.com/v1/images/generations"},
+	}
+	for _, tc := range cases {
+		if got := imagesEndpoint(tc.in); got != tc.want {
+			t.Errorf("imagesEndpoint(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestGenerateImageOpenAIAndAnthropic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/generations" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["prompt"] != "a cute cat" {
+			http.Error(w, "bad prompt", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"created":12345,"data":[{"b64_json":"aGVsbG8=","revised_prompt":"a very cute cat"}]}`)
+	}))
+	defer server.Close()
+
+	reg := testRegistry()
+	res, err := reg.GenerateImage(context.Background(), Provider{
+		Kind: KindOpenAI, BaseURL: server.URL, APIKey: "sk-test",
+	}, ImageRequest{
+		Model:  "dall-e-3",
+		Prompt: "a cute cat",
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage: %v", err)
+	}
+	if len(res.Data) != 1 || res.Data[0].B64JSON != "aGVsbG8=" || res.Data[0].RevisedPrompt != "a very cute cat" {
+		t.Errorf("res = %+v", res)
+	}
+
+	_, err = reg.GenerateImage(context.Background(), Provider{
+		Kind: KindAnthropic, BaseURL: server.URL, APIKey: "sk-test",
+	}, ImageRequest{
+		Model:  "claude-3-5",
+		Prompt: "a cute cat",
+	})
+	if err == nil {
+		t.Fatal("expected error for anthropic image generation")
+	}
+}

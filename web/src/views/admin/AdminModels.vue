@@ -233,6 +233,7 @@ const form = ref({
   streaming: true,
   systemPromptSupported: true,
   tools: false,
+  imageGen: false,
   contextWindow: null as number | null,
   maxOutput: null as number | null,
   routeTo: '',
@@ -296,6 +297,7 @@ function open(row: AdminModel | null, from: AdminModel | null = null): void {
     streaming: source?.supports_streaming ?? true,
     systemPromptSupported: source?.supports_system_prompt ?? true,
     tools: source?.supports_tools ?? false,
+    imageGen: source?.supports_image_gen ?? false,
     contextWindow: source?.context_window ?? null,
     maxOutput: source?.max_output_tokens ?? null,
     routeTo: source?.route_to_id ?? '',
@@ -340,6 +342,7 @@ async function save(): Promise<void> {
     supports_streaming: form.value.streaming,
     supports_system_prompt: form.value.systemPromptSupported,
     supports_tools: form.value.tools,
+    supports_image_gen: form.value.imageGen,
     context_window: form.value.contextWindow ?? 0,
     max_output_tokens: form.value.maxOutput ?? 0,
     request_weight: form.value.requestWeight ?? 0,
@@ -449,6 +452,7 @@ function portable(row: AdminModel): Record<string, unknown> {
     supports_streaming: row.supports_streaming,
     supports_system_prompt: row.supports_system_prompt,
     supports_tools: row.supports_tools,
+    supports_image_gen: row.supports_image_gen,
     context_window: row.context_window,
     max_output_tokens: row.max_output_tokens,
     request_weight: row.request_weight,
@@ -625,6 +629,7 @@ let sortState: SortState | null = null;
       </template>
       <template #cell-can="{ row }">
         <OaBadgeRow>
+          <OaBadge v-if="row.supports_image_gen" tone="muted">{{ t('canImageGen') }}</OaBadge>
           <OaBadge v-if="row.supports_reasoning" tone="muted">{{ t('canThinks') }}</OaBadge>
           <OaBadge v-if="row.supports_vision" tone="muted">{{ t('canSees') }}</OaBadge>
           <OaBadge v-if="row.supports_images && !row.supports_vision" tone="muted">
@@ -772,6 +777,7 @@ let sortState: SortState | null = null;
     />
 
     <OaFormSection :title="t('secCapabilities')" :hint="t('capabilitiesHint')" />
+    <OaSwitchField v-model="form.imageGen" :label="t('capImageGen')" />
     <OaSwitchField v-model="form.reasoning" :label="t('capReasoning')" :hint="t('capReasoningHint')" />
     <OaSwitchField v-model="form.images" :label="t('capImages')" :hint="t('capImagesHint')" />
     <OaSwitchField v-model="form.vision" :label="t('capVision')" />

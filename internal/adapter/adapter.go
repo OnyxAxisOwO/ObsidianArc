@@ -318,10 +318,33 @@ type RemoteModel struct {
 // which is how a disconnected client cancels an upstream request.
 type Sink func(Event) error
 
+// ImageRequest is what an image generation call needs.
+type ImageRequest struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	Size           string `json:"size,omitempty"`
+	Style          string `json:"style,omitempty"`
+	Quality        string `json:"quality,omitempty"`
+	N              int    `json:"n,omitempty"`
+	ResponseFormat string `json:"response_format,omitempty"`
+}
+
+type GeneratedImage struct {
+	URL           string `json:"url,omitempty"`
+	B64JSON       string `json:"b64_json,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}
+
+type ImageResult struct {
+	Created int64            `json:"created"`
+	Data    []GeneratedImage `json:"data"`
+}
+
 type Adapter interface {
 	Kind() Kind
 	Chat(ctx context.Context, client *http.Client, p Provider, req ChatRequest, sink Sink) (Result, error)
 	ListModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteModel, error)
+	GenerateImage(ctx context.Context, client *http.Client, p Provider, req ImageRequest) (ImageResult, error)
 }
 
 // Registry holds the adapters and the one HTTP client they share.
@@ -390,6 +413,16 @@ func (r *Registry) ListModels(ctx context.Context, p Provider) ([]RemoteModel, e
 	}
 	return adapter.ListModels(ctx, r.client, p)
 }
+
+func (r *Registry) GenerateImage(ctx context.Context, p Provider, req ImageRequest) (ImageResult, error) {
+	adapter, ok := r.adapters[p.Kind]
+	if !ok {
+		return ImageResult{}, &Error{Kind: ErrorInvalidRequest, Message: "Unknown provider type " + string(p.Kind) + "."}
+	}
+	return adapter.GenerateImage(ctx, r.client, p, req)
+}
+
+func (r *Registry) Client() *http.Client { return r.client }
 
 func (r *Registry) Kinds() []Kind { return []Kind{KindOpenAI, KindAnthropic} }
 

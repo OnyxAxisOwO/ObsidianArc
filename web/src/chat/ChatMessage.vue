@@ -7,10 +7,11 @@
 // rather than as two files that look alike.
 
 import { computed, nextTick, ref } from 'vue';
-import { updateMessage, type Message, type MessageStats } from '@/api/chat';
+import { updateMessage, attachmentURL, type Message, type MessageStats } from '@/api/chat';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import { t } from '@/composables/useI18n';
 import { copyToClipboard } from '@/chat/markdown';
+import { IconDownload } from '@/icons';
 import ChatAttachments from './ChatAttachments.vue';
 import ChatThinking from './ChatThinking.vue';
 import {
@@ -195,7 +196,29 @@ function describe(value: MessageStats): string {
         </div>
 
         <template v-else>
-          <OaMarkdown class="ai-answer" :text="props.message.content" />
+          <div v-if="images.length" class="ai-chat-generated-images">
+            <div v-for="img in images" :key="img.id" class="ai-chat-generated-card">
+              <img
+                :src="attachmentURL(img.id)"
+                class="ai-chat-generated-img"
+                :alt="props.message.content || 'Generated image'"
+              />
+              <div class="ai-chat-generated-bar">
+                <a
+                  :href="attachmentURL(img.id)"
+                  :download="`image-${img.id}.png`"
+                  target="_blank"
+                  rel="noopener"
+                  class="ai-chat-mini-btn"
+                  style="text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"
+                >
+                  <IconDownload :size="12" />
+                  <span>{{ t('downloadImage') }}</span>
+                </a>
+              </div>
+            </div>
+          </div>
+          <OaMarkdown v-if="props.message.content" class="ai-answer" :text="props.message.content" />
           <div class="ai-msg-actions">
             <button v-if="!busy" type="button" class="ai-chat-mini-btn" @click="beginEdit">
               {{ t('edit') }}

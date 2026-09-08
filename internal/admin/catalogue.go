@@ -227,6 +227,7 @@ type modelRequest struct {
 	SupportsStreaming    *bool `json:"supports_streaming"`
 	SupportsSystemPrompt *bool `json:"supports_system_prompt"`
 	SupportsTools        *bool `json:"supports_tools"`
+	SupportsImageGen     *bool `json:"supports_image_gen"`
 	ContextWindow        *int  `json:"context_window"`
 	MaxOutputTokens      *int  `json:"max_output_tokens"`
 
@@ -336,6 +337,7 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 		SupportsStreaming:    body.SupportsStreaming,
 		SupportsSystemPrompt: body.SupportsSystemPrompt,
 		SupportsTools:        body.SupportsTools,
+		SupportsImageGen:     body.SupportsImageGen,
 		ContextWindow:        body.ContextWindow,
 		MaxOutputTokens:      body.MaxOutputTokens,
 		RequestWeight:        body.RequestWeight,
@@ -445,6 +447,7 @@ func applyModelFields(
 	setIf(&capabilities.SupportsStreaming, body.SupportsStreaming)
 	setIf(&capabilities.SupportsSystemPrompt, body.SupportsSystemPrompt)
 	setIf(&capabilities.SupportsTools, body.SupportsTools)
+	setIf(&capabilities.SupportsImageGen, body.SupportsImageGen)
 	setIf(&capabilities.ContextWindow, body.ContextWindow)
 	setIf(&capabilities.MaxOutputTokens, body.MaxOutputTokens)
 

@@ -244,6 +244,7 @@ func updateFromImport(entry modelImport) model.Update {
 		SupportsStreaming:    &capabilities.SupportsStreaming,
 		SupportsSystemPrompt: &capabilities.SupportsSystemPrompt,
 		SupportsTools:        &capabilities.SupportsTools,
+		SupportsImageGen:     &capabilities.SupportsImageGen,
 		ContextWindow:        &capabilities.ContextWindow,
 		MaxOutputTokens:      &capabilities.MaxOutputTokens,
 		RequestWeight:        &weights.Request,

@@ -310,6 +310,10 @@ onBeforeUnmount(() => window.clearTimeout(hideTimer));
                 <span class="ai-pop-model-title-row">
                   <span class="ai-pop-model-title">{{ model.display_name }}</span>
                   <span
+                    v-if="model.supports_image_gen"
+                    class="ai-pop-model-tag"
+                  >{{ t('canImageGen') }}</span>
+                  <span
                     v-if="uptimeTag(model)"
                     class="ai-pop-model-tag"
                     :class="{ warn: uptimeTag(model)!.warn }"

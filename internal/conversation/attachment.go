@@ -182,7 +182,7 @@ func (s *Store) Discard(ctx context.Context, conversationID string) (int64, erro
 	result, err := s.db.Exec(ctx,
 		`UPDATE attachments SET data = ?, discarded_at = ?
 		 WHERE discarded_at = 0
-		   AND message_id IN (SELECT id FROM messages WHERE conversation_id = ?)`,
+		   AND message_id IN (SELECT id FROM messages WHERE conversation_id = ? AND role = 'user')`,
 		[]byte{}, time.Now().UnixMilli(), conversationID)
 	if err != nil {
 		return 0, fmt.Errorf("conversation: discard attachments: %w", err)

@@ -2363,3 +2363,37 @@
   text-align: center;
 }
 
+/* --- image generation lab -------------------------------------------------- */
+
+/* The list of generated cards inside the image lab panel. */
+.oa-image-lab-results {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+/* One generated image with its prompt note and download action. */
+.oa-image-lab-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--ai-surface-container-low);
+  border: 1px solid var(--ai-border);
+  padding: 12px;
+}
+
+.oa-image-lab-img {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  object-fit: contain;
+  background: var(--ai-surface-card);
+}
+
+.oa-image-lab-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}

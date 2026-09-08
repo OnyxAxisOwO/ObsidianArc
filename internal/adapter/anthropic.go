@@ -502,3 +502,7 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 	}
 	return result, nil
 }
+
+func (anthropicAdapter) GenerateImage(ctx context.Context, client *http.Client, p Provider, req ImageRequest) (ImageResult, error) {
+	return ImageResult{}, &Error{Kind: ErrorImagesUnsupported, Message: "Anthropic does not support image generation."}
+}

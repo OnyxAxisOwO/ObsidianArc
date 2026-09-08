@@ -94,6 +94,23 @@ func modelsEndpoint(kind Kind, base string) string {
 	return strings.TrimSuffix(trimmed, "/chat/completions") + "/models"
 }
 
+func imagesEndpoint(base string) string {
+	trimmed := strings.TrimRight(base, "/")
+	if strings.HasSuffix(trimmed, "/chat/completions") {
+		trimmed = strings.TrimSuffix(trimmed, "/chat/completions")
+	}
+	if strings.HasSuffix(trimmed, "/images/generations") {
+		return trimmed
+	}
+	if strings.HasSuffix(trimmed, "/v1") {
+		return trimmed + "/images/generations"
+	}
+	if !strings.Contains(trimmed, "/v1") {
+		return trimmed + "/v1/images/generations"
+	}
+	return trimmed + "/images/generations"
+}
+
 func applyHeaders(req *http.Request, p Provider) {
 	// The provider's own extras go on first, so the protocol headers below
 	// cannot be overridden into something that breaks the request.

@@ -26,6 +26,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { currentUser, isAdmin, siteInfo } from '@/stores/session';
 import AboutPanel from '@/views/AboutPanel.vue';
 import AuthView from '@/views/AuthView.vue';
+import ImageLabPanel from '@/views/ImageLabPanel.vue';
 import KeysPanel from '@/views/KeysPanel.vue';
 import NotFoundView from '@/views/NotFoundView.vue';
 import RootView from '@/views/RootView.vue';
@@ -49,6 +50,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'keys', component: KeysPanel, meta: { auth: true } },
       { path: 'usage', component: UsagePanel, meta: { auth: true } },
       { path: 'about', component: AboutPanel, meta: { auth: true } },
+      { path: 'image-lab', component: ImageLabPanel, meta: { auth: true } },
     ],
   },
 

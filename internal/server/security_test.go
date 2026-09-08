@@ -250,6 +250,7 @@ func TestUserRoutesRequireASession(t *testing.T) {
 		{http.MethodPatch, "/api/profile", map[string]any{"nickname": "x"}},
 		{http.MethodPost, "/api/profile/password", map[string]any{"current_password": "a", "new_password": "b"}},
 		{http.MethodPost, "/api/attachments", map[string]any{"mime": "image/png", "data": ""}},
+		{http.MethodPost, "/api/images/generate", map[string]any{"model_id": "x", "prompt": "hi"}},
 	}
 
 	for _, route := range routes {

@@ -110,6 +110,9 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	// Its errors are the same envelope as chat/completions.
 	mux.HandleFunc("POST /v1/responses", h.serve(h.responses))
 
+	// Image generations, OpenAI shape.
+	mux.HandleFunc("POST /v1/images/generations", h.serve(h.imagesGenerations))
+
 	// Anything else under /v1 is a client pointed at an endpoint this server
 	// does not implement, and should read as that rather than as the SPA.
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {

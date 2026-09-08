@@ -99,6 +99,7 @@ export interface AdminModel {
   supports_streaming: boolean;
   supports_system_prompt: boolean;
   supports_tools: boolean;
+  supports_image_gen: boolean;
   context_window: number;
   max_output_tokens: number;
 

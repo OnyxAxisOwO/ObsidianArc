@@ -607,6 +607,70 @@ func (openAIAdapter) ListModels(ctx context.Context, client *http.Client, p Prov
 	return listModels(ctx, client, p)
 }
 
+func (openAIAdapter) GenerateImage(ctx context.Context, client *http.Client, p Provider, req ImageRequest) (ImageResult, error) {
+	endpoint := imagesEndpoint(p.BaseURL)
+	body := map[string]any{
+		"model":  req.Model,
+		"prompt": req.Prompt,
+	}
+	if req.Size != "" {
+		body["size"] = req.Size
+	}
+	if req.Style != "" {
+		body["style"] = req.Style
+	}
+	if req.Quality != "" {
+		body["quality"] = req.Quality
+	}
+	if req.N > 0 {
+		body["n"] = req.N
+	}
+	if req.ResponseFormat != "" {
+		body["response_format"] = req.ResponseFormat
+	} else {
+		body["response_format"] = "b64_json"
+	}
+
+	response, err := postJSON(ctx, client, p, endpoint, body)
+	if err != nil {
+		return ImageResult{}, err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= 400 {
+		return ImageResult{}, classifyHTTP(p, endpoint, response.StatusCode,
+			response.Header.Get("Retry-After"), readErrorBody(response), false)
+	}
+
+	var payload struct {
+		Created int64 `json:"created"`
+		Data    []struct {
+			URL           string `json:"url"`
+			B64JSON       string `json:"b64_json"`
+			RevisedPrompt string `json:"revised_prompt"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return ImageResult{}, &Error{Kind: ErrorUpstream, Message: "The provider returned an image response we could not read.", cause: err}
+	}
+	if len(payload.Data) == 0 {
+		return ImageResult{}, &Error{Kind: ErrorUpstream, Message: "The provider returned no images."}
+	}
+
+	out := ImageResult{
+		Created: payload.Created,
+		Data:    make([]GeneratedImage, 0, len(payload.Data)),
+	}
+	for _, item := range payload.Data {
+		out.Data = append(out.Data, GeneratedImage{
+			URL:           item.URL,
+			B64JSON:       item.B64JSON,
+			RevisedPrompt: item.RevisedPrompt,
+		})
+	}
+	return out, nil
+}
+
 func (anthropicAdapter) ListModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteModel, error) {
 	return listModels(ctx, client, p)
 }
