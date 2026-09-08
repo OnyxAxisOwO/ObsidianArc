@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,16 +28,20 @@ const (
 	// Messages in one exchange. A client that has more than this to say is
 	// not having a conversation.
 	maxMessages = 400
+	// Tools in one request. An agent with a few MCP servers attached brings
+	// dozens; one that brings hundreds has a configuration problem, not a
+	// task.
+	maxTools = 256
 )
 
 // completionRequest is what an OpenAI client sends.
 //
-// Only the fields this server can honour are declared. The rest — tools,
-// response_format, logprobs, n, seed and the others — are accepted and
-// ignored rather than rejected, because a client library that always sends
-// `n: 1` should not be refused for it. Nothing is forwarded upstream that is
-// not named here, so an unknown field cannot become a way to reach a
-// provider parameter through this endpoint.
+// Only the fields this server can honour are declared. The rest —
+// response_format, parallel_tool_calls, logprobs, n, seed and the others —
+// are accepted and ignored rather than rejected, because a client library
+// that always sends `n: 1` should not be refused for it. Nothing is forwarded
+// upstream that is not named here, so an unknown field cannot become a way to
+// reach a provider parameter through this endpoint.
 type completionRequest struct {
 	Model    string        `json:"model"`
 	Messages []wireMessage `json:"messages"`
@@ -48,13 +53,36 @@ type completionRequest struct {
 	// OpenAI's own control, translated into the neutral one the adapters
 	// take. This is the layer whose job is to speak that dialect.
 	ReasoningEffort string `json:"reasoning_effort"`
+
+	Tools []wireTool `json:"tools"`
+	// A string or an object, so it is read after the fact rather than typed
+	// here.
+	ToolChoice json.RawMessage `json:"tool_choice"`
+}
+
+// wireTool is one function the caller is offering. The 2023-era `functions`
+// field is not read: every client that speaks to an agent today sends
+// `tools`, and accepting a second spelling of the same thing is a second
+// thing to keep correct.
+type wireTool struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Parameters  json.RawMessage `json:"parameters"`
+	} `json:"function"`
 }
 
 type wireMessage struct {
 	Role string `json:"role"`
 	// A string, or an array of typed parts. Both are current in the wild, so
-	// both are read.
+	// both are read. Null on an assistant turn that was nothing but tool
+	// calls, which is why readContent tolerates one.
 	Content json.RawMessage `json:"content"`
+	// What the model asked for on an assistant turn the client is replaying.
+	ToolCalls []toolCallObject `json:"tool_calls"`
+	// On a tool result: which call it answers.
+	ToolCallID string `json:"tool_call_id"`
 }
 
 type contentPart struct {
@@ -71,36 +99,19 @@ func (h *Handlers) completions(w http.ResponseWriter, r *http.Request, who calle
 		return err
 	}
 
-	modelID, err := h.resolveModel(r.Context(), who, body.Model)
+	resolved, err := h.authorize(r, who, body.Model)
 	if err != nil {
 		return err
 	}
-
-	// The same authorisation the browser gateway performs, including the one
-	// hop of routing: a hidden model is refused here exactly as it is there,
-	// and a routed one answers under the name the caller asked for.
-	resolved, err := h.models.Authorize(r.Context(), who.account.GroupID, modelID, who.account.IsAdmin())
-	if err != nil {
-		return translateModelError(err, body.Model)
-	}
-
-	reqlog.Annotate(r.Context(), reqlog.Annotation{
-		ModelID:   resolved.Model.ID,
-		ModelName: resolved.Model.DisplayName,
-	})
 
 	request, err := h.buildRequest(body, resolved)
 	if err != nil {
 		return err
 	}
 
-	release := func() {}
-	if h.Guard != nil {
-		free, err := h.Guard(r.Context(), who.account, resolved.Model)
-		if err != nil {
-			return translateGuardError(err)
-		}
-		release = free
+	release, err := h.reserve(r.Context(), who, resolved)
+	if err != nil {
+		return err
 	}
 	// Every path out, including the ones that never reach the provider: a
 	// reservation that is not given back is an allowance lost until the
@@ -117,6 +128,46 @@ func (h *Handlers) completions(w http.ResponseWriter, r *http.Request, who calle
 	return h.buffered(w, r, who, request, resolved, label)
 }
 
+// --- the spine the three surfaces share ---------------------------------------
+
+// authorize maps the name the caller used onto a model they may actually
+// send to, and notes it in the request log.
+//
+// The same authorisation the browser gateway performs, including the one hop
+// of routing: a hidden model is refused here exactly as it is there, and a
+// routed one answers under the name the caller asked for.
+func (h *Handlers) authorize(r *http.Request, who caller, wanted string) (model.Resolved, error) {
+	modelID, err := h.resolveModel(r.Context(), who, wanted)
+	if err != nil {
+		return model.Resolved{}, err
+	}
+
+	resolved, err := h.models.Authorize(r.Context(), who.account.GroupID, modelID, who.account.IsAdmin())
+	if err != nil {
+		return model.Resolved{}, translateModelError(err, wanted)
+	}
+
+	reqlog.Annotate(r.Context(), reqlog.Annotation{
+		ModelID:   resolved.Model.ID,
+		ModelName: resolved.Model.DisplayName,
+	})
+	return resolved, nil
+}
+
+// reserve takes the spend check. Called after the request has been read, so a
+// body that was never going to be answered does not hold an allowance while
+// it is refused.
+func (h *Handlers) reserve(ctx context.Context, who caller, resolved model.Resolved) (func(), error) {
+	if h.Guard == nil {
+		return func() {}, nil
+	}
+	free, err := h.Guard(ctx, who.account, resolved.Model)
+	if err != nil {
+		return nil, translateGuardError(err)
+	}
+	return free, nil
+}
+
 // --- the two shapes -----------------------------------------------------------
 
 func (h *Handlers) buffered(
@@ -129,6 +180,7 @@ func (h *Handlers) buffered(
 	var reasoning strings.Builder
 	var answer strings.Builder
 	usage := adapter.Usage{}
+	var calls []adapter.ToolCall
 
 	sink := func(event adapter.Event) error {
 		switch event.Type {
@@ -136,6 +188,8 @@ func (h *Handlers) buffered(
 			answer.WriteString(event.Text)
 		case adapter.EventReasoning:
 			reasoning.WriteString(event.Text)
+		case adapter.EventToolCall:
+			calls = append(calls, event.ToolCall)
 		case adapter.EventUsage:
 			usage = usage.Merge(event.Usage)
 		}
@@ -149,6 +203,9 @@ func (h *Handlers) buffered(
 		reasoning.Reset()
 		reasoning.WriteString(result.Reasoning)
 	}
+	if len(calls) == 0 {
+		calls = result.ToolCalls
+	}
 
 	if chatErr != nil {
 		h.record(r.Context(), who, resolved, requestID, usage, startedAt, chatErr)
@@ -156,19 +213,26 @@ func (h *Handlers) buffered(
 	}
 	h.record(r.Context(), who, resolved, requestID, usage, startedAt, nil)
 
+	message := &assistantMessage{
+		Role:      "assistant",
+		Reasoning: reasoning.String(),
+		ToolCalls: renderToolCalls(calls, requestID, 0, false),
+	}
+	// Null only when the turn was nothing but tool calls; an ordinary answer
+	// carries its text, and an empty one carries the empty string.
+	if text := answer.String(); text != "" || len(calls) == 0 {
+		message.Content = &text
+	}
+
 	return writeJSON(w, http.StatusOK, completionResponse{
 		ID:      completionID(requestID),
 		Object:  "chat.completion",
 		Created: startedAt.Unix(),
 		Model:   label,
 		Choices: []choice{{
-			Index: 0,
-			Message: &responseMessage{
-				Role:      "assistant",
-				Content:   answer.String(),
-				Reasoning: reasoning.String(),
-			},
-			FinishReason: finishReason(result.FinishReason),
+			Index:        0,
+			Message:      message,
+			FinishReason: finishReason(result.FinishReason, len(calls)),
 		}},
 		Usage: usageOf(usage),
 	})
@@ -196,6 +260,9 @@ func (h *Handlers) streamed(
 	// Whether any answer text has gone out. The opening role chunk does not
 	// count: it is the reason this is not simply "have we written anything".
 	streamedText := false
+	// How many calls have gone out, which is also the index the next one
+	// takes: a client assembles a streamed call by its position.
+	streamedCalls := 0
 
 	emit := func(delta responseMessage, finish *string) error {
 		return sse.Event("", completionChunk{
@@ -213,6 +280,19 @@ func (h *Handlers) streamed(
 		return nil
 	}
 
+	// Each call goes out in one chunk rather than as argument fragments. The
+	// adapters only know a call once it is whole, and a client assembling
+	// fragments ends up with exactly this either way.
+	emitCalls := func(calls []adapter.ToolCall) error {
+		for _, rendered := range renderToolCalls(calls, requestID, streamedCalls, true) {
+			streamedCalls++
+			if err := emit(responseMessage{ToolCalls: []toolCallObject{rendered}}, nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	sink := func(event adapter.Event) error {
 		switch event.Type {
 		case adapter.EventDelta:
@@ -220,6 +300,8 @@ func (h *Handlers) streamed(
 			return emit(responseMessage{Content: event.Text}, nil)
 		case adapter.EventReasoning:
 			return emit(responseMessage{Reasoning: event.Text}, nil)
+		case adapter.EventToolCall:
+			return emitCalls([]adapter.ToolCall{event.ToolCall})
 		case adapter.EventUsage:
 			usage = usage.Merge(event.Usage)
 		}
@@ -232,6 +314,12 @@ func (h *Handlers) streamed(
 	// has to reach the client as a chunk.
 	if result.Text != "" && !streamedText {
 		_ = emit(responseMessage{Content: result.Text}, nil)
+	}
+	// The same for its tool calls — and this is the path a model marked as
+	// not streaming always takes, so it is the ordinary case for one of them
+	// rather than a fallback.
+	if len(result.ToolCalls) > 0 && streamedCalls == 0 {
+		_ = emitCalls(result.ToolCalls)
 	}
 
 	h.record(context.WithoutCancel(r.Context()), who, resolved, requestID, usage, startedAt, chatErr)
@@ -257,8 +345,12 @@ func (h *Handlers) streamed(
 		Object:  "chat.completion.chunk",
 		Created: startedAt.Unix(),
 		Model:   label,
-		Choices: []choice{{Index: 0, Delta: &responseMessage{}, FinishReason: finishReason(result.FinishReason)}},
-		Usage:   usageOf(usage),
+		Choices: []choice{{
+			Index:        0,
+			Delta:        &responseMessage{},
+			FinishReason: finishReason(result.FinishReason, streamedCalls),
+		}},
+		Usage: usageOf(usage),
 	}
 	_ = sse.Event("", final)
 	_ = sse.Literal("[DONE]")
@@ -298,6 +390,17 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 				}
 			}
 		case "assistant":
+			for _, call := range incoming.ToolCalls {
+				if call.Function.Name == "" {
+					continue
+				}
+				parts = append(parts, adapter.Part{
+					Kind:       adapter.PartToolCall,
+					ToolCallID: call.ID,
+					ToolName:   call.Function.Name,
+					ToolArgs:   call.Function.Arguments,
+				})
+			}
 			if len(parts) > 0 {
 				messages = append(messages, adapter.Message{Role: adapter.RoleAssistant, Parts: parts})
 			}
@@ -306,8 +409,23 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 				messages = append(messages, adapter.Message{Role: adapter.RoleUser, Parts: parts})
 			}
 		case "tool", "function":
-			return adapter.ChatRequest{}, badRequest("messages",
-				"Tool messages are not supported by this server.")
+			// The id is what pairs this with the call it answers, and both
+			// protocols refuse a result without one. Saying so is more use
+			// than letting the provider say it in its own words.
+			if strings.TrimSpace(incoming.ToolCallID) == "" {
+				return adapter.ChatRequest{}, badRequest("messages",
+					"A tool message must name the call it answers in tool_call_id.")
+			}
+			// An empty result is a real answer — a tool that returns nothing
+			// still returned — so this is not gated on there being text.
+			messages = append(messages, adapter.Message{
+				Role: adapter.RoleTool,
+				Parts: []adapter.Part{{
+					Kind:       adapter.PartToolResult,
+					ToolCallID: incoming.ToolCallID,
+					Text:       joinText(parts),
+				}},
+			})
 		default:
 			return adapter.ChatRequest{}, badRequest("messages",
 				"Unknown message role: "+incoming.Role+".")
@@ -337,9 +455,23 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 		reasoning = adapter.Reasoning{Enabled: true, Effort: effort}
 	}
 
-	stream := true
+	// False when the field is absent, which is what the protocol says and
+	// what every client library assumes. It used to default to true, so a
+	// caller that simply did not mention streaming — the official SDK's
+	// ordinary call does not — was answered with an event stream where it
+	// was parsing a JSON document, and got no further.
+	stream := false
 	if body.Stream != nil {
 		stream = *body.Stream
+	}
+
+	tools, err := readTools(body.Tools)
+	if err != nil {
+		return adapter.ChatRequest{}, err
+	}
+	choice, err := readToolChoice(body.ToolChoice)
+	if err != nil {
+		return adapter.ChatRequest{}, err
 	}
 
 	return adapter.ChatRequest{
@@ -350,7 +482,100 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 		MaxTokens:   maxTokens,
 		Reasoning:   reasoning,
 		Stream:      stream,
+		Tools:       tools,
+		ToolChoice:  choice,
 	}, nil
+}
+
+// readTools converts what the caller offered. The parameter schema is carried
+// through untouched: it is the caller's contract with their own function, and
+// this layer has no business tidying it.
+func readTools(declared []wireTool) ([]adapter.Tool, error) {
+	if len(declared) == 0 {
+		return nil, nil
+	}
+	if len(declared) > maxTools {
+		return nil, badRequest("tools", "Too many tools in one request.")
+	}
+
+	out := make([]adapter.Tool, 0, len(declared))
+	for _, tool := range declared {
+		// Every tool a chat-completions client can send is a function. A
+		// different type names a hosted tool this server has no way to run,
+		// and accepting it silently would have the model call something that
+		// does not exist.
+		if tool.Type != "" && tool.Type != "function" {
+			return nil, badRequest("tools", "Unsupported tool type: "+tool.Type+".")
+		}
+		name := strings.TrimSpace(tool.Function.Name)
+		if name == "" {
+			return nil, badRequest("tools", "Every tool needs a name.")
+		}
+		out = append(out, adapter.Tool{
+			Name:        name,
+			Description: tool.Function.Description,
+			Parameters:  tool.Function.Parameters,
+		})
+	}
+	return out, nil
+}
+
+// readToolChoice reads the field in both shapes it takes: one of the words,
+// or an object naming the function that must be called.
+func readToolChoice(raw json.RawMessage) (adapter.ToolChoice, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return adapter.ToolChoice{}, nil
+	}
+
+	var word string
+	if err := json.Unmarshal(raw, &word); err == nil {
+		switch strings.ToLower(strings.TrimSpace(word)) {
+		case "auto":
+			// The default everywhere, so nothing is sent for it.
+			return adapter.ToolChoice{}, nil
+		case "none":
+			return adapter.ToolChoice{Mode: adapter.ToolChoiceNone}, nil
+		case "required", "any":
+			return adapter.ToolChoice{Mode: adapter.ToolChoiceRequired}, nil
+		}
+		return adapter.ToolChoice{}, badRequest("tool_choice", "Unknown tool_choice: "+word+".")
+	}
+
+	var named struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+		// Where the other protocol's clients put it.
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &named); err != nil {
+		return adapter.ToolChoice{}, badRequest("tool_choice",
+			"tool_choice must be a string or an object naming a function.")
+	}
+	name := strings.TrimSpace(named.Function.Name)
+	if name == "" {
+		name = strings.TrimSpace(named.Name)
+	}
+	if name == "" {
+		return adapter.ToolChoice{}, badRequest("tool_choice",
+			"tool_choice must name the function to call.")
+	}
+	return adapter.ToolChoice{Mode: adapter.ToolChoiceNamed, Name: name}, nil
+}
+
+// joinText is a tool result's payload: whatever text the client sent, in the
+// order it sent it. A result that arrived as typed parts is flattened,
+// because both protocols carry a result as one string.
+func joinText(parts []adapter.Part) string {
+	var out strings.Builder
+	for _, part := range parts {
+		if part.Kind == adapter.PartText {
+			out.WriteString(part.Text)
+		}
+	}
+	return out.String()
 }
 
 // ceiling is how many tokens the answer may run to: what the caller asked
@@ -484,13 +709,27 @@ type completionChunk struct {
 }
 
 type choice struct {
-	Index   int              `json:"index"`
-	Message *responseMessage `json:"message,omitempty"`
-	Delta   *responseMessage `json:"delta,omitempty"`
+	Index   int               `json:"index"`
+	Message *assistantMessage `json:"message,omitempty"`
+	Delta   *responseMessage  `json:"delta,omitempty"`
 	// A pointer so an unfinished chunk renders as null rather than as the
 	// empty string. Clients test this field for null to decide whether the
 	// answer is complete, and "" is not null.
 	FinishReason *string `json:"finish_reason"`
+}
+
+// assistantMessage is the answer on a buffered completion.
+//
+// Separate from responseMessage, whose every field is omitempty because a
+// stream chunk carries only what changed. Here `content` is always present,
+// null when the turn was nothing but tool calls, because that is what
+// OpenAI's schema says and a client decoding into a non-optional field fails
+// on a key that is missing rather than null.
+type assistantMessage struct {
+	Role      string           `json:"role"`
+	Content   *string          `json:"content"`
+	Reasoning string           `json:"reasoning_content,omitempty"`
+	ToolCalls []toolCallObject `json:"tool_calls,omitempty"`
 }
 
 type responseMessage struct {
@@ -503,7 +742,62 @@ type responseMessage struct {
 	// in — signatures, block identifiers, encrypted payloads — is consumed by
 	// the adapter and never reaches this layer, so there is nothing here to
 	// leak even by accident.
-	Reasoning string `json:"reasoning_content,omitempty"`
+	Reasoning string           `json:"reasoning_content,omitempty"`
+	ToolCalls []toolCallObject `json:"tool_calls,omitempty"`
+}
+
+// toolCallObject is one call, in both directions: it is what this server
+// writes on an answer and what a client replays on the assistant turn after
+// it.
+type toolCallObject struct {
+	// Set only inside a stream chunk, where it is how a client knows which
+	// call a fragment belongs to. A finished message has no use for it and
+	// OpenAI does not send one. A pointer because the first call's index is
+	// 0, which omitempty would drop.
+	Index    *int             `json:"index,omitempty"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function toolCallFunction `json:"function"`
+}
+
+type toolCallFunction struct {
+	Name string `json:"name"`
+	// JSON text, which is what the protocol carries — not an object.
+	Arguments string `json:"arguments"`
+}
+
+// renderToolCalls writes the calls of one answer. `indexed` numbers them, for
+// a stream chunk.
+func renderToolCalls(calls []adapter.ToolCall, requestID string, from int, indexed bool) []toolCallObject {
+	out := make([]toolCallObject, 0, len(calls))
+	for offset, call := range calls {
+		position := from + offset
+		rendered := toolCallObject{
+			ID:   callID(requestID, position),
+			Type: "function",
+			Function: toolCallFunction{
+				Name:      call.Name,
+				Arguments: call.Arguments,
+			},
+		}
+		if indexed {
+			rendered.Index = &position
+		}
+		out = append(out, rendered)
+	}
+	return out
+}
+
+// callID is the identifier a tool call is answered by.
+//
+// Minted here rather than passed through, for the reason this whole package
+// exists: a provider's own id is a provider's own spelling, and a `toolu_`
+// prefix names the family that answered as plainly as a header would. The
+// client echoes this back on both the call and its result, and both protocols
+// only ever check that the two match inside the transcript they were sent —
+// so a name of our own does the same work and says nothing.
+func callID(requestID string, position int) string {
+	return "call_" + requestID + "_" + strconv.Itoa(position)
 }
 
 type usageBlock struct {
@@ -537,13 +831,24 @@ func usageOf(u adapter.Usage) *usageBlock {
 // Not passed through: Anthropic says "end_turn" and "max_tokens", and a
 // caller who saw those would learn which family answered a model the operator
 // presented under their own name.
-func finishReason(upstream string) *string {
+//
+// A turn that produced calls ends in "tool_calls" whatever the provider called
+// it, because that is the field an agent's loop branches on — one that reads
+// "stop" stops, with the calls it was about to run still in its hand. Not
+// over "length" or "content_filter" though: those say the turn was cut short,
+// which the client needs to hear more than it needs to be sent round again.
+func finishReason(upstream string, toolCalls int) *string {
 	reason := "stop"
 	switch strings.ToLower(strings.TrimSpace(upstream)) {
 	case "length", "max_tokens", "model_length":
 		reason = "length"
 	case "content_filter", "refusal":
 		reason = "content_filter"
+	case "tool_calls", "tool_use", "function_call":
+		reason = "tool_calls"
+	}
+	if toolCalls > 0 && reason == "stop" {
+		reason = "tool_calls"
 	}
 	return &reason
 }
@@ -598,8 +903,18 @@ func (h *Handlers) record(
 
 // --- error translation --------------------------------------------------------
 
+// decode reads a /v1 body.
+//
+// Lenient, unlike the rest of this server: an unknown field on an internal
+// endpoint is a typo worth reporting, but this endpoint implements somebody
+// else's protocol, and that protocol grows fields on its own schedule. The
+// case that matters is a client replaying an assistant turn it was given —
+// every SDK sends the whole message back, `refusal` and `annotations` and
+// whatever was added last month included, and refusing one of those ends the
+// agent's loop on its second step. Which fields are honoured is decided by
+// completionRequest, so nothing reaches a provider by being named here.
 func decode(w http.ResponseWriter, r *http.Request, dst any) error {
-	if err := httpx.DecodeJSON(w, r, dst, maxBodyBytes); err != nil {
+	if err := httpx.DecodeJSONLenient(w, r, dst, maxBodyBytes); err != nil {
 		var decided *httpx.Error
 		if errors.As(err, &decided) {
 			return apiError{

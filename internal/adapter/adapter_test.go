@@ -41,6 +41,7 @@ type collected struct {
 	answer    strings.Builder
 	reasoning strings.Builder
 	usages    []Usage
+	calls     []ToolCall
 }
 
 func (c *collected) sink(event Event) error {
@@ -51,6 +52,8 @@ func (c *collected) sink(event Event) error {
 		c.reasoning.WriteString(event.Text)
 	case EventUsage:
 		c.usages = append(c.usages, event.Usage)
+	case EventToolCall:
+		c.calls = append(c.calls, event.ToolCall)
 	}
 	return nil
 }

@@ -144,7 +144,7 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// Never for the first account: an empty instance must not be locked
 		// out of its own setup by a challenge nobody has configured yet.
 		"turnstile_site_key":   h.turnstileSiteKey(count == 0),
-		"turnstile_on_login":    count > 0 && h.settings.Bool(settings.TurnstileOnLogin),
+		"turnstile_on_login":   count > 0 && h.settings.Bool(settings.TurnstileOnLogin),
 		"turnstile_on_signup":  count > 0 && h.settings.Bool(settings.TurnstileOnSignup),
 		"turnstile_on_api_key": h.settings.Bool(settings.TurnstileOnAPIKey),
 		// So the sign-up button can say what it is waiting for. A review

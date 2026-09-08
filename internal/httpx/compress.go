@@ -22,8 +22,9 @@ import (
 // buffer fills rather than when the model produced a word: the chat would sit
 // still and then drop a paragraph, with nothing in any log to say why. So
 // text/event-stream is not on the list, and neither is a response whose type
-// the handler never stated — including the one the SSE helper commits when it
-// probes for flushability before setting its own headers.
+// the handler never stated — which is a belt-and-braces case now that the SSE
+// helper names its type before committing anything, and was load-bearing when
+// it did not.
 func Compress() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -117,17 +118,30 @@ func (w *gzipWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-// Flush pushes the compressor's buffer out before the writer beneath it, so a
-// handler that flushes deliberately still reaches the client. Streaming does
-// not go through here — the event stream is never compressed — but a flush
-// that silently did nothing would be a bad thing to leave lying around.
+// Flush pushes the compressor's buffer out and then the writer beneath it, so
+// a handler that flushes deliberately reaches the client.
+//
+// Every flush on a streamed answer goes through here. The stream itself is
+// never compressed, so it was tempting to read this as a formality — it is
+// not: a gzipWriter wraps the response of any client that sent
+// Accept-Encoding, whatever type comes back, so this is the flush the chat
+// and the API both depend on.
 func (w *gzipWriter) Flush() {
 	if w.on {
 		_ = w.gz.Flush()
 	}
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
+	// Through the controller rather than a type assertion on the writer
+	// directly beneath, because in the live chain that writer is the access
+	// log's recorder — which offers Unwrap and not Flush. A bare assertion
+	// finds no Flusher there and does nothing, so every flush on a streamed
+	// answer became a silent no-op and the whole thing arrived in one lump
+	// when Go's buffer filled. The controller walks the Unwrap chain to the
+	// real writer, which is the only one that can actually flush.
+	//
+	// It only ever bit a client that sends Accept-Encoding, since nothing
+	// else is wrapped at all: every browser and every agent's HTTP library
+	// does, and plain curl does not, which is why hand-testing never saw it.
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 // Unwrap keeps http.ResponseController and Committed working through this

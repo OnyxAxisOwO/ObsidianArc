@@ -75,6 +75,145 @@ func TestEventStreamIsNeverCompressed(t *testing.T) {
 	}
 }
 
+// chained runs a handler behind the middleware the server actually stacks
+// above Compress, rather than handing the compressor a bare recorder.
+//
+// The difference is the whole point. httptest.ResponseRecorder flushes;
+// Logger's recorder offers Unwrap and not Flush, and it is what sits directly
+// beneath the compressor in the live chain. Every other test in this file
+// used the bare recorder, which is exactly how a compressor that could not
+// flush through the real chain passed all of them.
+func chained(t *testing.T, handler http.Handler, accept string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/stream", nil)
+	if accept != "" {
+		request.Header.Set("Accept-Encoding", accept)
+	}
+	response := httptest.NewRecorder()
+	Chain(handler, RequestID(), Recover(), Logger(), Compress()).ServeHTTP(response, request)
+	return response
+}
+
+// A flush has to reach the client through a layer that cannot flush itself.
+// When it did not, every streamed answer arrived in one lump once Go's buffer
+// filled — to browsers and to API clients alike, and only to the ones that
+// send Accept-Encoding, which is why hand-testing with bare curl never showed
+// it.
+func TestFlushReachesTheClientThroughTheRealChain(t *testing.T) {
+	response := chained(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: first\n\n")
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("flush: %v", err)
+		}
+	}), "gzip")
+
+	if !response.Flushed {
+		t.Error("the flush never reached the client, so a streamed answer would arrive in one lump")
+	}
+	if !strings.Contains(response.Body.String(), "data: first") {
+		t.Errorf("the stream did not arrive: %q", response.Body.String())
+	}
+}
+
+// The same chain on a body that is compressed: the compressor's own buffer
+// has to be pushed out too, or a deliberate flush still strands bytes.
+func TestFlushPushesTheCompressorThroughTheRealChain(t *testing.T) {
+	response := chained(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "<p>early</p>")
+		_ = http.NewResponseController(w).Flush()
+	}), "gzip")
+
+	if !response.Flushed {
+		t.Error("the flush never reached the client")
+	}
+	if response.Body.Len() == 0 {
+		t.Error("the compressor held everything back despite the flush")
+	}
+}
+
+// And the SSE helper itself, which has to find a flush through the real chain
+// — and has to say what it is sending.
+//
+// Result(), not Header(): the recorder snapshots the header block when the
+// response is committed, which is the only view that matches what a client
+// reads. Against the live map every header looks present no matter how late
+// it was set, which is how a stream with no Content-Type at all went
+// unnoticed.
+func TestSSEOpensThroughTheRealChain(t *testing.T) {
+	response := chained(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		stream, err := NewSSE(w)
+		if err != nil {
+			t.Errorf("open stream: %v", err)
+			return
+		}
+		_ = stream.Event("", map[string]string{"text": "hello"})
+	}), "gzip")
+
+	sent := response.Result().Header
+	if got := sent.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Errorf("Content-Type = %q, want text/event-stream — a strict client will not parse this", got)
+	}
+	// nginx buffers a proxied response by default, which holds a whole answer
+	// back however well the origin flushes.
+	if got := sent.Get("X-Accel-Buffering"); got != "no" {
+		t.Errorf("X-Accel-Buffering = %q, want no", got)
+	}
+	if got := sent.Get("Cache-Control"); !strings.Contains(got, "no-cache") {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	if got := sent.Get("Content-Encoding"); got != "" {
+		t.Fatalf("the event stream was encoded as %q", got)
+	}
+	if !response.Flushed {
+		t.Error("the stream opened without a working flush")
+	}
+	if !strings.Contains(response.Body.String(), `"text":"hello"`) {
+		t.Errorf("the event did not arrive: %q", response.Body.String())
+	}
+}
+
+// The same, with no Accept-Encoding and so no compressor in the way: this is
+// the path that carried an untyped stream for as long as the helper has
+// existed, since the controller walked straight past the missing wrapper to a
+// writer that really did flush.
+func TestSSENamesItsTypeWithNoCompressorInTheWay(t *testing.T) {
+	response := chained(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		stream, err := NewSSE(w)
+		if err != nil {
+			t.Errorf("open stream: %v", err)
+			return
+		}
+		_ = stream.Literal("[DONE]")
+	}), "")
+
+	if got := response.Result().Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Errorf("Content-Type = %q, want text/event-stream", got)
+	}
+}
+
+// A writer with nothing flushable under it is refused before anything is
+// committed, so the caller can still answer with an ordinary error.
+func TestSSERefusesAnUnflushableWriterWithoutCommitting(t *testing.T) {
+	dead := unflushable{httptest.NewRecorder()}
+	if _, err := NewSSE(dead); err == nil {
+		t.Fatal("an unflushable response opened a stream")
+	}
+	if dead.inner.Code != 200 || dead.inner.Flushed {
+		t.Error("the refusal committed the response anyway")
+	}
+}
+
+// No Flush, and no Unwrap to reach one through.
+type unflushable struct{ inner *httptest.ResponseRecorder }
+
+func (u unflushable) Header() http.Header         { return u.inner.Header() }
+func (u unflushable) Write(b []byte) (int, error) { return u.inner.Write(b) }
+func (u unflushable) WriteHeader(status int)      { u.inner.WriteHeader(status) }
+
 // The SSE helper probes for flushability before it sets its own headers, so a
 // response can be committed with no Content-Type at all. Anything unnamed has
 // to be left alone.

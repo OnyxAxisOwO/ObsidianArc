@@ -43,6 +43,14 @@ system, same motion. What changed is everything behind it.
   ask a couple of questions before signing up.
 - **Model routing.** Offer one model and serve it with another; users see the
   model they picked, and only an administrator sees that a route exists.
+- **An API for agents.** Three shapes under `/v1`, authenticated by a key and
+  never by a session cookie: OpenAI's `chat/completions`, Anthropic's
+  `messages`, and OpenAI's `responses`. Three because the clients worth
+  pointing at an instance do not agree — Claude Code speaks only the second,
+  and Codex has dropped everything but the third — and each is a translation
+  onto the same adapters, so tool calls work through all of them and a turn
+  spent over any of them counts against the same allowance as one spent in
+  the tab.
 - **Registration controls**: required and verified email addresses, a domain
   allowlist, and a ceiling on how fast accounts may appear.
 - **Safe Markdown rendering** with no `innerHTML` in any path that renders
@@ -151,7 +159,7 @@ Measured on the build in this repository, SQLite, one process:
 
 | | |
 | --- | --- |
-| Binary | 17.4 MB — 13.8 MB built `-tags nosqlite` for a Postgres-only deployment |
+| Binary | 17.6 MB — 14.0 MB built `-tags nosqlite` for a Postgres-only deployment |
 | Cold start to serving | 28 ms |
 | Idle resident memory | ~16 MB |
 | After 200 streamed turns, 20 concurrent | ~54 MB peak, 11 OS threads |

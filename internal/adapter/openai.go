@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -22,8 +23,28 @@ type openAIAdapter struct{}
 func (openAIAdapter) Kind() Kind { return KindOpenAI }
 
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	Role string `json:"role"`
+	// Left null on an assistant turn that was nothing but tool calls, which
+	// is what the protocol says and what the models emit.
+	Content any `json:"content"`
+	// Omitted rather than sent empty: several compatible servers reject a
+	// null or `[]` here on an ordinary message.
+	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
+	// On a tool result, naming the call it answers.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+type openAIToolCall struct {
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function openAIToolFunction `json:"function"`
+}
+
+type openAIToolFunction struct {
+	Name string `json:"name"`
+	// JSON text rather than an object, which is what the protocol carries in
+	// both directions.
+	Arguments string `json:"arguments"`
 }
 
 type openAITextPart struct {
@@ -84,10 +105,49 @@ func (a openAIAdapter) buildBody(p Provider, req ChatRequest) (map[string]any, b
 		}
 	}
 
+	if len(req.Tools) > 0 {
+		body["tools"] = openAITools(req.Tools)
+		if choice, ok := openAIToolChoice(req.ToolChoice); ok {
+			body["tool_choice"] = choice
+		}
+	}
+
 	for key, value := range req.Extra {
 		body[key] = value
 	}
 	return body, carriedImages
+}
+
+func openAITools(tools []Tool) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		function := map[string]any{"name": tool.Name, "parameters": schemaOrEmpty(tool.Parameters)}
+		if tool.Description != "" {
+			function["description"] = tool.Description
+		}
+		out = append(out, map[string]any{"type": "function", "function": function})
+	}
+	return out
+}
+
+func openAIToolChoice(choice ToolChoice) (any, bool) {
+	switch choice.Mode {
+	case ToolChoiceNone:
+		return "none", true
+	case ToolChoiceRequired:
+		return "required", true
+	case ToolChoiceNamed:
+		if choice.Name == "" {
+			return nil, false
+		}
+		return map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": choice.Name},
+		}, true
+	}
+	// Auto is the default on every endpoint, so saying it adds a field that
+	// an older compatible server might not know and changes nothing.
+	return nil, false
 }
 
 func (openAIAdapter) buildMessages(req ChatRequest) ([]openAIMessage, bool) {
@@ -95,12 +155,29 @@ func (openAIAdapter) buildMessages(req ChatRequest) ([]openAIMessage, bool) {
 	carriedImages := false
 
 	for _, message := range req.Messages {
+		// A tool result is a message of its own here, one per call answered.
+		// It never merges with anything: the protocol pairs a result with a
+		// call by id, and two of them in one message would leave one call
+		// unanswered.
+		if message.Role == RoleTool {
+			for _, part := range message.Parts {
+				if part.Kind != PartToolResult || part.ToolCallID == "" {
+					continue
+				}
+				out = append(out, openAIMessage{
+					Role: "tool", Content: part.Text, ToolCallID: part.ToolCallID,
+				})
+			}
+			continue
+		}
+
 		role := "user"
 		if message.Role == RoleAssistant {
 			role = "assistant"
 		}
 
 		parts := make([]any, 0, len(message.Parts))
+		var calls []openAIToolCall
 		text := strings.Builder{}
 		for _, part := range message.Parts {
 			switch part.Kind {
@@ -115,6 +192,18 @@ func (openAIAdapter) buildMessages(req ChatRequest) ([]openAIMessage, bool) {
 					base64.StdEncoding.EncodeToString(part.Data)
 				parts = append(parts, block)
 				carriedImages = true
+			case PartToolCall:
+				if part.ToolName == "" {
+					continue
+				}
+				calls = append(calls, openAIToolCall{
+					ID:   part.ToolCallID,
+					Type: "function",
+					Function: openAIToolFunction{
+						Name:      part.ToolName,
+						Arguments: toolArguments(part.ToolArgs),
+					},
+				})
 			}
 		}
 
@@ -123,10 +212,15 @@ func (openAIAdapter) buildMessages(req ChatRequest) ([]openAIMessage, bool) {
 			// A plain string, not a one-element array: several compatible
 			// servers only accept the simple form, and the vast majority of
 			// messages have no attachment.
-			if text.Len() == 0 {
+			if text.Len() > 0 {
+				content = text.String()
+			} else if len(calls) == 0 {
 				continue
 			}
-			content = text.String()
+			// An assistant turn that was nothing but tool calls still
+			// travels, with a null content. Dropping it would leave the
+			// results after it answering a call the transcript no longer
+			// contains, which both protocols refuse.
 		} else {
 			if text.Len() > 0 {
 				parts = append([]any{openAITextPart{Type: "text", Text: text.String()}}, parts...)
@@ -134,11 +228,16 @@ func (openAIAdapter) buildMessages(req ChatRequest) ([]openAIMessage, bool) {
 			content = parts
 		}
 
-		if last := len(out) - 1; last >= 0 && out[last].Role == role {
+		// Merging consecutive same-role messages repairs an edited
+		// transcript. A message carrying tool calls is not one to repair:
+		// the calls after it are addressed by id, and folding two turns
+		// together would put a call and its answer on the same side.
+		if last := len(out) - 1; last >= 0 && out[last].Role == role && content != nil &&
+			len(calls) == 0 && len(out[last].ToolCalls) == 0 {
 			out[last].Content = mergeOpenAIContent(out[last].Content, content)
 			continue
 		}
-		out = append(out, openAIMessage{Role: role, Content: content})
+		out = append(out, openAIMessage{Role: role, Content: content, ToolCalls: calls})
 	}
 
 	for len(out) > 0 && out[0].Role != "user" {
@@ -215,9 +314,10 @@ func (openAIAdapter) readOnce(response *http.Response) (Result, error) {
 			Message struct {
 				Content string `json:"content"`
 				// Two spellings are in the wild for the same thing.
-				Reasoning        string `json:"reasoning"`
-				ReasoningContent string `json:"reasoning_content"`
-				Refusal          string `json:"refusal"`
+				Reasoning        string           `json:"reasoning"`
+				ReasoningContent string           `json:"reasoning_content"`
+				Refusal          string           `json:"refusal"`
+				ToolCalls        []openAIToolCall `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -242,6 +342,16 @@ func (openAIAdapter) readOnce(response *http.Response) (Result, error) {
 		FinishReason: choice.FinishReason,
 		Usage:        payload.Usage.toUsage(),
 	}
+	for _, call := range choice.Message.ToolCalls {
+		if call.Function.Name == "" {
+			continue
+		}
+		result.ToolCalls = append(result.ToolCalls, ToolCall{
+			ID:        call.ID,
+			Name:      call.Function.Name,
+			Arguments: toolArguments(call.Function.Arguments),
+		})
+	}
 	return result, nil
 }
 
@@ -265,9 +375,10 @@ func (u openAIUsage) toUsage() Usage {
 type openAIStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content          string `json:"content"`
-			Reasoning        string `json:"reasoning"`
-			ReasoningContent string `json:"reasoning_content"`
+			Content          string                `json:"content"`
+			Reasoning        string                `json:"reasoning"`
+			ReasoningContent string                `json:"reasoning_content"`
+			ToolCalls        []openAIToolCallDelta `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -279,6 +390,77 @@ type openAIStreamChunk struct {
 	Error struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// One frame's worth of a tool call. Everything but the position is optional:
+// the first frame usually carries the id and the name, and the ones after it
+// carry a few more characters of the arguments and nothing else.
+type openAIToolCallDelta struct {
+	// A pointer because a server with one call in flight may leave it out,
+	// and the zero value is a valid position.
+	Index    *int   `json:"index"`
+	ID       string `json:"id"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// toolCallAssembly reassembles the calls of one streamed answer.
+//
+// The wire index is the identity, not the order of arrival: a server may
+// interleave two calls' argument fragments, and OpenAI's own client keys on
+// the index for exactly that reason.
+type toolCallAssembly struct {
+	calls []ToolCall
+	at    map[int]int
+}
+
+func (a *toolCallAssembly) absorb(fragments []openAIToolCallDelta) {
+	for _, fragment := range fragments {
+		index := 0
+		if fragment.Index != nil {
+			index = *fragment.Index
+		}
+		if a.at == nil {
+			a.at = map[int]int{}
+		}
+		position, seen := a.at[index]
+		if !seen {
+			position = len(a.calls)
+			a.at[index] = position
+			a.calls = append(a.calls, ToolCall{})
+		}
+		if fragment.ID != "" {
+			a.calls[position].ID = fragment.ID
+		}
+		// Assigned rather than appended: a server that repeats the whole
+		// name on every fragment is more common than one that splits it, and
+		// appending would turn "search" into "searchsearchsearch".
+		if fragment.Function.Name != "" {
+			a.calls[position].Name = fragment.Function.Name
+		}
+		a.calls[position].Arguments += fragment.Function.Arguments
+	}
+}
+
+// finish emits each assembled call, once, now that no more fragments are
+// coming.
+func (a *toolCallAssembly) finish(result *Result, sink Sink) error {
+	for _, call := range a.calls {
+		if call.Name == "" {
+			// Fragments for a call whose name never arrived. Nothing can be
+			// invoked from that, and forwarding it would have the client
+			// call a tool it does not have.
+			continue
+		}
+		call.Arguments = toolArguments(call.Arguments)
+		result.ToolCalls = append(result.ToolCalls, call)
+		if err := sink(Event{Type: EventToolCall, ToolCall: call}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (openAIAdapter) readStream(ctx context.Context, response *http.Response, sink Sink) (Result, error) {
@@ -300,6 +482,7 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		emittedInline  int
 		// Kept across deltas rather than rebuilt per delta: see inlineThinking.
 		thinking inlineThinking
+		tools    toolCallAssembly
 	)
 
 	flushContent := func(final bool) error {
@@ -369,6 +552,11 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 			}
 		}
 
+		// Before the early return below: a tool-call frame usually carries no
+		// content at all, so reading it after that test would read none of
+		// them.
+		tools.absorb(choice.Delta.ToolCalls)
+
 		if choice.Delta.Content == "" {
 			return nil
 		}
@@ -394,6 +582,9 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 	// Release anything held back as a possible tag prefix now that no more
 	// deltas are coming.
 	if err := flushContent(true); err != nil {
+		return result, err
+	}
+	if err := tools.finish(&result, sink); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -481,6 +672,27 @@ func listModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteM
 
 // --- shared helpers ----------------------------------------------------------
 
+// toolArguments is the arguments field as the protocols want it: JSON text,
+// always parseable. A call with no arguments is a call with `{}` — an empty
+// string is not valid JSON, and a client that decodes it fails on a tool the
+// model invoked correctly.
+func toolArguments(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return "{}"
+	}
+	return raw
+}
+
+// schemaOrEmpty is the parameter schema a tool travels with. A tool that
+// declared none takes no arguments, which is a schema both protocols accept
+// — where a missing `parameters` is refused outright by several servers.
+func schemaOrEmpty(schema json.RawMessage) any {
+	if len(bytes.TrimSpace(schema)) == 0 {
+		return map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	return schema
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -508,6 +720,11 @@ func emitAll(sink Sink, result Result) error {
 	}
 	if result.Text != "" {
 		if err := sink(Event{Type: EventDelta, Text: result.Text}); err != nil {
+			return err
+		}
+	}
+	for _, call := range result.ToolCalls {
+		if err := sink(Event{Type: EventToolCall, ToolCall: call}); err != nil {
 			return err
 		}
 	}

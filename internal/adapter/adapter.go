@@ -7,14 +7,21 @@
 // a new file here plus a row in the registry, not a change anywhere else.
 //
 // The shapes below are deliberately smaller than what either provider can
-// express. This is a chat server: text and images in, text and reasoning out.
-// Tool calls, structured output and the rest are absent because nothing above
-// this layer has anywhere to put them yet, and a field with no consumer is a
-// field that drifts.
+// express: text, images and tool calls in, text, reasoning and tool calls
+// out. Structured output and the rest are absent because nothing above this
+// layer has anywhere to put them yet, and a field with no consumer is a field
+// that drifts.
+//
+// Tool calls are here because the /v1 API has a consumer for them — an agent
+// on the other end that cannot work without them — and because they are the
+// one thing a caller cannot fake from outside: everything else an OpenAI
+// client sends can be folded into the prompt, but a tool call has to come
+// back from the provider as its own thing to be one.
 package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"time"
@@ -96,6 +103,11 @@ type Role string
 const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
+	// What the caller's tools answered. Its own role because the protocols
+	// disagree about where it belongs: OpenAI gives it a message of its own,
+	// Anthropic makes it a block inside the next user turn. Folding it into
+	// a user message here would pick Anthropic's answer for both.
+	RoleTool Role = "tool"
 )
 
 type PartKind string
@@ -103,6 +115,10 @@ type PartKind string
 const (
 	PartText  PartKind = "text"
 	PartImage PartKind = "image"
+	// A call the model asked for, replayed to it as part of the transcript.
+	PartToolCall PartKind = "tool_call"
+	// What that call returned.
+	PartToolResult PartKind = "tool_result"
 )
 
 // Part is one piece of a message. Images travel as raw bytes plus a media
@@ -114,6 +130,61 @@ type Part struct {
 	Text      string
 	MediaType string
 	Data      []byte
+
+	// Tool traffic, on PartToolCall and PartToolResult.
+	//
+	// ToolCallID is what pairs the two: the model chose it, the caller echoes
+	// it back on the result, and both protocols refuse a result that does not
+	// name a call they remember making. ToolName and ToolArgs describe the
+	// call; a result carries its payload in Text.
+	//
+	// ToolArgs is the arguments object as JSON text, never decoded here. The
+	// schema is the caller's, this layer has no opinion about it, and a
+	// decode-and-re-encode is only ever a chance to change what the model
+	// wrote.
+	ToolCallID string
+	ToolName   string
+	ToolArgs   string
+}
+
+// Tool is one function the caller has offered the model.
+type Tool struct {
+	Name        string
+	Description string
+	// The JSON Schema for the arguments, forwarded exactly as it arrived.
+	// Providers disagree about which keywords they accept, and rewriting a
+	// schema to suit one of them is how a client's tool quietly stops
+	// matching the function it actually implements.
+	Parameters json.RawMessage
+}
+
+// ToolChoiceMode is how hard the caller wants the model pushed towards a tool.
+type ToolChoiceMode string
+
+const (
+	// The model decides, which is what both protocols do when nothing is
+	// said — so this is the zero value and nothing is sent for it.
+	ToolChoiceAuto ToolChoiceMode = ""
+	// The tools stay visible but must not be called.
+	ToolChoiceNone ToolChoiceMode = "none"
+	// Some tool must be called.
+	ToolChoiceRequired ToolChoiceMode = "required"
+	// This tool must be called.
+	ToolChoiceNamed ToolChoiceMode = "named"
+)
+
+type ToolChoice struct {
+	Mode ToolChoiceMode
+	Name string
+}
+
+// ToolCall is one invocation the model asked for.
+type ToolCall struct {
+	ID   string
+	Name string
+	// The arguments object as JSON text, for the same reason Part.ToolArgs
+	// is: it goes back to the caller byte for byte.
+	Arguments string
 }
 
 type Message struct {
@@ -155,6 +226,16 @@ type ChatRequest struct {
 	MaxTokens   int
 	Reasoning   Reasoning
 	Stream      bool
+	// What the caller offered the model, and how hard to push it.
+	//
+	// Not gated on a model capability flag. `supports_tools` exists on the
+	// row and defaults to false on every model configured before this
+	// worked, so refusing on it would ship a fix that stays broken
+	// everywhere until an operator flips a switch they have never had a
+	// reason to touch — and a model that genuinely cannot take tools says so
+	// upstream, in a message the /v1 layer already renders.
+	Tools      []Tool
+	ToolChoice ToolChoice
 	// Escape hatch for a provider parameter with no dedicated field. Merged
 	// last, so an operator can override anything the adapter set.
 	Extra map[string]any
@@ -169,12 +250,22 @@ const (
 	EventReasoning
 	// Updated token counts. May arrive more than once.
 	EventUsage
+	// One tool call, whole.
+	//
+	// Whole rather than in pieces: both protocols stream the arguments as
+	// JSON fragments, and half an arguments object is not something any
+	// consumer can act on — it cannot even be parsed to find out whether it
+	// is finished. The adapters accumulate the fragments and emit this once
+	// the call is complete, which costs the caller nothing: an agent waits
+	// for the whole call before running anything anyway.
+	EventToolCall
 )
 
 type Event struct {
-	Type  EventType
-	Text  string
-	Usage Usage
+	Type     EventType
+	Text     string
+	Usage    Usage
+	ToolCall ToolCall
 }
 
 type Usage struct {
@@ -204,6 +295,10 @@ func (u Usage) Merge(next Usage) Usage {
 type Result struct {
 	Text      string
 	Reasoning string
+	// Every call the model asked for this turn, in the order it asked. More
+	// than one is ordinary: both protocols let a model open several at once,
+	// and an agent runs them in parallel.
+	ToolCalls []ToolCall
 	Usage     Usage
 	Streamed  bool
 	// Set when streaming was asked for but could not be used, naming why, so

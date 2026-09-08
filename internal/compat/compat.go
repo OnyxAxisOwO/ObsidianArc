@@ -1,10 +1,23 @@
-// Package compat serves the OpenAI-shaped API at /v1.
+// Package compat serves the agent-facing API at /v1.
 //
-// It exists so that a script, an editor plugin or a desktop client that
-// already speaks OpenAI can point at this instance and work. That is the
-// whole ambition: it is a translation layer, not a second product.
+// It exists so that a script, an editor plugin or a coding agent that already
+// speaks somebody else's protocol can point at this instance and work. That
+// is the whole ambition: it is a translation layer, not a second product.
 //
-// Three things about it are deliberate.
+// Three protocols, in three files, onto one set of adapters:
+//
+//   - completions.go — OpenAI's chat/completions, which most clients speak
+//   - messages.go    — Anthropic's messages, which Claude Code speaks and
+//     which nothing will make it stop speaking
+//   - responses.go   — OpenAI's responses, which current Codex speaks and
+//     which it now speaks exclusively
+//
+// Three rather than one because the clients do not agree and none of them
+// can be talked out of it. They share everything below the wire format: the
+// same key check, the same model resolution and routing, the same spend
+// guard, the same ledger. What differs between the files is only spelling.
+//
+// Three things about all of them are deliberate.
 //
 // It is stateless. A completion here writes no conversation, no message and
 // no attachment — the client sends the whole exchange every time, because
@@ -87,6 +100,16 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/models/{id}", h.serve(h.getModel))
 	mux.HandleFunc("POST /v1/chat/completions", h.serve(h.completions))
 
+	// The Anthropic shape, for the clients that speak only it. Its own error
+	// envelope, because that is the one thing its callers parse before they
+	// have anything else to go on.
+	mux.HandleFunc("POST /v1/messages", h.serveAs(writeAnthropicError, h.messages))
+	mux.HandleFunc("POST /v1/messages/count_tokens", h.serveAs(writeAnthropicError, h.countTokens))
+
+	// The Responses shape, which is the only one current Codex will speak.
+	// Its errors are the same envelope as chat/completions.
+	mux.HandleFunc("POST /v1/responses", h.serve(h.responses))
+
 	// Anything else under /v1 is a client pointed at an endpoint this server
 	// does not implement, and should read as that rather than as the SPA.
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
@@ -103,13 +126,21 @@ type caller struct {
 type handler func(http.ResponseWriter, *http.Request, caller) error
 
 // serve authenticates, then runs the handler and renders whatever it returns
-// in OpenAI's error shape. Every route goes through it; there is no
-// unauthenticated path under /v1.
+// in OpenAI's error shape. Every route goes through it or serveAs; there is
+// no unauthenticated path under /v1.
 func (h *Handlers) serve(next handler) http.HandlerFunc {
+	return h.serveAs(writeError, next)
+}
+
+// serveAs is serve with another protocol's error envelope. The failures
+// themselves are the same values either way — an apiError carries a decided
+// status and a sentence written for a person — and only the wrapper around
+// them changes.
+func (h *Handlers) serveAs(render func(http.ResponseWriter, error), next handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		who, err := h.authenticate(r)
 		if err != nil {
-			writeError(w, err)
+			render(w, err)
 			return
 		}
 		// Only now, once the request is genuinely being served: recording it
@@ -131,10 +162,10 @@ func (h *Handlers) serve(next handler) http.HandlerFunc {
 
 		if err := next(w, r, who); err != nil {
 			var rendered apiError
-			if errors.As(err, &rendered) {
+			if asAPIError(err, &rendered) {
 				reqlog.Annotate(r.Context(), reqlog.Annotation{ErrorCode: rendered.code})
 			}
-			writeError(w, err)
+			render(w, err)
 		}
 	}
 }
@@ -526,9 +557,14 @@ type errorBody struct {
 	Param   string `json:"param,omitempty"`
 }
 
+// asAPIError is errors.As for the one error type this package renders, named
+// so the three surfaces read the same and none of them reaches for errors.As
+// with the wrong target.
+func asAPIError(err error, target *apiError) bool { return errors.As(err, target) }
+
 func writeError(w http.ResponseWriter, err error) {
 	var rendered apiError
-	if !errors.As(err, &rendered) {
+	if !asAPIError(err, &rendered) {
 		rendered = internalError(err)
 	}
 	if rendered.status == http.StatusUnauthorized {

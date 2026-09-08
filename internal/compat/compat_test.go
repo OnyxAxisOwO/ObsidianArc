@@ -59,13 +59,21 @@ type stubUpstream struct {
 	body   string
 	frames []string
 	status int
+	// What the server was last asked for, decoded. Tool support is mostly a
+	// question of what leaves this instance, so the tests need to read it.
+	sent map[string]any
 }
 
 func newStubUpstream(t *testing.T) *stubUpstream {
 	t.Helper()
 	stub := &stubUpstream{status: 200}
 	stub.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		decoded := map[string]any{}
+		_ = json.Unmarshal(raw, &decoded)
+
 		stub.mu.Lock()
+		stub.sent = decoded
 		body, frames, status := stub.body, append([]string(nil), stub.frames...), stub.status
 		stub.mu.Unlock()
 
@@ -110,6 +118,12 @@ func (s *stubUpstream) fail(status int, body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.status, s.body, s.frames = status, body, nil
+}
+
+func (s *stubUpstream) received() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sent
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -624,13 +638,29 @@ func TestFinishReasonIsNormalisedNotForwarded(t *testing.T) {
 		"refusal":        "content_filter",
 		"content_filter": "content_filter",
 		"":               "stop",
-		"tool_use":       "stop",
+		// Both families' word for the same thing, under OpenAI's.
+		"tool_use":   "tool_calls",
+		"tool_calls": "tool_calls",
 	}
 	for upstream, want := range cases {
-		got := finishReason(upstream)
+		got := finishReason(upstream, 0)
 		if got == nil || *got != want {
 			t.Errorf("finishReason(%q) = %v, want %q", upstream, got, want)
 		}
+	}
+}
+
+// An agent's loop branches on this field. A provider that ended a turn with
+// calls but called it "stop" — several compatible servers do — would stop the
+// loop with the calls still in the client's hand.
+func TestFinishReasonSaysToolCallsWhenThereAreSome(t *testing.T) {
+	if got := finishReason("stop", 2); got == nil || *got != "tool_calls" {
+		t.Errorf("finishReason(stop, 2) = %v, want tool_calls", got)
+	}
+	// Except where the turn was cut short: that is what the client needs to
+	// hear, and the arguments it was given may be half-written.
+	if got := finishReason("max_tokens", 1); got == nil || *got != "length" {
+		t.Errorf("finishReason(max_tokens, 1) = %v, want length", got)
 	}
 }
 
@@ -976,6 +1006,11 @@ func TestAnUnverifiedAccountIsNotLockedOutOfTheAPI(t *testing.T) {
 	// No guard, which is what an instance that does not require verification
 	// amounts to: nothing refuses, so nothing should.
 	f.handlers.Guard = nil
+	// Primed, so the turn below is a turn that worked. Without this the
+	// upstream fails, and a streamed reply reports that inside a 200 — which
+	// is what this test used to assert on, and would have kept asserting
+	// however broken the request was.
+	f.upstream.reply(answer)
 	if res := f.do(t, http.MethodGet, "/v1/models", token, ""); res.Code != http.StatusOK {
 		t.Fatalf("listing models: %d %s", res.Code, res.Body.String())
 	}
@@ -1066,6 +1101,7 @@ func TestKeyModelRestrictionEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 1. Calling with the allowed model succeeds
+	f.upstream.reply(answer)
 	res := f.do(t, http.MethodPost, "/v1/chat/completions", restrictedToken,
 		fmt.Sprintf(`{"model": "%s", "messages": [{"role": "user", "content": "hi"}]}`, f.model.ID))
 	if res.Code != http.StatusOK {

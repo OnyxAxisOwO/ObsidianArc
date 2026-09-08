@@ -48,6 +48,21 @@ type anthropicImageBlock struct {
 	} `json:"source"`
 }
 
+type anthropicToolUseBlock struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// An object here, where the other protocol carries the same thing as
+	// JSON text.
+	Input json.RawMessage `json:"input"`
+}
+
+type anthropicToolResultBlock struct {
+	Type      string `json:"type"`
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+}
+
 func (a anthropicAdapter) buildBody(p Provider, req ChatRequest) (map[string]any, bool) {
 	messages, carriedImages := a.buildMessages(req)
 
@@ -98,10 +113,66 @@ func (a anthropicAdapter) buildBody(p Provider, req ChatRequest) (map[string]any
 		body["system"] = req.System
 	}
 
+	if len(req.Tools) > 0 {
+		body["tools"] = anthropicTools(req.Tools)
+		// While thinking is on the API accepts only auto and none, so a
+		// forced choice is dropped rather than made into a failed turn —
+		// the same trade as the temperature above.
+		if choice, ok := anthropicToolChoice(req.ToolChoice); ok &&
+			(!thinking || req.ToolChoice.Mode == ToolChoiceNone) {
+			body["tool_choice"] = choice
+		}
+	}
+
 	for key, value := range req.Extra {
 		body[key] = value
 	}
 	return body, carriedImages
+}
+
+func anthropicTools(tools []Tool) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		entry := map[string]any{
+			"name": tool.Name,
+			// The same schema under the name this protocol gives the field.
+			"input_schema": schemaOrEmpty(tool.Parameters),
+		}
+		if tool.Description != "" {
+			entry["description"] = tool.Description
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func anthropicToolChoice(choice ToolChoice) (any, bool) {
+	switch choice.Mode {
+	case ToolChoiceNone:
+		return map[string]any{"type": "none"}, true
+	case ToolChoiceRequired:
+		// "any" is this protocol's word for "call something".
+		return map[string]any{"type": "any"}, true
+	case ToolChoiceNamed:
+		if choice.Name == "" {
+			return nil, false
+		}
+		return map[string]any{"type": "tool", "name": choice.Name}, true
+	}
+	return nil, false
+}
+
+// toolInput is a call's arguments as this protocol wants them: an object.
+//
+// Anything that will not parse becomes an empty one. The arguments are
+// already lost at that point, and sending them raw would put malformed JSON
+// in the request body, which loses the whole turn instead of one call.
+func toolInput(arguments string) json.RawMessage {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" || !json.Valid([]byte(trimmed)) {
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(trimmed)
 }
 
 func reasoningBudget(effort Effort) int {
@@ -124,7 +195,7 @@ func (anthropicAdapter) buildMessages(req ChatRequest) ([]anthropicMessage, bool
 	carriedImages := false
 
 	for _, message := range req.Messages {
-		blocks := make([]any, 0, len(message.Parts))
+		var results, images, calls []any
 		text := strings.Builder{}
 
 		for _, part := range message.Parts {
@@ -141,20 +212,46 @@ func (anthropicAdapter) buildMessages(req ChatRequest) ([]anthropicMessage, bool
 				block.Source.Type = "base64"
 				block.Source.MediaType = part.MediaType
 				block.Source.Data = base64.StdEncoding.EncodeToString(part.Data)
-				blocks = append(blocks, block)
+				images = append(images, block)
 				carriedImages = true
+			case PartToolCall:
+				if part.ToolName == "" {
+					continue
+				}
+				calls = append(calls, anthropicToolUseBlock{
+					Type: "tool_use", ID: part.ToolCallID, Name: part.ToolName,
+					Input: toolInput(part.ToolArgs),
+				})
+			case PartToolResult:
+				if part.ToolCallID == "" {
+					continue
+				}
+				results = append(results, anthropicToolResultBlock{
+					Type: "tool_result", ToolUseID: part.ToolCallID, Content: part.Text,
+				})
 			}
 		}
 
-		// Text first: the models follow an instruction better when it
-		// precedes the pictures it is about.
+		// The order the API requires, and the order that reads best.
+		//
+		// Tool results head their turn — the API refuses a turn whose results
+		// come after anything else. Text precedes the pictures it is about,
+		// because the models follow an instruction better that way. Tool
+		// calls come last, after whatever the model said about making them.
+		blocks := make([]any, 0, len(results)+len(images)+len(calls)+1)
+		blocks = append(blocks, results...)
 		if text.Len() > 0 {
-			blocks = append([]any{anthropicTextBlock{Type: "text", Text: text.String()}}, blocks...)
+			blocks = append(blocks, anthropicTextBlock{Type: "text", Text: text.String()})
 		}
+		blocks = append(blocks, images...)
+		blocks = append(blocks, calls...)
 		if len(blocks) == 0 {
 			continue
 		}
 
+		// A tool result is a user turn here, which is the whole reason the
+		// unified layer keeps them apart: the other protocol gives them a
+		// role of their own.
 		role := "user"
 		if message.Role == RoleAssistant {
 			role = "assistant"
@@ -218,9 +315,12 @@ func (a anthropicAdapter) Chat(ctx context.Context, client *http.Client, p Provi
 func (anthropicAdapter) readOnce(response *http.Response) (Result, error) {
 	var payload struct {
 		Content []struct {
-			Type     string `json:"type"`
-			Text     string `json:"text"`
-			Thinking string `json:"thinking"`
+			Type     string          `json:"type"`
+			Text     string          `json:"text"`
+			Thinking string          `json:"thinking"`
+			ID       string          `json:"id"`
+			Name     string          `json:"name"`
+			Input    json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
@@ -242,6 +342,14 @@ func (anthropicAdapter) readOnce(response *http.Response) (Result, error) {
 			result.Text += block.Text
 		case "thinking":
 			result.Reasoning += block.Thinking
+		case "tool_use":
+			if block.Name == "" {
+				continue
+			}
+			result.ToolCalls = append(result.ToolCalls, ToolCall{
+				ID: block.ID, Name: block.Name,
+				Arguments: toolArguments(string(block.Input)),
+			})
 		}
 	}
 	result.FinishReason = payload.StopReason
@@ -250,12 +358,23 @@ func (anthropicAdapter) readOnce(response *http.Response) (Result, error) {
 }
 
 type anthropicStreamEvent struct {
-	Type  string `json:"type"`
+	Type string `json:"type"`
+	// Which content block this frame belongs to. Tool calls are the reason it
+	// matters: a model may open several at once and their argument fragments
+	// interleave.
+	Index        int `json:"index"`
+	ContentBlock struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"content_block"`
 	Delta struct {
-		Type       string `json:"type"`
-		Text       string `json:"text"`
-		Thinking   string `json:"thinking"`
-		StopReason string `json:"stop_reason"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking string `json:"thinking"`
+		// A tool call's arguments, a few characters at a time.
+		PartialJSON string `json:"partial_json"`
+		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
 	Message struct {
 		Usage struct {
@@ -275,6 +394,13 @@ type anthropicStreamEvent struct {
 func (anthropicAdapter) readStream(ctx context.Context, response *http.Response, sink Sink) (Result, error) {
 	result := Result{Streamed: true}
 	var sinkErr error
+
+	// A tool call is its own content block: a start frame naming it, then the
+	// arguments as JSON fragments, then a stop. Each call is emitted at its
+	// stop — the first moment the arguments are whole, and earlier than the
+	// end of the message, so an agent can begin work while the model is
+	// still writing the next one.
+	pending := map[int]*ToolCall{}
 
 	err := readEventStream(response.Body, func(data []byte) error {
 		var event anthropicStreamEvent
@@ -309,6 +435,28 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 			result.FinishReason = event.Delta.StopReason
 		}
 
+		switch event.Type {
+		case "content_block_start":
+			if event.ContentBlock.Type == "tool_use" && event.ContentBlock.Name != "" {
+				pending[event.Index] = &ToolCall{
+					ID: event.ContentBlock.ID, Name: event.ContentBlock.Name,
+				}
+			}
+		case "content_block_stop":
+			call, open := pending[event.Index]
+			if !open {
+				return nil
+			}
+			delete(pending, event.Index)
+			call.Arguments = toolArguments(call.Arguments)
+			result.ToolCalls = append(result.ToolCalls, *call)
+			if err := sink(Event{Type: EventToolCall, ToolCall: *call}); err != nil {
+				sinkErr = err
+				return err
+			}
+			return nil
+		}
+
 		switch event.Delta.Type {
 		case "text_delta":
 			if event.Delta.Text == "" {
@@ -327,6 +475,13 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 			if err := sink(Event{Type: EventReasoning, Text: event.Delta.Thinking}); err != nil {
 				sinkErr = err
 				return err
+			}
+		case "input_json_delta":
+			// A fragment for a call that never started, or one already
+			// emitted, has nowhere to go. Both mean a frame arrived out of
+			// order, which is not worth ending a good generation over.
+			if call, open := pending[event.Index]; open {
+				call.Arguments += event.Delta.PartialJSON
 			}
 		}
 		return nil

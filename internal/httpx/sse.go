@@ -23,9 +23,14 @@ type SSE struct {
 // only if the response cannot be flushed, which would make streaming
 // pointless — every byte would sit in a buffer until the handler returned.
 func NewSSE(w http.ResponseWriter) (*SSE, error) {
-	rc := http.NewResponseController(w)
-	if err := rc.Flush(); err != nil {
-		return nil, fmt.Errorf("sse: response is not flushable: %w", err)
+	// Asked without flushing, because a flush is what commits the response:
+	// it sends the header block exactly as it stands, and at this point none
+	// of the headers below are on it. Probing with a real flush is how the
+	// stream went out with no Content-Type at all — every header set after
+	// the probe was one the client never saw, including the one that says
+	// this is an event stream.
+	if !canFlush(w) {
+		return nil, fmt.Errorf("sse: response is not flushable")
 	}
 
 	header := w.Header()
@@ -38,8 +43,26 @@ func NewSSE(w http.ResponseWriter) (*SSE, error) {
 	header.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	stream := &SSE{w: w, rc: rc}
+	stream := &SSE{w: w, rc: http.NewResponseController(w)}
 	return stream, stream.flush()
+}
+
+// canFlush reports whether a flush will reach the client, without performing
+// one. It walks the same Unwrap chain http.ResponseController does, because
+// the controller can only answer the question by flushing — which is exactly
+// the side effect NewSSE has to avoid until its headers are set.
+func canFlush(w http.ResponseWriter) bool {
+	for {
+		switch w.(type) {
+		case interface{ FlushError() error }, http.Flusher:
+			return true
+		}
+		unwrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return false
+		}
+		w = unwrapper.Unwrap()
+	}
 }
 
 // Event writes one named event carrying a JSON payload.
