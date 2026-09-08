@@ -8,6 +8,7 @@
 
 import { computed, nextTick, ref } from 'vue';
 import { updateMessage, attachmentURL, type Message, type MessageStats } from '@/api/chat';
+import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import { t } from '@/composables/useI18n';
 import { copyToClipboard } from '@/chat/markdown';
@@ -24,6 +25,7 @@ const props = defineProps<{ message: Message }>();
 const editor = ref<HTMLTextAreaElement | null>(null);
 const draft = ref('');
 const saving = ref(false);
+const zoomedImage = ref<{ url: string; alt?: string } | null>(null);
 
 const editing = computed(() => editingID.value === props.message.id);
 const images = computed(() => props.message.attachments ?? []);
@@ -202,6 +204,7 @@ function describe(value: MessageStats): string {
                 :src="attachmentURL(img.id)"
                 class="ai-chat-generated-img"
                 :alt="props.message.content || 'Generated image'"
+                @click="zoomedImage = { url: attachmentURL(img.id), alt: props.message.content || '' }"
               />
               <div class="ai-chat-generated-bar">
                 <a
@@ -234,5 +237,12 @@ function describe(value: MessageStats): string {
         </template>
       </template>
     </template>
+
+    <OaImageLightbox
+      v-if="zoomedImage"
+      :src="zoomedImage.url"
+      :alt="zoomedImage.alt"
+      @close="zoomedImage = null"
+    />
   </div>
 </template>

@@ -641,6 +641,7 @@ export const zh: Record<StringKey, string> = {
   imageSize: '画面比例',
   imageResult: '生成结果',
   noImageCapableModel: '当前暂无可用生图模型。',
+  imageStyleNone: '无',
   styleVivid: '生动',
   styleNatural: '自然',
   styleAnime: '动漫',
@@ -652,6 +653,9 @@ export const zh: Record<StringKey, string> = {
   sizeSquare: '正方形 (1:1)',
   sizePortrait: '竖屏 (9:16)',
   sizeLandscape: '横屏 (16:9)',
+  ratioSquare: '正方形',
+  ratioPortrait: '竖屏',
+  ratioLandscape: '横屏',
 
   // --- announcements
   announcements: '公告',

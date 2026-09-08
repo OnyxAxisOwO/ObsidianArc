@@ -9,6 +9,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { generateImages, type ImageGenerationItem } from '@/api/images';
 import OaFormSection from '@/components/OaFormSection.vue';
+import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import { t } from '@/composables/useI18n';
@@ -19,12 +20,13 @@ const router = useRouter();
 
 const selectedModelID = ref('');
 const prompt = ref('');
-const selectedStyle = ref('vivid');
+const selectedStyle = ref('');
 const selectedSize = ref('1024x1024');
 
 const busy = ref(false);
 const error = ref('');
 const history = ref<ImageGenerationItem[]>([]);
+const zoomedImage = ref<{ url: string; alt?: string } | null>(null);
 
 const imageCapableModels = computed(() =>
   models.value.filter((m) => m.usable !== false && m.supports_image_gen),
@@ -39,6 +41,7 @@ const modelOptions = computed(() => {
 });
 
 const styleOptions = computed(() => [
+  { value: '', label: t('imageStyleNone') },
   { value: 'vivid', label: t('styleVivid') },
   { value: 'natural', label: t('styleNatural') },
   { value: 'anime', label: t('styleAnime') },
@@ -50,9 +53,9 @@ const styleOptions = computed(() => [
 ]);
 
 const sizeOptions = computed(() => [
-  { value: '1024x1024', label: t('sizeSquare') },
-  { value: '1024x1792', label: t('sizePortrait') },
-  { value: '1792x1024', label: t('sizeLandscape') },
+  { value: '1024x1024', ratio: '1:1', label: t('ratioSquare'), boxClass: 'square' },
+  { value: '1024x1792', ratio: '9:16', label: t('ratioPortrait'), boxClass: 'portrait' },
+  { value: '1792x1024', ratio: '16:9', label: t('ratioLandscape'), boxClass: 'landscape' },
 ]);
 
 onMounted(async () => {
@@ -130,11 +133,25 @@ function imageSource(img: ImageGenerationItem): string {
       :options="styleOptions"
     />
 
-    <OaSelectField
-      v-model="selectedSize"
-      :label="t('imageSize')"
-      :options="sizeOptions"
-    />
+    <div class="oa-field">
+      <label class="oa-field-label">{{ t('imageSize') }}</label>
+      <div class="oa-ratio-grid">
+        <button
+          v-for="opt in sizeOptions"
+          :key="opt.value"
+          type="button"
+          class="oa-ratio-tile"
+          :class="{ active: selectedSize === opt.value }"
+          @click="selectedSize = opt.value"
+        >
+          <div class="oa-ratio-preview">
+            <div class="oa-ratio-box" :class="opt.boxClass" />
+          </div>
+          <span class="oa-ratio-name">{{ opt.ratio }}</span>
+          <span class="oa-ratio-sub">{{ opt.label }}</span>
+        </button>
+      </div>
+    </div>
 
     <div class="oa-field">
       <label class="oa-field-label" for="image-lab-prompt">{{ t('imagePrompt') }}</label>
@@ -162,6 +179,7 @@ function imageSource(img: ImageGenerationItem): string {
           :src="imageSource(img)"
           class="oa-image-lab-img"
           :alt="img.revised_prompt || prompt"
+          @click="zoomedImage = { url: imageSource(img), alt: img.revised_prompt || prompt }"
         />
         <p v-if="img.revised_prompt" class="oa-field-hint" style="margin-top: 8px;">
           {{ img.revised_prompt }}
@@ -181,5 +199,12 @@ function imageSource(img: ImageGenerationItem): string {
         </div>
       </div>
     </div>
+
+    <OaImageLightbox
+      v-if="zoomedImage"
+      :src="zoomedImage.url"
+      :alt="zoomedImage.alt"
+      @close="zoomedImage = null"
+    />
   </OaPanel>
 </template>

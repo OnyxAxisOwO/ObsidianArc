@@ -939,6 +939,12 @@
   height: auto;
   display: block;
   object-fit: contain;
+  cursor: zoom-in;
+  transition: opacity 0.15s ease;
+
+  &:hover {
+    opacity: 0.95;
+  }
 }
 
 .ai-chat-generated-bar {

@@ -663,6 +663,7 @@ const en = {
   imageSize: 'Aspect ratio',
   imageResult: 'Results',
   noImageCapableModel: 'No image generation model is currently available.',
+  imageStyleNone: 'None',
   styleVivid: 'Vivid',
   styleNatural: 'Natural',
   styleAnime: 'Anime',
@@ -674,6 +675,9 @@ const en = {
   sizeSquare: 'Square (1:1)',
   sizePortrait: 'Portrait (9:16)',
   sizeLandscape: 'Landscape (16:9)',
+  ratioSquare: 'Square',
+  ratioPortrait: 'Portrait',
+  ratioLandscape: 'Landscape',
 
   // --- announcements
   announcements: 'Announcements',

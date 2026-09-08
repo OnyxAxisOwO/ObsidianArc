@@ -38,7 +38,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'select', row: T): void;
-  (event: 'sort', next: SortState): void;
+  (event: 'sort', next: SortState | null): void;
   (event: 'reorder', rows: T[]): void;
 }>();
 
@@ -81,11 +81,17 @@ function sortState(index: number): 'ascending' | 'descending' | 'none' {
   return props.sort.descending ? 'descending' : 'ascending';
 }
 
-// The same column again reverses; a different one starts ascending, because
-// arriving at a column already reversed reads as a bug.
+// A different column starts ascending; the same column again reverses to
+// descending; a third click restores natural unsorted order (null) so that
+// drag-and-drop reordering becomes available again.
 function toggleSort(index: number): void {
-  const active = props.sort?.column === index;
-  emit('sort', { column: index, descending: active && !props.sort!.descending });
+  if (props.sort?.column !== index) {
+    emit('sort', { column: index, descending: false });
+  } else if (!props.sort.descending) {
+    emit('sort', { column: index, descending: true });
+  } else {
+    emit('sort', null);
+  }
 }
 
 function onDragStart(event: DragEvent, index: number): void {

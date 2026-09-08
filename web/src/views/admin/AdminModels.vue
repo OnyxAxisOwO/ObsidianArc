@@ -176,7 +176,7 @@ function uptime(row: AdminModel): { text: string; tone: 'default' | 'muted' | 'd
   return result;
 }
 
-function onSort(next: SortState): void {
+function onSort(next: SortState | null): void {
   order.value = next;
   sortState = next;
 }

@@ -2390,10 +2390,191 @@
   border-radius: 8px;
   object-fit: contain;
   background: var(--ai-surface-card);
+  cursor: zoom-in;
+  transition: opacity 0.15s ease;
+
+  &:hover {
+    opacity: 0.95;
+  }
 }
 
 .oa-image-lab-actions {
   display: flex;
   justify-content: flex-end;
   margin-top: 10px;
+}
+
+/* Aspect ratio selector tiles with shape preview silhouettes. */
+.oa-ratio-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.oa-ratio-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 8px 12px;
+  background: var(--ai-surface-container-low);
+  border: 1.5px solid var(--ai-border);
+  border-radius: 14px;
+  cursor: pointer;
+  color: var(--ai-text-secondary);
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+  user-select: none;
+  font-family: inherit;
+  outline: none;
+
+  &:hover {
+    background: var(--ai-surface-card);
+    border-color: var(--ai-text-muted);
+    color: var(--ai-text-primary);
+  }
+
+  &:active {
+    transform: scale(0.97);
+  }
+
+  &.active {
+    background: var(--ai-surface-card);
+    border-color: var(--ai-primary);
+    color: var(--ai-text-primary);
+    box-shadow: 0 0 0 1px var(--ai-primary);
+
+    .oa-ratio-box {
+      border-color: var(--ai-primary);
+      border-width: 2px;
+    }
+
+    .oa-ratio-name {
+      color: var(--ai-primary);
+      font-weight: 600;
+    }
+  }
+}
+
+.oa-ratio-preview {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+.oa-ratio-box {
+  border: 1.5px solid var(--ai-text-muted);
+  border-radius: 4px;
+  background: transparent;
+  transition: all 0.15s ease;
+
+  &.square {
+    width: 24px;
+    height: 24px;
+  }
+
+  &.portrait {
+    width: 17px;
+    height: 30px;
+  }
+
+  &.landscape {
+    width: 30px;
+    height: 17px;
+  }
+}
+
+.oa-ratio-name {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.oa-ratio-sub {
+  font-size: 11px;
+  color: var(--ai-text-muted);
+  margin-top: 3px;
+  line-height: 1.2;
+}
+
+/* --- image lightbox overlay ------------------------------------------------ */
+
+/* Dark frosted backdrop to inspect generated outputs without viewport bounds. */
+.oa-lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.oa-lightbox-overlay.open {
+  opacity: 1;
+}
+
+.oa-lightbox-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: min(92vw, 1100px);
+  max-height: 90vh;
+  transform: scale(0.96);
+  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.oa-lightbox-overlay.open .oa-lightbox-card {
+  transform: scale(1);
+}
+
+.oa-lightbox-close {
+  position: absolute;
+  top: -42px;
+  right: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.18);
+  border: none;
+  border-radius: 50%;
+  color: #ffffff;
+  cursor: pointer;
+  transition: background 0.15s ease;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.35);
+  }
+}
+
+.oa-lightbox-img {
+  max-width: 100%;
+  max-height: calc(85vh - 72px);
+  object-fit: contain;
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+  background: var(--ai-surface-card);
+}
+
+.oa-lightbox-caption {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: #e4e4e7;
+  max-width: 600px;
+  text-align: center;
+  line-height: 1.4;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+.oa-lightbox-actions {
+  margin-top: 12px;
 }
