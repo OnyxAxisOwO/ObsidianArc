@@ -2404,6 +2404,12 @@
   margin-top: 10px;
 }
 
+/* Tighten top padding for image lab panel so form starts right under the title. */
+.oa-panel-body.oa-image-lab-body {
+  padding-top: 6px;
+  gap: 12px;
+}
+
 /* Aspect ratio selector tiles with shape preview silhouettes. */
 .oa-ratio-grid {
   display: grid;
@@ -2416,7 +2422,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 14px 8px 12px;
+  padding: 12px 6px 10px;
   background: var(--ai-surface-container-low);
   border: 1.5px solid var(--ai-border);
   border-radius: 14px;
@@ -2429,8 +2435,13 @@
 
   &:hover {
     background: var(--ai-surface-card);
-    border-color: var(--ai-text-muted);
-    color: var(--ai-text-primary);
+    border-color: var(--ai-text-secondary);
+    color: var(--ai-text);
+
+    .oa-ratio-rect {
+      stroke: var(--ai-text);
+      fill: rgba(125, 125, 125, 0.14);
+    }
   }
 
   &:active {
@@ -2440,12 +2451,13 @@
   &.active {
     background: var(--ai-surface-card);
     border-color: var(--ai-primary);
-    color: var(--ai-text-primary);
+    color: var(--ai-text);
     box-shadow: 0 0 0 1px var(--ai-primary);
 
-    .oa-ratio-box {
-      border-color: var(--ai-primary);
-      border-width: 2px;
+    .oa-ratio-rect {
+      stroke: var(--ai-primary);
+      stroke-width: 2.5;
+      fill: rgba(125, 125, 125, 0.18);
     }
 
     .oa-ratio-name {
@@ -2455,34 +2467,25 @@
   }
 }
 
-.oa-ratio-preview {
+.oa-ratio-icon-wrap {
   height: 38px;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
-.oa-ratio-box {
-  border: 1.5px solid var(--ai-text-muted);
-  border-radius: 4px;
-  background: transparent;
+.oa-ratio-svg {
+  width: 34px;
+  height: 34px;
+  display: block;
+}
+
+.oa-ratio-rect {
+  fill: rgba(125, 125, 125, 0.08);
+  stroke: var(--ai-text-secondary);
+  stroke-width: 1.8;
   transition: all 0.15s ease;
-
-  &.square {
-    width: 24px;
-    height: 24px;
-  }
-
-  &.portrait {
-    width: 17px;
-    height: 30px;
-  }
-
-  &.landscape {
-    width: 30px;
-    height: 17px;
-  }
 }
 
 .oa-ratio-name {
@@ -2493,7 +2496,7 @@
 
 .oa-ratio-sub {
   font-size: 11px;
-  color: var(--ai-text-muted);
+  color: var(--ai-text-secondary);
   margin-top: 3px;
   line-height: 1.2;
 }

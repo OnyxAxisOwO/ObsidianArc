@@ -112,11 +112,10 @@ function imageSource(img: ImageGenerationItem): string {
     :busy="busy"
     :error="error"
     :width="460"
+    body-class="oa-image-lab-body"
     @close="router.replace('/')"
     @confirm="generate"
   >
-    <OaFormSection :title="t('imageLabSettings')" />
-
     <p v-if="!modelOptions.length" class="oa-field-hint">
       {{ t('noImageCapableModel') }}
     </p>
@@ -144,8 +143,34 @@ function imageSource(img: ImageGenerationItem): string {
           :class="{ active: selectedSize === opt.value }"
           @click="selectedSize = opt.value"
         >
-          <div class="oa-ratio-preview">
-            <div class="oa-ratio-box" :class="opt.boxClass" />
+          <div class="oa-ratio-icon-wrap">
+            <svg
+              v-if="opt.ratio === '1:1'"
+              class="oa-ratio-svg"
+              viewBox="0 0 32 32"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect x="5" y="5" width="22" height="22" rx="4" class="oa-ratio-rect" />
+            </svg>
+            <svg
+              v-else-if="opt.ratio === '9:16'"
+              class="oa-ratio-svg"
+              viewBox="0 0 32 32"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect x="9" y="3" width="14" height="26" rx="3.5" class="oa-ratio-rect" />
+            </svg>
+            <svg
+              v-else-if="opt.ratio === '16:9'"
+              class="oa-ratio-svg"
+              viewBox="0 0 32 32"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect x="3" y="9" width="26" height="14" rx="3.5" class="oa-ratio-rect" />
+            </svg>
           </div>
           <span class="oa-ratio-name">{{ opt.ratio }}</span>
           <span class="oa-ratio-sub">{{ opt.label }}</span>
