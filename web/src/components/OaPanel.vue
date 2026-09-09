@@ -307,7 +307,7 @@ defineExpose({
     <aside
       ref="panel"
       class="oa-panel"
-      :class="{ open: shown, fullscreen: zoomed, zooming, swapping }"
+      :class="{ open: shown, fullscreen: zoomed, zooming, swapping, 'no-footer': !props.footer }"
       :style="{ '--oa-panel-width': `${width}px` }"
     >
       <div class="oa-panel-head">

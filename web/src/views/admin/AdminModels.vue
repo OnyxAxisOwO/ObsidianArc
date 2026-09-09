@@ -7,6 +7,7 @@
 // composer stops offering attachments, or the thinking toggle disappears.
 
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   adminApi,
   type AdminModel, type Group, type Meta, type ModelHealth, type Provider,
@@ -31,15 +32,28 @@ import OaTierList from '@/components/OaTierList.vue';
 import type { ListItem } from '@/components/list-items';
 import type { Column, SortState } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
-import { IconCopy } from '@/icons';
+import { IconCheck, IconCopy } from '@/icons';
 import { compactNumber } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import ReasoningTiers from './ReasoningTiers.vue';
 import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
 
+const router = useRouter();
 const view = useAdminView();
 view.setTitle(t('modelsTitle'), t('modelsSubtitle'));
+
+const idCopied = ref(false);
+
+async function copyID(value: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(value);
+    idCopied.value = true;
+    setTimeout(() => { idCopied.value = false; }, 1500);
+  } catch {
+    // clipboard failure ignored
+  }
+}
 
 const models = ref<AdminModel[]>([]);
 const providers = ref<Provider[]>([]);
@@ -280,6 +294,7 @@ const routeChoices = computed(() => [
 function open(row: AdminModel | null, from: AdminModel | null = null): void {
   existing.value = row;
   template.value = from;
+  idCopied.value = false;
   panelError.value = '';
   detected.value = null;
   detectStatus.value = '';
@@ -715,10 +730,29 @@ let sortState: SortState | null = null;
       </div>
     </template>
     <!-- A field that shows a value the form cannot change. -->
-    <div v-else class="oa-field">
-      <span class="oa-field-label">{{ t('colProvider') }}</span>
-      <span class="oa-field-hint">{{ existing!.provider_name }}</span>
-    </div>
+    <template v-else>
+      <div class="oa-facts" style="margin-bottom: 14px;">
+        <div class="oa-fact">
+          <span class="oa-fact-label">{{ t('modelUniqueID') }}</span>
+          <div style="display: inline-flex; align-items: center; gap: 4px;">
+            <span class="oa-fact-value mono">{{ existing!.id }}</span>
+            <OaIconButton
+              class="oa-icon-btn"
+              :label="idCopied ? t('copied') : t('copy')"
+              style="width: 22px; height: 22px; padding: 0;"
+              @click="copyID(existing!.id)"
+            >
+              <IconCheck v-if="idCopied" :size="12" />
+              <IconCopy v-else :size="12" />
+            </OaIconButton>
+          </div>
+        </div>
+        <div class="oa-fact">
+          <span class="oa-fact-label">{{ t('colProvider') }}</span>
+          <span class="oa-fact-value">{{ existing!.provider_name }}</span>
+        </div>
+      </div>
+    </template>
 
     <OaTextField
       ref="modelIDField"
@@ -760,24 +794,35 @@ let sortState: SortState | null = null;
     <OaNumberField v-model="form.sortOrder" :label="t('sortOrder')" />
 
     <!-- Why a model is down, in the panel where somebody is about to act on it. -->
-    <div v-if="status" class="oa-form-section">
+    <div v-if="existing" class="oa-form-section">
       <h3 class="oa-drawer-subhead">{{ t('secHealth') }}</h3>
-      <p v-if="status.status.samples === 0" class="oa-field-hint">{{ t('healthNoEvidence') }}</p>
-      <template v-else>
-        <p class="oa-field-hint">
-          {{ t('healthSummary', {
-            uptime: (status.status.uptime * 100).toFixed(1),
-            users: status.status.user_samples,
-            system: status.status.system_samples,
-          }) }}
-        </p>
-        <p v-if="status.auto_disabled" class="oa-field-hint">{{ t('healthAutoDisabled') }}</p>
-        <div v-if="status.status.errors.length" class="oa-code-list">
-          <code v-for="failure in status.status.errors" :key="failure.code" class="oa-code-line">
-            {{ failure.count }}x  {{ failure.code }}{{ failure.message ? '  ' + failure.message : '' }}
-          </code>
-        </div>
+      <template v-if="status">
+        <p v-if="status.status.samples === 0" class="oa-field-hint">{{ t('healthNoEvidence') }}</p>
+        <template v-else>
+          <p class="oa-field-hint">
+            {{ t('healthSummary', {
+              uptime: (status.status.uptime * 100).toFixed(1),
+              users: status.status.user_samples,
+              system: status.status.system_samples,
+            }) }}
+          </p>
+          <p v-if="status.auto_disabled" class="oa-field-hint">{{ t('healthAutoDisabled') }}</p>
+          <div v-if="status.status.errors.length" class="oa-code-list">
+            <code v-for="failure in status.status.errors" :key="failure.code" class="oa-code-line">
+              {{ failure.count }}x  {{ failure.code }}{{ failure.message ? '  ' + failure.message : '' }}
+            </code>
+          </div>
+        </template>
       </template>
+      <div style="margin-top: 10px;">
+        <button
+          type="button"
+          class="oa-btn"
+          @click="router.push({ path: '/admin/logs', query: { model_id: existing.id, outcome: 'failed', window: '' } })"
+        >
+          {{ t('viewModelErrorHistory') }}
+        </button>
+      </div>
     </div>
 
     <OaFormSection :title="t('secGroupAccess')" />

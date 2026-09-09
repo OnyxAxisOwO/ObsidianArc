@@ -31,6 +31,7 @@ import KeysPanel from '@/views/KeysPanel.vue';
 import NotFoundView from '@/views/NotFoundView.vue';
 import RootView from '@/views/RootView.vue';
 import SettingsPanel from '@/views/SettingsPanel.vue';
+import UptimePanel from '@/views/UptimePanel.vue';
 import UsagePanel from '@/views/UsagePanel.vue';
 import VerifyView from '@/views/VerifyView.vue';
 
@@ -51,6 +52,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'usage', component: UsagePanel, meta: { auth: true } },
       { path: 'about', component: AboutPanel, meta: { auth: true } },
       { path: 'image-lab', component: ImageLabPanel, meta: { auth: true } },
+      { path: 'uptime', component: UptimePanel, meta: { auth: true } },
     ],
   },
 
@@ -92,6 +94,11 @@ router.beforeEach((to) => {
 
   // Someone signed in who is already where they were being sent.
   if (signedIn && (to.path === '/login' || to.path === '/register')) {
+    return { path: '/', replace: true };
+  }
+
+  // Uptime is available to admins, and to readers only if published.
+  if (to.path === '/uptime' && !isAdmin.value && !siteInfo.value.health_show_users) {
     return { path: '/', replace: true };
   }
 

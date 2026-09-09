@@ -184,6 +184,9 @@ noscript {
 ::-webkit-scrollbar-track,
 ::-webkit-scrollbar-corner {
   background: transparent;
+  /* An 8px inset prevents the thumb from reaching into the curved corner arcs
+     of rounded cards and dialogs (typically 12px to 18px radii). */
+  margin: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
@@ -242,8 +245,10 @@ noscript {
 
 .oa-overlay-track {
   position: absolute;
-  top: 4px;
-  bottom: 12px;
+  /* Inset enough from top and bottom so the thumb does not cut into or
+     exceed the 16px-18px corner radius curves of containing cards. */
+  top: 10px;
+  bottom: 14px;
   right: 4px;
   width: 6px;
   z-index: 20;

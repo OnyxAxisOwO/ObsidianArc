@@ -5,9 +5,9 @@ import OaAvatar from '@/components/OaAvatar.vue';
 import OaMenu from '@/components/OaMenu.vue';
 import OaMenuItem from '@/components/OaMenuItem.vue';
 import { t } from '@/composables/useI18n';
-import { IconChart, IconGear, IconImage, IconInfo, IconKey, IconLogout, IconSliders } from '@/icons';
+import { IconChart, IconGear, IconImage, IconInfo, IconKey, IconLogout, IconPulse, IconSliders } from '@/icons';
 import { displayName } from '@/lib/account';
-import { forget } from '@/stores/session';
+import { forget, siteInfo } from '@/stores/session';
 
 const props = defineProps<{ account: Account }>();
 
@@ -31,7 +31,7 @@ async function signOut(close: () => void): Promise<void> {
 </script>
 
 <template>
-  <OaMenu>
+  <OaMenu menu-class="oa-menu-account">
     <template #trigger="{ open, toggle }">
       <button
         type="button"
@@ -73,6 +73,13 @@ async function signOut(close: () => void): Promise<void> {
       </OaMenuItem>
       <OaMenuItem :title="t('imageLab')" @click="go(close, '/image-lab')">
         <template #leading><IconImage :size="14" /></template>
+      </OaMenuItem>
+      <OaMenuItem
+        v-if="props.account.role === 'admin' || siteInfo.health_show_users"
+        :title="t('uptimeTitle')"
+        @click="go(close, '/uptime')"
+      >
+        <template #leading><IconPulse :size="14" /></template>
       </OaMenuItem>
       <OaMenuItem :title="t('navUsage')" @click="go(close, '/usage')">
         <template #leading><IconChart :size="14" /></template>

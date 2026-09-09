@@ -179,6 +179,13 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  /* Matches the 18px card radius at the bottom so the track and contents do not bleed. */
+  border-radius: 0 0 18px 18px;
+}
+
+.oa-admin-body-wrap .oa-overlay-track {
+  top: 8px;
+  bottom: 16px;
 }
 
 .oa-admin-body {
@@ -790,6 +797,24 @@
   overflow: hidden;
 }
 
+/* When the panel has no footer, the scrolling body extends to the bottom
+   of the card. Clip it to the panel's 18px bottom corners so neither the
+   body nor its scrollbar bleeds past the card boundary. */
+.oa-panel.no-footer .oa-panel-body-wrap,
+.oa-panel:not(:has(.oa-panel-foot)) .oa-panel-body-wrap {
+  border-radius: 0 0 18px 18px;
+}
+
+.oa-panel-body-wrap .oa-overlay-track {
+  top: 8px;
+  bottom: 12px;
+}
+
+.oa-panel.no-footer .oa-panel-body-wrap .oa-overlay-track,
+.oa-panel:not(:has(.oa-panel-foot)) .oa-panel-body-wrap .oa-overlay-track {
+  bottom: 16px;
+}
+
 .oa-panel-body {
   display: flex;
   flex-direction: column;
@@ -1255,6 +1280,12 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  border-radius: 0 0 18px 18px;
+}
+
+.oa-panel:not(.fullscreen) .oa-settings-scroll-wrap .oa-overlay-track {
+  top: 8px;
+  bottom: 16px;
 }
 
 .oa-panel:not(.fullscreen) .oa-settings-scroll {
@@ -1308,6 +1339,12 @@
   min-height: 0;
   height: 100%;
   overflow: hidden;
+  border-radius: 14px;
+}
+
+.oa-panel.fullscreen .oa-settings-scroll-wrap .oa-overlay-track {
+  top: 8px;
+  bottom: 16px;
 }
 
 .oa-panel.fullscreen .oa-settings-scroll {
@@ -2580,4 +2617,130 @@
 
 .oa-lightbox-actions {
   margin-top: 12px;
+}
+
+/* --- uptime panel ----------------------------------------------------------- */
+
+.oa-uptime-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.oa-uptime-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-high);
+}
+
+.oa-uptime-banner.degraded {
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.oa-uptime-banner.outage {
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.oa-uptime-banner-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background-color: #10b981;
+  flex-shrink: 0;
+}
+
+.oa-uptime-banner.degraded .oa-uptime-banner-dot {
+  background-color: #f59e0b;
+}
+
+.oa-uptime-banner.outage .oa-uptime-banner-dot {
+  background-color: #ef4444;
+}
+
+.oa-uptime-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.oa-uptime-banner-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ai-text-primary);
+}
+
+.oa-uptime-banner-sub {
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-uptime-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oa-uptime-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+}
+
+.oa-uptime-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.oa-uptime-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background-color: var(--ai-outline-variant);
+
+  &.up {
+    background-color: #10b981;
+  }
+  &.degraded {
+    background-color: #f59e0b;
+  }
+  &.down {
+    background-color: #ef4444;
+  }
+}
+
+.oa-uptime-row-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.oa-uptime-row-title {
+  font-size: 13px;
+  color: var(--ai-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oa-uptime-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.oa-uptime-percentage {
+  font-size: 12px;
+  font-weight: 500;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ai-text-secondary);
 }

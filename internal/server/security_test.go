@@ -799,3 +799,91 @@ func TestUnknownAPIPathIsNotTheSPA(t *testing.T) {
 		t.Errorf("unknown API path answered %q", response.Header().Get("Content-Type"))
 	}
 }
+
+func TestUptimeAccessControl(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("founder", "a-good-password")
+	regular := in.register("visitor", "another-password")
+
+	// 1. Unauthenticated -> 401
+	if res := in.do(http.MethodGet, "/api/uptime", nil, nil); res.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous GET /api/uptime = %d, want 401", res.Code)
+	}
+
+	// 2. Regular user when health.show_users is false (default) -> 403
+	if res := in.do(http.MethodGet, "/api/uptime", nil, regular); res.Code != http.StatusForbidden {
+		t.Fatalf("regular user GET /api/uptime without show_users = %d, want 403", res.Code)
+	}
+
+	// 3. Admin user when health.show_users is false -> 200
+	if res := in.do(http.MethodGet, "/api/uptime", nil, admin); res.Code != http.StatusOK {
+		t.Fatalf("admin user GET /api/uptime = %d, want 200", res.Code)
+	}
+
+	// 4. Enable health.show_users
+	saved := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"health.show_users": "true",
+	}, admin)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("enable health.show_users: %d", saved.Code)
+	}
+
+	// 5. Regular user when health.show_users is true -> 200
+	if res := in.do(http.MethodGet, "/api/uptime", nil, regular); res.Code != http.StatusOK {
+		t.Fatalf("regular user GET /api/uptime with show_users = %d, want 200", res.Code)
+	}
+
+	// 6. Verify data isolation between admin and regular user:
+	// Regular users must not see hidden models or upstream provider names.
+	provRes := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "SecretUpstream", "kind": "openai", "base_url": "https://api.example.com/v1", "api_key": "sk-secret",
+	}, admin)
+	prov := decode[map[string]any](t, provRes)
+	provID := prov["provider"].(map[string]any)["id"].(string)
+
+	m1Res := in.do(http.MethodPost, "/api/admin/models", map[string]any{
+		"provider_id": provID, "model_id": "public-model", "display_name": "Public Model", "enabled": true,
+	}, admin)
+	if m1Res.Code != http.StatusCreated {
+		t.Fatalf("create public model: %d %s", m1Res.Code, m1Res.Body.String())
+	}
+
+	m2Res := in.do(http.MethodPost, "/api/admin/models", map[string]any{
+		"provider_id": provID, "model_id": "hidden-model", "display_name": "Hidden Model", "enabled": true, "hidden": true,
+	}, admin)
+	if m2Res.Code != http.StatusCreated {
+		t.Fatalf("create hidden model: %d %s", m2Res.Code, m2Res.Body.String())
+	}
+
+	adminRes := decode[map[string]any](t, in.do(http.MethodGet, "/api/uptime", nil, admin))
+	adminModels := adminRes["models"].([]any)
+	hasHidden := false
+	hasProvider := false
+	for _, raw := range adminModels {
+		item := raw.(map[string]any)
+		if item["display_name"] == "Hidden Model" {
+			hasHidden = true
+		}
+		if item["provider_name"] == "SecretUpstream" {
+			hasProvider = true
+		}
+	}
+	if !hasHidden {
+		t.Error("admin uptime response missing hidden model")
+	}
+	if !hasProvider {
+		t.Error("admin uptime response missing provider_name")
+	}
+
+	regRes := decode[map[string]any](t, in.do(http.MethodGet, "/api/uptime", nil, regular))
+	regModels := regRes["models"].([]any)
+	for _, raw := range regModels {
+		item := raw.(map[string]any)
+		if item["display_name"] == "Hidden Model" {
+			t.Error("regular user uptime response leaked hidden model")
+		}
+		if _, ok := item["provider_name"]; ok {
+			t.Errorf("regular user uptime response leaked provider_name: %v", item["provider_name"])
+		}
+	}
+}

@@ -92,6 +92,7 @@ const EMPTY_BODIES: Array<[RegExp, unknown]> = [
     top_models: [], top_users: [], series: [], bucket_ms: 3600000, recent: [],
   }],
   [/\/api\/models/, { models: [] }],
+  [/\/api\/uptime/, { uptime_sec: 10, models: [] }],
 ];
 
 function stubServer(): void {
@@ -214,6 +215,13 @@ describe('what moves, and what does not', () => {
     const panel = host.querySelector('.oa-panel');
     expect(panel).not.toBeNull();
     expect(panel?.classList.contains('open')).toBe(true);
+  });
+
+  it('mounts the uptime panel when navigated to', async () => {
+    adopt({ ...ACCOUNT, role: 'admin' });
+    await mountAt('/uptime');
+    expect(host.querySelector('.oa-panel')).not.toBeNull();
+    expect(host.querySelector('.oa-uptime-content')).not.toBeNull();
   });
 
   it('gives each backoffice section a fresh body, so its entry actually plays', async () => {

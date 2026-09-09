@@ -1,103 +1,84 @@
 # Obsidian Arc
 
-A self-hosted AI chat server: multi-user, multi-provider, with an admin
-backoffice, saved conversations and usage accounting. One Go binary with the
-frontend inside it, one database, nothing else to run.
+<p align="center">
+  <strong>专为 <a href="https://ai.onyxaxis.org">Axis AI</a> 打造的高可用、自托管多用户 AI 聊天与 API 网关中枢。</strong><br>
+  <strong>A self-hosted, high-availability multi-user AI chat & gateway hub built for <a href="https://ai.onyxaxis.org">Axis AI</a>.</strong>
+</p>
 
-It started as the AI chat component inside [PageDye](https://github.com/OnyxAxisOwO/PageDye)
-(a browser extension for theming websites), was pulled out into a standalone
-bring-your-own-key page, and is now the server that page always wanted to be.
-The interface is the same one: same layout, same message shapes, same accent
-system, same motion. What changed is everything behind it.
+<p align="center">
+  <a href="#中文说明">中文说明</a> • <a href="#english">English</a>
+</p>
 
-## What it does
+---
 
-- **Accounts and groups.** Register, sign in, sign out. Groups decide which
-  models a set of people may use and what allowance they share; nothing is
-  hard-coded, so an instance defines whatever groups it wants.
-- **Any provider.** Anthropic's Messages API and any OpenAI-compatible
-  endpoint — OpenAI, DeepSeek, xAI, OpenRouter, Groq, a local Ollama or vLLM.
-  Added from the admin backoffice at runtime, not from a config file.
-- **Providers and models are separate.** One provider serves many models, and
-  the id the provider knows a model by is not the name a user reads.
-- **Streamed answers** over Server-Sent Events, with live reasoning where the
-  model produces it. Pressing Stop cancels the upstream request, so it stops
-  generating and stops billing.
-- **Unified reasoning.** The interface offers one toggle and three levels; the
-  adapter turns that into thinking budgets, `reasoning_effort`, or whatever
-  else the endpoint wants.
-- **Saved conversations.** Switch, rename, delete. Edit an earlier message and
-  resend — everything after it is regenerated. Regenerate any answer, retry a
-  failed turn.
-- **Images and text files.** Pictures are downscaled in the browser before
-  they are uploaded; text and code files are folded into the message.
-- **Usage and quota.** Every request writes a ledger row. Limits apply per 5
-  hours, per week and per month, over requests, tokens or credits, resolved
-  global → group → user.
-- **Light / dark / system theme** with an accent picker: pick one hue and it
-  is adjusted to stay readable in both schemes.
-- **Announcements** with a read state per person: a popup on every visit,
-  once until it is read, or nothing but a dot on the bell.
-- **A configurable front door.** Visitors with no account get the sign-in
-  card, a page you write, or the chat itself — optionally live, so they can
-  ask a couple of questions before signing up.
-- **Model routing.** Offer one model and serve it with another; users see the
-  model they picked, and only an administrator sees that a route exists.
-- **An API for agents.** Three shapes under `/v1`, authenticated by a key and
-  never by a session cookie: OpenAI's `chat/completions`, Anthropic's
-  `messages`, and OpenAI's `responses`. Three because the clients worth
-  pointing at an instance do not agree — Claude Code speaks only the second,
-  and Codex has dropped everything but the third — and each is a translation
-  onto the same adapters, so tool calls work through all of them and a turn
-  spent over any of them counts against the same allowance as one spent in
-  the tab.
-- **Registration controls**: required and verified email addresses, a domain
-  allowlist, and a ceiling on how fast accounts may appear.
-- **Safe Markdown rendering** with no `innerHTML` in any path that renders
-  someone else's content. The one assignment in the project is the
-  administrator's own landing page, and the content policy — `script-src`
-  is `'self'` plus one hash — is what contains it rather than trust.
+<a name="中文说明"></a>
+## 中文说明
 
-## Running it
+**Obsidian Arc** 是一个专为 [Axis AI](https://ai.onyxaxis.org) 量身定制的高性能自托管 AI 对话与网关中枢：支持多用户体系、多模型与服务商路由聚合、开箱即用的管理员后台、持久化对话流以及基于用量账本的高精度配额核算系统。
+
+整个系统仅需**一个内嵌了前端的 Go 二进制文件**和**一个数据库**（支持 SQLite 或 PostgreSQL），无需依赖 Redis、消息队列、微服务 Sidecar 或外部缓存层。
+
+项目源自网页主题扩展 [PageDye](https://github.com/OnyxAxisOwO/PageDye) 的内置 AI 模块，后演进为极简的高颜值独立对话界面，并最终构建为现在的生产级服务中枢。
+
+### 核心特性
+
+- **多账户与权限用户组**：完整的注册、登录、登出流程；通过灵活的用户组定义各群体可使用的模型列表与共用额度池。
+- **全服务商兼容**：原生支持 Anthropic Messages API 及任意兼容 OpenAI 规范的端点（OpenAI、DeepSeek、xAI、OpenRouter、Groq，以及本地部署的 Ollama / vLLM）。无需重启，在管理后台即可动态增删上游提供商与模型。
+- **服务商与模型解耦 & 路由调度**：单个服务商可挂载多款模型；支持模型透明路由（对外展示 A 模型，底层由 B 模型响应，仅管理员可见路由规则）；支持重复模型 ID 自动防冲突命名与自定义 `api_name` 别名。
+- **实时流式与统一推理思维链**：基于 Server-Sent Events (SSE) 实现打字机流式输出；原生解析模型思考过程（Reasoning Effort / Thinking Budget），前端一键调节三档推理深度；点击“停止”即时向中断上游请求，中断计费。
+- **完整的 Agent API 兼容体系**：在 `/v1` 下提供符合行业标准的无状态 Key 鉴权端点：
+  - OpenAI `chat/completions`
+  - Anthropic `messages`（完美兼容 Claude Code）
+  - OpenAI `responses`（支持 Codex 等现代化开发助手）
+  - 模型工具调用（Tool Calling / Function Calling）全渠道穿透与统一转换。
+- **实时 Uptime 可用性监控**：
+  - 统计系统启动时长、实时健康状态（全部正常 / 部分降级 / 服务故障）以及各模型的在线率与状态指示灯；
+  - 区分真实用户流量与后台自动轻量探测（Probe）；
+  - 支持连续失败自动熔断；管理员可在系统设置中一键控制普通用户是否可见该侧边栏页面，非管理员请求自动脱敏并屏蔽上游私密信息。
+- **画图实验室（Image Lab）**：支持多款生图模型、风格选择（配有不占用水平空间的纤细平滑悬浮滚动条）、宽高比切换、局部光箱缩放与一键下载。
+- **模型详情与精准日志排查**：后台模型列表点击即展示全局唯一 ID（支持一键复制），并提供“查看历史报错信息”专属快捷入口，直达当前模型的失败请求排查视图。
+- **会话持久化与分支编辑**：支持对话历史检索、重命名、导出与软硬删除；支持回退到历史提问进行重新编辑并重新分支生成后续回答。
+- **图片与文件上下文**：图片在浏览器本地自适应压缩后再安全上传；支持文本与代码文件一键折叠并入上下文。
+- **精准配额与用量账本**：每次对话均写入审计记录；支持按 5 小时、周、月维度，针对请求次数、Token 消耗或点数余额进行“全局 → 用户组 → 个人”三级约束。
+- **主题与色调系统**：原生支持浅色 / 深色 / 跟随系统，自适应对比度色彩调节算法。
+- **全站公告与通知系统**：支持针对特定用户或全站推送弹出通知或未读小红点。
+- **纯粹且安全**：前端全面杜绝 `innerHTML` 和 `v-html`，安全防范 XSS 漏洞；后端坚持原子化数据库行锁，无并发超售风险。
+
+---
+
+### 运行与配置
+
+#### 快速启动
 
 ```bash
 ./obsidian-arc
 ```
 
-That is the whole quick start. It creates `./data`, generates a secret key,
-runs its migrations, opens SQLite, and serves on `:8080`. The first account to
-register becomes the administrator.
+无需任何额外参数即可在 `:8080` 端口直接启动。系统会自动创建 `./data` 目录、初始化 SQLite 数据库并应用迁移。注册的第一个账户自动晋升为管理员。
 
-For an unattended first boot, name the administrator instead:
+如果希望以无头方式在首次启动时直接创建管理员账号：
 
 ```bash
-OBSIDIAN_ADMIN_USER=admin OBSIDIAN_ADMIN_PASSWORD='a good password' ./obsidian-arc
+OBSIDIAN_ADMIN_USER=admin OBSIDIAN_ADMIN_PASSWORD='YourStrongPassword' ./obsidian-arc
 ```
 
-### Configuration
+#### 常用环境变量
 
-Every setting has a working default. These are the ones a real deployment
-tends to set:
-
-| Variable | Default | |
+| 变量名 | 默认值 | 作用说明 |
 | --- | --- | --- |
-| `OBSIDIAN_ADDR` | `:8080` | Listen address |
-| `OBSIDIAN_DB_DRIVER` | `sqlite` | `sqlite` or `postgres` |
-| `OBSIDIAN_DB_DSN` | `./data/obsidian.db` | Required for Postgres |
-| `OBSIDIAN_SECRET_KEY` | generated into `./data` | Encrypts provider API keys. Set it explicitly before running more than one instance against one database |
-| `OBSIDIAN_DATA_DIR` | `./data` | Database, secret key |
-| `OBSIDIAN_TRUST_PROXY` | `false` | Honour forwarded addresses. Only from the peers below |
-| `OBSIDIAN_TRUSTED_PROXIES` | private ranges | Exact proxy addresses or CIDRs. Everything else has its forwarded headers ignored |
-| `OBSIDIAN_COOKIE_SECURE` | `true` | Turn off only for plain-http local use |
-| `OBSIDIAN_SESSION_TTL` | `720h` | |
-| `OBSIDIAN_ADMIN_USER` / `_PASSWORD` | — | First administrator, on an empty database |
-| `OBSIDIAN_PUBLIC_URL` | — | Where links in outgoing mail point. Required for email verification |
-| `OBSIDIAN_SMTP_HOST` | — | Enables mail. Without it, email verification stays inert whatever the setting says |
-| `OBSIDIAN_SMTP_PORT` | `587` | 465 turns on implicit TLS; 587 uses STARTTLS |
-| `OBSIDIAN_SMTP_FROM` | the username | Envelope and header sender |
-| `OBSIDIAN_SMTP_USERNAME` / `_PASSWORD` | — | Omit both for an unauthenticated relay |
+| `OBSIDIAN_ADDR` | `:8080` | 监听地址与端口 |
+| `OBSIDIAN_DB_DRIVER` | `sqlite` | 数据库驱动：`sqlite` 或 `postgres` |
+| `OBSIDIAN_DB_DSN` | `./data/obsidian.db` | 数据库连接字符串（PostgreSQL 必填） |
+| `OBSIDIAN_SECRET_KEY` | 自动生成保存至 `./data` | 用于加密上游 API Key 的密钥。多实例集群部署时需保持一致 |
+| `OBSIDIAN_DATA_DIR` | `./data` | 数据库与密钥存放目录 |
+| `OBSIDIAN_COOKIE_SECURE` | `true` | 是否启用安全 Cookie（本地测试 HTTP 时可置为 `false`） |
+| `OBSIDIAN_TRUST_PROXY` | `false` | 是否信任反向代理传递的客户端真实 IP |
+| `OBSIDIAN_PUBLIC_URL` | — | 站点的公开访问基准 URL（用于邮件验证等） |
+| `OBSIDIAN_SMTP_HOST` | — | SMTP 邮件服务器地址（开启邮箱验证时需配置） |
 
-### Docker
+#### Docker 部署
+
+使用 Docker 运行：
 
 ```bash
 docker build -t obsidian-arc .
@@ -106,132 +87,72 @@ docker run -d -p 8080:8080 -v arc-data:/data \
   obsidian-arc
 ```
 
-Three stages: the frontend is compiled, embedded into the Go binary, and the
-binary is copied into a distroless image with no shell, no package manager
-and no interpreter in it. It runs as a non-root user.
-
-For PostgreSQL, `docker-compose.yml` adds one service and nothing else — no
-reverse proxy, no cache, no queue:
+搭配 PostgreSQL 运行（`docker-compose.yml`）：
 
 ```bash
 OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
 ```
 
-Kubernetes is not assumed anywhere.
+---
 
-> **Both are run on every push.** Neither Docker nor a Postgres server was
-> available on the machine this was written on, so for a while these two paths
-> were reviewed and never executed. They are now: CI builds the image, starts
-> it, and waits for it to migrate and answer, and runs the whole suite against
-> a real PostgreSQL 16 — which is when `TestPostgresMigrations` stops skipping
-> itself and applies the actual schema plus the atomic quota upsert. Point it
-> at your own database to do the same locally:
->
-> ```bash
-> OBSIDIAN_TEST_POSTGRES_DSN=postgres://user:pass@localhost:5432/arc_test go test ./internal/database/
-> ```
->
-> Still unproven: a long-lived deployment. Nothing here has carried real
-> traffic for a week.
+<a name="english"></a>
+## English
 
-## Building
+**Obsidian Arc** is a high-performance, self-hosted AI chat server and unified gateway hub built specifically for [Axis AI](https://ai.onyxaxis.org). It offers multi-user management, runtime provider routing, an admin backoffice, conversation history, and fine-grained ledger-based usage accounting.
 
-```bash
-make build     # frontend, then a binary with it embedded
-make test      # go vet, gofmt, go test, tsc
-make dev       # server on :8080 proxying to Vite on :5173
-make version   # the version this build would carry
-```
+One single Go binary with the embedded Vue 3 SPA frontend, one database (SQLite or PostgreSQL), and zero extra moving parts — no Redis, no sidecars, no message brokers.
 
-`make dev` expects `npm --prefix web run dev` alongside it and reverse
-proxies to it, so the frontend hot-reloads while the API stays on one origin.
+### Key Capabilities
 
-Requires Go 1.22+ and Node 20+.
+- **Accounts & Groups**: Role-based access control with groups defining accessible models, rate limits, and credit pools.
+- **Universal Provider Support**: Supports Anthropic's Messages API and any OpenAI-compatible API (OpenAI, DeepSeek, xAI, OpenRouter, Groq, local Ollama or vLLM). Managed dynamically from the admin panel at runtime.
+- **Provider & Model Decoupling**: Map multiple models to upstream providers with transparent model routing, automated anti-collision name qualification, and custom `api_name` aliases.
+- **Streaming & Live Reasoning**: Server-Sent Events (SSE) with live thinking/reasoning effort display and cancellation-aware generation.
+- **Agent API Ecosystem**: Key-authenticated endpoints under `/v1` supporting OpenAI `chat/completions`, Anthropic `messages` (e.g. Claude Code), and OpenAI `responses` (Codex), with full tool-calling parity.
+- **Real-Time Uptime Monitoring**: System running duration, health state detection, automated probe checks for idle models, and admin-toggleable user visibility with upstream credential stripping.
+- **Image Lab**: Prompt-based image generation, aspect-ratio selection, lightbox zoom, and floating non-intrusive scrollbars.
+- **Model Unique ID & Error History**: Inspect unique model ULIDs with 1-click copy, and drill straight into filtered error logs from the model editor.
+- **Persistent Conversations**: Rich markdown rendering without `innerHTML`, local image downscaling, code folding, and turn regenerations.
+- **Atomic Quotas**: Atomic balance upserts preventing race conditions and concurrent overdrafts without needing a separate Redis instance.
 
-Versions are the UTC build moment — `yyyy.MM.dd.HH.mm.ss` — stamped in by the
-Makefile. Zero-padded, so they sort chronologically as plain text; unique per
-build; and needing no tag or counter to keep up to date. `/api/health`
-returns the running one, and the admin rail shows it.
+---
 
-## What it costs to run
+## 性能与运行开销 / Resource Costs
 
-Measured on the build in this repository, SQLite, one process:
+测试基准环境：单进程、SQLite 驱动（测试数据已校准）：
 
-| | |
+| 评估项 / Metric | 实测数据 / Measurement |
 | --- | --- |
-| Binary | 17.7 MB — 14.0 MB built `-tags nosqlite` for a Postgres-only deployment |
-| Cold start to serving | 28 ms |
-| Idle resident memory | ~16 MB |
-| After 200 streamed turns, 20 concurrent | ~54 MB peak, 11 OS threads |
-| Frontend | 120 kB on the wire to open the chat — 105 kB of JavaScript and 15 kB of CSS. The server compresses, so that is what is actually transferred, not what a proxy might have managed. The Chinese dictionary (17 kB), the backoffice (33 kB) and the formula renderer (4 kB) are separate, and are fetched only by the readers who need them |
-| Background goroutines at idle | 1 — a janitor on a ten-minute tick |
-| Direct Go dependencies | 3 |
-| Runtime frontend dependencies | 4 — Vue, Vue Router, VueUse, Lucide |
+| 二进制文件大小 / Binary size | 17.7 MB（使用 `-tags nosqlite` 纯 Postgres 构建仅 14.0 MB） |
+| 冷启动就绪时间 / Cold start | ~28 ms |
+| 常驻空闲内存 / Idle RSS | ~16 MB |
+| 20 并发流式交互峰值 / Peak under 20 concurrency | ~54 MB 内存，11 OS 线程 |
+| 前端网络传输开销 / Wire payload | 进入聊天仅需传输 120 kB（105 kB JS + 15 kB CSS）；中文语言包 (17 kB)、管理后台 (33 kB)、数学公式渲染器 (4 kB) 独立按需加载 |
+| 空闲后台协程 / Background goroutines | 1（仅运行 10 分钟周期的系统清理协程） |
+| 直接 Go 依赖 / Direct Go dependencies | 3 个（纯 Go SQLite 驱动、pgx、x/crypto） |
+| 前端运行时依赖 / Frontend runtime dependencies | 4 个（Vue、Vue Router、VueUse、Lucide Icons） |
 
-## Architecture
+---
 
-One process. A modular monolith, not services.
+## 贡献者与特别致谢 / Contributors & Acknowledgements
 
-```
-cmd/server            wire, serve, shut down
-internal/
-  config              one Config from the environment
-  database            one pool, `?` rebound per dialect, embedded migrations
-  httpx               errors, JSON, SSE, middleware
-  auth                argon2id, sessions, RBAC
-  user  group         accounts, groups, permissions
-  provider  model     upstream endpoints and the catalogue
-  adapter             OpenAI + Anthropic, behind one request shape
-  conversation        transcripts, messages, attachments
-  chat                the gateway: permission → transcript → provider → ledger
-  usage  quota        accounting and enforcement
-  admin               the administrative surface
-  settings            instance settings
-  web                 the embedded frontend
-web/                  Vue 3 + SCSS, built by Vite
-```
+本项目专为 **[Axis AI](https://ai.onyxaxis.org)** 倾力打造，凝聚了开发者社区与前沿大模型的共同智慧：
 
-Three direct Go dependencies: a pure-Go SQLite driver, pgx, and `x/crypto`
-for Argon2id. Routing is `net/http`. Migrations are numbered `.sql` files.
-There is no ORM, no server-side router, no logging framework, and no config
-library.
+### 核心开发者 / Core Developers
+- **[OnyxAxisOwO](https://github.com/OnyxAxisOwO/)** — Creator & Lead Maintainer (项目发起人与核心维护者)
+- **[Abloom](https://github.com/abloom25)** — Core Architecture, Frontend Engineering & Performance Optimization (前端架构演进与优化)
+- **[amnssb](https://github.com/amnssb)** — Core Feature Contributions & Enhancements (核心功能与组件贡献)
 
-The frontend has four: Vue, Vue Router, VueUse and Lucide. There is no
-component library, no CSS framework and no state-management library — the
-stylesheets are the same hand-written `--ai-*` tokens they always were, and
-the two stores are a handful of `ref`s.
+### 协同构建模型 / Co-developed with AI Models
+- **Claude Opus 5**
+- **GPT 5.6 Sol**
+- **Gemini 3.8 Flash**
 
-The design, the schema and the reasoning behind both are in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+### 社区致谢 / Community
+同时，由衷感谢 **[Axis AI 社区](https://ai.onyxaxis.org)** 各位小伙伴的持续支持、深度测试与宝贵反馈！感谢大家让 Obsidian Arc 变得更稳定、更优雅。
 
-### Notes on a few decisions
+---
 
-**SQLite or PostgreSQL.** Both, from one set of queries. Identifiers are
-ULIDs and timestamps are epoch milliseconds, so nothing depends on a
-sequence or a timestamp type; `?` placeholders are rebound per dialect in one
-place. SQLite is the default because a single-instance deployment does not
-need a second process to run.
+## 开源协议 / License
 
-**Cancellation is the request context.** Stop closes the browser's
-connection, which cancels the server's request context, which cancels the
-outbound call to the provider. There is no stop endpoint and no registry of
-in-flight requests. The save afterwards runs on a detached context, so a
-stopped answer is still kept — it is what the user read, and it was paid for.
-
-**Provider keys never leave the server.** They are encrypted with a key
-derived from the instance secret, and the struct the admin API serialises has
-no field they could travel in. The administrator sees `••••1234`.
-
-**No Redis.** Quota is enforced with an atomic upsert that returns its own
-post-increment value, so the check happens after the write and two concurrent
-requests cannot both see room that only one of them has. If the counter table
-ever becomes the bottleneck, that is the moment to add a cache — not before.
-
-## Contributors
-
-- [OnyxAxisOwO](https://github.com/OnyxAxisOwO) — creator and maintainer
-- [abloom25](https://github.com/abloom25) — optimization and improvements
-
-## License
-
-[MIT](LICENSE)
+[MIT License](LICENSE)

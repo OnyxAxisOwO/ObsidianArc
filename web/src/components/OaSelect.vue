@@ -24,6 +24,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useEventListener, useRafFn } from '@vueuse/core';
 import { placeList } from '@/lib/select-placement';
+import OaScrollArea from './OaScrollArea.vue';
 import type { Choice } from './choice';
 
 defineOptions({
@@ -48,6 +49,7 @@ const id = `oa-select-${nextSequence()}`;
 
 const trigger = ref<HTMLButtonElement | null>(null);
 const list = ref<HTMLElement | null>(null);
+const scrollArea = ref<InstanceType<typeof OaScrollArea> | null>(null);
 
 const open = ref(false);
 const mounted = ref(false);
@@ -80,7 +82,7 @@ const listStyle = computed(() => ({
 function measure(): void {
   const node = list.value;
   if (!node) return;
-  node.style.maxHeight = '';
+  node.style.maxHeight = 'none';
   node.style.top = '0px';
   node.style.left = '0px';
   natural = node.offsetHeight;
@@ -98,6 +100,9 @@ function place(): void {
   left.value = spot.left;
   maxHeight.value = spot.maxHeight;
   origin.value = spot.origin;
+  if (list.value) {
+    list.value.style.maxHeight = `${spot.maxHeight}px`;
+  }
 }
 
 function markActive(index: number): void {
@@ -108,13 +113,15 @@ function markActive(index: number): void {
   // The list's own scrollTop rather than scrollIntoView: the list is a child
   // of <body>, and scrollIntoView on one of those is entitled to scroll the
   // document under the reader to reveal it.
-  const node = list.value?.children[active.value];
-  const box = list.value;
-  if (!(node instanceof HTMLElement) || !box) return;
+  const box = scrollArea.value?.scroller ?? list.value;
+  if (!box) return;
+  const node = box.children[active.value];
+  if (!(node instanceof HTMLElement)) return;
   const rowTop = node.offsetTop;
   const rowBottom = rowTop + node.offsetHeight;
   if (rowTop < box.scrollTop) box.scrollTop = rowTop;
   else if (rowBottom > box.scrollTop + box.clientHeight) box.scrollTop = rowBottom - box.clientHeight;
+  scrollArea.value?.update();
 }
 
 async function openList(): Promise<void> {
@@ -130,6 +137,7 @@ async function openList(): Promise<void> {
   measure();
   place();
   markActive(Math.max(0, props.choices.findIndex((choice) => choice.value === props.modelValue)));
+  scrollArea.value?.update();
   anchor = '';
   follow.resume();
 
@@ -292,6 +300,7 @@ watch(() => props.choices, async () => {
   measure();
   place();
   markActive(Math.max(0, props.choices.findIndex((choice) => choice.value === props.modelValue)));
+  scrollArea.value?.update();
 });
 
 onBeforeUnmount(() => {
@@ -346,23 +355,29 @@ function nextSequence(): number {
       role="listbox"
       :style="listStyle"
     >
-      <!-- A div, not a button: focus stays on the trigger and the active row
-           is named by aria-activedescendant, which is the combobox pattern. A
-           button here would take focus on mousedown and the trigger would
-           lose the keydown handler mid-interaction. -->
-      <div
-        v-for="(choice, index) in props.choices"
-        :id="`${id}-${index}`"
-        :key="choice.value"
-        class="oa-menu-item"
-        :class="{ active: index === active }"
-        role="option"
-        :aria-selected="choice.value === props.modelValue"
-        @mousedown.prevent
-        @click="choose(choice.value)"
+      <OaScrollArea
+        ref="scrollArea"
+        wrap-class="oa-select-scroll-wrap"
+        scroll-class="oa-select-scroll"
       >
-        <span class="oa-menu-item-title">{{ choice.label }}</span>
-      </div>
+        <!-- A div, not a button: focus stays on the trigger and the active row
+             is named by aria-activedescendant, which is the combobox pattern. A
+             button here would take focus on mousedown and the trigger would
+             lose the keydown handler mid-interaction. -->
+        <div
+          v-for="(choice, index) in props.choices"
+          :id="`${id}-${index}`"
+          :key="choice.value"
+          class="oa-menu-item"
+          :class="{ active: index === active }"
+          role="option"
+          :aria-selected="choice.value === props.modelValue"
+          @mousedown.prevent
+          @click="choose(choice.value)"
+        >
+          <span class="oa-menu-item-title">{{ choice.label }}</span>
+        </div>
+      </OaScrollArea>
     </div>
   </Teleport>
 </template>

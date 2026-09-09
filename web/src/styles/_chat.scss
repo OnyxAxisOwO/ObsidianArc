@@ -248,6 +248,11 @@
   overflow: hidden;
 }
 
+.ai-chat-list-wrap .oa-overlay-track {
+  top: 8px;
+  bottom: 8px;
+}
+
 .ai-chat-list {
   display: flex;
   flex: 1;
@@ -1143,6 +1148,13 @@
 
 .ai-chat-wide .ai-chat-scroll {
   padding: 26px 14px 18px;
+}
+
+/* On wide screens, the transcript scroller starts at the top edge of
+   .ai-chat-main; inset the track by 14px so the thumb stays clear of the
+   18px top-right corner. */
+.ai-chat-wide .ai-chat-scroll-wrap .oa-overlay-track {
+  top: 14px;
 }
 
 /* The rail scrolls without showing anything: it is a short list beside a

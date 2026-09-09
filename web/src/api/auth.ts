@@ -46,6 +46,7 @@ export interface SiteInfo {
   name: string;
   description: string;
   registration_enabled: boolean;
+  health_show_users?: boolean;
   // True while the instance has no accounts at all: the first person to
   // register becomes the administrator.
   setup_required: boolean;

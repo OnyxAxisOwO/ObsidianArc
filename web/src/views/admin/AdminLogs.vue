@@ -11,7 +11,8 @@
 // a list of things that happened. That also means they are rebuilt when the
 // window changes: last hour and last month have different casts.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { adminApi, type LogEntry, type LogFacets, type LogOption } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
@@ -43,17 +44,32 @@ const WINDOWS: Array<{ value: string; label: StringKey; hours: number }> = [
 const view = useAdminView();
 view.setTitle(t('navLogs'));
 
-const query = ref({
-  window: '24',
-  userID: '',
-  modelID: '',
-  outcome: '',
-  status: '',
-  channel: '',
-  errorCode: '',
-  path: '',
-  offset: 0,
-});
+const router = useRouter();
+const route = useRoute();
+
+function parseRouteQuery() {
+  return {
+    window: typeof route.query.window === 'string' ? route.query.window : '24',
+    userID: typeof route.query.user_id === 'string' ? route.query.user_id : '',
+    modelID: typeof route.query.model_id === 'string' ? route.query.model_id : '',
+    outcome: typeof route.query.outcome === 'string' ? route.query.outcome : '',
+    status: typeof route.query.status === 'string' ? route.query.status : '',
+    channel: typeof route.query.channel === 'string' ? route.query.channel : '',
+    errorCode: typeof route.query.error_code === 'string' ? route.query.error_code : '',
+    path: typeof route.query.path === 'string' ? route.query.path : '',
+    offset: 0,
+  };
+}
+
+const query = ref(parseRouteQuery());
+
+watch(
+  () => route.query,
+  () => {
+    query.value = parseRouteQuery();
+    void reload();
+  },
+);
 
 const facets = ref<LogFacets | null>(null);
 const entries = ref<LogEntry[]>([]);
@@ -86,11 +102,15 @@ function listQuery(): string {
   return `?${params.toString()}`;
 }
 
-function withAny(options: LogOption[], anyLabel: string): Array<Choice<string>> {
-  return [
+function withAny(options: LogOption[], anyLabel: string, fallbackValue?: string): Array<Choice<string>> {
+  const choices: Array<Choice<string>> = [
     { value: '', label: anyLabel },
     ...options.map((option) => ({ value: option.value, label: `${option.label} (${option.count})` })),
   ];
+  if (fallbackValue && !choices.some((c) => c.value === fallbackValue)) {
+    choices.push({ value: fallbackValue, label: fallbackValue });
+  }
+  return choices;
 }
 
 /** Any change to what is being asked invalidates which page we are on. */
@@ -135,6 +155,9 @@ function clearFilters(): void {
     userID: '', modelID: '', outcome: '', status: '',
     channel: '', errorCode: '', path: '', offset: 0,
   };
+  if (Object.keys(route.query).length > 0) {
+    void router.replace({ path: '/admin/logs', query: {} });
+  }
   void paint();
 }
 
@@ -202,25 +225,25 @@ onMounted(reload);
         <OaSelectField
           v-model="query.userID"
           :label="t('logUser')"
-          :options="withAny(facets.users, t('logAnyUser'))"
+          :options="withAny(facets.users, t('logAnyUser'), query.userID)"
           @update:model-value="narrow"
         />
         <OaSelectField
           v-model="query.modelID"
           :label="t('logModel')"
-          :options="withAny(facets.models, t('logAnyModel'))"
+          :options="withAny(facets.models, t('logAnyModel'), query.modelID)"
           @update:model-value="narrow"
         />
         <OaSelectField
           v-model="query.status"
           :label="t('logStatus')"
-          :options="withAny(facets.statuses, t('logAnyStatus'))"
+          :options="withAny(facets.statuses, t('logAnyStatus'), query.status)"
           @update:model-value="narrow"
         />
         <OaSelectField
           v-model="query.errorCode"
           :label="t('logErrorCode')"
-          :options="withAny(facets.error_codes, t('logAnyErrorCode'))"
+          :options="withAny(facets.error_codes, t('logAnyErrorCode'), query.errorCode)"
           @update:model-value="narrow"
         />
         <OaSelectField

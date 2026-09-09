@@ -308,10 +308,39 @@
   left: 0;
   right: auto;
   z-index: 55;
+  max-height: none;
+  overflow: hidden;
+  padding: 0;
   /* No max-height here: the script sets one from the room actually left
      beside the trigger. A static cap is how a list ends up hanging off the
      bottom of a short window, and a body-fixed node scrolls with nothing, so
      the rows past the fold cannot be reached at all. */
+}
+
+.oa-select-scroll-wrap {
+  position: relative;
+  max-height: inherit;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.oa-select-scroll {
+  max-height: inherit;
+  overflow-y: auto;
+  padding: 6px;
+  box-sizing: border-box;
+  scrollbar-width: none;
+}
+
+.oa-select-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.oa-select-scroll-wrap .oa-overlay-track {
+  top: 8px;
+  bottom: 8px;
+  right: 4px;
 }
 
 /* Open is a class, and it arrives a frame after the node does and leaves

@@ -38,6 +38,7 @@ const FALLBACK_SITE: SiteInfo = {
   name: 'Obsidian Arc',
   description: '',
   registration_enabled: false,
+  health_show_users: false,
   setup_required: false,
   require_email: false,
   email_domains: [],

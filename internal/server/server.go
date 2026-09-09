@@ -292,6 +292,98 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return seen
 	}
 	modelHandlers.Routes(mux)
+
+	mux.HandleFunc("GET /api/uptime", httpx.Wrap(func(w http.ResponseWriter, r *http.Request) error {
+		account, ok := auth.UserFrom(r.Context())
+		if !ok {
+			return httpx.Unauthorized("Sign in to view uptime.")
+		}
+		show := settingsService.Bool(settings.HealthShowUsers)
+		if account.Role != "admin" && !show {
+			return httpx.Forbidden("Uptime is not visible to users.")
+		}
+
+		window := time.Duration(settingsService.Int(settings.HealthWindowMins, 30)) * time.Minute
+		if window < 24*time.Hour {
+			window = 24 * time.Hour
+		}
+		rates, err := healthStore.Rates(r.Context(), time.Now().Add(-window).UnixMilli())
+		if err != nil {
+			return httpx.Internal(err)
+		}
+
+		var (
+			modelList []model.Model
+		)
+		if account.Role == "admin" {
+			modelList, err = models.ListAll(r.Context(), "")
+		} else {
+			modelList, err = models.ListForUser(r.Context(), account.GroupID, false)
+		}
+		if err != nil {
+			return httpx.Internal(err)
+		}
+
+		type modelUptimeItem struct {
+			ID          string   `json:"id"`
+			DisplayName string   `json:"display_name"`
+			Provider    string   `json:"provider_name,omitempty"`
+			Enabled     bool     `json:"enabled"`
+			Uptime      *float64 `json:"uptime,omitempty"`
+			State       string   `json:"state"`
+			Total       int      `json:"total"`
+		}
+
+		warnBelow := settingsService.Int(settings.HealthWarnBelow, 0)
+		result := make([]modelUptimeItem, 0, len(modelList))
+		for _, m := range modelList {
+			if account.Role == "admin" && !m.Enabled && !m.AutoDisabled {
+				continue
+			}
+			rate, hasRate := rates[m.ID]
+			item := modelUptimeItem{
+				ID:          m.ID,
+				DisplayName: m.DisplayName,
+				Enabled:     m.Enabled,
+				State:       "unknown",
+			}
+			if account.Role == "admin" {
+				item.Provider = m.ProviderName
+			}
+			if m.AutoDisabled {
+				item.State = "down"
+			}
+			if hasRate && rate.Total >= health.MinSamplesToJudge {
+				share := rate.Share()
+				item.Uptime = &share
+				item.Total = rate.Total
+				if m.AutoDisabled {
+					item.State = "down"
+				} else if share >= 0.99 {
+					item.State = "up"
+				} else if (warnBelow > 0 && share*100 < float64(warnBelow)) || share < 0.95 {
+					item.State = "degraded"
+				} else {
+					item.State = "up"
+				}
+			} else if hasRate && rate.Total > 0 {
+				share := rate.Share()
+				item.Uptime = &share
+				item.Total = rate.Total
+				if m.AutoDisabled {
+					item.State = "down"
+				} else {
+					item.State = "unknown"
+				}
+			}
+			result = append(result, item)
+		}
+
+		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"uptime_sec": int64(time.Since(deps.Started).Seconds()),
+			"models":     result,
+		})
+	}))
 	chatHandlers := chat.NewHandlers(chatService, conversations)
 	// The one condition that must hold for an account to spend anything,
 	// shared by the turn and by the upload that precedes it.

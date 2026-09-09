@@ -211,7 +211,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  max-width: 190px;
+  max-width: 220px;
   padding: 4px 10px 4px 5px;
   border: 1px solid transparent;
   border-radius: 999px;
@@ -229,6 +229,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The top-right account dropdown: longer and taller than a compact select
+   menu, with room for avatar, badges, and all eight navigation items without
+   prematurely forcing a scrollbar. */
+.oa-menu-account {
+  min-width: 260px;
+  max-width: 360px;
+  max-height: min(600px, calc(100vh - 72px));
+  padding: 8px;
+}
+
+.oa-menu-account .oa-menu-head {
+  padding: 10px 12px 12px;
+  margin-bottom: 6px;
+}
+
+.oa-menu-account .oa-menu-item {
+  padding: 9px 12px;
 }
 
 .oa-menu-head {

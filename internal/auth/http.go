@@ -126,6 +126,7 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// setting says; that account becomes the administrator.
 		"registration_enabled": !populated || h.settings.Bool(settings.RegistrationEnabled),
 		"setup_required":       !populated,
+		"health_show_users":    h.settings.Bool(settings.HealthShowUsers),
 		// So the sign-up form can mark the field required and say which
 		// addresses will be accepted, instead of finding out on submit.
 		// Neither applies to the first account.

@@ -183,6 +183,49 @@ describe('the option list', () => {
     const trigger = host.querySelector<HTMLButtonElement>('.oa-select');
     expect(trigger?.classList.contains('oa-filter-select')).toBe(true);
   });
+
+  it('wraps choices in an overlay scroll area with track and thumb', async () => {
+    const manyChoices = Array.from({ length: 15 }, (_, i) => ({ value: `v${i}`, label: `Option ${i}` }));
+    const control = mount(manyChoices, 'v0');
+    control.trigger.click();
+    await settle();
+
+    const menu = list();
+    expect(menu).not.toBeNull();
+    const wrap = menu?.querySelector('.oa-select-scroll-wrap');
+    const scroller = menu?.querySelector('.oa-select-scroll');
+    const track = menu?.querySelector('.oa-overlay-track');
+    const thumb = menu?.querySelector('.oa-overlay-thumb');
+
+    expect(wrap).not.toBeNull();
+    expect(scroller).not.toBeNull();
+    expect(track).not.toBeNull();
+    expect(thumb).not.toBeNull();
+  });
+
+  it('scrolls the overlay scroller when walking down choices', async () => {
+    const manyChoices = Array.from({ length: 10 }, (_, i) => ({ value: `v${i}`, label: `Option ${i}` }));
+    const control = mount(manyChoices, 'v0');
+    control.trigger.click();
+    await settle();
+
+    const scroller = list()?.querySelector<HTMLElement>('.oa-select-scroll');
+    expect(scroller).not.toBeNull();
+
+    Object.defineProperty(scroller, 'clientHeight', { value: 100, configurable: true });
+    Object.defineProperty(scroller, 'scrollHeight', { value: 300, configurable: true });
+    Array.from(scroller!.children).forEach((child, i) => {
+      Object.defineProperty(child, 'offsetTop', { value: i * 30, configurable: true });
+      Object.defineProperty(child, 'offsetHeight', { value: 30, configurable: true });
+    });
+
+    for (let i = 0; i < 5; i++) {
+      control.trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await settle();
+    }
+
+    expect(scroller!.scrollTop).toBeGreaterThan(0);
+  });
 });
 
 describe('placeList', () => {
