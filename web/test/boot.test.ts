@@ -92,7 +92,31 @@ const EMPTY_BODIES: Array<[RegExp, unknown]> = [
     top_models: [], top_users: [], series: [], bucket_ms: 3600000, recent: [],
   }],
   [/\/api\/models/, { models: [] }],
-  [/\/api\/uptime/, { uptime_sec: 10, models: [] }],
+  [/\/api\/uptime/, {
+    uptime_sec: 10,
+    models: [
+      {
+        id: 'model-1',
+        display_name: 'Model One',
+        provider_name: 'Provider A',
+        enabled: true,
+        uptime: 0.99,
+        state: 'up',
+        total: 100,
+        history: [{ at: 1000, uptime: 0.99, total: 10 }],
+      },
+      {
+        id: 'model-2',
+        display_name: 'Model Two',
+        provider_name: 'Provider B',
+        enabled: true,
+        uptime: 0.85,
+        state: 'degraded',
+        total: 50,
+        history: [{ at: 1000, uptime: 0.85, total: 5 }],
+      },
+    ],
+  }],
 ];
 
 function stubServer(): void {
@@ -217,11 +241,52 @@ describe('what moves, and what does not', () => {
     expect(panel?.classList.contains('open')).toBe(true);
   });
 
-  it('mounts the uptime panel when navigated to', async () => {
+  it('mounts the uptime panel when navigated to and toggles accordion cards', async () => {
     adopt({ ...ACCOUNT, role: 'admin' });
     await mountAt('/uptime');
     expect(host.querySelector('.oa-panel')).not.toBeNull();
     expect(host.querySelector('.oa-uptime-content')).not.toBeNull();
+
+    const cards = host.querySelectorAll('.oa-uptime-card');
+    expect(cards.length).toBe(2);
+
+    const firstHeader = cards[0]?.querySelector<HTMLElement>('.oa-uptime-card-header');
+    const firstAccordion = cards[0]?.querySelector('.oa-uptime-accordion');
+    expect(firstAccordion?.classList.contains('open')).toBe(false);
+
+    // Clicking header expands the card
+    firstHeader?.click();
+    await nextTick();
+    expect(firstAccordion?.classList.contains('open')).toBe(true);
+
+    // Clicking again collapses it
+    firstHeader?.click();
+    await nextTick();
+    expect(firstAccordion?.classList.contains('open')).toBe(false);
+
+    // Expand all button
+    const actionBtns = host.querySelectorAll<HTMLButtonElement>('.oa-uptime-action-btn');
+    const expandAllBtn = actionBtns[0];
+    const collapseAllBtn = actionBtns[1];
+
+    expandAllBtn?.click();
+    await nextTick();
+    const accordions = host.querySelectorAll('.oa-uptime-accordion.open');
+    expect(accordions.length).toBe(2);
+
+    // Collapse all button
+    collapseAllBtn?.click();
+    await nextTick();
+    const closedAccordions = host.querySelectorAll('.oa-uptime-accordion.open');
+    expect(closedAccordions.length).toBe(0);
+  });
+
+  it('mounts the admin availability section when navigated to', async () => {
+    adopt({ ...ACCOUNT, role: 'admin' });
+    await mountAt('/admin/availability');
+
+    const body = host.querySelector('.oa-admin-body');
+    expect(body).not.toBeNull();
   });
 
   it('gives each backoffice section a fresh body, so its entry actually plays', async () => {

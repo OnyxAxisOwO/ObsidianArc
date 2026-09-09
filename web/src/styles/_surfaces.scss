@@ -2744,3 +2744,185 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--ai-text-secondary);
 }
+
+.oa-uptime-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.oa-uptime-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oa-uptime-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  background: var(--ai-surface-container-high);
+  color: var(--ai-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+
+  &:hover {
+    background: var(--ai-surface-container-highest);
+    color: var(--ai-text-primary);
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--ai-primary);
+  }
+}
+
+.oa-uptime-card {
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+  overflow: hidden;
+  transition: background 0.15s ease;
+}
+
+.oa-uptime-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+
+  &:hover {
+    background: var(--ai-surface-container);
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--ai-primary);
+  }
+}
+
+.oa-uptime-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ai-text-secondary);
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &.open {
+    transform: rotate(180deg);
+  }
+}
+
+/* Accordion with pure CSS grid height animation */
+.oa-uptime-accordion {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &.open {
+    grid-template-rows: 1fr;
+  }
+}
+
+.oa-uptime-accordion-body {
+  min-height: 0;
+  overflow: hidden;
+  transition: opacity 0.24s ease;
+  opacity: 0;
+}
+
+.oa-uptime-accordion.open .oa-uptime-accordion-body {
+  opacity: 1;
+}
+
+.oa-uptime-card-expanded {
+  padding: 8px 12px 12px 12px;
+  border-top: 1px solid var(--ai-outline-variant);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.oa-uptime-card-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+  padding: 0 4px;
+
+  strong {
+    color: var(--ai-text-primary);
+    font-weight: 500;
+  }
+}
+
+/* Line chart styles */
+.oa-linechart-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.oa-linechart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.oa-linechart-title {
+  color: var(--ai-text-secondary);
+  font-weight: 500;
+}
+
+.oa-linechart-hover-info {
+  color: var(--ai-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.oa-linechart-svg {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.oa-linechart-grid {
+  stroke: var(--ai-outline-variant);
+  stroke-width: 1;
+  stroke-dasharray: 2, 3;
+  opacity: 0.5;
+}
+
+.oa-linechart-label {
+  fill: var(--ai-text-secondary);
+  font-size: 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  user-select: none;
+}
+
+.oa-linechart-empty-text {
+  fill: var(--ai-text-secondary);
+  font-size: 11px;
+  user-select: none;
+  opacity: 0.8;
+}
+
+.oa-linechart-target {
+  cursor: pointer;
+}
+
+.oa-linechart-dot {
+  pointer-events: none;
+  transition: r 0.15s ease;
+}

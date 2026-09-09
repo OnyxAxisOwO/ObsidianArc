@@ -267,7 +267,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		if window < 24*time.Hour {
 			window = 24 * time.Hour
 		}
-		rates, err := healthStore.Rates(ctx, time.Now().Add(-window).UnixMilli())
+		since := time.Now().Add(-window).UnixMilli()
+		if resetAt := int64(settingsService.Int(settings.HealthResetAt, 0)); resetAt > since {
+			since = resetAt
+		}
+		rates, err := healthStore.Rates(ctx, since)
 		if err != nil {
 			slog.ErrorContext(ctx, "liveness for readers", "error", err)
 			return livenessSeen
@@ -303,11 +307,21 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			return httpx.Forbidden("Uptime is not visible to users.")
 		}
 
+		resetAt := int64(settingsService.Int(settings.HealthResetAt, 0))
 		window := time.Duration(settingsService.Int(settings.HealthWindowMins, 30)) * time.Minute
 		if window < 24*time.Hour {
 			window = 24 * time.Hour
 		}
-		rates, err := healthStore.Rates(r.Context(), time.Now().Add(-window).UnixMilli())
+		windowStart := time.Now().Add(-window).UnixMilli()
+		since := windowStart
+		if resetAt > since {
+			since = resetAt
+		}
+		rates, err := healthStore.Rates(r.Context(), since)
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		timeline, err := healthStore.Timeline(r.Context(), windowStart, resetAt, 24)
 		if err != nil {
 			return httpx.Internal(err)
 		}
@@ -325,13 +339,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 
 		type modelUptimeItem struct {
-			ID          string   `json:"id"`
-			DisplayName string   `json:"display_name"`
-			Provider    string   `json:"provider_name,omitempty"`
-			Enabled     bool     `json:"enabled"`
-			Uptime      *float64 `json:"uptime,omitempty"`
-			State       string   `json:"state"`
-			Total       int      `json:"total"`
+			ID          string             `json:"id"`
+			DisplayName string             `json:"display_name"`
+			Provider    string             `json:"provider_name,omitempty"`
+			Enabled     bool               `json:"enabled"`
+			Uptime      *float64           `json:"uptime,omitempty"`
+			State       string             `json:"state"`
+			Total       int                `json:"total"`
+			History     []health.TimePoint `json:"history"`
 		}
 
 		warnBelow := settingsService.Int(settings.HealthWarnBelow, 0)
@@ -361,7 +376,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 					item.State = "down"
 				} else if share >= 0.99 {
 					item.State = "up"
-				} else if (warnBelow > 0 && share*100 < float64(warnBelow)) || share < 0.95 {
+				} else if (warnBelow > 0 && share*100 < float64(warnBelow)) || (warnBelow <= 0 && share < 0.95) {
 					item.State = "degraded"
 				} else {
 					item.State = "up"
@@ -376,11 +391,35 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 					item.State = "unknown"
 				}
 			}
+
+			pts, hasPts := timeline[m.ID]
+			if !hasPts || len(pts) == 0 {
+				now := time.Now().UnixMilli()
+				span := (now - since) / 24
+				if span <= 0 {
+					span = 1
+				}
+				pts = make([]health.TimePoint, 24)
+				for i := 0; i < 24; i++ {
+					pts[i] = health.TimePoint{At: since + int64(i)*span + span/2, Total: 0}
+				}
+			}
+			item.History = pts
+
 			result = append(result, item)
 		}
 
+		uptimeStart := deps.Started
+		if resetAt > 0 && resetAt > uptimeStart.UnixMilli() {
+			uptimeStart = time.UnixMilli(resetAt)
+		}
+		sec := int64(time.Since(uptimeStart).Seconds())
+		if sec < 0 {
+			sec = 0
+		}
+
 		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"uptime_sec": int64(time.Since(deps.Started).Seconds()),
+			"uptime_sec": sec,
 			"models":     result,
 		})
 	}))

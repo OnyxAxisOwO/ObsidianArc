@@ -157,6 +157,7 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodGet, "/api/admin/dashboard", nil},
 		{http.MethodGet, "/api/admin/resources", nil},
 		{http.MethodGet, "/api/admin/health", nil},
+		{http.MethodPost, "/api/admin/health/reset", nil},
 		{http.MethodPost, "/api/admin/security/review", map[string]any{"username": "x"}},
 		{http.MethodGet, "/api/admin/users", nil},
 		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
@@ -885,5 +886,29 @@ func TestUptimeAccessControl(t *testing.T) {
 		if _, ok := item["provider_name"]; ok {
 			t.Errorf("regular user uptime response leaked provider_name: %v", item["provider_name"])
 		}
+	}
+}
+
+func TestHealthResetEndpoint(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("admin_user", "password123")
+
+	res := in.do(http.MethodPost, "/api/admin/health/reset", nil, admin)
+	if res.Code != http.StatusOK {
+		t.Fatalf("POST /api/admin/health/reset = %d, want 200", res.Code)
+	}
+	body := decode[map[string]any](t, res)
+	if _, ok := body["reset_at"]; !ok {
+		t.Errorf("missing reset_at in response: %+v", body)
+	}
+
+	uptimeRes := in.do(http.MethodGet, "/api/uptime", nil, admin)
+	if uptimeRes.Code != http.StatusOK {
+		t.Fatalf("GET /api/uptime = %d, want 200", uptimeRes.Code)
+	}
+	uptimeBody := decode[map[string]any](t, uptimeRes)
+	sec, ok := uptimeBody["uptime_sec"].(float64)
+	if !ok || sec > 5 {
+		t.Errorf("uptime_sec after reset = %v, want <= 5", sec)
 	}
 }

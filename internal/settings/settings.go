@@ -97,6 +97,10 @@ const (
 	// operator's own record of their instance, and publishing it is a choice.
 	HealthShowUsers = "health.show_users"
 	HealthWarnBelow = "health.warn_below"
+	// When uptime was last reset by an administrator. Epoch milliseconds, or
+	// zero if never reset. Everything before this moment is excluded from
+	// availability figures.
+	HealthResetAt = "health.reset_at"
 	// Written by the janitor rather than by a form, so that a restart does
 	// not lose track of whether today's purge already happened. Readable in
 	// the settings response and deliberately absent from the writable set.
@@ -246,6 +250,7 @@ var Defaults = map[string]string{
 	// types a long question into it. Off would be the safer default and a
 	// worse one: nobody switches on a warning they have not been bitten by.
 	HealthWarnBelow: "90",
+	HealthResetAt:   "0",
 	// Off until an operator says otherwise: it opens a second way to spend
 	// the instance's provider credit, one that no longer goes through a
 	// browser session.

@@ -30,6 +30,9 @@ type Policy struct {
 	DisableBelow int
 	// How long probe rows are kept.
 	Retain time.Duration
+	// When uptime was last reset by an administrator. Evidence before this
+	// moment is excluded so a reset does not re-disable a model on old rows.
+	ResetAt int64
 }
 
 // Checker runs one pass of the liveness policy.
@@ -74,6 +77,9 @@ func (c *Checker) Run(ctx context.Context, policy Policy) {
 		return
 	}
 	since := time.Now().Add(-policy.Window).UnixMilli()
+	if policy.ResetAt > since {
+		since = policy.ResetAt
+	}
 
 	for _, record := range models {
 		// A model an administrator switched off is not a model that is down.

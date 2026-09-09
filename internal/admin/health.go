@@ -7,6 +7,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/health"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
@@ -37,6 +38,10 @@ func (h *Handlers) modelHealth(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 	since := time.Now().Add(-time.Duration(hours) * time.Hour).UnixMilli()
+	resetAt := int64(h.settings.Int(settings.HealthResetAt, 0))
+	if resetAt > since {
+		since = resetAt
+	}
 
 	entries := make([]map[string]any, 0, len(models))
 	for _, record := range models {
@@ -64,6 +69,56 @@ func (h *Handlers) modelHealth(w http.ResponseWriter, r *http.Request) error {
 			"probe":         h.settings.Bool(settings.HealthProbe),
 			"window_mins":   h.settings.Int(settings.HealthWindowMins, 30),
 			"disable_after": h.settings.Int(settings.HealthDisableAfter, 0),
+			"disable_below": h.settings.Int(settings.HealthDisableBelow, 0),
+			"warn_below":    h.settings.Int(settings.HealthWarnBelow, 90),
+			"show_users":    h.settings.Bool(settings.HealthShowUsers),
+			"retain_days":   h.settings.Int(settings.HealthRetainDays, 14),
+			"reset_at":      resetAt,
 		},
+	})
+}
+
+// resetHealth resets the instance's uptime baseline, clears past probe samples,
+// and re-enables models that were auto-disabled due to previous failures.
+func (h *Handlers) resetHealth(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	now := time.Now().UnixMilli()
+
+	// Record when uptime was reset so that readers and administrators alike
+	// measure from this moment rather than from server start.
+	if err := h.settings.Set(ctx, settings.HealthResetAt, strconv.FormatInt(now, 10)); err != nil {
+		return httpx.Internal(err)
+	}
+
+	// Drop past probes so that the health store does not carry dead
+	// samples across a reset.
+	dropped, err := h.health.Reset(ctx)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+
+	// Re-enable any models the checker auto-disabled for past failures, so
+	// that a reset gives them a clean start.
+	models, err := h.models.ListAll(ctx, "")
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	reenabled := 0
+	for _, m := range models {
+		if m.AutoDisabled {
+			on, off := true, false
+			if _, err := h.models.Update(ctx, m.ID, model.Update{
+				Enabled:      &on,
+				AutoDisabled: &off,
+			}); err == nil {
+				reenabled++
+			}
+		}
+	}
+
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"reset_at":         now,
+		"probes_cleared":   dropped,
+		"models_reenabled": reenabled,
 	})
 }

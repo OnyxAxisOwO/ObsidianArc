@@ -340,8 +340,21 @@ export const adminApi = {
     api.get<{
       hours: number;
       models: ModelHealth[];
-      policy: { probe: boolean; window_mins: number; disable_after: number };
+      policy: {
+        probe: boolean;
+        window_mins: number;
+        disable_after: number;
+        disable_below?: number;
+        warn_below?: number;
+        show_users?: boolean;
+        retain_days?: number;
+        reset_at?: number;
+      };
     }>(`/api/admin/health?hours=${hours}`),
+  resetHealth: () =>
+    api.post<{ reset_at: number; probes_cleared: number; models_reenabled: number }>(
+      '/api/admin/health/reset',
+    ),
   resources: () => api.get<Resources>('/api/admin/resources'),
 
   users: (query: string) => api.get<{ users: Account[]; total: number }>(`/api/admin/users${query}`),

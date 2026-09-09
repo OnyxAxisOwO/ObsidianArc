@@ -128,6 +128,10 @@ export const IconLayers = draw('Layers', ['M12 2 2 7l10 5 10-5-10-5Z', 'M2 17l10
 export const IconServer = draw('Server', ['M2 3h20v6H2z', 'M2 15h20v6H2z', 'M6 6h.01', 'M6 18h.01']);
 export const IconChart = draw('BarChart', ['M3 3v18h18', 'M7 15l4-4 3 3 5-6']);
 export const IconPulse = draw('Activity', ['M3 12h4l3 8 4-16 3 8h4']);
+export const IconCpu = draw('Cpu', [
+  'M4 4h16v16H4z', 'M9 9h6v6H9z', 'M9 1v3', 'M15 1v3',
+  'M9 20v3', 'M15 20v3', 'M20 9h3', 'M20 14h3', 'M1 9h3', 'M1 14h3',
+]);
 export const IconSliders = draw('SlidersHorizontal', [
   'M4 21v-7', 'M4 10V3', 'M12 21v-9', 'M12 8V3', 'M20 21v-5', 'M20 12V3', 'M1 14h6', 'M9 8h6', 'M17 16h6',
 ]);

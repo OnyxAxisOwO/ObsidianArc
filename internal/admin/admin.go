@@ -110,6 +110,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/dashboard", protected(h.dashboard))
 	mux.Handle("GET /api/admin/resources", protected(h.resources))
 	mux.Handle("GET /api/admin/health", protected(h.modelHealth))
+	mux.Handle("POST /api/admin/health/reset", protected(h.resetHealth))
 	mux.Handle("POST /api/admin/security/review", protected(h.trialReview))
 
 	mux.Handle("GET /api/admin/users", protected(h.listUsers))

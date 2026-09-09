@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -211,5 +212,51 @@ func TestAPercentageNeedsEnoughEvidenceToMeanAnything(t *testing.T) {
 	checker.apply(ctx, record, Summarise(record.ID, enough), policy)
 	if reload(t, models, record.ID).Enabled {
 		t.Error("a model failing every request stayed on once there was evidence")
+	}
+}
+
+func TestResetAndTimeline(t *testing.T) {
+	checker, _, record := checkerFixture(t)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+	since := now - 2*time.Hour.Milliseconds()
+
+	if err := checker.Store.Record(ctx, record.ID, true, "", "", 50*time.Millisecond); err != nil {
+		t.Fatalf("record probe: %v", err)
+	}
+	if err := checker.Store.Record(ctx, record.ID, false, "timeout", "timeout", 100*time.Millisecond); err != nil {
+		t.Fatalf("record probe: %v", err)
+	}
+
+	timeline, err := checker.Store.Timeline(ctx, since, 0, 24)
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	pts, ok := timeline[record.ID]
+	if !ok || len(pts) != 24 {
+		t.Fatalf("expected 24 points for model, got %v", len(pts))
+	}
+	totalFound := 0
+	for _, p := range pts {
+		totalFound += p.Total
+	}
+	if totalFound != 2 {
+		t.Errorf("expected 2 total events in timeline, got %d", totalFound)
+	}
+
+	dropped, err := checker.Store.Reset(ctx)
+	if err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if dropped != 2 {
+		t.Errorf("dropped = %d, want 2", dropped)
+	}
+
+	samples, err := checker.Store.Samples(ctx, record.ID, since, 10)
+	if err != nil {
+		t.Fatalf("samples: %v", err)
+	}
+	if len(samples) != 0 {
+		t.Errorf("expected 0 samples after reset, got %d", len(samples))
 	}
 }

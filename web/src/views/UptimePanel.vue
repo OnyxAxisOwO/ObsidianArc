@@ -3,15 +3,18 @@
 //
 // A side panel presented beside the chat showing real-time availability of
 // models and the server instance. Configurable by administrators whether
-// regular users may view it.
+// regular users may view it. Each model card expands to show a 24-hour trend
+// chart with smooth accordion animation.
 
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
+import OaLineChart from '@/components/OaLineChart.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
+import { IconChevron } from '@/icons';
 import { formatUptime } from '@/lib/format';
 
 interface ModelUptimeItem {
@@ -22,6 +25,7 @@ interface ModelUptimeItem {
   uptime?: number;
   state: 'up' | 'degraded' | 'down' | 'unknown';
   total?: number;
+  history?: Array<{ at: number; uptime: number | null; total: number }>;
 }
 
 interface UptimeResponse {
@@ -34,6 +38,7 @@ const router = useRouter();
 const loading = ref(true);
 const error = ref('');
 const data = ref<UptimeResponse | null>(null);
+const expanded = ref<Set<string>>(new Set());
 
 const systemUptime = computed(() => (data.value ? formatUptime(data.value.uptime_sec) : '—'));
 
@@ -44,6 +49,25 @@ const hasOutage = computed(() =>
 const hasDegraded = computed(() =>
   data.value?.models.some((m) => m.state === 'degraded') ?? false,
 );
+
+function toggle(id: string): void {
+  const next = new Set(expanded.value);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  expanded.value = next;
+}
+
+function expandAll(): void {
+  if (!data.value) return;
+  expanded.value = new Set(data.value.models.map((m) => m.id));
+}
+
+function collapseAll(): void {
+  expanded.value = new Set();
+}
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -91,7 +115,26 @@ onMounted(load);
         </div>
       </div>
 
-      <OaFormSection :title="t('uptimeModels')" />
+      <div class="oa-uptime-section-head">
+        <OaFormSection :title="t('uptimeModels')" />
+        <div v-if="data.models.length" class="oa-uptime-actions">
+          <button
+            type="button"
+            class="oa-uptime-action-btn"
+            @click="expandAll"
+          >
+            {{ t('expandAll') }}
+          </button>
+          <button
+            type="button"
+            class="oa-uptime-action-btn"
+            @click="collapseAll"
+          >
+            {{ t('collapseAll') }}
+          </button>
+        </div>
+      </div>
+
       <div v-if="!data.models.length" class="oa-field-hint">
         {{ t('healthNoEvidence') }}
       </div>
@@ -99,32 +142,63 @@ onMounted(load);
         <div
           v-for="model in data.models"
           :key="model.id"
-          class="oa-uptime-row"
+          class="oa-uptime-card"
         >
-          <div class="oa-uptime-row-main">
-            <span class="oa-uptime-status-dot" :class="model.state" />
-            <div class="oa-uptime-row-names">
-              <span class="oa-uptime-row-title">{{ model.display_name }}</span>
-              <span v-if="model.provider_name" class="oa-field-hint">{{ model.provider_name }}</span>
+          <div
+            class="oa-uptime-card-header"
+            role="button"
+            tabindex="0"
+            :aria-expanded="expanded.has(model.id)"
+            @click="toggle(model.id)"
+            @keydown.enter.space.prevent="toggle(model.id)"
+          >
+            <div class="oa-uptime-row-main">
+              <span class="oa-uptime-status-dot" :class="model.state" />
+              <div class="oa-uptime-row-names">
+                <span class="oa-uptime-row-title">{{ model.display_name }}</span>
+                <span v-if="model.provider_name" class="oa-field-hint">{{ model.provider_name }}</span>
+              </div>
+            </div>
+            <div class="oa-uptime-row-meta">
+              <span v-if="model.uptime !== undefined" class="oa-uptime-percentage">
+                {{ (model.uptime * 100).toFixed(model.uptime >= 0.995 ? 0 : 1) }}%
+              </span>
+              <OaBadge
+                :tone="model.state === 'up' ? 'default' : model.state === 'degraded' ? 'warning' : model.state === 'down' ? 'danger' : 'muted'"
+              >
+                {{
+                  model.state === 'up'
+                    ? t('uptimeOperational')
+                    : model.state === 'degraded'
+                      ? t('uptimeDegraded')
+                      : model.state === 'down'
+                        ? t('uptimeOutage')
+                        : t('uptimeNoData')
+                }}
+              </OaBadge>
+              <span class="oa-uptime-chevron" :class="{ open: expanded.has(model.id) }">
+                <IconChevron :size="14" />
+              </span>
             </div>
           </div>
-          <div class="oa-uptime-row-meta">
-            <span v-if="model.uptime !== undefined" class="oa-uptime-percentage">
-              {{ (model.uptime * 100).toFixed(model.uptime >= 0.995 ? 0 : 1) }}%
-            </span>
-            <OaBadge
-              :tone="model.state === 'up' ? 'default' : model.state === 'degraded' ? 'warning' : model.state === 'down' ? 'danger' : 'muted'"
-            >
-              {{
-                model.state === 'up'
-                  ? t('uptimeOperational')
-                  : model.state === 'degraded'
-                    ? t('uptimeDegraded')
-                    : model.state === 'down'
-                      ? t('uptimeOutage')
-                      : t('uptimeNoData')
-              }}
-            </OaBadge>
+
+          <div class="oa-uptime-accordion" :class="{ open: expanded.has(model.id) }">
+            <div class="oa-uptime-accordion-body">
+              <div class="oa-uptime-card-expanded">
+                <OaLineChart
+                  :points="model.history ?? []"
+                  :state="model.state"
+                />
+                <div class="oa-uptime-card-stats">
+                  <span class="oa-uptime-stat-item">
+                    {{ t('statRequests') }}: <strong>{{ model.total ?? 0 }}</strong>
+                  </span>
+                  <span v-if="model.uptime !== undefined" class="oa-uptime-stat-item">
+                    {{ t('colUptime') }}: <strong>{{ (model.uptime * 100).toFixed(1) }}%</strong>
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

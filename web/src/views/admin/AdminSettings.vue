@@ -54,13 +54,6 @@ const form = ref({
   purgeAfterDays: 0 as number | null,
   purgeDailyAt: '',
   orphanMinutes: 60 as number | null,
-  healthProbe: true,
-  healthWindow: 30 as number | null,
-  healthDisableAfter: 0 as number | null,
-  healthDisableBelow: 0 as number | null,
-  healthWarnBelow: 90 as number | null,
-  healthShowUsers: false,
-  healthRetainDays: 14 as number | null,
   apiEnabled: false,
 });
 
@@ -103,13 +96,6 @@ function collect(): Record<string, string> {
     'attachments.purge_after_days': String(form.value.purgeAfterDays ?? 0),
     'attachments.purge_daily_at': form.value.purgeDailyAt.trim(),
     'attachments.orphan_minutes': String(form.value.orphanMinutes ?? 60),
-    'health.probe': String(form.value.healthProbe),
-    'health.window_minutes': String(form.value.healthWindow ?? 30),
-    'health.disable_after': String(form.value.healthDisableAfter ?? 0),
-    'health.retain_days': String(form.value.healthRetainDays ?? 14),
-    'health.disable_below': String(form.value.healthDisableBelow ?? 0),
-    'health.show_users': String(form.value.healthShowUsers),
-    'health.warn_below': String(form.value.healthWarnBelow ?? 0),
   };
 }
 
@@ -213,13 +199,6 @@ async function load(): Promise<void> {
       purgeAfterDays: Number(values['attachments.purge_after_days'] ?? 0),
       purgeDailyAt: values['attachments.purge_daily_at'] ?? '',
       orphanMinutes: Number(values['attachments.orphan_minutes'] ?? 60),
-      healthProbe: values['health.probe'] !== 'false',
-      healthWindow: Number(values['health.window_minutes'] ?? 30),
-      healthDisableAfter: Number(values['health.disable_after'] ?? 0),
-      healthDisableBelow: Number(values['health.disable_below'] ?? 0),
-      healthWarnBelow: Number(values['health.warn_below'] ?? 90),
-      healthShowUsers: values['health.show_users'] === 'true',
-      healthRetainDays: Number(values['health.retain_days'] ?? 14),
       apiEnabled: values['api.enabled'] === 'true',
     };
   } catch (failure) {
@@ -386,41 +365,6 @@ onMounted(load);
         @confirm="purge"
       />
     </div>
-
-    <OaFormSection :title="t('secLiveness')" :hint="t('livenessHint')" />
-    <OaSwitchField v-model="form.healthProbe" :label="t('healthProbe')" :hint="t('healthProbeHint')" />
-    <OaNumberField v-model="form.healthWindow" :label="t('healthWindow')" :min="1" :hint="t('healthWindowHint')" />
-    <OaNumberField
-      v-model="form.healthDisableAfter"
-      :label="t('healthDisableAfter')"
-      :min="0"
-      :hint="t('healthDisableAfterHint')"
-    />
-    <OaNumberField
-      v-model="form.healthDisableBelow"
-      :label="t('healthDisableBelow')"
-      :min="0"
-      :max="100"
-      :hint="t('healthDisableBelowHint')"
-    />
-    <OaNumberField
-      v-model="form.healthWarnBelow"
-      :label="t('healthWarnBelow')"
-      :min="0"
-      :max="100"
-      :hint="t('healthWarnBelowHint')"
-    />
-    <OaSwitchField
-      v-model="form.healthShowUsers"
-      :label="t('healthShowUsers')"
-      :hint="t('healthShowUsersHint')"
-    />
-    <OaNumberField
-      v-model="form.healthRetainDays"
-      :label="t('healthRetainDays')"
-      :min="1"
-      :hint="t('healthRetainDaysHint')"
-    />
 
     <OaFormSection :title="t('apiKeys')" />
     <OaSwitchField v-model="form.apiEnabled" :label="t('apiEnabled')" :hint="t('apiEnabledHint')" />

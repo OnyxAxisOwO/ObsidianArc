@@ -389,3 +389,117 @@ func (s *Store) Rates(ctx context.Context, since int64) (map[string]Rate, error)
 	}
 	return rates, nil
 }
+
+// Reset drops all probes recorded so far. Used when an administrator resets
+// uptime so that stale probe failures do not pollute the new baseline.
+func (s *Store) Reset(ctx context.Context) (int64, error) {
+	result, err := s.db.Exec(ctx, `DELETE FROM model_probes`)
+	if err != nil {
+		return 0, fmt.Errorf("health: reset: %w", err)
+	}
+	dropped, _ := result.RowsAffected()
+	return dropped, nil
+}
+
+// TimePoint is evidence aggregated into one time bucket for graphing.
+type TimePoint struct {
+	At     int64    `json:"at"`
+	Uptime *float64 `json:"uptime"`
+	Total  int      `json:"total"`
+}
+
+// Timeline groups recent evidence for each model into uniform time buckets so
+// that callers can render a trend without pulling thousands of raw samples.
+//
+// If resetAt is non-zero, evidence before resetAt is excluded from the buckets
+// while preserving the uniform time span across the requested window.
+func (s *Store) Timeline(ctx context.Context, since int64, resetAt int64, buckets int) (map[string][]TimePoint, error) {
+	if buckets <= 0 {
+		buckets = 24
+	}
+	now := time.Now().UnixMilli()
+	if resetAt > now {
+		resetAt = now
+	}
+	if since >= now {
+		since = now - 24*time.Hour.Milliseconds()
+	}
+	bucketSpan := (now - since) / int64(buckets)
+	if bucketSpan <= 0 {
+		bucketSpan = 1
+	}
+
+	evidenceSince := since
+	if resetAt > evidenceSince {
+		evidenceSince = resetAt
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT model_id, at, ok FROM (
+			SELECT model_id, started_at AS at,
+			       CASE WHEN status = ? THEN 1 ELSE 0 END AS ok
+			FROM usage_records
+			WHERE started_at >= ? AND status IN (?, ?)
+			UNION ALL
+			SELECT model_id, at, CASE WHEN ok THEN 1 ELSE 0 END AS ok
+			FROM model_probes
+			WHERE at >= ?
+		) AS evidence
+		ORDER BY at ASC`,
+		statusOK, evidenceSince, statusOK, statusError,
+		evidenceSince)
+	if err != nil {
+		return nil, fmt.Errorf("health: timeline: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type count struct {
+		total int
+		ok    int
+	}
+	byModel := map[string][]count{}
+
+	for rows.Next() {
+		var modelID string
+		var at int64
+		var ok int
+		if err := rows.Scan(&modelID, &at, &ok); err != nil {
+			return nil, fmt.Errorf("health: timeline: %w", err)
+		}
+		list, exists := byModel[modelID]
+		if !exists {
+			list = make([]count, buckets)
+			byModel[modelID] = list
+		}
+		idx := int((at - since) / bucketSpan)
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= buckets {
+			idx = buckets - 1
+		}
+		list[idx].total++
+		if ok == 1 {
+			list[idx].ok++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("health: timeline: %w", err)
+	}
+
+	result := make(map[string][]TimePoint, len(byModel))
+	for modelID, list := range byModel {
+		pts := make([]TimePoint, buckets)
+		for i := 0; i < buckets; i++ {
+			at := since + int64(i)*bucketSpan + bucketSpan/2
+			pt := TimePoint{At: at, Total: list[i].total}
+			if list[i].total > 0 {
+				u := float64(list[i].ok) / float64(list[i].total)
+				pt.Uptime = &u
+			}
+			pts[i] = pt
+		}
+		result[modelID] = pts
+	}
+	return result, nil
+}

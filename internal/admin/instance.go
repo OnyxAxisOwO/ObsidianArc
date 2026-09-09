@@ -165,6 +165,7 @@ var writableSettings = map[string]bool{
 	settings.HealthDisableBelow:    true,
 	settings.HealthShowUsers:       true,
 	settings.HealthWarnBelow:       true,
+	settings.HealthResetAt:         true,
 	settings.UsageDisplay:          true,
 	settings.LandingMode:           true,
 	settings.LandingIntro:          true,
