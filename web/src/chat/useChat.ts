@@ -93,6 +93,60 @@ export const suggestions = ref<Array<(typeof SUGGESTION_KEYS)[number]>>(pickSugg
 let controller: AbortController | null = null;
 
 /**
+ * Deltas arrive faster than the screen redraws, so they are applied per frame.
+ *
+ * A model streams tokens tens of times a second, and every one of them used to
+ * replace the pending message outright — which re-parses the whole answer into
+ * DOM (chat/markdown.ts rebuilds the subtree rather than patching it) and reads
+ * the scroll geometry back. That is work proportional to the answer so far,
+ * done once per token, so a long answer grew slower the longer it got.
+ * Buffering into one animation frame bounds it at the refresh rate, which is
+ * all a reader can see in any case.
+ */
+let frame = 0;
+let bufferedAnswer = '';
+let bufferedReasoning = '';
+
+/** Exported so a test can prove the per-frame bound rather than assume it. */
+export function flushDeltas() {
+  frame = 0;
+  const answer = bufferedAnswer;
+  const reasoning = bufferedReasoning;
+  bufferedAnswer = '';
+  bufferedReasoning = '';
+  if (!answer && !reasoning) return;
+  if (pending.value) {
+    pending.value = {
+      ...pending.value,
+      answer: pending.value.answer + answer,
+      reasoning: pending.value.reasoning + reasoning,
+    };
+  }
+  scrollToEnd();
+}
+
+/** Buffers one delta. Exported alongside flushDeltas, and for the same reason. */
+export function bufferDelta(answer: string, reasoning = '') {
+  bufferedAnswer += answer;
+  bufferedReasoning += reasoning;
+  if (!frame) frame = requestAnimationFrame(flushDeltas);
+}
+
+/**
+ * Applies whatever is still buffered and stops the pending frame.
+ *
+ * Called when a turn ends, so the next one cannot inherit the tail of this
+ * one — and because a background tab never runs an animation frame, which
+ * would otherwise leave the buffer holding a whole answer.
+ *
+ * Exported alongside the other two so the cross-turn drain is covered.
+ */
+export function settleDeltas() {
+  if (frame) cancelAnimationFrame(frame);
+  flushDeltas();
+}
+
+/**
  * Where the transcript should scroll to, and whether it may.
  *
  * Set by the store, read by the surface: yanking the view back while somebody
@@ -292,14 +346,8 @@ export async function runTurn(turn: TurnOptions): Promise<void> {
           if (!activeID.value) activeID.value = payload.conversation_id;
           upsertConversationStub(payload.conversation_id, payload.title);
         },
-        onDelta: (text) => {
-          if (pending.value) pending.value = { ...pending.value, answer: pending.value.answer + text };
-          scrollToEnd();
-        },
-        onReasoning: (text) => {
-          if (pending.value) pending.value = { ...pending.value, reasoning: pending.value.reasoning + text };
-          scrollToEnd();
-        },
+        onDelta: (text) => bufferDelta(text),
+        onReasoning: (text) => bufferDelta('', text),
         onDone: (payload) => {
           if (payload.stream_fallback) setFlash(t('streamFallback', { reason: payload.stream_fallback }));
           else if (payload.stopped) setFlash(t('stopped'));
@@ -317,6 +365,7 @@ export async function runTurn(turn: TurnOptions): Promise<void> {
       setFlash(error instanceof ApiError ? error.message : String(error));
     }
   } finally {
+    settleDeltas();
     busy.value = false;
     pending.value = null;
     controller = null;

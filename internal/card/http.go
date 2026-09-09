@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -19,9 +20,18 @@ type Handlers struct {
 	// the counters belong to internal/quota and this package has no business
 	// knowing they exist.
 	OnSpend func(context.Context, user.User) error
+	// Resolves who is calling, for the guessing limit below. Optional; nil
+	// keys the limit on the account alone.
+	ClientIP func(*http.Request) string
+	// Its own limiter rather than the sign-in one. The buckets are keyed by
+	// address as well as by account, so sharing the map would let somebody
+	// who mistyped six codes lock themselves out of logging in.
+	guesses *auth.Limiter
 }
 
-func NewHandlers(store *Store) *Handlers { return &Handlers{store: store} }
+func NewHandlers(store *Store) *Handlers {
+	return &Handlers{store: store, guesses: auth.NewLimiter()}
+}
 
 func (h *Handlers) Routes(mux *http.ServeMux) {
 	protected := func(handler httpx.Handler) http.Handler {
@@ -77,8 +87,35 @@ func (h *Handlers) redeem(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	// A code is a secret that is typed, and an administrator may deliberately
+	// mint a memorable one, so guessing at them has to get slower the same way
+	// guessing at a password does. translate() below already refuses to say
+	// whether an unknown code exists; without a limit that only slowed one
+	// guess down, not the dictionary behind it.
+	ip := ""
+	if h.ClientIP != nil {
+		ip = h.ClientIP(r)
+	}
+	attempt, err := h.guesses.Begin(ip, account.ID)
+	if err != nil {
+		var limited *auth.RateLimitError
+		if errors.As(err, &limited) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())+1))
+			return httpx.TooManyRequests("too_many_attempts", limited.Error())
+		}
+		return httpx.Internal(err)
+	}
+	// Releases the reservation on every path out. A redemption that worked
+	// does not clear the count: only time does.
+	defer attempt.Cancelled()
+
 	record, err := h.store.Redeem(r.Context(), account.ID, body.Code)
 	if err != nil {
+		// A code that exists and simply is not for this account is a typo, not
+		// a guess; only "no such code" says the caller was searching.
+		if errors.Is(err, ErrCodeUnknown) || errors.Is(err, ErrCodeExpired) {
+			attempt.Failed()
+		}
 		return translate(err)
 	}
 	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"card": record})

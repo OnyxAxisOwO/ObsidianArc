@@ -43,10 +43,15 @@ var privateProxyRanges = []string{
 // to the private ranges — still a real restriction, and it means a request
 // arriving from the public internet cannot claim to have been forwarded.
 func NewProxyTrust(enabled bool, cidrs []string) (ProxyTrust, error) {
+	// The flag is the switch; the list only narrows what it turns on. Read
+	// the other way round, a list left behind in the environment kept trust
+	// alive after an operator had turned the flag off — which is the one
+	// thing somebody reaches for the flag to do, and the deployment notes
+	// hand out both settings together.
+	if !enabled {
+		return ProxyTrust{}, nil
+	}
 	if len(cidrs) == 0 {
-		if !enabled {
-			return ProxyTrust{}, nil
-		}
 		cidrs = privateProxyRanges
 	}
 

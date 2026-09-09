@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // Shared plumbing: base-URL handling, the Server-Sent Events reader, inline
@@ -140,8 +142,11 @@ func postJSON(ctx context.Context, client *http.Client, p Provider, endpoint str
 		return nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
+	send, timedOut, done := providerDeadline(ctx, p)
+
+	req, err := http.NewRequestWithContext(send, http.MethodPost, endpoint, bytes.NewReader(encoded))
 	if err != nil {
+		done(nil, err)
 		return nil, &Error{Kind: ErrorInvalidRequest, Message: "Invalid provider endpoint.", cause: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -149,9 +154,87 @@ func postJSON(ctx context.Context, client *http.Client, p Provider, endpoint str
 
 	response, err := client.Do(req)
 	if err != nil {
+		done(nil, err)
+		if timedOut() {
+			return nil, &Error{
+				Kind:    ErrorNetwork,
+				Message: "The provider did not start responding within its configured timeout.",
+				cause:   err,
+			}
+		}
 		return nil, networkError(ctx, err)
 	}
-	return response, nil
+	// The headers are here, so the provider is answering. Everything from now
+	// on is the caller's to bound, and the deadline is handed to the body so
+	// closing the response releases it.
+	return done(response, nil), nil
+}
+
+// providerDeadline bounds how long a provider may take to *start* answering.
+//
+// The per-provider timeout an operator sets in the backoffice used to be read
+// from the database, carried on Provider, and then used by nothing at all —
+// the control saved, and the request still hung for as long as the browser
+// held it. It is applied here rather than as a client-level Timeout because a
+// deadline over the whole call would cut a long streamed answer off
+// mid-sentence, which is exactly why this package sets no such Timeout.
+//
+// So the timer is stopped once the headers land, and its cancel is handed to
+// the response body: reading the stream keeps the context alive for as long
+// as the caller wants, and closing the body releases it.
+//
+// It narrows, it does not widen. The transport's own ResponseHeaderTimeout
+// (UPSTREAM_HEADER_TIMEOUT, 90s by default) bounds the same event, so the
+// smaller of the two always wins and a per-provider value above it has no
+// effect — including the 120s this field defaults to. Only a provider timeout
+// set below the global one changes anything.
+func providerDeadline(ctx context.Context, p Provider) (
+	send context.Context, timedOut func() bool, done func(*http.Response, error) *http.Response,
+) {
+	if p.Timeout <= 0 {
+		return ctx, func() bool { return false },
+			func(r *http.Response, _ error) *http.Response { return r }
+	}
+
+	timed, cancel := context.WithCancel(ctx)
+	var fired atomic.Bool
+	timer := time.AfterFunc(p.Timeout, func() {
+		fired.Store(true)
+		cancel()
+	})
+
+	// done runs on every way out, not only the successful one: a request that
+	// fails in a millisecond against a refused port used to leave the timer
+	// armed for the whole configured timeout, holding a context alive with it.
+	return timed, fired.Load, func(response *http.Response, err error) *http.Response {
+		stopped := timer.Stop()
+		if err != nil || response == nil {
+			cancel()
+			return response
+		}
+		if !stopped {
+			// The timer has already fired, or is about to: the context is
+			// cancelled either way, so the body is dead and the caller will
+			// find out on its first read.
+			cancel()
+			return response
+		}
+		response.Body = &cancelOnClose{ReadCloser: response.Body, cancel: cancel}
+		return response
+	}
+}
+
+// cancelOnClose releases a request context when the caller is finished with
+// the stream it belongs to.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
 
 // extractErrorMessage digs the human-readable part out of an error body.

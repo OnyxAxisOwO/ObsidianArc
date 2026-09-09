@@ -77,6 +77,25 @@ func newStubUpstream(t *testing.T) *stubUpstream {
 			return
 		}
 
+		// Image generation is an ordinary JSON call rather than a stream, so
+		// the stub has to be able to answer as one — and to sit on the
+		// request, so a test can cancel one that is in flight.
+		if len(frames) == 0 && body != "" {
+			if hold != nil {
+				select {
+				case <-hold:
+				case <-r.Context().Done():
+					return
+				case <-time.After(3 * time.Second):
+					return
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			_, _ = io.WriteString(w, body)
+			return
+		}
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		flusher, _ := w.(http.Flusher)
@@ -106,6 +125,30 @@ func (s *stubUpstream) script(frames ...string) {
 	s.frames = frames
 	s.status = 200
 	s.hold = nil
+}
+
+// reply answers with one JSON body rather than a stream, which is what an
+// image generation call is.
+func (s *stubUpstream) reply(body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.frames = nil
+	s.status = 200
+	s.body = body
+	s.hold = nil
+}
+
+// replyHeld answers with one JSON body, but only once the returned channel is
+// closed — so a test can cancel a call that is genuinely in flight.
+func (s *stubUpstream) replyHeld(body string) chan struct{} {
+	release := make(chan struct{})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.frames = nil
+	s.status = 200
+	s.body = body
+	s.hold = release
+	return release
 }
 
 func (s *stubUpstream) fail(status int, body string) {

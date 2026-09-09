@@ -6,7 +6,7 @@
 // administrator's answer, and getting it wrong is visible immediately — the
 // composer stops offering attachments, or the thinking toggle disappears.
 
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import {
   adminApi,
   type AdminModel, type Group, type Meta, type ModelHealth, type Provider,
@@ -244,6 +244,19 @@ const form = ref({
   outputWeight: 1 as number | null,
   reasoningWeight: 1 as number | null,
 });
+
+// An image model's whole cost is its per-request weight: there are no tokens
+// to charge for, so the three token weights multiply out to nothing. That
+// weight starts at zero while the token weights start at one, so ticking this
+// box and saving used to produce a model that is free to use however often —
+// which is not what turning image generation on is meant to mean. Seeded
+// rather than enforced: an operator who wants it free can still set it back.
+watch(
+  () => form.value.imageGen,
+  (on) => {
+    if (on && !form.value.requestWeight) form.value.requestWeight = 1;
+  },
+);
 
 const creating = computed(() => existing.value === null);
 const status = computed(() => (existing.value ? health.value.get(existing.value.id) : undefined));

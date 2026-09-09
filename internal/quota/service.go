@@ -414,7 +414,11 @@ func (s *Service) PruneCounters(ctx context.Context) (int64, error) {
 	return removed, nil
 }
 
-func scopeKey(userID string) string { return "u:" + userID }
+// The one place the per-account scope key is spelled, so ResetGroup can build
+// the same key in SQL without the two drifting apart.
+const userScopePrefix = "u:"
+
+func scopeKey(userID string) string { return userScopePrefix + userID }
 
 // ResetAll puts every account's allowance back to its full amount.
 //
@@ -429,6 +433,28 @@ func scopeKey(userID string) string { return "u:" + userID }
 func (s *Service) ResetAll(ctx context.Context) error {
 	if _, err := s.db.Exec(ctx, `DELETE FROM usage_counters`); err != nil {
 		return fmt.Errorf("quota: reset all: %w", err)
+	}
+	return nil
+}
+
+// ResetGroup does the same for everyone in a group.
+//
+// Named by the group rather than by its members, because enumerating them
+// first needs a page size — and a page size on this path is a silent cap on
+// how much of a group a reset actually reaches. It was one: the caller asked
+// the user list for exactly as many rows as the group has, and the list
+// clamps anything above two hundred back down to fifty, so resetting a large
+// group quietly reset fifty accounts and reported that it had.
+//
+// The scope key is built in SQL with the same "u:" prefix scopeKey writes,
+// concatenated with || because that is the one string operator both engines
+// spell the same way.
+func (s *Service) ResetGroup(ctx context.Context, groupID string) error {
+	if _, err := s.db.Exec(ctx,
+		`DELETE FROM usage_counters WHERE scope_key IN (
+		   SELECT ? || id FROM users WHERE group_id = ?)`,
+		userScopePrefix, groupID); err != nil {
+		return fmt.Errorf("quota: reset group: %w", err)
 	}
 	return nil
 }

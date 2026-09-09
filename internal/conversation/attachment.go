@@ -80,6 +80,29 @@ type UploadInput struct {
 	MaxBytes int64
 }
 
+// usage is what the two account-level caps are measured against: how many
+// attachments are waiting for a message, and how many bytes the account is
+// actually holding.
+//
+// Only bytes still held count. A discarded row keeps its size so the
+// transcript can still say how big the picture was and the operator's storage
+// page can still add it up, but the bytes are gone — and since the retention
+// policy discards after the turn that sends them, counting those filled every
+// account's allowance with images the database no longer stores.
+func (s *Store) usage(ctx context.Context, q database.Queryer, userID string) (pending int, held int64, err error) {
+	if q == nil {
+		q = s.db
+	}
+	if err := q.QueryRow(ctx,
+		`SELECT
+		   COUNT(CASE WHEN message_id IS NULL THEN 1 END),
+		   COALESCE(SUM(CASE WHEN discarded_at = 0 THEN size ELSE 0 END), 0)
+		 FROM attachments WHERE user_id = ?`, userID).Scan(&pending, &held); err != nil {
+		return 0, 0, fmt.Errorf("conversation: attachment usage: %w", err)
+	}
+	return pending, held, nil
+}
+
 func (s *Store) Upload(ctx context.Context, in UploadInput) (Attachment, error) {
 	if !allowedMedia[in.Mime] {
 		return Attachment{}, ErrUnsupportedMedia
@@ -117,16 +140,10 @@ func (s *Store) Upload(ctx context.Context, in UploadInput) (Attachment, error) 
 		}
 
 		// Checked before the insert rather than after, because the point is not
-		// to store the row at all. Two counts in one statement: how many are
-		// unattached, and how much the account holds altogether.
-		var pending int
-		var held int64
-		if err := tx.QueryRow(ctx,
-			`SELECT
-			   COUNT(CASE WHEN message_id IS NULL THEN 1 END),
-			   COALESCE(SUM(size), 0)
-			 FROM attachments WHERE user_id = ?`, in.UserID).Scan(&pending, &held); err != nil {
-			return fmt.Errorf("conversation: attachment usage: %w", err)
+		// to store the row at all.
+		pending, held, err := s.usage(ctx, tx, in.UserID)
+		if err != nil {
+			return err
 		}
 		if pending >= MaxPendingAttachments {
 			return ErrTooManyPending

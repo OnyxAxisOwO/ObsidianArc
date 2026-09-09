@@ -110,6 +110,19 @@ func (a *loginAttempt) finish(outcome attemptOutcome) {
 	})
 }
 
+// Attempt is what Begin hands back.
+//
+// Named, with exported outcomes, because signing in is not the only place a
+// caller types a secret that a wrong answer has to make slower: a redemption
+// code is guessed exactly the same way, and a second limiter elsewhere would
+// be a second opinion about what "too many" means. Succeeded stays unexported
+// on purpose — a caller that guesses at codes should never be able to clear
+// its own failure count by eventually getting one right.
+type Attempt = loginAttempt
+
+func (a *loginAttempt) Failed()    { a.finish(attemptFailed) }
+func (a *loginAttempt) Cancelled() { a.finish(attemptCancelled) }
+
 // RateLimitError carries how long the caller must wait, so the handler can
 // send a Retry-After the client can act on.
 type RateLimitError struct{ RetryAfter time.Duration }

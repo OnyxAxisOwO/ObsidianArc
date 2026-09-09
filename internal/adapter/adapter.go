@@ -363,8 +363,13 @@ func NewRegistry(cfg config.Upstream) *Registry {
 			Timeout:   cfg.DialTimeout,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:        cfg.MaxIdleConns,
-		MaxIdleConnsPerHost: 8,
+		MaxIdleConns: cfg.MaxIdleConns,
+		// Per-host equals the whole pool because an instance usually talks to
+		// one busy provider: a lower cap made UPSTREAM_MAX_IDLE_CONNS
+		// unreachable and threw away every connection past the eighth, paying
+		// a fresh TLS handshake for it on the next burst. The global ceiling
+		// still bounds the total.
+		MaxIdleConnsPerHost: cfg.MaxIdleConns,
 		IdleConnTimeout:     cfg.IdleConnTimeout,
 		// How long to wait for the first byte of the response. A generation
 		// can take minutes, but a provider that has not even acknowledged the

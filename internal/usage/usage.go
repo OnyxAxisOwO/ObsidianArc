@@ -330,64 +330,61 @@ type Point struct {
 	Totals
 }
 
-// Series buckets usage over time for the dashboard. Bucketing is done in Go
-// rather than with a date function, because the two engines spell those
-// differently and the row count here is small.
+// Series buckets usage over time for the dashboard.
+//
+// The bucketing is a GROUP BY rather than a loop in Go. It used to be the
+// loop, on the grounds that a date function is spelled differently by each
+// engine and the row count was small — but the row count is one per AI
+// request ever made, and opening the dashboard read every one of them in the
+// window to produce a few hundred points. No date function is needed for it:
+// started_at is epoch milliseconds, so the bucket is integer arithmetic, which
+// both engines do the same way.
+//
+// The step is chosen here, never by a caller, so folding it into the text
+// would be safe — it is bound anyway, because there is no reason for this to
+// be the one query in the package that concatenates a value.
 func (s *Store) Series(ctx context.Context, filter Filter, bucket time.Duration) ([]Point, error) {
 	if bucket <= 0 {
 		bucket = time.Hour
 	}
-	where, args := filter.where("")
+	where, filterArgs := filter.where("")
+	step := bucket.Milliseconds()
+
+	// Ordered as the placeholders appear: the two in the select list, then
+	// whatever the filter added to the WHERE. Grouping and ordering are by
+	// position, which saves repeating the expression and is understood by
+	// both engines.
+	args := append([]any{step, string(StatusError)}, filterArgs...)
 
 	rows, err := s.db.Query(ctx,
-		`SELECT started_at, input_tokens, output_tokens, reasoning_tokens, total_tokens, credits, status
-		 FROM usage_records`+where+` ORDER BY started_at`, args...)
+		`SELECT started_at - (started_at % ?) AS bucket,
+		        COUNT(*),
+		        COALESCE(SUM(input_tokens), 0),
+		        COALESCE(SUM(output_tokens), 0),
+		        COALESCE(SUM(reasoning_tokens), 0),
+		        COALESCE(SUM(total_tokens), 0),
+		        COALESCE(SUM(credits), 0),
+		        COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0)
+		 FROM usage_records`+where+`
+		 GROUP BY 1
+		 ORDER BY 1`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("usage: series: %w", err)
 	}
 	defer rows.Close()
 
-	step := bucket.Milliseconds()
-	byBucket := map[int64]*Point{}
-	order := []int64{}
-
+	out := []Point{}
 	for rows.Next() {
-		var (
-			at     int64
-			input  int64
-			output int64
-			reason int64
-			total  int64
-			credit float64
-			status string
-		)
-		if err := rows.Scan(&at, &input, &output, &reason, &total, &credit, &status); err != nil {
+		var point Point
+		if err := rows.Scan(&point.At, &point.Requests,
+			&point.InputTokens, &point.OutputTokens, &point.ReasoningTokens,
+			&point.TotalTokens, &point.Credits, &point.Errors); err != nil {
 			return nil, fmt.Errorf("usage: series scan: %w", err)
 		}
-		key := at - at%step
-		point := byBucket[key]
-		if point == nil {
-			point = &Point{At: key}
-			byBucket[key] = point
-			order = append(order, key)
-		}
-		point.Requests++
-		point.InputTokens += input
-		point.OutputTokens += output
-		point.ReasoningTokens += reason
-		point.TotalTokens += total
-		point.Credits += credit
-		if status == string(StatusError) {
-			point.Errors++
-		}
+		out = append(out, point)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-
-	out := make([]Point, 0, len(order))
-	for _, key := range order {
-		out = append(out, *byBucket[key])
 	}
 	return out, nil
 }

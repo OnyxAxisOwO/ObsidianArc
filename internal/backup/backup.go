@@ -202,11 +202,13 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	// And what the account already holds, checked before anything is
 	// written: the per-request limits above say nothing about the twentieth
 	// request.
-	ceiling := s.MaxStoredMessages
-	if ceiling <= 0 {
-		ceiling = MaxStoredMessages
-	}
-	stored, err := s.conversations.CountMessages(ctx, account.ID)
+	ceiling := s.ceiling()
+	// A first, unlocked look, so a document that plainly does not fit is
+	// refused before any of it is written. It is not the enforcement: two
+	// imports arriving together both read the same figure here and both pass.
+	// importThread re-checks under the account's row lock, which is what the
+	// ceiling actually rests on.
+	stored, err := s.conversations.CountMessages(ctx, nil, account.ID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -244,6 +246,15 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	return result, nil
 }
 
+// ceiling is how many messages one account may store. Zero configures the
+// package default.
+func (s *Service) ceiling() int {
+	if s.MaxStoredMessages > 0 {
+		return s.MaxStoredMessages
+	}
+	return MaxStoredMessages
+}
+
 // importThread writes one conversation in a transaction, so a file that goes
 // wrong halfway leaves whole conversations behind rather than half of one.
 func (s *Service) importThread(ctx context.Context, account user.User, thread Thread) (int, error) {
@@ -269,7 +280,26 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 
 	written := 0
 	newID := ""
+	ceiling := s.ceiling()
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		// The stored-message ceiling is read and then written against, so it
+		// holds the account's row across both. Without the lock, imports sent
+		// in parallel each counted the same pre-import total, each decided
+		// they fit, and together wrote several times the cap — the caller's
+		// own check before this transaction cannot see the other writers.
+		// Same no-op UPDATE as conversation.Store.Upload, for the same reason.
+		if _, err := tx.Exec(ctx,
+			`UPDATE users SET updated_at = updated_at WHERE id = ?`, account.ID); err != nil {
+			return err
+		}
+		stored, err := s.conversations.CountMessages(ctx, tx, account.ID)
+		if err != nil {
+			return err
+		}
+		if stored+len(usable) > ceiling {
+			return ErrStorageFull
+		}
+
 		// No model id: the export names the model as text, and an id from
 		// another instance would point at a row that is not the same model or
 		// does not exist. The name is kept on each message instead.

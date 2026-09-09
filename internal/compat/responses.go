@@ -423,6 +423,7 @@ func (h *Handlers) responsesBuffered(
 	startedAt := time.Now()
 	requestID := id.New()
 
+	var thinking strings.Builder
 	var answer strings.Builder
 	usage := adapter.Usage{}
 	var calls []adapter.ToolCall
@@ -431,6 +432,8 @@ func (h *Handlers) responsesBuffered(
 		switch event.Type {
 		case adapter.EventDelta:
 			answer.WriteString(event.Text)
+		case adapter.EventReasoning:
+			thinking.WriteString(event.Text)
 		case adapter.EventToolCall:
 			calls = append(calls, event.ToolCall)
 		case adapter.EventUsage:
@@ -443,6 +446,8 @@ func (h *Handlers) responsesBuffered(
 	usage = usage.Merge(result.Usage)
 	if result.Text != "" && answer.Len() == 0 {
 		answer.WriteString(result.Text)
+		thinking.Reset()
+		thinking.WriteString(result.Reasoning)
 	}
 	if len(calls) == 0 {
 		calls = result.ToolCalls
@@ -454,9 +459,10 @@ func (h *Handlers) responsesBuffered(
 	}
 	h.record(r.Context(), who, resolved, requestID, usage, startedAt, nil)
 
+	status, incomplete := responsesStatus(result.FinishReason)
 	return writeJSON(w, http.StatusOK, responseObject(
-		requestID, label, startedAt, "completed",
-		responsesOutput(requestID, answer.String(), calls), usage,
+		requestID, label, startedAt, status, incomplete,
+		responsesOutput(requestID, thinking.String(), answer.String(), calls), usage,
 	))
 }
 
@@ -484,6 +490,7 @@ func (h *Handlers) responsesStreamed(
 	usage := adapter.Usage{}
 	var calls []adapter.ToolCall
 	var answer strings.Builder
+	var thinking strings.Builder
 
 	// Every event carries its position in the stream, which is what a client
 	// resuming or reordering them counts on.
@@ -498,17 +505,72 @@ func (h *Handlers) responsesStreamed(
 	index := 0
 	textOpen := false
 	textItemID := "msg_" + requestID
+	reasoningOpen := false
+	reasoningItemID := "rs_" + requestID
 
 	_ = emit("response.created", map[string]any{
-		"response": responseObject(requestID, label, startedAt, "in_progress", nil, adapter.Usage{}),
+		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}),
 	})
 	_ = emit("response.in_progress", map[string]any{
-		"response": responseObject(requestID, label, startedAt, "in_progress", nil, adapter.Usage{}),
+		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}),
 	})
+
+	// The model's thinking, which this surface used to drop. It is an
+	// output item like any other and closes before whatever follows it.
+	openReasoning := func() error {
+		if reasoningOpen {
+			return nil
+		}
+		reasoningOpen = true
+		if err := emit("response.output_item.added", map[string]any{
+			"output_index": index,
+			"item": map[string]any{
+				"type": "reasoning", "id": reasoningItemID, "summary": []any{},
+			},
+		}); err != nil {
+			return err
+		}
+		return emit("response.reasoning_summary_part.added", map[string]any{
+			"item_id": reasoningItemID, "output_index": index, "summary_index": 0,
+			"part": map[string]any{"type": "summary_text", "text": ""},
+		})
+	}
+
+	closeReasoning := func() error {
+		if !reasoningOpen {
+			return nil
+		}
+		reasoningOpen = false
+		if err := emit("response.reasoning_summary_text.done", map[string]any{
+			"item_id": reasoningItemID, "output_index": index, "summary_index": 0,
+			"text": thinking.String(),
+		}); err != nil {
+			return err
+		}
+		if err := emit("response.reasoning_summary_part.done", map[string]any{
+			"item_id": reasoningItemID, "output_index": index, "summary_index": 0,
+			"part": map[string]any{"type": "summary_text", "text": thinking.String()},
+		}); err != nil {
+			return err
+		}
+		if err := emit("response.output_item.done", map[string]any{
+			"output_index": index,
+			"item":         reasoningItem(reasoningItemID, thinking.String()),
+		}); err != nil {
+			return err
+		}
+		index++
+		return nil
+	}
 
 	openText := func() error {
 		if textOpen {
 			return nil
+		}
+		// The thinking that led here is its own item and closes before the
+		// answer opens, so the two arrive in the order they happened.
+		if err := closeReasoning(); err != nil {
+			return err
 		}
 		textOpen = true
 		if err := emit("response.output_item.added", map[string]any{
@@ -556,6 +618,9 @@ func (h *Handlers) responsesStreamed(
 	}
 
 	sendCall := func(call adapter.ToolCall, position int) error {
+		if err := closeReasoning(); err != nil {
+			return err
+		}
 		if err := closeText(); err != nil {
 			return err
 		}
@@ -602,6 +667,15 @@ func (h *Handlers) responsesStreamed(
 				"item_id": textItemID, "output_index": index, "content_index": 0,
 				"delta": event.Text,
 			})
+		case adapter.EventReasoning:
+			if err := openReasoning(); err != nil {
+				return err
+			}
+			thinking.WriteString(event.Text)
+			return emit("response.reasoning_summary_text.delta", map[string]any{
+				"item_id": reasoningItemID, "output_index": index, "summary_index": 0,
+				"delta": event.Text,
+			})
 		case adapter.EventToolCall:
 			calls = append(calls, event.ToolCall)
 			return sendCall(event.ToolCall, len(calls)-1)
@@ -617,6 +691,14 @@ func (h *Handlers) responsesStreamed(
 	// A provider that could not stream answered all at once, and the answer
 	// still has to reach the client as items.
 	if result.Text != "" && answer.Len() == 0 {
+		if result.Reasoning != "" && thinking.Len() == 0 {
+			_ = openReasoning()
+			thinking.WriteString(result.Reasoning)
+			_ = emit("response.reasoning_summary_text.delta", map[string]any{
+				"item_id": reasoningItemID, "output_index": index, "summary_index": 0,
+				"delta": result.Reasoning,
+			})
+		}
 		_ = openText()
 		answer.WriteString(result.Text)
 		_ = emit("response.output_text.delta", map[string]any{
@@ -630,6 +712,7 @@ func (h *Handlers) responsesStreamed(
 			_ = sendCall(call, position)
 		}
 	}
+	_ = closeReasoning()
 	_ = closeText()
 
 	h.record(context.WithoutCancel(r.Context()), who, resolved, requestID, usage, startedAt, chatErr)
@@ -648,9 +731,17 @@ func (h *Handlers) responsesStreamed(
 		return nil
 	}
 
-	_ = emit("response.completed", map[string]any{
-		"response": responseObject(requestID, label, startedAt, "completed",
-			responsesOutput(requestID, answer.String(), calls), usage),
+	status, incomplete := responsesStatus(result.FinishReason)
+	// `response.incomplete` rather than `response.completed` when the turn
+	// was cut short, because a client that reads only the event that closes
+	// the stream learns from its name alone that the answer is not whole.
+	closing := "response.completed"
+	if status != "completed" {
+		closing = "response." + status
+	}
+	_ = emit(closing, map[string]any{
+		"response": responseObject(requestID, label, startedAt, status, incomplete,
+			responsesOutput(requestID, thinking.String(), answer.String(), calls), usage),
 	})
 	return nil
 }
@@ -661,7 +752,7 @@ func (h *Handlers) responsesStreamed(
 // several events rather than sending once.
 func responseObject(
 	requestID, label string, startedAt time.Time,
-	status string, output []map[string]any, usage adapter.Usage,
+	status string, incomplete map[string]any, output []map[string]any, usage adapter.Usage,
 ) map[string]any {
 	if output == nil {
 		output = []map[string]any{}
@@ -676,7 +767,7 @@ func responseObject(
 		"error":      nil,
 		// Named because a client reading a finished response looks for them,
 		// and an absent field is not the same as a stated null.
-		"incomplete_details":  nil,
+		"incomplete_details":  incomplete,
 		"instructions":        nil,
 		"parallel_tool_calls": true,
 		"tool_choice":         "auto",
@@ -692,8 +783,11 @@ func responseObject(
 	return object
 }
 
-func responsesOutput(requestID, text string, calls []adapter.ToolCall) []map[string]any {
-	out := make([]map[string]any, 0, len(calls)+1)
+func responsesOutput(requestID, thinking, text string, calls []adapter.ToolCall) []map[string]any {
+	out := make([]map[string]any, 0, len(calls)+2)
+	if thinking != "" {
+		out = append(out, reasoningItem("rs_"+requestID, thinking))
+	}
 	if text != "" {
 		out = append(out, textItem("msg_"+requestID, text))
 	}
@@ -701,6 +795,48 @@ func responsesOutput(requestID, text string, calls []adapter.ToolCall) []map[str
 		out = append(out, callItem(requestID, call, position))
 	}
 	return out
+}
+
+// responsesStatus reads how the turn ended, in this protocol's vocabulary.
+//
+// A turn stopped at the ceiling is `incomplete`, not `completed`. That is
+// the difference between an agent sending the transcript round again and an
+// agent acting on half an answer as though it were whole — and the other
+// two surfaces already say so, in `finish_reason` and in `stop_reason`.
+//
+// Codex answers `response.incomplete` by retrying the turn a few times and
+// then failing with the reason, which is what it does against the real API
+// for the same event. That is the client's policy and it costs a generation
+// each time, so it looks like a regression from the outside — it is not.
+// Saying "completed" instead would hand every client on this surface a
+// truncated answer with nothing in it to detect the truncation by.
+func responsesStatus(upstream string) (string, map[string]any) {
+	switch strings.ToLower(strings.TrimSpace(upstream)) {
+	case "length", "max_tokens", "model_length":
+		return "incomplete", map[string]any{"reason": "max_output_tokens"}
+	case "content_filter", "refusal":
+		return "incomplete", map[string]any{"reason": "content_filter"}
+	}
+	return "completed", nil
+}
+
+// reasoningItem carries the model's thinking.
+//
+// In `summary` rather than in `content`, because the summary slot is the
+// one a client renders without being asked: Codex reads the
+// reasoning_summary_text events and shows what they carry, while the raw
+// slot is behind a setting most people never turn on. The text is the same
+// text the browser shows in a thinking block, so the slot that displays it
+// is the honest one.
+//
+// Sendable in a way the Anthropic surface's thinking blocks are not: this
+// is plain text with no signature to mint, and a client that replays the
+// item is answered by buildResponsesRequest dropping it again.
+func reasoningItem(itemID, text string) map[string]any {
+	return map[string]any{
+		"type": "reasoning", "id": itemID,
+		"summary": []map[string]any{{"type": "summary_text", "text": text}},
+	}
 }
 
 func textItem(itemID, text string) map[string]any {

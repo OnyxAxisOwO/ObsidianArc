@@ -637,17 +637,8 @@ func (s *Service) SetPassword(ctx context.Context, userID, newPassword string) e
 // rejected here, so a session issued before the account was disabled stops
 // working on its next request rather than at its next expiry.
 func (s *Service) Authenticate(ctx context.Context, token string) (user.User, Session, error) {
-	session, err := s.sessions.Get(ctx, token)
+	session, account, err := s.sessions.GetWithUser(ctx, token)
 	if err != nil {
-		return user.User{}, Session{}, err
-	}
-
-	account, err := s.users.ByID(ctx, nil, session.UserID)
-	if err != nil {
-		if errors.Is(err, user.ErrNotFound) {
-			_ = s.sessions.DeleteByID(ctx, session.ID)
-			return user.User{}, Session{}, ErrSessionNotFound
-		}
 		return user.User{}, Session{}, err
 	}
 	if !account.IsActive() {

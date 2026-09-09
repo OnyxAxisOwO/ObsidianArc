@@ -240,7 +240,7 @@ for a week. Do not write anything into the README that claims otherwise.
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 17.4 MB binary; 116.8 kB on the wire to open the chat, against a
+Current: 17.7 MB binary; 119.6 kB on the wire to open the chat, against a
 target of 130. The target used to be 80 and the figure used to be 59.5;
 adopting Vue moved both, and `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.

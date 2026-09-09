@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,10 +38,25 @@ type Handlers struct {
 	// The operator's per-file ceiling, read per request so a change takes
 	// effect without a restart. Optional; nil means the package default.
 	MaxUploadBytes func() int64
+	// Slots for in-flight attachment decodes. See uploadAttachment.
+	decoding chan struct{}
 }
 
+// How many uploads may be decoding at once.
+//
+// An upload holds the encoded body and the decoded picture at the same time,
+// so each one costs several times the file's size while it runs. The stored
+// caps say nothing about that: they are checked after the allocation. Small
+// enough that a burst cannot exhaust memory, large enough that nobody sharing
+// an instance waits behind one.
+const maxConcurrentDecodes = 4
+
 func NewHandlers(service *Service, conversations *conversation.Store) *Handlers {
-	return &Handlers{service: service, conversations: conversations}
+	return &Handlers{
+		service:       service,
+		conversations: conversations,
+		decoding:      make(chan struct{}, maxConcurrentDecodes),
+	}
 }
 
 func (h *Handlers) Routes(mux *http.ServeMux) {
@@ -371,10 +386,27 @@ func (h *Handlers) uploadAttachment(w http.ResponseWriter, r *http.Request) erro
 	if !conversation.MediaAllowed(body.Mime) {
 		return httpx.BadRequest("Images must be PNG, JPEG, WebP or GIF.")
 	}
+	// Bounds how many uploads are decoding at once, not how many bytes end up
+	// stored — the per-account caps are checked inside Upload's transaction,
+	// which is reached only after the whole encoded body has been buffered and
+	// this decode has allocated the picture again. Deliberately not a row
+	// lock: nothing here is read and then written, and the thing being
+	// protected is this process's heap rather than an invariant in the
+	// database.
+	select {
+	case h.decoding <- struct{}{}:
+		defer func() { <-h.decoding }()
+	case <-r.Context().Done():
+		return r.Context().Err()
+	}
+
 	data, err := base64.StdEncoding.DecodeString(body.Data)
 	if err != nil {
 		return httpx.BadRequest("Image data is not valid base64.")
 	}
+	// The encoded copy is the largest thing still reachable, and Upload is
+	// about to make another one for the driver's bind.
+	body.Data = ""
 
 	record, err := h.conversations.Upload(r.Context(), conversation.UploadInput{
 		UserID:   account.ID,
@@ -462,6 +494,14 @@ func translateConversationError(err error) error {
 
 // --- image generation ---------------------------------------------------------
 
+// MaxImagesPerRequest is how many pictures one call may ask for.
+//
+// The panel only ever asks for one. The bound is here because the field is
+// on the wire, and an unbounded count is a way to spend an account's
+// allowance — and the operator's money with the provider — many times over
+// in a single request that the quota reservation only counted once.
+const MaxImagesPerRequest = 4
+
 type imageGenRequest struct {
 	ModelID string `json:"model_id"`
 	Prompt  string `json:"prompt"`
@@ -476,6 +516,39 @@ type imageGenItem struct {
 	URL           string `json:"url,omitempty"`
 	B64JSON       string `json:"b64_json,omitempty"`
 	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}
+
+// recordImages writes the ledger entry for an image call and settles what it
+// cost.
+//
+// Image models report no token counts, so the whole charge is the model's
+// per-request credit, taken once for each picture that came back — that being
+// what the provider bills for. Without this the endpoint reserved an
+// allowance, handed it straight back and settled nothing, so pictures were
+// free and absent from the ledger while the same model used from the
+// transcript was neither.
+func (h *Handlers) recordImages(
+	ctx context.Context, account user.User, resolved model.Resolved,
+	requestID string, startedAt time.Time, images int, status Status, code string,
+) {
+	if h.service.OnTurn == nil {
+		return
+	}
+	// A call that came back empty still reached the provider, and the turn
+	// path charges a failed generation the same way.
+	billable := max(1, images)
+	h.service.OnTurn(ctx, TurnRecord{
+		User:         account,
+		Model:        resolved.Model,
+		ProviderID:   resolved.Provider.ID,
+		ProviderName: resolved.Provider.Name,
+		RequestID:    requestID,
+		Credits:      resolved.Model.Credits(adapter.Usage{}) * float64(billable),
+		Status:       status,
+		ErrorCode:    code,
+		StartedAt:    startedAt,
+		FinishedAt:   time.Now(),
+	})
 }
 
 func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
@@ -497,6 +570,12 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	resolved, err := h.service.models.Authorize(r.Context(), account.GroupID, body.ModelID, account.IsAdmin())
 	if err != nil {
 		return translatePrepareError(err)
+	}
+	// The turn path picks the image branch off this same flag, so a model
+	// without it reaching here means somebody asked for the endpoint
+	// directly with a chat model's id.
+	if !resolved.Model.SupportsImageGen {
+		return httpx.BadRequest("That model does not generate images.")
 	}
 
 	reqlog.Annotate(r.Context(), reqlog.Annotation{
@@ -520,6 +599,12 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	if n <= 0 {
 		n = 1
 	}
+	if n > MaxImagesPerRequest {
+		n = MaxImagesPerRequest
+	}
+
+	startedAt := time.Now()
+	requestID := id.New()
 
 	imgReq := adapter.ImageRequest{
 		Model:          resolved.Upstream.ModelID,
@@ -531,65 +616,108 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		ResponseFormat: "b64_json",
 	}
 
-	result, err := h.service.GenerateImage(r.Context(), resolved, imgReq)
-	if err != nil {
-		code, friendly := Describe(err)
-		return httpx.BadRequest("%s: %s", code, friendly)
-	}
+	result, genErr := h.service.GenerateImage(r.Context(), resolved, imgReq)
 
+	// Outliving a cancelled request for the same reason the turn path's save
+	// does: the provider generated and billed for these whether or not the
+	// browser is still listening, so the ledger entry is owed either way.
 	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer cancelSave()
 
+	// A shorter budget for collecting pictures the provider only linked to,
+	// carved out of the one above rather than sharing it: a URL that stalls
+	// would otherwise spend the whole allowance on the network and leave none
+	// for the writes that have to follow, losing the attachment and the
+	// ledger row for a turn that was already paid for.
+	fetchCtx, cancelFetch := context.WithTimeout(saveCtx, 8*time.Second)
+	defer cancelFetch()
+
+	// The operator's per-file limit applies to what a provider sends back as
+	// much as to what a person uploads; the endpoint used to hold generated
+	// images to the package default instead.
+	ceiling := int64(conversation.MaxAttachmentBytes)
+	if h.MaxUploadBytes != nil {
+		if configured := h.MaxUploadBytes(); configured > 0 {
+			ceiling = configured
+		}
+	}
+
+	if genErr != nil {
+		// The same distinction the turn path draws in finishFailed: somebody
+		// closing the panel is not the provider failing, and recording it as
+		// one makes the dashboard's error rate a count of how often people
+		// change their mind.
+		if r.Context().Err() != nil || isCancelled(genErr) {
+			h.recordImages(saveCtx, account, resolved, requestID, startedAt, 0, StatusAborted, "cancelled")
+			// The client is gone; there is nobody to answer.
+			return nil
+		}
+		code, friendly := Describe(genErr)
+		h.recordImages(saveCtx, account, resolved, requestID, startedAt, 0, StatusError, code)
+		return httpx.BadRequest("%s: %s", code, friendly)
+	}
+	h.recordImages(saveCtx, account, resolved, requestID, startedAt, len(result.Data), StatusOK, "")
+
 	var images []imageGenItem
+	var undelivered int
+	var lastFailure error
 	for _, img := range result.Data {
 		item := imageGenItem{
 			B64JSON:       img.B64JSON,
 			RevisedPrompt: img.RevisedPrompt,
 		}
 
-		var data []byte
-		if img.B64JSON != "" {
-			decoded, err := base64.StdEncoding.DecodeString(img.B64JSON)
-			if err == nil {
-				data = decoded
-			}
-		}
-		if len(data) == 0 && img.URL != "" {
-			fetchReq, err := http.NewRequestWithContext(saveCtx, http.MethodGet, img.URL, nil)
-			if err == nil {
-				client := h.service.registry.Client()
-				if client == nil {
-					client = http.DefaultClient
-				}
-				resp, err := client.Do(fetchReq)
-				if err == nil {
-					defer resp.Body.Close()
-					if resp.StatusCode == http.StatusOK {
-						bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, conversation.MaxAttachmentBytes))
-						if err == nil {
-							data = bodyBytes
-						}
-					}
-				}
-			}
-		}
-
-		if len(data) > 0 {
-			att, err := h.conversations.Upload(saveCtx, conversation.UploadInput{
-				UserID: account.ID,
-				Mime:   "image/png",
-				Data:   data,
+		data, mime, err := generatedImageBytes(fetchCtx, img, ceiling)
+		if err == nil {
+			var att conversation.Attachment
+			att, err = h.conversations.Upload(saveCtx, conversation.UploadInput{
+				UserID:   account.ID,
+				Mime:     mime,
+				Data:     data,
+				MaxBytes: ceiling,
 			})
 			if err == nil {
 				item.AttachmentID = att.ID
 				item.URL = "/api/attachments/" + att.ID
 			}
 		}
-		if item.URL == "" && img.URL != "" {
-			item.URL = img.URL
+		if err != nil {
+			// Dropped rather than returned empty. The provider's own URL is
+			// deliberately not offered as a fallback — it is usually a
+			// short-lived signed link, and handing it over makes the browser
+			// fetch from the upstream, which is the one thing this endpoint
+			// exists to avoid — so an item with nothing in it is a broken
+			// picture on screen and no explanation.
+			slog.WarnContext(saveCtx, "could not take delivery of a generated image",
+				"error", err, "user", account.ID)
+			undelivered++
+			lastFailure = err
+			continue
 		}
 
 		images = append(images, item)
+	}
+
+	// Every picture failing is a failure, not an empty success: the account
+	// has been charged and has nothing to show, and the panel would otherwise
+	// report that it generated none and say why to nobody.
+	if len(images) == 0 && undelivered > 0 {
+		switch {
+		// A picture generated here is stored unattached, and nothing ever
+		// links it to a message, so the panel fills the same pending-image
+		// allowance the composer uses until the janitor clears it.
+		case errors.Is(lastFailure, conversation.ErrTooManyPending):
+			return httpx.TooManyRequests("too_many_pending_images",
+				"Too many images are waiting to be sent. Send or discard some first.")
+		case errors.Is(lastFailure, conversation.ErrAttachmentQuotaFull):
+			return httpx.ForbiddenCode("attachment_quota_full",
+				"This account is holding as many images as it may. Delete some conversations first.")
+		case errors.Is(lastFailure, conversation.ErrAttachmentTooLarge):
+			return httpx.BadRequest("The image the provider returned is larger than the %d MB this server accepts.",
+				ceiling/(1024*1024))
+		}
+		return httpx.BadRequest(
+			"The provider returned %d image(s) this server could not accept.", undelivered)
 	}
 
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{

@@ -53,24 +53,19 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 		if !isValidID(body.ID) {
 			return httpx.BadRequest("A group is required.")
 		}
-		// Limit 0 would be the store's default page. Every member has to be
-		// named, so the count comes first and asks for exactly that many.
+		// The count is for the answer only. Naming every member to reset them
+		// meant asking the user list for as many rows as the group holds, and
+		// that list clamps a page above two hundred back down to fifty — so a
+		// group any larger than that was reset fifty accounts at a time while
+		// reporting success. The reset selects its own rows now.
 		_, total, err := h.users.List(r.Context(), user.ListFilter{GroupID: body.ID, Limit: 1})
 		if err != nil {
 			return httpx.Internal(err)
 		}
-		members, _, err := h.users.List(r.Context(), user.ListFilter{GroupID: body.ID, Limit: total})
-		if err != nil {
+		if err := h.quota.ResetGroup(r.Context(), body.ID); err != nil {
 			return httpx.Internal(err)
 		}
-		ids := make([]string, 0, len(members))
-		for _, member := range members {
-			ids = append(ids, member.ID)
-		}
-		if err := h.quota.Reset(r.Context(), ids); err != nil {
-			return httpx.Internal(err)
-		}
-		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": len(ids)})
+		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": total})
 
 	case "user":
 		if !isValidID(body.ID) {

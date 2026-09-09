@@ -395,6 +395,14 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 	result := Result{Streamed: true}
 	var sinkErr error
 
+	// Accumulated in builders rather than by appending to the strings on
+	// result: every delta used to copy the whole answer so far, so a long
+	// generation spent time and garbage in proportion to its length squared.
+	// The strings on result are refreshed as they grow, because a sink error
+	// returns result as the partial answer and it has to hold what the reader
+	// actually saw.
+	var text, reasoning strings.Builder
+
 	// A tool call is its own content block: a start frame naming it, then the
 	// arguments as JSON fragments, then a stop. Each call is emitted at its
 	// stop — the first moment the arguments are whole, and earlier than the
@@ -462,7 +470,8 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 			if event.Delta.Text == "" {
 				return nil
 			}
-			result.Text += event.Delta.Text
+			text.WriteString(event.Delta.Text)
+			result.Text = text.String()
 			if err := sink(Event{Type: EventDelta, Text: event.Delta.Text}); err != nil {
 				sinkErr = err
 				return err
@@ -471,7 +480,8 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 			if event.Delta.Thinking == "" {
 				return nil
 			}
-			result.Reasoning += event.Delta.Thinking
+			reasoning.WriteString(event.Delta.Thinking)
+			result.Reasoning = reasoning.String()
 			if err := sink(Event{Type: EventReasoning, Text: event.Delta.Thinking}); err != nil {
 				sinkErr = err
 				return err

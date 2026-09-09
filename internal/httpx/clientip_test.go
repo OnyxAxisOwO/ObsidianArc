@@ -146,3 +146,26 @@ func TestMalformedTrustListIsAnError(t *testing.T) {
 		t.Fatal("a malformed entry was accepted")
 	}
 }
+
+// The flag is the switch and the list only narrows it. Read the other way
+// round, a list left behind in the environment kept forwarded headers
+// trusted after an operator had turned the flag off — which is the one thing
+// somebody turns it off to stop, and the deployment notes hand out both
+// settings together.
+func TestTurningTrustOffIgnoresAConfiguredProxyList(t *testing.T) {
+	trust, err := NewProxyTrust(false, []string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trust.Enabled() {
+		t.Fatal("trust stayed on with the flag off")
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "10.0.0.5:34567"
+	request.Header.Set("X-Forwarded-For", "8.8.8.8")
+
+	if got := ClientIP(request, trust); got != "10.0.0.5" {
+		t.Errorf("client ip = %q, want the peer 10.0.0.5: a forwarded header was believed", got)
+	}
+}

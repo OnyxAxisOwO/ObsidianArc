@@ -611,3 +611,56 @@ func TestRegisterQQRequirement(t *testing.T) {
 		t.Errorf("user5 QQ = %q, want 987654321", user5.QQ)
 	}
 }
+
+// The session and its account come back from one joined row now, with the
+// session's columns consumed before the user package's scanner reads the
+// rest. A misordering there scans the wrong column into the wrong field, and
+// the fields most likely to survive that silently are the string ones — so
+// this checks the account is whole, not merely that it resolved.
+func TestAuthenticateReturnsTheWholeAccountAndItsSession(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	created, token, err := f.auth.Register(ctx, RegisterInput{
+		Username: "arc", Password: "a-good-password", Nickname: "Arc Reader",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	account, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if account.ID != created.ID {
+		t.Errorf("account id = %q, want %q", account.ID, created.ID)
+	}
+	if account.Username != "arc" {
+		t.Errorf("username = %q, want arc", account.Username)
+	}
+	if account.Nickname != "Arc Reader" {
+		t.Errorf("nickname = %q, want 'Arc Reader'", account.Nickname)
+	}
+	if account.Role != created.Role || account.Status != created.Status {
+		t.Errorf("role/status = %q/%q, want %q/%q",
+			account.Role, account.Status, created.Role, created.Status)
+	}
+	if account.GroupID != created.GroupID {
+		t.Errorf("group = %q, want %q", account.GroupID, created.GroupID)
+	}
+	if account.CreatedAt != created.CreatedAt {
+		t.Errorf("created_at = %d, want %d", account.CreatedAt, created.CreatedAt)
+	}
+
+	// And the session half of the same row.
+	if session.UserID != created.ID {
+		t.Errorf("session user = %q, want %q", session.UserID, created.ID)
+	}
+	if session.ID != HashToken(token) {
+		t.Error("session id is not the hash of the cookie value")
+	}
+	if session.ExpiresAt <= session.CreatedAt {
+		t.Errorf("session expires at %d, created at %d", session.ExpiresAt, session.CreatedAt)
+	}
+}

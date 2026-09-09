@@ -319,3 +319,149 @@ func upstreamStrings(t *testing.T, f *fixture) []string {
 	}
 	return out
 }
+
+// --- thinking -----------------------------------------------------------------
+
+// The thinking a reasoning model produces. It reached the chat/completions
+// surface as `reasoning_content` from the day tools did, and this one dropped
+// it on the floor: a Codex user on a reasoning model watched nothing happen
+// until the answer arrived whole.
+const thinkingReply = `{"choices":[{"message":{"content":"42.",` +
+	`"reasoning_content":"Count the ways."},"finish_reason":"stop"}],` +
+	`"usage":{"prompt_tokens":11,"completion_tokens":7}}`
+
+func TestResponsesCarriesTheModelsThinking(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(thinkingReply)
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token,
+		`{"model":"`+f.model.ID+`","store":false,"input":"what is the answer?"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	output, _ := decodeJSON(t, w)["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("expected the thinking and the answer, got %v", output)
+	}
+
+	// The thinking comes first, because that is the order it happened in.
+	first, _ := output[0].(map[string]any)
+	if first["type"] != "reasoning" {
+		t.Fatalf("the first item is %v", first)
+	}
+	summary, _ := first["summary"].([]any)
+	if len(summary) != 1 {
+		t.Fatalf("summary = %v", first["summary"])
+	}
+	part, _ := summary[0].(map[string]any)
+	if part["type"] != "summary_text" || part["text"] != "Count the ways." {
+		t.Errorf("summary part = %v", part)
+	}
+
+	second, _ := output[1].(map[string]any)
+	if second["type"] != "message" {
+		t.Errorf("the answer did not follow the thinking: %v", second)
+	}
+}
+
+func TestResponsesStreamsThinkingAsItsOwnItem(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.stream(
+		`{"choices":[{"delta":{"role":"assistant"}}]}`,
+		`{"choices":[{"delta":{"reasoning_content":"Count "}}]}`,
+		`{"choices":[{"delta":{"reasoning_content":"the ways."}}]}`,
+		`{"choices":[{"delta":{"content":"42."}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}`,
+	)
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token,
+		`{"model":"`+f.model.ID+`","stream":true,"store":false,"input":"what is the answer?"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	raw := w.Body.String()
+
+	// The three events a client builds a thinking block from.
+	for _, event := range []string{
+		"event: response.reasoning_summary_part.added",
+		"event: response.reasoning_summary_text.delta",
+		"event: response.reasoning_summary_text.done",
+	} {
+		if !strings.Contains(raw, event) {
+			t.Errorf("the stream never sent %q:\n%s", event, raw)
+		}
+	}
+
+	// Assembled from its fragments, like the answer beside it.
+	if !strings.Contains(raw, `"text":"Count the ways."`) {
+		t.Errorf("the thinking never arrived whole:\n%s", raw)
+	}
+
+	// It closes before the answer opens, so a client rendering items in the
+	// order it is sent them shows the thinking above the answer rather than
+	// interleaved with it.
+	closed := strings.Index(raw, "event: response.reasoning_summary_text.done")
+	answered := strings.Index(raw, "event: response.output_text.delta")
+	if closed < 0 || answered < 0 || closed > answered {
+		t.Errorf("the thinking did not close before the answer began:\n%s", raw)
+	}
+
+	// Three finished items would mean the thinking was left open and closed
+	// again beside the message.
+	if got := strings.Count(raw, "event: response.output_item.done"); got != 2 {
+		t.Errorf("finished items = %d, want the thinking and the message:\n%s", got, raw)
+	}
+	if !strings.Contains(raw, `"type":"reasoning"`) {
+		t.Errorf("no reasoning item in the stream:\n%s", raw)
+	}
+}
+
+// --- a turn that was cut short --------------------------------------------------
+
+const truncatedReply = `{"choices":[{"message":{"content":"The first thing to say is"},` +
+	`"finish_reason":"length"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}`
+
+func TestResponsesSaysWhenATurnWasCutShort(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(truncatedReply)
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token,
+		`{"model":"`+f.model.ID+`","store":false,"input":"tell me everything"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	body := decodeJSON(t, w)
+	if body["status"] != "incomplete" {
+		t.Errorf("status = %v, want incomplete", body["status"])
+	}
+	details, _ := body["incomplete_details"].(map[string]any)
+	if details["reason"] != "max_output_tokens" {
+		t.Errorf("incomplete_details = %v", body["incomplete_details"])
+	}
+}
+
+func TestResponsesStreamEndsWithIncompleteWhenCutShort(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.stream(
+		`{"choices":[{"delta":{"content":"The first thing to say is"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}`,
+	)
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token,
+		`{"model":"`+f.model.ID+`","stream":true,"store":false,"input":"tell me everything"}`)
+	raw := w.Body.String()
+
+	if !strings.Contains(raw, "event: response.incomplete") {
+		t.Errorf("the stream never said the turn was cut short:\n%s", raw)
+	}
+	// A client that reads only the closing event must not be told the answer
+	// is whole, so the event that says so is not sent as well.
+	if strings.Contains(raw, "event: response.completed") {
+		t.Errorf("a truncated turn also reported completion:\n%s", raw)
+	}
+	if !strings.Contains(raw, `"reason":"max_output_tokens"`) {
+		t.Errorf("the reason never reached the client:\n%s", raw)
+	}
+}

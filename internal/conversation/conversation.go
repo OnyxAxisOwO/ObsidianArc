@@ -562,9 +562,12 @@ func nullable(value string) any {
 //
 // user_id is denormalised onto the row precisely so a question like this is
 // one indexed count rather than a join through every conversation.
-func (s *Store) CountMessages(ctx context.Context, userID string) (int, error) {
+func (s *Store) CountMessages(ctx context.Context, q database.Queryer, userID string) (int, error) {
+	if q == nil {
+		q = s.db
+	}
 	var count int
-	err := s.db.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT COUNT(*) FROM messages WHERE user_id = ?`, userID).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("conversation: count messages: %w", err)

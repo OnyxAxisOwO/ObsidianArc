@@ -321,6 +321,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	cardHandlers.OnSpend = func(ctx context.Context, account user.User) error {
 		return quotaService.Reset(ctx, []string{account.ID})
 	}
+	// So the limit on guessing at redemption codes counts one host's attempts
+	// together, not just one account's.
+	cardHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	cardHandlers.Routes(mux)
 
 	// Programmatic access. The key store is what an account manages from the

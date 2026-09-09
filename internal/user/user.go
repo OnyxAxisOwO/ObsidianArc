@@ -472,6 +472,14 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error
 	return out, total, rows.Err()
 }
 
+// escapeLike neutralises the wildcards inside a value an operator typed, so
+// a search for "_" matches an underscore rather than every account.
+func escapeLike(value string) string {
+	value = strings.ReplaceAll(value, "\\", "\\\\")
+	value = strings.ReplaceAll(value, "%", "\\%")
+	return strings.ReplaceAll(value, "_", "\\_")
+}
+
 func (filter ListFilter) clauses() (string, []any) {
 	conditions := []string{}
 	args := []any{}
@@ -479,9 +487,14 @@ func (filter ListFilter) clauses() (string, []any) {
 	if search := strings.TrimSpace(filter.Search); search != "" {
 		// LIKE with a lowered needle rather than ILIKE: the latter is
 		// Postgres-only, and the folded columns already exist for login.
-		pattern := "%" + strings.ToLower(search) + "%"
+		//
+		// The escape character is declared rather than assumed: SQLite has
+		// none by default, so without it an operator searching for "_" gets
+		// every account back and reads it as a match.
+		pattern := "%" + escapeLike(strings.ToLower(search)) + "%"
 		conditions = append(conditions,
-			"(username_lower LIKE ? OR email_lower LIKE ? OR LOWER(nickname) LIKE ? OR qq LIKE ?)")
+			`(username_lower LIKE ? ESCAPE '\' OR email_lower LIKE ? ESCAPE '\'`+
+				` OR LOWER(nickname) LIKE ? ESCAPE '\' OR qq LIKE ? ESCAPE '\')`)
 		args = append(args, pattern, pattern, pattern, pattern)
 	}
 	if filter.Role != "" {
@@ -511,6 +524,29 @@ func (s *Store) Count(ctx context.Context, q database.Queryer) (int, error) {
 		return 0, fmt.Errorf("user: count: %w", err)
 	}
 	return count, nil
+}
+
+// Any answers the only question most callers of Count actually ask: is this
+// instance still empty.
+//
+// Separate because it is on the path every client takes before the sign-in
+// screen paints, and counting a whole table to learn whether it has a first
+// row is work that grows with the instance to answer a question that does
+// not. LIMIT 1 over ErrNoRows rather than SELECT EXISTS, which comes back an
+// integer on SQLite and a boolean on Postgres.
+func (s *Store) Any(ctx context.Context, q database.Queryer) (bool, error) {
+	if q == nil {
+		q = s.db
+	}
+	var found string
+	err := q.QueryRow(ctx, `SELECT id FROM users LIMIT 1`).Scan(&found)
+	if database.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("user: any: %w", err)
+	}
+	return true, nil
 }
 
 // CountActiveAdmins guards the "do not lock everyone out" rule: demoting,
@@ -554,6 +590,23 @@ func (s *Store) MoveGroupMembers(ctx context.Context, q database.Queryer, from, 
 }
 
 // --- scanning ---------------------------------------------------------------
+
+// JoinColumns is the same column list qualified with a table alias, and
+// ScanRow reads what either list selects.
+//
+// Both exist so a query that joins users to another table can be answered in
+// one round trip without this package's column list being copied into the
+// caller — a copy that goes wrong silently, because a column list and a scan
+// list that disagree still compile.
+func JoinColumns(alias string) string {
+	parts := strings.Split(columns, ",")
+	for i, part := range parts {
+		parts[i] = alias + "." + strings.TrimSpace(part)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func ScanRow(row interface{ Scan(dest ...any) error }) (User, error) { return scanUser(row) }
 
 type rowScanner interface{ Scan(dest ...any) error }
 

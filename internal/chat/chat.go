@@ -19,12 +19,9 @@ package chat
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"strings"
 	"time"
 
@@ -362,6 +359,19 @@ func (s *Service) runImageGen(
 	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancelSave()
 
+	// Collecting a picture the provider only linked to gets a shorter budget
+	// carved out of the save's, not the whole of it: a URL that accepts the
+	// connection and then goes quiet would otherwise spend all fifteen
+	// seconds on the network, leaving none for the transcript entry and the
+	// ledger row that follow — losing both for a turn that was already paid
+	// for.
+	fetchCtx, cancelFetch := context.WithTimeout(saveCtx, 8*time.Second)
+	defer cancelFetch()
+
+	// The operator's per-file limit applies to what a provider sends back as
+	// much as to what somebody uploads.
+	ceiling := int64(s.settings.Int(settings.AttachmentMaxMB, 6)) * 1024 * 1024
+
 	finish := finished{
 		requestID:  requestID,
 		request:    req,
@@ -383,45 +393,27 @@ func (s *Service) runImageGen(
 		if img.RevisedPrompt != "" && answer == "" {
 			answer = img.RevisedPrompt
 		}
-		var data []byte
-		if img.B64JSON != "" {
-			decoded, err := base64.StdEncoding.DecodeString(img.B64JSON)
-			if err == nil {
-				data = decoded
-			}
+		data, mime, err := generatedImageBytes(fetchCtx, img, ceiling)
+		if err != nil {
+			// One image that cannot be taken delivery of does not spoil the
+			// turn: the others are still worth keeping, and the answer text
+			// has already been paid for.
+			slog.WarnContext(saveCtx, "could not take delivery of a generated image",
+				"error", err, "conversation", prepared.conversationID)
+			continue
 		}
-		if len(data) == 0 && img.URL != "" {
-			fetchReq, err := http.NewRequestWithContext(saveCtx, http.MethodGet, img.URL, nil)
-			if err == nil {
-				client := s.registry.Client()
-				if client == nil {
-					client = http.DefaultClient
-				}
-				resp, err := client.Do(fetchReq)
-				if err == nil {
-					defer resp.Body.Close()
-					if resp.StatusCode == http.StatusOK {
-						bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, conversation.MaxAttachmentBytes))
-						if err == nil {
-							data = bodyBytes
-						}
-					}
-				}
-			}
+		att, err := s.conversations.Upload(saveCtx, conversation.UploadInput{
+			UserID:   req.User.ID,
+			Mime:     mime,
+			Data:     data,
+			MaxBytes: ceiling,
+		})
+		if err != nil {
+			slog.ErrorContext(saveCtx, "could not save generated image attachment",
+				"error", err, "conversation", prepared.conversationID)
+			continue
 		}
-		if len(data) > 0 {
-			att, err := s.conversations.Upload(saveCtx, conversation.UploadInput{
-				UserID: req.User.ID,
-				Mime:   "image/png",
-				Data:   data,
-			})
-			if err == nil {
-				attachmentIDs = append(attachmentIDs, att.ID)
-			} else {
-				slog.ErrorContext(saveCtx, "could not save generated image attachment",
-					"error", err, "conversation", prepared.conversationID)
-			}
-		}
+		attachmentIDs = append(attachmentIDs, att.ID)
 	}
 
 	if answer == "" {
@@ -526,15 +518,11 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 	// API" as though the assistant had said it teaches the model that
 	// refusing is a valid answer shape.
 	usable := make([]conversation.Message, 0, len(messages))
-	withImages := make([]string, 0, 4)
 	for _, message := range messages {
 		if message.Role == conversation.RoleAssistant && (message.Error != "" || message.Content == "") {
 			continue
 		}
 		usable = append(usable, message)
-		if len(message.Attachments) > 0 {
-			withImages = append(withImages, message.ID)
-		}
 	}
 
 	// A cap on how much history is re-sent, and therefore re-billed, on every
@@ -542,6 +530,17 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 	maxTurns := s.settings.Int(settings.ConversationMaxTurns, 40)
 	if maxTurns > 0 && len(usable) > maxTurns {
 		usable = usable[len(usable)-maxTurns:]
+	}
+
+	// Collected after the trim, not before. Gathered first, this asked the
+	// database for the bytes of every picture in the conversation and then
+	// dropped the ones belonging to turns the trim had just removed — several
+	// megabytes read and discarded on every turn of a long conversation.
+	withImages := make([]string, 0, 4)
+	for _, message := range usable {
+		if len(message.Attachments) > 0 {
+			withImages = append(withImages, message.ID)
+		}
 	}
 
 	images := map[string][]conversation.ImageData{}

@@ -62,8 +62,21 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 		case errors.Is(err, ErrStorageFull):
 			// 409 rather than 400: the document is fine and sending it again
 			// will not help. Something has to be deleted first.
+			//
+			// The counts travel with it because the ceiling is no longer only
+			// checked before anything is written — a concurrent writer can
+			// fill the account between the first check and a later
+			// conversation's transaction. A reader told plainly that nothing
+			// was imported would re-send a file that is already partly in,
+			// and get a second copy of whatever did land.
 			return httpx.Conflict("storage_full",
-				"This account is already storing as many messages as it may. Delete some conversations and try again.")
+				"This account is already storing as many messages as it may. Delete some conversations and try again.").
+				WithDetails(map[string]any{
+					"conversations": result.Conversations,
+					"messages":      result.Messages,
+					"skipped":       result.Skipped,
+					"preferences":   result.Preferences,
+				})
 		}
 		return httpx.Internal(err)
 	}

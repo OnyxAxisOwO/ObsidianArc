@@ -156,3 +156,45 @@ func TestUnsupportedTypeIsRefusedBeforeAnythingIsStored(t *testing.T) {
 		t.Fatalf("err = %v, want ErrUnsupportedMedia", err)
 	}
 }
+
+// A discarded attachment keeps its size so the transcript can still say how
+// big the picture was, but its bytes are gone. Counting those against the
+// account's allowance filled every account up with images the database no
+// longer holds — and because the retention policy discards after the turn
+// that sends them, that is nearly every image anybody ever sent.
+func TestDiscardedAttachmentsDoNotCountTowardsTheAccountQuota(t *testing.T) {
+	store, _, account := attachmentFixture(t)
+	ctx := context.Background()
+
+	first, err := store.Upload(ctx, UploadInput{
+		UserID: account.ID, Mime: "image/png", Data: bytes.Repeat([]byte{1}, 1024),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Discard by id, the way a dispatched turn releases the bytes it sent.
+	if _, err := store.db.Exec(ctx,
+		`UPDATE attachments SET data = ?, discarded_at = ? WHERE id = ?`,
+		[]byte{}, int64(1), first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, held, err := store.usage(ctx, nil, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Errorf("a discarded attachment still occupies %d bytes of the allowance", held)
+	}
+
+	// And the size survives for everything that legitimately reads it back.
+	var size int64
+	if err := store.db.QueryRow(ctx,
+		`SELECT size FROM attachments WHERE id = ?`, first.ID).Scan(&size); err != nil {
+		t.Fatal(err)
+	}
+	if size != 1024 {
+		t.Errorf("size = %d, want 1024: the transcript and the storage page both read it", size)
+	}
+}

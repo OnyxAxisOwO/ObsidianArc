@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -329,7 +330,7 @@ func TestAnAccountCannotImportItselfPastTheStorageCeiling(t *testing.T) {
 	}
 
 	// The account is now within one import of the ceiling.
-	before, err := f.conversations.CountMessages(ctx, f.account.ID)
+	before, err := f.conversations.CountMessages(ctx, nil, f.account.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,13 +338,74 @@ func TestAnAccountCannotImportItselfPastTheStorageCeiling(t *testing.T) {
 		t.Fatalf("gave %v, want ErrStorageFull", err)
 	}
 
-	// Refused before writing, not halfway through: a partial import would
-	// leave the account over a ceiling the next attempt is measured against.
-	after, err := f.conversations.CountMessages(ctx, f.account.ID)
+	// Refused before writing, not halfway through. That holds for an import
+	// arriving on its own: the unlocked check ahead of the loop counts every
+	// message in the document, so nothing can reach the per-conversation
+	// check under the row lock unless another writer filled the account in
+	// between — and when one does, the endpoint reports how far it got.
+	after, err := f.conversations.CountMessages(ctx, nil, f.account.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if after != before {
 		t.Errorf("a refused import wrote %d messages", after-before)
+	}
+}
+
+// Concurrent imports used to each read the same pre-import count, each decide
+// they fitted, and together write several times the ceiling: the check was a
+// plain SELECT outside any transaction, so no writer could see the others.
+// The enforcement is a row lock now, which is what makes this converge.
+func TestConcurrentImportsCannotPassTheStorageCeilingTogether(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	const perImport = 200
+	const importers = 8
+	// Room for two of them, sent eight at a time.
+	f.service.MaxStoredMessages = perImport * 2
+
+	document := func() Document {
+		messages := make([]Turn, perImport)
+		for i := range messages {
+			messages[i] = Turn{Role: "user", Content: "x"}
+		}
+		return Document{Format: Format, Conversations: []Thread{{Title: "t", Messages: messages}}}
+	}
+
+	start := make(chan struct{})
+	failures := make(chan error, importers)
+	var wg sync.WaitGroup
+	for range importers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := f.service.Import(ctx, f.account, document())
+			failures <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(failures)
+
+	// Succeeding and being turned away are both correct; anything else means
+	// the refusal stopped being one the endpoint can answer 409 to, because
+	// the check now happens inside a transaction and behind two wraps.
+	for err := range failures {
+		if err != nil && !errors.Is(err, ErrStorageFull) {
+			t.Fatalf("a losing importer failed with %v, want nil or ErrStorageFull", err)
+		}
+	}
+
+	stored, err := f.conversations.CountMessages(ctx, nil, f.account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored > f.service.MaxStoredMessages {
+		t.Errorf("stored %d messages against a ceiling of %d", stored, f.service.MaxStoredMessages)
+	}
+	if stored == 0 {
+		t.Error("every concurrent import was refused; the lock should serialise them, not block them")
 	}
 }

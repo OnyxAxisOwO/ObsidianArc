@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -92,7 +93,13 @@ func (s *SSE) Comment(text string) error {
 }
 
 func (s *SSE) raw(name string, data []byte) error {
-	var b strings.Builder
+	// A bytes.Buffer rather than a strings.Builder because the frame is handed
+	// to Write as bytes: building a string only to convert it back copied
+	// every frame a second time, once per token of every answer.
+	//
+	// Function-local, not kept on the SSE: Comment is a keepalive, and the
+	// moment one is sent from a ticker a shared buffer is a data race.
+	var b bytes.Buffer
 	b.Grow(len(data) + len(name) + 16)
 	if name != "" {
 		b.WriteString("event: ")
@@ -105,7 +112,7 @@ func (s *SSE) raw(name string, data []byte) error {
 	b.Write(data)
 	b.WriteString("\n\n")
 
-	if _, err := s.w.Write([]byte(b.String())); err != nil {
+	if _, err := s.w.Write(b.Bytes()); err != nil {
 		return err
 	}
 	return s.flush()

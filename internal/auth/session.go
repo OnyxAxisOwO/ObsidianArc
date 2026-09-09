@@ -11,6 +11,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 // Session is a row in the sessions table. Its ID is the SHA-256 of the cookie
@@ -76,30 +77,51 @@ func (s *SessionStore) Create(ctx context.Context, userID string, ttl time.Durat
 	return token, record, nil
 }
 
-// Get resolves a cookie value. An expired row is treated as absent and
-// deleted, so the table does not accumulate dead sessions between janitor
-// runs on a busy instance.
-func (s *SessionStore) Get(ctx context.Context, token string) (Session, error) {
+// GetWithUser resolves a cookie to its session and the account that owns it.
+//
+// One query, because every authenticated request goes through here and this
+// used to be two in sequence — the session, then the account — which is two
+// round trips per request against Postgres for what one join answers. An
+// inner join is sound because sessions.user_id cascades on delete and foreign
+// keys are enforced on both engines, so a session whose account is gone does
+// not exist to be found.
+//
+// An expired row is treated as absent and deleted, so the table does not
+// accumulate dead sessions between janitor runs on a busy instance.
+func (s *SessionStore) GetWithUser(ctx context.Context, token string) (Session, user.User, error) {
 	key := HashToken(token)
 
 	var record Session
-	err := s.db.QueryRow(ctx,
-		`SELECT id, user_id, created_at, expires_at, last_seen_at, ip, user_agent
-		 FROM sessions WHERE id = ?`, key).
-		Scan(&record.ID, &record.UserID, &record.CreatedAt, &record.ExpiresAt,
-			&record.LastSeenAt, &record.IP, &record.UserAgent)
+	account, err := user.ScanRow(scanBoth{s.db.QueryRow(ctx,
+		`SELECT s.id, s.user_id, s.created_at, s.expires_at, s.last_seen_at, s.ip, s.user_agent, `+
+			user.JoinColumns("u")+
+			` FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?`, key),
+		[]any{&record.ID, &record.UserID, &record.CreatedAt, &record.ExpiresAt,
+			&record.LastSeenAt, &record.IP, &record.UserAgent}})
 	if err != nil {
-		if database.IsNotFound(err) {
-			return Session{}, ErrSessionNotFound
+		if database.IsNotFound(err) || errors.Is(err, user.ErrNotFound) {
+			return Session{}, user.User{}, ErrSessionNotFound
 		}
-		return Session{}, fmt.Errorf("auth: load session: %w", err)
+		return Session{}, user.User{}, fmt.Errorf("auth: load session: %w", err)
 	}
 
 	if record.ExpiresAt <= time.Now().UnixMilli() {
 		_ = s.DeleteByID(ctx, key)
-		return Session{}, ErrSessionNotFound
+		return Session{}, user.User{}, ErrSessionNotFound
 	}
-	return record, nil
+	return record, account, nil
+}
+
+// scanBoth lets one row fill two structs: the session's columns are consumed
+// here, and the rest are handed to the user package's own scanner, which is
+// what keeps its column list and its scan list from drifting apart.
+type scanBoth struct {
+	row    interface{ Scan(dest ...any) error }
+	prefix []any
+}
+
+func (s scanBoth) Scan(dest ...any) error {
+	return s.row.Scan(append(append([]any{}, s.prefix...), dest...)...)
 }
 
 // Touch records that a session is still in use, and extends it. Called at

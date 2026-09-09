@@ -860,6 +860,19 @@ func completionID(requestID string) string { return "chatcmpl-" + requestID }
 // record writes the turn to the usage ledger and settles the allowance,
 // through the same hook the browser gateway uses. An API turn differs from a
 // browser one only in having no conversation and no message to point at.
+// turnOutcome reads how a call ended. Shared with the image endpoint, which
+// records the same way about the same failures.
+func turnOutcome(failure error) (chat.Status, string) {
+	if failure == nil {
+		return chat.StatusOK, ""
+	}
+	if errors.Is(failure, context.Canceled) {
+		return chat.StatusAborted, "cancelled"
+	}
+	code, _ := chat.Describe(failure)
+	return chat.StatusError, code
+}
+
 func (h *Handlers) record(
 	ctx context.Context, who caller, resolved model.Resolved,
 	requestID string, usage adapter.Usage, startedAt time.Time, failure error,
@@ -868,17 +881,7 @@ func (h *Handlers) record(
 		return
 	}
 
-	status := chat.StatusOK
-	code := ""
-	if failure != nil {
-		status = chat.StatusError
-		if errors.Is(failure, context.Canceled) {
-			status = chat.StatusAborted
-			code = "cancelled"
-		} else {
-			code, _ = chat.Describe(failure)
-		}
-	}
+	status, code := turnOutcome(failure)
 
 	// Detached and bounded: the request context is cancelled the instant the
 	// client hangs up, and a turn that is not recorded is one the account

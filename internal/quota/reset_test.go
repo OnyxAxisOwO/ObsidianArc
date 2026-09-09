@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"testing"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 // A reset puts the allowance back to full without touching what the ledger
@@ -114,4 +118,68 @@ func spentThisMonth(t *testing.T, service *Service, userID string) float64 {
 		t.Fatalf("read counters: %v", err)
 	}
 	return credits
+}
+
+// Resetting a group used to name every member first, through a user listing
+// whose page size is clamped to fifty above two hundred — so a large group had
+// fifty accounts reset and was told it had all of them. The reset picks its own
+// rows now, which is why this uses a group bigger than that clamp.
+func TestResetGroupReachesEveryMemberOfALargeGroup(t *testing.T) {
+	service, db := newService(t)
+	ctx := context.Background()
+
+	groups := group.NewStore(db)
+	members, err := groups.Create(ctx, nil, group.CreateInput{Name: "Members", IsDefault: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsiders, err := groups.Create(ctx, nil, group.CreateInput{Name: "Outsiders"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	users := user.NewStore(db)
+	const size = 210
+	inside := make([]user.User, 0, size)
+	err = db.Tx(ctx, func(tx *database.Tx) error {
+		for i := range size {
+			record, err := users.Create(ctx, tx, user.CreateInput{
+				Username:     fmt.Sprintf("member-%03d", i),
+				PasswordHash: "x", GroupID: members.ID,
+			})
+			if err != nil {
+				return err
+			}
+			inside = append(inside, record)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger, err := users.Create(ctx, nil, user.CreateInput{
+		Username: "stranger", PasswordHash: "x", GroupID: outsiders.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, member := range append(append([]user.User{}, inside...), stranger) {
+		if err := service.Settle(ctx, member, Estimate{}, Estimate{Tokens: 100, Credits: 0.1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := service.ResetGroup(ctx, members.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, member := range inside {
+		if used := spentThisMonth(t, service, member.ID); used != 0 {
+			t.Fatalf("%s still shows %v spent after the group was reset", member.Username, used)
+		}
+	}
+	if used := spentThisMonth(t, service, stranger.ID); used == 0 {
+		t.Error("resetting one group cleared an account outside it")
+	}
 }

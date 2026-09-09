@@ -115,7 +115,7 @@ func (h *Handlers) account(r *http.Request, account user.User) accountPayload {
 // name and whether it accepts registrations. Nothing here is sensitive, and
 // nothing about the accounts that exist is disclosed.
 func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
-	count, err := h.users.Count(r.Context(), nil)
+	populated, err := h.users.Any(r.Context(), nil)
 	if err != nil {
 		return httpx.Internal(err)
 	}
@@ -124,18 +124,18 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"description": h.settings.Get(settings.SiteDescription),
 		// An empty instance always accepts the first account, whatever the
 		// setting says; that account becomes the administrator.
-		"registration_enabled": count == 0 || h.settings.Bool(settings.RegistrationEnabled),
-		"setup_required":       count == 0,
+		"registration_enabled": !populated || h.settings.Bool(settings.RegistrationEnabled),
+		"setup_required":       !populated,
 		// So the sign-up form can mark the field required and say which
 		// addresses will be accepted, instead of finding out on submit.
 		// Neither applies to the first account.
-		"require_email":  count > 0 && h.settings.Bool(settings.RequireEmail),
-		"require_qq":     count > 0 && h.settings.Get(settings.QQRequirement) == settings.QQRequired,
-		"qq_requirement": h.qqRequirement(count == 0),
+		"require_email":  populated && h.settings.Bool(settings.RequireEmail),
+		"require_qq":     populated && h.settings.Get(settings.QQRequirement) == settings.QQRequired,
+		"qq_requirement": h.qqRequirement(!populated),
 		// So the sign-up card can say a link is coming, rather than the
 		// banner being the first anyone hears of it.
-		"verify_email":  count > 0 && h.service.VerificationRequired(),
-		"email_domains": emailDomains(count, h.settings.Get(settings.EmailDomains)),
+		"verify_email":  populated && h.service.VerificationRequired(),
+		"email_domains": emailDomains(populated, h.settings.Get(settings.EmailDomains)),
 		// The site key is public — it is in the page's markup wherever the
 		// widget renders — and the secret it pairs with never leaves the
 		// server. Served only where a challenge is actually switched on, so
@@ -143,19 +143,19 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		//
 		// Never for the first account: an empty instance must not be locked
 		// out of its own setup by a challenge nobody has configured yet.
-		"turnstile_site_key":   h.turnstileSiteKey(count == 0),
-		"turnstile_on_login":   count > 0 && h.settings.Bool(settings.TurnstileOnLogin),
-		"turnstile_on_signup":  count > 0 && h.settings.Bool(settings.TurnstileOnSignup),
+		"turnstile_site_key":   h.turnstileSiteKey(!populated),
+		"turnstile_on_login":   populated && h.settings.Bool(settings.TurnstileOnLogin),
+		"turnstile_on_signup":  populated && h.settings.Bool(settings.TurnstileOnSignup),
 		"turnstile_on_api_key": h.settings.Bool(settings.TurnstileOnAPIKey),
 		// So the sign-up button can say what it is waiting for. A review
 		// takes seconds, and a button that only says "creating account" for
 		// that long reads as a form that has hung.
-		"signup_review": count > 0 && h.settings.Bool(settings.SignupReview) &&
+		"signup_review": populated && h.settings.Bool(settings.SignupReview) &&
 			h.settings.Get(settings.SignupReviewModel) != "",
 		// What a visitor with no account gets. Served here rather than
 		// from a second endpoint because the front door has to decide what
 		// to draw before it can draw anything.
-		"landing": h.landing(count == 0),
+		"landing": h.landing(!populated),
 		// The About panel, as the operator has written it. Both may be empty,
 		// which is what the client reads as "use your own wording": the panel
 		// falls back to the instance name and its built-in description rather
@@ -186,8 +186,8 @@ func (h *Handlers) qqRequirement(first bool) string {
 	return settings.QQDisabled
 }
 
-func emailDomains(accounts int, raw string) []string {
-	if accounts == 0 {
+func emailDomains(populated bool, raw string) []string {
+	if !populated {
 		return []string{}
 	}
 	return ParseDomains(raw)

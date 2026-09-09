@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
 // Facts are what the reviewer is given. Everything here was typed or sent by
@@ -275,6 +276,13 @@ func question(facts Facts) adapter.Message {
 	}
 }
 
+// How much of any one submitted fact reaches the prompt. Longer than any
+// field this server accepts, so it only ever truncates something that was not
+// checked on the way in.
+const maxFactChars = 200
+
+var lineBreaks = strings.NewReplacer("\n", " ", "\r", " ", " ", " ", " ", " ")
+
 // describe lays the facts out one per line, labelled, with nothing else in
 // the message — no prose the submitted values could be mistaken for.
 func describe(facts Facts) string {
@@ -284,8 +292,15 @@ func describe(facts Facts) string {
 			value = "(none)"
 		}
 		// Newlines inside a submitted value would let it forge a line of its
-		// own in this list.
-		value = strings.ReplaceAll(strings.ReplaceAll(value, "\n", " "), "\r", " ")
+		// own in this list. U+2028 and U+2029 are line breaks to a model even
+		// though they are not to a search for "\n".
+		value = lineBreaks.Replace(value)
+		// Bounded here rather than assumed to be bounded already: the user
+		// agent is a header nothing on this path checks, and a caller that can
+		// put sixty kilobytes into the prompt can push the instructions out of
+		// the model's attention, or its answer past the token limit — where an
+		// unparseable answer is admitted rather than refused.
+		value = text.TrimAndTruncate(value, maxFactChars)
 		fmt.Fprintf(&out, "%s: %s\n", label, value)
 	}
 

@@ -159,11 +159,11 @@ Measured on the build in this repository, SQLite, one process:
 
 | | |
 | --- | --- |
-| Binary | 17.6 MB — 14.0 MB built `-tags nosqlite` for a Postgres-only deployment |
+| Binary | 17.7 MB — 14.0 MB built `-tags nosqlite` for a Postgres-only deployment |
 | Cold start to serving | 28 ms |
 | Idle resident memory | ~16 MB |
 | After 200 streamed turns, 20 concurrent | ~54 MB peak, 11 OS threads |
-| Frontend | 117 kB on the wire to open the chat — 102 kB of JavaScript and 15 kB of CSS. The server compresses, so that is what is actually transferred, not what a proxy might have managed. The Chinese dictionary (17 kB), the backoffice (33 kB) and the formula renderer (4 kB) are separate, and are fetched only by the readers who need them |
+| Frontend | 120 kB on the wire to open the chat — 105 kB of JavaScript and 15 kB of CSS. The server compresses, so that is what is actually transferred, not what a proxy might have managed. The Chinese dictionary (17 kB), the backoffice (33 kB) and the formula renderer (4 kB) are separate, and are fetched only by the readers who need them |
 | Background goroutines at idle | 1 — a janitor on a ten-minute tick |
 | Direct Go dependencies | 3 |
 | Runtime frontend dependencies | 4 — Vue, Vue Router, VueUse, Lucide |
