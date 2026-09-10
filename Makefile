@@ -15,7 +15,7 @@ VERSION ?= v$(shell date -u +%Y.%m.%d.%H.%M.%S)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
-.PHONY: all build web web-ci server run dev test vet fmt typecheck web-test clean docker version
+.PHONY: all build web web-ci server run dev test vet fmt typecheck web-test clean docker version docs docs-dev
 
 all: build
 
@@ -87,3 +87,13 @@ clean:
 
 docker:
 	docker build --build-arg VERSION=$(VERSION) -t obsidian-arc:$(VERSION) -t obsidian-arc:latest .
+
+## docs: build VitePress documentation site
+docs:
+	npm --prefix docs install --no-fund --no-audit
+	npm --prefix docs run docs:build
+
+## docs-dev: start VitePress documentation dev server
+docs-dev:
+	npm --prefix docs install --no-fund --no-audit
+	npm --prefix docs run docs:dev

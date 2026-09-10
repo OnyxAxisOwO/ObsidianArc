@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#中文说明">中文说明</a> • <a href="#english">English</a>
+  <a href="#中文说明">中文说明</a> • <a href="#english">English</a> • <a href="docs/">📚 完整功能文档 / Documentation</a>
 </p>
 
 ---
@@ -60,6 +60,20 @@
 
 ```bash
 OBSIDIAN_ADMIN_USER=admin OBSIDIAN_ADMIN_PASSWORD='YourStrongPassword' ./obsidian-arc
+```
+
+#### 本地浏览全功能 VitePress 文档
+
+项目文档采用 VitePress 编写并托管于 `docs/` 目录下：
+
+```bash
+# 启动文档本地实时开发服务器
+make docs-dev
+# 或：npm --prefix docs run docs:dev
+
+# 编译文档静态网页
+make docs
+# 或：npm --prefix docs run docs:build
 ```
 
 #### 常用环境变量

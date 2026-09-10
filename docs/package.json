@@ -1,0 +1,18 @@
+{
+  "name": "obsidian-arc-docs",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "description": "Documentation site for Obsidian Arc",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview",
+    "docs:dev": "vitepress dev",
+    "docs:build": "vitepress build",
+    "docs:preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.3"
+  }
+}
