@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { chatModels, currentModel, loadModels, models, selectModel, selectedID } from '../src/chat/useModels';
+import { currentModel, loadModels, models, selectModel, selectedID } from '../src/chat/useModels';
 import type { AvailableModel } from '../src/chat/useModels';
 
-// An image model answers in the image lab and nowhere else — the gateway
-// refuses a turn asked of one. The composer therefore must never be able to
-// point at it: not by listing it, not by restoring it from a remembered
-// preference, and not by falling back onto it when the previous choice is
-// gone. This is the half of that rule the browser owns.
+// Being able to generate in the image lab and being able to hold a
+// conversation are two different capabilities, and for a while one flag stood
+// for both: ticking "image generation" so a model could be used in the lab
+// took it out of the composer's picker entirely, which is not what an operator
+// ticking that box is asking for. Most models that draw can also talk.
+//
+// What a conversation shows is the other flag, supports_chat_image_gen, and
+// it is a tag rather than a gate.
 
 function model(id: string, extra: Partial<AvailableModel> = {}): AvailableModel {
   return {
@@ -22,6 +25,7 @@ function model(id: string, extra: Partial<AvailableModel> = {}): AvailableModel 
     supports_system_prompt: true,
     supports_tools: false,
     supports_image_gen: false,
+    supports_chat_image_gen: false,
     context_window: 0,
     max_output_tokens: 0,
     ...extra,
@@ -45,36 +49,33 @@ afterEach(() => {
 });
 
 describe('which models a conversation may use', () => {
-  it('leaves image models to the lab, which reads the full list itself', () => {
-    models.value = [PAINTER, TALKER];
-    expect(chatModels.value.map((entry) => entry.id)).toEqual(['talker']);
-    // The lab's own source is untouched: it is the one place these belong.
-    expect(models.value.length).toBe(2);
-  });
-
-  it('does not settle on one when it is first in the list', async () => {
+  it('keeps a model the image lab can use', async () => {
     answerWith([PAINTER, TALKER]);
     await loadModels();
-    expect(selectedID.value).toBe('talker');
-    expect(currentModel.value?.id).toBe('talker');
+
+    expect(models.value.map((entry) => entry.id)).toEqual(['painter', 'talker']);
+    // It is the first usable model, so it is what the composer settles on —
+    // it used to be skipped over as though it were not a chat model at all.
+    expect(selectedID.value).toBe('painter');
+    expect(currentModel.value?.id).toBe('painter');
   });
 
-  it('drops a remembered choice that has since become an image model', async () => {
-    selectedID.value = 'painter';
-    answerWith([PAINTER, TALKER]);
-    await loadModels();
-    expect(selectedID.value).toBe('talker');
-  });
-
-  it('refuses to select one, whatever asks for it', () => {
+  it('lets one be chosen outright', () => {
     models.value = [PAINTER, TALKER];
     selectedID.value = 'talker';
     selectModel('painter');
+    expect(selectedID.value).toBe('painter');
+  });
+
+  it('still falls back when the remembered model is gone', async () => {
+    selectedID.value = 'retired';
+    answerWith([TALKER]);
+    await loadModels();
     expect(selectedID.value).toBe('talker');
   });
 
-  it('reports no model rather than an unusable one when the list is only images', async () => {
-    answerWith([PAINTER]);
+  it('reports no model when there is nothing usable', async () => {
+    answerWith([model('shelved', { usable: false })]);
     await loadModels();
     expect(selectedID.value).toBe('');
     // What the composer reads to decide whether it can send at all.

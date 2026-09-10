@@ -198,8 +198,6 @@ func translatePrepareError(err error) error {
 	switch {
 	case errors.Is(err, ErrNoModel):
 		return httpx.BadRequest("Choose a model first.")
-	case errors.Is(err, ErrImageModel):
-		return httpx.BadRequest("That model only generates images. Open the image lab to use it.")
 	case errors.Is(err, conversation.ErrNotFound):
 		return httpx.NotFound("No such conversation.")
 	case errors.Is(err, conversation.ErrMessageNotFound):
@@ -576,9 +574,10 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return translatePrepareError(err)
 	}
-	// The mirror of the turn path's refusal: a conversation will not take an
-	// image model, and this endpoint will not take a chat model. Between them
-	// every model has exactly one place it answers from.
+	// The lab generates, so the model has to be one that generates. Nothing
+	// about a conversation is decided here: a model can be marked for this
+	// endpoint and still be an ordinary chat model in the transcript, which
+	// is what most models that draw actually are.
 	if !resolved.Model.SupportsImageGen {
 		return httpx.BadRequest("That model does not generate images.")
 	}

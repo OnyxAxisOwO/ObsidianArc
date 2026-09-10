@@ -167,8 +167,6 @@ type Emit func(event string, payload any) error
 var (
 	ErrEmptyTurn = errors.New("chat: nothing to send")
 	ErrNoModel   = errors.New("chat: no model selected")
-	// An image model is not a conversation partner. See Prepare.
-	ErrImageModel = errors.New("chat: image model asked for in a conversation")
 )
 
 // Release undoes what Prepare claimed. Always non-nil, so a caller can
@@ -192,19 +190,6 @@ func (s *Service) Prepare(ctx context.Context, req *TurnRequest) (model.Resolved
 	resolved, err := s.models.Authorize(ctx, req.User.GroupID, req.ModelID, req.User.IsAdmin())
 	if err != nil {
 		return model.Resolved{}, noop, err
-	}
-	// An image model answers in the image lab, never in a conversation.
-	//
-	// A turn used to branch into a picture on this flag, which made the same
-	// model two different products depending on where it was used: the
-	// transcript could only send a bare prompt at a fixed square, while the
-	// lab has the size, the style and now a reference picture. Worse, the
-	// branch was silent — the composer looked like a chat and answered with
-	// an image nobody could steer. Refusing here rather than in the handler
-	// keeps every caller of Prepare on the same rule, and it happens before
-	// the allowance is reserved.
-	if resolved.Model.SupportsImageGen {
-		return model.Resolved{}, noop, ErrImageModel
 	}
 	req.Model = resolved.Model
 

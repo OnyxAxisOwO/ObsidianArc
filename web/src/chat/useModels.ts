@@ -18,7 +18,10 @@ export interface ModelCapabilities {
   supports_streaming: boolean;
   supports_system_prompt: boolean;
   supports_tools: boolean;
+  /** The image lab may generate with it. Nothing to do with conversations. */
   supports_image_gen: boolean;
+  /** It draws inside a conversation, which is what the transcript marks. */
+  supports_chat_image_gen: boolean;
   context_window: number;
   max_output_tokens: number;
 }
@@ -114,18 +117,14 @@ export const models = ref<AvailableModel[]>([]);
 export const selectedID = ref('');
 export const reasoning = ref<ReasoningState>({ enabled: false, effort: 'medium' });
 
-/**
- * The models a conversation can be held with.
- *
- * An image model answers in the image lab and nowhere else — the server
- * refuses a turn asked of one — so offering it in the composer's picker would
- * be offering a choice that can only fail. The lab reads `models` itself,
- * which is why the filter lives here rather than in the fetch.
- */
-export const chatModels = computed(() => models.value.filter((model) => !model.supports_image_gen));
-
+// The picker offers every model the account may use, image models included.
+// Being able to generate in the image lab says nothing about whether a model
+// can hold a conversation — most that draw can — and filtering them out here
+// took a working chat model away from anyone whose operator had ticked the
+// lab's box. What image generation in a conversation means is a separate
+// capability, `supports_chat_image_gen`, which the picker reads as a tag.
 export const currentModel = computed<AvailableModel | null>(
-  () => chatModels.value.find((model) => model.id === selectedID.value) ?? null,
+  () => models.value.find((model) => model.id === selectedID.value) ?? null,
 );
 
 /** Reads the account's remembered choices. Called once, before the fetch. */
@@ -145,7 +144,7 @@ export function restorePreferences(): void {
 }
 
 export function selectModel(modelID: string): void {
-  const model = chatModels.value.find((entry) => entry.id === modelID);
+  const model = models.value.find((entry) => entry.id === modelID);
   if (!model || model.usable === false) return;
   selectedID.value = modelID;
   syncPreferences({ default_model_id: modelID });
@@ -160,10 +159,9 @@ export async function loadModels(): Promise<void> {
   const result = await api.get<{ models: AvailableModel[] }>('/api/models');
   models.value = result.models;
 
-  const usable = chatModels.value.filter((model) => model.usable !== false);
-  // A remembered model that is gone, that this account may see but not use,
-  // or that has since been marked as an image model, falls back rather than
-  // leaving the composer pointing at something it cannot send to.
+  const usable = result.models.filter((model) => model.usable !== false);
+  // A remembered model that is gone, or that this account may see but not
+  // use, falls back rather than leaving the composer pointing at nothing.
   if (!usable.some((model) => model.id === selectedID.value)) {
     selectedID.value = usable[0]?.id ?? '';
   }

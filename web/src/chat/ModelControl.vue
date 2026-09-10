@@ -16,7 +16,7 @@ import { useEventListener } from '@vueuse/core';
 import { t } from '@/composables/useI18n';
 import { IconCheck, IconChevron, IconChevronRight, IconSpark } from '@/icons';
 import {
-  chatModels, currentModel, reasoning, selectModel, setReasoning, stopFor, stopsFor,
+  currentModel, models, reasoning, selectModel, setReasoning, stopFor, stopsFor,
   type AvailableModel,
 } from './useModels';
 
@@ -296,10 +296,10 @@ onBeforeUnmount(() => window.clearTimeout(hideTimer));
             <span>{{ t('chooseModel') }}</span>
           </button>
 
-          <p v-if="!chatModels.length" class="ai-pop-note">{{ t('modelsEmpty') }}</p>
+          <p v-if="!models.length" class="ai-pop-note">{{ t('modelsEmpty') }}</p>
           <div v-else class="ai-pop-models">
             <button
-              v-for="model in chatModels"
+              v-for="model in models"
               :key="model.id"
               type="button"
               class="ai-pop-model-row"
@@ -309,6 +309,14 @@ onBeforeUnmount(() => window.clearTimeout(hideTimer));
               <span class="ai-pop-model-text">
                 <span class="ai-pop-model-title-row">
                   <span class="ai-pop-model-title">{{ model.display_name }}</span>
+                  <!-- Only when it draws in a conversation. A model that
+                       generates in the image lab and talks here is a chat
+                       model here, and a tag saying otherwise would promise
+                       the composer something it cannot do. -->
+                  <span
+                    v-if="model.supports_chat_image_gen"
+                    class="ai-pop-model-tag"
+                  >{{ t('canImageGen') }}</span>
                   <span
                     v-if="uptimeTag(model)"
                     class="ai-pop-model-tag"

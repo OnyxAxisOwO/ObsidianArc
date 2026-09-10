@@ -37,7 +37,15 @@ type Capabilities struct {
 	SupportsStreaming    bool `json:"supports_streaming"`
 	SupportsSystemPrompt bool `json:"supports_system_prompt"`
 	SupportsTools        bool `json:"supports_tools"`
-	SupportsImageGen     bool `json:"supports_image_gen"`
+	// The image lab may generate with it. Says nothing about conversations:
+	// a model that draws is very often a model that also talks, and marking
+	// it for the lab used to take it out of the composer's picker entirely.
+	SupportsImageGen bool `json:"supports_image_gen"`
+	// It generates pictures inside a conversation, which is what makes the
+	// chat surface show it as an image generator. Off by default and off for
+	// every model that predates the split: generating happens in the lab
+	// unless somebody says this model does it in the transcript too.
+	SupportsChatImageGen bool `json:"supports_chat_image_gen"`
 	ContextWindow        int  `json:"context_window"`
 	MaxOutputTokens      int  `json:"max_output_tokens"`
 }
@@ -214,7 +222,8 @@ const columns = `m.id, m.provider_id, m.model_id, m.display_name, m.description,
 	m.supports_system_prompt, m.supports_tools, m.context_window, m.max_output_tokens,
 	m.request_weight, m.input_token_weight, m.output_token_weight, m.reasoning_token_weight,
 	m.created_at, m.updated_at, m.route_to_id, m.reasoning_style, m.hidden,
-	m.reasoning_tiers, m.api_name, m.auto_disabled, m.system_prompt, m.supports_image_gen`
+	m.reasoning_tiers, m.api_name, m.auto_disabled, m.system_prompt, m.supports_image_gen,
+	m.supports_chat_image_gen`
 
 const withProvider = columns + `, p.name, p.kind`
 
@@ -278,8 +287,9 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		 supports_reasoning, supports_images, supports_vision, supports_streaming,
 		 supports_system_prompt, supports_tools, context_window, max_output_tokens,
 		 request_weight, input_token_weight, output_token_weight, reasoning_token_weight,
-		 created_at, updated_at, route_to_id, reasoning_style, reasoning_tiers, api_name, auto_disabled, system_prompt, supports_image_gen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 created_at, updated_at, route_to_id, reasoning_style, reasoning_tiers, api_name, auto_disabled, system_prompt, supports_image_gen,
+		 supports_chat_image_gen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.ProviderID, record.ModelID, record.DisplayName, record.Description,
 		record.Avatar, record.Enabled, record.Hidden, record.SortOrder,
 		record.SupportsReasoning, record.SupportsImages, record.SupportsVision,
@@ -287,7 +297,8 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		record.ContextWindow, record.MaxOutputTokens,
 		record.Request, record.InputToken, record.OutputToken, record.ReasoningToken,
 		record.CreatedAt, record.UpdatedAt, routeValue(record.RouteToID), record.ReasoningStyle,
-		encodeTiers(record.ReasoningTiers), record.APIName, record.AutoDisabled, record.SystemPrompt, record.SupportsImageGen)
+		encodeTiers(record.ReasoningTiers), record.APIName, record.AutoDisabled, record.SystemPrompt, record.SupportsImageGen,
+		record.SupportsChatImageGen)
 	if err != nil {
 		if isUnique(err) {
 			return Model{}, s.whichDuplicate(ctx, record.APIName, record.ID)
@@ -320,6 +331,7 @@ type Update struct {
 	SupportsSystemPrompt *bool
 	SupportsTools        *bool
 	SupportsImageGen     *bool
+	SupportsChatImageGen *bool
 	ContextWindow        *int
 	MaxOutputTokens      *int
 
@@ -356,6 +368,7 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 	assign(&next.SupportsSystemPrompt, in.SupportsSystemPrompt)
 	assign(&next.SupportsTools, in.SupportsTools)
 	assign(&next.SupportsImageGen, in.SupportsImageGen)
+	assign(&next.SupportsChatImageGen, in.SupportsChatImageGen)
 	assign(&next.ContextWindow, in.ContextWindow)
 	assign(&next.MaxOutputTokens, in.MaxOutputTokens)
 	assign(&next.Request, in.RequestWeight)
@@ -372,13 +385,15 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 	_, err = s.db.Exec(ctx, `UPDATE models SET
 		model_id = ?, display_name = ?, description = ?, avatar = ?, enabled = ?, hidden = ?, sort_order = ?,
 		supports_reasoning = ?, supports_images = ?, supports_vision = ?, supports_streaming = ?,
-		supports_system_prompt = ?, supports_tools = ?, supports_image_gen = ?, context_window = ?, max_output_tokens = ?,
+		supports_system_prompt = ?, supports_tools = ?, supports_image_gen = ?, supports_chat_image_gen = ?,
+		context_window = ?, max_output_tokens = ?,
 		request_weight = ?, input_token_weight = ?, output_token_weight = ?, reasoning_token_weight = ?,
 		route_to_id = ?, reasoning_style = ?, reasoning_tiers = ?, api_name = ?, auto_disabled = ?, system_prompt = ?, updated_at = ?
 		WHERE id = ?`,
 		next.ModelID, next.DisplayName, next.Description, next.Avatar, next.Enabled, next.Hidden, next.SortOrder,
 		next.SupportsReasoning, next.SupportsImages, next.SupportsVision, next.SupportsStreaming,
-		next.SupportsSystemPrompt, next.SupportsTools, next.SupportsImageGen, next.ContextWindow, next.MaxOutputTokens,
+		next.SupportsSystemPrompt, next.SupportsTools, next.SupportsImageGen, next.SupportsChatImageGen,
+		next.ContextWindow, next.MaxOutputTokens,
 		next.Request, next.InputToken, next.OutputToken, next.ReasoningToken,
 		routeValue(next.RouteToID), next.ReasoningStyle, encodeTiers(next.ReasoningTiers),
 		next.APIName, next.AutoDisabled, next.SystemPrompt, next.UpdatedAt, modelID)
@@ -606,7 +621,7 @@ func (s *Store) readCallable(
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
 		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
 		&record.Hidden, &tiers, &record.APIName, &record.AutoDisabled, &record.SystemPrompt,
-		&record.SupportsImageGen,
+		&record.SupportsImageGen, &record.SupportsChatImageGen,
 		&record.ProviderName, &record.ProviderKind,
 		&upstream.BaseURL, &sealed, &headerJSON, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
 		&upstream.TimeoutSeconds, &upstream.APIKeyHint, &upstream.SortOrder, &upstream.Enabled,
@@ -980,7 +995,7 @@ func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
 		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
 		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
 		&record.Hidden, &tiers, &record.APIName, &record.AutoDisabled, &record.SystemPrompt,
-		&record.SupportsImageGen,
+		&record.SupportsImageGen, &record.SupportsChatImageGen,
 	}
 	if joined {
 		targets = append(targets, &record.ProviderName, &record.ProviderKind)

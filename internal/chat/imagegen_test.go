@@ -84,38 +84,52 @@ func (l *imageLab) ledger() []TurnRecord {
 	return append([]TurnRecord{}, l.records...)
 }
 
-// The lab is the only place an image model answers from.
+// Marking a model for the lab says nothing about conversations.
 //
-// A turn used to branch into a picture on the same capability flag, which
-// made one model two products depending on where it was used — and the
-// transcript's half could only send a bare prompt at a fixed square. The
-// refusal happens in Prepare, before the allowance is reserved and before
-// anything is written, so the conversation the composer would have opened
-// does not exist afterwards.
-func TestAConversationRefusesAnImageModel(t *testing.T) {
+// It said a great deal for a while: the gateway refused a turn asked of any
+// model with the capability, so an operator who wanted a model in the image
+// lab lost it from the composer's picker — and most models that draw are
+// perfectly good models to talk to. The lab is chosen by the endpoint the
+// request arrives at, not by taking the model away from the transcript.
+func TestAnImageModelIsStillAnOrdinaryChatModel(t *testing.T) {
 	lab := newImageLab(t, 3)
-	// A provider reply is queued so that a turn which wrongly reached the
-	// upstream would succeed rather than fail for some unrelated reason.
-	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
+	// A plain chat-completions body, not a stream: the painter is created
+	// without streaming support, so the adapter asks for one response.
+	lab.fixture.upstream.reply(`{"choices":[{"message":{"content":"a sentence, not a picture"}}]}`)
 
-	recorder := lab.turn(t, `{"model_id":"`+lab.painter.ID+`","content":"a sunset"}`)
+	recorder := lab.turn(t, `{"model_id":"`+lab.painter.ID+`","content":"hello"}`)
 
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "image lab") {
-		t.Errorf("the refusal does not say where the model can be used: %s", recorder.Body.String())
+	if strings.Contains(recorder.Body.String(), "event: error") {
+		t.Fatalf("the turn was refused: %s", recorder.Body.String())
+	}
+
+	// It answered through the chat endpoint: a conversation with this model
+	// is a conversation, not a picture the composer could not steer.
+	if path := lab.fixture.upstream.lastCall().path; !strings.HasSuffix(path, "/chat/completions") {
+		t.Errorf("the turn went to %q, want the chat endpoint", path)
 	}
 
 	conversations, err := lab.fixture.conversations.List(context.Background(), lab.fixture.account.ID, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(conversations) != 0 {
-		t.Errorf("a refused turn left %d conversations behind, want 0", len(conversations))
+	if len(conversations) != 1 {
+		t.Fatalf("the turn left %d conversations behind, want 1", len(conversations))
 	}
-	if records := lab.ledger(); len(records) != 0 {
-		t.Errorf("a refused turn left %d ledger rows behind, want 0", len(records))
+
+	messages := lab.fixture.messages(t, conversations[0].ID)
+	if len(messages) != 2 {
+		t.Fatalf("the conversation holds %d messages, want the question and its answer", len(messages))
+	}
+	if messages[1].Content != "a sentence, not a picture" {
+		t.Errorf("the answer is %q, want what the provider said", messages[1].Content)
+	}
+	if len(messages[1].Attachments) != 0 {
+		t.Errorf("the answer carried %d pictures; a conversation does not generate them",
+			len(messages[1].Attachments))
 	}
 }
 
