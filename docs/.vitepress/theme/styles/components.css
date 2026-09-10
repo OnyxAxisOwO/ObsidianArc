@@ -13,27 +13,37 @@
 
 .VPLocalSearchBox .shell {
   border-radius: 18px !important;
-  background-color: var(--ai-surface-container) !important;
+  background-color: var(--ai-surface-card) !important;
   border: 1px solid var(--ai-border) !important;
   box-shadow: var(--ai-shadow-md) !important;
-  padding: 14px !important;
+  padding: 16px !important;
   max-width: 600px !important;
+  overflow: hidden !important;
 }
 
-.VPLocalSearchBox .search-bar input.search-input {
+.VPLocalSearchBox .search-bar {
+  border: none !important;
   border-radius: 11px !important;
   background-color: var(--ai-field-bg) !important;
-  border: 1px solid var(--ai-border) !important;
-  color: var(--ai-text) !important;
-  font-size: 14px !important;
-  padding: 10px 14px !important;
+  padding: 0 12px !important;
+  min-height: 42px !important;
+  display: flex !important;
+  align-items: center !important;
   transition: all 0.15s ease !important;
 }
 
-.VPLocalSearchBox .search-bar input.search-input:focus {
+.VPLocalSearchBox .search-bar:focus-within {
+  box-shadow: 0 0 0 2px var(--ai-focus-shadow) !important;
+}
+
+.VPLocalSearchBox .search-bar input.search-input {
+  border: none !important;
   outline: none !important;
-  border-color: var(--ai-outline-variant) !important;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow) !important;
+  background: transparent !important;
+  color: var(--ai-text) !important;
+  font-size: 14px !important;
+  padding: 10px 8px !important;
+  box-shadow: none !important;
 }
 
 .VPLocalSearchBox ul.results li a.result {
@@ -41,7 +51,7 @@
   margin: 3px 0 !important;
   padding: 10px 14px !important;
   background-color: transparent !important;
-  border: 1px solid transparent !important;
+  border: none !important;
   color: var(--ai-text) !important;
   transition: all 0.12s ease !important;
 }
@@ -49,7 +59,6 @@
 .VPLocalSearchBox ul.results li a.result:hover,
 .VPLocalSearchBox ul.results li a.result.selected {
   background-color: var(--ai-state-hover) !important;
-  border-color: var(--ai-border) !important;
 }
 
 .VPLocalSearchBox ul.results li a.result .titles .title.main .text {
@@ -58,16 +67,17 @@
 }
 
 .VPLocalSearchBox ul.results li a.result mark {
-  background-color: rgba(99, 102, 241, 0.28) !important;
-  color: inherit !important;
+  background-color: var(--ai-badge-bg) !important;
+  color: var(--ai-text) !important;
   border-radius: 3px;
-  padding: 0 2px;
+  padding: 0 3px;
+  font-weight: 600;
 }
 
 .VPLocalSearchBox .search-keyboard-shortcuts {
   border-top: 1px solid var(--ai-border) !important;
   padding-top: 12px !important;
-  margin-top: 10px !important;
+  margin-top: 12px !important;
   font-size: 11.5px !important;
   color: var(--ai-text-secondary) !important;
 }
@@ -75,10 +85,11 @@
 .VPLocalSearchBox .search-keyboard-shortcuts kbd {
   border-radius: 6px !important;
   background-color: var(--ai-surface-container-high) !important;
-  border: 1px solid var(--ai-border) !important;
+  border: none !important;
   box-shadow: none !important;
   color: var(--ai-text-secondary) !important;
   font-size: 11px !important;
+  padding: 2px 6px !important;
 }
 
 /* --- Document Pager (Prev / Next) ------------------------------------------- */
@@ -93,7 +104,7 @@
 }
 
 .VPDocFooter .pager-link {
-  border-radius: 14px !important;
+  border-radius: 16px !important;
   background-color: var(--ai-surface-container) !important;
   border: 1px solid var(--ai-border) !important;
   padding: 14px 20px !important;
@@ -163,12 +174,22 @@
 }
 
 .oa-badge-danger {
-  background-color: rgba(220, 38, 38, 0.15);
+  background-color: rgba(248, 113, 113, 0.15);
+  color: var(--ai-danger);
+}
+
+:root:not(.dark) .oa-badge-danger {
+  background-color: rgba(185, 28, 28, 0.1);
   color: var(--ai-danger);
 }
 
 .oa-badge-warning {
-  background-color: rgba(245, 158, 11, 0.16);
+  background-color: rgba(251, 191, 36, 0.15);
+  color: var(--ai-warning);
+}
+
+:root:not(.dark) .oa-badge-warning {
+  background-color: rgba(180, 83, 9, 0.1);
   color: var(--ai-warning);
 }
 

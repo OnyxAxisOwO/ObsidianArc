@@ -7,15 +7,7 @@ const { Layout } = DefaultTheme;
 <template>
   <Layout class="oa-theme-root">
     <template #layout-top>
-      <div class="oa-ambient-glow" aria-hidden="true">
-        <div class="oa-glow-top" />
-        <div class="oa-glow-accent" />
-      </div>
-      <slot name="layout-top" />
-    </template>
-
-    <template v-for="(_, slotName) in $slots" #[slotName]="slotProps">
-      <slot v-if="slotName !== 'layout-top'" :name="slotName" v-bind="slotProps" />
+      <div class="oa-ambient-glow" aria-hidden="true" />
     </template>
   </Layout>
 </template>

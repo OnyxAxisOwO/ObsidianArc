@@ -65,9 +65,9 @@
   letter-spacing: 0.01em !important;
   padding: 4px 14px !important;
   border-radius: 999px !important;
-  background-color: var(--ai-surface-container-high) !important;
-  color: var(--ai-text-secondary) !important;
-  border: 1px solid var(--ai-border) !important;
+  background-color: var(--ai-badge-bg) !important;
+  color: var(--ai-badge-text) !important;
+  border: none !important;
   margin-top: 18px !important;
 }
 
@@ -112,21 +112,20 @@
 .dark .VPButton.alt {
   background-color: rgba(255, 255, 255, 0.08) !important;
   color: #ededef !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border: none !important;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
 
 .dark .VPButton.alt:hover {
   background-color: rgba(255, 255, 255, 0.14) !important;
-  border-color: rgba(255, 255, 255, 0.22) !important;
   transform: translateY(-1px);
 }
 
 :root:not(.dark) .VPButton.alt {
-  background-color: #e5e5ea !important;
+  background-color: #e8e8eb !important;
   color: #18181b !important;
-  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  border: none !important;
 }
 
 /* Feature Cards */
@@ -161,6 +160,7 @@
   align-items: center !important;
   justify-content: center !important;
   margin-bottom: 18px !important;
+  font-size: 20px !important;
   color: var(--ai-text) !important;
 }
 
@@ -189,12 +189,12 @@
 .VPHome .vp-doc div[class*='language-'] {
   border-radius: 18px !important;
   border: 1px solid var(--ai-border) !important;
-  background-color: #141416 !important;
+  background-color: var(--vp-code-block-bg) !important;
   box-shadow: var(--ai-shadow-md) !important;
 }
 
-/* Home Document Directory: Grid of Tactile Cards */
-.VPHome .vp-doc ul {
+/* Home Document Directory: Grid of Tactile Cards (only for lists of navigation links) */
+.VPHome .vp-doc ul:has(> li > a) {
   display: grid !important;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)) !important;
   gap: 12px !important;
@@ -203,11 +203,11 @@
   margin: 20px 0 !important;
 }
 
-.VPHome .vp-doc li {
+.VPHome .vp-doc ul:has(> li > a) li {
   margin: 0 !important;
 }
 
-.VPHome .vp-doc li a {
+.VPHome .vp-doc ul:has(> li > a) li a {
   display: flex !important;
   align-items: center !important;
   padding: 14px 18px !important;
@@ -221,14 +221,14 @@
   transition: all 0.2s cubic-bezier(0.2, 0, 0, 1) !important;
 }
 
-.VPHome .vp-doc li a:hover {
+.VPHome .vp-doc ul:has(> li > a) li a:hover {
   background-color: var(--ai-surface-container-high) !important;
   border-color: var(--ai-border-hover) !important;
   transform: translateY(-2px) !important;
   box-shadow: var(--ai-shadow-sm) !important;
 }
 
-.VPHome .vp-doc li a::after {
+.VPHome .vp-doc ul:has(> li > a) li a::after {
   content: '→';
   margin-left: auto;
   font-size: 13px;
@@ -236,7 +236,7 @@
   transition: transform 0.15s ease, color 0.15s ease;
 }
 
-.VPHome .vp-doc li a:hover::after {
+.VPHome .vp-doc ul:has(> li > a) li a:hover::after {
   color: var(--ai-text);
   transform: translateX(3px);
 }

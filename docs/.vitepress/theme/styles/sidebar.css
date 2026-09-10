@@ -54,11 +54,11 @@
 .VPSidebarItem .link {
   display: flex !important;
   align-items: center !important;
-  padding: 6px 12px !important;
+  padding: 7px 12px !important;
   border-radius: 10px !important;
   margin: 1px 0 !important;
   color: var(--ai-text-secondary) !important;
-  font-size: 13.5px !important;
+  font-size: 13px !important;
   line-height: 1.5 !important;
   font-weight: 400 !important;
   transition: background-color 0.15s ease, color 0.15s ease !important;
@@ -69,34 +69,15 @@
   color: var(--ai-text) !important;
 }
 
-/* Active Sidebar Item */
+/* Active Sidebar Item - Exact .oa-admin-nav.active pill fill */
 .VPSidebarItem.is-active > .item .link {
-  background-color: rgba(255, 255, 255, 0.08) !important;
-  color: #ffffff !important;
-  font-weight: 500 !important;
-}
-
-:root:not(.dark) .VPSidebarItem.is-active > .item .link {
-  background-color: rgba(0, 0, 0, 0.06) !important;
-  color: #18181b !important;
+  background-color: var(--ai-badge-bg) !important;
+  color: var(--ai-badge-text) !important;
   font-weight: 600 !important;
 }
 
-/* Pill Indicator on Active Item */
 .VPSidebarItem .indicator {
   display: none !important;
-}
-
-.VPSidebarItem.is-active > .item .link::before {
-  content: '';
-  position: absolute;
-  left: 2px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 16px;
-  border-radius: 999px;
-  background-color: var(--ai-primary);
 }
 
 /* Collapsible Caret Icon */

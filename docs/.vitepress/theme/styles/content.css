@@ -1,6 +1,6 @@
 /**
  * Obsidian Arc Document & Markdown Content Styles
- * Elegant, minimalist typography with dark obsidian accents.
+ * Elegant, minimalist typography with obsidian dark accents.
  */
 
 .VPDoc {
@@ -36,7 +36,7 @@
 }
 
 .vp-doc h2 {
-  font-size: 21px !important;
+  font-size: 20px !important;
   font-weight: 600 !important;
   letter-spacing: -0.015em !important;
   line-height: 1.35 !important;
@@ -62,39 +62,111 @@
   margin: 32px 0 12px !important;
 }
 
-/* Metadata / Rationale Subheadings */
 .vp-doc h4 {
-  display: inline-flex !important;
-  align-items: center !important;
-  margin: 20px 0 8px !important;
-  padding: 3px 10px !important;
-  border-radius: 6px !important;
-  font-size: 11px !important;
+  font-size: 14px !important;
   font-weight: 600 !important;
-  letter-spacing: 0.04em !important;
-  text-transform: uppercase !important;
-  background-color: var(--ai-surface-container-high) !important;
-  color: var(--ai-text-secondary) !important;
-  border: 1px solid var(--ai-border) !important;
+  color: var(--ai-text) !important;
+  margin: 22px 0 8px !important;
 }
 
 .vp-doc h5,
 .vp-doc h6 {
-  font-size: 13.5px !important;
+  font-size: 13px !important;
   font-weight: 600 !important;
   color: var(--ai-text-secondary) !important;
   margin: 16px 0 8px !important;
 }
 
+/* Architecture Rationale Pill Subheadings
+ * Targets technical rationale sections ("做了什么", "为什么这么做", "代价是什么", etc.)
+ * across both h3 and h4 levels without breaking normal heading typography.
+ */
+.vp-doc h3[id^="做了什么"],
+.vp-doc h4[id^="做了什么"],
+.vp-doc h3[id^="为什么这么做"],
+.vp-doc h4[id^="为什么这么做"],
+.vp-doc h3[id^="代价是什么"],
+.vp-doc h4[id^="代价是什么"],
+.vp-doc h3[id^="失效场景"],
+.vp-doc h4[id^="失效场景"],
+.vp-doc h3[id^="不明显的约束与前提"],
+.vp-doc h4[id^="不明显的约束与前提"],
+.vp-doc h3[id^="排查路径"],
+.vp-doc h4[id^="排查路径"],
+.vp-doc h3[id^="排查步骤"],
+.vp-doc h4[id^="排查步骤"] {
+  display: inline-flex !important;
+  align-items: center !important;
+  margin: 24px 0 10px !important;
+  padding: 3px 12px !important;
+  border-radius: 999px !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.03em !important;
+  border: none !important;
+}
+
+.vp-doc h3[id^="做了什么"],
+.vp-doc h4[id^="做了什么"] {
+  background-color: var(--ai-badge-bg) !important;
+  color: var(--ai-badge-text) !important;
+}
+
+.vp-doc h3[id^="为什么这么做"],
+.vp-doc h4[id^="为什么这么做"] {
+  background-color: var(--ai-surface-container-high) !important;
+  color: var(--ai-text-secondary) !important;
+}
+
+.vp-doc h3[id^="代价是什么"],
+.vp-doc h4[id^="代价是什么"] {
+  background-color: rgba(248, 113, 113, 0.15) !important;
+  color: var(--ai-danger) !important;
+}
+
+:root:not(.dark) .vp-doc h3[id^="代价是什么"],
+:root:not(.dark) .vp-doc h4[id^="代价是什么"] {
+  background-color: rgba(185, 28, 28, 0.1) !important;
+  color: var(--ai-danger) !important;
+}
+
+.vp-doc h3[id^="失效场景"],
+.vp-doc h4[id^="失效场景"] {
+  background-color: rgba(251, 191, 36, 0.15) !important;
+  color: var(--ai-warning) !important;
+}
+
+:root:not(.dark) .vp-doc h3[id^="失效场景"],
+:root:not(.dark) .vp-doc h4[id^="失效场景"] {
+  background-color: rgba(180, 83, 9, 0.1) !important;
+  color: var(--ai-warning) !important;
+}
+
+.vp-doc h3[id^="不明显的约束与前提"],
+.vp-doc h4[id^="不明显的约束与前提"] {
+  background-color: var(--ai-surface-container-high) !important;
+  color: var(--ai-text-secondary) !important;
+}
+
+.vp-doc h3[id^="排查路径"],
+.vp-doc h4[id^="排查路径"],
+.vp-doc h3[id^="排查步骤"],
+.vp-doc h4[id^="排查步骤"] {
+  background-color: var(--ai-badge-bg) !important;
+  color: var(--ai-text) !important;
+}
+
 /* Header Anchor Icon */
 .vp-doc .header-anchor {
   color: var(--ai-text-secondary) !important;
+  text-decoration: none !important;
   opacity: 0;
   transition: opacity 0.15s ease, color 0.15s ease;
 }
 
 .vp-doc .header-anchor:hover {
   color: var(--ai-text) !important;
+  text-decoration: none !important;
 }
 
 /* Paragraphs & Text */
@@ -110,25 +182,16 @@
 
 /* Links */
 .vp-doc a {
-  color: var(--ai-arc-accent) !important;
-  text-decoration: none !important;
-  border-bottom: 1px solid rgba(129, 140, 248, 0.28) !important;
-  transition: all 0.15s ease !important;
+  color: var(--ai-text) !important;
+  text-decoration: underline !important;
+  text-decoration-color: var(--ai-outline-variant) !important;
+  text-underline-offset: 3px !important;
+  transition: text-decoration-color 0.15s ease, color 0.15s ease !important;
 }
 
 .vp-doc a:hover {
-  color: #a5b4fc !important;
-  border-bottom-color: #a5b4fc !important;
-}
-
-:root:not(.dark) .vp-doc a {
-  color: #4f46e5 !important;
-  border-bottom-color: rgba(79, 70, 229, 0.3) !important;
-}
-
-:root:not(.dark) .vp-doc a:hover {
-  color: #3730a3 !important;
-  border-bottom-color: #3730a3 !important;
+  color: var(--ai-primary) !important;
+  text-decoration-color: var(--ai-primary) !important;
 }
 
 /* Dividers */
@@ -152,29 +215,35 @@
 
 /* Code Blocks */
 .vp-doc div[class*='language-'] {
-  border-radius: 16px !important;
+  border-radius: 14px !important;
   margin: 20px 0 !important;
   border: 1px solid var(--ai-border) !important;
   background-color: var(--vp-code-block-bg) !important;
   box-shadow: var(--ai-shadow-sm) !important;
   overflow: hidden !important;
+  position: relative !important;
 }
 
 .vp-doc div[class*='language-'] pre {
-  padding: 16px 20px !important;
+  margin: 0 !important;
+  padding: 20px 24px !important;
+}
+
+.vp-doc div[class*='language-'].line-numbers-mode pre {
+  padding-left: 16px !important;
 }
 
 .vp-doc div[class*='language-'] code {
   font-family: var(--vp-font-family-mono) !important;
-  font-size: 13.5px !important;
+  font-size: 13px !important;
   line-height: 1.65 !important;
 }
 
 /* Code Block Language Label */
 .vp-doc div[class*='language-'] > span.lang {
   top: 10px !important;
-  right: 48px !important;
-  font-size: 10.5px !important;
+  right: 42px !important;
+  font-size: 10px !important;
   font-weight: 600 !important;
   letter-spacing: 0.05em !important;
   text-transform: uppercase !important;
@@ -185,13 +254,14 @@
 .vp-doc div[class*='language-'] > button.copy {
   top: 8px !important;
   right: 8px !important;
-  width: 32px !important;
-  height: 32px !important;
-  border-radius: 999px !important;
-  background-color: var(--ai-state-hover) !important;
-  border: 1px solid var(--ai-border) !important;
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 50% !important;
+  border: none !important;
+  background-color: transparent !important;
+  color: var(--ai-text-secondary) !important;
   opacity: 0;
-  transition: opacity 0.15s ease, background-color 0.15s ease !important;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease !important;
 }
 
 .vp-doc div[class*='language-']:hover > button.copy {
@@ -199,12 +269,18 @@
 }
 
 .vp-doc div[class*='language-'] > button.copy:hover {
-  background-color: var(--ai-outline-variant) !important;
+  background-color: var(--ai-state-hover) !important;
+  color: var(--ai-text) !important;
+}
+
+.vp-doc div[class*='language-'] > button.copy.copied {
+  opacity: 1 !important;
+  color: var(--ai-primary) !important;
 }
 
 /* Code Groups */
 .vp-code-group {
-  border-radius: 16px !important;
+  border-radius: 14px !important;
   border: 1px solid var(--ai-border) !important;
   background-color: var(--vp-code-block-bg) !important;
   overflow: hidden !important;
@@ -219,11 +295,15 @@
 }
 
 .vp-code-group .tabs label {
+  display: inline-block;
   padding: 10px 14px !important;
   font-size: 12.5px !important;
   font-weight: 500 !important;
   color: var(--ai-text-secondary) !important;
-  transition: color 0.15s ease !important;
+  border-bottom: 2px solid transparent !important;
+  margin-bottom: -1px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease !important;
 }
 
 .vp-code-group .tabs label:hover {
@@ -233,6 +313,7 @@
 .vp-code-group input:checked + label {
   color: var(--ai-text) !important;
   border-bottom-color: var(--ai-primary) !important;
+  font-weight: 600 !important;
 }
 
 .vp-code-group div[class*='language-'] {
@@ -242,56 +323,73 @@
   box-shadow: none !important;
 }
 
-/* Tables */
+/* Tables - Faithful port of Obsidian Arc's .oa-table specification */
 .vp-doc table {
   display: table !important;
   width: 100% !important;
+  table-layout: auto !important;
   border-collapse: separate !important;
-  border-spacing: 0 !important;
-  border-radius: 14px !important;
-  border: 1px solid var(--ai-border) !important;
-  overflow: hidden !important;
+  border-spacing: 0 2px !important;
   margin: 24px 0 !important;
-  background-color: rgba(255, 255, 255, 0.01) !important;
-}
-
-.vp-doc th {
-  font-size: 11px !important;
-  font-weight: 600 !important;
-  letter-spacing: 0.05em !important;
-  text-transform: uppercase !important;
-  color: var(--ai-text-secondary) !important;
-  background-color: var(--ai-surface-container) !important;
+  font-size: 13px !important;
   border: none !important;
-  border-bottom: 1px solid var(--ai-border) !important;
-  padding: 10px 16px !important;
-  text-align: left !important;
-}
-
-.vp-doc td {
-  font-size: 13.5px !important;
-  line-height: 1.6 !important;
-  border: none !important;
-  border-bottom: 1px solid var(--ai-border) !important;
-  padding: 11px 16px !important;
-  color: var(--ai-text) !important;
   background-color: transparent !important;
 }
 
-.vp-doc tr:last-child td {
-  border-bottom: none !important;
+.vp-doc th {
+  padding: 8px 14px !important;
+  background: color-mix(in srgb, var(--ai-text) 9%, transparent) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+  text-align: left !important;
+  color: var(--ai-text-secondary) !important;
+  border: none !important;
+  white-space: nowrap !important;
 }
 
-.vp-doc tr:nth-child(even) td {
-  background-color: rgba(255, 255, 255, 0.02) !important;
+.vp-doc th:first-child {
+  border-radius: 9px 0 0 9px !important;
 }
 
-:root:not(.dark) .vp-doc tr:nth-child(even) td {
-  background-color: rgba(0, 0, 0, 0.02) !important;
+.vp-doc th:last-child {
+  border-radius: 0 9px 9px 0 !important;
 }
 
-.vp-doc tr:hover td {
-  background-color: var(--ai-state-hover) !important;
+.vp-doc th:only-child {
+  border-radius: 9px !important;
+}
+
+.vp-doc td {
+  padding: 10px 14px !important;
+  vertical-align: middle !important;
+  font-size: 13.5px !important;
+  line-height: 1.6 !important;
+  color: var(--ai-text) !important;
+  border: none !important;
+  background-color: transparent !important;
+  transition: background-color 0.12s ease !important;
+}
+
+.vp-doc td:first-child {
+  border-radius: 9px 0 0 9px !important;
+}
+
+.vp-doc td:last-child {
+  border-radius: 0 9px 9px 0 !important;
+}
+
+.vp-doc td:only-child {
+  border-radius: 9px !important;
+}
+
+.vp-doc tbody tr:nth-child(odd) td {
+  background: color-mix(in srgb, var(--ai-text) 4%, transparent) !important;
+}
+
+.vp-doc tbody tr:hover td {
+  background: var(--ai-state-hover) !important;
 }
 
 /* Blockquotes */
@@ -375,6 +473,8 @@
 }
 
 .VPDocAsideOutline .outline-link {
+  font-size: 12.5px !important;
+  line-height: 1.6 !important;
   color: var(--ai-text-secondary) !important;
   transition: color 0.15s ease !important;
 }

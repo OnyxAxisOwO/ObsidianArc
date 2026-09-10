@@ -36,13 +36,13 @@
   height: 24px;
   width: 24px;
   border-radius: 6px;
-  filter: drop-shadow(0 2px 6px rgba(99, 102, 241, 0.35));
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
   transition: transform 0.2s ease, filter 0.2s ease;
 }
 
 .VPNavBarTitle:hover .logo {
   transform: scale(1.05);
-  filter: drop-shadow(0 4px 10px rgba(99, 102, 241, 0.5));
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5));
 }
 
 /* Navigation Links - Pill Shape */
@@ -50,32 +50,30 @@
   gap: 4px;
 }
 
-.VPNavBarMenuLink {
+.VPNavBarMenuLink,
+.VPNavBarMenuGroup .button {
   height: 32px;
   line-height: 32px !important;
   padding: 0 12px !important;
   margin: auto 2px;
   border-radius: 999px !important;
+  border: none !important;
   font-size: 13px !important;
   font-weight: 500 !important;
   color: var(--ai-text-secondary) !important;
   transition: all 0.15s ease !important;
 }
 
-.VPNavBarMenuLink:hover {
+.VPNavBarMenuLink:hover,
+.VPNavBarMenuGroup .button:hover {
   color: var(--ai-text) !important;
   background-color: var(--ai-state-hover) !important;
 }
 
 .VPNavBarMenuLink.active {
-  color: var(--ai-text) !important;
-  background-color: rgba(255, 255, 255, 0.1) !important;
+  color: var(--ai-primary) !important;
+  background-color: var(--ai-badge-bg) !important;
   font-weight: 600 !important;
-}
-
-:root:not(.dark) .VPNavBarMenuLink.active {
-  background-color: rgba(0, 0, 0, 0.06) !important;
-  color: #18181b !important;
 }
 
 /* Search Button in Header */
@@ -88,7 +86,7 @@
   height: 34px !important;
   padding: 0 12px 0 10px !important;
   margin: 0 !important;
-  border: 1px solid var(--ai-border) !important;
+  border: none !important;
   border-radius: 999px !important;
   background-color: var(--ai-field-bg) !important;
   color: var(--ai-text-secondary) !important;
@@ -99,13 +97,12 @@
 
 .DocSearch-Button:hover {
   background-color: var(--ai-field-bg-hover) !important;
-  border-color: var(--ai-outline-variant) !important;
   color: var(--ai-text) !important;
 }
 
 .DocSearch-Button:focus-visible {
   outline: none !important;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow) !important;
+  box-shadow: 0 0 0 2px var(--ai-focus-shadow) !important;
 }
 
 .DocSearch-Button .DocSearch-Search-Icon {
@@ -124,11 +121,11 @@
   height: 18px !important;
   width: auto !important;
   min-width: 18px !important;
-  padding: 0 4px !important;
+  padding: 0 5px !important;
   margin: 0 1px !important;
   border-radius: 6px !important;
-  border: 1px solid var(--ai-border) !important;
-  background: var(--ai-surface-container) !important;
+  border: none !important;
+  background: var(--ai-surface-container-high) !important;
   color: var(--ai-text-secondary) !important;
   font-size: 10.5px !important;
   font-weight: 600 !important;
@@ -163,6 +160,11 @@
 /* Theme Toggle Button & Social Icons */
 .VPSwitchAppearance {
   border-radius: 999px !important;
+}
+
+.VPSwitchAppearance:focus-visible {
+  outline: none !important;
+  box-shadow: 0 0 0 2px var(--ai-focus-shadow) !important;
 }
 
 .VPSocialLink {
