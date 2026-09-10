@@ -1,0 +1,395 @@
+/**
+ * Obsidian Arc Document & Markdown Content Styles
+ * Elegant, minimalist typography with dark obsidian accents.
+ */
+
+.VPDoc {
+  padding: 32px 24px 96px !important;
+}
+
+@media (min-width: 960px) {
+  .VPDoc:not(.has-sidebar) .container {
+    max-width: 860px !important;
+  }
+}
+
+.vp-doc {
+  font-size: 14.5px;
+  line-height: 1.75;
+  color: var(--ai-text);
+}
+
+/* Headings */
+.vp-doc h1 {
+  font-size: 30px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.025em !important;
+  line-height: 1.25 !important;
+  color: var(--ai-text) !important;
+  margin: 0 0 24px !important;
+}
+
+@media (min-width: 768px) {
+  .vp-doc h1 {
+    font-size: 34px !important;
+  }
+}
+
+.vp-doc h2 {
+  font-size: 21px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.015em !important;
+  line-height: 1.35 !important;
+  color: var(--ai-text) !important;
+  border-top: 1px solid var(--ai-border) !important;
+  padding-top: 28px !important;
+  margin: 44px 0 16px !important;
+}
+
+/* Avoid duplicate line if hr precedes h2 */
+.vp-doc hr + h2 {
+  border-top: none !important;
+  padding-top: 0 !important;
+  margin-top: 24px !important;
+}
+
+.vp-doc h3 {
+  font-size: 16.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  line-height: 1.4 !important;
+  color: var(--ai-text) !important;
+  margin: 32px 0 12px !important;
+}
+
+/* Metadata / Rationale Subheadings */
+.vp-doc h4 {
+  display: inline-flex !important;
+  align-items: center !important;
+  margin: 20px 0 8px !important;
+  padding: 3px 10px !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+  background-color: var(--ai-surface-container-high) !important;
+  color: var(--ai-text-secondary) !important;
+  border: 1px solid var(--ai-border) !important;
+}
+
+.vp-doc h5,
+.vp-doc h6 {
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  color: var(--ai-text-secondary) !important;
+  margin: 16px 0 8px !important;
+}
+
+/* Header Anchor Icon */
+.vp-doc .header-anchor {
+  color: var(--ai-text-secondary) !important;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.vp-doc .header-anchor:hover {
+  color: var(--ai-text) !important;
+}
+
+/* Paragraphs & Text */
+.vp-doc p {
+  margin: 16px 0 !important;
+  line-height: 1.75 !important;
+}
+
+.vp-doc strong {
+  font-weight: 600 !important;
+  color: var(--ai-text) !important;
+}
+
+/* Links */
+.vp-doc a {
+  color: var(--ai-arc-accent) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid rgba(129, 140, 248, 0.28) !important;
+  transition: all 0.15s ease !important;
+}
+
+.vp-doc a:hover {
+  color: #a5b4fc !important;
+  border-bottom-color: #a5b4fc !important;
+}
+
+:root:not(.dark) .vp-doc a {
+  color: #4f46e5 !important;
+  border-bottom-color: rgba(79, 70, 229, 0.3) !important;
+}
+
+:root:not(.dark) .vp-doc a:hover {
+  color: #3730a3 !important;
+  border-bottom-color: #3730a3 !important;
+}
+
+/* Dividers */
+.vp-doc hr {
+  border: none !important;
+  height: 1px !important;
+  background: var(--ai-border) !important;
+  margin: 36px 0 !important;
+}
+
+/* Inline Code */
+.vp-doc :not(pre, h1, h2, h3, h4, h5, h6) > code {
+  font-family: var(--vp-font-family-mono) !important;
+  font-size: 0.88em !important;
+  padding: 2px 7px !important;
+  border-radius: 6px !important;
+  background-color: var(--vp-code-bg) !important;
+  color: var(--ai-text) !important;
+  border: 1px solid var(--ai-border) !important;
+}
+
+/* Code Blocks */
+.vp-doc div[class*='language-'] {
+  border-radius: 16px !important;
+  margin: 20px 0 !important;
+  border: 1px solid var(--ai-border) !important;
+  background-color: var(--vp-code-block-bg) !important;
+  box-shadow: var(--ai-shadow-sm) !important;
+  overflow: hidden !important;
+}
+
+.vp-doc div[class*='language-'] pre {
+  padding: 16px 20px !important;
+}
+
+.vp-doc div[class*='language-'] code {
+  font-family: var(--vp-font-family-mono) !important;
+  font-size: 13.5px !important;
+  line-height: 1.65 !important;
+}
+
+/* Code Block Language Label */
+.vp-doc div[class*='language-'] > span.lang {
+  top: 10px !important;
+  right: 48px !important;
+  font-size: 10.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.05em !important;
+  text-transform: uppercase !important;
+  color: var(--ai-text-secondary) !important;
+}
+
+/* Copy Button */
+.vp-doc div[class*='language-'] > button.copy {
+  top: 8px !important;
+  right: 8px !important;
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 999px !important;
+  background-color: var(--ai-state-hover) !important;
+  border: 1px solid var(--ai-border) !important;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease !important;
+}
+
+.vp-doc div[class*='language-']:hover > button.copy {
+  opacity: 1;
+}
+
+.vp-doc div[class*='language-'] > button.copy:hover {
+  background-color: var(--ai-outline-variant) !important;
+}
+
+/* Code Groups */
+.vp-code-group {
+  border-radius: 16px !important;
+  border: 1px solid var(--ai-border) !important;
+  background-color: var(--vp-code-block-bg) !important;
+  overflow: hidden !important;
+  box-shadow: var(--ai-shadow-sm) !important;
+  margin: 20px 0 !important;
+}
+
+.vp-code-group .tabs {
+  background-color: var(--ai-surface-container) !important;
+  border-bottom: 1px solid var(--ai-border) !important;
+  padding: 0 12px !important;
+}
+
+.vp-code-group .tabs label {
+  padding: 10px 14px !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  color: var(--ai-text-secondary) !important;
+  transition: color 0.15s ease !important;
+}
+
+.vp-code-group .tabs label:hover {
+  color: var(--ai-text) !important;
+}
+
+.vp-code-group input:checked + label {
+  color: var(--ai-text) !important;
+  border-bottom-color: var(--ai-primary) !important;
+}
+
+.vp-code-group div[class*='language-'] {
+  border: none !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Tables */
+.vp-doc table {
+  display: table !important;
+  width: 100% !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  border-radius: 14px !important;
+  border: 1px solid var(--ai-border) !important;
+  overflow: hidden !important;
+  margin: 24px 0 !important;
+  background-color: rgba(255, 255, 255, 0.01) !important;
+}
+
+.vp-doc th {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.05em !important;
+  text-transform: uppercase !important;
+  color: var(--ai-text-secondary) !important;
+  background-color: var(--ai-surface-container) !important;
+  border: none !important;
+  border-bottom: 1px solid var(--ai-border) !important;
+  padding: 10px 16px !important;
+  text-align: left !important;
+}
+
+.vp-doc td {
+  font-size: 13.5px !important;
+  line-height: 1.6 !important;
+  border: none !important;
+  border-bottom: 1px solid var(--ai-border) !important;
+  padding: 11px 16px !important;
+  color: var(--ai-text) !important;
+  background-color: transparent !important;
+}
+
+.vp-doc tr:last-child td {
+  border-bottom: none !important;
+}
+
+.vp-doc tr:nth-child(even) td {
+  background-color: rgba(255, 255, 255, 0.02) !important;
+}
+
+:root:not(.dark) .vp-doc tr:nth-child(even) td {
+  background-color: rgba(0, 0, 0, 0.02) !important;
+}
+
+.vp-doc tr:hover td {
+  background-color: var(--ai-state-hover) !important;
+}
+
+/* Blockquotes */
+.vp-doc blockquote {
+  border-radius: 12px !important;
+  border-left: 3px solid var(--ai-outline-variant) !important;
+  background-color: rgba(255, 255, 255, 0.02) !important;
+  padding: 14px 20px !important;
+  margin: 20px 0 !important;
+  color: var(--ai-text-secondary) !important;
+}
+
+:root:not(.dark) .vp-doc blockquote {
+  background-color: rgba(0, 0, 0, 0.02) !important;
+}
+
+.vp-doc blockquote > p {
+  margin: 0 !important;
+  font-size: 14px !important;
+}
+
+/* Custom Callout Blocks */
+.vp-doc .custom-block {
+  border-radius: 14px !important;
+  border: 1px solid var(--ai-border) !important;
+  padding: 16px 20px !important;
+  margin: 20px 0 !important;
+}
+
+.vp-doc .custom-block .custom-block-title {
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.03em !important;
+  text-transform: uppercase !important;
+  margin-bottom: 6px !important;
+}
+
+.vp-doc .custom-block.tip {
+  background-color: var(--vp-custom-block-tip-bg) !important;
+  border-color: var(--vp-custom-block-tip-border) !important;
+}
+
+.vp-doc .custom-block.info {
+  background-color: var(--vp-custom-block-info-bg) !important;
+  border-color: var(--vp-custom-block-info-border) !important;
+}
+
+.vp-doc .custom-block.warning {
+  background-color: var(--vp-custom-block-warning-bg) !important;
+  border-color: var(--vp-custom-block-warning-border) !important;
+}
+
+.vp-doc .custom-block.danger {
+  background-color: var(--vp-custom-block-danger-bg) !important;
+  border-color: var(--vp-custom-block-danger-border) !important;
+}
+
+/* Lists */
+.vp-doc ul,
+.vp-doc ol {
+  padding-left: 20px !important;
+  margin: 16px 0 !important;
+}
+
+.vp-doc li {
+  margin: 6px 0 !important;
+  line-height: 1.7 !important;
+}
+
+/* Document Aside Outline (On this page) */
+.VPDocAsideOutline {
+  font-size: 13px !important;
+}
+
+.VPDocAsideOutline .outline-title {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.05em !important;
+  text-transform: uppercase !important;
+  color: var(--ai-text-secondary) !important;
+}
+
+.VPDocAsideOutline .outline-link {
+  color: var(--ai-text-secondary) !important;
+  transition: color 0.15s ease !important;
+}
+
+.VPDocAsideOutline .outline-link:hover {
+  color: var(--ai-text) !important;
+}
+
+.VPDocAsideOutline .outline-link.active {
+  color: var(--ai-text) !important;
+  font-weight: 500 !important;
+}
+
+.VPDocAsideOutline .outline-marker {
+  width: 2px !important;
+  border-radius: 999px !important;
+  background-color: var(--ai-primary) !important;
+}

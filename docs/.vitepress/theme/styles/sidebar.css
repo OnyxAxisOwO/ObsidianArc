@@ -1,0 +1,121 @@
+/**
+ * Obsidian Arc Navigation Rail (Sidebar)
+ * Styled in the spirit of the .oa-admin-rail navigation rail.
+ */
+
+.VPSidebar {
+  background-color: var(--vp-sidebar-bg-color) !important;
+  border-right: 1px solid var(--ai-border) !important;
+  padding-top: var(--vp-nav-height) !important;
+}
+
+@media (min-width: 960px) {
+  .VPSidebar {
+    width: var(--vp-sidebar-width) !important;
+  }
+}
+
+.VPSidebar .nav {
+  padding: 16px 12px 32px !important;
+}
+
+/* Sidebar Groups */
+.VPSidebarGroup .group + .group {
+  border-top: 1px solid var(--ai-border) !important;
+  margin-top: 12px !important;
+  padding-top: 12px !important;
+}
+
+@media (min-width: 960px) {
+  .VPSidebarGroup .group {
+    width: 100% !important;
+    padding-top: 4px !important;
+  }
+}
+
+/* Group Title (Level 0) */
+.VPSidebarItem.level-0 > .item {
+  padding: 8px 10px 6px !important;
+}
+
+.VPSidebarItem.level-0 .text {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.05em !important;
+  text-transform: uppercase !important;
+  color: var(--ai-text-secondary) !important;
+}
+
+/* Sidebar Links & Items */
+.VPSidebarItem .item {
+  position: relative;
+}
+
+.VPSidebarItem .link {
+  display: flex !important;
+  align-items: center !important;
+  padding: 6px 12px !important;
+  border-radius: 10px !important;
+  margin: 1px 0 !important;
+  color: var(--ai-text-secondary) !important;
+  font-size: 13.5px !important;
+  line-height: 1.5 !important;
+  font-weight: 400 !important;
+  transition: background-color 0.15s ease, color 0.15s ease !important;
+}
+
+.VPSidebarItem .link:hover {
+  background-color: var(--ai-state-hover) !important;
+  color: var(--ai-text) !important;
+}
+
+/* Active Sidebar Item */
+.VPSidebarItem.is-active > .item .link {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+  font-weight: 500 !important;
+}
+
+:root:not(.dark) .VPSidebarItem.is-active > .item .link {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+  color: #18181b !important;
+  font-weight: 600 !important;
+}
+
+/* Pill Indicator on Active Item */
+.VPSidebarItem .indicator {
+  display: none !important;
+}
+
+.VPSidebarItem.is-active > .item .link::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 16px;
+  border-radius: 999px;
+  background-color: var(--ai-primary);
+}
+
+/* Collapsible Caret Icon */
+.VPSidebarItem .caret {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 6px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: var(--ai-text-secondary) !important;
+  transition: background-color 0.15s ease, color 0.15s ease !important;
+}
+
+.VPSidebarItem .caret:hover {
+  background-color: var(--ai-state-hover) !important;
+  color: var(--ai-text) !important;
+}
+
+.VPSidebarItem .caret-icon {
+  font-size: 13px !important;
+}

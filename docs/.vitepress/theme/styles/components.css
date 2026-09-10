@@ -1,0 +1,209 @@
+/**
+ * Obsidian Arc Custom Components & UI Overrides
+ * Modals, pagers, badges, and card components.
+ */
+
+/* --- Local Search Modal Box ------------------------------------------------ */
+
+.VPLocalSearchBox .backdrop {
+  background-color: rgba(0, 0, 0, 0.72) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.VPLocalSearchBox .shell {
+  border-radius: 18px !important;
+  background-color: var(--ai-surface-container) !important;
+  border: 1px solid var(--ai-border) !important;
+  box-shadow: var(--ai-shadow-md) !important;
+  padding: 14px !important;
+  max-width: 600px !important;
+}
+
+.VPLocalSearchBox .search-bar input.search-input {
+  border-radius: 11px !important;
+  background-color: var(--ai-field-bg) !important;
+  border: 1px solid var(--ai-border) !important;
+  color: var(--ai-text) !important;
+  font-size: 14px !important;
+  padding: 10px 14px !important;
+  transition: all 0.15s ease !important;
+}
+
+.VPLocalSearchBox .search-bar input.search-input:focus {
+  outline: none !important;
+  border-color: var(--ai-outline-variant) !important;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow) !important;
+}
+
+.VPLocalSearchBox ul.results li a.result {
+  border-radius: 10px !important;
+  margin: 3px 0 !important;
+  padding: 10px 14px !important;
+  background-color: transparent !important;
+  border: 1px solid transparent !important;
+  color: var(--ai-text) !important;
+  transition: all 0.12s ease !important;
+}
+
+.VPLocalSearchBox ul.results li a.result:hover,
+.VPLocalSearchBox ul.results li a.result.selected {
+  background-color: var(--ai-state-hover) !important;
+  border-color: var(--ai-border) !important;
+}
+
+.VPLocalSearchBox ul.results li a.result .titles .title.main .text {
+  color: var(--ai-text) !important;
+  font-weight: 500 !important;
+}
+
+.VPLocalSearchBox ul.results li a.result mark {
+  background-color: rgba(99, 102, 241, 0.28) !important;
+  color: inherit !important;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.VPLocalSearchBox .search-keyboard-shortcuts {
+  border-top: 1px solid var(--ai-border) !important;
+  padding-top: 12px !important;
+  margin-top: 10px !important;
+  font-size: 11.5px !important;
+  color: var(--ai-text-secondary) !important;
+}
+
+.VPLocalSearchBox .search-keyboard-shortcuts kbd {
+  border-radius: 6px !important;
+  background-color: var(--ai-surface-container-high) !important;
+  border: 1px solid var(--ai-border) !important;
+  box-shadow: none !important;
+  color: var(--ai-text-secondary) !important;
+  font-size: 11px !important;
+}
+
+/* --- Document Pager (Prev / Next) ------------------------------------------- */
+
+.VPDocFooter {
+  margin-top: 48px !important;
+}
+
+.VPDocFooter .prev-next {
+  border-top: 1px solid var(--ai-border) !important;
+  padding-top: 24px !important;
+}
+
+.VPDocFooter .pager-link {
+  border-radius: 14px !important;
+  background-color: var(--ai-surface-container) !important;
+  border: 1px solid var(--ai-border) !important;
+  padding: 14px 20px !important;
+  transition: all 0.2s cubic-bezier(0.2, 0, 0, 1) !important;
+}
+
+.VPDocFooter .pager-link:hover {
+  background-color: var(--ai-surface-container-high) !important;
+  border-color: var(--ai-border-hover) !important;
+  transform: translateY(-1px) !important;
+  box-shadow: var(--ai-shadow-sm) !important;
+}
+
+.VPDocFooter .pager-link .desc {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+  color: var(--ai-text-secondary) !important;
+}
+
+.VPDocFooter .pager-link .title {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: var(--ai-text) !important;
+  margin-top: 2px !important;
+}
+
+/* --- Global Footer --------------------------------------------------------- */
+
+.VPFooter {
+  border-top: 1px solid var(--ai-border) !important;
+  background-color: var(--ai-surface-container-low) !important;
+  color: var(--ai-text-secondary) !important;
+  padding: 32px 24px !important;
+  font-size: 12.5px !important;
+}
+
+.VPFooter .message,
+.VPFooter .copyright {
+  line-height: 1.6 !important;
+}
+
+/* --- Obsidian Arc Badges (.oa-badge) ---------------------------------------
+ * Direct port of web/src/styles/_app.scss rules.
+ */
+
+.oa-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background-color: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  vertical-align: middle;
+  line-height: 1.6;
+}
+
+.oa-badge-muted {
+  background-color: var(--ai-state-hover);
+  color: var(--ai-text-secondary);
+}
+
+.oa-badge-danger {
+  background-color: rgba(220, 38, 38, 0.15);
+  color: var(--ai-danger);
+}
+
+.oa-badge-warning {
+  background-color: rgba(245, 158, 11, 0.16);
+  color: var(--ai-warning);
+}
+
+/* --- Custom Card Component (.oa-card) -------------------------------------- */
+
+.oa-card {
+  border-radius: 18px;
+  background-color: var(--ai-surface-container);
+  border: 1px solid var(--ai-border);
+  box-shadow: var(--ai-shadow-sm);
+  padding: 20px;
+  margin: 20px 0;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.oa-card-header {
+  margin-bottom: 14px;
+}
+
+.oa-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ai-text);
+}
+
+.oa-card-subtitle {
+  font-size: 12.5px;
+  color: var(--ai-text-secondary);
+  margin-top: 2px;
+}
+
+.oa-card-body {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--ai-text);
+}

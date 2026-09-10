@@ -7,22 +7,12 @@ export default defineConfig({
   base: '/',
   cleanUrls: true,
   srcExclude: ['ARCHITECTURE.md'],
+  appearance: 'dark',
 
   head: [
     ['link', { rel: 'icon', href: '/logo.svg', type: 'image/svg+xml' }],
     ['link', { rel: 'alternate icon', href: '/favicon.ico' }],
-    ['meta', { name: 'theme-color', content: '#6366f1' }],
-    ['style', {}, `
-      /* 屏蔽多余的 hr 防止出现双重横线 */
-      .vp-doc hr {
-        display: none !important;
-      }
-      /* 主页全景目录完全去除横线与边框 */
-      .home-toc-wrapper h2 {
-        border-top: none !important;
-        border-bottom: none !important;
-      }
-    `],
+    ['meta', { name: 'theme-color', content: '#111113' }],
   ],
 
   themeConfig: {

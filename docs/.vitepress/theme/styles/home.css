@@ -1,0 +1,242 @@
+/**
+ * Obsidian Arc Home Page & Landing Experience
+ * Dark obsidian showcase styling matching the Obsidian Arc product atmosphere.
+ */
+
+.VPHome {
+  padding-bottom: 96px !important;
+}
+
+/* Hero Section */
+.VPHero {
+  padding-top: 56px !important;
+  padding-bottom: 48px !important;
+}
+
+@media (min-width: 960px) {
+  .VPHero {
+    padding-top: 84px !important;
+    padding-bottom: 64px !important;
+  }
+}
+
+.VPHero .name {
+  font-size: 46px !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.035em !important;
+  line-height: 1.15 !important;
+}
+
+@media (min-width: 640px) {
+  .VPHero .name {
+    font-size: 60px !important;
+  }
+}
+
+.dark .VPHero .name {
+  background: linear-gradient(180deg, #ffffff 40%, #a1a1a6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+:root:not(.dark) .VPHero .name {
+  color: #18181b !important;
+}
+
+.VPHero .text {
+  font-size: 20px !important;
+  font-weight: 500 !important;
+  letter-spacing: -0.015em !important;
+  color: var(--ai-text-secondary) !important;
+  margin-top: 14px !important;
+  line-height: 1.4 !important;
+}
+
+@media (min-width: 640px) {
+  .VPHero .text {
+    font-size: 24px !important;
+  }
+}
+
+.VPHero .tagline {
+  display: inline-block !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.01em !important;
+  padding: 4px 14px !important;
+  border-radius: 999px !important;
+  background-color: var(--ai-surface-container-high) !important;
+  color: var(--ai-text-secondary) !important;
+  border: 1px solid var(--ai-border) !important;
+  margin-top: 18px !important;
+}
+
+/* Action Buttons */
+.VPHero .actions {
+  display: flex !important;
+  gap: 12px !important;
+  margin-top: 32px !important;
+}
+
+.VPButton {
+  border-radius: 999px !important;
+  font-weight: 500 !important;
+  font-size: 13.5px !important;
+  letter-spacing: -0.01em !important;
+  height: 42px !important;
+  line-height: 42px !important;
+  padding: 0 24px !important;
+  border: none !important;
+  transition: all 0.2s cubic-bezier(0.2, 0, 0, 1) !important;
+}
+
+.dark .VPButton.brand {
+  background-color: #ffffff !important;
+  color: #0b0b0d !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 20px rgba(255, 255, 255, 0.16) !important;
+}
+
+.dark .VPButton.brand:hover {
+  background-color: #e4e4e7 !important;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 24px rgba(255, 255, 255, 0.22) !important;
+}
+
+:root:not(.dark) .VPButton.brand {
+  background-color: #18181b !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15) !important;
+}
+
+.dark .VPButton.alt {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  color: #ededef !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.dark .VPButton.alt:hover {
+  background-color: rgba(255, 255, 255, 0.14) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  transform: translateY(-1px);
+}
+
+:root:not(.dark) .VPButton.alt {
+  background-color: #e5e5ea !important;
+  color: #18181b !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Feature Cards */
+.VPFeatures {
+  padding: 32px 0 48px !important;
+}
+
+.VPFeature {
+  border-radius: 18px !important;
+  background-color: var(--ai-surface-container) !important;
+  border: 1px solid var(--ai-border) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  box-shadow: var(--ai-shadow-sm) !important;
+  padding: 24px !important;
+  transition: all 0.25s cubic-bezier(0.2, 0, 0, 1) !important;
+}
+
+.VPFeature:hover {
+  transform: translateY(-3px) !important;
+  border-color: var(--ai-border-hover) !important;
+  box-shadow: var(--ai-shadow-md) !important;
+}
+
+.VPFeature .icon {
+  width: 44px !important;
+  height: 44px !important;
+  border-radius: 12px !important;
+  background-color: var(--ai-surface-container-high) !important;
+  border: 1px solid var(--ai-border) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin-bottom: 18px !important;
+  color: var(--ai-text) !important;
+}
+
+.VPFeature .title {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  color: var(--ai-text) !important;
+  margin-bottom: 8px !important;
+}
+
+.VPFeature .details {
+  font-size: 13.5px !important;
+  line-height: 1.6 !important;
+  color: var(--ai-text-secondary) !important;
+}
+
+/* Home Markdown Content (Below Hero) */
+.VPHome .vp-doc {
+  max-width: 860px !important;
+  margin: 0 auto !important;
+  padding: 32px 24px 0 !important;
+}
+
+/* Terminal card feel on Home page */
+.VPHome .vp-doc div[class*='language-'] {
+  border-radius: 18px !important;
+  border: 1px solid var(--ai-border) !important;
+  background-color: #141416 !important;
+  box-shadow: var(--ai-shadow-md) !important;
+}
+
+/* Home Document Directory: Grid of Tactile Cards */
+.VPHome .vp-doc ul {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)) !important;
+  gap: 12px !important;
+  padding-left: 0 !important;
+  list-style: none !important;
+  margin: 20px 0 !important;
+}
+
+.VPHome .vp-doc li {
+  margin: 0 !important;
+}
+
+.VPHome .vp-doc li a {
+  display: flex !important;
+  align-items: center !important;
+  padding: 14px 18px !important;
+  border-radius: 14px !important;
+  background-color: var(--ai-surface-container) !important;
+  border: 1px solid var(--ai-border) !important;
+  color: var(--ai-text) !important;
+  text-decoration: none !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  transition: all 0.2s cubic-bezier(0.2, 0, 0, 1) !important;
+}
+
+.VPHome .vp-doc li a:hover {
+  background-color: var(--ai-surface-container-high) !important;
+  border-color: var(--ai-border-hover) !important;
+  transform: translateY(-2px) !important;
+  box-shadow: var(--ai-shadow-sm) !important;
+}
+
+.VPHome .vp-doc li a::after {
+  content: '→';
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--ai-text-secondary);
+  transition: transform 0.15s ease, color 0.15s ease;
+}
+
+.VPHome .vp-doc li a:hover::after {
+  color: var(--ai-text);
+  transform: translateX(3px);
+}
