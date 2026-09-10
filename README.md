@@ -127,7 +127,7 @@ One single Go binary with the embedded Vue 3 SPA frontend, one database (SQLite 
 | 冷启动就绪时间 / Cold start | ~28 ms |
 | 常驻空闲内存 / Idle RSS | ~16 MB |
 | 20 并发流式交互峰值 / Peak under 20 concurrency | ~54 MB 内存，11 OS 线程 |
-| 前端网络传输开销 / Wire payload | 进入聊天仅需传输 120 kB（105 kB JS + 15 kB CSS）；中文语言包 (17 kB)、管理后台 (33 kB)、数学公式渲染器 (4 kB) 独立按需加载 |
+| 前端网络传输开销 / Wire payload | 进入聊天仅需传输 126 kB（110 kB JS + 16 kB CSS）；中文语言包 (18 kB)、管理后台 (35 kB)、数学公式渲染器 (4 kB) 独立按需加载 |
 | 空闲后台协程 / Background goroutines | 1（仅运行 10 分钟周期的系统清理协程） |
 | 直接 Go 依赖 / Direct Go dependencies | 3 个（纯 Go SQLite 驱动、pgx、x/crypto） |
 | 前端运行时依赖 / Frontend runtime dependencies | 4 个（Vue、Vue Router、VueUse、Lucide Icons） |

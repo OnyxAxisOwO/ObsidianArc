@@ -16,7 +16,7 @@ import ChatPending from './ChatPending.vue';
 import ChatSidebar from './ChatSidebar.vue';
 import {
   active, addImages, busy, dragging, draft, flash, historyOpen, messages, pending,
-  scrollTick, startNewConversation, status, submit, suggestions, switchTick,
+  scrollTick, showPending, startNewConversation, status, submit, suggestions, switchTick,
 } from './useChat';
 import { isAdmin } from '@/stores/session';
 
@@ -138,7 +138,7 @@ defineExpose({ focus: () => composer.value?.focus() });
         </div>
       </div>
 
-      <ChatPending v-if="busy && pending" :pending="pending" />
+      <ChatPending v-if="showPending && pending" :pending="pending" />
     </OaScrollArea>
 
     <div class="ai-chat-flash" :class="{ visible: !!flash }" role="status" aria-live="polite">

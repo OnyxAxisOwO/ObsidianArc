@@ -194,6 +194,32 @@ describe('the application, mounted', () => {
     expect(host.querySelector('.oa-settings-tabs')).not.toBeNull();
   });
 
+  it('offers every image size as a tile whose silhouette fits its box', async () => {
+    adopt(ACCOUNT);
+    await mountAt('/image-lab');
+
+    expect(host.querySelectorAll('.oa-ratio-tile').length).toBe(8);
+    // The picture a prompt can work from, and nothing staged until one is
+    // chosen — the thumbnail is what says something is.
+    expect(host.querySelector('.oa-reference-pick')).not.toBeNull();
+    expect(host.querySelector('.oa-reference')).toBeNull();
+    // One rule draws all of them from a ratio, which is what lets a preset be
+    // added to the table without drawing another `<svg>` — and what this
+    // guards: a new ratio cannot quietly overflow the 32-unit icon box.
+    for (const rect of Array.from(host.querySelectorAll('.oa-ratio-rect'))) {
+      const x = Number(rect.getAttribute('x'));
+      const y = Number(rect.getAttribute('y'));
+      const width = Number(rect.getAttribute('width'));
+      const height = Number(rect.getAttribute('height'));
+      expect(width).toBeGreaterThan(0);
+      expect(height).toBeGreaterThan(0);
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(x + width).toBeLessThanOrEqual(32);
+      expect(y + height).toBeLessThanOrEqual(32);
+    }
+  });
+
   it('sends a visitor asking for a panel to the sign-in card', async () => {
     await mountAt('/keys');
     expect(router.currentRoute.value.path).toBe('/login');

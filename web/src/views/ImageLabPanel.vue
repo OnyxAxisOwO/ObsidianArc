@@ -5,16 +5,18 @@
 // model, provide a prompt, pick a visual style and aspect ratio, generate images
 // and download the results directly.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { generateImages, type ImageGenerationItem } from '@/api/images';
 import OaFormSection from '@/components/OaFormSection.vue';
+import OaIconButton from '@/components/OaIconButton.vue';
 import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import { t } from '@/composables/useI18n';
+import { ImageError, prepareImage } from '@/chat/image';
 import { loadModels, models } from '@/chat/useModels';
-import { IconDownload } from '@/icons';
+import { IconClose, IconDownload, IconImage } from '@/icons';
 
 const router = useRouter();
 
@@ -28,17 +30,52 @@ const error = ref('');
 const history = ref<ImageGenerationItem[]>([]);
 const zoomedImage = ref<{ url: string; alt?: string } | null>(null);
 
+/**
+ * The picture the prompt works from, downscaled in the browser by the same
+ * code that prepares a chat attachment — a phone photo is four thousand
+ * pixels wide, and the provider gains nothing from the other three thousand.
+ */
+const reference = ref<{ data: string; preview: string } | null>(null);
+const picker = ref<HTMLInputElement | null>(null);
+
+function dropReference(): void {
+  if (!reference.value) return;
+  URL.revokeObjectURL(reference.value.preview);
+  reference.value = null;
+}
+
+async function takeReference(): Promise<void> {
+  const node = picker.value;
+  const file = node?.files?.[0] ?? null;
+  // Cleared straight away so picking the same file twice still fires a change.
+  if (node) node.value = '';
+  if (!file) return;
+
+  try {
+    const prepared = await prepareImage(file);
+    dropReference();
+    reference.value = { data: prepared.data, preview: prepared.previewURL };
+    error.value = '';
+  } catch (err) {
+    error.value = err instanceof ImageError ? err.message : t('imageFailed');
+  }
+}
+
+// A blob: URL is held by the document until it is released, so leaving the
+// panel with a picture in it would leak the whole downscaled image.
+onUnmounted(dropReference);
+
 const imageCapableModels = computed(() =>
   models.value.filter((m) => m.usable !== false && m.supports_image_gen),
 );
 
-const modelOptions = computed(() => {
-  const source = imageCapableModels.value.length ? imageCapableModels.value : models.value.filter((m) => m.usable !== false);
-  return source.map((m) => ({
-    value: m.id,
-    label: m.supports_image_gen ? `${m.display_name} (${t('canImageGen')})` : m.display_name,
-  }));
-});
+// Only models that generate pictures: the endpoint refuses anything else, so
+// offering a chat model here would be offering a choice that can only fail.
+// It is the mirror of the composer's picker, which no longer lists these.
+const modelOptions = computed(() => imageCapableModels.value.map((m) => ({
+  value: m.id,
+  label: m.display_name,
+})));
 
 const styleOptions = computed(() => [
   { value: '', label: t('imageStyleNone') },
@@ -52,11 +89,45 @@ const styleOptions = computed(() => [
   { value: 'oil-painting', label: t('styleOilPainting') },
 ]);
 
-const sizeOptions = computed(() => [
-  { value: '1024x1024', ratio: '1:1', label: t('ratioSquare'), boxClass: 'square' },
-  { value: '1024x1792', ratio: '9:16', label: t('ratioPortrait'), boxClass: 'portrait' },
-  { value: '1792x1024', ratio: '16:9', label: t('ratioLandscape'), boxClass: 'landscape' },
-]);
+// The sizes the two families of image models actually take: 1:1 and the two
+// 3:2 sides are gpt-image-1's, the 16:9 pair is DALL-E 3's, and 4:3 is what
+// several self-hosted models expect. Nothing here is validated server-side —
+// the size is passed through to the provider — so `auto` is the escape hatch
+// for a model whose own list is none of these.
+const SIZES = [
+  { value: '1024x1024', ratio: '1:1', w: 1, h: 1 },
+  { value: '1536x1024', ratio: '3:2', w: 3, h: 2 },
+  { value: '1024x1536', ratio: '2:3', w: 2, h: 3 },
+  { value: '1152x896', ratio: '4:3', w: 4, h: 3 },
+  { value: '896x1152', ratio: '3:4', w: 3, h: 4 },
+  { value: '1792x1024', ratio: '16:9', w: 16, h: 9 },
+  { value: '1024x1792', ratio: '9:16', w: 9, h: 16 },
+  { value: '', ratio: '', w: 1, h: 1 },
+] as const;
+
+/**
+ * The silhouette drawn on a tile, inside the 32-unit icon box.
+ *
+ * Bounded on the long side so a 16:9 fits, and on area so a square does not
+ * tower over the wide ones — one rule for every ratio, which is what lets a
+ * preset be added to the table above without drawing another `<svg>`.
+ */
+function silhouette(w: number, h: number) {
+  const scale = Math.min(26 / Math.max(w, h), Math.sqrt(420 / (w * h)));
+  const width = Math.round(w * scale * 10) / 10;
+  const height = Math.round(h * scale * 10) / 10;
+  return { width, height, x: (32 - width) / 2, y: (32 - height) / 2 };
+}
+
+const sizeOptions = computed(() => SIZES.map((size) => ({
+  value: size.value,
+  // The pixels rather than a word for the shape: with eight presets on screen
+  // "portrait" no longer picks one out, and the dimensions are what a model's
+  // own documentation lists.
+  name: size.ratio || t('ratioAuto'),
+  detail: size.value ? size.value.replace('x', ' \u00d7 ') : t('ratioAutoHint'),
+  box: silhouette(size.w, size.h),
+})));
 
 onMounted(async () => {
   if (!models.value.length) {
@@ -85,6 +156,7 @@ async function generate(): Promise<void> {
       style: selectedStyle.value,
       size: selectedSize.value,
       n: 1,
+      ...(reference.value ? { image: reference.value.data } : {}),
     });
 
     if (res.images && res.images.length) {
@@ -144,38 +216,45 @@ function imageSource(img: ImageGenerationItem): string {
           @click="selectedSize = opt.value"
         >
           <div class="oa-ratio-icon-wrap">
-            <svg
-              v-if="opt.ratio === '1:1'"
-              class="oa-ratio-svg"
-              viewBox="0 0 32 32"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <rect x="5" y="5" width="22" height="22" rx="4" class="oa-ratio-rect" />
-            </svg>
-            <svg
-              v-else-if="opt.ratio === '9:16'"
-              class="oa-ratio-svg"
-              viewBox="0 0 32 32"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <rect x="9" y="3" width="14" height="26" rx="3.5" class="oa-ratio-rect" />
-            </svg>
-            <svg
-              v-else-if="opt.ratio === '16:9'"
-              class="oa-ratio-svg"
-              viewBox="0 0 32 32"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <rect x="3" y="9" width="26" height="14" rx="3.5" class="oa-ratio-rect" />
+            <svg class="oa-ratio-svg" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect
+                class="oa-ratio-rect"
+                :class="{ auto: !opt.value }"
+                :x="opt.box.x"
+                :y="opt.box.y"
+                :width="opt.box.width"
+                :height="opt.box.height"
+                rx="3.5"
+              />
             </svg>
           </div>
-          <span class="oa-ratio-name">{{ opt.ratio }}</span>
-          <span class="oa-ratio-sub">{{ opt.label }}</span>
+          <span class="oa-ratio-name">{{ opt.name }}</span>
+          <span class="oa-ratio-sub">{{ opt.detail }}</span>
         </button>
       </div>
+    </div>
+
+    <div class="oa-field">
+      <label class="oa-field-label">{{ t('referenceImage') }}</label>
+      <div v-if="reference" class="oa-reference">
+        <img class="oa-reference-img" :src="reference.preview" alt="" :draggable="false">
+        <OaIconButton class="oa-reference-remove" :label="t('removeImage')" @click="dropReference">
+          <IconClose :size="12" />
+        </OaIconButton>
+      </div>
+      <button v-else type="button" class="oa-reference-pick" :disabled="busy" @click="picker?.click()">
+        <IconImage :size="15" />
+        <span>{{ t('referenceImageAdd') }}</span>
+      </button>
+      <p class="oa-field-hint">{{ t('referenceImageHint') }}</p>
+      <input
+        ref="picker"
+        class="ai-chat-file"
+        type="file"
+        accept="image/*"
+        hidden
+        @change="takeReference"
+      >
     </div>
 
     <div class="oa-field">

@@ -715,6 +715,16 @@ func TestImagesEndpointResolution(t *testing.T) {
 			t.Errorf("imagesEndpoint(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
+
+	// Working from a picture is a sibling endpoint, so the same four spellings
+	// have to land on it — including the base URL that already names the
+	// generations one, which must be pointed sideways rather than appended to.
+	for _, tc := range cases {
+		want := strings.Replace(tc.want, "/generations", "/edits", 1)
+		if got := imageEditsEndpoint(tc.in); got != want {
+			t.Errorf("imageEditsEndpoint(%q) = %q, want %q", tc.in, got, want)
+		}
+	}
 }
 
 func TestGenerateImageOpenAIAndAnthropic(t *testing.T) {

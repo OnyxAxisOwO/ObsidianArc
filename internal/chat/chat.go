@@ -167,6 +167,8 @@ type Emit func(event string, payload any) error
 var (
 	ErrEmptyTurn = errors.New("chat: nothing to send")
 	ErrNoModel   = errors.New("chat: no model selected")
+	// An image model is not a conversation partner. See Prepare.
+	ErrImageModel = errors.New("chat: image model asked for in a conversation")
 )
 
 // Release undoes what Prepare claimed. Always non-nil, so a caller can
@@ -190,6 +192,19 @@ func (s *Service) Prepare(ctx context.Context, req *TurnRequest) (model.Resolved
 	resolved, err := s.models.Authorize(ctx, req.User.GroupID, req.ModelID, req.User.IsAdmin())
 	if err != nil {
 		return model.Resolved{}, noop, err
+	}
+	// An image model answers in the image lab, never in a conversation.
+	//
+	// A turn used to branch into a picture on this flag, which made the same
+	// model two different products depending on where it was used: the
+	// transcript could only send a bare prompt at a fixed square, while the
+	// lab has the size, the style and now a reference picture. Worse, the
+	// branch was silent — the composer looked like a chat and answered with
+	// an image nobody could steer. Refusing here rather than in the handler
+	// keeps every caller of Prepare on the same rule, and it happens before
+	// the allowance is reserved.
+	if resolved.Model.SupportsImageGen {
+		return model.Resolved{}, noop, ErrImageModel
 	}
 	req.Model = resolved.Model
 
@@ -238,10 +253,6 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 					"error", err, "conversation", prepared.conversationID)
 			}
 		}()
-	}
-
-	if resolved.Model.SupportsImageGen {
-		return s.runImageGen(ctx, req, resolved, prepared, startedAt, requestID, emit)
 	}
 
 	if err := emit(EventStart, StartPayload{
@@ -324,106 +335,6 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 		finish.answer = result.Text
 		finish.reasoning = result.Reasoning
 	}
-	return s.finishOK(saveCtx, finish, emit)
-}
-
-func (s *Service) runImageGen(
-	ctx context.Context,
-	req TurnRequest,
-	resolved model.Resolved,
-	prepared prepared,
-	startedAt time.Time,
-	requestID string,
-	emit Emit,
-) error {
-	if err := emit(EventStart, StartPayload{
-		ConversationID: prepared.conversationID,
-		Title:          prepared.title,
-		UserMessageID:  prepared.userMessageID,
-		ModelID:        resolved.Model.ID,
-		ModelName:      resolved.Model.DisplayName,
-	}); err != nil {
-		return err
-	}
-
-	imageReq := adapter.ImageRequest{
-		Model:          resolved.Upstream.ModelID,
-		Prompt:         req.Content,
-		N:              1,
-		Size:           "1024x1024",
-		ResponseFormat: "b64_json",
-	}
-
-	result, imgErr := s.registry.GenerateImage(ctx, resolved.Provider, imageReq)
-
-	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-	defer cancelSave()
-
-	// Collecting a picture the provider only linked to gets a shorter budget
-	// carved out of the save's, not the whole of it: a URL that accepts the
-	// connection and then goes quiet would otherwise spend all fifteen
-	// seconds on the network, leaving none for the transcript entry and the
-	// ledger row that follow — losing both for a turn that was already paid
-	// for.
-	fetchCtx, cancelFetch := context.WithTimeout(saveCtx, 8*time.Second)
-	defer cancelFetch()
-
-	// The operator's per-file limit applies to what a provider sends back as
-	// much as to what somebody uploads.
-	ceiling := int64(s.settings.Int(settings.AttachmentMaxMB, 6)) * 1024 * 1024
-
-	finish := finished{
-		requestID:  requestID,
-		request:    req,
-		resolved:   resolved,
-		prepared:   prepared,
-		startedAt:  startedAt,
-		firstToken: time.Now(),
-		streamed:   false,
-	}
-
-	if imgErr != nil {
-		return s.finishFailed(saveCtx, ctx, finish, imgErr, emit)
-	}
-
-	var attachmentIDs []string
-	var answer string
-
-	for _, img := range result.Data {
-		if img.RevisedPrompt != "" && answer == "" {
-			answer = img.RevisedPrompt
-		}
-		data, mime, err := generatedImageBytes(fetchCtx, img, ceiling)
-		if err != nil {
-			// One image that cannot be taken delivery of does not spoil the
-			// turn: the others are still worth keeping, and the answer text
-			// has already been paid for.
-			slog.WarnContext(saveCtx, "could not take delivery of a generated image",
-				"error", err, "conversation", prepared.conversationID)
-			continue
-		}
-		att, err := s.conversations.Upload(saveCtx, conversation.UploadInput{
-			UserID:   req.User.ID,
-			Mime:     mime,
-			Data:     data,
-			MaxBytes: ceiling,
-		})
-		if err != nil {
-			slog.ErrorContext(saveCtx, "could not save generated image attachment",
-				"error", err, "conversation", prepared.conversationID)
-			continue
-		}
-		attachmentIDs = append(attachmentIDs, att.ID)
-	}
-
-	if answer == "" {
-		answer = req.Content
-	}
-	finish.answer = answer
-	finish.attachmentIDs = attachmentIDs
-
-	_ = emit(EventDelta, TextPayload{Text: answer})
-
 	return s.finishOK(saveCtx, finish, emit)
 }
 

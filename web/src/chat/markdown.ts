@@ -20,6 +20,8 @@
 //     literal text.
 
 import { t } from '../i18n';
+import { IconCheck, IconCopy, IconDownload, iconElement, type OaIcon } from '../icons';
+import { describeCode, type CodeLanguage } from './code';
 
 // The LaTeX renderer is a fifth of this file's weight and most conversations
 // never contain a formula, so it arrives as a chunk of its own, requested by
@@ -495,31 +497,91 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
-function copyControl(text: string): HTMLButtonElement {
+/** A round icon button for the header above a code block. */
+function codeControl(icon: OaIcon, label: string, onClick: () => void): HTMLButtonElement {
   const control = document.createElement('button');
   control.type = 'button';
-  control.className = 'ai-code-copy';
-  control.textContent = t('copy');
+  control.className = 'ai-code-btn';
+  control.title = label;
+  control.setAttribute('aria-label', label);
+  control.appendChild(iconElement(icon, 15));
+  control.addEventListener('click', onClick);
+  return control;
+}
 
+function copyControl(text: string): HTMLButtonElement {
   // renderInto rebuilds the transcript on every streamed delta, so this button
   // is thrown away and made again constantly. Everything it owns — the
   // listener and the revert timer — is held on the element itself; nothing is
   // registered on document, and a detached button's pending timer only ever
   // writes to the node that is already gone.
   let revert = 0;
-  control.addEventListener('click', () => {
+  const control = codeControl(IconCopy, t('copy'), () => {
     void copyToClipboard(text).then((copied) => {
       if (!copied) return;
-      control.textContent = t('copied');
+      // The glyph is the whole message now that the control is an icon: a
+      // tick where the two sheets were says it landed without the header
+      // changing width mid-read.
+      control.replaceChildren(iconElement(IconCheck, 15));
       control.classList.add('copied');
+      control.title = t('copied');
       window.clearTimeout(revert);
       revert = window.setTimeout(() => {
-        control.textContent = t('copy');
+        control.replaceChildren(iconElement(IconCopy, 15));
         control.classList.remove('copied');
+        control.title = t('copy');
       }, COPIED_SHOWN_MS);
     });
   });
   return control;
+}
+
+/**
+ * Hands the reader the block as a file, built in their own browser.
+ *
+ * A blob and an object URL rather than a round trip: the text is already on
+ * screen, so asking the server to send it back would be a request that can
+ * only fail. The URL is released on the next task — revoking it in the same
+ * one races the download the click just started.
+ */
+function saveText(name: string, text: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  // Attached because a link that is not in the document does not reliably
+  // receive a synthetic click in every engine.
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/**
+ * The bar over a fenced block: what it is written in, and the two things a
+ * reader wants to do with it.
+ *
+ * The language is the fence's own tag when the model wrote one and a guess
+ * from the source when it did not, which is most of the time — see
+ * `chat/code.ts`.
+ */
+function codeHead(language: CodeLanguage, text: string): HTMLDivElement {
+  const head = document.createElement('div');
+  head.className = 'ai-code-head';
+
+  const name = document.createElement('span');
+  name.className = 'ai-code-lang';
+  name.textContent = language.label;
+  head.appendChild(name);
+
+  const actions = document.createElement('span');
+  actions.className = 'ai-code-actions';
+  actions.appendChild(codeControl(IconDownload, t('download'), () => {
+    saveText(`snippet.${language.extension}`, text);
+  }));
+  actions.appendChild(copyControl(text));
+  head.appendChild(actions);
+  return head;
 }
 
 function renderBlock(block: Block): Node {
@@ -543,17 +605,21 @@ function renderBlock(block: Block): Node {
       const pre = document.createElement('pre');
       const code = document.createElement('code');
       code.textContent = block.text;
-      const lang = SAFE_LANG_RE.test(block.lang) ? block.lang.toLowerCase() : '';
-      if (lang) code.className = `language-${lang}`;
+      const tag = SAFE_LANG_RE.test(block.lang) ? block.lang.toLowerCase() : '';
+      const language = describeCode(tag, block.text);
+      // The class still carries the fence's own tag rather than a guess: it is
+      // what a highlighter would key off, and naming a language the author
+      // never claimed is a stronger statement than a label on a header.
+      if (tag) code.className = `language-${tag}`;
       pre.appendChild(code);
 
-      // The wrapper anchors the copy button, not the <pre>: the <pre> scrolls
-      // horizontally, and a control positioned inside it would slide away with
-      // the long line the reader scrolled to see.
+      // The wrapper holds the header as well as the <pre>: the <pre> scrolls
+      // horizontally, and controls inside it would slide away with the long
+      // line the reader scrolled to see.
       const wrap = document.createElement('div');
       wrap.className = 'ai-code';
+      wrap.appendChild(codeHead(language, block.text));
       wrap.appendChild(pre);
-      wrap.appendChild(copyControl(block.text));
       return wrap;
     }
 

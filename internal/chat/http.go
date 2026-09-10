@@ -198,6 +198,8 @@ func translatePrepareError(err error) error {
 	switch {
 	case errors.Is(err, ErrNoModel):
 		return httpx.BadRequest("Choose a model first.")
+	case errors.Is(err, ErrImageModel):
+		return httpx.BadRequest("That model only generates images. Open the image lab to use it.")
 	case errors.Is(err, conversation.ErrNotFound):
 		return httpx.NotFound("No such conversation.")
 	case errors.Is(err, conversation.ErrMessageNotFound):
@@ -509,6 +511,9 @@ type imageGenRequest struct {
 	Style   string `json:"style"`
 	Quality string `json:"quality"`
 	N       int    `json:"n"`
+	// A picture to work from, base64 as the attachment endpoint takes it.
+	// Present turns the call into an edit rather than a generation.
+	Image string `json:"image"`
 }
 
 type imageGenItem struct {
@@ -571,9 +576,9 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return translatePrepareError(err)
 	}
-	// The turn path picks the image branch off this same flag, so a model
-	// without it reaching here means somebody asked for the endpoint
-	// directly with a chat model's id.
+	// The mirror of the turn path's refusal: a conversation will not take an
+	// image model, and this endpoint will not take a chat model. Between them
+	// every model has exactly one place it answers from.
 	if !resolved.Model.SupportsImageGen {
 		return httpx.BadRequest("That model does not generate images.")
 	}
@@ -603,6 +608,16 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		n = MaxImagesPerRequest
 	}
 
+	// The operator's per-file limit. It bounds a picture sent up to be worked
+	// from as well as the ones that come back, which is why it is read before
+	// the call rather than beside the writes that follow it.
+	ceiling := int64(conversation.MaxAttachmentBytes)
+	if h.MaxUploadBytes != nil {
+		if configured := h.MaxUploadBytes(); configured > 0 {
+			ceiling = configured
+		}
+	}
+
 	startedAt := time.Now()
 	requestID := id.New()
 
@@ -614,6 +629,24 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		Quality:        body.Quality,
 		N:              n,
 		ResponseFormat: "b64_json",
+	}
+	if body.Image != "" {
+		// Sniffed and bounded exactly like a picture that arrived from a
+		// provider: what the browser calls a file has no more standing than
+		// what an upstream says it sent.
+		data, err := base64.StdEncoding.DecodeString(body.Image)
+		if err != nil {
+			return httpx.BadRequest("The reference image could not be read.")
+		}
+		checked, mime, err := checkImage(data, ceiling)
+		if err != nil {
+			if errors.Is(err, errImageSize) {
+				return httpx.BadRequest("The reference image is larger than this instance allows.")
+			}
+			return httpx.BadRequest("The reference image is not an image this instance accepts.")
+		}
+		imgReq.Image = checked
+		imgReq.ImageMime = mime
 	}
 
 	result, genErr := h.service.GenerateImage(r.Context(), resolved, imgReq)
@@ -631,16 +664,6 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	// ledger row for a turn that was already paid for.
 	fetchCtx, cancelFetch := context.WithTimeout(saveCtx, 8*time.Second)
 	defer cancelFetch()
-
-	// The operator's per-file limit applies to what a provider sends back as
-	// much as to what a person uploads; the endpoint used to hold generated
-	// images to the package default instead.
-	ceiling := int64(conversation.MaxAttachmentBytes)
-	if h.MaxUploadBytes != nil {
-		if configured := h.MaxUploadBytes(); configured > 0 {
-			ceiling = configured
-		}
-	}
 
 	if genErr != nil {
 		// The same distinction the turn path draws in finishFailed: somebody

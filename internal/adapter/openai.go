@@ -6,7 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"strconv"
 	"strings"
 )
 
@@ -609,29 +613,43 @@ func (openAIAdapter) ListModels(ctx context.Context, client *http.Client, p Prov
 
 func (openAIAdapter) GenerateImage(ctx context.Context, client *http.Client, p Provider, req ImageRequest) (ImageResult, error) {
 	endpoint := imagesEndpoint(p.BaseURL)
-	body := map[string]any{
-		"model":  req.Model,
-		"prompt": req.Prompt,
-	}
-	if req.Size != "" {
-		body["size"] = req.Size
-	}
-	if req.Style != "" {
-		body["style"] = req.Style
-	}
-	if req.Quality != "" {
-		body["quality"] = req.Quality
-	}
-	if req.N > 0 {
-		body["n"] = req.N
-	}
-	if req.ResponseFormat != "" {
-		body["response_format"] = req.ResponseFormat
-	} else {
-		body["response_format"] = "b64_json"
-	}
 
-	response, err := postJSON(ctx, client, p, endpoint, body)
+	var (
+		response *http.Response
+		err      error
+	)
+
+	if len(req.Image) > 0 {
+		endpoint = imageEditsEndpoint(p.BaseURL)
+		contentType, encoded, buildErr := imageEditForm(req)
+		if buildErr != nil {
+			return ImageResult{}, buildErr
+		}
+		response, err = post(ctx, client, p, endpoint, contentType, encoded)
+	} else {
+		body := map[string]any{
+			"model":  req.Model,
+			"prompt": req.Prompt,
+		}
+		if req.Size != "" {
+			body["size"] = req.Size
+		}
+		if req.Style != "" {
+			body["style"] = req.Style
+		}
+		if req.Quality != "" {
+			body["quality"] = req.Quality
+		}
+		if req.N > 0 {
+			body["n"] = req.N
+		}
+		if req.ResponseFormat != "" {
+			body["response_format"] = req.ResponseFormat
+		} else {
+			body["response_format"] = "b64_json"
+		}
+		response, err = postJSON(ctx, client, p, endpoint, body)
+	}
 	if err != nil {
 		return ImageResult{}, err
 	}
@@ -669,6 +687,74 @@ func (openAIAdapter) GenerateImage(ctx context.Context, client *http.Client, p P
 		})
 	}
 	return out, nil
+}
+
+// imageEditForm encodes an edit request the way that endpoint takes it:
+// multipart, with the picture as a file part.
+//
+// Deliberately without `response_format`: the current image models reject the
+// parameter on this endpoint and answer with bytes anyway, and the older ones
+// that do accept it default to a link — which the caller takes delivery of in
+// either case. Sending it would fail the request that needs it least.
+func imageEditForm(req ImageRequest) (string, []byte, error) {
+	var buffer bytes.Buffer
+	form := multipart.NewWriter(&buffer)
+
+	fields := [][2]string{
+		{"model", req.Model},
+		{"prompt", req.Prompt},
+		{"size", req.Size},
+		{"quality", req.Quality},
+	}
+	if req.N > 0 {
+		fields = append(fields, [2]string{"n", strconv.Itoa(req.N)})
+	}
+	for _, field := range fields {
+		if field[1] == "" {
+			continue
+		}
+		if err := form.WriteField(field[0], field[1]); err != nil {
+			return "", nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
+		}
+	}
+
+	mime := req.ImageMime
+	if mime == "" {
+		mime = "image/png"
+	}
+	headers := make(textproto.MIMEHeader)
+	headers.Set("Content-Disposition",
+		fmt.Sprintf(`form-data; name="image"; filename="image%s"`, imageExtension(mime)))
+	// The part's own type, rather than the octet-stream a plain file part
+	// would carry: providers that sniff the upload by media type refuse the
+	// generic one outright.
+	headers.Set("Content-Type", mime)
+	part, err := form.CreatePart(headers)
+	if err != nil {
+		return "", nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
+	}
+	if _, err := part.Write(req.Image); err != nil {
+		return "", nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
+	}
+	if err := form.Close(); err != nil {
+		return "", nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
+	}
+	return form.FormDataContentType(), buffer.Bytes(), nil
+}
+
+// The filename is not decoration: some providers read the extension rather
+// than the part's media type to decide what was uploaded.
+func imageExtension(mime string) string {
+	switch mime {
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ".png"
+	}
 }
 
 func (anthropicAdapter) ListModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteModel, error) {

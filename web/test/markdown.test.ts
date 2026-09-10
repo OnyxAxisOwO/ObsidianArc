@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { safeHref, parse, parseInline, render, renderInto } from '../src/chat/markdown';
 
 /** Polls until a condition holds, or gives up loudly rather than silently. */
@@ -151,35 +151,80 @@ describe('markdown renderer', () => {
   });
 
   describe('code blocks', () => {
-    it('wraps a fenced block so the copy control has somewhere to sit', () => {
+    it('wraps a fenced block under a header that names it and acts on it', () => {
       const host = document.createElement('div');
       renderInto(host, '```js\nconst a = 1;\n```');
 
       const wrap = host.querySelector('.ai-code');
       expect(wrap).not.toBeNull();
-      // The wrapper, not the <pre>: the <pre> scrolls sideways, and a control
-      // positioned inside it would ride away with a long line.
+      // The header sits in the wrapper, not over the <pre>: the <pre> scrolls
+      // sideways, and a control inside it would ride away with a long line.
       expect(wrap?.querySelector('pre > code')?.textContent).toBe('const a = 1;');
       expect(wrap?.querySelector('code')?.className).toBe('language-js');
+      expect(wrap?.querySelector('.ai-code-lang')?.textContent).toBe('JavaScript');
 
-      const button = wrap?.querySelector('button.ai-code-copy');
-      expect(button).not.toBeNull();
-      expect(button?.getAttribute('type')).toBe('button');
+      const buttons = wrap?.querySelectorAll('.ai-code-actions button.ai-code-btn');
+      expect(buttons?.length).toBe(2);
+      expect(buttons?.[0]?.getAttribute('type')).toBe('button');
+      // Icon-only, so the name a screen reader reads has to be on the button.
+      expect(buttons?.[0]?.getAttribute('aria-label')).toBeTruthy();
+      expect(buttons?.[0]?.querySelector('svg')).not.toBeNull();
+    });
+
+    it('names an untagged block from its source, which is how most arrive', () => {
+      const host = document.createElement('div');
+      renderInto(host, '```\npackage main\n\nfunc main() {}\n```');
+
+      expect(host.querySelector('.ai-code-lang')?.textContent).toBe('Go');
+      // The class still carries only what the author tagged: a guess is worth
+      // a label, not a claim about what the block is.
+      expect(host.querySelector('pre > code')?.className).toBe('');
+    });
+
+    it('builds the file in the browser rather than asking the server for it', () => {
+      const created: string[] = [];
+      const saved: Array<{ name: string; href: string }> = [];
+      const url = URL as unknown as Record<string, unknown>;
+      const previous = { create: url.createObjectURL, revoke: url.revokeObjectURL };
+      url.createObjectURL = () => {
+        created.push('blob');
+        return 'blob:snippet';
+      };
+      url.revokeObjectURL = () => {};
+      const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+        this: HTMLAnchorElement,
+      ) {
+        saved.push({ name: this.download, href: this.href });
+      });
+
+      try {
+        const host = document.createElement('div');
+        renderInto(host, '```ts\nexport const a: number = 1;\n```');
+        const download = host.querySelectorAll('button.ai-code-btn')[0] as HTMLButtonElement;
+        download.click();
+
+        expect(created.length).toBe(1);
+        expect(saved).toEqual([{ name: 'snippet.ts', href: 'blob:snippet' }]);
+      } finally {
+        click.mockRestore();
+        url.createObjectURL = previous.create;
+        url.revokeObjectURL = previous.revoke;
+      }
     });
 
     it('leaves inline code alone, which has nothing worth a control', () => {
       const host = document.createElement('div');
       renderInto(host, 'a `const a = 1;` b');
       expect(host.querySelector('.ai-code')).toBeNull();
-      expect(host.querySelector('button.ai-code-copy')).toBeNull();
+      expect(host.querySelector('button.ai-code-btn')).toBeNull();
       expect(host.querySelector('code')?.textContent).toBe('const a = 1;');
     });
 
-    it('re-renders without leaving a second control behind', () => {
+    it('re-renders without leaving a second set of controls behind', () => {
       const host = document.createElement('div');
       renderInto(host, '```\nfirst\n```');
       renderInto(host, '```\nsecond\n```');
-      expect(host.querySelectorAll('button.ai-code-copy').length).toBe(1);
+      expect(host.querySelectorAll('button.ai-code-btn').length).toBe(2);
       expect(host.querySelector('pre > code')?.textContent).toBe('second');
     });
   });

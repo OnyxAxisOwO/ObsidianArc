@@ -217,7 +217,7 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 17.7 MB (14.0 MB `-tags nosqlite`) |
-| Frontend, on the wire | < 130 kB | 119.6 kB to open the chat (104.5 JS + 15.1 CSS) |
+| Frontend, on the wire | < 130 kB | 126.4 kB to open the chat (110.3 JS + 16.2 CSS) |
 | Background goroutines at idle | 1 | 1 |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
@@ -234,10 +234,10 @@ What each reader actually downloads:
 
 | | gzipped |
 | --- | --- |
-| English, not an administrator | 119.6 kB |
-| Chinese, not an administrator | 137.3 kB |
-| …and a conversation containing a formula | 141.0 kB |
-| Chinese administrator, backoffice open | 170.9 kB |
+| English, not an administrator | 126.4 kB |
+| Chinese, not an administrator | 144.6 kB |
+| …and a conversation containing a formula | 148.3 kB |
+| Chinese administrator, backoffice open | 179.5 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice: /settings, /keys, /usage and

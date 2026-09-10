@@ -84,6 +84,11 @@ export const justSentID = ref('');
 export const historyOpen = ref(false);
 export const flash = ref('');
 export const pending = ref<Pending | null>(null);
+/**
+ * The conversation the streaming turn belongs to, so the rail can mark the
+ * row that is still writing while the reader is somewhere else.
+ */
+export const pendingID = ref('');
 export const attachments = ref<ComposerAttachment[]>([]);
 export const draft = ref('');
 /** True while files are being dragged over the transcript. */
@@ -157,9 +162,23 @@ export function settleDeltas() {
 export const scrollTick = ref(0);
 export const switchTick = ref(0);
 
+/**
+ * Which view the streamed block belongs to.
+ *
+ * Switching conversations does not wait for a turn any more, so the pending
+ * block has to know whether the screen under it is still the one the turn was
+ * sent from. The id alone cannot answer that: a turn is unnamed until the
+ * server names it, and "new chat" is a different screen carrying the same
+ * empty id. `switchTick` counts explicit switches, so comparing tokens
+ * distinguishes them.
+ */
+const pendingView = ref(-1);
+
 export const active = computed(() => conversations.value.find((entry) => entry.id === activeID.value) ?? null);
 export const isEmpty = computed(() => messages.value.length === 0 && !busy.value);
 export const stoppable = computed(() => busy.value && controller !== null);
+/** The streamed block is rendered by the conversation it is being written into. */
+export const showPending = computed(() => busy.value && pending.value !== null && pendingView.value === switchTick.value);
 
 /**
  * Read live rather than captured: the settings panel can flip the preference
@@ -188,6 +207,11 @@ export const status = computed(() => {
     modelUnstable: !!model?.unstable,
   };
 });
+
+/** Whether the screen still shows the conversation the running turn is in. */
+function watching(): boolean {
+  return pendingView.value === switchTick.value;
+}
 
 function setFlash(text: string): void {
   flash.value = text;
@@ -321,6 +345,11 @@ export async function runTurn(turn: TurnOptions): Promise<void> {
   busy.value = true;
   editingID.value = '';
   pending.value = { answer: '', reasoning: '', startedAt: Date.now() };
+  // The turn belongs to the screen it was sent from, and to the conversation
+  // that screen is showing — which may still be unnamed for one more moment.
+  pendingView.value = switchTick.value;
+  pendingID.value = activeID.value;
+  let turnID = activeID.value;
   setFlash('');
   scrollToEnd();
   justSentID.value = '';
@@ -343,18 +372,29 @@ export async function runTurn(turn: TurnOptions): Promise<void> {
       },
       {
         onStart: (payload) => {
-          if (!activeID.value) activeID.value = payload.conversation_id;
+          turnID = payload.conversation_id;
+          pendingID.value = turnID;
+          // Adopting the new id is how the first message of a conversation
+          // lands in it — but only if the reader is still on the screen that
+          // sent it. Having wandered off, being pulled back is not a fix.
+          if (!activeID.value && watching()) activeID.value = turnID;
           upsertConversationStub(payload.conversation_id, payload.title);
         },
         onDelta: (text) => bufferDelta(text),
         onReasoning: (text) => bufferDelta('', text),
         onDone: (payload) => {
+          // A notice about this turn is only readable where the turn is. Said
+          // over a conversation the reader switched to, it would be about
+          // something they cannot see.
+          if (!watching()) return;
           if (payload.stream_fallback) setFlash(t('streamFallback', { reason: payload.stream_fallback }));
           else if (payload.stopped) setFlash(t('stopped'));
         },
         onError: (payload) => {
           failed = true;
-          setFlash(payload.message);
+          // Not lost when the reader is elsewhere: the server writes an error
+          // row, so opening the conversation shows what went wrong.
+          if (watching()) setFlash(payload.message);
         },
       },
       controller.signal,
@@ -362,20 +402,25 @@ export async function runTurn(turn: TurnOptions): Promise<void> {
   } catch (error) {
     if (!controller.signal.aborted) {
       failed = true;
-      setFlash(error instanceof ApiError ? error.message : String(error));
+      if (watching()) setFlash(error instanceof ApiError ? error.message : String(error));
     }
   } finally {
     settleDeltas();
     busy.value = false;
     pending.value = null;
+    pendingID.value = '';
     controller = null;
   }
 
   // The server owns the transcript, so the authoritative version is read back
   // rather than reconstructed from what streamed. It also fills in the message
-  // ids, the stats and — when a turn failed — the error row.
-  await reloadActive();
-  scrollToEnd();
+  // ids, the stats and — when a turn failed — the error row. Only when that
+  // conversation is what is on screen: the reader may have moved on, and their
+  // transcript is not this turn's to overwrite.
+  if (activeID.value === turnID) {
+    await reloadActive();
+    scrollToEnd();
+  }
   if (!failed) setFlash(flash.value);
   void refreshList();
 }
@@ -433,23 +478,33 @@ export async function refreshList(): Promise<void> {
 }
 
 async function reloadActive(): Promise<void> {
-  if (!activeID.value) {
+  const id = activeID.value;
+  if (!id) {
     messages.value = [];
     return;
   }
   try {
-    const { messages: list } = await getConversation(activeID.value);
+    const { messages: list } = await getConversation(id);
+    // Switching no longer waits for a turn, so a reload can land after the
+    // reader has moved on. Rows belong to the conversation they were read
+    // from, never to whatever happens to be on screen when they arrive.
+    if (activeID.value !== id) return;
     messages.value = list;
   } catch (error) {
-    if (error instanceof ApiError && error.status === 404) {
+    if (error instanceof ApiError && error.status === 404 && activeID.value === id) {
       activeID.value = '';
       messages.value = [];
     }
   }
 }
 
+/**
+ * Reading is not blocked by writing: a turn keeps streaming into its own
+ * conversation while the reader goes through another one. There is still only
+ * one turn at a time — the composer stays busy until it ends — but waiting for
+ * an answer is no longer waiting to look at anything else.
+ */
 export async function openConversation(id: string): Promise<void> {
-  if (busy.value) return;
   activeID.value = id;
   editingID.value = '';
   historyOpen.value = false;
@@ -457,16 +512,21 @@ export async function openConversation(id: string): Promise<void> {
   // A short rise says "a different conversation" instead of leaving the
   // transcript to flicker into something else within one frame.
   switchTick.value += 1;
+  // Coming back to the conversation that is still writing re-attaches the
+  // streamed block: it is the same turn, on screen again.
+  if (id && id === pendingID.value) pendingView.value = switchTick.value;
   await reloadActive();
   scrollToEnd();
 }
 
 export function startNewConversation(): void {
-  if (busy.value) return;
   activeID.value = '';
   messages.value = [];
   editingID.value = '';
   historyOpen.value = false;
+  // A running turn already holds its own copy of what it sent, so this drops
+  // only what is still staged in the composer — and nothing can be staged
+  // while a turn is running.
   clearAttachments();
   switchTick.value += 1;
 }
@@ -524,6 +584,7 @@ export function resetChat(): void {
   draft.value = '';
   flash.value = '';
   pending.value = null;
+  pendingID.value = '';
   busy.value = false;
   suggestions.value = pickSuggestions(SUGGESTIONS_SHOWN);
 }

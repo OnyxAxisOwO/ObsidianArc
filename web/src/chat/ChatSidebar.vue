@@ -8,7 +8,7 @@ import { usePanelHost } from '@/composables/usePanelHost';
 import { IconCheck, IconPlus, IconTrash } from '@/icons';
 import {
   activeID, canDelete, clearEverything, conversations, openConversation,
-  removeConversation, rename, startNewConversation,
+  pendingID, removeConversation, rename, startNewConversation,
 } from './useChat';
 
 // The rail's width drives its own collapsed margin as well as its size, so
@@ -55,6 +55,13 @@ watch(activeID, () => {
         >
           <span class="ai-chat-list-title">{{ conversation.title || t('newChat') }}</span>
         </button>
+        <!-- The row that is still being written into, so a composer that is
+             busy while the reader is somewhere else has a visible reason. -->
+        <span
+          v-if="conversation.id === pendingID"
+          class="ai-chat-list-live"
+          :title="t('thinking')"
+        ><span class="ai-chat-spinner" /></span>
         <OaConfirmButton
           v-if="canDelete"
           class="ai-chat-list-delete"

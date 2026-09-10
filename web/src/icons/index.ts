@@ -22,7 +22,7 @@
 // defaults to 16 and marks every icon aria-hidden, because an icon here is
 // never the accessible name of anything — the control around it carries that.
 
-import { h, type FunctionalComponent } from 'vue';
+import { h, render, type FunctionalComponent } from 'vue';
 import { Check as LucideCheck, ChevronDown as LucideChevronDown, Download as LucideDownload, createLucideIcon } from 'lucide-vue-next';
 
 /** One [tag, attributes] pair, as lucide's factory takes them. */
@@ -146,3 +146,38 @@ export const IconSpark = draw('Sparkles', [
   'M12 3v4', 'M12 17v4', 'M3 12h4', 'M17 12h4',
   'M5.6 5.6l2.8 2.8', 'M15.6 15.6l2.8 2.8', 'M18.4 5.6l-2.8 2.8', 'M8.4 15.6l-2.8 2.8',
 ]);
+
+/**
+ * One icon as a detached DOM node, for the code that builds DOM by hand.
+ *
+ * `chat/markdown.ts` assembles the transcript with `document.createElement`
+ * rather than a template — that is what keeps the one `innerHTML` in this
+ * project down to `lib/safe-intro.ts` — so it cannot mount a component. The
+ * alternative was to copy each glyph's path data into it, which would be the
+ * same drawing in two files, drifting the first time one of them changed.
+ *
+ * Vue renders the component once per size and the node is cached; callers get
+ * a clone, because the renderer builds a fresh subtree on every streamed
+ * delta and each one needs its own.
+ */
+const glyphs = new Map<OaIcon, Map<number, SVGElement>>();
+
+export function iconElement(icon: OaIcon, size = 16): SVGElement {
+  let bySize = glyphs.get(icon);
+  if (!bySize) {
+    bySize = new Map();
+    glyphs.set(icon, bySize);
+  }
+  let cached = bySize.get(size);
+  if (!cached) {
+    const host = document.createElement('div');
+    render(h(icon, { size }), host);
+    cached = host.firstElementChild as SVGElement;
+    // Kept out of the cache and out of the document: the copy is what is
+    // stored, so unmounting cannot take the cached node away with it.
+    cached = cached.cloneNode(true) as SVGElement;
+    render(null, host);
+    bySize.set(size, cached);
+  }
+  return cached.cloneNode(true) as SVGElement;
+}

@@ -1,8 +1,12 @@
 package chat
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,10 +68,55 @@ func (l *imageLab) generate(t *testing.T, body string) *httptest.ResponseRecorde
 	return recorder
 }
 
+func (l *imageLab) turn(t *testing.T, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request = request.WithContext(auth.WithUser(request.Context(), l.fixture.account))
+	recorder := httptest.NewRecorder()
+	l.mux.ServeHTTP(recorder, request)
+	return recorder
+}
+
 func (l *imageLab) ledger() []TurnRecord {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]TurnRecord{}, l.records...)
+}
+
+// The lab is the only place an image model answers from.
+//
+// A turn used to branch into a picture on the same capability flag, which
+// made one model two products depending on where it was used — and the
+// transcript's half could only send a bare prompt at a fixed square. The
+// refusal happens in Prepare, before the allowance is reserved and before
+// anything is written, so the conversation the composer would have opened
+// does not exist afterwards.
+func TestAConversationRefusesAnImageModel(t *testing.T) {
+	lab := newImageLab(t, 3)
+	// A provider reply is queued so that a turn which wrongly reached the
+	// upstream would succeed rather than fail for some unrelated reason.
+	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
+
+	recorder := lab.turn(t, `{"model_id":"`+lab.painter.ID+`","content":"a sunset"}`)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "image lab") {
+		t.Errorf("the refusal does not say where the model can be used: %s", recorder.Body.String())
+	}
+
+	conversations, err := lab.fixture.conversations.List(context.Background(), lab.fixture.account.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conversations) != 0 {
+		t.Errorf("a refused turn left %d conversations behind, want 0", len(conversations))
+	}
+	if records := lab.ledger(); len(records) != 0 {
+		t.Errorf("a refused turn left %d ledger rows behind, want 0", len(records))
+	}
 }
 
 // Generating a picture reserved an allowance, released it and settled
@@ -114,6 +163,77 @@ func TestGeneratingAnImageIsChargedAndRecorded(t *testing.T) {
 
 // The count is on the wire, and the allowance was reserved once however many
 // pictures were asked for.
+// A picture to work from turns the call into an edit: a different endpoint,
+// a multipart body, and the file carrying its own media type rather than the
+// octet-stream a plain form file would have — which is what providers that
+// sniff the upload refuse.
+func TestGeneratingAnImageFromAReferencePictureUploadsIt(t *testing.T) {
+	lab := newImageLab(t, 1)
+	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
+
+	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+
+		`","prompt":"make it night","image":"`+generatedPNG+`"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	call := lab.fixture.upstream.lastCall()
+	if !strings.HasSuffix(call.path, "/images/edits") {
+		t.Errorf("path = %q, want the edits endpoint", call.path)
+	}
+	if !strings.HasPrefix(call.contentType, "multipart/form-data") {
+		t.Errorf("content type = %q, want multipart", call.contentType)
+	}
+
+	form := readMultipart(t, call)
+	if form.Value["prompt"] == nil || form.Value["prompt"][0] != "make it night" {
+		t.Errorf("the prompt did not travel with the picture: %v", form.Value)
+	}
+	files := form.File["image"]
+	if len(files) != 1 {
+		t.Fatalf("image parts = %d, want 1", len(files))
+	}
+	if got := files[0].Header.Get("Content-Type"); got != "image/png" {
+		t.Errorf("the uploaded part is typed %q, want image/png", got)
+	}
+	if files[0].Filename != "image.png" {
+		t.Errorf("filename = %q, want image.png — some providers read the extension", files[0].Filename)
+	}
+}
+
+// The reference picture is sniffed rather than believed, the same way one
+// arriving from a provider is: an upload endpoint that stores what it is told
+// something is, is a way to store anything at all.
+func TestAReferencePictureThatIsNotAnImageIsRefused(t *testing.T) {
+	lab := newImageLab(t, 1)
+	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
+
+	notAnImage := base64.StdEncoding.EncodeToString([]byte("<html>an error page</html>"))
+	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+
+		`","prompt":"make it night","image":"`+notAnImage+`"}`)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+	if call := lab.fixture.upstream.lastCall(); call.path != "" {
+		t.Errorf("the provider was called anyway, at %q", call.path)
+	}
+}
+
+func readMultipart(t *testing.T, call upstreamCall) *multipart.Form {
+	t.Helper()
+	_, params, err := mime.ParseMediaType(call.contentType)
+	if err != nil {
+		t.Fatalf("content type %q: %v", call.contentType, err)
+	}
+	form, err := multipart.NewReader(bytes.NewReader(call.body), params["boundary"]).ReadForm(1 << 20)
+	if err != nil {
+		t.Fatalf("read multipart: %v", err)
+	}
+	t.Cleanup(func() { _ = form.RemoveAll() })
+	return form
+}
+
 func TestGeneratingImagesBoundsTheCount(t *testing.T) {
 	lab := newImageLab(t, 0)
 	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)

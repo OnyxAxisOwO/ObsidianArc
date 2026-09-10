@@ -97,20 +97,32 @@ func modelsEndpoint(kind Kind, base string) string {
 }
 
 func imagesEndpoint(base string) string {
+	return imagesAction(base, "generations")
+}
+
+// imageEditsEndpoint is where a picture is sent to be worked from, which is a
+// sibling of the generations endpoint rather than a parameter on it.
+func imageEditsEndpoint(base string) string {
+	return imagesAction(base, "edits")
+}
+
+func imagesAction(base, action string) string {
 	trimmed := strings.TrimRight(base, "/")
 	if strings.HasSuffix(trimmed, "/chat/completions") {
 		trimmed = strings.TrimSuffix(trimmed, "/chat/completions")
 	}
+	// A base URL that already names one action is pointed at the sibling
+	// rather than having a second path appended to it.
 	if strings.HasSuffix(trimmed, "/images/generations") {
-		return trimmed
+		return strings.TrimSuffix(trimmed, "generations") + action
 	}
 	if strings.HasSuffix(trimmed, "/v1") {
-		return trimmed + "/images/generations"
+		return trimmed + "/images/" + action
 	}
 	if !strings.Contains(trimmed, "/v1") {
-		return trimmed + "/v1/images/generations"
+		return trimmed + "/v1/images/" + action
 	}
-	return trimmed + "/images/generations"
+	return trimmed + "/images/" + action
 }
 
 func applyHeaders(req *http.Request, p Provider) {
@@ -141,7 +153,15 @@ func postJSON(ctx context.Context, client *http.Client, p Provider, endpoint str
 	if err != nil {
 		return nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
 	}
+	return post(ctx, client, p, endpoint, "application/json", encoded)
+}
 
+// post sends an already-encoded body. postJSON is this with the encoding in
+// front of it; the image edits endpoint takes multipart, which is the only
+// reason the two are separate.
+func post(
+	ctx context.Context, client *http.Client, p Provider, endpoint, contentType string, encoded []byte,
+) (*http.Response, error) {
 	send, timedOut, done := providerDeadline(ctx, p)
 
 	req, err := http.NewRequestWithContext(send, http.MethodPost, endpoint, bytes.NewReader(encoded))
@@ -149,7 +169,7 @@ func postJSON(ctx context.Context, client *http.Client, p Provider, endpoint str
 		done(nil, err)
 		return nil, &Error{Kind: ErrorInvalidRequest, Message: "Invalid provider endpoint.", cause: err}
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	applyHeaders(req, p)
 
 	response, err := client.Do(req)

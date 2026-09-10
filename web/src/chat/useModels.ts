@@ -114,8 +114,18 @@ export const models = ref<AvailableModel[]>([]);
 export const selectedID = ref('');
 export const reasoning = ref<ReasoningState>({ enabled: false, effort: 'medium' });
 
+/**
+ * The models a conversation can be held with.
+ *
+ * An image model answers in the image lab and nowhere else — the server
+ * refuses a turn asked of one — so offering it in the composer's picker would
+ * be offering a choice that can only fail. The lab reads `models` itself,
+ * which is why the filter lives here rather than in the fetch.
+ */
+export const chatModels = computed(() => models.value.filter((model) => !model.supports_image_gen));
+
 export const currentModel = computed<AvailableModel | null>(
-  () => models.value.find((model) => model.id === selectedID.value) ?? null,
+  () => chatModels.value.find((model) => model.id === selectedID.value) ?? null,
 );
 
 /** Reads the account's remembered choices. Called once, before the fetch. */
@@ -135,7 +145,7 @@ export function restorePreferences(): void {
 }
 
 export function selectModel(modelID: string): void {
-  const model = models.value.find((entry) => entry.id === modelID);
+  const model = chatModels.value.find((entry) => entry.id === modelID);
   if (!model || model.usable === false) return;
   selectedID.value = modelID;
   syncPreferences({ default_model_id: modelID });
@@ -150,9 +160,10 @@ export async function loadModels(): Promise<void> {
   const result = await api.get<{ models: AvailableModel[] }>('/api/models');
   models.value = result.models;
 
-  const usable = result.models.filter((model) => model.usable !== false);
-  // A remembered model that is gone, or that this account may see but not
-  // use, falls back rather than leaving the composer pointing at nothing.
+  const usable = chatModels.value.filter((model) => model.usable !== false);
+  // A remembered model that is gone, that this account may see but not use,
+  // or that has since been marked as an image model, falls back rather than
+  // leaving the composer pointing at something it cannot send to.
   if (!usable.some((model) => model.id === selectedID.value)) {
     selectedID.value = usable[0]?.id ?? '';
   }

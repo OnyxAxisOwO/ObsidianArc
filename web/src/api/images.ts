@@ -16,6 +16,8 @@ export interface ImageGenerationRequest {
   style?: string;
   quality?: string;
   n?: number;
+  /** Base64, no data: prefix — a picture for the prompt to work from. */
+  image?: string;
 }
 
 export interface ImageGenerationResponse {

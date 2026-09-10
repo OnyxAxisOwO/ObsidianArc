@@ -51,7 +51,17 @@ type stubUpstream struct {
 	status   int
 	body     string
 	requests []map[string]any
-	hold     chan struct{}
+	// What was asked for, before it was read as JSON: an image edit goes up
+	// as multipart to a different path, and neither is visible in the
+	// decoded map.
+	calls []upstreamCall
+	hold  chan struct{}
+}
+
+type upstreamCall struct {
+	path        string
+	contentType string
+	body        []byte
 }
 
 func newStubUpstream(t *testing.T) *stubUpstream {
@@ -64,6 +74,11 @@ func newStubUpstream(t *testing.T) *stubUpstream {
 
 		stub.mu.Lock()
 		stub.requests = append(stub.requests, decoded)
+		stub.calls = append(stub.calls, upstreamCall{
+			path:        r.URL.Path,
+			contentType: r.Header.Get("Content-Type"),
+			body:        raw,
+		})
 		frames := append([]string(nil), stub.frames...)
 		status := stub.status
 		body := stub.body
@@ -166,6 +181,15 @@ func (s *stubUpstream) blockAfterFirstFrame(frames ...string) chan struct{} {
 	s.status = 200
 	s.hold = release
 	return release
+}
+
+func (s *stubUpstream) lastCall() upstreamCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.calls) == 0 {
+		return upstreamCall{}
+	}
+	return s.calls[len(s.calls)-1]
 }
 
 func (s *stubUpstream) lastRequest() map[string]any {

@@ -311,6 +311,15 @@
   white-space: nowrap;
 }
 
+/* Marks the conversation a turn is still streaming into. Reusing the pending
+   spinner rather than a second shape: it means the same thing here. */
+.ai-chat-list-live {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  margin-right: 6px;
+}
+
 .ai-chat-list-delete {
   display: inline-flex;
   align-items: center;
@@ -474,47 +483,76 @@
   background: none;
 }
 
-/* The wrapper the renderer puts around a fenced block, so the copy button has
-   something to be positioned against that does not scroll sideways with a long
-   line. It inherits the margin the <pre> used to carry. */
+/* The wrapper the renderer puts around a fenced block: it carries the header
+   and the <pre> as one card, and the controls live in the header rather than
+   floating over the code, which used to slide out of reach sideways with a
+   long line. It inherits the margin the <pre> used to carry. */
 .ai-code {
-  position: relative;
   margin: 0 0 8px;
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+  overflow: hidden;
 }
 
 .ai-code pre {
   margin: 0;
+  border-radius: 0;
 }
 
-/* Always visible rather than hover-revealed: a control a reader has to
-   discover by hovering is a control most readers never find, and the button
-   is the only way to lift a block's code without dragging a selection across
-   a scrolled <pre>. The pill is small and filled, so it stays readable over
-   the code without an outline. */
-.ai-code-copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  padding: 3px 9px;
-  border: none;
-  border-radius: 999px;
+/* Names the language and holds the two things a reader does with a block.
+   Always visible rather than hover-revealed: a control a reader has to
+   discover by hovering is a control most readers never find. */
+.ai-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
   background: var(--ai-surface-container-high);
+}
+
+.ai-code-lang {
+  overflow: hidden;
   color: var(--ai-text-secondary);
   font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-code-actions {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+}
+
+/* Round and filled only once the pointer is on it: two glyphs in a row read
+   as a pair of controls without two more borders in the transcript. */
+.ai-code-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ai-text-secondary);
   cursor: pointer;
 }
 
-.ai-code-copy:hover {
-  background: var(--ai-field-bg-hover);
+.ai-code-btn:hover {
+  background: var(--ai-state-hover);
   color: var(--ai-text);
 }
 
-.ai-code-copy.copied {
-  background: var(--ai-primary);
-  color: var(--ai-primary-text);
+.ai-code-btn.copied {
+  color: var(--ai-primary);
 }
 
-.ai-code-copy:focus-visible {
+.ai-code-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
