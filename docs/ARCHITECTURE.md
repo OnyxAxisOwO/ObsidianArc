@@ -216,10 +216,15 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 17.7 MB (14.0 MB `-tags nosqlite`) |
-| Frontend, on the wire | < 130 kB | 126.4 kB to open the chat (110.3 JS + 16.2 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 18.2 MB (14.5 MB `-tags nosqlite`, Linux amd64) |
+| Frontend, on the wire | < 130 kB | 128.3 kB to open the chat (111.6 JS + 16.6 CSS) |
 | Background goroutines at idle | 1 | 1 |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Bundle and binary sizes were remeasured on 2026-09-10 after adding settings
+and history search and custom range tracks. Binary sizes use Go 1.27.0,
+Linux amd64, `-trimpath -ldflags "-s -w"`; transfer sizes are gzip-compressed
+JS and CSS in decimal kB, with totals rounded after summing.
 
 The target moved with the interface. It was < 80 kB while the frontend was
 hand-written DOM calls, and 71.6 kB against it; adopting Vue put roughly 45 kB
@@ -234,10 +239,10 @@ What each reader actually downloads:
 
 | | gzipped |
 | --- | --- |
-| English, not an administrator | 126.4 kB |
-| Chinese, not an administrator | 144.6 kB |
-| …and a conversation containing a formula | 148.3 kB |
-| Chinese administrator, backoffice open | 179.5 kB |
+| English, not an administrator | 128.3 kB |
+| Chinese, not an administrator | 146.5 kB |
+| …and a conversation containing a formula | 150.2 kB |
+| Chinese administrator, backoffice open | 182.3 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice: /settings, /keys, /usage and

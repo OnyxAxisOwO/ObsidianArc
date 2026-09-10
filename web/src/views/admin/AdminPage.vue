@@ -12,6 +12,8 @@ import { health } from '@/api/client';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaResizer from '@/components/OaResizer.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
+import OaSearchField from '@/components/OaSearchField.vue';
+import { matchesSearch } from '@/lib/search';
 import { t, type StringKey } from '@/composables/useI18n';
 import {
   IconChart, IconChevron, IconCpu, IconFile, IconHome, IconKey, IconLayers, IconLock,
@@ -67,6 +69,8 @@ const PAGES: AdminPageSpec[] = [
 
 const route = useRoute();
 const router = useRouter();
+const query = ref('');
+const filteredPages = computed(() => PAGES.filter((entry) => matchesSearch(query.value, t(entry.label))));
 
 const rail = ref<HTMLElement | null>(null);
 
@@ -187,16 +191,21 @@ onMounted(() => {
         <span class="oa-admin-rail-title">{{ t('administration') }}</span>
       </div>
 
-      <RouterLink
-        v-for="entry in PAGES"
-        :key="entry.slug"
-        class="oa-admin-nav"
-        :class="{ active: entry === current }"
-        :to="entry.slug ? `/admin/${entry.slug}` : '/admin'"
-      >
-        <component :is="entry.icon" :size="15" />
-        <span>{{ t(entry.label) }}</span>
-      </RouterLink>
+      <OaSearchField v-model="query" class="oa-admin-search" :label="t('searchAdmin')" />
+
+      <OaScrollArea wrap-class="oa-admin-nav-wrap" scroll-class="oa-admin-nav-list">
+        <p v-if="!filteredPages.length" class="oa-search-empty" role="status">{{ t('noSearchResults') }}</p>
+        <RouterLink
+          v-for="entry in filteredPages"
+          :key="entry.slug"
+          class="oa-admin-nav"
+          :class="{ active: entry === current }"
+          :to="entry.slug ? `/admin/${entry.slug}` : '/admin'"
+        >
+          <component :is="entry.icon" :size="15" />
+          <span>{{ t(entry.label) }}</span>
+        </RouterLink>
+      </OaScrollArea>
 
       <div class="oa-admin-rail-foot">
         <span class="oa-admin-build" :title="buildTitle">{{ build }}</span>

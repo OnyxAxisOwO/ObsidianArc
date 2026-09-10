@@ -127,7 +127,11 @@ function onTrackDown(event: MouseEvent): void {
 // --- keeping up with the content ---------------------------------------------
 
 useResizeObserver(scroller, () => update());
-useMutationObserver(scroller, () => void nextTick(update), { childList: true, subtree: true });
+// Search hides mounted forms with v-show to retain drafts. Those style changes
+// resize the content without changing either the scroller or its child list.
+useMutationObserver(scroller, () => void nextTick(update), {
+  childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'hidden'],
+});
 
 onMounted(() => {
   requestAnimationFrame(update);
