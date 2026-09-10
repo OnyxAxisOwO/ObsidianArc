@@ -1,4 +1,8 @@
-# Obsidian Arc
+<p align="center">
+  <img src="docs/public/logo.svg" width="64" height="64" alt="Obsidian Arc Logo">
+</p>
+
+<h1 align="center">Obsidian Arc</h1>
 
 <p align="center">
   <strong>专为 <a href="https://ai.onyxaxis.org">Axis AI</a> 打造的高可用、自托管多用户 AI 聊天与 API 网关中枢。</strong><br>
