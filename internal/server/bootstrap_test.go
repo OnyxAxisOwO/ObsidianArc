@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -45,13 +45,8 @@ func TestConcurrentBootstrapsCreateOneAdministrator(t *testing.T) {
 	})
 
 	t.Run("postgres is where the race is", func(t *testing.T) {
-		dsn := os.Getenv("OBSIDIAN_TEST_POSTGRES_DSN")
-		if dsn == "" {
-			t.Skip("set OBSIDIAN_TEST_POSTGRES_DSN — the SQLite run above cannot fail this")
-		}
-		raceBootstrap(t, t.TempDir(), config.Database{
-			Driver: "postgres", DSN: dsn, MaxOpenConns: 8, MaxIdleConns: 4,
-		})
+		raceBootstrap(t, t.TempDir(),
+			dbtest.Postgres(t, "the SQLite run above cannot fail this"))
 	})
 }
 
@@ -74,14 +69,10 @@ func raceBootstrap(t *testing.T, dir string, dbCfg config.Database) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	// A shared Postgres carries whatever the last run left behind, and this
-	// test is about an empty instance.
-	if dbCfg.Driver == "postgres" {
-		for _, table := range []string{"users", "user_groups", "settings"} {
-			_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
-		}
-		_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS schema_migrations CASCADE")
-	}
+	// Nothing is dropped first: on Postgres this runs in a schema of its own
+	// (see dbtest), and on SQLite in a file of its own. Emptiness comes from
+	// the database being new rather than from a list of tables to clear,
+	// which is the list that used to go stale as migrations added to it.
 	if _, err := db.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

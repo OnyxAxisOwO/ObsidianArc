@@ -3,12 +3,11 @@ package database
 import (
 	"context"
 	"io/fs"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
 
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 )
 
 // The migrations run on two engines from one set of files. Nothing checks
@@ -107,29 +106,16 @@ func TestMigrationsApplyInOrder(t *testing.T) {
 //
 //	OBSIDIAN_TEST_POSTGRES_DSN=postgres://user:pass@localhost:5432/arc_test go test ./internal/database/
 func TestPostgresMigrations(t *testing.T) {
-	dsn := os.Getenv("OBSIDIAN_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("set OBSIDIAN_TEST_POSTGRES_DSN to run the Postgres migration test")
-	}
-
+	// An empty schema of this test's own rather than the shared database with
+	// a list of tables dropped from it: the list only ever named the tables
+	// that existed when it was written, and one it had never heard of was
+	// enough to fail the migration that tried to create it again.
 	ctx := context.Background()
-	db, err := Open(ctx, config.Database{Driver: "postgres", DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 2})
+	db, err := Open(ctx, dbtest.Postgres(t, "the dialect handling then goes unexercised"))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	defer db.Close()
-
-	// A clean slate, so the test says something on a second run.
-	for _, table := range []string{
-		"schema_migrations", "usage_counters", "usage_records", "quota_policies",
-		"attachments", "messages", "conversations", "group_models", "models",
-		"api_key_models", "api_keys", "providers", "user_preferences", "settings",
-		"sessions", "users", "user_groups",
-	} {
-		if _, err := db.Exec(ctx, `DROP TABLE IF EXISTS `+table+` CASCADE`); err != nil {
-			t.Fatalf("drop %s: %v", table, err)
-		}
-	}
 
 	if _, err := db.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
