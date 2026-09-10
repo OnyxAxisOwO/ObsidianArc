@@ -1,109 +1,74 @@
 # 常见问题
 
-## 启动失败
+先区分问题发生在哪一步：程序启动、账号登录、模型调用，还是结果展示。请求失败时保留发生时间和请求 ID，方便在后台定位。
 
-### 端口已占用
+## 登录后又回到登录页
 
-典型报错：`bind: address already in use`
-排查：
+检查访问协议与 `OBSIDIAN_COOKIE_SECURE` 是否一致。非开发模式下默认启用 Secure Cookie，普通 HTTP 部署可能无法保存或发送登录 Cookie。
 
-```bash
-docker compose ps
-lsof -i :8080
-```
+本机 HTTP 测试可设 `OBSIDIAN_COOKIE_SECURE=false` 后重启。对外部署应使用 HTTPS 并保持该值为 `true`。
 
-处理：
+## 不知道管理员账号
 
-1. 修改 `OBSIDIAN_ADDR` 到空闲端口。
-2. 调整 `docker-compose.yml` 的 `ports` 映射。
+系统没有默认账号。没有通过初始化环境变量创建账号时，首个注册用户成为管理员。
 
-### PostgreSQL 模式下 DSN 未设置
+`OBSIDIAN_ADMIN_USER` 和 `OBSIDIAN_ADMIN_PASSWORD` 只用于空用户表的初始化。已有账号后修改这两个变量，不会修改账号密码。
 
-典型报错：与 driver 相关的启动错误、数据库连接错误。
-排查：
+## 程序无法启动
 
-```bash
-docker logs -f obsidian-arc
-```
+| 现象 | 检查内容 |
+| --- | --- |
+| 端口被占用 | 调整 `OBSIDIAN_ADDR`，容器同时检查宿主机端口映射 |
+| PostgreSQL 连接失败 | 驱动、DSN、数据库是否就绪，以及网络与认证配置 |
+| 数据目录无法写入 | 目录或数据卷权限，程序使用的运行用户 |
+| 实例密钥长度错误 | `OBSIDIAN_SECRET_KEY` 至少需要 16 个字符 |
+| 数据库迁移失败 | 保留启动日志与备份，核对当前程序版本及数据库状态 |
 
-处理：
+不要通过删除数据库或实例密钥来尝试修复启动问题。密钥改变后，原来加密的服务商凭据可能无法解密。
 
-```bash
-export OBSIDIAN_DB_DRIVER=postgresql
-export OBSIDIAN_DB_DSN="postgres://user:pass@host:5432/dbname?sslmode=disable"
-```
+## 页面空白或缺少前端资源
 
-### Secret Key 不合法
+从源码构建时，先运行 `npm --prefix web ci` 和 `npm --prefix web run build`，再执行 Go 构建。前端产物位于 `internal/web/dist`，会在编译时嵌入程序。
 
-典型报错：`secret key` 相关长度错误。
-排查：
+## 模型列表为空
 
-```bash
-cat data/secret.key
-```
+依次检查：
 
-处理：
+1. 服务商与模型是否已启用。
+2. 用户组是否允许该模型，或已开启全部模型访问。
+3. 模型是否因可用性策略被自动停用。
+4. API Key 是否绑定了其他模型。
 
-`OBSIDIAN_SECRET_KEY` 为空时，服务会在 `DATA_DIR/secret.key` 自动生成并复用；如设置值必须长度至少 16。删除 `secret.key` 会导致已存储密钥无法解密，处理前请先备份 `/data`。
+管理员与普通用户的权限不同。需要排查普通用户的问题时，按该用户的分组和密钥检查。
 
-## 无法连接上游
+## 网页能对话，API 却不能调用
 
-### 上游返回连接错误
+`/v1` 接口需要 API Key，不能复用登录 Cookie。还需开启全站 API，以及普通用户组的 API 权限。
 
-症状：`/api/chat` 返回 502/503，日志出现 `upstream`、`dial`、`timeout`。
-排查步骤：
+全站关闭时，`/v1` 返回 `404 api_disabled`。无效密钥、账号不可用或用户组没有 API 权限等情况可返回 `401 invalid_api_key`；这是网关有意统一的错误，不能只凭它判断密钥拼写错误。
 
-```bash
-docker logs -f obsidian-arc
-curl -I <provider-base-url>
-```
+先用同一把密钥请求 `/v1/models`，再复制返回的模型 ID 调用。详见[接入与鉴权](../api/overview)。
 
-处理：
+## 上游连接失败
 
-1. 检查 `/admin/providers` 的 Base URL。
-2. 检查出站网络（DNS/TLS/防火墙）。
-3. 检查上游 API Key 是否和供应商侧一致。
-4. 检查 `UPSTREAM_DIAL_TIMEOUT` 与 `UPSTREAM_HEADER_TIMEOUT`。
+在服务商配置中核对协议、Base URL 和 API Key，再检查服务端访问上游的网络。Base URL 不应包含完整的聊天请求路径。
 
-### 服务商可用性状态异常
+`OBSIDIAN_UPSTREAM_DIAL_TIMEOUT` 限制建立连接的时间，`OBSIDIAN_UPSTREAM_HEADER_TIMEOUT` 限制等待响应头的时间；它们都不是整段回答的时限。
 
-症状：`/admin/dashboard` 或 `/api/admin/health` 显示上游不可用。
-处理：
+## 回答一次性出现或中途断开
 
-1. 检查服务商条目中 `kind` 与模型协议类型。
-2. 在 `/admin/providers` 触发探测。
+一次性出现通常需要检查反向代理缓冲。Nginx 使用 `proxy_buffering off`；其他代理也需要允许流式数据及时下发。
 
-## 流式响应中断
+中途断开时，检查浏览器网络、代理超时和 `OBSIDIAN_UPSTREAM_REQUEST_TIMEOUT`。默认总请求超时为 `0`，表示由请求上下文控制。刷新或关闭网页会取消请求。
 
-### 客户端提前断开
+## 还有额度，却提示不足
 
-症状：前端界面看到模型回复半截后停止。
-排查日志：
+请求发出前会预留预计用量，结束后再按实际消耗结算。预留金额较高或已有请求在生成时，暂时可用额度可能少于页面里最后一次显示的数值。
 
-```bash
-docker logs -f obsidian-arc | grep -i stream
-```
+同时检查具体超限的周期、RPM、TPM 与并发限制。减少单次输出上限或等待已有请求完成后再试。
 
-处理：
+## 历史图片无法显示
 
-1. 检查浏览器是否刷新、切换网络、关闭代理加速。
-2. 检查中间层超时（例如 Nginx 的 `proxy_read_timeout`）。
-3. 调整请求端超时与上游代理配置。
+上传图片默认不会长期保留：`attachments.retain=false` 时，发送后会清理图片数据。已启用保留的实例也可能配置了按天或定时清理。
 
-### 服务端上下文提前结束
-
-症状：后端日志有 `context canceled` 或 `request canceled`。
-处理：
-
-1. 检查前端是否在请求还未结束时关闭页面。
-2. 检查代理是否对长连接有超时截断。
-3. 检查是否将 `UPSTREAM_REQUEST_TIMEOUT` 设置为过小值。
-
-## 关键日志入口
-
-```text
-启动日志：前端启动输出含 addr / db / version
-运行日志：docker logs -f obsidian-arc
-数据库健康：/api/health
-数据库迁移问题：启动日志中的 migrate error
-```
+附件二进制保存在数据库中，不存在需要单独检查的 `uploads` 目录。已经被清理的数据，需要从包含该数据的备份恢复。

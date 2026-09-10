@@ -1,81 +1,65 @@
 # 首次配置
 
-## 0. 登录入口
+服务启动后，先添加服务商与模型，再测试网页对话。只有需要外部客户端接入时，才需要开启 API 并创建密钥。
 
-```text
-首次启动未设置 ADMIN_* 时：
-打开 /register，创建首个账号并登录
+## 添加服务商
 
-设置了 ADMIN_USER/ADMIN_PASSWORD 时：
-打开 /login，使用管理员账号登录
-```
+1. 使用管理员账号登录，打开 `/admin/providers`。
+2. 新建服务商，填写名称、协议类型、Base URL 和上游 API Key。
+3. 保存后测试连接，确认地址和凭据有效。
 
-## 1. 添加上游服务商
+协议类型应与上游实际提供的接口一致。OpenAI 兼容接口使用 `openai`，Anthropic Messages 使用 `anthropic`。Base URL 填服务基础地址，不要填完整的聊天请求路径。
 
-1. 登录后打开 `/admin` 进入后台。
-2. 在左侧菜单点 `供应商`（页面地址 `/admin/providers`）。
-3. 点击新增，填入服务商名称、类型、Base URL、API Key。
-4. 保存后在列表里确认显示为可用。
-5. 可回到服务商列表点击测试连接，确认返回成功。
+上游密钥只保存在服务端。用户创建的 Obsidian Arc API Key 与这个密钥是两种不同的凭据。
 
-## 2. 添加模型
+## 添加模型
 
-1. 在左侧菜单点 `模型`（页面地址 `/admin/models`）。
-2. 点击新增模型。
-3. 选择刚才创建的供应商。
-4. 填写模型标识（上游模型 ID）和展示名称。
-5. 保存后用默认权限测试一次发起对话。
+打开 `/admin/models`，新建模型并选择刚才的服务商。主要字段如下：
 
-## 3. 创建普通用户
+| 字段 | 用途 |
+| --- | --- |
+| 上游模型 ID | 上游实际接受的模型名称 |
+| 展示名称 | 网页模型选择器中的名称 |
+| API 名称 | 外部客户端调用时使用的名称，可选 |
+| 模型能力 | 按实际支持情况配置视觉、推理、工具或生图能力 |
 
-1. 仍在管理员后台左侧菜单点 `用户`（页面地址 `/admin/users`）。
-2. 点击新增用户。
-3. 设置用户名、邮箱、初始密码、分组。
-4. 保存后把角色保持为 `user`（非管理员）。
-5. 如果你只想先用管理员账号验证，跳过此步不影响系统运行。
+可使用服务商的模型发现功能辅助添加。上游没有实现模型列表接口时，手动填写模型 ID。
 
-## 4. 配置普通用户 API Key
+确保服务商和模型均已启用。默认组初始允许访问全部模型；如果之后改成按模型授权，还需要给相应用户组勾选模型。
 
-1. 以普通用户登录进入前端后打开 `/keys`。
-2. 点击新增 Key。
-3. 复制返回的明文 Key 作为客户端调用凭证。
-4. 把 Key 绑定到你在 `/admin/models` 列表里启用的模型上。
+## 完成首次对话
 
-## 5. 直接调用验证
+回到首页，选择模型，发送一条简短问题。确认回答能够逐步显示，并且历史会话中能找到刚才的内容。
 
-### 健康检查
+模型没有出现在列表中时，先检查启用状态和用户组权限。请求失败时，到[请求日志](../admin/logs-and-auditing)查看对应的错误码。
 
-```bash
-curl http://localhost:8080/api/health
-```
+## 为其他用户开放
 
-### 测试 chat 请求
+在 `/admin/users` 创建用户，或在系统设置中开放注册。通过 `/admin/groups` 分配模型权限与额度；组级规则会应用到各成员自己的用量上。
+
+建议用普通账号再测试一次。管理员可以绕过部分分组限制，管理员测试成功不代表普通用户已获得权限。
+
+## 接入 API
+
+1. 在系统设置中开启 `api.enabled`。
+2. 为普通用户所属组开启 `api_access`。
+3. 以需要调用 API 的账号打开 `/keys`，创建密钥并保存明文。
+4. 使用 `/v1/models` 返回的模型名称发起请求。
+
+以下 Bash 示例中，替换 API Key，并将 `your-model` 改为模型列表中的 `id`：
 
 ```bash
-curl -H "Authorization: Bearer <KEY>" \
+export OBSIDIAN_API_KEY='替换为你创建的 API Key'
+
+curl http://localhost:8080/v1/models \
+  -H "Authorization: Bearer $OBSIDIAN_API_KEY"
+
+curl -N http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $OBSIDIAN_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model_id":"<MODEL_ID>","messages":[{"role":"user","content":"ping"}]}' \
-  http://localhost:8080/api/chat
+  -d '{"model":"your-model","stream":true,"messages":[{"role":"user","content":"你好"}]}'
 ```
 
-### 测试兼容接口（可选）
+`/api/chat` 是网页会话接口，需要登录 Cookie。外部客户端应使用上面的 `/v1/chat/completions`。
 
-```bash
-curl http://localhost:8080/v1/models -H "Authorization: Bearer <KEY>"
-```
-
-## 首次配置顺序（可复制）
-
-```text
-启动服务
-↓
-注册首个管理员或管理员登录
-↓
-/admin/providers 新增服务商
-↓
-/admin/models 新增模型
-↓
-/admin/users 新增普通用户
-↓
-/keys 创建普通用户 API Key
-```
+更多协议和限制见 [API 接入与鉴权](../api/overview)。

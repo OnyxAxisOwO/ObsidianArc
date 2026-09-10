@@ -1,122 +1,19 @@
-/**
- * Obsidian Arc Base Styles & Scrollbars
- * Directly matches web/src/styles/_base.scss.
- */
-
-html,
 body {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-}
-
-body {
-  background-color: var(--vp-c-bg);
-  color: var(--vp-c-text-1);
+  background: var(--ai-surface-container-low);
+  color: var(--ai-text);
   font-family: var(--vp-font-family-base);
-  font-size: 14.5px;
-  line-height: 1.65;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
 }
-
-/* Text Selection */
-::selection {
-  background-color: rgba(0, 0, 0, 0.15);
-  color: inherit;
+::selection { background: var(--ai-badge-bg); }
+:where(a, button, input, select):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
-
-.dark ::selection {
-  background-color: rgba(255, 255, 255, 0.22);
-  color: inherit;
-}
-
-/* --- Scrollbars ------------------------------------------------------------
- * Every scrollable surface gets the same one: a 4px rounded thumb inside its
- * own container, no track, no arrows, and nothing visible at all until the
- * pointer is over the area it scrolls.
- *
- * The thumb is drawn with `background-clip: content-box` inside a wider
- * transparent border, which is what makes it thin without giving it a hit
- * area too small to grab.
- */
-
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-  background: transparent;
-}
-
-::-webkit-scrollbar-track,
-::-webkit-scrollbar-corner {
-  background: transparent;
-  margin: 8px;
-}
-
-::-webkit-scrollbar-thumb {
-  min-height: 32px;
-  min-width: 32px;
-  border: 3px solid transparent;
-  border-radius: 999px;
-  background-color: transparent;
-  background-clip: content-box;
-  transition: background-color 0.15s ease;
-}
-
-:hover::-webkit-scrollbar-thumb,
-:focus-within::-webkit-scrollbar-thumb {
-  background-color: var(--ai-outline-variant);
-}
-
-::-webkit-scrollbar-thumb:hover,
-::-webkit-scrollbar-thumb:active {
-  background-color: var(--ai-text-secondary);
-}
-
-::-webkit-scrollbar-button {
-  display: none;
-  width: 0;
-  height: 0;
-}
-
-@supports not selector(::-webkit-scrollbar) {
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: transparent transparent;
-  }
-
-  *:hover,
-  *:focus-within {
-    scrollbar-color: var(--ai-outline-variant) transparent;
-  }
-}
-
+* { scrollbar-width: thin; scrollbar-color: var(--ai-outline-variant) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--ai-outline-variant); border-radius: 999px; }
+::-webkit-scrollbar-button { display: none; }
 @media (prefers-reduced-motion: reduce) {
-  ::-webkit-scrollbar-thumb {
-    transition: none;
-  }
-}
-
-/* --- Ambient Top Illumination ---------------------------------------------
- * Subtle monochrome atmosphere, creating obsidian depth without chromatic pollution.
- */
-
-.oa-ambient-glow {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 480px;
-  pointer-events: none;
-  z-index: 0;
-  overflow: hidden;
-  opacity: 0.7;
-  transition: opacity 0.3s ease;
-  background: radial-gradient(ellipse 900px 240px at 50% -40px, rgba(255, 255, 255, 0.04) 0%, transparent 70%);
-}
-
-:root:not(.dark) .oa-ambient-glow {
-  opacity: 0.5;
-  background: radial-gradient(ellipse 900px 240px at 50% -40px, rgba(0, 0, 0, 0.02) 0%, transparent 70%);
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }

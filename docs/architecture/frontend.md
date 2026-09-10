@@ -1,99 +1,84 @@
-# 前端架构与渲染安全
+# 前端开发
 
-本文档记录 Obsidian Arc 前端工程的依赖选型、分包策略、渲染安全机制与故障排查路径。
+主应用使用 Vue、TypeScript 和 Sass，由 Vite 构建，产物写入 `internal/web/dist` 后嵌入 Go 程序。VitePress 文档站独立位于 `docs/`，不打包进应用。
 
-## 依赖管理
+## 启动开发环境
 
-### 做了什么
-前端仅保留 4 个运行时依赖：
-1. `vue`（v3.5+）：响应式数据绑定与组件视图驱动；
-2. `vue-router`（v4.5+）：基于哈希模式的路由调度；
-3. `@vueuse/core`：提供定时器、DOM 监听与组件卸载自动清理工具；
-4. `lucide-vue-next`：SVG 图标组件库。
+在仓库根目录安装现有前端依赖，并启动 Vite：
 
-未引入第三方 UI 组件库（如 Element Plus）、CSS 框架（如 Tailwind CSS）与外部状态管理库（如 Pinia）。
-
-### 为什么这么做
-1. **控制传输体积**：第三方组件库与 CSS 框架会显著增加打包产物体积；
-2. **样式统一约束**：界面的颜色、圆角与间距统一由 `web/src/styles/_chat.scss` 中的 `--ai-*` CSS 自定义属性控制，减少因外部组件库内联样式导致的样式冲突；
-3. **状态复杂度控制**：系统状态通过 Vue 3 的 Composition API 响应式引用（`ref`、`shallowRef`）在模块闭包中管理，数据流向通过函数显式暴露。
-
-### 代价是什么
-1. **控件维护成本**：按钮、输入框、下拉选框、模态卡片、滚动容器（`OaScrollArea`）与确认按钮（`OaConfirmButton`）均需自行实现交互细节、焦点管理与无障碍可访问性。
-2. **缺少高级数据组件**：若需要虚拟滚动列表或复杂表格排序分页，需自行编写逻辑。
-
----
-
-## 产物分包与构建约束
-
-### 做了什么
-通过 Vite/Rollup 配置，生产构建产物被限制为确定的 5 个文件（由 `web/test/bundle.test.ts` 在自动化测试中执行断言）：
-
-```text
-internal/web/dist/assets/
-├── index-[hash].js        # 主应用入口核心逻辑（约 112 kB 压缩体积）
-├── index-[hash].css       # 全局样式表（约 16 kB 压缩体积）
-├── AdminPage-[hash].js    # 管理后台模块（路由懒加载）
-├── i18n.zh-[hash].js      # 中文语言字典（动态导入）
-└── math-[hash].js         # LaTeX 数学公式渲染模块（按需加载）
+```bash
+npm --prefix web ci --no-fund --no-audit
+npm --prefix web run dev
 ```
 
-除管理后台外，前端其余所有视图与组件均打包进 `index.js`，不针对每个功能路由单独分包。
+另开一个终端，启动开发模式的 Go 服务：
 
-### 为什么这么做
-1. **减少网络往返**：普通单页应用的过度细粒度分包会导致用户在切换侧边抽屉或二级视图时频繁发起微小 JS 文件的 HTTP 请求，在弱网环境下产生等待停顿；
-2. **首屏流量控制**：英文用户访问对话界面仅需加载 `index.js` 与 `index.css`（共计约 128 kB 传输大小），管理后台、中文字典与数学公式库仅在触发对应条件时被拉取。
+```bash
+OBSIDIAN_DEV=1 OBSIDIAN_LOG_LEVEL=debug go run ./cmd/server
+```
 
-### 代价是什么
-1. **测试约束成本**：主入口代码严禁静态导入仅属于懒加载模块的依赖（例如在通用工具函数中引用 `views/admin/` 内部代码）。一旦引入跨分包静态引用，Rollup 会将懒加载模块合并入主 bundle 或生成额外碎片 chunk，直接导致 `bundle.test.ts` 断言失败；
-2. **主包体积集中**：所有日常使用的设置面板、画图面板、密钥管理面板代码均包含在主 bundle 中，随着功能增加，主 bundle 尺寸会呈线性增长。
+PowerShell 使用：
 
----
+```powershell
+$env:OBSIDIAN_DEV = "1"
+$env:OBSIDIAN_LOG_LEVEL = "debug"
+go run ./cmd/server
+```
 
-## 渲染安全与 XSS 防护
+访问 Go 服务的 `http://localhost:8080`。开发模式会将前端资源代理到本机 Vite，API 仍由 Go 处理。
 
-### 做了什么
-前端在数据渲染与富文本处理上执行以下约束：
-1. **无 `v-html` 指令**：全站所有 `.vue` 组件模板均不使用 `v-html`；
-2. **受控的 `innerHTML` 白名单解析**：全站仅在 `web/src/lib/safe-intro.ts` 中存在唯一一处 `innerHTML` 赋值，用于解析管理员配置的落地页介绍富文本。解析在内存中脱离 DOM 树的 `<template>` 节点内执行，仅放行安全展示标签（如 `p`、`h1`-`h6`、`ul`、`li`、`code`、`blockquote`、`strong`、`a`），过滤所有 `style` 内联样式与 `on*` 事件属性；
-3. **基于 AST 的 Markdown 渲染**：聊天对话中的 Markdown 文本由词法解析器生成 Token 树，通过 `document.createElement()` 创建节点并使用 `textContent` 赋值文本；
-4. **链接协议过滤**：超链接仅放行 `http://`、`https://` 与 `mailto:` 协议，过滤 `javascript:`、`data:` 等伪协议；Markdown 中的图片标记默认转换为文本链接，不直接在对话流中渲染外部不受信的 `<img>` 标签。
+## 组件、路由与状态
 
-### 为什么这么做
-大语言模型生成的文本为动态不可信输入，可能包含恶意构造的 HTML 标签、脚本注入或诱导性伪协议链接。使用标准的 DOM API 组装节点可以避免浏览器将字符串二次解析为可执行代码。
+运行时依赖为 `vue`、`vue-router`、`@vueuse/core` 和 `lucide-vue-next`。项目没有另外引入 UI 组件库、CSS 框架或状态管理库。
 
-### 代价是什么
-1. **富文本展示受限**：不支持在 Markdown 中渲染内联 HTML 表单、自定义内嵌视频播放器或复杂样式排版；
-2. **DOM 操作代码冗长**：手动构造和拼接 DOM 节点的代码量显著多于基于模板字符串插值的方案。
+路由使用 `createWebHistory`。设置、密钥和用量是聊天工作区中的子面板，切换时保持聊天布局。状态通过组合式函数与模块中的响应式引用管理。
 
----
+共享组件、布局、路由和状态文件影响多个页面，修改前应读完整文件。组件卸载时不要通过清空共享目标引用触发已经卸载的组件再次渲染。
 
-## 静态类型检查与国际化字典
+## 样式与语言
 
-### 做了什么
-1. **模板级类型检查**：构建流程通过 `vue-tsc --noEmit` 进行全量检查，覆盖 `.vue` 文件 `<template>` 中的表达式类型、Prop 参数与事件传参；
-2. **国际化类型收敛**：在 `web/src/i18n.ts` 中，以英文文案对象 `en` 作为单一事实来源，导出 `StringKey = keyof typeof en` 类型，中文文案对象 `zh` 声明为 `Record<StringKey, string>`。新增翻译键但未在 `zh` 中补充会导致 TypeScript 编译报错。
+颜色使用 `web/src/styles/_chat.scss` 定义的 `--ai-*` 变量。侧边面板采用独立列，按钮为胶囊形，表单字段使用填充背景和焦点环。
 
-### 为什么这么做
-防止重构或新增参数时因属性名拼写错误而在生产运行时导致 `undefined` 报错；防止国际化词条遗漏导致生产界面出现缺失或空白。
+非聊天界面的通用控件样式位于 `_surfaces.scss`。组件使用全局类名，不使用 scoped 样式。修改现有样式时记录原因，避免为小改动重排整份样式表。
 
-### 代价是什么
-1. **类型声明开销**：每个组件的 Prop、Emit 事件均需显式声明 interface；
-2. **字典同步负担**：修改英文词条键名必须同步修改中文词条，增加了前端文案微调的工作量。
+界面字符串通过 `composables/useI18n` 的 `t()` 读取。英文键定义类型，中文使用同一组键，缺失翻译由类型检查发现。不要直接导入底层翻译函数绕过响应式更新。
 
----
+## 内容渲染
 
-## 运维约束与排查路径
+聊天 Markdown 通过 DOM API 创建节点，不把模型输出当作 HTML 插入。普通外部图片标记转换为链接；应用附件使用专门组件展示。
 
-### 失效场景
-1. **组件卸载生命周期中的引用访问**：Vue 组件在 unmount 期间，模板引用（template ref）会被置为 `null`。若异步操作或全局事件监听未在 `onUnmounted` 中取消，并在卸载后尝试访问该 ref，会抛出 `TypeError: Cannot read properties of null` 异常。
-2. **国际化导入方式错误**：若在组件中直接从 `i18n.ts` 导入 `t()` 函数而非从 `composables/useI18n` 导入，由于未接入版本计数器依赖收集，用户在界面切换语言时该组件的文案不会动态刷新。
+`safe-intro.ts` 是主应用唯一使用 `innerHTML` 解析输入的位置。它在脱离页面的模板中解析，再按允许列表重建内容，不直接挂载原始 HTML。
 
-### 不明显的约束与前提
-1. **全局样式无作用域隔离**：组件内不使用 `<style scoped>`，所有样式类均为全局生效。新增或修改 CSS 类名时，必须避免与 `_surfaces.scss` 和 `_chat.scss` 中的已有类名冲突。
-2. **构建产物数量检查**：任何新增的懒加载分包或动态导入都会直接影响生产打包产物的文件数量，修改 Vite 配置或路由分包策略前必须同步确认 `web/test/bundle.test.ts`。
+数学公式渲染器按需加载并生成 MathML。它的支持范围由项目实现决定，不保证覆盖完整 LaTeX 语法。
 
-### 排查路径
-1. **前端构建失败**：在 `web/` 目录下执行 `npm run typecheck`，根据 `vue-tsc` 的行号提示修复类型不匹配；
-2. **样式异常或错位**：检查是否在非对话容器中误用了 `--ai-*` 变量，或在输入控件上误加了默认的 outline/border 样式；
-3. **分包测试报错**：执行 `npm run test`，检查 Vitest 打印的实际生成文件列表，定位哪一个静态 import 打破了分包规则。
+## 分包与检查
+
+主应用产物约束为五个文件：
+
+```text
+index-[hash].js
+index-[hash].css
+AdminPage-[hash].js
+i18n.zh-[hash].js
+math-[hash].js
+```
+
+后台、中文字典和数学渲染器独立加载。主入口的静态导入不能意外把它们重新拉进主包。`web/test/bundle.test.ts` 检查实际构建结果，因此测试前需要存在前端产物。
+
+```bash
+npm --prefix web run build
+make test
+```
+
+## 维护文档站
+
+```bash
+npm --prefix docs ci --no-fund --no-audit
+npm --prefix docs run dev
+npm --prefix docs run build
+npm --prefix docs test
+```
+
+文档主题复用应用的中性配色，首页内容放在 `docs/index.md`，主题组件和样式放在 `docs/.vitepress/theme/`。导航、搜索和 Markdown 由 VitePress 提供。
+
+文档修改后需要检查实际命令、路由和默认值，不要用推测补全功能。构建会检查页面链接，测试还会检查产物中的站内链接和锚点。

@@ -1,96 +1,73 @@
-# OpenAI Responses 接口 (Codex 规范)
+# Responses
 
-`POST /v1/responses` 遵循 OpenAI 面向代码辅助工具与智能体推出的 Responses 协议规范。
+`POST /v1/responses` 提供 Responses 格式的输入、输出和流式事件。网关按无状态方式处理，不保存可在后续请求中引用的响应对象。
 
----
-
-## 接口规范
-
-- **请求方法**：`POST`
-- **请求地址**：`https://<你的域名>/v1/responses`
-- **认证方式**：HTTP Header `Authorization: Bearer sk-oa-<你的APIKey>`
-
-### 请求体参数
-
-| 参数名 | 类型 | 必填 | 说明 |
-| :--- | :--- | :--- | :--- |
-| `model` | string | **是** | 模型名称或别名。 |
-| `input` | string/array | **是** | 待处理的上下文或用户输入内容。 |
-| `instructions` | string | 否 | 系统指令说明（相当于 System Prompt）。 |
-| `stream` | bool | 否 | 是否启用流式输出。 |
-| `tools` | array | 否 | 结构化工具定义。 |
-
----
-
-## 协议适配机制
-
-### 做了什么
-网关接收符合 Responses 规范的入站请求，将其映射到底层模型的调用格式（如 Completions 或原生上游结构），并在输出端将生成结果统一重构成结构化的 `output` 数组对象。
-
-### 为什么这么做
-支持使用新一代代码辅助插件或基于 Responses 格式编写的自动化工具直接接入，使开发者无需改造客户端即可调用已有模型。
-
-### 代价是什么
-Responses 格式相比基础 Completions 增加了结构包装，输入与输出对象的序列化过程会带来微小的性能开销；对于不支持直接生成结构化消息的旧模型，必须通过提示词与后置转换模拟该协议。
-
----
-
-## 调用示例
-
-### cURL 请求
+## 请求示例
 
 ```bash
 curl https://ai.example.com/v1/responses \
-  -H "Authorization: Bearer sk-oa-xxxxxxxxxxxx" \
+  -H "Authorization: Bearer $OBSIDIAN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-4o",
-    "instructions": "你是一个代码审查工具。",
-    "input": "func Sum(a, b int) int { return a + b }"
+    "model": "your-model",
+    "store": false,
+    "instructions": "回答简洁。",
+    "input": "介绍一下 Go 的 channel。",
+    "max_output_tokens": 1024
   }'
 ```
 
-### 响应示例
+`input` 可以是字符串，也可以是包含消息、函数调用与函数结果的数组。
+
+## 参数
+
+| 参数 | 说明 |
+| --- | --- |
+| `model` | 模型名称 |
+| `input` | 必须提供有效输入 |
+| `instructions` | 系统指令 |
+| `stream` | 默认 `false` |
+| `max_output_tokens` | 输出上限，受模型配置约束 |
+| `temperature` | 可选采样参数 |
+| `reasoning.effort` | 推理等级 |
+| `tools` / `tool_choice` | 受支持的函数工具与选择方式 |
+| `store` | 省略或设为 `false` |
+
+本端点读取 `max_output_tokens`，不要用 Chat Completions 的 `max_tokens` 替代。
+
+## 返回内容
+
+非流式结果使用 `object: "response"` 和 `output` 数组。文本位于 message 项的 content 中，类型为 `output_text`。
+
+以下只展示用于读取文本的结构片段：
 
 ```json
 {
-  "id": "resp_01J...",
   "object": "response",
-  "created": 1726000000,
-  "model": "gpt-4o",
-  "output": [
-    {
-      "type": "message",
-      "role": "assistant",
-      "content": [
-        {
-          "type": "text",
-          "text": "代码实现简洁规范，无并发安全风险。"
-        }
-      ]
-    }
-  ],
-  "usage": {
-    "input_tokens": 18,
-    "output_tokens": 12,
-    "total_tokens": 30
-  }
+  "output": [{
+    "type": "message",
+    "role": "assistant",
+    "content": [{
+      "type": "output_text",
+      "text": "这里是模型回答。",
+      "annotations": []
+    }]
+  }]
 }
 ```
 
----
+流式正文通过 `response.output_text.delta` 等事件提供。函数调用使用独立的输出项，不能把所有 `output` 项都当成文本。
 
-## 运维约束与排查路径
+## 多轮与工具结果
 
-### 失效场景
-1. **上游模型无法映射指令参数**：若上游服务商不支持独立的 system/instruction 区分，系统会将 `instructions` 与 `input` 合并为多轮消息，可能轻微改变模型原本的注意力分配；
-2. **流式分块协议不兼容**：客户端若依赖专有的 Responses 流式事件类型，而网关转换逻辑未能覆盖某些未公开的增量事件，会导致流式输出中断。
+每次请求都要携带所需的完整历史。函数调用结果通过 `function_call_output` 输入项返回，使用 `call_id` 与先前调用对应。
 
-### 不明显的约束与前提
-1. **结构化参数必填要求**：该端点要求请求体必须携带 `input` 字段，且对于包含 `instructions` 的请求，底层适配器会根据上游模型能力进行指令重构；
-2. **用量记账一致性**：Responses 规范返回的 `output` 数组会被解析并折算为统一的 Token 账本记录，遵循相同的滑动窗口配额策略；
-3. **模型透明路由适用**：本端点同样支持后台配置的模型透明重定向，但要求目标模型具备文本生成能力。
+工具定义采用 Responses 的结构，函数名称与参数直接放在工具项中，不要照搬 Chat Completions 的 `function` 嵌套格式。
 
-### 排查步骤
-1. **核对参数结构**：在管理后台「请求日志」中查看接收到的原始 JSON 请求体，确认 `input` 与 `instructions` 字段是否存在反序列化异常；
-2. **检查模型绑定权限**：核对 API Key 是否具备调用该指定 `model` 的权限。
+## 不支持的能力
+
+`store: true` 和非空 `previous_response_id` 会被拒绝。不能依赖服务端通过上次响应 ID 恢复上下文。
+
+当前没有后台任务、响应查询或删除接口，也没有内置网页搜索、文件检索或代码执行服务。客户端额外发送字段，不代表对应能力已实现。
+
+调用支持此格式的客户端时，确认它可以关闭服务端存储，并由客户端维护历史。

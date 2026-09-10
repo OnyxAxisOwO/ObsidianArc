@@ -1,102 +1,28 @@
-/**
- * Obsidian Arc Navigation Rail (Sidebar)
- * Styled in the spirit of the .oa-admin-rail navigation rail.
- */
-
-.VPSidebar {
-  background-color: var(--vp-sidebar-bg-color) !important;
-  border-right: 1px solid var(--ai-border) !important;
-  padding-top: var(--vp-nav-height) !important;
+.oa-docs .VPSidebar { background: var(--ai-surface-container-low); }
+/* VitePress gives groups a fixed width; a padded card must size them to its content box. */
+.oa-docs .VPSidebar .group { width: 100%; border: 0; padding-top: 16px; }
+.oa-docs .VPSidebarItem.level-0 > .item > .text { font-size: 13px; color: var(--ai-text-secondary); }
+.oa-docs .VPSidebarItem.level-1 > .item > .link {
+  width: 100%;
+  padding: 5px 12px;
+  border-radius: 11px;
 }
-
+.oa-docs .VPSidebarItem.level-1 .text { font-size: 14px; line-height: 24px; }
+.oa-docs .VPSidebarItem.level-1.is-active > .item > .link {
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+}
+.oa-docs .VPSidebarItem.level-1 > .item > .link:hover { background: var(--ai-state-hover); }
+.oa-docs .VPDocAsideOutline .content { border: 0; }
+.oa-docs .VPDocAsideOutline .outline-marker { display: none; }
+.oa-docs .VPDocAsideOutline .outline-link { font-size: 13px; }
+.oa-docs .VPDocAsideOutline .outline-link.active { font-weight: 600; }
 @media (min-width: 960px) {
-  .VPSidebar {
-    width: var(--vp-sidebar-width) !important;
+  .oa-docs .VPSidebar { padding-right: 16px; }
+  /* The rail reads as its own column, matching the application's side panels. */
+  .oa-docs .VPSidebar .nav {
+    padding: 4px 12px 20px;
+    border-radius: 18px;
+    background: var(--ai-surface-container);
   }
-}
-
-.VPSidebar .nav {
-  padding: 16px 12px 32px !important;
-}
-
-/* Sidebar Groups */
-.VPSidebarGroup .group + .group {
-  border-top: 1px solid var(--ai-border) !important;
-  margin-top: 12px !important;
-  padding-top: 12px !important;
-}
-
-@media (min-width: 960px) {
-  .VPSidebarGroup .group {
-    width: 100% !important;
-    padding-top: 4px !important;
-  }
-}
-
-/* Group Title (Level 0) */
-.VPSidebarItem.level-0 > .item {
-  padding: 8px 10px 6px !important;
-}
-
-.VPSidebarItem.level-0 .text {
-  font-size: 11px !important;
-  font-weight: 600 !important;
-  letter-spacing: 0.05em !important;
-  text-transform: uppercase !important;
-  color: var(--ai-text-secondary) !important;
-}
-
-/* Sidebar Links & Items */
-.VPSidebarItem .item {
-  position: relative;
-}
-
-.VPSidebarItem .link {
-  display: flex !important;
-  align-items: center !important;
-  padding: 7px 12px !important;
-  border-radius: 10px !important;
-  margin: 1px 0 !important;
-  color: var(--ai-text-secondary) !important;
-  font-size: 13px !important;
-  line-height: 1.5 !important;
-  font-weight: 400 !important;
-  transition: background-color 0.15s ease, color 0.15s ease !important;
-}
-
-.VPSidebarItem .link:hover {
-  background-color: var(--ai-state-hover) !important;
-  color: var(--ai-text) !important;
-}
-
-/* Active Sidebar Item - Exact .oa-admin-nav.active pill fill */
-.VPSidebarItem.is-active > .item .link {
-  background-color: var(--ai-badge-bg) !important;
-  color: var(--ai-badge-text) !important;
-  font-weight: 600 !important;
-}
-
-.VPSidebarItem .indicator {
-  display: none !important;
-}
-
-/* Collapsible Caret Icon */
-.VPSidebarItem .caret {
-  width: 28px !important;
-  height: 28px !important;
-  border-radius: 6px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  color: var(--ai-text-secondary) !important;
-  transition: background-color 0.15s ease, color 0.15s ease !important;
-}
-
-.VPSidebarItem .caret:hover {
-  background-color: var(--ai-state-hover) !important;
-  color: var(--ai-text) !important;
-}
-
-.VPSidebarItem .caret-icon {
-  font-size: 13px !important;
 }

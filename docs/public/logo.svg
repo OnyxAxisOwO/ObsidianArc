@@ -1,9 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32">
-  <defs>
-    <linearGradient id="oa-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#6366f1" />
-      <stop offset="100%" stop-color="#a855f7" />
-    </linearGradient>
-  </defs>
-  <path fill="url(#oa-gradient)" d="M12 2 3 7v10l9 5 9-5V7z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>.surface{fill:#18181b}.mark{fill:#fff}@media(prefers-color-scheme:dark){.surface{fill:#ededef}.mark{fill:#18181b}}</style>
+  <rect class="surface" width="32" height="32" rx="11"/>
+  <path class="mark" d="m16 5 2.6 8.4L27 16l-8.4 2.6L16 27l-2.6-8.4L5 16l8.4-2.6z"/>
 </svg>

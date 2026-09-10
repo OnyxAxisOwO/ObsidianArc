@@ -1,205 +1,28 @@
-/**
- * Obsidian Arc Top Navigation Bar
- * Frosted translucent header matching the Obsidian Arc header.
- */
-
-.VPNav {
-  position: relative;
-  background-color: var(--vp-nav-bg-color) !important;
-  backdrop-filter: blur(20px) saturate(1.6);
-  -webkit-backdrop-filter: blur(20px) saturate(1.6);
-  border-bottom: 1px solid var(--ai-border);
-  transition: border-color 0.2s ease, background-color 0.2s ease;
+/* Keep VitePress's navigation geometry and keyboard behavior; only change its surfaces. */
+.oa-docs .VPNavBar { background: var(--ai-surface-container-low); }
+.oa-docs .VPNavBar .divider { display: none; }
+.oa-docs .VPNavBarTitle .title { gap: 10px; border: 0; font-size: 16px; letter-spacing: -.02em; }
+.oa-docs .VPNavBarTitle .logo { width: 26px; height: 26px; margin: 0; }
+.oa-docs .VPNavBarMenu { gap: 4px; align-items: center; }
+.oa-docs .VPNavBarMenuLink {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  line-height: 36px;
+  color: var(--ai-text-secondary);
 }
-
-.VPNavBar {
-  border-bottom: none !important;
+.oa-docs .VPNavBarMenuLink.active,
+.oa-docs .VPNavBarMenuLink:hover { background: var(--ai-surface-container-high); color: var(--ai-text); }
+.oa-docs .DocSearch-Button {
+  border: 0;
+  border-radius: 11px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text-secondary);
 }
-
-/* Site Brand / Title */
-.VPNavBarTitle .title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14.5px;
-  font-weight: 700;
-  letter-spacing: -0.015em;
-  color: var(--ai-text);
-  transition: opacity 0.15s ease;
-}
-
-.VPNavBarTitle .title:hover {
-  opacity: 0.85;
-}
-
-.VPNavBarTitle .logo {
-  height: 24px;
-  width: 24px;
-  border-radius: 6px;
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
-  transition: transform 0.2s ease, filter 0.2s ease;
-}
-
-.VPNavBarTitle:hover .logo {
-  transform: scale(1.05);
-  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5));
-}
-
-/* Navigation Links - Pill Shape */
-.VPNavBarMenu {
-  gap: 4px;
-}
-
-.VPNavBarMenuLink,
-.VPNavBarMenuGroup .button {
-  height: 32px;
-  line-height: 32px !important;
-  padding: 0 12px !important;
-  margin: auto 2px;
-  border-radius: 999px !important;
-  border: none !important;
-  font-size: 13px !important;
-  font-weight: 500 !important;
-  color: var(--ai-text-secondary) !important;
-  transition: all 0.15s ease !important;
-}
-
-.VPNavBarMenuLink:hover,
-.VPNavBarMenuGroup .button:hover {
-  color: var(--ai-text) !important;
-  background-color: var(--ai-state-hover) !important;
-}
-
-.VPNavBarMenuLink.active {
-  color: var(--ai-primary) !important;
-  background-color: var(--ai-badge-bg) !important;
-  font-weight: 600 !important;
-}
-
-/* Search Button in Header */
-.VPNavBarSearch {
-  display: flex;
-  align-items: center;
-}
-
-.DocSearch-Button {
-  height: 34px !important;
-  padding: 0 12px 0 10px !important;
-  margin: 0 !important;
-  border: none !important;
-  border-radius: 999px !important;
-  background-color: var(--ai-field-bg) !important;
-  color: var(--ai-text-secondary) !important;
-  font-size: 12.5px !important;
-  box-shadow: none !important;
-  transition: all 0.15s ease !important;
-}
-
-.DocSearch-Button:hover {
-  background-color: var(--ai-field-bg-hover) !important;
-  color: var(--ai-text) !important;
-}
-
-.DocSearch-Button:focus-visible {
-  outline: none !important;
-  box-shadow: 0 0 0 2px var(--ai-focus-shadow) !important;
-}
-
-.DocSearch-Button .DocSearch-Search-Icon {
-  width: 14px !important;
-  height: 14px !important;
-  color: var(--ai-text-secondary) !important;
-  margin-right: 6px !important;
-}
-
-.DocSearch-Button .DocSearch-Button-Placeholder {
-  font-size: 12.5px !important;
-  color: var(--ai-text-secondary) !important;
-}
-
-.DocSearch-Button-Key {
-  height: 18px !important;
-  width: auto !important;
-  min-width: 18px !important;
-  padding: 0 5px !important;
-  margin: 0 1px !important;
-  border-radius: 6px !important;
-  border: none !important;
-  background: var(--ai-surface-container-high) !important;
-  color: var(--ai-text-secondary) !important;
-  font-size: 10.5px !important;
-  font-weight: 600 !important;
-  box-shadow: none !important;
-}
-
-/* Dropdown Menus & Popovers */
-.VPMenu,
-.VPFlyout .menu {
-  border-radius: 16px !important;
-  background-color: var(--ai-surface-container) !important;
-  border: 1px solid var(--ai-border) !important;
-  box-shadow: var(--ai-shadow-md) !important;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  padding: 6px !important;
-}
-
-.VPMenu .action {
-  border-radius: 10px !important;
-  font-size: 13px !important;
-  padding: 8px 12px !important;
-  color: var(--ai-text-secondary) !important;
-  transition: all 0.15s ease !important;
-}
-
-.VPMenu .action:hover {
-  background-color: var(--ai-state-hover) !important;
-  color: var(--ai-text) !important;
-}
-
-/* Theme Toggle Button & Social Icons */
-.VPSwitchAppearance {
-  border-radius: 999px !important;
-}
-
-.VPSwitchAppearance:focus-visible {
-  outline: none !important;
-  box-shadow: 0 0 0 2px var(--ai-focus-shadow) !important;
-}
-
-.VPSocialLink {
-  border-radius: 50% !important;
-  width: 34px !important;
-  height: 34px !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  color: var(--ai-text-secondary) !important;
-  transition: all 0.15s ease !important;
-}
-
-.VPSocialLink:hover {
-  background-color: var(--ai-state-hover) !important;
-  color: var(--ai-text) !important;
-}
-
-/* Mobile Nav Screen */
-.VPNavScreen {
-  background-color: var(--vp-c-bg) !important;
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-}
-
-.VPNavScreenMenuLink {
-  border-radius: 12px !important;
-  padding: 10px 16px !important;
-  font-size: 14px !important;
-  color: var(--ai-text-secondary) !important;
-  transition: all 0.15s ease !important;
-}
-
-.VPNavScreenMenuLink:hover,
-.VPNavScreenMenuLink.active {
-  background-color: var(--ai-state-hover) !important;
-  color: var(--ai-text) !important;
-}
+.oa-docs .DocSearch-Button:hover { background: var(--ai-field-bg-hover); }
+.oa-docs .DocSearch-Button-Key { border: 0; box-shadow: none; }
+.oa-docs .VPSwitchAppearance { border: 0; background: var(--ai-field-bg); }
+.oa-docs .VPNavBarAppearance::before,
+.oa-docs .VPNavBarSocialLinks::before { display: none; }
+.oa-docs .VPLocalNav { border: 0; background: var(--ai-surface-container-low); }
+.oa-docs .VPNavScreen { background: var(--ai-surface-container-low); }
