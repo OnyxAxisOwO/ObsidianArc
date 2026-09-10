@@ -7,6 +7,8 @@ import test from 'node:test';
 const docs = fileURLToPath(new URL('../', import.meta.url));
 const dist = path.join(docs, '.vitepress/dist');
 const origin = 'https://docs.invalid';
+const siteBase = `/${(process.env.DOCS_BASE || '/').replace(/^\/+|\/+$/g, '')}`.replace('//', '/');
+const base = siteBase === '/' ? '/' : `${siteBase}/`;
 
 function filesIn(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -47,12 +49,13 @@ test('every public Markdown page is rendered with a main heading', () => {
 // Frontmatter links in the custom homepage bypass VitePress's Markdown link check.
 for (const [name, html] of pages) {
   test(`${name}: internal links, anchors and images resolve`, () => {
-    const route = name === 'index.html' ? '/' : `/${name.replace(/\.html$/, '')}`;
+    const route = name === 'index.html' ? base : `${base}${name.replace(/\.html$/, '')}`;
     for (const match of html.matchAll(/<(a|img)\b[^>]*?\b(?:href|src)="([^"]+)"/g)) {
       const href = decodeEntities(match[2]);
       const url = new URL(href, `${origin}${route}`);
       if (url.origin !== origin) continue;
-      let target = decodeURIComponent(url.pathname).slice(1);
+      assert.ok(url.pathname.startsWith(base), `${name}: target escapes configured base ${href}`);
+      let target = decodeURIComponent(url.pathname.slice(base.length));
       if (!target || target.endsWith('/')) target += 'index.html';
       else if (!path.posix.extname(target)) target += '.html';
       assert.ok(existsSync(path.join(dist, target)), `${name}: missing target ${href}`);

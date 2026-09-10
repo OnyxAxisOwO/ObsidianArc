@@ -1,5 +1,7 @@
 import { defineConfig } from 'vitepress';
 
+const base = process.env.DOCS_BASE || '/';
+
 const sidebar = [
   { text: '开始使用', items: [
     { text: '安装', link: '/guide/introduction' },
@@ -46,12 +48,12 @@ export default defineConfig({
   title: 'Obsidian Arc',
   description: 'Obsidian Arc 文档：部署、使用、管理与 API 接入。',
   lang: 'zh-CN',
-  base: '/',
+  base,
   cleanUrls: true,
   srcExclude: ['ARCHITECTURE.md'],
   appearance: true,
   head: [
-    ['link', { rel: 'icon', href: '/logo.svg', type: 'image/svg+xml' }],
+    ['link', { rel: 'icon', href: `${base}logo.svg`, type: 'image/svg+xml' }],
     ['meta', { name: 'theme-color', content: '#f8f8f9', media: '(prefers-color-scheme: light)' }],
     ['meta', { name: 'theme-color', content: '#1c1c1e', media: '(prefers-color-scheme: dark)' }],
   ],
