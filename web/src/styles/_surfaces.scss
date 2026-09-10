@@ -45,9 +45,8 @@
   padding: 14px 12px;
   border-radius: 18px;
   background: var(--ai-surface-container);
-  /* Deliberately not scrollable: seven fixed entries always fit, and any
-     overflow rule here would clip the resize handle that sits just outside
-     the rail's right edge — or grow a scrollbar for it. */
+  /* The inner navigation scrolls; clipping the rail itself would also clip
+     the resize handle just outside its right edge. */
   overflow: visible;
   /* Slid out by a negative margin rather than collapsed by width: the rail
      keeps its own width the whole way, so its entries never reflow mid
@@ -1477,13 +1476,13 @@
   background-repeat: no-repeat;
 }
 
-.oa-settings-panel input:hover,
+.oa-settings-panel input:not([type='range']):hover,
 .oa-settings-panel .oa-select:hover,
 .oa-settings-panel textarea:hover {
   background-color: var(--ai-field-bg-hover);
 }
 
-.oa-settings-panel input:focus,
+.oa-settings-panel input:not([type='range']):focus,
 .oa-settings-panel .oa-select:focus-visible,
 .oa-settings-panel textarea:focus {
   outline: none;
@@ -2997,4 +2996,132 @@
 .oa-linechart-dot {
   pointer-events: none;
   transition: r 0.15s ease;
+}
+
+/* Search shares the field fill and focus ring across rails and forms, with
+   room reserved for clearing so typing never changes the input's width. */
+.oa-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
+  min-height: 36px;
+  box-sizing: border-box;
+  padding: 0 8px 0 11px;
+  border-radius: 11px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text-secondary);
+}
+
+.oa-search:hover {
+  background: var(--ai-field-bg-hover);
+}
+
+.oa-search:focus-within {
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-search > svg {
+  flex-shrink: 0;
+}
+
+.oa-search input {
+  appearance: none;
+  min-width: 0;
+  width: 100%;
+  flex: 1;
+  padding: 9px 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.oa-search input::placeholder {
+  color: var(--ai-text-secondary);
+}
+
+.oa-search input::-webkit-search-cancel-button,
+.oa-search input::-webkit-search-decoration {
+  appearance: none;
+}
+
+.oa-search .oa-search-clear {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.oa-search:not(:has(.oa-search-clear))::after {
+  content: '';
+  width: 24px;
+  flex-shrink: 0;
+}
+
+.oa-settings-search {
+  margin: 2px 18px 12px;
+}
+
+/* Fullscreen uses a centred form column; its search should share that width. */
+.oa-panel.fullscreen .oa-settings-search {
+  width: calc(100% - 48px);
+  max-width: 872px;
+  margin: 2px auto 12px;
+}
+
+.oa-admin-search {
+  margin-bottom: 8px;
+}
+
+.oa-search-empty {
+  margin: 0;
+  padding: 18px 8px;
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.oa-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.oa-settings > .oa-settings-group {
+  gap: 26px;
+}
+
+/* The search takes a row of its own; keep every admin link reachable on
+   short windows without moving the rail footer or the resize handle. */
+.oa-admin-nav-wrap {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.oa-admin-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 3px;
+  scrollbar-width: none;
+}
+
+.oa-admin-nav-list::-webkit-scrollbar {
+  display: none;
+}
+
+/* A range gets its focus halo on the thumb, never a filled input rectangle. */
+.oa-range-field input[type='range']:focus {
+  outline: none;
+  background: transparent;
+  box-shadow: none;
 }

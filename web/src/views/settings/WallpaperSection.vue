@@ -108,7 +108,7 @@ async function clear(): Promise<void> {
 <template>
   <div class="oa-settings-panel">
     <h2 class="oa-admin-section-title">{{ t('secWallpaper') }}</h2>
-    <p class="oa-field-hint">{{ status }}</p>
+    <p v-if="status" class="oa-field-hint">{{ status }}</p>
 
     <div class="oa-button-row">
       <button type="button" class="oa-btn" @click="picker?.click()">{{ t('chooseImage') }}</button>

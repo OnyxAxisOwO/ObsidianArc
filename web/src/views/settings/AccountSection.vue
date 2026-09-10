@@ -13,6 +13,9 @@ import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { t } from '@/composables/useI18n';
 import { adopt, currentPreferences, currentUser, requireUser } from '@/stores/session';
+import { matchesSettings } from './search';
+
+const props = withDefaults(defineProps<{ query?: string }>(), { query: '' });
 
 const account = requireUser();
 
@@ -141,7 +144,7 @@ function importData(): void {
 </script>
 
 <template>
-  <div class="oa-settings-panel">
+  <div v-show="matchesSettings(props.query, 'profile')" class="oa-settings-panel">
     <h2 class="oa-admin-section-title">{{ t('secProfile') }}</h2>
     <OaTextField
       v-model="nickname"
@@ -167,7 +170,7 @@ function importData(): void {
     </div>
   </div>
 
-  <div class="oa-settings-panel">
+  <div v-show="matchesSettings(props.query, 'password')" class="oa-settings-panel">
     <h2 class="oa-admin-section-title">{{ t('secPassword') }}</h2>
     <p class="oa-field-hint">{{ t('passwordSectionHint') }}</p>
     <OaTextField v-model="currentPassword" :label="t('currentPassword')" type="password" />
@@ -185,7 +188,7 @@ function importData(): void {
     </div>
   </div>
 
-  <div class="oa-settings-panel">
+  <div v-show="matchesSettings(props.query, 'data')" class="oa-settings-panel">
     <h2 class="oa-admin-section-title">{{ t('secData') }}</h2>
     <p class="oa-field-hint">{{ t('dataHint') }}</p>
     <div class="oa-button-row">

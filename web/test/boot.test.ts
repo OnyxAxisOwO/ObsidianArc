@@ -4,6 +4,8 @@ import App from '../src/App.vue';
 import { router } from '../src/router';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import type { Account } from '../src/api/auth';
+import { conversations } from '../src/chat/useChat';
+import { changeLanguage, t } from '../src/composables/useI18n';
 
 // The whole application, mounted.
 //
@@ -250,6 +252,115 @@ describe('the application, mounted', () => {
 });
 
 describe('what moves, and what does not', () => {
+  async function search(selector: string, value: string): Promise<HTMLInputElement> {
+    const input = host.querySelector<HTMLInputElement>(selector)!;
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+    return input;
+  }
+
+  function shown(selector: string): Element[] {
+    return Array.from(host.querySelectorAll<HTMLElement>(selector)).filter((node) => {
+      for (let parent: HTMLElement | null = node; parent; parent = parent.parentElement) {
+        if (parent.style.display === 'none') return false;
+      }
+      return true;
+    });
+  }
+
+  it('filters history titles without changing the underlying list and clears with Escape', async () => {
+    adopt(ACCOUNT);
+    await mountAt('/');
+    conversations.value = ['Vue Search', '周末计划', 'Go notes'].map((title, index) => ({
+      id: `search-${index}`, title, model_id: '', pinned: false, message_count: 0, created_at: 0, updated_at: 0,
+    }));
+    await nextTick();
+    await search('.oa-history-search input', '  ＶＵＥ search  ');
+    expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(1);
+    expect(host.querySelector('.ai-chat-list-title')?.textContent).toBe('Vue Search');
+    expect(conversations.value).toHaveLength(3);
+    await search('.oa-history-search input', '周末');
+    expect(host.querySelector('.ai-chat-list-title')?.textContent).toBe('周末计划');
+    const input = await search('.oa-history-search input', 'absent');
+    expect(host.querySelector('.ai-chat-list-empty')?.textContent).toBe(t('noSearchResults'));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await nextTick();
+    expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(3);
+    expect(document.activeElement).toBe(input);
+    input.dispatchEvent(new CompositionEvent('compositionstart'));
+    await search('.oa-history-search input', 'zhou');
+    expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(3);
+    input.value = '周末';
+    input.dispatchEvent(new CompositionEvent('compositionend'));
+    await nextTick();
+    expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(1);
+    expect(host.querySelector('.ai-chat-list-title')?.textContent).toBe('周末计划');
+    conversations.value = [];
+  });
+
+  it('searches settings across categories and preserves a hidden profile draft', async () => {
+    await changeLanguage('en');
+    adopt(ACCOUNT);
+    await mountAt('/settings');
+    await search('.oa-settings-search input', 'nickname');
+    expect(shown('.oa-settings-panel')).toHaveLength(1);
+    const nickname = shown('.oa-settings-panel')[0]!.querySelector<HTMLInputElement>('input')!;
+    nickname.value = 'Unsaved nickname';
+    nickname.dispatchEvent(new Event('input', { bubbles: true }));
+    await search('.oa-settings-search input', 'wallpaper');
+    expect(shown('.oa-range-field')).toHaveLength(4);
+    await search('.oa-settings-search input', 'nothing-matches-this');
+    expect(shown('.oa-settings-panel')).toHaveLength(0);
+    expect(host.querySelector('.oa-settings .oa-search-empty')?.textContent).toBe(t('noSearchResults'));
+    await search('.oa-settings-search input', 'nickname');
+    expect(shown('.oa-settings-panel')[0]!.querySelector<HTMLInputElement>('input')).toBe(nickname);
+    expect(nickname.value).toBe('Unsaved nickname');
+    host.querySelector<HTMLButtonElement>('.oa-settings-search button')!.click();
+    await nextTick();
+    expect(shown('.oa-settings-panel')).toHaveLength(2);
+    expect(shown('.oa-range-field')).toHaveLength(4);
+    expect(host.querySelector('.oa-panel')).not.toBeNull();
+  });
+
+  it('updates settings matches when switching language with a query still entered', async () => {
+    await changeLanguage('en');
+    adopt(ACCOUNT);
+    await mountAt('/settings');
+    await search('.oa-settings-search input', '壁纸');
+    expect(shown('.oa-settings-panel')).toHaveLength(0);
+    await changeLanguage('zh');
+    await nextTick();
+    expect(shown('.oa-range-field')).toHaveLength(4);
+    expect(host.querySelector<HTMLInputElement>('.oa-settings-search input')?.placeholder).toBe('搜索设置');
+    await changeLanguage('en');
+  });
+
+  it('filters admin navigation and instance settings while retaining unsaved values', async () => {
+    await changeLanguage('en');
+    adopt({ ...ACCOUNT, role: 'admin' });
+    await mountAt('/admin/settings');
+    await search('.oa-admin-search input', 'providers');
+    expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(1);
+    expect(host.querySelector('.oa-admin-nav')?.getAttribute('href')).toBe('/admin/providers');
+    expect(router.currentRoute.value.path).toBe('/admin/settings');
+    await search('.oa-admin-body .oa-search input', t('siteName'));
+    const siteName = shown('.oa-admin-body section')[0]!.querySelector<HTMLInputElement>('input')!;
+    siteName.value = 'Unsaved site';
+    siteName.dispatchEvent(new Event('input', { bubbles: true }));
+    await search('.oa-admin-body .oa-search input', t('attachmentPurgeDaily'));
+    expect(shown('.oa-admin-body section')).toHaveLength(1);
+    expect(shown('.oa-admin-body section')[0]!.textContent).toContain(t('attachmentPurgeDaily'));
+    await search('.oa-admin-body .oa-search input', t('siteName'));
+    expect(shown('.oa-admin-body section')[0]!.querySelector<HTMLInputElement>('input')).toBe(siteName);
+    expect(siteName.value).toBe('Unsaved site');
+    await search('.oa-admin-body .oa-search input', 'nothing-matches-this');
+    expect(shown('.oa-admin-body section')).toHaveLength(0);
+    expect(host.querySelector('.oa-admin-body .oa-search-empty')?.textContent).toBe(t('noSearchResults'));
+    await search('.oa-admin-body .oa-search input', '');
+    expect(shown('.oa-admin-body section')).toHaveLength(7);
+  });
+
   it('swaps one panel for another without letting the chat reflow wide', async () => {
     adopt(ACCOUNT);
     await mountAt('/settings');

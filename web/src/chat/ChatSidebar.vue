@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaResizer from '@/components/OaResizer.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
+import OaSearchField from '@/components/OaSearchField.vue';
+import { matchesSearch } from '@/lib/search';
 import { t } from '@/composables/useI18n';
 import { usePanelHost } from '@/composables/usePanelHost';
 import { IconCheck, IconPlus, IconTrash } from '@/icons';
@@ -14,6 +16,9 @@ import {
 // The rail's width drives its own collapsed margin as well as its size, so
 // the handle writes the custom property on the row rather than a width here.
 const row = usePanelHost();
+const query = ref('');
+const filteredConversations = computed(() => conversations.value.filter((entry) =>
+  matchesSearch(query.value, entry.title || t('newChat'))));
 
 // A short rise on the row that just became current, so switching reads as a
 // different conversation rather than the list quietly repainting.
@@ -36,10 +41,13 @@ watch(activeID, () => {
       </button>
     </div>
 
+    <OaSearchField v-model="query" class="oa-history-search" :label="t('searchHistory')" />
+
     <OaScrollArea wrap-class="ai-chat-list-wrap" scroll-class="ai-chat-list">
       <p v-if="!conversations.length" class="ai-chat-list-empty">{{ t('noHistory') }}</p>
+      <p v-else-if="!filteredConversations.length" class="ai-chat-list-empty" role="status">{{ t('noSearchResults') }}</p>
       <div
-        v-for="conversation in conversations"
+        v-for="conversation in filteredConversations"
         :key="conversation.id"
         class="ai-chat-list-item"
         :class="{

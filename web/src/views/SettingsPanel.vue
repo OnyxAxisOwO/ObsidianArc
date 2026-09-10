@@ -13,17 +13,19 @@
 // Save at the bottom would be claiming to commit things it has nothing to do
 // with.
 
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
+import OaSearchField from '@/components/OaSearchField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { IconCollapse, IconExpand } from '@/icons';
 import AccountSection from './settings/AccountSection.vue';
 import AppearanceSection from './settings/AppearanceSection.vue';
 import ChatSection from './settings/ChatSection.vue';
 import WallpaperSection from './settings/WallpaperSection.vue';
+import { matchesSettings, type SettingsGroup } from './settings/search';
 
 type Category = 'appearance' | 'chat' | 'account';
 
@@ -39,6 +41,23 @@ const panel = ref<InstanceType<typeof OaPanel> | null>(null);
 const scroll = ref<InstanceType<typeof OaScrollArea> | null>(null);
 
 const category = ref<Category>('appearance');
+const query = ref('');
+const searching = computed(() => !!query.value.trim());
+const visibleGroups = computed(() => {
+  const visible = (group: SettingsGroup, owner: Category) => searching.value
+    ? matchesSettings(query.value, group)
+    : category.value === owner;
+  return {
+    appearance: visible('appearance', 'appearance'),
+    wallpaper: visible('wallpaper', 'appearance'),
+    chat: visible('chat', 'chat'),
+    account: (['profile', 'password', 'data'] as const).some((group) => visible(group, 'account')),
+  };
+});
+watch(query, () => {
+  const node = scroll.value?.scroller;
+  if (node) node.scrollTop = 0;
+});
 const fullscreen = ref(false);
 /** Which way the pane arrives, so a step back does not read as a step on. */
 const direction = ref<'forward' | 'back' | 'rise'>('rise');
@@ -46,6 +65,7 @@ const direction = ref<'forward' | 'back' | 'rise'>('rise');
 const paneClass = computed(() => `oa-settings enter-${direction.value}`);
 
 function select(next: Category): void {
+  query.value = '';
   if (next === category.value) return;
   const from = CATEGORIES.findIndex((entry) => entry.id === category.value);
   const to = CATEGORIES.findIndex((entry) => entry.id === next);
@@ -80,6 +100,8 @@ function toggleFullscreen(): void {
       </OaIconButton>
     </template>
 
+    <OaSearchField v-model="query" class="oa-settings-search" :label="t('searchSettings')" />
+
     <!-- Drawer view: a segmented control fixed at the top. -->
     <div class="oa-settings-tabs-bar">
       <nav class="oa-settings-tabs">
@@ -88,7 +110,7 @@ function toggleFullscreen(): void {
           :key="entry.id"
           type="button"
           class="oa-settings-tab"
-          :class="{ active: entry.id === category }"
+          :class="{ active: !searching && entry.id === category }"
           @click="select(entry.id)"
         >{{ t(entry.label) }}</button>
       </nav>
@@ -102,7 +124,7 @@ function toggleFullscreen(): void {
           :key="entry.id"
           type="button"
           class="oa-settings-rail-item"
-          :class="{ active: entry.id === category }"
+          :class="{ active: !searching && entry.id === category }"
           @click="select(entry.id)"
         >{{ t(entry.label) }}</button>
       </nav>
@@ -112,13 +134,15 @@ function toggleFullscreen(): void {
         wrap-class="oa-settings-scroll-wrap"
         scroll-class="oa-settings-scroll"
       >
-        <div :key="category" :class="paneClass">
-          <template v-if="category === 'appearance'">
-            <AppearanceSection />
-            <WallpaperSection />
-          </template>
-          <ChatSection v-else-if="category === 'chat'" />
-          <AccountSection v-else />
+        <div :class="paneClass">
+          <p v-if="!Object.values(visibleGroups).some(Boolean)" class="oa-search-empty" role="status">{{ t('noSearchResults') }}</p>
+          <!-- Keep drafts mounted while search temporarily hides their section. -->
+          <AppearanceSection v-show="visibleGroups.appearance" />
+          <WallpaperSection v-show="visibleGroups.wallpaper" />
+          <ChatSection v-show="visibleGroups.chat" />
+          <div v-show="visibleGroups.account" class="oa-settings-group">
+            <AccountSection :query="query" />
+          </div>
         </div>
       </OaScrollArea>
     </div>
