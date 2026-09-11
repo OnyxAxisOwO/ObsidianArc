@@ -3137,7 +3137,9 @@
      then grows over that strip without making the page or its tabs reflow. */
   .oa-admin-rail {
     width: 100%;
-    min-height: 52px;
+    height: 56px;
+    min-height: 56px;
+    padding: 12px 8px;
     overflow: hidden;
   }
 
@@ -3148,11 +3150,11 @@
   .oa-admin-search.oa-search-collapsible {
     position: absolute;
     z-index: 3;
-    top: 8px;
+    top: 12px;
     left: 8px;
-    width: 36px;
-    height: 36px;
-    min-height: 36px;
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
     margin: 0;
     padding: 0;
     gap: 0;
@@ -3164,8 +3166,8 @@
   }
 
   .oa-admin-search.oa-search-collapsible .oa-search-open {
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
   }
 
   .oa-admin-search.oa-search-collapsible:not(.expanded) input,
@@ -3183,14 +3185,20 @@
 
   .oa-admin-nav-wrap {
     min-width: 0;
-    margin-left: 44px;
+    margin-left: 40px;
     overflow: hidden;
   }
 
   .oa-admin-nav-list {
     flex-direction: row;
+    height: 32px;
+    padding: 0;
     overflow-x: auto;
     overflow-y: hidden;
+  }
+
+  .oa-admin-nav {
+    height: 32px;
   }
 }
 
