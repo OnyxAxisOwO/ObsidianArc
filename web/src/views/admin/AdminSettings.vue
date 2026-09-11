@@ -5,7 +5,8 @@
 // understand before they change it. Anything with a sensible answer for every
 // deployment is a constant, not a setting.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { adminApi, type AdminModel, type HeldAttachments } from '@/admin/api';
 import { pickJSONFile, saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
@@ -26,6 +27,7 @@ import { useAdminView } from './adminView';
 const view = useAdminView();
 view.setTitle(t('adminSettingsTitle'));
 
+const route = useRoute();
 const query = ref('');
 const SEARCH_GROUPS = {
   secIdentity: [
@@ -61,6 +63,19 @@ const SEARCH_GROUPS = {
 const visibleGroups = computed(() => Object.fromEntries(
   Object.entries(SEARCH_GROUPS).map(([group, terms]) => [group, matchesSearch(query.value, ...terms.map((key) => t(key)))]),
 ));
+
+// If navigating to a specific setting section from global admin search,
+// clear the local query so the targeted section is visible.
+watch(
+  () => route.hash,
+  (nextHash) => {
+    const hash = nextHash.replace(/^#/, '');
+    if (hash && hash in SEARCH_GROUPS) {
+      query.value = '';
+    }
+  },
+  { immediate: true },
+);
 
 const error = ref('');
 const loaded = ref(false);
@@ -251,8 +266,10 @@ onMounted(load);
 
 <template>
   <Teleport :to="view.actionsHost">
-    <button type="button" class="oa-btn" @click="exportSettings">{{ t('exportSettings') }}</button>
-    <button type="button" class="oa-btn" @click="importSettings">{{ t('importSettings') }}</button>
+    <div id="backupSettings" style="display: contents">
+      <button type="button" class="oa-btn" @click="exportSettings">{{ t('exportSettings') }}</button>
+      <button type="button" class="oa-btn" @click="importSettings">{{ t('importSettings') }}</button>
+    </div>
     <button type="button" class="oa-btn primary" :disabled="busy" @click="save">
       {{ saveLabel || t('save') }}
     </button>
@@ -265,7 +282,7 @@ onMounted(load);
     <OaSearchField v-model="query" :label="t('searchSettings')" />
     <p v-if="!Object.values(visibleGroups).some(Boolean)" class="oa-search-empty" role="status">{{ t('noSearchResults') }}</p>
 
-    <section v-show="visibleGroups.secIdentity" class="oa-settings-group">
+    <section id="secIdentity" v-show="visibleGroups.secIdentity" class="oa-settings-group">
       <OaFormSection :title="t('secIdentity')" />
       <OaTextField v-model="form.siteName" :label="t('siteName')" :hint="t('siteNameHint')" :max-length="60" />
       <OaTextArea v-model="form.description" :label="t('signInNote')" :rows="2" :hint="t('signInNoteHint')" />
@@ -284,7 +301,7 @@ onMounted(load);
       />
     </section>
 
-    <section v-show="visibleGroups.secLanding" class="oa-settings-group">
+    <section id="secLanding" v-show="visibleGroups.secLanding" class="oa-settings-group">
       <OaFormSection :title="t('secLanding')" />
       <OaSelectField
         v-model="form.landingMode"
@@ -328,7 +345,7 @@ onMounted(load);
       />
     </section>
 
-    <section v-show="visibleGroups.secChat" class="oa-settings-group">
+    <section id="secChat" v-show="visibleGroups.secChat" class="oa-settings-group">
       <OaFormSection :title="t('secChat')" />
       <OaTextArea
         v-model="form.systemPrompt"
@@ -345,7 +362,7 @@ onMounted(load);
       />
     </section>
 
-    <section v-show="visibleGroups.secLimits" class="oa-settings-group">
+    <section id="secLimits" v-show="visibleGroups.secLimits" class="oa-settings-group">
       <OaFormSection :title="t('secLimits')" />
       <OaSwitchField
         v-model="form.adminBypass"
@@ -364,7 +381,7 @@ onMounted(load);
       />
     </section>
 
-    <section v-show="visibleGroups.secAttachments" class="oa-settings-group">
+    <section id="secAttachments" v-show="visibleGroups.secAttachments" class="oa-settings-group">
       <OaFormSection :title="t('secAttachments')" :hint="t('attachmentsHint')" />
       <OaNumberField
         v-model="form.attachmentMaxMB"
@@ -380,7 +397,7 @@ onMounted(load);
       />
     </section>
 
-    <section v-show="visibleGroups.secCleanup" class="oa-settings-group">
+    <section id="secCleanup" v-show="visibleGroups.secCleanup" class="oa-settings-group">
       <OaFormSection :title="t('secCleanup')" :hint="t('cleanupHint')" />
       <OaNumberField
         v-model="form.purgeAfterDays"
@@ -419,7 +436,7 @@ onMounted(load);
       </div>
     </section>
 
-    <section v-show="visibleGroups.apiKeys" class="oa-settings-group">
+    <section id="apiKeys" v-show="visibleGroups.apiKeys" class="oa-settings-group">
       <OaFormSection :title="t('apiKeys')" />
       <OaSwitchField v-model="form.apiEnabled" :label="t('apiEnabled')" :hint="t('apiEnabledHint')" />
     </section>

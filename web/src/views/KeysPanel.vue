@@ -27,7 +27,7 @@ import type { ListItem } from '@/components/list-items';
 import { t, type StringKey } from '@/composables/useI18n';
 import { IconCheck, IconCopy, IconGear, IconPause, IconPlay, IconTrash } from '@/icons';
 import { absoluteTime, relativeTime } from '@/lib/format';
-import { siteInfo } from '@/stores/session';
+import { currentUser, siteInfo } from '@/stores/session';
 
 /** Expiry choices, as days from now. Zero is "never". */
 const LIFETIMES: Array<{ days: number; label: StringKey }> = [
@@ -77,6 +77,16 @@ const editStatus = ref<'active' | 'paused'>('active');
 const editModels = ref<string[]>([]);
 
 const full = computed(() => keys.value.length >= max.value);
+const apiWarning = computed(() => {
+  const account = currentUser.value;
+  if (account?.api_restricted &&
+      (account.api_restricted_until === 0 || account.api_restricted_until > Date.now())) {
+    return account.api_restricted_until > 0
+      ? t('apiRestrictedUntil', { when: absoluteTime(account.api_restricted_until) })
+      : t('apiRestrictedIndefinitely');
+  }
+  return t('apiDisabledForYou');
+});
 const lifetimeChoices = computed(() => LIFETIMES.map((entry) => ({ value: String(entry.days), label: t(entry.label) })));
 const endpoint = `${window.location.origin}/v1`;
 
@@ -344,7 +354,7 @@ onMounted(() => void refresh());
     <template v-else>
       <section class="oa-keys-intro">
         <p class="oa-field-hint">{{ t('apiKeysIntro') }}</p>
-        <p v-if="!enabled" class="oa-key-warning">{{ t('apiDisabledForYou') }}</p>
+        <p v-if="!enabled" class="oa-key-warning">{{ apiWarning }}</p>
         <!-- The base URL to paste into a client, which is the other half of a
              key. It exists to be pasted somewhere else, and selecting
              monospace text out of a rounded box by hand is the part nobody

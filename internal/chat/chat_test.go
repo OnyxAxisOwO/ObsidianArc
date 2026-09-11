@@ -20,10 +20,13 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
+	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -992,5 +995,66 @@ func TestUpdateMessageHandler(t *testing.T) {
 	mux.ServeHTTP(recEmpty, reqEmpty)
 	if recEmpty.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for empty content, got %d", recEmpty.Code)
+	}
+}
+
+func TestChatSpeedChallengePausesAndThenClearsThePendingTurn(t *testing.T) {
+	f := newFixture(t)
+	handlers := NewHandlers(f.service, f.conversations)
+	handlers.Security = securityevents.NewStore(f.db)
+	handlers.ChatChallengePolicy = func() securityevents.ChatPolicy {
+		return securityevents.ChatPolicy{Requests: 1, Window: time.Minute, Clearance: 30 * time.Minute}
+	}
+	handlers.ClientIP = func(*http.Request) string { return "203.0.113.9" }
+	verify := func(_ context.Context, token, ip string) error {
+		if ip != "203.0.113.9" {
+			t.Errorf("verification IP = %q", ip)
+		}
+		if token == "good" {
+			return nil
+		}
+		return turnstile.ErrFailed
+	}
+	handlers.ChatChallenge = turnstile.Gate{
+		Enabled: func() bool { return true }, Verify: verify,
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+
+	if err := handlers.requireChatChallenge(request, f.account, ""); err != nil {
+		t.Fatalf("first turn: %v", err)
+	}
+	assertChallengeCode := func(token, want string) {
+		t.Helper()
+		err := handlers.requireChatChallenge(request, f.account, token)
+		var response *httpx.Error
+		if !errors.As(err, &response) || response.Code != want {
+			t.Fatalf("token %q: error = %v, want %s", token, err, want)
+		}
+	}
+	assertChallengeCode("", "chat_challenge_required")
+	assertChallengeCode("bad", "challenge_failed")
+	if err := handlers.requireChatChallenge(request, f.account, "good"); err != nil {
+		t.Fatalf("valid challenge: %v", err)
+	}
+	if err := handlers.requireChatChallenge(request, f.account, ""); err != nil {
+		t.Fatalf("turn inside clearance: %v", err)
+	}
+
+	events, total, err := handlers.Security.List(
+		context.Background(), securityevents.Filter{Event: securityevents.EventChatChallenge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(events) != 3 {
+		t.Fatalf("events = %d/%d, want 3", len(events), total)
+	}
+	want := map[string]bool{"required": false, "failed": false, "passed": false}
+	for _, event := range events {
+		want[event.Decision] = true
+	}
+	for decision, found := range want {
+		if !found {
+			t.Errorf("missing %q event", decision)
+		}
 	}
 }

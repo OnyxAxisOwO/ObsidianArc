@@ -11,11 +11,12 @@ import OaScrollArea from '@/components/OaScrollArea.vue';
 import { t } from '@/composables/useI18n';
 import { IconMenu, IconPlus } from '@/icons';
 import ChatComposer from './ChatComposer.vue';
+import ChatChallenge from './ChatChallenge.vue';
 import ChatMessage from './ChatMessage.vue';
 import ChatPending from './ChatPending.vue';
 import ChatSidebar from './ChatSidebar.vue';
 import {
-  active, addImages, busy, dragging, draft, flash, historyOpen, messages, pending,
+  active, addImages, busy, chatChallenge, dragging, draft, flash, historyOpen, messages, pending,
   scrollTick, showPending, startNewConversation, status, submit, suggestions, switchTick,
 } from './useChat';
 import { isAdmin } from '@/stores/session';
@@ -149,4 +150,6 @@ defineExpose({ focus: () => composer.value?.focus() });
 
     <div class="ai-chat-drop">{{ t('dropHint') }}</div>
   </div>
+
+  <ChatChallenge v-if="chatChallenge" />
 </template>

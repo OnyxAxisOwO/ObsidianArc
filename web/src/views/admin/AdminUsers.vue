@@ -115,6 +115,7 @@ const keys = ref<ApiKey[] | null>(null);
 const conversations = ref<Conversation[] | null>(null);
 const transcript = ref<Message[] | null>(null);
 const transcriptTitle = ref('');
+const apiRestrictionTouched = ref(false);
 
 const grantCount = ref<number | null>(1);
 const grantLabel = ref('');
@@ -124,6 +125,8 @@ const form = ref({
   role: 'user' as Role,
   status: 'active' as AccountStatus,
   group: '',
+  apiRestricted: false,
+  apiRestrictionHours: 24 as number | null,
   newPassword: '',
   rpm: null as number | null,
   windows: {} as Record<QuotaWindowKind, {
@@ -133,6 +136,10 @@ const form = ref({
 });
 
 const self = computed(() => currentUser.value?.id === account.value?.id);
+
+function apiRestrictionActive(row: Account): boolean {
+  return row.api_restricted && (row.api_restricted_until === 0 || row.api_restricted_until > Date.now());
+}
 
 const enforced = computed(() => usage.value?.windows.filter((window) => window.enforced) ?? []);
 const unlimited = computed(() => !!usage.value && (usage.value.unlimited || !enforced.value.length));
@@ -216,6 +223,11 @@ async function open(id: string): Promise<void> {
   usage.value = detail.usage;
   lifetime.value = detail.lifetime;
   cards.value = detail.cards;
+  apiRestrictionTouched.value = false;
+  const restrictionActive = apiRestrictionActive(row);
+  const restrictionHours = restrictionActive && row.api_restricted_until > 0
+    ? Math.max(1, Math.ceil((row.api_restricted_until - Date.now()) / 3_600_000))
+    : 0;
   form.value = {
     nickname: row.nickname,
     email: row.email,
@@ -225,6 +237,8 @@ async function open(id: string): Promise<void> {
     role: row.role,
     status: row.status,
     group: row.group_id,
+    apiRestricted: restrictionActive,
+    apiRestrictionHours: restrictionActive ? restrictionHours : 24,
     newPassword: '',
     rpm: policy.rpm,
     windows,
@@ -245,7 +259,7 @@ async function save(): Promise<void> {
   busy.value = true;
   panelError.value = '';
   try {
-    await adminApi.updateUser(row.id, {
+    const patch: Record<string, unknown> = {
       nickname: form.value.nickname.trim(),
       email: form.value.email.trim(),
       qq: form.value.qq.trim(),
@@ -254,7 +268,12 @@ async function save(): Promise<void> {
       role: form.value.role,
       status: form.value.status,
       group_id: form.value.group,
-    });
+    };
+    if (apiRestrictionTouched.value) {
+      patch.api_restricted = form.value.apiRestricted;
+      patch.api_restriction_hours = form.value.apiRestrictionHours ?? 0;
+    }
+    await adminApi.updateUser(row.id, patch);
 
     if (form.value.newPassword) {
       await adminApi.resetPassword(row.id, form.value.newPassword);
@@ -396,7 +415,7 @@ const state = { q: '', role: '', status: '', group: '' };
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <template v-else>
-    <div class="oa-filters">
+    <div id="usersList" class="oa-filters">
       <input v-model="filters.q" type="search" :placeholder="t('searchUsers')">
       <OaSelect
         v-model="filters.role"
@@ -450,6 +469,7 @@ const state = { q: '', role: '', status: '', group: '' };
         <OaBadgeRow>
           <OaBadge v-if="row.role === 'admin'">{{ t('admin') }}</OaBadge>
           <OaBadge v-if="row.status === 'disabled'" tone="danger">{{ t('disabled') }}</OaBadge>
+          <OaBadge v-if="apiRestrictionActive(row)" tone="warning">{{ t('apiRestrictedBadge') }}</OaBadge>
         </OaBadgeRow>
       </template>
     </OaTable>
@@ -576,6 +596,21 @@ const state = { q: '', role: '', status: '', group: '' };
         v-model="form.group"
         :label="t('group')"
         :options="groups.map((entry) => ({ value: entry.id, label: entry.name }))"
+      />
+      <OaSwitchField
+        v-model="form.apiRestricted"
+        :label="t('apiRestricted')"
+        :hint="t('apiRestrictedHint')"
+        @update:model-value="apiRestrictionTouched = true"
+      />
+      <OaNumberField
+        v-if="form.apiRestricted"
+        v-model="form.apiRestrictionHours"
+        :label="t('apiRestrictionHours')"
+        :hint="t('apiRestrictionHoursHint')"
+        :min="0"
+        :max="8760"
+        @update:model-value="apiRestrictionTouched = true"
       />
       <OaTextField
         v-model="form.newPassword"

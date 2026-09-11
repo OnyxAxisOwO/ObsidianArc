@@ -304,19 +304,19 @@ let selectedDimension: 'model' | 'user' | 'provider' = 'model';
         @update:model-value="onRange"
       />
     </div>
-    <button type="button" class="oa-btn" @click="openPolicy">{{ t('defaultLimits') }}</button>
-    <button type="button" class="oa-btn oa-btn-danger" @click="openReset">{{ t('resetQuota') }}</button>
+    <button id="defaultLimits" type="button" class="oa-btn" @click="openPolicy">{{ t('defaultLimits') }}</button>
+    <button id="resetQuota" type="button" class="oa-btn oa-btn-danger" @click="openReset">{{ t('resetQuota') }}</button>
   </Teleport>
 
   <AdminFailure v-if="error" :message="error" @retry="load" />
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <template v-else>
-    <OaAdminSection :title="t('secTotals')">
+    <OaAdminSection id="secTotals" :title="t('secTotals')">
       <OaStatGrid :stats="totalStats" />
     </OaAdminSection>
 
-    <OaAdminSection :title="t('secOverTime')">
+    <OaAdminSection id="secOverTime" :title="t('secOverTime')">
       <OaSpark :series="series" :bucket-ms="bucketMs" :empty-text="t('noRequestsPeriod')" />
     </OaAdminSection>
 
@@ -324,7 +324,7 @@ let selectedDimension: 'model' | 'user' | 'provider' = 'model';
          defensible answers and a chart that picks silently is a chart that
          misleads. Shape and dimension repaint from what is already loaded;
          changing the metric refetches, because the ranking is the server's. -->
-    <OaAdminSection :title="t('secRanking')">
+    <OaAdminSection id="secRanking" :title="t('secRanking')">
       <div class="oa-ranking">
         <div class="oa-ranking-controls">
           <OaSelectField
@@ -369,11 +369,11 @@ let selectedDimension: 'model' | 'user' | 'provider' = 'model';
       </div>
     </OaAdminSection>
 
-    <OaAdminSection :title="t('secByModel')">
+    <OaAdminSection id="secByModel" :title="t('secByModel')">
       <OaTable :columns="breakdownColumns" :rows="byModel" :empty="t('nothingInPeriod')" />
     </OaAdminSection>
 
-    <OaAdminSection :title="t('secByProvider')">
+    <OaAdminSection id="secByProvider" :title="t('secByProvider')">
       <OaTable :columns="providerColumns" :rows="byProvider" :empty="t('nothingInPeriod')" />
     </OaAdminSection>
 

@@ -18,6 +18,8 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
+	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -38,6 +40,13 @@ type Handlers struct {
 	// The operator's per-file ceiling, read per request so a change takes
 	// effect without a restart. Optional; nil means the package default.
 	MaxUploadBytes func() int64
+	// A fast run of browser turns asks for a fresh proof of a person before
+	// another provider call is made. All are optional so the zero handler used
+	// by tests and deployments with the feature off behaves as before.
+	Security            *securityevents.Store
+	ChatChallenge       turnstile.Gate
+	ChatChallengePolicy func() securityevents.ChatPolicy
+	ClientIP            func(*http.Request) string
 	// Slots for in-flight attachment decodes. See uploadAttachment.
 	decoding chan struct{}
 }
@@ -92,6 +101,7 @@ type chatRequest struct {
 	} `json:"reasoning"`
 	TruncateFromMessageID string `json:"truncate_from_message_id"`
 	Stream                *bool  `json:"stream"`
+	Turnstile             string `json:"turnstile"`
 }
 
 // chat answers one turn over Server-Sent Events.
@@ -128,6 +138,9 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 	}
 	if len([]rune(body.Content)) > conversation.MaxContentChars {
 		return httpx.BadRequest("Message must be %d characters or fewer.", conversation.MaxContentChars)
+	}
+	if err := h.requireChatChallenge(r, account, body.Turnstile); err != nil {
+		return err
 	}
 
 	stream := true
@@ -191,6 +204,73 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		})
 		return nil
 	}
+	return nil
+}
+
+func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, token string) error {
+	if account.IsAdmin() || h.Security == nil || h.ChatChallengePolicy == nil {
+		return nil
+	}
+	policy := h.ChatChallengePolicy()
+	state, err := h.Security.ChatAttempt(
+		r.Context(), account.ID, time.Now(), policy.Requests, policy.Window)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	if !state.Required {
+		return nil
+	}
+
+	ip := ""
+	if h.ClientIP != nil {
+		ip = h.ClientIP(r)
+	}
+	record := func(decision, reason string, severity securityevents.Severity) {
+		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		defer cancel()
+		if err := h.Security.Record(recordCtx, nil, securityevents.Event{
+			Event: securityevents.EventChatChallenge, Severity: severity,
+			UserID: account.ID, Username: account.Username, IP: ip,
+			Source: "chat_speed", Decision: decision, Reason: reason,
+		}); err != nil {
+			slog.ErrorContext(r.Context(), "could not record chat challenge", "error", err)
+		}
+	}
+
+	if strings.TrimSpace(token) == "" {
+		if state.Attempt == policy.Requests+1 {
+			record("required", "chat submission speed crossed the configured threshold", securityevents.SeverityWarning)
+		}
+		return httpx.ForbiddenCode("chat_challenge_required",
+			"Complete a verification check to continue chatting.")
+	}
+	if err := h.ChatChallenge.Check(r.Context(), token, ip); err != nil {
+		// One failure explains the outcome without giving a bot a database-write
+		// amplifier by submitting an unlimited stream of bogus tokens.
+		if state.Attempt <= policy.Requests+2 {
+			record("failed", err.Error(), securityevents.SeverityWarning)
+		}
+		switch {
+		case errors.Is(err, turnstile.ErrFailed):
+			return httpx.ForbiddenCode("challenge_failed",
+				"The verification could not be completed. Try again.")
+		case errors.Is(err, turnstile.ErrUnavailable):
+			return httpx.UnavailableCode("challenge_unavailable",
+				"Verification is unavailable right now. Try again shortly.")
+		default:
+			return httpx.Internal(err)
+		}
+	}
+	clearance := policy.Clearance
+	if clearance <= 0 {
+		clearance = 30 * time.Minute
+	}
+	clearCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if err := h.Security.ClearChatChallenge(clearCtx, account.ID, time.Now().Add(clearance)); err != nil {
+		return httpx.Internal(err)
+	}
+	record("passed", "visitor passed the chat speed challenge", securityevents.SeverityInfo)
 	return nil
 }
 

@@ -50,9 +50,13 @@ type Service struct {
 	//
 	// A function rather than the reviewer itself: the review needs a model,
 	// a provider and an adapter registry, and auth has no business knowing
-	// about any of them. It returns an error only to be refused — anything
-	// that went wrong on the way is the wiring's to log and to allow.
-	ReviewSignup func(ctx context.Context, in RegisterInput, fromAddress int) error
+	// about any of them. A call failure still carries the mode's fallback
+	// decision; the error exists so the wiring can report why it was needed.
+	ReviewSignup func(ctx context.Context, in RegisterInput, fromAddress int) (SignupReview, error)
+	// Called after a review has a durable outcome, including a refusal where
+	// no account was created. Recording is best-effort and must not turn an
+	// audit failure into a registration failure.
+	OnSignupReview func(context.Context, RegisterInput, *user.User, SignupReview)
 	// Optional. Nil, or configured with no host, means every feature
 	// that needs mail reports itself as unavailable rather than
 	// failing halfway through.
@@ -97,6 +101,21 @@ type RegisterInput struct {
 	Turnstile string
 }
 
+type SignupDecision string
+
+const (
+	SignupAllow    SignupDecision = "allow"
+	SignupRestrict SignupDecision = "restrict"
+	SignupRefuse   SignupDecision = "refuse"
+)
+
+type SignupReview struct {
+	Ran             bool
+	Decision        SignupDecision
+	Reason          string
+	RestrictedUntil int64
+}
+
 // Register creates an account and signs it in. The first account on an empty
 // instance becomes an administrator regardless of whether registration is
 // otherwise open, which is what makes a fresh deployment usable without
@@ -134,6 +153,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	if err != nil {
 		return user.User{}, "", err
 	}
+	review := SignupReview{Decision: SignupAllow}
 	if total > 0 {
 		if !s.settings.Bool(settings.RegistrationEnabled) {
 			return user.User{}, "", ErrRegistrationClosed
@@ -172,8 +192,16 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			if err != nil {
 				return user.User{}, "", err
 			}
-			if err := s.ReviewSignup(ctx, in, seen); err != nil {
-				return user.User{}, "", err
+			review, _ = s.ReviewSignup(ctx, in, seen)
+			switch review.Decision {
+			case SignupAllow, SignupRestrict, SignupRefuse:
+			default:
+				review.Decision = SignupRestrict
+				review.Reason = "review returned no decision"
+			}
+			if review.Decision == SignupRefuse {
+				s.recordSignupReview(ctx, in, nil, review)
+				return user.User{}, "", ErrSignupRefused
 			}
 		}
 	}
@@ -271,16 +299,19 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		unverified := !first && s.VerificationRequired()
 
 		created, err = s.users.Create(ctx, tx, user.CreateInput{
-			Username:     in.Username,
-			Email:        in.Email,
-			QQ:           in.QQ,
-			PasswordHash: hash,
-			Nickname:     in.Nickname,
-			Role:         role,
-			GroupID:      groupID,
-			Status:       user.StatusActive,
-			Unverified:   unverified,
-			SignupIP:     in.IP,
+			Username:             in.Username,
+			Email:                in.Email,
+			QQ:                   in.QQ,
+			PasswordHash:         hash,
+			Nickname:             in.Nickname,
+			Role:                 role,
+			GroupID:              groupID,
+			Status:               user.StatusActive,
+			Unverified:           unverified,
+			SignupIP:             in.IP,
+			APIRestricted:        review.Decision == SignupRestrict,
+			APIRestrictedUntil:   review.RestrictedUntil,
+			APIRestrictionSource: restrictionSource(review.Decision),
 		})
 		if err != nil {
 			return err
@@ -300,6 +331,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	if err != nil {
 		return user.User{}, "", err
 	}
+	s.recordSignupReview(ctx, in, &created, review)
 
 	if verification != "" {
 		s.mailVerification(ctx, created.Email, verification)
@@ -313,6 +345,27 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	_ = s.users.MarkLogin(ctx, created.ID, now)
 	created.LastLoginAt = now
 	return created, token, nil
+}
+
+func restrictionSource(decision SignupDecision) string {
+	if decision == SignupRestrict {
+		return "signup_review"
+	}
+	return ""
+}
+
+func (s *Service) recordSignupReview(
+	ctx context.Context, in RegisterInput, account *user.User, review SignupReview,
+) {
+	if s.OnSignupReview == nil || !review.Ran {
+		return
+	}
+	// The decision remains useful if the browser goes away just as review
+	// finishes. Bound the detached write so an audit problem cannot hold the
+	// registration path indefinitely.
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	s.OnSignupReview(recordCtx, in, account, review)
 }
 
 // UpdateProfile applies the fields an account owns about itself.

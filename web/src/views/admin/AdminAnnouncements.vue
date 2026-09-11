@@ -5,7 +5,8 @@
 // announcement can be either, both or neither, and enumerating the
 // combinations would just be these two booleans wearing a costume.
 
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { adminApi, type Announcement } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
@@ -26,6 +27,7 @@ import { useAdminView } from './adminView';
 
 type DisplayMode = Announcement['display_mode'];
 
+const route = useRoute();
 const view = useAdminView();
 view.setTitle(t('announcements'));
 
@@ -132,15 +134,28 @@ async function load(): Promise<void> {
     error.value = failure instanceof Error ? failure.message : String(failure);
   } finally {
     loaded.value = true;
+    checkDrawerTarget();
   }
 }
+
+function checkDrawerTarget(): void {
+  if (route.hash === '#addAnnouncement' && !panelOpen.value) {
+    open(null);
+  }
+}
+
+watch(() => route.hash, () => {
+  if (loaded.value) {
+    checkDrawerTarget();
+  }
+});
 
 onMounted(load);
 </script>
 
 <template>
   <Teleport :to="view.actionsHost">
-    <button type="button" class="oa-btn primary" @click="open(null)">{{ t('addAnnouncement') }}</button>
+    <button id="addAnnouncement" type="button" class="oa-btn primary" @click="open(null)">{{ t('addAnnouncement') }}</button>
   </Teleport>
 
   <AdminFailure v-if="error" :message="error" @retry="load" />
@@ -148,6 +163,7 @@ onMounted(load);
 
   <OaTable
     v-else
+    id="announcementsList"
     :columns="columns"
     :rows="announcements"
     :empty="t('announcementsEmpty')"

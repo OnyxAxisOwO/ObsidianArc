@@ -132,54 +132,58 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 // administrator invent settings nothing reads, and would let a typo silently
 // replace a real one.
 var writableSettings = map[string]bool{
-	settings.SiteName:              true,
-	settings.SiteDescription:       true,
-	settings.AboutTitle:            true,
-	settings.AboutBody:             true,
-	settings.HomeNotice:            true,
-	settings.HomeNoticeDismissible: true,
-	settings.RegistrationEnabled:   true,
-	settings.RegistrationGroup:     true,
-	settings.RequireEmail:          true,
-	settings.QQRequirement:         true,
-	settings.VerifyEmail:           true,
-	settings.EmailDomains:          true,
-	settings.SignupsPerMinute:      true,
-	settings.SignupsPerHour:        true,
-	settings.SignupsPerIP:          true,
-	settings.SignupsIPWindowMin:    true,
-	settings.TurnstileSiteKey:      true,
-	settings.TurnstileSecretKey:    true,
-	settings.TurnstileOnLogin:      true,
-	settings.TurnstileOnSignup:     true,
-	settings.TurnstileOnAPIKey:     true,
-	settings.SignupReview:          true,
-	settings.SignupReviewModel:     true,
-	settings.SignupReviewMode:      true,
-	settings.SignupReviewRefusal:   true,
-	settings.AdminsBypassQuota:     true,
-	settings.HealthProbe:           true,
-	settings.HealthWindowMins:      true,
-	settings.HealthDisableAfter:    true,
-	settings.HealthRetainDays:      true,
-	settings.HealthDisableBelow:    true,
-	settings.HealthShowUsers:       true,
-	settings.HealthWarnBelow:       true,
-	settings.HealthResetAt:         true,
-	settings.UsageDisplay:          true,
-	settings.LandingMode:           true,
-	settings.LandingIntro:          true,
-	settings.TrialEnabled:          true,
-	settings.TrialTurns:            true,
-	settings.TrialModel:            true,
-	settings.DefaultSystemPrompt:   true,
-	settings.ConversationMaxTurns:  true,
-	settings.APIEnabled:            true,
-	settings.AttachmentMaxMB:       true,
-	settings.AttachmentRetain:      true,
-	settings.AttachmentPurgeDays:   true,
-	settings.AttachmentPurgeDaily:  true,
-	settings.AttachmentOrphanMins:  true,
+	settings.SiteName:                  true,
+	settings.SiteDescription:           true,
+	settings.AboutTitle:                true,
+	settings.AboutBody:                 true,
+	settings.HomeNotice:                true,
+	settings.HomeNoticeDismissible:     true,
+	settings.RegistrationEnabled:       true,
+	settings.RegistrationGroup:         true,
+	settings.RequireEmail:              true,
+	settings.QQRequirement:             true,
+	settings.VerifyEmail:               true,
+	settings.EmailDomains:              true,
+	settings.SignupsPerMinute:          true,
+	settings.SignupsPerHour:            true,
+	settings.SignupsPerIP:              true,
+	settings.SignupsIPWindowMin:        true,
+	settings.TurnstileSiteKey:          true,
+	settings.TurnstileSecretKey:        true,
+	settings.TurnstileOnLogin:          true,
+	settings.TurnstileOnSignup:         true,
+	settings.TurnstileOnAPIKey:         true,
+	settings.SignupReview:              true,
+	settings.SignupReviewModel:         true,
+	settings.SignupReviewMode:          true,
+	settings.SignupReviewRefusal:       true,
+	settings.SignupReviewRestrictHours: true,
+	settings.ChatChallengeRequests:     true,
+	settings.ChatChallengeWindowSecs:   true,
+	settings.ChatChallengeClearMins:    true,
+	settings.AdminsBypassQuota:         true,
+	settings.HealthProbe:               true,
+	settings.HealthWindowMins:          true,
+	settings.HealthDisableAfter:        true,
+	settings.HealthRetainDays:          true,
+	settings.HealthDisableBelow:        true,
+	settings.HealthShowUsers:           true,
+	settings.HealthWarnBelow:           true,
+	settings.HealthResetAt:             true,
+	settings.UsageDisplay:              true,
+	settings.LandingMode:               true,
+	settings.LandingIntro:              true,
+	settings.TrialEnabled:              true,
+	settings.TrialTurns:                true,
+	settings.TrialModel:                true,
+	settings.DefaultSystemPrompt:       true,
+	settings.ConversationMaxTurns:      true,
+	settings.APIEnabled:                true,
+	settings.AttachmentMaxMB:           true,
+	settings.AttachmentRetain:          true,
+	settings.AttachmentPurgeDays:       true,
+	settings.AttachmentPurgeDaily:      true,
+	settings.AttachmentOrphanMins:      true,
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
@@ -251,6 +255,20 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	if raw, present := body[settings.AttachmentOrphanMins]; present {
 		if mins, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || mins < 5 || mins > 1440 {
 			return httpx.BadRequest("Unsent uploads must be kept for between 5 and 1440 minutes.")
+		}
+	}
+	for key, bounds := range map[string][2]int{
+		settings.SignupReviewRestrictHours: {0, 24 * 365},
+		settings.ChatChallengeRequests:     {0, 1000},
+		settings.ChatChallengeWindowSecs:   {5, 3600},
+		settings.ChatChallengeClearMins:    {1, 24 * 60},
+	} {
+		if raw, present := body[key]; present {
+			value, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || value < bounds[0] || value > bounds[1] {
+				return httpx.BadRequest("Setting %q must be between %d and %d.",
+					key, bounds[0], bounds[1])
+			}
 		}
 	}
 
@@ -327,6 +345,20 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		if err != nil || size < 1 || size > settings.MaxAttachmentCeilingMB {
 			delete(applied, settings.AttachmentMaxMB)
 			skipped = append(skipped, settings.AttachmentMaxMB)
+		}
+	}
+	for key, bounds := range map[string][2]int{
+		settings.SignupReviewRestrictHours: {0, 24 * 365},
+		settings.ChatChallengeRequests:     {0, 1000},
+		settings.ChatChallengeWindowSecs:   {5, 3600},
+		settings.ChatChallengeClearMins:    {1, 24 * 60},
+	} {
+		if raw, present := applied[key]; present {
+			value, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || value < bounds[0] || value > bounds[1] {
+				delete(applied, key)
+				skipped = append(skipped, key)
+			}
 		}
 	}
 

@@ -1,10 +1,11 @@
-// Cloudflare Turnstile, for the two places an anonymous or cheap request
-// creates something durable: a new account, and a new API key.
+// Cloudflare Turnstile, for the places where an automated request creates
+// something durable or crosses an operator-selected chat speed threshold.
 //
 // Not a general middleware. A challenge belongs on the handful of endpoints
-// where the cost of an automated success is an account or a credential, and
+// where the cost of an automated success is an account, a credential, or an
+// unusually fast stream of provider calls, and
 // putting one in front of everything would be a widget in the way of every
-// reader for the sake of two forms.
+// reader on ordinary requests.
 //
 // The secret never leaves this process. The site key is public by design —
 // it is in the page's markup — and is served with the rest of what the login
@@ -58,7 +59,7 @@ func Verify(ctx context.Context, client *http.Client, secret, token, ip string) 
 
 // verifyAt is Verify with the endpoint as an argument, so the parsing and the
 // error mapping can be tested against a local server. Unexported, and the
-// only caller in the程 passes the constant: an operator who could point this
+// only caller in the package passes the constant: an operator who could point this
 // at another host could point it at one that says yes to everything.
 func verifyAt(ctx context.Context, client *http.Client, endpoint, secret, token, ip string) error {
 	if strings.TrimSpace(secret) == "" {
@@ -131,6 +132,9 @@ type Gate struct {
 	Client  *http.Client
 	Enabled func() bool
 	Secret  func() string
+	// Test seams and private deployments may provide the verification call
+	// directly. Production wiring leaves it nil and uses Cloudflare below.
+	Verify func(context.Context, string, string) error
 }
 
 // Check passes silently when the challenge is switched off.
@@ -140,6 +144,9 @@ type Gate struct {
 func (g Gate) Check(ctx context.Context, token, ip string) error {
 	if g.Enabled == nil || !g.Enabled() {
 		return nil
+	}
+	if g.Verify != nil {
+		return g.Verify(ctx, token, ip)
 	}
 	secret := ""
 	if g.Secret != nil {

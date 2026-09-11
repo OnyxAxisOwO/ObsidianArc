@@ -62,25 +62,29 @@ const (
 	// everybody from this domain", and this runs before an account exists,
 	// where a mistake has no appeal. What an operator chooses is whether it
 	// runs, which model answers, and what a refusal says.
-	SignupReview         = "security.signup_review"
-	SignupReviewModel    = "security.signup_review_model"
-	SignupReviewMode     = "security.signup_review_mode"
-	SignupReviewRefusal  = "security.signup_review_refusal"
-	AdminsBypassQuota    = "quota.admins_bypass"
-	UsageDisplay         = "quota.usage_display"
-	LandingMode          = "landing.mode"
-	LandingIntro         = "landing.intro"
-	TrialEnabled         = "landing.trial_enabled"
-	TrialTurns           = "landing.trial_turns"
-	TrialModel           = "landing.trial_model"
-	DefaultSystemPrompt  = "chat.default_system_prompt"
-	ConversationMaxTurns = "chat.max_turns"
-	APIEnabled           = "api.enabled"
-	AttachmentMaxMB      = "attachments.max_mb"
-	AttachmentRetain     = "attachments.retain"
-	AttachmentPurgeDays  = "attachments.purge_after_days"
-	AttachmentPurgeDaily = "attachments.purge_daily_at"
-	AttachmentOrphanMins = "attachments.orphan_minutes"
+	SignupReview              = "security.signup_review"
+	SignupReviewModel         = "security.signup_review_model"
+	SignupReviewMode          = "security.signup_review_mode"
+	SignupReviewRefusal       = "security.signup_review_refusal"
+	SignupReviewRestrictHours = "security.signup_review_restrict_hours"
+	ChatChallengeRequests     = "security.chat_challenge_requests"
+	ChatChallengeWindowSecs   = "security.chat_challenge_window_seconds"
+	ChatChallengeClearMins    = "security.chat_challenge_clear_minutes"
+	AdminsBypassQuota         = "quota.admins_bypass"
+	UsageDisplay              = "quota.usage_display"
+	LandingMode               = "landing.mode"
+	LandingIntro              = "landing.intro"
+	TrialEnabled              = "landing.trial_enabled"
+	TrialTurns                = "landing.trial_turns"
+	TrialModel                = "landing.trial_model"
+	DefaultSystemPrompt       = "chat.default_system_prompt"
+	ConversationMaxTurns      = "chat.max_turns"
+	APIEnabled                = "api.enabled"
+	AttachmentMaxMB           = "attachments.max_mb"
+	AttachmentRetain          = "attachments.retain"
+	AttachmentPurgeDays       = "attachments.purge_after_days"
+	AttachmentPurgeDaily      = "attachments.purge_daily_at"
+	AttachmentOrphanMins      = "attachments.orphan_minutes"
 
 	// Liveness. The window is both "how far back counts as evidence" and
 	// "how quiet a model has to be before the system asks it directly",
@@ -224,16 +228,23 @@ var Defaults = map[string]string{
 	// What a refused person reads. Empty means the sentence built into the
 	// client, which says only that the sign-up was not accepted — an operator
 	// who wants to offer a way to appeal writes it here.
-	SignupReviewRefusal:  "",
-	AdminsBypassQuota:    "true",
-	UsageDisplay:         UsageAbsolute,
-	LandingMode:          LandingLogin,
-	LandingIntro:         "",
-	TrialEnabled:         "false",
-	TrialTurns:           "3",
-	TrialModel:           "",
-	DefaultSystemPrompt:  "",
-	ConversationMaxTurns: "40",
+	SignupReviewRefusal:       "",
+	SignupReviewRestrictHours: "24",
+	// Zero leaves the mid-chat challenge off. Once enabled, the other two
+	// defaults describe a short burst and a clearance long enough that a real
+	// reader is not challenged again during the same conversation.
+	ChatChallengeRequests:   "0",
+	ChatChallengeWindowSecs: "60",
+	ChatChallengeClearMins:  "30",
+	AdminsBypassQuota:       "true",
+	UsageDisplay:            UsageAbsolute,
+	LandingMode:             LandingLogin,
+	LandingIntro:            "",
+	TrialEnabled:            "false",
+	TrialTurns:              "3",
+	TrialModel:              "",
+	DefaultSystemPrompt:     "",
+	ConversationMaxTurns:    "40",
 	// On: asking a model nobody has used costs one token and answers the
 	// question the liveness column exists for. Off, a quiet model reads as
 	// "no data" forever, which is the state this feature was built to end.

@@ -128,7 +128,7 @@ onMounted(load);
     </p>
 
     <!-- 1. Service Degradation and Auto-disable Thresholds -->
-    <OaFormSection :title="t('secDegradationPolicy')" :hint="t('healthWarnBelowHint')" />
+    <OaFormSection id="secDegradationPolicy" :title="t('secDegradationPolicy')" :hint="t('healthWarnBelowHint')" />
     <OaNumberField
       v-model="form.healthWarnBelow"
       :label="t('healthWarnBelow')"
@@ -151,7 +151,7 @@ onMounted(load);
     />
 
     <!-- 2. Probing and Window -->
-    <OaFormSection :title="t('secProbingWindow')" :hint="t('livenessHint')" />
+    <OaFormSection id="secProbingWindow" :title="t('secProbingWindow')" :hint="t('livenessHint')" />
     <OaSwitchField v-model="form.healthProbe" :label="t('healthProbe')" :hint="t('healthProbeHint')" />
     <OaNumberField v-model="form.healthWindow" :label="t('healthWindow')" :min="1" :hint="t('healthWindowHint')" />
     <OaNumberField
@@ -162,7 +162,7 @@ onMounted(load);
     />
 
     <!-- 3. User-facing Availability Visibility -->
-    <OaFormSection :title="t('secUserVisibility')" />
+    <OaFormSection id="secUserVisibility" :title="t('secUserVisibility')" />
     <OaSwitchField
       v-model="form.healthShowUsers"
       :label="t('healthShowUsers')"
@@ -170,7 +170,7 @@ onMounted(load);
     />
 
     <!-- 4. Reset Uptime -->
-    <OaFormSection :title="t('secResetUptime')" :hint="t('resetUptimeHint')" />
+    <OaFormSection id="secResetUptime" :title="t('secResetUptime')" :hint="t('resetUptimeHint')" />
     <div class="oa-field">
       <OaConfirmButton
         class="oa-btn"
@@ -185,7 +185,7 @@ onMounted(load);
 
     <!-- 5. Current Models Health Overview -->
     <div class="oa-uptime-section-head" style="margin-top: 24px;">
-      <OaFormSection :title="t('modelHealthOverview')" />
+      <OaFormSection id="modelHealthOverview" :title="t('modelHealthOverview')" />
       <a href="/uptime" target="_blank" class="oa-uptime-action-btn">
         {{ t('viewUptimePage') }}
       </a>

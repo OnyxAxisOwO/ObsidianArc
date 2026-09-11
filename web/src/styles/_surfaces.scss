@@ -121,6 +121,98 @@
   font-weight: 600;
 }
 
+
+/* Search result groups in the administration rail: when searching, matching
+   pages and their sub-features are nested under the page heading so operators
+   can jump straight to an individual control. */
+.oa-admin-search-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.oa-admin-subnav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 17px;
+  padding-left: 10px;
+  border-left: 1px solid var(--ai-border);
+}
+
+.oa-admin-subnav-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.oa-admin-subnav-item:hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+.oa-admin-subnav-item.active {
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-weight: 600;
+}
+
+.oa-admin-subnav-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.oa-admin-subnav-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pulses a scrolled-to section so operators searching for a control can
+   immediately see where the jump landed on the destination screen. */
+@keyframes oa-target-pulse {
+  0% {
+    outline: 2px solid var(--ai-accent);
+    background-color: var(--ai-state-hover);
+  }
+  60% {
+    outline: 2px solid var(--ai-accent);
+    background-color: var(--ai-state-hover);
+  }
+  100% {
+    outline: 2px solid transparent;
+    background-color: transparent;
+  }
+}
+
+.oa-highlight-target {
+  animation: oa-target-pulse 2s ease-out;
+  border-radius: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-highlight-target {
+    animation: none;
+  }
+}
+
 .oa-admin-rail-foot {
   margin-top: auto;
   padding-top: 10px;
@@ -3199,6 +3291,30 @@
 
   .oa-admin-nav {
     height: 32px;
+  }
+
+  .oa-admin-search-group {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .oa-admin-subnav-list {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    margin-left: 0;
+    padding-left: 0;
+    border-left: none;
+  }
+
+  .oa-admin-subnav-item {
+    height: 32px;
+    padding: 0 10px;
+    border-radius: 999px;
+    flex-shrink: 0;
   }
 }
 

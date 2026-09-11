@@ -60,10 +60,20 @@ type User struct {
 	// where the per-address registration limit is configured and therefore
 	// where "why was this address refused" gets asked.
 	SignupIP string `json:"signup_ip"`
+	// A user-level brake over the group's API grant. Zero means a manual or
+	// policy restriction has no automatic expiry; the boolean distinguishes
+	// that from an unrestricted account.
+	APIRestricted        bool   `json:"api_restricted"`
+	APIRestrictedUntil   int64  `json:"api_restricted_until"`
+	APIRestrictionSource string `json:"api_restriction_source"`
 }
 
 func (u User) IsAdmin() bool  { return u.Role == RoleAdmin }
 func (u User) IsActive() bool { return u.Status == StatusActive }
+
+func (u User) APIRestrictedAt(now time.Time) bool {
+	return u.APIRestricted && (u.APIRestrictedUntil == 0 || u.APIRestrictedUntil > now.UnixMilli())
+}
 
 // DisplayName is what the interface shows: the nickname when set, the
 // username otherwise. One definition so the header, the admin list and the
@@ -141,7 +151,8 @@ type Store struct{ db *database.DB }
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
 const columns = `id, username, email, qq, nickname, avatar, bio, role, group_id, status,
-	email_verified, created_at, updated_at, last_login_at, signup_ip`
+	email_verified, created_at, updated_at, last_login_at, signup_ip,
+	api_restricted, api_restricted_until, api_restriction_source`
 
 type CreateInput struct {
 	Username     string
@@ -157,7 +168,10 @@ type CreateInput struct {
 	Status     Status
 	// The address this account was created from, for the per-address
 	// registration limit. Empty where it could not be resolved.
-	SignupIP string
+	SignupIP             string
+	APIRestricted        bool
+	APIRestrictedUntil   int64
+	APIRestrictionSource string
 }
 
 func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) (User, error) {
@@ -193,19 +207,24 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		Status:   orDefault(in.Status, StatusActive),
 		// An account with no address has nothing to confirm, so it is
 		// never held back for not having confirmed it.
-		EmailVerified: !in.Unverified || email == "",
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		EmailVerified:        !in.Unverified || email == "",
+		CreatedAt:            now,
+		UpdatedAt:            now,
+		APIRestricted:        in.APIRestricted,
+		APIRestrictedUntil:   in.APIRestrictedUntil,
+		APIRestrictionSource: in.APIRestrictionSource,
 	}
 
 	_, err = q.Exec(ctx, `INSERT INTO users
 		(id, username, username_lower, email, email_lower, qq, password_hash, nickname, avatar, bio,
-		 role, group_id, status, email_verified, created_at, updated_at, last_login_at, signup_ip)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?)`,
+		 role, group_id, status, email_verified, created_at, updated_at, last_login_at, signup_ip,
+		 api_restricted, api_restricted_until, api_restriction_source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
 		record.ID, record.Username, strings.ToLower(record.Username),
 		record.Email, strings.ToLower(record.Email), record.QQ, in.PasswordHash, record.Nickname,
 		record.Role, nullable(record.GroupID), record.Status, record.EmailVerified,
-		record.CreatedAt, record.UpdatedAt, in.SignupIP)
+		record.CreatedAt, record.UpdatedAt, in.SignupIP, record.APIRestricted,
+		record.APIRestrictedUntil, record.APIRestrictionSource)
 	if err != nil {
 		// Both engines report a violated unique index without naming a
 		// portable error code, so the message is matched instead. The check
@@ -239,7 +258,8 @@ func (s *Store) CredentialsByLogin(ctx context.Context, identifier string) (User
 	)
 	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.QQ, &record.Nickname, &record.Avatar,
 		&record.Bio, &record.Role, &group, &record.Status, &record.EmailVerified,
-		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP, &hash)
+		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP,
+		&record.APIRestricted, &record.APIRestrictedUntil, &record.APIRestrictionSource, &hash)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return User{}, "", ErrNotFound
@@ -406,6 +426,29 @@ func (s *Store) UpdateAdminFields(ctx context.Context, q database.Queryer, userI
 	if _, err := q.Exec(ctx,
 		`UPDATE users SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
 		return User{}, fmt.Errorf("user: admin update: %w", err)
+	}
+	return s.ByID(ctx, q, userID)
+}
+
+// UpdateAPIRestriction is separate from group membership: a review must be
+// able to withhold programmatic access without also changing which models,
+// quota, and interface capabilities the account inherits.
+func (s *Store) UpdateAPIRestriction(
+	ctx context.Context, q database.Queryer, userID string, restricted bool, until int64, source string,
+) (User, error) {
+	if q == nil {
+		q = s.db
+	}
+	if !restricted {
+		until = 0
+		source = ""
+	}
+	_, err := q.Exec(ctx,
+		`UPDATE users SET api_restricted = ?, api_restricted_until = ?,
+		 api_restriction_source = ?, updated_at = ? WHERE id = ?`,
+		restricted, until, strings.TrimSpace(source), time.Now().UnixMilli(), userID)
+	if err != nil {
+		return User{}, fmt.Errorf("user: update API restriction: %w", err)
 	}
 	return s.ByID(ctx, q, userID)
 }
@@ -617,7 +660,8 @@ func scanUser(row rowScanner) (User, error) {
 	)
 	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.QQ, &record.Nickname, &record.Avatar,
 		&record.Bio, &record.Role, &group, &record.Status, &record.EmailVerified,
-		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP)
+		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP,
+		&record.APIRestricted, &record.APIRestrictedUntil, &record.APIRestrictionSource)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return User{}, ErrNotFound

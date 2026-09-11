@@ -7,7 +7,7 @@
 // composer stops offering attachments, or the thinking toggle disappears.
 
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import {
   adminApi,
   type AdminModel, type Group, type Meta, type ModelHealth, type Provider,
@@ -40,6 +40,7 @@ import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
 
 const router = useRouter();
+const route = useRoute();
 const view = useAdminView();
 view.setTitle(t('modelsTitle'), t('modelsSubtitle'));
 
@@ -562,7 +563,22 @@ async function load(): Promise<void> {
   } catch {
     // The column simply says nothing. An operator came here to edit models.
   }
+  checkDrawerTarget();
 }
+
+const DRAWER_HASHES = new Set(['#addModel', '#secCapabilities', '#secWeights', '#secGroupAccess', '#secRouting', '#secThinking']);
+
+function checkDrawerTarget(): void {
+  if (DRAWER_HASHES.has(route.hash) && !panelOpen.value && providers.value.length > 0) {
+    open(null);
+  }
+}
+
+watch(() => route.hash, () => {
+  if (loaded.value) {
+    checkDrawerTarget();
+  }
+});
 
 onMounted(load);
 </script>
@@ -582,19 +598,22 @@ let sortState: SortState | null = null;
 
 <template>
   <Teleport :to="view.actionsHost">
+    <div id="modelImportExport" style="display: inline-flex; gap: inherit;">
+      <button
+        type="button"
+        class="oa-btn"
+        :disabled="!models.length"
+        @click="exportModels"
+      >{{ t('exportModels') }}</button>
+      <button
+        type="button"
+        class="oa-btn"
+        :disabled="uploadBusy"
+        @click="importModels"
+      >{{ t('importModels') }}</button>
+    </div>
     <button
-      type="button"
-      class="oa-btn"
-      :disabled="!models.length"
-      @click="exportModels"
-    >{{ t('exportModels') }}</button>
-    <button
-      type="button"
-      class="oa-btn"
-      :disabled="uploadBusy"
-      @click="importModels"
-    >{{ t('importModels') }}</button>
-    <button
+      id="addModel"
       type="button"
       class="oa-btn primary"
       :disabled="!providers.length"
@@ -607,7 +626,7 @@ let sortState: SortState | null = null;
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <template v-else>
-    <div class="oa-filters" :hidden="models.length === 0">
+    <div id="modelsList" class="oa-filters" :hidden="models.length === 0">
       <input v-model="filters.q" type="search" :placeholder="t('searchModels')" @input="onFilter">
       <OaSelect
         v-model="filters.provider"
@@ -830,7 +849,7 @@ let sortState: SortState | null = null;
       </div>
     </div>
 
-    <OaFormSection :title="t('secGroupAccess')" />
+    <OaFormSection id="secGroupAccess" :title="t('secGroupAccess')" />
     <OaTierList
       v-model="form.groupGrants"
       :label="t('groupsTitle')"
@@ -839,7 +858,7 @@ let sortState: SortState | null = null;
       :empty-text="t('noGroups')"
     />
 
-    <OaFormSection :title="t('secCapabilities')" :hint="t('capabilitiesHint')" />
+    <OaFormSection id="secCapabilities" :title="t('secCapabilities')" :hint="t('capabilitiesHint')" />
     <OaSwitchField v-model="form.imageGen" :label="t('capImageGen')" :hint="t('capImageGenHint')" />
     <OaSwitchField
       v-model="form.chatImageGen"
@@ -855,7 +874,7 @@ let sortState: SortState | null = null;
     <OaNumberField v-model="form.contextWindow" :label="t('contextWindow')" placeholder="200000" :min="0" />
     <OaNumberField v-model="form.maxOutput" :label="t('maxOutputTokens')" placeholder="8192" :min="0" />
 
-    <OaFormSection :title="t('secRouting')" />
+    <OaFormSection id="secRouting" :title="t('secRouting')" />
     <OaSelectField
       v-model="form.routeTo"
       :label="t('routeTo')"
@@ -865,7 +884,7 @@ let sortState: SortState | null = null;
 
     <!-- The style and the tiers are one subject — how this model is asked to
          think — and they used to sit under Routing, which is a different one. -->
-    <OaFormSection :title="t('secThinking')" />
+    <OaFormSection id="secThinking" :title="t('secThinking')" />
     <OaSelectField
       v-model="form.reasoningStyle"
       :label="t('reasoningStyleModel')"
@@ -877,7 +896,7 @@ let sortState: SortState | null = null;
     />
     <ReasoningTiers v-model="form.tiers" />
 
-    <OaFormSection :title="t('secWeights')" :hint="t('weightsHint')" />
+    <OaFormSection id="secWeights" :title="t('secWeights')" :hint="t('weightsHint')" />
     <OaNumberField
       v-model="form.requestWeight"
       :label="t('perRequest')"

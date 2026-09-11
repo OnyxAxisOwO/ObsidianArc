@@ -109,7 +109,7 @@ let dashboardShape: ChartShape = 'bar';
   <p v-else-if="!data" class="oa-table-empty">{{ t('loading') }}</p>
 
   <template v-else>
-    <OaAdminSection :title="t('secInstance')">
+    <OaAdminSection id="secInstance" :title="t('secInstance')">
       <OaStatGrid :stats="instanceStats" />
     </OaAdminSection>
 
@@ -169,11 +169,11 @@ let dashboardShape: ChartShape = 'bar';
       </div>
     </OaAdminSection>
 
-    <OaAdminSection v-if="data.top_models.length" :title="t('secBusiestModels')">
+    <OaAdminSection v-if="data.top_models.length" id="secBusiestModels" :title="t('secBusiestModels')">
       <OaTable :columns="busiestColumns" :rows="data.top_models" :empty="t('nothingYet')" />
     </OaAdminSection>
 
-    <OaAdminSection :title="t('secRecentRequests')">
+    <OaAdminSection id="secRecentRequests" :title="t('secRecentRequests')">
       <OaTable
         :columns="recentColumns"
         :rows="data.recent"

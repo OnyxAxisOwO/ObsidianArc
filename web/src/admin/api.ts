@@ -247,6 +247,22 @@ export interface LogOption {
   count: number;
 }
 
+/** One access decision, kept separately from the request log. */
+export interface SecurityEvent {
+  id: string;
+  at: number;
+  event: 'signup_review' | 'api_restriction' | 'api_restriction_lifted' | 'chat_challenge' | string;
+  severity: 'info' | 'warning' | 'danger';
+  user_id?: string;
+  username?: string;
+  actor_id?: string;
+  actor_username?: string;
+  ip?: string;
+  source?: string;
+  decision?: string;
+  reason?: string;
+}
+
 /** The values actually present in the log, so the filters offer what exists. */
 export interface LogFacets {
   users: LogOption[];
@@ -335,8 +351,12 @@ export const adminApi = {
     api.get<Dashboard>(`/api/admin/dashboard?metric=${metric}`),
   meta: () => api.get<Meta>('/api/admin/meta'),
   tryReview: (body: Record<string, unknown>) =>
-    api.post<{ ran: boolean; allow: boolean; reason: string }>(
+    api.post<{ ran: boolean; decision: 'allow' | 'restrict' | 'refuse'; reason: string }>(
       '/api/admin/security/review', body),
+  securityEvents: (query = '') =>
+    api.get<{ events: SecurityEvent[]; total: number; limit: number; offset: number }>(
+      `/api/admin/security/events${query}`,
+    ),
   health: (hours = 24) =>
     api.get<{
       hours: number;

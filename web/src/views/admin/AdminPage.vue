@@ -6,7 +6,7 @@
 // same radius, same surface, same hover tint — so moving between chatting and
 // administering does not feel like moving between two applications.
 
-import { computed, markRaw, onMounted, ref, watch, type Component } from 'vue';
+import { computed, markRaw, nextTick, onMounted, ref, watch } from 'vue';
 import { useMediaQuery } from '@vueuse/core';
 import { useRoute, useRouter } from 'vue-router';
 import { health } from '@/api/client';
@@ -14,11 +14,10 @@ import OaIconButton from '@/components/OaIconButton.vue';
 import OaResizer from '@/components/OaResizer.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
-import { matchesSearch } from '@/lib/search';
-import { t, type StringKey } from '@/composables/useI18n';
+import { t } from '@/composables/useI18n';
 import {
   IconChart, IconChevron, IconCpu, IconFile, IconHome, IconKey, IconLayers, IconLock,
-  IconMenu, IconPulse, IconServer, IconSliders, IconSpark, IconUsers, type OaIcon,
+  IconMenu, IconPulse, IconServer, IconSliders, IconSpark, IconUsers,
 } from '@/icons';
 import AppShell from '@/layouts/AppShell.vue';
 import { useRailCollapse } from '@/composables/useRailCollapse';
@@ -27,6 +26,7 @@ import { isAdmin } from '@/stores/session';
 import UnauthorizedModal from '@/views/UnauthorizedModal.vue';
 import ChatLayout from '@/layouts/ChatLayout.vue';
 import { provideAdminView } from './adminView';
+import { searchAdminFeatures, type AdminPageSpec } from './features';
 
 import AdminDashboard from './AdminDashboard.vue';
 import AdminUsers from './AdminUsers.vue';
@@ -41,14 +41,6 @@ import AdminLogs from './AdminLogs.vue';
 import AdminSecurity from './AdminSecurity.vue';
 import AdminSettings from './AdminSettings.vue';
 import AdminAnnouncements from './AdminAnnouncements.vue';
-
-interface AdminPageSpec {
-  /** The path segment after /admin, empty for the dashboard. */
-  slug: string;
-  label: StringKey;
-  icon: OaIcon;
-  component: Component;
-}
 
 // Labels are looked up at render rather than stored, because this table is
 // evaluated at import time — before the language is known.
@@ -72,7 +64,55 @@ const route = useRoute();
 const router = useRouter();
 const query = ref('');
 const narrow = useMediaQuery('(max-width: 900px)');
-const filteredPages = computed(() => PAGES.filter((entry) => matchesSearch(query.value, t(entry.label))));
+const searchGroups = computed(() => searchAdminFeatures(query.value, PAGES));
+
+const bodyScroll = ref<InstanceType<typeof OaScrollArea> | null>(null);
+
+let highlightTimer = 0;
+function scrollToSection(id: string): void {
+  window.clearTimeout(highlightTimer);
+  let attempts = 0;
+  const maxAttempts = 30;
+
+  const check = () => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      el.classList.add('oa-highlight-target');
+      window.setTimeout(() => {
+        el.classList.remove('oa-highlight-target');
+      }, 2000);
+      return;
+    }
+    attempts += 1;
+    if (attempts < maxAttempts) {
+      highlightTimer = window.setTimeout(check, 100);
+    }
+  };
+  void nextTick(check);
+}
+
+function onPageClick(slug: string): void {
+  if ((segments.value[0] ?? '') === slug && route.hash) {
+    void router.push({ path: slug ? `/admin/${slug}` : '/admin' });
+    bodyScroll.value?.scroller?.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+}
+
+function onItemClick(slug: string, id: string): void {
+  if ((segments.value[0] ?? '') === slug && route.hash === `#${id}`) {
+    scrollToSection(id);
+  }
+}
+
+watch(
+  () => route.hash,
+  (nextHash) => {
+    const id = nextHash.replace(/^#/, '');
+    if (id) scrollToSection(id);
+  },
+  { flush: 'post' },
+);
 
 const rail = ref<HTMLElement | null>(null);
 
@@ -153,6 +193,10 @@ onMounted(() => {
     .catch(() => {
       // A version nobody can read is not worth an error state.
     });
+  if (route.hash) {
+    const id = route.hash.replace(/^#/, '');
+    if (id) scrollToSection(id);
+  }
 });
 </script>
 
@@ -201,17 +245,50 @@ onMounted(() => {
       />
 
       <OaScrollArea wrap-class="oa-admin-nav-wrap" scroll-class="oa-admin-nav-list">
-        <p v-if="!filteredPages.length" class="oa-search-empty" role="status">{{ t('noSearchResults') }}</p>
-        <RouterLink
-          v-for="entry in filteredPages"
-          :key="entry.slug"
-          class="oa-admin-nav"
-          :class="{ active: entry === current }"
-          :to="entry.slug ? `/admin/${entry.slug}` : '/admin'"
-        >
-          <component :is="entry.icon" :size="15" />
-          <span>{{ t(entry.label) }}</span>
-        </RouterLink>
+        <template v-if="!query.trim()">
+          <RouterLink
+            v-for="entry in PAGES"
+            :key="entry.slug"
+            class="oa-admin-nav"
+            :class="{ active: entry === current && !route.hash }"
+            :to="entry.slug ? `/admin/${entry.slug}` : '/admin'"
+          >
+            <component :is="entry.icon" :size="15" />
+            <span>{{ t(entry.label) }}</span>
+          </RouterLink>
+        </template>
+        <template v-else>
+          <p v-if="!searchGroups.length" class="oa-search-empty" role="status">{{ t('noSearchResults') }}</p>
+          <div
+            v-for="group in searchGroups"
+            :key="group.page.slug"
+            class="oa-admin-search-group"
+          >
+            <RouterLink
+              :to="group.page.slug ? `/admin/${group.page.slug}` : '/admin'"
+              class="oa-admin-nav oa-admin-group-head"
+              :class="{ active: group.page === current && !route.hash }"
+              @click="onPageClick(group.page.slug)"
+            >
+              <component :is="group.page.icon" :size="15" />
+              <span>{{ t(group.page.label) }}</span>
+            </RouterLink>
+
+            <div v-if="group.items.length" class="oa-admin-subnav-list">
+              <RouterLink
+                v-for="item in group.items"
+                :key="item.id"
+                :to="{ path: group.page.slug ? `/admin/${group.page.slug}` : '/admin', hash: `#${item.id}` }"
+                class="oa-admin-subnav-item"
+                :class="{ active: group.page === current && route.hash === `#${item.id}` }"
+                @click="onItemClick(group.page.slug, item.id)"
+              >
+                <span class="oa-admin-subnav-dot" />
+                <span class="oa-admin-subnav-text">{{ t(item.titleKey) }}</span>
+              </RouterLink>
+            </div>
+          </div>
+        </template>
       </OaScrollArea>
 
       <div class="oa-admin-rail-foot">
@@ -249,6 +326,7 @@ onMounted(() => {
            re-reading the same screen after a save should not replay an
            entrance. -->
       <OaScrollArea
+        ref="bodyScroll"
         :key="current.slug"
         wrap-class="oa-admin-body-wrap"
         :scroll-class="`oa-admin-body enter-${direction}`"

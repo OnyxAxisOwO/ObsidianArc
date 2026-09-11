@@ -217,12 +217,13 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 18.2 MB (14.5 MB `-tags nosqlite`, Linux amd64) |
-| Frontend, on the wire | < 130 kB | 128.8 kB to open the chat (111.9 JS + 16.8 CSS) |
+| Frontend, on the wire | < 130 kB | 129.9 kB to open the chat (113.1 JS + 16.8 CSS) |
 | Background goroutines at idle | 1 | 1 |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
-Bundle and binary sizes were remeasured on 2026-09-10 after adding settings
-and history search and custom range tracks. Binary sizes use Go 1.27.0,
+The bundle was remeasured on 2026-09-11 after adding the on-demand chat
+challenge and security controls; binary sizes were measured on 2026-09-10.
+Binary sizes use Go 1.27.0,
 Linux amd64, `-trimpath -ldflags "-s -w"`; transfer sizes are gzip-compressed
 JS and CSS in decimal kB, with totals rounded after summing.
 
@@ -239,10 +240,10 @@ What each reader actually downloads:
 
 | | gzipped |
 | --- | --- |
-| English, not an administrator | 128.8 kB |
-| Chinese, not an administrator | 147.1 kB |
-| …and a conversation containing a formula | 150.8 kB |
-| Chinese administrator, backoffice open | 183.1 kB |
+| English, not an administrator | 129.9 kB |
+| Chinese, not an administrator | 148.9 kB |
+| …and a conversation containing a formula | 152.5 kB |
+| Chinese administrator, backoffice open | 185.9 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice: /settings, /keys, /usage and
@@ -573,6 +574,8 @@ will not be.
 | Log redaction | A `redact()` helper for anything key-shaped; request bodies are never logged. |
 | Input validation | Every handler decodes into a typed struct with explicit bounds; `MaxBytesReader` on all bodies. |
 | Rate limiting | Per-IP on `/api/auth/*` (in-memory token bucket), per-user via quota everywhere else. |
+| Abuse review | Sign-up review produces `allow`, timed `restrict`, or `refuse`; restrictions gate all programmatic API keys at the account level. Browser chat bursts use a database-backed per-account counter and an on-demand Turnstile challenge. |
+| Security audit | Access decisions are persisted in `security_events`, separately from the ordinary HTTP request log. |
 
 Explicitly out of scope for the browser: provider API keys never reach the
 HTML, the JS bundle, any network response, or `localStorage`.

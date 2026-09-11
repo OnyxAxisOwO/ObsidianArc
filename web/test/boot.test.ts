@@ -31,8 +31,11 @@ const ACCOUNT: Account = {
   updated_at: Date.now(),
   last_login_at: Date.now(),
   email_verified: true,
-  allow_stats: true,
-  allow_delete_conversations: true,
+      allow_stats: true,
+      allow_delete_conversations: true,
+      api_restricted: false,
+      api_restricted_until: 0,
+      api_restriction_source: '',
 };
 
 /**

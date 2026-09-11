@@ -144,10 +144,11 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		//
 		// Never for the first account: an empty instance must not be locked
 		// out of its own setup by a challenge nobody has configured yet.
-		"turnstile_site_key":   h.turnstileSiteKey(!populated),
-		"turnstile_on_login":   populated && h.settings.Bool(settings.TurnstileOnLogin),
-		"turnstile_on_signup":  populated && h.settings.Bool(settings.TurnstileOnSignup),
-		"turnstile_on_api_key": h.settings.Bool(settings.TurnstileOnAPIKey),
+		"turnstile_site_key":      h.turnstileSiteKey(!populated),
+		"turnstile_on_login":      populated && h.settings.Bool(settings.TurnstileOnLogin),
+		"turnstile_on_signup":     populated && h.settings.Bool(settings.TurnstileOnSignup),
+		"turnstile_on_api_key":    h.settings.Bool(settings.TurnstileOnAPIKey),
+		"turnstile_on_chat_speed": h.settings.Int(settings.ChatChallengeRequests, 0) > 0,
 		// So the sign-up button can say what it is waiting for. A review
 		// takes seconds, and a button that only says "creating account" for
 		// that long reads as a form that has hung.
@@ -647,7 +648,10 @@ func (h *Handlers) turnstileSiteKey(firstAccount bool) string {
 	if firstAccount {
 		return ""
 	}
-	if !h.settings.Bool(settings.TurnstileOnSignup) && !h.settings.Bool(settings.TurnstileOnLogin) && !h.settings.Bool(settings.TurnstileOnAPIKey) {
+	if !h.settings.Bool(settings.TurnstileOnSignup) &&
+		!h.settings.Bool(settings.TurnstileOnLogin) &&
+		!h.settings.Bool(settings.TurnstileOnAPIKey) &&
+		h.settings.Int(settings.ChatChallengeRequests, 0) <= 0 {
 		return ""
 	}
 	return h.settings.Get(settings.TurnstileSiteKey)

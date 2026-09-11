@@ -30,6 +30,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
+	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -50,11 +51,12 @@ type Handlers struct {
 	announcements *announcement.Store
 	keys          *apikey.Store
 	requests      *reqlog.Store
+	security      *securityevents.Store
 	cards         *card.Store
 	health        *health.Store
 	// Runs the sign-up reviewer on a hypothetical account. Set by the wiring;
 	// nil where no reviewer exists.
-	TryReview func(ctx context.Context, in ReviewTrial) (bool, string, error)
+	TryReview func(ctx context.Context, in ReviewTrial) (string, string, error)
 
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
@@ -76,6 +78,7 @@ func NewHandlers(
 	announcements *announcement.Store,
 	keys *apikey.Store,
 	requests *reqlog.Store,
+	securityLog *securityevents.Store,
 	cards *card.Store,
 	healthStore *health.Store,
 ) *Handlers {
@@ -94,6 +97,7 @@ func NewHandlers(
 		announcements: announcements,
 		keys:          keys,
 		requests:      requests,
+		security:      securityLog,
 		cards:         cards,
 		health:        healthStore,
 	}
@@ -112,6 +116,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/health", protected(h.modelHealth))
 	mux.Handle("POST /api/admin/health/reset", protected(h.resetHealth))
 	mux.Handle("POST /api/admin/security/review", protected(h.trialReview))
+	mux.Handle("GET /api/admin/security/events", protected(h.listSecurityEvents))
 
 	mux.Handle("GET /api/admin/users", protected(h.listUsers))
 	mux.Handle("GET /api/admin/users/{id}", protected(h.showUser))

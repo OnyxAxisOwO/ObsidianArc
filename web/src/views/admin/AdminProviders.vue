@@ -225,13 +225,14 @@ onMounted(load);
 
 <template>
   <Teleport :to="view.actionsHost">
-    <button type="button" class="oa-btn primary" @click="open(null)">{{ t('addProvider') }}</button>
+    <button id="addProvider" type="button" class="oa-btn primary" @click="open(null)">{{ t('addProvider') }}</button>
   </Teleport>
 
   <AdminFailure v-if="error" :message="error" @retry="load" />
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <OaTable
+    id="providersList"
     v-else
     :columns="columns"
     :rows="providers"

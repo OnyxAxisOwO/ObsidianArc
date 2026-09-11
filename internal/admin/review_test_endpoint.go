@@ -41,21 +41,21 @@ func (h *Handlers) trialReview(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("A username is required to review.")
 	}
 
-	allow, reason, err := h.TryReview(r.Context(), ReviewTrial{
+	decision, reason, err := h.TryReview(r.Context(), ReviewTrial{
 		Username: body.Username, Email: body.Email, QQ: body.QQ,
 		Nickname: body.Nickname, UserAgent: body.UserAgent,
 		FromThisAddress: body.FromThisAddress,
 	})
 	if err != nil {
 		// Reported rather than returned as a failure: an unreachable model is
-		// exactly the answer somebody is here to find, and it is the state in
-		// which every registration is being allowed.
+		// exactly the answer somebody is here to find. The decision beside it
+		// is the configured mode's fallback, not a claim that the model ran.
 		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"ran": false, "allow": true, "reason": err.Error(),
+			"ran": false, "decision": decision, "reason": err.Error(),
 		})
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"ran": true, "allow": allow, "reason": reason,
+		"ran": true, "decision": decision, "reason": reason,
 	})
 }
 

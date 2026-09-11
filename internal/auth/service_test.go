@@ -207,6 +207,82 @@ func TestRegistrationRespectsTheSetting(t *testing.T) {
 	}
 }
 
+func TestSignupReviewCanRestrictAPIWithoutRefusingTheAccount(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	until := time.Now().Add(30 * time.Hour).UnixMilli()
+	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+		return SignupReview{
+			Ran: true, Decision: SignupRestrict, Reason: "generated-looking handle", RestrictedUntil: until,
+		}, nil
+	}
+	var recorded SignupReview
+	f.auth.OnSignupReview = func(_ context.Context, _ RegisterInput, account *user.User, review SignupReview) {
+		if account == nil {
+			t.Error("a successful restricted registration had no account in its review event")
+		}
+		recorded = review
+	}
+
+	created, token, err := f.auth.Register(ctx, RegisterInput{
+		Username: "questionable", Password: "another-password",
+	})
+	if err != nil {
+		t.Fatalf("restricted registration: %v", err)
+	}
+	if token == "" {
+		t.Error("restricted registration returned no web session")
+	}
+	if !created.APIRestricted || created.APIRestrictedUntil != until ||
+		created.APIRestrictionSource != "signup_review" {
+		t.Fatalf("restriction = %+v", created)
+	}
+	if recorded.Decision != SignupRestrict {
+		t.Errorf("recorded decision = %q, want restrict", recorded.Decision)
+	}
+}
+
+func TestSignupReviewCanRefuseWithoutCreatingAnAccount(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+		return SignupReview{Ran: true, Decision: SignupRefuse, Reason: "automated"}, nil
+	}
+	called := false
+	f.auth.OnSignupReview = func(_ context.Context, _ RegisterInput, account *user.User, review SignupReview) {
+		called = true
+		if account != nil || review.Decision != SignupRefuse {
+			t.Errorf("refusal event = account %+v, review %+v", account, review)
+		}
+	}
+
+	_, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "definitely-a-bot", Password: "another-password",
+	})
+	if !errors.Is(err, ErrSignupRefused) {
+		t.Fatalf("error = %v, want ErrSignupRefused", err)
+	}
+	if !called {
+		t.Error("refused review was not reported")
+	}
+	found, _, _, lookupErr := f.users.Exists(ctx, nil, "definitely-a-bot", "", "")
+	if lookupErr != nil || found {
+		t.Fatalf("refused account exists = %v, lookup error = %v", found, lookupErr)
+	}
+}
+
 func TestDuplicateUsernameIsRejected(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

@@ -5,7 +5,7 @@
 // every instance until somebody turns it on. The dependency rule is about
 // what ships in the bundle, and this ships in nothing — but it is a script
 // from somebody else's server on the sign-in page, which is worth knowing and
-// is why it is confined to this file and two forms.
+// is why it is confined to this file and the few challenged surfaces.
 
 const SCRIPT = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
 

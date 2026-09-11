@@ -37,6 +37,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/screening"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
+	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/trial"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
@@ -106,6 +107,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	announcements := announcement.NewStore(db)
 	usageStore := usage.NewStore(db)
 	requestLog := reqlog.NewStore(db)
+	securityLog := securityevents.NewStore(db)
 	keys := apikey.NewStore(db)
 	quotaService := quota.NewService(db, quota.NewStore(db), settingsService)
 	chatService := chat.NewService(db, conversations, models, registry, settingsService)
@@ -423,6 +425,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			"models":     result,
 		})
 	}))
+	// One client for every Turnstile check, so registration, key creation and
+	// a burst challenge reuse connections to Cloudflare.
+	challengeClient := &http.Client{}
 	chatHandlers := chat.NewHandlers(chatService, conversations)
 	// The one condition that must hold for an account to spend anything,
 	// shared by the turn and by the upload that precedes it.
@@ -440,6 +445,24 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// effect without a restart.
 	chatHandlers.MaxUploadBytes = func() int64 {
 		return int64(settingsService.Int(settings.AttachmentMaxMB, 6)) * 1024 * 1024
+	}
+	chatHandlers.Security = securityLog
+	chatHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	chatHandlers.ChatChallenge = turnstile.Gate{
+		Client: challengeClient,
+		Enabled: func() bool {
+			return settingsService.Int(settings.ChatChallengeRequests, 0) > 0
+		},
+		Secret: func() string { return settingsService.Get(settings.TurnstileSecretKey) },
+	}
+	chatHandlers.ChatChallengePolicy = func() securityevents.ChatPolicy {
+		return securityevents.ChatPolicy{
+			Requests: settingsService.Int(settings.ChatChallengeRequests, 0),
+			Window: time.Duration(
+				settingsService.Int(settings.ChatChallengeWindowSecs, 60)) * time.Second,
+			Clearance: time.Duration(
+				settingsService.Int(settings.ChatChallengeClearMins, 30)) * time.Minute,
+		}
 	}
 	chatHandlers.Routes(mux)
 	quota.NewHandlers(quotaService).Routes(mux)
@@ -461,9 +484,6 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// interface; the compatibility surface is what the key is then presented
 	// to, and the two are separate because one is a browser screen and the
 	// other is not a browser at all.
-	// One client for both challenges, so a burst of registrations reuses the
-	// connection to Cloudflare rather than opening one per attempt.
-	challengeClient := &http.Client{}
 	authService.Challenge = turnstile.Gate{
 		Client:  challengeClient,
 		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnSignup) },
@@ -475,12 +495,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
 	}
 
-	// Asking a model whether a sign-up looks like a person.
-	//
-	// Everything that can go wrong here lets the registration through: a
-	// model that was deleted, a provider that is down, an answer that will
-	// not parse. Refusing everybody because an upstream hiccuped turns a spam
-	// filter into an outage of the front door.
+	// Asking a model whether a sign-up looks like a person. A restriction is
+	// the middle answer: the account exists and can use the website, but the
+	// programmatic surface stays closed until the configured time passes.
 	reviewer := screening.Reviewer{
 		Registry: registry,
 		Resolve: func(ctx context.Context) (adapter.Provider, adapter.ModelSpec, error) {
@@ -495,10 +512,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			return upstream, record.Spec(), nil
 		},
 	}
-	authService.ReviewSignup = func(ctx context.Context, in auth.RegisterInput, fromAddress int) error {
+	authService.ReviewSignup = func(ctx context.Context, in auth.RegisterInput, fromAddress int) (auth.SignupReview, error) {
 		if !settingsService.Bool(settings.SignupReview) ||
 			settingsService.Get(settings.SignupReviewModel) == "" {
-			return nil
+			return auth.SignupReview{Decision: auth.SignupAllow}, nil
 		}
 
 		mode := screening.ParseMode(settingsService.Get(settings.SignupReviewMode))
@@ -507,31 +524,51 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			IP: in.IP, UserAgent: in.UA, FromThisAddress: fromAddress,
 		})
 		if err != nil {
-			// Always worth saying: an operator needs to know their reviewer is
-			// broken. Whether it also refuses is the mode's decision, made in
-			// the verdict, and strict is the one that says yes.
+			// The fallback is part of the verdict: loose allows, normal restricts,
+			// and strict refuses. The failure is still logged because an operator
+			// must be able to distinguish policy from a broken reviewer.
 			slog.WarnContext(ctx, "signup review could not answer",
-				"username", in.Username, "mode", mode, "allowed", verdict.Allow, "error", err)
+				"username", in.Username, "mode", mode, "decision", verdict.Decision, "error", err)
 		}
-		if verdict.Allow {
-			return nil
+
+		out := auth.SignupReview{
+			Ran: true, Decision: auth.SignupDecision(verdict.Decision), Reason: verdict.Reason,
 		}
-		// The model's own words go here and nowhere else. What the visitor
-		// sees is the operator's message: a model's reasoning about somebody
-		// is not a thing to hand them.
-		slog.InfoContext(ctx, "signup refused by review",
-			"username", in.Username, "ip", in.IP, "reason", verdict.Reason)
-		return auth.ErrSignupRefused
+		if verdict.Decision == screening.DecisionRestrict {
+			hours := settingsService.Int(settings.SignupReviewRestrictHours, 24)
+			if hours > 0 {
+				out.RestrictedUntil = time.Now().Add(time.Duration(hours) * time.Hour).UnixMilli()
+			}
+		}
+		return out, err
+	}
+	authService.OnSignupReview = func(ctx context.Context, in auth.RegisterInput, account *user.User, review auth.SignupReview) {
+		event := securityevents.Event{
+			Event: securityevents.EventSignupReview, Severity: securityevents.SeverityInfo,
+			Username: in.Username, IP: in.IP, Source: "ai", Decision: string(review.Decision),
+			Reason: review.Reason,
+		}
+		if account != nil {
+			event.UserID = account.ID
+		}
+		if review.Decision == auth.SignupRestrict {
+			event.Severity = securityevents.SeverityWarning
+		} else if review.Decision == auth.SignupRefuse {
+			event.Severity = securityevents.SeverityDanger
+		}
+		if err := securityLog.Record(ctx, nil, event); err != nil {
+			slog.ErrorContext(ctx, "could not record signup review", "error", err)
+		}
 	}
 
-	adminTryReview := func(ctx context.Context, in admin.ReviewTrial) (bool, string, error) {
+	adminTryReview := func(ctx context.Context, in admin.ReviewTrial) (string, string, error) {
 		verdict, err := reviewer.Review(ctx,
 			screening.ParseMode(settingsService.Get(settings.SignupReviewMode)),
 			screening.Facts{
 				Username: in.Username, Email: in.Email, QQ: in.QQ, Nickname: in.Nickname,
 				UserAgent: in.UserAgent, FromThisAddress: in.FromThisAddress,
 			})
-		return verdict.Allow, verdict.Reason, err
+		return string(verdict.Decision), verdict.Reason, err
 	}
 
 	apiKeyHandlers := apikey.NewHandlers(keys)
@@ -578,7 +615,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	compatHandlers.Routes(mux)
 	announcement.NewHandlers(announcements).Routes(mux)
 	trial.NewHandlers(settingsService, models, registry, proxyTrust, cfg.SecretKey).Routes(mux)
-	adminHandlers := admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, cards, healthStore)
+	adminHandlers := admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, securityLog, cards, healthStore)
 	adminHandlers.TryReview = adminTryReview
 	adminHandlers.Routes(mux)
 
@@ -619,7 +656,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			return settingsService.Get(settings.TurnstileSiteKey) != "" &&
 				(settingsService.Bool(settings.TurnstileOnSignup) ||
 					settingsService.Bool(settings.TurnstileOnLogin) ||
-					settingsService.Bool(settings.TurnstileOnAPIKey))
+					settingsService.Bool(settings.TurnstileOnAPIKey) ||
+					settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
 		}),
 		httpx.SameOrigin(cfg.AllowedOrigins),
 		// Last, so the session lookup only happens for requests that survived
@@ -651,13 +689,35 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 }
 
 // apiAllowed reports whether this account may use the API: the instance-wide
-// switch, then the grant on their group. Administrators bypass the second the
-// way they bypass every other group restriction, but not the first — a
-// disabled API is disabled for everyone.
+// switch, an account restriction, then the grant on their group.
+// Administrators bypass the latter two the way they bypass every other group
+// restriction, but not the first — a disabled API is disabled for everyone.
 //
 // It backs the interface's "you cannot create a key" state. The /v1 surface
-// checks the same two conditions itself rather than calling this, because a
+// checks the same conditions itself rather than calling this, because a
 // screen wants to know why and a stranger with a token must not be told.
+func apiAllowed(
+	ctx context.Context, set *settings.Service, groups *group.Store, account user.User,
+) error {
+	if !set.Bool(settings.APIEnabled) {
+		return httpx.ForbiddenCode("api_disabled", "The API is not enabled on this instance.")
+	}
+	if account.IsAdmin() {
+		return nil
+	}
+	if account.APIRestrictedAt(time.Now()) {
+		return httpx.ForbiddenCode("api_restricted",
+			"API access is restricted for this account.").
+			WithDetails(map[string]any{"until": account.APIRestrictedUntil})
+	}
+	membership, err := groups.ByID(ctx, nil, account.GroupID)
+	if err != nil || !membership.APIAccess {
+		return httpx.ForbiddenCode("api_not_permitted",
+			"Your group does not have API access.")
+	}
+	return nil
+}
+
 // deleteAllowed answers whether this account's group lets it remove its own
 // conversations. An administrator always may: the capability exists to hold
 // an instance's members to a record, not to lock its operator out of one.
@@ -675,23 +735,6 @@ func deleteAllowed(ctx context.Context, groups *group.Store, account user.User) 
 	}
 	return httpx.ForbiddenCode("delete_not_permitted",
 		"Your group cannot delete conversations.")
-}
-
-func apiAllowed(
-	ctx context.Context, set *settings.Service, groups *group.Store, account user.User,
-) error {
-	if !set.Bool(settings.APIEnabled) {
-		return httpx.ForbiddenCode("api_disabled", "The API is not enabled on this instance.")
-	}
-	if account.IsAdmin() {
-		return nil
-	}
-	membership, err := groups.ByID(ctx, nil, account.GroupID)
-	if err != nil || !membership.APIAccess {
-		return httpx.ForbiddenCode("api_not_permitted",
-			"Your group does not have API access.")
-	}
-	return nil
 }
 
 // skipFromLog drops the requests nobody audits: the compiled frontend's own

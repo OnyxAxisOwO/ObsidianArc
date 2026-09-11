@@ -128,7 +128,7 @@ onMounted(load);
   <p v-else-if="!snapshot" class="oa-table-empty">{{ t('loading') }}</p>
 
   <template v-else>
-    <OaAdminSection :title="t('resStorage')">
+    <OaAdminSection id="resStorage" :title="t('resStorage')">
       <OaStatGrid :stats="storageStats" />
     </OaAdminSection>
 
@@ -140,11 +140,11 @@ onMounted(load);
       @sort="sort = $event"
     />
 
-    <OaAdminSection :title="t('resMemory')">
+    <OaAdminSection id="resMemory" :title="t('resMemory')">
       <OaStatGrid :stats="memoryStats" />
     </OaAdminSection>
 
-    <OaAdminSection :title="t('resCPU')">
+    <OaAdminSection id="resCPU" :title="t('resCPU')">
       <OaStatGrid :stats="cpuStats" />
     </OaAdminSection>
 

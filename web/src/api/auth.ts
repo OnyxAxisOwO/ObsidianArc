@@ -25,6 +25,11 @@ export interface Account {
   // endpoints that act; these decide only what is worth drawing.
   allow_stats: boolean;
   allow_delete_conversations: boolean;
+  /** A user-level brake over the group's API permission. A zero expiry means
+   *  the restriction remains until an administrator lifts it. */
+  api_restricted: boolean;
+  api_restricted_until: number;
+  api_restriction_source: string;
   /** Where the account registered from. Administrators only; '' where it
    *  could not be resolved, and on accounts created before it was recorded. */
   signup_ip?: string;
@@ -62,6 +67,7 @@ export interface SiteInfo {
   turnstile_on_login?: boolean;
   turnstile_on_signup?: boolean;
   turnstile_on_api_key?: boolean;
+  turnstile_on_chat_speed?: boolean;
   /** Whether a model reads each sign-up, so the button can say it is happening. */
   signup_review?: boolean;
   // Whether a new account has to confirm its address before it can

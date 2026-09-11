@@ -317,6 +317,32 @@ func TestMissingAndBadCredentialsAreRefused(t *testing.T) {
 	}
 }
 
+func TestAccountAPIRestrictionCoversExistingKeysUntilItExpires(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	restricted, err := f.users.UpdateAPIRestriction(
+		ctx, nil, f.account.ID, true, time.Now().Add(time.Hour).UnixMilli(), "signup_review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.account = restricted
+
+	w := f.do(t, http.MethodGet, "/v1/models", f.token, "")
+	if w.Code != http.StatusForbidden || errorCode(t, w) != "api_restricted" {
+		t.Fatalf("restricted key: %d %s", w.Code, w.Body.String())
+	}
+
+	if _, err := f.users.UpdateAPIRestriction(
+		ctx, nil, f.account.ID, true, time.Now().Add(-time.Minute).UnixMilli(), "signup_review"); err != nil {
+		t.Fatal(err)
+	}
+	w = f.do(t, http.MethodGet, "/v1/models", f.token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expired restriction: %d %s", w.Code, w.Body.String())
+	}
+}
+
 // A session cookie is not a credential here. Were it one, the browser's
 // same-origin protections would be the only thing standing between this
 // surface and any page the user visits.

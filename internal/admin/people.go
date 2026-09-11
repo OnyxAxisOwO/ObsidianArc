@@ -16,6 +16,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
+	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -138,6 +139,9 @@ type userRequest struct {
 	Role    *user.Role   `json:"role"`
 	GroupID *string      `json:"group_id"`
 	Status  *user.Status `json:"status"`
+
+	APIRestricted       *bool `json:"api_restricted"`
+	APIRestrictionHours *int  `json:"api_restriction_hours"`
 }
 
 func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
@@ -159,6 +163,13 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 	}
 	if body.Status != nil && *body.Status != user.StatusActive && *body.Status != user.StatusDisabled {
 		return httpx.BadRequest("Status must be active or disabled.")
+	}
+	if body.APIRestrictionHours != nil &&
+		(*body.APIRestrictionHours < 0 || *body.APIRestrictionHours > 24*365) {
+		return httpx.BadRequest("API restriction hours must be between 0 and 8760.")
+	}
+	if body.APIRestrictionHours != nil && body.APIRestricted == nil {
+		return httpx.BadRequest("API restriction hours require an API restriction choice.")
 	}
 	if body.GroupID != nil && *body.GroupID != "" {
 		if !isValidID(*body.GroupID) {
@@ -247,6 +258,40 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 				Status:  body.Status,
 			})
 			if err != nil {
+				return err
+			}
+		}
+
+		if body.APIRestricted != nil {
+			until := int64(0)
+			if *body.APIRestricted && body.APIRestrictionHours != nil && *body.APIRestrictionHours > 0 {
+				until = time.Now().Add(time.Duration(*body.APIRestrictionHours) * time.Hour).UnixMilli()
+			}
+			updated, err = h.users.UpdateAPIRestriction(
+				r.Context(), tx, userID, *body.APIRestricted, until, "admin")
+			if err != nil {
+				return err
+			}
+			decision := "allow"
+			eventType := securityevents.EventAPIRestrictionLift
+			severity := securityevents.SeverityInfo
+			reason := "administrator lifted the API restriction"
+			if *body.APIRestricted {
+				decision = "restrict"
+				eventType = securityevents.EventAPIRestriction
+				severity = securityevents.SeverityWarning
+				reason = "administrator restricted API access permanently"
+				if body.APIRestrictionHours != nil && *body.APIRestrictionHours > 0 {
+					reason = "administrator restricted API access for " +
+						strconv.Itoa(*body.APIRestrictionHours) + " hours"
+				}
+			}
+			if err := h.security.Record(r.Context(), tx, securityevents.Event{
+				Event: eventType, Severity: severity,
+				UserID: userID, Username: target.Username, Source: "admin",
+				ActorID: actor.ID, ActorUsername: actor.Username,
+				Decision: decision, Reason: reason,
+			}); err != nil {
 				return err
 			}
 		}

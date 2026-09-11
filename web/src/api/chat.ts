@@ -107,6 +107,7 @@ export interface TurnRequest {
   attachment_ids?: string[];
   reasoning?: { enabled: boolean; effort: string };
   truncate_from_message_id?: string;
+  turnstile?: string;
 }
 
 export interface TurnHandlers {

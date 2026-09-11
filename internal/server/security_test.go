@@ -159,6 +159,7 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodGet, "/api/admin/health", nil},
 		{http.MethodPost, "/api/admin/health/reset", nil},
 		{http.MethodPost, "/api/admin/security/review", map[string]any{"username": "x"}},
+		{http.MethodGet, "/api/admin/security/events", nil},
 		{http.MethodGet, "/api/admin/users", nil},
 		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
 		{http.MethodPatch, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{"nickname": "x"}},
@@ -601,6 +602,56 @@ func TestKeyCannotBePinnedToAnUnavailableModel(t *testing.T) {
 	if patched.Code != http.StatusBadRequest {
 		t.Fatalf("pinning an existing key to an unknown model gave %d %s, want 400",
 			patched.Code, patched.Body.String())
+	}
+}
+
+func TestAdministratorCanRestrictAndRestoreAnAccountsAPI(t *testing.T) {
+	in := newInstance(t)
+	administrator := in.register("founder", "a-good-password")
+	member := in.register("member", "another-password")
+
+	if response := in.do(http.MethodPut, "/api/admin/settings",
+		map[string]string{"api.enabled": "true"}, administrator); response.Code != http.StatusOK {
+		t.Fatalf("enable API: %d %s", response.Code, response.Body.String())
+	}
+	groupsResponse := in.do(http.MethodGet, "/api/admin/groups", nil, administrator)
+	var groupsPayload struct {
+		Groups []struct {
+			ID string `json:"id"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(groupsResponse.Body.Bytes(), &groupsPayload); err != nil || len(groupsPayload.Groups) != 1 {
+		t.Fatalf("groups: %v %s", err, groupsResponse.Body.String())
+	}
+	if response := in.do(http.MethodPatch, "/api/admin/groups/"+groupsPayload.Groups[0].ID,
+		map[string]any{"api_access": true}, administrator); response.Code != http.StatusOK {
+		t.Fatalf("grant group API: %d %s", response.Code, response.Body.String())
+	}
+
+	if response := in.do(http.MethodPatch, "/api/admin/users/"+member.userID,
+		map[string]any{"api_restricted": true, "api_restriction_hours": 30}, administrator); response.Code != http.StatusOK {
+		t.Fatalf("restrict account API: %d %s", response.Code, response.Body.String())
+	}
+	blocked := in.do(http.MethodPost, "/api/keys", map[string]any{"name": "blocked"}, member)
+	if blocked.Code != http.StatusForbidden || !strings.Contains(blocked.Body.String(), `"code":"api_restricted"`) {
+		t.Fatalf("restricted key creation: %d %s", blocked.Code, blocked.Body.String())
+	}
+
+	if response := in.do(http.MethodPatch, "/api/admin/users/"+member.userID,
+		map[string]any{"api_restricted": false}, administrator); response.Code != http.StatusOK {
+		t.Fatalf("restore account API: %d %s", response.Code, response.Body.String())
+	}
+	allowed := in.do(http.MethodPost, "/api/keys", map[string]any{"name": "restored"}, member)
+	if allowed.Code != http.StatusCreated {
+		t.Fatalf("restored key creation: %d %s", allowed.Code, allowed.Body.String())
+	}
+
+	events := in.do(http.MethodGet, "/api/admin/security/events?user_id="+member.userID, nil, administrator)
+	if events.Code != http.StatusOK ||
+		!strings.Contains(events.Body.String(), `"event":"api_restriction"`) ||
+		!strings.Contains(events.Body.String(), `"event":"api_restriction_lifted"`) ||
+		!strings.Contains(events.Body.String(), `"actor_username":"founder"`) {
+		t.Fatalf("security events: %d %s", events.Code, events.Body.String())
 	}
 }
 

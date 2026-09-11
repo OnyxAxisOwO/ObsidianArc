@@ -212,6 +212,14 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 	if err != nil || !account.IsActive() {
 		return caller{}, invalidKey()
 	}
+	if !account.IsAdmin() && account.APIRestrictedAt(time.Now()) {
+		return caller{}, apiError{
+			status:  http.StatusForbidden,
+			kind:    "permission_error",
+			code:    "api_restricted",
+			message: "API access is restricted for this account.",
+		}
+	}
 
 	// No confirmation check here. It used to be a third copy of one — the
 	// gateway's guard has it, and so does the upload path — and it was the

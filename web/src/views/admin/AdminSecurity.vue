@@ -8,8 +8,9 @@
 // junk accounts opens one page, not seven sections of another.
 
 import { computed, onMounted, ref } from 'vue';
-import { adminApi, type AdminModel, type Group } from '@/admin/api';
+import { adminApi, type AdminModel, type Group, type SecurityEvent } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import OaBadge from '@/components/OaBadge.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
@@ -17,6 +18,7 @@ import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { t } from '@/composables/useI18n';
+import { absoluteTime } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 
@@ -31,6 +33,9 @@ const models = ref<AdminModel[]>([]);
 const flash = ref('');
 const saveLabel = ref('');
 const busy = ref(false);
+const events = ref<SecurityEvent[]>([]);
+const eventsTotal = ref(0);
+const eventsLoading = ref(false);
 
 const form = ref({
   registration: false,
@@ -49,9 +54,13 @@ const form = ref({
   turnstileOnLogin: false,
   turnstileOnSignup: false,
   turnstileOnAPIKey: false,
+  chatChallengeRequests: 0 as number | null,
+  chatChallengeWindowSecs: 60 as number | null,
+  chatChallengeClearMins: 30 as number | null,
   reviewEnabled: false,
   reviewModel: '',
   reviewMode: 'normal',
+  reviewRestrictHours: 24 as number | null,
   reviewRefusal: '',
 });
 
@@ -84,9 +93,13 @@ function collect(): Record<string, string> {
     'turnstile.on_login': String(form.value.turnstileOnLogin),
     'turnstile.on_signup': String(form.value.turnstileOnSignup),
     'turnstile.on_api_key': String(form.value.turnstileOnAPIKey),
+    'security.chat_challenge_requests': String(form.value.chatChallengeRequests ?? 0),
+    'security.chat_challenge_window_seconds': String(form.value.chatChallengeWindowSecs ?? 60),
+    'security.chat_challenge_clear_minutes': String(form.value.chatChallengeClearMins ?? 30),
     'security.signup_review': String(form.value.reviewEnabled),
     'security.signup_review_model': form.value.reviewModel,
     'security.signup_review_mode': form.value.reviewMode,
+    'security.signup_review_restrict_hours': String(form.value.reviewRestrictHours ?? 24),
     'security.signup_review_refusal': form.value.reviewRefusal.trim(),
   };
 }
@@ -127,13 +140,46 @@ function runTrial(): void {
   })
     .then((result) => {
       trial.value.answer = !result.ran
-        ? t('reviewTryBroken', { reason: result.reason })
-        : t(result.allow ? 'reviewTryAllowed' : 'reviewTryRefused', { reason: result.reason });
+        ? t('reviewTryBroken', { decision: reviewDecision(result.decision), reason: result.reason })
+        : t(result.decision === 'allow'
+          ? 'reviewTryAllowed'
+          : result.decision === 'restrict' ? 'reviewTryRestricted' : 'reviewTryRefused',
+        { reason: result.reason });
     })
     .catch((failure: unknown) => {
       trial.value.answer = failure instanceof ApiError ? failure.message : String(failure);
     })
     .finally(() => { trial.value.running = false; });
+}
+
+function reviewDecision(decision: string): string {
+  if (decision === 'allow') return t('securityDecisionAllow');
+  if (decision === 'refuse') return t('securityDecisionRefuse');
+  if (decision === 'required') return t('securityDecisionRequired');
+  if (decision === 'passed') return t('securityDecisionPassed');
+  if (decision === 'failed') return t('securityDecisionFailed');
+  return t('securityDecisionRestrict');
+}
+
+function eventLabel(event: string): string {
+  if (event === 'signup_review') return t('securityEventSignupReview');
+  if (event === 'api_restriction') return t('securityEventAPIRestriction');
+  if (event === 'api_restriction_lifted') return t('securityEventAPIRestrictionLifted');
+  if (event === 'chat_challenge') return t('securityEventChatChallenge');
+  return event;
+}
+
+async function loadEvents(): Promise<void> {
+  eventsLoading.value = true;
+  try {
+    const result = await adminApi.securityEvents('?limit=50');
+    events.value = result.events ?? [];
+    eventsTotal.value = result.total;
+  } catch (failure) {
+    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+  } finally {
+    eventsLoading.value = false;
+  }
 }
 
 async function load(): Promise<void> {
@@ -142,11 +188,15 @@ async function load(): Promise<void> {
     // The models come along because one of these settings is which model
     // reviews a sign-up, and a select needs its options. The groups arrive
     // with the settings already.
-    const [data, modelsResult] = await Promise.all([adminApi.settings(), adminApi.models()]);
+    const [data, modelsResult, securityResult] = await Promise.all([
+      adminApi.settings(), adminApi.models(), adminApi.securityEvents('?limit=50'),
+    ]);
     const values = data.settings;
     mailConfigured.value = data.mail_configured;
     groups.value = data.groups;
     models.value = modelsResult.models;
+    events.value = securityResult.events ?? [];
+    eventsTotal.value = securityResult.total;
 
     form.value = {
       registration: values['registration.enabled'] === 'true',
@@ -165,9 +215,13 @@ async function load(): Promise<void> {
       turnstileOnLogin: values['turnstile.on_login'] === 'true',
       turnstileOnSignup: values['turnstile.on_signup'] === 'true',
       turnstileOnAPIKey: values['turnstile.on_api_key'] === 'true',
+      chatChallengeRequests: Number(values['security.chat_challenge_requests'] ?? 0),
+      chatChallengeWindowSecs: Number(values['security.chat_challenge_window_seconds'] ?? 60),
+      chatChallengeClearMins: Number(values['security.chat_challenge_clear_minutes'] ?? 30),
       reviewEnabled: values['security.signup_review'] === 'true',
       reviewModel: values['security.signup_review_model'] ?? '',
       reviewMode: values['security.signup_review_mode'] ?? 'normal',
+      reviewRestrictHours: Number(values['security.signup_review_restrict_hours'] ?? 24),
       reviewRefusal: values['security.signup_review_refusal'] ?? '',
     };
   } catch (failure) {
@@ -191,7 +245,7 @@ onMounted(load);
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <div v-else class="oa-settings-panel">
-    <OaFormSection :title="t('secAccounts')" />
+    <OaFormSection id="secAccounts" :title="t('secAccounts')" />
     <OaSwitchField
       v-model="form.registration"
       :label="t('anyoneCanRegister')"
@@ -206,7 +260,7 @@ onMounted(load);
       ]"
     />
 
-    <OaFormSection :title="t('secRegistration')" />
+    <OaFormSection id="secRegistration" :title="t('secRegistration')" />
     <OaSwitchField v-model="form.requireEmail" :label="t('requireEmail')" :hint="t('requireEmailHint')" />
     <!-- Offered but inert without SMTP, and the hint says so. The server
          ignores it in that state too, so an operator cannot lock every new
@@ -251,7 +305,7 @@ onMounted(load);
       :hint="t('signupsIPWindowHint')"
     />
 
-    <OaFormSection :title="t('secTurnstile')" :hint="t('turnstileHint')" />
+    <OaFormSection id="secTurnstile" :title="t('secTurnstile')" :hint="t('turnstileHint')" />
     <OaTextField
       v-model="form.turnstileSiteKey"
       :label="t('turnstileSiteKey')"
@@ -281,8 +335,31 @@ onMounted(load);
       :label="t('turnstileOnAPIKey')"
       :hint="t('turnstileOnAPIKeyHint')"
     />
+    <OaNumberField
+      v-model="form.chatChallengeRequests"
+      :label="t('chatChallengeRequests')"
+      :hint="t('chatChallengeRequestsHint')"
+      :min="0"
+      :max="1000"
+    />
+    <template v-if="(form.chatChallengeRequests ?? 0) > 0">
+      <OaNumberField
+        v-model="form.chatChallengeWindowSecs"
+        :label="t('chatChallengeWindow')"
+        :hint="t('chatChallengeWindowHint')"
+        :min="5"
+        :max="3600"
+      />
+      <OaNumberField
+        v-model="form.chatChallengeClearMins"
+        :label="t('chatChallengeClearance')"
+        :hint="t('chatChallengeClearanceHint')"
+        :min="1"
+        :max="1440"
+      />
+    </template>
 
-    <OaFormSection :title="t('secSignupReview')" :hint="t('signupReviewIntro')" />
+    <OaFormSection id="secSignupReview" :title="t('secSignupReview')" :hint="t('signupReviewIntro')" />
     <OaSwitchField v-model="form.reviewEnabled" :label="t('signupReview')" :hint="t('signupReviewHint')" />
     <OaSelectField
       v-model="form.reviewModel"
@@ -303,6 +380,13 @@ onMounted(load);
         { value: 'strict', label: t('reviewModeStrict') },
       ]"
     />
+    <OaNumberField
+      v-model="form.reviewRestrictHours"
+      :label="t('signupReviewRestrictHours')"
+      :hint="t('signupReviewRestrictHoursHint')"
+      :min="0"
+      :max="8760"
+    />
     <OaTextArea
       v-model="form.reviewRefusal"
       :label="t('signupReviewRefusal')"
@@ -322,6 +406,38 @@ onMounted(load);
       </button>
       <p class="oa-field-hint">{{ trial.answer }}</p>
     </div>
+
+    <OaFormSection id="secSecurityLog" :title="t('secSecurityLog')" :hint="t('securityLogHint')" />
+    <button type="button" class="oa-btn" :disabled="eventsLoading" @click="loadEvents">
+      {{ t('refresh') }}
+    </button>
+    <p v-if="eventsLoading" class="oa-table-empty">{{ t('loading') }}</p>
+    <p v-else-if="!events.length" class="oa-table-empty">{{ t('securityLogEmpty') }}</p>
+    <div v-else class="oa-log-list">
+      <div v-for="event in events" :key="event.id" class="oa-log-row">
+        <div class="oa-log-row-main">
+          <div class="oa-log-row-head">
+            <span class="oa-log-path">{{ eventLabel(event.event) }}</span>
+            <OaBadge
+              :tone="event.severity === 'danger'
+                ? 'danger' : event.severity === 'warning' ? 'warning' : 'muted'"
+            >{{ reviewDecision(event.decision ?? '') }}</OaBadge>
+          </div>
+          <div class="oa-log-row-meta">
+            <span>{{ absoluteTime(event.at) }}</span>
+            <span v-if="event.username">@{{ event.username }}</span>
+            <span v-if="event.ip">{{ event.ip }}</span>
+            <span v-if="event.actor_username">
+              {{ t('securityLogActor', { name: `@${event.actor_username}` }) }}
+            </span>
+          </div>
+          <span v-if="event.reason" class="oa-field-hint">{{ event.reason }}</span>
+        </div>
+      </div>
+    </div>
+    <p v-if="eventsTotal > events.length" class="oa-field-hint">
+      {{ t('securityLogShowing', { shown: events.length, total: eventsTotal }) }}
+    </p>
 
     <p class="oa-drawer-flash" :class="{ visible: !!flash }">{{ flash }}</p>
   </div>

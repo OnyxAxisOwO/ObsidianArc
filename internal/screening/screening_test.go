@@ -9,14 +9,12 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 )
 
-// Everything that can go wrong lets the registration through. A model that
-// answers with prose, an empty body, an object about something else — none of
-// them is a decision, and treating a non-answer as a refusal turns a spam
-// filter into an outage of the front door.
+// Prose, an empty body, and an object about something else are not decisions.
+// The selected mode decides the fallback; the parser must not guess one.
 func TestOnlyARealVerdictIsAVerdict(t *testing.T) {
 	for _, raw := range []string{
 		"", "   ", "I think this is fine", "{}", "{\"reason\":\"looks fine\"}",
-		"{\"allow\":", "not json at all {", "}{",
+		"{\"decision\":", "not json at all {", "}{",
 	} {
 		if _, ok := parse(raw); ok {
 			t.Errorf("%q was read as a verdict", raw)
@@ -27,11 +25,11 @@ func TestOnlyARealVerdictIsAVerdict(t *testing.T) {
 // Models wrap JSON in prose and in code fences however firmly they are asked
 // not to, so the object is taken from the first brace to the last.
 func TestTheVerdictIsFoundInsideWhateverItArrivesIn(t *testing.T) {
-	cases := map[string]bool{
-		`{"allow":true,"reason":"ordinary"}`:                                            true,
-		"```json\n{\"allow\": false, \"reason\": \"random string\"}\n```":               false,
-		"Here is my answer:\n{\"allow\": false, \"reason\": \"bot\"}\nHope that helps.": false,
-		`{"allow":true}`: true,
+	cases := map[string]Decision{
+		`{"decision":"allow","reason":"ordinary"}`:                                              DecisionAllow,
+		"```json\n{\"decision\": \"restrict\", \"reason\": \"random string\"}\n```":             DecisionRestrict,
+		"Here is my answer:\n{\"decision\": \"refuse\", \"reason\": \"bot\"}\nHope that helps.": DecisionRefuse,
+		`{"decision":"allow"}`: DecisionAllow,
 	}
 	for raw, want := range cases {
 		verdict, ok := parse(raw)
@@ -39,8 +37,8 @@ func TestTheVerdictIsFoundInsideWhateverItArrivesIn(t *testing.T) {
 			t.Errorf("%q did not parse", raw)
 			continue
 		}
-		if verdict.Allow != want {
-			t.Errorf("%q allowed = %v, want %v", raw, verdict.Allow, want)
+		if verdict.Decision != want {
+			t.Errorf("%q decision = %q, want %q", raw, verdict.Decision, want)
 		}
 	}
 }
@@ -51,7 +49,7 @@ func TestAnUnconfiguredReviewerAllows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an unconfigured reviewer errored: %v", err)
 	}
-	if !verdict.Allow {
+	if verdict.Decision != DecisionAllow {
 		t.Error("an unconfigured reviewer refused a registration")
 	}
 }
@@ -139,8 +137,14 @@ func TestTheFactsActuallyTravelInTheMessage(t *testing.T) {
 // A verdict of null is not a verdict. It is what a model answers when it was
 // given nothing to judge, and reading it either way would be guessing.
 func TestANullVerdictIsNotAnAnswer(t *testing.T) {
-	if _, ok := parse(`{"allow": null, "reason": "No user details provided to evaluate."}`); ok {
+	if _, ok := parse(`{"decision": null, "reason": "No user details provided to evaluate."}`); ok {
 		t.Error("a null verdict was read as a decision")
+	}
+}
+
+func TestAnUnknownDecisionIsNotAnAnswer(t *testing.T) {
+	if _, ok := parse(`{"decision":"maybe","reason":"uncertain"}`); ok {
+		t.Error("an unknown decision was read as a verdict")
 	}
 }
 
@@ -187,10 +191,9 @@ func TestAnUnknownModeIsNormal(t *testing.T) {
 	}
 }
 
-// What the operator asked for: in strict, a model that cannot answer is not a
-// pass. The blunt consequence is that while the model is unreachable nobody
-// registers, which is the trade an operator makes by choosing it.
-func TestStrictRefusesWhenTheModelCannotAnswer(t *testing.T) {
+// A failed review follows the operator's selected risk posture: loose admits,
+// normal contains the account, and strict keeps it out.
+func TestEachModeHasADifferentFailureDecision(t *testing.T) {
 	broken := Reviewer{
 		Registry: &adapter.Registry{},
 		Resolve: func(context.Context) (adapter.Provider, adapter.ModelSpec, error) {
@@ -198,13 +201,15 @@ func TestStrictRefusesWhenTheModelCannotAnswer(t *testing.T) {
 		},
 	}
 
-	for mode, wantAllow := range map[Mode]bool{Loose: true, Normal: true, Strict: false} {
+	for mode, want := range map[Mode]Decision{
+		Loose: DecisionAllow, Normal: DecisionRestrict, Strict: DecisionRefuse,
+	} {
 		verdict, err := broken.Review(t.Context(), mode, Facts{Username: "someone"})
 		if err == nil {
 			t.Errorf("%s: no error reported for a broken reviewer", mode)
 		}
-		if verdict.Allow != wantAllow {
-			t.Errorf("%s: allowed = %v, want %v", mode, verdict.Allow, wantAllow)
+		if verdict.Decision != want {
+			t.Errorf("%s: decision = %q, want %q", mode, verdict.Decision, want)
 		}
 	}
 }

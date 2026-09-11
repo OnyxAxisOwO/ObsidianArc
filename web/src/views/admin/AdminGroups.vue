@@ -243,7 +243,7 @@ onMounted(load);
 
 <template>
   <Teleport :to="view.actionsHost">
-    <button type="button" class="oa-btn primary" @click="open(null)">{{ t('addGroup') }}</button>
+    <button id="addGroup" type="button" class="oa-btn primary" @click="open(null)">{{ t('addGroup') }}</button>
   </Teleport>
 
   <AdminFailure v-if="error" :message="error" @retry="load" />
@@ -251,6 +251,7 @@ onMounted(load);
 
   <template v-else>
     <OaTable
+      id="groupsList"
       :columns="columns"
       :rows="groups"
       :empty="t('noGroups')"

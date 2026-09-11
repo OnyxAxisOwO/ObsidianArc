@@ -20,6 +20,13 @@
 
 注册频率、Turnstile 和模型审核见[注册与安全](../features/security)。
 
+| 设置键 | 默认值 | 用途 |
+| --- | --- | --- |
+| `security.signup_review_restrict_hours` | `24` | `restrict` 注册的 API 限制时长；0 表示手动解除 |
+| `security.chat_challenge_requests` | `0` | 聊天速度窗口内允许的请求数；0 表示关闭 |
+| `security.chat_challenge_window_seconds` | `60` | 聊天速度统计窗口 |
+| `security.chat_challenge_clear_minutes` | `30` | 一次验证通过后的免验证时间 |
+
 ## 首页与对话
 
 | 设置键 | 默认值 | 用途 |

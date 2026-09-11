@@ -204,7 +204,7 @@ onMounted(reload);
   <AdminFailure v-if="error" :message="error" @retry="reload" />
 
   <div v-else class="oa-log-page">
-    <div v-if="facets" class="oa-log-filters">
+    <div v-if="facets" id="logsFilter" class="oa-log-filters">
       <div class="oa-log-filter-grid">
         <OaSelectField
           v-model="query.window"
@@ -270,7 +270,7 @@ onMounted(reload);
       </div>
     </div>
 
-    <div class="oa-log-results">
+    <div id="logsTable" class="oa-log-results">
       <p v-if="loading" class="oa-menu-empty">{{ t('loading') }}</p>
       <p v-else-if="listError" class="oa-menu-empty">{{ listError }}</p>
       <p v-else-if="!entries.length" class="oa-menu-empty">{{ t('logEmpty') }}</p>

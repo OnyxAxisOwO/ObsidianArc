@@ -319,10 +319,15 @@ interface TurnOptions {
   content?: string;
   attachmentIDs?: string[];
   truncateFrom?: string;
+  conversationID?: string;
 }
 
-export async function runTurn(turn: TurnOptions): Promise<void> {
-  if (busy.value || !status.value.configured) return;
+export const chatChallenge = ref<TurnOptions | null>(null);
+export const chatChallengeError = ref('');
+
+export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done' | 'challenge'> {
+  if (busy.value || !status.value.configured) return 'done';
+  const conversationID = turn.conversationID ?? activeID.value;
 
   // Optimistic local rewind, so the transcript reacts before the server
   // answers. The server does the same thing to the rows.
@@ -348,8 +353,8 @@ export async function runTurn(turn: TurnOptions): Promise<void> {
   // The turn belongs to the screen it was sent from, and to the conversation
   // that screen is showing — which may still be unnamed for one more moment.
   pendingView.value = switchTick.value;
-  pendingID.value = activeID.value;
-  let turnID = activeID.value;
+  pendingID.value = conversationID;
+  let turnID = conversationID;
   setFlash('');
   scrollToEnd();
   justSentID.value = '';
@@ -360,7 +365,7 @@ export async function runTurn(turn: TurnOptions): Promise<void> {
   try {
     await sendTurn(
       {
-        ...(activeID.value ? { conversation_id: activeID.value } : {}),
+        ...(conversationID ? { conversation_id: conversationID } : {}),
         model_id: status.value.modelID,
         ...(turn.content ? { content: turn.content } : {}),
         ...(turn.attachmentIDs?.length ? { attachment_ids: turn.attachmentIDs } : {}),
@@ -369,6 +374,7 @@ export async function runTurn(turn: TurnOptions): Promise<void> {
           enabled: status.value.reasoningAvailable && status.value.reasoningEnabled,
           effort: status.value.reasoningEffort,
         },
+        ...(turnstile ? { turnstile } : {}),
       },
       {
         onStart: (payload) => {
@@ -401,8 +407,20 @@ export async function runTurn(turn: TurnOptions): Promise<void> {
     );
   } catch (error) {
     if (!controller.signal.aborted) {
-      failed = true;
-      if (watching()) setFlash(error instanceof ApiError ? error.message : String(error));
+      if (error instanceof ApiError &&
+          (error.code === 'chat_challenge_required' || error.code === 'challenge_failed' ||
+           error.code === 'challenge_unavailable')) {
+        failed = true;
+        // The server rejects before creating a turn. Remove the optimistic
+        // copy so solving or cancelling the challenge cannot duplicate text.
+        const last = messages.value[messages.value.length - 1];
+        if (turn.content && last?.id.startsWith('local-')) messages.value = messages.value.slice(0, -1);
+        chatChallenge.value = { ...turn, conversationID };
+        chatChallengeError.value = error.code === 'chat_challenge_required' ? '' : error.message;
+      } else {
+        failed = true;
+        if (watching()) setFlash(error instanceof ApiError ? error.message : String(error));
+      }
     }
   } finally {
     settleDeltas();
@@ -423,6 +441,7 @@ export async function runTurn(turn: TurnOptions): Promise<void> {
   }
   if (!failed) setFlash(flash.value);
   void refreshList();
+  return chatChallenge.value ? 'challenge' : 'done';
 }
 
 export async function submit(): Promise<void> {
@@ -434,10 +453,30 @@ export async function submit(): Promise<void> {
 
   draft.value = '';
   const previews = attachments.value.map((entry) => entry.preview);
-  await runTurn({ content: text, attachmentIDs: ids });
+  const result = await runTurn({ content: text, attachmentIDs: ids });
+
+  if (result === 'challenge') return;
 
   for (const url of previews) URL.revokeObjectURL(url);
   attachments.value = [];
+}
+
+export async function completeChatChallenge(token: string): Promise<void> {
+  const turn = chatChallenge.value;
+  if (!turn || !token) return;
+  chatChallenge.value = null;
+  chatChallengeError.value = '';
+  const result = await runTurn(turn, token);
+  if (result === 'challenge') return;
+  for (const entry of attachments.value) URL.revokeObjectURL(entry.preview);
+  attachments.value = [];
+}
+
+export function cancelChatChallenge(): void {
+  const turn = chatChallenge.value;
+  if (turn?.content && !draft.value.trim()) draft.value = turn.content;
+  chatChallenge.value = null;
+  chatChallengeError.value = '';
 }
 
 /**
@@ -583,6 +622,8 @@ export function resetChat(): void {
   editingID.value = '';
   draft.value = '';
   flash.value = '';
+  chatChallenge.value = null;
+  chatChallengeError.value = '';
   pending.value = null;
   pendingID.value = '';
   busy.value = false;
