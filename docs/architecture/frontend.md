@@ -67,7 +67,7 @@ math-[hash].js
 
 ```bash
 npm --prefix web run build
-make test
+make test-full
 ```
 
 ## 维护文档站

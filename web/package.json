@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "typecheck": "vue-tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --pool=threads --maxWorkers=4",
     "preview": "vite preview"
   },
   "dependencies": {

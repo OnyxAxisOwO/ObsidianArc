@@ -65,6 +65,6 @@ SQLite 的写入由数据库串行协调，不能把这个方案理解成 SQLite
 
 ## 验证
 
-`make test` 执行 Go 静态检查、格式检查、Go 测试、Vue 类型检查与前端测试。CI 还运行 PostgreSQL 测试及 Docker 启动检查。
+`make test` 执行 Go 静态检查、格式检查、并发受限的 Go 测试与前端测试；`make test-full` 还执行 Vue 类型检查，并作为 CI 门禁。CI 另外运行 PostgreSQL 测试及 Docker 启动检查。
 
 构建体积属于测量结果。修改主应用的依赖或分包后，应重新测量，并同步更新仓库中的测量记录；文档站的构建产物与应用产物分别计算。

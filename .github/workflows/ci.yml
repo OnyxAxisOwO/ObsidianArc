@@ -1,6 +1,6 @@
 # The gate, run by something other than the person who wrote the change.
 #
-# `make test` is the only reviewer that reads every agent's output, and until
+# `make test-full` is the only reviewer that reads every agent's output, and until
 # now it only ran when somebody remembered to type it. Several agents work in
 # this repository at once; this is what notices when two of them disagree.
 #
@@ -76,7 +76,7 @@ jobs:
         run: make web-ci
 
       - name: go vet, gofmt, go test, vue-tsc, web test
-        run: make test
+        run: make test-full
         env:
           OBSIDIAN_TEST_POSTGRES_DSN: postgres://arc:arc@localhost:5432/arc_test?sslmode=disable
 

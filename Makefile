@@ -15,7 +15,7 @@ VERSION ?= v$(shell date -u +%Y.%m.%d.%H.%M.%S)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
-.PHONY: all build web web-ci server run dev test vet fmt typecheck web-test clean docker version docs docs-dev
+.PHONY: all build web web-ci server run dev test test-full vet fmt typecheck web-test clean docker version docs docs-dev
 
 all: build
 
@@ -54,7 +54,7 @@ run: server
 dev:
 	OBSIDIAN_DEV=1 OBSIDIAN_LOG_LEVEL=debug go run ./cmd/server
 
-## test: everything the phase gate checks
+## test: fast local gate with bounded test concurrency
 ##
 ## The frontend tests include assertions about the built bundle — that the
 ## backoffice, the Chinese dictionary and the maths renderer are still in
@@ -64,9 +64,12 @@ dev:
 ## there and cannot rewrite the lockfile behind its back.
 test: vet
 	@test -d internal/web/dist/assets || $(MAKE) web
-	go test ./...
-	npm --prefix web run typecheck
+	go test -p 4 ./...
 	npm --prefix web run test
+
+## test-full: CI gate, including the slower Vue template typecheck
+test-full: test
+	npm --prefix web run typecheck
 
 vet:
 	go vet ./...
