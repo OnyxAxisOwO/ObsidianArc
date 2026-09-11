@@ -3026,6 +3026,19 @@
   flex-shrink: 0;
 }
 
+/* The collapsible variant needs a real control while it is only an icon.
+   At full width it occupies exactly the old decorative icon's footprint. */
+.oa-search .oa-search-open {
+  width: 15px;
+  height: 24px;
+  flex-shrink: 0;
+  color: inherit;
+}
+
+.oa-search .oa-search-open:hover {
+  background: transparent;
+}
+
 .oa-search input {
   appearance: none;
   min-width: 0;
@@ -3117,6 +3130,74 @@
 
 .oa-admin-nav-list::-webkit-scrollbar {
   display: none;
+}
+
+@media (max-width: 900px) {
+  /* The rail is a single tab strip here. Search begins as one round control,
+     then grows over that strip without making the page or its tabs reflow. */
+  .oa-admin-rail {
+    width: 100%;
+    min-height: 52px;
+    overflow: hidden;
+  }
+
+  .oa-admin-rail-head {
+    display: none;
+  }
+
+  .oa-admin-search.oa-search-collapsible {
+    position: absolute;
+    z-index: 3;
+    top: 8px;
+    left: 8px;
+    width: 36px;
+    height: 36px;
+    min-height: 36px;
+    margin: 0;
+    padding: 0;
+    gap: 0;
+    overflow: hidden;
+    border-radius: 999px;
+    transition: width 0.34s cubic-bezier(0.2, 0, 0, 1),
+      border-radius 0.34s cubic-bezier(0.2, 0, 0, 1),
+      background-color 0.15s ease;
+  }
+
+  .oa-admin-search.oa-search-collapsible .oa-search-open {
+    width: 36px;
+    height: 36px;
+  }
+
+  .oa-admin-search.oa-search-collapsible:not(.expanded) input,
+  .oa-admin-search.oa-search-collapsible:not(.expanded) .oa-search-clear,
+  .oa-admin-search.oa-search-collapsible:not(.expanded)::after {
+    display: none;
+  }
+
+  .oa-admin-search.oa-search-collapsible.expanded {
+    width: calc(100% - 16px);
+    padding-right: 8px;
+    gap: 8px;
+    border-radius: 11px;
+  }
+
+  .oa-admin-nav-wrap {
+    min-width: 0;
+    margin-left: 44px;
+    overflow: hidden;
+  }
+
+  .oa-admin-nav-list {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+}
+
+@media (max-width: 900px) and (prefers-reduced-motion: reduce) {
+  .oa-admin-search.oa-search-collapsible {
+    transition: none;
+  }
 }
 
 /* A range gets its focus halo on the thumb, never a filled input rectangle. */

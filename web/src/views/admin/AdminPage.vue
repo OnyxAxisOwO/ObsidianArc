@@ -7,6 +7,7 @@
 // administering does not feel like moving between two applications.
 
 import { computed, markRaw, onMounted, ref, watch, type Component } from 'vue';
+import { useMediaQuery } from '@vueuse/core';
 import { useRoute, useRouter } from 'vue-router';
 import { health } from '@/api/client';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -70,6 +71,7 @@ const PAGES: AdminPageSpec[] = [
 const route = useRoute();
 const router = useRouter();
 const query = ref('');
+const narrow = useMediaQuery('(max-width: 900px)');
 const filteredPages = computed(() => PAGES.filter((entry) => matchesSearch(query.value, t(entry.label))));
 
 const rail = ref<HTMLElement | null>(null);
@@ -191,7 +193,12 @@ onMounted(() => {
         <span class="oa-admin-rail-title">{{ t('administration') }}</span>
       </div>
 
-      <OaSearchField v-model="query" class="oa-admin-search" :label="t('searchAdmin')" />
+      <OaSearchField
+        v-model="query"
+        class="oa-admin-search"
+        :label="t('searchAdmin')"
+        :collapsible="narrow"
+      />
 
       <OaScrollArea wrap-class="oa-admin-nav-wrap" scroll-class="oa-admin-nav-list">
         <p v-if="!filteredPages.length" class="oa-search-empty" role="status">{{ t('noSearchResults') }}</p>

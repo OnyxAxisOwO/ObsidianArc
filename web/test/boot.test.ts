@@ -361,6 +361,48 @@ describe('what moves, and what does not', () => {
     expect(shown('.oa-admin-body section')).toHaveLength(7);
   });
 
+  it('expands the compact admin search across the navigation strip on narrow screens', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+      matches: query === '(max-width: 900px)',
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+    adopt({ ...ACCOUNT, role: 'admin' });
+    await mountAt('/admin/settings');
+
+    const searchBox = host.querySelector<HTMLElement>('.oa-admin-search')!;
+    const trigger = searchBox.querySelector<HTMLButtonElement>('.oa-search-open')!;
+    const input = searchBox.querySelector<HTMLInputElement>('input')!;
+    expect(searchBox.classList.contains('oa-search-collapsible')).toBe(true);
+    expect(searchBox.classList.contains('expanded')).toBe(false);
+
+    trigger.click();
+    await nextTick();
+    expect(searchBox.classList.contains('expanded')).toBe(true);
+    expect(document.activeElement).toBe(input);
+
+    await search('.oa-admin-search input', 'providers');
+    expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(1);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await nextTick();
+    expect(searchBox.classList.contains('expanded')).toBe(false);
+    expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(1);
+    expect(document.activeElement).toBe(trigger);
+
+    trigger.click();
+    await nextTick();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await nextTick();
+    expect(searchBox.classList.contains('expanded')).toBe(false);
+    expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(13);
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('swaps one panel for another without letting the chat reflow wide', async () => {
     adopt(ACCOUNT);
     await mountAt('/settings');

@@ -7,14 +7,24 @@
 // both places at once, which is why every icon control in this interface goes
 // through here rather than writing `title` and `aria-label` by hand.
 
+import { ref } from 'vue';
+
 const props = defineProps<{
   label: string;
   disabled?: boolean;
 }>();
+
+const button = ref<HTMLButtonElement | null>(null);
+
+defineExpose({
+  focus(): void {
+    button.value?.focus();
+  },
+});
 </script>
 
 <template>
-  <button type="button" :title="props.label" :aria-label="props.label" :disabled="props.disabled">
+  <button ref="button" type="button" :title="props.label" :aria-label="props.label" :disabled="props.disabled">
     <slot />
   </button>
 </template>
