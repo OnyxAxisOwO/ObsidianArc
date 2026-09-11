@@ -6,7 +6,7 @@
   "description": "Frontend for the Obsidian Arc server. Vue 3 + SCSS, built by Vite, embedded into the Go binary.",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "vite build",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run --pool=threads --maxWorkers=4",
     "preview": "vite preview"
