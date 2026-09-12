@@ -18,6 +18,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
 type Role string
@@ -60,6 +61,9 @@ type User struct {
 	// where the per-address registration limit is configured and therefore
 	// where "why was this address refused" gets asked.
 	SignupIP string `json:"signup_ip"`
+	// What the registering client identified itself as. Kept with the account
+	// because a later session cannot recover the client that created it.
+	SignupUserAgent string `json:"signup_user_agent"`
 	// A user-level brake over the group's API grant. Zero means a manual or
 	// policy restriction has no automatic expiry; the boolean distinguishes
 	// that from an unrestricted account.
@@ -108,6 +112,9 @@ const (
 	// megabyte-per-row column.
 	MaxAvatarChars = 8 * 1024
 	MaxEmailChars  = 254
+	// The value comes from an untrusted request header and the user row is read
+	// on every authenticated request, so it gets the same bound as session UAs.
+	MaxSignupUserAgentChars = 200
 )
 
 var (
@@ -151,7 +158,7 @@ type Store struct{ db *database.DB }
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
 const columns = `id, username, email, qq, nickname, avatar, bio, role, group_id, status,
-	email_verified, created_at, updated_at, last_login_at, signup_ip,
+	email_verified, created_at, updated_at, last_login_at, signup_ip, signup_user_agent,
 	api_restricted, api_restricted_until, api_restriction_source`
 
 type CreateInput struct {
@@ -168,7 +175,9 @@ type CreateInput struct {
 	Status     Status
 	// The address this account was created from, for the per-address
 	// registration limit. Empty where it could not be resolved.
-	SignupIP             string
+	SignupIP        string
+	SignupUserAgent string
+
 	APIRestricted        bool
 	APIRestrictedUntil   int64
 	APIRestrictionSource string
@@ -210,6 +219,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		EmailVerified:        !in.Unverified || email == "",
 		CreatedAt:            now,
 		UpdatedAt:            now,
+		SignupUserAgent:      text.Truncate(in.SignupUserAgent, MaxSignupUserAgentChars),
 		APIRestricted:        in.APIRestricted,
 		APIRestrictedUntil:   in.APIRestrictedUntil,
 		APIRestrictionSource: in.APIRestrictionSource,
@@ -218,12 +228,12 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 	_, err = q.Exec(ctx, `INSERT INTO users
 		(id, username, username_lower, email, email_lower, qq, password_hash, nickname, avatar, bio,
 		 role, group_id, status, email_verified, created_at, updated_at, last_login_at, signup_ip,
-		 api_restricted, api_restricted_until, api_restriction_source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+		 signup_user_agent, api_restricted, api_restricted_until, api_restriction_source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
 		record.ID, record.Username, strings.ToLower(record.Username),
 		record.Email, strings.ToLower(record.Email), record.QQ, in.PasswordHash, record.Nickname,
 		record.Role, nullable(record.GroupID), record.Status, record.EmailVerified,
-		record.CreatedAt, record.UpdatedAt, in.SignupIP, record.APIRestricted,
+		record.CreatedAt, record.UpdatedAt, in.SignupIP, record.SignupUserAgent, record.APIRestricted,
 		record.APIRestrictedUntil, record.APIRestrictionSource)
 	if err != nil {
 		// Both engines report a violated unique index without naming a
@@ -259,7 +269,8 @@ func (s *Store) CredentialsByLogin(ctx context.Context, identifier string) (User
 	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.QQ, &record.Nickname, &record.Avatar,
 		&record.Bio, &record.Role, &group, &record.Status, &record.EmailVerified,
 		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP,
-		&record.APIRestricted, &record.APIRestrictedUntil, &record.APIRestrictionSource, &hash)
+		&record.SignupUserAgent, &record.APIRestricted, &record.APIRestrictedUntil,
+		&record.APIRestrictionSource, &hash)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return User{}, "", ErrNotFound
@@ -661,7 +672,8 @@ func scanUser(row rowScanner) (User, error) {
 	err := row.Scan(&record.ID, &record.Username, &record.Email, &record.QQ, &record.Nickname, &record.Avatar,
 		&record.Bio, &record.Role, &group, &record.Status, &record.EmailVerified,
 		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP,
-		&record.APIRestricted, &record.APIRestrictedUntil, &record.APIRestrictionSource)
+		&record.SignupUserAgent, &record.APIRestricted, &record.APIRestrictedUntil,
+		&record.APIRestrictionSource)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return User{}, ErrNotFound

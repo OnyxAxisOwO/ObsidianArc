@@ -180,6 +180,7 @@ const identity = computed<Array<[string, string, boolean]>>(() => {
   // Only where it was recorded: accounts predating the column have none, and
   // an empty row reads as a missing value rather than an absent one.
   if (row.signup_ip) rows.push([t('colSignupIP'), row.signup_ip, true]);
+  if (row.signup_user_agent) rows.push([t('registrationUserAgent'), row.signup_user_agent, true]);
   return rows;
 });
 

@@ -17,7 +17,7 @@ const TERMS = {
   ],
   profile: [
     'secProfile', 'nickname', 'nicknameHint', 'email', 'qq', 'qqPlaceholder', 'bio', 'avatar',
-    'avatarPlaceholderUser', 'avatarHint', 'save',
+    'avatarPlaceholderUser', 'avatarHint', 'registrationUserAgent', 'save',
   ],
   password: [
     'secPassword', 'passwordSectionHint', 'currentPassword', 'newPassword', 'newPasswordHint', 'changePassword',

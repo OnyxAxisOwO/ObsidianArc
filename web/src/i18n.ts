@@ -309,6 +309,7 @@ const en = {
   avatar: 'Avatar',
   avatarPlaceholder: '/uploads/… or a data: URI',
   avatarHint: 'A same-origin path or an inline image.',
+  registrationUserAgent: 'Registration user agent',
   role: 'Role',
   roleUser: 'User',
   roleAdmin: 'Administrator',

@@ -162,6 +162,12 @@ function importData(): void {
       :placeholder="t('avatarPlaceholderUser')"
       :hint="t('avatarHint')"
     />
+    <div class="oa-facts">
+      <div class="oa-fact">
+        <span class="oa-fact-label">{{ t('registrationUserAgent') }}</span>
+        <span class="oa-fact-value mono">{{ account.signup_user_agent || '—' }}</span>
+      </div>
+    </div>
     <p class="oa-drawer-flash" :class="{ visible: !!profileFlash }">{{ profileFlash }}</p>
     <div class="oa-button-row">
       <button type="button" class="oa-btn primary" :disabled="profileBusy" @click="saveProfile">

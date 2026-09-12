@@ -295,6 +295,7 @@ export const zh: Record<StringKey, string> = {
   avatar: '头像',
   avatarPlaceholder: '/uploads/… 或 data: URI',
   avatarHint: '同源路径或内联图片。',
+  registrationUserAgent: '注册时的 User-Agent',
   role: '角色',
   roleUser: '普通用户',
   roleAdmin: '管理员',

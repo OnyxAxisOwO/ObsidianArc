@@ -309,6 +309,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			Status:               user.StatusActive,
 			Unverified:           unverified,
 			SignupIP:             in.IP,
+			SignupUserAgent:      in.UA,
 			APIRestricted:        review.Decision == SignupRestrict,
 			APIRestrictedUntil:   review.RestrictedUntil,
 			APIRestrictionSource: restrictionSource(review.Decision),

@@ -437,14 +437,14 @@ func TestUserAgentSurvivesAMultiByteCharacterAtTheTruncationBoundary(t *testing.
 
 	ua := strings.Repeat("M", MaxUserAgentChars-1) + "中" + strings.Repeat("N", 50)
 
-	_, token, err := f.auth.Register(ctx, RegisterInput{
+	created, token, err := f.auth.Register(ctx, RegisterInput{
 		Username: "arc", Password: "a-good-password", UA: ua,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, session, err := f.auth.Authenticate(ctx, token)
+	account, session, err := f.auth.Authenticate(ctx, token)
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)
 	}
@@ -453,6 +453,12 @@ func TestUserAgentSurvivesAMultiByteCharacterAtTheTruncationBoundary(t *testing.
 		t.Fatalf("stored user agent %q (% x) is not valid UTF-8", session.UserAgent, session.UserAgent)
 	}
 	want := strings.Repeat("M", MaxUserAgentChars-1) + "中"
+	if created.SignupUserAgent != want {
+		t.Fatalf("created signup user agent = %q, want %q", created.SignupUserAgent, want)
+	}
+	if account.SignupUserAgent != want {
+		t.Fatalf("stored signup user agent = %q, want %q", account.SignupUserAgent, want)
+	}
 	if session.UserAgent != want {
 		t.Fatalf("stored user agent = %q, want %q", session.UserAgent, want)
 	}

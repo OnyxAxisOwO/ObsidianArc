@@ -36,6 +36,7 @@ const ACCOUNT: Account = {
       api_restricted: false,
       api_restricted_until: 0,
       api_restriction_source: '',
+      signup_user_agent: 'Mozilla/5.0 ObsidianArcTest/1.0',
 };
 
 /**
@@ -197,6 +198,11 @@ describe('the application, mounted', () => {
     expect(panel).not.toBeNull();
     expect(panel?.parentElement?.classList.contains('oa-chat-root')).toBe(true);
     expect(host.querySelector('.oa-settings-tabs')).not.toBeNull();
+    const registrationAgent = Array.from(host.querySelectorAll('.oa-fact')).find(
+      (fact) => fact.querySelector('.oa-fact-label')?.textContent === t('registrationUserAgent'),
+    );
+    expect(registrationAgent?.querySelector('.oa-fact-value')?.textContent)
+      .toBe('Mozilla/5.0 ObsidianArcTest/1.0');
   });
 
   it('offers every image size as a tile whose silhouette fits its box', async () => {

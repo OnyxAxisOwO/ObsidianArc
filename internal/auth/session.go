@@ -37,7 +37,7 @@ var ErrSessionNotFound = errors.New("auth: session not found")
 const TokenBytes = 32
 
 // MaxUserAgentChars bounds what is stored from a client-supplied header.
-const MaxUserAgentChars = 200
+const MaxUserAgentChars = user.MaxSignupUserAgentChars
 
 type SessionStore struct{ db *database.DB }
 

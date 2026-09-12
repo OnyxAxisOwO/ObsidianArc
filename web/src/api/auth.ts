@@ -33,6 +33,9 @@ export interface Account {
   /** Where the account registered from. Administrators only; '' where it
    *  could not be resolved, and on accounts created before it was recorded. */
   signup_ip?: string;
+  /** The client reported when this account was registered. Empty on accounts
+   *  created before it was recorded. */
+  signup_user_agent?: string;
 }
 
 // What a visitor with no account is shown at the address. The server settles
