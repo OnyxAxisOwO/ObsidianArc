@@ -95,7 +95,11 @@ type ModelSpec struct {
 	SupportsImages    bool
 	SupportsStreaming bool
 	SupportsSystem    bool
-	MaxOutputTokens   int
+	// Whether the protocol's tool fields can be sent as they are. When they
+	// cannot, Registry.Chat trades them for the prose protocol in
+	// toolprompt.go rather than sending fields the endpoint refuses.
+	SupportsTools   bool
+	MaxOutputTokens int
 }
 
 type Role string
@@ -228,12 +232,10 @@ type ChatRequest struct {
 	Stream      bool
 	// What the caller offered the model, and how hard to push it.
 	//
-	// Not gated on a model capability flag. `supports_tools` exists on the
-	// row and defaults to false on every model configured before this
-	// worked, so refusing on it would ship a fix that stays broken
-	// everywhere until an operator flips a switch they have never had a
-	// reason to touch — and a model that genuinely cannot take tools says so
-	// upstream, in a message the /v1 layer already renders.
+	// Sent as the protocol carries them when the model supports tools. For a
+	// model that does not, Registry.Chat trades them for the prose protocol
+	// in toolprompt.go before any adapter sees them, so no adapter has to
+	// know that a model's tool calls might arrive as text.
 	Tools      []Tool
 	ToolChoice ToolChoice
 	// Escape hatch for a provider parameter with no dedicated field. Merged
@@ -412,6 +414,9 @@ func (r *Registry) Chat(ctx context.Context, p Provider, req ChatRequest, sink S
 	adapter, ok := r.adapters[p.Kind]
 	if !ok {
 		return Result{}, &Error{Kind: ErrorInvalidRequest, Message: "Unknown provider type " + string(p.Kind) + "."}
+	}
+	if needsToolEmulation(req) {
+		return emulatedChat(ctx, adapter, r.client, p, req, sink)
 	}
 	return adapter.Chat(ctx, r.client, p, req, sink)
 }

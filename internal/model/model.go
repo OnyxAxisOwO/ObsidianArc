@@ -162,6 +162,7 @@ func (m Model) Spec() adapter.ModelSpec {
 		SupportsImages:    m.SupportsImages,
 		SupportsStreaming: m.SupportsStreaming,
 		SupportsSystem:    m.SupportsSystemPrompt,
+		SupportsTools:     m.SupportsTools,
 		MaxOutputTokens:   m.MaxOutputTokens,
 	}
 }

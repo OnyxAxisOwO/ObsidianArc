@@ -188,6 +188,10 @@ func newFixture(t *testing.T) *fixture {
 		Capabilities: model.Capabilities{
 			SupportsStreaming: true, SupportsSystemPrompt: true,
 			SupportsImages: true, SupportsReasoning: true,
+			// The stub upstream speaks the OpenAI wire, tool fields included,
+			// so the model row says so — a row without it gets the prose
+			// protocol in the adapter instead.
+			SupportsTools: true,
 		},
 		Weights: model.Weights{InputToken: 1, OutputToken: 1},
 	})
