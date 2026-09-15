@@ -32,7 +32,10 @@ func testModel() ModelSpec {
 		SupportsImages:    true,
 		SupportsStreaming: true,
 		SupportsSystem:    true,
-		MaxOutputTokens:   4096,
+		// The native tool tests need a model that takes the protocol's tool
+		// fields; the emulated ones build their own spec without this.
+		SupportsTools:  true,
+		MaxOutputTokens: 4096,
 	}
 }
 
