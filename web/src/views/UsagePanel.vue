@@ -9,6 +9,7 @@
 
 import { computed, nextTick, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { useIntervalFn } from '@vueuse/core';
 import { ApiError, api } from '@/api/client';
 import { fetchUsage, type UsageSummary } from '@/api/usage';
 import OaFormSection from '@/components/OaFormSection.vue';
@@ -57,6 +58,13 @@ interface Turn {
 }
 
 const router = useRouter();
+
+// The panel re-reads itself while it is open, so a turn finished in another
+// tab or an API call arrives on its own rather than at the next visit. The
+// figures are aggregates over the ledger and move in steps, so fifteen
+// seconds is plenty — unlike the composer's allowance bar, nobody is waiting
+// on this screen for permission to send.
+const REFRESH_MS = 15000;
 
 const summary = ref<UsageSummary | null>(null);
 const allowanceError = ref('');
@@ -132,9 +140,13 @@ async function loadAllowance(): Promise<void> {
   }
 }
 
+async function fetchHistory(): Promise<{ totals: Totals; turns: Turn[] }> {
+  return api.get<{ totals: Totals; turns: Turn[] }>('/api/usage/me/history');
+}
+
 async function loadHistory(): Promise<void> {
   try {
-    const payload = await api.get<{ totals: Totals; turns: Turn[] }>('/api/usage/me/history');
+    const payload = await fetchHistory();
     totals.value = payload.totals;
     turns.value = payload.turns;
   } catch (error) {
@@ -142,14 +154,38 @@ async function loadHistory(): Promise<void> {
   }
 }
 
+async function fetchCards(): Promise<{ cards: Card[] }> {
+  return api.get<{ cards: Card[] }>('/api/usage/cards');
+}
+
 async function loadCards(): Promise<void> {
   cardsError.value = '';
   try {
-    const payload = await api.get<{ cards: Card[] }>('/api/usage/cards');
+    const payload = await fetchCards();
     cards.value = payload.cards;
   } catch {
     cardsError.value = t('usageUnavailable');
   }
+}
+
+// The same three reads without the error handling: a failed refresh leaves
+// what is on screen, because the last good figures are a better answer than
+// an error where they were. Success clears the errors, so a panel that
+// opened while the server was unreachable recovers on its own.
+function refreshQuietly(): void {
+  fetchUsage().then((next) => {
+    summary.value = next;
+    allowanceError.value = '';
+  }).catch(() => {});
+  fetchHistory().then((payload) => {
+    totals.value = payload.totals;
+    turns.value = payload.turns;
+    historyError.value = '';
+  }).catch(() => {});
+  fetchCards().then((payload) => {
+    cards.value = payload.cards;
+    cardsError.value = '';
+  }).catch(() => {});
 }
 
 async function redeem(): Promise<void> {
@@ -200,6 +236,8 @@ onMounted(() => {
   void loadHistory();
   void loadCards();
 });
+
+useIntervalFn(refreshQuietly, REFRESH_MS);
 </script>
 
 <template>

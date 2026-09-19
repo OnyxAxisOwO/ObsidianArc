@@ -7,6 +7,7 @@
 // a separate feature.
 
 import { computed, onMounted, ref } from 'vue';
+import { useIntervalFn } from '@vueuse/core';
 import {
   adminApi, emptyPolicy,
   type Group, type QuotaWindowKind, type UsageBreakdown, type UsageMetric,
@@ -45,6 +46,10 @@ const RANGES: Array<{ label: StringKey; hours: number }> = [
 ];
 
 const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
+
+// Rationale at the interval below: these are whole-ledger aggregates, so the
+// page reads itself again at a walking pace rather than a gauges pace.
+const REFRESH_MS = 15000;
 
 const view = useAdminView();
 view.setTitle(t('usageTitle'));
@@ -257,32 +262,70 @@ async function runReset(): Promise<void> {
   }
 }
 
-async function load(): Promise<void> {
-  error.value = '';
+/** Both payloads the page draws, for whatever filters are current. */
+async function fetchPage(): Promise<
+  [Awaited<ReturnType<typeof adminApi.usage>>, Awaited<ReturnType<typeof adminApi.usageRecords>>]
+> {
   const since = Date.now() - RANGES[Number(range.value)]!.hours * 3600_000;
   // The ranking is done in SQL, so which metric is being asked for has to go
   // with the request: the top fifty by credits is not the top fifty by
   // request count.
   const query = `?since=${since}&metric=${metric.value}`;
+  return Promise.all([
+    adminApi.usage(query),
+    adminApi.usageRecords(`${query}&limit=50`),
+  ]);
+}
+
+type Page = Awaited<ReturnType<typeof fetchPage>>;
+
+function applyPage([summary, recordsResult]: Page): void {
+  totals.value = summary.totals;
+  byModel.value = summary.by_model;
+  byProvider.value = summary.by_provider;
+  byUser.value = summary.by_user;
+  series.value = summary.series;
+  bucketMs.value = summary.bucket_ms;
+  records.value = recordsResult.records;
+  recordTotal.value = recordsResult.total;
+  loaded.value = true;
+}
+
+// Filter changes and the timer both fetch; this says whose answer counts.
+// A refresh carries the query it was built with, so one that outlives a
+// range or metric change must not paint its stale numbers over the newer
+// request's — or leave `loaded` false when it did paint.
+let fetchSeq = 0;
+
+async function load(): Promise<void> {
+  error.value = '';
+  const seq = ++fetchSeq;
   try {
-    const [summary, recordsResult] = await Promise.all([
-      adminApi.usage(query),
-      adminApi.usageRecords(`${query}&limit=50`),
-    ]);
-    totals.value = summary.totals;
-    byModel.value = summary.by_model;
-    byProvider.value = summary.by_provider;
-    byUser.value = summary.by_user;
-    series.value = summary.series;
-    bucketMs.value = summary.bucket_ms;
-    records.value = recordsResult.records;
-    recordTotal.value = recordsResult.total;
+    const page = await fetchPage();
+    if (seq === fetchSeq) applyPage(page);
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-  } finally {
-    loaded.value = true;
+    if (seq === fetchSeq) {
+      error.value = failure instanceof Error ? failure.message : String(failure);
+    }
   }
 }
+
+// The page re-reads itself while it is open: an operator watching a running
+// instance wants the figures to move, and these aggregates change the moment
+// a request lands. Fifteen seconds rather than the resources page's five —
+// that one is a runtime gauge, this one re-runs thirty-day aggregations, and
+// neither number moves faster than its reader. A failed refresh is ignored
+// (the last good figures are a better answer than an error where they were),
+// and success clears the error so a page that opened against an unreachable
+// server recovers on its own.
+useIntervalFn(() => {
+  const seq = ++fetchSeq;
+  void fetchPage().then((page) => {
+    if (seq !== fetchSeq) return;
+    applyPage(page);
+    error.value = '';
+  }).catch(() => {});
+}, REFRESH_MS);
 
 onMounted(load);
 </script>
