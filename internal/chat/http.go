@@ -94,6 +94,8 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/attachments/{id}", protected(h.getAttachment))
 
 	mux.Handle("POST /api/images/generate", protected(h.generateImage))
+	mux.Handle("GET /api/images/generations", protected(h.listImageGenerations))
+	mux.Handle("DELETE /api/images/generations/{id}", protected(h.deleteImageGeneration))
 }
 
 // --- chat ---------------------------------------------------------------------
@@ -643,23 +645,29 @@ func translateConversationError(err error) error {
 // in a single request that the quota reservation only counted once.
 const MaxImagesPerRequest = 4
 
+// MaxReferenceImages bounds how many pictures an edit request may carry.
+const MaxReferenceImages = 5
+
 type imageGenRequest struct {
-	ModelID string `json:"model_id"`
-	Prompt  string `json:"prompt"`
-	Size    string `json:"size"`
-	Style   string `json:"style"`
-	Quality string `json:"quality"`
-	N       int    `json:"n"`
-	// A picture to work from, base64 as the attachment endpoint takes it.
+	ModelID string   `json:"model_id"`
+	Prompt  string   `json:"prompt"`
+	Size    string   `json:"size"`
+	Style   string   `json:"style"`
+	Quality string   `json:"quality"`
+	N       int      `json:"n"`
+	// Pictures to work from, base64 as the attachment endpoint takes them.
 	// Present turns the call into an edit rather than a generation.
-	Image string `json:"image"`
+	Image  string   `json:"image"`
+	Images []string `json:"images"`
 }
 
 type imageGenItem struct {
+	ID            string `json:"id,omitempty"`
 	AttachmentID  string `json:"attachment_id,omitempty"`
 	URL           string `json:"url,omitempty"`
 	B64JSON       string `json:"b64_json,omitempty"`
 	RevisedPrompt string `json:"revised_prompt,omitempty"`
+	CreatedAt     int64  `json:"created_at,omitempty"`
 }
 
 // recordImages writes the ledger entry for an image call and settles what it
@@ -698,8 +706,23 @@ func (h *Handlers) recordImages(
 func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
 
+	// The operator's per-file limit. It bounds a picture sent up to be worked
+	// from as well as the ones that come back, which is why it is read before
+	// the call rather than beside the writes that follow it.
+	ceiling := int64(conversation.MaxAttachmentBytes)
+	if h.MaxUploadBytes != nil {
+		if configured := h.MaxUploadBytes(); configured > 0 {
+			ceiling = configured
+		}
+	}
+
 	var body imageGenRequest
-	if err := httpx.DecodeJSON(w, r, &body, 256*1024); err != nil {
+	maxBodyBytes := (ceiling*4/3+16*1024)*int64(MaxReferenceImages) + 64*1024
+	if err := httpx.DecodeJSON(w, r, &body, maxBodyBytes); err != nil {
+		var decided *httpx.Error
+		if errors.As(err, &decided) && decided.Status == http.StatusRequestEntityTooLarge {
+			return httpx.BadRequest("That request is larger than this server accepts.")
+		}
 		return err
 	}
 
@@ -748,16 +771,6 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		n = MaxImagesPerRequest
 	}
 
-	// The operator's per-file limit. It bounds a picture sent up to be worked
-	// from as well as the ones that come back, which is why it is read before
-	// the call rather than beside the writes that follow it.
-	ceiling := int64(conversation.MaxAttachmentBytes)
-	if h.MaxUploadBytes != nil {
-		if configured := h.MaxUploadBytes(); configured > 0 {
-			ceiling = configured
-		}
-	}
-
 	startedAt := time.Now()
 	requestID := id.New()
 
@@ -770,23 +783,48 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		N:              n,
 		ResponseFormat: "b64_json",
 	}
-	if body.Image != "" {
-		// Sniffed and bounded exactly like a picture that arrived from a
-		// provider: what the browser calls a file has no more standing than
-		// what an upstream says it sent.
-		data, err := base64.StdEncoding.DecodeString(body.Image)
-		if err != nil {
-			return httpx.BadRequest("The reference image could not be read.")
-		}
-		checked, mime, err := checkImage(data, ceiling)
-		if err != nil {
-			if errors.Is(err, errImageSize) {
-				return httpx.BadRequest("The reference image is larger than this instance allows.")
+
+	var rawImages []string
+	if len(body.Images) > 0 {
+		rawImages = body.Images
+	} else if body.Image != "" {
+		rawImages = []string{body.Image}
+	}
+	if len(rawImages) > MaxReferenceImages {
+		return httpx.BadRequest("At most %d reference images may be provided.", MaxReferenceImages)
+	}
+
+	if len(rawImages) > 0 {
+		var parts []adapter.ImagePart
+		for _, raw := range rawImages {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
 			}
-			return httpx.BadRequest("The reference image is not an image this instance accepts.")
+			// Sniffed and bounded exactly like a picture that arrived from a
+			// provider: what the browser calls a file has no more standing than
+			// what an upstream says it sent.
+			data, err := base64.StdEncoding.DecodeString(raw)
+			if err != nil {
+				return httpx.BadRequest("The reference image could not be read.")
+			}
+			checked, mime, err := checkImage(data, ceiling)
+			if err != nil {
+				if errors.Is(err, errImageSize) {
+					return httpx.BadRequest("The reference image is larger than this instance allows.")
+				}
+				return httpx.BadRequest("The reference image is not an image this instance accepts.")
+			}
+			parts = append(parts, adapter.ImagePart{
+				Data: checked,
+				Mime: mime,
+			})
 		}
-		imgReq.Image = checked
-		imgReq.ImageMime = mime
+		if len(parts) > 0 {
+			imgReq.Images = parts
+			imgReq.Image = parts[0].Data
+			imgReq.ImageMime = parts[0].Mime
+		}
 	}
 
 	result, genErr := h.service.GenerateImage(r.Context(), resolved, imgReq)
@@ -842,6 +880,20 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 			if err == nil {
 				item.AttachmentID = att.ID
 				item.URL = "/api/attachments/" + att.ID
+
+				gen, recErr := h.conversations.RecordImageGeneration(saveCtx, conversation.RecordImageGenerationInput{
+					UserID:        account.ID,
+					AttachmentID:  att.ID,
+					ModelID:       resolved.Model.ID,
+					Prompt:        body.Prompt,
+					RevisedPrompt: img.RevisedPrompt,
+					Size:          body.Size,
+					Style:         body.Style,
+				})
+				if recErr == nil {
+					item.ID = gen.ID
+					item.CreatedAt = gen.CreatedAt
+				}
 			}
 		}
 		if err != nil {
@@ -887,4 +939,43 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		"created": result.Created,
 		"images":  images,
 	})
+}
+
+func (h *Handlers) listImageGenerations(w http.ResponseWriter, r *http.Request) error {
+	account := auth.MustUser(r.Context())
+
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	var before int64
+	if raw := r.URL.Query().Get("before"); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			before = n
+		}
+	}
+
+	list, err := h.conversations.ListImageGenerations(r.Context(), account.ID, limit, before)
+	if err != nil {
+		return err
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"generations": list,
+	})
+}
+
+func (h *Handlers) deleteImageGeneration(w http.ResponseWriter, r *http.Request) error {
+	account := auth.MustUser(r.Context())
+
+	id := r.PathValue("id")
+	if id == "" {
+		return httpx.BadRequest("Generation ID is required.")
+	}
+
+	if err := h.conversations.DeleteImageGeneration(r.Context(), account.ID, id); err != nil {
+		return err
+	}
+	return httpx.NoContent(w)
 }

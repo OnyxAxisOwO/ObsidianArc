@@ -608,9 +608,14 @@ func (openAIAdapter) GenerateImage(ctx context.Context, client *http.Client, p P
 		err      error
 	)
 
-	if len(req.Image) > 0 {
+	images := req.Images
+	if len(images) == 0 && len(req.Image) > 0 {
+		images = []ImagePart{{Data: req.Image, Mime: req.ImageMime}}
+	}
+
+	if len(images) > 0 {
 		endpoint = imageEditsEndpoint(p.BaseURL)
-		contentType, encoded, buildErr := imageEditForm(req)
+		contentType, encoded, buildErr := imageEditForm(req, images)
 		if buildErr != nil {
 			return ImageResult{}, buildErr
 		}
@@ -679,13 +684,13 @@ func (openAIAdapter) GenerateImage(ctx context.Context, client *http.Client, p P
 }
 
 // imageEditForm encodes an edit request the way that endpoint takes it:
-// multipart, with the picture as a file part.
+// multipart, with the pictures as file parts.
 //
 // Deliberately without `response_format`: the current image models reject the
 // parameter on this endpoint and answer with bytes anyway, and the older ones
 // that do accept it default to a link — which the caller takes delivery of in
 // either case. Sending it would fail the request that needs it least.
-func imageEditForm(req ImageRequest) (string, []byte, error) {
+func imageEditForm(req ImageRequest, images []ImagePart) (string, []byte, error) {
 	var buffer bytes.Buffer
 	form := multipart.NewWriter(&buffer)
 
@@ -707,24 +712,31 @@ func imageEditForm(req ImageRequest) (string, []byte, error) {
 		}
 	}
 
-	mime := req.ImageMime
-	if mime == "" {
-		mime = "image/png"
+	for i, img := range images {
+		mime := img.Mime
+		if mime == "" {
+			mime = "image/png"
+		}
+		headers := make(textproto.MIMEHeader)
+		filename := "image" + imageExtension(mime)
+		if len(images) > 1 {
+			filename = fmt.Sprintf("image%d%s", i+1, imageExtension(mime))
+		}
+		headers.Set("Content-Disposition",
+			fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename))
+		// The part's own type, rather than the octet-stream a plain file part
+		// would carry: providers that sniff the upload by media type refuse the
+		// generic one outright.
+		headers.Set("Content-Type", mime)
+		part, err := form.CreatePart(headers)
+		if err != nil {
+			return "", nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
+		}
+		if _, err := part.Write(img.Data); err != nil {
+			return "", nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
+		}
 	}
-	headers := make(textproto.MIMEHeader)
-	headers.Set("Content-Disposition",
-		fmt.Sprintf(`form-data; name="image"; filename="image%s"`, imageExtension(mime)))
-	// The part's own type, rather than the octet-stream a plain file part
-	// would carry: providers that sniff the upload by media type refuse the
-	// generic one outright.
-	headers.Set("Content-Type", mime)
-	part, err := form.CreatePart(headers)
-	if err != nil {
-		return "", nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
-	}
-	if _, err := part.Write(req.Image); err != nil {
-		return "", nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
-	}
+
 	if err := form.Close(); err != nil {
 		return "", nil, &Error{Kind: ErrorInvalidRequest, Message: "Could not encode the request.", cause: err}
 	}

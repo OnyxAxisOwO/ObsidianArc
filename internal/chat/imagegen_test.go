@@ -234,6 +234,71 @@ func TestAReferencePictureThatIsNotAnImageIsRefused(t *testing.T) {
 	}
 }
 
+func TestGeneratingAnImageFromMultipleReferencePicturesUploadsThem(t *testing.T) {
+	lab := newImageLab(t, 1)
+	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
+
+	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+
+		`","prompt":"combine styles","images":["`+generatedPNG+`","`+generatedPNG+`"]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	call := lab.fixture.upstream.lastCall()
+	if !strings.HasSuffix(call.path, "/images/edits") {
+		t.Errorf("path = %q, want the edits endpoint", call.path)
+	}
+	if !strings.HasPrefix(call.contentType, "multipart/form-data") {
+		t.Errorf("content type = %q, want multipart", call.contentType)
+	}
+
+	form := readMultipart(t, call)
+	if form.Value["prompt"] == nil || form.Value["prompt"][0] != "combine styles" {
+		t.Errorf("the prompt did not travel with the picture: %v", form.Value)
+	}
+	files := form.File["image"]
+	if len(files) != 2 {
+		t.Fatalf("image parts = %d, want 2", len(files))
+	}
+	for i, f := range files {
+		if got := f.Header.Get("Content-Type"); got != "image/png" {
+			t.Errorf("part %d is typed %q, want image/png", i, got)
+		}
+	}
+	if files[0].Filename != "image1.png" || files[1].Filename != "image2.png" {
+		t.Errorf("filenames = [%q, %q], want [image1.png, image2.png]",
+			files[0].Filename, files[1].Filename)
+	}
+}
+
+func TestGeneratingAnImageWithTooManyReferencePicturesIsRefused(t *testing.T) {
+	lab := newImageLab(t, 1)
+	many := make([]string, MaxReferenceImages+1)
+	for i := range many {
+		many[i] = `"` + generatedPNG + `"`
+	}
+
+	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+
+		`","prompt":"too many","images":[`+strings.Join(many, ",")+`]}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "reference images") {
+		t.Errorf("error message = %s, want reference images limit error", recorder.Body.String())
+	}
+}
+
+func TestGeneratingAnImageWithInvalidReferencePictureInListIsRefused(t *testing.T) {
+	lab := newImageLab(t, 1)
+	notAnImage := base64.StdEncoding.EncodeToString([]byte("<html>bad</html>"))
+
+	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+
+		`","prompt":"bad image in list","images":["`+generatedPNG+`","`+notAnImage+`"]}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func readMultipart(t *testing.T, call upstreamCall) *multipart.Form {
 	t.Helper()
 	_, params, err := mime.ParseMediaType(call.contentType)
@@ -350,5 +415,79 @@ func TestAbandonedImageGenerationIsRecordedAsAbortedNotFailed(t *testing.T) {
 	}
 	if records[0].ErrorCode != "cancelled" {
 		t.Errorf("error code = %q, want cancelled", records[0].ErrorCode)
+	}
+}
+
+func TestImageGenerationsHistoryAndDeletion(t *testing.T) {
+	lab := newImageLab(t, 1)
+	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
+
+	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+`","prompt":"a mountain"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("generate status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/images/generations", nil)
+	req = req.WithContext(auth.WithUser(req.Context(), lab.fixture.account))
+	rec := httptest.NewRecorder()
+	lab.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var historyResp struct {
+		Generations []conversation.ImageGeneration `json:"generations"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&historyResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(historyResp.Generations) != 1 {
+		t.Fatalf("generations = %d, want 1", len(historyResp.Generations))
+	}
+	gen := historyResp.Generations[0]
+	if gen.Prompt != "a mountain" || gen.ModelID != lab.painter.ID {
+		t.Errorf("unexpected generation record: %+v", gen)
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/images/generations/"+gen.ID, nil)
+	delReq = delReq.WithContext(auth.WithUser(delReq.Context(), lab.fixture.account))
+	delRec := httptest.NewRecorder()
+	lab.mux.ServeHTTP(delRec, delReq)
+
+	if delRec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d: %s", delRec.Code, delRec.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/api/images/generations", nil)
+	req2 = req2.WithContext(auth.WithUser(req2.Context(), lab.fixture.account))
+	lab.mux.ServeHTTP(rec2, req2)
+	var historyResp2 struct {
+		Generations []conversation.ImageGeneration `json:"generations"`
+	}
+	if err := json.NewDecoder(rec2.Body).Decode(&historyResp2); err != nil {
+		t.Fatal(err)
+	}
+	if len(historyResp2.Generations) != 0 {
+		t.Errorf("generations after delete = %d, want 0", len(historyResp2.Generations))
+	}
+}
+
+func TestGeneratedImagesAreNotPrunedAsOrphans(t *testing.T) {
+	lab := newImageLab(t, 1)
+	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
+
+	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+`","prompt":"a mountain"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("generate status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	removed, err := lab.fixture.conversations.DeleteOrphans(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Errorf("DeleteOrphans removed %d attachments, want 0 for generated image", removed)
 	}
 }

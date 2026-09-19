@@ -907,9 +907,15 @@ const en = {
   styleOilPainting: 'Oil Painting',
   referenceImage: 'Reference image',
   referenceImageAdd: 'Choose a picture',
-  referenceImageHint: 'Optional. The prompt works from this picture instead of from nothing. Not every image model accepts one.',
+  referenceImageHint: 'Optional. The prompt works from these pictures instead of from nothing. Up to 5 pictures. Not every image model accepts reference images.',
   ratioAuto: 'Auto',
   ratioAutoHint: 'Model default',
+  imageLabTabGenerate: 'Generate',
+  imageLabTabGallery: 'Gallery',
+  usePrompt: 'Use prompt',
+  noImageHistory: 'No image generations yet.',
+  loadMoreImages: 'Load more',
+  deleteImageConfirm: 'Delete this generated image?',
 
   // --- announcements
   announcements: 'Announcements',

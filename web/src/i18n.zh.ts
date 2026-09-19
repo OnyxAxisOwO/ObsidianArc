@@ -885,9 +885,15 @@ export const zh: Record<StringKey, string> = {
   styleOilPainting: '油画',
   referenceImage: '参考图',
   referenceImageAdd: '选择图片',
-  referenceImageHint: '可选。填了就是在这张图上改，而不是从零开始。并非所有生图模型都支持。',
+  referenceImageHint: '可选。填了就是在参考图上改，而不是从零开始，最多支持 5 张。并非所有生图模型都支持多参考图。',
   ratioAuto: '自动',
   ratioAutoHint: '模型默认',
+  imageLabTabGenerate: '生图',
+  imageLabTabGallery: '历史图库',
+  usePrompt: '使用提示词',
+  noImageHistory: '暂无历史生图记录。',
+  loadMoreImages: '加载更多',
+  deleteImageConfirm: '确定要删除这张生成的图片吗？',
 
   // --- announcements
   announcements: '公告',

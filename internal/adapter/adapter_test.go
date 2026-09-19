@@ -770,6 +770,62 @@ func TestGenerateImageOpenAIAndAnthropic(t *testing.T) {
 	}
 }
 
+func TestGenerateImageOpenAIMultipleImages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/edits" {
+			http.NotFound(w, r)
+			return
+		}
+		_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			http.Error(w, "bad content type", http.StatusBadRequest)
+			return
+		}
+		form, err := multipart.NewReader(r.Body, params["boundary"]).ReadForm(1 << 20)
+		if err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		defer form.RemoveAll()
+
+		if form.Value["prompt"] == nil || form.Value["prompt"][0] != "combine" {
+			http.Error(w, "bad prompt", http.StatusBadRequest)
+			return
+		}
+		files := form.File["image"]
+		if len(files) != 2 {
+			http.Error(w, "wrong image count", http.StatusBadRequest)
+			return
+		}
+		if files[0].Filename != "image1.png" || files[1].Filename != "image2.png" {
+			http.Error(w, "wrong filenames", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"created":12345,"data":[{"b64_json":"aGVsbG8="}]}`)
+	}))
+	defer server.Close()
+
+	reg := testRegistry()
+	res, err := reg.GenerateImage(context.Background(), Provider{
+		Kind: KindOpenAI, BaseURL: server.URL, APIKey: "sk-test",
+	}, ImageRequest{
+		Model:  "gpt-image-1",
+		Prompt: "combine",
+		Images: []ImagePart{
+			{Data: []byte("first"), Mime: "image/png"},
+			{Data: []byte("second"), Mime: "image/png"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage: %v", err)
+	}
+	if len(res.Data) != 1 || res.Data[0].B64JSON != "aGVsbG8=" {
+		t.Errorf("res = %+v", res)
+	}
+}
+
 // The error body is whatever the gateway wrote, and need not be UTF-8. A byte
 // offset cut can land inside a multi-byte character; the invalid bytes then
 // reach the log, the stored usage record and — on PostgreSQL — the INSERT.

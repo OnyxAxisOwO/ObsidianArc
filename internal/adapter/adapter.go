@@ -323,6 +323,12 @@ type RemoteModel struct {
 // which is how a disconnected client cancels an upstream request.
 type Sink func(Event) error
 
+// ImagePart is a single reference image carried by an edit request.
+type ImagePart struct {
+	Data []byte
+	Mime string
+}
+
 // ImageRequest is what an image generation call needs.
 type ImageRequest struct {
 	Model          string `json:"model"`
@@ -332,11 +338,12 @@ type ImageRequest struct {
 	Quality        string `json:"quality,omitempty"`
 	N              int    `json:"n,omitempty"`
 	ResponseFormat string `json:"response_format,omitempty"`
-	// A picture the prompt works from. Present makes this an edit rather than
+	// Pictures the prompt works from. Present makes this an edit rather than
 	// a generation, which is a different endpoint and a multipart body — so
-	// these two never travel as JSON and carry no tags to suggest they might.
-	Image     []byte `json:"-"`
-	ImageMime string `json:"-"`
+	// these never travel as JSON and carry no tags to suggest they might.
+	Image     []byte      `json:"-"`
+	ImageMime string      `json:"-"`
+	Images    []ImagePart `json:"-"`
 }
 
 type GeneratedImage struct {

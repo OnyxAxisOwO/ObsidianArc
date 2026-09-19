@@ -95,7 +95,7 @@ func (s *Store) usage(ctx context.Context, q database.Queryer, userID string) (p
 	}
 	if err := q.QueryRow(ctx,
 		`SELECT
-		   COUNT(CASE WHEN message_id IS NULL THEN 1 END),
+		   COUNT(CASE WHEN message_id IS NULL AND id NOT IN (SELECT attachment_id FROM image_generations) THEN 1 END),
 		   COALESCE(SUM(CASE WHEN discarded_at = 0 THEN size ELSE 0 END), 0)
 		 FROM attachments WHERE user_id = ?`, userID).Scan(&pending, &held); err != nil {
 		return 0, 0, fmt.Errorf("conversation: attachment usage: %w", err)
@@ -296,7 +296,10 @@ func (s *Store) linkAttachments(ctx context.Context, q database.Queryer, userID,
 func (s *Store) DeleteOrphans(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan).UnixMilli()
 	result, err := s.db.Exec(ctx,
-		`DELETE FROM attachments WHERE message_id IS NULL AND created_at < ?`, cutoff)
+		`DELETE FROM attachments
+		 WHERE message_id IS NULL
+		   AND id NOT IN (SELECT attachment_id FROM image_generations)
+		   AND created_at < ?`, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("conversation: prune attachments: %w", err)
 	}
