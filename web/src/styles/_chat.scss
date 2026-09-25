@@ -1266,8 +1266,16 @@
 
 .ai-chat-composer-row {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  align-items: flex-end;
+}
+
+.ai-chat-composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
 }
 
 /* --- attachments ------------------------------------------------------------------ */
@@ -1416,11 +1424,8 @@
 
 .ai-chat-input {
   box-sizing: border-box;
-  flex: 1;
-  /* A floor, not zero: with a flex basis of 0 this is the only thing standing
-     between the box you type in and the controls beside it. Below about this
-     width the caret has nowhere to go and the field looks broken. */
-  min-width: 110px;
+  width: 100%;
+  min-width: 0;
   min-height: 34px;
   max-height: 160px;
   padding: 6px 12px;
@@ -1686,9 +1691,10 @@
 .ai-chat-wide .ai-chat-composer {
   margin-top: 5px;
   margin-bottom: 20px;
-  padding: 7px 7px 7px 8px;
+  padding: 10px 10px 8px 12px;
+  gap: 6px;
   border: none;
-  border-radius: 26px;
+  border-radius: 24px;
   background: var(--ai-surface-container-high);
 }
 
@@ -1701,12 +1707,14 @@
 }
 
 .ai-chat-wide .ai-chat-input {
-  min-height: 36px;
+  width: 100%;
+  min-height: 28px;
   max-height: 200px;
-  padding: 7px 6px;
+  padding: 2px 4px 4px;
   border: none;
   border-radius: 0;
   background: transparent;
+  box-sizing: border-box;
 }
 
 .ai-chat-wide .ai-chat-input:focus {

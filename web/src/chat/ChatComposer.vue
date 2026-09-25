@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import { t } from '@/composables/useI18n';
 import { IconClose, IconSend, IconStop } from '@/icons';
@@ -20,10 +20,11 @@ function resize(): void {
   const node = input.value;
   if (!node) return;
   node.style.height = 'auto';
-  node.style.height = `${Math.min(200, node.scrollHeight)}px`;
+  node.style.height = `${Math.min(200, Math.max(28, node.scrollHeight))}px`;
 }
 
 watch(draft, () => void nextTick(resize));
+onMounted(resize);
 
 function onKeyDown(event: KeyboardEvent): void {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
@@ -87,41 +88,48 @@ defineExpose({ focus: () => input.value?.focus({ preventScroll: true }) });
       </div>
     </div>
 
+    <!-- The textarea takes the full width across the top of the composer card.
+         Placing it above the controls lets multi-line prompts expand cleanly
+         without being squeezed horizontally by the model chip, and keeps the
+         action controls stably anchored at the bottom row. -->
+    <textarea
+      ref="input"
+      v-model="draft"
+      class="ai-chat-input"
+      rows="1"
+      spellcheck="false"
+      :maxlength="MAX_MESSAGE_CHARS"
+      :placeholder="placeholder"
+      :disabled="busy || !status.configured"
+      @input="resize"
+      @keydown="onKeyDown"
+      @paste="onPaste"
+    />
+
     <div class="ai-chat-composer-row">
       <ComposerMenu
         :disabled="busy || !status.configured"
         @pick-images="imagePicker?.click()"
         @pick-files="filePicker?.click()"
       />
-      <textarea
-        ref="input"
-        v-model="draft"
-        class="ai-chat-input"
-        rows="1"
-        spellcheck="false"
-        :maxlength="MAX_MESSAGE_CHARS"
-        :placeholder="placeholder"
-        :disabled="busy || !status.configured"
-        @input="resize"
-        @keydown="onKeyDown"
-        @paste="onPaste"
-      />
 
-      <!-- What answers and how hard it thinks, beside the button that sends
-           it — the decision and the act in the same place. -->
-      <ModelControl />
-      <button
-        type="button"
-        class="ai-chat-send"
-        :class="{ stop: stoppable }"
-        :disabled="busy ? !stoppable : !status.configured"
-        :title="t(stoppable ? 'stop' : 'send')"
-        :aria-label="t(stoppable ? 'stop' : 'send')"
-        @click="onSend"
-      >
-        <IconStop v-if="stoppable" :size="14" />
-        <IconSend v-else :size="16" />
-      </button>
+      <div class="ai-chat-composer-tools">
+        <!-- What answers and how hard it thinks, beside the button that sends
+             it — the decision and the act in the same place. -->
+        <ModelControl />
+        <button
+          type="button"
+          class="ai-chat-send"
+          :class="{ stop: stoppable }"
+          :disabled="busy ? !stoppable : !status.configured"
+          :title="t(stoppable ? 'stop' : 'send')"
+          :aria-label="t(stoppable ? 'stop' : 'send')"
+          @click="onSend"
+        >
+          <IconStop v-if="stoppable" :size="14" />
+          <IconSend v-else :size="16" />
+        </button>
+      </div>
     </div>
 
     <input
