@@ -15,11 +15,13 @@ import (
 // part that makes them exist.
 
 type codeRequest struct {
-	Code      string `json:"code"`
-	Cards     int    `json:"cards"`
-	CardDays  int    `json:"card_days"`
-	ExpiresAt int64  `json:"expires_at"`
-	Note      string `json:"note"`
+	Code      string   `json:"code"`
+	Name      string   `json:"name"`
+	Windows   []string `json:"windows"`
+	Cards     int      `json:"cards"`
+	CardDays  int      `json:"card_days"`
+	ExpiresAt int64    `json:"expires_at"`
+	Note      string   `json:"note"`
 	// How many distinct codes to mint. More than one means they are
 	// generated, because a batch cannot all be called the same thing.
 	Count int `json:"count"`
@@ -41,6 +43,8 @@ func (h *Handlers) createCode(w http.ResponseWriter, r *http.Request) error {
 
 	codes, err := h.cards.CreateCodes(r.Context(), card.CodeInput{
 		Code:      body.Code,
+		Name:      body.Name,
+		Windows:   body.Windows,
 		Cards:     body.Cards,
 		CardDays:  body.CardDays,
 		ExpiresAt: body.ExpiresAt,
@@ -90,9 +94,11 @@ func (h *Handlers) grantCards(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	var body struct {
-		Cards     int   `json:"cards"`
-		CardDays  int   `json:"card_days"`
-		ExpiresAt int64 `json:"expires_at"`
+		Name      string   `json:"name"`
+		Windows   []string `json:"windows"`
+		Cards     int      `json:"cards"`
+		CardDays  int      `json:"card_days"`
+		ExpiresAt int64    `json:"expires_at"`
 	}
 	if err := httpx.DecodeJSON(w, r, &body, 4*1024); err != nil {
 		return err
@@ -103,16 +109,17 @@ func (h *Handlers) grantCards(w http.ResponseWriter, r *http.Request) error {
 
 	var granted []card.Card
 	if body.ExpiresAt > 0 {
-		granted, err = h.cards.GrantUntil(r.Context(), userID, body.Cards, body.ExpiresAt)
+		granted, err = h.cards.GrantUntilNamed(r.Context(), userID, body.Cards, body.ExpiresAt, body.Name, body.Windows)
 	} else {
 		// Kept for clients from before the date picker existed.
-		granted, err = h.cards.Grant(r.Context(), nil, userID, body.Cards, body.CardDays)
+		granted, err = h.cards.GrantNamed(r.Context(), nil, userID, body.Cards, body.CardDays, body.Name, body.Windows)
 	}
 	if err != nil {
 		return card.TranslateError(err)
 	}
 	h.tellAccount(r.Context(), auth.MustUser(r.Context()), userID, "cards_granted", "/usage",
 		map[string]any{"count": len(granted)})
+
 	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"cards": granted})
 }
 

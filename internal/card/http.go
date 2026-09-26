@@ -20,7 +20,7 @@ type Handlers struct {
 	// Performs the reset a spent card pays for. Wired in server.go, because
 	// the counters belong to internal/quota and this package has no business
 	// knowing they exist.
-	OnSpend func(context.Context, user.User) error
+	OnSpend func(context.Context, user.User, Card) error
 	// Resolves who is calling, for the guessing limit below. Optional; nil
 	// keys the limit on the account alone.
 	ClientIP func(*http.Request) string
@@ -70,15 +70,17 @@ func (h *Handlers) use(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("A card is required.")
 	}
 
-	if err := h.store.Spend(r.Context(), account.ID, cardID); err != nil {
+	card, err := h.store.SpendCard(r.Context(), account.ID, cardID)
+	if err != nil {
 		return translate(err)
 	}
 	if h.OnSpend != nil {
-		if err := h.OnSpend(r.Context(), account); err != nil {
+		if err := h.OnSpend(r.Context(), account, card); err != nil {
 			return httpx.Internal(err)
 		}
 	}
 	return httpx.NoContent(w)
+
 }
 
 func (h *Handlers) redeem(w http.ResponseWriter, r *http.Request) error {
@@ -172,6 +174,8 @@ func translate(err error) error {
 		return httpx.BadRequest("At least one card is required.")
 	case errors.Is(err, ErrInvalidExpiry):
 		return httpx.BadRequest("Choose a card expiry in the future, within ten years.")
+	case errors.Is(err, ErrInvalidWindow):
+		return httpx.BadRequest("Valid windows are: 5h, 1w, 1m, or full.")
 	}
 	return httpx.Internal(err)
 }

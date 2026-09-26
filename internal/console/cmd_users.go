@@ -79,6 +79,23 @@ func splitCSV(s string) []string {
 	return out
 }
 
+func formatWindows(raw any) string {
+	slice := asSlice(raw)
+	if len(slice) == 0 {
+		return "full"
+	}
+	parts := make([]string, 0, len(slice))
+	for _, item := range slice {
+		if s := asStr(item); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return "full"
+	}
+	return strings.Join(parts, ",")
+}
+
 // bodyBuilder collects PATCH/POST fields, setting a key only when its flag
 // was actually given on the line. Every write route in API.md treats an
 // absent field as "leave alone" (a pointer on the server side) — guessing a
@@ -925,7 +942,7 @@ func init() {
 		Name:    "user cards",
 		Group:   "accounts",
 		Summary: Text{EN: "Grant an account trial cards", ZH: "向账户发放体验卡"},
-		Usage:   "user cards <id|username> [--cards N] [--card-days D] [--expires-at MS]",
+		Usage:   "user cards <id|username> [--name NAME] [--windows WINS] [--cards N] [--card-days D] [--expires-at MS]",
 		// Said "never expires" until 2026-09: card.clampDays turns 0 into 30, so
 		// every grant without --card-days is a 30-day card. An operator who read
 		// this and handed out a batch believed they were permanent.
@@ -937,11 +954,13 @@ func init() {
 		},
 		Args: []Arg{{Name: "id|username", Hint: Text{EN: "account id or username", ZH: "账户 id 或用户名"}, Required: true}},
 		Flags: []Flag{
+			{Name: "--name", Hint: Text{EN: "name or label for the card", ZH: "卡片名称或标识"}, Value: "NAME"},
+			{Name: "--windows", Hint: Text{EN: "quota windows, e.g. 5h, 1w, 1m, 5h,1w, or full", ZH: "重置周期，如 5h、1w、1m、5h,1w 或 full"}, Value: "WINS"},
 			{Name: "--cards", Hint: Text{EN: "how many to grant, default 1, max 10000", ZH: "发放数量，默认 1，最多 10000"}, Value: "N", Default: "1"},
 			{Name: "--card-days", Hint: Text{EN: "days from now until expiry, 0-3650", ZH: "自现在起多少天过期，0-3650"}, Value: "D"},
 			{Name: "--expires-at", Hint: Text{EN: "explicit expiry, epoch ms, wins over --card-days", ZH: "明确的到期时间（毫秒时间戳），优先于 --card-days"}, Value: "MS"},
 		},
-		Examples:   []string{"user cards alice --cards 3 --card-days 30", "user cards alice --cards 1"},
+		Examples:   []string{"user cards alice --cards 3 --card-days 30", "user cards alice --name 'VIP Boost' --windows 5h --cards 1"},
 		Permission: "users",
 		Endpoints:  []string{"POST /api/admin/users/{id}/cards"},
 		Run: func(_ context.Context, rt *Runtime) error {
@@ -954,6 +973,10 @@ func init() {
 				return err
 			}
 			body := bodyBuilder{}
+			body.str(rt, "name", "name")
+			if rt.Present("windows") {
+				body["windows"] = splitCSV(rt.String("windows"))
+			}
 			body.intv(rt, "cards", "cards")
 			body.intv(rt, "card-days", "card_days")
 			body.int64v(rt, "expires-at", "expires_at")
@@ -964,9 +987,9 @@ func init() {
 			var rows [][]string
 			for _, raw := range asSlice(asMap(data)["cards"]) {
 				c := asMap(raw)
-				rows = append(rows, []string{asStr(c["id"]), asStr(c["source"]), formatMS(c["expires_at"]), formatMS(c["created_at"])})
+				rows = append(rows, []string{asStr(c["id"]), asStr(c["name"]), formatWindows(c["windows"]), asStr(c["source"]), formatMS(c["expires_at"]), formatMS(c["created_at"])})
 			}
-			return rt.Table([]string{"id", "source", "expires", "created"}, rows)
+			return rt.Table([]string{"id", "name", "windows", "source", "expires", "created"}, rows)
 		},
 	})
 

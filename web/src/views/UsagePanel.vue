@@ -43,6 +43,8 @@ interface Totals {
 /** One reset somebody was given, and until when they may spend it. */
 interface Card {
   id: string;
+  name?: string;
+  windows?: string[];
   source: 'grant' | 'code';
   expires_at: number;
 }
@@ -162,7 +164,48 @@ function expiryDay(at: number): string {
   return new Date(at).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
 }
 
-/** A day's worth of cards, as one row. */
+function formatCardScope(card: Card): string {
+  const wins = card.windows ?? [];
+  if (wins.length === 0 || wins.includes('full')) {
+    return t('cardFullReset');
+  }
+  const order = ['5h', '1w', '1m'];
+  const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  if (sorted.length === 1) {
+    if (sorted[0] === '5h') return t('cardScope5H');
+    if (sorted[0] === '1w') return t('cardScope1W');
+    if (sorted[0] === '1m') return t('cardScope1M');
+  }
+  const labels = sorted.map((w) => {
+    if (w === '5h') return t('cardScopeLabel5H');
+    if (w === '1w') return t('cardScopeLabel1W');
+    if (w === '1m') return t('cardScopeLabel1M');
+    return w;
+  });
+  return t('cardScopeCombined', { windows: labels.join(' + ') });
+}
+
+function cardTitle(card: Card): string {
+  if (card.name && card.name.trim()) {
+    return card.name.trim();
+  }
+  return formatCardScope(card);
+}
+
+function cardSubtitle(stack: CardStack): string {
+  const card = stack.first;
+  const expiryText = stack.count > 1
+    ? t('cardExpires', { when: expiryDay(card.expires_at) })
+    : t('cardExpires', { when: expiry(card.expires_at) });
+  const scope = formatCardScope(card);
+
+  if (card.name && card.name.trim() && card.name.trim() !== scope) {
+    return `${scope} · ${expiryText}`;
+  }
+  return expiryText;
+}
+
+/** A day's worth of matching cards, as one row. */
 interface CardStack {
   key: string;
   count: number;
@@ -171,27 +214,25 @@ interface CardStack {
 }
 
 /**
- * Cards that run out on the same day, stacked into one row.
- *
- * Somebody holding twenty of these was reading twenty near-identical lines to
- * answer "how many do I have" — a question the list was the worst possible
- * shape for. They are grouped by day rather than by the exact millisecond
- * because that is the difference a reader acts on, and cards earned one at a
- * time carry timestamps minutes apart that would never collapse otherwise.
+ * Cards with the same name and reset windows that run out on the same day,
+ * stacked into one row.
  */
 const cardStacks = computed<CardStack[]>(() => {
-  const byDay = new Map<string, CardStack>();
+  const byGroup = new Map<string, CardStack>();
   for (const card of cards.value) {
-    const key = new Date(card.expires_at).toDateString();
-    const stack = byDay.get(key);
+    const wins = (card.windows ?? []).filter((w) => w && w !== 'full');
+    const winsKey = wins.slice().sort().join(',');
+    const dayKey = new Date(card.expires_at).toDateString();
+    const key = `${card.name ?? ''}::${winsKey}::${dayKey}`;
+    const stack = byGroup.get(key);
     if (!stack) {
-      byDay.set(key, { key, count: 1, first: card });
+      byGroup.set(key, { key, count: 1, first: card });
       continue;
     }
     stack.count += 1;
     if (card.expires_at < stack.first.expires_at) stack.first = card;
   }
-  return [...byDay.values()].sort((a, b) => a.first.expires_at - b.first.expires_at);
+  return [...byGroup.values()].sort((a, b) => a.first.expires_at - b.first.expires_at);
 });
 
 const cardsLeft = computed(() => cards.value.length);
@@ -443,7 +484,7 @@ useIntervalFn(refreshQuietly, REFRESH_MS);
         <div v-for="stack in cardStacks" v-else :key="stack.key" class="oa-card-row">
           <div>
             <span class="oa-card-title">
-              {{ t('cardFullReset') }}
+              {{ cardTitle(stack.first) }}
               <!-- Only when there is more than one. "× 1" is noise on the
                    row it was added to make legible. -->
               <em v-if="stack.count > 1" class="oa-card-times">&times; {{ stack.count }}</em>
@@ -451,11 +492,7 @@ useIntervalFn(refreshQuietly, REFRESH_MS);
             <!-- A stack spans a day, so it is dated to the day. A lone card
                  keeps its time: that is the one somebody is deciding whether
                  to spend before it runs out this evening. -->
-            <span class="oa-card-sub">{{
-              stack.count > 1
-                ? t('cardExpires', { when: expiryDay(stack.first.expires_at) })
-                : t('cardExpires', { when: expiry(stack.first.expires_at) })
-            }}</span>
+            <span class="oa-card-sub">{{ cardSubtitle(stack) }}</span>
           </div>
           <span class="oa-header-spacer" />
           <button

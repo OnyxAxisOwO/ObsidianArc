@@ -199,12 +199,15 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		var reserved quota.Reservation
 		if autoReset {
 			reserved, err = quotaService.ReserveWithAutoReset(ctx, account, estimate,
-				func(ctx context.Context, q database.Queryer) (bool, error) {
-					err := cards.SpendNext(ctx, q, account.ID)
+				func(ctx context.Context, q database.Queryer, needed quota.Window) ([]string, bool, error) {
+					spentCard, err := cards.SpendNextForWindow(ctx, q, account.ID, string(needed))
 					if errors.Is(err, card.ErrNotFound) {
-						return false, nil
+						return nil, false, nil
 					}
-					return err == nil, err
+					if err != nil {
+						return nil, false, err
+					}
+					return spentCard.Windows, true, nil
 				})
 		} else {
 			reserved, err = quotaService.Reserve(ctx, account, estimate)
@@ -566,8 +569,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	cardHandlers := card.NewHandlers(cards)
 	// What spending a card actually buys. The card package does not know the
 	// counters exist; this is the one line that connects the two.
-	cardHandlers.OnSpend = func(ctx context.Context, account user.User) error {
-		return quotaService.Reset(ctx, []string{account.ID})
+	cardHandlers.OnSpend = func(ctx context.Context, account user.User, c card.Card) error {
+		return quotaService.ResetWindows(ctx, []string{account.ID}, c.Windows)
 	}
 	// So the limit on guessing at redemption codes counts one host's attempts
 	// together, not just one account's.

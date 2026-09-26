@@ -87,9 +87,11 @@ const emptyTotals = {
 };
 
 /** One card, `hours` from now, with an id derived from that offset. */
-function card(hours: number) {
+function card(hours: number, name?: string, windows?: string[]) {
   return {
     id: `card-${hours}`,
+    name,
+    windows,
     source: 'grant' as const,
     expires_at: Date.now() + hours * 3_600_000,
   };
@@ -109,6 +111,33 @@ function cardRows(): HTMLElement[] {
 }
 
 describe('held reset cards', () => {
+  it('stacks cards separately by name and windows variant', async () => {
+    get.mockImplementation(async (url) =>
+      routes([
+        card(1, 'VIP Card', ['5h']),
+        card(2, 'VIP Card', ['5h']),
+        card(3, 'VIP Card', ['1w']),
+        card(4, undefined, ['5h']),
+      ])(url));
+
+    mountPanel();
+    await settle();
+
+    const rows = cardRows();
+    expect(rows).toHaveLength(3);
+    // VIP Card with 5h has 2 cards
+    expect(rows[0]!.querySelector('.oa-card-title')!.textContent).toContain('VIP Card');
+    expect(rows[0]!.querySelector('.oa-card-title')!.textContent).toContain('× 2');
+    expect(rows[0]!.querySelector('.oa-card-sub')!.textContent).toContain('5-hour');
+
+    // VIP Card with 1w
+    expect(rows[1]!.querySelector('.oa-card-title')!.textContent).toContain('VIP Card');
+    expect(rows[1]!.querySelector('.oa-card-sub')!.textContent).toContain('1-week');
+
+    // Unnamed card with 5h has scope as title
+    expect(rows[2]!.querySelector('.oa-card-title')!.textContent).toContain('5-hour');
+  });
+
   it('stacks the ones that run out on the same day into a single row', async () => {
     // Three within the pinned day, and one deliberately a week out.
     get.mockImplementation(async (url) =>

@@ -715,11 +715,12 @@ func init() {
 			for _, raw := range asSlice(asMap(data)["codes"]) {
 				c := asMap(raw)
 				rows = append(rows, []string{
-					asStr(c["id"]), asStr(c["code"]), fmt.Sprint(asNum(c["cards"])), fmt.Sprint(asNum(c["claimed"])),
+					asStr(c["id"]), asStr(c["code"]), asStr(c["name"]), formatWindows(c["windows"]),
+					fmt.Sprint(asNum(c["cards"])), fmt.Sprint(asNum(c["claimed"])),
 					fmt.Sprint(asNum(c["card_days"])), formatMS(c["expires_at"]), asStr(c["note"]),
 				})
 			}
-			return rt.Table([]string{"id", "code", "cards", "claimed", "card_days", "expires", "note"}, rows)
+			return rt.Table([]string{"id", "code", "name", "windows", "cards", "claimed", "card_days", "expires", "note"}, rows)
 		},
 	})
 
@@ -727,13 +728,15 @@ func init() {
 		Name:    "code create",
 		Group:   "operations",
 		Summary: Text{EN: "Mint one or more redemption codes", ZH: "生成一个或多个兑换码"},
-		Usage:   "code create [--code TEXT] [--cards N] [--card-days D] [--expires-at MS] [--note TEXT] [--count N]",
+		Usage:   "code create [--name NAME] [--windows WINS] [--code TEXT] [--cards N] [--card-days D] [--expires-at MS] [--note TEXT] [--count N]",
 		Help: Text{
 			EN: "Leave --code empty to generate it. --count mints several distinct codes in one call and " +
 				"requires --code to be empty.",
 			ZH: "留空 --code 即自动生成。--count 可一次生成多个不同的兑换码，此时 --code 必须留空。",
 		},
 		Flags: []Flag{
+			{Name: "--name", Hint: Text{EN: "name or label for the minted card", ZH: "卡片名称"}, Value: "NAME"},
+			{Name: "--windows", Hint: Text{EN: "quota windows, e.g. 5h, 1w, 1m, 5h,1w, or full", ZH: "重置周期，如 5h、1w、1m、5h,1w 或 full"}, Value: "WINS"},
 			{Name: "--code", Hint: Text{EN: "the literal code; empty = generated", ZH: "字面兑换码；留空则自动生成"}, Value: "TEXT"},
 			{Name: "--cards", Hint: Text{EN: "cards per code, 1-10000, default 1", ZH: "每个兑换码的卡数，1-10000，默认 1"}, Value: "N", Default: "1"},
 			{Name: "--card-days", Hint: Text{EN: "how long each minted card lives, 0-3650", ZH: "每张卡的有效天数，0-3650"}, Value: "D"},
@@ -741,12 +744,16 @@ func init() {
 			{Name: "--note", Hint: Text{EN: "an operator label", ZH: "备注"}, Value: "TEXT"},
 			{Name: "--count", Hint: Text{EN: "how many distinct codes to mint, max 200", ZH: "生成多少个不同的兑换码，最多 200"}, Value: "N", Default: "1"},
 		},
-		Examples:   []string{"code create --cards 5 --card-days 30", "code create --count 20 --note 'launch batch'"},
+		Examples:   []string{"code create --cards 5 --card-days 30", "code create --name 'VIP' --windows 5h,1w --count 20"},
 		SeeAlso:    []string{"code list"},
 		Permission: "codes",
 		Endpoints:  []string{"POST /api/admin/codes"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			body := bodyBuilder{}
+			body.str(rt, "name", "name")
+			if rt.Present("windows") {
+				body["windows"] = splitCSV(rt.String("windows"))
+			}
 			body.str(rt, "code", "code")
 			body.intv(rt, "cards", "cards")
 			body.intv(rt, "card-days", "card_days")
@@ -760,9 +767,12 @@ func init() {
 			var rows [][]string
 			for _, raw := range asSlice(asMap(data)["codes"]) {
 				c := asMap(raw)
-				rows = append(rows, []string{asStr(c["id"]), asStr(c["code"]), fmt.Sprint(asNum(c["cards"])), formatMS(c["expires_at"])})
+				rows = append(rows, []string{
+					asStr(c["id"]), asStr(c["code"]), asStr(c["name"]), formatWindows(c["windows"]),
+					fmt.Sprint(asNum(c["cards"])), formatMS(c["expires_at"]),
+				})
 			}
-			return rt.Table([]string{"id", "code", "cards", "expires"}, rows)
+			return rt.Table([]string{"id", "code", "name", "windows", "cards", "expires"}, rows)
 		},
 	})
 

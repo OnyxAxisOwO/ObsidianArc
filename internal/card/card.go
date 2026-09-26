@@ -25,6 +25,7 @@ const (
 	SourceGrant = "grant"
 	SourceCode  = "code"
 
+	MaxNameChars = 64
 	MaxNoteChars = 200
 	MaxCodeChars = 64
 	// One code cannot mint an unbounded number of cards, and one grant cannot
@@ -49,28 +50,88 @@ var (
 	ErrInvalidCode   = errors.New("card: a code is required")
 	ErrInvalidCount  = errors.New("card: at least one card is required")
 	ErrInvalidExpiry = errors.New("card: expiry must be in the future")
+	ErrInvalidWindow = errors.New("card: invalid quota window")
 	ErrNamedBatch    = errors.New("card: a batch is generated, so it cannot be given a code of its own")
 )
 
+// ValidWindows are the quota allowance windows that a card can target.
+var ValidWindows = []string{"5h", "1w", "1m"}
+
+func validateWindows(windows []string) error {
+	for _, w := range windows {
+		w = strings.ToLower(strings.TrimSpace(w))
+		if w == "" || w == "full" {
+			continue
+		}
+		if w != "5h" && w != "1w" && w != "1m" {
+			return ErrInvalidWindow
+		}
+	}
+	return nil
+}
+
+func normalizeWindows(windows []string) string {
+	if len(windows) == 0 {
+		return ""
+	}
+	seen := make(map[string]bool)
+	for _, w := range windows {
+		w = strings.ToLower(strings.TrimSpace(w))
+		if w == "full" {
+			return ""
+		}
+		if w == "5h" || w == "1w" || w == "1m" {
+			seen[w] = true
+		}
+	}
+	var ordered []string
+	for _, expected := range ValidWindows {
+		if seen[expected] {
+			ordered = append(ordered, expected)
+		}
+	}
+	return strings.Join(ordered, ",")
+}
+
+func parseWindows(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "full" {
+		return []string{}
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // Card is one reset, as its owner sees it.
 type Card struct {
-	ID        string `json:"id"`
-	Source    string `json:"source"`
-	ExpiresAt int64  `json:"expires_at"`
-	UsedAt    int64  `json:"used_at,omitempty"`
-	CreatedAt int64  `json:"created_at"`
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Windows   []string `json:"windows"`
+	Source    string   `json:"source"`
+	ExpiresAt int64    `json:"expires_at"`
+	UsedAt    int64    `json:"used_at,omitempty"`
+	CreatedAt int64    `json:"created_at"`
 }
 
 // Code is a batch of cards behind a string somebody types in.
 type Code struct {
-	ID        string `json:"id"`
-	Code      string `json:"code"`
-	Cards     int    `json:"cards"`
-	Claimed   int    `json:"claimed"`
-	CardDays  int    `json:"card_days"`
-	ExpiresAt int64  `json:"expires_at"`
-	Note      string `json:"note"`
-	CreatedAt int64  `json:"created_at"`
+	ID        string   `json:"id"`
+	Code      string   `json:"code"`
+	Name      string   `json:"name"`
+	Windows   []string `json:"windows"`
+	Cards     int      `json:"cards"`
+	Claimed   int      `json:"claimed"`
+	CardDays  int      `json:"card_days"`
+	ExpiresAt int64    `json:"expires_at"`
+	Note      string   `json:"note"`
+	CreatedAt int64    `json:"created_at"`
 }
 
 // Redemption identifies who claimed one card from a code and when. It is an
@@ -92,7 +153,7 @@ func NewStore(db *database.DB) *Store { return &Store{db: db} }
 // Available is what an account may still spend: unused, and not yet expired.
 func (s *Store) Available(ctx context.Context, userID string) ([]Card, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT id, source, expires_at, used_at, created_at FROM usage_cards
+		`SELECT id, name, windows, source, expires_at, used_at, created_at FROM usage_cards
 		 WHERE user_id = ? AND used_at = ? AND expires_at > ?
 		 ORDER BY expires_at`,
 		userID, 0, time.Now().UnixMilli())
@@ -104,10 +165,12 @@ func (s *Store) Available(ctx context.Context, userID string) ([]Card, error) {
 	out := []Card{}
 	for rows.Next() {
 		var record Card
-		if err := rows.Scan(&record.ID, &record.Source, &record.ExpiresAt,
+		var rawWins string
+		if err := rows.Scan(&record.ID, &record.Name, &rawWins, &record.Source, &record.ExpiresAt,
 			&record.UsedAt, &record.CreatedAt); err != nil {
 			return nil, fmt.Errorf("card: scan: %w", err)
 		}
+		record.Windows = parseWindows(rawWins)
 		out = append(out, record)
 	}
 	return out, rows.Err()
@@ -160,16 +223,33 @@ func (s *Store) Held(ctx context.Context, userID string) (Holding, error) {
 // two tabs pressing the same button at once would otherwise both see an
 // unused card and both reset the account, spending two cards for one reset.
 func (s *Store) Spend(ctx context.Context, userID, cardID string) error {
+	_, err := s.SpendCard(ctx, userID, cardID)
+	return err
+}
+
+// SpendCard marks one card used and returns the spent Card so the caller knows
+// which quota windows to reset.
+func (s *Store) SpendCard(ctx context.Context, userID, cardID string) (Card, error) {
 	now := time.Now().UnixMilli()
 	result, err := s.db.Exec(ctx,
 		`UPDATE usage_cards SET used_at = ?
 		 WHERE id = ? AND user_id = ? AND used_at = ? AND expires_at > ?`,
 		now, cardID, userID, 0, now)
 	if err != nil {
-		return fmt.Errorf("card: spend: %w", err)
+		return Card{}, fmt.Errorf("card: spend: %w", err)
 	}
 	if affected, _ := result.RowsAffected(); affected == 1 {
-		return nil
+		var c Card
+		var rawWins string
+		err := s.db.QueryRow(ctx,
+			`SELECT id, name, windows, source, expires_at, used_at, created_at
+			 FROM usage_cards WHERE id = ? AND user_id = ?`,
+			cardID, userID).Scan(&c.ID, &c.Name, &rawWins, &c.Source, &c.ExpiresAt, &c.UsedAt, &c.CreatedAt)
+		if err != nil {
+			return Card{}, fmt.Errorf("card: spend read: %w", err)
+		}
+		c.Windows = parseWindows(rawWins)
+		return c, nil
 	}
 
 	// Nothing changed. Say which of the three reasons it was, because "that
@@ -180,39 +260,81 @@ func (s *Store) Spend(ctx context.Context, userID, cardID string) error {
 		cardID, userID).Scan(&used, &expires)
 	if err != nil {
 		if database.IsNotFound(err) {
-			return ErrNotFound
+			return Card{}, ErrNotFound
 		}
-		return fmt.Errorf("card: spend: %w", err)
+		return Card{}, fmt.Errorf("card: spend: %w", err)
 	}
 	if used != 0 {
-		return ErrUsed
+		return Card{}, ErrUsed
 	}
-	return ErrExpired
+	return Card{}, ErrExpired
 }
 
-// SpendNext marks the available card that expires first. The conditional
-// update is the ownership check and the spend in one statement, so two
-// servers cannot both consume the same card while handling one account.
-func (s *Store) SpendNext(ctx context.Context, q database.Queryer, userID string) error {
+// SpendNextForWindow marks used the earliest expiring card that covers targetWindow.
+// An empty targetWindow matches any card. A card with no windows (or "full") covers all windows.
+func (s *Store) SpendNextForWindow(ctx context.Context, q database.Queryer, userID string, targetWindow string) (Card, error) {
 	if q == nil {
-		q = s.db
+		var spent Card
+		err := s.db.Tx(ctx, func(tx *database.Tx) error {
+			var err error
+			spent, err = s.spendNextLocked(ctx, tx, userID, targetWindow)
+			return err
+		})
+		return spent, err
 	}
+	return s.spendNextLocked(ctx, q, userID, targetWindow)
+}
+
+func (s *Store) spendNextLocked(ctx context.Context, q database.Queryer, userID string, targetWindow string) (Card, error) {
 	now := time.Now().UnixMilli()
+	targetWindow = strings.TrimSpace(strings.ToLower(targetWindow))
+
+	query := `SELECT id, name, windows, source, expires_at, created_at
+		FROM usage_cards
+		WHERE user_id = ? AND used_at = ? AND expires_at > ?`
+	args := []any{userID, 0, now}
+
+	if targetWindow != "" && targetWindow != "full" {
+		query += ` AND (windows = '' OR windows = 'full' OR windows LIKE ?)`
+		args = append(args, "%"+targetWindow+"%")
+	}
+
+	query += ` ORDER BY expires_at, id LIMIT 1`
+
+	var (
+		c       Card
+		rawWins string
+	)
+	err := q.QueryRow(ctx, query, args...).Scan(
+		&c.ID, &c.Name, &rawWins, &c.Source, &c.ExpiresAt, &c.CreatedAt,
+	)
+	if err != nil {
+		if database.IsNotFound(err) {
+			return Card{}, ErrNotFound
+		}
+		return Card{}, fmt.Errorf("card: spend next query: %w", err)
+	}
+
 	result, err := q.Exec(ctx,
 		`UPDATE usage_cards SET used_at = ?
-		 WHERE id = (
-		   SELECT id FROM usage_cards
-		   WHERE user_id = ? AND used_at = ? AND expires_at > ?
-		   ORDER BY expires_at, id LIMIT 1
-		 ) AND user_id = ? AND used_at = ? AND expires_at > ?`,
-		now, userID, 0, now, userID, 0, now)
+		 WHERE id = ? AND user_id = ? AND used_at = ? AND expires_at > ?`,
+		now, c.ID, userID, 0, now)
 	if err != nil {
-		return fmt.Errorf("card: spend next: %w", err)
+		return Card{}, fmt.Errorf("card: spend next update: %w", err)
 	}
 	if affected, _ := result.RowsAffected(); affected != 1 {
-		return ErrNotFound
+		return Card{}, ErrNotFound
 	}
-	return nil
+
+	c.UsedAt = now
+	c.Windows = parseWindows(rawWins)
+	return c, nil
+}
+
+// SpendNext marks the available card that expires first, regardless of window.
+func (s *Store) SpendNext(ctx context.Context, q database.Queryer, userID string) error {
+	_, err := s.SpendNextForWindow(ctx, q, userID, "")
+	return err
 }
 
 // Grant hands cards to one account without a code in between. q is nil to
@@ -220,18 +342,34 @@ func (s *Store) SpendNext(ctx context.Context, q database.Queryer, userID string
 // or fall with something else — an invite reward's claim, which must not
 // commit as paid when the cards it pays were never written.
 func (s *Store) Grant(ctx context.Context, q database.Queryer, userID string, count, days int) ([]Card, error) {
+	return s.GrantNamed(ctx, q, userID, count, days, "", nil)
+}
+
+// GrantNamed hands named cards with specified windows to an account.
+func (s *Store) GrantNamed(ctx context.Context, q database.Queryer, userID string, count, days int, name string, windows []string) ([]Card, error) {
+	if err := validateWindows(windows); err != nil {
+		return nil, err
+	}
 	now := time.Now()
-	return s.grant(ctx, q, userID, count, now.Add(time.Duration(clampDays(days))*24*time.Hour).UnixMilli(), now.UnixMilli())
+	return s.grant(ctx, q, userID, count, now.Add(time.Duration(clampDays(days))*24*time.Hour).UnixMilli(), now.UnixMilli(), name, windows)
 }
 
 // GrantUntil is the administrative spelling: the operator chose the expiry
 // itself rather than a duration whose exact resulting date was implicit.
 func (s *Store) GrantUntil(ctx context.Context, userID string, count int, expiresAt int64) ([]Card, error) {
+	return s.GrantUntilNamed(ctx, userID, count, expiresAt, "", nil)
+}
+
+// GrantUntilNamed is the administrative spelling with custom name and quota windows.
+func (s *Store) GrantUntilNamed(ctx context.Context, userID string, count int, expiresAt int64, name string, windows []string) ([]Card, error) {
+	if err := validateWindows(windows); err != nil {
+		return nil, err
+	}
 	now := time.Now().UnixMilli()
 	if expiresAt <= now || expiresAt > now+int64(MaxDays)*24*3600*1000 {
 		return nil, ErrInvalidExpiry
 	}
-	return s.grant(ctx, nil, userID, count, expiresAt, now)
+	return s.grant(ctx, nil, userID, count, expiresAt, now, name, windows)
 }
 
 // Reschedule moves the expiry of the cards one account is still holding.
@@ -279,23 +417,26 @@ func (s *Store) Reschedule(ctx context.Context, userID string, cardIDs []string,
 	return int(moved), nil
 }
 
-func (s *Store) grant(ctx context.Context, q database.Queryer, userID string, count int, expires, now int64) ([]Card, error) {
+func (s *Store) grant(ctx context.Context, q database.Queryer, userID string, count int, expires, now int64, name string, windows []string) ([]Card, error) {
 	if count < 1 {
 		return nil, ErrInvalidCount
 	}
 	count = min(count, MaxCards)
+	cleanName := text.TrimAndTruncate(name, MaxNameChars)
+	rawWindows := normalizeWindows(windows)
+	parsedWin := parseWindows(rawWindows)
 
 	out := make([]Card, 0, count)
 	insert := func(tx database.Queryer) error {
 		for range count {
 			record := Card{
-				ID: id.New(), Source: SourceGrant,
+				ID: id.New(), Name: cleanName, Windows: parsedWin, Source: SourceGrant,
 				ExpiresAt: expires, CreatedAt: now,
 			}
 			if _, err := tx.Exec(ctx,
-				`INSERT INTO usage_cards (id, user_id, source, code_id, expires_at, used_at, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				record.ID, userID, record.Source, "", record.ExpiresAt, 0, record.CreatedAt); err != nil {
+				`INSERT INTO usage_cards (id, user_id, name, windows, source, code_id, expires_at, used_at, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				record.ID, userID, record.Name, rawWindows, record.Source, "", record.ExpiresAt, 0, record.CreatedAt); err != nil {
 				return fmt.Errorf("card: grant: %w", err)
 			}
 			out = append(out, record)
@@ -351,6 +492,8 @@ func (s *Store) Revoke(ctx context.Context, userID, cardID string) error {
 
 type CodeInput struct {
 	Code      string
+	Name      string
+	Windows   []string
 	Cards     int
 	CardDays  int
 	ExpiresAt int64
@@ -365,6 +508,9 @@ type CodeInput struct {
 // works ten times" and "here are ten codes" are different things to hand out
 // and only the second can be given to ten people separately.
 func (s *Store) CreateCodes(ctx context.Context, in CodeInput, count int) ([]Code, error) {
+	if err := validateWindows(in.Windows); err != nil {
+		return nil, err
+	}
 	if count < 1 {
 		count = 1
 	}
@@ -454,9 +600,15 @@ func drawSymbols(reader io.Reader, count, width int) ([]byte, error) {
 }
 
 func (s *Store) CreateCode(ctx context.Context, in CodeInput) (Code, error) {
+	if err := validateWindows(in.Windows); err != nil {
+		return Code{}, err
+	}
+	rawWindows := normalizeWindows(in.Windows)
 	record := Code{
 		ID:        id.New(),
 		Code:      strings.TrimSpace(in.Code),
+		Name:      text.TrimAndTruncate(in.Name, MaxNameChars),
+		Windows:   parseWindows(rawWindows),
 		Cards:     in.Cards,
 		CardDays:  clampDays(in.CardDays),
 		ExpiresAt: in.ExpiresAt,
@@ -473,9 +625,9 @@ func (s *Store) CreateCode(ctx context.Context, in CodeInput) (Code, error) {
 
 	_, err := s.db.Exec(ctx,
 		`INSERT INTO redemption_codes
-		 (id, code, cards, claimed, card_days, expires_at, note, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.Code, record.Cards, 0, record.CardDays,
+		 (id, code, name, windows, cards, claimed, card_days, expires_at, note, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.ID, record.Code, record.Name, rawWindows, record.Cards, 0, record.CardDays,
 		record.ExpiresAt, record.Note, record.CreatedAt)
 	if err != nil {
 		if isUnique(err) {
@@ -488,7 +640,7 @@ func (s *Store) CreateCode(ctx context.Context, in CodeInput) (Code, error) {
 
 func (s *Store) ListCodes(ctx context.Context) ([]Code, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT id, code, cards, claimed, card_days, expires_at, note, created_at
+		`SELECT id, code, name, windows, cards, claimed, card_days, expires_at, note, created_at
 		 FROM redemption_codes ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("card: list codes: %w", err)
@@ -498,10 +650,12 @@ func (s *Store) ListCodes(ctx context.Context) ([]Code, error) {
 	out := []Code{}
 	for rows.Next() {
 		var record Code
-		if err := rows.Scan(&record.ID, &record.Code, &record.Cards, &record.Claimed,
+		var rawWins string
+		if err := rows.Scan(&record.ID, &record.Code, &record.Name, &rawWins, &record.Cards, &record.Claimed,
 			&record.CardDays, &record.ExpiresAt, &record.Note, &record.CreatedAt); err != nil {
 			return nil, fmt.Errorf("card: scan code: %w", err)
 		}
+		record.Windows = parseWindows(rawWins)
 		out = append(out, record)
 	}
 	return out, rows.Err()
@@ -563,14 +717,16 @@ func (s *Store) Redeem(ctx context.Context, userID, code string) (Card, error) {
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
 		var (
 			codeID   string
+			name     string
+			rawWins  string
 			cards    int
 			claimed  int
 			cardDays int
 			expires  int64
 		)
 		err := tx.QueryRow(ctx,
-			`SELECT id, cards, claimed, card_days, expires_at FROM redemption_codes WHERE code = ?`,
-			code).Scan(&codeID, &cards, &claimed, &cardDays, &expires)
+			`SELECT id, name, windows, cards, claimed, card_days, expires_at FROM redemption_codes WHERE code = ?`,
+			code).Scan(&codeID, &name, &rawWins, &cards, &claimed, &cardDays, &expires)
 		if err != nil {
 			if database.IsNotFound(err) {
 				return ErrCodeUnknown
@@ -602,14 +758,16 @@ func (s *Store) Redeem(ctx context.Context, userID, code string) (Card, error) {
 
 		card = Card{
 			ID:        id.New(),
+			Name:      name,
+			Windows:   parseWindows(rawWins),
 			Source:    SourceCode,
 			ExpiresAt: now + int64(clampDays(cardDays))*24*3600*1000,
 			CreatedAt: now,
 		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO usage_cards (id, user_id, source, code_id, expires_at, used_at, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			card.ID, userID, card.Source, codeID, card.ExpiresAt, 0, card.CreatedAt); err != nil {
+			`INSERT INTO usage_cards (id, user_id, name, windows, source, code_id, expires_at, used_at, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			card.ID, userID, card.Name, rawWins, card.Source, codeID, card.ExpiresAt, 0, card.CreatedAt); err != nil {
 			return fmt.Errorf("card: redeem: %w", err)
 		}
 		return nil

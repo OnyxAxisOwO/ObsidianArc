@@ -244,3 +244,58 @@ func TestResetGroupReachesEveryMemberOfALargeGroup(t *testing.T) {
 		t.Error("resetting one group cleared an account outside it")
 	}
 }
+
+func TestResetWindowsClearsSpecificWindowsOnly(t *testing.T) {
+	service, _ := newService(t)
+	ctx := context.Background()
+
+	spender := account("user-variant", "")
+	if err := service.Settle(ctx, spender, Estimate{}, Estimate{Tokens: 1000, Credits: 1.0}); err != nil {
+		t.Fatal(err)
+	}
+
+	spent5H := spentInWindow(t, service, spender.ID, Window5H)
+	spent1W := spentInWindow(t, service, spender.ID, WindowWeek)
+	spent1M := spentInWindow(t, service, spender.ID, WindowMonth)
+	if spent5H == 0 || spent1W == 0 || spent1M == 0 {
+		t.Fatal("counters were not populated in all windows")
+	}
+
+	// Reset only 5h.
+	if err := service.ResetWindows(ctx, []string{spender.ID}, []string{"5h"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := spentInWindow(t, service, spender.ID, Window5H); got != 0 {
+		t.Errorf("5h window was not reset, got %v", got)
+	}
+	if got := spentInWindow(t, service, spender.ID, WindowWeek); got == 0 {
+		t.Error("1w window was cleared unexpectedly")
+	}
+	if got := spentInWindow(t, service, spender.ID, WindowMonth); got == 0 {
+		t.Error("1m window was cleared unexpectedly")
+	}
+
+	// Reset combined 1w and 1m.
+	if err := service.ResetWindows(ctx, []string{spender.ID}, []string{"1w", "1m"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := spentInWindow(t, service, spender.ID, WindowWeek); got != 0 {
+		t.Errorf("1w window was not reset, got %v", got)
+	}
+	if got := spentInWindow(t, service, spender.ID, WindowMonth); got != 0 {
+		t.Errorf("1m window was not reset, got %v", got)
+	}
+}
+
+func spentInWindow(t *testing.T, service *Service, userID string, window Window) float64 {
+	t.Helper()
+	var credits float64
+	err := service.db.QueryRow(context.Background(),
+		`SELECT COALESCE(SUM(credits), 0) FROM usage_counters WHERE scope_key = ? AND window_kind = ?`,
+		scopeKey(userID), window).Scan(&credits)
+	if err != nil {
+		t.Fatalf("read counter window %s: %v", window, err)
+	}
+	return credits
+}

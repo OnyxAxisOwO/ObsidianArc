@@ -173,3 +173,206 @@ func TestWithdrawingACardIsSilent(t *testing.T) {
 		t.Fatalf("withdrawing a spent card: %d %s", refused.Code, refused.Body.String())
 	}
 }
+
+func TestCardVariantsResetOnlyTargetedQuotaWindows(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("var-admin", "a-good-password")
+	reader := in.register("var-reader", "a-good-password")
+	expires := time.Now().Add(48 * time.Hour).Truncate(time.Second).UnixMilli()
+
+	// 1. Admin grants a 5h card.
+	grantRes := in.do(http.MethodPost, "/api/admin/users/"+reader.userID+"/cards", map[string]any{
+		"name":       "Boost 5H",
+		"windows":    []string{"5h"},
+		"cards":      1,
+		"expires_at": expires,
+	}, admin)
+	if grantRes.Code != http.StatusCreated {
+		t.Fatalf("grant 5h card: %d %s", grantRes.Code, grantRes.Body.String())
+	}
+
+	// 2. Reader checks cards.
+	type fullCard struct {
+		ID        string   `json:"id"`
+		Name      string   `json:"name"`
+		Windows   []string `json:"windows"`
+		ExpiresAt int64    `json:"expires_at"`
+	}
+	cardsList := decode[struct {
+		Cards []fullCard `json:"cards"`
+	}](t, in.do(http.MethodGet, "/api/usage/cards", nil, reader)).Cards
+	if len(cardsList) != 1 {
+		t.Fatalf("cards = %+v, want 1", cardsList)
+	}
+	if cardsList[0].Name != "Boost 5H" {
+		t.Errorf("card name = %q, want 'Boost 5H'", cardsList[0].Name)
+	}
+	if len(cardsList[0].Windows) != 1 || cardsList[0].Windows[0] != "5h" {
+		t.Errorf("card windows = %v, want ['5h']", cardsList[0].Windows)
+	}
+
+	// 3. Simulate usage by populating usage_counters for 5h and 1w.
+	scopeKey := "u:" + reader.userID
+	now := time.Now().UnixMilli()
+	if _, err := in.db.Exec(t.Context(),
+		`INSERT INTO usage_counters (scope_key, window_kind, window_start, requests, tokens, credits)
+		 VALUES (?, '5h', ?, 10, 500, 0.5), (?, '1w', ?, 10, 500, 0.5)`,
+		scopeKey, now, scopeKey, now); err != nil {
+		t.Fatalf("insert counters: %v", err)
+	}
+
+	// 4. Reader spends the 5h card.
+	spendRes := in.do(http.MethodPost, "/api/usage/cards/"+cardsList[0].ID+"/use", map[string]any{}, reader)
+	if spendRes.Code != http.StatusNoContent {
+		t.Fatalf("spend 5h card: %d %s", spendRes.Code, spendRes.Body.String())
+	}
+
+	// 5. Verify 5h counter was deleted, but 1w counter is still present.
+	var count5H, count1W int
+	if err := in.db.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM usage_counters WHERE scope_key = ? AND window_kind = '5h'`,
+		scopeKey).Scan(&count5H); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.db.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM usage_counters WHERE scope_key = ? AND window_kind = '1w'`,
+		scopeKey).Scan(&count1W); err != nil {
+		t.Fatal(err)
+	}
+	if count5H != 0 {
+		t.Errorf("5h counter still exists (%d rows), expected 0", count5H)
+	}
+	if count1W != 1 {
+		t.Errorf("1w counter was cleared (%d rows), expected 1", count1W)
+	}
+}
+
+func TestAdminCodeAndGrantWithInvalidWindowsRejected(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("win-admin", "a-good-password")
+	reader := in.register("win-reader", "a-good-password")
+
+	// 1. Granting with an invalid window returns 400 Bad Request.
+	res := in.do(http.MethodPost, "/api/admin/users/"+reader.userID+"/cards", map[string]any{
+		"windows": []string{"2h"},
+	}, admin)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("grant bad window code = %d, want 400", res.Code)
+	}
+
+	// 2. Creating code with an invalid window returns 400 Bad Request.
+	res2 := in.do(http.MethodPost, "/api/admin/codes", map[string]any{
+		"code":    "BAD-WIN",
+		"windows": []string{"weekly"},
+	}, admin)
+	if res2.Code != http.StatusBadRequest {
+		t.Fatalf("create code bad window code = %d, want 400", res2.Code)
+	}
+}
+
+func TestNamedCodeCreationAndRedemptionEndToEnd(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("code-admin", "a-good-password")
+	reader := in.register("code-reader", "a-good-password")
+
+	// 1. Admin creates a named code with windows 5h and 1w.
+	createRes := in.do(http.MethodPost, "/api/admin/codes", map[string]any{
+		"code":      "VIP-COMBO-2026",
+		"name":      "VIP Summer Pass",
+		"windows":   []string{"5h", "1w"},
+		"cards":     5,
+		"card_days": 10,
+	}, admin)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("create code: %d %s", createRes.Code, createRes.Body.String())
+	}
+
+	// 2. Admin lists codes and verifies name and windows.
+	type codeItem struct {
+		Code    string   `json:"code"`
+		Name    string   `json:"name"`
+		Windows []string `json:"windows"`
+	}
+	listRes := decode[struct {
+		Codes []codeItem `json:"codes"`
+	}](t, in.do(http.MethodGet, "/api/admin/codes", nil, admin))
+	if len(listRes.Codes) != 1 {
+		t.Fatalf("codes len = %d, want 1", len(listRes.Codes))
+	}
+	if listRes.Codes[0].Name != "VIP Summer Pass" {
+		t.Errorf("code name = %q, want 'VIP Summer Pass'", listRes.Codes[0].Name)
+	}
+	if len(listRes.Codes[0].Windows) != 2 || listRes.Codes[0].Windows[0] != "5h" || listRes.Codes[0].Windows[1] != "1w" {
+		t.Errorf("code windows = %v, want ['5h', '1w']", listRes.Codes[0].Windows)
+	}
+
+	// 3. Reader redeems the code.
+	redeemRes := in.do(http.MethodPost, "/api/usage/redeem", map[string]any{
+		"code": "VIP-COMBO-2026",
+	}, reader)
+	if redeemRes.Code != http.StatusCreated {
+		t.Fatalf("redeem code: %d %s", redeemRes.Code, redeemRes.Body.String())
+	}
+
+	// 4. Reader checks available cards.
+	type fullCard struct {
+		ID      string   `json:"id"`
+		Name    string   `json:"name"`
+		Windows []string `json:"windows"`
+	}
+	cardsList := decode[struct {
+		Cards []fullCard `json:"cards"`
+	}](t, in.do(http.MethodGet, "/api/usage/cards", nil, reader)).Cards
+	if len(cardsList) != 1 {
+		t.Fatalf("cards = %+v, want 1", cardsList)
+	}
+	if cardsList[0].Name != "VIP Summer Pass" {
+		t.Errorf("card name = %q, want 'VIP Summer Pass'", cardsList[0].Name)
+	}
+	if len(cardsList[0].Windows) != 2 || cardsList[0].Windows[0] != "5h" || cardsList[0].Windows[1] != "1w" {
+		t.Errorf("card windows = %v, want ['5h', '1w']", cardsList[0].Windows)
+	}
+
+	// 5. Populate counters in 5h, 1w, and 1m.
+	scopeKey := "u:" + reader.userID
+	now := time.Now().UnixMilli()
+	if _, err := in.db.Exec(t.Context(),
+		`INSERT INTO usage_counters (scope_key, window_kind, window_start, requests, tokens, credits)
+		 VALUES (?, '5h', ?, 1, 10, 0.1), (?, '1w', ?, 1, 10, 0.1), (?, '1m', ?, 1, 10, 0.1)`,
+		scopeKey, now, scopeKey, now, scopeKey, now); err != nil {
+		t.Fatalf("insert counters: %v", err)
+	}
+
+	// 6. Reader spends the card.
+	spendRes := in.do(http.MethodPost, "/api/usage/cards/"+cardsList[0].ID+"/use", map[string]any{}, reader)
+	if spendRes.Code != http.StatusNoContent {
+		t.Fatalf("spend card: %d %s", spendRes.Code, spendRes.Body.String())
+	}
+
+	// 7. Verify 5h and 1w counters were cleared, but 1m is untouched.
+	var count5H, count1W, count1M int
+	if err := in.db.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM usage_counters WHERE scope_key = ? AND window_kind = '5h'`,
+		scopeKey).Scan(&count5H); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.db.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM usage_counters WHERE scope_key = ? AND window_kind = '1w'`,
+		scopeKey).Scan(&count1W); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.db.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM usage_counters WHERE scope_key = ? AND window_kind = '1m'`,
+		scopeKey).Scan(&count1M); err != nil {
+		t.Fatal(err)
+	}
+	if count5H != 0 {
+		t.Errorf("5h count = %d, want 0", count5H)
+	}
+	if count1W != 0 {
+		t.Errorf("1w count = %d, want 0", count1W)
+	}
+	if count1M != 1 {
+		t.Errorf("1m count = %d, want 1", count1M)
+	}
+}

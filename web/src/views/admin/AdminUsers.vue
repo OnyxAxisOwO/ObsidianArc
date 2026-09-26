@@ -154,10 +154,61 @@ const transcriptTitle = ref('');
 const apiRestrictionTouched = ref(false);
 
 const grantCount = ref<number | null>(1);
+const grantName = ref('');
+const grantScopePreset = ref<'full' | '5h' | '1w' | '1m' | 'custom'>('full');
+const grantCustomWindows = ref<string[]>(['5h']);
 const grantExpiresAt = ref(defaultGrantExpiry());
 const grantLabel = ref('');
 const rescheduleLabel = ref('');
 const rescheduling = ref('');
+
+function grantSelectedWindows(): string[] {
+  if (grantScopePreset.value === 'custom') {
+    return grantCustomWindows.value;
+  }
+  if (grantScopePreset.value === 'full') {
+    return [];
+  }
+  return [grantScopePreset.value];
+}
+
+function formatCardScope(card: { windows?: string[] }): string {
+  const wins = card.windows ?? [];
+  if (wins.length === 0 || wins.includes('full')) {
+    return t('cardFullReset');
+  }
+  const order = ['5h', '1w', '1m'];
+  const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  if (sorted.length === 1) {
+    if (sorted[0] === '5h') return t('cardScope5H');
+    if (sorted[0] === '1w') return t('cardScope1W');
+    if (sorted[0] === '1m') return t('cardScope1M');
+  }
+  const labels = sorted.map((w) => {
+    if (w === '5h') return t('cardScopeLabel5H');
+    if (w === '1w') return t('cardScopeLabel1W');
+    if (w === '1m') return t('cardScopeLabel1M');
+    return w;
+  });
+  return t('cardScopeCombined', { windows: labels.join(' + ') });
+}
+
+function cardTitle(card: { name?: string; windows?: string[] }): string {
+  if (card.name && card.name.trim()) {
+    return card.name.trim();
+  }
+  return formatCardScope(card);
+}
+
+function cardSubtitle(card: { name?: string; windows?: string[]; source: string; expires_at: number }): string {
+  const sourceText = card.source === 'grant' ? t('cardFromAdmin') : t('cardFromCode');
+  const expiryText = card.expires_at > 0 ? t('cardExpires', { when: relativeTime(card.expires_at) }) : t('noLimit');
+  const scope = formatCardScope(card);
+  if (card.name && card.name.trim() && card.name.trim() !== scope) {
+    return `${scope} · ${sourceText} · ${expiryText}`;
+  }
+  return `${sourceText} · ${expiryText}`;
+}
 
 // Unused cards, expired ones included: those are what a reschedule reaches,
 // and the count beside the button has to say the same thing the request does
@@ -289,6 +340,9 @@ async function open(id: string): Promise<void> {
   grantLabel.value = '';
   rescheduleLabel.value = '';
   rescheduling.value = '';
+  grantName.value = '';
+  grantScopePreset.value = 'full';
+  grantCustomWindows.value = ['5h'];
   grantCount.value = 1;
   grantExpiresAt.value = defaultGrantExpiry();
 
@@ -490,6 +544,10 @@ async function remove(): Promise<void> {
 function grant(): void {
   const row = account.value;
   if (!row) return;
+  if (grantScopePreset.value === 'custom' && grantCustomWindows.value.length === 0) {
+    panelError.value = t('cardResetScopeRequired');
+    return;
+  }
   const count = grantCount.value ?? 1;
   const expiresAt = new Date(grantExpiresAt.value).getTime();
   if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
@@ -497,8 +555,17 @@ function grant(): void {
     return;
   }
   grantLabel.value = '…';
-  void adminApi.grantCards(row.id, { cards: count, expires_at: expiresAt })
-    .then(() => { grantLabel.value = t('granted', { count }); })
+  void adminApi.grantCards(row.id, {
+    cards: count,
+    expires_at: expiresAt,
+    name: grantName.value.trim(),
+    windows: grantSelectedWindows(),
+  })
+    .then(async () => {
+      grantLabel.value = t('granted', { count });
+      const detail = await adminApi.user(row.id);
+      cards.value = detail.cards;
+    })
     .catch((failure: unknown) => {
       grantLabel.value = '';
       panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -818,12 +885,10 @@ const state = { q: '', role: '', status: '', group: '' };
           </p>
           <div v-if="cards.cards.length" class="oa-card-list">
             <div v-for="card in cards.cards" :key="card.id" class="oa-card-row">
-              <span class="oa-card-source">
-                {{ card.source === 'grant' ? t('cardFromAdmin') : t('cardFromCode') }}
-              </span>
-              <span class="oa-card-expiry">
-                {{ card.expires_at > 0 ? t('cardExpires', { when: relativeTime(card.expires_at) }) : t('noLimit') }}
-              </span>
+              <div>
+                <span class="oa-card-title">{{ cardTitle(card) }}</span>
+                <span class="oa-card-sub">{{ cardSubtitle(card) }}</span>
+              </div>
               <span class="oa-header-spacer" />
               <!-- Moves this one onto the date below. One card at a time is
                    the "this one runs out tomorrow" case; the button under the
@@ -851,6 +916,36 @@ const state = { q: '', role: '', status: '', group: '' };
         </template>
       </div>
 
+      <OaTextField
+        v-model="grantName"
+        :label="t('cardName')"
+        :placeholder="t('cardNamePlaceholder')"
+        :hint="t('cardNameHint')"
+        :max-length="64"
+      />
+      <OaSelectField
+        v-model="grantScopePreset"
+        :label="t('cardResetScope')"
+        :hint="t('cardResetScopeHint')"
+        :options="[
+          { value: 'full', label: t('cardResetFull') },
+          { value: '5h', label: t('cardReset5H') },
+          { value: '1w', label: t('cardReset1W') },
+          { value: '1m', label: t('cardReset1M') },
+          { value: 'custom', label: t('cardResetCustom') },
+        ]"
+      />
+      <OaCheckList
+        v-if="grantScopePreset === 'custom'"
+        v-model="grantCustomWindows"
+        :label="t('cardResetScope')"
+        :empty-text="t('nothingYet')"
+        :items="[
+          { value: '5h', label: t('cardScopeLabel5H') },
+          { value: '1w', label: t('cardScopeLabel1W') },
+          { value: '1m', label: t('cardScopeLabel1M') },
+        ]"
+      />
       <OaNumberField
         v-model="grantCount"
         :label="t('grantCards')"

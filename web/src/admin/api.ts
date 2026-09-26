@@ -61,6 +61,8 @@ export interface ReasoningTier {
 export interface RedemptionCode {
   id: string;
   code: string;
+  name?: string;
+  windows?: string[];
   cards: number;
   claimed: number;
   card_days: number;
@@ -558,7 +560,7 @@ export interface CardHolding {
   expired: number;
   total: number;
   /** The unused, unexpired ones, soonest to expire first. */
-  cards: Array<{ id: string; source: string; expires_at: number; created_at: number }>;
+  cards: Array<{ id: string; name?: string; windows?: string[]; source: string; expires_at: number; created_at: number }>;
 }
 
 export type GroupOption = Pick<Group, 'id' | 'name'>;
@@ -728,7 +730,7 @@ export const adminApi = {
   inviteUses: (id: string) =>
     api.get<{ uses: InviteUse[] }>(`/api/admin/invites/${encodeURIComponent(id)}/uses`),
   inviteStats: () => api.get<InviteStats>('/api/admin/invites/stats'),
-  grantCards: (userID: string, body: { cards: number; expires_at: number }) =>
+  grantCards: (userID: string, body: { name?: string; windows?: string[]; cards: number; expires_at: number }) =>
     api.post<void>(`/api/admin/users/${userID}/cards`, body),
   // Moves cards the account already holds. Omitting card_ids means every
   // unused one, expired included — which is what "their card ran out" asks

@@ -94,10 +94,10 @@ type Estimate struct {
 
 func (e Estimate) empty() bool { return e.Tokens <= 0 && e.Credits <= 0 }
 
-// AutoReset spends whatever restores this account's allowance. It receives
-// the reservation transaction so the spend, reset and replacement
-// reservation either all happen or none of them do.
-type AutoReset func(context.Context, database.Queryer) (bool, error)
+// AutoReset spends whatever restores this account's allowance for the needed
+// window. It receives the reservation transaction and the exceeded window,
+// and reports which windows were reset (an empty slice means all windows).
+type AutoReset func(ctx context.Context, q database.Queryer, needed Window) (windows []string, spent bool, err error)
 
 // Reserve claims one request and the turn's worst case against every window
 // that applies, and fails if any of them is already spent.
@@ -177,14 +177,14 @@ func (s *Service) reserve(
 			return reserveErr
 		}
 
-		spent, err := reset(ctx, tx)
+		resetWindows, spent, err := reset(ctx, tx, exceeded.Window)
 		if err != nil {
 			return err
 		}
 		if !spent {
 			return reserveErr
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM usage_counters WHERE scope_key = ?`, key); err != nil {
+		if err := deleteScopeCounters(ctx, tx, key, resetWindows); err != nil {
 			return fmt.Errorf("quota: automatic reset: %w", err)
 		}
 		return reserveCounters(ctx, tx, policy, key, anchor, estimate, now)
@@ -195,6 +195,34 @@ func (s *Service) reserve(
 		return Reservation{}, err
 	}
 	return Reservation{at: now, estimate: estimate, taken: true, anchor: anchor}, nil
+}
+
+func deleteScopeCounters(ctx context.Context, tx database.Queryer, key string, windows []string) error {
+	cleanWindows := make([]string, 0, len(windows))
+	for _, w := range windows {
+		w = strings.TrimSpace(w)
+		if w == "full" {
+			cleanWindows = nil
+			break
+		}
+		if w != "" {
+			cleanWindows = append(cleanWindows, w)
+		}
+	}
+	if len(cleanWindows) == 0 {
+		_, err := tx.Exec(ctx, `DELETE FROM usage_counters WHERE scope_key = ?`, key)
+		return err
+	}
+	placeholders := make([]string, len(cleanWindows))
+	args := make([]any, 0, len(cleanWindows)+1)
+	args = append(args, key)
+	for i, win := range cleanWindows {
+		placeholders[i] = "?"
+		args = append(args, win)
+	}
+	query := `DELETE FROM usage_counters WHERE scope_key = ? AND window_kind IN (` + strings.Join(placeholders, ", ") + `)`
+	_, err := tx.Exec(ctx, query, args...)
+	return err
 }
 
 func reserveCounters(
@@ -585,11 +613,21 @@ func (s *Service) ResetGroup(ctx context.Context, groupID string) error {
 	return nil
 }
 
-// Reset does the same for named accounts.
-//
-// In batches, because the caller may hand it every member of a group and one
-// statement with ten thousand placeholders is a statement no database wants.
-func (s *Service) Reset(ctx context.Context, userIDs []string) error {
+// ResetWindows clears usage counters for specific windows on named accounts.
+// An empty window list or one containing "full" clears every window.
+func (s *Service) ResetWindows(ctx context.Context, userIDs []string, windows []string) error {
+	cleanWindows := make([]string, 0, len(windows))
+	for _, w := range windows {
+		w = strings.TrimSpace(w)
+		if w == "full" {
+			cleanWindows = nil
+			break
+		}
+		if w != "" {
+			cleanWindows = append(cleanWindows, w)
+		}
+	}
+
 	const batch = 200
 	for start := 0; start < len(userIDs); start += batch {
 		end := min(start+batch, len(userIDs))
@@ -603,11 +641,29 @@ func (s *Service) Reset(ctx context.Context, userIDs []string) error {
 		}
 		query := `DELETE FROM usage_counters WHERE scope_key IN (` +
 			strings.Join(placeholders, ", ") + `)`
+
+		if len(cleanWindows) > 0 {
+			winPlaceholders := make([]string, len(cleanWindows))
+			for i, win := range cleanWindows {
+				winPlaceholders[i] = "?"
+				args = append(args, win)
+			}
+			query += ` AND window_kind IN (` + strings.Join(winPlaceholders, ", ") + `)`
+		}
+
 		if _, err := s.db.Exec(ctx, query, args...); err != nil {
-			return fmt.Errorf("quota: reset: %w", err)
+			return fmt.Errorf("quota: reset windows: %w", err)
 		}
 	}
 	return nil
+}
+
+// Reset does the same for named accounts across all windows.
+//
+// In batches, because the caller may hand it every member of a group and one
+// statement with ten thousand placeholders is a statement no database wants.
+func (s *Service) Reset(ctx context.Context, userIDs []string) error {
+	return s.ResetWindows(ctx, userIDs, nil)
 }
 
 // Windows are fixed and aligned rather than rolling, so "when does this

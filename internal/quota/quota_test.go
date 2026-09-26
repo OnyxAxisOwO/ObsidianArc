@@ -266,11 +266,11 @@ func TestConcurrentAutomaticResetSpendsOneCard(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			_, err := service.ReserveWithAutoReset(ctx, person, Estimate{},
-				func(context.Context, database.Queryer) (bool, error) {
+				func(context.Context, database.Queryer, Window) ([]string, bool, error) {
 					mu.Lock()
 					spent++
 					mu.Unlock()
-					return true, nil
+					return nil, true, nil
 				})
 			if err == nil {
 				mu.Lock()
@@ -301,9 +301,9 @@ func TestAutomaticResetDoesNotSpendForMinuteRateLimit(t *testing.T) {
 	}
 	spent := 0
 	_, err := service.ReserveWithAutoReset(ctx, person, Estimate{},
-		func(context.Context, database.Queryer) (bool, error) {
+		func(context.Context, database.Queryer, Window) ([]string, bool, error) {
 			spent++
-			return true, nil
+			return nil, true, nil
 		})
 	exceeded, ok := AsExceeded(err)
 	if !ok || exceeded.Window != WindowRPM {
@@ -311,6 +311,102 @@ func TestAutomaticResetDoesNotSpendForMinuteRateLimit(t *testing.T) {
 	}
 	if spent != 0 {
 		t.Errorf("spent %d cards on a minute rate limit", spent)
+	}
+}
+
+func TestAutoResetTargetingWindowVariantClearsOnlyTargetedWindow(t *testing.T) {
+	service, db := newService(t)
+	ctx := context.Background()
+	const userID = "window-auto-user"
+	if _, err := db.Exec(ctx,
+		`INSERT INTO users (id, username, username_lower, password_hash, role, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		userID, userID, userID, "x", user.RoleUser, user.StatusActive, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Policies().Save(ctx, Policy{
+		Scope: ScopeGlobal,
+		Windows: map[Window]Limits{
+			Window5H:   limits(true, ptrInt(2), nil, nil),
+			WindowWeek: limits(true, ptrInt(10), nil, nil),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	person := account(userID, "")
+
+	// Exhaust 5h window (2 requests), and record 2 requests into 1w window as well.
+	for range 2 {
+		if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var weekRequestsBefore int
+	if err := db.QueryRow(ctx,
+		`SELECT requests FROM usage_counters WHERE scope_key = ? AND window_kind = '1w'`,
+		scopeKey(userID)).Scan(&weekRequestsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if weekRequestsBefore != 2 {
+		t.Fatalf("week requests before = %d, want 2", weekRequestsBefore)
+	}
+
+	// 1. Auto-reset with a 5h card only clears 5h window.
+	res, err := service.ReserveWithAutoReset(ctx, person, Estimate{},
+		func(ctx context.Context, q database.Queryer, needed Window) ([]string, bool, error) {
+			if needed != Window5H {
+				t.Fatalf("needed window = %s, want 5h", needed)
+			}
+			return []string{"5h"}, true, nil
+		})
+	if err != nil {
+		t.Fatalf("reserve with auto reset 5h: %v", err)
+	}
+	if !res.taken {
+		t.Error("reservation not taken")
+	}
+
+	// 5h was reset, so after 1 request it has 1 request.
+	var count5H int
+	if err := db.QueryRow(ctx,
+		`SELECT requests FROM usage_counters WHERE scope_key = ? AND window_kind = '5h'`,
+		scopeKey(userID)).Scan(&count5H); err != nil {
+		t.Fatal(err)
+	}
+	if count5H != 1 {
+		t.Errorf("5h requests = %d, want 1", count5H)
+	}
+
+	// 1w was NOT reset, so it now has 3 requests (2 original + 1 new turn).
+	var count1W int
+	if err := db.QueryRow(ctx,
+		`SELECT requests FROM usage_counters WHERE scope_key = ? AND window_kind = '1w'`,
+		scopeKey(userID)).Scan(&count1W); err != nil {
+		t.Fatal(err)
+	}
+	if count1W != 3 {
+		t.Errorf("1w requests = %d, want 3 (it should not have been wiped!)", count1W)
+	}
+
+	// 2. If user only has a 1w card (no 5h card) and 5h is exhausted again:
+	// Exhaust the remaining 1 request in 5h:
+	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 5h is exhausted. Callback says no matching card (spent = false):
+	_, err = service.ReserveWithAutoReset(ctx, person, Estimate{},
+		func(ctx context.Context, q database.Queryer, needed Window) ([]string, bool, error) {
+			if needed == Window5H {
+				// No 5h card available!
+				return nil, false, nil
+			}
+			return []string{"1w"}, true, nil
+		})
+	exceeded, ok := AsExceeded(err)
+	if !ok || exceeded.Window != Window5H {
+		t.Fatalf("expected 5h exceeded error, got: %v", err)
 	}
 }
 

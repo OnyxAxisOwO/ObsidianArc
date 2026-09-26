@@ -13,9 +13,11 @@ import { copyToClipboard } from '@/chat/markdown';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
+import OaCheckList from '@/components/OaCheckList.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
+import OaSelectField from '@/components/OaSelectField.vue';
 import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
@@ -79,10 +81,44 @@ const redemptionsError = ref('');
 const form = ref({
   count: 1 as number | null,
   code: '',
+  name: '',
+  scopePreset: 'full' as 'full' | '5h' | '1w' | '1m' | 'custom',
+  customWindows: ['5h'] as string[],
   cards: 10 as number | null,
   cardDays: 30 as number | null,
   expiresDays: null as number | null,
 });
+
+function formatCodeScope(windows?: string[]): string {
+  const wins = windows ?? [];
+  if (wins.length === 0 || wins.includes('full')) {
+    return t('cardFullReset');
+  }
+  const order = ['5h', '1w', '1m'];
+  const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  if (sorted.length === 1) {
+    if (sorted[0] === '5h') return t('cardScope5H');
+    if (sorted[0] === '1w') return t('cardScope1W');
+    if (sorted[0] === '1m') return t('cardScope1M');
+  }
+  const labels = sorted.map((w) => {
+    if (w === '5h') return t('cardScopeLabel5H');
+    if (w === '1w') return t('cardScopeLabel1W');
+    if (w === '1m') return t('cardScopeLabel1M');
+    return w;
+  });
+  return t('cardScopeCombined', { windows: labels.join(' + ') });
+}
+
+function selectedWindows(): string[] {
+  if (form.value.scopePreset === 'custom') {
+    return form.value.customWindows;
+  }
+  if (form.value.scopePreset === 'full') {
+    return [];
+  }
+  return [form.value.scopePreset];
+}
 
 const creating = computed(() => existing.value === null);
 
@@ -112,7 +148,16 @@ function open(row: RedemptionCode | null): void {
   redemptions.value = [];
   redemptionsError.value = '';
   redemptionsLoading.value = row !== null;
-  form.value = { count: 1, code: '', cards: 10, cardDays: 30, expiresDays: null };
+  form.value = {
+    count: 1,
+    code: '',
+    name: '',
+    scopePreset: 'full',
+    customWindows: ['5h'],
+    cards: 10,
+    cardDays: 30,
+    expiresDays: null,
+  };
   panelOpen.value = true;
   if (row) void loadRedemptions(row.id);
 }
@@ -131,6 +176,10 @@ async function loadRedemptions(codeID: string): Promise<void> {
 }
 
 async function create(): Promise<void> {
+  if (form.value.scopePreset === 'custom' && form.value.customWindows.length === 0) {
+    panelError.value = t('cardResetScopeRequired');
+    return;
+  }
   const batch = form.value.count ?? 1;
   const days = form.value.expiresDays;
   busy.value = true;
@@ -138,6 +187,8 @@ async function create(): Promise<void> {
   try {
     const { codes: created } = await adminApi.createCode({
       code: batch > 1 ? '' : form.value.code.trim(),
+      name: form.value.name.trim(),
+      windows: selectedWindows(),
       count: batch,
       cards: form.value.cards ?? 1,
       card_days: form.value.cardDays ?? 30,
@@ -210,7 +261,11 @@ onMounted(load);
     @select="open($event)"
   >
     <template #cell-code="{ row }">
-      <OaCellStack :title="row.code" :sub="row.note || undefined" monospace />
+      <OaCellStack
+        :title="row.code"
+        :sub="Array.from(new Set([row.name || undefined, formatCodeScope(row.windows), row.note || undefined].filter(Boolean))).join(' · ')"
+        monospace
+      />
     </template>
     <template #cell-state="{ row }">
       <OaBadgeRow>
@@ -266,6 +321,14 @@ onMounted(load);
       <p class="oa-field-hint">
         {{ t('codeClaimedSoFar', { claimed: existing!.claimed, cards: existing!.cards }) }}
       </p>
+      <div v-if="existing!.name || (existing!.windows && existing!.windows.length)" class="oa-card-list" style="margin-bottom: 12px;">
+        <div class="oa-card-row">
+          <div>
+            <span class="oa-card-title">{{ existing!.name || formatCodeScope(existing!.windows) }}</span>
+            <span v-if="existing!.name" class="oa-card-sub">{{ formatCodeScope(existing!.windows) }}</span>
+          </div>
+        </div>
+      </div>
       <OaFormSection :title="t('codeRedeemedBy')" />
       <p v-if="redemptionsLoading" class="oa-field-hint">{{ t('loading') }}</p>
       <p v-else-if="redemptionsError" class="oa-field-hint">{{ redemptionsError }}</p>
@@ -299,6 +362,36 @@ onMounted(load);
         placeholder="WELCOME2026"
         :hint="t('codeHint')"
         monospace
+      />
+      <OaTextField
+        v-model="form.name"
+        :label="t('cardName')"
+        :placeholder="t('cardNamePlaceholder')"
+        :hint="t('cardNameHint')"
+        :max-length="64"
+      />
+      <OaSelectField
+        v-model="form.scopePreset"
+        :label="t('cardResetScope')"
+        :hint="t('cardResetScopeHint')"
+        :options="[
+          { value: 'full', label: t('cardResetFull') },
+          { value: '5h', label: t('cardReset5H') },
+          { value: '1w', label: t('cardReset1W') },
+          { value: '1m', label: t('cardReset1M') },
+          { value: 'custom', label: t('cardResetCustom') },
+        ]"
+      />
+      <OaCheckList
+        v-if="form.scopePreset === 'custom'"
+        v-model="form.customWindows"
+        :label="t('cardResetScope')"
+        :empty-text="t('nothingYet')"
+        :items="[
+          { value: '5h', label: t('cardScopeLabel5H') },
+          { value: '1w', label: t('cardScopeLabel1W') },
+          { value: '1m', label: t('cardScopeLabel1M') },
+        ]"
       />
       <OaNumberField v-model="form.cards" :label="t('codeCards')" :min="1" :hint="t('codeCardsHint')" />
       <OaNumberField

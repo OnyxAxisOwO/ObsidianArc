@@ -309,6 +309,95 @@ describe('moving the expiry on cards an account already holds', () => {
     expect(move).not.toHaveBeenCalled();
     expect(panels.textContent).toContain(t('grantCardExpiryInvalid'));
   });
+
+  it('grants cards with a custom name and window variant', async () => {
+    await openHolder();
+    const grant = vi.spyOn(adminApi, 'grantCards').mockResolvedValue(undefined);
+
+    const nameField = [...panels.querySelectorAll<HTMLElement>('.oa-field')].find((el) =>
+      el.querySelector('.oa-field-label')?.textContent === t('cardName'),
+    );
+    expect(nameField).toBeDefined();
+    input(nameField!.querySelector('input')!, 'Bonus Card');
+
+    pickDate('2030-01-02T03:04');
+    button(panels, t('grantCards')).click();
+    await settle();
+
+    expect(grant).toHaveBeenCalledWith(holder.id, {
+      cards: 1,
+      expires_at: new Date('2030-01-02T03:04').getTime(),
+      name: 'Bonus Card',
+      windows: [],
+    });
+  });
+
+  it('rejects custom window scope when no checkboxes are checked', async () => {
+    await openHolder();
+    const grant = vi.spyOn(adminApi, 'grantCards').mockResolvedValue(undefined);
+
+    // Select custom scope
+    const selectBtn = panels.querySelector<HTMLButtonElement>('.oa-select')!;
+    selectBtn.click();
+    await settle();
+    [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.trim() === t('cardResetCustom'))!.click();
+    await settle();
+
+    // By default custom has '5h' checked. Uncheck it:
+    const checkbox = panels.querySelector<HTMLInputElement>('.oa-check-list input[type="checkbox"]')!;
+    checkbox.click();
+    await settle();
+
+    pickDate('2030-01-02T03:04');
+    button(panels, t('grantCards')).click();
+    await settle();
+
+    expect(grant).not.toHaveBeenCalled();
+    expect(panels.textContent).toContain(t('cardResetScopeRequired'));
+  });
+});
+
+describe('redemption code creation and details', () => {
+  it('shows window variant as title when code has no custom name', async () => {
+    const item = { ...code('5H-CODE', '2026-09-13T12:00:00'), windows: ['5h'], name: '' };
+    vi.spyOn(adminApi, 'codes').mockResolvedValue({ codes: [item] });
+    vi.spyOn(adminApi, 'codeRedemptions').mockResolvedValue({ redemptions: [] });
+    await mount(AdminCodes);
+    await settle();
+
+    const row = host.querySelector<HTMLElement>('.oa-table tbody tr')!;
+    row.click();
+    await settle();
+
+    expect(panels.querySelector('.oa-card-title')?.textContent).toContain(t('cardScope5H'));
+    expect(panels.querySelector('.oa-card-title')?.textContent).not.toContain(t('cardFullReset'));
+  });
+
+  it('rejects custom scope without windows during code creation', async () => {
+    vi.spyOn(adminApi, 'codes').mockResolvedValue({ codes: [] });
+    const create = vi.spyOn(adminApi, 'createCode').mockResolvedValue({ codes: [] });
+    await mount(AdminCodes);
+    actions.querySelector<HTMLButtonElement>('#addCode')!.click();
+    await settle();
+
+    // Select custom scope
+    const selectBtn = panels.querySelector<HTMLButtonElement>('.oa-select')!;
+    selectBtn.click();
+    await settle();
+    [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.trim() === t('cardResetCustom'))!.click();
+    await settle();
+
+    // Uncheck 5h
+    const checkbox = panels.querySelector<HTMLInputElement>('.oa-check-list input[type="checkbox"]')!;
+    checkbox.click();
+    await settle();
+
+    button(panels, t('add')).click();
+    await settle();
+
+    expect(create).not.toHaveBeenCalled();
+    expect(panels.textContent).toContain(t('cardResetScopeRequired'));
+  });
 });
 
 describe('redemption code export', () => {

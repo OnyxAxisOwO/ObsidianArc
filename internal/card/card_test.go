@@ -668,3 +668,173 @@ func TestRevokingCannotReachAnotherAccount(t *testing.T) {
 		t.Error("the other account's card is gone")
 	}
 }
+
+func TestNamedCardsAndWindowVariants(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	person := f.reader(t, "variant-user")
+
+	// 1. Grant named card with 5h window.
+	granted5H, err := f.store.GrantNamed(ctx, nil, person.ID, 1, 30, "Five Hour Boost", []string{"5h"})
+	if err != nil {
+		t.Fatalf("grant 5h: %v", err)
+	}
+	if len(granted5H) != 1 {
+		t.Fatalf("granted %d cards, want 1", len(granted5H))
+	}
+	if granted5H[0].Name != "Five Hour Boost" {
+		t.Errorf("name = %q, want 'Five Hour Boost'", granted5H[0].Name)
+	}
+	if len(granted5H[0].Windows) != 1 || granted5H[0].Windows[0] != "5h" {
+		t.Errorf("windows = %v, want ['5h']", granted5H[0].Windows)
+	}
+
+	// 2. Create code with combined windows (5h, 1w).
+	codeRecord, err := f.store.CreateCode(ctx, CodeInput{
+		Code:     "COMBO-WEEK",
+		Name:     "Weekly Combo Card",
+		Windows:  []string{"5h", "1w"},
+		Cards:    5,
+		CardDays: 14,
+	})
+	if err != nil {
+		t.Fatalf("create code: %v", err)
+	}
+	if codeRecord.Name != "Weekly Combo Card" {
+		t.Errorf("code name = %q, want 'Weekly Combo Card'", codeRecord.Name)
+	}
+	if len(codeRecord.Windows) != 2 || codeRecord.Windows[0] != "5h" || codeRecord.Windows[1] != "1w" {
+		t.Errorf("code windows = %v, want ['5h', '1w']", codeRecord.Windows)
+	}
+
+	// 3. Redeem code and check minted card inherits name and windows.
+	redeemedCard, err := f.store.Redeem(ctx, person.ID, "COMBO-WEEK")
+	if err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	if redeemedCard.Name != "Weekly Combo Card" {
+		t.Errorf("redeemed name = %q, want 'Weekly Combo Card'", redeemedCard.Name)
+	}
+	if len(redeemedCard.Windows) != 2 || redeemedCard.Windows[0] != "5h" || redeemedCard.Windows[1] != "1w" {
+		t.Errorf("redeemed windows = %v, want ['5h', '1w']", redeemedCard.Windows)
+	}
+
+	// 4. Check available cards list has both cards with their names and windows.
+	available, err := f.store.Available(ctx, person.ID)
+	if err != nil {
+		t.Fatalf("available: %v", err)
+	}
+	if len(available) != 2 {
+		t.Fatalf("available = %d cards, want 2", len(available))
+	}
+
+	// 5. SpendCard returns the card with its windows.
+	spent, err := f.store.SpendCard(ctx, person.ID, redeemedCard.ID)
+	if err != nil {
+		t.Fatalf("spend: %v", err)
+	}
+	if spent.ID != redeemedCard.ID {
+		t.Errorf("spent id = %q, want %q", spent.ID, redeemedCard.ID)
+	}
+	if spent.Name != "Weekly Combo Card" {
+		t.Errorf("spent name = %q, want 'Weekly Combo Card'", spent.Name)
+	}
+	if len(spent.Windows) != 2 || spent.Windows[0] != "5h" || spent.Windows[1] != "1w" {
+		t.Errorf("spent windows = %v, want ['5h', '1w']", spent.Windows)
+	}
+}
+
+func TestSpendNextForWindowTargetsMatchingCards(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	person := f.reader(t, "user-spend-window")
+
+	// Grant three cards with different expiries:
+	// 1. Expiring in 10 days: "1w" only
+	// 2. Expiring in 20 days: "5h" only
+	// 3. Expiring in 30 days: full reset (empty windows)
+	cardsWeek, err := f.store.GrantNamed(ctx, nil, person.ID, 1, 10, "Week Card", []string{"1w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cards5H, err := f.store.GrantNamed(ctx, nil, person.ID, 1, 20, "5H Card", []string{"5h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cardsFull, err := f.store.GrantNamed(ctx, nil, person.ID, 1, 30, "Full Card", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Requesting "5h" should NOT pick the earliest expiring card ("Week Card" at 10 days).
+	// It should pick "5H Card" (20 days).
+	spent, err := f.store.SpendNextForWindow(ctx, nil, person.ID, "5h")
+	if err != nil {
+		t.Fatalf("spend next 5h: %v", err)
+	}
+	if spent.ID != cards5H[0].ID {
+		t.Errorf("spent card id = %q, want 5H Card %q", spent.ID, cards5H[0].ID)
+	}
+
+	// Requesting "5h" again: "5H Card" is used. Full Card (30 days) covers 5h too!
+	spent2, err := f.store.SpendNextForWindow(ctx, nil, person.ID, "5h")
+	if err != nil {
+		t.Fatalf("spend next 5h (fallback to full): %v", err)
+	}
+	if spent2.ID != cardsFull[0].ID {
+		t.Errorf("spent card id = %q, want Full Card %q", spent2.ID, cardsFull[0].ID)
+	}
+
+	// Requesting "5h" a third time: Only "Week Card" remains, which does NOT cover 5h.
+	_, err = f.store.SpendNextForWindow(ctx, nil, person.ID, "5h")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for 5h when only 1w card left, got: %v", err)
+	}
+
+	// But requesting "1w" succeeds and spends "Week Card":
+	spent3, err := f.store.SpendNextForWindow(ctx, nil, person.ID, "1w")
+	if err != nil {
+		t.Fatalf("spend next 1w: %v", err)
+	}
+	if spent3.ID != cardsWeek[0].ID {
+		t.Errorf("spent card id = %q, want Week Card %q", spent3.ID, cardsWeek[0].ID)
+	}
+}
+
+func TestInvalidWindowsRejected(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	person := f.reader(t, "user-invalid-win")
+
+	// 1. GrantNamed rejects invalid window
+	_, err := f.store.GrantNamed(ctx, nil, person.ID, 1, 10, "Bad Card", []string{"invalid_window"})
+	if !errors.Is(err, ErrInvalidWindow) {
+		t.Errorf("expected ErrInvalidWindow, got: %v", err)
+	}
+
+	// 2. GrantUntilNamed rejects invalid window
+	now := time.Now().Add(24 * time.Hour).UnixMilli()
+	_, err = f.store.GrantUntilNamed(ctx, person.ID, 1, now, "Bad Card", []string{"5hr"})
+	if !errors.Is(err, ErrInvalidWindow) {
+		t.Errorf("expected ErrInvalidWindow, got: %v", err)
+	}
+
+	// 3. CreateCode rejects invalid window
+	_, err = f.store.CreateCode(ctx, CodeInput{
+		Code:    "BAD-WIN-CODE",
+		Windows: []string{"weekly"},
+		Cards:   1,
+	})
+	if !errors.Is(err, ErrInvalidWindow) {
+		t.Errorf("expected ErrInvalidWindow, got: %v", err)
+	}
+
+	// 4. CreateCodes rejects invalid window
+	_, err = f.store.CreateCodes(ctx, CodeInput{
+		Windows: []string{"xyz"},
+		Cards:   1,
+	}, 5)
+	if !errors.Is(err, ErrInvalidWindow) {
+		t.Errorf("expected ErrInvalidWindow, got: %v", err)
+	}
+}
