@@ -33,6 +33,10 @@ var (
 	// One code for both, deliberately: see consumeInvite.
 	ErrInviteRequired = errors.New("auth: an invite code is required to register here")
 	ErrInviteInvalid  = errors.New("auth: that invite code is not valid")
+	// A fresh instance can gain its first account between preflight and the
+	// registration row lock. Leave the transaction and screen that second
+	// account's address before retrying, so it cannot slip past the check.
+	errNeedsEmailScreening = errors.New("auth: email screening must run before the transaction")
 )
 
 // InviteGrant is what consuming an invite code hands back to Register and
@@ -73,6 +77,9 @@ type Service struct {
 	// about any of them. A call failure still carries the mode's fallback
 	// decision; the error exists so the wiring can report why it was needed.
 	ReviewSignup func(ctx context.Context, in RegisterInput, fromAddress int) (SignupReview, error)
+	// A paid disposable-address lookup, configured by the administrator.
+	// Call before account writes, never from inside a transaction.
+	ScreenEmail func(context.Context, string) error
 	// Called after a review has a durable outcome, including a refusal where
 	// no account was created. Recording is best-effort and must not turn an
 	// audit failure into a registration failure.
@@ -86,8 +93,9 @@ type Service struct {
 	// the key signs remembered browsers and keys recovery-code digests.
 	// Both are nil on a build with no instance secret, where two-step
 	// sign-in reports itself unavailable rather than inventing a key.
-	twoFactorBox *secret.Box
-	twoFactorKey []byte
+	twoFactorBox    *secret.Box
+	twoFactorKey    []byte
+	verificationKey []byte
 	// Its own budget, apart from the password limiter's: see spendCode.
 	codes *Limiter
 	// Told when the second step is switched on or off, or a recovery code
@@ -143,6 +151,10 @@ func NewService(
 		mailer:   mailer,
 	}
 	if len(cfg.SecretKey) > 0 {
+		verificationKey, verificationErr := secret.DeriveKey(cfg.SecretKey, secret.PurposeEmailCode)
+		if verificationErr == nil {
+			service.verificationKey = verificationKey
+		}
 		box, boxErr := secret.New(cfg.SecretKey, secret.PurposeTwoFactor)
 		key, keyErr := secret.DeriveKey(cfg.SecretKey, secret.PurposeTwoFactorDigest)
 		if boxErr == nil && keyErr == nil {
@@ -232,6 +244,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		if err := checkEmail(s.settings, in.Email); err != nil {
 			return user.User{}, "", err
 		}
+		if s.VerificationRequired() && strings.TrimSpace(in.Email) == "" {
+			return user.User{}, "", ErrEmailRequired
+		}
 		if err := checkQQ(s.settings, in.QQ); err != nil {
 			return user.User{}, "", err
 		}
@@ -261,6 +276,22 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		if err := s.Challenge.Check(ctx, in.Turnstile, in.IP); err != nil {
 			return user.User{}, "", err
 		}
+		// This pass only saves paid screening and review calls for an address
+		// already held here. The transaction still repeats the uniqueness
+		// check under the registration lock before writing the account.
+		usernameTaken, emailTaken, qqTaken, err := s.users.Exists(ctx, nil, in.Username, in.Email, in.QQ)
+		if err != nil {
+			return user.User{}, "", err
+		}
+		if usernameTaken {
+			return user.User{}, "", user.ErrUsernameTaken
+		}
+		if emailTaken {
+			return user.User{}, "", user.ErrEmailTaken
+		}
+		if qqTaken {
+			return user.User{}, "", user.ErrQQTaken
+		}
 
 		// Last of the gates and outside the transaction, for the same two
 		// reasons: it is a call to a provider, and it is the slowest thing
@@ -283,6 +314,13 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			}
 		}
 	}
+	screened := false
+	if total > 0 {
+		if err := s.CheckRegistrationEmail(ctx, in.Email); err != nil {
+			return user.User{}, "", err
+		}
+		screened = true
+	}
 
 	hash, err := s.hasher.Hash(ctx, in.Password)
 	if err != nil {
@@ -293,146 +331,161 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		created      user.User
 		verification string
 	)
-	err = s.db.Tx(ctx, func(tx *database.Tx) error {
-		// Serialise the decision about who is first across processes as well
-		// as goroutines. Under Postgres' default isolation, two fresh-instance
-		// registrations can otherwise both count zero users and both become
-		// administrators. Upserting one known settings row takes the same row
-		// lock on both supported databases without changing its value.
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+	for {
+		err = s.db.Tx(ctx, func(tx *database.Tx) error {
+			// Serialise the decision about who is first across processes as well
+			// as goroutines. Under Postgres' default isolation, two fresh-instance
+			// registrations can otherwise both count zero users and both become
+			// administrators. Upserting one known settings row takes the same row
+			// lock on both supported databases without changing its value.
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
 			 ON CONFLICT (key) DO UPDATE SET updated_at = settings.updated_at`,
-			settings.RegistrationEnabled, settings.Defaults[settings.RegistrationEnabled],
-			time.Now().UnixMilli()); err != nil {
-			return fmt.Errorf("auth: lock registration: %w", err)
-		}
-
-		total, err := s.users.Count(ctx, tx)
-		if err != nil {
-			return err
-		}
-		first := total == 0
-
-		if !first && !s.settings.Bool(settings.RegistrationEnabled) {
-			return ErrRegistrationClosed
-		}
-		// None of the registration controls apply to the first account.
-		// It is the one that turns an empty instance into an
-		// administered one, and locking someone out of that would leave
-		// a deployment with no way in at all.
-		if !first {
-			if err := checkEmail(s.settings, in.Email); err != nil {
-				return err
-			}
-			if err := checkQQ(s.settings, in.QQ); err != nil {
-				return err
-			}
-			allowed, retryAfter := s.signups.allow(
-				s.settings.Int(settings.SignupsPerMinute, 0),
-				s.settings.Int(settings.SignupsPerHour, 0),
-			)
-			if !allowed {
-				return &SignupThrottleError{RetryAfter: retryAfter}
+				settings.RegistrationEnabled, settings.Defaults[settings.RegistrationEnabled],
+				time.Now().UnixMilli()); err != nil {
+				return fmt.Errorf("auth: lock registration: %w", err)
 			}
 
-			// Per address, and counted in the database inside the lock this
-			// transaction already holds — so the count and the insert cannot
-			// interleave, a restart does not hand out a fresh allowance, and
-			// two instances against one database agree.
-			//
-			// Unlike the two limits above, this one refuses rather than asks
-			// the caller to wait: somebody who has just made ten accounts
-			// does not want to hear about a retry.
-			if err := s.checkSignupIP(ctx, tx, in.IP); err != nil {
-				return err
-			}
-		}
-
-		// Consumed here, inside the same transaction as the account it is
-		// spent for: a registration that fails for any other reason below —
-		// a taken username, a race lost on the signup IP count — rolls the
-		// spend back with it, and the code is exactly as good afterwards as
-		// it was before this request touched it. Skipped for the first
-		// account along with every other registration control, above.
-		var grant *InviteGrant
-		if !first {
-			grant, err = s.consumeInvite(ctx, tx, in.InviteCode)
+			total, err := s.users.Count(ctx, tx)
 			if err != nil {
 				return err
 			}
-		}
+			first := total == 0
 
-		usernameTaken, emailTaken, qqTaken, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.QQ)
-		if err != nil {
-			return err
-		}
-		if usernameTaken {
-			return user.ErrUsernameTaken
-		}
-		if emailTaken {
-			return user.ErrEmailTaken
-		}
-		if qqTaken {
-			return user.ErrQQTaken
-		}
+			if !first && !s.settings.Bool(settings.RegistrationEnabled) {
+				return ErrRegistrationClosed
+			}
+			// None of the registration controls apply to the first account.
+			// It is the one that turns an empty instance into an
+			// administered one, and locking someone out of that would leave
+			// a deployment with no way in at all.
+			if !first {
+				if err := checkEmail(s.settings, in.Email); err != nil {
+					return err
+				}
+				if !screened {
+					return errNeedsEmailScreening
+				}
+				if s.VerificationRequired() && strings.TrimSpace(in.Email) == "" {
+					return ErrEmailRequired
+				}
+				if err := checkQQ(s.settings, in.QQ); err != nil {
+					return err
+				}
+				allowed, retryAfter := s.signups.allow(
+					s.settings.Int(settings.SignupsPerMinute, 0),
+					s.settings.Int(settings.SignupsPerHour, 0),
+				)
+				if !allowed {
+					return &SignupThrottleError{RetryAfter: retryAfter}
+				}
 
-		groupID, err := s.registrationGroup(ctx, tx)
-		if err != nil {
-			return err
-		}
-		// An admin code's group replaces the instance default rather than
-		// combining with it — a partner's trial is a specific group chosen
-		// for that link, not a suggestion layered onto whatever registration
-		// would otherwise have picked.
-		if grant != nil && grant.GroupID != "" {
-			groupID = grant.GroupID
-		}
+				// Per address, and counted in the database inside the lock this
+				// transaction already holds — so the count and the insert cannot
+				// interleave, a restart does not hand out a fresh allowance, and
+				// two instances against one database agree.
+				//
+				// Unlike the two limits above, this one refuses rather than asks
+				// the caller to wait: somebody who has just made ten accounts
+				// does not want to hear about a retry.
+				if err := s.checkSignupIP(ctx, tx, in.IP); err != nil {
+					return err
+				}
+			}
 
-		role := user.RoleUser
-		if first {
-			role = user.RoleSuperAdmin
-		}
+			// Consumed here, inside the same transaction as the account it is
+			// spent for: a registration that fails for any other reason below —
+			// a taken username, a race lost on the signup IP count — rolls the
+			// spend back with it, and the code is exactly as good afterwards as
+			// it was before this request touched it. Skipped for the first
+			// account along with every other registration control, above.
+			var grant *InviteGrant
+			if !first {
+				grant, err = s.consumeInvite(ctx, tx, in.InviteCode)
+				if err != nil {
+					return err
+				}
+			}
 
-		// The first account is never held back: it is the one that turns
-		// an empty instance into an administered one.
-		unverified := !first && s.VerificationRequired()
+			usernameTaken, emailTaken, qqTaken, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.QQ)
+			if err != nil {
+				return err
+			}
+			if usernameTaken {
+				return user.ErrUsernameTaken
+			}
+			if emailTaken {
+				return user.ErrEmailTaken
+			}
+			if qqTaken {
+				return user.ErrQQTaken
+			}
 
-		created, err = s.users.Create(ctx, tx, user.CreateInput{
-			Username:             in.Username,
-			Email:                in.Email,
-			QQ:                   in.QQ,
-			PasswordHash:         hash,
-			Nickname:             in.Nickname,
-			Role:                 role,
-			GroupID:              groupID,
-			Status:               user.StatusActive,
-			Unverified:           unverified,
-			SignupIP:             in.IP,
-			SignupUserAgent:      in.UA,
-			APIRestricted:        review.Decision == SignupRestrict,
-			APIRestrictedUntil:   review.RestrictedUntil,
-			APIRestrictionSource: restrictionSource(review.Decision),
+			groupID, err := s.registrationGroup(ctx, tx)
+			if err != nil {
+				return err
+			}
+			// An admin code's group replaces the instance default rather than
+			// combining with it — a partner's trial is a specific group chosen
+			// for that link, not a suggestion layered onto whatever registration
+			// would otherwise have picked.
+			if grant != nil && grant.GroupID != "" {
+				groupID = grant.GroupID
+			}
+
+			role := user.RoleUser
+			if first {
+				role = user.RoleSuperAdmin
+			}
+
+			// The first account is never held back: it is the one that turns
+			// an empty instance into an administered one.
+			unverified := !first && s.VerificationRequired()
+
+			created, err = s.users.Create(ctx, tx, user.CreateInput{
+				Username:             in.Username,
+				Email:                in.Email,
+				QQ:                   in.QQ,
+				PasswordHash:         hash,
+				Nickname:             in.Nickname,
+				Role:                 role,
+				GroupID:              groupID,
+				Status:               user.StatusActive,
+				Unverified:           unverified,
+				SignupIP:             in.IP,
+				SignupUserAgent:      in.UA,
+				APIRestricted:        review.Decision == SignupRestrict,
+				APIRestrictedUntil:   review.RestrictedUntil,
+				APIRestrictionSource: restrictionSource(review.Decision),
+			})
+			if err != nil {
+				return err
+			}
+			groupExpiresAt, err := s.applyInvite(ctx, tx, grant, created.ID)
+			if err != nil {
+				return err
+			}
+			created.GroupExpiresAt = groupExpiresAt
+			if !created.EmailVerified {
+				verification, err = s.issueVerification(ctx, tx, created.ID, created.Email)
+				if err != nil {
+					return err
+				}
+			}
+			// Record while the registration lock is still held. Putting this
+			// after commit leaves a scheduling gap in which the next queued
+			// registration can pass the throttle before this one is visible.
+			s.signups.record()
+			return nil
 		})
-		if err != nil {
-			return err
+		if !errors.Is(err, errNeedsEmailScreening) {
+			break
 		}
-		groupExpiresAt, err := s.applyInvite(ctx, tx, grant, created.ID)
-		if err != nil {
-			return err
+		if err := s.CheckRegistrationEmail(ctx, in.Email); err != nil {
+			return user.User{}, "", err
 		}
-		created.GroupExpiresAt = groupExpiresAt
-		if !created.EmailVerified {
-			verification, err = s.issueVerification(ctx, tx, created.ID, created.Email)
-			if err != nil {
-				return err
-			}
-		}
-		// Record while the registration lock is still held. Putting this
-		// after commit leaves a scheduling gap in which the next queued
-		// registration can pass the throttle before this one is visible.
-		s.signups.record()
-		return nil
-	})
+		screened = true
+	}
 	if err != nil {
 		return user.User{}, "", err
 	}
@@ -495,126 +548,148 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 		verification string
 		address      string
 	)
-	err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		// Whether the address is new is read here and written below, so the
-		// owner's row is locked across both: two updates racing would each
-		// compare against the address the other is replacing, and the one
-		// that commits second could leave the account verified for an
-		// address nobody confirmed.
-		if _, err := tx.Exec(ctx,
-			`UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
-			return fmt.Errorf("auth: lock account: %w", err)
-		}
-		current, err := s.users.ByID(ctx, tx, userID)
-		if err != nil {
-			return err
-		}
-
-		moved := false
-		if in.Email != nil {
-			address = strings.TrimSpace(*in.Email)
-			// Folded the same way the store folds it, which is not the same
-			// way EqualFold does. EqualFold applies Unicode simple case
-			// folding: it reads "boſs@example.com" and "boss@example.com" as
-			// one address, because U+017F folds to 's'. ToLower does not touch
-			// U+017F, so the store would have written a different email_lower
-			// — a different identity, since that column is what login and the
-			// uniqueness index read — while this decided nothing had moved and
-			// skipped the allowlist, the withdrawal and the outstanding links.
-			// The comparison has to be in the same alphabet as the write.
-			moved = strings.ToLower(address) != strings.ToLower(current.Email)
-		}
-		// Only when it moves. An operator who narrows the allowlist after
-		// accounts exist has not asked for those accounts to be frozen out
-		// of their own profile form; they have asked that nobody take an
-		// address outside it from now on.
-		if moved {
-			if err := checkEmail(s.settings, address); err != nil {
+	screened := false
+	var err error
+	for {
+		err = s.db.Tx(ctx, func(tx *database.Tx) error {
+			// Whether the address is new is read here and written below, so the
+			// owner's row is locked across both: two updates racing would each
+			// compare against the address the other is replacing, and the one
+			// that commits second could leave the account verified for an
+			// address nobody confirmed.
+			if _, err := tx.Exec(ctx,
+				`UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
+				return fmt.Errorf("auth: lock account: %w", err)
+			}
+			current, err := s.users.ByID(ctx, tx, userID)
+			if err != nil {
 				return err
 			}
-		}
-		if in.QQ != nil && strings.TrimSpace(*in.QQ) != current.QQ {
-			if err := checkQQ(s.settings, *in.QQ); err != nil {
-				return err
+
+			moved := false
+			if in.Email != nil {
+				address = strings.TrimSpace(*in.Email)
+				// Folded the same way the store folds it, which is not the same
+				// way EqualFold does. EqualFold applies Unicode simple case
+				// folding: it reads "boſs@example.com" and "boss@example.com" as
+				// one address, because U+017F folds to 's'. ToLower does not touch
+				// U+017F, so the store would have written a different email_lower
+				// — a different identity, since that column is what login and the
+				// uniqueness index read — while this decided nothing had moved and
+				// skipped the allowlist, the withdrawal and the outstanding links.
+				// The comparison has to be in the same alphabet as the write.
+				moved = strings.ToLower(address) != strings.ToLower(current.Email)
 			}
-		}
-
-		if moved {
-			// Whatever is outstanding was issued for the address being left
-			// behind. Verify no longer writes an address, so an old link can
-			// only fail to match — but it is still a link to somewhere this
-			// account has been, and there is no reason to leave it open.
-			confirmed := address == "" || !s.VerificationRequired()
-			if confirmed {
-				// An account with no address has nothing to confirm and
-				// nothing to hold back — the rule registration keeps in
-				// user.Store.Create, and the one this branch used to break:
-				// clearing the address marked the account unconfirmed, issued
-				// a link for the empty string, tried to post it there, and
-				// then refused the resend because there was no address, so the
-				// owner was shut out of sending anything until they typed one
-				// back in.
-				if _, err := tx.Exec(ctx,
-					`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
-					true, time.Now().UnixMilli(), userID); err != nil {
-					return fmt.Errorf("auth: settle confirmation: %w", err)
-				}
-				if _, err := tx.Exec(ctx,
-					`DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
-					return fmt.Errorf("auth: clear verifications: %w", err)
-				}
-			} else {
-				// One posted link every couple of minutes, counted the same way
-				// and for the same reason as the resend button: without it this
-				// form is a way to have the server post mail to a stranger as
-				// fast as requests can be made, and the default allowlist is
-				// empty, so the stranger can be anyone.
-				//
-				// The limit is on the sending, not on the move. Registration
-				// posts a link of its own, so refusing the change instead would
-				// mean nobody could correct an address they had just mistyped
-				// into the sign-up form.
-				var issuedAt int64
-				throttled := false
-				switch err := tx.QueryRow(ctx,
-					`SELECT created_at FROM email_verifications WHERE user_id = ?`, userID).
-					Scan(&issuedAt); {
-				case err == nil:
-					throttled = time.Since(time.UnixMilli(issuedAt)) < maxOutstandingResend
-				case !database.IsNotFound(err):
-					return fmt.Errorf("auth: read verification: %w", err)
-				}
-
-				if _, err := tx.Exec(ctx,
-					`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
-					false, time.Now().UnixMilli(), userID); err != nil {
-					return fmt.Errorf("auth: withdraw confirmation: %w", err)
-				}
-				token, err := s.issueVerification(ctx, tx, userID, address)
-				if err != nil {
+			// Only when it moves. An operator who narrows the allowlist after
+			// accounts exist has not asked for those accounts to be frozen out
+			// of their own profile form; they have asked that nobody take an
+			// address outside it from now on.
+			if moved {
+				if err := checkEmail(s.settings, address); err != nil {
 					return err
 				}
-				if throttled {
-					// The new link is the only valid one, so it is written
-					// either way — but it keeps the clock the one before it
-					// started, or moving address would be a way to reset the
-					// resend limit and post again immediately.
-					if _, err := tx.Exec(ctx,
-						`UPDATE email_verifications SET created_at = ? WHERE user_id = ?`,
-						issuedAt, userID); err != nil {
-						return fmt.Errorf("auth: hold the resend window: %w", err)
-					}
-				} else {
-					verification = token
+				// Otherwise an unverified account could clear its address,
+				// become verified by the no-address rule, and bypass the gate.
+				if address == "" && s.VerificationRequired() {
+					return ErrEmailRequired
+				}
+				if err := user.ValidateEmail(address); err != nil {
+					return err
+				}
+				if address != "" && !screened {
+					return errNeedsEmailScreening
 				}
 			}
-		}
+			if in.QQ != nil && strings.TrimSpace(*in.QQ) != current.QQ {
+				if err := checkQQ(s.settings, *in.QQ); err != nil {
+					return err
+				}
+			}
 
-		// Last, so the record it reads back already carries the withdrawn
-		// confirmation.
-		updated, err = s.users.UpdateProfile(ctx, tx, userID, in)
-		return err
-	})
+			if moved {
+				// Whatever is outstanding was issued for the address being left
+				// behind. Verify no longer writes an address, so an old link can
+				// only fail to match — but it is still a link to somewhere this
+				// account has been, and there is no reason to leave it open.
+				confirmed := address == "" || !s.VerificationRequired()
+				if confirmed {
+					// An account with no address has nothing to confirm and
+					// nothing to hold back — the rule registration keeps in
+					// user.Store.Create, and the one this branch used to break:
+					// clearing the address marked the account unconfirmed, issued
+					// a link for the empty string, tried to post it there, and
+					// then refused the resend because there was no address, so the
+					// owner was shut out of sending anything until they typed one
+					// back in.
+					if _, err := tx.Exec(ctx,
+						`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
+						true, time.Now().UnixMilli(), userID); err != nil {
+						return fmt.Errorf("auth: settle confirmation: %w", err)
+					}
+					if _, err := tx.Exec(ctx,
+						`DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
+						return fmt.Errorf("auth: clear verifications: %w", err)
+					}
+				} else {
+					// One posted link every couple of minutes, counted the same way
+					// and for the same reason as the resend button: without it this
+					// form is a way to have the server post mail to a stranger as
+					// fast as requests can be made, and the default allowlist is
+					// empty, so the stranger can be anyone.
+					//
+					// The limit is on the sending, not on the move. Registration
+					// posts a link of its own, so refusing the change instead would
+					// mean nobody could correct an address they had just mistyped
+					// into the sign-up form.
+					var issuedAt int64
+					throttled := false
+					switch err := tx.QueryRow(ctx,
+						`SELECT created_at FROM email_verifications WHERE user_id = ?`, userID).
+						Scan(&issuedAt); {
+					case err == nil:
+						throttled = time.Since(time.UnixMilli(issuedAt)) < maxOutstandingResend
+					case !database.IsNotFound(err):
+						return fmt.Errorf("auth: read verification: %w", err)
+					}
+
+					if _, err := tx.Exec(ctx,
+						`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
+						false, time.Now().UnixMilli(), userID); err != nil {
+						return fmt.Errorf("auth: withdraw confirmation: %w", err)
+					}
+					token, err := s.issueVerification(ctx, tx, userID, address)
+					if err != nil {
+						return err
+					}
+					if throttled {
+						// The new link is the only valid one, so it is written
+						// either way — but it keeps the clock the one before it
+						// started, or moving address would be a way to reset the
+						// resend limit and post again immediately.
+						if _, err := tx.Exec(ctx,
+							`UPDATE email_verifications SET created_at = ? WHERE user_id = ?`,
+							issuedAt, userID); err != nil {
+							return fmt.Errorf("auth: hold the resend window: %w", err)
+						}
+					} else {
+						verification = token
+					}
+				}
+			}
+
+			// Last, so the record it reads back already carries the withdrawn
+			// confirmation.
+			updated, err = s.users.UpdateProfile(ctx, tx, userID, in)
+			return err
+		})
+		if !errors.Is(err, errNeedsEmailScreening) {
+			break
+		}
+		if err := s.CheckRegistrationEmail(ctx, address); err != nil {
+			return user.User{}, err
+		}
+		screened = true
+	}
 	if err != nil {
 		return user.User{}, err
 	}

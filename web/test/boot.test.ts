@@ -90,6 +90,15 @@ const EMPTY_BODIES: Array<[RegExp, unknown]> = [
   [/\/api\/admin\/settings/, {
     settings: {}, groups: [], mail_configured: false, attachments: { held: 0, bytes: 0 },
   }],
+  [/\/api\/admin\/mail$/, {
+    host: '', port: 587, username: '', from: '', implicit_tls: false, public_url: '', password_set: false,
+  }],
+  [/\/api\/admin\/usercheck$/, {
+    enabled: false,
+    exempt_domains: ['gmail.com', 'outlook.com', 'hotmail.com', 'qq.com', '163.com', '126.com', 'icloud.com', 'yahoo.com', 'foxmail.com', 'proton.me'],
+    failure_mode: 'reject',
+    api_key_set: false,
+  }],
   [/\/api\/admin\/resources/, {
     storage: { held_bytes: 0, held_count: 0, discarded_count: 0, by_user: [] },
     memory: { heap_bytes: 0, heap_sys_bytes: 0, sys_bytes: 0, gc_count: 0, gc_pause_ms: 0, goroutines: 0 },

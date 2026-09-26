@@ -29,15 +29,12 @@ func TestAnAddressAnAdministratorTypedIsNotConfirmed(t *testing.T) {
 	})
 
 	admin := in.register("founder", "a-good-password")
+	member := in.register("member", "another-password")
 	if res := in.do(http.MethodPut, "/api/admin/settings",
 		map[string]string{"registration.verify_email": "true"}, admin); res.Code != http.StatusOK {
 		t.Fatalf("turn verification on: %d %s", res.Code, res.Body.String())
 	}
 
-	member := in.register("member", "another-password")
-
-	// Confirmed the ordinary way first, so the withdrawal below has something
-	// to withdraw.
 	confirm := in.do(http.MethodPatch, "/api/admin/users/"+member.userID,
 		map[string]any{"email": "member@example.com"}, admin)
 	if confirm.Code != http.StatusOK {

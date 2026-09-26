@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
 )
 
 type fixture struct {
@@ -157,6 +159,180 @@ func TestFirstSignInOpensAnAccountAndTheSecondReturnsToIt(t *testing.T) {
 	}
 	if other.ID == first.ID {
 		t.Error("two provider accounts resolved to one account here")
+	}
+}
+
+func TestOAuthScreensOnlyAddressesThatCanOpenANewAccount(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	existing, _, err := f.auth.Register(ctx, auth.RegisterInput{
+		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	var calls atomic.Int32
+	var screenedEmail atomic.Value
+	f.auth.ScreenEmail = func(_ context.Context, email string) error {
+		calls.Add(1)
+		screenedEmail.Store(email)
+		return nil
+	}
+
+	linked, err := f.service.SignIn(ctx, identity("existing-subject", "founder-gh", "founder@example.com"), "", "")
+	if err != nil || linked.ID != existing.ID {
+		t.Fatalf("link existing account = %+v, %v", linked, err)
+	}
+	// An already linked subject signs in without looking at its current email.
+	if _, err := f.service.SignIn(ctx, identity("existing-subject", "founder-gh", "changed@example.com"), "", ""); err != nil {
+		t.Fatalf("existing identity: %v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("existing accounts triggered %d paid email checks", calls.Load())
+	}
+
+	if _, err := f.service.SignIn(ctx, identity("new-subject", "new-user", "new@example.com"), "", ""); err != nil {
+		t.Fatalf("new account: %v", err)
+	}
+	if calls.Load() != 1 || screenedEmail.Load() != "new@example.com" {
+		t.Fatalf("screen calls = %d, email = %v; want one lookup for the new address", calls.Load(), screenedEmail.Load())
+	}
+}
+
+func TestTheFirstOAuthAccountKeepsTheBootstrapExemption(t *testing.T) {
+	f := newFixture(t)
+	var calls atomic.Int32
+	f.auth.ScreenEmail = func(context.Context, string) error {
+		calls.Add(1)
+		return usercheck.ErrDisposable
+	}
+
+	account, err := f.service.SignIn(context.Background(), identity("first-subject", "founder", "disposable@example.com"), "", "")
+	if err != nil {
+		t.Fatalf("first account was rejected by screening: %v", err)
+	}
+	if !account.IsAdmin() || calls.Load() != 0 {
+		t.Fatalf("first account = %+v, UserCheck calls = %d; want an unscreened bootstrap administrator", account, calls.Load())
+	}
+}
+
+func TestDisposableOAuthEmailIsRefusedBeforeAccountCreation(t *testing.T) {
+	f := newFixture(t)
+	if _, _, err := f.auth.Register(context.Background(), auth.RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	}); err != nil {
+		t.Fatalf("register existing user: %v", err)
+	}
+	var calls atomic.Int32
+	f.auth.ScreenEmail = func(_ context.Context, email string) error {
+		calls.Add(1)
+		if email != "disposable@example.com" {
+			t.Errorf("screened email = %q", email)
+		}
+		return usercheck.ErrDisposable
+	}
+
+	if _, err := f.service.SignIn(context.Background(), identity("new-subject", "new-user", "disposable@example.com"), "", ""); !errors.Is(err, usercheck.ErrDisposable) {
+		t.Fatalf("sign in = %v, want disposable address refused", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("UserCheck calls = %d, want one", calls.Load())
+	}
+	if count, err := f.users.Count(context.Background(), nil); err != nil || count != 1 {
+		t.Fatalf("accounts = %d, %v; want only the pre-existing account", count, err)
+	}
+}
+
+func TestOAuthCompletionScreensTheAddressTypedIntoTheForm(t *testing.T) {
+	f := newFixture(t)
+	if _, _, err := f.auth.Register(context.Background(), auth.RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	}); err != nil {
+		t.Fatalf("register existing user: %v", err)
+	}
+	var calls atomic.Int32
+	f.auth.ScreenEmail = func(_ context.Context, email string) error {
+		calls.Add(1)
+		if email != "typed@example.com" {
+			t.Errorf("screened email = %q, want completion-form value", email)
+		}
+		return usercheck.ErrDisposable
+	}
+
+	_, err := f.service.Complete(context.Background(), identity("new-subject", "new-user", ""),
+		Details{Email: "typed@example.com"}, "", "")
+	if !errors.Is(err, usercheck.ErrDisposable) {
+		t.Fatalf("completion = %v, want typed disposable email refused", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("UserCheck calls = %d, want one", calls.Load())
+	}
+}
+
+func TestAnEmptyPreflightRerunsScreeningIfAnotherRequestCreatesTheFirstAccount(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	var calls atomic.Int32
+	f.auth.ScreenEmail = func(context.Context, string) error {
+		calls.Add(1)
+		return usercheck.ErrDisposable
+	}
+	locked := make(chan *database.Tx, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseLock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseLock()
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- f.db.Tx(ctx, func(tx *database.Tx) error {
+			if err := settings.Lock(ctx, tx); err != nil {
+				return err
+			}
+			locked <- tx
+			<-release
+			return nil
+		})
+	}()
+	tx := <-locked
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := f.service.SignIn(ctx, identity("new-subject", "new-user", "disposable@example.com"), "", "")
+		result <- err
+	}()
+
+	// The first transaction holds the instance row lock. Waiting for the
+	// second connection to remain checked out means OAuth finished its empty
+	// preflight and is blocked starting its write transaction.
+	deadline := time.After(3 * time.Second)
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+	waiting := false
+	for !waiting {
+		select {
+		case <-deadline:
+			t.Fatal("OAuth did not reach its transaction while the instance was empty")
+		case <-ticker.C:
+			waiting = f.db.Pool().Stats().InUse >= 2
+		}
+	}
+	if _, err := f.auth.Provision(ctx, tx, auth.ProvisionInput{
+		Username: "first-admin", Email: "first@example.com",
+	}); err != nil {
+		t.Fatalf("create the concurrent bootstrap account: %v", err)
+	}
+	releaseLock()
+	if err := <-lockDone; err != nil {
+		t.Fatalf("commit concurrent bootstrap: %v", err)
+	}
+	if err := <-result; !errors.Is(err, usercheck.ErrDisposable) {
+		t.Fatalf("racing OAuth sign-in = %v, want screening to refuse it", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("UserCheck calls = %d, want retry to screen once", calls.Load())
+	}
+	if count, err := f.users.Count(ctx, nil); err != nil || count != 1 {
+		t.Fatalf("accounts = %d, %v; want only the concurrently created first account", count, err)
 	}
 }
 

@@ -36,6 +36,7 @@ const (
 	// Not a Box: the key that keys the digests of recovery codes and signs
 	// the remembered-browser cookie. See DeriveKey.
 	PurposeTwoFactorDigest = "obsidian-arc/two-factor-digest"
+	PurposeEmailCode       = "obsidian-arc/email-verification-code"
 )
 
 var ErrDecrypt = errors.New("secret: could not decrypt (wrong key, or the value is corrupt)")

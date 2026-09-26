@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,9 +12,39 @@ import (
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
 )
+
+func TestUserCheckErrorsMapToOAuthResponses(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		status     int
+		code       string
+		redirectID string
+	}{
+		{"disposable", usercheck.ErrDisposable, http.StatusBadRequest, "disposable_email", "disposable_email"},
+		{"unavailable", usercheck.ErrUnavailable, http.StatusServiceUnavailable, "email_screening_unavailable", "email_screening_unavailable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mapped := completionError(tc.err)
+			var response *httpx.Error
+			if !errors.As(mapped, &response) {
+				t.Fatalf("completion mapping = %T %v, want httpx.Error", mapped, mapped)
+			}
+			if response.Status != tc.status || response.Code != tc.code {
+				t.Errorf("completion mapping = %d/%s, want %d/%s", response.Status, response.Code, tc.status, tc.code)
+			}
+			if got := signInFailure(tc.err); got != tc.redirectID {
+				t.Errorf("callback failure = %q, want %q", got, tc.redirectID)
+			}
+		})
+	}
+}
 
 // stub points a provider at a server this test controls, and restores it
 // afterwards. The endpoints are constants in the source for a reason — an

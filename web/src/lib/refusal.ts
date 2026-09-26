@@ -33,6 +33,10 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       const notice = failure.details['notice'];
       return typeof notice === 'string' && notice.trim() ? notice : t('signupRefused');
     }
+    case 'disposable_email':
+      return t('disposableEmailRejected');
+    case 'email_screening_unavailable':
+      return t('emailScreeningUnavailable');
     case 'challenge_failed':
       return t('challengeFailed');
     case 'challenge_unavailable':

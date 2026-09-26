@@ -53,6 +53,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/web"
 )
 
@@ -102,7 +103,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	groups := group.NewStore(db)
 	users := user.NewStore(db)
 	preferences := user.NewPreferenceStore(db)
-	mailer := mail.New(mail.Config{
+	legacyMail := mail.Config{
 		Host:        cfg.Mail.Host,
 		Port:        cfg.Mail.Port,
 		Username:    cfg.Mail.Username,
@@ -110,8 +111,18 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		From:        cfg.Mail.From,
 		ImplicitTLS: cfg.Mail.ImplicitTLS,
 		PublicURL:   cfg.Mail.PublicURL,
-	})
+	}
+	mailer := mail.New(legacyMail)
+	mailManager, err := mail.NewManager(ctx, db, mailer, legacyMail, cfg.SecretKey)
+	if err != nil {
+		return nil, err
+	}
+	userCheckManager, err := usercheck.NewManager(ctx, db, cfg.SecretKey, nil)
+	if err != nil {
+		return nil, err
+	}
 	authService := auth.NewService(db, users, groups, settingsService, mailer, cfg)
+	authService.ScreenEmail = userCheckManager.Check
 
 	// Provider API keys are encrypted with a key derived from the instance
 	// secret; the box is the only thing that can read them back.
@@ -836,7 +847,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// TLS ends at the proxy in every deployment of this, so neither the host
 	// nor the scheme can come from this process's own socket.
 	publicOrigin := func(r *http.Request) string {
-		return httpx.PublicOrigin(r, proxyTrust, cfg.Mail.PublicURL)
+		return httpx.PublicOrigin(r, proxyTrust, mailer.PublicURL())
 	}
 	oauthHandlers.Origin = publicOrigin
 	oauthHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
@@ -874,6 +885,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 
 	trial.NewHandlers(settingsService, models, registry, proxyTrust, cfg.SecretKey).Routes(mux)
 	adminHandlers := admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, securityLog, cards, healthStore, feedbackStore, idpStore, invites)
+	adminHandlers.Mail = mailManager
+	adminHandlers.UserCheck = userCheckManager
 	adminHandlers.TryReview = adminTryReview
 	adminHandlers.Origin = publicOrigin
 	adminHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }

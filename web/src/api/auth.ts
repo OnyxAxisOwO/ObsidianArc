@@ -155,6 +155,10 @@ export function resendVerification(): Promise<void> {
   return api.post<void>('/api/profile/verify/resend', {});
 }
 
+export function verifyEmailCode(code: string): Promise<void> {
+  return api.post<void>('/api/profile/verify/code', { code });
+}
+
 export function fetchSite(): Promise<SiteInfo> {
   return api.get<SiteInfo>('/api/site');
 }

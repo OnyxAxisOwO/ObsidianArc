@@ -3,10 +3,14 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -112,6 +116,476 @@ func TestVerifyConsumesTheTokenExactlyOnce(t *testing.T) {
 	// forwarded mail keeps working forever.
 	if _, err := f.auth.Verify(ctx, token); err != ErrVerificationInvalid {
 		t.Fatalf("replay err = %v, want ErrVerificationInvalid", err)
+	}
+}
+
+func TestVerificationCodeConfirmsAndConsumesTheLink(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	verifying(t, f)
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"}); err != nil {
+		t.Fatal(err)
+	}
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "member", Email: "member@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := f.auth.verificationCode(token)
+
+	if err := f.auth.VerifyCode(ctx, account.ID, code); err != nil {
+		t.Fatalf("verify code: %v", err)
+	}
+	if _, err := f.auth.Verify(ctx, token); !errors.Is(err, ErrVerificationInvalid) {
+		t.Fatalf("link remained usable after code verification: %v", err)
+	}
+	if err := f.auth.VerifyCode(ctx, account.ID, code); !errors.Is(err, ErrVerificationInvalid) {
+		t.Fatalf("code replay err = %v, want ErrVerificationInvalid", err)
+	}
+}
+
+func TestVerificationLinkConsumesTheCode(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := f.auth.verificationCode(token)
+	if _, err := f.auth.Verify(ctx, token); err != nil {
+		t.Fatalf("verify link: %v", err)
+	}
+	if err := f.auth.VerifyCode(ctx, account.ID, code); !errors.Is(err, ErrVerificationInvalid) {
+		t.Fatalf("code remained usable after link verification: %v", err)
+	}
+}
+
+func TestVerificationCodeExpiresWithoutExpiringTheLink(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(ctx, `UPDATE email_verifications SET code_expires_at = ? WHERE user_id = ?`,
+		time.Now().Add(-time.Second).UnixMilli(), account.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.auth.VerifyCode(ctx, account.ID, f.auth.verificationCode(token)); !errors.Is(err, ErrVerificationCodeExpired) {
+		t.Fatalf("expired code err = %v, want ErrVerificationCodeExpired", err)
+	}
+	if _, err := f.auth.Verify(ctx, token); err != nil {
+		t.Fatalf("the still-live link stopped working after its code expired: %v", err)
+	}
+}
+
+func TestFiveWrongCodesLockCodesButLeaveTheLinkUsable(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	correct := f.auth.verificationCode(token)
+	wrong := "000000"
+	if wrong == correct {
+		wrong = "000001"
+	}
+	for i := 0; i < verificationMaxTries; i++ {
+		want := ErrVerificationInvalid
+		if i == verificationMaxTries-1 {
+			want = ErrVerificationCodeLimited
+		}
+		if err := f.auth.VerifyCode(ctx, account.ID, wrong); !errors.Is(err, want) {
+			t.Fatalf("wrong attempt %d err = %v, want %v", i+1, err, want)
+		}
+	}
+	if err := f.auth.VerifyCode(ctx, account.ID, correct); !errors.Is(err, ErrVerificationCodeLimited) {
+		t.Fatalf("the locked account returned %v, want ErrVerificationCodeLimited", err)
+	}
+	var attempts int
+	if err := f.db.QueryRow(ctx, `SELECT code_attempts FROM email_verifications WHERE user_id = ?`, account.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != verificationMaxTries {
+		t.Fatalf("wrong attempts = %d, want the locked code to stop at %d", attempts, verificationMaxTries)
+	}
+	var accountAttempts int
+	if err := f.db.QueryRow(ctx,
+		`SELECT attempts FROM email_verification_attempts WHERE user_id = ?`, account.ID).Scan(&accountAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if accountAttempts != verificationMaxTries {
+		t.Fatalf("account wrong attempts = %d, want %d", accountAttempts, verificationMaxTries)
+	}
+	if _, err := f.auth.Verify(ctx, token); err != nil {
+		t.Fatalf("attempt limit invalidated the link too: %v", err)
+	}
+	if err := f.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM email_verification_attempts WHERE user_id = ?`, account.ID).Scan(&accountAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if accountAttempts != 0 {
+		t.Fatalf("successful link left an attempt budget row: %d", accountAttempts)
+	}
+}
+
+func TestVerificationCodeBudgetSurvivesResendAndAddressChange(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	verifying(t, f)
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"}); err != nil {
+		t.Fatal(err)
+	}
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "member", Email: "member@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldToken, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := wrongVerificationCode(f.auth, oldToken)
+	for i := 0; i < 3; i++ {
+		if err := f.auth.VerifyCode(ctx, account.ID, wrong); !errors.Is(err, ErrVerificationInvalid) {
+			t.Fatalf("wrong code before address change %d err = %v", i+1, err)
+		}
+	}
+
+	newAddress := "member2@example.com"
+	updated, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &newAddress})
+	if err != nil {
+		t.Fatalf("change address: %v", err)
+	}
+	if updated.Email != newAddress || updated.EmailVerified {
+		t.Fatalf("changed account = email %q, verified %t; want new unverified address", updated.Email, updated.EmailVerified)
+	}
+	var accountAttempts int
+	if err := f.db.QueryRow(ctx,
+		`SELECT attempts FROM email_verification_attempts WHERE user_id = ?`, account.ID).Scan(&accountAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if accountAttempts != 3 {
+		t.Fatalf("address change reset the account budget to %d attempts, want 3", accountAttempts)
+	}
+
+	newToken, err := f.auth.issueVerification(ctx, f.db, account.ID, newAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Resend inserts its new credential before SMTP, then retires the old row
+	// only after delivery. Model those two database writes without a network
+	// dependency; the account-level budget is intentionally outside both rows.
+	resentToken, err := randomVerificationToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.auth.insertVerification(ctx, f.db, account.ID, newAddress, resentToken, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(ctx,
+		`DELETE FROM email_verifications WHERE user_id = ? AND id <> ?`, account.ID, digest(resentToken)); err != nil {
+		t.Fatal(err)
+	}
+	wrong = wrongVerificationCode(f.auth, oldToken, newToken, resentToken)
+	for i := 0; i < 2; i++ {
+		want := ErrVerificationInvalid
+		if i == 1 {
+			want = ErrVerificationCodeLimited
+		}
+		if err := f.auth.VerifyCode(ctx, account.ID, wrong); !errors.Is(err, want) {
+			t.Fatalf("wrong code after resend %d err = %v, want %v", i+1, err, want)
+		}
+	}
+	if err := f.auth.VerifyCode(ctx, account.ID, f.auth.verificationCode(resentToken)); !errors.Is(err, ErrVerificationCodeLimited) {
+		t.Fatalf("resent correct code worked after five account guesses: %v", err)
+	}
+	if _, err := f.auth.Verify(ctx, resentToken); err != nil {
+		t.Fatalf("the link stopped working after the code budget was spent: %v", err)
+	}
+}
+
+func wrongVerificationCode(s *Service, tokens ...string) string {
+	correct := make(map[string]struct{}, len(tokens))
+	for _, token := range tokens {
+		correct[s.verificationCode(token)] = struct{}{}
+	}
+	for value := 0; value < 1_000_000; value++ {
+		candidate := fmt.Sprintf("%06d", value)
+		if _, found := correct[candidate]; !found {
+			return candidate
+		}
+	}
+	panic("all six-digit codes were marked correct")
+}
+
+func TestVerificationCodeBudgetExpiresAfter24Hours(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := wrongVerificationCode(f.auth, token)
+	for i := 0; i < verificationMaxTries; i++ {
+		want := ErrVerificationInvalid
+		if i == verificationMaxTries-1 {
+			want = ErrVerificationCodeLimited
+		}
+		if err := f.auth.VerifyCode(ctx, account.ID, wrong); !errors.Is(err, want) {
+			t.Fatalf("wrong attempt %d err = %v, want %v", i+1, err, want)
+		}
+	}
+	if _, err := f.db.Exec(ctx,
+		`UPDATE email_verification_attempts SET last_attempt_at = ? WHERE user_id = ?`,
+		time.Now().Add(-verificationTryWindow-time.Millisecond).UnixMilli(), account.ID); err != nil {
+		t.Fatal(err)
+	}
+	newToken, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.auth.VerifyCode(ctx, account.ID, f.auth.verificationCode(newToken)); err != nil {
+		t.Fatalf("correct code remained locked after the 24-hour window: %v", err)
+	}
+}
+
+func TestConcurrentWrongCodesCannotExceedFiveAttempts(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := "123456"
+	if wrong == f.auth.verificationCode(token) {
+		wrong = "123457"
+	}
+	const callers = 12
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			if err := f.auth.VerifyCode(ctx, account.ID, wrong); !errors.Is(err, ErrVerificationInvalid) && !errors.Is(err, ErrVerificationCodeLimited) {
+				t.Errorf("wrong code err = %v, want ErrVerificationInvalid or ErrVerificationCodeLimited", err)
+			}
+		}()
+	}
+	close(start)
+	workers.Wait()
+	var attempts int
+	if err := f.db.QueryRow(ctx, `SELECT code_attempts FROM email_verifications WHERE user_id = ?`, account.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != verificationMaxTries {
+		t.Fatalf("concurrent attempts = %d, want exactly %d", attempts, verificationMaxTries)
+	}
+	if err := f.db.QueryRow(ctx,
+		`SELECT attempts FROM email_verification_attempts WHERE user_id = ?`, account.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != verificationMaxTries {
+		t.Fatalf("concurrent account attempts = %d, want exactly %d", attempts, verificationMaxTries)
+	}
+}
+
+func TestVerificationCodeLimitHasSpecificHTTPError(t *testing.T) {
+	var response *httpx.Error
+	if err := verificationError(ErrVerificationCodeLimited); !errors.As(err, &response) {
+		t.Fatalf("error mapping returned %T, want *httpx.Error", err)
+	}
+	if response.Status != http.StatusTooManyRequests || response.Code != "verification_code_limited" {
+		t.Fatalf("HTTP mapping = status %d code %q, want 429 verification_code_limited", response.Status, response.Code)
+	}
+}
+
+func TestConcurrentLinkAndCodeVerificationConsumeOneCredentialSet(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := f.auth.verificationCode(token)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	go func() { <-start; _, err := f.auth.Verify(ctx, token); results <- err }()
+	go func() { <-start; results <- f.auth.VerifyCode(ctx, account.ID, code) }()
+	close(start)
+	first, second := <-results, <-results
+	successes := 0
+	invalid := 0
+	for _, err := range []error{first, second} {
+		if err == nil {
+			successes++
+		} else if errors.Is(err, ErrVerificationInvalid) {
+			invalid++
+		} else {
+			t.Fatalf("verification returned unexpected error: %v", err)
+		}
+	}
+	if successes != 1 || invalid != 1 {
+		t.Fatalf("link/code results = %v, %v; want one success and one invalid", first, second)
+	}
+}
+
+func TestCodeVerificationDuringResendCountsBothRowsAndConsumesBoth(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	verifying(t, f)
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"}); err != nil {
+		t.Fatal(err)
+	}
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "member", Email: "member@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldToken, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(ctx, `UPDATE email_verifications SET created_at = ? WHERE id = ?`,
+		time.Now().Add(-3*maxOutstandingResend).UnixMilli(), digest(oldToken)); err != nil {
+		t.Fatal(err)
+	}
+	oldCode := f.auth.verificationCode(oldToken)
+	reachedMail, releaseMail := holdVerificationMail(t, f)
+	resendResult := make(chan error, 1)
+	go func() { resendResult <- f.auth.Resend(ctx, "Arc", account.ID) }()
+	select {
+	case <-reachedMail:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resend did not reach the held mail connection")
+	}
+
+	rows, err := f.db.Query(ctx,
+		`SELECT id, code_digest, code_attempts FROM email_verifications WHERE user_id = ?`, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type storedCode struct {
+		id, digest string
+		attempts   int
+	}
+	var stored []storedCode
+	for rows.Next() {
+		var item storedCode
+		if err := rows.Scan(&item.id, &item.digest, &item.attempts); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		stored = append(stored, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	if len(stored) != 2 {
+		t.Fatalf("verification rows while resend was in SMTP = %d, want old and new", len(stored))
+	}
+	var newCodeDigest string
+	for _, item := range stored {
+		if item.id == digest(oldToken) {
+			if item.digest != f.auth.codeDigest(oldCode) {
+				t.Fatal("old code changed during resend")
+			}
+		} else {
+			newCodeDigest = item.digest
+		}
+	}
+	wrong := "000000"
+	for value := 0; f.auth.codeDigest(wrong) == f.auth.codeDigest(oldCode) || f.auth.codeDigest(wrong) == newCodeDigest; value++ {
+		wrong = fmt.Sprintf("%06d", (value+1)%1_000_000)
+	}
+	if err := f.auth.VerifyCode(ctx, account.ID, wrong); !errors.Is(err, ErrVerificationInvalid) {
+		t.Fatalf("wrong code during resend err = %v, want ErrVerificationInvalid", err)
+	}
+	rows, err = f.db.Query(ctx, `SELECT code_attempts FROM email_verifications WHERE user_id = ?`, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	for rows.Next() {
+		var count int
+		if err := rows.Scan(&count); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Errorf("active code attempt count = %d, want both rows to count the guess once", count)
+		}
+		attempts++
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	if attempts != 2 {
+		t.Fatalf("wrong guess updated %d code rows, want both", attempts)
+	}
+	if err := f.auth.VerifyCode(ctx, account.ID, oldCode); err != nil {
+		t.Fatalf("the old code stopped working while the new email was in flight: %v", err)
+	}
+	var remaining int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM email_verifications WHERE user_id = ?`, account.ID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("successful old code left %d link/code rows behind", remaining)
+	}
+	releaseMail()
+	if err := <-resendResult; err == nil {
+		t.Fatal("held TLS connection unexpectedly delivered mail")
 	}
 }
 
@@ -373,6 +847,26 @@ func TestVerificationHoldsBackNewAccountsWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestVerificationRequiresEmailForLaterAccountsButExemptsFirstAdmin(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	verifying(t, f)
+	founder, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatalf("register first admin without email: %v", err)
+	}
+	if !founder.EmailVerified {
+		t.Fatal("first admin was held back despite having no email to confirm")
+	}
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "later", Password: "a-good-password",
+	}); !errors.Is(err, ErrEmailRequired) {
+		t.Fatalf("later account without email err = %v, want ErrEmailRequired", err)
+	}
+}
+
 // Resend is a way to make this server mail a stranger, so it is throttled.
 func TestResendIsThrottled(t *testing.T) {
 	f := newFixture(t)
@@ -421,6 +915,54 @@ func TestResendRefusesAnAlreadyVerifiedAccount(t *testing.T) {
 	}
 }
 
+func TestFailedResendKeepsTheOldLinkAndAllowsImmediateRetry(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	verifying(t, f)
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"}); err != nil {
+		t.Fatal(err)
+	}
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "member", Email: "member@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldToken, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCreated := time.Now().Add(-3 * maxOutstandingResend).UnixMilli()
+	if _, err := f.db.Exec(ctx, `UPDATE email_verifications SET created_at = ? WHERE user_id = ?`, oldCreated, account.ID); err != nil {
+		t.Fatal(err)
+	}
+	var oldID, oldCodeDigest string
+	if err := f.db.QueryRow(ctx,
+		`SELECT id, code_digest FROM email_verifications WHERE user_id = ?`, account.ID).Scan(&oldID, &oldCodeDigest); err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		err := f.auth.Resend(ctx, "Arc", account.ID)
+		if err == nil || errors.Is(err, ErrResendTooSoon) {
+			t.Fatalf("failed resend %d err = %v; want SMTP failure and an immediate retry window", attempt, err)
+		}
+		var remaining int
+		var id, codeDigest string
+		if err := f.db.QueryRow(ctx,
+			`SELECT COUNT(*), MIN(id), MIN(code_digest) FROM email_verifications WHERE user_id = ?`, account.ID).
+			Scan(&remaining, &id, &codeDigest); err != nil {
+			t.Fatal(err)
+		}
+		if remaining != 1 || id != oldID || codeDigest != oldCodeDigest {
+			t.Fatalf("failed resend changed old credential: rows=%d id=%q code digest matches=%t", remaining, id, codeDigest == oldCodeDigest)
+		}
+	}
+	if _, err := f.auth.Verify(ctx, oldToken); err != nil {
+		t.Fatalf("old link stopped working after delivery failed: %v", err)
+	}
+}
+
 // Resend is a way to make this server mail a stranger, so it is throttled —
 // but only against a client that asks politely. The timestamp was read and
 // then written with nothing holding the two together, so eight requests in
@@ -430,15 +972,7 @@ func TestResendRefusesAnAlreadyVerifiedAccount(t *testing.T) {
 func TestParallelResendsLeaveWithOneLink(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-
-	// The relay is unreachable on purpose: what is counted below is how many
-	// requests got as far as sending, not whether the send succeeded.
-	f.auth.mailer = mail.New(mail.Config{
-		Host:      "127.0.0.1",
-		Port:      1,
-		From:      "arc@example.com",
-		PublicURL: "https://arc.example.com",
-	})
+	verifying(t, f)
 	if err := f.settings.Set(ctx, settings.VerifyEmail, "true"); err != nil {
 		t.Fatal(err)
 	}
@@ -461,41 +995,80 @@ func TestParallelResendsLeaveWithOneLink(t *testing.T) {
 		`DELETE FROM email_verifications WHERE user_id = ?`, account.ID); err != nil {
 		t.Fatal(err)
 	}
+	reachedMail, releaseMail := holdVerificationMail(t, f)
 
 	const attempts = 8
 	var (
 		wg      sync.WaitGroup
-		mu      sync.Mutex
-		sent    int
-		refused int
-		relay   error
+		results = make(chan error, attempts)
 	)
 	for i := 0; i < attempts; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := f.auth.Resend(ctx, "Arc", account.ID)
-			mu.Lock()
-			defer mu.Unlock()
-			if errors.Is(err, ErrResendTooSoon) {
-				refused++
-				return
-			}
-			// A nil error or a relay failure both mean this request got past
-			// the throttle and tried to send.
-			sent++
-			if err != nil && relay == nil {
-				relay = err
-			}
+			results <- f.auth.Resend(ctx, "Arc", account.ID)
 		}()
 	}
-	wg.Wait()
+	select {
+	case <-reachedMail:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no resend reached the held mail connection")
+	}
 
-	if sent != 1 {
-		t.Errorf("%d of %d resends reached the mail step, want exactly one (relay said: %v)",
-			sent, attempts, relay)
+	refused := 0
+	for i := 0; i < attempts-1; i++ {
+		select {
+		case err := <-results:
+			if !errors.Is(err, ErrResendTooSoon) {
+				t.Fatalf("concurrent resend returned %v, want ErrResendTooSoon", err)
+			}
+			refused++
+		case <-time.After(5 * time.Second):
+			t.Fatal("contending resend did not finish while SMTP was held open")
+		}
+	}
+	releaseMail()
+	var deliveredErr error
+	select {
+	case deliveredErr = <-results:
+	case <-time.After(5 * time.Second):
+		t.Fatal("held mail request did not return after the connection closed")
+	}
+	wg.Wait()
+	if deliveredErr == nil || errors.Is(deliveredErr, ErrResendTooSoon) {
+		t.Fatalf("the single request reaching SMTP returned %v; want the blocked relay failure", deliveredErr)
 	}
 	if refused != attempts-1 {
-		t.Errorf("%d resends were refused as too soon, want %d", refused, attempts-1)
+		t.Fatalf("%d resends were refused as too soon, want %d", refused, attempts-1)
 	}
+}
+
+func holdVerificationMail(t *testing.T, f *fixture) (<-chan struct{}, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.auth.mailer.Update(mail.Config{
+		Host: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port,
+		From: "arc@example.com", PublicURL: "https://arc.example.com", ImplicitTLS: true,
+	})
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	releaseMail := func() { once.Do(func() { close(release) }) }
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		close(reached)
+		<-release
+		_ = conn.Close()
+	}()
+	t.Cleanup(func() {
+		releaseMail()
+		_ = listener.Close()
+	})
+	return reached, releaseMail
 }

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -107,14 +108,10 @@ func mustIssue(t *testing.T, f *fixture, userID, address string) string {
 	return token
 }
 
-// An account with no address has nothing to confirm and nothing to hold back —
-// the rule user.Store.Create keeps with `!in.Unverified || email == ""`.
-//
-// Clearing the address broke it: the account was marked unconfirmed, a link
-// was issued for the empty string and posted there, and the resend that would
-// have been the way out refuses when there is no address. The owner was shut
-// out of sending anything until they typed one back in, and the settings form
-// makes that one keystroke away.
+// With verification enabled, clearing the address would turn an unverified
+// account into one with nothing to confirm, bypassing the restriction. Once
+// the operator disables verification, clearing must settle any outstanding
+// link so the account is not stranded with a confirmation it cannot give.
 func TestClearingAnAddressDoesNotStrandTheAccount(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -132,6 +129,12 @@ func TestClearingAnAddressDoesNotStrandTheAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: ptr("")}); !errors.Is(err, ErrEmailRequired) {
+		t.Fatalf("verification was bypassed by clearing the address: %v", err)
+	}
+	if err := f.settings.Set(ctx, settings.VerifyEmail, "false"); err != nil {
+		t.Fatal(err)
+	}
 	cleared, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: ptr("")})
 	if err != nil {
 		t.Fatalf("clearing the address was refused: %v", err)

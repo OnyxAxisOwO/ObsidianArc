@@ -29,6 +29,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/idp"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/invite"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
@@ -38,6 +39,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
 )
 
 type Handlers struct {
@@ -61,6 +63,12 @@ type Handlers struct {
 	feedback      *feedback.Store
 	apps          *idp.Store
 	invites       *invite.Store
+	// Mail owns the database override and the live sender. Set by server
+	// wiring so environment fallbacks and administrator saves share one path.
+	Mail *mail.Manager
+	// UserCheck is an optional paid disposable-address check, configured only
+	// by an administrator and never through environment settings.
+	UserCheck *usercheck.Manager
 	// Runs the sign-up reviewer on a hypothetical account. Set by the wiring;
 	// nil where no reviewer exists.
 	TryReview func(ctx context.Context, in ReviewTrial) (string, string, error)
@@ -162,6 +170,12 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/security/review", protected("security", h.trialReview))
 	mux.Handle("GET /api/admin/security/events", protected("security", h.listSecurityEvents))
 	mux.Handle("GET /api/admin/security/two-factor", protected("security", h.twoFactorAdoption))
+	mux.Handle("GET /api/admin/mail", protected("security", h.getMail))
+	mux.Handle("PUT /api/admin/mail", protected("security", h.putMail))
+	mux.Handle("POST /api/admin/mail/test", protected("security", h.testMail))
+	mux.Handle("GET /api/admin/usercheck", protected("security", h.getUserCheck))
+	mux.Handle("PUT /api/admin/usercheck", protected("security", h.putUserCheck))
+	mux.Handle("POST /api/admin/usercheck/test", protected("security", h.testUserCheck))
 	// The applications that may use this instance as a sign-in. Under the
 	// security grant rather than a page grant of their own: they are part
 	// of the same subject as the front door, and they live on the same

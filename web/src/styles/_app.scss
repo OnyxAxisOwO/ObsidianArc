@@ -1178,6 +1178,9 @@ body.oa-resizing * {
   border-radius: 14px;
   background: var(--ai-badge-bg);
   font-size: 12.5px;
+  /* The code form adds controls beside the message, so let them wrap instead
+     of squeezing the account address into an unreadable line. */
+  flex-wrap: wrap;
 }
 
 /* The instance's standing notice. Quieter than the verification strip above
@@ -1217,6 +1220,40 @@ body.oa-resizing * {
 }
 
 .oa-verify-text span {
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+}
+
+/* The code belongs beside the resend action; the ordinary field wrapper would
+   spend more space on labels than this narrow banner has to give. */
+.oa-verify-code {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.oa-verify-code input {
+  width: 116px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 11px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-align: center;
+}
+
+.oa-verify-code input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-verify-status {
+  flex-basis: 100%;
   color: var(--ai-text-secondary);
   font-size: 11.5px;
 }
@@ -1829,7 +1866,6 @@ $oa-slide-ease: cubic-bezier(0.16, 1, 0.3, 1);
     transform: none;
   }
 }
-
 
 
 

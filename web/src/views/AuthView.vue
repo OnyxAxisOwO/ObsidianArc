@@ -201,6 +201,8 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
   ip_blocked: 'signupBlocked',
   throttled: 'oauthThrottled',
   domain: 'oauthDomain',
+  disposable_email: 'disposableEmailRejected',
+  email_screening_unavailable: 'emailScreeningUnavailable',
   email_required: 'oauthEmailRequired',
   qq_required: 'oauthQQRequired',
 };

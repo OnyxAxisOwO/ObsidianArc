@@ -7,8 +7,9 @@ import (
 
 // The "me" family is the caller's own profile — no id in the path, no
 // username or account argument accepted anywhere in this file, because
-// GET /api/auth/me, PATCH /api/profile, POST /api/profile/password and
-// POST /api/profile/verify/resend are all scoped to the signed-in caller
+// GET /api/auth/me, PATCH /api/profile, POST /api/profile/password, and
+// POST /api/profile/verify/resend and /api/profile/verify/code are scoped to
+// the signed-in caller
 // (auth.MustUser / auth.UserFrom) with nothing in their request shape that
 // could point one at a different account. See cmd_self_backup.go for the
 // same shape a level up, over a whole account's data instead of its profile
@@ -166,19 +167,39 @@ func init() {
 	registerCommand(Command{
 		Name:    "me verify",
 		Group:   "profile",
-		Summary: Text{EN: "Resend the address-verification email", ZH: "重新发送邮箱验证邮件"},
-		Usage:   "me verify",
+		Summary: Text{EN: "Verify your email or resend its link", ZH: "验证邮箱或重新发送验证邮件"},
+		Usage:   "me verify [--code CODE]",
 		Help: Text{
-			EN: "Sends a fresh confirmation link to the email address on your account. Refused if " +
-				"the address is already verified, if the account has no address to confirm, or if " +
-				"one was sent too recently — wait for that one before asking for another.",
-			ZH: "向你账户上的邮箱地址重新发送一封确认邮件。若地址已验证、账户没有邮箱地址，或是刚发送过" +
-				"一封，该操作会被拒绝——请先等待那一封，再申请下一封。",
+			EN: "Without --code, sends a fresh confirmation link to your account's email address. " +
+				"With --code, submits the six-digit code from that email. Codes expire after ten " +
+				"minutes and allow five incorrect attempts. The code is treated as sensitive and " +
+				"is omitted from the command audit.",
+			ZH: "不带 --code 时，向你账户的邮箱重新发送验证链接；带 --code 时，提交邮件中的六位验证码。" +
+				"验证码十分钟后过期，最多可输错五次。验证码属于敏感信息，不会写入命令审计记录。",
 		},
-		Examples:   []string{"me verify", "me verify --json"},
+		Flags:      []Flag{{Name: "--code", Hint: Text{EN: "six-digit email code", ZH: "六位邮箱验证码"}, Value: "CODE", Sensitive: true}},
+		Examples:   []string{"me verify", "me verify --code 123456"},
 		Permission: Anyone,
-		Endpoints:  []string{"POST /api/profile/verify/resend"},
+		Endpoints:  []string{"POST /api/profile/verify/resend", "POST /api/profile/verify/code"},
 		Run: func(_ context.Context, rt *Runtime) error {
+			if rt.Present("code") {
+				code := rt.String("code")
+				if code == "" {
+					if rt.Session.Lang == "zh" {
+						return rt.Errorf("--code 不能为空")
+					}
+					return rt.Errorf("--code cannot be empty")
+				}
+				if _, _, err := rt.Call(http.MethodPost, "/api/profile/verify/code", map[string]any{"code": code}); err != nil {
+					return err
+				}
+				if rt.Session.Lang == "zh" {
+					rt.Printf("邮箱已验证。\n")
+				} else {
+					rt.Printf("email verified.\n")
+				}
+				return nil
+			}
 			if _, _, err := rt.Call(http.MethodPost, "/api/profile/verify/resend", nil); err != nil {
 				return err
 			}

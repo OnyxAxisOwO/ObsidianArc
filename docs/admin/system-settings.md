@@ -1,6 +1,6 @@
 # 系统设置
 
-后台系统设置保存到数据库，当前实例保存后即可使用新值。数据库连接、SMTP 凭据、监听地址和实例密钥属于[环境变量](../guide/configuration)，需要重启后生效。
+后台系统设置保存到数据库，当前实例保存后即可使用新值。邮件服务也在后台配置：SMTP 密码加密保存，读取配置时只显示是否已设置。数据库连接、监听地址和实例密钥仍属于[启动配置](../guide/configuration)。
 
 ## 站点与注册
 
@@ -15,11 +15,15 @@
 | `registration.enabled` | `true` | 是否开放注册 |
 | `registration.default_group` | 空 | 注册分组覆盖值；未设置时使用默认组 |
 | `registration.require_email` | `false` | 注册是否要求邮箱 |
-| `registration.verify_email` | `false` | 是否要求邮件验证，需邮件服务可用 |
+| `registration.verify_email` | `false` | 是否要求邮件验证；开启后新账户必须提供邮箱，需先配置并测试邮件服务 |
 | `registration.email_domains` | 空 | 允许注册的邮箱域名 |
 | `registration.qq_requirement` | `off` | QQ 关闭、选填或必填 |
 
 注册频率、Turnstile 和模型审核见[注册与安全](../features/security)。
+
+「安全 → 邮件服务」保存 SMTP 主机、端口、加密方式、账号、发件人及站点公开地址，并向指定地址发送测试邮件。先保存配置再测试；未保存的草稿不会用于测试邮件。密码输入留空表示保留原密码，清除密码需要明确选择。邮件把验证链接和六位验证码发给同一个收件人；链接需在页面点击确认，两者任一成功，另一种方式同时失效。
+
+「安全 → 临时邮箱检测」可填写付费 UserCheck API 密钥并启用检测。后台预填一组常用邮箱域名免检列表，可增删；域名按完整名称匹配，免检域名完全跳过 UserCheck，包括对该域名中个别临时地址的识别。名单外的邮箱使用 [UserCheck 邮箱接口](https://www.usercheck.com/docs/api/email-endpoint)；只在返回 `disposable: true` 时拒绝。密钥加密保存，输入框留空会保留原密钥。管理员还可选择 UserCheck 超时、限流或不可用时让注册继续，或暂停注册并提示稍后重试；默认为后者。测试按钮会实际调用付费接口，五分钟内只能执行一次。
 
 | 设置键 | 默认值 | 用途 |
 | --- | --- | --- |

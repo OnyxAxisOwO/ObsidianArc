@@ -87,7 +87,7 @@ func (s *Service) MissingFor(ctx context.Context, q database.Queryer, email stri
 	}
 	return Missing{
 		QQ:     s.settings.Get(settings.QQRequirement) == settings.QQRequired,
-		Email:  strings.TrimSpace(email) == "" && s.settings.Bool(settings.RequireEmail),
+		Email:  strings.TrimSpace(email) == "" && (s.settings.Bool(settings.RequireEmail) || s.VerificationRequired()),
 		Invite: s.settings.Bool(settings.InvitesRequired),
 	}, nil
 }
@@ -124,6 +124,9 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		}
 		if err := checkEmail(s.settings, in.Email); err != nil {
 			return user.User{}, err
+		}
+		if s.VerificationRequired() && strings.TrimSpace(in.Email) == "" {
+			return user.User{}, ErrEmailRequired
 		}
 		// The same check the sign-up form makes. A provider has none of this
 		// to offer, so by the time a caller reaches here it has either asked

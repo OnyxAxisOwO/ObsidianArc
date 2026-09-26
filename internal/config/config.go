@@ -63,8 +63,9 @@ type Config struct {
 
 // Mail is optional. Without a host the server simply cannot offer the
 // features that need it, which is a state the admin screen reports rather
-// than a misconfiguration. Credentials come from the environment and not
-// from the settings table, because that table is served to a browser.
+// than a misconfiguration. These environment values are a fallback until
+// an administrator saves a mail configuration in its own sealed table; the
+// general settings table is served to a browser and cannot hold credentials.
 type Mail struct {
 	Host     string
 	Port     int

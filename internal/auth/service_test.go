@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -18,6 +19,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
 )
 
 type fixture struct {
@@ -139,6 +141,71 @@ func TestParallelFirstRegistrationsCreateOnlyOneAdmin(t *testing.T) {
 	}
 	if admins != 1 {
 		t.Fatalf("parallel first registrations created %d administrators, want 1", admins)
+	}
+}
+
+func TestParallelFirstRegistrationsScreenEveryNonAdministrator(t *testing.T) {
+	f := newFixture(t)
+	var screened atomic.Int32
+	f.auth.ScreenEmail = func(context.Context, string) error {
+		screened.Add(1)
+		return usercheck.ErrDisposable
+	}
+	start := make(chan struct{})
+	results := make(chan error, 8)
+	var workers sync.WaitGroup
+	for i := 0; i < cap(results); i++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			<-start
+			_, _, err := f.auth.Register(context.Background(), RegisterInput{
+				Username: fmt.Sprintf("screen-%d", index),
+				Email:    fmt.Sprintf("person-%d@temporary.example", index),
+				Password: "a-good-password",
+			})
+			results <- err
+		}(i)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	var created, refused int
+	for err := range results {
+		switch {
+		case err == nil:
+			created++
+		case errors.Is(err, usercheck.ErrDisposable):
+			refused++
+		default:
+			t.Fatalf("parallel registration: %v", err)
+		}
+	}
+	if created != 1 || refused != 7 || screened.Load() != 7 {
+		t.Fatalf("created %d, refused %d, screened %d; want 1/7/7", created, refused, screened.Load())
+	}
+}
+
+func TestRegisteredAddressDoesNotSpendPaidScreeningLookup(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Email: "held@example.com", Password: "a-good-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	f.auth.ScreenEmail = func(context.Context, string) error {
+		calls.Add(1)
+		return nil
+	}
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "other", Email: "held@example.com", Password: "a-good-password",
+	}); !errors.Is(err, user.ErrEmailTaken) {
+		t.Fatalf("duplicate address = %v, want already taken", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("duplicate address spent %d paid lookups", calls.Load())
 	}
 }
 

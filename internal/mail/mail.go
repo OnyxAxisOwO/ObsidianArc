@@ -17,8 +17,11 @@ import (
 	"fmt"
 	"mime"
 	"net"
+	netmail "net/mail"
 	"net/smtp"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,13 +30,14 @@ var (
 	ErrTLSRequired   = errors.New("mail: SMTP server does not offer STARTTLS")
 )
 
-// Config is what an operator supplies through the environment. Credentials do
-// not belong in the settings table: it is served to the admin screen, and a
-// password that reaches a browser is a password that has leaked.
+// Config is the effective SMTP setup, loaded from the database override or
+// the legacy environment values when no override exists.
 type Config struct {
 	Host     string
 	Port     int
 	Username string
+	// Password is sealed before persistence and omitted from every admin
+	// response; the general settings table is served to browsers.
 	Password string
 	// The envelope and header sender. Falls back to the username when it
 	// looks like an address, because that is what most providers require
@@ -50,7 +54,7 @@ type Config struct {
 }
 
 func (c Config) Configured() bool {
-	return strings.TrimSpace(c.Host) != "" && c.sender() != ""
+	return strings.TrimSpace(c.Host) != "" && c.Port >= 1 && c.Port <= 65535 && c.sender() != ""
 }
 
 func (c Config) sender() string {
@@ -63,15 +67,78 @@ func (c Config) sender() string {
 	return ""
 }
 
-type Sender struct{ cfg Config }
+// ValidateConfig rejects values that would become headers, dial targets, or
+// externally visible links before they reach the live sender.
+func ValidateConfig(c Config) error {
+	host := strings.TrimSpace(c.Host)
+	if strings.ContainsAny(host, "\r\n \t") || strings.Contains(host, "/") || strings.Contains(host, ":") {
+		return errors.New("mail: host must be a hostname without a port")
+	}
+	if c.Port != 0 && (c.Port < 1 || c.Port > 65535) {
+		return errors.New("mail: port must be between 1 and 65535")
+	}
+	if host != "" && c.Port == 0 {
+		return errors.New("mail: a port is required when an SMTP host is configured")
+	}
+	from := c.sender()
+	if host != "" && from == "" {
+		return errors.New("mail: sender email is required when an SMTP host is configured")
+	}
+	if strings.ContainsAny(from, "\r\n") {
+		return errors.New("mail: sender contains a line break")
+	}
+	if from != "" {
+		address, err := netmail.ParseAddress(from)
+		if err != nil || address.Address != strings.TrimSpace(from) || !strings.Contains(address.Address, "@") {
+			return errors.New("mail: sender must be an email address")
+		}
+	}
+	if c.PublicURL != "" && !validPublicURL(c.PublicURL) {
+		return errors.New("mail: public URL must be an HTTPS origin")
+	}
+	return nil
+}
+
+func validPublicURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil &&
+		(u.Path == "" || u.Path == "/") && u.RawPath == "" && u.RawQuery == "" && !u.ForceQuery &&
+		u.Fragment == "" && u.RawFragment == ""
+}
+
+type Sender struct {
+	mu  sync.RWMutex
+	cfg Config
+}
 
 func New(cfg Config) *Sender { return &Sender{cfg: cfg} }
 
-func (s *Sender) Configured() bool { return s.cfg.Configured() }
+func (s *Sender) Configured() bool { return s.config().Configured() }
+
+// VerificationReady includes the stable public origin needed to construct a
+// link; merely having an SMTP relay is not enough to make verification usable.
+func (s *Sender) VerificationReady() bool {
+	cfg := s.config()
+	return cfg.Configured() && validPublicURL(cfg.PublicURL)
+}
+
+// Update replaces one complete configuration atomically so a send observes
+// either the old credentials or the new ones, never a mixture of both.
+func (s *Sender) Update(cfg Config) {
+	s.mu.Lock()
+	s.cfg = cfg
+	s.mu.Unlock()
+}
+
+func (s *Sender) config() Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg
+}
 
 // PublicURL is the base links are built from, without a trailing slash.
 func (s *Sender) PublicURL() string {
-	return strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/")
+	return strings.TrimRight(strings.TrimSpace(s.config().PublicURL), "/")
 }
 
 type Message struct {
@@ -87,7 +154,13 @@ type Message struct {
 // closed if the context ends, which is what stops a hung SMTP server from
 // holding a request open indefinitely.
 func (s *Sender) Send(ctx context.Context, message Message) error {
-	if !s.cfg.Configured() {
+	// Resends and administrator test sends use request contexts without a
+	// deadline. A relay that accepts TCP but stops answering must not hold
+	// their HTTP handlers indefinitely; earlier caller deadlines still win.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cfg := s.config()
+	if !cfg.Configured() {
 		return ErrNotConfigured
 	}
 	to := strings.TrimSpace(message.To)
@@ -100,7 +173,7 @@ func (s *Sender) Send(ctx context.Context, message Message) error {
 		return errors.New("mail: header contains a line break")
 	}
 
-	address := net.JoinHostPort(s.cfg.Host, fmt.Sprint(s.cfg.Port))
+	address := net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port))
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 
 	conn, err := dialer.DialContext(ctx, "tcp", address)
@@ -111,24 +184,27 @@ func (s *Sender) Send(ctx context.Context, message Message) error {
 	// path, and a leaked connection per failed send is a slow leak.
 	defer func() { _ = conn.Close() }()
 
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	// Keep the raw connection in the cancellation callback. The TLS wrapper
+	// below replaces conn while cancellation can run on another goroutine.
+	rawConn := conn
+	stop := context.AfterFunc(ctx, func() { _ = rawConn.Close() })
 	defer stop()
 
-	if s.cfg.ImplicitTLS {
-		tlsConn := tls.Client(conn, &tls.Config{ServerName: s.cfg.Host})
+	if cfg.ImplicitTLS {
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: cfg.Host})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			return fmt.Errorf("mail: tls handshake: %w", err)
 		}
 		conn = tlsConn
 	}
 
-	client, err := smtp.NewClient(conn, s.cfg.Host)
+	client, err := smtp.NewClient(conn, cfg.Host)
 	if err != nil {
 		return fmt.Errorf("mail: smtp: %w", err)
 	}
 	defer func() { _ = client.Close() }()
 
-	if !s.cfg.ImplicitTLS {
+	if !cfg.ImplicitTLS {
 		// Verification links and SMTP credentials are secrets in transit.
 		// Silently continuing when a relay omits STARTTLS turns a downgrade or
 		// a configuration mistake into plaintext mail. Port 465 is protected
@@ -136,19 +212,19 @@ func (s *Sender) Send(ctx context.Context, message Message) error {
 		if ok, _ := client.Extension("STARTTLS"); !ok {
 			return ErrTLSRequired
 		}
-		if err := client.StartTLS(&tls.Config{ServerName: s.cfg.Host}); err != nil {
+		if err := client.StartTLS(&tls.Config{ServerName: cfg.Host}); err != nil {
 			return fmt.Errorf("mail: starttls: %w", err)
 		}
 	}
 
-	if s.cfg.Username != "" {
-		auth := smtp.PlainAuth("", s.cfg.Username, s.cfg.Password, s.cfg.Host)
+	if cfg.Username != "" {
+		auth := smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
 		if err := client.Auth(auth); err != nil {
 			return fmt.Errorf("mail: auth: %w", err)
 		}
 	}
 
-	sender := s.cfg.sender()
+	sender := cfg.sender()
 	if err := client.Mail(sender); err != nil {
 		return fmt.Errorf("mail: from: %w", err)
 	}

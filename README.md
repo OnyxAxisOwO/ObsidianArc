@@ -30,6 +30,8 @@
 ### 功能列表
 
 - **用户管理与权限分组**：支持账号注册、登录与密码管理。管理员可通过用户组控制不同群体的可用模型列表与额度池。
+- **邮箱验证**：管理员在后台配置邮件服务并发送测试邮件；新用户可使用同一封邮件中的链接或六位验证码确认地址。未验证账号仍可登录、修改邮箱和重发邮件，但暂不能消耗模型额度。
+- **临时邮箱拦截**：后台配置付费 UserCheck API 密钥、常用邮箱免检列表和接口故障策略；注册及更换邮箱时拒绝检测出的临时地址。
 - **邀请码**：注册可设为开放、仅限邀请或关闭三档；管理员可批量生成邀请码，或生成一个绑定分组与随机试用天数的自定义合作方码（用于合作/赞助商链接，默认已注册账户也可直接领取，无需重新注册）；账户也可开启个人邀请码，按「每邀请 N 人奖励 M 张重置卡」的节奏发放邀请奖励。
 - **服务商聚合与模型路由**：兼容 Anthropic Messages API 及兼容 OpenAI 协议的接口（OpenAI、DeepSeek、xAI、OpenRouter、Groq、Ollama、vLLM）。支持单个提供商挂载多款模型、模型映射路由（外部模型 ID 路由到底层实际模型 ID）与模型别名（`api_name`）。
 - **流式传输与推理过程解析**：基于 Server-Sent Events (SSE) 传输流式文本与推理思维链（reasoning effort / thinking budget）；客户端取消请求时即时终止向上游发送数据；支持在单条会话中途切换不同模型。
@@ -90,8 +92,8 @@ make docs
 | `OBSIDIAN_DATA_DIR` | `./data` | 数据库文件与密钥存储路径 |
 | `OBSIDIAN_COOKIE_SECURE` | `true` | 是否仅允许 HTTPS 传输 Cookie；本地 HTTP 测试可设为 `false` |
 | `OBSIDIAN_TRUST_PROXY` | `false` | 是否信任反向代理传递的 `X-Forwarded-For` 报头 |
-| `OBSIDIAN_PUBLIC_URL` | 空 | 站点公开访问地址（用于邮箱验证链接） |
-| `OBSIDIAN_SMTP_HOST` | 空 | SMTP 服务器地址（用于发送验证邮件） |
+| `OBSIDIAN_PUBLIC_URL` | 空 | 旧部署的站点公开地址回退值；新部署可在后台设置 |
+| `OBSIDIAN_SMTP_HOST` | 空 | 旧部署的 SMTP 回退值；新部署可在后台设置 |
 | `OBSIDIAN_SSH_ADDR` | 空 | 终端的 SSH 监听地址（例如 `:2222`） |
 
 #### Docker 部署
@@ -127,6 +129,8 @@ Online documentation is hosted on Cloudflare Pages:
 ### Capabilities
 
 - **Accounts and Groups**: Registration, authentication, and session management. User groups allow operators to assign model access lists and shared credit allowances.
+- **Email Verification**: Operators configure SMTP and send a test message from the backoffice. New accounts can confirm an address with either the link or the six-digit code in one email; pending accounts can still sign in, correct the address, and resend the message.
+- **Disposable Email Screening**: Operators configure a paid UserCheck API key, editable common-domain exemptions, and a provider-failure policy in the backoffice. New registrations and email changes can reject disposable addresses.
 - **Invite Codes**: Registration can be open, invite-only, or closed. Administrators mint batches of codes, or one named partner code with a target group and a randomized trial length for sponsor and affiliate links — claimable by an existing account as well as a new signup by default. Accounts can also carry a personal invite code that pays out reset cards on a configurable "every N invites" cadence.
 - **Provider Aggregation and Model Routing**: Compatible with Anthropic Messages API and OpenAI-compatible endpoints (OpenAI, DeepSeek, xAI, OpenRouter, Groq, Ollama, vLLM). Supports mapping multiple models per provider, model routing (mapping exposed names to internal identifiers), and aliases (`api_name`).
 - **Streaming and Reasoning Display**: Server-Sent Events (SSE) streaming with live reasoning effort and thinking budget extraction. Client disconnection cancels outbound requests to stop provider billing. Supports switching models mid-conversation.
@@ -154,11 +158,11 @@ Online documentation is hosted on Cloudflare Pages:
 
 | 指标 / Metric | 实测数据 / Measurement |
 | --- | --- |
-| 二进制体积 / Binary size | 21.4 MB（Linux amd64；使用 `-tags nosqlite` 为 17.7 MB） |
+| 二进制体积 / Binary size | 21.77 MB（Linux amd64；使用 `-tags nosqlite` 为 18.06 MB） |
 | 冷启动就绪时间 / Cold start | ~28 ms |
 | 空闲内存占用 / Idle RSS | ~16 MB |
 | 20 并发流式峰值 / Peak under 20 concurrency | ~54 MB 内存，11 个 OS 线程 |
-| 首次加载传输体积 / Wire payload | 打开对话界面传输 190.40 kB（160.05 kB JS + 30.35 kB CSS）；中文语言包 (34.80 kB)、管理后台 (83.97 kB)、终端 (7.20 kB)、公式渲染器 (3.61 kB) 按需分包加载 |
+| 首次加载传输体积 / Wire payload | 打开对话界面传输 202.65 kB（168.31 kB JS + 34.34 kB CSS）；中文语言包 (37.13 kB)、管理后台 (89.98 kB)、终端 (7.22 kB)、公式渲染器 (3.61 kB) 按需分包加载 |
 | 后台常驻协程 / Background goroutines | 1 个（10 分钟周期的系统清理协程） |
 | Go 直接依赖 / Direct Go dependencies | 3 个（SQLite 驱动、pgx、x/crypto） |
 | 前端运行时依赖 / Frontend runtime dependencies | 4 个（`vue`、`vue-router`、`@vueuse/core`、`lucide-vue-next`） |

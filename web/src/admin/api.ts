@@ -595,7 +595,45 @@ export interface ApplicationInput {
   public?: boolean;
 }
 
+export interface AdminMailSettings {
+  host: string;
+  port: number;
+  username: string;
+  from: string;
+  implicit_tls: boolean;
+  public_url: string;
+  password_set: boolean;
+}
+
+export interface AdminMailUpdate extends Omit<AdminMailSettings, 'password_set'> {
+  password: string;
+  clear_password: boolean;
+}
+
+export interface AdminUserCheckSettings {
+  enabled: boolean;
+  exempt_domains: string[];
+  failure_mode: 'allow' | 'reject';
+  api_key_set: boolean;
+}
+
+export interface AdminUserCheckUpdate extends Omit<AdminUserCheckSettings, 'api_key_set'> {
+  api_key: string;
+  clear_api_key: boolean;
+}
+
+export interface AdminUserCheckTestResult {
+  disposable: boolean;
+  skipped?: boolean;
+}
+
 export const adminApi = {
+  mail: () => api.get<AdminMailSettings>('/api/admin/mail'),
+  saveMail: (body: AdminMailUpdate) => api.put<AdminMailSettings>('/api/admin/mail', body),
+  testMail: (to: string) => api.post<void>('/api/admin/mail/test', { to }),
+  userCheck: () => api.get<AdminUserCheckSettings>('/api/admin/usercheck'),
+  saveUserCheck: (body: AdminUserCheckUpdate) => api.put<AdminUserCheckSettings>('/api/admin/usercheck', body),
+  testUserCheck: (email: string) => api.post<AdminUserCheckTestResult>('/api/admin/usercheck/test', { email }),
   groupOptions: () => api.get<{ groups: GroupOption[] }>('/api/admin/references'),
   modelOptions: () => api.get<{ models: ModelOption[] }>('/api/admin/references'),
   providerOptions: () => api.get<{ providers: ProviderOption[] }>('/api/admin/references'),

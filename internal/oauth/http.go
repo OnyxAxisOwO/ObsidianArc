@@ -10,6 +10,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
 )
 
 // The two halves of a sign-in are ordinary navigations, not API calls: the
@@ -403,6 +404,12 @@ func completionError(err error) error {
 			WithDetails(map[string]any{"allowed_domains": domain.Allowed})
 	}
 	switch {
+	case errors.Is(err, usercheck.ErrDisposable):
+		return httpx.BadRequestCode("disposable_email", "Disposable email addresses cannot be used here.")
+	case errors.Is(err, usercheck.ErrUnavailable), errors.Is(err, usercheck.ErrNotConfigured):
+		return httpx.UnavailableCode("email_screening_unavailable", "Email screening is temporarily unavailable. Try again shortly.")
+	}
+	switch {
 	case errors.Is(err, user.ErrQQRequired):
 		return httpx.BadRequestCode("qq_required", "A QQ number is required on this server.")
 	case errors.Is(err, user.ErrInvalidQQ):
@@ -444,6 +451,12 @@ func signInFailure(err error) string {
 	var domain *auth.EmailDomainError
 	if errors.As(err, &domain) {
 		return "domain"
+	}
+	if errors.Is(err, usercheck.ErrDisposable) {
+		return "disposable_email"
+	}
+	if errors.Is(err, usercheck.ErrUnavailable) || errors.Is(err, usercheck.ErrNotConfigured) {
+		return "email_screening_unavailable"
 	}
 	switch {
 	case errors.Is(err, ErrAddressTaken):

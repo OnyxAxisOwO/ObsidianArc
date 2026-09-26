@@ -8,7 +8,7 @@
 // junk accounts opens one page, not seven sections of another.
 
 import { computed, onMounted, ref } from 'vue';
-import { adminApi, type AdminModel, type Group, type SecurityEvent, type SignInApplication, type TwoFactorAdoption } from '@/admin/api';
+import { adminApi, type AdminMailSettings, type AdminModel, type AdminUserCheckSettings, type Group, type SecurityEvent, type SignInApplication, type TwoFactorAdoption } from '@/admin/api';
 import { fetchSite } from '@/api/auth';
 import { ApiError } from '@/api/client';
 import OaPagination from '@/components/OaPagination.vue';
@@ -19,13 +19,13 @@ import AdminControlCard from './AdminControlCard.vue';
 import AdminWorkbench from './AdminWorkbench.vue';
 import type { WorkbenchGroup } from './workbench';
 import { useSettingsDraft } from './settingsDraft';
-import { IconUsers, IconLock, IconSpark, IconFile, IconSliders, IconKey, IconGithub, IconGoogle, IconCopy, IconCheck, IconShield } from '@/icons';
+import { IconUsers, IconLock, IconSpark, IconFile, IconSliders, IconKey, IconGithub, IconGoogle, IconCopy, IconCheck, IconShield, IconMessage } from '@/icons';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
-import { t } from '@/composables/useI18n';
+import { t, type StringKey } from '@/composables/useI18n';
 import { copyToClipboard } from '@/chat/markdown';
 import { initials } from '@/lib/account';
 import { absoluteTime } from '@/lib/format';
@@ -41,6 +41,38 @@ view.setTitle(t('navSecurity'), t('securitySubtitle'));
 const error = ref('');
 const loaded = ref(false);
 const mailConfigured = ref(false);
+const mailLoaded = ref(false);
+const mailLoadError = ref<StringKey | null>(null);
+const mailBusy = ref(false);
+const mailTestBusy = ref(false);
+const mailFlash = ref<StringKey | null>(null);
+const mailFlashOK = ref(false);
+const mailTestTo = ref('');
+const savedMail = ref<AdminMailSettings>({
+  host: '', port: 587, username: '', from: '', implicit_tls: false, public_url: '', password_set: false,
+});
+const mailForm = ref({ ...savedMail.value, password: '' });
+const mailSettingsDirty = computed(() => {
+  const form = mailForm.value;
+  const saved = savedMail.value;
+  return form.host.trim() !== saved.host || (form.port ?? 587) !== saved.port ||
+    form.username.trim() !== saved.username || form.from.trim() !== saved.from ||
+    form.implicit_tls !== saved.implicit_tls || form.public_url.trim() !== saved.public_url ||
+    form.password !== '';
+});
+const userCheckLoaded = ref(false);
+const userCheckLoadError = ref<StringKey | null>(null);
+const userCheckBusy = ref(false);
+const userCheckTestBusy = ref(false);
+const userCheckFlash = ref<StringKey | null>(null);
+const userCheckFlashOK = ref(false);
+const userCheckTestEmail = ref('');
+const savedUserCheck = ref<AdminUserCheckSettings>({
+  enabled: false, exempt_domains: [], failure_mode: 'reject', api_key_set: false,
+});
+const userCheckForm = ref({
+  enabled: false, exempt_domains: '', failure_mode: 'reject' as 'allow' | 'reject', api_key_set: false, api_key: '',
+});
 const groups = ref<Pick<Group, 'id' | 'name'>[]>([]);
 const models = ref<Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>[]>([]);
 const flash = ref('');
@@ -441,6 +473,216 @@ async function loadEvents(): Promise<void> {
   }
 }
 
+async function loadMail(): Promise<void> {
+  mailLoadError.value = null;
+  mailLoaded.value = false;
+  try {
+    const settings = await adminApi.mail();
+    savedMail.value = settings;
+    mailForm.value = { ...settings, password: '' };
+    mailLoaded.value = true;
+  } catch (failure) {
+    mailLoadError.value = mailErrorText(failure, 'load');
+  }
+}
+
+function mailErrorText(failure: unknown, action: 'load' | 'save' | 'test'): StringKey {
+  if (!(failure instanceof ApiError)) return 'failed';
+  if (failure.code === 'mail_test_cooldown') return 'mailTestCooldown';
+  if (failure.code === 'mail_unavailable') return 'mailDeliveryUnavailable';
+  if (failure.status === 400) return action === 'test' ? 'mailTestInvalid' : 'mailSettingsInvalid';
+  return 'failed';
+}
+
+async function saveMail(): Promise<void> {
+  if (!mailLoaded.value || mailBusy.value) return;
+  mailBusy.value = true;
+  mailFlash.value = null;
+  mailFlashOK.value = false;
+  try {
+    const settings = await adminApi.saveMail({
+      host: mailForm.value.host.trim(),
+      port: mailForm.value.port ?? 587,
+      username: mailForm.value.username.trim(),
+      from: mailForm.value.from.trim(),
+      implicit_tls: mailForm.value.implicit_tls,
+      public_url: mailForm.value.public_url.trim(),
+      // Empty keeps the existing credential; only the explicit action below clears it.
+      password: mailForm.value.password,
+      clear_password: false,
+    });
+    savedMail.value = settings;
+    mailForm.value = { ...settings, password: '' };
+    mailConfigured.value = !!(settings.host && settings.port &&
+      (settings.from || settings.username.includes('@')) && settings.public_url);
+    mailFlash.value = 'mailSaved';
+    mailFlashOK.value = true;
+  } catch (failure) {
+    mailFlash.value = mailErrorText(failure, 'save');
+  } finally {
+    mailBusy.value = false;
+  }
+}
+
+async function clearMailPassword(): Promise<void> {
+  if (!mailLoaded.value || mailBusy.value || !savedMail.value.password_set) return;
+  mailBusy.value = true;
+  mailFlash.value = null;
+  mailFlashOK.value = false;
+  try {
+    const settings = await adminApi.saveMail({
+      host: savedMail.value.host,
+      port: savedMail.value.port,
+      username: savedMail.value.username,
+      from: savedMail.value.from,
+      implicit_tls: savedMail.value.implicit_tls,
+      public_url: savedMail.value.public_url,
+      password: '',
+      clear_password: true,
+    });
+    savedMail.value = settings;
+    mailForm.value.password_set = settings.password_set;
+    mailForm.value.password = '';
+    mailFlash.value = 'mailPasswordCleared';
+    mailFlashOK.value = true;
+  } catch (failure) {
+    mailFlash.value = mailErrorText(failure, 'save');
+  } finally {
+    mailBusy.value = false;
+  }
+}
+
+async function sendMailTest(): Promise<void> {
+  if (mailBusy.value || mailTestBusy.value || mailSettingsDirty.value || !mailTestTo.value.trim()) return;
+  mailTestBusy.value = true;
+  mailFlash.value = null;
+  mailFlashOK.value = false;
+  try {
+    await adminApi.testMail(mailTestTo.value.trim());
+    mailFlash.value = 'mailTestSent';
+    mailFlashOK.value = true;
+  } catch (failure) {
+    mailFlash.value = mailErrorText(failure, 'test');
+  } finally {
+    mailTestBusy.value = false;
+  }
+}
+
+async function loadUserCheck(): Promise<void> {
+  userCheckLoadError.value = null;
+  userCheckLoaded.value = false;
+  try {
+    const settings = await adminApi.userCheck();
+    savedUserCheck.value = settings;
+    userCheckForm.value = {
+      enabled: settings.enabled,
+      exempt_domains: settings.exempt_domains.join('\n'),
+      failure_mode: settings.failure_mode,
+      api_key_set: settings.api_key_set,
+      api_key: '',
+    };
+    userCheckLoaded.value = true;
+  } catch (failure) {
+    userCheckLoadError.value = userCheckErrorText(failure, 'load');
+  }
+}
+
+function userCheckErrorText(failure: unknown, action: 'load' | 'save' | 'test'): StringKey {
+  if (!(failure instanceof ApiError)) return 'failed';
+  if (failure.code === 'usercheck_test_cooldown') return 'userCheckTestCooldown';
+  if (failure.code === 'unavailable' || failure.code === 'email_screening_unavailable') {
+    return 'emailScreeningUnavailable';
+  }
+  if (failure.status === 400) return action === 'test' ? 'userCheckTestInvalid' : 'userCheckSettingsInvalid';
+  return 'failed';
+}
+
+function userCheckDomains(): string[] {
+  return [...new Set(userCheckForm.value.exempt_domains
+    .split(/[\n,]/)
+    .map((domain) => domain.trim().toLowerCase())
+    .filter(Boolean))];
+}
+
+async function saveUserCheck(): Promise<void> {
+  if (!userCheckLoaded.value || userCheckBusy.value) return;
+  if (userCheckForm.value.enabled && !userCheckForm.value.api_key_set && !userCheckForm.value.api_key.trim()) {
+    userCheckFlash.value = 'userCheckAPIKeyRequired';
+    userCheckFlashOK.value = false;
+    return;
+  }
+  userCheckBusy.value = true;
+  userCheckFlash.value = null;
+  userCheckFlashOK.value = false;
+  try {
+    const settings = await adminApi.saveUserCheck({
+      enabled: userCheckForm.value.enabled,
+      exempt_domains: userCheckDomains(),
+      failure_mode: userCheckForm.value.failure_mode,
+      api_key: userCheckForm.value.api_key,
+      clear_api_key: false,
+    });
+    savedUserCheck.value = settings;
+    userCheckForm.value = {
+      enabled: settings.enabled,
+      exempt_domains: settings.exempt_domains.join('\n'),
+      failure_mode: settings.failure_mode,
+      api_key_set: settings.api_key_set,
+      api_key: '',
+    };
+    userCheckFlash.value = 'userCheckSaved';
+    userCheckFlashOK.value = true;
+  } catch (failure) {
+    userCheckFlash.value = userCheckErrorText(failure, 'save');
+  } finally {
+    userCheckBusy.value = false;
+  }
+}
+
+async function clearUserCheckAPIKey(): Promise<void> {
+  if (!userCheckLoaded.value || userCheckBusy.value || !savedUserCheck.value.api_key_set) return;
+  userCheckBusy.value = true;
+  userCheckFlash.value = null;
+  userCheckFlashOK.value = false;
+  try {
+    const settings = await adminApi.saveUserCheck({
+      exempt_domains: savedUserCheck.value.exempt_domains,
+      failure_mode: savedUserCheck.value.failure_mode,
+      enabled: false,
+      api_key: '',
+      clear_api_key: true,
+    });
+    savedUserCheck.value = settings;
+    userCheckForm.value.enabled = false;
+    userCheckForm.value.api_key_set = false;
+    userCheckForm.value.api_key = '';
+    userCheckFlash.value = 'userCheckAPIKeyCleared';
+    userCheckFlashOK.value = true;
+  } catch (failure) {
+    userCheckFlash.value = userCheckErrorText(failure, 'save');
+  } finally {
+    userCheckBusy.value = false;
+  }
+}
+
+async function sendUserCheckTest(): Promise<void> {
+  if (userCheckTestBusy.value || !userCheckTestEmail.value.trim() || !userCheckForm.value.api_key_set) return;
+  userCheckTestBusy.value = true;
+  userCheckFlash.value = null;
+  userCheckFlashOK.value = false;
+  try {
+    const result = await adminApi.testUserCheck(userCheckTestEmail.value.trim());
+    userCheckFlash.value = result.skipped
+      ? 'userCheckTestSkipped'
+      : result.disposable ? 'userCheckTestDisposable' : 'userCheckTestClean';
+    userCheckFlashOK.value = !result.disposable;
+  } catch (failure) {
+    userCheckFlash.value = userCheckErrorText(failure, 'test');
+  } finally {
+    userCheckTestBusy.value = false;
+  }
+}
+
 async function load(): Promise<void> {
   error.value = '';
   try {
@@ -448,7 +690,7 @@ async function load(): Promise<void> {
     // reviews a sign-up, and a select needs its options. The groups arrive
     // with the settings already.
     const [data, modelsResult] = await Promise.all([
-      adminApi.settings(), adminApi.modelOptions(), loadEvents(), loadApplications(), loadAdoption(),
+      adminApi.settings(), adminApi.modelOptions(), loadEvents(), loadApplications(), loadAdoption(), loadMail(), loadUserCheck(),
     ]);
     const values = data.settings;
     mailConfigured.value = data.mail_configured ?? false;
@@ -512,14 +754,14 @@ async function load(): Promise<void> {
 
 const categories: WorkbenchGroup[] = [
   { id: 'accounts', label: 'controlAccounts', hint: 'controlAccountsHint', icon: IconUsers, sections: ['secAccounts', 'secRegistration', 'secRegistrationLimits'] },
-  { id: 'verification', label: 'controlVerification', hint: 'controlVerificationHint', icon: IconLock, sections: ['secTurnstile', 'secVerificationScenes', 'secChatChallenge'] },
+  { id: 'verification', label: 'controlVerification', hint: 'controlVerificationHint', icon: IconLock, sections: ['secTurnstile', 'secVerificationScenes', 'secChatChallenge', 'secMail', 'secUserCheck'] },
   { id: 'review', label: 'controlReview', hint: 'controlReviewHint', icon: IconSpark, sections: ['secSignupReview', 'secReviewTrial'] },
   { id: 'signin', label: 'controlSignIn', hint: 'controlSignInHint', icon: IconGithub, sections: ['secOAuth', 'secApplications'] },
   { id: 'twofactor', label: 'controlTwoFactor', hint: 'controlTwoFactorHint', icon: IconShield, sections: ['secTwoFactorPolicy', 'secBackofficeVerify', 'secTwoFactorAdoption'] },
   { id: 'events', label: 'controlEvents', hint: 'controlEventsHint', icon: IconFile, sections: ['secSecurityLog'] },
 ];
 
-const columns: [string[], string[]] = [['secAccounts', 'secRegistrationLimits', 'secTurnstile', 'secChatChallenge', 'secSignupReview', 'secTwoFactorPolicy', 'secBackofficeVerify'], ['secRegistration', 'secVerificationScenes', 'secReviewTrial', 'secTwoFactorAdoption']];
+const columns: [string[], string[]] = [['secAccounts', 'secRegistrationLimits', 'secTurnstile', 'secChatChallenge', 'secSignupReview', 'secTwoFactorPolicy', 'secBackofficeVerify'], ['secRegistration', 'secVerificationScenes', 'secReviewTrial', 'secTwoFactorAdoption', 'secMail', 'secUserCheck']];
 
 onMounted(load);
 </script>
@@ -776,6 +1018,125 @@ onMounted(load);
           :label="t('turnstileOnFeedback')"
           :hint="t('turnstileOnFeedbackHint')"
         />
+      </AdminControlCard>
+      <AdminControlCard id="secMail" v-show="visible('secMail')" :title="t('mailSettings')" :icon="IconMessage" :hint="t('mailSettingsHint')">
+        <AdminFailure v-if="mailLoadError" :message="t(mailLoadError)" @retry="loadMail" />
+        <p v-else-if="!mailLoaded" class="oa-table-empty" role="status">{{ t('loading') }}</p>
+        <template v-else>
+          <OaTextField v-model="mailForm.host" :label="t('mailHost')" autocomplete="off" />
+          <OaNumberField v-model="mailForm.port" :label="t('mailPort')" :min="1" :max="65535" />
+          <OaTextField v-model="mailForm.username" :label="t('mailUsername')" autocomplete="username" />
+          <OaTextField v-model="mailForm.from" :label="t('mailFrom')" autocomplete="email" />
+          <OaSwitchField v-model="mailForm.implicit_tls" :label="t('mailImplicitTLS')" :hint="t('mailImplicitTLSHint')" />
+          <OaTextField
+            v-model="mailForm.public_url"
+            :label="t('mailPublicURL')"
+            :hint="t('mailPublicURLHint')"
+            autocomplete="url"
+          />
+          <OaTextField
+            v-model="mailForm.password"
+            type="password"
+            :label="t('mailPassword')"
+            :placeholder="mailForm.password_set ? t('mailPasswordKeepPlaceholder') : t('mailPasswordPlaceholder')"
+            :hint="mailForm.password_set ? t('mailPasswordSetHint') : t('mailPasswordHint')"
+            autocomplete="new-password"
+          />
+          <OaConfirmButton
+            v-if="mailForm.password_set"
+            class="oa-btn oa-btn-danger"
+            :label="t('mailClearPassword')"
+            :armed-label="t('mailClearPasswordConfirm')"
+            :armed-title="t('mailClearPasswordConfirm')"
+            :disabled="mailBusy"
+            @confirm="clearMailPassword"
+          />
+          <button type="button" class="oa-btn primary" :disabled="mailBusy" @click="saveMail">
+            {{ mailBusy ? t('saving') : t('save') }}
+          </button>
+          <OaTextField
+            v-model="mailTestTo"
+            :label="t('mailTestTo')"
+            :hint="mailSettingsDirty ? t('mailTestSaveFirst') : undefined"
+            type="email"
+            autocomplete="email"
+          />
+          <button type="button" class="oa-btn" :disabled="mailBusy || mailTestBusy || mailSettingsDirty || !mailTestTo.trim()" @click="sendMailTest">
+            {{ mailTestBusy ? t('sending') : t('mailTestSend') }}
+          </button>
+          <p
+            v-if="mailFlash"
+            class="oa-drawer-flash visible oa-control-flash"
+            :class="{ ok: mailFlashOK }"
+            :role="mailFlashOK ? 'status' : 'alert'"
+          >{{ t(mailFlash) }}</p>
+        </template>
+      </AdminControlCard>
+      <AdminControlCard id="secUserCheck" v-show="visible('secUserCheck')" :title="t('userCheckSettings')" :icon="IconShield" :hint="t('userCheckSettingsHint')">
+        <AdminFailure v-if="userCheckLoadError" :message="t(userCheckLoadError)" @retry="loadUserCheck" />
+        <p v-else-if="!userCheckLoaded" class="oa-table-empty" role="status">{{ t('loading') }}</p>
+        <template v-else>
+          <OaSwitchField
+            v-model="userCheckForm.enabled"
+            :label="t('userCheckEnabled')"
+            :hint="t('userCheckEnabledHint')"
+          />
+          <OaTextField
+            v-model="userCheckForm.api_key"
+            type="password"
+            :label="t('userCheckAPIKey')"
+            :placeholder="userCheckForm.api_key_set ? t('userCheckAPIKeyKeepPlaceholder') : t('userCheckAPIKeyPlaceholder')"
+            :hint="userCheckForm.api_key_set ? t('userCheckAPIKeySetHint') : t('userCheckAPIKeyMissingHint')"
+            autocomplete="new-password"
+          />
+          <OaConfirmButton
+            v-if="userCheckForm.api_key_set"
+            class="oa-btn oa-btn-danger"
+            :label="t('userCheckClearAPIKey')"
+            :armed-label="t('userCheckClearAPIKeyConfirm')"
+            :armed-title="t('userCheckClearAPIKeyConfirm')"
+            :disabled="userCheckBusy"
+            @confirm="clearUserCheckAPIKey"
+          />
+          <OaTextArea
+            v-model="userCheckForm.exempt_domains"
+            :label="t('userCheckExemptDomains')"
+            :hint="t('userCheckExemptDomainsHint')"
+            :placeholder="t('userCheckExemptDomainsPlaceholder')"
+            :rows="5"
+          />
+          <OaSelectField
+            v-model="userCheckForm.failure_mode"
+            :label="t('userCheckFailureMode')"
+            :hint="t('userCheckFailureModeHint')"
+            :options="[
+              { value: 'reject', label: t('userCheckFailureReject') },
+              { value: 'allow', label: t('userCheckFailureAllow') },
+            ]"
+          />
+          <button type="button" class="oa-btn primary" :disabled="userCheckBusy" @click="saveUserCheck">
+            {{ userCheckBusy ? t('saving') : t('save') }}
+          </button>
+          <OaTextField
+            v-model="userCheckTestEmail"
+            :label="t('userCheckTestEmail')"
+            type="email"
+            autocomplete="email"
+            :hint="t('userCheckTestHint')"
+          />
+          <button
+            type="button"
+            class="oa-btn"
+            :disabled="userCheckTestBusy || !userCheckTestEmail.trim() || !userCheckForm.api_key_set"
+            @click="sendUserCheckTest"
+          >{{ userCheckTestBusy ? t('checking') : t('userCheckTest') }}</button>
+          <p
+            v-if="userCheckFlash"
+            class="oa-drawer-flash visible oa-control-flash"
+            :class="{ ok: userCheckFlashOK }"
+            :role="userCheckFlashOK ? 'status' : 'alert'"
+          >{{ t(userCheckFlash) }}</p>
+        </template>
       </AdminControlCard>
       <AdminControlCard id="secReviewTrial" v-show="visible('secReviewTrial')" :title="t('reviewTry')" :icon="IconSliders" :hint="t('reviewTryHint')">
         <div class="oa-field">

@@ -1,38 +1,52 @@
 <script setup lang="ts">
 // The strip that tells somebody their address is still unconfirmed.
-//
-// It sits above the chat rather than replacing it: an account in this state
-// can sign in, read, and change its address — it just cannot spend anything
-// until the link is opened. Locking it out of the interface entirely would
-// leave nowhere to press resend from.
+// It sits above the chat so a pending account can still reach resend and profile settings.
 
 import { computed, ref } from 'vue';
-import { resendVerification } from '@/api/auth';
-import { ApiError } from '@/api/client';
-import { t } from '@/composables/useI18n';
-import { currentUser, siteInfo } from '@/stores/session';
+import { fetchMe, resendVerification, verifyEmailCode } from '@/api/auth';
+import { t, type StringKey } from '@/composables/useI18n';
+import { verificationErrorKey } from '@/lib/verification-error';
+import { adopt, currentUser, siteInfo } from '@/stores/session';
 
 const visible = computed(() => {
   const account = currentUser.value;
   if (!account || account.email_verified) return false;
-  // The server decides whether verification is in force. Without mail it is
-  // inert, and an account left unverified from a period when it was on should
-  // not be nagged about something it can no longer do.
   return siteInfo.value.verify_email ?? false;
 });
 
 const busy = ref(false);
-const label = ref('');
+const codeBusy = ref(false);
+const code = ref('');
+const label = ref<StringKey | null>(null);
 
 function resend(): void {
+  if (busy.value || codeBusy.value) return;
   busy.value = true;
+  label.value = null;
   void resendVerification()
-    .then(() => { label.value = t('verifyResendSent'); })
-    .catch((error: unknown) => {
-      // Including the throttle, which is a real answer rather than a failure:
-      // a link went out recently and is worth looking for.
-      label.value = error instanceof ApiError ? error.message : t('failed');
-    });
+    .then(() => { label.value = 'verifyResendSent'; })
+    .catch((error: unknown) => { label.value = verificationErrorKey(error); })
+    .finally(() => { busy.value = false; });
+}
+
+async function verifyCode(): Promise<void> {
+  if (codeBusy.value || !/^\d{6}$/.test(code.value)) return;
+  codeBusy.value = true;
+  label.value = null;
+  try {
+    await verifyEmailCode(code.value);
+    try {
+      const session = await fetchMe();
+      adopt(session.user, session.preferences);
+    } catch {
+      // The code is already accepted; a session refresh can be retried by reloading.
+    }
+    label.value = 'verifyCodeSuccess';
+  } catch (error) {
+    label.value = verificationErrorKey(error);
+  } finally {
+    codeBusy.value = false;
+  }
 }
 </script>
 
@@ -46,14 +60,25 @@ function resend(): void {
           : t('verifyBannerNoAddress') }}
       </span>
     </div>
-    <button
-      v-if="currentUser?.email"
-      type="button"
-      class="oa-btn"
-      :disabled="busy"
-      @click="resend"
-    >
-      {{ label || t('verifyResend') }}
-    </button>
+    <form v-if="currentUser?.email" class="oa-verify-code" @submit.prevent="verifyCode">
+      <input
+        v-model="code"
+        :aria-label="t('verifyCodeLabel')"
+        :placeholder="t('verifyCodePlaceholder')"
+        inputmode="numeric"
+        autocomplete="one-time-code"
+        maxlength="6"
+        pattern="[0-9]{6}"
+        :disabled="codeBusy"
+        @input="code = code.replace(/\D/g, '').slice(0, 6); label = null"
+      >
+      <button type="submit" class="oa-btn primary" :disabled="codeBusy || code.length !== 6">
+        {{ codeBusy ? t('verifying') : t('verifyCodeSubmit') }}
+      </button>
+      <button type="button" class="oa-btn" :disabled="busy || codeBusy" @click="resend">
+        {{ busy ? t('sending') : t('verifyResend') }}
+      </button>
+    </form>
+    <span v-if="label" class="oa-verify-status" role="status">{{ t(label) }}</span>
   </div>
 </template>

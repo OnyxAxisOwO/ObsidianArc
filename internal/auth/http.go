@@ -16,6 +16,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
 )
 
 // Handlers is the transport layer for accounts: sign up, sign in, sign out,
@@ -87,6 +88,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/profile", protected(h.updateProfile))
 	mux.HandleFunc("POST /api/profile/password", protected(h.changePassword))
 	mux.HandleFunc("POST /api/profile/verify/resend", protected(h.resendVerification))
+	mux.HandleFunc("POST /api/profile/verify/code", protected(h.verifyEmailCode))
 	mux.HandleFunc("GET /api/preferences", protected(h.getPreferences))
 	mux.HandleFunc("PATCH /api/preferences", protected(h.patchPreferences))
 	mux.HandleFunc("GET /api/preferences/wallpaper", protected(h.getWallpaper))
@@ -434,21 +436,40 @@ func (h *Handlers) resendVerification(w http.ResponseWriter, r *http.Request) er
 	return httpx.NoContent(w)
 }
 
+func (h *Handlers) verifyEmailCode(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := httpx.DecodeJSON(w, r, &body, 4*1024); err != nil {
+		return err
+	}
+	account := MustUser(r.Context())
+	if err := h.service.VerifyCode(r.Context(), account.ID, body.Code); err != nil {
+		return verificationError(err)
+	}
+	return httpx.NoContent(w)
+}
+
 func verificationError(err error) error {
 	switch {
 	case errors.Is(err, ErrVerificationInvalid):
-		return httpx.BadRequest("That verification link is not valid.")
+		return httpx.BadRequestCode("verification_invalid", "That verification link or code is not valid.")
 	case errors.Is(err, ErrVerificationExpired):
-		return httpx.BadRequest("That verification link has expired. Ask for a new one.")
+		return httpx.BadRequestCode("verification_expired", "That verification link has expired. Ask for a new one.")
+	case errors.Is(err, ErrVerificationCodeExpired):
+		return httpx.BadRequestCode("verification_code_expired", "That verification code has expired. Ask for a new one.")
+	case errors.Is(err, ErrVerificationCodeLimited):
+		return httpx.TooManyRequests("verification_code_limited",
+			"Too many incorrect verification code attempts. Use the verification link or try again after the current 24-hour window.")
 	case errors.Is(err, ErrAlreadyVerified):
 		return httpx.Conflict("already_verified", "That address is already verified.")
 	case errors.Is(err, ErrNoAddress):
-		return httpx.BadRequest("This account has no email address to verify.")
+		return httpx.BadRequestCode("verification_no_address", "This account has no email address to verify.")
 	case errors.Is(err, ErrResendTooSoon):
-		return httpx.TooManyRequests("resend_too_soon",
+		return httpx.TooManyRequests("verification_resend_too_soon",
 			"A link was just sent. Check the address before asking for another.")
 	case errors.Is(err, mail.ErrNotConfigured), errors.Is(err, mail.ErrTLSRequired):
-		return httpx.Unavailable("This server cannot send mail.")
+		return httpx.UnavailableCode("mail_unavailable", "This server cannot send mail.")
 	default:
 		return httpx.Internal(err)
 	}
@@ -893,6 +914,10 @@ func profileError(err error) error {
 	}
 
 	switch {
+	case errors.Is(err, usercheck.ErrDisposable):
+		return httpx.BadRequestCode("disposable_email", "Disposable email addresses cannot be used here.")
+	case errors.Is(err, usercheck.ErrUnavailable):
+		return httpx.UnavailableCode("email_screening_unavailable", "Email screening is temporarily unavailable. Try again shortly.")
 	case errors.Is(err, ErrEmailRequired):
 		return httpx.BadRequest("An email address is required on this server.")
 	case errors.Is(err, user.ErrQQRequired):

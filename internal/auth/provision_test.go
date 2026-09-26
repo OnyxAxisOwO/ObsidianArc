@@ -57,6 +57,30 @@ func TestProvisionOpensAnAccountWithNoPassword(t *testing.T) {
 	}
 }
 
+func TestProvisionRequiresEmailForVerificationButExemptsFirstAdmin(t *testing.T) {
+	f := newFixture(t)
+	verifying(t, f)
+	ctx := context.Background()
+
+	first, err := provision(t, f, ProvisionInput{Username: "founder"})
+	if err != nil {
+		t.Fatalf("provision first admin without an email: %v", err)
+	}
+	if first.Role != user.RoleSuperAdmin || !first.EmailVerified {
+		t.Fatalf("first provisioned account = %+v, want verified administrator", first)
+	}
+	missing, err := f.auth.MissingFor(ctx, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !missing.Email {
+		t.Fatal("later OAuth account was not asked for an email")
+	}
+	if _, err := provision(t, f, ProvisionInput{Username: "later"}); !errors.Is(err, ErrEmailRequired) {
+		t.Fatalf("provision without required email err = %v, want ErrEmailRequired", err)
+	}
+}
+
 // The one thing a passwordless account must not do is answer the sign-in
 // form. A stored hash that cannot be parsed used to reach the caller as an
 // internal error, which is both a 500 where a 401 belongs and a way to ask

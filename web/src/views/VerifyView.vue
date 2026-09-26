@@ -7,48 +7,94 @@
 
 import { nextTick, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { verifyEmail } from '@/api/auth';
-import { ApiError } from '@/api/client';
-import { t } from '@/composables/useI18n';
+import { fetchMe, verifyEmail } from '@/api/auth';
+import { t, type StringKey } from '@/composables/useI18n';
 import { IconSpark } from '@/icons';
-import { siteInfo } from '@/stores/session';
+import { verificationErrorKey } from '@/lib/verification-error';
+import { adopt, currentUser, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
 
 const route = useRoute();
 const router = useRouter();
 const { loginBgUrl } = useLoginBackground();
 
-const title = ref(t('verifyPageChecking'));
-const body = ref('');
-const action = ref('');
+const title = ref<StringKey>('verifyPageReadyTitle');
+const body = ref<StringKey | null>(null);
+const action = ref<StringKey | null>(null);
 const actionButton = ref<HTMLButtonElement | null>(null);
+const token = ref('');
+const busy = ref(false);
+const nextAction = ref<'confirm' | 'continue' | 'signin' | null>(null);
 
 onMounted(() => {
-  const token = String(route.query['token'] ?? '');
-  if ('token' in route.query) {
-    // The token is single-use and is now spent; leaving it in the address bar
-    // only invites it into a history entry, a bookmark or a screenshot.
-    const clean = { ...route.query };
+  const query = route.query;
+  const queryToken = query['token'];
+  if ('token' in query) {
+    // The token is single-use; leaving it in the address bar invites it into a
+    // history entry, a bookmark or a screenshot.
+    const clean = { ...query };
     delete clean['token'];
     void router.replace({ path: route.path, query: clean });
   }
 
-  void verifyEmail(token)
-    .then(async () => {
-      title.value = t('verifyPageDone');
-      body.value = '';
-      action.value = t('verifyPageContinue');
-      await nextTick();
-      actionButton.value?.focus();
-    })
-    .catch((error: unknown) => {
-      title.value = t('verifyPageFailedTitle');
-      body.value = error instanceof ApiError ? error.message : String(error);
-      // Still somewhere to go: the link may have already been used, in which
-      // case the account is fine and signing in is the right next step.
-      action.value = t('signIn');
-    });
+  token.value = typeof queryToken === 'string' ? queryToken : '';
+  if (!token.value) {
+    title.value = 'verifyPageMissingTitle';
+    body.value = 'verifyPageMissingBody';
+    action.value = 'signIn';
+    nextAction.value = 'signin';
+    return;
+  }
+
+  title.value = 'verifyPageReadyTitle';
+  body.value = 'verifyPageReadyBody';
+  action.value = 'verifyPageConfirm';
+  nextAction.value = 'confirm';
 });
+
+async function confirm(): Promise<void> {
+  if (busy.value || !token.value) return;
+  busy.value = true;
+  title.value = 'verifyPageChecking';
+  body.value = null;
+  action.value = 'verifyPageChecking';
+  try {
+    await verifyEmail(token.value);
+    token.value = '';
+    if (currentUser.value) {
+      try {
+        const session = await fetchMe();
+        adopt(session.user, session.preferences);
+      } catch {
+        // A valid link has already changed the account; refreshing the cookie-backed view is best effort.
+      }
+    }
+    title.value = 'verifyPageDone';
+    body.value = null;
+    action.value = 'verifyPageContinue';
+    nextAction.value = 'continue';
+    await nextTick();
+    actionButton.value?.focus();
+  } catch (error) {
+    title.value = 'verifyPageFailedTitle';
+    body.value = verificationErrorKey(error);
+    // An invalid or already-used link still leaves sign-in as a useful next step.
+    action.value = 'signIn';
+    nextAction.value = 'signin';
+  } finally {
+    busy.value = false;
+  }
+}
+
+function activate(): void {
+  if (nextAction.value === 'confirm') {
+    void confirm();
+  } else if (nextAction.value === 'continue') {
+    void router.replace('/');
+  } else if (nextAction.value === 'signin') {
+    void router.replace('/login');
+  }
+}
 </script>
 
 <template>
@@ -63,15 +109,16 @@ onMounted(() => {
         <span v-else class="oa-auth-mark"><IconSpark :size="15" /></span>
         <span>{{ siteInfo.name }}</span>
       </div>
-      <h1 class="oa-auth-title">{{ title }}</h1>
-      <p class="oa-auth-sub">{{ body }}</p>
+      <h1 class="oa-auth-title">{{ t(title) }}</h1>
+      <p v-if="body" class="oa-auth-sub">{{ t(body) }}</p>
       <button
         ref="actionButton"
         type="button"
         class="oa-btn primary oa-btn-block"
         :hidden="!action"
-        @click="router.replace('/')"
-      >{{ action }}</button>
+        :disabled="busy"
+        @click="activate"
+      >{{ action ? t(action) : '' }}</button>
     </div>
   </div>
 </template>
