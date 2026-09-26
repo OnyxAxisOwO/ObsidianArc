@@ -1055,9 +1055,20 @@ func holdVerificationMail(t *testing.T, f *fixture) (<-chan struct{}, func()) {
 	})
 	reached := make(chan struct{})
 	release := make(chan struct{})
+	closed := make(chan struct{})
 	var once sync.Once
-	releaseMail := func() { once.Do(func() { close(release) }) }
+	releaseMail := func() {
+		once.Do(func() { close(release) })
+		// Wait for the test relay to close the socket before timing how
+		// promptly the client leaves SMTP; scheduling the relay is separate.
+		select {
+		case <-closed:
+		case <-time.After(15 * time.Second):
+			t.Error("test mail connection did not close after release")
+		}
+	}
 	go func() {
+		defer close(closed)
 		conn, err := listener.Accept()
 		if err != nil {
 			return
@@ -1067,8 +1078,8 @@ func holdVerificationMail(t *testing.T, f *fixture) (<-chan struct{}, func()) {
 		_ = conn.Close()
 	}()
 	t.Cleanup(func() {
-		releaseMail()
 		_ = listener.Close()
+		releaseMail()
 	})
 	return reached, releaseMail
 }

@@ -646,10 +646,17 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 // inside the command would not read it until the command it was meant to stop
 // had already finished.
 func (sess *sshSession) serveExec(requests <-chan *ssh.Request, line string) {
+	// A signal may arrive as soon as the exec request is acknowledged. Make
+	// cancellation visible before the command goroutine starts, or that early
+	// signal finds no cancel function and a long-running command continues.
+	ctx, cancel := context.WithCancel(sess.base)
+	sess.mu.Lock()
+	sess.cancel = cancel
+	sess.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sess.runExec(line)
+		sess.runExec(ctx, cancel, line)
 	}()
 
 	for {
@@ -778,11 +785,7 @@ func (sess *sshSession) snapshot(transport string) *console.Session {
 // similar scripting works. Never anything but console.Console.Execute —
 // this is the one function in the package that could be mistaken for a
 // shell, and it is not one.
-func (sess *sshSession) runExec(line string) {
-	ctx, cancel := context.WithCancel(sess.base)
-	sess.mu.Lock()
-	sess.cancel = cancel
-	sess.mu.Unlock()
+func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, line string) {
 	defer cancel()
 
 	consoleSession, err := sess.currentSession(ctx, "ssh")
