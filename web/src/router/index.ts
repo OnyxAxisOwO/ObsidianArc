@@ -40,6 +40,7 @@ import RootView from '@/views/RootView.vue';
 import SettingsPanel from '@/views/SettingsPanel.vue';
 import TwoFactorEnrolView from '@/views/TwoFactorEnrolView.vue';
 import UptimePanel from '@/views/UptimePanel.vue';
+import LeaderboardPanel from '@/views/LeaderboardPanel.vue';
 import UsagePanel from '@/views/UsagePanel.vue';
 import VerifyView from '@/views/VerifyView.vue';
 
@@ -75,6 +76,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'about', component: AboutPanel, meta: { auth: true } },
       { path: 'image-lab', component: ImageLabPanel, meta: { auth: true } },
       { path: 'uptime', component: UptimePanel, meta: { auth: true } },
+      { path: 'leaderboard', component: LeaderboardPanel, meta: { auth: true } },
       { path: 'terminal', component: () => import('@/views/TerminalPanel.vue'), meta: { auth: true } },
     ],
   },
@@ -174,6 +176,11 @@ router.beforeEach((to) => {
 
   // Uptime is available to admins, and to readers only if published.
   if (to.path === '/uptime' && !canAdmin('availability') && !siteInfo.value.health_show_users) {
+    return { path: '/', replace: true };
+  }
+
+  // The leaderboard likewise: its curators may look before it is published.
+  if (to.path === '/leaderboard' && !canAdmin('leaderboard') && !siteInfo.value.leaderboard_show_users) {
     return { path: '/', replace: true };
   }
 

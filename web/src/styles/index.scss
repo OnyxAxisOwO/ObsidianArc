@@ -29,3 +29,6 @@
 @use 'analytics';
 // Grouped administration forms share only this local layout.
 @use 'workbench';
+// The public front page. Last: it is one screen, it consumes the vocabulary
+// every file above defines, and it overrides a little of `_surfaces`.
+@use 'front';

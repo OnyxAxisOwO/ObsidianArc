@@ -34,6 +34,8 @@ func settingPermission(key string) string {
 	switch {
 	case strings.HasPrefix(key, "health."):
 		return "availability"
+	case strings.HasPrefix(key, "leaderboard."):
+		return "leaderboard"
 	// The invites page's registration-mode select writes this switch as well
 	// as invites.required: "invite only" is registration on, with a code
 	// required. An operator trusted with invites and not with the rest of

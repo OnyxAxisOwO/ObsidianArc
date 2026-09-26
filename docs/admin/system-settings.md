@@ -47,7 +47,7 @@
 
 | 设置键 | 默认值 | 用途 |
 | --- | --- | --- |
-| `landing.mode` | `login` | 登录页、介绍页或访客对话 |
+| `landing.mode` | `login` | 登录页、内置官网首页、介绍页或访客对话 |
 | `landing.intro` | 空 | 介绍页 HTML，经过允许列表处理 |
 | `landing.trial_enabled` | `false` | 开启访客试用 |
 | `landing.trial_turns` | `3` | 试用轮数，最高 20 |
@@ -57,7 +57,7 @@
 | `chat.allow_archive` | `true` | 是否允许用户归档会话 |
 | `chat.agent_max_rounds` | `8` | 智能体工作流（工具调用）单次提问最大轮数上限 |
 
-访客试用只在 `landing.mode=chat` 时提供。介绍页支持受控 HTML，首页通知则是纯文本，两者格式不同。
+访客试用只在 `landing.mode=chat` 时提供。`site` 是程序自带的官网首页，内容由程序提供，不读取 `landing.intro`；介绍页支持受控 HTML，首页通知则是纯文本，三者格式不同。详见[访客试用](../features/trial)。
 
 ## API 与额度
 

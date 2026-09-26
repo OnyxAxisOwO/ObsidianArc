@@ -154,11 +154,11 @@ Online documentation is hosted on Cloudflare Pages:
 
 | 指标 / Metric | 实测数据 / Measurement |
 | --- | --- |
-| 二进制体积 / Binary size | 21.4 MB（Linux amd64；使用 `-tags nosqlite` 为 17.7 MB） |
+| 二进制体积 / Binary size | 21.6 MB（Linux amd64；使用 `-tags nosqlite` 为 17.9 MB） |
 | 冷启动就绪时间 / Cold start | ~28 ms |
 | 空闲内存占用 / Idle RSS | ~16 MB |
 | 20 并发流式峰值 / Peak under 20 concurrency | ~54 MB 内存，11 个 OS 线程 |
-| 首次加载传输体积 / Wire payload | 打开对话界面传输 190.40 kB（160.05 kB JS + 30.35 kB CSS）；中文语言包 (34.80 kB)、管理后台 (83.97 kB)、终端 (7.20 kB)、公式渲染器 (3.61 kB) 按需分包加载 |
+| 首次加载传输体积 / Wire payload | 打开对话界面传输 208.00 kB（170.35 kB JS + 37.65 kB CSS）；中文语言包 (37.71 kB)、管理后台 (87.13 kB)、终端 (7.24 kB)、公式渲染器 (3.63 kB)、访客官网首页 (3.98 kB) 按需分包加载 |
 | 后台常驻协程 / Background goroutines | 1 个（10 分钟周期的系统清理协程） |
 | Go 直接依赖 / Direct Go dependencies | 3 个（SQLite 驱动、pgx、x/crypto） |
 | 前端运行时依赖 / Frontend runtime dependencies | 4 个（`vue`、`vue-router`、`@vueuse/core`、`lucide-vue-next`） |

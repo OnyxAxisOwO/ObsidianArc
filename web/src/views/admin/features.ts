@@ -300,6 +300,36 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['重置在线率', '清空探针历史', '恢复自动停用模型', 'reset uptime'],
   },
 
+  // --- Leaderboard
+  {
+    id: 'secBoardPreview',
+    pageSlug: 'leaderboard',
+    titleKey: 'secBoardPreview',
+    searchKeys: ['boardPreviewHint', 'boardViewPage'],
+    keywords: ['排行榜预览', '榜单效果', 'leaderboard preview', 'ranking preview'],
+  },
+  {
+    id: 'secBoardVisibility',
+    pageSlug: 'leaderboard',
+    titleKey: 'secBoardVisibility',
+    searchKeys: ['boardShowUsers', 'boardShowUsersHint'],
+    keywords: ['排行榜开放', '对用户可见', '公开排行榜', 'show leaderboard to users'],
+  },
+  {
+    id: 'secBoardIdentity',
+    pageSlug: 'leaderboard',
+    titleKey: 'secBoardIdentity',
+    searchKeys: ['boardIdentity', 'boardIdentityHint'],
+    keywords: ['榜单身份', '匿名排行', '昵称显示', '隐私', 'leaderboard identity', 'anonymous ranking'],
+  },
+  {
+    id: 'secBoardContents',
+    pageSlug: 'leaderboard',
+    titleKey: 'secBoardContents',
+    searchKeys: ['boardSize', 'boardShowModels'],
+    keywords: ['上榜人数', '榜单长度', '热门模型榜', 'leaderboard size', 'popular models'],
+  },
+
   // --- Usage
   {
     id: 'secTotals',

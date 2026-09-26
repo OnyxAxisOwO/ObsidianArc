@@ -65,3 +65,42 @@ func TestBrowserTitleFallsBackToSiteName(t *testing.T) {
 		t.Errorf("BrowserTitle() = %q, want the explicit browser title to win", got)
 	}
 }
+
+// The front door's modes are a closed set on both sides: the frontend's
+// `Landing.mode` union names the same four, and admin.instance refuses a save
+// that is not one of them. A mode added to one side and not the other is a
+// front door the server accepts and the browser cannot draw — so the count is
+// asserted, not just the membership.
+func TestValidLandingMode(t *testing.T) {
+	cases := map[string]bool{
+		LandingLogin:     true,
+		LandingIntroPage: true,
+		LandingChat:      true,
+		LandingSite:      true,
+		"":               false,
+		"Login":          false, // the values are compared exactly, never folded
+		"marketing":      false,
+		"site ":          false,
+	}
+	for value, want := range cases {
+		if got := ValidLandingMode(value); got != want {
+			t.Errorf("ValidLandingMode(%q) = %v, want %v", value, got, want)
+		}
+	}
+
+	if len(LandingModes) != 4 {
+		t.Errorf("LandingModes has %d entries, want 4 — a mode added here needs the "+
+			"same entry in web/src/api/auth.ts's Landing union and an option in "+
+			"AdminSettings, or an operator can save a front door nothing draws",
+			len(LandingModes))
+	}
+}
+
+// The default has to stay the sign-in card. Every other mode publishes
+// something to people with no account, and an upgrade must not make that
+// decision on an operator's behalf.
+func TestLandingDefaultsToTheSignInCard(t *testing.T) {
+	if got := Defaults[LandingMode]; got != LandingLogin {
+		t.Errorf("Defaults[LandingMode] = %q, want %q", got, LandingLogin)
+	}
+}

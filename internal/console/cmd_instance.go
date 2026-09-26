@@ -27,7 +27,7 @@ func init() {
 		Flags:      []Flag{{Name: "--q", Hint: Text{EN: "substring filter on the key name", ZH: "对键名做子串筛选"}, Value: "TEXT"}},
 		Examples:   []string{"setting list", "setting list --q attachments"},
 		SeeAlso:    []string{"setting get", "setting set"},
-		Permission: "settings,security,availability,invites",
+		Permission: "settings,security,availability,invites,leaderboard",
 		Endpoints:  []string{"GET /api/admin/settings"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			data, _, err := rt.Call(http.MethodGet, "/api/admin/settings", nil)
@@ -59,7 +59,7 @@ func init() {
 		Args:       []Arg{{Name: "key", Hint: Text{EN: "the setting key", ZH: "设置键"}, Required: true}},
 		Examples:   []string{"setting get site.name", "setting get attachments.max_mb"},
 		SeeAlso:    []string{"setting list", "setting set"},
-		Permission: "settings,security,availability,invites",
+		Permission: "settings,security,availability,invites,leaderboard",
 		Endpoints:  []string{"GET /api/admin/settings"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			key, err := requireRef(rt, "setting key")
@@ -104,7 +104,7 @@ func init() {
 		},
 		Examples:   []string{"setting set site.name 'Obsidian Arc'", "setting set attachments.max_mb 12"},
 		SeeAlso:    []string{"setting list", "setting import"},
-		Permission: "settings,security,availability,invites",
+		Permission: "settings,security,availability,invites,leaderboard",
 		Endpoints:  []string{"PUT /api/admin/settings"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 2 {

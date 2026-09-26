@@ -37,6 +37,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/idp"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/invite"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/leaderboard"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
@@ -565,6 +566,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	quotaHandlers.Routes(mux)
 	usageHandlers := usage.NewHandlers(usageStore)
 	usageHandlers.Routes(mux)
+	leaderboardHandlers := leaderboard.NewHandlers(settingsService, usageStore, users, models)
+	leaderboardHandlers.Routes(mux)
 
 	cardHandlers := card.NewHandlers(cards)
 	// What spending a card actually buys. The card package does not know the

@@ -6,7 +6,7 @@ import OaAvatar from '@/components/OaAvatar.vue';
 import OaMenu from '@/components/OaMenu.vue';
 import OaMenuItem from '@/components/OaMenuItem.vue';
 import { t } from '@/composables/useI18n';
-import { IconArchive, IconChart, IconGear, IconImage, IconInfo, IconKey, IconLogout, IconMessage, IconPulse, IconSliders, IconTerminal } from '@/icons';
+import { IconArchive, IconChart, IconGear, IconImage, IconInfo, IconKey, IconLogout, IconMessage, IconPulse, IconSliders, IconTerminal, IconTrophy } from '@/icons';
 import { displayName } from '@/lib/account';
 import { feedbackUnread, forgetFeedbackUnread, refreshFeedbackUnread } from '@/stores/feedback';
 import { forget, siteInfo, isAdmin, canAdmin } from '@/stores/session';
@@ -97,6 +97,13 @@ async function signOut(close: () => void): Promise<void> {
         @click="go(close, '/uptime')"
       >
         <template #leading><IconPulse :size="14" /></template>
+      </OaMenuItem>
+      <OaMenuItem
+        v-if="canAdmin('leaderboard') || siteInfo.leaderboard_show_users"
+        :title="t('leaderboardTitle')"
+        @click="go(close, '/leaderboard')"
+      >
+        <template #leading><IconTrophy :size="14" /></template>
       </OaMenuItem>
       <OaMenuItem :title="t('apiKeys')" @click="go(close, '/keys')">
         <template #leading><IconKey :size="14" /></template>

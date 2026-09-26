@@ -193,8 +193,8 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/groups/{id}/members", protected("groups", h.assignGroupMembers))
 	mux.Handle("DELETE /api/admin/groups/{id}", protected("groups", h.deleteGroup))
 
-	mux.Handle("GET /api/admin/settings", protected("settings,security,availability,invites", h.listSettings))
-	mux.Handle("PUT /api/admin/settings", protected("settings,security,availability,invites", h.updateSettings))
+	mux.Handle("GET /api/admin/settings", protected("settings,security,availability,invites,leaderboard", h.listSettings))
+	mux.Handle("PUT /api/admin/settings", protected("settings,security,availability,invites,leaderboard", h.updateSettings))
 	mux.Handle("POST /api/admin/settings/import", protected("settings", h.importSettings))
 	mux.Handle("POST /api/admin/attachments/purge", protected("settings", h.purgeAttachments))
 	mux.Handle("PUT /api/admin/login-background/{variant}", protected("settings", h.putLoginBackground))

@@ -1,0 +1,1302 @@
+/* The front page.
+ *
+ * Its own file, for the reason `_terminal.scss` is: one screen with several
+ * hundred rules that nothing else consumes, where `_surfaces.scss` is the
+ * vocabulary every non-chat screen shares. It loads after those so it can
+ * lean on `.oa-btn` and `.oa-auth-mark` and override a little.
+ *
+ * Every colour here is an `--ai-*` token. That is not decoration discipline
+ * for its own sake — the accent is a runtime custom property, so a hardcoded
+ * hue would be the one surface in the product that ignored the colour the
+ * reader picked, and it would be the first surface they see. The glows are
+ * `--ai-primary` at low alpha through `color-mix`, which is how they follow
+ * the accent and the scheme at once.
+ *
+ * Motion lives at the bottom, in one `prefers-reduced-motion` block plus the
+ * `.still` class the component sets. Two switches rather than one because
+ * they answer different questions: the media query is the browser's setting,
+ * and `.still` is what the component uses to also skip the JavaScript — the
+ * observer, the counters and the typing — so the two have to agree.
+ */
+
+/* --- the scroller ---------------------------------------------------------
+ *
+ * The page scrolls inside itself. `.oa-app-viewport` is `overflow: hidden` so
+ * the chat's columns can own their own scrolling, which means the document
+ * never scrolls and anything reading `window.scrollY` here would read zero
+ * forever. `overflow-y: auto` on this element is what the component's scroll
+ * handler, its progress bar and its IntersectionObserver root all refer to. */
+.oa-front {
+  position: relative;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* The reveals translate upward from below their resting place, and a
+     scroll-linked reveal that can itself extend the scroll range is a loop:
+     the section moves, the page grows, the observer fires again. Clipping the
+     inline axis above is half of it; this is the half that stops a stray
+     horizontal scrollbar from the marquee. */
+  scroll-behavior: smooth;
+  /* The header is sticky, so a section scrolled to `block: start` would come
+     to rest underneath it with its own heading hidden. This is that height
+     plus a little air, and it applies to the nav's jumps and to a `#hash` in
+     the address bar alike. */
+  scroll-padding-top: 76px;
+  background: var(--ai-surface-container-low);
+  color: var(--ai-text);
+}
+
+.oa-front.still {
+  scroll-behavior: auto;
+}
+
+/* Reading progress. Fixed rather than sticky because it belongs to the
+   viewport, not to the flow, and scaled rather than sized: a transform is
+   composited, where animating `width` would lay the page out again on every
+   scroll event. */
+.oa-front-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 40;
+  width: 100%;
+  height: 2px;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: var(--ai-primary);
+  /* Nothing here is interactive, and the bar spans the whole width — without
+     this it would swallow the first two pixels of every click. */
+  pointer-events: none;
+}
+
+/* --- header ---------------------------------------------------------------- */
+
+.oa-front-head {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 22px;
+  /* Transparent at rest so the hero's aurora runs behind the header, and
+     frosted once the page has moved — at which point there is text under it
+     that has to stay readable. */
+  background: transparent;
+  transition:
+    background-color 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-front-head.lifted {
+  background: color-mix(in srgb, var(--ai-surface-container) 82%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 1px 0 var(--ai-border);
+}
+
+.oa-front-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 10px;
+}
+
+.oa-front-nav button {
+  padding: 7px 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-front-nav button:hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+.oa-front-nav button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+/* The nav is the first thing to go: the three buttons are shortcuts to
+   sections the reader can also reach by scrolling, and the sign-in pair is
+   not. */
+@media (max-width: 860px) {
+  .oa-front-nav {
+    display: none;
+  }
+}
+
+/* --- hero ------------------------------------------------------------------ */
+
+.oa-front-hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  /* As `.oa-front-section`: padding on a full-width box, and no global
+     border-box reset to absorb it. */
+  box-sizing: border-box;
+  width: 100%;
+  /* Tall enough to be a first screen, short enough that the section under it
+     shows its top edge — a full 100% would read as a page with nothing after
+     it. `svh` rather than `vh` so a phone's collapsing toolbar does not crop
+     the buttons. */
+  min-height: 78svh;
+  padding: 40px 22px 64px;
+  text-align: center;
+}
+
+/* The aurora. Three drifting fields, a travelling grid, two layers of motes
+   and a glow that follows the pointer — all behind the hero's text and
+   nothing else, because a page-wide version would keep large composited
+   layers alive for the whole scroll.
+
+   It does not take pointer events. The handler is on the hero, not here: the
+   hero's body sits above this layer across the whole middle of the screen, so
+   a handler here only ever heard the pointer at the two side margins — which
+   is how the parallax went unnoticed as broken. The custom properties the
+   hero's handler writes are inherited by everything in here. */
+.oa-front-aurora {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The defaults are the centre, so the hero looks deliberate before the
+   pointer has ever been over it — and on a touch device, where it never
+   will be. Declared on the hero because that is the element that writes
+   them. */
+.oa-front-hero {
+  --oa-front-px: 0.5;
+  --oa-front-py: 0.5;
+  /* Pixels, because `translate` percentages are of the glow's own box, not
+     the hero's — `50%` here would park it 260px from the corner, not in the
+     middle. The glow is hidden until the pointer arrives and writes real
+     coordinates, so this only decides where its first fade-in starts. */
+  --oa-front-gx: 50vw;
+  --oa-front-gy: 30vh;
+}
+
+.oa-front-hero-body,
+.oa-front-scroll {
+  position: relative;
+  z-index: 1;
+}
+
+/* The hero is a centring flex column, so this is a flex item — and a flex
+   item with no width is sized by its content. The protocol strip inside it is
+   a row of `nowrap` pills, so without a width here the hero measured its own
+   widest unwrappable line (about 1700px) and every centred child hung off
+   both sides of the viewport. */
+.oa-front-hero-body {
+  width: min(920px, 100%);
+}
+
+.oa-front-blob {
+  position: absolute;
+  width: 56vw;
+  height: 56vw;
+  min-width: 360px;
+  min-height: 360px;
+  border-radius: 50%;
+  /* A radial fill rather than a blur filter: a 56vw blur is one of the most
+     expensive things a browser can be asked to composite, and the soft edge
+     of a radial gradient is indistinguishable from it at this size.
+
+     40% rather than the 26% this started at. The default accent is a
+     near-black, so these fields are grey on a near-white page, and at 26%
+     they were grey enough that the motion could not be seen at all. The
+     colour still comes from the accent — a coloured accent makes this an
+     aurora, and the default makes it smoke, which is the default's point. */
+  background: radial-gradient(
+    circle at center,
+    color-mix(in srgb, var(--ai-primary) 40%, transparent) 0%,
+    transparent 68%
+  );
+  will-change: transform, opacity;
+  /* The pointer's parallax is the individual `translate` property, not a
+     second `transform`: the drift below animates `transform`, and the two
+     compose rather than one replacing the other. The transition is what
+     turns a pointer that jumps into a field that follows with some weight. */
+  translate: 0 0;
+  transition: translate 0.9s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Three periods with no common factor, so the three never line up into a
+   pattern the eye can learn — 9, 11 and 13 seconds repeat together only
+   after twenty-one minutes. Each gets its own parallax factor, and the middle
+   one runs against the pointer, which is what reads as depth. */
+.oa-front-blob.one {
+  top: -18%;
+  left: 2%;
+  translate: calc((var(--oa-front-px) - 0.5) * 120px) calc((var(--oa-front-py) - 0.5) * 80px);
+  animation: oaFrontDrift 9s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.oa-front-blob.two {
+  top: 6%;
+  right: -4%;
+  translate: calc((var(--oa-front-px) - 0.5) * -150px) calc((var(--oa-front-py) - 0.5) * -90px);
+  animation: oaFrontDrift 11s cubic-bezier(0.45, 0, 0.55, 1) -4s infinite reverse;
+}
+
+.oa-front-blob.three {
+  bottom: -30%;
+  left: 28%;
+  translate: calc((var(--oa-front-px) - 0.5) * 80px) calc((var(--oa-front-py) - 0.5) * 130px);
+  animation: oaFrontDrift 13s cubic-bezier(0.45, 0, 0.55, 1) -7s infinite;
+}
+
+/* The grid. Two layers because two different things are happening to it:
+   this one holds the mask and breathes, and the tile layer inside it travels.
+   The mask has to be on the one that does not move — on the moving layer, the
+   faded edge would travel with the lines and the grid would slide in and out
+   of view as a block. */
+.oa-front-grid {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  /* Both spellings: Safari still needs the prefix, and without it the grid
+     reaches the section boundary as a hard line. */
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 20%, transparent 78%);
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 20%, transparent 78%);
+  opacity: 0.7;
+  animation: oaFrontBreathe 8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/* One tile of overscan on every side, travelling exactly one tile diagonally
+   per loop — so the last frame is pixel-identical to the first and the loop
+   has no seam. A transform rather than `background-position`, which would
+   repaint the whole layer every frame. */
+.oa-front-grid::before {
+  content: '';
+  position: absolute;
+  inset: -72px;
+  background-image:
+    linear-gradient(to right, var(--ai-border) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--ai-border) 1px, transparent 1px);
+  background-size: 72px 72px;
+  will-change: transform;
+  animation: oaFrontGridTravel 24s linear infinite;
+}
+
+/* The motes: two layers of soft points rising at different speeds, the same
+   construction as the effort bar's sparks in `_chat.scss` — a repeated tile
+   of radial gradients, two layers at different rates so the difference reads
+   as depth. Two things differ from there, both deliberately:
+
+   - the colour is the accent rather than white, because this sits on a light
+     page where white motes would be invisible;
+   - the layer is one tile taller than its box and moved by `transform`, not
+     `background-position`, so rising costs a composite rather than a repaint
+     of a full-screen layer on every frame.
+
+   Which is also why the two are sibling elements rather than an element and
+   its `::before`, as they are there. A pseudo-element moves with the
+   transform of its host, so the near layer would ride the far one — and when
+   the far one loops back by its 220px tile, the near one would jump by a
+   distance that is not a multiple of its own 160px tile. */
+.oa-front-motes {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  background-repeat: repeat;
+  will-change: transform;
+  --oa-front-mote: color-mix(in srgb, var(--ai-primary) 55%, transparent);
+}
+
+.oa-front-motes.far {
+  height: calc(100% + 220px);
+  background-image:
+    radial-gradient(circle 2px at 12% 18%, var(--oa-front-mote), transparent 100%),
+    radial-gradient(circle 1.4px at 38% 62%, var(--oa-front-mote), transparent 100%),
+    radial-gradient(circle 2.4px at 64% 30%, var(--oa-front-mote), transparent 100%),
+    radial-gradient(circle 1.2px at 82% 76%, var(--oa-front-mote), transparent 100%),
+    radial-gradient(circle 1.8px at 50% 92%, var(--oa-front-mote), transparent 100%);
+  background-size: 180px 220px;
+  animation:
+    oaFrontRiseFar 34s linear infinite,
+    oaFrontTwinkle 6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.oa-front-motes.near {
+  height: calc(100% + 160px);
+  background-image:
+    radial-gradient(circle 1.2px at 22% 40%, var(--oa-front-mote), transparent 100%),
+    radial-gradient(circle 1.8px at 58% 12%, var(--oa-front-mote), transparent 100%),
+    radial-gradient(circle 1px at 76% 58%, var(--oa-front-mote), transparent 100%),
+    radial-gradient(circle 1.5px at 90% 86%, var(--oa-front-mote), transparent 100%);
+  background-size: 130px 160px;
+  opacity: 0.7;
+  animation: oaFrontRiseNear 22s linear infinite;
+}
+
+/* The glow under the pointer. Positioned by the pixel coordinates the hero's
+   handler writes, moved by `translate` so it composites, and faded in only
+   while the pointer is actually over the hero — a glow parked in the middle
+   of the screen with no pointer behind it would just be a smudge. */
+.oa-front-glow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 520px;
+  height: 520px;
+  margin: -260px 0 0 -260px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at center,
+    color-mix(in srgb, var(--ai-primary) 22%, transparent) 0%,
+    transparent 65%
+  );
+  translate: var(--oa-front-gx) var(--oa-front-gy);
+  opacity: 0;
+  will-change: translate, opacity;
+  transition:
+    translate 0.5s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-front-hero:hover .oa-front-glow {
+  opacity: 1;
+}
+
+/* Off screen, all of the above is still being composited sixty times a
+   second for nobody. The hero's observer sets this once it scrolls away. */
+.oa-front-hero.idle .oa-front-aurora,
+.oa-front-hero.idle .oa-front-aurora *,
+.oa-front-hero.idle .oa-front-aurora *::before {
+  animation-play-state: paused;
+}
+
+.oa-front-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.oa-front-title {
+  display: flex;
+  flex-direction: column;
+  margin: 20px 0 0;
+  /* Fluid rather than stepped: this is the one line on the page whose whole
+     job is scale, and a breakpoint would hold it too small for most of the
+     range between two widths. */
+  font-size: clamp(38px, 7.4vw, 82px);
+  font-weight: 700;
+  line-height: 1.02;
+  letter-spacing: -0.035em;
+}
+
+/* Each line is a mask its own text slides up out of. The mask is the reason
+   the movement reads as typesetting rather than as a fade: the glyphs are
+   clipped by the line box above them, so they appear from nowhere instead of
+   appearing faintly in place. */
+.oa-front-line {
+  display: block;
+  overflow: hidden;
+  /* Descenders (a `y`, a `g`) are below the baseline and would be shaved off
+     by the overflow. The padding gives them room and the negative margin
+     takes the space back out of the flow. */
+  padding-bottom: 0.08em;
+  margin-bottom: -0.08em;
+}
+
+.oa-front-line > span {
+  display: block;
+  transform: translateY(105%);
+  animation: oaFrontRise 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.oa-front-line:nth-child(2) > span {
+  animation-delay: 0.1s;
+}
+
+.oa-front-line:nth-child(3) > span {
+  animation-delay: 0.2s;
+}
+
+/* The third line carries the accent, as a gradient rather than a flat colour:
+   the accent's own ramp against the text colour, so it stays legible in both
+   schemes and still moves with the palette. */
+.oa-front-line.accent > span {
+  background: linear-gradient(
+    100deg,
+    var(--ai-primary) 0%,
+    color-mix(in srgb, var(--ai-primary) 45%, var(--ai-text)) 55%,
+    var(--ai-primary) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation:
+    oaFrontRise 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.2s forwards,
+    oaFrontSheen 7s linear 1.2s infinite;
+}
+
+.oa-front-lede {
+  /* `min(…, 100%)` on every measure below, not a bare `ch`: a `ch` is a
+     fraction of the font's zero-width, which on a 300px phone in Chinese is
+     wider than the screen — and a max-width larger than the container is not
+     a maximum at all. */
+  max-width: min(52ch, 100%);
+  margin: 22px auto 0;
+  color: var(--ai-text-secondary);
+  font-size: 15px;
+  line-height: 1.68;
+  opacity: 0;
+  animation: oaFrontFade 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.42s forwards;
+}
+
+.oa-front-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 28px;
+  opacity: 0;
+  animation: oaFrontFade 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.54s forwards;
+}
+
+/* A taller pill than the interface's own, and the only place in the product
+   with one: these are the two decisions the page is asking for, and at the
+   34px the rest of the interface uses they read as toolbar buttons. */
+.oa-front-cta {
+  min-height: 42px;
+  padding: 0 22px;
+  font-size: 13.5px;
+  text-decoration: none;
+  transition:
+    transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-front-cta:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--ai-shadow-md);
+}
+
+.oa-front-cta:active {
+  transform: translateY(0);
+}
+
+.oa-front-cta > svg {
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-front-cta:hover > svg {
+  transform: translateX(3px);
+}
+
+/* --- the protocol strip ---------------------------------------------------- */
+
+.oa-front-speaks {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: min(760px, 100%);
+  margin: 44px auto 0;
+  opacity: 0;
+  animation: oaFrontFade 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.68s forwards;
+}
+
+.oa-front-speaks-label {
+  flex-shrink: 0;
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Faded at both ends so the names arrive and leave rather than being cut. The
+   mask is what makes an infinite loop look like a loop instead of a jump. */
+.oa-front-marquee {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
+}
+
+.oa-front-marquee-row {
+  display: flex;
+  flex-shrink: 0;
+  gap: 10px;
+  padding-right: 10px;
+  animation: oaFrontMarquee 26s linear infinite;
+}
+
+.oa-front-marquee-row span {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.oa-front-marquee:hover .oa-front-marquee-row {
+  animation-play-state: paused;
+}
+
+.oa-front-scroll {
+  position: absolute;
+  bottom: 22px;
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  animation: oaFrontNudge 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-front-scroll.gone {
+  opacity: 0;
+}
+
+/* --- sections -------------------------------------------------------------- */
+
+.oa-front-section {
+  /* This project has no global `border-box` reset — each rule opts in — and
+     a `width: 100%` with horizontal padding is exactly the case that needs
+     it: without this the section is the viewport plus 44px of padding, and
+     every card in it hangs off the right edge. */
+  box-sizing: border-box;
+  width: min(1100px, 100%);
+  margin: 0 auto;
+  padding: 80px 22px;
+}
+
+.oa-front-head-block {
+  max-width: min(62ch, 100%);
+  margin-bottom: 40px;
+}
+
+.oa-front-head-block h2 {
+  margin: 16px 0 0;
+  font-size: clamp(26px, 3.4vw, 40px);
+  font-weight: 650;
+  line-height: 1.16;
+  letter-spacing: -0.025em;
+}
+
+.oa-front-head-block p {
+  margin: 14px 0 0;
+  color: var(--ai-text-secondary);
+  font-size: 14.5px;
+  line-height: 1.7;
+}
+
+/* Reveal on scroll. The class is applied by the component's one
+   IntersectionObserver and never removed: a section that faded out again on
+   the way past would make the page strobe as the reader scrolls back. */
+.oa-front-reveal {
+  opacity: 0;
+  transform: translateY(26px);
+  transition:
+    opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1) var(--oa-front-delay, 0ms),
+    transform 0.7s cubic-bezier(0.16, 1, 0.3, 1) var(--oa-front-delay, 0ms);
+}
+
+.oa-front-reveal.shown {
+  opacity: 1;
+  transform: none;
+}
+
+/* --- feature cards -------------------------------------------------------- */
+
+.oa-front-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 14px;
+}
+
+.oa-front-card {
+  position: relative;
+  padding: 22px;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  overflow: hidden;
+  --oa-front-px: 0.5;
+  --oa-front-py: 0.5;
+}
+
+/* The spotlight. A gradient positioned from the two custom properties the
+   pointer handler writes, faded in on hover — so a card the pointer has never
+   touched paints nothing at all, and the whole effect costs one extra layer
+   on exactly one card at a time. */
+.oa-front-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    380px circle at calc(var(--oa-front-px) * 100%) calc(var(--oa-front-py) * 100%),
+    color-mix(in srgb, var(--ai-primary) 14%, transparent),
+    transparent 72%
+  );
+  opacity: 0;
+  transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+
+.oa-front-card:hover::before {
+  opacity: 1;
+}
+
+/* The transition is on the resting state, not on `:hover`, because a
+   transition is read from the style being moved *to* — declared only on hover
+   the card would lift smoothly and drop instantly. Both the card's own class
+   and `.shown` carry it: `.oa-front-card` is also a `.oa-front-reveal`, and
+   this rule is what supplies that reveal's timing as well as the hover's. */
+.oa-front-card,
+.oa-front-card.shown {
+  transition:
+    opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1) var(--oa-front-delay, 0ms),
+    transform 0.32s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Later than `.oa-front-reveal.shown`, which sets `transform: none` at the
+   same specificity — so this is what lets a revealed card still lift. */
+.oa-front-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--ai-shadow-md);
+}
+
+.oa-front-card > * {
+  position: relative;
+}
+
+.oa-front-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+}
+
+.oa-front-card h3 {
+  margin: 16px 0 0;
+  font-size: 15.5px;
+  font-weight: 620;
+  letter-spacing: -0.012em;
+}
+
+.oa-front-card p {
+  margin: 10px 0 0;
+  color: var(--ai-text-secondary);
+  font-size: 13.5px;
+  line-height: 1.68;
+}
+
+/* --- the diagram ----------------------------------------------------------- */
+
+.oa-front-flow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.oa-front-flow-side {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.oa-front-node,
+.oa-front-core {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+}
+
+.oa-front-node strong,
+.oa-front-core strong {
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.oa-front-node span:last-child,
+.oa-front-core span:last-child {
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+}
+
+/* The centre is the binary, so it is the only filled card in the row — the
+   diagram's whole claim is that everything passes through this one thing. */
+.oa-front-core {
+  position: relative;
+  flex: 1.15;
+  min-width: 0;
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+  overflow: hidden;
+}
+
+.oa-front-core span:last-child {
+  color: color-mix(in srgb, var(--ai-primary-text) 70%, transparent);
+}
+
+.oa-front-core .oa-front-card-icon {
+  background: color-mix(in srgb, var(--ai-primary-text) 18%, transparent);
+  color: var(--ai-primary-text);
+}
+
+/* A slow sweep across the filled card, so the centre reads as running rather
+   than as a static block. */
+.oa-front-core-ring {
+  position: absolute;
+  inset: -40%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    color-mix(in srgb, var(--ai-primary-text) 12%, transparent) 40deg,
+    transparent 80deg
+  );
+  animation: oaFrontSpin 9s linear infinite;
+  pointer-events: none;
+}
+
+/* The wires. A dim rule with a bright segment sliding along it, which is the
+   cheapest honest way to draw "requests are moving through here": one painted
+   element per wire, animating `background-position` only. */
+.oa-front-wires {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 18px;
+  width: 58px;
+}
+
+.oa-front-wire {
+  height: 2px;
+  border-radius: 2px;
+  background:
+    linear-gradient(90deg, transparent, var(--ai-primary), transparent) no-repeat,
+    var(--ai-outline-variant);
+  background-size: 40% 100%;
+  animation: oaFrontPulse 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.oa-front-wire:nth-child(2) {
+  animation-delay: 0.6s;
+}
+
+/* Under about a tablet the row cannot hold three columns, and a diagram that
+   reads left-to-right is not worth preserving at the cost of 90px-wide
+   cards — so it stacks, and the wires turn to run downward with it. */
+@media (max-width: 900px) {
+  .oa-front-flow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .oa-front-wires {
+    flex-direction: row;
+    justify-content: center;
+    width: auto;
+    height: 46px;
+  }
+
+  .oa-front-wire {
+    width: 2px;
+    height: 100%;
+    background:
+      linear-gradient(180deg, transparent, var(--ai-primary), transparent) no-repeat,
+      var(--ai-outline-variant);
+    background-size: 100% 40%;
+    animation-name: oaFrontPulseDown;
+  }
+}
+
+/* --- code and terminal ----------------------------------------------------- */
+
+.oa-front-panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 14px;
+}
+
+.oa-front-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 18px;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+}
+
+.oa-front-pane figcaption {
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.oa-front-code,
+.oa-front-term {
+  margin: 0;
+  padding: 16px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-high);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.oa-front-code {
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--ai-text-secondary);
+}
+
+.oa-front-term {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Held at the height of the tallest of the three answers — six lines, which
+     is `key create`. Without it the card resizes every time the mock moves
+     on, and a panel that jumps every three seconds beside a page that is
+     otherwise still is the most distracting thing on it. It is a floor, not a
+     cap: the token line wraps on a narrow card and is allowed to grow past
+     this rather than be clipped. */
+  min-height: 168px;
+}
+
+.oa-front-term-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ai-text);
+}
+
+.oa-front-prompt {
+  color: var(--ai-primary);
+  font-weight: 600;
+}
+
+.oa-front-caret {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  background: var(--ai-primary);
+  animation: oaFrontBlink 1.1s steps(2, start) infinite;
+}
+
+.oa-front-term-out {
+  color: var(--ai-text-secondary);
+  /* `pre-wrap`, not `pre`: the mock's columns are padded with real spaces, so
+     they need preserving — but a line longer than the card should wrap rather
+     than force a horizontal scrollbar nobody asked for. An empty line keeps
+     its line box under this value, which is what makes the blank row before
+     the token line a blank row. */
+  white-space: pre-wrap;
+  animation: oaFrontFade 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* A blank output line has no text to give it height, and the mock uses one as
+   a separator. `min-height` rather than a `&nbsp;` in the template: the line
+   is spacing, not content, and a screen reader should not read it. */
+.oa-front-term-out:empty {
+  min-height: 1.65em;
+}
+
+/* --- the figures ----------------------------------------------------------- */
+
+.oa-front-fact-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+  margin-top: 28px;
+}
+
+.oa-front-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 22px;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+}
+
+.oa-front-fact strong {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  /* The digits are counted up, and proportional figures change width as they
+     go — so the label under a `1` that has been through `0` would shuffle
+     sideways on the way. */
+  font-variant-numeric: tabular-nums;
+}
+
+.oa-front-fact-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.oa-front-fact-note {
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* --- closing card and footer ---------------------------------------------- */
+
+.oa-front-close-card {
+  position: relative;
+  padding: 56px 32px;
+  border-radius: 24px;
+  background: var(--ai-surface-container);
+  overflow: hidden;
+  text-align: center;
+}
+
+.oa-front-blob.close {
+  top: -60%;
+  left: 50%;
+  width: 640px;
+  height: 640px;
+  min-width: 0;
+  min-height: 0;
+  transform: translateX(-50%);
+  animation: none;
+  /* Outside the hero, so none of the pointer's custom properties reach it —
+     and the hero's parallax and its transition are not this card's to have. */
+  translate: none;
+  transition: none;
+  will-change: auto;
+}
+
+.oa-front-close-card h2,
+.oa-front-close-card p,
+.oa-front-close-card .oa-front-actions {
+  position: relative;
+}
+
+.oa-front-close-card h2 {
+  margin: 0;
+  font-size: clamp(26px, 3.6vw, 42px);
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+
+.oa-front-close-card p {
+  max-width: min(54ch, 100%);
+  margin: 16px auto 0;
+  color: var(--ai-text-secondary);
+  font-size: 14.5px;
+  line-height: 1.7;
+}
+
+/* The hero's entrance animations are keyed to page load; this card is reached
+   by scrolling, so its buttons must not start invisible waiting for one. */
+.oa-front-close-card .oa-front-actions {
+  opacity: 1;
+  animation: none;
+}
+
+.oa-front-foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 32px;
+  padding-top: 20px;
+  border-top: 1px solid var(--ai-border);
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+}
+
+.oa-front-foot a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ai-text-secondary);
+  text-decoration: none;
+  transition: color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-front-foot a:hover {
+  color: var(--ai-text);
+}
+
+@media (max-width: 600px) {
+  .oa-front-section {
+    padding: 56px 18px;
+  }
+
+  .oa-front-speaks {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  /* Stacked, the strip is no longer a flex row's child, so `flex: 1` is not
+     what bounds it — and its own content is a row of `nowrap` pills about
+     1700px wide. `overflow: hidden` does not shrink a box below its content;
+     an explicit width is what makes the clipping happen. */
+  .oa-front-marquee {
+    width: 100%;
+  }
+
+  .oa-front-foot {
+    flex-wrap: wrap;
+  }
+
+  /* The spacer pushes the two links to the far edge, which on one line with
+     the site name wrapping above them leaves them stranded. */
+  .oa-front-foot .oa-header-spacer {
+    display: none;
+  }
+}
+
+/* --- keyframes ------------------------------------------------------------- */
+
+@keyframes oaFrontRise {
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes oaFrontFade {
+  to {
+    opacity: 1;
+  }
+}
+
+/* A loop through four waypoints rather than a there-and-back: a field that
+   swings between two points reads as a pendulum, and one that circles reads
+   as weather. The opacity breathes on the same clock so the three fields
+   thicken and thin as they pass one another. */
+@keyframes oaFrontDrift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.85;
+  }
+
+  25% {
+    transform: translate3d(16%, 10%, 0) scale(1.28);
+    opacity: 1;
+  }
+
+  50% {
+    transform: translate3d(4%, 22%, 0) scale(0.92);
+    opacity: 0.7;
+  }
+
+  75% {
+    transform: translate3d(-14%, 8%, 0) scale(1.16);
+    opacity: 0.95;
+  }
+}
+
+/* Exactly one tile, so the loop is seamless — see `.oa-front-grid::before`. */
+@keyframes oaFrontGridTravel {
+  to {
+    transform: translate3d(72px, 72px, 0);
+  }
+}
+
+@keyframes oaFrontBreathe {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+
+  50% {
+    opacity: 0.85;
+  }
+}
+
+/* Each exactly its own tile's height, for the same seamless-loop reason. */
+@keyframes oaFrontRiseFar {
+  to {
+    transform: translate3d(0, -220px, 0);
+  }
+}
+
+@keyframes oaFrontRiseNear {
+  to {
+    transform: translate3d(0, -160px, 0);
+  }
+}
+
+@keyframes oaFrontTwinkle {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes oaFrontSheen {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes oaFrontMarquee {
+  to {
+    /* The row and its clone are the same width, so moving one full row's
+       width brings the clone exactly where the original was. */
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes oaFrontNudge {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.7;
+  }
+
+  50% {
+    transform: translateY(5px);
+    opacity: 1;
+  }
+}
+
+@keyframes oaFrontSpin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes oaFrontPulse {
+  0% {
+    background-position: -50% 0;
+  }
+
+  100% {
+    background-position: 150% 0;
+  }
+}
+
+@keyframes oaFrontPulseDown {
+  0% {
+    background-position: 0 -50%;
+  }
+
+  100% {
+    background-position: 0 150%;
+  }
+}
+
+@keyframes oaFrontBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0;
+  }
+}
+
+/* --- reduced motion -------------------------------------------------------
+ *
+ * This page moves more than any other in the product, so it has more to
+ * switch off. Both selectors are listed on every rule: the media query is the
+ * browser's setting, and `.still` is the same answer read in JavaScript,
+ * where the observer, the counters and the typing are also skipped. Leaving
+ * either out would give a reader half a still page.
+ *
+ * The entrance animations are not merely stopped — they are what reveals the
+ * headline and the buttons, so stopping them without also resetting `opacity`
+ * and `transform` would leave a blank hero. */
+@media (prefers-reduced-motion: reduce) {
+  /* `*::before` as well: the universal selector does not match
+     pseudo-elements, and the grid's travelling layer is one. Without it that
+     layer kept moving for a reader who had asked for nothing to move. */
+  .oa-front,
+  .oa-front *,
+  .oa-front *::before {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .oa-front-line > span,
+  .oa-front-lede,
+  .oa-front-actions,
+  .oa-front-speaks,
+  .oa-front-reveal {
+    opacity: 1;
+    transform: none;
+  }
+
+  .oa-front-scroll {
+    display: none;
+  }
+
+  /* The glow exists only to follow a pointer, and following is motion. */
+  .oa-front-glow {
+    display: none;
+  }
+}
+
+.oa-front.still,
+.oa-front.still *,
+.oa-front.still *::before {
+  animation: none !important;
+  transition: none !important;
+}
+
+.oa-front.still .oa-front-glow {
+  display: none;
+}
+
+.oa-front.still .oa-front-line > span,
+.oa-front.still .oa-front-lede,
+.oa-front.still .oa-front-actions,
+.oa-front.still .oa-front-speaks,
+.oa-front.still .oa-front-reveal {
+  opacity: 1;
+  transform: none;
+}
+
+.oa-front.still .oa-front-scroll {
+  display: none;
+}

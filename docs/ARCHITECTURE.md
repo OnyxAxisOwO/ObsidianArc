@@ -216,10 +216,51 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 21.4 MB (17.7 MB `-tags nosqlite`, Linux amd64) |
-| Frontend, on the wire | < 135 kB | 190.40 kB to open the chat (160.05 JS + 30.35 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 21.6 MB (17.9 MB `-tags nosqlite`, Linux amd64) |
+| Frontend, on the wire | < 135 kB | 208.00 kB to open the chat (170.35 JS + 37.65 CSS) |
 | Background goroutines at idle | 1 | 1 |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-09-26 (UTC) for the leaderboard and the front page landing
+together, on top of the upstream work that arrived the same day (the login
+backgrounds, the site logo, the sliding tabs, the model-name marquee). That
+upstream tree already measured 200.05 kB before either of these, well above
+the 190.40 kB this table last recorded — the figure had drifted, which is the
+failure the rule about re-measuring exists to prevent. Against it, the two
+together add 7.95 kB to the first paint: the leaderboard panel is a column
+over the chat and is imported statically like every other panel, so its
+code, its `en` strings and its stylesheet rules are on the entry by design;
+the front page's own code stays in its chunk. Every figure here was measured
+from one build of the combined tree, gzip byte counts in decimal kB.
+
+Remeasured later on 2026-09-26 (UTC) for the front page's moving background:
+stronger drifting fields, a travelling grid, two layers of rising motes and
+a glow that follows the pointer. The stylesheet grew by 0.55 kB, which is on
+the first paint for the reason `_front.scss` is — this project ships one
+stylesheet — and the `FrontPage` chunk by 0.13 kB to 3.99 kB. Measured the
+same way as the entry below, before and after on one tree.
+
+Remeasured on 2026-09-26 (UTC) for the public front page — the `site` landing
+mode, which draws the product's own marketing page at the address instead of
+the sign-in card. The page itself is a chunk of its own, `FrontPage`, at
+3.86 kB: it is a fifth landing mode most instances will not switch on, and no
+signed-in account ever sees it, so it has no business on the first paint of
+somebody opening the chat. `test/bundle.test.ts` now expects seven build
+artifacts rather than six, and asserts that chunk stays out of the entry.
+
+What did land on the first paint is 2.47 kB of JS and 2.60 kB of CSS: the
+fifty-six new `en` keys (the English dictionary is also the fallback, so it
+cannot be split), the one-line async import in `RootView`, and
+`styles/_front.scss`, which is in the single stylesheet this project ships
+rather than a chunk of its own. The Chinese dictionary grew by 1.65 kB.
+
+Measured as a delta, not as a total: the working tree carried another agent's
+unfinished work at the time, so the figures above are this change's own cost —
+two builds of one tree, one with the page in the graph and one with it
+stripped out, nothing else differing — added to the total this table already
+carried. The binary was not remeasured: Go is not installed on the machine
+this was written on, and CI builds it. See "Known unverified ground" in
+AGENTS.md.
 
 Remeasured once more on 2026-09-25 (UTC), for the invite-claim flow the first
 pass over invite codes below had not yet reached: the existing-account claim
@@ -371,17 +412,19 @@ is whether this project's own code grows, not whether the framework does. It
 moved from 130 to 135 kB when the measured bundle reached 131.05 kB rather
 than leaving a target the shipped usage controls no longer met.
 
-The four pieces most people never need are split off: the administration
-backoffice, the terminal, the Chinese dictionary, and the LaTeX renderer.
+The five pieces most people never need are split off: the administration
+backoffice, the terminal, the Chinese dictionary, the LaTeX renderer, and the
+public front page.
 What each reader actually downloads:
 
 | | gzipped |
 | --- | --- |
-| English, not an administrator | 190.40 kB |
-| Chinese, not an administrator | 225.20 kB |
-| …and a conversation containing a formula | 228.81 kB |
-| Chinese administrator, backoffice open | 309.17 kB |
+| English, not an administrator | 208.00 kB |
+| Chinese, not an administrator | 245.71 kB |
+| …and a conversation containing a formula | 249.34 kB |
+| Chinese administrator, backoffice open | 332.84 kB |
 | Anybody, once they open the terminal | +7.20 kB |
+| A visitor to an instance whose front door is the front page | +3.99 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice and the terminal: /settings, /keys, /usage and

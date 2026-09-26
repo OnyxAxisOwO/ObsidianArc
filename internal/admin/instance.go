@@ -244,6 +244,10 @@ var writableSettings = map[string]bool{
 	settings.PWAThemeColor:              true,
 	settings.PWABackgroundColor:         true,
 	settings.PWAIconURL:                 true,
+	settings.LeaderboardShowUsers:       true,
+	settings.LeaderboardIdentity:        true,
+	settings.LeaderboardSize:            true,
+	settings.LeaderboardShowModels:      true,
 }
 
 // The numeric settings and what they may be, shared by the ordinary save and
@@ -265,6 +269,7 @@ var numericBounds = map[string][2]int{
 	settings.ChatAgentMaxRounds:         {1, 50},
 	settings.TwoFactorRememberDays:      {0, settings.MaxTwoFactorRememberDays},
 	settings.TwoFactorBackofficeMinutes: {1, settings.MaxTwoFactorBackofficeMinutes},
+	settings.LeaderboardSize:            {1, settings.MaxLeaderboardSize},
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
@@ -370,6 +375,9 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	if display, present := body[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
 		return httpx.BadRequest("Unknown usage display %q.", display)
 	}
+	if identity, present := body[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
+		return httpx.BadRequest("Unknown leaderboard identity %q.", identity)
+	}
 
 	// A registration group that does not exist would send every new account
 	// into no group at all, which quietly means no models.
@@ -431,6 +439,10 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 	if display, present := applied[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
 		delete(applied, settings.UsageDisplay)
 		skipped = append(skipped, settings.UsageDisplay)
+	}
+	if identity, present := applied[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
+		delete(applied, settings.LeaderboardIdentity)
+		skipped = append(skipped, settings.LeaderboardIdentity)
 	}
 	for _, key := range []string{settings.PWAThemeColor, settings.PWABackgroundColor} {
 		if value, present := applied[key]; present && value != "" && !settings.ValidHexColor(value) {
