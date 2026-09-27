@@ -117,7 +117,6 @@ const form = ref({
   reviewRestrictHours: 24 as number | null,
   reviewPrompt: '',
   reviewRefusal: '',
-  reviewPrompt: '',
   githubEnabled: false,
   githubClientID: '',
   githubSecret: '',
@@ -368,11 +367,10 @@ function collect(): Record<string, string> {
     'security.signup_review_model': form.value.reviewModel,
     'security.signup_review_mode': form.value.reviewMode,
     'security.signup_review_restrict_hours': String(form.value.reviewRestrictHours ?? 24),
-    'security.signup_review_prompt': form.value.reviewPrompt.trim() === defaultReviewPrompt.value.trim()
+    'security.signup_review_refusal': form.value.reviewRefusal.trim(),
+    'security.signup_review_prompt': (defaultReviewPrompt.value && form.value.reviewPrompt.trim() === defaultReviewPrompt.value.trim())
       ? ''
       : form.value.reviewPrompt.trim(),
-    'security.signup_review_refusal': form.value.reviewRefusal.trim(),
-    'security.signup_review_prompt': form.value.reviewPrompt.trim(),
     'oauth.github_enabled': String(form.value.githubEnabled),
     'oauth.github_client_id': form.value.githubClientID.trim(),
     // Empty keeps what is stored, the same bargain the Turnstile secret
@@ -860,7 +858,6 @@ async function load(): Promise<void> {
       reviewModel: values['security.signup_review_model'] ?? '',
       reviewMode: values['security.signup_review_mode'] ?? 'normal',
       reviewRestrictHours: Number(values['security.signup_review_restrict_hours'] ?? 24),
-      reviewPrompt: values['security.signup_review_prompt'] || defaultReviewPrompt.value,
       reviewRefusal: values['security.signup_review_refusal'] ?? '',
       reviewPrompt: values['security.signup_review_prompt'] ?? '',
       githubEnabled: values['oauth.github_enabled'] === 'true',

@@ -1543,8 +1543,6 @@ export const zh: Record<StringKey, string> = {
   signupReviewModelHint: '小而快的就够了，它只回答一个词。这次请求不计到任何人头上，也不出现在任何人的用量里。',
   signupReviewRestrictHours: 'API 限制时长（小时）',
   signupReviewRestrictHoursHint: 'restrict 用户多久后自动恢复 API。填 0 表示必须由管理员手动解除。',
-  signupReviewPrompt: '自定义审查提示词',
-  signupReviewPromptHint: '这段通用提示词会发送给审查模型，所选模式的专属规则仍会追加在后面。保存前可以先用下方试运行检查效果。',
   signupReviewPromptRestore: '恢复内置提示词',
   signupReviewRefusal: '被拒绝时显示的文字',
   signupReviewRefusalPlaceholder: '如果你认为这是误判，请加 QQ 群 123456789，或发邮件到 admin@example.com。',

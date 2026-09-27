@@ -216,7 +216,6 @@ var writableSettings = map[string]bool{
 	settings.SignupReviewPrompt:         true,
 	settings.SignupReviewRefusal:        true,
 	settings.SignupReviewRestrictHours:  true,
-	settings.SignupReviewPrompt:         true,
 	settings.TwoFactorPolicy:            true,
 	settings.TwoFactorIssuer:            true,
 	settings.TwoFactorRememberDays:      true,

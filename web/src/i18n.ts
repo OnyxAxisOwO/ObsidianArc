@@ -1577,8 +1577,6 @@ const en = {
   signupReviewModelHint: 'A small fast one is enough: it answers with a word. The request is charged to nobody and does not appear in anyone’s usage.',
   signupReviewRestrictHours: 'Restricted API period (hours)',
   signupReviewRestrictHoursHint: 'How long a restricted sign-up loses API access. 0 requires an administrator to lift it.',
-  signupReviewPrompt: 'Custom review prompt',
-  signupReviewPromptHint: 'This shared prompt is sent to the review model. The selected mode’s rules are appended after it. Try changes below before saving.',
   signupReviewPromptRestore: 'Restore built-in prompt',
   signupReviewRefusal: 'What a refused visitor reads',
   signupReviewRefusalPlaceholder: 'If you believe this is a mistake, join QQ group 123456789 or write to admin@example.com.',

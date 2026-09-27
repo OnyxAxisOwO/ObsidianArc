@@ -425,6 +425,7 @@ describe('administrator mail settings', () => {
   });
 
   it('shows the saved prompt and restores the built-in prompt before saving', async () => {
+    adopt({ ...ACCOUNT, two_factor_at: 1000 });
     const builtIn = 'The built-in registration review instructions.';
     const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
     vi.spyOn(authApi, 'fetchSite').mockResolvedValue(siteInfo.value);
@@ -450,6 +451,11 @@ describe('administrator mail settings', () => {
     expect(prompt.value).toBe(builtIn);
 
     button(actions, t('save')).click();
+    await nextTick();
+    const dialogInput = document.body.querySelector<HTMLInputElement>('input.oa-2fa-code');
+    if (dialogInput) {
+      type(dialogInput, '123456');
+    }
     await settle();
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ 'security.signup_review_prompt': '' }));
   });
