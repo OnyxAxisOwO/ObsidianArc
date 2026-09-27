@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -67,9 +69,22 @@ type Details struct {
 // here are the same constants the settings screen and the writable list use,
 // and TestEveryProviderHasItsSettings can tell when a provider is added
 // without them.
-var credentials = map[string][3]string{
+var credentials = map[string][]string{
 	"github": {settings.OAuthGitHubEnabled, settings.OAuthGitHubID, settings.OAuthGitHubSecret},
 	"google": {settings.OAuthGoogleEnabled, settings.OAuthGoogleID, settings.OAuthGoogleSecret},
+	"oidc": {
+		settings.OAuthOIDCEnabled,
+		settings.OAuthOIDCClientID,
+		settings.OAuthOIDCClientSecret,
+		settings.OAuthOIDCIssuer,
+		settings.OAuthOIDCDisplayName,
+		settings.OAuthOIDCScopes,
+		settings.OAuthOIDCAuthURL,
+		settings.OAuthOIDCTokenURL,
+		settings.OAuthOIDCUserInfoURL,
+		settings.OAuthOIDCTrustEmail,
+		settings.OAuthOIDCOnlySignup,
+	},
 }
 
 type Service struct {
@@ -78,6 +93,11 @@ type Service struct {
 	users    *user.Store
 	auth     *auth.Service
 	settings *settings.Service
+
+	discoveryMu   sync.Mutex
+	cachedIssuer  string
+	cachedDoc     oidcDiscovery
+	cachedExpires time.Time
 }
 
 func NewService(
@@ -94,7 +114,7 @@ func (s *Service) Enabled(providerID string) bool {
 	if !known {
 		return false
 	}
-	return s.settings.Bool(keys[0]) && s.Credentials(providerID).configured()
+	return s.settings.Bool(keys[0]) && s.Credentials(providerID).configuredFor(providerID)
 }
 
 func (s *Service) Credentials(providerID string) Credentials {
@@ -102,10 +122,35 @@ func (s *Service) Credentials(providerID string) Credentials {
 	if !known {
 		return Credentials{}
 	}
-	return Credentials{
+	creds := Credentials{
 		ClientID:     strings.TrimSpace(s.settings.Get(keys[1])),
 		ClientSecret: strings.TrimSpace(s.settings.Get(keys[2])),
 	}
+	if providerID == "oidc" {
+		creds.Issuer = strings.TrimSpace(s.settings.Get(settings.OAuthOIDCIssuer))
+		creds.DisplayName = strings.TrimSpace(s.settings.Get(settings.OAuthOIDCDisplayName))
+		if scopes := strings.TrimSpace(s.settings.Get(settings.OAuthOIDCScopes)); scopes != "" {
+			creds.Scopes = strings.Fields(scopes)
+		}
+		creds.AuthURL = strings.TrimSpace(s.settings.Get(settings.OAuthOIDCAuthURL))
+		creds.TokenURL = strings.TrimSpace(s.settings.Get(settings.OAuthOIDCTokenURL))
+		creds.UserInfoURL = strings.TrimSpace(s.settings.Get(settings.OAuthOIDCUserInfoURL))
+		creds.TrustEmail = s.settings.Bool(settings.OAuthOIDCTrustEmail)
+	}
+	return creds
+}
+
+// DisplayName returns the label for a provider button or connection.
+func (s *Service) DisplayName(providerID string) string {
+	if providerID == "oidc" {
+		if custom := strings.TrimSpace(s.settings.Get(settings.OAuthOIDCDisplayName)); custom != "" {
+			return custom
+		}
+	}
+	if p := ByID(providerID); p != nil {
+		return p.Name
+	}
+	return providerID
 }
 
 // SignIn resolves a provider's answer to an account, opening one if this
@@ -274,6 +319,18 @@ func (s *Service) resolve(
 				}
 				if populated {
 					return ErrSignupClosed
+				}
+			}
+
+			// When OIDC is enforced for all new accounts, other third-party providers
+			// cannot open an account either; only OIDC signups are allowed.
+			if s.settings.Bool(settings.OAuthOIDCOnlySignup) && s.settings.Bool(settings.OAuthOIDCEnabled) && identity.Provider != "oidc" {
+				populated, err := s.users.Any(ctx, tx)
+				if err != nil {
+					return err
+				}
+				if populated {
+					return auth.ErrOIDCOnlyRegistration
 				}
 			}
 

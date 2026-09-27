@@ -31,3 +31,5 @@ Thumbs.db
 .agents/
 docs/SECURITY_AUDIT.md
 /veil/
+.demo-user/
+data-demo/

@@ -103,12 +103,23 @@ const (
 	// pasting a client id is configuring, not yet opening a second front
 	// door, and a button that appeared the moment a key was saved would be a
 	// button nobody had finished setting up.
-	OAuthGitHubEnabled = "oauth.github_enabled"
-	OAuthGitHubID      = "oauth.github_client_id"
-	OAuthGitHubSecret  = "oauth.github_client_secret"
-	OAuthGoogleEnabled = "oauth.google_enabled"
-	OAuthGoogleID      = "oauth.google_client_id"
-	OAuthGoogleSecret  = "oauth.google_client_secret"
+	OAuthGitHubEnabled    = "oauth.github_enabled"
+	OAuthGitHubID         = "oauth.github_client_id"
+	OAuthGitHubSecret     = "oauth.github_client_secret"
+	OAuthGoogleEnabled    = "oauth.google_enabled"
+	OAuthGoogleID         = "oauth.google_client_id"
+	OAuthGoogleSecret     = "oauth.google_client_secret"
+	OAuthOIDCEnabled      = "oauth.oidc_enabled"
+	OAuthOIDCClientID     = "oauth.oidc_client_id"
+	OAuthOIDCClientSecret = "oauth.oidc_client_secret"
+	OAuthOIDCIssuer       = "oauth.oidc_issuer"
+	OAuthOIDCDisplayName  = "oauth.oidc_display_name"
+	OAuthOIDCScopes       = "oauth.oidc_scopes"
+	OAuthOIDCAuthURL      = "oauth.oidc_auth_url"
+	OAuthOIDCTokenURL     = "oauth.oidc_token_url"
+	OAuthOIDCUserInfoURL  = "oauth.oidc_userinfo_url"
+	OAuthOIDCTrustEmail   = "oauth.oidc_trust_email"
+	OAuthOIDCOnlySignup   = "oauth.oidc_only_signup"
 	// Whether a provider identity nobody here knows may open an account, or
 	// only sign in to one that already exists. On, because an instance that
 	// has closed registration already refuses it through
@@ -129,9 +140,10 @@ const (
 	// the server at all.
 	FeedbackShowStaffName = "feedback.show_staff_name"
 
-	// Asking a model whether a sign-up looks like a person. Empty keeps the
-	// built-in shared prompt; mode-specific fairness and decision rules are
-	// appended by the reviewer either way.
+	// Asking a model whether a sign-up looks like a person. What an operator
+	// chooses is whether it runs, which model answers, the mode, what a refusal
+	// says, and optionally custom review instructions. Modifying the custom
+	// prompt requires two-factor authentication to protect the door.
 	SignupReview              = "security.signup_review"
 	SignupReviewModel         = "security.signup_review_model"
 	SignupReviewMode          = "security.signup_review_mode"
@@ -535,17 +547,27 @@ var Defaults = map[string]string{
 	// Off, and off even once the credentials are filled in, for the reason
 	// the challenge switches above are: pasting a key is not the same as
 	// opening the door.
-	OAuthGitHubEnabled: "false",
-	OAuthGitHubID:      "",
-	OAuthGitHubSecret:  "",
-	OAuthGoogleEnabled: "false",
-	OAuthGoogleID:      "",
-	OAuthGoogleSecret:  "",
-	OAuthAllowSignup:   "true",
-	OAuthLinkByEmail:   "true",
-	SignupReview:       "false",
-	SignupReviewModel:  "",
-	SignupReviewPrompt: "",
+	OAuthGitHubEnabled:    "false",
+	OAuthGitHubID:         "",
+	OAuthGitHubSecret:     "",
+	OAuthGoogleEnabled:    "false",
+	OAuthGoogleID:         "",
+	OAuthGoogleSecret:     "",
+	OAuthOIDCEnabled:      "false",
+	OAuthOIDCClientID:     "",
+	OAuthOIDCClientSecret: "",
+	OAuthOIDCIssuer:       "",
+	OAuthOIDCDisplayName:  "",
+	OAuthOIDCScopes:       "",
+	OAuthOIDCAuthURL:      "",
+	OAuthOIDCTokenURL:     "",
+	OAuthOIDCUserInfoURL:  "",
+	OAuthOIDCTrustEmail:   "false",
+	OAuthOIDCOnlySignup:   "false",
+	OAuthAllowSignup:      "true",
+	OAuthLinkByEmail:      "true",
+	SignupReview:          "false",
+	SignupReviewModel:     "",
 	// Loose, normal or strict. Normal refuses what reads as generated and
 	// allows what reads as chosen; the other two move the line, and strict
 	// also refuses when the model cannot answer at all.
@@ -555,6 +577,7 @@ var Defaults = map[string]string{
 	// who wants to offer a way to appeal writes it here.
 	SignupReviewRefusal:       "",
 	SignupReviewRestrictHours: "24",
+	SignupReviewPrompt:        "",
 	// Optional: a policy that suddenly asked every account for a code would
 	// lock out everybody who has never heard of an authenticator app, the
 	// moment the software was upgraded.

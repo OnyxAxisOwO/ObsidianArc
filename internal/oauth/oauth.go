@@ -79,6 +79,8 @@ type Provider struct {
 	PKCE bool
 	// Reads the provider's own account endpoints with the token just issued.
 	identify func(context.Context, *http.Client, string) (Identity, error)
+	// For OIDC or providers that require full token exchange response and credentials.
+	identifyTokens func(context.Context, *http.Client, Credentials, tokenResponse) (Identity, error)
 }
 
 var providers = []*Provider{
@@ -103,6 +105,13 @@ var providers = []*Provider{
 		PKCE:     true,
 		identify: identifyGoogle,
 	},
+	{
+		ID:             "oidc",
+		Name:           "OpenID Connect",
+		Scopes:         []string{"openid", "email", "profile"},
+		PKCE:           true,
+		identifyTokens: identifyOIDC,
+	},
 }
 
 // Providers is every provider this build knows how to talk to, in the order
@@ -124,30 +133,59 @@ func ByID(id string) *Provider {
 type Credentials struct {
 	ClientID     string
 	ClientSecret string
+	Issuer       string
+	AuthURL      string
+	TokenURL     string
+	UserInfoURL  string
+	Scopes       []string
+	DisplayName  string
+	TrustEmail   bool
+}
+
+func (c Credentials) configuredFor(providerID string) bool {
+	if strings.TrimSpace(c.ClientID) == "" || strings.TrimSpace(c.ClientSecret) == "" {
+		return false
+	}
+	if providerID == "oidc" {
+		return strings.TrimSpace(c.Issuer) != "" || (strings.TrimSpace(c.AuthURL) != "" && strings.TrimSpace(c.TokenURL) != "")
+	}
+	return true
 }
 
 func (c Credentials) configured() bool {
-	return strings.TrimSpace(c.ClientID) != "" && strings.TrimSpace(c.ClientSecret) != ""
+	return c.configuredFor("")
 }
 
 // authorise is the URL the browser is sent to.
 func (p *Provider) authorise(creds Credentials, redirect, state, challenge string) string {
+	authURL := p.AuthURL
+	if creds.AuthURL != "" {
+		authURL = creds.AuthURL
+	}
+	if authURL == "" {
+		return ""
+	}
+	scopes := p.Scopes
+	if len(creds.Scopes) > 0 {
+		scopes = creds.Scopes
+	}
 	query := url.Values{
 		"client_id":     {creds.ClientID},
 		"redirect_uri":  {redirect},
 		"response_type": {"code"},
-		"scope":         {strings.Join(p.Scopes, " ")},
+		"scope":         {strings.Join(scopes, " ")},
 		"state":         {state},
 	}
 	if p.PKCE && challenge != "" {
 		query.Set("code_challenge", challenge)
 		query.Set("code_challenge_method", "S256")
 	}
-	return p.AuthURL + "?" + query.Encode()
+	return authURL + "?" + query.Encode()
 }
 
 type tokenResponse struct {
 	AccessToken      string `json:"access_token"`
+	IDToken          string `json:"id_token"`
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
 }
@@ -159,7 +197,11 @@ type tokenResponse struct {
 // useless anywhere but here.
 func (p *Provider) exchange(
 	ctx context.Context, client *http.Client, creds Credentials, code, redirect, verifier string,
-) (string, error) {
+) (tokenResponse, error) {
+	tokenURL := p.TokenURL
+	if creds.TokenURL != "" {
+		tokenURL = creds.TokenURL
+	}
 	form := url.Values{
 		"client_id":     {creds.ClientID},
 		"client_secret": {creds.ClientSecret},
@@ -171,10 +213,10 @@ func (p *Provider) exchange(
 		form.Set("code_verifier", verifier)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.TokenURL,
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL,
 		strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrUnavailable, err)
+		return tokenResponse{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// GitHub answers in form encoding unless it is asked for JSON. Google
@@ -183,18 +225,18 @@ func (p *Provider) exchange(
 
 	var body tokenResponse
 	if err := fetchJSON(ctx, client, request, &body); err != nil {
-		return "", err
+		return tokenResponse{}, err
 	}
 	if body.Error != "" {
 		// The provider naming its own refusal — an expired code, a secret
 		// that does not match. Nothing the visitor can do except start again,
 		// so it reads as a denial rather than as an outage.
-		return "", fmt.Errorf("%w: %s", ErrDenied, body.Error)
+		return tokenResponse{}, fmt.Errorf("%w: %s", ErrDenied, body.Error)
 	}
-	if body.AccessToken == "" {
-		return "", fmt.Errorf("%w: no access token in the reply", ErrUnavailable)
+	if body.AccessToken == "" && body.IDToken == "" {
+		return tokenResponse{}, fmt.Errorf("%w: no access token in the reply", ErrUnavailable)
 	}
-	return body.AccessToken, nil
+	return body, nil
 }
 
 // Authenticate runs the half of the flow that happens after the browser comes
@@ -202,17 +244,24 @@ func (p *Provider) exchange(
 func (p *Provider) Authenticate(
 	ctx context.Context, client *http.Client, creds Credentials, code, redirect, verifier string,
 ) (Identity, error) {
-	if !creds.configured() {
+	if !creds.configuredFor(p.ID) {
 		return Identity{}, ErrNotConfigured
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	token, err := p.exchange(ctx, client, creds, code, redirect, verifier)
+	tokens, err := p.exchange(ctx, client, creds, code, redirect, verifier)
 	if err != nil {
 		return Identity{}, err
 	}
-	identity, err := p.identify(ctx, client, token)
+	var identity Identity
+	if p.identifyTokens != nil {
+		identity, err = p.identifyTokens(ctx, client, creds, tokens)
+	} else if p.identify != nil {
+		identity, err = p.identify(ctx, client, tokens.AccessToken)
+	} else {
+		return Identity{}, fmt.Errorf("%w: provider %s has no identify method", ErrUnavailable, p.ID)
+	}
 	if err != nil {
 		return Identity{}, err
 	}

@@ -674,5 +674,65 @@ func TestSignInRecordsWhereTheAccountCameFrom(t *testing.T) {
 	if account.SignupUserAgent != "a browser" {
 		t.Errorf("signup user agent = %q, want the client that opened it", account.SignupUserAgent)
 	}
+}
 
+func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// Initial user registers via GitHub on empty instance.
+	firstUser, err := f.service.SignIn(ctx, identity("gh-1", "admin", ""), "", "")
+	if err != nil {
+		t.Fatalf("first user sign-in: %v", err)
+	}
+
+	// Turn on OIDC and OIDC-only signup.
+	if err := f.settings.Set(ctx, settings.OAuthOIDCEnabled, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Existing GitHub user can still sign in.
+	again, err := f.service.SignIn(ctx, identity("gh-1", "admin", ""), "", "")
+	if err != nil {
+		t.Fatalf("existing github user sign-in failed: %v", err)
+	}
+	if again.ID != firstUser.ID {
+		t.Fatalf("existing user ID = %q, want %q", again.ID, firstUser.ID)
+	}
+
+	// New user trying to sign in via GitHub is rejected with auth.ErrOIDCOnlyRegistration.
+	if _, err := f.service.SignIn(ctx, identity("gh-2", "stranger", ""), "", ""); !errors.Is(err, auth.ErrOIDCOnlyRegistration) {
+		t.Fatalf("new github user want ErrOIDCOnlyRegistration, got %v", err)
+	}
+
+	// New user signing in via OIDC succeeds.
+	oidcIdent := Identity{
+		Provider: "oidc",
+		Subject:  "oidc-sub-1",
+		Login:    "oidcuser",
+		Name:     "OIDC User",
+		Email:    "oidc@example.com",
+	}
+	oidcUser, err := f.service.SignIn(ctx, oidcIdent, "", "")
+	if err != nil {
+		t.Fatalf("new oidc user sign-in failed: %v", err)
+	}
+	if oidcUser.Username != "oidcuser" {
+		t.Fatalf("oidc user username = %q, want 'oidcuser'", oidcUser.Username)
+	}
+
+	// Toggle OIDC-only switch off. New user can sign in via GitHub again.
+	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "false"); err != nil {
+		t.Fatal(err)
+	}
+	ghUser, err := f.service.SignIn(ctx, identity("gh-3", "ghuser", ""), "", "")
+	if err != nil {
+		t.Fatalf("new github user sign-in after turning off oidc-only failed: %v", err)
+	}
+	if ghUser.Username != "ghuser" {
+		t.Fatalf("github user username = %q, want 'ghuser'", ghUser.Username)
+	}
 }

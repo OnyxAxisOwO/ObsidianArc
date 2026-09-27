@@ -638,6 +638,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			}
 			return upstream, record.Spec(), nil
 		},
+		Prompt: func() string {
+			return settingsService.Get(settings.SignupReviewPrompt)
+		},
 	}
 	// The model needs to see a repeated registration template, not other
 	// people's contact details. Read a bounded recent sample and send only
@@ -895,7 +898,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		out := []auth.SignInProvider{}
 		for _, provider := range oauth.Providers() {
 			if oauthService.Enabled(provider.ID) {
-				out = append(out, auth.SignInProvider{ID: provider.ID, Name: provider.Name})
+				out = append(out, auth.SignInProvider{
+					ID:   provider.ID,
+					Name: oauthService.DisplayName(provider.ID),
+				})
 			}
 		}
 		return out

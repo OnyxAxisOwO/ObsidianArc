@@ -230,3 +230,54 @@ func TestACodeOnEveryVisitToTheBackoffice(t *testing.T) {
 		t.Fatalf("backoffice after leaving: %d", code)
 	}
 }
+
+// Modifying security.signup_review_prompt requires an administrator to have 2FA
+// enabled and verify their current TOTP authenticator code.
+func TestSignupReviewPromptRequiresTwoFactor(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	// 1. Without 2FA on the admin's account: rejected with two_factor_required.
+	update := map[string]string{"security.signup_review_prompt": "Custom prompt."}
+	res := in.do(http.MethodPut, "/api/admin/settings", update, founder)
+	if res.Code != http.StatusForbidden || !strings.Contains(res.Body.String(), "two_factor_required") {
+		t.Fatalf("update without 2FA enrolled: %d %s", res.Code, res.Body.String())
+	}
+
+	// 2. Enrol founder in 2FA.
+	secret, used := in.enrol(founder)
+
+	// 3. With 2FA enrolled but no code sent: rejected with two_factor_code_required.
+	res = in.do(http.MethodPut, "/api/admin/settings", update, founder)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "two_factor_code_required") {
+		t.Fatalf("update without code: %d %s", res.Code, res.Body.String())
+	}
+
+	// 4. With wrong code sent: rejected with two_factor_code.
+	update["two_factor_code"] = "000000"
+	res = in.do(http.MethodPut, "/api/admin/settings", update, founder)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "two_factor_code") {
+		t.Fatalf("update with wrong code: %d %s", res.Code, res.Body.String())
+	}
+
+	// 5. With valid TOTP code: succeeds and saves the setting.
+	code, _ := totp.Code(secret, used+1)
+	update["two_factor_code"] = code
+	res = in.do(http.MethodPut, "/api/admin/settings", update, founder)
+	if res.Code != http.StatusOK {
+		t.Fatalf("update with valid code: %d %s", res.Code, res.Body.String())
+	}
+
+	// 6. Verify setting persisted.
+	settingsRes := in.do(http.MethodGet, "/api/admin/settings", nil, founder)
+	if !strings.Contains(settingsRes.Body.String(), `"security.signup_review_prompt":"Custom prompt."`) {
+		t.Fatalf("setting not persisted in: %s", settingsRes.Body.String())
+	}
+
+	// 7. Saving unchanged prompt does not demand a 2FA code again.
+	delete(update, "two_factor_code")
+	res = in.do(http.MethodPut, "/api/admin/settings", update, founder)
+	if res.Code != http.StatusOK {
+		t.Fatalf("save unchanged prompt without code: %d %s", res.Code, res.Body.String())
+	}
+}

@@ -145,6 +145,8 @@ export interface SiteInfo {
   logo_url?: string;
   /** Layout position of the sign-in / registration card ('center' | 'left' | 'right'). */
   auth_card_position?: 'center' | 'left' | 'right';
+  /** Whether new user registrations are forced to use OIDC. */
+  oidc_only_signup?: boolean;
 }
 
 // The presentation state the server keeps for an account. Deliberately loose:

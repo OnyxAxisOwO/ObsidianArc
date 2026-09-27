@@ -63,7 +63,7 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
   { id: 'secMail', pageSlug: 'security', titleKey: 'mailSettings', searchKeys: ['mailSettingsHint', 'mailHost', 'mailPort', 'mailUsername', 'mailFrom', 'mailPublicURL', 'mailTestSend'], keywords: ['邮件服务器', '验证邮件', '邮箱配置', 'SMTP', 'mail', 'email verification'] },
   { id: 'secUserCheck', pageSlug: 'security', titleKey: 'userCheckSettings', searchKeys: ['userCheckSettingsHint', 'userCheckEnabled', 'userCheckAPIKey', 'userCheckExemptDomains', 'userCheckFailureMode', 'userCheckTest'], keywords: ['临时邮箱', '一次性邮箱', '临时邮件', 'UserCheck', 'disposable email', 'disposable address'] },
   { id: 'secChatChallenge', pageSlug: 'security', titleKey: 'controlChatChallenge', searchKeys: ['chatChallengeRequests', 'chatChallengeWindow', 'chatChallengeClearance'] },
-  { id: 'secReviewTrial', pageSlug: 'security', titleKey: 'reviewTry', searchKeys: ['reviewTryHint', 'reviewTryRun', 'username', 'email', 'qq'] },
+  { id: 'secReviewTrial', pageSlug: 'security', titleKey: 'reviewTry', searchKeys: ['reviewTryHint', 'reviewTryRun', 'username', 'email', 'qq', 'reviewTrialFromAddress'] },
 
   // --- Dashboard
   {
@@ -521,10 +521,10 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     id: 'secOAuth',
     pageSlug: 'security',
     titleKey: 'secOAuth',
-    searchKeys: ['oauthHint', 'oauthGitHub', 'oauthGoogle', 'oauthClientID', 'oauthClientSecret',
-      'oauthAllowSignup', 'oauthLinkByEmail'],
-    keywords: ['第三方登录', 'GitHub 登录', '谷歌登录', 'Google 登录', '社交登录', '单点登录',
-      'oauth', 'social login', 'sign in with github', 'sign in with google', 'sso'],
+    searchKeys: ['oauthHint', 'oauthGitHub', 'oauthGoogle', 'oauthOIDC', 'oauthClientID', 'oauthClientSecret',
+      'oauthAllowSignup', 'oauthLinkByEmail', 'oauthOIDCOnlySignup'],
+    keywords: ['第三方登录', 'GitHub 登录', '谷歌登录', 'Google 登录', 'OIDC 登录', 'OpenID Connect', 'Keycloak', 'Authentik', '社交登录', '单点登录',
+      'oauth', 'oidc', 'social login', 'sign in with github', 'sign in with google', 'sso', '强制oidc', 'oidc注册'],
   },
   {
     id: 'secApplications',

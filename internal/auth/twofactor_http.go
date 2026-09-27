@@ -146,9 +146,9 @@ func (h *Handlers) leaveBackoffice(w http.ResponseWriter, r *http.Request) error
 	return httpx.NoContent(w)
 }
 
-// twoFactorError words every refusal with a code, because each one is said
+// TranslateTwoFactorError words every refusal with a code, because each one is said
 // in the reader's own language by the screen that asked.
-func twoFactorError(w http.ResponseWriter, err error) error {
+func TranslateTwoFactorError(w http.ResponseWriter, err error) error {
 	var limited *RateLimitError
 	if errors.As(err, &limited) {
 		seconds := int(limited.RetryAfter.Seconds()) + 1
@@ -186,4 +186,8 @@ func twoFactorError(w http.ResponseWriter, err error) error {
 	default:
 		return httpx.Internal(err)
 	}
+}
+
+func twoFactorError(w http.ResponseWriter, err error) error {
+	return TranslateTwoFactorError(w, err)
 }

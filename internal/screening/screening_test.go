@@ -188,6 +188,14 @@ func TestEachModeCarriesItsOwnBiasAndTheCommonRules(t *testing.T) {
 		if !strings.Contains(text, "digits by definition") {
 			t.Errorf("%s lost the note that a QQ number is just digits", name)
 		}
+		// The reason is shown directly in the admin security log, so every
+		// mode instructs the model to answer in Simplified Chinese.
+		if !strings.Contains(text, "Simplified Chinese") {
+			t.Errorf("%s does not tell the model to write the reason in Simplified Chinese", name)
+		}
+		if !strings.Contains(text, "Chinese Pinyin") {
+			t.Errorf("%s lost the note about Chinese naming and Pinyin conventions", name)
+		}
 	}
 
 	if !strings.Contains(strings.ToUpper(strict), "STRICT") {
@@ -272,5 +280,42 @@ func TestClipKeepsTheTailOfAnAnswerValid(t *testing.T) {
 	// An answer that already fits is returned trimmed, with no ellipsis.
 	if got := clip("  allow  ", 20); got != "allow" {
 		t.Errorf("clip(%q, 20) = %q, want %q", "  allow  ", got, "allow")
+	}
+}
+
+// An operator's custom prompt replaces the default instruction while still
+// enforcing the JSON response contract and the mode's bias.
+func TestCustomPromptEnforcesFormatAndBias(t *testing.T) {
+	custom := "Only allow registrations from domain @example.com."
+	prompt := instructionFor(Normal, custom)
+
+	if !strings.Contains(prompt, custom) {
+		t.Errorf("prompt does not contain the operator's custom rules:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, `{"decision"`) {
+		t.Errorf("prompt does not enforce the JSON response contract:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "NORMAL") {
+		t.Errorf("prompt lost the mode bias:\n%s", prompt)
+	}
+
+	// When a custom prompt already includes the decision format, it is not duplicated.
+	withSchema := "Custom rules.\nAnswer with JSON and nothing else:\n{\"decision\": \"allow|restrict|refuse\"}"
+	promptWithSchema := instructionFor(Strict, withSchema)
+	if strings.Count(promptWithSchema, `{"decision"`) != 1 {
+		t.Errorf("schema was duplicated when already provided:\n%s", promptWithSchema)
+	}
+}
+
+// Bot/machine patterns (e.g. hawk0344onyx, userXXXXX, guestXXXXX) are called out in the instructions
+// and must be directly refused by the screening model rather than restricted.
+func TestBotRegistrationMachinePatternsAreMentioned(t *testing.T) {
+	for _, mode := range []Mode{Loose, Normal, Strict} {
+		prompt := instructionFor(mode)
+		for _, term := range []string{"hawk0344onyx", "user12345", "refuse"} {
+			if !strings.Contains(prompt, term) {
+				t.Errorf("%s prompt does not mention bot registration pattern or action %q:\n%s", mode, term, prompt)
+			}
+		}
 	}
 }
