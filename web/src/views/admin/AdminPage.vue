@@ -18,6 +18,7 @@ import { t } from '@/composables/useI18n';
 import {
   IconChart, IconChevron, IconCpu, IconFile, IconHome, IconKey, IconLayers, IconLock,
   IconMenu, IconMessage, IconPulse, IconSend, IconServer, IconSliders, IconSpark,
+  IconTrophy,
   IconUsers,
 } from '@/icons';
 import AppShell from '@/layouts/AppShell.vue';
@@ -40,6 +41,7 @@ import AdminGroups from './AdminGroups.vue';
 import AdminProviders from './AdminProviders.vue';
 import AdminModels from './AdminModels.vue';
 import AdminAvailability from './AdminAvailability.vue';
+import AdminLeaderboard from './AdminLeaderboard.vue';
 import AdminUsage from './AdminUsage.vue';
 import AdminResources from './AdminResources.vue';
 import AdminCodes from './AdminCodes.vue';
@@ -61,6 +63,7 @@ const PAGES: AdminPageSpec[] = [
   { slug: 'models', label: 'navModels', icon: IconSpark, component: markRaw(AdminModels) },
   { slug: 'availability', label: 'navAvailability', icon: IconPulse, component: markRaw(AdminAvailability) },
   { slug: 'usage', label: 'navUsage', icon: IconChart, component: markRaw(AdminUsage) },
+  { slug: 'leaderboard', label: 'navLeaderboard', icon: IconTrophy, component: markRaw(AdminLeaderboard) },
   { slug: 'resources', label: 'navResources', icon: IconCpu, component: markRaw(AdminResources) },
   { slug: 'codes', label: 'navCodes', icon: IconKey, component: markRaw(AdminCodes) },
   { slug: 'invites', label: 'navInvites', icon: IconSend, component: markRaw(AdminInvites) },

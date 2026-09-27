@@ -212,6 +212,7 @@ var writableSettings = map[string]bool{
 	settings.SignupReviewMode:           true,
 	settings.SignupReviewRefusal:        true,
 	settings.SignupReviewRestrictHours:  true,
+	settings.SignupReviewPrompt:         true,
 	settings.TwoFactorPolicy:            true,
 	settings.TwoFactorIssuer:            true,
 	settings.TwoFactorRememberDays:      true,
@@ -255,6 +256,10 @@ var writableSettings = map[string]bool{
 	settings.PWAThemeColor:              true,
 	settings.PWABackgroundColor:         true,
 	settings.PWAIconURL:                 true,
+	settings.LeaderboardShowUsers:       true,
+	settings.LeaderboardIdentity:        true,
+	settings.LeaderboardSize:            true,
+	settings.LeaderboardShowModels:      true,
 }
 
 // The numeric settings and what they may be, shared by the ordinary save and
@@ -276,12 +281,19 @@ var numericBounds = map[string][2]int{
 	settings.ChatAgentMaxRounds:         {1, 50},
 	settings.TwoFactorRememberDays:      {0, settings.MaxTwoFactorRememberDays},
 	settings.TwoFactorBackofficeMinutes: {1, settings.MaxTwoFactorBackofficeMinutes},
+	settings.LeaderboardSize:            {1, settings.MaxLeaderboardSize},
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
 	var body map[string]string
 	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
 		return err
+	}
+
+	twoFactorCode := body["two_factor_code"]
+	delete(body, "two_factor_code")
+	if twoFactorCode == "" {
+		twoFactorCode = r.Header.Get("X-Two-Factor-Code")
 	}
 
 	for key, value := range body {
@@ -312,6 +324,23 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	}
 	if err := checkTwoFactorSettings(auth.MustUser(r.Context()), body); err != nil {
 		return err
+	}
+	if newPrompt, present := body[settings.SignupReviewPrompt]; present {
+		currentPrompt := h.settings.Get(settings.SignupReviewPrompt)
+		if strings.TrimSpace(newPrompt) != strings.TrimSpace(currentPrompt) {
+			actor := auth.MustUser(r.Context())
+			if !actor.TwoFactorEnabled() {
+				return httpx.ForbiddenCode("two_factor_required",
+					"Modifying the AI review prompt requires two-step verification enabled on your account.")
+			}
+			if strings.TrimSpace(twoFactorCode) == "" {
+				return httpx.BadRequestCode("two_factor_code_required",
+					"Enter a code from your authenticator app to modify the AI review prompt.")
+			}
+			if err := h.auth.VerifyTwoFactorCode(r.Context(), actor, strings.TrimSpace(twoFactorCode), h.clientIP(r)); err != nil {
+				return auth.TranslateTwoFactorError(w, err)
+			}
+		}
 	}
 	if req, present := body[settings.QQRequirement]; present && !settings.ValidQQRequirement(req) {
 		return httpx.BadRequest("Unknown QQ requirement %q.", req)
@@ -381,6 +410,9 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	if display, present := body[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
 		return httpx.BadRequest("Unknown usage display %q.", display)
 	}
+	if identity, present := body[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
+		return httpx.BadRequest("Unknown leaderboard identity %q.", identity)
+	}
 
 	// A registration group that does not exist would send every new account
 	// into no group at all, which quietly means no models.
@@ -421,6 +453,12 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		return httpx.BadRequest("That file contains no settings.")
 	}
 
+	twoFactorCode := body["two_factor_code"]
+	delete(body, "two_factor_code")
+	if twoFactorCode == "" {
+		twoFactorCode = r.Header.Get("X-Two-Factor-Code")
+	}
+
 	applied := map[string]string{}
 	skipped := []string{}
 
@@ -443,6 +481,10 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		delete(applied, settings.UsageDisplay)
 		skipped = append(skipped, settings.UsageDisplay)
 	}
+	if identity, present := applied[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
+		delete(applied, settings.LeaderboardIdentity)
+		skipped = append(skipped, settings.LeaderboardIdentity)
+	}
 	for _, key := range []string{settings.PWAThemeColor, settings.PWABackgroundColor} {
 		if value, present := applied[key]; present && value != "" && !settings.ValidHexColor(value) {
 			delete(applied, key)
@@ -462,6 +504,14 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 				delete(applied, key)
 				skipped = append(skipped, key)
 			}
+		}
+	}
+	if value, present := applied[settings.SignupReviewPrompt]; present && strings.TrimSpace(value) != strings.TrimSpace(h.settings.Get(settings.SignupReviewPrompt)) {
+		actor := auth.MustUser(r.Context())
+		if !actor.TwoFactorEnabled() || strings.TrimSpace(twoFactorCode) == "" ||
+			h.auth.VerifyTwoFactorCode(r.Context(), actor, strings.TrimSpace(twoFactorCode), h.clientIP(r)) != nil {
+			delete(applied, settings.SignupReviewPrompt)
+			skipped = append(skipped, settings.SignupReviewPrompt)
 		}
 	}
 	if raw, present := applied[settings.AttachmentPurgeDaily]; present && strings.TrimSpace(raw) != "" {

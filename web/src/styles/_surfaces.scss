@@ -4092,6 +4092,184 @@
   }
 }
 
+/* --- leaderboard panel ------------------------------------------------------
+   The reader's own board. It borrows the uptime panel's layout — same column,
+   same full-screen behaviour — and the ranked list from the overview, so the
+   only rules here are the ones neither of those already has: a pinned row for
+   the reader's own place, and the three places that get a medal.
+
+   No colour of its own. The medals are the accent at three strengths rather
+   than gold, silver and bronze: a hardcoded hue would be the one thing in
+   this interface that ignores the reader's chosen accent. */
+
+.oa-panel.fullscreen .oa-panel-body.oa-board-body {
+  padding: 0;
+}
+
+.oa-board-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.oa-panel.fullscreen .oa-board-content {
+  max-width: 1480px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 8px 24px 24px;
+  box-sizing: border-box;
+}
+
+.oa-board-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+/* Pinned above the list: being four hundredth is the common case, and a
+   board that only shows twenty places answers the question for twenty
+   people. */
+.oa-board-me {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-high);
+}
+
+.oa-board-me-rank {
+  display: flex;
+  align-items: baseline;
+  flex-shrink: 0;
+  color: var(--ai-primary);
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.oa-board-me-hash {
+  font-size: 15px;
+  font-weight: 500;
+  opacity: 0.6;
+}
+
+.oa-board-me-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.oa-board-me-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ai-text);
+}
+
+.oa-board-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.oa-panel.fullscreen .oa-board-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: 8px;
+  align-items: start;
+}
+
+.oa-board-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+}
+
+/* The reader's own row, marked by a fill rather than an outline, which is
+   the rule everywhere else here. */
+.oa-board-row.self {
+  background: var(--ai-state-hover);
+  box-shadow: inset 2px 0 0 var(--ai-primary);
+}
+
+.oa-board-rank {
+  flex-shrink: 0;
+  min-width: 22px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ai-text-secondary);
+  text-align: right;
+}
+
+.oa-board-row.podium .oa-board-rank {
+  color: var(--ai-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.oa-board-avatar {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  font-size: 11px;
+}
+
+.oa-board-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.oa-board-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ai-text);
+
+  /* The name is the part that has to give way; the "you" badge beside it is
+     already as short as it goes. */
+  > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* A share of the leader rather than of the total: the question a reader has
+   is how far off the top they are. */
+.oa-board-track {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+  overflow: hidden;
+
+  > span {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--ai-primary);
+  }
+}
+
+.oa-board-value {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ai-text-secondary);
+}
+
 /* Line chart styles */
 .oa-linechart-container {
   display: flex;

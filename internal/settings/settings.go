@@ -137,16 +137,16 @@ const (
 	// the server at all.
 	FeedbackShowStaffName = "feedback.show_staff_name"
 
-	// Asking a model whether a sign-up looks like a person. The prompt is not
-	// a setting: one that could be edited could be turned into "refuse
-	// everybody from this domain", and this runs before an account exists,
-	// where a mistake has no appeal. What an operator chooses is whether it
-	// runs, which model answers, and what a refusal says.
+	// Asking a model whether a sign-up looks like a person. What an operator
+	// chooses is whether it runs, which model answers, the mode, what a refusal
+	// says, and optionally custom review instructions. Modifying the custom
+	// prompt requires two-factor authentication to protect the door.
 	SignupReview              = "security.signup_review"
 	SignupReviewModel         = "security.signup_review_model"
 	SignupReviewMode          = "security.signup_review_mode"
 	SignupReviewRefusal       = "security.signup_review_refusal"
 	SignupReviewRestrictHours = "security.signup_review_restrict_hours"
+	SignupReviewPrompt        = "security.signup_review_prompt"
 	// Two-step sign-in. Who must switch it on, the name an authenticator
 	// app files the entry under, and how many days a browser may skip the
 	// code once somebody has typed one on it.
@@ -217,6 +217,19 @@ const (
 	// the settings response and deliberately absent from the writable set.
 	AttachmentPurgeLast = "attachments.purge_last_run"
 
+	// The leaderboard readers may open from the account menu. Off by default
+	// for the reason uptime is: it tells every account what the others have
+	// been doing, and that is a thing an operator decides to publish rather
+	// than a thing an upgrade publishes for them.
+	LeaderboardShowUsers = "leaderboard.show_users"
+	// How the other people on it are named. See LeaderboardIdentities.
+	LeaderboardIdentity = "leaderboard.identity"
+	// How many places are shown. The reader's own place is shown whatever it
+	// is, so this bounds the list, not who can find themselves on it.
+	LeaderboardSize = "leaderboard.size"
+	// Whether the busiest-models board is shown beside the accounts one.
+	LeaderboardShowModels = "leaderboard.show_models"
+
 	// The browser tab and the PWA install card. Both fall back to the site's
 	// own name (and, for the description, site.description) rather than
 	// needing a second copy typed in — an operator who never opens this card
@@ -262,9 +275,14 @@ const (
 	LandingIntroPage = "intro"
 	// The chat itself, read-only unless a trial is enabled.
 	LandingChat = "chat"
+	// The product's own front page — written here rather than by the
+	// operator, so an instance gets one without anybody composing HTML.
+	// It says what the software is; `intro` is still how an operator says
+	// what *their* instance is.
+	LandingSite = "site"
 )
 
-var LandingModes = []string{LandingLogin, LandingIntroPage, LandingChat}
+var LandingModes = []string{LandingLogin, LandingIntroPage, LandingChat, LandingSite}
 
 func ValidLandingMode(value string) bool {
 	for _, candidate := range LandingModes {
@@ -292,6 +310,34 @@ func ValidUsageDisplay(value string) bool {
 	}
 	return false
 }
+
+// How the leaderboard names the accounts on it, other than the reader's own.
+const (
+	// The name and picture each person chose for themselves, which is what
+	// they already show everyone they talk to here.
+	LeaderboardNickname = "nickname"
+	// Nobody but the reader: everyone else is a place number. For an
+	// instance whose users would rather not be seen to spend.
+	LeaderboardAnonymous = "anonymous"
+	// The nickname with the handle under it, as the backoffice shows them.
+	// Nicknames are not unique; handles are.
+	LeaderboardHandle = "handle"
+)
+
+var LeaderboardIdentities = []string{LeaderboardNickname, LeaderboardAnonymous, LeaderboardHandle}
+
+func ValidLeaderboardIdentity(value string) bool {
+	for _, candidate := range LeaderboardIdentities {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// MaxLeaderboardSize bounds the list. Every place shown costs a lookup for its
+// picture, and past a hundred it is a table rather than a leaderboard.
+const MaxLeaderboardSize = 100
 
 // Who has to have two-step sign-in switched on. Each level includes the
 // one before it: an administrator who must enrol before signing in has
@@ -509,6 +555,7 @@ var Defaults = map[string]string{
 	// who wants to offer a way to appeal writes it here.
 	SignupReviewRefusal:       "",
 	SignupReviewRestrictHours: "24",
+	SignupReviewPrompt:        "",
 	// Optional: a policy that suddenly asked every account for a code would
 	// lock out everybody who has never heard of an authenticator app, the
 	// moment the software was upgraded.
@@ -587,6 +634,11 @@ var Defaults = map[string]string{
 	// which this server holds a picture it has no use for.
 	AttachmentOrphanMins: "60",
 	AttachmentPurgeLast:  "0",
+
+	LeaderboardShowUsers:  "false",
+	LeaderboardIdentity:   LeaderboardNickname,
+	LeaderboardSize:       "20",
+	LeaderboardShowModels: "true",
 
 	SiteBrowserTitle: "",
 	PWAName:          "",

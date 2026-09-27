@@ -59,7 +59,7 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
   { id: 'secMail', pageSlug: 'security', titleKey: 'mailSettings', searchKeys: ['mailSettingsHint', 'mailHost', 'mailPort', 'mailUsername', 'mailFrom', 'mailPublicURL', 'mailTestSend'], keywords: ['邮件服务器', '验证邮件', '邮箱配置', 'SMTP', 'mail', 'email verification'] },
   { id: 'secUserCheck', pageSlug: 'security', titleKey: 'userCheckSettings', searchKeys: ['userCheckSettingsHint', 'userCheckEnabled', 'userCheckAPIKey', 'userCheckExemptDomains', 'userCheckFailureMode', 'userCheckTest'], keywords: ['临时邮箱', '一次性邮箱', '临时邮件', 'UserCheck', 'disposable email', 'disposable address'] },
   { id: 'secChatChallenge', pageSlug: 'security', titleKey: 'controlChatChallenge', searchKeys: ['chatChallengeRequests', 'chatChallengeWindow', 'chatChallengeClearance'] },
-  { id: 'secReviewTrial', pageSlug: 'security', titleKey: 'reviewTry', searchKeys: ['reviewTryHint', 'reviewTryRun', 'username', 'email', 'qq'] },
+  { id: 'secReviewTrial', pageSlug: 'security', titleKey: 'reviewTry', searchKeys: ['reviewTryHint', 'reviewTryRun', 'username', 'email', 'qq', 'reviewTrialFromAddress'] },
 
   // --- Dashboard
   {
@@ -300,6 +300,36 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     titleKey: 'secResetUptime',
     searchKeys: ['resetUptime', 'resetUptimeHint'],
     keywords: ['重置在线率', '清空探针历史', '恢复自动停用模型', 'reset uptime'],
+  },
+
+  // --- Leaderboard
+  {
+    id: 'secBoardPreview',
+    pageSlug: 'leaderboard',
+    titleKey: 'secBoardPreview',
+    searchKeys: ['boardPreviewHint', 'boardViewPage'],
+    keywords: ['排行榜预览', '榜单效果', 'leaderboard preview', 'ranking preview'],
+  },
+  {
+    id: 'secBoardVisibility',
+    pageSlug: 'leaderboard',
+    titleKey: 'secBoardVisibility',
+    searchKeys: ['boardShowUsers', 'boardShowUsersHint'],
+    keywords: ['排行榜开放', '对用户可见', '公开排行榜', 'show leaderboard to users'],
+  },
+  {
+    id: 'secBoardIdentity',
+    pageSlug: 'leaderboard',
+    titleKey: 'secBoardIdentity',
+    searchKeys: ['boardIdentity', 'boardIdentityHint'],
+    keywords: ['榜单身份', '匿名排行', '昵称显示', '隐私', 'leaderboard identity', 'anonymous ranking'],
+  },
+  {
+    id: 'secBoardContents',
+    pageSlug: 'leaderboard',
+    titleKey: 'secBoardContents',
+    searchKeys: ['boardSize', 'boardShowModels'],
+    keywords: ['上榜人数', '榜单长度', '热门模型榜', 'leaderboard size', 'popular models'],
   },
 
   // --- Usage

@@ -70,7 +70,8 @@ export interface Account {
 // this — an instance still being set up always gets the sign-in card, whatever
 // is configured — so the client only has to draw what it is told.
 export interface Landing {
-  mode: 'login' | 'intro' | 'chat';
+  /** 'site' is the product's own front page, which no operator has to write. */
+  mode: 'login' | 'intro' | 'chat' | 'site';
   /** HTML the operator wrote. Only meaningful in 'intro' mode. */
   intro: string;
   /** Whether a visitor may actually send a message in 'chat' mode. */
@@ -86,6 +87,8 @@ export interface SiteInfo {
   browser_title?: string;
   registration_enabled: boolean;
   health_show_users?: boolean;
+  /** Whether readers may open the leaderboard. Absent on an older server. */
+  leaderboard_show_users?: boolean;
   allow_archive_conversations?: boolean;
   // True while the instance has no accounts at all: the first person to
   // register becomes the administrator.

@@ -28,7 +28,7 @@ import {
   Download as LucideDownload, Github as LucideGithub, MessageSquare as LucideMessageSquare,
   MoreVertical as LucideMoreVertical, Pencil as LucidePencil,
   RefreshCw as LucideRefreshCw,
-  Terminal as LucideTerminal, createLucideIcon,
+  Terminal as LucideTerminal, Trophy as LucideTrophy, createLucideIcon,
 } from 'lucide-vue-next';
 
 /** One [tag, attributes] pair, as lucide's factory takes them. */
@@ -113,6 +113,8 @@ export const IconRefresh = wrap(LucideRefreshCw as unknown as AnyComponent);
 // Feedback is new here too, so there is no earlier glyph to be faithful to
 // and lucide's own drawing is the one this uses.
 export const IconMessage = wrap(LucideMessageSquare as unknown as AnyComponent);
+// The leaderboard is new as well; lucide's cup is the glyph.
+export const IconTrophy = wrap(LucideTrophy as unknown as AnyComponent);
 // The two sign-in marks. GitHub's is lucide's own; Google has none, so its G
 // is drawn here as a single path in one colour rather than the four-colour
 // asset, which would be the only hardcoded hue in the interface.

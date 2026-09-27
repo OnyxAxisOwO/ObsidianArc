@@ -7,10 +7,12 @@
 // a model is asked to look at the result. An operator dealing with a wave of
 // junk accounts opens one page, not seven sections of another.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
 import { adminApi, type AdminMailSettings, type AdminModel, type AdminUserCheckSettings, type Group, type SecurityEvent, type SignInApplication, type TwoFactorAdoption } from '@/admin/api';
 import { fetchSite } from '@/api/auth';
 import { ApiError } from '@/api/client';
+import OaIconButton from '@/components/OaIconButton.vue';
+import OaOverlay from '@/components/OaOverlay.vue';
 import OaPagination from '@/components/OaPagination.vue';
 import type { PageState } from '@/components/table-types';
 import OaBadge from '@/components/OaBadge.vue';
@@ -19,7 +21,7 @@ import AdminControlCard from './AdminControlCard.vue';
 import AdminWorkbench from './AdminWorkbench.vue';
 import type { WorkbenchGroup } from './workbench';
 import { useSettingsDraft } from './settingsDraft';
-import { IconUsers, IconLock, IconSpark, IconFile, IconSliders, IconKey, IconGithub, IconGoogle, IconCopy, IconCheck, IconShield, IconMessage } from '@/icons';
+import { IconUsers, IconLock, IconSpark, IconFile, IconSliders, IconKey, IconGithub, IconGoogle, IconCopy, IconCheck, IconShield, IconMessage, IconClose } from '@/icons';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
@@ -29,6 +31,7 @@ import { t, type StringKey } from '@/composables/useI18n';
 import { copyToClipboard } from '@/chat/markdown';
 import { initials } from '@/lib/account';
 import { absoluteTime } from '@/lib/format';
+import { refusalText } from '@/lib/refusal';
 import { currentUser, site } from '@/stores/session';
 import { maskUser, maskLog, maskCredential } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
@@ -112,6 +115,7 @@ const form = ref({
   reviewMode: 'normal',
   reviewRestrictHours: 24 as number | null,
   reviewRefusal: '',
+  reviewPrompt: '',
   githubEnabled: false,
   githubClientID: '',
   githubSecret: '',
@@ -319,7 +323,7 @@ function removeApplication(app: SignInApplication): void {
 }
 
 // Trying the reviewer on an account that is not being created.
-const trial = ref({ username: '', email: '', qq: '', answer: '', running: false });
+const trial = ref({ username: '', email: '', qq: '', fromThisAddress: 0, answer: '', running: false });
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
 
@@ -357,6 +361,7 @@ function collect(): Record<string, string> {
     'security.signup_review_mode': form.value.reviewMode,
     'security.signup_review_restrict_hours': String(form.value.reviewRestrictHours ?? 24),
     'security.signup_review_refusal': form.value.reviewRefusal.trim(),
+    'security.signup_review_prompt': form.value.reviewPrompt.trim(),
     'oauth.github_enabled': String(form.value.githubEnabled),
     'oauth.github_client_id': form.value.githubClientID.trim(),
     // Empty keeps what is stored, the same bargain the Turnstile secret
@@ -392,15 +397,79 @@ function collect(): Record<string, string> {
 
 const { dirty, accept } = useSettingsDraft(collect);
 
+const initialReviewPrompt = ref('');
+const showTwoFactorModal = ref(false);
+const twoFactorCode = ref('');
+const twoFactorBusy = ref(false);
+const twoFactorError = ref('');
+const twoFactorField = ref<HTMLInputElement | null>(null);
+
+function cancelTwoFactor(): void {
+  showTwoFactorModal.value = false;
+  twoFactorCode.value = '';
+  twoFactorError.value = '';
+}
+
+function onTwoFactorInput(event: Event): void {
+  twoFactorCode.value = (event.target as HTMLInputElement).value;
+  if (/^\s*\d{3}\s?\d{3}\s*$/.test(twoFactorCode.value)) void submitTwoFactor();
+}
+
+async function submitTwoFactor(): Promise<void> {
+  const code = twoFactorCode.value.trim();
+  if (twoFactorBusy.value || !code) return;
+  twoFactorBusy.value = true;
+  twoFactorError.value = '';
+  try {
+    await performSave(code);
+    showTwoFactorModal.value = false;
+    twoFactorCode.value = '';
+  } catch (failure) {
+    twoFactorError.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
+    twoFactorCode.value = '';
+    await nextTick();
+    twoFactorField.value?.focus();
+  } finally {
+    twoFactorBusy.value = false;
+  }
+}
+
 async function save(): Promise<void> {
   if (!loaded.value || error.value || busy.value) return;
   const values = collect();
+  const promptChanged = values['security.signup_review_prompt'] !== initialReviewPrompt.value;
+  if (promptChanged) {
+    if (selfWithout.value) {
+      flash.value = t('signupReviewPromptNeeds2FA');
+      return;
+    }
+    showTwoFactorModal.value = true;
+    twoFactorCode.value = '';
+    twoFactorError.value = '';
+    await nextTick();
+    twoFactorField.value?.focus();
+    return;
+  }
+  try {
+    await performSave();
+  } catch {
+    // Handled in performSave
+  }
+}
+
+async function performSave(codeParam?: string): Promise<void> {
+  const values = collect();
+  const payload: Record<string, string> = { ...values };
+  if (codeParam) {
+    payload['two_factor_code'] = codeParam;
+  }
   busy.value = true;
   saveLabel.value = t('saving');
   flash.value = '';
   try {
-    await adminApi.saveSettings(values);
+    await adminApi.saveSettings(payload);
     accept(values);
+    initialReviewPrompt.value = values['security.signup_review_prompt'] ?? '';
     try {
       site.value = await fetchSite();
     } catch {
@@ -411,10 +480,23 @@ async function save(): Promise<void> {
     window.setTimeout(() => { saveLabel.value = ''; }, 1500);
     void loadAdoption();
   } catch (failure) {
-    flash.value = failure instanceof ApiError && failure.code === 'two_factor_self'
-      ? t('twoFactorPolicySelfRefused')
-      : failure instanceof ApiError ? failure.message : String(failure);
+    if (failure instanceof ApiError && failure.code === 'two_factor_code_required') {
+      showTwoFactorModal.value = true;
+      twoFactorCode.value = '';
+      twoFactorError.value = '';
+      await nextTick();
+      twoFactorField.value?.focus();
+      return;
+    }
+    if (failure instanceof ApiError && failure.code === 'two_factor_self') {
+      flash.value = t('twoFactorPolicySelfRefused');
+    } else if (failure instanceof ApiError && failure.code === 'two_factor_required') {
+      flash.value = t('signupReviewPromptNeeds2FA');
+    } else {
+      flash.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
+    }
     saveLabel.value = '';
+    throw failure;
   } finally {
     busy.value = false;
   }
@@ -434,22 +516,41 @@ function runTrial(): void {
     username: trial.value.username.trim(),
     email: trial.value.email.trim(),
     qq: trial.value.qq.trim(),
+    from_this_address: trial.value.fromThisAddress || 0,
     // What a browser would have sent, so the answer is about the details and
     // not about a missing user agent.
     user_agent: navigator.userAgent,
   })
     .then((result) => {
+      const reason = formatEventReason(result.reason);
       trial.value.answer = !result.ran
-        ? t('reviewTryBroken', { decision: reviewDecision(result.decision), reason: result.reason })
+        ? t('reviewTryBroken', { decision: reviewDecision(result.decision), reason })
         : t(result.decision === 'allow'
           ? 'reviewTryAllowed'
           : result.decision === 'restrict' ? 'reviewTryRestricted' : 'reviewTryRefused',
-        { reason: result.reason });
+        { reason });
     })
     .catch((failure: unknown) => {
       trial.value.answer = failure instanceof ApiError ? failure.message : String(failure);
     })
     .finally(() => { trial.value.running = false; });
+}
+
+function formatEventReason(reason: string): string {
+  if (!reason) return '';
+  if (reason === 'administrator lifted the API restriction') return t('securityReasonAPILifted');
+  if (reason === 'administrator restricted API access permanently') return t('securityReasonAPIPermanent');
+  const hoursMatch = reason.match(/^administrator restricted API access for (\d+) hours$/);
+  if (hoursMatch) {
+    return t('securityReasonAPIHours', { count: Number(hoursMatch[1]) });
+  }
+  if (reason === 'chat submission speed crossed the configured threshold') return t('securityReasonChatSpeed');
+  if (reason === 'no reviewer configured') return t('securityReasonNoReviewer');
+  if (reason === 'model unavailable') return t('securityReasonModelUnavailable');
+  if (reason === 'review failed') return t('securityReasonReviewFailed');
+  if (reason === 'unparseable answer') return t('securityReasonUnparseableAnswer');
+  if (reason === 'review returned no decision') return t('securityReasonNoDecision');
+  return reason;
 }
 
 function reviewDecision(decision: string): string {
@@ -748,6 +849,7 @@ async function load(): Promise<void> {
       reviewMode: values['security.signup_review_mode'] ?? 'normal',
       reviewRestrictHours: Number(values['security.signup_review_restrict_hours'] ?? 24),
       reviewRefusal: values['security.signup_review_refusal'] ?? '',
+      reviewPrompt: values['security.signup_review_prompt'] ?? '',
       githubEnabled: values['oauth.github_enabled'] === 'true',
       githubClientID: values['oauth.github_client_id'] ?? '',
       githubSecret: '',
@@ -779,6 +881,7 @@ async function load(): Promise<void> {
       backofficeBrowser: values['security.two_factor_backoffice_browser'] === 'true',
       newDeviceEmail: values['security.new_device_email'] === 'true',
     };
+    initialReviewPrompt.value = values['security.signup_review_prompt'] ?? '';
     accept();
   } catch (failure) {
     error.value = failure instanceof Error ? failure.message : String(failure);
@@ -915,6 +1018,13 @@ onMounted(load);
           :hint="t('signupReviewRestrictHoursHint')"
           :min="0"
           :max="8760"
+        />
+        <OaTextArea
+          v-model="form.reviewPrompt"
+          :label="t('signupReviewPrompt')"
+          :rows="4"
+          :placeholder="t('signupReviewPromptPlaceholder')"
+          :hint="t('signupReviewPromptHint')"
         />
         <OaTextArea
           v-model="form.reviewRefusal"
@@ -1178,6 +1288,13 @@ onMounted(load);
           <OaTextField v-model="trial.username" :label="t('username')" placeholder="123123123123" />
           <OaTextField v-model="trial.email" :label="t('email')" placeholder="123123123123@qq.com" />
           <OaTextField v-model="trial.qq" :label="t('qq')" placeholder="123123123123" />
+          <OaNumberField
+            v-model="trial.fromThisAddress"
+            :label="t('reviewTrialFromAddress')"
+            :hint="t('reviewTrialFromAddressHint')"
+            :min="0"
+            :max="1000"
+          />
           <button type="button" class="oa-btn" :disabled="trial.running" @click="runTrial">
             {{ t('reviewTryRun') }}
           </button>
@@ -1443,7 +1560,7 @@ onMounted(load);
                 {{ t('securityLogActor', { name: `@${maskUser(event.actor_username)}` }) }}
               </span>
             </div>
-            <p v-if="event.reason" class="oa-event-reason">{{ event.reason }}</p>
+            <p v-if="event.reason" class="oa-event-reason">{{ formatEventReason(event.reason) }}</p>
           </li>
         </ol>
         <OaPagination v-bind="eventPage" :total="eventsTotal" :busy="eventsLoading" @change="changeEvents" />
@@ -1451,4 +1568,45 @@ onMounted(load);
     </template>
   </AdminWorkbench>
   <p v-if="flash" class="oa-drawer-flash visible oa-control-flash" role="status">{{ flash }}</p>
+
+  <OaOverlay v-if="showTwoFactorModal" overlay-class="oa-modal-overlay" @close="cancelTwoFactor">
+    <div class="oa-auth-card oa-modal-card oa-2fa-unlock">
+      <OaIconButton class="oa-icon-btn oa-modal-close" :label="t('close')" @click="cancelTwoFactor">
+        <IconClose :size="16" />
+      </OaIconButton>
+
+      <header class="oa-2fa-unlock-head">
+        <span class="oa-2fa-head-mark"><IconLock :size="18" /></span>
+        <div class="oa-2fa-pane-head">
+          <h2 class="oa-2fa-title">{{ t('signupReviewPrompt2FATitle') }}</h2>
+          <p class="oa-2fa-desc">{{ t('signupReviewPrompt2FADesc') }}</p>
+        </div>
+      </header>
+
+      <form class="oa-auth-form" novalidate @submit.prevent="submitTwoFactor">
+        <div class="oa-field">
+          <input
+            ref="twoFactorField"
+            class="oa-2fa-code"
+            :value="twoFactorCode"
+            type="text"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            spellcheck="false"
+            maxlength="16"
+            placeholder="000000"
+            :aria-label="t('twoFactorCodeLabel')"
+            @input="onTwoFactorInput"
+          >
+        </div>
+        <p v-if="twoFactorError" class="oa-auth-error" role="alert">{{ twoFactorError }}</p>
+        <footer class="oa-2fa-foot">
+          <button type="button" class="oa-btn" @click="cancelTwoFactor">{{ t('cancel') }}</button>
+          <button type="submit" class="oa-btn primary" :disabled="twoFactorBusy || !twoFactorCode.trim()">
+            {{ twoFactorBusy ? t('twoFactorVerifying') : t('confirmWord') }}
+          </button>
+        </footer>
+      </form>
+    </div>
+  </OaOverlay>
 </template>

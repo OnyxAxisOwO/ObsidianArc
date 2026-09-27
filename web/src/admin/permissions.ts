@@ -7,6 +7,7 @@ export const ADMIN_PERMISSIONS: Array<{ value: string; label: StringKey }> = [
   { value: 'providers', label: 'navProviders' },
   { value: 'models', label: 'navModels' },
   { value: 'availability', label: 'navAvailability' },
+  { value: 'leaderboard', label: 'navLeaderboard' },
   { value: 'usage', label: 'navUsage' },
   { value: 'resources', label: 'navResources' },
   { value: 'codes', label: 'navCodes' },

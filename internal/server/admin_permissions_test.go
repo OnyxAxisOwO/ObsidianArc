@@ -31,7 +31,7 @@ func TestAdministratorPageGrants(t *testing.T) {
 			}
 			for page, path := range pages {
 				response = in.do(http.MethodGet, "/api/admin"+path, nil, operator)
-				allowed := page == grant || (page == "settings" && (grant == "security" || grant == "availability" || grant == "invites"))
+				allowed := page == grant || (page == "settings" && (grant == "security" || grant == "availability" || grant == "invites" || grant == "leaderboard"))
 				if allowed {
 					if response.Code != http.StatusOK {
 						t.Errorf("%s: %d %s", page, response.Code, response.Body.String())

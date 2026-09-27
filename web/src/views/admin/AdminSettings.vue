@@ -48,7 +48,7 @@ const SEARCH_GROUPS = {
   secFeedback: ['navFeedback', 'feedbackShowStaffName', 'feedbackShowStaffNameHint'],
   secLanding: [
     'secLanding', 'landingMode', 'landingModeHint', 'landingLogin', 'landingIntro', 'landingChat',
-    'landingIntroHTML', 'landingIntroHTMLHint', 'trialEnabled', 'trialEnabledHint', 'trialTurns',
+    'landingSite', 'landingIntroHTML', 'landingIntroHTMLHint', 'trialEnabled', 'trialEnabledHint', 'trialTurns',
     'trialTurnsHint', 'trialModel', 'trialFirstAvailable',
   ],
   secChat: [
@@ -769,6 +769,7 @@ onMounted(load);
           :hint="t('landingModeHint')"
           :options="[
             { value: 'login', label: t('landingLogin') },
+            { value: 'site', label: t('landingSite') },
             { value: 'intro', label: t('landingIntro') },
             { value: 'chat', label: t('landingChat') },
           ]"

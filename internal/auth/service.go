@@ -310,7 +310,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			case SignupAllow, SignupRestrict, SignupRefuse:
 			default:
 				review.Decision = SignupRestrict
-				review.Reason = "review returned no decision"
+				review.Reason = "审查未返回有效决策"
 			}
 			if review.Decision == SignupRefuse {
 				s.recordSignupReview(ctx, in, nil, review)
