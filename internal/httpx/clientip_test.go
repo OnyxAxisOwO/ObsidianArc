@@ -170,19 +170,28 @@ func TestTurningTrustOffIgnoresAConfiguredProxyList(t *testing.T) {
 	}
 }
 
-func TestCFConnectingIPIsBelievedFromTrustedProxy(t *testing.T) {
+// CF-Connecting-IP carries no chain, so believing it is the operator's
+// claim that the outermost hop really is Cloudflare — nothing a request
+// can prove by arriving from a proxy of ours. The claim must also never
+// stand in for peer trust: an untrusted connection stays untrusted.
+func TestCFConnectingIPNeedsTheOperatorClaim(t *testing.T) {
 	trust, err := NewProxyTrust(true, []string{"10.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	// The caller typed both headers; the trusted proxy appended the honest
+	// entry to the chain and passed the claimed one through untouched.
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.1:5000"
-	req.Header.Set("CF-Connecting-IP", "198.51.100.42")
-	req.Header.Set("X-Forwarded-For", "198.51.100.42, 172.68.85.216")
+	req.Header.Set("CF-Connecting-IP", "6.6.6.6")
+	req.Header.Set("X-Forwarded-For", "6.6.6.6, 198.51.100.7")
 
-	if got := ClientIP(req, trust); got != "198.51.100.42" {
-		t.Errorf("ClientIP = %q, want 198.51.100.42", got)
+	if got := ClientIP(req, trust); got != "198.51.100.7" {
+		t.Errorf("without the claim: ClientIP = %q, want the chain's 198.51.100.7", got)
+	}
+	if got := ClientIP(req, trust.WithCloudflare()); got != "6.6.6.6" {
+		t.Errorf("with the claim: ClientIP = %q, want the Cloudflare header 6.6.6.6", got)
 	}
 }
 
@@ -198,5 +207,8 @@ func TestCFConnectingIPIsIgnoredFromUntrustedPeer(t *testing.T) {
 
 	if got := ClientIP(req, trust); got != "203.0.113.9" {
 		t.Errorf("ClientIP = %q, want untrusted peer 203.0.113.9", got)
+	}
+	if got := ClientIP(req, trust.WithCloudflare()); got != "203.0.113.9" {
+		t.Errorf("with the claim: ClientIP = %q, want untrusted peer 203.0.113.9", got)
 	}
 }

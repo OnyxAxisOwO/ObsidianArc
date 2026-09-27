@@ -40,6 +40,7 @@
 | `OBSIDIAN_SESSION_TOUCH_INTERVAL` | `1h` | 活跃时间写回间隔 |
 | `OBSIDIAN_TRUST_PROXY` | `false` | 是否信任配置来源的代理转发头 |
 | `OBSIDIAN_TRUSTED_PROXIES` | 空 | 代理地址或 CIDR，逗号分隔 |
+| `OBSIDIAN_TRUST_CLOUDFLARE` | `false` | 采信 `CF-Connecting-IP` 的前提声明，仅当部署在 Cloudflare 之后时开启 |
 | `OBSIDIAN_ALLOWED_ORIGINS` | 空 | 同源写入检查额外允许的 Origin，逗号分隔 |
 
 本机 HTTP 测试可关闭 Secure Cookie。对外使用时应配置 HTTPS。

@@ -24,7 +24,8 @@ import (
 
 // ProxyTrust is the set of peers whose forwarded headers are believed.
 type ProxyTrust struct {
-	prefixes []netip.Prefix
+	prefixes   []netip.Prefix
+	cloudflare bool
 }
 
 // The networks a reverse proxy sits on in almost every deployment: the same
@@ -81,6 +82,16 @@ func NewProxyTrust(enabled bool, cidrs []string) (ProxyTrust, error) {
 // Enabled reports whether any forwarded header will ever be believed.
 func (p ProxyTrust) Enabled() bool { return len(p.prefixes) > 0 }
 
+// WithCloudflare marks the operator's claim that Cloudflare sits in front
+// of this deployment. CF-Connecting-IP is one any client can put on a
+// wire: Cloudflare overwrites it on its own edge, but a plain Caddy or
+// nginx passes a caller-supplied one straight through. Only the operator
+// knows which world this is, so only they can switch it on.
+func (p ProxyTrust) WithCloudflare() ProxyTrust {
+	p.cloudflare = true
+	return p
+}
+
 func (p ProxyTrust) trusts(address netip.Addr) bool {
 	if !address.IsValid() {
 		return false
@@ -105,12 +116,16 @@ func ClientIP(r *http.Request, trust ProxyTrust) string {
 		return addrString(peer, r.RemoteAddr)
 	}
 
-	// Cloudflare sets CF-Connecting-IP to the visitor's authentic address.
-	// When arriving through a trusted proxy (such as Caddy or a local reverse proxy),
-	// this header holds the actual client address that Cloudflare observed.
-	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
-		if address, err := netip.ParseAddr(stripPort(cf)); err == nil {
-			return address.Unmap().String()
+	// CF-Connecting-IP has no chain behind it, only a bare value, so the
+	// walk's discipline cannot vet it the way it vets X-Forwarded-For.
+	// Believing it rests entirely on the operator's word that Cloudflare is
+	// the outermost hop; without that word, a caller behind any other proxy
+	// names whatever address they like and every limit keyed on it follows.
+	if trust.cloudflare {
+		if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+			if address, err := netip.ParseAddr(stripPort(cf)); err == nil {
+				return address.Unmap().String()
+			}
 		}
 	}
 

@@ -869,6 +869,7 @@ OBSIDIAN_SECRET_KEY        encrypts provider keys; generated into the data
                            directory when unset
 OBSIDIAN_SESSION_TTL       720h
 OBSIDIAN_TRUST_PROXY       false
+OBSIDIAN_TRUST_CLOUDFLARE   false
 OBSIDIAN_LOG_LEVEL         info
 ```
 

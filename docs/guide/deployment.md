@@ -13,6 +13,7 @@
 | `OBSIDIAN_COOKIE_SECURE` | HTTPS 下保持 `true` |
 | `OBSIDIAN_TRUST_PROXY` | 需要识别代理转发的客户端地址时设为 `true` |
 | `OBSIDIAN_TRUSTED_PROXIES` | 填实际代理地址或尽可能小的网段 |
+| `OBSIDIAN_TRUST_CLOUDFLARE` | 确认部署在 Cloudflare 之后时设为 `true`，否则该报头可被伪造 |
 | 站点公开地址 | 在管理员后台「安全 → 邮件服务」填写 HTTPS 地址。邮件验证、第三方登录和对外的 OpenID 登录都用它；旧部署可继续用 `OBSIDIAN_PUBLIC_URL` 作回退值 |
 
 没有固定公开地址时，部分对外链接会从请求本身推断地址，而这依赖整条链路都如实转发协议。
