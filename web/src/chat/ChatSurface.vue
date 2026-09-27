@@ -43,6 +43,10 @@ const modeDragX = ref(0);
 // Set on a release that was a real drag, read once by the click that the same
 // release fires, so a drag that ends over a button does not also toggle it.
 let modeDragged = false;
+// The teardown for an in-flight drag, held so onBeforeUnmount can run it. The
+// listeners live on window and outlive the strip's v-if, so a drag still held
+// when the transcript fills and unmounts the switch would otherwise leak them.
+let modeRelease: (() => void) | null = null;
 
 function onModePointerDown(event: PointerEvent): void {
   // Left button only; a right-click or middle-click has no business dragging.
@@ -71,6 +75,7 @@ function onModePointerDown(event: PointerEvent): void {
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', release);
     window.removeEventListener('pointercancel', release);
+    modeRelease = null;
     if (moved) {
       modeDragged = true;
       setMode(modeDragX.value > travel / 2 ? 'work' : 'chat');
@@ -84,6 +89,7 @@ function onModePointerDown(event: PointerEvent): void {
     // transitions to the settled side rather than teleporting.
     modeDragging.value = false;
   };
+  modeRelease = release;
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', release);
   window.addEventListener('pointercancel', release);
@@ -269,6 +275,9 @@ watch(justSentID, (id) => {
 
 onBeforeUnmount(() => {
   cancelAllFlights();
+  // A drag held while the switch unmounts (the transcript fills and the v-if
+  // drops it) would leave its window listeners behind; release tears them down.
+  modeRelease?.();
 });
 
 defineExpose({ focus: () => composer.value?.focus() });
