@@ -112,7 +112,9 @@ function disconnect(provider: string): void {
       // nobody, including its owner, able to reach the account again.
       connectionFlash.value = error instanceof ApiError && error.code === 'last_way_in'
         ? t('oauthLastWayIn')
-        : error instanceof ApiError ? error.message : String(error);
+        : error instanceof ApiError && error.code === 'oidc_pinned'
+          ? t('oauthOIDCPinned')
+          : error instanceof ApiError ? error.message : String(error);
     })
     .finally(() => { connectionsBusy.value = false; });
 }
@@ -331,6 +333,12 @@ function importData(): void {
           class="oa-btn"
           :href="signInURL(provider.id, { link: true, next: '/settings' })"
         >{{ t('connect') }}</a>
+        <!-- A bound OpenID Connect identity proves the account's QQ number,
+             so it has no remove control at all — deleting the account is the
+             only way it comes off. -->
+        <span v-else-if="provider.id === 'oidc'" class="oa-connection-meta">
+          {{ t('oauthOIDCPinnedHint') }}
+        </span>
         <OaConfirmButton
           v-else
           class="oa-btn"
