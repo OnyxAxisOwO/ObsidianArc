@@ -599,6 +599,115 @@ func (s *Store) ListForUser(ctx context.Context, groupID string, isAdmin bool) (
 	return collect(rows, true, true)
 }
 
+// FindAPIModel resolves one API-facing model name without materialising the
+// whole catalogue. The list endpoint still needs every model; a generation
+// request only needs the one name it was given.
+func (s *Store) FindAPIModel(
+	ctx context.Context, groupID string, isAdmin bool, restrictions []string, wanted string,
+) (string, error) {
+	available := `SELECT m.id, m.model_id, m.api_name, m.display_name, m.sort_order,
+		CASE WHEN m.api_name <> '' THEN m.api_name ELSE m.model_id END AS public_name
+		FROM models m
+		JOIN providers p ON p.id = m.provider_id
+		WHERE m.enabled = ? AND p.enabled = ? AND m.hidden = ?`
+	availableArgs := []any{true, true, false}
+	if !isAdmin {
+		available += ` AND EXISTS (
+			SELECT 1 FROM user_groups g
+			WHERE g.id = ?
+			  AND (g.allow_all_models = ? OR EXISTS (
+				SELECT 1 FROM group_models gm
+				WHERE gm.group_id = g.id AND gm.model_id = m.id AND gm.access = ?
+			  ))
+		)`
+		availableArgs = append(availableArgs, groupID, true, AccessUse)
+	}
+	if len(restrictions) > 0 {
+		available += ` AND (`
+		for i, restriction := range restrictions {
+			if i > 0 {
+				available += ` OR `
+			}
+			available += `(LOWER(m.id) = LOWER(?) OR LOWER(m.display_name) = LOWER(?))`
+			availableArgs = append(availableArgs, restriction, restriction)
+		}
+		available += `)`
+	}
+
+	candidates := `SELECT a.* FROM available a
+		WHERE a.id = ?
+		   OR LOWER(a.display_name) = LOWER(?)
+		   OR LOWER(a.api_name) = LOWER(?)
+		   OR (a.api_name = '' AND LOWER(a.model_id) = LOWER(?))`
+	candidateArgs := []any{wanted, wanted, wanted, wanted}
+	if base, suffix, ok := splitQualifiedAPIRef(wanted); ok {
+		candidates += ` OR (a.api_name = ''
+			AND LOWER(a.model_id) = LOWER(?)
+			AND LOWER(SUBSTR(a.id, LENGTH(a.id) - 5, 6)) = LOWER(?))`
+		candidateArgs = append(candidateArgs, base, suffix)
+	}
+
+	query := `WITH available AS (` + available + `),
+		candidates AS (` + candidates + `)
+		SELECT c.id, c.model_id, c.api_name, c.display_name,
+			(SELECT COUNT(*) FROM available claims WHERE claims.public_name = c.public_name)
+		FROM candidates c
+		ORDER BY c.sort_order, c.display_name`
+	args := append(availableArgs, candidateArgs...)
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return "", fmt.Errorf("model: find API model: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var candidate struct {
+			ID          string
+			ModelID     string
+			APIName     string
+			DisplayName string
+			Claims      int
+		}
+		if err := rows.Scan(&candidate.ID, &candidate.ModelID, &candidate.APIName,
+			&candidate.DisplayName, &candidate.Claims); err != nil {
+			return "", fmt.Errorf("model: scan API model: %w", err)
+		}
+		ref := candidate.APIName
+		if ref == "" {
+			ref = candidate.ModelID
+			if ref == "" {
+				ref = candidate.ID
+			} else if candidate.Claims > 1 {
+				ref += "-" + modelIDTail(candidate.ID)
+			}
+		}
+		if candidate.ID == wanted || strings.EqualFold(ref, wanted) ||
+			strings.EqualFold(candidate.DisplayName, wanted) {
+			return candidate.ID, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("model: read API model candidates: %w", err)
+	}
+	return "", ErrNotFound
+}
+
+func splitQualifiedAPIRef(wanted string) (string, string, bool) {
+	separator := strings.LastIndexByte(wanted, '-')
+	if separator <= 0 || len(wanted)-separator-1 != 6 {
+		return "", "", false
+	}
+	return wanted[:separator], wanted[separator+1:], true
+}
+
+func modelIDTail(id string) string {
+	lowered := strings.ToLower(id)
+	if len(lowered) <= 6 {
+		return lowered
+	}
+	return lowered[len(lowered)-6:]
+}
+
 // Resolved is a model together with the provider credentials needed to call
 // it — the one thing the chat gateway asks for per turn.
 //

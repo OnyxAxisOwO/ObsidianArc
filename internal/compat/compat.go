@@ -150,11 +150,15 @@ func (h *Handlers) serveAs(render func(http.ResponseWriter, error), next handler
 		}
 		// Only now, once the request is genuinely being served: recording it
 		// on every presentation would make an unauthenticated probe a write.
-		go func() {
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-			defer cancel()
-			_ = h.keys.Touch(ctx, who.key.ID)
-		}()
+		// Resolve already returned LastUsedAt, so ordinary hot-key traffic can
+		// skip both the goroutine and its database round trip.
+		if who.key.NeedsTouch(time.Now()) {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+				defer cancel()
+				_ = h.keys.Touch(ctx, who.key.ID)
+			}()
+		}
 
 		// The session middleware saw no cookie on this request, so the log
 		// would have it as anonymous. This is the only layer that knows whose
@@ -435,34 +439,23 @@ func (h *Handlers) resolveModel(ctx context.Context, who caller, wanted string) 
 		return "", badRequest("model", "No model was specified.")
 	}
 
-	available, err := h.available(ctx, who)
+	restrictions := keyModelIDs(who.key)
+	modelID, err := h.models.FindAPIModel(ctx, who.account.GroupID, who.account.IsAdmin(), restrictions, wanted)
 	if err != nil {
-		return "", err
-	}
-
-	refs := publicRefs(available)
-
-	// When the key is locked to a set of models, reject any request for another model.
-	if len(keyModelIDs(who.key)) > 0 {
-		for _, record := range available {
-			if matchesRef(record, refs[record.ID], wanted) {
-				return record.ID, nil
+		if !errors.Is(err, model.ErrNotFound) {
+			return "", internalError(err)
+		}
+		if len(restrictions) > 0 {
+			return "", apiError{
+				status:  http.StatusForbidden,
+				kind:    "invalid_request_error",
+				code:    "model_not_permitted",
+				message: "This API key is restricted to the selected models.",
 			}
 		}
-		return "", apiError{
-			status:  http.StatusForbidden,
-			kind:    "invalid_request_error",
-			code:    "model_not_permitted",
-			message: "This API key is restricted to the selected models.",
-		}
+		return "", unknownModel(wanted)
 	}
-
-	for _, record := range available {
-		if matchesRef(record, refs[record.ID], wanted) {
-			return record.ID, nil
-		}
-	}
-	return "", unknownModel(wanted)
+	return modelID, nil
 }
 
 func keyModelIDs(key apikey.Key) []string {

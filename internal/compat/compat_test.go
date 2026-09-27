@@ -458,7 +458,7 @@ func TestModelListingCarriesNoUpstreamDetail(t *testing.T) {
 func TestEverySpellingOfAModelResolves(t *testing.T) {
 	f := newFixture(t)
 
-	for _, wanted := range []string{"upstream-real-name", "UPSTREAM-REAL-NAME", f.model.ID, "Mock Fast"} {
+	for _, wanted := range []string{"upstream-real-name", "UPSTREAM-REAL-NAME", f.model.ID, "Mock Fast", "mock fast"} {
 		f.upstream.reply(answer)
 		w := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, completionBody(wanted))
 		if w.Code != http.StatusOK {
@@ -473,6 +473,45 @@ func TestEverySpellingOfAModelResolves(t *testing.T) {
 	}
 	if w := f.do(t, http.MethodGet, "/v1/models/upstream-real-name", f.token, ""); w.Code != http.StatusOK {
 		t.Errorf("the model id did not fetch: status = %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDuplicatePublicModelNamesResolveByQualifiedRef(t *testing.T) {
+	f := newFixture(t)
+	duplicate, err := f.models.Create(context.Background(), model.CreateInput{
+		ProviderID: f.model.ProviderID, ModelID: f.model.ModelID,
+		DisplayName: "Mock Fast Backup", Enabled: true,
+		Capabilities: model.Capabilities{SupportsStreaming: true, SupportsSystemPrompt: true},
+		Weights:      model.Weights{InputToken: 1, OutputToken: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listing := f.do(t, http.MethodGet, "/v1/models", f.token, "")
+	if listing.Code != http.StatusOK {
+		t.Fatalf("list models: status = %d: %s", listing.Code, listing.Body.String())
+	}
+	data, _ := decodeJSON(t, listing)["data"].([]any)
+	if len(data) != 2 {
+		t.Fatalf("listed %d models, want 2", len(data))
+	}
+	refs := make(map[string]bool, len(data))
+	for _, item := range data {
+		entry, _ := item.(map[string]any)
+		ref, _ := entry["id"].(string)
+		refs[ref] = true
+	}
+	wantRefs := []string{f.model.ModelID + "-" + tail(f.model.ID), duplicate.ModelID + "-" + tail(duplicate.ID)}
+	for _, ref := range wantRefs {
+		if !refs[ref] {
+			t.Errorf("listed refs %v, want qualified ref %q", refs, ref)
+		}
+		f.upstream.reply(answer)
+		response := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, completionBody(ref))
+		if response.Code != http.StatusOK {
+			t.Errorf("qualified ref %q: status = %d: %s", ref, response.Code, response.Body.String())
+		}
 	}
 }
 

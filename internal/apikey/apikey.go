@@ -57,6 +57,12 @@ func (k Key) IsActive(t time.Time) bool {
 	return !k.Disabled && !k.Expired(t)
 }
 
+// NeedsTouch reports whether this key's last-use timestamp is old enough to
+// record another successful request.
+func (k Key) NeedsTouch(at time.Time) bool {
+	return k.LastUsedAt < at.Add(-time.Minute).UnixMilli()
+}
+
 var (
 	ErrNotFound    = errors.New("apikey: not found")
 	ErrPaused      = errors.New("apikey: paused")
@@ -199,6 +205,11 @@ func (s *Store) Resolve(ctx context.Context, token string) (Key, error) {
 	}
 	if record.Expired(time.Now()) {
 		return Key{}, ErrNotFound
+	}
+	if record.ModelID == "" {
+		// An empty legacy restriction is the unrestricted case; the join table
+		// has no rows to read, so keep the hot authentication path to one query.
+		return record, nil
 	}
 	return s.withModels(ctx, record)
 }

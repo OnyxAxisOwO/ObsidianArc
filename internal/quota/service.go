@@ -334,7 +334,10 @@ type Reservation struct {
 // It touches every window unconditionally rather than only the enforced ones:
 // the counters are also what the usage display reads, and a limit turned on
 // tomorrow should not start from zero for someone who has been using the
-// server all week.
+// server all week. The reset anchor is read before the short write transaction:
+// if a global reset overlaps this accounting, the charge stays in the older
+// bucket and the reset's new epoch ignores it. Unrelated completions do not
+// queue on the reset row.
 func (s *Service) Settle(ctx context.Context, account user.User, reserved, actual Estimate) error {
 	tokens := actual.Tokens - reserved.Tokens
 	credits := actual.Credits - reserved.Credits
@@ -343,12 +346,12 @@ func (s *Service) Settle(ctx context.Context, account user.User, reserved, actua
 	}
 	now := time.Now()
 	key := scopeKey(account.ID)
+	anchor, err := allowanceAnchor(ctx, s.db, account.CreatedAt)
+	if err != nil {
+		return err
+	}
 
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
-		anchor, err := lockedAllowanceAnchor(ctx, tx, account.CreatedAt)
-		if err != nil {
-			return err
-		}
 		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
 			if _, err := bump(ctx, tx, key, window, bucketStart(window, now, anchor), 0, tokens, credits); err != nil {
 				return err
@@ -547,9 +550,9 @@ func allowanceAnchor(ctx context.Context, q database.Queryer, createdAt int64) (
 }
 
 func lockedAllowanceAnchor(ctx context.Context, tx database.Queryer, createdAt int64) (int64, error) {
-	// A reset and a charge must agree which side of the boundary the charge
-	// belongs to. This no-op upsert takes the same database row lock ResetAll
-	// writes, including when two server processes share the database.
+	// A reset and a reservation must agree which side of the boundary the
+	// allowance check belongs to. This no-op upsert takes the same database row
+	// lock ResetAll writes, including when two server processes share the database.
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
 		 ON CONFLICT (key) DO UPDATE SET updated_at = settings.updated_at`,
@@ -573,9 +576,10 @@ func lockedAllowanceAnchor(ctx context.Context, tx database.Queryer, createdAt i
 func (s *Service) ResetAll(ctx context.Context) error {
 	now := time.Now().UnixMilli()
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		// This row is also the instance-wide lock used by reservations and
-		// settlement, so no charge can be written into an old bucket after its
-		// counters have been cleared.
+		// Reservations hold this row lock so a limit check cannot be written
+		// against an obsolete allowance after the counters have been cleared.
+		// Settlement reads the epoch before its write transaction, allowing
+		// independent completed turns to update their own counters concurrently.
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
 			 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
