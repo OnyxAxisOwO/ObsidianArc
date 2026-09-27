@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +22,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 )
 
 // The authorization surface, exercised as HTTP rather than as function calls.
@@ -888,6 +892,129 @@ func TestAboutSoftwareInfoVisibility(t *testing.T) {
 	ver, _ = readHealth(user)
 	if ver == "" {
 		t.Fatal("regular user did not see version after re-enabling")
+	}
+}
+
+func TestPoWChallengeAndRegistrationFlow(t *testing.T) {
+	in := newInstance(t)
+	// Register first user (administrator bootstrap).
+	admin := in.register("founder", "a-good-password")
+
+	// 1. Request PoW challenge.
+	resp := in.do(http.MethodGet, "/api/auth/pow-challenge", nil, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /api/auth/pow-challenge: %d %s", resp.Code, resp.Body.String())
+	}
+	var ch pow.Challenge
+	if err := json.Unmarshal(resp.Body.Bytes(), &ch); err != nil {
+		t.Fatalf("unmarshal challenge: %v", err)
+	}
+	if ch.Challenge == "" || ch.Salt == "" || ch.MaxNumber <= 0 || ch.Signature == "" {
+		t.Fatalf("incomplete challenge: %+v", ch)
+	}
+
+	// 2. Set registration captcha mode to pow.
+	setRes := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"registration.captcha_mode": "pow",
+	}, admin)
+	if setRes.Code != http.StatusOK {
+		t.Fatalf("set captcha mode: %d %s", setRes.Code, setRes.Body.String())
+	}
+
+	// 3. Register without PoW -> 400 pow_required.
+	regNoPoW := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user1",
+		"password": "valid-password",
+	}, nil)
+	if regNoPoW.Code != http.StatusBadRequest || !strings.Contains(regNoPoW.Body.String(), "pow_required") {
+		t.Fatalf("expected pow_required, got: %d %s", regNoPoW.Code, regNoPoW.Body.String())
+	}
+
+	// 4. Solve the challenge.
+	var foundNonce int64 = -1
+	for i := int64(0); i <= ch.MaxNumber; i++ {
+		sum := sha256.Sum256([]byte(ch.Salt + strconv.FormatInt(i, 10)))
+		if strings.EqualFold(hex.EncodeToString(sum[:]), ch.Challenge) {
+			foundNonce = i
+			break
+		}
+	}
+	if foundNonce == -1 {
+		t.Fatalf("failed to solve challenge %+v", ch)
+	}
+
+	// 5. Register with invalid nonce -> 400 pow_invalid_nonce.
+	regBadNonce := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user1",
+		"password": "valid-password",
+		"pow": pow.Solution{
+			Challenge: ch.Challenge,
+			Salt:      ch.Salt,
+			MaxNumber: ch.MaxNumber,
+			Expires:   ch.Expires,
+			Signature: ch.Signature,
+			Nonce:     foundNonce + 1,
+		},
+	}, nil)
+	if regBadNonce.Code != http.StatusBadRequest || !strings.Contains(regBadNonce.Body.String(), "pow_invalid_nonce") {
+		t.Fatalf("expected pow_invalid_nonce, got: %d %s", regBadNonce.Code, regBadNonce.Body.String())
+	}
+
+	// 6. Register with tampered signature -> 400 pow_invalid_signature.
+	regBadSig := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user1",
+		"password": "valid-password",
+		"pow": pow.Solution{
+			Challenge: ch.Challenge,
+			Salt:      ch.Salt,
+			MaxNumber: ch.MaxNumber,
+			Expires:   ch.Expires,
+			Signature: ch.Signature + "bad",
+			Nonce:     foundNonce,
+		},
+	}, nil)
+	if regBadSig.Code != http.StatusBadRequest || !strings.Contains(regBadSig.Body.String(), "pow_invalid_signature") {
+		t.Fatalf("expected pow_invalid_signature, got: %d %s", regBadSig.Code, regBadSig.Body.String())
+	}
+
+	// 7. Register with valid solution -> 201 Created.
+	validSol := pow.Solution{
+		Challenge: ch.Challenge,
+		Salt:      ch.Salt,
+		MaxNumber: ch.MaxNumber,
+		Expires:   ch.Expires,
+		Signature: ch.Signature,
+		Nonce:     foundNonce,
+	}
+	regSuccess := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user1",
+		"password": "valid-password",
+		"pow":      validSol,
+	}, nil)
+	if regSuccess.Code != http.StatusCreated {
+		t.Fatalf("register with valid PoW: %d %s", regSuccess.Code, regSuccess.Body.String())
+	}
+
+	// 8. Replay the same solution on another register -> 400 pow_replayed.
+	regReplay := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user2",
+		"password": "valid-password",
+		"pow":      validSol,
+	}, nil)
+	if regReplay.Code != http.StatusBadRequest || !strings.Contains(regReplay.Body.String(), "pow_replayed") {
+		t.Fatalf("expected pow_replayed, got: %d %s", regReplay.Code, regReplay.Body.String())
+	}
+
+	// 9. Admin switches mode to "disabled" -> register without PoW succeeds.
+	in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"registration.captcha_mode": "disabled",
+	}, admin)
+	regDisabled := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user3",
+		"password": "valid-password",
+	}, nil)
+	if regDisabled.Code != http.StatusCreated {
+		t.Fatalf("register with disabled captcha mode: %d %s", regDisabled.Code, regDisabled.Body.String())
 	}
 }
 
