@@ -2123,6 +2123,14 @@
 }
 
 .ai-model-chip-name {
+  /* flex:1 so the name takes what the spark, effort tag and chevron leave,
+     from a base of zero. Content-sized instead, the box grows to fit the name
+     and only gives way once the pill hits its 200px ceiling — and at that
+     edge the marquee inside sets itself to width:100%, which feeds its own
+     ResizeObserver and flips overflow on and off frame after frame. Chromium's
+     Edge rounded that oscillation into a visible jitter; a fixed flex basis
+     ends it by making this width independent of the name it holds. */
+  flex: 1;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
