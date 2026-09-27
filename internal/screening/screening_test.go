@@ -270,13 +270,15 @@ func TestCustomPromptEnforcesFormatAndBias(t *testing.T) {
 	}
 }
 
-// Bot/machine patterns (e.g. userXXXXX, guestXXXXX) are called out in the instructions
-// so registration machine scripts are intercepted by the screening model.
+// Bot/machine patterns (e.g. hawk0344onyx, userXXXXX, guestXXXXX) are called out in the instructions
+// and must be directly refused by the screening model rather than restricted.
 func TestBotRegistrationMachinePatternsAreMentioned(t *testing.T) {
-	prompt := instructionFor(Normal)
-	for _, term := range []string{"user12345", "placeholder"} {
-		if !strings.Contains(prompt, term) {
-			t.Errorf("normal prompt does not mention bot registration pattern %q:\n%s", term, prompt)
+	for _, mode := range []Mode{Loose, Normal, Strict} {
+		prompt := instructionFor(mode)
+		for _, term := range []string{"hawk0344onyx", "user12345", "refuse"} {
+			if !strings.Contains(prompt, term) {
+				t.Errorf("%s prompt does not mention bot registration pattern or action %q:\n%s", mode, term, prompt)
+			}
 		}
 	}
 }
