@@ -32,6 +32,73 @@ import { currentUser, isAdmin } from '@/stores/session';
 // that holds which one is chosen.
 const MODES: Mode[] = ['chat', 'work'];
 
+// Dragging the pill directly, the same gesture as the thinking-level slider:
+// while a finger is down the pill leaves its class-driven position and rides
+// under the pointer; on release the transition comes back and glides it to
+// whichever side it was nearer. A plain tap on a side still toggles, so the
+// drag never takes the click away from someone who did not mean to drag.
+const modeSwitch = ref<HTMLElement | null>(null);
+const modeDragging = ref(false);
+const modeDragX = ref(0);
+// Set on a release that was a real drag, read once by the click that the same
+// release fires, so a drag that ends over a button does not also toggle it.
+let modeDragged = false;
+
+function onModePointerDown(event: PointerEvent): void {
+  // Left button only; a right-click or middle-click has no business dragging.
+  if (event.button !== 0) return;
+  const strip = modeSwitch.value;
+  const pill = strip?.querySelector<HTMLElement>('.ai-mode-pill');
+  if (!strip || !pill) return;
+
+  const rect = strip.getBoundingClientRect();
+  const pillWidth = pill.offsetWidth;
+  const pad = 3; // .ai-mode-switch padding, where the pill's travel starts.
+  const gap = 2; // the pill's work-side offset past its own width.
+  const travel = pillWidth + gap;
+  const startX = event.clientX;
+  let moved = false;
+
+  const move = (e: PointerEvent) => {
+    // A few pixels of slack so a click that trembles is still a click.
+    if (!moved && Math.abs(e.clientX - startX) <= 3) return;
+    moved = true;
+    modeDragging.value = true;
+    const centred = e.clientX - rect.left - pad - pillWidth / 2;
+    modeDragX.value = Math.min(travel, Math.max(0, centred));
+  };
+  const release = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', release);
+    window.removeEventListener('pointercancel', release);
+    if (moved) {
+      modeDragged = true;
+      setMode(modeDragX.value > travel / 2 ? 'work' : 'chat');
+      // The click this release fires reads the flag and swallows itself. If it
+      // released over the strip's padding no click fires at all, so clear the
+      // flag on the next tick too — otherwise a stale true would eat the
+      // reader's next genuine tap.
+      setTimeout(() => { modeDragged = false; }, 0);
+    }
+    // Clearing this hands the pill back to its class transform, which now
+    // transitions to the settled side rather than teleporting.
+    modeDragging.value = false;
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
+}
+
+function onModeChoice(option: Mode): void {
+  // The click that a drag's release also fires: the drag already committed the
+  // mode, so swallow this one instead of toggling to wherever it landed.
+  if (modeDragged) {
+    modeDragged = false;
+    return;
+  }
+  setMode(option);
+}
+
 let route: ReturnType<typeof useRoute> | undefined;
 try {
   route = useRoute();
@@ -260,10 +327,18 @@ defineExpose({ focus: () => composer.value?.focus() });
              choice is still open: once a conversation exists it carries its
              own mode, and a toggle over a running thread would offer to
              change something it cannot. -->
-        <div class="ai-mode-switch" role="tablist" :aria-label="t('modeChat')">
+        <div
+          ref="modeSwitch"
+          class="ai-mode-switch"
+          :class="{ dragging: modeDragging }"
+          role="tablist"
+          :aria-label="t('modeChat')"
+          @pointerdown="onModePointerDown"
+        >
           <span
             class="ai-mode-pill"
             :class="{ 'mode-work': pendingMode === 'work' }"
+            :style="modeDragging ? { transform: `translateX(${modeDragX}px)` } : undefined"
             aria-hidden="true"
           />
           <button
@@ -274,7 +349,7 @@ defineExpose({ focus: () => composer.value?.focus() });
             class="ai-mode-choice"
             :class="{ active: pendingMode === option }"
             :aria-selected="pendingMode === option"
-            @click="setMode(option)"
+            @click="onModeChoice(option)"
           >{{ t(option === 'work' ? 'modeWork' : 'modeChat') }}</button>
         </div>
 
