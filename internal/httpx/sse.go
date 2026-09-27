@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // SSE writes a Server-Sent Events response.
@@ -19,6 +20,14 @@ type SSE struct {
 	w  http.ResponseWriter
 	rc *http.ResponseController
 }
+
+// writeDeadline caps how long one frame may take to reach the client — not how
+// long an answer may take. It is re-armed just before every frame, so the gaps
+// a model leaves between tokens never count against it; what it bounds is a
+// frame that will not leave at all, a reader whose TCP receive window has stuck
+// near zero and would otherwise pin this goroutine and the upstream stream
+// behind it open for good.
+const writeDeadline = 30 * time.Second
 
 // NewSSE commits the response headers and returns a writer for it. It fails
 // only if the response cannot be flushed, which would make streaming
@@ -45,7 +54,10 @@ func NewSSE(w http.ResponseWriter) (*SSE, error) {
 	w.WriteHeader(http.StatusOK)
 
 	stream := &SSE{w: w, rc: http.NewResponseController(w)}
-	return stream, stream.flush()
+	// The header block commits under the same deadline as a frame: a client
+	// that has already stopped reading must not wedge the response open on
+	// this first flush either.
+	return stream, stream.armed(stream.flush)
 }
 
 // canFlush reports whether a flush will reach the client, without performing
@@ -86,19 +98,16 @@ func (s *SSE) Literal(data string) error { return s.raw("", []byte(data)) }
 // keeps an idle proxy from closing a connection that is waiting on a slow
 // first token.
 func (s *SSE) Comment(text string) error {
-	if _, err := fmt.Fprintf(s.w, ": %s\n\n", strings.ReplaceAll(text, "\n", " ")); err != nil {
-		return err
-	}
-	return s.flush()
+	// Built into a local slice and sent through the one write path, so a
+	// keepalive carries a write deadline too. Local rather than a field: sent
+	// from a ticker, a shared buffer would be a data race.
+	return s.send([]byte(fmt.Sprintf(": %s\n\n", strings.ReplaceAll(text, "\n", " "))))
 }
 
 func (s *SSE) raw(name string, data []byte) error {
 	// A bytes.Buffer rather than a strings.Builder because the frame is handed
 	// to Write as bytes: building a string only to convert it back copied
 	// every frame a second time, once per token of every answer.
-	//
-	// Function-local, not kept on the SSE: Comment is a keepalive, and the
-	// moment one is sent from a ticker a shared buffer is a data race.
 	var b bytes.Buffer
 	b.Grow(len(data) + len(name) + 16)
 	if name != "" {
@@ -112,10 +121,29 @@ func (s *SSE) raw(name string, data []byte) error {
 	b.Write(data)
 	b.WriteString("\n\n")
 
-	if _, err := s.w.Write(b.Bytes()); err != nil {
-		return err
-	}
-	return s.flush()
+	return s.send(b.Bytes())
+}
+
+// armed runs one write — the header block or a single frame — with a write
+// deadline in force, then clears it. The deadline covers only pushing that one
+// frame out: never the gap until the next token, and never the idle connection
+// once it returns to the keep-alive pool, where a leftover deadline would fail
+// whatever request reused it. Best-effort by design: the console records this
+// same SSE into an in-process writer that has no deadline to set, and that
+// frame must still go out.
+func (s *SSE) armed(write func() error) error {
+	_ = s.rc.SetWriteDeadline(time.Now().Add(writeDeadline))
+	defer func() { _ = s.rc.SetWriteDeadline(time.Time{}) }()
+	return write()
+}
+
+func (s *SSE) send(frame []byte) error {
+	return s.armed(func() error {
+		if _, err := s.w.Write(frame); err != nil {
+			return err
+		}
+		return s.flush()
+	})
 }
 
 func (s *SSE) flush() error {
