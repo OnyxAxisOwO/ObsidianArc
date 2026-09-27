@@ -108,6 +108,10 @@ const form = ref({
   turnstileOnAPIKey: false,
   turnstileOnRedeem: false,
   turnstileOnFeedback: false,
+  captchaMode: 'turnstile' as 'off' | 'turnstile' | 'pow' | 'both',
+  powBaseMaxNumber: 50000 as number | null,
+  powElevatedMaxNumber: 500000 as number | null,
+  powThreshold: 10 as number | null,
   chatChallengeRequests: 0 as number | null,
   chatChallengeWindowSecs: 60 as number | null,
   chatChallengeClearMins: 30 as number | null,
@@ -356,10 +360,14 @@ function collect(): Record<string, string> {
     // sending its emptiness back would erase it.
     'turnstile.secret_key': form.value.turnstileSecret.trim(),
     'turnstile.on_login': String(form.value.turnstileOnLogin),
-    'turnstile.on_signup': String(form.value.turnstileOnSignup),
+    'turnstile.on_signup': String(form.value.captchaMode === 'turnstile' || form.value.captchaMode === 'both'),
     'turnstile.on_api_key': String(form.value.turnstileOnAPIKey),
     'turnstile.on_redeem': String(form.value.turnstileOnRedeem),
     'turnstile.on_feedback': String(form.value.turnstileOnFeedback),
+    'registration.captcha_mode': form.value.captchaMode,
+    'security.pow_base_max_number': String(form.value.powBaseMaxNumber ?? 50000),
+    'security.pow_elevated_max_number': String(form.value.powElevatedMaxNumber ?? 500000),
+    'security.pow_threshold': String(form.value.powThreshold ?? 10),
     'security.chat_challenge_requests': String(form.value.chatChallengeRequests ?? 0),
     'security.chat_challenge_window_seconds': String(form.value.chatChallengeWindowSecs ?? 60),
     'security.chat_challenge_clear_minutes': String(form.value.chatChallengeClearMins ?? 30),
@@ -559,6 +567,14 @@ function formatEventReason(reason: string): string {
   if (reason === 'review failed') return t('securityReasonReviewFailed');
   if (reason === 'unparseable answer') return t('securityReasonUnparseableAnswer');
   if (reason === 'review returned no decision') return t('securityReasonNoDecision');
+  if (reason === '缺少 PoW 解答') return t('securityReasonPoWMissing');
+  if (reason === 'PoW 挑战已过期') return t('securityReasonPoWExpired');
+  if (reason === 'PoW 签名无效') return t('securityReasonPoWInvalidSignature');
+  if (reason === 'PoW 步数超出上限') return t('securityReasonPoWMaxExceeded');
+  if (reason === 'PoW 计算结果不匹配') return t('securityReasonPoWInvalidNonce');
+  if (reason === 'PoW 挑战已被使用') return t('securityReasonPoWReplayed');
+  if (reason === 'PoW 校验失败') return t('securityReasonPoWFailed');
+  if (reason === 'Turnstile 人机验证未通过') return t('securityReasonTurnstileFailed');
   return reason;
 }
 
@@ -588,6 +604,8 @@ function eventLabel(event: string): string {
   if (event === 'two_factor') return t('securityEventTwoFactor');
   if (event === 'new_device') return t('securityEventNewDevice');
   if (event === 'console_command') return t('securityEventConsoleCommand');
+  if (event === 'pow_challenge') return t('securityEventPoWChallenge');
+  if (event === 'turnstile_challenge') return t('securityEventTurnstileChallenge');
   return event;
 }
 
@@ -851,6 +869,10 @@ async function load(): Promise<void> {
       turnstileOnAPIKey: values['turnstile.on_api_key'] === 'true',
       turnstileOnRedeem: values['turnstile.on_redeem'] === 'true',
       turnstileOnFeedback: values['turnstile.on_feedback'] === 'true',
+      captchaMode: (values['registration.captcha_mode'] as any) || (values['turnstile.on_signup'] === 'true' ? 'turnstile' : 'off'),
+      powBaseMaxNumber: Number(values['security.pow_base_max_number'] || 50000),
+      powElevatedMaxNumber: Number(values['security.pow_elevated_max_number'] || 500000),
+      powThreshold: Number(values['security.pow_threshold'] || 10),
       chatChallengeRequests: Number(values['security.chat_challenge_requests'] ?? 0),
       chatChallengeWindowSecs: Number(values['security.chat_challenge_window_seconds'] ?? 60),
       chatChallengeClearMins: Number(values['security.chat_challenge_clear_minutes'] ?? 30),
@@ -1157,15 +1179,41 @@ onMounted(load);
         />
       </AdminControlCard>
       <AdminControlCard id="secVerificationScenes" v-show="visible('secVerificationScenes')" :title="t('controlVerificationScenes')" :icon="IconLock" :hint="t('controlVerificationScenesHint')">
+        <OaSelectField
+          v-model="form.captchaMode"
+          :label="t('captchaMode')"
+          :hint="t('captchaModeHint')"
+          :options="[
+            { value: 'off', label: t('captchaModeOff') },
+            { value: 'turnstile', label: t('captchaModeTurnstile') },
+            { value: 'pow', label: t('captchaModePoW') },
+            { value: 'both', label: t('captchaModeBoth') },
+          ]"
+        />
+        <template v-if="form.captchaMode === 'pow' || form.captchaMode === 'both'">
+          <OaNumberField
+            v-model="form.powBaseMaxNumber"
+            :label="t('powBaseMaxNumber')"
+            :min="1"
+            :hint="t('powBaseMaxNumberHint')"
+          />
+          <OaNumberField
+            v-model="form.powElevatedMaxNumber"
+            :label="t('powElevatedMaxNumber')"
+            :min="1"
+            :hint="t('powElevatedMaxNumberHint')"
+          />
+          <OaNumberField
+            v-model="form.powThreshold"
+            :label="t('powThreshold')"
+            :min="1"
+            :hint="t('powThresholdHint')"
+          />
+        </template>
         <OaSwitchField
           v-model="form.turnstileOnLogin"
           :label="t('turnstileOnLogin')"
           :hint="t('turnstileOnLoginHint')"
-        />
-        <OaSwitchField
-          v-model="form.turnstileOnSignup"
-          :label="t('turnstileOnSignup')"
-          :hint="t('turnstileOnSignupHint')"
         />
         <OaSwitchField
           v-model="form.turnstileOnAPIKey"

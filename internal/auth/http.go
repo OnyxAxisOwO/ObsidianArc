@@ -13,6 +13,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -69,6 +70,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/site/logo", httpx.Wrap(h.getSiteLogo))
 	mux.HandleFunc("GET /api/site/login-background/{variant}", httpx.Wrap(h.getLoginBackground))
 	mux.HandleFunc("POST /api/auth/register", httpx.Wrap(h.register))
+	mux.HandleFunc("GET /api/auth/pow-challenge", httpx.Wrap(h.powChallenge))
 	mux.HandleFunc("POST /api/auth/login", httpx.Wrap(h.login))
 	mux.HandleFunc("POST /api/auth/logout", httpx.Wrap(h.logout))
 	mux.HandleFunc("GET /api/auth/me", httpx.Wrap(h.me))
@@ -228,13 +230,16 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		//
 		// Never for the first account: an empty instance must not be locked
 		// out of its own setup by a challenge nobody has configured yet.
-		"turnstile_site_key":      h.turnstileSiteKey(!populated),
-		"turnstile_on_login":      populated && h.settings.Bool(settings.TurnstileOnLogin),
-		"turnstile_on_signup":     populated && h.settings.Bool(settings.TurnstileOnSignup),
-		"turnstile_on_api_key":    h.settings.Bool(settings.TurnstileOnAPIKey),
-		"turnstile_on_redeem":     h.settings.Bool(settings.TurnstileOnRedeem),
-		"turnstile_on_feedback":   h.settings.Bool(settings.TurnstileOnFeedback),
-		"turnstile_on_chat_speed": h.settings.Int(settings.ChatChallengeRequests, 0) > 0,
+		"captcha_mode":              h.captchaMode(!populated),
+		"registration_captcha_mode": h.captchaMode(!populated),
+		"pow_on_signup":             populated && (h.settings.RegistrationCaptchaMode() == settings.CaptchaModePoW || h.settings.RegistrationCaptchaMode() == settings.CaptchaModeBoth),
+		"turnstile_site_key":        h.turnstileSiteKey(!populated),
+		"turnstile_on_login":        populated && h.settings.Bool(settings.TurnstileOnLogin),
+		"turnstile_on_signup":       populated && (h.settings.RegistrationCaptchaMode() == settings.CaptchaModeTurnstile || h.settings.RegistrationCaptchaMode() == settings.CaptchaModeBoth),
+		"turnstile_on_api_key":      h.settings.Bool(settings.TurnstileOnAPIKey),
+		"turnstile_on_redeem":       h.settings.Bool(settings.TurnstileOnRedeem),
+		"turnstile_on_feedback":     h.settings.Bool(settings.TurnstileOnFeedback),
+		"turnstile_on_chat_speed":   h.settings.Int(settings.ChatChallengeRequests, 0) > 0,
 		// So the code step can offer "don't ask again on this browser" only
 		// where the operator allows it, and say for how long.
 		"two_factor_remember_days": h.service.RememberDays(),
@@ -482,11 +487,13 @@ func verificationError(err error) error {
 type registerRequest struct {
 	// The Turnstile token, where the operator has switched the challenge on.
 	Turnstile string `json:"turnstile"`
-	Username  string `json:"username"`
-	Email     string `json:"email"`
-	QQ        string `json:"qq"`
-	Password  string `json:"password"`
-	Nickname  string `json:"nickname"`
+	// PoW solution, when proof-of-work challenge is required.
+	PoW      *pow.Solution `json:"pow"`
+	Username string        `json:"username"`
+	Email    string        `json:"email"`
+	QQ       string        `json:"qq"`
+	Password string        `json:"password"`
+	Nickname string        `json:"nickname"`
 	// Empty unless this instance's registration mode asks for one, or the
 	// visitor arrived through a partner link and typed or carried one along
 	// anyway. See Service.Register.
@@ -503,6 +510,7 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 	ua := r.UserAgent()
 	account, token, err := h.service.Register(r.Context(), RegisterInput{
 		Turnstile:  body.Turnstile,
+		PoW:        body.PoW,
 		Username:   body.Username,
 		Email:      body.Email,
 		QQ:         body.QQ,
@@ -877,6 +885,18 @@ func (h *Handlers) registrationError(err error) error {
 		return httpx.BadRequestCode("invite_required", "An invite code is required to register here.")
 	case errors.Is(err, ErrInviteInvalid):
 		return httpx.BadRequestCode("invite_invalid", "That invite code is not valid.")
+	case errors.Is(err, pow.ErrMissingSolution):
+		return httpx.BadRequestCode("pow_required", "Proof of work challenge solution is required.")
+	case errors.Is(err, pow.ErrExpired):
+		return httpx.BadRequestCode("pow_expired", "Proof of work challenge has expired. Please try again.")
+	case errors.Is(err, pow.ErrInvalidSignature):
+		return httpx.BadRequestCode("pow_invalid_signature", "Invalid proof of work challenge signature.")
+	case errors.Is(err, pow.ErrMaxExceeded):
+		return httpx.BadRequestCode("pow_max_exceeded", "Proof of work nonce exceeds maximum allowed number.")
+	case errors.Is(err, pow.ErrInvalidNonce):
+		return httpx.BadRequestCode("pow_invalid_nonce", "Invalid proof of work solution.")
+	case errors.Is(err, pow.ErrReplayed):
+		return httpx.BadRequestCode("pow_replayed", "Proof of work challenge salt has already been used.")
 	case errors.Is(err, turnstile.ErrFailed):
 		return httpx.ForbiddenCode("challenge_failed",
 			"The verification could not be completed. Try again.")
@@ -969,6 +989,36 @@ func capitalise(value string) string {
 	return value
 }
 
+func (h *Handlers) captchaMode(firstAccount bool) string {
+	if firstAccount {
+		return settings.CaptchaModeOff
+	}
+	return h.settings.RegistrationCaptchaMode()
+}
+
+func (h *Handlers) powChallenge(w http.ResponseWriter, r *http.Request) error {
+	if h.service.PoW == nil {
+		return httpx.UnavailableCode("pow_unavailable", "Proof-of-work challenges are not configured.")
+	}
+	ip := httpx.ClientIP(r, h.trust)
+	now := time.Now()
+	if err := h.service.PoW.Tracker().CheckChallengeRate(ip, now); err != nil {
+		return httpx.TooManyRequests("pow_rate_limited", "Too many challenge requests. Please try again later.")
+	}
+
+	baseMax := h.settings.PoWBaseMaxNumber()
+	elevMax := h.settings.PoWElevatedMaxNumber()
+	threshold := h.settings.PoWThreshold()
+
+	maxNumber := h.service.PoW.Tracker().DetermineMaxNumber(ip, baseMax, elevMax, threshold, now)
+	challenge, err := h.service.PoW.Issue(maxNumber)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	h.service.PoW.Tracker().RecordAttempt(ip, now)
+	return httpx.WriteJSON(w, http.StatusOK, challenge)
+}
+
 // turnstileSiteKey is the key the widget needs, and only where one will be
 // drawn: a key served to a page with no challenge on it is a key in the
 // markup for nothing.
@@ -976,7 +1026,9 @@ func (h *Handlers) turnstileSiteKey(firstAccount bool) string {
 	if firstAccount {
 		return ""
 	}
-	if !h.settings.Bool(settings.TurnstileOnSignup) &&
+	captchaMode := h.settings.RegistrationCaptchaMode()
+	turnstileSignup := captchaMode == settings.CaptchaModeTurnstile || captchaMode == settings.CaptchaModeBoth
+	if !turnstileSignup &&
 		!h.settings.Bool(settings.TurnstileOnLogin) &&
 		!h.settings.Bool(settings.TurnstileOnAPIKey) &&
 		!h.settings.Bool(settings.TurnstileOnRedeem) &&

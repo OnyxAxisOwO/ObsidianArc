@@ -47,6 +47,17 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       return t('challengeFailed');
     case 'challenge_unavailable':
       return t('challengeUnavailable');
+    case 'pow_required':
+      return t('powRequired');
+    case 'pow_expired':
+      return t('powExpired');
+    case 'pow_invalid_signature':
+    case 'pow_max_exceeded':
+    case 'pow_invalid_nonce':
+    case 'pow_replayed':
+      return t('powVerificationFailed');
+    case 'pow_rate_limited':
+      return t('powRateLimited');
     case 'qq_required':
       return t('qqRequiredHere');
     case 'invalid_qq':

@@ -169,3 +169,34 @@ func TestTurningTrustOffIgnoresAConfiguredProxyList(t *testing.T) {
 		t.Errorf("client ip = %q, want the peer 10.0.0.5: a forwarded header was believed", got)
 	}
 }
+
+func TestCFConnectingIPIsBelievedFromTrustedProxy(t *testing.T) {
+	trust, err := NewProxyTrust(true, []string{"10.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:5000"
+	req.Header.Set("CF-Connecting-IP", "198.51.100.42")
+	req.Header.Set("X-Forwarded-For", "198.51.100.42, 172.68.85.216")
+
+	if got := ClientIP(req, trust); got != "198.51.100.42" {
+		t.Errorf("ClientIP = %q, want 198.51.100.42", got)
+	}
+}
+
+func TestCFConnectingIPIsIgnoredFromUntrustedPeer(t *testing.T) {
+	trust, err := NewProxyTrust(true, []string{"10.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:44321"
+	req.Header.Set("CF-Connecting-IP", "1.1.1.1")
+
+	if got := ClientIP(req, trust); got != "203.0.113.9" {
+		t.Errorf("ClientIP = %q, want untrusted peer 203.0.113.9", got)
+	}
+}

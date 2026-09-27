@@ -183,6 +183,7 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool) M
 	policy := strings.Join([]string{
 		"default-src 'self'",
 		scriptSrc,
+		"worker-src 'self' blob:",
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data: blob:",
 		"font-src 'self' data:",
@@ -198,6 +199,7 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool) M
 	withChallenge := strings.Join([]string{
 		"default-src 'self'",
 		scriptSrc + " " + challengeOrigin,
+		"worker-src 'self' blob:",
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data: blob:",
 		"font-src 'self' data:",
@@ -215,6 +217,7 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool) M
 		policy = strings.Join([]string{
 			"default-src 'self'",
 			"script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+			"worker-src 'self' blob:",
 			"style-src 'self' 'unsafe-inline'",
 			"img-src 'self' data: blob:",
 			"font-src 'self' data:",

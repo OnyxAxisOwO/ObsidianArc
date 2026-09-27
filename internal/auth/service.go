@@ -13,6 +13,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
@@ -71,6 +72,10 @@ type Service struct {
 	// challenge rather than a broken one.
 	Challenge      turnstile.Gate
 	LoginChallenge turnstile.Gate
+	// Self-developed proof-of-work manager. Nil is off.
+	PoW *pow.Manager
+	// Challenge failure hook for recording to security events.
+	OnChallengeFailure func(ctx context.Context, event, ip, username, reason string)
 	// Asks a model whether a sign-up looks like a person. Nil is off.
 	//
 	// A function rather than the reviewer itself: the review needs a model,
@@ -179,6 +184,8 @@ type RegisterInput struct {
 	UA       string
 	// Turnstile's token, when the operator has switched the challenge on.
 	Turnstile string
+	// PoW solution, when proof-of-work challenge is required.
+	PoW *pow.Solution
 	// Empty unless this instance's registration mode asks for one — see
 	// consumeInvite. Optional even where it is not required: a code applied
 	// in open mode still seats the account in its group.
@@ -269,16 +276,59 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		}
 	}
 
-	// Before the transaction, and before hashing: this is a call to
-	// Cloudflare, and a transaction never spans a network round trip to
-	// somebody else's server. Hashing is deliberate work and there is no
-	// reason to do it for a request that has already failed.
+	// Before the transaction, and before hashing: these are challenge verifications.
+	// Hashing is deliberate work and there is no reason to do it for a request
+	// that has already failed.
 	//
 	// After the first-account check above, so a fresh instance is never
 	// locked out of its own setup by a challenge nobody could pass yet.
 	if total > 0 {
-		if err := s.Challenge.Check(ctx, in.Turnstile, in.IP); err != nil {
-			return user.User{}, "", err
+		captchaMode := s.settings.RegistrationCaptchaMode()
+
+		// 1. Proof-of-work challenge verification (PoW -> Turnstile -> AI Review)
+		if captchaMode == settings.CaptchaModePoW || captchaMode == settings.CaptchaModeBoth {
+			if s.PoW == nil {
+				return user.User{}, "", errors.New("auth: pow required but manager not configured")
+			}
+			if in.PoW == nil {
+				if s.OnChallengeFailure != nil {
+					s.OnChallengeFailure(ctx, "pow_challenge", in.IP, in.Username, "缺少 PoW 解答")
+				}
+				return user.User{}, "", pow.ErrMissingSolution
+			}
+			if err := s.PoW.Verify(in.PoW); err != nil {
+				reason := "PoW 校验失败"
+				switch {
+				case errors.Is(err, pow.ErrExpired):
+					reason = "PoW 挑战已过期"
+				case errors.Is(err, pow.ErrInvalidSignature):
+					reason = "PoW 签名无效"
+				case errors.Is(err, pow.ErrMaxExceeded):
+					reason = "PoW 步数超出上限"
+				case errors.Is(err, pow.ErrInvalidNonce):
+					reason = "PoW 计算结果不匹配"
+				case errors.Is(err, pow.ErrReplayed):
+					reason = "PoW 挑战已被使用"
+				}
+				if s.OnChallengeFailure != nil {
+					s.OnChallengeFailure(ctx, "pow_challenge", in.IP, in.Username, reason)
+				}
+				return user.User{}, "", err
+			}
+		}
+
+		// 2. Cloudflare Turnstile challenge verification
+		if captchaMode == settings.CaptchaModeTurnstile || captchaMode == settings.CaptchaModeBoth {
+			if err := s.Challenge.Check(ctx, in.Turnstile, in.IP); err != nil {
+				if s.OnChallengeFailure != nil {
+					s.OnChallengeFailure(ctx, "turnstile_challenge", in.IP, in.Username, "Turnstile 人机验证未通过")
+				}
+				return user.User{}, "", err
+			}
+		}
+
+		if s.PoW != nil && s.PoW.Tracker() != nil {
+			s.PoW.Tracker().RecordAttempt(in.IP, time.Now())
 		}
 		// This pass only saves paid screening and review calls for an address
 		// already held here. The transaction still repeats the uniqueness

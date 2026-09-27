@@ -91,6 +91,7 @@ var consoleExempt = map[string]string{
 	"POST /api/profile/two-factor/backoffice/leave": "sent by the browser as the backoffice page closes; the web terminal's unlock lapses on its own",
 	"POST /api/auth/logout":                         "signing out would end the session the terminal itself runs in",
 	"POST /api/auth/register":                       "creating an account happens before there is a terminal",
+	"GET /api/auth/pow-challenge":                   "fetching a proof-of-work challenge happens before there is a terminal",
 	"POST /api/auth/verify":                         "followed from the link in the verification email",
 	"GET /api/auth/oauth/start/{provider}":          "a browser redirect to the identity provider",
 	"GET /api/auth/oauth/callback/{provider}":       "a browser redirect back from the identity provider",

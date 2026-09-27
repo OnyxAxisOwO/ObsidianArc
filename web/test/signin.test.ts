@@ -737,3 +737,72 @@ describe('auth card layout position', () => {
     expect(authElement?.classList.contains('position-left')).toBe(true);
   });
 });
+
+describe('registering with proof-of-work (PoW)', () => {
+  it('fetches PoW challenge and submits solved nonce when pow_on_signup is active', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true };
+
+    const salt = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    const nonce = 3;
+    const challenge = (await import('node:crypto')).createHash('sha256').update(salt + nonce).digest('hex');
+
+    const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue({
+      challenge,
+      salt,
+      maxNumber: 10,
+      expires: Date.now() + 300000,
+      signature: 'test-sig',
+    });
+
+    const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
+      user: { id: 'u1', username: 'alice', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', qq: '', nickname: '', avatar: '', bio: '' },
+    });
+
+    await mount(AuthView, { mode: 'register' });
+    expect(fetchSpy).toHaveBeenCalled();
+
+    type(fieldInput(t('username')), 'alice');
+    type(fieldInput(t('password')), 'super-secret-password');
+
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(regSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        username: 'alice',
+        password: 'super-secret-password',
+        pow: expect.objectContaining({
+          nonce: 3,
+          challenge,
+          salt,
+          maxNumber: 10,
+          signature: 'test-sig',
+        }),
+      }),
+    );
+  });
+
+  it('does not fetch or send PoW when pow_on_signup is disabled', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: false };
+
+    const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge');
+    const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
+      user: { id: 'u1', username: 'bob', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', qq: '', nickname: '', avatar: '', bio: '' },
+    });
+
+    await mount(AuthView, { mode: 'register' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    type(fieldInput(t('username')), 'bob');
+    type(fieldInput(t('password')), 'super-secret-password');
+
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(regSpy).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        pow: expect.anything(),
+      }),
+    );
+  });
+});

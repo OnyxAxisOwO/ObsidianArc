@@ -42,6 +42,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/oauth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/project"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
@@ -619,6 +620,24 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
 	}
 
+	powKey, err := secret.DeriveKey(cfg.SecretKey, "obsidian-arc/pow-challenge")
+	if err != nil {
+		powKey = cfg.SecretKey
+	}
+	powManager := pow.NewManager(powKey, pow.NewTracker())
+	authService.PoW = powManager
+
+	authService.OnChallengeFailure = func(ctx context.Context, event, ip, username, reason string) {
+		ev := securityevents.Event{
+			Event: event, Severity: securityevents.SeverityWarning,
+			Username: username, IP: ip, Decision: "refuse",
+			Reason: reason,
+		}
+		if err := securityLog.Record(ctx, nil, ev); err != nil {
+			slog.ErrorContext(ctx, "could not record challenge failure", "error", err)
+		}
+	}
+
 	// Asking a model whether a sign-up looks like a person. A restriction is
 	// the middle answer: the account exists and can use the website, but the
 	// programmatic surface stays closed until the configured time passes.
@@ -1149,8 +1168,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			// Exactly when a widget can appear. A key with both switches off
 			// draws nothing, and an instance that draws nothing keeps the
 			// policy it had before this feature existed.
+			mode := settingsService.RegistrationCaptchaMode()
+			turnstileOnSignup := mode == settings.CaptchaModeTurnstile || mode == settings.CaptchaModeBoth
 			return settingsService.Get(settings.TurnstileSiteKey) != "" &&
-				(settingsService.Bool(settings.TurnstileOnSignup) ||
+				(turnstileOnSignup ||
 					settingsService.Bool(settings.TurnstileOnLogin) ||
 					settingsService.Bool(settings.TurnstileOnAPIKey) ||
 					settingsService.Bool(settings.TurnstileOnRedeem) ||

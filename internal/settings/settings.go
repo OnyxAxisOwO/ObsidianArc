@@ -95,6 +95,19 @@ const (
 	// challenge only on an instance that has actually been spammed.
 	TurnstileOnFeedback = "turnstile.on_feedback"
 
+	// Registration Captcha mode and self-developed Proof-of-Work settings.
+	// Captcha mode controls the challenge required at sign-up: "off",
+	// "turnstile", "pow", or "both".
+	RegistrationCaptchaMode = "registration.captcha_mode"
+	CaptchaModeOff          = "off"
+	CaptchaModeTurnstile    = "turnstile"
+	CaptchaModePoW          = "pow"
+	CaptchaModeBoth         = "both"
+
+	PoWBaseMaxNumber     = "security.pow_base_max_number"
+	PoWElevatedMaxNumber = "security.pow_elevated_max_number"
+	PoWThreshold         = "security.pow_threshold"
+
 	// Signing in with an account somebody already holds somewhere else. Each
 	// provider is a switch and a pair of credentials from its own console;
 	// the secret is write-only, the way the Turnstile one is.
@@ -441,6 +454,43 @@ func ValidQQRequirement(value string) bool {
 	return false
 }
 
+func ValidCaptchaMode(value string) bool {
+	switch value {
+	case CaptchaModeOff, CaptchaModeTurnstile, CaptchaModePoW, CaptchaModeBoth:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) RegistrationCaptchaMode() string {
+	mode := s.Get(RegistrationCaptchaMode)
+	if ValidCaptchaMode(mode) {
+		return mode
+	}
+	return CaptchaModeTurnstile
+}
+
+func (s *Service) PoWBaseMaxNumber() int64 {
+	val, err := strconv.ParseInt(s.Get(PoWBaseMaxNumber), 10, 64)
+	if err != nil || val <= 0 {
+		return 50000
+	}
+	return val
+}
+
+func (s *Service) PoWElevatedMaxNumber() int64 {
+	val, err := strconv.ParseInt(s.Get(PoWElevatedMaxNumber), 10, 64)
+	if err != nil || val <= 0 {
+		return 500000
+	}
+	return val
+}
+
+func (s *Service) PoWThreshold() int {
+	return s.Int(PoWThreshold, 10)
+}
+
 // What the backoffice's one registration-mode select actually means, and
 // what GET /api/site tells a visitor before they type anything.
 const (
@@ -538,12 +588,16 @@ var Defaults = map[string]string{
 	// is configuring, not yet switching on, and a challenge that appeared the
 	// moment a key was saved would lock out the half-finished setup it was
 	// saved during.
-	TurnstileOnLogin:      "false",
-	TurnstileOnSignup:     "false",
-	TurnstileOnAPIKey:     "false",
-	TurnstileOnRedeem:     "false",
-	TurnstileOnFeedback:   "false",
-	FeedbackShowStaffName: "true",
+	TurnstileOnLogin:        "false",
+	TurnstileOnSignup:       "false",
+	TurnstileOnAPIKey:       "false",
+	TurnstileOnRedeem:       "false",
+	TurnstileOnFeedback:     "false",
+	RegistrationCaptchaMode: CaptchaModeTurnstile,
+	PoWBaseMaxNumber:        "50000",
+	PoWElevatedMaxNumber:    "500000",
+	PoWThreshold:            "10",
+	FeedbackShowStaffName:   "true",
 	// Off, and off even once the credentials are filled in, for the reason
 	// the challenge switches above are: pasting a key is not the same as
 	// opening the door.
