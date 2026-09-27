@@ -65,6 +65,11 @@ export interface PendingSignup {
   provider_name: string;
   /** What the provider calls them, so the form can say whose sign-in this is. */
   login: string;
+  /**
+   * A QQ number the provider has already answered with — an IdP whose subject
+   * is one, verified before it vouched. Prefilled, still confirmed by hand.
+   */
+  qq?: string;
   /** Only ever an address the provider proved. Empty otherwise. */
   email: string;
   needs: { qq: boolean; email: boolean };

@@ -33,7 +33,10 @@ var (
 	ErrSignupClosed = errors.New("oauth: this server does not open accounts from a provider sign-in")
 	// Removing this connection would leave no way into the account.
 	ErrLastWayIn = errors.New("oauth: this is the only way left into this account")
-	// There was nothing to remove.
+	// An OpenID Connect connection is bound for the life of the account: its
+	// subject is the QQ number the account answers to, and removing it would
+	// leave a QQ on the account that no longer has a way to prove it.
+	ErrOIDCPinned          = errors.New("oauth: an OpenID Connect connection cannot be removed")
 	ErrNotConnected        = errors.New("oauth: that provider is not connected to this account")
 	errNeedsEmailScreening = errors.New("oauth: email screening must run before opening this account")
 )
@@ -308,6 +311,34 @@ func (s *Service) resolve(
 				}
 			}
 
+			// An IdP whose subject is the QQ number — verified upstream by a
+			// group message before it vouches — has proved that number the way
+			// a confirmed address is proved. An account here that already
+			// carries the same number is the same person, arriving a different
+			// way, and is linked under the same switch as the address case.
+			if identity.Provider == "oidc" && isAllDigits(identity.Subject) {
+				byQQ, err := s.users.ByQQ(ctx, tx, identity.Subject)
+				switch {
+				case err == nil:
+					if !s.settings.Bool(settings.OAuthLinkByEmail) {
+						return ErrAddressTaken
+					}
+					if !byQQ.IsActive() {
+						return auth.ErrAccountDisabled
+					}
+					if err := s.store.Link(ctx, tx, byQQ.ID, identity); err != nil {
+						if errors.Is(err, ErrAlreadyLinked) {
+							return ErrAddressTaken
+						}
+						return err
+					}
+					account = byQQ
+					return nil
+				case !errors.Is(err, user.ErrNotFound):
+					return err
+				}
+			}
+
 			// Nobody here is this person yet.
 			if !s.settings.Bool(settings.OAuthAllowSignup) {
 				// Unless there is nobody here at all. An empty instance is being
@@ -355,6 +386,14 @@ func (s *Service) resolve(
 			if address == "" {
 				address = strings.TrimSpace(details.Email)
 			}
+			// A subject that is the QQ number rides into the account the same
+			// way Connect writes it on a settings-screen bind — the number is
+			// what the IdP proved. An answer typed into the completion form
+			// wins over it, because that is the answer the person confirmed.
+			qq := strings.TrimSpace(details.QQ)
+			if qq == "" && identity.Provider == "oidc" && isAllDigits(identity.Subject) {
+				qq = identity.Subject
+			}
 			populated, err := s.users.Any(ctx, tx)
 			if err != nil {
 				return err
@@ -376,7 +415,7 @@ func (s *Service) resolve(
 				Username:      identity.Login,
 				Email:         address,
 				EmailVerified: identity.Email != "",
-				QQ:            strings.TrimSpace(details.QQ),
+				QQ:            qq,
 				Nickname:      strings.TrimSpace(identity.Name),
 				IP:            ip,
 				UA:            ua,
@@ -434,6 +473,11 @@ func (s *Service) emailDomains() []string {
 func (s *Service) verificationRequired() bool { return s.auth.VerificationRequired() }
 
 // Connect adds a provider to an account that is already signed in.
+//
+// Binding an OpenID Connect provider whose subject is the QQ number also
+// writes that number onto the account when it has none — the settings screen
+// binds the account the same way a group-verified sign-in would. A number
+// another account already carries is left alone rather than stolen.
 func (s *Service) Connect(ctx context.Context, userID string, identity Identity) error {
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		// The account's own row, because what follows is a check — is this
@@ -453,7 +497,28 @@ func (s *Service) Connect(ctx context.Context, userID string, identity Identity)
 		case !errors.Is(err, ErrNoIdentity):
 			return err
 		}
-		return s.store.Link(ctx, tx, userID, identity)
+		if err := s.store.Link(ctx, tx, userID, identity); err != nil {
+			return err
+		}
+		// The QQ association rides along with the connection. Only a first
+		// binding writes it: the account's own number, if any, is the one it
+		// answered to first.
+		if identity.Provider == "oidc" && isAllDigits(identity.Subject) {
+			current, err := s.users.ByID(ctx, tx, userID)
+			if err != nil {
+				return err
+			}
+			if current.QQ == "" {
+				if _, err := s.users.ByQQ(ctx, tx, identity.Subject); errors.Is(err, user.ErrNotFound) {
+					if _, err := s.users.UpdateProfile(ctx, tx, userID, user.ProfileUpdate{QQ: &identity.Subject}); err != nil {
+						return err
+					}
+				} else if err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	})
 }
 
@@ -480,6 +545,12 @@ func (s *Service) Connections(ctx context.Context, userID string) ([]Connection,
 // lock, because two clicks on two providers would otherwise each see the
 // other still there and both go through.
 func (s *Service) Disconnect(ctx context.Context, userID, provider string) error {
+	// A bound OpenID Connect identity is the proof behind the account's QQ
+	// number; unbinding it would leave the number without a way to prove it.
+	// Deleting the account is the only way it comes off.
+	if provider == "oidc" {
+		return ErrOIDCPinned
+	}
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {

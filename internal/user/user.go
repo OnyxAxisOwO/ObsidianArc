@@ -300,7 +300,25 @@ func (s *Store) ByEmail(ctx context.Context, q database.Queryer, email string) (
 	return s.ResolveMembership(ctx, q, record)
 }
 
-// PasswordHash is the stored credential, or the empty string for an account
+// ByQQ resolves the one account that carries this QQ number. Callers arrive
+// holding a number a provider has proved — an IdP whose subject is the QQ
+// number itself — so a match is a person, not a claim to double-check.
+func (s *Store) ByQQ(ctx context.Context, q database.Queryer, qq string) (User, error) {
+	if q == nil {
+		q = s.db
+	}
+	number := strings.TrimSpace(qq)
+	if number == "" {
+		return User{}, ErrNotFound
+	}
+	record, err := scanUser(q.QueryRow(ctx,
+		`SELECT `+columns+` FROM users WHERE qq <> '' AND qq = ?`, number))
+	if err != nil {
+		return User{}, err
+	}
+	return s.ResolveMembership(ctx, q, record)
+}
+
 // that has never had one — every account created by a provider sign-in.
 //
 // Separate from CredentialsByLogin because the callers are different

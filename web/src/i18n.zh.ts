@@ -1881,6 +1881,8 @@ export const zh: Record<StringKey, string> = {
   oauthConnected: '已连接。',
   oauthLastWayIn: '请先设置密码——这是目前进入这个账户的唯一方式。',
   oauthAlreadyLinked: '那个账号已经连接到这里的另一个账户了。',
+  oauthOIDCPinned: 'OIDC 连接无法解绑——它就是这个账户 QQ 号的凭证。',
+  oauthOIDCPinnedHint: '账户存续期间保持绑定——它是 QQ 号的凭证。',
   setPassword: '设置密码',
   setPasswordHint: '这个账户通过第三方登录，还没有密码。设置一个之后就多了一种登录方式，即使管理员关闭了第三方登录也仍然能进来。',
   oauthFailed: '这次登录没有完成，请重试。',
