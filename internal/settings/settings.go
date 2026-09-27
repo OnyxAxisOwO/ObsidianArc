@@ -32,6 +32,10 @@ const (
 	// so an operator who never opens this screen still gets a sensible page.
 	AboutTitle = "about.title"
 	AboutBody  = "about.body"
+	// Whether the About drawer reveals version, uptime, and the contributors
+	// list to non-admin users. Enabled by default as a way to support and credit
+	// the Obsidian Arc project.
+	AboutShowSoftwareInfo = "about.show_software_info"
 	// A standing notice above the chat. Unlike an announcement, which is a
 	// dated thing someone reads once, this is a property of the instance: it
 	// stays until an operator takes it down. Empty means there is none.
@@ -549,12 +553,13 @@ func ValidPWAIconURL(value string) bool {
 // Defaults are what a fresh instance behaves like, and what a deleted row
 // falls back to. Nothing reads a setting without one.
 var Defaults = map[string]string{
-	SiteName:             "Obsidian Arc",
-	SiteDescription:      "",
-	SiteAuthCardPosition: AuthCardPositionCenter,
-	AboutTitle:           "",
-	AboutBody:            "",
-	HomeNotice:           "",
+	SiteName:              "Obsidian Arc",
+	SiteDescription:       "",
+	SiteAuthCardPosition:  AuthCardPositionCenter,
+	AboutTitle:            "",
+	AboutBody:             "",
+	AboutShowSoftwareInfo: "true",
+	HomeNotice:            "",
 	// Dismissible unless an operator says otherwise: a strip that cannot be
 	// put away is the exception, and defaults should not be the exception.
 	HomeNoticeDismissible: "true",

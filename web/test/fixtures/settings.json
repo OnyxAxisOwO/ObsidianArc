@@ -11,6 +11,7 @@
   "pwa.icon_url": "",
   "about.title": "",
   "about.body": "",
+  "about.show_software_info": "true",
   "home.notice": "",
   "home.notice_dismissible": "true",
   "landing.mode": "login",

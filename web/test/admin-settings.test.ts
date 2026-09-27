@@ -159,4 +159,55 @@ describe('admin settings payload', () => {
     expect(host.querySelector<HTMLElement>('#secLoginBg')?.style.display).not.toBe('none');
     expect(host.querySelector<HTMLElement>('#secAbout')?.style.display).toBe('none');
   });
+
+  it('opens confirmation modal when disabling showSoftwareInfo and respects user decision', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    await mountSettings();
+
+    const aboutCard = host.querySelector('#secAbout');
+    expect(aboutCard).not.toBeNull();
+    const checkbox = aboutCard?.querySelector<HTMLInputElement>('.oa-switch-field input[type="checkbox"]');
+    expect(checkbox).not.toBeNull();
+    expect(checkbox!.checked).toBe(true);
+
+    // Click checkbox to turn it OFF
+    checkbox!.click();
+    await nextTick();
+
+    // Confirmation modal should now be visible in body
+    const modal = document.body.querySelector('.oa-modal-card');
+    expect(modal).not.toBeNull();
+    expect(modal?.querySelector('.oa-auth-title')?.textContent).toBe(t('aboutDisableModalTitle'));
+
+    // 1. Click "Keep Enabled" (cancel)
+    const keepBtn = [...modal!.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent?.trim() === t('aboutDisableModalKeep'),
+    );
+    expect(keepBtn).not.toBeUndefined();
+    keepBtn!.click();
+    await nextTick();
+
+    // Modal is dismissed, setting remains true, form is not dirty
+    expect(document.body.querySelector('.oa-modal-card')).toBeNull();
+    expect(checkbox!.checked).toBe(true);
+    expectSaveState(false);
+
+    // 2. Click checkbox again to turn it OFF, then confirm
+    checkbox!.click();
+    await nextTick();
+
+    const modal2 = document.body.querySelector('.oa-modal-card');
+    expect(modal2).not.toBeNull();
+    const confirmBtn = [...modal2!.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent?.trim() === t('aboutDisableModalConfirm'),
+    );
+    expect(confirmBtn).not.toBeUndefined();
+    confirmBtn!.click();
+    await nextTick();
+
+    // Modal is dismissed, setting is now false, form is dirty
+    expect(document.body.querySelector('.oa-modal-card')).toBeNull();
+    expect(checkbox!.checked).toBe(false);
+    expectSaveState(true);
+  });
 });

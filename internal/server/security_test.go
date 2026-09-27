@@ -803,6 +803,94 @@ func TestAboutTextIsOperatorWritableAndOptional(t *testing.T) {
 	}
 }
 
+func TestAboutSoftwareInfoVisibility(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("founder", "a-good-password")
+	user := in.register("regular", "another-good-password")
+
+	readSiteShowInfo := func() bool {
+		t.Helper()
+		response := in.do(http.MethodGet, "/api/site", nil, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/site: %d", response.Code)
+		}
+		var payload struct {
+			About struct {
+				ShowSoftwareInfo bool `json:"show_software_info"`
+			} `json:"about"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.About.ShowSoftwareInfo
+	}
+
+	readHealth := func(as *session) (string, int64) {
+		t.Helper()
+		response := in.do(http.MethodGet, "/api/health", nil, as)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/health: %d", response.Code)
+		}
+		var payload struct {
+			Status    string `json:"status"`
+			Version   string `json:"version"`
+			UptimeSec int64  `json:"uptime_sec"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Status != "ok" {
+			t.Fatalf("health status = %q, want ok", payload.Status)
+		}
+		return payload.Version, payload.UptimeSec
+	}
+
+	// 1. By default, it is enabled (supports Obsidian Arc by showing version/uptime/credits).
+	if !readSiteShowInfo() {
+		t.Fatal("fresh instance served about.show_software_info = false, want true")
+	}
+	ver, _ := readHealth(user)
+	if ver == "" {
+		t.Fatal("regular user got empty version on default settings")
+	}
+
+	// 2. Admin disables show_software_info.
+	saved := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"about.show_software_info": "false",
+	}, admin)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("disable show_software_info: %d %s", saved.Code, saved.Body.String())
+	}
+
+	if readSiteShowInfo() {
+		t.Fatal("site info still shows about.show_software_info = true after disabling")
+	}
+
+	// 3. Regular user now gets masked/empty version and uptime.
+	userVer, userUp := readHealth(user)
+	if userVer != "" || userUp != 0 {
+		t.Fatalf("regular user saw version=%q, uptime=%d when disabled", userVer, userUp)
+	}
+
+	// 4. Admin still sees version and uptime.
+	adminVer, _ := readHealth(admin)
+	if adminVer == "" {
+		t.Fatal("admin did not see version when disabled")
+	}
+
+	// 5. Re-enabling restores visibility.
+	in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"about.show_software_info": "true",
+	}, admin)
+	if !readSiteShowInfo() {
+		t.Fatal("site info did not restore about.show_software_info = true")
+	}
+	ver, _ = readHealth(user)
+	if ver == "" {
+		t.Fatal("regular user did not see version after re-enabling")
+	}
+}
+
 // The standing notice above the chat. Unlike an announcement it carries no
 // read state and no date, so the only two things to get right are that it is
 // served to everyone — including a visitor who has not signed in, since the

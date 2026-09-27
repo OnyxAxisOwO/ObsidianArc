@@ -131,7 +131,7 @@ export interface SiteInfo {
   landing?: Landing;
   // The About panel as the operator wrote it. Either field may be empty, which
   // means "use the built-in wording" rather than "render nothing".
-  about?: { title: string; body: string };
+  about?: { title: string; body: string; show_software_info?: boolean };
   // The standing notice above the chat. Not an announcement: no read state,
   // no date, and it stays until an operator clears it.
   home_notice?: { text: string; dismissible: boolean };

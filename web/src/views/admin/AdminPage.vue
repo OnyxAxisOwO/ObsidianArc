@@ -298,8 +298,10 @@ onMounted(() => {
   // that matters.
   void health()
     .then((status) => {
-      build.value = status.version;
-      buildTitle.value = `Build ${status.version} · up ${formatUptime(status.uptime_sec)}`;
+      build.value = status.version ?? '';
+      buildTitle.value = status.version && status.uptime_sec !== undefined
+        ? `Build ${status.version} · up ${formatUptime(status.uptime_sec)}`
+        : '';
     })
     .catch(() => {
       // A version nobody can read is not worth an error state.

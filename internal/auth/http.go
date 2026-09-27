@@ -275,8 +275,9 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// falls back to the instance name and its built-in description rather
 		// than rendering a blank card.
 		"about": map[string]any{
-			"title": h.settings.Get(settings.AboutTitle),
-			"body":  h.settings.Get(settings.AboutBody),
+			"title":              h.settings.Get(settings.AboutTitle),
+			"body":               h.settings.Get(settings.AboutBody),
+			"show_software_info": h.settings.Bool(settings.AboutShowSoftwareInfo),
 		},
 		// The standing notice above the chat. Served here rather than from the
 		// announcements endpoint because it is not an announcement: nobody has

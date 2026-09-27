@@ -49,7 +49,13 @@ export function visibleAdminPages(pages: AdminPageSpec[], superAdmin: boolean): 
 }
 
 export const ADMIN_FEATURES: AdminFeatureItem[] = [
-  { id: 'secAbout', pageSlug: 'settings', titleKey: 'controlAbout', searchKeys: ['aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint'] },
+  {
+    id: 'secAbout',
+    pageSlug: 'settings',
+    titleKey: 'controlAbout',
+    searchKeys: ['aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint', 'aboutShowSoftwareInfo', 'aboutShowSoftwareInfoHint'],
+    keywords: ['版本号', '已运行时间', '贡献者', '隐藏版本', '隐藏运行时间', '支持 Obsidian Arc', '致谢', 'version', 'uptime', 'contributors', 'credits'],
+  },
   { id: 'secHomeNotice', pageSlug: 'settings', titleKey: 'homeNotice', searchKeys: ['homeNoticeHint', 'homeNoticeDismissible', 'homeNoticeDismissibleHint'] },
   {
     id: 'secFeedback',

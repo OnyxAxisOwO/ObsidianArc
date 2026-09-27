@@ -5,7 +5,14 @@ const props = defineProps<{
   hint?: string | undefined;
 }>();
 
-defineEmits<{ (event: 'update:modelValue', value: boolean): void }>();
+const emit = defineEmits<{ (event: 'update:modelValue', value: boolean): void }>();
+
+function onChange(event: Event): void {
+  const target = event.target as HTMLInputElement;
+  const next = target.checked;
+  target.checked = props.modelValue;
+  emit('update:modelValue', next);
+}
 </script>
 
 <template>
@@ -14,7 +21,7 @@ defineEmits<{ (event: 'update:modelValue', value: boolean): void }>();
       <input
         type="checkbox"
         :checked="props.modelValue"
-        @change="$emit('update:modelValue', ($event.target as HTMLInputElement).checked)"
+        @change="onChange"
       >
       <span>{{ props.label }}</span>
     </label>

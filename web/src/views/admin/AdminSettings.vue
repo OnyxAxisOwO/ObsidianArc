@@ -10,11 +10,13 @@ import { adminApi, type AdminModel, type HeldAttachments } from '@/admin/api';
 import { pickJSONFile, saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
+import OaIconButton from '@/components/OaIconButton.vue';
+import OaOverlay from '@/components/OaOverlay.vue';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminWorkbench from './AdminWorkbench.vue';
 import type { WorkbenchGroup } from './workbench';
 import { useSettingsDraft } from './settingsDraft';
-import { IconHome, IconSpark, IconFile, IconKey, IconInfo, IconBell, IconMessage, IconSliders, IconTrash, IconImage, IconSun, IconMoon } from '@/icons';
+import { IconHome, IconSpark, IconFile, IconKey, IconInfo, IconBell, IconMessage, IconSliders, IconTrash, IconImage, IconSun, IconMoon, IconClose } from '@/icons';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
@@ -45,7 +47,7 @@ const SEARCH_GROUPS = {
     'pwaDescriptionHint', 'pwaThemeColor', 'pwaThemeColorHint', 'pwaBackgroundColor', 'pwaBackgroundColorHint',
     'pwaIconUrl', 'pwaIconUrlHint',
   ],
-  secAbout: ['controlAbout', 'aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint'],
+  secAbout: ['controlAbout', 'aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint', 'aboutShowSoftwareInfo', 'aboutShowSoftwareInfoHint'],
   secHomeNotice: ['homeNotice', 'homeNoticeHint', 'homeNoticeDismissible', 'homeNoticeDismissibleHint'],
   secFeedback: ['navFeedback', 'feedbackShowStaffName', 'feedbackShowStaffNameHint'],
   secLanding: [
@@ -113,6 +115,7 @@ const form = ref({
   pwaIconUrl: '',
   aboutHeading: '',
   aboutText: '',
+  aboutShowSoftwareInfo: true,
   homeNotice: '',
   homeNoticeDismissible: true,
   feedbackShowStaffName: true,
@@ -165,6 +168,7 @@ function collect(): Record<string, string> {
     'pwa.icon_url': form.value.pwaIconUrl.trim(),
     'about.title': form.value.aboutHeading.trim(),
     'about.body': form.value.aboutText.trim(),
+    'about.show_software_info': String(form.value.aboutShowSoftwareInfo),
     'home.notice': form.value.homeNotice.trim(),
     'home.notice_dismissible': String(form.value.homeNoticeDismissible),
     'feedback.show_staff_name': String(form.value.feedbackShowStaffName),
@@ -210,6 +214,11 @@ async function save(): Promise<void> {
         name,
         browser_title: form.value.browserTitle.trim() || name,
         auth_card_position: form.value.authCardPosition as 'center' | 'left' | 'right',
+        about: {
+          title: form.value.aboutHeading.trim(),
+          body: form.value.aboutText.trim(),
+          show_software_info: form.value.aboutShowSoftwareInfo,
+        },
       };
     }
     saveLabel.value = t('saved');
@@ -498,6 +507,25 @@ async function clearSiteLogo(): Promise<void> {
   }
 }
 
+const showConfirmDisableModal = ref(false);
+
+function onToggleSoftwareInfo(value: boolean): void {
+  if (!value) {
+    showConfirmDisableModal.value = true;
+  } else {
+    form.value.aboutShowSoftwareInfo = true;
+  }
+}
+
+function confirmDisableSoftwareInfo(): void {
+  form.value.aboutShowSoftwareInfo = false;
+  showConfirmDisableModal.value = false;
+}
+
+function cancelDisableSoftwareInfo(): void {
+  showConfirmDisableModal.value = false;
+}
+
 async function load(): Promise<void> {
   error.value = '';
   try {
@@ -523,6 +551,7 @@ async function load(): Promise<void> {
       pwaIconUrl: values['pwa.icon_url'] ?? '',
       aboutHeading: values['about.title'] ?? '',
       aboutText: values['about.body'] ?? '',
+      aboutShowSoftwareInfo: values['about.show_software_info'] !== 'false',
       homeNotice: values['home.notice'] ?? '',
       homeNoticeDismissible: (values['home.notice_dismissible'] ?? 'true') === 'true',
       feedbackShowStaffName: (values['feedback.show_staff_name'] ?? 'true') === 'true',
@@ -741,6 +770,12 @@ onMounted(load);
           :max-length="60"
         />
         <OaTextArea v-model="form.aboutText" :label="t('aboutText')" :rows="5" :hint="t('aboutTextHint')" />
+        <OaSwitchField
+          :model-value="form.aboutShowSoftwareInfo"
+          :label="t('aboutShowSoftwareInfo')"
+          :hint="t('aboutShowSoftwareInfoHint')"
+          @update:model-value="onToggleSoftwareInfo"
+        />
       </AdminControlCard>
       <AdminControlCard id="secChat" v-show="visible('secChat')" :title="t('secChat')" :icon="IconSpark">
         <OaTextArea
@@ -911,4 +946,45 @@ onMounted(load);
     </template>
   </AdminWorkbench>
   <p v-if="flash" class="oa-drawer-flash visible oa-control-flash" :class="{ ok: flashOK }" role="status">{{ flash }}</p>
+
+  <OaOverlay
+    v-if="showConfirmDisableModal"
+    overlay-class="oa-modal-overlay"
+    @close="cancelDisableSoftwareInfo"
+  >
+    <div class="oa-auth-card oa-modal-card">
+      <OaIconButton
+        class="oa-icon-btn oa-modal-close"
+        :label="t('close')"
+        @click="cancelDisableSoftwareInfo"
+      >
+        <IconClose :size="16" />
+      </OaIconButton>
+
+      <div class="oa-auth-brand">
+        <span class="oa-auth-mark"><IconInfo :size="15" /></span>
+        <span>{{ site?.name || 'Obsidian Arc' }}</span>
+      </div>
+
+      <h1 class="oa-auth-title">{{ t('aboutDisableModalTitle') }}</h1>
+      <p class="oa-auth-sub">{{ t('aboutDisableModalDesc') }}</p>
+
+      <div class="oa-auth-form" style="margin-top: 18px; display: flex; gap: 8px; flex-direction: column;">
+        <button
+          type="button"
+          class="oa-btn primary oa-btn-block"
+          @click="cancelDisableSoftwareInfo"
+        >
+          {{ t('aboutDisableModalKeep') }}
+        </button>
+        <button
+          type="button"
+          class="oa-btn oa-btn-danger oa-btn-block"
+          @click="confirmDisableSoftwareInfo"
+        >
+          {{ t('aboutDisableModalConfirm') }}
+        </button>
+      </div>
+    </div>
+  </OaOverlay>
 </template>

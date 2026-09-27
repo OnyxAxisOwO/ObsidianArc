@@ -282,6 +282,36 @@ describe('the application, mounted', () => {
     expect(host.querySelector<HTMLAnchorElement>('.oa-about-lede a')?.href).toBe('https://example.com/');
   });
 
+  it('hides version, runtime, and contributors from regular users when show_software_info is false', async () => {
+    site.value = {
+      ...siteInfo.value,
+      about: { title: 'Lantern', body: 'Hello world', show_software_info: false },
+    };
+    adopt(ACCOUNT);
+    await mountAt('/about');
+
+    const facts = host.querySelectorAll('.oa-about-fact');
+    expect(facts.length).toBe(2);
+    expect(host.textContent).not.toContain('vtest');
+    expect(host.querySelector('.oa-about-people')).toBeNull();
+  });
+
+  it('shows version, runtime, and contributors with admin badge when admin opens About with show_software_info false', async () => {
+    site.value = {
+      ...siteInfo.value,
+      about: { title: 'Lantern', body: 'Hello world', show_software_info: false },
+    };
+    adopt({ ...ACCOUNT, role: 'admin' });
+    await mountAt('/about');
+
+    const facts = host.querySelectorAll('.oa-about-fact');
+    expect(facts.length).toBe(4);
+    expect(host.querySelector('.oa-about-people')).not.toBeNull();
+    const badges = host.querySelectorAll('.oa-badge-muted');
+    expect(badges.length).toBeGreaterThan(0);
+    expect(badges[0]?.textContent).toContain(t('aboutAdminOnlyBadge'));
+  });
+
   it('shows the current group and renders its description as Markdown on Usage', async () => {
     adopt({
       ...ACCOUNT,

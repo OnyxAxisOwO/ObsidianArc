@@ -165,6 +165,7 @@ var writableSettings = map[string]bool{
 	settings.SiteAuthCardPosition:       true,
 	settings.AboutTitle:                 true,
 	settings.AboutBody:                  true,
+	settings.AboutShowSoftwareInfo:      true,
 	settings.HomeNotice:                 true,
 	settings.HomeNoticeDismissible:      true,
 	settings.RegistrationEnabled:        true,

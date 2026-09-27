@@ -318,11 +318,18 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		if err := db.Pool().PingContext(r.Context()); err != nil {
 			return httpx.Unavailable("Database is not reachable.").WithCause(err)
 		}
-		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"status":     "ok",
-			"version":    deps.Version,
-			"uptime_sec": int64(time.Since(deps.Started).Seconds()),
-		})
+		account, _ := auth.UserFrom(r.Context())
+		isAdmin := account.Role == user.RoleAdmin || account.Role == user.RoleSuperAdmin
+		showInfo := settingsService.Bool(settings.AboutShowSoftwareInfo)
+
+		res := map[string]any{
+			"status": "ok",
+		}
+		if isAdmin || showInfo {
+			res["version"] = deps.Version
+			res["uptime_sec"] = int64(time.Since(deps.Started).Seconds())
+		}
+		return httpx.WriteJSON(w, http.StatusOK, res)
 	}))
 
 	authHandlers := auth.NewHandlers(authService, users, groups, preferences, settingsService, proxyTrust)
@@ -520,10 +527,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			sec = 0
 		}
 
-		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"uptime_sec": sec,
-			"models":     result,
-		})
+		resp := map[string]any{
+			"models": result,
+		}
+		if account.CanAdmin("availability") || settingsService.Bool(settings.AboutShowSoftwareInfo) {
+			resp["uptime_sec"] = sec
+		} else {
+			resp["uptime_sec"] = 0
+		}
+
+		return httpx.WriteJSON(w, http.StatusOK, resp)
 	}))
 	// One client for every Turnstile check, so registration, key creation and
 	// a burst challenge reuse connections to Cloudflare.

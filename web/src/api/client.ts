@@ -111,8 +111,8 @@ export const api = {
 
 export interface Health {
   status: string;
-  version: string;
-  uptime_sec: number;
+  version?: string;
+  uptime_sec?: number;
 }
 
 export function health(): Promise<Health> {
