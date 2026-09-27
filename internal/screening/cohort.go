@@ -132,15 +132,12 @@ func (c signupCohort) protect(verdict Verdict) Verdict {
 		Reason: fmt.Sprintf("Matches %d recent registrations with the same domain and two account templates; %d are disabled and %d have API restrictions.", c.matching, c.disabled, c.restricted)}
 }
 
-// A model can invent browser facts or overread a single odd handle. Holding
-// API access is reversible; refusing a real person's registration is not.
+// The model's decision to refuse is honored directly so that bot signups
+// are refused on registration and the model's reason is preserved. A
+// confirmed abuse cohort still upgrades weaker verdicts to refusal.
 func (c signupCohort) protectModel(verdict Verdict) Verdict {
 	if c.confirmed() {
 		return c.protect(verdict)
-	}
-	if verdict.Decision == DecisionRefuse {
-		return Verdict{Decision: DecisionRestrict,
-			Reason: "AI refusal lacked corroborating registration evidence; API access held for review."}
 	}
 	return verdict
 }

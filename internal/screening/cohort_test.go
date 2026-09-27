@@ -58,8 +58,8 @@ func TestACommonDomainOrNameShapeDoesNotRefuse(t *testing.T) {
 	if got := cohort.protect(Verdict{Decision: DecisionAllow}); got.Decision != DecisionAllow {
 		t.Fatalf("ordinary registration was refused: %+v", got)
 	}
-	if got := cohort.protectModel(Verdict{Decision: DecisionRefuse, Reason: "EdgA is forged"}); got.Decision != DecisionRestrict {
-		t.Fatalf("uncorroborated model refusal denied registration: %+v", got)
+	if got := cohort.protectModel(Verdict{Decision: DecisionRefuse, Reason: "EdgA is forged"}); got.Decision != DecisionRefuse || got.Reason != "EdgA is forged" {
+		t.Fatalf("model refusal was not honored directly: %+v", got)
 	}
 
 	base.Recent = []RecentSignup{
