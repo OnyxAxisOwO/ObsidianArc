@@ -623,6 +623,12 @@ Timeouts: `ResponseHeaderTimeout` on the upstream client, plus a per-provider
 overall deadline. `WriteTimeout` on our own server is disabled for the SSE
 route and enforced per-request instead, so a long generation is not cut off.
 
+`Emit` also arms a per-frame write deadline: a client that connects and never
+reads crosses the next frame's deadline, its `Emit` returns the timeout error,
+and the caller cancels the turn through the same path as Stop. A client that
+consumes each token as it lands never trips it, because the deadline is
+re-armed on every frame — only the stuck are cut loose.
+
 ---
 
 ## 8. Usage ledger

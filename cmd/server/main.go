@@ -95,8 +95,9 @@ func run() error {
 		Addr:    cfg.Addr,
 		Handler: app.Handler(),
 		// No WriteTimeout: a streamed answer legitimately takes minutes, and
-		// a global write deadline would sever it mid-sentence. Streaming
-		// handlers set their own deadlines through http.ResponseController.
+		// a global write deadline would sever it mid-sentence. httpx.SSE arms
+		// a per-frame write deadline instead (writeDeadline there), so a
+		// stalled reader is cut loose without capping how long an answer runs.
 		ReadHeaderTimeout: 15 * time.Second,
 		ReadTimeout:       5 * time.Minute,
 		IdleTimeout:       120 * time.Second,
