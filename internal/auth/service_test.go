@@ -814,3 +814,65 @@ func TestAuthenticateReturnsTheWholeAccountAndItsSession(t *testing.T) {
 		t.Errorf("session expires at %d, created at %d", session.ExpiresAt, session.CreatedAt)
 	}
 }
+
+func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// Initial setup account (empty instance) is exempt even if OIDC-only is on.
+	if err := f.settings.Set(ctx, settings.OAuthOIDCEnabled, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	admin, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("first account should succeed even when oidc-only is active: %v", err)
+	}
+	if !admin.IsAdmin() {
+		t.Fatalf("first user role = %q, want admin", admin.Role)
+	}
+
+	// Subsequent normal registrations fail with ErrOIDCOnlyRegistration.
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"}); !errors.Is(err, ErrOIDCOnlyRegistration) {
+		t.Fatalf("second registration want ErrOIDCOnlyRegistration, got %v", err)
+	}
+
+	// Existing user can still log in with password.
+	logged, token, err := f.auth.Login(ctx, LoginInput{Identifier: "admin", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("existing user login failed: %v", err)
+	}
+	if logged.ID != admin.ID || token == "" {
+		t.Fatalf("existing user login id = %q, want %q", logged.ID, admin.ID)
+	}
+
+	// Toggle OIDC-only switch off. Normal registration is allowed again.
+	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "false"); err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("registration after turning off oidc-only failed: %v", err)
+	}
+	if second.Username != "second" {
+		t.Fatalf("second username = %q, want 'second'", second.Username)
+	}
+
+	// If OAuthOIDCEnabled is false, OAuthOIDCOnlySignup alone does not block registration.
+	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.settings.Set(ctx, settings.OAuthOIDCEnabled, "false"); err != nil {
+		t.Fatal(err)
+	}
+	third, _, err := f.auth.Register(ctx, RegisterInput{Username: "third", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("registration when oidc disabled failed: %v", err)
+	}
+	if third.Username != "third" {
+		t.Fatalf("third username = %q, want 'third'", third.Username)
+	}
+}

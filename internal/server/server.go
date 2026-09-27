@@ -865,7 +865,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		out := []auth.SignInProvider{}
 		for _, provider := range oauth.Providers() {
 			if oauthService.Enabled(provider.ID) {
-				out = append(out, auth.SignInProvider{ID: provider.ID, Name: provider.Name})
+				out = append(out, auth.SignInProvider{
+					ID:   provider.ID,
+					Name: oauthService.DisplayName(provider.ID),
+				})
 			}
 		}
 		return out

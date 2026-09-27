@@ -23,6 +23,8 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       return t('signupBlocked');
     case 'registration_closed':
       return t('registrationClosed');
+    case 'oidc_only_registration':
+      return t('oidcOnlyRegistration');
     case 'signup_closed':
       return t('oauthSignupClosed');
     case 'address_taken':

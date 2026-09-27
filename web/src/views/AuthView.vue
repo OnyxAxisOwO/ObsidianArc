@@ -175,6 +175,10 @@ const guarded = computed(() =>
 // is the administrator, and a provider cannot be configured before there is
 // one to configure it.
 const providers = computed(() => (setup.value ? [] : site.value.oauth ?? []));
+const oidcProviders = computed(() => {
+  const oidc = providers.value.filter((p) => p.id === 'oidc');
+  return oidc.length ? oidc : providers.value;
+});
 
 const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
 function mark(id: string): OaIcon {
@@ -197,6 +201,7 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
   address_taken: 'oauthAddressTaken',
   signup_closed: 'oauthSignupClosed',
   registration_closed: 'registrationClosed',
+  oidc_only: 'oauthOIDCOnly',
   disabled: 'accountBanned',
   ip_blocked: 'signupBlocked',
   throttled: 'oauthThrottled',
@@ -374,10 +379,33 @@ async function onSubmit(): Promise<void> {
           {{ setup ? t('firstAccountTitle') : registering ? t('createAccountTitle') : t('welcomeBack') }}
         </h1>
         <p class="oa-auth-sub">
-          {{ setup ? t('firstAccountBody') : registering ? t('createAccountBody') : t('welcomeBackBody') }}
+          {{
+            setup
+              ? t('firstAccountBody')
+              : registering && site.oidc_only_signup
+                ? t('oidcOnlySignupNotice')
+                : registering
+                  ? t('createAccountBody')
+                  : t('welcomeBackBody')
+          }}
         </p>
 
-        <div class="oa-auth-form">
+        <div v-if="registering && site.oidc_only_signup" class="oa-auth-form">
+          <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
+          <div class="oa-auth-providers">
+            <a
+              v-for="provider in oidcProviders"
+              :key="provider.id"
+              class="oa-btn primary oa-btn-block oa-auth-provider"
+              :href="signInURL(provider.id, { next: safeNext(route.query['next']) })"
+            >
+              <component :is="mark(provider.id)" :size="15" />
+              <span>{{ t('continueWith', { provider: provider.name }) }}</span>
+            </a>
+          </div>
+        </div>
+
+        <div v-else class="oa-auth-form">
           <OaField :label="identityLabel">
             <input
               ref="identifierField"
@@ -491,7 +519,7 @@ async function onSubmit(): Promise<void> {
             <span>{{ t('haveAccount') }}</span>
             <button type="button" @click="router.push('/login')">{{ t('signIn') }}</button>
           </template>
-          <template v-else-if="site.registration_enabled">
+          <template v-else-if="site.registration_enabled || site.oidc_only_signup">
             <span>{{ t('noAccount') }}</span>
             <button type="button" @click="router.push('/register')">{{ t('createOne') }}</button>
           </template>

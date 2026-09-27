@@ -28,6 +28,7 @@ func TestUserCheckErrorsMapToOAuthResponses(t *testing.T) {
 	}{
 		{"disposable", usercheck.ErrDisposable, http.StatusBadRequest, "disposable_email", "disposable_email"},
 		{"unavailable", usercheck.ErrUnavailable, http.StatusServiceUnavailable, "email_screening_unavailable", "email_screening_unavailable"},
+		{"oidc_only", auth.ErrOIDCOnlyRegistration, http.StatusForbidden, "oidc_only_registration", "oidc_only"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
