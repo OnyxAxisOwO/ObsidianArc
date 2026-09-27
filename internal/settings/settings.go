@@ -24,6 +24,9 @@ import (
 const (
 	SiteName        = "site.name"
 	SiteDescription = "site.description"
+	// Layout position of the sign-in / registration card on the auth page:
+	// "center" by default, or "left" / "right" when docked beside wallpaper.
+	SiteAuthCardPosition = "site.auth_card_position"
 	// The About panel's heading and Markdown introduction. Empty is the normal
 	// state and means "use the instance name and the built-in introduction",
 	// so an operator who never opens this screen still gets a sensible page.
@@ -126,14 +129,13 @@ const (
 	// the server at all.
 	FeedbackShowStaffName = "feedback.show_staff_name"
 
-	// Asking a model whether a sign-up looks like a person. The prompt is not
-	// a setting: one that could be edited could be turned into "refuse
-	// everybody from this domain", and this runs before an account exists,
-	// where a mistake has no appeal. What an operator chooses is whether it
-	// runs, which model answers, and what a refusal says.
+	// Asking a model whether a sign-up looks like a person. Empty keeps the
+	// built-in shared prompt; mode-specific fairness and decision rules are
+	// appended by the reviewer either way.
 	SignupReview              = "security.signup_review"
 	SignupReviewModel         = "security.signup_review_model"
 	SignupReviewMode          = "security.signup_review_mode"
+	SignupReviewPrompt        = "security.signup_review_prompt"
 	SignupReviewRefusal       = "security.signup_review_refusal"
 	SignupReviewRestrictHours = "security.signup_review_restrict_hours"
 	// Two-step sign-in. Who must switch it on, the name an authenticator
@@ -275,6 +277,24 @@ var LandingModes = []string{LandingLogin, LandingIntroPage, LandingChat, Landing
 
 func ValidLandingMode(value string) bool {
 	for _, candidate := range LandingModes {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// Where the sign-in / registration card sits on the screen.
+const (
+	AuthCardPositionCenter = "center"
+	AuthCardPositionLeft   = "left"
+	AuthCardPositionRight  = "right"
+)
+
+var AuthCardPositions = []string{AuthCardPositionCenter, AuthCardPositionLeft, AuthCardPositionRight}
+
+func ValidAuthCardPosition(value string) bool {
+	for _, candidate := range AuthCardPositions {
 		if value == candidate {
 			return true
 		}
@@ -467,11 +487,12 @@ func ValidPWAIconURL(value string) bool {
 // Defaults are what a fresh instance behaves like, and what a deleted row
 // falls back to. Nothing reads a setting without one.
 var Defaults = map[string]string{
-	SiteName:        "Obsidian Arc",
-	SiteDescription: "",
-	AboutTitle:      "",
-	AboutBody:       "",
-	HomeNotice:      "",
+	SiteName:             "Obsidian Arc",
+	SiteDescription:      "",
+	SiteAuthCardPosition: AuthCardPositionCenter,
+	AboutTitle:           "",
+	AboutBody:            "",
+	HomeNotice:           "",
 	// Dismissible unless an operator says otherwise: a strip that cannot be
 	// put away is the exception, and defaults should not be the exception.
 	HomeNoticeDismissible: "true",
@@ -524,6 +545,7 @@ var Defaults = map[string]string{
 	OAuthLinkByEmail:   "true",
 	SignupReview:       "false",
 	SignupReviewModel:  "",
+	SignupReviewPrompt: "",
 	// Loose, normal or strict. Normal refuses what reads as generated and
 	// allows what reads as chosen; the other two move the line, and strict
 	// also refuses when the model cannot answer at all.
@@ -727,6 +749,16 @@ func (s *Service) BrowserTitle() string {
 		return title
 	}
 	return s.Get(SiteName)
+}
+
+// AuthCardPosition returns the effective layout position of the sign-in card.
+// Falls back to "center" when empty or unrecognised.
+func (s *Service) AuthCardPosition() string {
+	pos := s.Get(SiteAuthCardPosition)
+	if ValidAuthCardPosition(pos) {
+		return pos
+	}
+	return AuthCardPositionCenter
 }
 
 // All returns every known key with its effective value, so the admin screen

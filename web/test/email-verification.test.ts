@@ -254,8 +254,12 @@ describe('email verification controls', () => {
 });
 
 describe('administrator mail settings', () => {
-  async function mountSecurity(): Promise<HTMLElement> {
-    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: {}, groups: [], mail_configured: true });
+  async function mountSecurity(
+    settingsResult: Awaited<ReturnType<typeof adminApi.settings>> = {
+      settings: {}, groups: [], mail_configured: true,
+    },
+  ): Promise<HTMLElement> {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue(settingsResult);
     vi.spyOn(adminApi, 'modelOptions').mockResolvedValue({ models: [] });
     vi.spyOn(adminApi, 'securityEvents').mockResolvedValue({ events: [], total: 0, limit: 20, offset: 0 });
     vi.spyOn(adminApi, 'applications').mockResolvedValue({ applications: [], issuer: '', scopes: [] });
@@ -418,5 +422,35 @@ describe('administrator mail settings', () => {
       enabled: false, exempt_domains: ['gmail.com', 'example.com'], failure_mode: 'reject',
       api_key: '', clear_api_key: true,
     });
+  });
+
+  it('shows the saved prompt and restores the built-in prompt before saving', async () => {
+    const builtIn = 'The built-in registration review instructions.';
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    vi.spyOn(authApi, 'fetchSite').mockResolvedValue(siteInfo.value);
+    await mountSecurity({
+      settings: { 'security.signup_review_prompt': 'Custom review instructions.' },
+      groups: [],
+      mail_configured: true,
+      signup_review_prompt_default: builtIn,
+    });
+
+    const reviewTab = [...host.querySelectorAll<HTMLButtonElement>('.oa-workbench-tab')]
+      .find((node) => node.querySelector('strong')?.textContent === t('controlReview'));
+    if (!reviewTab) throw new Error('Missing review settings category');
+    reviewTab.click();
+    await nextTick();
+
+    const card = host.querySelector<HTMLElement>('#secSignupReview');
+    if (!card) throw new Error('Missing sign-up review settings card');
+    const prompt = fieldArea(card, t('signupReviewPrompt'));
+    expect(prompt.value).toBe('Custom review instructions.');
+    button(card, t('signupReviewPromptRestore')).click();
+    await nextTick();
+    expect(prompt.value).toBe(builtIn);
+
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ 'security.signup_review_prompt': '' }));
   });
 });

@@ -35,8 +35,10 @@ const SEARCH_GROUPS = {
     'siteLogo', 'siteLogoHint',
   ],
   secLoginBg: [
-    'secLoginBg', 'loginBgHint', 'loginBgLandscape', 'loginBgPortrait', 'loginBgLandscapeLight',
-    'loginBgLandscapeDark', 'loginBgPortraitLight', 'loginBgPortraitDark', 'loginBgFallbackNote',
+    'secLoginBg', 'loginBgHint', 'authCardPosition', 'authCardPositionHint', 'authCardPositionCenter',
+    'authCardPositionLeft', 'authCardPositionRight', 'loginBgLandscape', 'loginBgPortrait',
+    'loginBgLandscapeLight', 'loginBgLandscapeDark', 'loginBgPortraitLight', 'loginBgPortraitDark',
+    'loginBgFallbackNote',
   ],
   secPWA: [
     'secPWA', 'controlPWAHint', 'pwaName', 'pwaNameHint', 'pwaShortName', 'pwaShortNameHint', 'pwaDescription',
@@ -102,6 +104,7 @@ const form = ref({
   siteName: '',
   description: '',
   browserTitle: '',
+  authCardPosition: 'center',
   pwaName: '',
   pwaShortName: '',
   pwaDescription: '',
@@ -153,6 +156,7 @@ function collect(): Record<string, string> {
     'site.name': form.value.siteName.trim(),
     'site.description': form.value.description.trim(),
     'site.browser_title': form.value.browserTitle.trim(),
+    'site.auth_card_position': form.value.authCardPosition,
     'pwa.name': form.value.pwaName.trim(),
     'pwa.short_name': form.value.pwaShortName.trim(),
     'pwa.description': form.value.pwaDescription.trim(),
@@ -201,7 +205,12 @@ async function save(): Promise<void> {
     // until the next full page load re-fetched /api/site.
     if (site.value) {
       const name = form.value.siteName.trim();
-      site.value = { ...site.value, name, browser_title: form.value.browserTitle.trim() || name };
+      site.value = {
+        ...site.value,
+        name,
+        browser_title: form.value.browserTitle.trim() || name,
+        auth_card_position: form.value.authCardPosition as 'center' | 'left' | 'right',
+      };
     }
     saveLabel.value = t('saved');
     window.setTimeout(() => { saveLabel.value = ''; }, 1500);
@@ -505,6 +514,7 @@ async function load(): Promise<void> {
       siteName: values['site.name'] ?? '',
       description: values['site.description'] ?? '',
       browserTitle: values['site.browser_title'] ?? '',
+      authCardPosition: (values['site.auth_card_position'] || 'center') as 'center' | 'left' | 'right',
       pwaName: values['pwa.name'] ?? '',
       pwaShortName: values['pwa.short_name'] ?? '',
       pwaDescription: values['pwa.description'] ?? '',
@@ -617,6 +627,17 @@ onMounted(load);
         </div>
       </AdminControlCard>
       <AdminControlCard id="secLoginBg" v-show="visible('secLoginBg')" :title="t('secLoginBg')" :icon="IconImage" :hint="t('loginBgHint')">
+        <OaSelectField
+          v-model="form.authCardPosition"
+          :label="t('authCardPosition')"
+          :hint="t('authCardPositionHint')"
+          :searchable="false"
+          :options="[
+            { value: 'center', label: t('authCardPositionCenter') },
+            { value: 'left', label: t('authCardPositionLeft') },
+            { value: 'right', label: t('authCardPositionRight') },
+          ]"
+        />
         <p class="oa-field-hint">{{ t('loginBgFallbackNote') }}</p>
         <div class="oa-login-bg-grid">
           <div

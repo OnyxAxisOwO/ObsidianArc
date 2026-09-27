@@ -202,7 +202,8 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// Already resolved against the site's own name, so the tab title
 		// watcher in App.vue has no fallback of its own to keep in sync with
 		// this one.
-		"browser_title": h.settings.BrowserTitle(),
+		"browser_title":      h.settings.BrowserTitle(),
+		"auth_card_position": h.settings.AuthCardPosition(),
 		// An empty instance always accepts the first account, whatever the
 		// setting says; that account becomes the administrator.
 		"registration_enabled":        !populated || h.settings.Bool(settings.RegistrationEnabled),

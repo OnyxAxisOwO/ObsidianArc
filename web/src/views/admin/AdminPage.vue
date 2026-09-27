@@ -16,7 +16,7 @@ import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t } from '@/composables/useI18n';
 import {
-  IconChart, IconChevron, IconCpu, IconFile, IconHome, IconKey, IconLayers, IconLock,
+  IconArchive, IconChart, IconChevron, IconCpu, IconFile, IconHome, IconKey, IconLayers, IconLock,
   IconMenu, IconMessage, IconPulse, IconSend, IconServer, IconSliders, IconSpark,
   IconTrophy,
   IconUsers,
@@ -27,13 +27,13 @@ import { formatUptime } from '@/lib/format';
 import { fetchMe, type Account } from '@/api/auth';
 import { BACKOFFICE_LOCKED } from '@/api/client';
 import { leaveBackoffice } from '@/api/twofactor';
-import { adopt, canAdmin, currentPreferences, currentUser, isAdmin } from '@/stores/session';
+import { adopt, canAdmin, currentPreferences, currentUser, isAdmin, isSuperAdmin } from '@/stores/session';
 import TwoFactorWizard from '@/views/settings/TwoFactorWizard.vue';
 import AdminUnlock from './AdminUnlock.vue';
 import UnauthorizedModal from '@/views/UnauthorizedModal.vue';
 import ChatLayout from '@/layouts/ChatLayout.vue';
 import { provideAdminView } from './adminView';
-import { searchAdminFeatures, type AdminPageSpec } from './features';
+import { searchAdminFeatures, type AdminPageSpec, visibleAdminPages } from './features';
 
 import AdminDashboard from './AdminDashboard.vue';
 import AdminUsers from './AdminUsers.vue';
@@ -52,6 +52,7 @@ import AdminSettings from './AdminSettings.vue';
 import AdminAnnouncements from './AdminAnnouncements.vue';
 import AdminFeedback from './AdminFeedback.vue';
 import AdminSafeMode from './AdminSafeMode.vue';
+import AdminBackup from './AdminBackup.vue';
 
 // Labels are looked up at render rather than stored, because this table is
 // evaluated at import time — before the language is known.
@@ -69,6 +70,7 @@ const PAGES: AdminPageSpec[] = [
   { slug: 'invites', label: 'navInvites', icon: IconSend, component: markRaw(AdminInvites) },
   { slug: 'logs', label: 'navLogs', icon: IconFile, component: markRaw(AdminLogs) },
   { slug: 'security', label: 'navSecurity', icon: IconLock, component: markRaw(AdminSecurity) },
+  { slug: 'backup', label: 'navBackup', icon: IconArchive, component: markRaw(AdminBackup), permission: '*' },
   { slug: 'settings', label: 'navSettings', icon: IconSliders, component: markRaw(AdminSettings) },
   { slug: 'announcements', label: 'announcements', icon: IconFile, component: markRaw(AdminAnnouncements) },
   { slug: 'feedback', label: 'navFeedback', icon: IconMessage, component: markRaw(AdminFeedback) },
@@ -78,7 +80,8 @@ const route = useRoute();
 const router = useRouter();
 const query = ref('');
 const narrow = useMediaQuery('(max-width: 900px)');
-const searchGroups = computed(() => searchAdminFeatures(query.value, PAGES));
+const visiblePages = computed(() => visibleAdminPages(PAGES, isSuperAdmin.value));
+const searchGroups = computed(() => searchAdminFeatures(query.value, visiblePages.value));
 
 const bodyScroll = ref<InstanceType<typeof OaScrollArea> | null>(null);
 
@@ -162,13 +165,11 @@ function keepRail(node: unknown): void {
 const segments = computed(() => route.path.replace(/^\/admin\/?/, '').split('/').filter(Boolean));
 const current = computed(() => PAGES.find((entry) => entry.slug === (segments.value[0] ?? '')) ?? PAGES[0]!);
 
-// A section's grant is its slug unless it says otherwise. `canAdmin('')` is
-// false for a delegated administrator — the empty string matches no grant —
-// so "any administrator" has to be asked as `isAdmin`, not as an empty
-// permission. No section asks it since the console moved to the account menu.
+// A section's grant is its slug unless it says otherwise. The backup page
+// spans the whole instance, so its `*` marker is reserved for the super admin.
 const allowed = computed(() => {
   const needs = current.value.permission ?? (current.value.slug || 'dashboard');
-  return needs === '*' ? isAdmin.value : canAdmin(needs);
+  return needs === '*' ? isSuperAdmin.value : canAdmin(needs);
 });
 
 // The operator's policy wants a second sign-in step before the backoffice
@@ -361,7 +362,7 @@ onMounted(() => {
       <OaScrollArea wrap-class="oa-admin-nav-wrap" scroll-class="oa-admin-nav-list">
         <template v-if="!query.trim()">
           <RouterLink
-            v-for="entry in PAGES"
+            v-for="entry in visiblePages"
             :key="entry.slug"
             class="oa-admin-nav"
             :class="{ active: entry === current && !route.hash }"

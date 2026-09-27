@@ -59,6 +59,7 @@ const FALLBACK_SITE: SiteInfo = {
   about: { title: '', body: '' },
   home_notice: { text: '', dismissible: true },
   logo_url: '',
+  auth_card_position: 'center',
 };
 
 /**

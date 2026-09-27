@@ -2,21 +2,25 @@ import { ApiError } from '@/api/client';
 import { t } from '@/composables/useI18n';
 
 /**
- * Why a registration was refused, in the reader's own language.
+ * Why an authentication request was refused, in the reader's own language.
  *
- * One place, because there are two screens that open accounts now — the
- * sign-up form and the step a provider sign-in stops at when this server
- * wants something the provider could not supply — and they are refused by the
- * same endpoint's rules for the same reasons. Two copies would drift, and the
- * half that drifts is the one nobody tests: the wording of a failure.
+ * Password sign-in, its second factor, and provider sign-up share these
+ * responses. Keeping their wording here means the server's English strings
+ * never have to be shown as the only explanation on a translated screen.
  *
  * `domains` is what the instance accepts, for the case where the server
  * refused an address without naming them.
  */
 export function refusalText(failure: unknown, domains: string[] = []): string {
-  if (!(failure instanceof ApiError)) return String(failure);
+  if (!(failure instanceof ApiError)) return t('authRequestFailed');
+
+  if (failure.details['code_detail'] === 'invalid_credentials' || failure.code === 'invalid_credentials') {
+    return t('invalidCredentials');
+  }
 
   switch (failure.code) {
+    case 'network':
+      return t('connectionFailed');
     case 'account_banned':
       return t('accountBanned');
     case 'signup_ip_blocked':
@@ -71,9 +75,17 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       if (domains.length && failure.status === 400 && /email/i.test(failure.message)) {
         return t('emailDomainRejected', { domains: domains.join(', ') });
       }
-      return failure.message;
+      if (failure.status === 0) return t('connectionFailed');
+      if (failure.status >= 500) return t('authServiceFailed');
+      return t('authRequestFailed');
     }
   }
+}
+
+/** Keep unknown accounts indistinguishable from wrong passwords at sign-in. */
+export function loginRefusalText(failure: unknown): string {
+  if (failure instanceof ApiError && failure.status === 401) return t('invalidCredentials');
+  return refusalText(failure);
 }
 
 function allowed(failure: ApiError, fallback: string[]): string[] {

@@ -40,6 +40,7 @@ view.setTitle(t('navSecurity'), t('securitySubtitle'));
 
 const error = ref('');
 const loaded = ref(false);
+const defaultReviewPrompt = ref('');
 const mailConfigured = ref(false);
 const mailLoaded = ref(false);
 const mailLoadError = ref<StringKey | null>(null);
@@ -111,6 +112,7 @@ const form = ref({
   reviewModel: '',
   reviewMode: 'normal',
   reviewRestrictHours: 24 as number | null,
+  reviewPrompt: '',
   reviewRefusal: '',
   githubEnabled: false,
   githubClientID: '',
@@ -310,6 +312,12 @@ function removeApplication(app: SignInApplication): void {
 const trial = ref({ username: '', email: '', qq: '', answer: '', running: false });
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
+const reviewPromptIsDefault = computed(() =>
+  form.value.reviewPrompt.trim() === defaultReviewPrompt.value.trim());
+
+function restoreReviewPrompt(): void {
+  form.value.reviewPrompt = defaultReviewPrompt.value;
+}
 
 /**
  * Only this page's keys. The settings endpoint writes what it is given and
@@ -344,6 +352,9 @@ function collect(): Record<string, string> {
     'security.signup_review_model': form.value.reviewModel,
     'security.signup_review_mode': form.value.reviewMode,
     'security.signup_review_restrict_hours': String(form.value.reviewRestrictHours ?? 24),
+    'security.signup_review_prompt': form.value.reviewPrompt.trim() === defaultReviewPrompt.value.trim()
+      ? ''
+      : form.value.reviewPrompt.trim(),
     'security.signup_review_refusal': form.value.reviewRefusal.trim(),
     'oauth.github_enabled': String(form.value.githubEnabled),
     'oauth.github_client_id': form.value.githubClientID.trim(),
@@ -693,6 +704,7 @@ async function load(): Promise<void> {
       adminApi.settings(), adminApi.modelOptions(), loadEvents(), loadApplications(), loadAdoption(), loadMail(), loadUserCheck(),
     ]);
     const values = data.settings;
+    defaultReviewPrompt.value = data.signup_review_prompt_default ?? '';
     mailConfigured.value = data.mail_configured ?? false;
     groups.value = data.groups ?? [];
     models.value = modelsResult.models;
@@ -724,6 +736,7 @@ async function load(): Promise<void> {
       reviewModel: values['security.signup_review_model'] ?? '',
       reviewMode: values['security.signup_review_mode'] ?? 'normal',
       reviewRestrictHours: Number(values['security.signup_review_restrict_hours'] ?? 24),
+      reviewPrompt: values['security.signup_review_prompt'] || defaultReviewPrompt.value,
       reviewRefusal: values['security.signup_review_refusal'] ?? '',
       githubEnabled: values['oauth.github_enabled'] === 'true',
       githubClientID: values['oauth.github_client_id'] ?? '',
@@ -881,6 +894,20 @@ onMounted(load);
           :min="0"
           :max="8760"
         />
+        <OaTextArea
+          v-model="form.reviewPrompt"
+          :label="t('signupReviewPrompt')"
+          :rows="12"
+          :hint="t('signupReviewPromptHint')"
+        />
+        <button
+          type="button"
+          class="oa-btn"
+          :disabled="reviewPromptIsDefault"
+          @click="restoreReviewPrompt"
+        >
+          {{ t('signupReviewPromptRestore') }}
+        </button>
         <OaTextArea
           v-model="form.reviewRefusal"
           :label="t('signupReviewRefusal')"

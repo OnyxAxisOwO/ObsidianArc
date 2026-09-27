@@ -116,4 +116,47 @@ describe('admin settings payload', () => {
     expectSaveState(false);
     expect(button(actions, t('saved')).disabled).toBe(false);
   });
+
+  it('updates auth card position setting', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    const expectedSettings = { ...settingsFixture, 'site.auth_card_position': 'left' };
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: expectedSettings });
+    await mountSettings();
+    expectSaveState(false);
+
+    expect(host.querySelector<HTMLElement>('#secLoginBg')?.style.display).not.toBe('none');
+    const selectTrigger = host.querySelector<HTMLButtonElement>('#secLoginBg .oa-select');
+    expect(selectTrigger).not.toBeNull();
+    expect(selectTrigger?.textContent).toContain(t('authCardPositionCenter'));
+
+    selectTrigger!.click();
+    await nextTick();
+    const leftOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find((node) => node.textContent?.includes(t('authCardPositionLeft')));
+    expect(leftOption).toBeDefined();
+    leftOption!.click();
+    await nextTick();
+    expectSaveState(true);
+
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(expectedSettings);
+    expectSaveState(false);
+  });
+
+  it('filters to secLoginBg when searching for auth card position keywords', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    await mountSettings();
+
+    const searchInput = host.querySelector<HTMLInputElement>('.oa-search input');
+    expect(searchInput).not.toBeNull();
+
+    searchInput!.value = 'auth card position';
+    searchInput!.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+
+    expect(host.querySelector<HTMLElement>('#secLoginBg')?.style.display).not.toBe('none');
+    expect(host.querySelector<HTMLElement>('#secAbout')?.style.display).toBe('none');
+  });
 });

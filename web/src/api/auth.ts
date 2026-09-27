@@ -143,6 +143,8 @@ export interface SiteInfo {
   login_background?: Record<string, string>;
   /** Custom site logo URL, or empty if the built-in mark/favicon is used. */
   logo_url?: string;
+  /** Layout position of the sign-in / registration card ('center' | 'left' | 'right'). */
+  auth_card_position?: 'center' | 'left' | 'right';
 }
 
 // The presentation state the server keeps for an account. Deliberately loose:

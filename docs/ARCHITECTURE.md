@@ -216,9 +216,9 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 21.84 MB (18.14 MB `-tags nosqlite`, Linux amd64) |
-| Frontend, on the wire | < 135 kB | 210.44 kB to open the chat (172.69 JS + 37.75 CSS) |
-| Background goroutines at idle | 1 | 1 |
+| Binary (SQLite + embedded SPA) | < 30 MB | 22.23 MB (18.51 MB `-tags nosqlite`, Linux amd64) |
+| Frontend, on the wire | < 135 kB | 211.37 kB to open the chat (173.49 JS + 37.88 CSS) |
+| Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
 Remeasured on 2026-09-26 (UTC), after adding both email verification methods,
@@ -235,6 +235,19 @@ chat columns. The front page stays in its own 3.96 kB chunk. The Linux amd64
 binary measures 21,844,128 bytes with SQLite and 18,137,248 bytes with
 `-tags nosqlite` (Go 1.27.1). Gzip figures are decimal kB.
 
+Remeasured on 2026-09-27 (UTC) after adding scheduled, S3-compatible instance
+backups. The first paint is 211.37 kB (173.49 kB JS + 37.88 kB CSS), up 0.93
+kB from the PR #24 tree. The administration chunk is 93.45 kB, including the
+backup settings; the Chinese dictionary is 40.30 kB. The Linux amd64 binary
+measures 22,208,672 bytes with SQLite and 18,501,792 bytes with
+`-tags nosqlite` (Go 1.27.1). Three idle loops write request logs, run cleanup,
+and check the backup schedule. Gzip figures are decimal kB.
+
+Remeasured on 2026-09-27 (UTC) after adding bounded recent-registration
+cohort review. The frontend is unchanged. The Linux amd64 binary measures
+22,225,056 bytes with SQLite and 18,514,080 bytes with `-tags nosqlite`
+(Go 1.27.1).
+
 Remeasured once more on 2026-09-25 (UTC), for the invite-claim flow the first
 pass over invite codes below had not yet reached: the existing-account claim
 box and its every-N progress line in the settings' invites section, the
@@ -246,6 +259,15 @@ by 1.29 kB to 83.97 kB for the partner/claims columns, and the Chinese
 dictionary to 34.80 kB. The binary grew by 61 kB with SQLite (21,430,432
 bytes) and 66 kB without (17,719,456) — the larger embedded frontend, Go
 1.27.1.
+
+Remeasured on 2026-09-27 (UTC), with the full-instance backup page and the
+concurrent auth-card-position change in the same working tree. The chat
+payload is 201.42 kB (167.05 JS + 34.36 CSS); the Chinese dictionary is 36.44
+kB, the admin chunk is 89.72 kB, the terminal is 7.22 kB, and math is 3.61
+kB. The bundle remains six files. The Linux amd64 binary is 21,930,144 bytes
+with SQLite and 18,223,264 bytes with `-tags nosqlite`, built with Go
+1.27.1. The project still has three direct Go dependencies and four frontend
+runtime dependencies.
 
 Remeasured for invite codes on 2026-09-25 (UTC): the first paint grew by
 3.02 kB (3.01 JS, 0.01 CSS) — the invite field on the
@@ -392,11 +414,11 @@ What each reader actually downloads:
 
 | | gzipped |
 | --- | --- |
-| English, not an administrator | 210.44 kB |
-| Chinese, not an administrator | 249.92 kB |
-| …and a conversation containing a formula | 253.53 kB |
-| Chinese administrator, backoffice open | 341.18 kB |
-| Anybody, once they open the terminal | +7.21 kB |
+| English, not an administrator | 211.37 kB |
+| Chinese, not an administrator | 251.67 kB |
+| …and a conversation containing a formula | 255.28 kB |
+| Chinese administrator, backoffice open | 345.12 kB |
+| Anybody, once they open the terminal | +7.22 kB |
 | A visitor to an instance whose front door is the front page | +3.96 kB |
 
 Route-level splitting would shave the first paint further and is deliberately

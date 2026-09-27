@@ -5,17 +5,21 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/systembackup"
 )
 
 // The build's identity, stamped in by the Makefile as
@@ -29,10 +33,65 @@ import (
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "restore-backup" {
+		if err := restoreBackup(os.Args[2:]); err != nil {
+			slog.Error("backup restore failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("startup failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func restoreBackup(args []string) error {
+	flags := flag.NewFlagSet("restore-backup", flag.ContinueOnError)
+	archivePath := flags.String("file", "", "path to the .arcbackup archive")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *archivePath == "" || flags.NArg() != 0 {
+		return errors.New("usage: obsidian-arc restore-backup --file <archive.arcbackup>")
+	}
+	if err := requireExistingRestoreKey(); err != nil {
+		return err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if err := systembackup.VerifyArchiveKey(*archivePath, cfg.SecretKey); err != nil {
+		return err
+	}
+	setupLogging(cfg)
+	ctx := context.Background()
+	db, err := database.Open(ctx, cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.Migrate(ctx); err != nil {
+		return err
+	}
+	return systembackup.RestoreArchive(ctx, db, *archivePath, cfg.SecretKey)
+}
+
+func requireExistingRestoreKey() error {
+	if strings.TrimSpace(os.Getenv("OBSIDIAN_SECRET_KEY")) != "" {
+		return nil
+	}
+	dataDir := os.Getenv("OBSIDIAN_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "./data"
+	}
+	keyPath := filepath.Join(dataDir, config.SecretKeyFile)
+	key, err := os.ReadFile(keyPath)
+	if err != nil || len(strings.TrimSpace(string(key))) < 16 {
+		return errors.New("restore requires the original OBSIDIAN_SECRET_KEY or the original secret.key in the configured data directory")
+	}
+	return nil
 }
 
 func run() error {
@@ -86,7 +145,7 @@ func run() error {
 		return err
 	}
 
-	// Cancelled by the shutdown path below, which is what stops the janitor.
+	// Cancelled by the shutdown path below, which signals the background loops.
 	backgroundCtx, stopBackground := context.WithCancel(context.Background())
 	defer stopBackground()
 	app.StartJanitor(backgroundCtx)

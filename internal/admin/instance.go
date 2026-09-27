@@ -13,6 +13,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/screening"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -119,6 +120,7 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 	actor := auth.MustUser(r.Context())
 	out := map[string]any{"settings": h.visibleSettings(actor)}
 	if actor.CanAdmin("security") {
+		out["signup_review_prompt_default"] = screening.DefaultPrompt()
 		groups, err := h.groups.List(r.Context(), nil)
 		if err != nil {
 			return httpx.Internal(err)
@@ -160,6 +162,7 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 var writableSettings = map[string]bool{
 	settings.SiteName:                   true,
 	settings.SiteDescription:            true,
+	settings.SiteAuthCardPosition:       true,
 	settings.AboutTitle:                 true,
 	settings.AboutBody:                  true,
 	settings.HomeNotice:                 true,
@@ -199,6 +202,7 @@ var writableSettings = map[string]bool{
 	settings.SignupReview:               true,
 	settings.SignupReviewModel:          true,
 	settings.SignupReviewMode:           true,
+	settings.SignupReviewPrompt:         true,
 	settings.SignupReviewRefusal:        true,
 	settings.SignupReviewRestrictHours:  true,
 	settings.TwoFactorPolicy:            true,
@@ -303,6 +307,9 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 
 	if mode, present := body[settings.LandingMode]; present && !settings.ValidLandingMode(mode) {
 		return httpx.BadRequest("Unknown landing mode %q.", mode)
+	}
+	if pos, present := body[settings.SiteAuthCardPosition]; present && !settings.ValidAuthCardPosition(pos) {
+		return httpx.BadRequest("Unknown auth card position %q.", pos)
 	}
 	if err := checkTwoFactorSettings(auth.MustUser(r.Context()), body); err != nil {
 		return err
@@ -435,6 +442,10 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 	if mode, present := applied[settings.LandingMode]; present && !settings.ValidLandingMode(mode) {
 		delete(applied, settings.LandingMode)
 		skipped = append(skipped, settings.LandingMode)
+	}
+	if pos, present := applied[settings.SiteAuthCardPosition]; present && !settings.ValidAuthCardPosition(pos) {
+		delete(applied, settings.SiteAuthCardPosition)
+		skipped = append(skipped, settings.SiteAuthCardPosition)
 	}
 	if display, present := applied[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
 		delete(applied, settings.UsageDisplay)

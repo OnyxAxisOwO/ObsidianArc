@@ -20,7 +20,7 @@ import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { ApiError } from '@/api/client';
-import { refusalText } from '@/lib/refusal';
+import { loginRefusalText, refusalText } from '@/lib/refusal';
 import { IconGithub, IconGoogle, IconKey, IconSpark, type OaIcon } from '@/icons';
 import { adopt, forget, pendingSecondFactor, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
@@ -302,7 +302,9 @@ async function onSubmit(): Promise<void> {
     // taken username as much as a failed challenge — leaves a spent token
     // behind that would fail the next attempt on its own.
     guard.value?.reset();
-    error.value = refusalText(failure, domains.value);
+    error.value = registering.value
+      ? refusalText(failure, domains.value)
+      : loginRefusalText(failure);
     busy.value = false;
     buttonLabel.value = '';
     await nextTick();
@@ -315,7 +317,10 @@ async function onSubmit(): Promise<void> {
 <template>
   <div
     class="oa-auth"
-    :class="{ 'has-login-bg': !!loginBgUrl }"
+    :class="[
+      { 'has-login-bg': !!loginBgUrl },
+      `position-${site.auth_card_position || 'center'}`,
+    ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
     <form class="oa-auth-card" novalidate @submit.prevent="stage === 'code' ? onCode() : onSubmit()">

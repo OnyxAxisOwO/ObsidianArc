@@ -2,6 +2,7 @@
   "site.name": "Obsidian Arc",
   "site.description": "",
   "site.browser_title": "",
+  "site.auth_card_position": "center",
   "pwa.name": "",
   "pwa.short_name": "",
   "pwa.description": "",

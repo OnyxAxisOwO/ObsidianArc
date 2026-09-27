@@ -9,6 +9,7 @@
 | `site.name` | `Obsidian Arc` | 站点名称 |
 | `site.description` | 空 | 站点说明 |
 | `site.browser_title` | 空 | 浏览器标签页标题；空值使用 `site.name` |
+| `site.auth_card_position` | `center` | 登录与注册卡片停靠位置；可选 `center`、`left` 或 `right` |
 | `about.title` / `about.body` | 空 | 关于页面标题与 Markdown 详细介绍；空值使用内置内容 |
 | `home.notice` | 空 | 首页纯文本通知 |
 | `home.notice_dismissible` | `true` | 是否允许关闭通知 |
