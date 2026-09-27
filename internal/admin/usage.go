@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -90,6 +92,82 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 	return httpx.BadRequest("Reset everyone, a group, or one account.")
 }
 
+type cachedUsageSummary struct {
+	createdAt time.Time
+	data      map[string]any
+}
+
+type cachedUsageBreakdown struct {
+	createdAt time.Time
+	rows      []usage.Breakdown
+}
+
+func (h *Handlers) getSummaryCache(key string) map[string]any {
+	h.usageCacheMu.RLock()
+	defer h.usageCacheMu.RUnlock()
+	if h.usageSummaryCache == nil {
+		return nil
+	}
+	entry, ok := h.usageSummaryCache[key]
+	if !ok || time.Since(entry.createdAt) >= 15*time.Second {
+		return nil
+	}
+	return entry.data
+}
+
+func (h *Handlers) setSummaryCache(key string, data map[string]any) {
+	h.usageCacheMu.Lock()
+	defer h.usageCacheMu.Unlock()
+	if h.usageSummaryCache == nil {
+		h.usageSummaryCache = make(map[string]*cachedUsageSummary)
+	}
+	now := time.Now()
+	if len(h.usageSummaryCache) > 50 {
+		for k, v := range h.usageSummaryCache {
+			if now.Sub(v.createdAt) >= 15*time.Second {
+				delete(h.usageSummaryCache, k)
+			}
+		}
+	}
+	h.usageSummaryCache[key] = &cachedUsageSummary{
+		createdAt: now,
+		data:      data,
+	}
+}
+
+func (h *Handlers) getBreakdownCache(key string) []usage.Breakdown {
+	h.usageCacheMu.RLock()
+	defer h.usageCacheMu.RUnlock()
+	if h.usageBreakdownCache == nil {
+		return nil
+	}
+	entry, ok := h.usageBreakdownCache[key]
+	if !ok || time.Since(entry.createdAt) >= 15*time.Second {
+		return nil
+	}
+	return entry.rows
+}
+
+func (h *Handlers) setBreakdownCache(key string, rows []usage.Breakdown) {
+	h.usageCacheMu.Lock()
+	defer h.usageCacheMu.Unlock()
+	if h.usageBreakdownCache == nil {
+		h.usageBreakdownCache = make(map[string]*cachedUsageBreakdown)
+	}
+	now := time.Now()
+	if len(h.usageBreakdownCache) > 50 {
+		for k, v := range h.usageBreakdownCache {
+			if now.Sub(v.createdAt) >= 15*time.Second {
+				delete(h.usageBreakdownCache, k)
+			}
+		}
+	}
+	h.usageBreakdownCache[key] = &cachedUsageBreakdown{
+		createdAt: now,
+		rows:      rows,
+	}
+}
+
 // filterFrom builds a ledger filter from the query string. Every value is
 // validated here rather than in the store, so a malformed parameter is a 400
 // and never reaches a query.
@@ -119,10 +197,41 @@ func filterFrom(r *http.Request) (usage.Filter, error) {
 		return usage.Filter{}, httpx.BadRequest("Unknown status filter.")
 	}
 
+	const hourMS = int64(time.Hour / time.Millisecond)
+	const maxSpanMS = int64(365 * 24 * time.Hour / time.Millisecond)
+	now := time.Now()
+	nowHour := (now.UnixMilli() / hourMS) * hourMS
+
 	// Defaults to the last thirty days: an unbounded scan of the whole ledger
 	// is not what anyone opening a dashboard wants.
-	filter.Since = int64Param(query.Get("since"), time.Now().AddDate(0, 0, -30).UnixMilli())
+	defaultSince := now.AddDate(0, 0, -30).Truncate(time.Hour).UnixMilli()
+	filter.Since = int64Param(query.Get("since"), defaultSince)
 	filter.Until = int64Param(query.Get("until"), 0)
+
+	// Since is rounded down to the hour.
+	if filter.Since > 0 {
+		filter.Since = (filter.Since / hourMS) * hourMS
+	}
+
+	// Until is rounded to the hour.
+	if filter.Until > 0 {
+		filter.Until = (filter.Until / hourMS) * hourMS
+		if filter.Until <= filter.Since {
+			filter.Until = filter.Since + hourMS
+		}
+	}
+
+	// Maximum span is capped at 365 days.
+	if filter.Until > 0 {
+		if filter.Since <= 0 || filter.Until-filter.Since > maxSpanMS {
+			filter.Since = filter.Until - maxSpanMS
+		}
+	} else {
+		if filter.Since <= 0 || nowHour-filter.Since > maxSpanMS {
+			filter.Since = nowHour - maxSpanMS
+		}
+	}
+
 	filter.Limit = intParam(query.Get("limit"), 50)
 	filter.Offset = intParam(query.Get("offset"), 0)
 	return filter, nil
@@ -163,6 +272,16 @@ type Matrix struct {
 }
 
 func (h *Handlers) usageSummary(w http.ResponseWriter, r *http.Request) error {
+	actor := auth.MustUser(r.Context())
+	clientIP := r.RemoteAddr
+	if h.ClientIP != nil {
+		clientIP = h.ClientIP(r)
+	}
+	rateKey := clientIP + ":" + actor.ID
+	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(rateKey) {
+		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	}
+
 	filter, err := filterFrom(r)
 	if err != nil {
 		return err
@@ -171,94 +290,127 @@ func (h *Handlers) usageSummary(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	ctx := r.Context()
 
 	// What "the most" means is the caller's to choose: the most requests, the
 	// most tokens, the most money, or the most people. The ranking happens in
 	// SQL, so a top fifty is the top fifty of the thing that was asked for.
 	metric := r.URL.Query().Get("metric")
 
-	// Hourly for a short range, daily for a long one: a month of hourly
-	// buckets is seven hundred points nobody can read.
-	bucket := time.Hour
-	span := time.Duration(0)
-	if filter.Since > 0 {
-		if filter.Until > filter.Since {
-			span = time.Duration(filter.Until-filter.Since) * time.Millisecond
-		} else {
-			span = time.Since(time.UnixMilli(filter.Since))
+	cacheKey := fmt.Sprintf("summary:%s:%s:%s:%s:%s:%d:%d:%d:%s",
+		filter.UserID, filter.GroupID, filter.ModelID, filter.ProviderID,
+		filter.Status, filter.Since, filter.Until, zone.Milliseconds(), metric)
+
+	if cached := h.getSummaryCache(cacheKey); cached != nil {
+		return httpx.WriteJSON(w, http.StatusOK, cached)
+	}
+
+	res, err, _ := h.usageSummarySF.Do(cacheKey, func() (any, error) {
+		if cached := h.getSummaryCache(cacheKey); cached != nil {
+			return cached, nil
 		}
-	} else {
-		// Since <= 0 represents all time, which is unbounded.
-		// Use daily buckets to avoid hundreds of unreadable hourly buckets.
-		span = 4 * 24 * time.Hour
-	}
-	if span > 3*24*time.Hour {
-		bucket = 24 * time.Hour
-	}
 
-	var (
-		totals   usage.Totals
-		previous *usage.Totals
-		series   []usage.Point
-		heatmap  []usage.Slot
-		rpm      int64
-	)
-	dimensions := []string{"model", "provider", "user", "group", "status"}
-	ranked := make([][]usage.Breakdown, len(dimensions))
-	reads := []func() error{
-		func() (err error) { totals, err = h.usage.Totals(ctx, filter); return },
-		func() (err error) { series, err = h.usage.Series(ctx, filter, bucket, zone); return },
-		func() (err error) { heatmap, err = h.usage.Heatmap(ctx, filter, zone); return },
-		func() (err error) { rpm, err = h.usage.CurrentRPM(ctx, filter); return },
-	}
-	for i, dimension := range dimensions {
-		reads = append(reads, func() (err error) {
-			ranked[i], err = h.usage.GroupBy(ctx, dimension, metric, filter)
-			return
-		})
-	}
-	// The same length of time immediately before, so a figure can say which
-	// way it moved. Only for a bounded window: "all time" has no before.
-	if filter.Since > 0 {
-		before := filter
-		before.Until = filter.Since
-		before.Since = filter.Since - span.Milliseconds()
-		reads = append(reads, func() error {
-			earlier, err := h.usage.Totals(ctx, before)
-			previous = &earlier
-			return err
-		})
-	}
-	if err := together(reads...); err != nil {
-		return httpx.Internal(err)
-	}
-	breakdowns := map[string][]usage.Breakdown{}
-	for i, dimension := range dimensions {
-		breakdowns[dimension] = ranked[i]
-	}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		defer cancel()
 
-	// After the rest, not beside it: the grid is drawn for the top of the
-	// account and model rankings, so it cannot be asked for before them.
-	matrix := Matrix{Rows: keysOf(breakdowns["user"], matrixUsers), Cols: keysOf(breakdowns["model"], matrixModels)}
-	if matrix.Cells, err = h.usage.Cross(ctx, "user", "model", matrix.Rows, matrix.Cols, filter); err != nil {
-		return httpx.Internal(err)
-	}
+		release, err := httpx.AcquireAggregationSlot(dbCtx)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"totals":      totals,
-		"previous":    previous,
-		"by_model":    breakdowns["model"],
-		"by_provider": breakdowns["provider"],
-		"by_user":     breakdowns["user"],
-		"by_group":    breakdowns["group"],
-		"by_status":   breakdowns["status"],
-		"series":      series,
-		"bucket_ms":   bucket.Milliseconds(),
-		"heatmap":     heatmap,
-		"matrix":      matrix,
-		"current_rpm": rpm,
+		// Hourly for a short range, daily for a long one: a month of hourly
+		// buckets is seven hundred points nobody can read.
+		bucket := time.Hour
+		span := time.Duration(0)
+		if filter.Since > 0 {
+			if filter.Until > filter.Since {
+				span = time.Duration(filter.Until-filter.Since) * time.Millisecond
+			} else {
+				span = time.Since(time.UnixMilli(filter.Since))
+			}
+		} else {
+			// Since <= 0 represents all time, which is unbounded.
+			// Use daily buckets to avoid hundreds of unreadable hourly buckets.
+			span = 4 * 24 * time.Hour
+		}
+		if span > 3*24*time.Hour {
+			bucket = 24 * time.Hour
+		}
+
+		var (
+			totals   usage.Totals
+			previous *usage.Totals
+			series   []usage.Point
+			heatmap  []usage.Slot
+			rpm      int64
+		)
+		dimensions := []string{"model", "provider", "user", "group", "status"}
+		ranked := make([][]usage.Breakdown, len(dimensions))
+		reads := []func() error{
+			func() (err error) { totals, err = h.usage.Totals(dbCtx, filter); return },
+			func() (err error) { series, err = h.usage.Series(dbCtx, filter, bucket, zone); return },
+			func() (err error) { heatmap, err = h.usage.Heatmap(dbCtx, filter, zone); return },
+			func() (err error) { rpm, err = h.usage.CurrentRPM(dbCtx, filter); return },
+		}
+		for i, dimension := range dimensions {
+			reads = append(reads, func() (err error) {
+				ranked[i], err = h.usage.GroupBy(dbCtx, dimension, metric, filter)
+				return
+			})
+		}
+		// The same length of time immediately before, so a figure can say which
+		// way it moved. Only for a bounded window: "all time" has no before.
+		if filter.Since > 0 {
+			before := filter
+			before.Until = filter.Since
+			before.Since = filter.Since - span.Milliseconds()
+			reads = append(reads, func() error {
+				earlier, err := h.usage.Totals(dbCtx, before)
+				previous = &earlier
+				return err
+			})
+		}
+		if err := together(reads...); err != nil {
+			return nil, err
+		}
+		breakdowns := map[string][]usage.Breakdown{}
+		for i, dimension := range dimensions {
+			breakdowns[dimension] = ranked[i]
+		}
+
+		// After the rest, not beside it: the grid is drawn for the top of the
+		// account and model rankings, so it cannot be asked for before them.
+		matrix := Matrix{Rows: keysOf(breakdowns["user"], matrixUsers), Cols: keysOf(breakdowns["model"], matrixModels)}
+		if matrix.Cells, err = h.usage.Cross(dbCtx, "user", "model", matrix.Rows, matrix.Cols, filter); err != nil {
+			return nil, err
+		}
+
+		payload := map[string]any{
+			"totals":      totals,
+			"previous":    previous,
+			"by_model":    breakdowns["model"],
+			"by_provider": breakdowns["provider"],
+			"by_user":     breakdowns["user"],
+			"by_group":    breakdowns["group"],
+			"by_status":   breakdowns["status"],
+			"series":      series,
+			"bucket_ms":   bucket.Milliseconds(),
+			"heatmap":     heatmap,
+			"matrix":      matrix,
+			"current_rpm": rpm,
+		}
+		h.setSummaryCache(cacheKey, payload)
+		return payload, nil
 	})
+	if err != nil {
+		var httpxErr *httpx.Error
+		if errors.As(err, &httpxErr) {
+			return httpxErr
+		}
+		return httpx.Internal(err)
+	}
+
+	return httpx.WriteJSON(w, http.StatusOK, res)
 }
 
 // keysOf is the first n keys of a ranked breakdown, skipping the empty one a
@@ -281,6 +433,16 @@ func keysOf(rows []usage.Breakdown, n int) []string {
 // computes. It is what a panel about one model or one account asks, and it
 // should not cost what the whole page does.
 func (h *Handlers) usageBreakdown(w http.ResponseWriter, r *http.Request) error {
+	actor := auth.MustUser(r.Context())
+	clientIP := r.RemoteAddr
+	if h.ClientIP != nil {
+		clientIP = h.ClientIP(r)
+	}
+	rateKey := clientIP + ":" + actor.ID
+	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(rateKey) {
+		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	}
+
 	filter, err := filterFrom(r)
 	if err != nil {
 		return err
@@ -291,14 +453,58 @@ func (h *Handlers) usageBreakdown(w http.ResponseWriter, r *http.Request) error 
 	default:
 		return httpx.BadRequest("Unknown dimension.")
 	}
-	rows, err := h.usage.GroupBy(r.Context(), dimension, r.URL.Query().Get("metric"), filter)
+	metric := r.URL.Query().Get("metric")
+
+	cacheKey := fmt.Sprintf("breakdown:%s:%s:%s:%s:%s:%s:%d:%d:%s",
+		dimension, filter.UserID, filter.GroupID, filter.ModelID, filter.ProviderID,
+		filter.Status, filter.Since, filter.Until, metric)
+
+	if cached := h.getBreakdownCache(cacheKey); cached != nil {
+		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": cached})
+	}
+
+	res, err, _ := h.usageBreakdownSF.Do(cacheKey, func() (any, error) {
+		if cached := h.getBreakdownCache(cacheKey); cached != nil {
+			return cached, nil
+		}
+
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		defer cancel()
+
+		release, err := httpx.AcquireAggregationSlot(dbCtx)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+
+		rows, err := h.usage.GroupBy(dbCtx, dimension, metric, filter)
+		if err != nil {
+			return nil, err
+		}
+		h.setBreakdownCache(cacheKey, rows)
+		return rows, nil
+	})
 	if err != nil {
+		var httpxErr *httpx.Error
+		if errors.As(err, &httpxErr) {
+			return httpxErr
+		}
 		return httpx.Internal(err)
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": rows})
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": res})
 }
 
 func (h *Handlers) currentRPM(w http.ResponseWriter, r *http.Request) error {
+	actor := auth.MustUser(r.Context())
+	clientIP := r.RemoteAddr
+	if h.ClientIP != nil {
+		clientIP = h.ClientIP(r)
+	}
+	rateKey := clientIP + ":" + actor.ID
+	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(rateKey) {
+		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	}
+
 	filter, err := filterFrom(r)
 	if err != nil {
 		return err
@@ -313,6 +519,16 @@ func (h *Handlers) currentRPM(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handlers) usageRecords(w http.ResponseWriter, r *http.Request) error {
+	actor := auth.MustUser(r.Context())
+	clientIP := r.RemoteAddr
+	if h.ClientIP != nil {
+		clientIP = h.ClientIP(r)
+	}
+	rateKey := clientIP + ":" + actor.ID
+	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(rateKey) {
+		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	}
+
 	filter, err := filterFrom(r)
 	if err != nil {
 		return err

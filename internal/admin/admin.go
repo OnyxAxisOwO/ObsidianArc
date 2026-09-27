@@ -14,6 +14,9 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
@@ -89,6 +92,14 @@ type Handlers struct {
 	// single super administrator rather than delegated settings operators.
 	SystemBackup *systembackup.Service
 
+	UsageLimiter *httpx.TokenBucketLimiter
+
+	usageCacheMu        sync.RWMutex
+	usageSummaryCache   map[string]*cachedUsageSummary
+	usageBreakdownCache map[string]*cachedUsageBreakdown
+	usageSummarySF      singleflight.Group
+	usageBreakdownSF    singleflight.Group
+
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
 	cpu cpuSampler
@@ -117,26 +128,29 @@ func NewHandlers(
 	invites *invite.Store,
 ) *Handlers {
 	return &Handlers{
-		db:            db,
-		users:         users,
-		groups:        groups,
-		providers:     providers,
-		models:        models,
-		settings:      set,
-		registry:      registry,
-		auth:          authService,
-		usage:         usageStore,
-		quota:         quotaService,
-		conversations: conversations,
-		announcements: announcements,
-		keys:          keys,
-		requests:      requests,
-		security:      securityLog,
-		cards:         cards,
-		health:        healthStore,
-		feedback:      feedbackStore,
-		apps:          apps,
-		invites:       invites,
+		db:                  db,
+		users:               users,
+		groups:              groups,
+		providers:           providers,
+		models:              models,
+		settings:            set,
+		registry:            registry,
+		auth:                authService,
+		usage:               usageStore,
+		quota:               quotaService,
+		conversations:       conversations,
+		announcements:       announcements,
+		keys:                keys,
+		requests:            requests,
+		security:            securityLog,
+		cards:               cards,
+		health:              healthStore,
+		feedback:            feedbackStore,
+		apps:                apps,
+		invites:             invites,
+		UsageLimiter:        httpx.NewTokenBucketLimiter(5, 10),
+		usageSummaryCache:   make(map[string]*cachedUsageSummary),
+		usageBreakdownCache: make(map[string]*cachedUsageBreakdown),
 	}
 }
 

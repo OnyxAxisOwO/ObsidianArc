@@ -22,9 +22,13 @@ package leaderboard
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -55,15 +59,36 @@ var metrics = map[string]string{
 	"requests": usage.MetricRequests,
 }
 
+type cachedBoard struct {
+	createdAt time.Time
+	userRows  []usage.Breakdown
+	userInfos map[string]user.User
+	modelRows []usage.Breakdown
+}
+
 type Handlers struct {
 	settings *settings.Service
 	usage    *usage.Store
 	users    *user.Store
 	models   *model.Store
+
+	ClientIP func(*http.Request) string
+	Limiter  *httpx.TokenBucketLimiter
+
+	mu    sync.RWMutex
+	cache map[string]*cachedBoard
+	sf    singleflight.Group
 }
 
 func NewHandlers(set *settings.Service, usageStore *usage.Store, users *user.Store, models *model.Store) *Handlers {
-	return &Handlers{settings: set, usage: usageStore, users: users, models: models}
+	return &Handlers{
+		settings: set,
+		usage:    usageStore,
+		users:    users,
+		models:   models,
+		Limiter:  httpx.NewTokenBucketLimiter(2, 5),
+		cache:    make(map[string]*cachedBoard),
+	}
 }
 
 func (h *Handlers) Routes(mux *http.ServeMux) {
@@ -108,10 +133,35 @@ type Standing struct {
 	Participants int   `json:"participants"`
 }
 
+func (h *Handlers) getCache(key string) *cachedBoard {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	entry, ok := h.cache[key]
+	if !ok || time.Since(entry.createdAt) >= 30*time.Second {
+		return nil
+	}
+	return entry
+}
+
+func (h *Handlers) setCache(key string, b *cachedBoard) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cache[key] = b
+}
+
 func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
 	if !account.CanAdmin(Permission) && !h.settings.Bool(settings.LeaderboardShowUsers) {
 		return httpx.Forbidden("The leaderboard is not visible to users.")
+	}
+
+	clientIP := r.RemoteAddr
+	if h.ClientIP != nil {
+		clientIP = h.ClientIP(r)
+	}
+	rateKey := clientIP + ":" + account.ID
+	if h.Limiter != nil && !h.Limiter.Allow(rateKey) {
+		return httpx.TooManyRequests("rate_limited", "Too many leaderboard requests. Please try again later.")
 	}
 
 	query := r.URL.Query()
@@ -141,16 +191,104 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 		identity = settings.LeaderboardNickname
 	}
 
-	filter := usage.Filter{
-		Since:  time.Now().Add(-window).UnixMilli(),
-		Status: usage.StatusOK,
+	cacheKey := period
+	board := h.getCache(cacheKey)
+	if board == nil {
+		res, err, _ := h.sf.Do(cacheKey, func() (any, error) {
+			if b := h.getCache(cacheKey); b != nil {
+				return b, nil
+			}
+
+			// Context is detached from client disconnection and given a 5s deadline.
+			queryCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+			defer cancel()
+
+			release, err := httpx.AcquireAggregationSlot(queryCtx)
+			if err != nil {
+				return nil, err
+			}
+			defer release()
+
+			filter := usage.Filter{
+				Since:  time.Now().Add(-window).UnixMilli(),
+				Status: usage.StatusOK,
+			}
+
+			userRows, err := h.usage.GroupBy(queryCtx, "user", usage.MetricTokens, filter)
+			if err != nil {
+				return nil, err
+			}
+
+			maxFetch := settings.MaxLeaderboardSize
+			if maxFetch < 1 || maxFetch > 50 {
+				maxFetch = 50
+			}
+
+			// Pre-collect top user IDs by tokens and by requests so that whichever
+			// metric the caller asks for, the top accounts have their profiles resolved.
+			topUserKeys := make(map[string]struct{})
+			tokensLimit := maxFetch
+			if tokensLimit > len(userRows) {
+				tokensLimit = len(userRows)
+			}
+			for i := 0; i < tokensLimit; i++ {
+				topUserKeys[userRows[i].Key] = struct{}{}
+			}
+
+			requestsSorted := make([]usage.Breakdown, len(userRows))
+			copy(requestsSorted, userRows)
+			sort.SliceStable(requestsSorted, func(i, j int) bool {
+				if requestsSorted[i].Requests != requestsSorted[j].Requests {
+					return requestsSorted[i].Requests > requestsSorted[j].Requests
+				}
+				if requestsSorted[i].TotalTokens != requestsSorted[j].TotalTokens {
+					return requestsSorted[i].TotalTokens > requestsSorted[j].TotalTokens
+				}
+				return requestsSorted[i].Key < requestsSorted[j].Key
+			})
+			requestsLimit := maxFetch
+			if requestsLimit > len(requestsSorted) {
+				requestsLimit = len(requestsSorted)
+			}
+			for i := 0; i < requestsLimit; i++ {
+				topUserKeys[requestsSorted[i].Key] = struct{}{}
+			}
+
+			userInfos := make(map[string]user.User, len(topUserKeys))
+			for uid := range topUserKeys {
+				if person, err := h.users.ByID(queryCtx, nil, uid); err == nil {
+					userInfos[uid] = person
+				}
+			}
+
+			var modelRows []usage.Breakdown
+			if h.settings.Bool(settings.LeaderboardShowModels) {
+				modelRows, err = h.usage.GroupBy(queryCtx, "model", usage.MetricUsers, filter)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			b := &cachedBoard{
+				createdAt: time.Now(),
+				userRows:  userRows,
+				userInfos: userInfos,
+				modelRows: modelRows,
+			}
+			h.setCache(cacheKey, b)
+			return b, nil
+		})
+		if err != nil {
+			var httpxErr *httpx.Error
+			if errors.As(err, &httpxErr) {
+				return httpxErr
+			}
+			return httpx.Internal(err)
+		}
+		board = res.(*cachedBoard)
 	}
 
-	accounts, standing, err := h.accounts(r.Context(), account.ID, metric, filter, size, identity)
-	if err != nil {
-		return httpx.Internal(err)
-	}
-
+	accounts, standing := h.projectAccounts(board, account.ID, metric, size, identity)
 	out := map[string]any{
 		"period":   period,
 		"metric":   metricName,
@@ -159,7 +297,7 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 		"me":       standing,
 	}
 	if h.settings.Bool(settings.LeaderboardShowModels) {
-		models, err := h.modelBoard(r.Context(), account, metric, filter, size)
+		models, err := h.projectModels(r.Context(), board.modelRows, account, metric, size)
 		if err != nil {
 			return httpx.Internal(err)
 		}
@@ -175,49 +313,63 @@ func valueOf(row usage.Breakdown, metric string) int64 {
 	return row.TotalTokens
 }
 
-// accounts builds the accounts board and the reader's standing on it.
-//
-// The whole ranking is read — GroupBy returns every group — because the
-// reader's place has to be right when it is two hundredth, not only when it
-// is in the part that is shown. What leaves the server is only the top of it.
-func (h *Handlers) accounts(ctx context.Context, self, metric string, filter usage.Filter, size int, identity string) ([]Entry, Standing, error) {
-	rows, err := h.usage.GroupBy(ctx, "user", metric, filter)
-	if err != nil {
-		return nil, Standing{}, err
+func (h *Handlers) projectAccounts(b *cachedBoard, self, metric string, size int, identity string) ([]Entry, Standing) {
+	sorted := make([]usage.Breakdown, len(b.userRows))
+	copy(sorted, b.userRows)
+
+	if metric == usage.MetricRequests {
+		sort.SliceStable(sorted, func(i, j int) bool {
+			if sorted[i].Requests != sorted[j].Requests {
+				return sorted[i].Requests > sorted[j].Requests
+			}
+			if sorted[i].TotalTokens != sorted[j].TotalTokens {
+				return sorted[i].TotalTokens > sorted[j].TotalTokens
+			}
+			return sorted[i].Key < sorted[j].Key
+		})
+	} else {
+		sort.SliceStable(sorted, func(i, j int) bool {
+			if sorted[i].TotalTokens != sorted[j].TotalTokens {
+				return sorted[i].TotalTokens > sorted[j].TotalTokens
+			}
+			if sorted[i].Requests != sorted[j].Requests {
+				return sorted[i].Requests > sorted[j].Requests
+			}
+			return sorted[i].Key < sorted[j].Key
+		})
 	}
 
-	// GroupBy orders by the metric and breaks ties by request count, then id.
-	// Places are then given competition-style — two people level on tokens
-	// share a place — so the number beside a name never implies a lead that
-	// is not in the figure beside it.
-	standing := Standing{Participants: len(rows)}
-	ranks := make([]int, len(rows))
-	for i, row := range rows {
-		if i > 0 && valueOf(row, metric) == valueOf(rows[i-1], metric) {
+	ranks := make([]int, len(sorted))
+	for i, row := range sorted {
+		if i > 0 && valueOf(row, metric) == valueOf(sorted[i-1], metric) {
 			ranks[i] = ranks[i-1]
 		} else {
 			ranks[i] = i + 1
 		}
+	}
+
+	standing := Standing{Participants: len(sorted)}
+	for i, row := range sorted {
 		if row.Key == self {
 			standing.Rank = ranks[i]
 			standing.Value = valueOf(row, metric)
-			// The nearest figure above that is actually higher, so a tie at
-			// the top does not report a gap of nought to overtake.
 			for j := i - 1; j >= 0; j-- {
-				if above := valueOf(rows[j], metric); above > standing.Value {
+				if above := valueOf(sorted[j], metric); above > standing.Value {
 					standing.Gap = above - standing.Value
 					break
 				}
 			}
+			break
 		}
 	}
 
-	shown := rows
-	if len(shown) > size {
-		shown = shown[:size]
+	shownCount := len(sorted)
+	if shownCount > size {
+		shownCount = size
 	}
-	entries := make([]Entry, 0, len(shown))
-	for i, row := range shown {
+	entries := make([]Entry, 0, shownCount)
+	for i := 0; i < shownCount; i++ {
+		row := sorted[i]
 		entry := Entry{
 			Rank:     ranks[i],
 			Value:    valueOf(row, metric),
@@ -226,11 +378,7 @@ func (h *Handlers) accounts(ctx context.Context, self, metric string, filter usa
 			Models:   row.Models,
 			Self:     row.Key == self,
 		}
-		// Looked up rather than taken from the breakdown: the breakdown's
-		// label falls back to the account id when there is no name, and an
-		// id is the one thing this board does not hand out. A place whose
-		// account has since been deleted keeps its figures and loses its name.
-		if person, err := h.users.ByID(ctx, nil, row.Key); err == nil {
+		if person, ok := b.userInfos[row.Key]; ok {
 			switch {
 			case entry.Self, identity != settings.LeaderboardAnonymous:
 				entry.Name = person.Nickname
@@ -245,17 +393,10 @@ func (h *Handlers) accounts(ctx context.Context, self, metric string, filter usa
 		}
 		entries = append(entries, entry)
 	}
-	return entries, standing, nil
+	return entries, standing
 }
 
-// modelBoard ranks models by how many people use them, then by the metric the
-// reader chose. Popularity rather than volume, because "what does everybody
-// reach for" is the question a reader has about models; one account's heavy
-// use of something obscure answers a different one.
-//
-// Only models the reader's group can see are listed, under their current
-// names, so the board never announces a model the reader has no way to open.
-func (h *Handlers) modelBoard(ctx context.Context, account user.User, metric string, filter usage.Filter, size int) ([]ModelEntry, error) {
+func (h *Handlers) projectModels(ctx context.Context, modelRows []usage.Breakdown, account user.User, metric string, size int) ([]ModelEntry, error) {
 	visible, err := h.models.ListForUser(ctx, account.GroupID, account.IsAdmin())
 	if err != nil {
 		return nil, err
@@ -265,18 +406,13 @@ func (h *Handlers) modelBoard(ctx context.Context, account user.User, metric str
 		known[m.ID] = m
 	}
 
-	rows, err := h.usage.GroupBy(ctx, "model", usage.MetricUsers, filter)
-	if err != nil {
-		return nil, err
-	}
-	kept := make([]usage.Breakdown, 0, len(rows))
-	for _, row := range rows {
+	kept := make([]usage.Breakdown, 0, len(modelRows))
+	for _, row := range modelRows {
 		if _, ok := known[row.Key]; ok {
 			kept = append(kept, row)
 		}
 	}
-	// Stable, so rows already in the ledger's order keep it when both figures
-	// are level.
+
 	sort.SliceStable(kept, func(i, j int) bool {
 		if kept[i].Users != kept[j].Users {
 			return kept[i].Users > kept[j].Users

@@ -76,22 +76,60 @@ func (s *Store) Write(ctx context.Context, record Record) error {
 	if record.FinishedAt == 0 {
 		record.FinishedAt = time.Now().UnixMilli()
 	}
+	if record.StartedAt == 0 {
+		record.StartedAt = record.FinishedAt
+	}
 	if record.DurationMS == 0 && record.StartedAt > 0 {
 		record.DurationMS = int(record.FinishedAt - record.StartedAt)
 	}
 
-	_, err := s.db.Exec(ctx, `INSERT INTO usage_records
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO usage_records
 		(id, user_id, group_id, provider_id, provider_name, model_id, model_name, model_ref,
 		 conversation_id, message_id, request_id,
 		 input_tokens, output_tokens, reasoning_tokens, total_tokens, credits, usage_estimated,
 		 status, error_code, started_at, finished_at, duration_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.UserID, record.GroupID, record.ProviderID, record.ProviderName,
-		record.ModelID, record.ModelName, record.ModelRef,
-		record.ConversationID, record.MessageID, record.RequestID,
-		record.InputTokens, record.OutputTokens, record.ReasoningTokens,
-		record.TotalTokens, record.Credits, record.Estimated,
-		record.Status, record.ErrorCode, record.StartedAt, record.FinishedAt, record.DurationMS)
+			record.ID, record.UserID, record.GroupID, record.ProviderID, record.ProviderName,
+			record.ModelID, record.ModelName, record.ModelRef,
+			record.ConversationID, record.MessageID, record.RequestID,
+			record.InputTokens, record.OutputTokens, record.ReasoningTokens,
+			record.TotalTokens, record.Credits, record.Estimated,
+			record.Status, record.ErrorCode, record.StartedAt, record.FinishedAt, record.DurationMS)
+		if err != nil {
+			return err
+		}
+
+		hourTS := record.StartedAt - (record.StartedAt % 3600000)
+		var errors int64
+		if record.Status == StatusError {
+			errors = 1
+		}
+
+		_, err = tx.Exec(ctx, `INSERT INTO usage_rollup_hourly
+			(hour_ts, user_id, model_id, provider_id, group_id, status,
+			 requests, input_tokens, output_tokens, reasoning_tokens, total_tokens,
+			 credits, duration_ms, errors, model_name, provider_name)
+			VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (hour_ts, user_id, model_id, provider_id, group_id, status) DO UPDATE SET
+				requests = usage_rollup_hourly.requests + excluded.requests,
+				input_tokens = usage_rollup_hourly.input_tokens + excluded.input_tokens,
+				output_tokens = usage_rollup_hourly.output_tokens + excluded.output_tokens,
+				reasoning_tokens = usage_rollup_hourly.reasoning_tokens + excluded.reasoning_tokens,
+				total_tokens = usage_rollup_hourly.total_tokens + excluded.total_tokens,
+				credits = usage_rollup_hourly.credits + excluded.credits,
+				duration_ms = usage_rollup_hourly.duration_ms + excluded.duration_ms,
+				errors = usage_rollup_hourly.errors + excluded.errors,
+				model_name = CASE WHEN excluded.model_name != '' THEN excluded.model_name ELSE usage_rollup_hourly.model_name END,
+				provider_name = CASE WHEN excluded.provider_name != '' THEN excluded.provider_name ELSE usage_rollup_hourly.provider_name END`,
+			hourTS, record.UserID, record.ModelID, record.ProviderID, record.GroupID, string(record.Status),
+			record.InputTokens, record.OutputTokens, record.ReasoningTokens, record.TotalTokens,
+			record.Credits, record.DurationMS, errors, record.ModelName, record.ProviderName)
+		if err != nil {
+			return fmt.Errorf("usage: write rollup: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("usage: write: %w", err)
 	}
@@ -134,10 +172,11 @@ type Totals struct {
 // accounts and models a set of rows spans are exactly the ones its folded
 // rows name, so the answer is the same.
 
-// partial is the first pass's select list: the account and the model the
-// distinct counts are taken over, and every figure in a form the second pass
-// can add up. The names are what the fixed text of the second pass reads.
-const partial = `user_id, model_id,
+// partialRecords is the first pass's select list for raw usage_records: the
+// account and the model the distinct counts are taken over, and every figure
+// in a form the second pass can add up. The names are what the fixed text of
+// the second pass reads.
+const partialRecords = `user_id, model_id,
 		COUNT(*) AS requests,
 		SUM(input_tokens) AS input_tokens,
 		SUM(output_tokens) AS output_tokens,
@@ -147,6 +186,21 @@ const partial = `user_id, model_id,
 		SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
 		SUM(duration_ms) AS duration_ms,
 		MAX(started_at) AS last_at,
+		MAX(model_name) AS model_name,
+		MAX(provider_name) AS provider_name`
+
+// partialRollup is the first pass's select list for usage_rollup_hourly.
+// Pre-aggregated counters are summed rather than counted from rows.
+const partialRollup = `user_id, model_id,
+		SUM(requests) AS requests,
+		SUM(input_tokens) AS input_tokens,
+		SUM(output_tokens) AS output_tokens,
+		SUM(reasoning_tokens) AS reasoning_tokens,
+		SUM(total_tokens) AS total_tokens,
+		SUM(credits) AS credits,
+		SUM(errors) AS errors,
+		SUM(duration_ms) AS duration_ms,
+		MAX(hour_ts) AS last_at,
 		MAX(model_name) AS model_name,
 		MAX(provider_name) AS provider_name`
 
@@ -175,14 +229,14 @@ const aggregates = `COALESCE(SUM(t.requests), 0),
 // The keys are grouped by position rather than repeated, since one is an
 // expression with bound parameters, and repeating it would mean binding them
 // twice. A key's parameters therefore come before the clause's.
-func folded(keys []string, where string) string {
+func folded(table, partial string, keys []string, where string) string {
 	var columns, positions strings.Builder
 	for i, key := range keys {
 		fmt.Fprintf(&columns, "%s AS k%d, ", key, i)
 		fmt.Fprintf(&positions, "%d, ", i+1)
 	}
 	return `(SELECT ` + columns.String() + partial + `
-		FROM usage_records` + where + `
+		FROM ` + table + where + `
 		GROUP BY ` + positions.String() + `user_id, model_id) t`
 }
 
@@ -202,6 +256,21 @@ type Filter struct {
 	Until      int64
 	Limit      int
 	Offset     int
+}
+
+// usesRollup reports whether the filter spans at least one hour and should
+// query usage_rollup_hourly rather than the raw ledger.
+func (f Filter) usesRollup() bool {
+	if f.Since <= 0 {
+		return false
+	}
+	var span int64
+	if f.Until > 0 {
+		span = f.Until - f.Since
+	} else {
+		span = time.Now().UnixMilli() - f.Since
+	}
+	return span >= 3600_000
 }
 
 // where builds the filter clause. The prefix qualifies every column, which
@@ -245,12 +314,108 @@ func (f Filter) where(prefix string) (string, []any) {
 	return " WHERE " + strings.Join(conditions, " AND "), args
 }
 
-func (s *Store) Totals(ctx context.Context, filter Filter) (Totals, error) {
-	where, args := filter.where("")
+// whereRollup builds the filter clause for usage_rollup_hourly, where timestamps
+// are rounded to UTC hour_ts.
+func (f Filter) whereRollup(prefix string) (string, []any) {
+	conditions := []string{}
+	args := []any{}
 
+	add := func(column string, value any) {
+		conditions = append(conditions, prefix+column+" = ?")
+		args = append(args, value)
+	}
+	if f.UserID != "" {
+		add("user_id", f.UserID)
+	}
+	if f.GroupID != "" {
+		add("group_id", f.GroupID)
+	}
+	if f.ModelID != "" {
+		add("model_id", f.ModelID)
+	}
+	if f.ProviderID != "" {
+		add("provider_id", f.ProviderID)
+	}
+	if f.Status != "" {
+		add("status", f.Status)
+	}
+	if f.Since > 0 {
+		conditions = append(conditions, prefix+"hour_ts >= ?")
+		args = append(args, f.Since-(f.Since%3600_000))
+	}
+	if f.Until > 0 {
+		conditions = append(conditions, prefix+"hour_ts < ?")
+		args = append(args, f.Until)
+	}
+	if len(conditions) == 0 {
+		return "", nil
+	}
+	return " WHERE " + strings.Join(conditions, " AND "), args
+}
+
+// withTimeoutTx runs fn within a transaction on PostgreSQL to apply a 5s
+// statement timeout. On SQLite, statement_timeout is not supported and transactions
+// take an immediate write lock, so SQLite relies on context cancellation alone.
+func (s *Store) withTimeoutTx(ctx context.Context, fn func(database.Queryer) error) error {
+	if s.db != nil && s.db.Dialect() == database.Postgres {
+		return s.db.Tx(ctx, func(tx *database.Tx) error {
+			if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = '5s'"); err != nil {
+				return err
+			}
+			return fn(tx)
+		})
+	}
+	return fn(s.db)
+}
+
+func (s *Store) Totals(ctx context.Context, filter Filter) (Totals, error) {
 	var totals Totals
-	err := s.db.QueryRow(ctx, `SELECT `+aggregates+` FROM `+folded(nil, where), args...).
-		Scan(totals.targets()...)
+	err := s.withTimeoutTx(ctx, func(q database.Queryer) error {
+		if filter.usesRollup() {
+			where, args := filter.whereRollup("")
+			query := `SELECT
+				COALESCE(SUM(requests), 0),
+				COALESCE(SUM(input_tokens), 0),
+				COALESCE(SUM(output_tokens), 0),
+				COALESCE(SUM(reasoning_tokens), 0),
+				COALESCE(SUM(total_tokens), 0),
+				COALESCE(SUM(credits), 0),
+				COALESCE(SUM(errors), 0),
+				COUNT(DISTINCT user_id),
+				COUNT(DISTINCT NULLIF(model_id, '')),
+				COALESCE(SUM(duration_ms), 0)
+				FROM usage_rollup_hourly` + where
+			return q.QueryRow(ctx, query, args...).Scan(totals.targets()...)
+		}
+
+		where, args := filter.where("")
+		modelWhere := where
+		if modelWhere == "" {
+			modelWhere = " WHERE model_id != ''"
+		} else {
+			modelWhere += " AND model_id != ''"
+		}
+
+		query := `SELECT
+			COUNT(*),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(reasoning_tokens), 0),
+			COALESCE(SUM(total_tokens), 0),
+			COALESCE(SUM(credits), 0),
+			COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0),
+			(SELECT COUNT(*) FROM (SELECT DISTINCT user_id FROM usage_records` + where + `) sub_u),
+			(SELECT COUNT(*) FROM (SELECT DISTINCT model_id FROM usage_records` + modelWhere + `) sub_m),
+			COALESCE(SUM(duration_ms), 0)
+			FROM usage_records` + where
+
+		queryArgs := make([]any, 0, len(args)*3)
+		queryArgs = append(queryArgs, args...)
+		queryArgs = append(queryArgs, args...)
+		queryArgs = append(queryArgs, args...)
+
+		return q.QueryRow(ctx, query, queryArgs...).Scan(totals.targets()...)
+	})
 	if err != nil {
 		return Totals{}, fmt.Errorf("usage: totals: %w", err)
 	}
@@ -264,7 +429,9 @@ func (s *Store) CurrentRPM(ctx context.Context, filter Filter) (int64, error) {
 	rpmFilter.Until = 0
 	where, args := rpmFilter.where("")
 	var count int64
-	err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM usage_records`+where, args...).Scan(&count)
+	err := s.withTimeoutTx(ctx, func(q database.Queryer) error {
+		return q.QueryRow(ctx, `SELECT COUNT(*) FROM usage_records`+where, args...).Scan(&count)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("usage: rpm: %w", err)
 	}
@@ -354,32 +521,51 @@ func (s *Store) GroupBy(ctx context.Context, dimension, metric string, filter Fi
 		return nil, fmt.Errorf("usage: unknown dimension %q", dimension)
 	}
 
-	where, args := filter.where("")
+	var (
+		table   = "usage_records"
+		partial = partialRecords
+		where   string
+		args    []any
+	)
+	if filter.usesRollup() {
+		table = "usage_rollup_hourly"
+		partial = partialRollup
+		where, args = filter.whereRollup("")
+	} else {
+		where, args = filter.where("")
+	}
+
 	query := `SELECT t.k0, ` + labelExpr + `, ` + detailExpr + `,
 		COALESCE(MAX(t.last_at), 0), ` + aggregates + `
-		FROM ` + folded([]string{keyColumn}, where) + join + `
+		FROM ` + folded(table, partial, []string{keyColumn}, where) + join + `
 		GROUP BY t.k0
 		ORDER BY ` + rankBy(metric) + ` DESC, COALESCE(SUM(t.requests), 0) DESC, t.k0`
 
-	rows, err := s.db.Query(ctx, query, args...)
+	out := []Breakdown{}
+	err := s.withTimeoutTx(ctx, func(q database.Queryer) error {
+		rows, err := q.Query(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var entry Breakdown
+			targets := append([]any{&entry.Key, &entry.Label, &entry.Detail, &entry.LastAt}, entry.targets()...)
+			if err := rows.Scan(targets...); err != nil {
+				return fmt.Errorf("usage: group scan: %w", err)
+			}
+			if entry.Label == "" {
+				entry.Label = entry.Key
+			}
+			out = append(out, entry)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("usage: group by %s: %w", dimension, err)
 	}
-	defer rows.Close()
-
-	out := []Breakdown{}
-	for rows.Next() {
-		var entry Breakdown
-		targets := append([]any{&entry.Key, &entry.Label, &entry.Detail, &entry.LastAt}, entry.targets()...)
-		if err := rows.Scan(targets...); err != nil {
-			return nil, fmt.Errorf("usage: group scan: %w", err)
-		}
-		if entry.Label == "" {
-			entry.Label = entry.Key
-		}
-		out = append(out, entry)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Cell is where two breakdowns meet: one account's use of one model, say.
@@ -420,7 +606,20 @@ func (s *Store) Cross(ctx context.Context, rows, cols string, rowKeys, colKeys [
 		return []Cell{}, nil
 	}
 
-	where, args := filter.where("")
+	var (
+		table   = "usage_records"
+		partial = partialRecords
+		where   string
+		args    []any
+	)
+	if filter.usesRollup() {
+		table = "usage_rollup_hourly"
+		partial = partialRollup
+		where, args = filter.whereRollup("")
+	} else {
+		where, args = filter.where("")
+	}
+
 	keys := rowColumn + " IN (" + placeholders(len(rowKeys)) + ") AND " +
 		colColumn + " IN (" + placeholders(len(colKeys)) + ")"
 	if where == "" {
@@ -435,23 +634,29 @@ func (s *Store) Cross(ctx context.Context, rows, cols string, rowKeys, colKeys [
 		args = append(args, key)
 	}
 
-	result, err := s.db.Query(ctx, `SELECT t.k0, t.k1, `+aggregates+`
-		FROM `+folded([]string{rowColumn, colColumn}, where)+`
-		GROUP BY t.k0, t.k1`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("usage: cross %s by %s: %w", rows, cols, err)
-	}
-	defer result.Close()
-
 	out := []Cell{}
-	for result.Next() {
-		var cell Cell
-		if err := result.Scan(append([]any{&cell.Row, &cell.Col}, cell.targets()...)...); err != nil {
-			return nil, fmt.Errorf("usage: cross scan: %w", err)
+	err := s.withTimeoutTx(ctx, func(q database.Queryer) error {
+		result, err := q.Query(ctx, `SELECT t.k0, t.k1, `+aggregates+`
+		FROM `+folded(table, partial, []string{rowColumn, colColumn}, where)+`
+		GROUP BY t.k0, t.k1`, args...)
+		if err != nil {
+			return fmt.Errorf("usage: cross %s by %s: %w", rows, cols, err)
 		}
-		out = append(out, cell)
+		defer result.Close()
+
+		for result.Next() {
+			var cell Cell
+			if err := result.Scan(append([]any{&cell.Row, &cell.Col}, cell.targets()...)...); err != nil {
+				return fmt.Errorf("usage: cross scan: %w", err)
+			}
+			out = append(out, cell)
+		}
+		return result.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, result.Err()
+	return out, nil
 }
 
 // placeholders is n bound parameters for an IN list: the keys are values, and
@@ -538,31 +743,49 @@ func (s *Store) Series(ctx context.Context, filter Filter, bucket, offset time.D
 	if bucket <= 0 {
 		bucket = time.Hour
 	}
-	where, filterArgs := filter.where("")
+
+	var (
+		table      = "usage_records"
+		partial    = partialRecords
+		timeCol    = "started_at"
+		where      string
+		filterArgs []any
+	)
+	if filter.usesRollup() && bucket >= time.Hour && bucket%time.Hour == 0 {
+		table = "usage_rollup_hourly"
+		partial = partialRollup
+		timeCol = "hour_ts"
+		where, filterArgs = filter.whereRollup("")
+	} else {
+		where, filterArgs = filter.where("")
+	}
 
 	// Ordered as the placeholders appear: the two in the bucket's expression,
 	// then whatever the filter added to the WHERE.
 	args := append([]any{offset.Milliseconds(), bucket.Milliseconds()}, filterArgs...)
 
-	rows, err := s.db.Query(ctx,
-		`SELECT t.k0, `+aggregates+`
-		 FROM `+folded([]string{"started_at - ((started_at + ?) % ?)"}, where)+`
+	out := []Point{}
+	err := s.withTimeoutTx(ctx, func(q database.Queryer) error {
+		rows, err := q.Query(ctx,
+			`SELECT t.k0, `+aggregates+`
+		 FROM `+folded(table, partial, []string{timeCol + " - ((" + timeCol + " + ?) % ?)"}, where)+`
 		 GROUP BY t.k0
 		 ORDER BY t.k0`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("usage: series: %w", err)
-	}
-	defer rows.Close()
-
-	out := []Point{}
-	for rows.Next() {
-		var point Point
-		if err := rows.Scan(append([]any{&point.At}, point.targets()...)...); err != nil {
-			return nil, fmt.Errorf("usage: series scan: %w", err)
+		if err != nil {
+			return fmt.Errorf("usage: series: %w", err)
 		}
-		out = append(out, point)
-	}
-	if err := rows.Err(); err != nil {
+		defer rows.Close()
+
+		for rows.Next() {
+			var point Point
+			if err := rows.Scan(append([]any{&point.At}, point.targets()...)...); err != nil {
+				return fmt.Errorf("usage: series scan: %w", err)
+			}
+			out = append(out, point)
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -585,33 +808,54 @@ type Slot struct {
 // neither engine's date functions — spelled differently, and in disagreement
 // about time zones — are needed. The epoch fell on a Thursday, which is the 4.
 func (s *Store) Heatmap(ctx context.Context, filter Filter, offset time.Duration) ([]Slot, error) {
-	where, filterArgs := filter.where("")
-	args := append([]any{offset.Milliseconds()}, filterArgs...)
+	var (
+		query string
+		args  []any
+	)
+	if filter.usesRollup() {
+		where, filterArgs := filter.whereRollup("")
+		args = append([]any{offset.Milliseconds()}, filterArgs...)
+		query = `SELECT (t.h / 24 + 4) % 7, t.h % 24, SUM(t.requests), COALESCE(SUM(t.total_tokens), 0)
+		 FROM (SELECT (hour_ts + ?) / 3600000 AS h, SUM(requests) AS requests, SUM(total_tokens) AS total_tokens
+		       FROM usage_rollup_hourly` + where + `
+		       GROUP BY 1) t
+		 GROUP BY 1, 2
+		 ORDER BY 1, 2`
+	} else {
+		where, filterArgs := filter.where("")
+		args = append([]any{offset.Milliseconds()}, filterArgs...)
+		query = `SELECT (t.h / 24 + 4) % 7, t.h % 24, SUM(t.requests), COALESCE(SUM(t.total_tokens), 0)
+		 FROM (SELECT (started_at + ?) / 3600000 AS h, COUNT(*) AS requests, SUM(total_tokens) AS total_tokens
+		       FROM usage_records` + where + `
+		       GROUP BY 1) t
+		 GROUP BY 1, 2
+		 ORDER BY 1, 2`
+	}
 
 	// Folded to hours first, then the hours onto the week: a few thousand
 	// hours are cheaper to fold twice than every turn is to sort once, which
 	// is what Postgres did with the two expressions grouped in one pass.
-	rows, err := s.db.Query(ctx,
-		`SELECT (t.h / 24 + 4) % 7, t.h % 24, SUM(t.requests), COALESCE(SUM(t.total_tokens), 0)
-		 FROM (SELECT (started_at + ?) / 3600000 AS h, COUNT(*) AS requests, SUM(total_tokens) AS total_tokens
-		       FROM usage_records`+where+`
-		       GROUP BY 1) t
-		 GROUP BY 1, 2
-		 ORDER BY 1, 2`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("usage: heatmap: %w", err)
-	}
-	defer rows.Close()
-
 	out := []Slot{}
-	for rows.Next() {
-		var weekday, hour int64
-		var slot Slot
-		if err := rows.Scan(&weekday, &hour, &slot.Requests, &slot.TotalTokens); err != nil {
-			return nil, fmt.Errorf("usage: heatmap scan: %w", err)
+	err := s.withTimeoutTx(ctx, func(q database.Queryer) error {
+		rows, err := q.Query(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("usage: heatmap: %w", err)
 		}
-		slot.Weekday, slot.Hour = int(weekday), int(hour)
-		out = append(out, slot)
+		defer rows.Close()
+
+		for rows.Next() {
+			var weekday, hour int64
+			var slot Slot
+			if err := rows.Scan(&weekday, &hour, &slot.Requests, &slot.TotalTokens); err != nil {
+				return fmt.Errorf("usage: heatmap scan: %w", err)
+			}
+			slot.Weekday, slot.Hour = int(weekday), int(hour)
+			out = append(out, slot)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }

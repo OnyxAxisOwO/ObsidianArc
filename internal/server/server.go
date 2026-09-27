@@ -581,6 +581,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	usageHandlers := usage.NewHandlers(usageStore)
 	usageHandlers.Routes(mux)
 	leaderboardHandlers := leaderboard.NewHandlers(settingsService, usageStore, users, models)
+	leaderboardHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	leaderboardHandlers.Routes(mux)
 
 	cardHandlers := card.NewHandlers(cards)

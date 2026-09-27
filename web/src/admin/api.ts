@@ -5,7 +5,7 @@
 // key, in either direction beyond writing a new one. The server never sends
 // one back, and there is no field on these types that could carry it.
 
-import { api, ApiError } from '../api/client';
+import { api, ApiError, type RequestOptions } from '../api/client';
 import type { ApiKey } from '../api/keys';
 import type { UsageSummary } from '../api/usage';
 import { t } from '../composables/useI18n';
@@ -826,14 +826,14 @@ export const adminApi = {
   pruneLogs: (days: number) =>
     api.post<{ removed: number }>('/api/admin/logs/prune', { days }),
 
-  usage: (query: string) =>
-    api.get<UsageReport>(`/api/admin/usage${query}`),
+  usage: (query: string, options?: RequestOptions) =>
+    api.get<UsageReport>(`/api/admin/usage${query}`, options),
   // One dimension alone — who used a model, what an account used — for a panel
   // that should not pay for the whole report.
-  usageBreakdown: (dimension: UsageDimension, query = '') =>
-    api.get<{ rows: UsageBreakdown[] }>(`/api/admin/usage/breakdown?dimension=${dimension}${query ? `&${query}` : ''}`),
-  usageRecords: (query: string) =>
-    api.get<{ records: UsageRecord[]; total: number }>(`/api/admin/usage/records${query}`),
+  usageBreakdown: (dimension: UsageDimension, query = '', options?: RequestOptions) =>
+    api.get<{ rows: UsageBreakdown[] }>(`/api/admin/usage/breakdown?dimension=${dimension}${query ? `&${query}` : ''}`, options),
+  usageRecords: (query: string, options?: RequestOptions) =>
+    api.get<{ records: UsageRecord[]; total: number }>(`/api/admin/usage/records${query}`, options),
   rpm: (query = '') =>
     api.get<{ rpm: number }>(`/api/admin/usage/rpm${query}`),
 

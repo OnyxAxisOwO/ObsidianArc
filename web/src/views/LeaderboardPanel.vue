@@ -11,7 +11,7 @@
 // found in it. Being four hundredth is the common case, and a board that only
 // shows the top twenty answers the question for twenty people.
 
-import { onMounted, ref, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ApiError } from '@/api/client';
 import {
@@ -88,23 +88,138 @@ function share(value: number): string {
   return top > 0 ? `${Math.max(2, (value / top) * 100)}%` : '0%';
 }
 
-async function load(): Promise<void> {
-  loading.value = true;
-  error.value = '';
-  try {
-    data.value = await fetchLeaderboard(period.value, metric.value);
-  } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
-  } finally {
-    loading.value = false;
+function isAbortError(err: unknown): boolean {
+  return (
+    (err instanceof DOMException && err.name === 'AbortError') ||
+    (err instanceof Error && err.name === 'AbortError') ||
+    (typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError')
+  );
+}
+
+function applyMetricSort(board: Leaderboard, currentMetric: LeaderboardMetric): void {
+  board.metric = currentMetric;
+
+  if (board.accounts && Array.isArray(board.accounts)) {
+    board.accounts.sort((a, b) => {
+      const valA = currentMetric === 'requests' ? (a.requests ?? 0) : (a.tokens ?? 0);
+      const valB = currentMetric === 'requests' ? (b.requests ?? 0) : (b.tokens ?? 0);
+      if (valB !== valA) return valB - valA;
+      const tieA = currentMetric === 'requests' ? (a.tokens ?? 0) : (a.requests ?? 0);
+      const tieB = currentMetric === 'requests' ? (b.tokens ?? 0) : (b.requests ?? 0);
+      if (tieB !== tieA) return tieB - tieA;
+      return (a.name ?? '').localeCompare(b.name ?? '');
+    });
+
+    for (let i = 0; i < board.accounts.length; i++) {
+      const a = board.accounts[i];
+      if (!a) continue;
+      a.value = currentMetric === 'requests' ? (a.requests ?? 0) : (a.tokens ?? 0);
+      const prev = i > 0 ? board.accounts[i - 1] : undefined;
+      if (prev && a.value === prev.value) {
+        a.rank = prev.rank;
+      } else {
+        a.rank = i + 1;
+      }
+    }
+  }
+
+  if (board.me && board.accounts && Array.isArray(board.accounts)) {
+    const selfEntry = board.accounts.find((a) => a.self);
+    if (selfEntry) {
+      board.me.rank = selfEntry.rank;
+      board.me.value = selfEntry.value;
+      let gap = 0;
+      const selfIdx = board.accounts.indexOf(selfEntry);
+      for (let j = selfIdx - 1; j >= 0; j--) {
+        const higher = board.accounts[j];
+        if (higher && higher.value > selfEntry.value) {
+          gap = higher.value - selfEntry.value;
+          break;
+        }
+      }
+      board.me.gap = gap;
+    }
+  }
+
+  if (board.models && board.models.length > 0) {
+    board.models.sort((a, b) => {
+      const valA = currentMetric === 'requests' ? (a.requests ?? 0) : (a.tokens ?? 0);
+      const valB = currentMetric === 'requests' ? (b.requests ?? 0) : (b.tokens ?? 0);
+      if (valB !== valA) return valB - valA;
+      if (b.users !== a.users) return b.users - a.users;
+      return (a.name ?? '').localeCompare(b.name ?? '');
+    });
+
+    for (let i = 0; i < board.models.length; i++) {
+      const m = board.models[i];
+      if (!m) continue;
+      m.value = currentMetric === 'requests' ? (m.requests ?? 0) : (m.tokens ?? 0);
+      const prev = i > 0 ? board.models[i - 1] : undefined;
+      if (prev && m.value === prev.value && m.users === prev.users) {
+        m.rank = prev.rank;
+      } else {
+        m.rank = i + 1;
+      }
+    }
   }
 }
 
-// The window and the measure are both server-side aggregates, so changing
-// either is a new question rather than a re-sort of the answer on screen.
-watch([period, metric], () => void load());
+let abortController: AbortController | null = null;
+
+async function load(): Promise<void> {
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+  const controller = new AbortController();
+  abortController = controller;
+
+  loading.value = true;
+  error.value = '';
+  try {
+    const result = await fetchLeaderboard(period.value, metric.value, controller.signal);
+    if (controller.signal.aborted) return;
+    result.period = period.value;
+    applyMetricSort(result, metric.value);
+    data.value = result;
+  } catch (failure) {
+    if (controller.signal.aborted || isAbortError(failure)) return;
+    error.value = failure instanceof ApiError ? failure.message : t('failed');
+  } finally {
+    if (abortController === controller) {
+      abortController = null;
+      loading.value = false;
+    }
+  }
+}
+
+// Switching the period asks the server for the new window, aborting any
+// prior in-flight request. Switching the metric re-sorts the existing
+// aggregate locally on the client without a new network round-trip.
+watch(period, () => void load());
+
+watch(metric, (nextMetric) => {
+  if (data.value && data.value.period === period.value) {
+    applyMetricSort(data.value, nextMetric);
+    data.value = {
+      ...data.value,
+      accounts: [...data.value.accounts],
+      ...(data.value.models ? { models: [...data.value.models] } : {}),
+      me: { ...data.value.me },
+    };
+  } else {
+    void load();
+  }
+});
 
 onMounted(load);
+
+onBeforeUnmount(() => {
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+});
 </script>
 
 <template>
