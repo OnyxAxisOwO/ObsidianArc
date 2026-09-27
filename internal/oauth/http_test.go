@@ -58,13 +58,22 @@ func stub(t *testing.T, providerID string, tokenHandler http.HandlerFunc, identi
 
 	provider := ByID(providerID)
 	auth, token, identify := provider.AuthURL, provider.TokenURL, provider.identify
+	identifyTokens := provider.identifyTokens
 	t.Cleanup(func() {
 		provider.AuthURL, provider.TokenURL, provider.identify = auth, token, identify
+		provider.identifyTokens = identifyTokens
 	})
 	provider.AuthURL = server.URL + "/authorize"
 	provider.TokenURL = server.URL + "/token"
 	provider.identify = func(context.Context, *http.Client, string) (Identity, error) {
 		return identity, nil
+	}
+	// The OIDC provider resolves identity from the whole token exchange rather
+	// than a bearer call, so the answer is swapped in there too.
+	if identifyTokens != nil {
+		provider.identifyTokens = func(context.Context, *http.Client, Credentials, tokenResponse) (Identity, error) {
+			return identity, nil
+		}
 	}
 	return server
 }
@@ -479,6 +488,116 @@ func TestASignInThatNeedsMoreStopsAndAsksRatherThanRefusing(t *testing.T) {
 	// And the provider is connected to it, so the next sign-in asks nothing.
 	if linked, err := f.store.Account(context.Background(), nil, "github", "4218"); err != nil || linked != account.ID {
 		t.Errorf("identity = %q (%v), want it connected to the new account", linked, err)
+	}
+}
+
+// An IdP whose subject is the QQ number — OneAuth, which watches a group
+// message before vouching — has answered the question already. The form asks
+// for it anyway, but it arrives filled in with what the provider said.
+func TestAnOIDCSubjectThatIsAQQNumberArrivesPrefilled(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	require(t, f, settings.QQRequirement, settings.QQRequired)
+	f.configure(t, "oidc")
+
+	server := stub(t, "oidc", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"a-token"}`))
+	}, Identity{Provider: "oidc", Subject: "123456789", Login: "qq_123456789", Name: "Someone"})
+	// Discovery is not under test here; the endpoints point straight at the stub.
+	if err := f.settings.SetMany(context.Background(), map[string]string{
+		settings.OAuthOIDCAuthURL:     server.URL + "/authorize",
+		settings.OAuthOIDCTokenURL:    server.URL + "/token",
+		settings.OAuthOIDCUserInfoURL: server.URL + "/userinfo",
+	}); err != nil {
+		t.Fatalf("set endpoints: %v", err)
+	}
+	_, mux := handlers(t, f)
+
+	start := get(mux, "/api/auth/oauth/start/oidc", nil, nil)
+	state := start.Result().Cookies()[0]
+	target, _ := url.Parse(start.Header().Get("Location"))
+	back := get(mux, "/api/auth/oauth/callback/oidc?code=c&state="+target.Query().Get("state"),
+		[]*http.Cookie{state}, nil)
+	if location := back.Header().Get("Location"); location != "/oauth/complete" {
+		t.Fatalf("callback = %q, want the form that asks", location)
+	}
+	var ticket *http.Cookie
+	for _, cookie := range back.Result().Cookies() {
+		if cookie.Name == pendingCookie {
+			ticket = cookie
+		}
+	}
+	if ticket == nil {
+		t.Fatal("no pending ticket was issued")
+	}
+
+	asked := get(mux, "/api/auth/oauth/signup", []*http.Cookie{ticket}, nil)
+	if asked.Code != http.StatusOK {
+		t.Fatalf("signup = %d %s", asked.Code, asked.Body.String())
+	}
+	if !strings.Contains(asked.Body.String(), `"qq":"123456789"`) {
+		t.Errorf("signup = %s, want the subject offered as the QQ number", asked.Body.String())
+	}
+
+	// Confirming the prefilled answer opens the account with it.
+	done := postJSON(mux, "/api/auth/oauth/signup",
+		map[string]any{"qq": "123456789", "email": ""}, []*http.Cookie{ticket})
+	if done.Code != http.StatusOK {
+		t.Fatalf("complete = %d %s", done.Code, done.Body.String())
+	}
+	if total, _ := f.users.Count(context.Background(), nil); total != 2 {
+		t.Fatalf("accounts = %d, want the founder and the new one", total)
+	}
+}
+
+// An IdP whose subject is the QQ number reaches the account that already
+// carries it, the way a proved address reaches its account — no form, no
+// second account with the same person behind it.
+func TestASignInWithAQQNumberSubjectReachesTheAccountThatCarriesIt(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	// The founder carries QQ 12345678; the IdP has just proved the same number.
+	joined, err := f.service.SignIn(context.Background(),
+		Identity{Provider: "oidc", Subject: "12345678", Login: "qq_123456789"}, "203.0.113.5", "a browser")
+	if err != nil {
+		t.Fatalf("sign-in by QQ subject: %v", err)
+	}
+	if joined.Username != "founder" {
+		t.Errorf("sign-in opened %q, want it to reach the founder's account", joined.Username)
+	}
+	if total, _ := f.users.Count(context.Background(), nil); total != 1 {
+		t.Errorf("accounts = %d, want no second one opened", total)
+	}
+	if linked, _ := f.store.Account(context.Background(), nil, "oidc", "12345678"); linked != joined.ID {
+		t.Errorf("identity = %q, want it connected to the founder", linked)
+	}
+}
+
+// Binding an OpenID Connect provider from the settings screen writes the
+// subject onto the account when it has no QQ number of its own, and never
+// takes one another account already carries.
+func TestBindingOIDCFromTheSettingsScreenAlsoBindsTheQQNumber(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+
+	// An account created by a provider sign-in has no QQ number yet.
+	second, err := f.service.SignIn(context.Background(),
+		Identity{Provider: "github", Subject: "4218", Login: "octocat", Email: "cat@example.com"}, "203.0.113.5", "a browser")
+	if err != nil {
+		t.Fatalf("sign-in: %v", err)
+	}
+	if err := f.service.Connect(context.Background(), second.ID,
+		Identity{Provider: "oidc", Subject: "55512345", Login: "qq_55512345"}); err != nil {
+		t.Fatalf("connect oidc: %v", err)
+	}
+	after, err := f.users.ByID(context.Background(), nil, second.ID)
+	if err != nil || after.QQ != "55512345" {
+		t.Errorf("qq = %q (%v), want the subject the provider proved", after.QQ, err)
+	}
+
+	// And unbinding it is not offered: the number would outlive its proof.
+	if err := f.service.Disconnect(context.Background(), second.ID, "oidc"); !errors.Is(err, ErrOIDCPinned) {
+		t.Errorf("disconnect oidc = %v, want it refused as pinned", err)
 	}
 }
 

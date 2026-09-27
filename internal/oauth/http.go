@@ -272,12 +272,20 @@ func (h *Handlers) pendingSignup(w http.ResponseWriter, r *http.Request) error {
 	if provider := ByID(held.Provider); provider != nil {
 		name = provider.Name
 	}
+	// An IdP whose subject is the QQ number itself — OneAuth verifies it by a
+	// group message before vouching — has already answered the question this
+	// form exists to ask, so the field arrives filled and only needs confirming.
+	var suggestedQQ string
+	if held.Provider == "oidc" && isAllDigits(held.Subject) {
+		suggestedQQ = held.Subject
+	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"provider":      held.Provider,
 		"provider_name": name,
 		// What the provider calls them, so the form can say whose sign-in
 		// this is finishing rather than asking a stranger for their QQ number.
 		"login": held.Login,
+		"qq":    suggestedQQ,
 		"email": held.Email,
 		"needs": map[string]any{"qq": missing.QQ, "email": missing.Email, "invite": missing.Invite},
 		// The same two things the sign-up form says about an address, for the
@@ -539,6 +547,9 @@ func (h *Handlers) disconnect(w http.ResponseWriter, r *http.Request) error {
 	case errors.Is(err, ErrLastWayIn):
 		return httpx.Conflict("last_way_in",
 			"Set a password first — this is the only way left into this account.")
+	case errors.Is(err, ErrOIDCPinned):
+		return httpx.Conflict("oidc_pinned",
+			"An OpenID Connect connection cannot be removed; it is what proves this account's QQ number.")
 	case errors.Is(err, ErrNotConnected):
 		return httpx.NotFound("That provider is not connected to this account.")
 	default:
@@ -572,4 +583,16 @@ func (h *Handlers) address(r *http.Request) string {
 		return ""
 	}
 	return h.ClientIP(r)
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

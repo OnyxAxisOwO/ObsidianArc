@@ -54,7 +54,12 @@ const emailHint = computed(() => {
 
 onMounted(() => {
   void fetchPendingSignup()
-    .then((result) => { pending.value = result; })
+    .then((result) => {
+      pending.value = result;
+      // An IdP that vouches with the QQ number itself fills the field; the
+      // answer still goes through the button, so it stays editable.
+      if (result.qq) qq.value = result.qq;
+    })
     .catch(() => { gone.value = t('signupCompleteGone'); });
   const invite = route.query['invite'];
   if (typeof invite === 'string' && invite) {

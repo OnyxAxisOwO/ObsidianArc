@@ -1830,6 +1830,8 @@ const en = {
   oauthConnected: 'Connected.',
   oauthLastWayIn: 'Set a password first — this is the only way left into this account.',
   oauthAlreadyLinked: 'That account is already connected to somebody else here.',
+  oauthOIDCPinned: 'An OpenID Connect connection cannot be removed — it is what proves this account\'s QQ number.',
+  oauthOIDCPinnedHint: 'Bound for the life of the account — it proves the QQ number.',
   setPassword: 'Set a password',
   setPasswordHint: 'This account signs in through a provider and has no password. Setting one gives it a second way in, which still works if the provider is switched off here.',
   oauthFailed: 'That sign-in did not go through. Try again.',
