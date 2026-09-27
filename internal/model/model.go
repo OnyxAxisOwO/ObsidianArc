@@ -599,9 +599,8 @@ func (s *Store) ListForUser(ctx context.Context, groupID string, isAdmin bool) (
 	return collect(rows, true, true)
 }
 
-// FindAPIModel resolves one API-facing model name without materialising the
-// whole catalogue. The list endpoint still needs every model; a generation
-// request only needs the one name it was given.
+// FindAPIModel resolves one API-facing model name without materialising full
+// model and provider rows for the whole catalogue on every generation.
 func (s *Store) FindAPIModel(
 	ctx context.Context, groupID string, isAdmin bool, restrictions []string, wanted string,
 ) (string, error) {

@@ -515,6 +515,39 @@ func TestDuplicatePublicModelNamesResolveByQualifiedRef(t *testing.T) {
 	}
 }
 
+func TestChosenAPINameResolvesAheadOfUnchosenCollision(t *testing.T) {
+	f := newFixture(t)
+	chosenName := "shared-model-name"
+	if _, err := f.models.Update(context.Background(), f.model.ID, model.Update{APIName: &chosenName}); err != nil {
+		t.Fatal(err)
+	}
+	unnamed, err := f.models.Create(context.Background(), model.CreateInput{
+		ProviderID: f.model.ProviderID, ModelID: chosenName,
+		DisplayName: "AAA Unnamed Collision", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualified := chosenName + "-" + tail(unnamed.ID)
+
+	for _, test := range []struct {
+		ref           string
+		upstreamModel string
+	}{
+		{ref: chosenName, upstreamModel: f.model.ModelID},
+		{ref: qualified, upstreamModel: chosenName},
+	} {
+		f.upstream.reply(answer)
+		response := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, completionBody(test.ref))
+		if response.Code != http.StatusOK {
+			t.Fatalf("ref %q: status = %d: %s", test.ref, response.Code, response.Body.String())
+		}
+		if got := f.upstream.received()["model"]; got != test.upstreamModel {
+			t.Errorf("ref %q reached upstream model %v, want %q", test.ref, got, test.upstreamModel)
+		}
+	}
+}
+
 // One upstream model reached through two providers is two rows under one
 // model id. They cannot share an identifier, or one becomes unreachable —
 // and both are qualified, not just the second, because which one is "second"

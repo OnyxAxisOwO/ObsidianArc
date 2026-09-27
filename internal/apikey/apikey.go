@@ -57,8 +57,8 @@ func (k Key) IsActive(t time.Time) bool {
 	return !k.Disabled && !k.Expired(t)
 }
 
-// NeedsTouch reports whether this key's last-use timestamp is old enough to
-// record another successful request.
+// NeedsTouch lets the API handler skip a no-op database update for a hot key;
+// Touch still uses its SQL predicate to coordinate requests across instances.
 func (k Key) NeedsTouch(at time.Time) bool {
 	return k.LastUsedAt < at.Add(-time.Minute).UnixMilli()
 }
