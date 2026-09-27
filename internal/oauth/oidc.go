@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -11,20 +12,47 @@ import (
 	"time"
 )
 
+// flexAudience reads the aud claim in either shape the spec allows: one
+// string, or an array of them.
+type flexAudience []string
+
+func (a *flexAudience) UnmarshalJSON(raw []byte) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var list []string
+		if err := json.Unmarshal(trimmed, &list); err != nil {
+			return err
+		}
+		*a = list
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(trimmed, &single); err != nil {
+		return err
+	}
+	*a = flexAudience{single}
+	return nil
+}
+
 // oidcClaims represents user claims returned in an ID token or from a UserInfo endpoint.
 type oidcClaims struct {
-	Subject           string   `json:"sub"`
-	Email             string   `json:"email"`
-	EmailVerified     flexBool `json:"email_verified"`
-	Name              string   `json:"name"`
-	PreferredUsername string   `json:"preferred_username"`
-	Nickname          string   `json:"nickname"`
-	GivenName         string   `json:"given_name"`
+	Issuer            string       `json:"iss"`
+	Subject           string       `json:"sub"`
+	Audience          flexAudience `json:"aud"`
+	AuthorizedParty   string       `json:"azp"`
+	ExpiresAt         int64        `json:"exp"`
+	Email             string       `json:"email"`
+	EmailVerified     flexBool     `json:"email_verified"`
+	Name              string       `json:"name"`
+	PreferredUsername string       `json:"preferred_username"`
+	Nickname          string       `json:"nickname"`
+	GivenName         string       `json:"given_name"`
 }
 
 // parseIDTokenClaims extracts and parses the JSON claims from an unencrypted JWT ID token payload.
 // Signature validation is omitted here when tokens are fetched directly over TLS from the provider's
-// authenticated token endpoint (RFC 6749 / OpenID Connect Core 1.0 Section 3.1.3.7 rule 2).
+// authenticated token endpoint (RFC 6749 / OpenID Connect Core 1.0 Section 3.1.3.7 rule 2); the
+// claims that rule still requires on that path are enforced by validateIDTokenClaims.
 func parseIDTokenClaims(rawToken string) (oidcClaims, error) {
 	parts := strings.Split(rawToken, ".")
 	if len(parts) < 2 {
@@ -48,6 +76,49 @@ func parseIDTokenClaims(rawToken string) (oidcClaims, error) {
 	return claims, nil
 }
 
+// idTokenLeeway tolerates a small clock difference between this server and
+// the issuer when judging exp. A tighter bound locks people out of sign-in
+// over seconds of skew; a looser one buys an attacker almost nothing on a
+// token minted for one exchange and never verifiable twice.
+const idTokenLeeway = time.Minute
+
+// validateIDTokenClaims enforces the claims OIDC Core 3.1.3.7 rule 2 still
+// requires when the signature check is skipped: that the token was issued by
+// the configured issuer, for this client, and has not expired. iss and aud
+// can only be judged against a reference the configuration supplies, while
+// exp is unconditional — an id_token without it is not one the spec
+// describes, and accepting it would mean accepting anything.
+func validateIDTokenClaims(claims oidcClaims, creds Credentials, now time.Time) error {
+	if issuer := strings.TrimSpace(creds.Issuer); issuer != "" && claims.Issuer != issuer {
+		return fmt.Errorf("id_token iss %q does not match the configured issuer %q", claims.Issuer, issuer)
+	}
+	if clientID := strings.TrimSpace(creds.ClientID); clientID != "" {
+		matched := false
+		for _, audience := range claims.Audience {
+			if audience == clientID {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("id_token aud %v does not name this client %q", []string(claims.Audience), clientID)
+		}
+		// With several audiences the spec requires azp to single out the one
+		// this token was minted for; without it the token is ambiguous about
+		// whose client it belongs to.
+		if len(claims.Audience) > 1 && strings.TrimSpace(claims.AuthorizedParty) != clientID {
+			return fmt.Errorf("id_token names %d audiences without azp naming this client", len(claims.Audience))
+		}
+	}
+	if claims.ExpiresAt == 0 {
+		return errors.New("id_token carries no exp")
+	}
+	if now.After(time.Unix(claims.ExpiresAt, 0).Add(idTokenLeeway)) {
+		return fmt.Errorf("id_token expired at %s", time.Unix(claims.ExpiresAt, 0).UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
 // identifyOIDC resolves an identity from the userinfo endpoint and/or the ID token claims.
 func identifyOIDC(ctx context.Context, client *http.Client, creds Credentials, tokens tokenResponse) (Identity, error) {
 	var userinfo oidcClaims
@@ -60,15 +131,18 @@ func identifyOIDC(ctx context.Context, client *http.Client, creds Credentials, t
 	}
 
 	var idClaims oidcClaims
-	idClaimsFound := false
 	if tokens.IDToken != "" {
-		if parsed, err := parseIDTokenClaims(tokens.IDToken); err == nil {
-			idClaims = parsed
-			idClaimsFound = true
+		parsed, err := parseIDTokenClaims(tokens.IDToken)
+		if err != nil {
+			return Identity{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
+		if err := validateIDTokenClaims(parsed, creds, time.Now()); err != nil {
+			return Identity{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+		idClaims = parsed
 	}
 
-	if !userinfoFound && !idClaimsFound {
+	if !userinfoFound && tokens.IDToken == "" {
 		return Identity{}, fmt.Errorf("%w: could not read identity from userinfo endpoint or id_token", ErrUnavailable)
 	}
 
@@ -168,6 +242,13 @@ func (s *Service) discover(ctx context.Context, client *http.Client, issuer stri
 	var doc oidcDiscovery
 	if err := fetchJSON(ctx, client, req, &doc); err != nil {
 		return oidcDiscovery{}, err
+	}
+	// The document names the issuer it claims to speak for, and the spec
+	// requires that to be the one this URL was built from — endpoints from
+	// any other document belong to somebody else's deployment. A document
+	// naming nothing is tolerated; one naming another issuer is not.
+	if claimed := strings.TrimSpace(doc.Issuer); claimed != "" && claimed != issuer {
+		return oidcDiscovery{}, fmt.Errorf("oidc discovery document issuer %q does not match the configured issuer %q", claimed, issuer)
 	}
 	if strings.TrimSpace(doc.AuthorizationEndpoint) == "" || strings.TrimSpace(doc.TokenEndpoint) == "" {
 		return oidcDiscovery{}, errors.New("oidc discovery document missing authorization or token endpoint")
