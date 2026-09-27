@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -36,8 +38,12 @@ func TestSQLiteSnapshotIsPrivatePointInTimeCopy(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if got := info.Mode().Perm(); got != 0600 {
-			t.Errorf("snapshot file mode = %04o, want 0600", got)
+		// Windows reports no POSIX permission bits: os.Stat prints 0666 for
+		// every writable file, so owner-only staging is a POSIX-side property.
+		if runtime.GOOS != "windows" {
+			if got := info.Mode().Perm(); got != 0600 {
+				t.Errorf("snapshot file mode = %04o, want 0600", got)
+			}
 		}
 		if _, err := db.Exec(ctx, `UPDATE settings SET value = ? WHERE key = ?`, "after", "snapshot.test"); err != nil {
 			return err
@@ -69,6 +75,23 @@ func TestSQLiteSnapshotIsPrivatePointInTimeCopy(t *testing.T) {
 		return nil
 	}); err == nil {
 		t.Fatal("one-byte snapshot ceiling unexpectedly accepted the database")
+	}
+}
+
+// The Windows drive letter used to render into the URI authority and fail
+// every open with "invalid uri authority". The input is rebuilt through
+// filepath.FromSlash so the suite feeds the native Windows spelling on
+// Windows and the same drive-letter shape on POSIX — ToSlash alone is
+// platform-dependent and would turn the check into a no-op off Windows —
+// pinning the regression on CI's Linux too. The snapshot suites cover the
+// real end-to-end path on whichever OS they run.
+func TestSQLiteSnapshotURIHandlesWindowsPaths(t *testing.T) {
+	native := filepath.FromSlash("C:/Users/goodi/AppData/Local/Temp/obsidian-arc-snapshot-1.db")
+	if got := sqliteReadOnlyURI(native); got != "file:///C:/Users/goodi/AppData/Local/Temp/obsidian-arc-snapshot-1.db?mode=ro&immutable=1" {
+		t.Fatalf("windows snapshot uri = %q", got)
+	}
+	if got := sqliteReadOnlyURI("/tmp/obsidian-arc-snapshot-1.db"); got != "file:///tmp/obsidian-arc-snapshot-1.db?mode=ro&immutable=1" {
+		t.Fatalf("posix snapshot uri = %q", got)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -90,7 +91,7 @@ func (db *DB) readSQLiteSnapshot(ctx context.Context, maxBytes int64, fn func(Qu
 	if !sqliteEnabled {
 		return errors.New("database: SQLite snapshot unavailable in a nosqlite build")
 	}
-	uri := (&url.URL{Scheme: "file", Path: path}).String() + "?mode=ro&immutable=1"
+	uri := sqliteReadOnlyURI(path)
 	snapshot, err := Open(ctx, config.Database{
 		Driver: "sqlite", DSN: uri, MaxOpenConns: 1, MaxIdleConns: 1,
 	})
@@ -102,6 +103,20 @@ func (db *DB) readSQLiteSnapshot(ctx context.Context, maxBytes int64, fn func(Qu
 		return err
 	}
 	return nil
+}
+
+// sqliteReadOnlyURI renders the read-only URI for a snapshot copy. A
+// Windows temp path (C:\Users\name\...) must land on the documented
+// file:///C:/... form: url.URL alone escapes the backslashes, leaves the
+// drive letter inside the URI authority, and every open fails with
+// "invalid uri authority". The leading "/" is only supplied when the
+// slashed path is not already absolute, so POSIX output is unchanged.
+func sqliteReadOnlyURI(path string) string {
+	slashed := filepath.ToSlash(path)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return (&url.URL{Scheme: "file", Path: slashed}).String() + "?mode=ro&immutable=1"
 }
 
 // Tables lists tables in the active SQLite database or PostgreSQL search
