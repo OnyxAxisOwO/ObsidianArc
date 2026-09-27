@@ -20,10 +20,11 @@ import (
 )
 
 var (
-	ErrInvalidCredentials = errors.New("auth: incorrect username or password")
-	ErrAccountDisabled    = errors.New("auth: this account has been disabled")
-	ErrRegistrationClosed = errors.New("auth: registration is closed on this server")
-	ErrSignupIPBlocked    = errors.New("auth: too many accounts have been created from this address")
+	ErrInvalidCredentials   = errors.New("auth: incorrect username or password")
+	ErrAccountDisabled      = errors.New("auth: this account has been disabled")
+	ErrRegistrationClosed   = errors.New("auth: registration is closed on this server")
+	ErrOIDCOnlyRegistration = errors.New("auth: registration is only permitted via OIDC")
+	ErrSignupIPBlocked      = errors.New("auth: too many accounts have been created from this address")
 	// The review said no. The words a visitor sees are the operator's, set in
 	// the security screen; this only carries the fact.
 	ErrSignupRefused        = errors.New("auth: this registration was not accepted")
@@ -241,6 +242,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		if !s.settings.Bool(settings.RegistrationEnabled) {
 			return user.User{}, "", ErrRegistrationClosed
 		}
+		if s.settings.Bool(settings.OAuthOIDCOnlySignup) && s.settings.Bool(settings.OAuthOIDCEnabled) {
+			return user.User{}, "", ErrOIDCOnlyRegistration
+		}
 		if err := checkEmail(s.settings, in.Email); err != nil {
 			return user.User{}, "", err
 		}
@@ -354,6 +358,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 
 			if !first && !s.settings.Bool(settings.RegistrationEnabled) {
 				return ErrRegistrationClosed
+			}
+			if !first && s.settings.Bool(settings.OAuthOIDCOnlySignup) && s.settings.Bool(settings.OAuthOIDCEnabled) {
+				return ErrOIDCOnlyRegistration
 			}
 			// None of the registration controls apply to the first account.
 			// It is the one that turns an empty instance into an

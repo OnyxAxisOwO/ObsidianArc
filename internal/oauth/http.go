@@ -95,6 +95,12 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	creds, err := h.service.ResolveCredentials(r.Context(), h.Client, provider.ID)
+	if err != nil {
+		h.fail(w, r, linking, "unavailable")
+		return
+	}
+
 	value := state{
 		Provider: provider.ID,
 		Nonce:    token(),
@@ -117,8 +123,12 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	}
 	h.setState(w, cookie)
 
-	target := provider.authorise(h.service.Credentials(provider.ID),
+	target := provider.authorise(creds,
 		h.redirectURI(r, provider.ID), value.Nonce, challenge)
+	if target == "" {
+		h.fail(w, r, linking, "unavailable")
+		return
+	}
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
@@ -169,8 +179,14 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	creds, err := h.service.ResolveCredentials(r.Context(), h.Client, provider.ID)
+	if err != nil {
+		h.fail(w, r, linking, "unavailable")
+		return
+	}
+
 	identity, err := provider.Authenticate(r.Context(), h.Client,
-		h.service.Credentials(provider.ID), code, h.redirectURI(r, provider.ID), value.Verifier)
+		creds, code, h.redirectURI(r, provider.ID), value.Verifier)
 	if err != nil {
 		h.fail(w, r, linking, providerFailure(err))
 		return
@@ -424,6 +440,8 @@ func completionError(err error) error {
 		return httpx.BadRequestCode("email_required", "An email address is required on this server.")
 	case errors.Is(err, auth.ErrRegistrationClosed):
 		return httpx.ForbiddenCode("registration_closed", "Registration is closed on this server.")
+	case errors.Is(err, auth.ErrOIDCOnlyRegistration):
+		return httpx.ForbiddenCode("oidc_only_registration", "Registration is only permitted via OIDC.")
 	case errors.Is(err, auth.ErrInviteRequired):
 		return httpx.BadRequestCode("invite_required", "An invite code is required to register here.")
 	case errors.Is(err, auth.ErrInviteInvalid):
@@ -459,6 +477,8 @@ func signInFailure(err error) string {
 		return "email_screening_unavailable"
 	}
 	switch {
+	case errors.Is(err, auth.ErrOIDCOnlyRegistration):
+		return "oidc_only"
 	case errors.Is(err, ErrAddressTaken):
 		return "address_taken"
 	case errors.Is(err, ErrSignupClosed):
@@ -493,7 +513,7 @@ func (h *Handlers) connections(w http.ResponseWriter, r *http.Request) error {
 	for _, provider := range Providers() {
 		offered = append(offered, map[string]any{
 			"id":      provider.ID,
-			"name":    provider.Name,
+			"name":    h.service.DisplayName(provider.ID),
 			"enabled": h.service.Enabled(provider.ID),
 		})
 	}

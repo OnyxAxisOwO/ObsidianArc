@@ -140,6 +140,8 @@ export interface SiteInfo {
   login_background?: Record<string, string>;
   /** Custom site logo URL, or empty if the built-in mark/favicon is used. */
   logo_url?: string;
+  /** Whether new user registrations are forced to use OIDC. */
+  oidc_only_signup?: boolean;
 }
 
 // The presentation state the server keeps for an account. Deliberately loose:

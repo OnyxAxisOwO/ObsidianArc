@@ -241,6 +241,8 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// the card draws a divider and a row of buttons only when there is
 		// something to draw.
 		"oauth": h.signInProviders(),
+		"oidc_only_signup": populated && h.settings.Bool(settings.RegistrationEnabled) &&
+			h.settings.Bool(settings.OAuthOIDCOnlySignup) && h.settings.Bool(settings.OAuthOIDCEnabled),
 		// So the sign-up button can say what it is waiting for. A review
 		// takes seconds, and a button that only says "creating account" for
 		// that long reads as a form that has hung.
@@ -867,6 +869,8 @@ func (h *Handlers) registrationError(err error) error {
 	switch {
 	case errors.Is(err, ErrRegistrationClosed):
 		return httpx.Forbidden("Registration is closed on this server.")
+	case errors.Is(err, ErrOIDCOnlyRegistration):
+		return httpx.ForbiddenCode("oidc_only_registration", "Registration is only permitted via OIDC.")
 	case errors.Is(err, ErrInviteRequired):
 		return httpx.BadRequestCode("invite_required", "An invite code is required to register here.")
 	case errors.Is(err, ErrInviteInvalid):

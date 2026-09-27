@@ -120,6 +120,18 @@ const form = ref({
   googleClientID: '',
   googleSecret: '',
   googleSecretHint: '',
+  oidcEnabled: false,
+  oidcDisplayName: '',
+  oidcIssuer: '',
+  oidcClientID: '',
+  oidcSecret: '',
+  oidcSecretHint: '',
+  oidcScopes: '',
+  oidcAuthURL: '',
+  oidcTokenURL: '',
+  oidcUserInfoURL: '',
+  oidcTrustEmail: false,
+  oidcOnlySignup: false,
   oauthAllowSignup: true,
   oauthLinkByEmail: true,
   twoFactorPolicy: 'optional',
@@ -354,6 +366,17 @@ function collect(): Record<string, string> {
     'oauth.google_enabled': String(form.value.googleEnabled),
     'oauth.google_client_id': form.value.googleClientID.trim(),
     'oauth.google_client_secret': form.value.googleSecret.trim(),
+    'oauth.oidc_enabled': String(form.value.oidcEnabled),
+    'oauth.oidc_display_name': form.value.oidcDisplayName.trim(),
+    'oauth.oidc_issuer': form.value.oidcIssuer.trim(),
+    'oauth.oidc_client_id': form.value.oidcClientID.trim(),
+    'oauth.oidc_client_secret': form.value.oidcSecret.trim(),
+    'oauth.oidc_scopes': form.value.oidcScopes.trim(),
+    'oauth.oidc_auth_url': form.value.oidcAuthURL.trim(),
+    'oauth.oidc_token_url': form.value.oidcTokenURL.trim(),
+    'oauth.oidc_userinfo_url': form.value.oidcUserInfoURL.trim(),
+    'oauth.oidc_trust_email': String(form.value.oidcTrustEmail),
+    'oauth.oidc_only_signup': String(form.value.oidcOnlySignup),
     'oauth.allow_signup': String(form.value.oauthAllowSignup),
     'oauth.link_by_email': String(form.value.oauthLinkByEmail),
     'security.two_factor_policy': form.value.twoFactorPolicy,
@@ -733,6 +756,18 @@ async function load(): Promise<void> {
       googleClientID: values['oauth.google_client_id'] ?? '',
       googleSecret: '',
       googleSecretHint: values['oauth.google_client_secret'] ?? '',
+      oidcEnabled: values['oauth.oidc_enabled'] === 'true',
+      oidcDisplayName: values['oauth.oidc_display_name'] ?? '',
+      oidcIssuer: values['oauth.oidc_issuer'] ?? '',
+      oidcClientID: values['oauth.oidc_client_id'] ?? '',
+      oidcSecret: '',
+      oidcSecretHint: values['oauth.oidc_client_secret'] ?? '',
+      oidcScopes: values['oauth.oidc_scopes'] ?? '',
+      oidcAuthURL: values['oauth.oidc_auth_url'] ?? '',
+      oidcTokenURL: values['oauth.oidc_token_url'] ?? '',
+      oidcUserInfoURL: values['oauth.oidc_userinfo_url'] ?? '',
+      oidcTrustEmail: values['oauth.oidc_trust_email'] === 'true',
+      oidcOnlySignup: values['oauth.oidc_only_signup'] === 'true',
       oauthAllowSignup: (values['oauth.allow_signup'] ?? 'true') === 'true',
       oauthLinkByEmail: (values['oauth.link_by_email'] ?? 'true') === 'true',
       twoFactorPolicy: values['security.two_factor_policy'] ?? 'optional',
@@ -1217,6 +1252,72 @@ onMounted(load);
               :label="t('oauthClientSecret')"
               :placeholder="form.googleSecretHint || '••••'"
               :hint="t('oauthCallback', { url: callbackURL('google') })"
+              monospace
+            />
+          </div>
+          <div class="oa-provider">
+            <span class="oa-provider-mark"><IconKey :size="15" /></span>
+            <OaSwitchField v-model="form.oidcEnabled" :label="t('oauthOIDC')" :hint="t('oauthOIDCHint')" />
+            <OaTextField
+              v-model="form.oidcDisplayName"
+              :label="t('oauthOIDCDisplayName')"
+              :hint="t('oauthOIDCDisplayNameHint')"
+              placeholder="OpenID Connect"
+            />
+            <OaTextField
+              v-model="form.oidcIssuer"
+              :label="t('oauthOIDCIssuer')"
+              :hint="t('oauthOIDCIssuerHint')"
+              placeholder="https://auth.example.com"
+              monospace
+            />
+            <OaTextField
+              v-model="form.oidcClientID"
+              :label="t('oauthClientID')"
+              placeholder="obsidian-arc"
+              monospace
+            />
+            <OaTextField
+              v-model="form.oidcSecret"
+              type="password"
+              :label="t('oauthClientSecret')"
+              :placeholder="form.oidcSecretHint || '••••'"
+              :hint="t('oauthCallback', { url: callbackURL('oidc') })"
+              monospace
+            />
+            <OaTextField
+              v-model="form.oidcScopes"
+              :label="t('oauthOIDCScopes')"
+              :hint="t('oauthOIDCScopesHint')"
+              placeholder="openid email profile"
+              monospace
+            />
+            <OaSwitchField
+              v-model="form.oidcTrustEmail"
+              :label="t('oauthOIDCTrustEmail')"
+              :hint="t('oauthOIDCTrustEmailHint')"
+            />
+            <OaSwitchField
+              v-model="form.oidcOnlySignup"
+              :label="t('oauthOIDCOnlySignup')"
+              :hint="t('oauthOIDCOnlySignupHint')"
+            />
+            <OaTextField
+              v-model="form.oidcAuthURL"
+              :label="t('oauthOIDCAuthURL')"
+              placeholder="https://auth.example.com/oauth/authorize"
+              monospace
+            />
+            <OaTextField
+              v-model="form.oidcTokenURL"
+              :label="t('oauthOIDCTokenURL')"
+              placeholder="https://auth.example.com/oauth/token"
+              monospace
+            />
+            <OaTextField
+              v-model="form.oidcUserInfoURL"
+              :label="t('oauthOIDCUserInfoURL')"
+              placeholder="https://auth.example.com/oauth/userinfo"
               monospace
             />
           </div>

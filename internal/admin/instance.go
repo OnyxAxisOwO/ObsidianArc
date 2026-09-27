@@ -194,6 +194,17 @@ var writableSettings = map[string]bool{
 	settings.OAuthGoogleEnabled:         true,
 	settings.OAuthGoogleID:              true,
 	settings.OAuthGoogleSecret:          true,
+	settings.OAuthOIDCEnabled:           true,
+	settings.OAuthOIDCClientID:          true,
+	settings.OAuthOIDCClientSecret:      true,
+	settings.OAuthOIDCIssuer:            true,
+	settings.OAuthOIDCDisplayName:       true,
+	settings.OAuthOIDCScopes:            true,
+	settings.OAuthOIDCAuthURL:           true,
+	settings.OAuthOIDCTokenURL:          true,
+	settings.OAuthOIDCUserInfoURL:       true,
+	settings.OAuthOIDCTrustEmail:        true,
+	settings.OAuthOIDCOnlySignup:        true,
 	settings.OAuthAllowSignup:           true,
 	settings.OAuthLinkByEmail:           true,
 	settings.SignupReview:               true,
@@ -661,6 +672,7 @@ var secretSettings = []string{
 	settings.TurnstileSecretKey,
 	settings.OAuthGitHubSecret,
 	settings.OAuthGoogleSecret,
+	settings.OAuthOIDCClientSecret,
 }
 
 // Enough to show a field is filled in and nothing an attacker could use. A

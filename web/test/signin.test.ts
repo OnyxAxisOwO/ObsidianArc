@@ -131,6 +131,33 @@ describe('signing in with an account from elsewhere', () => {
     expect(replace).toHaveBeenCalledWith({ path: '/login', query: {} });
   });
 
+  it('explains when third-party signup was refused because oidc is required', async () => {
+    offer([{ id: 'github', name: 'GitHub' }, { id: 'oidc', name: 'OpenID Connect' }]);
+    route.query = { oauth_error: 'oidc_only' };
+    await mount(AuthView, { mode: 'login' });
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthOIDCOnly'));
+    expect(replace).toHaveBeenCalledWith({ path: '/login', query: {} });
+  });
+
+  it('renders dedicated OIDC signup button when oidc_only_signup is active on register page', async () => {
+    site.value = {
+      ...siteInfo.value,
+      registration_enabled: true,
+      oidc_only_signup: true,
+      oauth: [{ id: 'oidc', name: 'Company SSO' }],
+    };
+    route.path = '/register';
+    await mount(AuthView, { mode: 'register' });
+
+    expect(host.querySelector('.oa-auth-sub')!.textContent).toBe(t('oidcOnlySignupNotice'));
+    expect(host.querySelector('input[type="password"]')).toBeNull();
+    const oidcButton = host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
+    expect(oidcButton).not.toBeNull();
+    expect(oidcButton.getAttribute('href')).toBe('/api/auth/oauth/start/oidc');
+    expect(oidcButton.textContent).toContain('Company SSO');
+  });
+
   it('falls back to a general sentence for a code it does not know', async () => {
     route.query = { oauth_error: 'something-new' };
     await mount(AuthView, { mode: 'login' });
