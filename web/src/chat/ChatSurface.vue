@@ -11,11 +11,12 @@ import { useResizeObserver } from '@vueuse/core';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import { t, type StringKey } from '@/composables/useI18n';
-import { isWork, pendingMode, setMode, type Mode } from '@/stores/workspace';
+import { isWork, pendingMode } from '@/stores/workspace';
 import { IconMenu, IconPlus } from '@/icons';
 import ChatComposer from './ChatComposer.vue';
 import ChatChallenge from './ChatChallenge.vue';
 import ChatMessage from './ChatMessage.vue';
+import ChatModeSwitch from './ChatModeSwitch.vue';
 import ChatPending from './ChatPending.vue';
 import ChatSidebar from './ChatSidebar.vue';
 import {
@@ -26,84 +27,6 @@ import {
   cancelAllFlights, captureComposerRect, lastComposerRect, markFlying, playSendAnimation,
 } from './useSendAnimation';
 import { currentUser, isAdmin } from '@/stores/session';
-
-// The two surfaces, in the order they are offered. A list rather than two
-// hand-written buttons so the strip cannot drift out of step with the store
-// that holds which one is chosen.
-const MODES: Mode[] = ['chat', 'work'];
-
-// Dragging the pill directly, the same gesture as the thinking-level slider:
-// while a finger is down the pill leaves its class-driven position and rides
-// under the pointer; on release the transition comes back and glides it to
-// whichever side it was nearer. A plain tap on a side still toggles, so the
-// drag never takes the click away from someone who did not mean to drag.
-const modeSwitch = ref<HTMLElement | null>(null);
-const modeDragging = ref(false);
-const modeDragX = ref(0);
-// Set on a release that was a real drag, read once by the click that the same
-// release fires, so a drag that ends over a button does not also toggle it.
-let modeDragged = false;
-// The teardown for an in-flight drag, held so onBeforeUnmount can run it. The
-// listeners live on window and outlive the strip's v-if, so a drag still held
-// when the transcript fills and unmounts the switch would otherwise leak them.
-let modeRelease: (() => void) | null = null;
-
-function onModePointerDown(event: PointerEvent): void {
-  // Left button only; a right-click or middle-click has no business dragging.
-  if (event.button !== 0) return;
-  const strip = modeSwitch.value;
-  const pill = strip?.querySelector<HTMLElement>('.ai-mode-pill');
-  if (!strip || !pill) return;
-
-  const rect = strip.getBoundingClientRect();
-  const pillWidth = pill.offsetWidth;
-  const pad = 3; // .ai-mode-switch padding, where the pill's travel starts.
-  const gap = 2; // the pill's work-side offset past its own width.
-  const travel = pillWidth + gap;
-  const startX = event.clientX;
-  let moved = false;
-
-  const move = (e: PointerEvent) => {
-    // A few pixels of slack so a click that trembles is still a click.
-    if (!moved && Math.abs(e.clientX - startX) <= 3) return;
-    moved = true;
-    modeDragging.value = true;
-    const centred = e.clientX - rect.left - pad - pillWidth / 2;
-    modeDragX.value = Math.min(travel, Math.max(0, centred));
-  };
-  const release = () => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', release);
-    window.removeEventListener('pointercancel', release);
-    modeRelease = null;
-    if (moved) {
-      modeDragged = true;
-      setMode(modeDragX.value > travel / 2 ? 'work' : 'chat');
-      // The click this release fires reads the flag and swallows itself. If it
-      // released over the strip's padding no click fires at all, so clear the
-      // flag on the next tick too — otherwise a stale true would eat the
-      // reader's next genuine tap.
-      setTimeout(() => { modeDragged = false; }, 0);
-    }
-    // Clearing this hands the pill back to its class transform, which now
-    // transitions to the settled side rather than teleporting.
-    modeDragging.value = false;
-  };
-  modeRelease = release;
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', release);
-  window.addEventListener('pointercancel', release);
-}
-
-function onModeChoice(option: Mode): void {
-  // The click that a drag's release also fires: the drag already committed the
-  // mode, so swallow this one instead of toggling to wherever it landed.
-  if (modeDragged) {
-    modeDragged = false;
-    return;
-  }
-  setMode(option);
-}
 
 let route: ReturnType<typeof useRoute> | undefined;
 try {
@@ -275,9 +198,6 @@ watch(justSentID, (id) => {
 
 onBeforeUnmount(() => {
   cancelAllFlights();
-  // A drag held while the switch unmounts (the transcript fills and the v-if
-  // drops it) would leave its window listeners behind; release tears them down.
-  modeRelease?.();
 });
 
 defineExpose({ focus: () => composer.value?.focus() });
@@ -335,32 +255,9 @@ defineExpose({ focus: () => composer.value?.focus() });
         <!-- Only on the empty state, because that is the only moment the
              choice is still open: once a conversation exists it carries its
              own mode, and a toggle over a running thread would offer to
-             change something it cannot. -->
-        <div
-          ref="modeSwitch"
-          class="ai-mode-switch"
-          :class="{ dragging: modeDragging }"
-          role="tablist"
-          :aria-label="t('modeChat')"
-          @pointerdown="onModePointerDown"
-        >
-          <span
-            class="ai-mode-pill"
-            :class="{ 'mode-work': pendingMode === 'work' }"
-            :style="modeDragging ? { transform: `translateX(${modeDragX}px)` } : undefined"
-            aria-hidden="true"
-          />
-          <button
-            v-for="option in MODES"
-            :key="option"
-            type="button"
-            role="tab"
-            class="ai-mode-choice"
-            :class="{ active: pendingMode === option }"
-            :aria-selected="pendingMode === option"
-            @click="onModeChoice(option)"
-          >{{ t(option === 'work' ? 'modeWork' : 'modeChat') }}</button>
-        </div>
+             change something it cannot. Its own component so the drag's window
+             listeners are torn down when this v-if drops it — see the file. -->
+        <ChatModeSwitch />
 
         <div class="ai-chat-empty-intro-wrap">
           <Transition name="ai-mode-text" mode="out-in">
