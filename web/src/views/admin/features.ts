@@ -538,7 +538,7 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     pageSlug: 'security',
     titleKey: 'secRisk',
     searchKeys: ['riskBaseURL', 'riskSite', 'riskSecretKey', 'riskOnLogin'],
-    keywords: ['自建风控', '风控服务', '人机验证', '风险控制', 'siteverify', 'rcToken', 'risk control', 'anti-bot', 'boot.js'],
+    keywords: ['超级风控', '自建风控', '风控服务', '人机验证', '风险控制', 'siteverify', 'rcToken', 'super risk control', 'risk control', 'anti-bot', 'boot.js'],
   },
   {
     id: 'secOAuth',
