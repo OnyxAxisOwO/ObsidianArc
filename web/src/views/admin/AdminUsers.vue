@@ -536,6 +536,42 @@ async function remove(): Promise<void> {
   }
 }
 
+// --- processing a group departure ------------------------------------------
+
+const departureFlash = ref('');
+
+/**
+ * Ends an account on purpose because the member has left the community's
+ * group chat. Disable keeps the account — and the QQ number it occupies,
+ * which is what stops an instant re-registration — for a possible return;
+ * delete removes it and everything cascading from it. Both take back the
+ * reward this account's invite earned, and the response reports what was
+ * due separately from what came back, because cards already spent are gone
+ * rather than taken from anywhere else.
+ */
+async function depart(mode: 'disable' | 'delete'): Promise<void> {
+  const row = account.value;
+  if (!row) return;
+  busy.value = true;
+  departureFlash.value = '';
+  panelError.value = '';
+  try {
+    const { departure } = await adminApi.departUser(row.id, mode);
+    departureFlash.value = t('departureDone', {
+      due: departure.reward_cards_due, revoked: departure.cards_revoked,
+    });
+    if (mode === 'delete') {
+      panelOpen.value = false;
+    }
+    view.reload();
+  } catch (failure) {
+    departureFlash.value = '';
+    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+  } finally {
+    busy.value = false;
+  }
+}
+
 /**
  * Straight to this account, without a code in between. Beside the figures it
  * changes, because "why does this person have no allowance left" and "give
@@ -1207,6 +1243,33 @@ const state = { q: '', role: '', status: '', group: '' };
         :disabled="signOutAllBusy"
         @confirm="signOutEverywhere"
       />
+
+      <OaFormSection v-if="!self" :title="t('secDeparture')" :hint="t('departureHint')" />
+      <!-- Two buttons because the two ends are different decisions, not two
+           flavours of one: disable is reversible and holds the QQ number
+           against a quick re-registration, delete is not and does not. Each
+           asks in place, the way every other account-ending action does. -->
+      <div v-if="!self" class="oa-2fa-admin-row">
+        <OaConfirmButton
+          class="oa-btn"
+          :label="t('departureDisableLabel')"
+          :armed-label="t('confirmWord')"
+          :armed-title="t('departureDisableConfirm', { name: maskUser(account.username) })"
+          :resting-title="t('departureDisableLabel')"
+          :disabled="busy"
+          @confirm="depart('disable')"
+        />
+        <OaConfirmButton
+          class="oa-btn oa-btn-danger"
+          :label="t('departureDeleteLabel')"
+          :armed-label="t('confirmWord')"
+          :armed-title="t('departureDeleteConfirm', { name: maskUser(account.username) })"
+          :resting-title="t('departureDeleteLabel')"
+          :disabled="busy"
+          @confirm="depart('delete')"
+        />
+      </div>
+      <p v-if="!self && departureFlash" class="oa-field-hint" role="status">{{ departureFlash }}</p>
 
       <OaFormSection :title="t('secConversations')" :hint="t('conversationsHint')" />
       <button type="button" class="oa-btn" @click="openConversations">

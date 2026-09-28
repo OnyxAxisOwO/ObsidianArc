@@ -13,7 +13,7 @@
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
-import { adminApi, type Group, type InviteCode, type InviteStats, type InviteUse } from '@/admin/api';
+import { adminApi, type Departure, type Group, type InviteCode, type InviteStats, type InviteUse } from '@/admin/api';
 import { fetchSite } from '@/api/auth';
 import { ApiError } from '@/api/client';
 import { copyToClipboard } from '@/chat/markdown';
@@ -33,7 +33,7 @@ import type { Column, PageState } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
 import { t } from '@/composables/useI18n';
 import { IconChart, IconSend, IconUsers } from '@/icons';
-import { compactNumber, relativeTime } from '@/lib/format';
+import { absoluteTime, compactNumber, relativeTime } from '@/lib/format';
 import { maskCredential, maskUser } from '@/admin/safeMode';
 import { site } from '@/stores/session';
 import AdminFailure from './AdminFailure.vue';
@@ -479,11 +479,63 @@ function copyAllCodes(): void {
   void copyToClipboard(lines).then((ok) => { copyFlash.value = ok ? t('copied') : t('copyFailed'); });
 }
 
+// --- group departures: the audit list of invitees who left -------------------
+
+const departures = ref<Departure[]>([]);
+const departuresTotal = ref(0);
+const departuresPaging = ref<PageState>({ page: 1, pageSize: 20 });
+const departuresError = ref('');
+
+function changeDeparturesPage(next: PageState): void {
+  departuresPaging.value = next;
+  void loadDepartures();
+}
+
+async function loadDepartures(): Promise<void> {
+  departuresError.value = '';
+  const query = new URLSearchParams({
+    limit: String(departuresPaging.value.pageSize),
+    offset: String((departuresPaging.value.page - 1) * departuresPaging.value.pageSize),
+  });
+  try {
+    const result = await adminApi.departures(`?${query}`);
+    departures.value = result.departures ?? [];
+    departuresTotal.value = result.total;
+  } catch (failure) {
+    departuresError.value = failure instanceof ApiError ? failure.message : String(failure);
+  }
+}
+
+/** Who processed it, in one word each — an operator's decision or a bot's
+ *  report. The actor's own name rides in the row's secondary line. */
+function departureSourceLabel(row: Departure): string {
+  if (row.source === 'bot') return t('departureSourceBot');
+  if (row.source === 'admin') return t('departureSourceAdmin');
+  return '—';
+}
+
+function departureModeLabel(row: Departure): string {
+  return row.mode === 'delete' ? t('departureModeDelete') : t('departureModeDisable');
+}
+
+function departureModeTone(row: Departure): 'default' | 'muted' | 'danger' {
+  return row.mode === 'delete' ? 'danger' : 'default';
+}
+
+const departureColumns = computed<Array<Column<Departure>>>(() => [
+  { key: 'member', header: t('colAccount') },
+  { key: 'inviter', header: t('colOwner'), secondary: true, width: '150px' },
+  { key: 'mode', header: t('colDepartureMode'), width: '100px' },
+  { key: 'cards', header: t('colDepartureCards'), secondary: true, width: '130px' },
+  { key: 'source', header: t('colDepartureSource'), secondary: true, width: '110px' },
+]);
+
 onMounted(() => {
   void loadSettings();
   void loadStats();
   void list();
   void loadPartners();
+  void loadDepartures();
 });
 </script>
 
@@ -553,6 +605,49 @@ onMounted(() => {
               </div>
             </div>
           </template>
+        </AdminControlCard>
+
+        <AdminControlCard
+          id="secDepartures"
+          class="oa-control-card-wide"
+          :title="t('departuresTitle')"
+          :hint="t('departuresHint')"
+          :icon="IconUsers"
+        >
+          <p v-if="departuresError" class="oa-field-hint">{{ departuresError }}</p>
+          <OaTable
+            v-else
+            :pagination="{ ...departuresPaging, total: departuresTotal }"
+            @page="changeDeparturesPage"
+            :columns="departureColumns"
+            :rows="departures"
+            :empty="t('departuresEmpty')"
+          >
+            <template #cell-member="{ row }">
+              <OaCellStack
+                :title="maskUser(row.username)"
+                :sub="row.qq ? `QQ ${maskUser(row.qq)}` : undefined"
+              />
+            </template>
+            <template #cell-inviter="{ row }">
+              <OaCellStack
+                :title="row.inviter_name ? maskUser(row.inviter_name) : t('inviteOwnerGone')"
+                :sub="row.inviter_name ? `@${maskUser(row.inviter_name)}` : undefined"
+              />
+            </template>
+            <template #cell-mode="{ row }">
+              <OaBadge :tone="departureModeTone(row)">{{ departureModeLabel(row) }}</OaBadge>
+            </template>
+            <template #cell-cards="{ row }">
+              {{ row.reward_cards_due }} / {{ row.cards_revoked }}
+            </template>
+            <template #cell-source="{ row }">
+              <OaCellStack
+                :title="departureSourceLabel(row)"
+                :sub="row.created_at ? absoluteTime(row.created_at) : undefined"
+              />
+            </template>
+          </OaTable>
         </AdminControlCard>
 
         <AdminControlCard

@@ -442,6 +442,47 @@ func init() {
 	})
 
 	registerCommand(Command{
+		Name:    "invite departures",
+		Group:   "invites",
+		Summary: Text{EN: "List processed group departures", ZH: "列出已处理的退群记录"},
+		Usage:   "invite departures",
+		Examples: []string{
+			"invite departures",
+			"invite departures --json",
+		},
+		SeeAlso:    []string{"user depart", "invite stats"},
+		Permission: "invites",
+		Endpoints:  []string{"GET /api/admin/departures"},
+		Run: func(_ context.Context, rt *Runtime) error {
+			q := url.Values{}
+			q.Set("limit", strconv.Itoa(rt.IntOr("limit", 50)))
+			if v := rt.IntOr("offset", 0); v != 0 {
+				q.Set("offset", strconv.Itoa(v))
+			}
+			data, _, err := rt.Call(http.MethodGet, "/api/admin/departures?"+q.Encode(), nil)
+			if err != nil {
+				return err
+			}
+			rows := make([][]string, 0)
+			for _, raw := range asSlice(asMap(data)["departures"]) {
+				d := asMap(raw)
+				inviter := asStr(d["inviter_name"])
+				if inviter == "" {
+					// A deleted inviter has no name left to show; the id is
+					// what the audit trail keeps.
+					inviter = asStr(d["inviter_id"])
+				}
+				rows = append(rows, []string{
+					asStr(d["username"]), asStr(d["qq"]), inviter, asStr(d["mode"]),
+					fmt.Sprintf("%v/%v", asNum(d["reward_cards_due"]), asNum(d["cards_revoked"])),
+					asStr(d["source"]), formatMS(d["created_at"]),
+				})
+			}
+			return rt.Table([]string{"username", "qq", "inviter", "mode", "due/revoked", "source", "at"}, rows)
+		},
+	})
+
+	registerCommand(Command{
 		Name:       "invite stats",
 		Group:      "invites",
 		Summary:    Text{EN: "Show invite code usage at a glance", ZH: "查看邀请码使用概况"},

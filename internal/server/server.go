@@ -155,6 +155,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	cards := card.NewStore(db)
 	invites := invite.NewStore(db, users, cards, groups, settingsService)
 	invites.Notify = notifyStore
+	// Departures end accounts and must leave a trace: the sessions are
+	// cleared inside the departure transaction, and the decision lands in
+	// the security log beside every other account-ending action.
+	invites.Sessions = authService.Sessions()
+	invites.Security = securityLog
 	quotaService := quota.NewService(db, quota.NewStore(db), settingsService)
 	projects := project.NewStore(db)
 
@@ -618,6 +623,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// routes — see internal/invite/http.go.
 	inviteHandlers := invite.NewHandlers(invites)
 	inviteHandlers.Routes(mux)
+
+	// The QQ bot's view of the same closure: one externally reachable route
+	// that processes a group departure. Bearer-token gated and inert until
+	// an operator sets a token; see internal/invite/bot.go. The burst
+	// absorbs a bot catching up on a backlog of events; the sustained rate
+	// is one departure every few seconds, far above any real group's pace.
+	botHandlers := invite.NewBotHandlers(invites)
+	botHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	botHandlers.Limiter = httpx.NewTokenBucketLimiter(0.2, 10)
+	botHandlers.Routes(mux)
 
 	// Programmatic access. The key store is what an account manages from the
 	// interface; the compatibility surface is what the key is then presented

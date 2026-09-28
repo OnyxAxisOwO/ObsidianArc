@@ -484,6 +484,16 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
       'generate invite codes', 'revoke invite',
     ],
   },
+  {
+    id: 'secDepartures',
+    pageSlug: 'invites',
+    titleKey: 'departuresTitle',
+    searchKeys: ['departuresHint', 'colDepartureMode', 'colDepartureCards', 'colDepartureSource'],
+    keywords: [
+      '退群', '退群记录', '收回重置卡', '封禁账号', '删除账号', 'QQ机器人',
+      'group departure', 'left the group', 'claw back', 'bot webhook',
+    ],
+  },
 
   // --- Logs
   {

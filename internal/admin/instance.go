@@ -184,6 +184,8 @@ var writableSettings = map[string]bool{
 	settings.InvitesRewardCards:         true,
 	settings.InvitesRewardCardDays:      true,
 	settings.InvitesRewardEvery:         true,
+	settings.BotWebhookToken:            true,
+	settings.BotDepartureMode:           true,
 	settings.TurnstileSiteKey:           true,
 	settings.TurnstileSecretKey:         true,
 	settings.TurnstileOnLogin:           true,
@@ -356,6 +358,11 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	}
 	if req, present := body[settings.QQRequirement]; present && !settings.ValidQQRequirement(req) {
 		return httpx.BadRequest("Unknown QQ requirement %q.", req)
+	}
+	// A bot mode nothing reads would silently do the wrong thing to every
+	// account the bot reports, so it is refused here rather than defaulted.
+	if mode, present := body[settings.BotDepartureMode]; present && !settings.ValidDepartMode(mode) {
+		return httpx.BadRequest("Unknown departure mode %q.", mode)
 	}
 	// Empty is allowed for both — it means "no override", not "black" — so
 	// only a non-empty value that fails the format is refused.
@@ -739,6 +746,7 @@ var secretSettings = []string{
 	settings.OAuthGitHubSecret,
 	settings.OAuthGoogleSecret,
 	settings.OAuthOIDCClientSecret,
+	settings.BotWebhookToken,
 }
 
 // Enough to show a field is filled in and nothing an attacker could use. A

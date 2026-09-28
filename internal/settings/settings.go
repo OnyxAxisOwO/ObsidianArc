@@ -85,6 +85,17 @@ const (
 	// scheme wants a small one often.
 	InvitesRewardEvery = "invites.reward_every"
 
+	// The QQ bot's webhook. The token is what authenticates POST
+	// /api/bot/departure — the one externally reachable way to process a
+	// group departure — and empty means the endpoint answers nothing at all,
+	// which is the default: an instance that has no bot has no reason to
+	// expose the route. Write-only, like the other credentials.
+	BotWebhookToken = "bot.webhook_token"
+	// What the bot's call does when the event itself does not say: disable
+	// the account (reversible, and it keeps the QQ number occupied against
+	// instant re-registration) or delete it outright.
+	BotDepartureMode = "bot.departure_mode"
+
 	// Cloudflare Turnstile. The site key is public — it is in the page's
 	// markup — and the secret is write-only: it is redacted out of every
 	// response, the way a provider's API key is.
@@ -465,6 +476,27 @@ func ValidQQRequirement(value string) bool {
 	return false
 }
 
+// What processing a group departure does to the departing account. Shared by
+// the backoffice's action and the bot's webhook so neither can invent a third
+// one: disable keeps the account (and, with it, the QQ number that a fresh
+// registration would otherwise claim immediately), delete removes it and
+// everything cascading from it.
+const (
+	DepartModeDisable = "disable"
+	DepartModeDelete  = "delete"
+)
+
+var DepartModes = []string{DepartModeDisable, DepartModeDelete}
+
+func ValidDepartMode(value string) bool {
+	for _, candidate := range DepartModes {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 func ValidCaptchaMode(value string) bool {
 	switch value {
 	case CaptchaModeOff, CaptchaModeTurnstile, CaptchaModePoW, CaptchaModeBoth:
@@ -594,8 +626,13 @@ var Defaults = map[string]string{
 	InvitesRewardCards:    "0",
 	InvitesRewardCardDays: "30",
 	InvitesRewardEvery:    "1",
-	TurnstileSiteKey:      "",
-	TurnstileSecretKey:    "",
+	// Off: a token nobody has set means the bot route answers nothing, and
+	// the default mode is the reversible one — a bot misfire should cost an
+	// administrator a re-enable, not an account.
+	BotWebhookToken:    "",
+	BotDepartureMode:   DepartModeDisable,
+	TurnstileSiteKey:   "",
+	TurnstileSecretKey: "",
 	// Off, and off even once the keys are filled in: an operator pasting keys
 	// is configuring, not yet switching on, and a challenge that appeared the
 	// moment a key was saved would lock out the half-finished setup it was

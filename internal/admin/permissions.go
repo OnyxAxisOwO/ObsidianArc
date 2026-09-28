@@ -48,6 +48,11 @@ func settingPermission(key string) string {
 		return "security"
 	case strings.HasPrefix(key, "invites."):
 		return "invites"
+	// The bot's webhook token and its default departure mode: the bot can
+	// disable or delete accounts, which is a front-door concern, and the
+	// token lives on the same screen as the other credentials.
+	case strings.HasPrefix(key, "bot."):
+		return "security"
 	default:
 		return "settings"
 	}

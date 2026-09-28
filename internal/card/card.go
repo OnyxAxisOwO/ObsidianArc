@@ -488,6 +488,73 @@ func (s *Store) Revoke(ctx context.Context, userID, cardID string) error {
 	return ErrUsed
 }
 
+// RevokeAvailable takes back up to max of an account's unused, unexpired
+// cards — soonest-expiring first — and reports how many it actually took.
+// This is the claw-back spelling: a departure takes from the inviter what an
+// invitee's reward paid, without knowing which rows those were, and cards
+// already spent are gone rather than taken from anywhere else.
+//
+// The read-then-delete is safe against a concurrent spend the same way
+// Revoke is: used_at = 0 stays in the DELETE's predicate, so a card that
+// gets spent between the two statements survives having paid for a reset.
+// The caller holds the owner's row lock, which serialises two claw-backs
+// against one inviter; the predicate covers everyone else.
+func (s *Store) RevokeAvailable(ctx context.Context, q database.Queryer, userID string, max int) (int, error) {
+	if q == nil {
+		q = s.db
+	}
+	if max <= 0 {
+		return 0, nil
+	}
+	now := time.Now().UnixMilli()
+	rows, err := q.Query(ctx,
+		`SELECT id FROM usage_cards
+		 WHERE user_id = ? AND used_at = ? AND expires_at > ?
+		 ORDER BY expires_at, id LIMIT ?`,
+		userID, 0, now, max)
+	if err != nil {
+		return 0, fmt.Errorf("card: revoke available: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var cardID string
+		if err := rows.Scan(&cardID); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("card: revoke available: %w", err)
+		}
+		ids = append(ids, cardID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("card: revoke available: %w", err)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	var placeholders strings.Builder
+	args := make([]any, 0, len(ids)+2)
+	args = append(args, userID, 0)
+	for i, cardID := range ids {
+		if i > 0 {
+			placeholders.WriteByte(',')
+		}
+		placeholders.WriteString("?")
+		args = append(args, cardID)
+	}
+	result, err := q.Exec(ctx,
+		`DELETE FROM usage_cards WHERE user_id = ? AND used_at = ? AND id IN (`+placeholders.String()+`)`,
+		args...)
+	if err != nil {
+		return 0, fmt.Errorf("card: revoke available: %w", err)
+	}
+	revoked, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("card: revoke available: %w", err)
+	}
+	return int(revoked), nil
+}
+
 // --- codes ---------------------------------------------------------------------
 
 type CodeInput struct {

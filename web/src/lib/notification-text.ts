@@ -134,6 +134,22 @@ export function describeNotification(n: Notification): NotificationText {
           : t('notifyBodyInviteJoinedPlain', { username });
       return { title: t('notifyTitleInviteJoined'), body, icon: IconUsers };
     }
+    case 'invite_departed': {
+      // Three shapes again, by what the claw-back managed: some cards came
+      // back, none did because the inviter had already spent them, or there
+      // was never a reward on this invite at all.
+      const username = text(params['username']);
+      const taken = count(params['cards_revoked']);
+      const due = count(params['cards_due']);
+      const body = taken > 0
+        ? tn(taken, 'notifyBodyInviteDepartedCardsOne', 'notifyBodyInviteDepartedCardsOther', {
+            username, cards: taken,
+          })
+        : due > 0
+          ? t('notifyBodyInviteDepartedSpent', { username })
+          : t('notifyBodyInviteDepartedPlain', { username });
+      return { title: t('notifyTitleInviteDeparted'), body, icon: IconUsers };
+    }
     case 'two_factor_changed': {
       const kind = text(params['kind']);
       return {
