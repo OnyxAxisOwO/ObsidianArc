@@ -42,6 +42,9 @@ type ProvisionInput struct {
 	// ExplicitUsername says the person typed this username into the completion
 	// form, so an invalid or taken one must be refused rather than suffixed.
 	ExplicitUsername bool
+	// Password is an optional or required password chosen on third-party registration.
+	// When non-empty, the account receives this password and can log in with it.
+	Password string
 	// The address, from whichever of the two places it came: proved by the
 	// provider, or typed by the person when this instance asked for one the
 	// provider could not supply.
@@ -215,17 +218,26 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		role = user.RoleSuperAdmin
 	}
 
+	var passwordHash string
+	if in.Password != "" {
+		if err := ValidatePassword(in.Password); err != nil {
+			return user.User{}, err
+		}
+		var err error
+		passwordHash, err = s.hasher.Hash(ctx, in.Password)
+		if err != nil {
+			return user.User{}, err
+		}
+	}
+
 	created, err := s.users.Create(ctx, tx, user.CreateInput{
 		Username: username,
 		Email:    in.Email,
 		QQ:       in.QQ,
 		Nickname: in.Nickname,
-		// No password. Not a placeholder and not a random one nobody knows: a
-		// credential that exists is a credential that can be guessed at, and
-		// this account has never had one. Login answers an attempt against it
-		// exactly as it answers a wrong password; the owner can set one from
-		// their own settings, which is the only place that knows it is them.
-		PasswordHash: "",
+		// No password unless chosen. A third-party account can either set one
+		// during completion or leave it blank to remain OAuth-only.
+		PasswordHash: passwordHash,
 		Role:         role,
 		GroupID:      groupID,
 		Status:       user.StatusActive,

@@ -10,6 +10,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
@@ -301,6 +302,10 @@ func (h *Handlers) pendingSignup(w http.ResponseWriter, r *http.Request) error {
 	if held.Provider == "oidc" && isAllDigits(held.Subject) {
 		suggestedQQ = held.Subject
 	}
+	needsPassword := h.service.settings.Bool(settings.OAuthAllowPassword)
+	passwordRequired := h.service.settings.Bool(settings.OAuthRequirePassword)
+	usernameRequired := h.service.settings.Bool(settings.OAuthRequireUsername)
+
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"provider":      held.Provider,
 		"provider_name": name,
@@ -311,6 +316,9 @@ func (h *Handlers) pendingSignup(w http.ResponseWriter, r *http.Request) error {
 		"qq":                 suggestedQQ,
 		"email":              held.Email,
 		"needs":              map[string]any{"qq": missing.QQ, "email": missing.Email, "invite": missing.Invite},
+		"needs_password":     needsPassword,
+		"password_required":  passwordRequired,
+		"username_required":  usernameRequired,
 		// The same two things the sign-up form says about an address, for the
 		// same reason: they are worth knowing before typing rather than after.
 		"email_domains": h.service.emailDomains(),
@@ -326,6 +334,7 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 
 	var body struct {
 		Username string `json:"username"`
+		Password string `json:"password"`
 		QQ       string `json:"qq"`
 		Email    string `json:"email"`
 		Invite   string `json:"invite_code"`
@@ -342,6 +351,7 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 		Email:    held.Email,
 	}, Details{
 		Username: body.Username,
+		Password: body.Password,
 		QQ:       body.QQ,
 		Email:    body.Email,
 		Invite:   body.Invite,
@@ -509,6 +519,10 @@ func completionError(err error) error {
 		return httpx.Conflict("address_taken", "An account here already uses that address.")
 	case errors.Is(err, auth.ErrSignupIPBlocked):
 		return httpx.ForbiddenCode("signup_ip_blocked", "You have been blocked from registering.")
+	case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLong):
+		return httpx.BadRequestCode("invalid_password", "%s", err.Error())
+	case errors.Is(err, ErrPasswordNotAllowed):
+		return httpx.ForbiddenCode("password_not_allowed", "Password setting is not enabled on this server.")
 	case errors.Is(err, auth.ErrAccountDisabled):
 		return httpx.ForbiddenCode("account_banned",
 			"This account has been banned. Contact an administrator.")

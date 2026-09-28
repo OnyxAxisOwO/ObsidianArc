@@ -728,3 +728,124 @@ func TestThirdPartyOnlySignupAllowsAllProviders(t *testing.T) {
 		t.Fatalf("oidc user username = %q, want 'oidcuser'", oidcUser.Username)
 	}
 }
+
+func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// Initial user registers via GitHub on empty instance.
+	_, err := f.service.SignIn(ctx, identity("gh-admin", "admin", ""), "", "")
+	if err != nil {
+		t.Fatalf("first user sign-in: %v", err)
+	}
+
+	t.Run("require_password", func(t *testing.T) {
+		if err := f.settings.Set(ctx, settings.OAuthRequirePassword, "true"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.settings.Set(ctx, settings.OAuthRequirePassword, "false") }()
+
+		ident := identity("gh-pwd-1", "pwduser", "pwduser@example.com")
+		// First pass must stop for more details because password is required.
+		_, err := f.service.SignIn(ctx, ident, "", "")
+		var more *MoreDetailsNeeded
+		if !errors.As(err, &more) {
+			t.Fatalf("SignIn err = %v, want *MoreDetailsNeeded", err)
+		}
+
+		// Completing without password fails.
+		_, err = f.service.Complete(ctx, ident, Details{
+			Username: "pwduser",
+			Password: "",
+		}, "", "")
+		if !errors.Is(err, auth.ErrPasswordTooShort) {
+			t.Fatalf("Complete err = %v, want ErrPasswordTooShort", err)
+		}
+
+		// Completing with valid password succeeds.
+		account, err := f.service.Complete(ctx, ident, Details{
+			Username: "pwduser",
+			Password: "secure-password-123",
+		}, "", "")
+		if err != nil {
+			t.Fatalf("Complete with password err: %v", err)
+		}
+
+		// Can log in with the new password.
+		loggedIn, _, err := f.auth.Login(ctx, auth.LoginInput{
+			Identifier: "pwduser",
+			Password:   "secure-password-123",
+		})
+		if err != nil {
+			t.Fatalf("Login with created password: %v", err)
+		}
+		if loggedIn.ID != account.ID {
+			t.Fatalf("LoggedIn ID = %q, want %q", loggedIn.ID, account.ID)
+		}
+	})
+
+	t.Run("require_username", func(t *testing.T) {
+		if err := f.settings.Set(ctx, settings.OAuthRequireUsername, "true"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.settings.Set(ctx, settings.OAuthRequireUsername, "false") }()
+
+		ident := identity("gh-user-req-1", "alice", "alice@example.com")
+		// First pass must stop for more details because explicit username is required.
+		_, err := f.service.SignIn(ctx, ident, "", "")
+		var more *MoreDetailsNeeded
+		if !errors.As(err, &more) {
+			t.Fatalf("SignIn err = %v, want *MoreDetailsNeeded", err)
+		}
+
+		// Completing with empty username fails.
+		_, err = f.service.Complete(ctx, ident, Details{
+			Username: "",
+		}, "", "")
+		if !errors.Is(err, user.ErrInvalidUsername) {
+			t.Fatalf("Complete with empty username err = %v, want ErrInvalidUsername", err)
+		}
+
+		// Completing with valid custom username succeeds.
+		account, err := f.service.Complete(ctx, ident, Details{
+			Username: "custom_alice",
+		}, "", "")
+		if err != nil {
+			t.Fatalf("Complete with username err: %v", err)
+		}
+		if account.Username != "custom_alice" {
+			t.Fatalf("account username = %q, want custom_alice", account.Username)
+		}
+	})
+
+	t.Run("oidc_require_completion", func(t *testing.T) {
+		if err := f.settings.Set(ctx, settings.OAuthOIDCRequireCompletion, "true"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.settings.Set(ctx, settings.OAuthOIDCRequireCompletion, "false") }()
+
+		oidcIdent := Identity{
+			Provider: "oidc",
+			Subject:  "oidc-sub-completion",
+			Login:    "bob",
+			Name:     "Bob",
+			Email:    "bob@example.com",
+		}
+		// First pass stops for completion even though email and username exist.
+		_, err := f.service.SignIn(ctx, oidcIdent, "", "")
+		var more *MoreDetailsNeeded
+		if !errors.As(err, &more) {
+			t.Fatalf("SignIn err = %v, want *MoreDetailsNeeded", err)
+		}
+
+		account, err := f.service.Complete(ctx, oidcIdent, Details{
+			Username: "bob_custom",
+		}, "", "")
+		if err != nil {
+			t.Fatalf("Complete err: %v", err)
+		}
+		if account.Username != "bob_custom" {
+			t.Fatalf("account username = %q, want bob_custom", account.Username)
+		}
+	})
+}

@@ -752,6 +752,68 @@ describe('finishing a sign-up the provider could not', () => {
     });
   });
 
+  it('allows entering a password and validates password rules', async () => {
+    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue(pending);
+    const complete = vi.spyOn(oauthApi, 'completeSignup')
+      .mockResolvedValue({ redirect: '/' });
+    await mount(CompleteSignupView);
+
+    const pwdInput = fieldInput(t('passwordOptional'));
+    expect(pwdInput).not.toBeNull();
+
+    // Short password -> rejected
+    type(fieldInput(t('qq')), '87654321');
+    type(pwdInput, '123');
+    button(host, t('signupCompleteSubmit')).click();
+    await settle();
+    expect(complete).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('passwordTooShort'));
+
+    // Valid password -> included in payload
+    type(pwdInput, 'securepassword123');
+    button(host, t('signupCompleteSubmit')).click();
+    await settle();
+    expect(complete).toHaveBeenCalledWith({
+      username: 'octocat',
+      password: 'securepassword123',
+      qq: '87654321',
+      email: '',
+      inviteCode: '',
+    });
+  });
+
+  it('enforces password input when password_required is true', async () => {
+    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue({
+      ...pending,
+      password_required: true,
+    });
+    const complete = vi.spyOn(oauthApi, 'completeSignup')
+      .mockResolvedValue({ redirect: '/' });
+    await mount(CompleteSignupView);
+
+    const pwdInput = fieldInput(t('password'));
+    expect(pwdInput).not.toBeNull();
+
+    type(fieldInput(t('qq')), '87654321');
+    button(host, t('signupCompleteSubmit')).click();
+    await settle();
+    expect(complete).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('passwordRequired'));
+  });
+
+  it('hides password field when needs_password is false', async () => {
+    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue({
+      ...pending,
+      needs_password: false,
+    });
+    await mount(CompleteSignupView);
+
+    const pwdField = [...host.querySelectorAll('.oa-field')]
+      .find((node) => node.querySelector('.oa-field-label')?.textContent === t('password')
+        || node.querySelector('.oa-field-label')?.textContent === t('passwordOptional'));
+    expect(pwdField).toBeUndefined();
+  });
+
   it('says so when the sign-in is no longer in progress', async () => {
     const { ApiError } = await import('../src/api/client');
     vi.spyOn(oauthApi, 'fetchPendingSignup')

@@ -528,10 +528,11 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     pageSlug: 'security',
     titleKey: 'secOAuth',
     searchKeys: ['oauthHint', 'oauthGitHub', 'oauthGoogle', 'oauthOIDC', 'oauthClientID', 'oauthClientSecret',
-      'oauthAllowSignup', 'oauthLinkByEmail', 'oauthThirdPartyOnlySignup', 'oauthOIDCOnlySignup', 'oauthOIDCRequireForAll'],
+      'oauthAllowSignup', 'oauthLinkByEmail', 'oauthThirdPartyOnlySignup', 'oauthOIDCOnlySignup', 'oauthOIDCRequireForAll',
+      'oauthOIDCRequireCompletion', 'oauthAllowPassword', 'oauthRequirePassword', 'oauthRequireUsername'],
     keywords: ['第三方登录', 'GitHub 登录', '谷歌登录', 'Google 登录', 'OIDC 登录', 'OpenID Connect', 'Keycloak', 'Authentik', '社交登录', '单点登录',
       'oauth', 'oidc', 'social login', 'sign in with github', 'sign in with google', 'sso', '只允许第三方注册', '第三方注册', 'third party only', '强制oidc', 'oidc注册',
-      '强制绑定', '所有用户绑定', 'require oidc for all', 'force everyone to link'],
+      '强制绑定', '所有用户绑定', 'require oidc for all', 'force everyone to link', '第三方设置密码', '第三方登录密码', '强制用户名', '强制输入密码', 'OIDC信息补充'],
   },
   {
     id: 'secApplications',

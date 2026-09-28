@@ -78,7 +78,10 @@ export interface PendingSignup {
   qq?: string;
   /** Only ever an address the provider proved. Empty otherwise. */
   email: string;
-  needs: { qq: boolean; email: boolean };
+  needs: { qq: boolean; email: boolean; invite?: boolean };
+  needs_password?: boolean;
+  password_required?: boolean;
+  username_required?: boolean;
   email_domains: string[];
   /** Whether a typed address will be sent a confirmation link. */
   verify_email: boolean;
@@ -90,10 +93,11 @@ export function fetchPendingSignup(): Promise<PendingSignup> {
 
 /** Opens the account, and answers with where to go next. */
 export function completeSignup(
-  details: { username?: string; qq?: string; email?: string; inviteCode?: string },
+  details: { username?: string; password?: string; qq?: string; email?: string; inviteCode?: string },
 ): Promise<{ redirect: string }> {
   return api.post<{ redirect: string }>('/api/auth/oauth/signup', {
     username: details.username ?? '',
+    password: details.password ?? '',
     qq: details.qq ?? '',
     email: details.email ?? '',
     invite_code: details.inviteCode ?? '',

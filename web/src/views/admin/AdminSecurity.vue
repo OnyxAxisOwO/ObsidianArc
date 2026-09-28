@@ -142,6 +142,10 @@ const form = ref({
   oidcTrustEmail: false,
   thirdPartyOnlySignup: false,
   oidcRequireForAll: false,
+  oauthOIDCRequireCompletion: false,
+  oauthAllowPassword: true,
+  oauthRequirePassword: false,
+  oauthRequireUsername: false,
   oauthAllowSignup: true,
   oauthLinkByEmail: true,
   twoFactorPolicy: 'optional',
@@ -402,6 +406,10 @@ function collect(): Record<string, string> {
     'oauth.third_party_only_signup': String(form.value.thirdPartyOnlySignup),
     'oauth.oidc_only_signup': String(form.value.thirdPartyOnlySignup),
     'oauth.oidc_require_for_all': String(form.value.oidcRequireForAll),
+    'oauth.oidc_require_completion': String(form.value.oauthOIDCRequireCompletion),
+    'oauth.allow_password': String(form.value.oauthAllowPassword),
+    'oauth.require_password': String(form.value.oauthRequirePassword),
+    'oauth.require_username': String(form.value.oauthRequireUsername),
     'oauth.allow_signup': String(form.value.oauthAllowSignup),
     'oauth.link_by_email': String(form.value.oauthLinkByEmail),
     'security.two_factor_policy': form.value.twoFactorPolicy,
@@ -906,6 +914,10 @@ async function load(): Promise<void> {
       oidcTrustEmail: values['oauth.oidc_trust_email'] === 'true',
       thirdPartyOnlySignup: (values['oauth.third_party_only_signup'] ?? values['oauth.oidc_only_signup']) === 'true',
       oidcRequireForAll: values['oauth.oidc_require_for_all'] === 'true',
+      oauthOIDCRequireCompletion: values['oauth.oidc_require_completion'] === 'true',
+      oauthAllowPassword: (values['oauth.allow_password'] ?? 'true') === 'true',
+      oauthRequirePassword: values['oauth.require_password'] === 'true',
+      oauthRequireUsername: values['oauth.require_username'] === 'true',
       oauthAllowSignup: (values['oauth.allow_signup'] ?? 'true') === 'true',
       oauthLinkByEmail: (values['oauth.link_by_email'] ?? 'true') === 'true',
       twoFactorPolicy: values['security.two_factor_policy'] ?? 'optional',
@@ -1490,6 +1502,11 @@ onMounted(load);
               :label="t('oauthOIDCRequireForAll')"
               :hint="t('oauthOIDCRequireForAllHint')"
             />
+            <OaSwitchField
+              v-model="form.oauthOIDCRequireCompletion"
+              :label="t('oauthOIDCRequireCompletion')"
+              :hint="t('oauthOIDCRequireCompletionHint')"
+            />
             <OaTextField
               v-model="form.oidcAuthURL"
               :label="t('oauthOIDCAuthURL')"
@@ -1514,6 +1531,22 @@ onMounted(load);
           v-model="form.thirdPartyOnlySignup"
           :label="t('oauthThirdPartyOnlySignup')"
           :hint="t('oauthThirdPartyOnlySignupHint')"
+        />
+        <OaSwitchField
+          v-model="form.oauthRequireUsername"
+          :label="t('oauthRequireUsername')"
+          :hint="t('oauthRequireUsernameHint')"
+        />
+        <OaSwitchField
+          v-model="form.oauthAllowPassword"
+          :label="t('oauthAllowPassword')"
+          :hint="t('oauthAllowPasswordHint')"
+        />
+        <OaSwitchField
+          v-if="form.oauthAllowPassword"
+          v-model="form.oauthRequirePassword"
+          :label="t('oauthRequirePassword')"
+          :hint="t('oauthRequirePasswordHint')"
         />
         <OaSwitchField
           v-model="form.oauthAllowSignup"

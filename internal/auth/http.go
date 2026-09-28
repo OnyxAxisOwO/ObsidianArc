@@ -276,6 +276,10 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"oidc_only_signup": populated && h.settings.Bool(settings.RegistrationEnabled) &&
 			(h.settings.Bool(settings.OAuthThirdPartyOnlySignup) || h.settings.Bool(settings.OAuthOIDCOnlySignup)) &&
 			len(h.signInProviders()) > 0,
+		"oauth_allow_password":          h.settings.Bool(settings.OAuthAllowPassword),
+		"oauth_require_password":        h.settings.Bool(settings.OAuthRequirePassword),
+		"oauth_require_username":        h.settings.Bool(settings.OAuthRequireUsername),
+		"oauth_oidc_require_completion": h.settings.Bool(settings.OAuthOIDCRequireCompletion),
 		// So the sign-up button can say what it is waiting for. A review
 		// takes seconds, and a button that only says "creating account" for
 		// that long reads as a form that has hung.

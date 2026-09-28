@@ -125,6 +125,10 @@ export interface SiteInfo {
    * list means the card draws no divider and no buttons.
    */
   oauth?: { id: string; name: string }[];
+  oauth_allow_password?: boolean;
+  oauth_require_password?: boolean;
+  oauth_require_username?: boolean;
+  oauth_oidc_require_completion?: boolean;
   // Whether a new account has to confirm its address before it can
   // send anything. False whenever the server cannot post mail,
   // whatever the setting says.

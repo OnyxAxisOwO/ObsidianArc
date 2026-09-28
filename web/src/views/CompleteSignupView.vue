@@ -37,8 +37,12 @@ const error = ref('');
 const busy = ref(false);
 
 const username = ref('');
+const password = ref('');
 const qq = ref('');
 const email = ref('');
+
+const showPassword = computed(() => pending.value?.needs_password !== false);
+const passwordRequired = computed(() => !!pending.value?.password_required);
 
 const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
 const mark = computed<OaIcon>(() => MARKS[pending.value?.provider ?? ''] ?? IconKey);
@@ -87,6 +91,18 @@ async function submit(): Promise<void> {
     return;
   }
 
+  const chosenPassword = password.value;
+  if (showPassword.value) {
+    if (passwordRequired.value && !chosenPassword) {
+      error.value = t('passwordRequired');
+      return;
+    }
+    if (chosenPassword && chosenPassword.length < 8) {
+      error.value = t('passwordTooShort');
+      return;
+    }
+  }
+
   // Checked here only so the answer is immediate; the server decides.
   const number = qq.value.trim();
   if (pending.value.needs.qq && !number) {
@@ -110,12 +126,16 @@ async function submit(): Promise<void> {
   busy.value = true;
   error.value = '';
   try {
-    const { redirect } = await completeSignup({
+    const details: { username: string; password?: string; qq: string; email: string; inviteCode: string } = {
       username: chosenUsername,
       qq: number,
       email: address,
       inviteCode: inviteCode.value.trim(),
-    });
+    };
+    if (showPassword.value && chosenPassword) {
+      details.password = chosenPassword;
+    }
+    const { redirect } = await completeSignup(details);
     // A full navigation rather than a route change: the session cookie has
     // just been set, and everything on the other side of this reads the
     // account once at boot.
@@ -181,6 +201,21 @@ async function submit(): Promise<void> {
               autocomplete="username"
               maxlength="32"
               required
+            >
+          </OaField>
+
+          <OaField
+            v-if="showPassword"
+            :label="passwordRequired ? t('password') : t('passwordOptional')"
+          >
+            <input
+              v-model="password"
+              type="password"
+              spellcheck="false"
+              :placeholder="passwordRequired ? t('passwordHint') : t('passwordOptionalHint')"
+              autocomplete="new-password"
+              maxlength="256"
+              :required="passwordRequired"
             >
           </OaField>
 

@@ -62,6 +62,10 @@ const FALLBACK_SITE: SiteInfo = {
   auth_card_position: 'center',
   oauth_only_signup: false,
   oidc_only_signup: false,
+  oauth_allow_password: true,
+  oauth_require_password: false,
+  oauth_require_username: false,
+  oauth_oidc_require_completion: false,
 };
 
 /**

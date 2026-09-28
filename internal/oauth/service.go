@@ -39,6 +39,7 @@ var (
 	ErrOIDCPinned          = errors.New("oauth: an OpenID Connect connection cannot be removed")
 	ErrNotConnected        = errors.New("oauth: that provider is not connected to this account")
 	errNeedsEmailScreening = errors.New("oauth: email screening must run before opening this account")
+	ErrPasswordNotAllowed  = errors.New("oauth: password setting is not allowed for third-party signup")
 )
 
 // MoreDetailsNeeded says the sign-in stopped one step short.
@@ -60,6 +61,7 @@ func (e *MoreDetailsNeeded) Error() string {
 // Details are those answers.
 type Details struct {
 	Username string
+	Password string
 	QQ       string
 	Email    string
 	// Empty unless MissingFor asked for one (an invite-only instance) and
@@ -88,6 +90,7 @@ var credentials = map[string][]string{
 		settings.OAuthOIDCUserInfoURL,
 		settings.OAuthOIDCTrustEmail,
 		settings.OAuthOIDCOnlySignup,
+		settings.OAuthOIDCRequireCompletion,
 	},
 }
 
@@ -389,7 +392,12 @@ func (s *Service) resolve(
 				if err != nil {
 					return err
 				}
-				if missing.Any() || user.ValidateUsername(identity.Login) != nil {
+				needDetails := missing.Any() ||
+					user.ValidateUsername(identity.Login) != nil ||
+					s.settings.Bool(settings.OAuthRequireUsername) ||
+					s.settings.Bool(settings.OAuthRequirePassword) ||
+					(identity.Provider == "oidc" && s.settings.Bool(settings.OAuthOIDCRequireCompletion))
+				if needDetails {
 					return &MoreDetailsNeeded{Identity: identity, Missing: missing}
 				}
 			}
@@ -427,16 +435,33 @@ func (s *Service) resolve(
 				}
 			}
 
+			if s.settings.Bool(settings.OAuthRequirePassword) && strings.TrimSpace(details.Password) == "" {
+				return auth.ErrPasswordTooShort
+			}
+			password := strings.TrimSpace(details.Password)
+			if password != "" {
+				if !s.settings.Bool(settings.OAuthAllowPassword) {
+					return ErrPasswordNotAllowed
+				}
+				if err := auth.ValidatePassword(password); err != nil {
+					return err
+				}
+			}
+
 			explicitUsername := false
 			desiredUsername := strings.TrimSpace(details.Username)
 			if desiredUsername != "" {
 				explicitUsername = true
 			} else {
+				if s.settings.Bool(settings.OAuthRequireUsername) {
+					return user.ErrInvalidUsername
+				}
 				desiredUsername = identity.Login
 			}
 			created, err := s.auth.Provision(ctx, tx, auth.ProvisionInput{
 				Username:         desiredUsername,
 				ExplicitUsername: explicitUsername,
+				Password:         password,
 				Email:            address,
 				EmailVerified:    identity.Email != "",
 				QQ:               qq,

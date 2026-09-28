@@ -150,7 +150,11 @@ const (
 	// has closed registration already refuses it through
 	// registration.enabled, and one that has not has just been handed a
 	// visitor a provider vouches for.
-	OAuthAllowSignup = "oauth.allow_signup"
+	OAuthAllowSignup           = "oauth.allow_signup"
+	OAuthAllowPassword         = "oauth.allow_password"
+	OAuthRequirePassword       = "oauth.require_password"
+	OAuthRequireUsername       = "oauth.require_username"
+	OAuthOIDCRequireCompletion = "oauth.oidc_require_completion"
 	// Whether an address a provider has verified may adopt the account that
 	// already holds it, instead of being refused as taken. On: it is what
 	// makes "sign in with Google" work for the people who registered with a
@@ -614,29 +618,33 @@ var Defaults = map[string]string{
 	// Off, and off even once the credentials are filled in, for the reason
 	// the challenge switches above are: pasting a key is not the same as
 	// opening the door.
-	OAuthGitHubEnabled:        "false",
-	OAuthGitHubID:             "",
-	OAuthGitHubSecret:         "",
-	OAuthGoogleEnabled:        "false",
-	OAuthGoogleID:             "",
-	OAuthGoogleSecret:         "",
-	OAuthOIDCEnabled:          "false",
-	OAuthOIDCClientID:         "",
-	OAuthOIDCClientSecret:     "",
-	OAuthOIDCIssuer:           "",
-	OAuthOIDCDisplayName:      "",
-	OAuthOIDCScopes:           "",
-	OAuthOIDCAuthURL:          "",
-	OAuthOIDCTokenURL:         "",
-	OAuthOIDCUserInfoURL:      "",
-	OAuthOIDCTrustEmail:       "false",
-	OAuthThirdPartyOnlySignup: "false",
-	OAuthOIDCOnlySignup:       "false",
-	OAuthOIDCRequireForAll:    "false",
-	OAuthAllowSignup:          "true",
-	OAuthLinkByEmail:          "true",
-	SignupReview:              "false",
-	SignupReviewModel:         "",
+	OAuthGitHubEnabled:         "false",
+	OAuthGitHubID:              "",
+	OAuthGitHubSecret:          "",
+	OAuthGoogleEnabled:         "false",
+	OAuthGoogleID:              "",
+	OAuthGoogleSecret:          "",
+	OAuthOIDCEnabled:           "false",
+	OAuthOIDCClientID:          "",
+	OAuthOIDCClientSecret:      "",
+	OAuthOIDCIssuer:            "",
+	OAuthOIDCDisplayName:       "",
+	OAuthOIDCScopes:            "",
+	OAuthOIDCAuthURL:           "",
+	OAuthOIDCTokenURL:          "",
+	OAuthOIDCUserInfoURL:       "",
+	OAuthOIDCTrustEmail:        "false",
+	OAuthThirdPartyOnlySignup:  "false",
+	OAuthOIDCOnlySignup:        "false",
+	OAuthOIDCRequireForAll:     "false",
+	OAuthAllowSignup:           "true",
+	OAuthAllowPassword:         "true",
+	OAuthRequirePassword:       "false",
+	OAuthRequireUsername:       "false",
+	OAuthOIDCRequireCompletion: "false",
+	OAuthLinkByEmail:           "true",
+	SignupReview:               "false",
+	SignupReviewModel:          "",
 	// Loose, normal or strict. Normal refuses what reads as generated and
 	// allows what reads as chosen; the other two move the line, and strict
 	// also refuses when the model cannot answer at all.
