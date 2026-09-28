@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	mathrand "math/rand/v2"
 	"regexp"
 	"strings"
@@ -225,6 +226,10 @@ func generateCode() (string, error) {
 	return out.String(), nil
 }
 
+// codeGenerator is a variable so tests can simulate collisions or generator
+// failures deterministically without relying on random draws.
+var codeGenerator = generateCode
+
 // drawSymbols returns count uniform indices into an alphabet width symbols
 // wide. Rejection sampling rather than `int(b) % width`, the same reasoning
 // card.drawSymbols carries: 256 is not a multiple of 30, so the naive
@@ -362,7 +367,7 @@ func (s *Store) Consume(ctx context.Context, q database.Queryer, rawCode string,
 	if ownerID != "" {
 		// Personal codes stop working when the operator switches personal
 		// invites off, not only stop being handed out.
-		userEnabled, limit, _, _, _ := s.Settings()
+		userEnabled, _, _, _, _ := s.Settings()
 		if !userEnabled {
 			return nil, ErrInvalid
 		}
@@ -386,19 +391,10 @@ func (s *Store) Consume(ctx context.Context, q database.Queryer, rawCode string,
 		if ownerStatus != string(user.StatusActive) {
 			return nil, ErrInvalid
 		}
-		// The per-account limit is on invites, not only on rewards: a
-		// personal code carries an unlimited max_uses of its own, and this
-		// is what stops it at the operator's number.
-		if limit > 0 {
-			var invited int
-			if err := q.QueryRow(ctx, `SELECT COUNT(*) FROM invite_uses WHERE inviter_id = ?`, ownerID).
-				Scan(&invited); err != nil {
-				return nil, fmt.Errorf("invite: count invites: %w", err)
-			}
-			if invited >= limit {
-				return nil, ErrInvalid
-			}
-		}
+		// The per-account limit is on rewards (see evaluateReward), not on
+		// registrations through the personal code: a personal code carries an
+		// unlimited max_uses, so someone registering through it still joins
+		// successfully; only the reward to the inviter stops crediting.
 	}
 
 	// The one atomic step: every condition Consume promises is re-checked
@@ -491,6 +487,19 @@ const (
 type ClaimThrottled struct{ RetryAfter time.Duration }
 
 func (e *ClaimThrottled) Error() string {
+	return fmt.Sprintf("invite: too many attempts; try again in %s", e.RetryAfter.Round(time.Second))
+}
+
+// Rate limit on regenerating personal invite codes: at most 10 in an hour.
+const (
+	regenerateWindow = time.Hour
+	maxRegenerates   = 10
+)
+
+// RegenerateThrottled is Regenerate's rate-limit refusal, mirroring ClaimThrottled.
+type RegenerateThrottled struct{ RetryAfter time.Duration }
+
+func (e *RegenerateThrottled) Error() string {
 	return fmt.Sprintf("invite: too many attempts; try again in %s", e.RetryAfter.Round(time.Second))
 }
 
@@ -699,17 +708,24 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 			case account.GroupID == defaultGroupID || account.GroupID == "":
 				// Starting fresh from the group everybody without a code
 				// lands in: the code's group, for exactly what it grants.
+				// days <= 0 denotes permanent membership, matching the
+				// registration path (auth.Service.applyInvite) where
+				// group_expires_at is left 0.
 				newGroupID = record.groupID
-				newExpiresAt = nowMS + days*86400000
+				if days > 0 {
+					newExpiresAt = nowMS + days*86400000
+				}
 			case account.GroupID == record.groupID && account.GroupExpiresAt != 0:
 				// Already sitting in this very group on a trial: topped up,
-				// never replaced.
+				// or upgraded to permanent membership if days <= 0.
 				newGroupID = record.groupID
-				base := account.GroupExpiresAt
-				if nowMS > base {
-					base = nowMS
+				if days > 0 {
+					base := account.GroupExpiresAt
+					if nowMS > base {
+						base = nowMS
+					}
+					newExpiresAt = base + days*86400000
 				}
-				newExpiresAt = base + days*86400000
 			default:
 				// Permanently in the code's own group, or a member of any
 				// other one: never downgraded or replaced by a claim.
@@ -848,6 +864,35 @@ func writeClaimThrottle(ctx context.Context, q database.Queryer, userID string, 
 	return nil
 }
 
+// readRegenerateThrottle reads the account's current regenerate window, rolling
+// it over when the hour has elapsed.
+func readRegenerateThrottle(ctx context.Context, q database.Queryer, userID string, nowMS int64) (windowStart int64, count int, err error) {
+	err = q.QueryRow(ctx, `SELECT window_start, count FROM invite_regenerate_throttle WHERE user_id = ?`, userID).
+		Scan(&windowStart, &count)
+	if database.IsNotFound(err) {
+		return 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("invite: read regenerate throttle: %w", err)
+	}
+	if nowMS-windowStart >= regenerateWindow.Milliseconds() {
+		return 0, 0, nil
+	}
+	return windowStart, count, nil
+}
+
+// writeRegenerateThrottle stores the account's regenerate window.
+func writeRegenerateThrottle(ctx context.Context, q database.Queryer, userID string, windowStart int64, count int) error {
+	_, err := q.Exec(ctx,
+		`INSERT INTO invite_regenerate_throttle (user_id, window_start, count) VALUES (?, ?, ?)
+		 ON CONFLICT (user_id) DO UPDATE SET window_start = excluded.window_start, count = excluded.count`,
+		userID, windowStart, count)
+	if err != nil {
+		return fmt.Errorf("invite: write regenerate throttle: %w", err)
+	}
+	return nil
+}
+
 // Reward resolves the personal-code invite reward for userID: whether the
 // invitee now qualifies to trigger it, and if so whether the inviter is
 // actually paid or the reward is skipped and why.
@@ -966,7 +1011,8 @@ func (s *Store) Reward(ctx context.Context, userID string, verificationRequired 
 
 	if s.Notify != nil {
 		_, _, instanceRewardCards, _, _ := s.Settings()
-		if err := s.Notify.Push(ctx, nil, notify.Notification{
+		notifyCtx := context.WithoutCancel(ctx)
+		if err := s.Notify.Push(notifyCtx, nil, notify.Notification{
 			Audience: notify.AudienceUser, UserID: inviterID,
 			Kind: "invite_joined",
 			Params: map[string]any{
@@ -1012,12 +1058,14 @@ func (s *Store) RewardPending(ctx context.Context, verificationRequired bool) er
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("invite: read pending rewards: %w", err)
 	}
+	var lastErr error
 	for _, userID := range pending {
 		if err := s.Reward(ctx, userID, verificationRequired); err != nil {
-			return err
+			slog.ErrorContext(ctx, "invite: resolve pending reward failed", "user_id", userID, "error", err)
+			lastErr = err
 		}
 	}
-	return nil
+	return lastErr
 }
 
 // evaluateReward decides whether the inviter is actually paid, and how much,
@@ -1143,19 +1191,38 @@ func (s *Store) PersonalCode(ctx context.Context, userID string) (Code, error) {
 }
 
 // Regenerate revokes the current personal code and issues a new one, under
-// the same row lock PersonalCode uses.
+// the same row lock PersonalCode uses. Limited to 10 regenerations per hour.
 func (s *Store) Regenerate(ctx context.Context, userID string) (Code, error) {
 	var record Code
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
 		if _, err := tx.Exec(ctx, `UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
 			return fmt.Errorf("invite: lock account: %w", err)
 		}
+		nowMS := time.Now().UnixMilli()
+		windowStart, count, err := readRegenerateThrottle(ctx, tx, userID, nowMS)
+		if err != nil {
+			return err
+		}
+		if count >= maxRegenerates {
+			remaining := regenerateWindow - time.Duration(nowMS-windowStart)*time.Millisecond
+			if remaining <= 0 {
+				remaining = time.Second
+			}
+			return &RegenerateThrottled{RetryAfter: remaining}
+		}
+		freshWindow := windowStart
+		if freshWindow == 0 {
+			freshWindow = nowMS
+		}
+		if err := writeRegenerateThrottle(ctx, tx, userID, freshWindow, count+1); err != nil {
+			return err
+		}
+
 		if _, err := tx.Exec(ctx,
 			`UPDATE invite_codes SET revoked_at = ? WHERE owner_id = ? AND revoked_at = 0`,
-			time.Now().UnixMilli(), userID); err != nil {
+			nowMS, userID); err != nil {
 			return fmt.Errorf("invite: revoke personal code: %w", err)
 		}
-		var err error
 		record, err = s.createPersonal(ctx, tx, userID)
 		return err
 	})
@@ -1192,26 +1259,29 @@ func (s *Store) ownedCode(ctx context.Context, q database.Queryer, userID string
 // nothing to retry and should never reach a caller as a failure.
 func (s *Store) createPersonal(ctx context.Context, q database.Queryer, userID string) (Code, error) {
 	now := time.Now().UnixMilli()
-	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		generated, err := generateCode()
 		if err != nil {
 			return Code{}, err
 		}
 		record := Code{ID: id.New(), Code: generated, OwnerID: userID, Kind: CodeKindPersonal, CreatedAt: now, Status: StatusActive}
-		_, err = q.Exec(ctx, `INSERT INTO invite_codes
+		res, err := q.Exec(ctx, `INSERT INTO invite_codes
 			(id, code, owner_id, kind, name, allow_existing, group_id, group_days, group_days_max, max_uses, uses, expires_at, revoked_at, note, created_by, created_at)
-			VALUES (?, ?, ?, ?, '', ?, '', 0, 0, 0, 0, 0, 0, '', ?, ?)`,
+			VALUES (?, ?, ?, ?, '', ?, '', 0, 0, 0, 0, 0, 0, '', ?, ?)
+			ON CONFLICT (code) DO NOTHING`,
 			record.ID, record.Code, record.OwnerID, record.Kind, false, userID, record.CreatedAt)
-		if err == nil {
-			return record, nil
-		}
-		if !isUnique(err) {
+		if err != nil {
 			return Code{}, fmt.Errorf("invite: create personal code: %w", err)
 		}
-		lastErr = err
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return Code{}, fmt.Errorf("invite: create personal code: %w", err)
+		}
+		if affected == 1 {
+			return record, nil
+		}
 	}
-	return Code{}, fmt.Errorf("invite: create personal code: %w", lastErr)
+	return Code{}, fmt.Errorf("invite: create personal code: collision retry exhausted")
 }
 
 func isUnique(err error) bool {
@@ -1227,6 +1297,10 @@ func isUnique(err error) bool {
 // account and may earn its inviter a reward, invite_claims adds time to one
 // that already exists and rewards nobody, and Via is how a reader (and this
 // method's own caller) tells which row came from which.
+// maxUsesListed caps the rows Uses returns, protecting both the profile
+// invite panel and the administrator's code inspection from unbounded lists.
+const maxUsesListed = 100
+
 func (s *Store) Uses(ctx context.Context, codeID string) ([]Use, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT user_id, username, nickname, group_days, created_at,
@@ -1248,7 +1322,8 @@ func (s *Store) Uses(ctx context.Context, codeID string) ([]Use, error) {
 			JOIN users u ON u.id = ic.user_id
 			WHERE ic.code_id = ?
 		) everything
-		ORDER BY created_at DESC`, ViaRegister, codeID, ViaClaim, codeID)
+		ORDER BY created_at DESC
+		LIMIT ?`, ViaRegister, codeID, ViaClaim, codeID, maxUsesListed)
 	if err != nil {
 		return nil, fmt.Errorf("invite: list uses: %w", err)
 	}
@@ -1266,6 +1341,40 @@ func (s *Store) Uses(ctx context.Context, codeID string) ([]Use, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("invite: list uses: %w", err)
+	}
+	return out, nil
+}
+
+// UsesByInviter returns up to maxUsesListed registrations made through any of
+// this inviter's personal invite codes (including codes previously regenerated),
+// ordered newest first.
+func (s *Store) UsesByInviter(ctx context.Context, inviterID string) ([]Use, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT iu.user_id, COALESCE(u.username, ''), COALESCE(u.nickname, ''),
+		       iu.group_days, iu.created_at, iu.rewarded_at, iu.reward_cards,
+		       iu.reward_skipped, ? AS via
+		FROM invite_uses iu
+		JOIN users u ON u.id = iu.user_id
+		WHERE iu.inviter_id = ?
+		ORDER BY iu.created_at DESC
+		LIMIT ?`, ViaRegister, inviterID, maxUsesListed)
+	if err != nil {
+		return nil, fmt.Errorf("invite: list uses by inviter: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Use{}
+	for rows.Next() {
+		var record Use
+		if err := rows.Scan(&record.UserID, &record.Username, &record.Nickname,
+			&record.GroupDays, &record.CreatedAt, &record.RewardedAt,
+			&record.RewardCards, &record.RewardSkipped, &record.Via); err != nil {
+			return nil, fmt.Errorf("invite: scan use: %w", err)
+		}
+		out = append(out, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("invite: list uses by inviter: %w", err)
 	}
 	return out, nil
 }

@@ -52,7 +52,7 @@ func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]an
 	if err != nil {
 		return nil, err
 	}
-	uses, err := h.store.Uses(ctx, code.ID)
+	uses, err := h.store.UsesByInviter(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -60,9 +60,13 @@ func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]an
 	if err != nil {
 		return nil, err
 	}
+	var totalUses int
+	if err := h.store.db.QueryRow(ctx, `SELECT COUNT(*) FROM invite_uses WHERE inviter_id = ?`, accountID).Scan(&totalUses); err != nil {
+		return nil, err
+	}
 
 	out["code"] = code.Code
-	out["used"] = code.Uses
+	out["used"] = totalUses
 	out["counted"] = counted
 	out["next_reward_in"] = nextRewardIn(counted, rewardEvery, rewardCards)
 	invitees := make([]map[string]any, 0, len(uses))
@@ -93,6 +97,13 @@ func (h *Handlers) regenerate(w http.ResponseWriter, r *http.Request) error {
 		return httpx.ForbiddenCode("invites_disabled", "Personal invite codes are switched off on this server.")
 	}
 	if _, err := h.store.Regenerate(r.Context(), account.ID); err != nil {
+		var throttled *RegenerateThrottled
+		if errors.As(err, &throttled) {
+			retryAfter := int(throttled.RetryAfter.Seconds()) + 1
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			return httpx.TooManyRequests("too_many_attempts", throttled.Error()).
+				WithDetails(map[string]any{"retry_after_seconds": retryAfter})
+		}
 		return httpx.Internal(err)
 	}
 	out, err := h.payload(r.Context(), account.ID)

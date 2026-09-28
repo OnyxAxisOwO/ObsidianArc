@@ -9,9 +9,10 @@
 CREATE TABLE invite_codes (
     id             TEXT PRIMARY KEY,
     code           TEXT NOT NULL,
-    -- '' for an admin-issued code. An account's own code, so its reward can
-    -- be credited without a second lookup, and so ON DELETE CASCADE removes
-    -- it when the account does.
+    -- '' for an admin-issued code, or the account ID for a personal code.
+    -- Personal codes are cleaned up by user.Store.Delete when the owner
+    -- account is deleted (not an ON DELETE CASCADE foreign key because
+    -- admin codes use '' rather than NULL).
     owner_id       TEXT NOT NULL DEFAULT '',
     -- The group a registration through this code joins, and for how long.
     -- group_days_max = 0 means group_days is a fixed length; otherwise a

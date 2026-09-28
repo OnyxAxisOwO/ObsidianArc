@@ -390,6 +390,33 @@ func TestRegenerateRevokesTheOldCode(t *testing.T) {
 	}
 }
 
+func TestRegenerateThrottlesAfterTenAttempts(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account := f.account(t, "regenerate-throttled")
+
+	// Ensure account has an initial code
+	_, err := f.store.PersonalCode(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("initial personal code: %v", err)
+	}
+
+	for i := 0; i < maxRegenerates; i++ {
+		if _, err := f.store.Regenerate(ctx, account.ID); err != nil {
+			t.Fatalf("regenerate attempt %d: %v", i+1, err)
+		}
+	}
+
+	var throttled *RegenerateThrottled
+	_, err = f.store.Regenerate(ctx, account.ID)
+	if !errors.As(err, &throttled) {
+		t.Fatalf("11th regenerate attempt = %v, want *RegenerateThrottled", err)
+	}
+	if throttled.RetryAfter <= 0 || throttled.RetryAfter > regenerateWindow {
+		t.Fatalf("retry after = %v, want between 0 and %v", throttled.RetryAfter, regenerateWindow)
+	}
+}
+
 // registerThrough runs a whole personal-code registration the way
 // internal/server wires it — Consume, then Create, then RecordUse, all in
 // one transaction — so Reward has a real row to resolve.
@@ -517,9 +544,10 @@ func inviterSignupIP(t *testing.T, f *fixture, userID string) string {
 	return ip
 }
 
-// The per-account limit is on invites themselves: a personal code carries an
-// unlimited max_uses of its own, so without this it would never stop.
-func TestAPersonalCodeStopsAtTheOwnersLimit(t *testing.T) {
+// The per-account limit is on rewards, not on registrations: the personal
+// code keeps working past the limit, but additional invites are skipped with
+// reward_skipped = "limit".
+func TestAPersonalCodeContinuesPastLimitWithoutReward(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	if err := f.store.settings.SetMany(ctx, map[string]string{
@@ -532,13 +560,30 @@ func TestAPersonalCodeStopsAtTheOwnersLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("personal code: %v", err)
 	}
-	f.registerThrough(t, personal.Code, "203.0.113.11")
-	err = f.db.Tx(ctx, func(tx *database.Tx) error {
-		_, err := f.store.Consume(ctx, tx, personal.Code, time.Now().UnixMilli())
-		return err
-	})
-	if !errors.Is(err, ErrInvalid) {
-		t.Fatalf("a second invite past the limit: %v, want ErrInvalid", err)
+	first := f.registerThrough(t, personal.Code, "203.0.113.11")
+	if err := f.store.Reward(ctx, first.ID, false); err != nil {
+		t.Fatalf("reward first invite: %v", err)
+	}
+
+	second := f.registerThrough(t, personal.Code, "203.0.113.12")
+	if err := f.store.Reward(ctx, second.ID, false); err != nil {
+		t.Fatalf("reward second invite: %v", err)
+	}
+
+	var reason string
+	if err := f.db.QueryRow(ctx, `SELECT reward_skipped FROM invite_uses WHERE user_id = ?`, second.ID).Scan(&reason); err != nil {
+		t.Fatalf("read second invite reward_skipped: %v", err)
+	}
+	if reason != "limit" {
+		t.Fatalf("second invite reward_skipped = %q, want %q", reason, "limit")
+	}
+
+	var cards int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM usage_cards WHERE user_id = ?`, inviter.ID).Scan(&cards); err != nil {
+		t.Fatalf("count cards: %v", err)
+	}
+	if cards != 1 {
+		t.Fatalf("inviter cards = %d, want 1", cards)
 	}
 }
 
@@ -765,5 +810,90 @@ func TestRewardDefersUntilVerified(t *testing.T) {
 	}
 	if len(held) != 1 {
 		t.Fatalf("cards granted after verifying = %d, want 1", len(held))
+	}
+}
+
+// TestRewardPendingContinuesOnSingleFailure verifies that an error on one pending
+// invite use does not abort processing the remaining pending rows.
+func TestRewardPendingContinuesOnSingleFailure(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.store.settings.SetMany(ctx, map[string]string{
+		settings.InvitesUserEnabled: "true", settings.InvitesRewardCards: "1", settings.InvitesUserLimit: "0",
+	}); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+
+	inviter := f.account(t, "multi-pending-inviter")
+	personal, err := f.store.PersonalCode(ctx, inviter.ID)
+	if err != nil {
+		t.Fatalf("personal code: %v", err)
+	}
+
+	invitee1 := f.registerThrough(t, personal.Code, "203.0.113.91")
+	invitee2 := f.registerThrough(t, personal.Code, "203.0.113.92")
+
+	// Restrict both so initial Reward calls during registration leave them pending.
+	if _, err := f.users.UpdateAPIRestriction(ctx, nil, invitee1.ID, true, 0, "ai"); err != nil {
+		t.Fatalf("restrict invitee1: %v", err)
+	}
+	if _, err := f.users.UpdateAPIRestriction(ctx, nil, invitee2.ID, true, 0, "ai"); err != nil {
+		t.Fatalf("restrict invitee2: %v", err)
+	}
+	if err := f.store.Reward(ctx, invitee1.ID, false); err != nil {
+		t.Fatalf("reward invitee1 while restricted: %v", err)
+	}
+	if err := f.store.Reward(ctx, invitee2.ID, false); err != nil {
+		t.Fatalf("reward invitee2 while restricted: %v", err)
+	}
+
+	// Lift restrictions so both now qualify.
+	if _, err := f.users.UpdateAPIRestriction(ctx, nil, invitee1.ID, false, 0, "admin"); err != nil {
+		t.Fatalf("lift invitee1: %v", err)
+	}
+	if _, err := f.users.UpdateAPIRestriction(ctx, nil, invitee2.ID, false, 0, "admin"); err != nil {
+		t.Fatalf("lift invitee2: %v", err)
+	}
+
+	// Trigger a failure on the first invitee's update.
+	trigger := "CREATE TRIGGER fail_reward BEFORE UPDATE ON invite_uses WHEN NEW.user_id = '" +
+		invitee1.ID + "' BEGIN SELECT RAISE(ABORT, 'intentional failure'); END;"
+	if _, err := f.db.Exec(ctx, trigger); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.db.Exec(ctx, "DROP TRIGGER IF EXISTS fail_reward")
+	})
+
+	err = f.store.RewardPending(ctx, false)
+	if err == nil {
+		t.Fatal("expected error from failed row in RewardPending, got nil")
+	}
+
+	// invitee1 should remain unrewarded (rewarded_at == 0).
+	var rewarded1 int64
+	if err := f.db.QueryRow(ctx, `SELECT rewarded_at FROM invite_uses WHERE user_id = ?`, invitee1.ID).Scan(&rewarded1); err != nil {
+		t.Fatalf("query invitee1: %v", err)
+	}
+	if rewarded1 != 0 {
+		t.Fatalf("invitee1 rewarded_at = %d, want 0", rewarded1)
+	}
+
+	// invitee2 should have succeeded despite invitee1 failing before it.
+	var rewarded2 int64
+	if err := f.db.QueryRow(ctx, `SELECT rewarded_at FROM invite_uses WHERE user_id = ?`, invitee2.ID).Scan(&rewarded2); err != nil {
+		t.Fatalf("query invitee2: %v", err)
+	}
+	if rewarded2 == 0 {
+		t.Fatal("invitee2 was not rewarded after invitee1 failed")
+	}
+
+	// inviter should hold the card granted from invitee2.
+	var cards int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM usage_cards WHERE user_id = ?`, inviter.ID).Scan(&cards); err != nil {
+		t.Fatalf("query cards: %v", err)
+	}
+	if cards != 1 {
+		t.Fatalf("cards = %d, want 1", cards)
 	}
 }

@@ -174,4 +174,23 @@ func TestSelfInviteCommands(t *testing.T) {
 			t.Errorf("want invite_invalid, got %q (output: %q)", result.Code, out)
 		}
 	})
+
+	t.Run("me invite localizes the reward column into Chinese when lang is zh", func(t *testing.T) {
+		var out bytes.Buffer
+		s := &Session{Actor: actor, Transport: "web", Lang: "zh", Width: 120}
+		res := c.Execute(context.Background(), s, &out, "me invite")
+		if !res.OK {
+			t.Fatalf("me invite in zh failed: %s", out.String())
+		}
+		output := out.String()
+		if !strings.Contains(output, "+2 张重置卡") {
+			t.Errorf("expected +2 张重置卡 in zh output:\n%s", output)
+		}
+		if !strings.Contains(output, "已计入") {
+			t.Errorf("expected 已计入 in zh output:\n%s", output)
+		}
+		if !strings.Contains(output, "邀请名额已用完") {
+			t.Errorf("expected 邀请名额已用完 in zh output:\n%s", output)
+		}
+	})
 }

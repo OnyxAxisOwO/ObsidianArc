@@ -13,9 +13,11 @@ import InvitesSection from '../src/views/settings/InvitesSection.vue';
 // present), and — when personal invites are on — an account's own code, its
 // every-N reward progress, and who it has brought in.
 
-const route = { query: {} as Record<string, string> };
+const route = { path: '/settings', query: {} as Record<string, string> };
+const router = { replace: vi.fn() };
 vi.mock('vue-router', () => ({
   useRoute: () => route,
+  useRouter: () => router,
 }));
 
 const OFF: ProfileInvites = {
@@ -41,6 +43,7 @@ let host: HTMLElement;
 beforeEach(async () => {
   await changeLanguage('en');
   route.query = {};
+  router.replace.mockClear();
   host = document.createElement('div');
   document.body.append(host);
 });
@@ -320,4 +323,98 @@ describe('the invites card', () => {
     expect(host.textContent).toContain('ZZZZ-9999');
     expect(host.textContent).not.toContain('ABCD-2345');
   });
+
+  it('keeps claim box, displays error and allows retry when loading fails', async () => {
+    const fetchSpy = vi.spyOn(invitesApi, 'fetchProfileInvites')
+      .mockRejectedValueOnce(new ApiError(500, 'internal', 'Network connection failed'))
+      .mockResolvedValueOnce(ON);
+
+    await mount(InvitesSection);
+
+    // Claim box is still rendered
+    expect(host.textContent).toContain(t('inviteClaimTitle'));
+    expect(() => button(t('inviteClaimSubmit'))).not.toThrow();
+
+    // Error and retry button are shown
+    expect(host.textContent).toContain('Network connection failed');
+    const retryBtn = button(t('retry'));
+    expect(retryBtn).not.toBeNull();
+
+    // Clicking retry reloads the data
+    retryBtn.click();
+    await settle();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain('ABCD-2345');
+    expect(host.textContent).not.toContain('Network connection failed');
+  });
+
+  it('claims a permanent group code and displays permanent success message', async () => {
+    vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue(OFF);
+    const claim = vi.spyOn(invitesApi, 'claimInviteCode')
+      .mockResolvedValue({ group_id: 'g-perm', group_name: 'Lifetime VIP', days: 0, expires_at: 0 });
+    await mount(InvitesSection);
+
+    await type(claimInput(), 'LIFETIME');
+    button(t('inviteClaimSubmit')).click();
+    await settle();
+
+    expect(claim).toHaveBeenCalledWith('LIFETIME');
+    expect(host.textContent).toContain(t('inviteClaimSuccessPermanent', { group: 'Lifetime VIP' }));
+  });
+
+  it('removes ?claim= from query params after claiming successfully', async () => {
+    route.query = { claim: 'CLEANME' };
+    vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue(OFF);
+    vi.spyOn(invitesApi, 'claimInviteCode')
+      .mockResolvedValue({ group_id: 'g1', group_name: 'Basic', days: 7, expires_at: Date.now() + 7 * 86400000 });
+    await mount(InvitesSection);
+
+    button(t('inviteClaimSubmit')).click();
+    await settle();
+
+    expect(router.replace).toHaveBeenCalledWith({ path: '/settings', query: {} });
+  });
+
+  it('displays rate limit error when regenerate is throttled', async () => {
+    vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue(ON);
+    vi.spyOn(invitesApi, 'regenerateProfileInvite')
+      .mockRejectedValue(new ApiError(429, 'too_many_attempts', 'rate limited', { retry_after_seconds: 45 }));
+    await mount(InvitesSection);
+
+    button(t('inviteRegenerate')).click();
+    await settle();
+    button(t('confirmWord')).click();
+    await settle();
+
+    expect(host.textContent).toContain(t('tooManyAttempts', { count: 45 }));
+  });
+
+  it('renders loading state while profile invites are being fetched', async () => {
+    let resolveInvites!: (value: ProfileInvites) => void;
+    vi.spyOn(invitesApi, 'fetchProfileInvites').mockReturnValue(new Promise((resolve) => {
+      resolveInvites = resolve;
+    }));
+
+    const panels = document.createElement('div');
+    document.body.append(panels);
+    app = createApp({
+      setup() {
+        providePanelHost(shallowRef(panels));
+        return () => h(InvitesSection, {});
+      },
+    });
+    app.mount(host);
+    await nextTick();
+
+    expect(host.textContent).toContain(t('inviteClaimTitle'));
+    expect(host.textContent).toContain(t('loading'));
+
+    resolveInvites(ON);
+    await settle();
+
+    expect(host.textContent).not.toContain(t('loading'));
+    expect(host.textContent).toContain('ABCD-2345');
+  });
 });
+

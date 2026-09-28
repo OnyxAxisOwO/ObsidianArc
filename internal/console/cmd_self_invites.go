@@ -22,15 +22,49 @@ import (
 // a skip reason recorded instead of silently dropped, or "-" while nothing
 // has resolved yet (an unverified invitee, on an instance that requires
 // verification).
-func inviteRewardLabel(u map[string]any) string {
+func inviteRewardLabel(u map[string]any, lang string) string {
 	if asBoolVal(u["counted"]) {
 		if n := asNum(u["reward_cards"]); n > 0 {
+			if lang == "zh" {
+				return fmt.Sprintf("+%v 张重置卡", n)
+			}
 			return fmt.Sprintf("+%v cards", n)
+		}
+		if lang == "zh" {
+			return "已计入"
 		}
 		return "counted"
 	}
 	if s := asStr(u["reward_skipped"]); s != "" {
-		return s
+		switch s {
+		case "same_ip":
+			if lang == "zh" {
+				return "不符合奖励条件"
+			}
+			return "Ineligible for reward"
+		case "limit":
+			if lang == "zh" {
+				return "邀请名额已用完"
+			}
+			return "Invite limit reached"
+		case "disabled":
+			if lang == "zh" {
+				return "奖励当时已关闭"
+			}
+			return "Rewards were off"
+		case "inviter_gone":
+			if lang == "zh" {
+				return "邀请人账号已注销"
+			}
+			return "Inviter’s account no longer exists"
+		case "inviter_disabled":
+			if lang == "zh" {
+				return "邀请人账号已被禁用"
+			}
+			return "Inviter’s account is disabled"
+		default:
+			return s
+		}
 	}
 	return "-"
 }
@@ -43,7 +77,7 @@ func inviteesTable(rt *Runtime, invitees []any) {
 	for _, raw := range invitees {
 		u := asMap(raw)
 		rows = append(rows, []string{
-			asStr(u["username"]), asStr(u["nickname"]), formatMS(u["created_at"]), inviteRewardLabel(u),
+			asStr(u["username"]), asStr(u["nickname"]), formatMS(u["created_at"]), inviteRewardLabel(u, rt.Session.Lang),
 		})
 	}
 	RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour, []string{"username", "nickname", "joined", "reward"}, rows)

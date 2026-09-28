@@ -94,3 +94,53 @@ func TestProfilePayloadFields(t *testing.T) {
 		t.Fatalf("rows carrying cards = %d, want 1", milestoneRows)
 	}
 }
+
+func TestRegeneratePreservesHistoricalTotalUsedInPayload(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	handlers := NewHandlers(f.store)
+	inviter := f.account(t, "regen-history-inviter")
+
+	if err := f.store.settings.SetMany(ctx, map[string]string{
+		settings.InvitesUserEnabled: "true", settings.InvitesRewardCards: "1",
+		settings.InvitesUserLimit: "10",
+	}); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+
+	firstCode, err := f.store.PersonalCode(ctx, inviter.ID)
+	if err != nil {
+		t.Fatalf("first personal code: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		invitee := f.registerThrough(t, firstCode.Code, "203.0.113."+strconv.Itoa(190+i))
+		if err := f.store.Reward(ctx, invitee.ID, false); err != nil {
+			t.Fatalf("reward: %v", err)
+		}
+	}
+
+	// Regenerate a new code
+	secondCode, err := f.store.Regenerate(ctx, inviter.ID)
+	if err != nil {
+		t.Fatalf("regenerate: %v", err)
+	}
+	if secondCode.Code == firstCode.Code {
+		t.Fatal("code did not change")
+	}
+
+	payload, err := handlers.payload(ctx, inviter.ID)
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if payload["code"] != secondCode.Code {
+		t.Fatalf("payload code = %v, want %s", payload["code"], secondCode.Code)
+	}
+	// "used" must reflect all historical invite_uses under the inviter, matching the user_limit basis
+	if payload["used"] != 3 {
+		t.Fatalf("payload used = %v, want 3 (historical uses across all codes)", payload["used"])
+	}
+	invitees, ok := payload["invitees"].([]map[string]any)
+	if !ok || len(invitees) != 3 {
+		t.Fatalf("payload invitees = %+v, want 3 historical invitees preserved", payload["invitees"])
+	}
+}

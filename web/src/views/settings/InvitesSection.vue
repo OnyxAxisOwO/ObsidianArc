@@ -12,7 +12,7 @@
 // each invitee row carries its own outcome rather than a shared blurb.
 
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { ApiError } from '@/api/client';
 import {
   claimInviteCode, fetchProfileInvites, formatInviteCode, inviteLink, regenerateProfileInvite,
@@ -27,8 +27,10 @@ import { matchesSettings } from './search';
 
 const props = withDefaults(defineProps<{ query?: string }>(), { query: '' });
 const route = useRoute();
+const router = useRouter();
 
 const data = ref<ProfileInvites | null>(null);
+const loading = ref(true);
 const flash = ref('');
 const busy = ref(false);
 const copiedCode = ref(false);
@@ -38,10 +40,14 @@ const formattedCode = computed(() => (data.value ? formatInviteCode(data.value.c
 const link = computed(() => (data.value ? inviteLink(data.value.code) : ''));
 
 async function load(): Promise<void> {
+  loading.value = true;
+  flash.value = '';
   try {
     data.value = await fetchProfileInvites();
   } catch (failure) {
     flash.value = failure instanceof ApiError ? failure.message : String(failure);
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -95,7 +101,11 @@ async function regenerate(): Promise<void> {
   try {
     data.value = await regenerateProfileInvite();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (failure instanceof ApiError && failure.code === 'too_many_attempts') {
+      flash.value = t('tooManyAttempts', { count: Number(failure.details['retry_after_seconds'] ?? 60) });
+    } else {
+      flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    }
   } finally {
     busy.value = false;
   }
@@ -139,8 +149,17 @@ async function submitClaim(): Promise<void> {
   try {
     const result = await claimInviteCode(code);
     claimOk.value = true;
-    claimFlash.value = t('inviteClaimSuccess', { group: result.group_name, date: absoluteTime(result.expires_at) });
+    if (result.expires_at > 0) {
+      claimFlash.value = t('inviteClaimSuccess', { group: result.group_name, date: absoluteTime(result.expires_at) });
+    } else {
+      claimFlash.value = t('inviteClaimSuccessPermanent', { group: result.group_name });
+    }
     claimCode.value = '';
+    if (route.query['claim']) {
+      const query = { ...route.query };
+      delete query['claim'];
+      void router.replace({ path: route.path, query });
+    }
     // The claimed group can be this account's own invite-reward group too,
     // so its card above may now read differently.
     void load();
@@ -184,7 +203,7 @@ function skipLabel(reason: string): string {
 </script>
 
 <template>
-  <div v-if="data" v-show="matchesSettings(props.query, 'invites')" class="oa-settings-panel">
+  <div v-show="matchesSettings(props.query, 'invites')" class="oa-settings-panel">
     <h2 class="oa-admin-section-title">{{ t('secInvites') }}</h2>
 
     <!-- Always present: a code from anyone else is worth redeeming whether
@@ -217,7 +236,20 @@ function skipLabel(reason: string): string {
       <p v-if="claimFlash" class="oa-2fa-flash" :class="{ ok: claimOk }" role="alert">{{ claimFlash }}</p>
     </section>
 
-    <section v-if="data.enabled" class="oa-2fa-panel">
+    <!-- Loading state for personal invite card -->
+    <section v-if="loading && !data" class="oa-2fa-panel">
+      <p class="oa-2fa-note">{{ t('loading') }}</p>
+    </section>
+
+    <!-- Error state with retry button when loading failed -->
+    <section v-else-if="flash && !data" class="oa-2fa-panel">
+      <p class="oa-2fa-flash" role="alert">{{ flash }}</p>
+      <div class="oa-2fa-row">
+        <button type="button" class="oa-btn" @click="load">{{ t('retry') }}</button>
+      </div>
+    </section>
+
+    <section v-else-if="data && data.enabled" class="oa-2fa-panel">
       <header class="oa-2fa-head">
         <span class="oa-2fa-head-mark"><IconUsers :size="18" /></span>
         <div class="oa-2fa-head-text">

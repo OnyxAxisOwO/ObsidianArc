@@ -147,35 +147,76 @@ func (s *Store) Create(ctx context.Context, in CreateInput) ([]Code, error) {
 
 	now := time.Now().UnixMilli()
 	out := make([]Code, 0, count)
-	for i := 0; i < count; i++ {
-		code := custom
-		if code == "" {
-			generated, err := generateCode()
-			if err != nil {
-				return nil, err
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		for i := 0; i < count; i++ {
+			if custom != "" {
+				record := Code{
+					ID: id.New(), Code: custom, Kind: kind, Name: text.TrimAndTruncate(name, MaxPartnerNameChars),
+					AllowExisting: allowExisting, GroupID: in.GroupID, GroupDays: in.GroupDays,
+					GroupDaysMax: in.GroupDaysMax, MaxUses: in.MaxUses, ExpiresAt: in.ExpiresAt,
+					Note: text.TrimAndTruncate(in.Note, MaxNoteChars), CreatedBy: in.CreatedBy, CreatedAt: now,
+					Status: status(0, in.ExpiresAt, in.MaxUses, 0, now),
+				}
+				_, err := tx.Exec(ctx, `INSERT INTO invite_codes
+					(id, code, owner_id, kind, name, allow_existing, group_id, group_days, group_days_max, max_uses, uses, expires_at, revoked_at, note, created_by, created_at)
+					VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?)`,
+					record.ID, record.Code, record.Kind, record.Name, record.AllowExisting,
+					record.GroupID, record.GroupDays, record.GroupDaysMax,
+					record.MaxUses, record.ExpiresAt, record.Note, record.CreatedBy, record.CreatedAt)
+				if err != nil {
+					if isUnique(err) {
+						return ErrCodeTaken
+					}
+					return fmt.Errorf("invite: create: %w", err)
+				}
+				out = append(out, record)
+				continue
 			}
-			code = generated
-		}
-		record := Code{
-			ID: id.New(), Code: code, Kind: kind, Name: text.TrimAndTruncate(name, MaxPartnerNameChars),
-			AllowExisting: allowExisting, GroupID: in.GroupID, GroupDays: in.GroupDays,
-			GroupDaysMax: in.GroupDaysMax, MaxUses: in.MaxUses, ExpiresAt: in.ExpiresAt,
-			Note: text.TrimAndTruncate(in.Note, MaxNoteChars), CreatedBy: in.CreatedBy, CreatedAt: now,
-			Status: status(0, in.ExpiresAt, in.MaxUses, 0, now),
-		}
-		_, err := s.db.Exec(ctx, `INSERT INTO invite_codes
-			(id, code, owner_id, kind, name, allow_existing, group_id, group_days, group_days_max, max_uses, uses, expires_at, revoked_at, note, created_by, created_at)
-			VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?)`,
-			record.ID, record.Code, record.Kind, record.Name, record.AllowExisting,
-			record.GroupID, record.GroupDays, record.GroupDaysMax,
-			record.MaxUses, record.ExpiresAt, record.Note, record.CreatedBy, record.CreatedAt)
-		if err != nil {
-			if isUnique(err) {
-				return nil, ErrCodeTaken
+
+			// Randomly generated codes retry on unique collisions.
+			// ON CONFLICT (code) DO NOTHING avoids triggering an error that would abort
+			// the entire transaction on PostgreSQL (SQLSTATE 25P02).
+			inserted := false
+			for attempt := 0; attempt < 5; attempt++ {
+				generated, err := codeGenerator()
+				if err != nil {
+					return err
+				}
+				record := Code{
+					ID: id.New(), Code: generated, Kind: kind, Name: text.TrimAndTruncate(name, MaxPartnerNameChars),
+					AllowExisting: allowExisting, GroupID: in.GroupID, GroupDays: in.GroupDays,
+					GroupDaysMax: in.GroupDaysMax, MaxUses: in.MaxUses, ExpiresAt: in.ExpiresAt,
+					Note: text.TrimAndTruncate(in.Note, MaxNoteChars), CreatedBy: in.CreatedBy, CreatedAt: now,
+					Status: status(0, in.ExpiresAt, in.MaxUses, 0, now),
+				}
+				res, err := tx.Exec(ctx, `INSERT INTO invite_codes
+					(id, code, owner_id, kind, name, allow_existing, group_id, group_days, group_days_max, max_uses, uses, expires_at, revoked_at, note, created_by, created_at)
+					VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?)
+					ON CONFLICT (code) DO NOTHING`,
+					record.ID, record.Code, record.Kind, record.Name, record.AllowExisting,
+					record.GroupID, record.GroupDays, record.GroupDaysMax,
+					record.MaxUses, record.ExpiresAt, record.Note, record.CreatedBy, record.CreatedAt)
+				if err != nil {
+					return fmt.Errorf("invite: create: %w", err)
+				}
+				affected, err := res.RowsAffected()
+				if err != nil {
+					return fmt.Errorf("invite: create: %w", err)
+				}
+				if affected == 1 {
+					out = append(out, record)
+					inserted = true
+					break
+				}
 			}
-			return nil, fmt.Errorf("invite: create: %w", err)
+			if !inserted {
+				return fmt.Errorf("invite: create: collision retry exhausted")
+			}
 		}
-		out = append(out, record)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }

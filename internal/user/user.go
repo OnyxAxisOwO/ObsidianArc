@@ -740,6 +740,11 @@ func (s *Store) Delete(ctx context.Context, q database.Queryer, userID string) e
 	if q == nil {
 		q = s.db
 	}
+	// Personal invite codes carry owner_id rather than a foreign key with
+	// ON DELETE CASCADE, because admin-issued codes use '' rather than NULL.
+	if _, err := q.Exec(ctx, `DELETE FROM invite_codes WHERE owner_id = ?`, userID); err != nil {
+		return fmt.Errorf("user: delete invite codes: %w", err)
+	}
 	if _, err := q.Exec(ctx, `DELETE FROM users WHERE id = ?`, userID); err != nil {
 		return fmt.Errorf("user: delete: %w", err)
 	}

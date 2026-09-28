@@ -216,3 +216,95 @@ func TestUsesShowsViaForBothRegistrationsAndClaims(t *testing.T) {
 		t.Errorf("claim row via = %q, want %q", byUser[claimer.ID], ViaClaim)
 	}
 }
+
+// TestCreateBatchRollsBackOnFailure verifies that an error occurring mid-batch
+// rolls back all previously inserted codes in the batch so partial batches
+// are never committed.
+func TestCreateBatchRollsBackOnFailure(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	origGen := codeGenerator
+	t.Cleanup(func() { codeGenerator = origGen })
+
+	calls := 0
+	boom := errors.New("simulated generator failure")
+	codeGenerator = func() (string, error) {
+		calls++
+		if calls >= 2 {
+			return "", boom
+		}
+		return "BATCH001", nil
+	}
+
+	_, err := f.store.Create(ctx, CreateInput{Count: 3})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want %v", err, boom)
+	}
+
+	var count int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM invite_codes`).Scan(&count); err != nil {
+		t.Fatalf("count codes: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("found %d committed codes after batch rollback, want 0", count)
+	}
+}
+
+// TestCreateRandomCodeRetriesCollision checks that a collision on a randomly
+// generated code retries up to 5 times and commits when a unique code is drawn.
+func TestCreateRandomCodeRetriesCollision(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	f.insertCode(t, Code{Code: "COLLIDE1", MaxUses: 1})
+
+	origGen := codeGenerator
+	t.Cleanup(func() { codeGenerator = origGen })
+
+	calls := 0
+	codeGenerator = func() (string, error) {
+		calls++
+		if calls == 1 {
+			return "COLLIDE1", nil
+		}
+		return "UNIQUE02", nil
+	}
+
+	created, err := f.store.Create(ctx, CreateInput{Count: 1})
+	if err != nil {
+		t.Fatalf("create code with collision: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("codeGenerator calls = %d, want 2", calls)
+	}
+	if len(created) != 1 || created[0].Code != "UNIQUE02" {
+		t.Fatalf("created = %+v, want UNIQUE02", created)
+	}
+}
+
+// TestCreateRandomCodeExhaustsRetries checks that failing 5 consecutive collision
+// retries returns an error and aborts the creation.
+func TestCreateRandomCodeExhaustsRetries(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	f.insertCode(t, Code{Code: "COLLIDE1", MaxUses: 1})
+
+	origGen := codeGenerator
+	t.Cleanup(func() { codeGenerator = origGen })
+
+	calls := 0
+	codeGenerator = func() (string, error) {
+		calls++
+		return "COLLIDE1", nil
+	}
+
+	_, err := f.store.Create(ctx, CreateInput{Count: 1})
+	if err == nil {
+		t.Fatal("expected error when collisions exhaust retry budget, got nil")
+	}
+	if calls != 5 {
+		t.Fatalf("codeGenerator calls = %d, want 5", calls)
+	}
+}

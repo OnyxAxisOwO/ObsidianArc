@@ -139,6 +139,70 @@ func TestClaimRefusesPermanentMembershipInSameGroup(t *testing.T) {
 	}
 }
 
+// TestClaimPermanentGroupGrantsPermanentMembership covers days = 0 (and groupDaysMax = 0):
+// claiming a permanent partner code seats the account in the target group with group_expires_at = 0,
+// and ResolveMembership does not revert them to the default group.
+func TestClaimPermanentGroupGrantsPermanentMembership(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	target, err := f.groups.Create(ctx, nil, group.CreateInput{Name: "Lifetime Group"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	code := f.partnerCode(t, "LIFETIMECODE", target.ID, 0, 0, 0)
+	account := f.account(t, "lifetime-claimer")
+
+	result, err := f.store.Claim(ctx, account.ID, code.Code)
+	if err != nil {
+		t.Fatalf("claim permanent code: %v", err)
+	}
+	if result.GroupID != target.ID || result.GroupName != target.Name || result.Days != 0 || result.ExpiresAt != 0 {
+		t.Fatalf("result = %+v, want group %s (%s) / days=0 / expires_at=0", result, target.ID, target.Name)
+	}
+
+	updated, err := f.users.ByID(ctx, nil, account.ID)
+	if err != nil {
+		t.Fatalf("read account: %v", err)
+	}
+	if updated.GroupID != target.ID || updated.GroupExpiresAt != 0 {
+		t.Fatalf("account after claim = %+v, want group %s with group_expires_at=0", updated, target.ID)
+	}
+
+	// ResolveMembership must preserve the permanent group, not expire it.
+	resolved, err := f.users.ResolveMembership(ctx, nil, updated)
+	if err != nil {
+		t.Fatalf("resolve membership: %v", err)
+	}
+	if resolved.GroupID != target.ID || resolved.GroupExpiresAt != 0 {
+		t.Fatalf("resolved membership = %+v, want group %s with group_expires_at=0", resolved, target.ID)
+	}
+
+	// Also verify that a trial user claiming a permanent code in the same group upgrades to permanent.
+	trialAccount := f.account(t, "trial-claimer")
+	trialExpiry := time.Now().Add(3 * 24 * time.Hour).UnixMilli()
+	if _, err := f.users.UpdateAdminFields(ctx, nil, trialAccount.ID, user.AdminUpdate{
+		GroupID: &target.ID, GroupExpiresAt: &trialExpiry,
+	}); err != nil {
+		t.Fatalf("set trial: %v", err)
+	}
+
+	secondCode := f.partnerCode(t, "LIFETIMECODE2", target.ID, 0, 0, 0)
+	upgradedResult, err := f.store.Claim(ctx, trialAccount.ID, secondCode.Code)
+	if err != nil {
+		t.Fatalf("claim permanent code on trial: %v", err)
+	}
+	if upgradedResult.ExpiresAt != 0 {
+		t.Fatalf("upgraded result expires_at = %d, want 0", upgradedResult.ExpiresAt)
+	}
+	upgradedUser, err := f.users.ByID(ctx, nil, trialAccount.ID)
+	if err != nil {
+		t.Fatalf("read upgraded user: %v", err)
+	}
+	if upgradedUser.GroupID != target.ID || upgradedUser.GroupExpiresAt != 0 {
+		t.Fatalf("upgraded user = %+v, want permanent (expires_at=0)", upgradedUser)
+	}
+}
+
 // TestClaimRefusesOtherGroup: an account in some group that has nothing to
 // do with the code is refused rather than moved — Claim never replaces a
 // membership it did not grant.
