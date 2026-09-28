@@ -2,10 +2,12 @@ package httpx
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 )
 
 // Resolving who is calling.
@@ -21,6 +23,11 @@ import (
 // flag, and the header is walked from the right — past the hops you trust —
 // until it reaches one you do not. That entry is the earliest address in the
 // chain that a proxy of yours actually observed.
+
+// warnUnclaimedCloudflare fires once per process: every request through
+// that proxy would otherwise repeat it, and one line is all an operator
+// needs to notice a topology they have not told the server about.
+var warnUnclaimedCloudflare sync.Once
 
 // ProxyTrust is the set of peers whose forwarded headers are believed.
 type ProxyTrust struct {
@@ -121,11 +128,20 @@ func ClientIP(r *http.Request, trust ProxyTrust) string {
 	// Believing it rests entirely on the operator's word that Cloudflare is
 	// the outermost hop; without that word, a caller behind any other proxy
 	// names whatever address they like and every limit keyed on it follows.
-	if trust.cloudflare {
-		if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
-			if address, err := netip.ParseAddr(stripPort(cf)); err == nil {
+	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+		if address, err := netip.ParseAddr(stripPort(cf)); err == nil {
+			if trust.cloudflare {
 				return address.Unmap().String()
 			}
+			// The peer is trusted and the header parses, yet no claim was
+			// made: either this deployment sits behind Cloudflare and the
+			// operator has not said so — in which case every address-keyed
+			// limit is about to key on the forwarding chain instead — or a
+			// client is sending the header for noise. Both are worth a line.
+			warnUnclaimedCloudflare.Do(func() {
+				slog.Warn("a trusted proxy forwarded CF-Connecting-IP while OBSIDIAN_TRUST_CLOUDFLARE is off; " +
+					"claim Cloudflare if this deployment sits behind it, or the address walk will key on the chain")
+			})
 		}
 	}
 
