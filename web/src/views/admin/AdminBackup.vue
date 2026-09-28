@@ -79,7 +79,8 @@ const nextRunLabel = computed(() => {
 });
 
 const visibility = useDocumentVisibility();
-let refreshing = false;
+let inFlightCount = 0;
+let refreshSeq = 0;
 const statusPollInterval = computed(() => snapshot.value?.running ? 5000 : 30000);
 const { pause: pauseStatusPoll, resume: resumeStatusPoll } = useIntervalFn(() => {
   if (visibility.value === 'visible') void refreshStatus();
@@ -92,6 +93,11 @@ watch(
   },
   { immediate: true },
 );
+watch(dirty, (isDirty) => {
+  if (isDirty && loaded.value) {
+    notice.value = '';
+  }
+});
 
 function message(failure: unknown): string {
   return failure instanceof ApiError ? failure.message : String(failure);
@@ -130,16 +136,26 @@ async function load(): Promise<void> {
   }
 }
 
-async function refreshStatus(): Promise<void> {
-  if (refreshing) return;
-  refreshing = true;
+// Polling drops overlapping ticks, but explicit actions (save, test, run)
+// force a fresh fetch. Tracking inFlightCount ensures an older request
+// finishing cannot prematurely re-enable background polling while a newer
+// forced fetch is still running. Background polling never overwrites user
+// action errors.
+async function refreshStatus(fromAction = false): Promise<void> {
+  if (inFlightCount > 0 && !fromAction) return;
+  inFlightCount++;
+  const seq = ++refreshSeq;
   try {
-    snapshot.value = await adminApi.backup();
-    actionError.value = '';
+    const data = await adminApi.backup();
+    if (seq === refreshSeq) {
+      snapshot.value = data;
+    }
   } catch (failure) {
-    actionError.value = message(failure);
+    if (fromAction && seq === refreshSeq) {
+      actionError.value = message(failure);
+    }
   } finally {
-    refreshing = false;
+    inFlightCount--;
   }
 }
 
@@ -158,7 +174,7 @@ async function save(): Promise<void> {
     if (form.value.secret_access_key === input.secret_access_key) form.value.secret_access_key = '';
     baseline.value = JSON.stringify({ ...input, access_key_id: '', secret_access_key: '' });
     notice.value = t('backupSaved');
-    await refreshStatus();
+    await refreshStatus(true);
   } catch (failure) {
     actionError.value = message(failure);
   } finally {
@@ -174,7 +190,7 @@ async function testStorage(): Promise<void> {
   try {
     await adminApi.testBackup();
     notice.value = t('backupTestSucceeded');
-    await refreshStatus();
+    await refreshStatus(true);
   } catch (failure) {
     actionError.value = message(failure);
   } finally {
@@ -190,7 +206,7 @@ async function runBackup(): Promise<void> {
   try {
     await adminApi.runBackup();
     notice.value = t('backupRunStarted');
-    await refreshStatus();
+    await refreshStatus(true);
   } catch (failure) {
     actionError.value = message(failure);
   } finally {
@@ -270,7 +286,8 @@ onMounted(load);
             {{ busy && !dirty ? t('backupStatusRunning') : t('backupRun') }}
           </button>
         </div>
-        <p class="oa-field-hint">{{ t('backupActionsHint') }}</p>
+        <p v-if="dirty" class="oa-field-hint">{{ t('backupActionsHint') }}</p>
+        <p v-else-if="!snapshot?.configured" class="oa-field-hint">{{ t('backupStorageMissing') }}</p>
         <p v-if="actionError" class="oa-field-hint" role="alert">{{ actionError }}</p>
         <p v-else-if="notice" class="oa-field-hint" role="status">{{ notice }}</p>
       </AdminControlCard>

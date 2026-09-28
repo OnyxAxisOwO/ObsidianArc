@@ -167,4 +167,143 @@ describe('admin instance backup', () => {
     await settle();
     expect(host.textContent).toContain(t('backupStatusSuccess'));
   });
+
+  it('only shows save hint when configuration is dirty, clearing it on save', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
+    vi.spyOn(adminApi, 'saveBackup').mockResolvedValue(undefined);
+    await mountBackup();
+
+    const testBtn = button(host, t('backupTest'));
+    const runBtn = button(host, t('backupRun'));
+    expect(testBtn.disabled).toBe(false);
+    expect(runBtn.disabled).toBe(false);
+    expect(host.textContent).not.toContain(t('backupActionsHint'));
+
+    const prefix = fieldInput(t('backupPrefix'));
+    prefix.value = 'changed-prefix';
+    prefix.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+
+    expect(testBtn.disabled).toBe(true);
+    expect(runBtn.disabled).toBe(true);
+    expect(host.textContent).toContain(t('backupActionsHint'));
+
+    button(actions, t('save')).click();
+    await settle();
+
+    expect(testBtn.disabled).toBe(false);
+    expect(runBtn.disabled).toBe(false);
+    expect(host.textContent).not.toContain(t('backupActionsHint'));
+    expect(host.textContent).toContain(t('backupSaved'));
+
+    // Editing a field after save should clear the saved notice so it does not
+    // contradict the newly displayed save hint.
+    prefix.value = 'changed-again';
+    prefix.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+
+    expect(testBtn.disabled).toBe(true);
+    expect(runBtn.disabled).toBe(true);
+    expect(host.textContent).toContain(t('backupActionsHint'));
+    expect(host.textContent).not.toContain(t('backupSaved'));
+  });
+
+  it('shows storage missing hint instead of save hint when unconfigured and clean', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue({
+      ...backup,
+      configured: false,
+      secret_configured: false,
+      endpoint: '',
+      bucket: '',
+    });
+    await mountBackup();
+
+    const testBtn = button(host, t('backupTest'));
+    const runBtn = button(host, t('backupRun'));
+    expect(testBtn.disabled).toBe(true);
+    expect(runBtn.disabled).toBe(true);
+    expect(host.textContent).not.toContain(t('backupActionsHint'));
+    expect(host.textContent).toContain(t('backupStorageMissing'));
+  });
+
+  it('preserves action error across subsequent successful background polling', async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
+    vi.spyOn(adminApi, 'testBackup').mockRejectedValue(new Error('connection timeout'));
+    await mountBackup();
+
+    button(host, t('backupTest')).click();
+    await settle();
+    expect(host.textContent).toContain('connection timeout');
+
+    // Automatic background poll runs 30s later and resolves successfully.
+    // It must not erase the test error that the operator is inspecting.
+    await vi.advanceTimersByTimeAsync(30000);
+    await settle();
+    expect(host.textContent).toContain('connection timeout');
+  });
+
+  it('correctly updates configured status when saving while background poll was in flight', async () => {
+    const unconfigured: AdminBackup = {
+      ...backup,
+      configured: false,
+      secret_configured: false,
+      endpoint: '',
+      bucket: '',
+    };
+    const configured: AdminBackup = {
+      ...backup,
+      configured: true,
+      secret_configured: true,
+      endpoint: 'https://storage.example.com',
+      bucket: 'arc-backups',
+    };
+
+    let resolvePoll: ((val: AdminBackup) => void) | undefined;
+    const pollPromise = new Promise<AdminBackup>((resolve) => {
+      resolvePoll = resolve;
+    });
+
+    // First call is mount load, second call is background poll (stuck in flight),
+    // third call is save refresh.
+    vi.spyOn(adminApi, 'backup')
+      .mockResolvedValueOnce(unconfigured)
+      .mockReturnValueOnce(pollPromise)
+      .mockResolvedValueOnce(configured);
+    vi.spyOn(adminApi, 'saveBackup').mockResolvedValue(undefined);
+
+    await mountBackup();
+
+    const testBtn = button(host, t('backupTest'));
+    const runBtn = button(host, t('backupRun'));
+    expect(testBtn.disabled).toBe(true);
+    expect(runBtn.disabled).toBe(true);
+
+    // Trigger in-flight poll
+    void adminApi.backup();
+
+    // Fill form and save
+    const endpoint = fieldInput(t('backupEndpoint'));
+    endpoint.value = 'https://storage.example.com';
+    endpoint.dispatchEvent(new Event('input', { bubbles: true }));
+    const bucketField = fieldInput(t('backupBucket'));
+    bucketField.value = 'arc-backups';
+    bucketField.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+
+    const savePromise = (async () => {
+      button(actions, t('save')).click();
+      await settle();
+    })();
+
+    // Background poll finishes before save refresh returns
+    resolvePoll!(unconfigured);
+    await savePromise;
+
+    expect(testBtn.disabled).toBe(false);
+    expect(runBtn.disabled).toBe(false);
+    expect(host.textContent).not.toContain(t('backupActionsHint'));
+    expect(host.textContent).not.toContain(t('backupStorageMissing'));
+  });
 });
