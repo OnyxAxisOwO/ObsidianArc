@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
@@ -21,6 +22,9 @@ func makeTestJWT(payload map[string]any) string {
 	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
 	return headerB64 + "." + payloadB64 + ".fake-sig"
 }
+
+// an expiry comfortably inside any reasonable test runtime
+func testFutureExp() int64 { return time.Now().Add(time.Hour).Unix() }
 
 func TestParseIDTokenClaims(t *testing.T) {
 	cases := []struct {
@@ -153,6 +157,7 @@ func TestIdentifyOIDC(t *testing.T) {
 			"email":              "david@example.com",
 			"email_verified":     true,
 			"preferred_username": "david01",
+			"exp":                testFutureExp(),
 		})
 		creds := Credentials{} // No userinfo URL
 		tokens := tokenResponse{IDToken: idToken}
@@ -171,6 +176,7 @@ func TestIdentifyOIDC(t *testing.T) {
 			"sub":            "sub-unverified",
 			"email":          "eve@example.com",
 			"email_verified": false,
+			"exp":            testFutureExp(),
 		})
 		tokens := tokenResponse{IDToken: idToken}
 
@@ -198,6 +204,7 @@ func TestIdentifyOIDC(t *testing.T) {
 			"sub":            "sub-prefix",
 			"email":          "frank.castle@example.com",
 			"email_verified": true,
+			"exp":            testFutureExp(),
 		})
 		id, err := identifyOIDC(ctx, http.DefaultClient, Credentials{}, tokenResponse{IDToken: idToken})
 		if err != nil {
@@ -211,12 +218,125 @@ func TestIdentifyOIDC(t *testing.T) {
 	t.Run("missing sub returns error", func(t *testing.T) {
 		idToken := makeTestJWT(map[string]any{
 			"email": "nosub@example.com",
+			"exp":   testFutureExp(),
 		})
 		_, err := identifyOIDC(ctx, http.DefaultClient, Credentials{}, tokenResponse{IDToken: idToken})
 		if !errors.Is(err, ErrUnavailable) {
 			t.Errorf("got error %v, want ErrUnavailable", err)
 		}
 	})
+}
+
+func TestIdentifyOIDCRejectsInvalidIDTokens(t *testing.T) {
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour).Unix()
+	cases := []struct {
+		name    string
+		creds   Credentials
+		payload map[string]any
+	}{
+		{
+			name:    "issuer is not the configured one",
+			creds:   Credentials{Issuer: "https://idp.example.com", ClientID: "arc"},
+			payload: map[string]any{"iss": "https://elsewhere.example.com", "aud": "arc", "exp": testFutureExp()},
+		},
+		{
+			name:    "audience does not name this client",
+			creds:   Credentials{ClientID: "arc"},
+			payload: map[string]any{"aud": "another-client", "exp": testFutureExp()},
+		},
+		{
+			name:    "several audiences without azp",
+			creds:   Credentials{ClientID: "arc"},
+			payload: map[string]any{"aud": []string{"arc", "another"}, "exp": testFutureExp()},
+		},
+		{
+			name:    "azp names another client",
+			creds:   Credentials{ClientID: "arc"},
+			payload: map[string]any{"aud": []string{"arc", "another"}, "azp": "another", "exp": testFutureExp()},
+		},
+		{
+			name:    "expired",
+			creds:   Credentials{},
+			payload: map[string]any{"sub": "sub-late", "exp": past},
+		},
+		{
+			name:    "no exp",
+			creds:   Credentials{},
+			payload: map[string]any{"sub": "sub-eternal"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			token := makeTestJWT(tc.payload)
+			_, err := identifyOIDC(ctx, http.DefaultClient, tc.creds, tokenResponse{IDToken: token})
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("error = %v, want ErrUnavailable", err)
+			}
+		})
+	}
+}
+
+// The positive sides of the same rules: a token naming the configured
+// issuer and client passes, and several audiences pass when azp singles
+// this client out.
+func TestIdentifyOIDCAcceptsClaimsMatchingTheConfiguration(t *testing.T) {
+	ctx := context.Background()
+	creds := Credentials{Issuer: "https://idp.example.com", ClientID: "arc"}
+
+	token := makeTestJWT(map[string]any{
+		"iss": "https://idp.example.com",
+		"sub": "sub-matched",
+		"aud": "arc",
+		"exp": testFutureExp(),
+	})
+	id, err := identifyOIDC(ctx, http.DefaultClient, creds, tokenResponse{IDToken: token})
+	if err != nil {
+		t.Fatalf("identifyOIDC: %v", err)
+	}
+	if id.Subject != "sub-matched" {
+		t.Errorf("Subject = %q, want sub-matched", id.Subject)
+	}
+
+	multi := makeTestJWT(map[string]any{
+		"iss": "https://idp.example.com",
+		"sub": "sub-azp",
+		"aud": []string{"another", "arc"},
+		"azp": "arc",
+		"exp": testFutureExp(),
+	})
+	if _, err := identifyOIDC(ctx, http.DefaultClient, creds, tokenResponse{IDToken: multi}); err != nil {
+		t.Fatalf("identifyOIDC multi-audience: %v", err)
+	}
+}
+
+// A token the parser cannot read used to be treated as no token at all,
+// letting the identity fall through to whatever else was available. A
+// provider sending one is misbehaving, and silent tolerance is exactly how
+// a fallback becomes the only line of defence without anyone noticing.
+func TestIdentifyOIDCRejectsMalformedIDToken(t *testing.T) {
+	_, err := identifyOIDC(context.Background(), http.DefaultClient, Credentials{}, tokenResponse{IDToken: "garbage"})
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("error = %v, want ErrUnavailable", err)
+	}
+}
+
+// The discovery document names the issuer it speaks for; endpoints from any
+// other document belong to somebody else's deployment.
+func TestOIDCDiscoveryRejectsAlienIssuer(t *testing.T) {
+	ctx := context.Background()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 "https://elsewhere.example.com",
+			"authorization_endpoint": "http://" + r.Host + "/oauth/auth",
+			"token_endpoint":         "http://" + r.Host + "/oauth/token",
+		})
+	}))
+	defer server.Close()
+
+	if _, err := (&Service{}).discover(ctx, server.Client(), server.URL); err == nil {
+		t.Fatal("a discovery document naming another issuer was accepted")
+	}
 }
 
 func TestOIDCDiscovery(t *testing.T) {
