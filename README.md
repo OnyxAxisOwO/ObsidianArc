@@ -30,6 +30,7 @@
 ### 功能列表
 
 - **用户管理与权限分组**：支持账号注册、登录与密码管理。管理员可通过用户组控制不同群体的可用模型列表与额度池。
+- **注册与安全**：可限制邮箱域名、启用邮件验证、检测临时邮箱；支持 Turnstile 人机验证与自研的可调难度工作量证明（PoW）两种校验方式，可分别用于注册、登录、API 密钥创建与聊天限速；可选的模型注册审核按用户名、邮箱等信息判断放行、限制或拒绝，并将结果单独记入安全日志。
 - **邀请码**：注册可设为开放、仅限邀请或关闭三档；管理员可批量生成邀请码，或生成一个绑定分组与随机试用天数的自定义合作方码（用于合作/赞助商链接，默认已注册账户也可直接领取，无需重新注册）；账户也可开启个人邀请码，按「每邀请 N 人奖励 M 张重置卡」的节奏发放邀请奖励。
 - **服务商聚合与模型路由**：兼容 Anthropic Messages API 及兼容 OpenAI 协议的接口（OpenAI、DeepSeek、xAI、OpenRouter、Groq、Ollama、vLLM）。支持单个提供商挂载多款模型、模型映射路由（外部模型 ID 路由到底层实际模型 ID）与模型别名（`api_name`）。
 - **流式传输与推理过程解析**：基于 Server-Sent Events (SSE) 传输流式文本与推理思维链（reasoning effort / thinking budget）；客户端取消请求时即时终止向上游发送数据；支持在单条会话中途切换不同模型。
@@ -45,8 +46,14 @@
 - **管理工作台（Workbench）与终端**：管理后台采用模块化工作台架构，提供清晰的分组导航、响应式选项卡与草稿自动暂存（`settingsDraft`）。右上角账户菜单里的**终端**是一个命令行界面，所有账号都能用（用户组可以关掉），每个人只能运行自己在页面上本来就能做的事：普通用户管理自己的资料、密钥、对话、项目、额度、反馈与生图记录，管理员另外获得其授权对应的全部后台命令（`user`、`group`、`model`、`health`、`usage` 等）。覆盖全部后台管理接口和账户侧所有可设置、可更改的接口，支持多标签页、双语 `help`、Tab 补全与 `--json` 输出；设置 `OBSIDIAN_SSH_ADDR` 后可通过 `ssh 用户名@域名` 直接连接（连上的是终端，不是服务器 shell），并可作为单条命令被脚本调用。
 - **服务健康与可用性监控**：实时记录运行时间与健康状态；对空闲模型进行定时探活；支持连续失败自动熔断与警告阈值（`health.warn_below`）；管理员可在系统设置中控制普通用户是否可见状态页面，对非管理员请求自动脱敏上游信息。
 - **图像实验室（Image Lab）**：支持图像生成模型调用、宽高比切换、灯箱缩放与图片下载；支持在后台独立标记模型的生图能力。
-- **用量核算与配额控制**：每次对话和 API 调用记录到用量账本；支持按 5 小时、周、月周期，针对请求次数、Token 消耗或积分设置限制；使用数据库行锁避免并发透支。
+- **用量核算与配额控制**：每次对话和 API 调用记录到用量账本；支持按 5 小时、周、月周期，针对请求次数、Token 消耗或积分设置限制；使用数据库行锁避免并发透支；管理员可批量生成兑换码或直接给账户发放重置卡，供用户按周期自行恢复额度。
 - **两步验证（2FA）**：用户可在「设置 → 安全」中按向导绑定身份验证器（TOTP，兼容 Google Authenticator、Microsoft Authenticator 等），扫码或手动输入密钥，并获得一次性恢复码；登录（含 GitHub / Google 登录与 SSH 终端）在密码之后再要求验证码。管理员可在「安全 → 两步验证」中设置强制策略：可选、管理员进入后台时必须绑定、所有管理员必须绑定、所有用户必须绑定；可设置验证器中显示的名称与「记住浏览器」天数，查看启用情况，并为丢失手机的用户重置两步验证。
+- **第三方登录与 OpenID Connect**：登录页可开启「使用 GitHub / Google 继续」，按对方平台已验证的邮箱或不会变更的用户 ID 识别已有账户，避免邮箱易主带来的风险；本站同时可作为标准 OpenID Connect 身份提供方（`/.well-known/openid-configuration`、登记登录应用、PKCE、令牌吊销）供外部软件接入，管理员可要求部分或全部账户完成身份绑定后才能继续使用。
+- **访客首页与试用**：首页可选登录页、内置官网介绍页、管理员自定义介绍页，或直接开放的访客对话四种展示模式；访客对话模式下可配置试用模型、轮数上限与独立的频率/并发限制，访客无需注册即可体验对话。
+- **排行榜**：可选择向登录用户展示按 Token 或请求数排名的使用排行榜，昵称、匿名或固定标识三种身份展示方式由管理员决定，是否展示模型分布同样可配置。
+- **公告与站内通知**：管理员可发布支持 Markdown 的公告，展示方式分为一次性提醒、持续提醒与仅列表可见三档；也可在首页展示一段纯文本通知，支持用户手动关闭。
+- **用户反馈**：账户菜单内置反馈入口，用户提交 Bug 或建议后可在同一条会话里追加说明；管理员在后台统一查看、回复与处理全部反馈，形成可追溯的往来记录而非散落在邮箱里。
+- **实例备份与个人数据导出**：超级管理员可配置到 S3 兼容存储（含 Cloudflare R2）的定时全量备份与保留策略，也支持从归档离线恢复；账户可随时导出或导入自己的对话数据与偏好设置。
 - **界面与安全设计**：前端采用 Vue 模板插值渲染，不使用 `innerHTML` 与 `v-html`；上游 API Key 在数据库中加密存储；提供浅色、深色与跟随系统的界面配色。
 
 ---
@@ -127,6 +134,7 @@ Online documentation is hosted on Cloudflare Pages:
 ### Capabilities
 
 - **Accounts and Groups**: Registration, authentication, and session management. User groups allow operators to assign model access lists and shared credit allowances.
+- **Registration and Security**: Email domain allowlists, optional email verification, and disposable-address detection. Turnstile and a self-developed, difficulty-tunable proof-of-work challenge are both available for signup, login, API key creation, and chat rate limiting. An optional model-based signup review can allow, restrict, or refuse a new account from its username and email, logged separately in the security audit trail.
 - **Invite Codes**: Registration can be open, invite-only, or closed. Administrators mint batches of codes, or one named partner code with a target group and a randomized trial length for sponsor and affiliate links — claimable by an existing account as well as a new signup by default. Accounts can also carry a personal invite code that pays out reset cards on a configurable "every N invites" cadence.
 - **Provider Aggregation and Model Routing**: Compatible with Anthropic Messages API and OpenAI-compatible endpoints (OpenAI, DeepSeek, xAI, OpenRouter, Groq, Ollama, vLLM). Supports mapping multiple models per provider, model routing (mapping exposed names to internal identifiers), and aliases (`api_name`).
 - **Streaming and Reasoning Display**: Server-Sent Events (SSE) streaming with live reasoning effort and thinking budget extraction. Client disconnection cancels outbound requests to stop provider billing. Supports switching models mid-conversation.
@@ -142,8 +150,14 @@ Online documentation is hosted on Cloudflare Pages:
 - **Admin Workbench & Terminal**: Modular administration workbench with categorized navigation, responsive tabs, and automatic form draft recovery (`settingsDraft`). The **Terminal** in the account menu is a command line every account can open (a group can switch it off), and it runs only what that account could already do on its own screens: an ordinary account manages its own profile, keys, conversations, projects, credit, feedback and image history, and an administrator also gets the backoffice commands their grants cover (`user`, `group`, `model`, `health`, `usage`, …). It covers every administrative endpoint and every account-side setting that can be changed, with bilingual `help`, tab completion, and `--json` output. Setting `OBSIDIAN_SSH_ADDR` serves the same terminal over SSH (`ssh user@host`), scriptable one command at a time.
 - **Uptime Monitoring and Circuit Breaking**: Uptime tracking and health status checks; automated periodic probe checks for idle models; automatic circuit breaking on consecutive upstream failures and warning thresholds (`health.warn_below`); configurable public visibility with credential stripping for non-admin requests.
 - **Image Lab**: Standalone image generation interface with aspect-ratio selection, lightbox zoom, and download controls; capability flags distinguish drawing models from text models.
-- **Usage Accounting and Rate Limits**: Per-turn usage recorded into an append-only ledger; supports request count, token, and credit limits across 5-hour, weekly, and monthly windows; row-level database locks prevent concurrent overdrafts.
+- **Usage Accounting and Rate Limits**: Per-turn usage recorded into an append-only ledger; supports request count, token, and credit limits across 5-hour, weekly, and monthly windows; row-level database locks prevent concurrent overdrafts; administrators mint redemption codes or grant reset cards directly so accounts can restore their own allowance on a schedule.
 - **Two-step verification (2FA)**: A guided setup under Settings → Security binds an authenticator app (TOTP — Google Authenticator, Microsoft Authenticator and the like) by QR code or typed key, with one-time recovery codes. Signing in — with a password, with GitHub or Google, or over the SSH terminal — then asks for a code as well. Operators choose who must have it (nobody, administrators before using the backoffice, all administrators, or everyone), the name apps show, and how long a browser may be remembered; they can see adoption and reset it for somebody who lost their phone.
+- **Third-party Sign-in and OpenID Connect**: The sign-in page can offer "Continue with GitHub / Google", matching existing accounts by the provider's verified email or its own stable user ID rather than a mutable address. The instance can also act as a standards-compliant OpenID Connect provider (`/.well-known/openid-configuration`, registered client apps, PKCE, token revocation) for other software to sign in against, and operators can require some or all accounts to link an identity before continuing.
+- **Guest Landing and Trial**: The signed-out landing page can be a login screen, a built-in marketing page, an operator-authored intro page, or an open guest chat; guest chat mode lets operators pick the trial model, a turn cap, and its own rate and concurrency limits so visitors can try the product without registering.
+- **Leaderboard**: An optional ranking of signed-in accounts by tokens or requests, shown by nickname, anonymously, or by a fixed handle at the operator's choice, with model-usage breakdown as a separate toggle.
+- **Announcements and Site Notices**: Markdown announcements with silent, once, or always reminder modes; a plain-text banner on the landing page that visitors can dismiss.
+- **User Feedback**: A feedback panel in the account menu lets anyone file a bug or an idea and keep following up in the same thread; administrators triage, reply, and resolve every submission from one backoffice page instead of a scattered inbox.
+- **Instance Backups and Personal Export**: Super administrators can schedule full-instance backups to an S3-compatible store (including Cloudflare R2) with a configurable retention window, and restore from an archive offline; any account can export or import its own conversations and preferences.
 - **Security and Rendering**: Frontend uses Vue template bindings with no `innerHTML` or `v-html`; upstream credentials stored encrypted; dark, light, and system theme options.
 
 ---
