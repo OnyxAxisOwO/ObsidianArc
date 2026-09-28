@@ -313,6 +313,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.TrustCloudflare {
+		proxyTrust = proxyTrust.WithCloudflare()
+	}
 	authService.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	if cfg.TrustProxy && len(cfg.TrustedProxies) == 0 {
 		slog.WarnContext(ctx, "trusting forwarded headers from any private address; "+

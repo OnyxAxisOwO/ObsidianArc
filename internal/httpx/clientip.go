@@ -2,10 +2,12 @@ package httpx
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 )
 
 // Resolving who is calling.
@@ -22,9 +24,15 @@ import (
 // until it reaches one you do not. That entry is the earliest address in the
 // chain that a proxy of yours actually observed.
 
+// warnUnclaimedCloudflare fires once per process: every request through
+// that proxy would otherwise repeat it, and one line is all an operator
+// needs to notice a topology they have not told the server about.
+var warnUnclaimedCloudflare sync.Once
+
 // ProxyTrust is the set of peers whose forwarded headers are believed.
 type ProxyTrust struct {
-	prefixes []netip.Prefix
+	prefixes   []netip.Prefix
+	cloudflare bool
 }
 
 // The networks a reverse proxy sits on in almost every deployment: the same
@@ -81,6 +89,16 @@ func NewProxyTrust(enabled bool, cidrs []string) (ProxyTrust, error) {
 // Enabled reports whether any forwarded header will ever be believed.
 func (p ProxyTrust) Enabled() bool { return len(p.prefixes) > 0 }
 
+// WithCloudflare marks the operator's claim that Cloudflare sits in front
+// of this deployment. CF-Connecting-IP is one any client can put on a
+// wire: Cloudflare overwrites it on its own edge, but a plain Caddy or
+// nginx passes a caller-supplied one straight through. Only the operator
+// knows which world this is, so only they can switch it on.
+func (p ProxyTrust) WithCloudflare() ProxyTrust {
+	p.cloudflare = true
+	return p
+}
+
 func (p ProxyTrust) trusts(address netip.Addr) bool {
 	if !address.IsValid() {
 		return false
@@ -105,12 +123,25 @@ func ClientIP(r *http.Request, trust ProxyTrust) string {
 		return addrString(peer, r.RemoteAddr)
 	}
 
-	// Cloudflare sets CF-Connecting-IP to the visitor's authentic address.
-	// When arriving through a trusted proxy (such as Caddy or a local reverse proxy),
-	// this header holds the actual client address that Cloudflare observed.
+	// CF-Connecting-IP has no chain behind it, only a bare value, so the
+	// walk's discipline cannot vet it the way it vets X-Forwarded-For.
+	// Believing it rests entirely on the operator's word that Cloudflare is
+	// the outermost hop; without that word, a caller behind any other proxy
+	// names whatever address they like and every limit keyed on it follows.
 	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
 		if address, err := netip.ParseAddr(stripPort(cf)); err == nil {
-			return address.Unmap().String()
+			if trust.cloudflare {
+				return address.Unmap().String()
+			}
+			// The peer is trusted and the header parses, yet no claim was
+			// made: either this deployment sits behind Cloudflare and the
+			// operator has not said so — in which case every address-keyed
+			// limit is about to key on the forwarding chain instead — or a
+			// client is sending the header for noise. Both are worth a line.
+			warnUnclaimedCloudflare.Do(func() {
+				slog.Warn("a trusted proxy forwarded CF-Connecting-IP while OBSIDIAN_TRUST_CLOUDFLARE is off; " +
+					"claim Cloudflare if this deployment sits behind it, or the address walk will key on the chain")
+			})
 		}
 	}
 

@@ -44,6 +44,9 @@ func TestDefaultsAreTheDocumentedOnes(t *testing.T) {
 	if len(cfg.TrustedProxies) != 0 {
 		t.Errorf("TrustedProxies = %v, want empty", cfg.TrustedProxies)
 	}
+	if cfg.TrustCloudflare {
+		t.Error("CF-Connecting-IP is believed without the operator's claim")
+	}
 	if !cfg.Session.SecureCookie {
 		t.Error("the session cookie is not marked secure by default")
 	}
@@ -196,6 +199,12 @@ func TestImplicitTLSFollowsThePort(t *testing.T) {
 	}
 }
 
+func TestTrustCloudflareParsesOn(t *testing.T) {
+	if !load(t, map[string]string{"TRUST_CLOUDFLARE": "true"}).TrustCloudflare {
+		t.Error("TRUST_CLOUDFLARE=true was not read as the claim")
+	}
+}
+
 // A value that will not parse falls back to the default rather than refusing
 // to boot. That is a deliberate choice — a typo in a tuning knob should not
 // take the server down — and it means a typo is silent, so it is worth
@@ -205,6 +214,7 @@ func TestUnparseableValuesFallBackToTheDefault(t *testing.T) {
 		"SESSION_TTL":      "not-a-duration",
 		"DB_MAX_CONNS":     "several",
 		"TRUST_PROXY":      "maybe",
+		"TRUST_CLOUDFLARE": "maybe",
 		"SMTP_PORT":        "",
 		"ARGON_MEMORY_KIB": "lots",
 	})
@@ -216,6 +226,9 @@ func TestUnparseableValuesFallBackToTheDefault(t *testing.T) {
 	}
 	if cfg.TrustProxy {
 		t.Error("an unparseable TRUST_PROXY was read as true")
+	}
+	if cfg.TrustCloudflare {
+		t.Error("an unparseable TRUST_CLOUDFLARE was read as true")
 	}
 	if cfg.Mail.Port != 587 {
 		t.Errorf("Port = %d, want 587", cfg.Mail.Port)
