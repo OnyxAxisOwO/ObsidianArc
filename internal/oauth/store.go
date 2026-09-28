@@ -134,6 +134,19 @@ func (s *Store) Count(ctx context.Context, q database.Queryer, userID string) (i
 	return count, nil
 }
 
+// HasProvider reports whether an account already holds a connection to one
+// named provider. Used by the OIDC binding gate, which cares about exactly
+// one provider rather than the count Count answers for the unlink check.
+func (s *Store) HasProvider(ctx context.Context, q database.Queryer, userID, provider string) (bool, error) {
+	var count int
+	if err := s.queryer(q).QueryRow(ctx,
+		`SELECT COUNT(*) FROM oauth_identities WHERE user_id = ? AND provider = ?`,
+		userID, provider).Scan(&count); err != nil {
+		return false, fmt.Errorf("oauth: check provider connection: %w", err)
+	}
+	return count > 0, nil
+}
+
 // Unlink removes one connection. The boolean is whether there was one, so a
 // second click on a stale screen is reported rather than silently succeeding.
 func (s *Store) Unlink(ctx context.Context, q database.Queryer, userID, provider string) (bool, error) {

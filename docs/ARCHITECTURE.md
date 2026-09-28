@@ -216,8 +216,8 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 22.23 MB (18.51 MB `-tags nosqlite`, Linux amd64) |
-| Frontend, on the wire | < 135 kB | 211.37 kB to open the chat (173.49 JS + 37.88 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 22.43 MB (18.71 MB `-tags nosqlite`, Linux amd64) |
+| Frontend, on the wire | < 135 kB | 218.39 kB to open the chat (180.54 JS + 37.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
@@ -259,6 +259,18 @@ by 1.29 kB to 83.97 kB for the partner/claims columns, and the Chinese
 dictionary to 34.80 kB. The binary grew by 61 kB with SQLite (21,430,432
 bytes) and 66 kB without (17,719,456) — the larger embedded frontend, Go
 1.27.1.
+
+Remeasured on 2026-09-28 (UTC), after adding the "require OIDC binding for
+every account" policy and its forced-bind screen (`BindOIDCView.vue`, imported
+statically the way `TwoFactorEnrolView.vue` is, for the same reason: it is
+reached from the same router guard, before the chat is known to be usable).
+The chat payload grew to 218.39 kB (180.54 kB JS + 37.85 kB CSS) — mostly the
+new screen's own markup and the account payload's extra field. The admin
+chunk grew to 97.40 kB for the new switch on the security page, and the
+Chinese dictionary to 43.01 kB. The bundle remains seven files. The Linux
+amd64 binary grew by 8 KB to 22,425,760 bytes with SQLite and 18,710,688 bytes
+with `-tags nosqlite`, Go 1.27.1. No new dependency, no migration: the policy
+reads the same `oauth_identities` table Connect and Disconnect already use.
 
 Remeasured on 2026-09-27 (UTC), with the full-instance backup page and the
 concurrent auth-card-position change in the same working tree. The chat

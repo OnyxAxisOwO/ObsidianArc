@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
@@ -383,7 +384,20 @@ func (h *Handlers) finishLink(w http.ResponseWriter, r *http.Request, value stat
 		h.fail(w, r, true, "failed")
 		return
 	}
-	http.Redirect(w, r, "/settings?oauth=connected", http.StatusFound)
+	// Settings by default, the way this flow has always landed — but the
+	// binding gate sends its own start request with next=/bind-oidc's own
+	// destination, and a connection made to satisfy that gate belongs there,
+	// not back at a settings screen the gate would immediately bounce it out
+	// of again.
+	page := value.Next
+	if page == "" {
+		page = "/settings"
+	}
+	sep := "?"
+	if strings.Contains(page, "?") {
+		sep = "&"
+	}
+	http.Redirect(w, r, page+sep+"oauth=connected", http.StatusFound)
 }
 
 // fail sends the browser to a page that can say what happened.

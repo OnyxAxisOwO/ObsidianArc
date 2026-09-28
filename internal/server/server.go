@@ -939,6 +939,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 		return out
 	}
+	// Same import-direction reason: whether an account owes an OIDC
+	// connection is oauth.Service's question to answer, and the account
+	// payload is auth's to build.
+	authHandlers.MustBindOIDC = oauthService.MustBindOIDC
 
 	// And the other direction: this instance as the place somebody else's site
 	// sends people to sign in. internal/idp is the provider; internal/oauth
@@ -1200,6 +1204,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// reaches nothing but the enrolment endpoints, whichever handler it
 		// was asking for.
 		authService.EnrolmentGate(),
+		// Then: an account the operator's OIDC policy says must link an
+		// identity reaches nothing but the connect flow and the endpoints
+		// that read who it is. After the two-step gate rather than before,
+		// so an account owing both factors first proves the one that
+		// protects the account before it pins an identity to it for life.
+		oauthService.BindingGate(),
 		// After it, because the account it names only exists in the context
 		// Attach created — which the log's own layer, further out, never sees.
 		reqlog.Identify(func(r *http.Request) (string, string) {
