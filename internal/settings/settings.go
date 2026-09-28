@@ -137,6 +137,13 @@ const (
 	OAuthOIDCUserInfoURL  = "oauth.oidc_userinfo_url"
 	OAuthOIDCTrustEmail   = "oauth.oidc_trust_email"
 	OAuthOIDCOnlySignup   = "oauth.oidc_only_signup"
+	// Whether every account, including ones that predate this switch, must
+	// carry a linked OIDC identity before it may keep using the rest of the
+	// API. Separate from OAuthOIDCOnlySignup, which only closes the door new
+	// accounts walk through: an operator moving an existing user base onto a
+	// single sign-on provider needs the people already inside to link too,
+	// not just the ones who have not registered yet.
+	OAuthOIDCRequireForAll = "oauth.oidc_require_for_all"
 	// Whether a provider identity nobody here knows may open an account, or
 	// only sign in to one that already exists. On, because an instance that
 	// has closed registration already refuses it through
@@ -606,27 +613,28 @@ var Defaults = map[string]string{
 	// Off, and off even once the credentials are filled in, for the reason
 	// the challenge switches above are: pasting a key is not the same as
 	// opening the door.
-	OAuthGitHubEnabled:    "false",
-	OAuthGitHubID:         "",
-	OAuthGitHubSecret:     "",
-	OAuthGoogleEnabled:    "false",
-	OAuthGoogleID:         "",
-	OAuthGoogleSecret:     "",
-	OAuthOIDCEnabled:      "false",
-	OAuthOIDCClientID:     "",
-	OAuthOIDCClientSecret: "",
-	OAuthOIDCIssuer:       "",
-	OAuthOIDCDisplayName:  "",
-	OAuthOIDCScopes:       "",
-	OAuthOIDCAuthURL:      "",
-	OAuthOIDCTokenURL:     "",
-	OAuthOIDCUserInfoURL:  "",
-	OAuthOIDCTrustEmail:   "false",
-	OAuthOIDCOnlySignup:   "false",
-	OAuthAllowSignup:      "true",
-	OAuthLinkByEmail:      "true",
-	SignupReview:          "false",
-	SignupReviewModel:     "",
+	OAuthGitHubEnabled:     "false",
+	OAuthGitHubID:          "",
+	OAuthGitHubSecret:      "",
+	OAuthGoogleEnabled:     "false",
+	OAuthGoogleID:          "",
+	OAuthGoogleSecret:      "",
+	OAuthOIDCEnabled:       "false",
+	OAuthOIDCClientID:      "",
+	OAuthOIDCClientSecret:  "",
+	OAuthOIDCIssuer:        "",
+	OAuthOIDCDisplayName:   "",
+	OAuthOIDCScopes:        "",
+	OAuthOIDCAuthURL:       "",
+	OAuthOIDCTokenURL:      "",
+	OAuthOIDCUserInfoURL:   "",
+	OAuthOIDCTrustEmail:    "false",
+	OAuthOIDCOnlySignup:    "false",
+	OAuthOIDCRequireForAll: "false",
+	OAuthAllowSignup:       "true",
+	OAuthLinkByEmail:       "true",
+	SignupReview:           "false",
+	SignupReviewModel:      "",
 	// Loose, normal or strict. Normal refuses what reads as generated and
 	// allows what reads as chosen; the other two move the line, and strict
 	// also refuses when the model cannot answer at all.

@@ -30,6 +30,7 @@ import { currentUser, isAdmin, canAdmin, pendingSecondFactor, siteInfo } from '@
 import AboutPanel from '@/views/AboutPanel.vue';
 import ArchivePanel from '@/views/ArchivePanel.vue';
 import AuthView from '@/views/AuthView.vue';
+import BindOIDCView from '@/views/BindOIDCView.vue';
 import CompleteSignupView from '@/views/CompleteSignupView.vue';
 import ConsentView from '@/views/ConsentView.vue';
 import FeedbackPanel from '@/views/FeedbackPanel.vue';
@@ -62,6 +63,9 @@ const routes: RouteRecordRaw[] = [
   // Where the two-step policy holds an account until it enrols. A page for
   // the reason the consent screen is one: nothing behind it would work.
   { path: '/two-factor', component: TwoFactorEnrolView, meta: { auth: true } },
+  // Where the operator's OIDC policy holds an account until it links an
+  // identity. Same reason as above.
+  { path: '/bind-oidc', component: BindOIDCView, meta: { auth: true } },
 
   {
     path: '/',
@@ -131,6 +135,23 @@ router.beforeEach((to) => {
     return { path: '/two-factor', query: next ? { next } : {}, replace: true };
   }
   if (to.path === '/two-factor' && signedIn && !currentUser.value?.two_factor_enrol) {
+    const next = safeNext(to.query['next']);
+    if (next && serverOwned(next)) {
+      window.location.assign(next);
+      return false;
+    }
+    return { path: next || '/', replace: true };
+  }
+
+  // The operator's OIDC policy wants every account to link an identity
+  // before it does anything else. After the two-step check above, so an
+  // account owing both is sent to enrol its factor first — see oauth.
+  // Service.BindingGate for why the server holds the same order.
+  if (signedIn && currentUser.value?.oidc_binding_required && to.path !== '/bind-oidc') {
+    const next = to.path === '/' ? undefined : to.fullPath;
+    return { path: '/bind-oidc', query: next ? { next } : {}, replace: true };
+  }
+  if (to.path === '/bind-oidc' && signedIn && !currentUser.value?.oidc_binding_required) {
     const next = safeNext(to.query['next']);
     if (next && serverOwned(next)) {
       window.location.assign(next);

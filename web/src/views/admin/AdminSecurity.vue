@@ -141,6 +141,7 @@ const form = ref({
   oidcUserInfoURL: '',
   oidcTrustEmail: false,
   oidcOnlySignup: false,
+  oidcRequireForAll: false,
   oauthAllowSignup: true,
   oauthLinkByEmail: true,
   twoFactorPolicy: 'optional',
@@ -399,6 +400,7 @@ function collect(): Record<string, string> {
     'oauth.oidc_userinfo_url': form.value.oidcUserInfoURL.trim(),
     'oauth.oidc_trust_email': String(form.value.oidcTrustEmail),
     'oauth.oidc_only_signup': String(form.value.oidcOnlySignup),
+    'oauth.oidc_require_for_all': String(form.value.oidcRequireForAll),
     'oauth.allow_signup': String(form.value.oauthAllowSignup),
     'oauth.link_by_email': String(form.value.oauthLinkByEmail),
     'security.two_factor_policy': form.value.twoFactorPolicy,
@@ -902,6 +904,7 @@ async function load(): Promise<void> {
       oidcUserInfoURL: values['oauth.oidc_userinfo_url'] ?? '',
       oidcTrustEmail: values['oauth.oidc_trust_email'] === 'true',
       oidcOnlySignup: values['oauth.oidc_only_signup'] === 'true',
+      oidcRequireForAll: values['oauth.oidc_require_for_all'] === 'true',
       oauthAllowSignup: (values['oauth.allow_signup'] ?? 'true') === 'true',
       oauthLinkByEmail: (values['oauth.link_by_email'] ?? 'true') === 'true',
       twoFactorPolicy: values['security.two_factor_policy'] ?? 'optional',
@@ -1485,6 +1488,11 @@ onMounted(load);
               v-model="form.oidcOnlySignup"
               :label="t('oauthOIDCOnlySignup')"
               :hint="t('oauthOIDCOnlySignupHint')"
+            />
+            <OaSwitchField
+              v-model="form.oidcRequireForAll"
+              :label="t('oauthOIDCRequireForAll')"
+              :hint="t('oauthOIDCRequireForAllHint')"
             />
             <OaTextField
               v-model="form.oidcAuthURL"

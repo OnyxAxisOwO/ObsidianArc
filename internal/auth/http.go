@@ -2,10 +2,12 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -35,6 +37,13 @@ type Handlers struct {
 	// ways. A function because an operator switches these on and off while
 	// the process runs.
 	SignInProviders func() []SignInProvider
+	// Whether this account is being held for want of an OpenID Connect
+	// connection — see oauth.Service.MustBindOIDC and settings.
+	// OAuthOIDCRequireForAll. The same import-direction reason as above: this
+	// package cannot ask internal/oauth directly, so the wiring hands it the
+	// question. Nil reports false, the way a build with no oauth wiring at
+	// all has always answered "no third-party sign-ins" to SignInProviders.
+	MustBindOIDC func(ctx context.Context, account user.User) (bool, error)
 }
 
 // SignInProvider is one button on the sign-in card. Nothing secret: the whole
@@ -150,6 +159,11 @@ type accountPayload struct {
 	TwoFactorBackofficeVerify  string `json:"two_factor_backoffice_verify"`
 	TwoFactorBackofficeMinutes int    `json:"two_factor_backoffice_minutes"`
 	TwoFactorBackofficeLocked  bool   `json:"two_factor_backoffice_locked"`
+	// Whether the operator's OIDC policy holds this account until it links
+	// an identity — see MustBindOIDC. The server holds the same line on
+	// every endpoint regardless; this only saves the client a screen made of
+	// refusals.
+	OIDCBindingRequired bool `json:"oidc_binding_required"`
 }
 
 func (h *Handlers) account(r *http.Request, account user.User) accountPayload {
@@ -169,6 +183,14 @@ func (h *Handlers) account(r *http.Request, account user.User) accountPayload {
 			payload.TwoFactorBackofficeVerify = h.service.BackofficeVerifyMode()
 			payload.TwoFactorBackofficeMinutes = h.service.BackofficeMinutes()
 			payload.TwoFactorBackofficeLocked = h.service.BackofficeLocked(r.Context(), account)
+		}
+	}
+	if h.MustBindOIDC != nil {
+		must, err := h.MustBindOIDC(r.Context(), account)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "could not check the OIDC binding requirement", "error", err)
+		} else {
+			payload.OIDCBindingRequired = must
 		}
 	}
 	if account.GroupID != "" {

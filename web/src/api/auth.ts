@@ -64,6 +64,9 @@ export interface Account {
   two_factor_backoffice_verify?: '' | 'visit' | 'idle' | 'interval';
   two_factor_backoffice_minutes?: number;
   two_factor_backoffice_locked?: boolean;
+  /** Whether the operator's OIDC policy holds this account until it links an
+   *  identity. Optional for the same reason as the two-factor fields above. */
+  oidc_binding_required?: boolean;
 }
 
 // What a visitor with no account is shown at the address. The server settles

@@ -143,6 +143,33 @@ func (s *Service) Credentials(providerID string) Credentials {
 	return creds
 }
 
+// RequireForAll reports whether the operator has switched on the "every
+// account must bind OIDC" policy. Separate from Enabled("oidc"): a policy
+// left on after the provider itself was switched off would otherwise hold
+// every account at a binding screen with no button that could ever satisfy
+// it, so the gate below treats an unavailable provider as the policy having
+// nothing to ask for yet.
+func (s *Service) RequireForAll() bool {
+	return s.settings.Bool(settings.OAuthOIDCRequireForAll) && s.Enabled("oidc")
+}
+
+// MustBindOIDC reports whether this account is being held for want of an
+// OpenID Connect connection. True only once the identity lookup below
+// confirms none exists — the account's own field is not enough by itself,
+// the way TwoFactorEnabled is, because binding an identity happens through
+// this package's own Connect and this is the one place that would otherwise
+// duplicate that read.
+func (s *Service) MustBindOIDC(ctx context.Context, account user.User) (bool, error) {
+	if !s.RequireForAll() {
+		return false, nil
+	}
+	bound, err := s.store.HasProvider(ctx, nil, account.ID, "oidc")
+	if err != nil {
+		return false, err
+	}
+	return !bound, nil
+}
+
 // DisplayName returns the label for a provider button or connection.
 func (s *Service) DisplayName(providerID string) string {
 	if providerID == "oidc" {
