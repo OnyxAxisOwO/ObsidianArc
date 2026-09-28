@@ -213,6 +213,7 @@ var writableSettings = map[string]bool{
 	settings.OAuthOIDCUserInfoURL:       true,
 	settings.OAuthOIDCTrustEmail:        true,
 	settings.OAuthOIDCOnlySignup:        true,
+	settings.OAuthOIDCRequireForAll:     true,
 	settings.OAuthAllowSignup:           true,
 	settings.OAuthLinkByEmail:           true,
 	settings.SignupReview:               true,
