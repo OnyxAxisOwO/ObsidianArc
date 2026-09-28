@@ -685,6 +685,62 @@ func init() {
 	})
 
 	registerCommand(Command{
+		Name:    "user depart",
+		Group:   "accounts",
+		Summary: Text{EN: "Process a group departure for an account", ZH: "处理账户的退群"},
+		Usage:   "user depart <id|username> [--mode=disable|delete] [--note TEXT] --yes",
+		Help: Text{
+			EN: "Ends the account the way a member leaving the QQ group is handled, and takes back " +
+				"the reset cards their invite earned. --mode=disable keeps the account (reversible; " +
+				"the QQ number stays taken); --mode=delete removes it and everything cascading from " +
+				"it. Cards already spent are not taken from anywhere else — the response says what " +
+				"was due and what actually came back.",
+			ZH: "按成员退出 QQ 群的方式结束该账户，并收回其邀请获得的重置卡。" +
+				"--mode=disable 保留账户（可恢复，QQ 号仍被占用）；--mode=delete 彻底删除账户及其全部数据。" +
+				"已用掉的卡不会从别处补收——响应会分别给出应收回与实际收回的数量。",
+		},
+		Args: []Arg{
+			{Name: "id|username", Hint: Text{EN: "account id or username", ZH: "账户 id 或用户名"}, Required: true},
+		},
+		Flags: []Flag{
+			{Name: "--mode", Hint: Text{EN: "disable (default) or delete", ZH: "disable（默认）或 delete"}, Value: "MODE"},
+			{Name: "--note", Hint: Text{EN: "why, for the audit log", ZH: "原因，记入审计日志"}, Value: "TEXT"},
+		},
+		Examples:    []string{"user depart alice --yes", "user depart alice --mode=delete --note 'left the group' -y"},
+		Permission:  "users",
+		Destructive: true,
+		Endpoints:   []string{"POST /api/admin/users/{id}/departure"},
+		Run: func(_ context.Context, rt *Runtime) error {
+			ref, err := requireRef(rt, "account id or username")
+			if err != nil {
+				return err
+			}
+			uid, err := resolveUserRef(rt, ref)
+			if err != nil {
+				return err
+			}
+			mode := rt.String("mode")
+			if mode == "" {
+				mode = "disable"
+			}
+			data, _, err := rt.Call(http.MethodPost, "/api/admin/users/"+url.PathEscape(uid)+"/departure",
+				map[string]any{"mode": mode, "note": rt.String("note")})
+			if err != nil {
+				return err
+			}
+			departure := asMap(asMap(data)["departure"])
+			if rt.Session.Lang == "zh" {
+				rt.Printf("退群处理完成（%s）。应收回 %s 张重置卡，实际收回 %s 张。\n",
+					asStr(departure["mode"]), asStr(departure["cards_due"]), asStr(departure["cards_revoked"]))
+			} else {
+				rt.Printf("departure processed (%s). %s card(s) due, %s taken back.\n",
+					asStr(departure["mode"]), asStr(departure["cards_due"]), asStr(departure["cards_revoked"]))
+			}
+			return nil
+		},
+	})
+
+	registerCommand(Command{
 		Name:       "user keys",
 		Group:      "accounts",
 		Summary:    Text{EN: "List an account's API keys", ZH: "列出账户的 API 密钥"},

@@ -69,13 +69,49 @@ func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]an
 	out["used"] = totalUses
 	out["counted"] = counted
 	out["next_reward_in"] = nextRewardIn(counted, rewardEvery, rewardCards)
-	invitees := make([]map[string]any, 0, len(uses))
+
+	// Every departure that names this inviter. A disabled invitee still has
+	// its invite_uses row and is badged beside it; a deleted one has neither
+	// the row nor the account any more, so the tombstone is the only place
+	// the list can still show them from.
+	departed, err := h.store.DeparturesForInviter(ctx, nil, accountID)
+	if err != nil {
+		return nil, err
+	}
+	departedByID := make(map[string]Departure, len(departed))
+	seen := make(map[string]bool, len(departed))
+	for _, departure := range departed {
+		departedByID[departure.UserID] = departure
+	}
+
+	invitees := make([]map[string]any, 0, len(uses)+len(departed))
 	for _, use := range uses {
-		invitees = append(invitees, map[string]any{
+		entry := map[string]any{
 			"nickname": use.Nickname, "username": use.Username, "created_at": use.CreatedAt,
 			"counted":        use.RewardedAt != 0 && use.RewardSkipped == "",
 			"reward_cards":   use.RewardCards,
 			"reward_skipped": use.RewardSkipped,
+		}
+		if departure, ok := departedByID[use.UserID]; ok {
+			seen[use.UserID] = true
+			entry["departed"] = true
+			entry["departure_mode"] = departure.Mode
+			entry["cards_revoked"] = departure.CardsRevoked
+		}
+		invitees = append(invitees, entry)
+	}
+	for _, departure := range departed {
+		// Seen covers the disable case; whatever is left here has no
+		// invite_uses row left to be merged into — the delete case.
+		if seen[departure.UserID] {
+			continue
+		}
+		invitees = append(invitees, map[string]any{
+			"nickname": "", "username": departure.Username, "created_at": departure.CreatedAt,
+			"counted": false, "reward_cards": 0, "reward_skipped": "",
+			"departed":       true,
+			"departure_mode": departure.Mode,
+			"cards_revoked":  departure.CardsRevoked,
 		})
 	}
 	out["invitees"] = invitees

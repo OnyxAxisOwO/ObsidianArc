@@ -214,6 +214,8 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/admin/users/{id}", protected("users", h.deleteUser))
 	mux.Handle("POST /api/admin/users", protected("users", h.createUser))
 	mux.Handle("POST /api/admin/users/{id}/password", protected("users", h.resetPassword))
+	mux.Handle("POST /api/admin/users/{id}/departure", protected("users", h.departUser))
+	mux.Handle("GET /api/admin/departures", protected("invites", h.listDepartures))
 	mux.Handle("DELETE /api/admin/users/{id}/two-factor", protected("users", h.resetTwoFactor))
 	mux.Handle("GET /api/admin/users/{id}/keys", protected("users", h.userKeys))
 	mux.Handle("DELETE /api/admin/users/{id}/keys/{key}", protected("users", h.revokeUserKey))

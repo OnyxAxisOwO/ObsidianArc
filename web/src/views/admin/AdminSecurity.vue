@@ -156,6 +156,9 @@ const form = ref({
   backofficeNetwork: false,
   backofficeBrowser: false,
   newDeviceEmail: false,
+  botToken: '',
+  botTokenHint: '',
+  botDepartureMode: 'disable' as 'disable' | 'delete',
 });
 
 // --- two-step verification ------------------------------------------------------
@@ -420,6 +423,11 @@ function collect(): Record<string, string> {
     'security.two_factor_backoffice_network': String(form.value.backofficeNetwork),
     'security.two_factor_backoffice_browser': String(form.value.backofficeBrowser),
     'security.new_device_email': String(form.value.newDeviceEmail),
+    // Empty keeps what is stored, the same bargain every other secret on
+    // this page makes: the field was never shown the token, so sending its
+    // emptiness back would switch the bot endpoint off by accident.
+    'bot.webhook_token': form.value.botToken.trim(),
+    'bot.departure_mode': form.value.botDepartureMode,
   };
 }
 
@@ -928,6 +936,9 @@ async function load(): Promise<void> {
       backofficeNetwork: values['security.two_factor_backoffice_network'] === 'true',
       backofficeBrowser: values['security.two_factor_backoffice_browser'] === 'true',
       newDeviceEmail: values['security.new_device_email'] === 'true',
+      botToken: '',
+      botTokenHint: values['bot.webhook_token'] ?? '',
+      botDepartureMode: (values['bot.departure_mode'] as 'disable' | 'delete') || 'disable',
     };
     initialReviewPrompt.value = values['security.signup_review_prompt'] ?? '';
     accept();
@@ -1191,6 +1202,22 @@ onMounted(load);
             { value: 'off', label: t('qqRequirementOff') },
             { value: 'optional', label: t('qqRequirementOptional') },
             { value: 'required', label: t('qqRequirementRequired') },
+          ]"
+        />
+        <OaTextField
+          v-model="form.botToken"
+          :label="t('botTokenLabel')"
+          type="password"
+          :placeholder="form.botTokenHint || '••••••••'"
+          :hint="t('botTokenHint')"
+        />
+        <OaSelectField
+          v-model="form.botDepartureMode"
+          :label="t('botDepartureModeLabel')"
+          :hint="t('botDepartureModeHint')"
+          :options="[
+            { value: 'disable', label: t('departureModeDisable') },
+            { value: 'delete', label: t('departureModeDelete') },
           ]"
         />
       </AdminControlCard>

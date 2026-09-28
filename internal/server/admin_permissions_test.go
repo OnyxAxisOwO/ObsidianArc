@@ -128,7 +128,8 @@ func TestSettingsGrantsAreScopedBySection(t *testing.T) {
 			// what it says it is, so it has to be written independently of
 			// the thing it checks.
 			if strings.HasPrefix(key, "registration.") || strings.HasPrefix(key, "turnstile.") ||
-				strings.HasPrefix(key, "security.") || strings.HasPrefix(key, "oauth.") {
+				strings.HasPrefix(key, "security.") || strings.HasPrefix(key, "oauth.") ||
+				strings.HasPrefix(key, "pow.") || strings.HasPrefix(key, "bot.") {
 				section = "security"
 			}
 			if section != grant {

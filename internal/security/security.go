@@ -58,6 +58,10 @@ const (
 	// beside the two-step entries because it is the first thing to look at
 	// when somebody says they never signed in from there.
 	EventNewDevice = "new_device"
+	// A group departure processed — the account disabled or deleted and the
+	// inviter's reward clawed back. Decision carries the mode, so "who ended
+	// this account, and how hard" is one query away.
+	EventAccountDeparture = "account_departure"
 
 	maxReasonChars = 500
 	MaxPageSize    = 200

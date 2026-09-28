@@ -181,8 +181,20 @@ const progressPercent = computed(() => {
 });
 
 /** One line per invitee: counted (with any cards that row itself earned),
- *  why it was skipped, or still pending. */
+ *  why it was skipped, still pending — or gone: the invitee processed a
+ *  group departure, and what the inviter sees is how it ended and what was
+ *  taken back. */
 function statusLine(invitee: ProfileInvitee): string {
+  if (invitee.departed) {
+    const base = invitee.departure_mode === 'delete'
+      ? t('inviteeDepartedDeleted')
+      : t('inviteeDeparted');
+    const taken = invitee.cards_revoked ?? 0;
+    const cards = taken > 0
+      ? tn(taken, 'inviteeDepartedCardsOne', 'inviteeDepartedCardsOther', { cards: taken })
+      : '';
+    return cards ? `${base} · ${cards}` : base;
+  }
   const status = invitee.counted ? t('inviteeCounted') : skipLabel(invitee.reward_skipped);
   const cards = invitee.reward_cards > 0
     ? tn(invitee.reward_cards, 'inviteeCardsOne', 'inviteeCardsOther', { cards: invitee.reward_cards })
