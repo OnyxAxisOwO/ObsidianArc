@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +22,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 )
 
 // The authorization surface, exercised as HTTP rather than as function calls.
@@ -214,6 +218,10 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodGet, "/api/admin/settings", nil},
 		{http.MethodPut, "/api/admin/settings", map[string]any{"site.name": "x"}},
 		{http.MethodGet, "/api/admin/meta", nil},
+		{http.MethodGet, "/api/admin/backup", nil},
+		{http.MethodPut, "/api/admin/backup", map[string]any{"enabled": false, "endpoint": "", "bucket": "", "region": "", "prefix": "", "interval_hours": 24, "retention_days": 7}},
+		{http.MethodPost, "/api/admin/backup/test", map[string]any{}},
+		{http.MethodPost, "/api/admin/backup/run", map[string]any{}},
 		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/conversations/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
 		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/keys", nil},
 		{http.MethodDelete, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/keys/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
@@ -796,6 +804,217 @@ func TestAboutTextIsOperatorWritableAndOptional(t *testing.T) {
 	}
 	if title, body := readAbout(); title != "" || body != "" {
 		t.Fatalf("cleared about = %q / %q, want both empty", title, body)
+	}
+}
+
+func TestAboutSoftwareInfoVisibility(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("founder", "a-good-password")
+	user := in.register("regular", "another-good-password")
+
+	readSiteShowInfo := func() bool {
+		t.Helper()
+		response := in.do(http.MethodGet, "/api/site", nil, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/site: %d", response.Code)
+		}
+		var payload struct {
+			About struct {
+				ShowSoftwareInfo bool `json:"show_software_info"`
+			} `json:"about"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.About.ShowSoftwareInfo
+	}
+
+	readHealth := func(as *session) (string, int64) {
+		t.Helper()
+		response := in.do(http.MethodGet, "/api/health", nil, as)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/health: %d", response.Code)
+		}
+		var payload struct {
+			Status    string `json:"status"`
+			Version   string `json:"version"`
+			UptimeSec int64  `json:"uptime_sec"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Status != "ok" {
+			t.Fatalf("health status = %q, want ok", payload.Status)
+		}
+		return payload.Version, payload.UptimeSec
+	}
+
+	// 1. By default, it is enabled (supports Obsidian Arc by showing version/uptime/credits).
+	if !readSiteShowInfo() {
+		t.Fatal("fresh instance served about.show_software_info = false, want true")
+	}
+	ver, _ := readHealth(user)
+	if ver == "" {
+		t.Fatal("regular user got empty version on default settings")
+	}
+
+	// 2. Admin disables show_software_info.
+	saved := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"about.show_software_info": "false",
+	}, admin)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("disable show_software_info: %d %s", saved.Code, saved.Body.String())
+	}
+
+	if readSiteShowInfo() {
+		t.Fatal("site info still shows about.show_software_info = true after disabling")
+	}
+
+	// 3. Regular user now gets masked/empty version and uptime.
+	userVer, userUp := readHealth(user)
+	if userVer != "" || userUp != 0 {
+		t.Fatalf("regular user saw version=%q, uptime=%d when disabled", userVer, userUp)
+	}
+
+	// 4. Admin still sees version and uptime.
+	adminVer, _ := readHealth(admin)
+	if adminVer == "" {
+		t.Fatal("admin did not see version when disabled")
+	}
+
+	// 5. Re-enabling restores visibility.
+	in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"about.show_software_info": "true",
+	}, admin)
+	if !readSiteShowInfo() {
+		t.Fatal("site info did not restore about.show_software_info = true")
+	}
+	ver, _ = readHealth(user)
+	if ver == "" {
+		t.Fatal("regular user did not see version after re-enabling")
+	}
+}
+
+func TestPoWChallengeAndRegistrationFlow(t *testing.T) {
+	in := newInstance(t)
+	// Register first user (administrator bootstrap).
+	admin := in.register("founder", "a-good-password")
+
+	// 1. Request PoW challenge.
+	resp := in.do(http.MethodGet, "/api/auth/pow-challenge", nil, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /api/auth/pow-challenge: %d %s", resp.Code, resp.Body.String())
+	}
+	var ch pow.Challenge
+	if err := json.Unmarshal(resp.Body.Bytes(), &ch); err != nil {
+		t.Fatalf("unmarshal challenge: %v", err)
+	}
+	if ch.Challenge == "" || ch.Salt == "" || ch.MaxNumber <= 0 || ch.Signature == "" {
+		t.Fatalf("incomplete challenge: %+v", ch)
+	}
+
+	// 2. Set registration captcha mode to pow.
+	setRes := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"registration.captcha_mode": "pow",
+	}, admin)
+	if setRes.Code != http.StatusOK {
+		t.Fatalf("set captcha mode: %d %s", setRes.Code, setRes.Body.String())
+	}
+
+	// 3. Register without PoW -> 400 pow_required.
+	regNoPoW := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user1",
+		"password": "valid-password",
+	}, nil)
+	if regNoPoW.Code != http.StatusBadRequest || !strings.Contains(regNoPoW.Body.String(), "pow_required") {
+		t.Fatalf("expected pow_required, got: %d %s", regNoPoW.Code, regNoPoW.Body.String())
+	}
+
+	// 4. Solve the challenge.
+	var foundNonce int64 = -1
+	for i := int64(0); i <= ch.MaxNumber; i++ {
+		sum := sha256.Sum256([]byte(ch.Salt + strconv.FormatInt(i, 10)))
+		if strings.EqualFold(hex.EncodeToString(sum[:]), ch.Challenge) {
+			foundNonce = i
+			break
+		}
+	}
+	if foundNonce == -1 {
+		t.Fatalf("failed to solve challenge %+v", ch)
+	}
+
+	// 5. Register with invalid nonce -> 400 pow_invalid_nonce.
+	regBadNonce := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user1",
+		"password": "valid-password",
+		"pow": pow.Solution{
+			Challenge: ch.Challenge,
+			Salt:      ch.Salt,
+			MaxNumber: ch.MaxNumber,
+			Expires:   ch.Expires,
+			Signature: ch.Signature,
+			Nonce:     foundNonce + 1,
+		},
+	}, nil)
+	if regBadNonce.Code != http.StatusBadRequest || !strings.Contains(regBadNonce.Body.String(), "pow_invalid_nonce") {
+		t.Fatalf("expected pow_invalid_nonce, got: %d %s", regBadNonce.Code, regBadNonce.Body.String())
+	}
+
+	// 6. Register with tampered signature -> 400 pow_invalid_signature.
+	regBadSig := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user1",
+		"password": "valid-password",
+		"pow": pow.Solution{
+			Challenge: ch.Challenge,
+			Salt:      ch.Salt,
+			MaxNumber: ch.MaxNumber,
+			Expires:   ch.Expires,
+			Signature: ch.Signature + "bad",
+			Nonce:     foundNonce,
+		},
+	}, nil)
+	if regBadSig.Code != http.StatusBadRequest || !strings.Contains(regBadSig.Body.String(), "pow_invalid_signature") {
+		t.Fatalf("expected pow_invalid_signature, got: %d %s", regBadSig.Code, regBadSig.Body.String())
+	}
+
+	// 7. Register with valid solution -> 201 Created.
+	validSol := pow.Solution{
+		Challenge: ch.Challenge,
+		Salt:      ch.Salt,
+		MaxNumber: ch.MaxNumber,
+		Expires:   ch.Expires,
+		Signature: ch.Signature,
+		Nonce:     foundNonce,
+	}
+	regSuccess := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user1",
+		"password": "valid-password",
+		"pow":      validSol,
+	}, nil)
+	if regSuccess.Code != http.StatusCreated {
+		t.Fatalf("register with valid PoW: %d %s", regSuccess.Code, regSuccess.Body.String())
+	}
+
+	// 8. Replay the same solution on another register -> 400 pow_replayed.
+	regReplay := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user2",
+		"password": "valid-password",
+		"pow":      validSol,
+	}, nil)
+	if regReplay.Code != http.StatusBadRequest || !strings.Contains(regReplay.Body.String(), "pow_replayed") {
+		t.Fatalf("expected pow_replayed, got: %d %s", regReplay.Code, regReplay.Body.String())
+	}
+
+	// 9. Admin switches mode to "disabled" -> register without PoW succeeds.
+	in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"registration.captcha_mode": "disabled",
+	}, admin)
+	regDisabled := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user3",
+		"password": "valid-password",
+	}, nil)
+	if regDisabled.Code != http.StatusCreated {
+		t.Fatalf("register with disabled captcha mode: %d %s", regDisabled.Code, regDisabled.Body.String())
 	}
 }
 

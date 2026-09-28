@@ -17,10 +17,8 @@ export interface AdminPageSpec {
   /**
    * The grant this section needs, when it is not simply the slug.
    *
-   * `'*'` means any administrator. No section uses it today: the console did,
-   * as a second view onto the grants an account already holds, until it moved
-   * out of the backoffice into every account's menu. It stays for the next
-   * section of that kind, so that one does not invent a grant of its own.
+   * `'*'` reserves a section to the super administrator when it exposes the
+   * whole instance and cannot be divided among delegated grants.
    */
   permission?: string;
 }
@@ -44,8 +42,20 @@ export interface SearchGroup {
   items: AdminFeatureItem[];
 }
 
+/** Pages marked `'*'` expose instance-wide data and are visible only to the
+ *  super administrator. The same filtered list drives navigation and search. */
+export function visibleAdminPages(pages: AdminPageSpec[], superAdmin: boolean): AdminPageSpec[] {
+  return pages.filter((page) => page.permission !== '*' || superAdmin);
+}
+
 export const ADMIN_FEATURES: AdminFeatureItem[] = [
-  { id: 'secAbout', pageSlug: 'settings', titleKey: 'controlAbout', searchKeys: ['aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint'] },
+  {
+    id: 'secAbout',
+    pageSlug: 'settings',
+    titleKey: 'controlAbout',
+    searchKeys: ['aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint', 'aboutShowSoftwareInfo', 'aboutShowSoftwareInfoHint'],
+    keywords: ['版本号', '已运行时间', '贡献者', '隐藏版本', '隐藏运行时间', '支持 Obsidian Arc', '致谢', 'version', 'uptime', 'contributors', 'credits'],
+  },
   { id: 'secHomeNotice', pageSlug: 'settings', titleKey: 'homeNotice', searchKeys: ['homeNoticeHint', 'homeNoticeDismissible', 'homeNoticeDismissibleHint'] },
   {
     id: 'secFeedback',
@@ -578,6 +588,13 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['站点标识', '网站名称', '登录提示', '浏览器标题', '标签页标题', 'site name', 'identity', 'branding', 'browser tab title'],
   },
   {
+    id: 'secLoginBg',
+    pageSlug: 'settings',
+    titleKey: 'secLoginBg',
+    searchKeys: ['loginBgHint', 'authCardPosition', 'authCardPositionHint'],
+    keywords: ['登录背景', '注册窗口位置', '登录卡片位置', '窗口居中', '居左', '居右', '注册主界面', '登录外观', 'sign in card position', 'login background', 'auth card position'],
+  },
+  {
     id: 'secPWA',
     pageSlug: 'settings',
     titleKey: 'secPWA',
@@ -632,6 +649,20 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     titleKey: 'exportSettings',
     searchKeys: ['importSettings'],
     keywords: ['数据备份与迁移', '导出配置', '导入配置', '导出实例数据', 'backup', 'export settings', 'import settings'],
+  },
+  {
+    id: 'backupConfig',
+    pageSlug: 'backup',
+    titleKey: 'backupConfig',
+    searchKeys: ['backupEnabled', 'backupEndpoint', 'backupBucket', 'backupRegion', 'backupPrefix', 'backupInterval', 'backupRetention'],
+    keywords: ['对象存储', 'S3', 'S3-compatible', '自动备份', '实例快照', 'instance backup', 'object storage', 'scheduled backup'],
+  },
+  {
+    id: 'backupStatus',
+    pageSlug: 'backup',
+    titleKey: 'backupStatus',
+    searchKeys: ['backupLastStatus', 'backupLastStarted', 'backupLastFinished', 'backupLastSuccess', 'backupNextRun', 'backupLastError', 'backupTest', 'backupRun'],
+    keywords: ['备份状态', '最近备份', '手动备份', '测试连接', 'backup status', 'run backup', 'test connection'],
   },
 
   // --- Announcements

@@ -2,6 +2,42 @@
 
 完整实例备份需要数据库和实例密钥。个人导出只包含自己的对话与偏好，不能替代实例备份。
 
+## 自动实例备份到 S3 或 Cloudflare R2
+
+超级管理员可在“管理后台 → 实例备份”配置完整实例备份。默认每 24 小时运行一次，并保留最近 7 天的备份；可将间隔设为 1–168 小时，保留期设为 1–3650 天。也可以立即运行备份。启用前先用“测试存储连接”确认存储桶权限。
+
+配置项包括 S3 兼容端点、存储桶、区域、对象前缀、Access Key ID 和 Secret Access Key。密钥在数据库中加密保存，界面只显示是否已配置，不会再次返回密钥。更换密钥时填写新值；留空会保留现有值。备份计划和最近运行状态也可通过控制台的 `backup status`、`backup configure`、`backup test` 和 `backup run` 命令查看或修改。凭据只能在超级管理员备份页面输入，避免进入命令历史。
+
+Cloudflare R2 配置示例：
+
+| 设置 | 示例 |
+| --- | --- |
+| Endpoint | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| Region | `auto` |
+| Bucket | 目标 R2 存储桶名称 |
+| Prefix | 例如 `obsidian-arc/production` |
+
+参见 [Cloudflare R2 S3 API](https://developers.cloudflare.com/r2/api/s3/api/)。访问密钥至少需要目标存储桶和备份前缀下的 `PutObject`、`ListBucket`、`DeleteObject` 权限。连接测试会在本站专属前缀下上传临时对象、列出并删除它。保留清理只会删除本站生成且超过保留期的备份对象，不会清理其他实例或手动命名的对象。
+
+每份 `.arcbackup` 包含一致性数据库快照和数据库中保存的附件二进制，不包含 `secret.key`、`OBSIDIAN_SECRET_KEY`、存储密钥或自动备份配置。归档本身不是加密格式，其中会有对话内容等明文业务数据；请使用私有存储桶，并限制读取权限。必须在其他安全位置保留原实例密钥，否则无法解密恢复后的凭据等加密字段。
+
+单个压缩归档最大 4 GiB，解压数据最大 8 GiB；SQLite 还要求数据库快照不超过 4 GiB。SQLite 快照和归档暂存文件可能同时存在，请为备份任务预留最多约 8 GiB 临时磁盘空间。PostgreSQL 快照使用只读、可重复读事务，不在网络上传输期间持有数据库事务。
+
+## 从实例归档恢复
+
+恢复是离线操作：先停止所有连接该数据库的 Arc 实例和写入，再对一个空目标数据库运行对应版本的二进制。目标必须使用与归档相同的数据库引擎和迁移版本；此工具不支持 SQLite 与 PostgreSQL 之间转换。恢复不会导入自动备份配置或存储凭据，恢复后需要由超级管理员重新配置并启用备份。
+
+恢复前提供原来的 `OBSIDIAN_SECRET_KEY`，或将原 `secret.key` 放在 `OBSIDIAN_DATA_DIR` 指定的数据目录中。命令会先验证归档中的密钥校验信息；缺少原密钥或密钥不匹配时，会在创建或迁移目标数据库前退出。示例使用构建产物 `bin/obsidian-arc`：
+
+```bash
+OBSIDIAN_SECRET_KEY='<original-key>' \
+OBSIDIAN_DB_DRIVER=sqlite \
+OBSIDIAN_DB_DSN='file:/restore/obsidian.db' \
+./bin/obsidian-arc restore-backup --file ./instance.arcbackup
+```
+
+PostgreSQL 目标也可以使用 `OBSIDIAN_DB_DRIVER=postgres` 和 `OBSIDIAN_DB_DSN` 指定一个空数据库。命令先运行迁移，再检查引擎、迁移版本、表结构和目标为空，最后在一个事务中导入数据；数据导入事务中的错误会回滚导入。此前已运行的数据库迁移不属于该事务。成功后将服务指向恢复好的目标并启动，检查登录、历史对话、附件和模型调用。不要在仍运行的实例上恢复，也不要将归档解压到数据库文件目录。
+
 ## 数据保存在哪里
 
 默认 SQLite 模式：

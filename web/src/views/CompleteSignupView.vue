@@ -109,7 +109,10 @@ async function submit(): Promise<void> {
 <template>
   <div
     class="oa-auth"
-    :class="{ 'has-login-bg': !!loginBgUrl }"
+    :class="[
+      { 'has-login-bg': !!loginBgUrl },
+      `position-${site.auth_card_position || 'center'}`,
+    ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
     <form class="oa-auth-card" novalidate @submit.prevent="submit">

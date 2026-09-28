@@ -124,6 +124,11 @@ func Open(ctx context.Context, cfg config.Database) (*DB, error) {
 
 func (db *DB) Close() error { return db.pool.Close() }
 
+// DriverName returns the active database driver name ("sqlite" or "postgres").
+func (db *DB) DriverName() string {
+	return string(db.dialect)
+}
+
 // Pool exposes the standard handle for the few things that genuinely need it
 // (stats, a driver-specific escape hatch). Queries should not use it: they
 // would skip rebinding.

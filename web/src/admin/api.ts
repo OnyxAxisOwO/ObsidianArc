@@ -5,7 +5,7 @@
 // key, in either direction beyond writing a new one. The server never sends
 // one back, and there is no field on these types that could carry it.
 
-import { api, ApiError } from '../api/client';
+import { api, ApiError, type RequestOptions } from '../api/client';
 import type { ApiKey } from '../api/keys';
 import type { UsageSummary } from '../api/usage';
 import { t } from '../composables/useI18n';
@@ -627,6 +627,39 @@ export interface AdminUserCheckTestResult {
   skipped?: boolean;
 }
 
+/** Instance-wide backup settings and the most recent run. Credential values
+ *  are deliberately absent: the API accepts them only on writes. */
+export interface AdminBackup {
+  enabled: boolean;
+  configured: boolean;
+  endpoint: string;
+  bucket: string;
+  region: string;
+  prefix: string;
+  interval_hours: number;
+  retention_days: number;
+  secret_configured: boolean;
+  running: boolean;
+  last_status: '' | 'running' | 'success' | 'error';
+  last_started_at: number;
+  last_finished_at: number;
+  last_success_at: number;
+  next_run_at: number;
+  last_error: string;
+}
+
+export interface AdminBackupInput {
+  enabled: boolean;
+  endpoint: string;
+  bucket: string;
+  region: string;
+  prefix: string;
+  access_key_id: string;
+  secret_access_key: string;
+  interval_hours: number;
+  retention_days: number;
+}
+
 export const adminApi = {
   mail: () => api.get<AdminMailSettings>('/api/admin/mail'),
   saveMail: (body: AdminMailUpdate) => api.put<AdminMailSettings>('/api/admin/mail', body),
@@ -793,14 +826,14 @@ export const adminApi = {
   pruneLogs: (days: number) =>
     api.post<{ removed: number }>('/api/admin/logs/prune', { days }),
 
-  usage: (query: string) =>
-    api.get<UsageReport>(`/api/admin/usage${query}`),
+  usage: (query: string, options?: RequestOptions) =>
+    api.get<UsageReport>(`/api/admin/usage${query}`, options),
   // One dimension alone — who used a model, what an account used — for a panel
   // that should not pay for the whole report.
-  usageBreakdown: (dimension: UsageDimension, query = '') =>
-    api.get<{ rows: UsageBreakdown[] }>(`/api/admin/usage/breakdown?dimension=${dimension}${query ? `&${query}` : ''}`),
-  usageRecords: (query: string) =>
-    api.get<{ records: UsageRecord[]; total: number }>(`/api/admin/usage/records${query}`),
+  usageBreakdown: (dimension: UsageDimension, query = '', options?: RequestOptions) =>
+    api.get<{ rows: UsageBreakdown[] }>(`/api/admin/usage/breakdown?dimension=${dimension}${query ? `&${query}` : ''}`, options),
+  usageRecords: (query: string, options?: RequestOptions) =>
+    api.get<{ records: UsageRecord[]; total: number }>(`/api/admin/usage/records${query}`, options),
   rpm: (query = '') =>
     api.get<{ rpm: number }>(`/api/admin/usage/rpm${query}`),
 
@@ -818,11 +851,16 @@ export const adminApi = {
       attachments?: HeldAttachments;
       login_background?: Record<string, string>;
       logo_url?: string;
+      signup_review_prompt_default?: string;
     }>(
       '/api/admin/settings',
     ),
   saveSettings: (values: Record<string, string>) =>
     api.put<{ settings: Record<string, string> }>('/api/admin/settings', values),
+  backup: () => api.get<AdminBackup>('/api/admin/backup'),
+  saveBackup: (input: AdminBackupInput) => api.put<void>('/api/admin/backup', input),
+  testBackup: () => api.post<{ ok: true }>('/api/admin/backup/test', {}),
+  runBackup: () => api.post<{ ok: true; running: true }>('/api/admin/backup/run', {}),
   uploadLoginBackground: (variant: string, mime: string, data: string) =>
     api.put<{ url: string; updated_at: number }>(`/api/admin/login-background/${variant}`, { mime, data }),
   deleteLoginBackground: (variant: string) =>

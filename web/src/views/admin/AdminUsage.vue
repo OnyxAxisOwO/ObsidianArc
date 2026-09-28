@@ -190,24 +190,63 @@ function summaryQuery(): string {
   return `?${params.toString()}&${zoneQuery()}`;
 }
 
-async function loadRecords(quiet = false): Promise<void> {
+function isAbortError(err: unknown): boolean {
+  return (
+    (err instanceof DOMException && err.name === 'AbortError') ||
+    (err instanceof Error && err.name === 'AbortError') ||
+    (typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError')
+  );
+}
+
+let summaryController: AbortController | null = null;
+let recordController: AbortController | null = null;
+
+function abortSummary(): void {
+  if (summaryController) {
+    summaryController.abort();
+    summaryController = null;
+  }
+}
+
+function abortRecords(): void {
+  if (recordController) {
+    recordController.abort();
+    recordController = null;
+  }
+}
+
+async function loadRecords(quiet = false, signal?: AbortSignal): Promise<void> {
   const ticket = ++recordRequest;
   recordsBusy.value = true;
   try {
     const params = sliceQuery();
     params.set('limit', String(recordPage.value.pageSize));
     params.set('offset', String((recordPage.value.page - 1) * recordPage.value.pageSize));
-    const result = await adminApi.usageRecords(`?${params.toString()}`);
-    if (ticket !== recordRequest) return;
+    const result = await adminApi.usageRecords(`?${params.toString()}`, signal ? { signal } : undefined);
+    if (ticket !== recordRequest || signal?.aborted) return;
     records.value = result.records ?? [];
     recordTotal.value = result.total;
-  } catch (failure) { if (!quiet && ticket === recordRequest) error.value = String(failure); }
-  finally { if (ticket === recordRequest) recordsBusy.value = false; }
+  } catch (failure) {
+    if (signal?.aborted || isAbortError(failure)) return;
+    if (!quiet && ticket === recordRequest) error.value = String(failure);
+  } finally {
+    if (ticket === recordRequest) recordsBusy.value = false;
+    if (recordController?.signal === signal) {
+      recordController = null;
+    }
+  }
 }
-function changeRecords(next: PageState): void { recordPage.value = next; void loadRecords(); }
+function changeRecords(next: PageState): void {
+  recordPage.value = next;
+  abortRecords();
+  const ctrl = new AbortController();
+  recordController = ctrl;
+  void loadRecords(false, ctrl.signal);
+}
 
 function applyReport(next: UsageReport): void {
   report.value = next;
+  loaded.value = true;
   if (typeof next.current_rpm === 'number') currentRPM.value = next.current_rpm;
   const lists: Record<Dimension, UsageBreakdown[]> = {
     model: next.by_model ?? [], user: next.by_user ?? [], group: next.by_group ?? [], provider: next.by_provider ?? [],
@@ -218,6 +257,13 @@ function applyReport(next: UsageReport): void {
 }
 
 async function load(): Promise<void> {
+  abortSummary();
+  abortRecords();
+  const currentSummaryCtrl = new AbortController();
+  const currentRecordCtrl = new AbortController();
+  summaryController = currentSummaryCtrl;
+  recordController = currentRecordCtrl;
+
   error.value = '';
   if (range.value === 'custom') {
     periodSince = customSince;
@@ -232,13 +278,25 @@ async function load(): Promise<void> {
 
   const ticket = ++summaryRequest;
   try {
-    const [summary] = await Promise.all([adminApi.usage(summaryQuery()), loadRecords()]);
-    if (ticket !== summaryRequest) return;
+    const [summary] = await Promise.all([
+      adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }),
+      loadRecords(false, currentRecordCtrl.signal),
+    ]);
+    if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
     applyReport(summary);
   } catch (failure) {
+    if (currentSummaryCtrl.signal.aborted || isAbortError(failure)) return;
     if (ticket === summaryRequest) error.value = failure instanceof Error ? failure.message : String(failure);
   } finally {
-    loaded.value = true;
+    if (summaryController === currentSummaryCtrl) {
+      summaryController = null;
+    }
+    if (recordController === currentRecordCtrl) {
+      recordController = null;
+    }
+    if (!currentSummaryCtrl.signal.aborted) {
+      loaded.value = true;
+    }
   }
 }
 
@@ -699,14 +757,27 @@ watch(visibility, (now, was) => {
 });
 
 function refreshQuietly(): void {
-  if (visibility.value === 'hidden') return;
+  if (visibility.value === 'hidden' || !loaded.value) return;
+  abortSummary();
+  abortRecords();
+  const currentSummaryCtrl = new AbortController();
+  const currentRecordCtrl = new AbortController();
+  summaryController = currentSummaryCtrl;
+  recordController = currentRecordCtrl;
+
   const ticket = ++summaryRequest;
-  void adminApi.usage(summaryQuery()).then((summary) => {
-    if (ticket !== summaryRequest) return;
+  void adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }).then((summary) => {
+    if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
     applyReport(summary);
     error.value = '';
-  }).catch(() => {});
-  void loadRecords(true);
+  }).catch((err) => {
+    if (isAbortError(err)) return;
+  }).finally(() => {
+    if (summaryController === currentSummaryCtrl) {
+      summaryController = null;
+    }
+  });
+  void loadRecords(true, currentRecordCtrl.signal);
 }
 
 useIntervalFn(refreshQuietly, REFRESH_MS);
@@ -719,6 +790,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (rpmTimer.value !== null) clearInterval(rpmTimer.value);
+  abortSummary();
+  abortRecords();
 });
 </script>
 

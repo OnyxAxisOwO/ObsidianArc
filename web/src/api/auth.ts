@@ -100,6 +100,9 @@ export interface SiteInfo {
   email_domains?: string[];
   require_qq?: boolean;
   qq_requirement?: 'off' | 'optional' | 'required';
+  captcha_mode?: 'off' | 'turnstile' | 'pow' | 'both';
+  registration_captcha_mode?: 'off' | 'turnstile' | 'pow' | 'both';
+  pow_on_signup?: boolean;
   /** Served only where a challenge is actually switched on. */
   turnstile_site_key?: string;
   turnstile_on_login?: boolean;
@@ -128,7 +131,7 @@ export interface SiteInfo {
   landing?: Landing;
   // The About panel as the operator wrote it. Either field may be empty, which
   // means "use the built-in wording" rather than "render nothing".
-  about?: { title: string; body: string };
+  about?: { title: string; body: string; show_software_info?: boolean };
   // The standing notice above the chat. Not an announcement: no read state,
   // no date, and it stays until an operator clears it.
   home_notice?: { text: string; dismissible: boolean };
@@ -143,6 +146,8 @@ export interface SiteInfo {
   login_background?: Record<string, string>;
   /** Custom site logo URL, or empty if the built-in mark/favicon is used. */
   logo_url?: string;
+  /** Layout position of the sign-in / registration card ('center' | 'left' | 'right'). */
+  auth_card_position?: 'center' | 'left' | 'right';
   /** Whether new user registrations are forced to use OIDC. */
   oidc_only_signup?: boolean;
 }
@@ -195,6 +200,27 @@ export function completeSignIn(code: string, remember: boolean): Promise<{ user:
   return api.post<{ user: Account }>('/api/auth/two-factor', { code, remember });
 }
 
+export interface PoWChallenge {
+  challenge: string;
+  salt: string;
+  maxNumber: number;
+  expires: number;
+  signature: string;
+}
+
+export interface PoWSolution {
+  challenge: string;
+  salt: string;
+  maxNumber: number;
+  expires: number;
+  signature: string;
+  nonce: number;
+}
+
+export function fetchPoWChallenge(): Promise<PoWChallenge> {
+  return api.get<PoWChallenge>('/api/auth/pow-challenge');
+}
+
 export interface RegisterInput {
   username: string;
   password: string;
@@ -203,6 +229,7 @@ export interface RegisterInput {
   nickname?: string;
   turnstile?: string;
   inviteCode?: string;
+  pow?: PoWSolution;
 }
 
 export function register(input: RegisterInput): Promise<{ user: Account }> {
@@ -214,6 +241,7 @@ export function register(input: RegisterInput): Promise<{ user: Account }> {
     nickname: input.nickname ?? '',
     turnstile: input.turnstile ?? '',
     invite_code: input.inviteCode ?? '',
+    ...(input.pow ? { pow: input.pow } : {}),
   });
 }
 

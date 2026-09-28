@@ -43,7 +43,8 @@ func settingPermission(key string) string {
 	case key == "registration.enabled":
 		return "security,invites"
 	case strings.HasPrefix(key, "registration."), strings.HasPrefix(key, "turnstile."),
-		strings.HasPrefix(key, "security."), strings.HasPrefix(key, "oauth."):
+		strings.HasPrefix(key, "security."), strings.HasPrefix(key, "oauth."),
+		strings.HasPrefix(key, "pow."):
 		return "security"
 	case strings.HasPrefix(key, "invites."):
 		return "invites"

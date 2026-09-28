@@ -56,9 +56,10 @@ const FALLBACK_SITE: SiteInfo = {
   turnstile_on_chat_speed: false,
   oauth: [],
   landing: { mode: 'login', intro: '', trial: false, trial_turns: 0 },
-  about: { title: '', body: '' },
+  about: { title: '', body: '', show_software_info: true },
   home_notice: { text: '', dismissible: true },
   logo_url: '',
+  auth_card_position: 'center',
   oidc_only_signup: false,
 };
 

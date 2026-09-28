@@ -1201,6 +1201,14 @@
   border-radius: 999px;
   background: var(--ai-surface-container-low);
   user-select: none;
+  // The pill can be grabbed and dragged across, so the strip reads as a
+  // handle. touch-action off keeps a drag from also scrolling the page.
+  cursor: grab;
+  touch-action: none;
+
+  &.dragging {
+    cursor: grabbing;
+  }
 }
 
 .ai-mode-pill {
@@ -1219,6 +1227,14 @@
   &.mode-work {
     transform: translateX(calc(100% + 2px));
   }
+}
+
+// Under a finger the pill follows the pointer with no easing between frames —
+// an inline translateX overrides the class transform, and the transition would
+// otherwise lag a pixel behind the drag. It comes back the instant the finger
+// lifts, so the settle to the nearer side still glides.
+.ai-mode-switch.dragging .ai-mode-pill {
+  transition: none;
 }
 
 .ai-mode-choice {
@@ -2123,6 +2139,14 @@
 }
 
 .ai-model-chip-name {
+  /* flex:1 so the name takes what the spark, effort tag and chevron leave,
+     from a base of zero. Content-sized instead, the box grows to fit the name
+     and only gives way once the pill hits its 200px ceiling — and at that
+     edge the marquee inside sets itself to width:100%, which feeds its own
+     ResizeObserver and flips overflow on and off frame after frame. Chromium's
+     Edge rounded that oscillation into a visible jitter; a fixed flex basis
+     ends it by making this width independent of the name it holds. */
+  flex: 1;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;

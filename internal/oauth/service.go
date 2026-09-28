@@ -386,6 +386,14 @@ func (s *Service) resolve(
 			if address == "" {
 				address = strings.TrimSpace(details.Email)
 			}
+			// A subject that is the QQ number rides into the account the same
+			// way Connect writes it on a settings-screen bind — the number is
+			// what the IdP proved. An answer typed into the completion form
+			// wins over it, because that is the answer the person confirmed.
+			qq := strings.TrimSpace(details.QQ)
+			if qq == "" && identity.Provider == "oidc" && isAllDigits(identity.Subject) {
+				qq = identity.Subject
+			}
 			populated, err := s.users.Any(ctx, tx)
 			if err != nil {
 				return err
@@ -407,7 +415,7 @@ func (s *Service) resolve(
 				Username:      identity.Login,
 				Email:         address,
 				EmailVerified: identity.Email != "",
-				QQ:            strings.TrimSpace(details.QQ),
+				QQ:            qq,
 				Nickname:      strings.TrimSpace(identity.Name),
 				IP:            ip,
 				UA:            ua,

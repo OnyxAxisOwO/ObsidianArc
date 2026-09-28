@@ -18,6 +18,7 @@ import { t } from '@/composables/useI18n';
 import { IconChevron, IconCollapse, IconExpand } from '@/icons';
 import { maskProvider } from '@/admin/safeMode';
 import { formatUptime } from '@/lib/format';
+import { canAdmin, siteInfo } from '@/stores/session';
 
 interface ModelUptimeItem {
   id: string;
@@ -46,7 +47,12 @@ const error = ref('');
 const data = ref<UptimeResponse | null>(null);
 const expanded = ref<Set<string>>(new Set());
 
-const systemUptime = computed(() => (data.value ? formatUptime(data.value.uptime_sec) : '—'));
+const systemUptime = computed(() => (data.value && data.value.uptime_sec > 0 ? formatUptime(data.value.uptime_sec) : '—'));
+
+const showSystemUptime = computed(() => {
+  if (canAdmin('availability')) return true;
+  return siteInfo.value.about?.show_software_info !== false;
+});
 
 const hasOutage = computed(() =>
   data.value?.models.some((m) => m.state === 'down') ?? false,
@@ -132,7 +138,7 @@ onMounted(load);
                   : t('allSystemsOperational')
             }}
           </span>
-          <span class="oa-uptime-banner-sub">
+          <span v-if="showSystemUptime" class="oa-uptime-banner-sub">
             {{ t('uptimeSystem') }}: {{ systemUptime }}
           </span>
         </div>

@@ -43,6 +43,7 @@ view.setTitle(t('navSecurity'), t('securitySubtitle'));
 
 const error = ref('');
 const loaded = ref(false);
+const defaultReviewPrompt = ref('');
 const mailConfigured = ref(false);
 const mailLoaded = ref(false);
 const mailLoadError = ref<StringKey | null>(null);
@@ -107,6 +108,10 @@ const form = ref({
   turnstileOnAPIKey: false,
   turnstileOnRedeem: false,
   turnstileOnFeedback: false,
+  captchaMode: 'turnstile' as 'off' | 'turnstile' | 'pow' | 'both',
+  powBaseMaxNumber: 50000 as number | null,
+  powElevatedMaxNumber: 500000 as number | null,
+  powThreshold: 10 as number | null,
   chatChallengeRequests: 0 as number | null,
   chatChallengeWindowSecs: 60 as number | null,
   chatChallengeClearMins: 30 as number | null,
@@ -114,8 +119,8 @@ const form = ref({
   reviewModel: '',
   reviewMode: 'normal',
   reviewRestrictHours: 24 as number | null,
-  reviewRefusal: '',
   reviewPrompt: '',
+  reviewRefusal: '',
   githubEnabled: false,
   githubClientID: '',
   githubSecret: '',
@@ -326,6 +331,12 @@ function removeApplication(app: SignInApplication): void {
 const trial = ref({ username: '', email: '', qq: '', fromThisAddress: 0, answer: '', running: false });
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
+const reviewPromptIsDefault = computed(() =>
+  form.value.reviewPrompt.trim() === defaultReviewPrompt.value.trim());
+
+function restoreReviewPrompt(): void {
+  form.value.reviewPrompt = defaultReviewPrompt.value;
+}
 
 /**
  * Only this page's keys. The settings endpoint writes what it is given and
@@ -349,10 +360,14 @@ function collect(): Record<string, string> {
     // sending its emptiness back would erase it.
     'turnstile.secret_key': form.value.turnstileSecret.trim(),
     'turnstile.on_login': String(form.value.turnstileOnLogin),
-    'turnstile.on_signup': String(form.value.turnstileOnSignup),
+    'turnstile.on_signup': String(form.value.captchaMode === 'turnstile' || form.value.captchaMode === 'both'),
     'turnstile.on_api_key': String(form.value.turnstileOnAPIKey),
     'turnstile.on_redeem': String(form.value.turnstileOnRedeem),
     'turnstile.on_feedback': String(form.value.turnstileOnFeedback),
+    'registration.captcha_mode': form.value.captchaMode,
+    'security.pow_base_max_number': String(form.value.powBaseMaxNumber ?? 50000),
+    'security.pow_elevated_max_number': String(form.value.powElevatedMaxNumber ?? 500000),
+    'security.pow_threshold': String(form.value.powThreshold ?? 10),
     'security.chat_challenge_requests': String(form.value.chatChallengeRequests ?? 0),
     'security.chat_challenge_window_seconds': String(form.value.chatChallengeWindowSecs ?? 60),
     'security.chat_challenge_clear_minutes': String(form.value.chatChallengeClearMins ?? 30),
@@ -361,7 +376,9 @@ function collect(): Record<string, string> {
     'security.signup_review_mode': form.value.reviewMode,
     'security.signup_review_restrict_hours': String(form.value.reviewRestrictHours ?? 24),
     'security.signup_review_refusal': form.value.reviewRefusal.trim(),
-    'security.signup_review_prompt': form.value.reviewPrompt.trim(),
+    'security.signup_review_prompt': (defaultReviewPrompt.value && form.value.reviewPrompt.trim() === defaultReviewPrompt.value.trim())
+      ? ''
+      : form.value.reviewPrompt.trim(),
     'oauth.github_enabled': String(form.value.githubEnabled),
     'oauth.github_client_id': form.value.githubClientID.trim(),
     // Empty keeps what is stored, the same bargain the Turnstile secret
@@ -550,6 +567,14 @@ function formatEventReason(reason: string): string {
   if (reason === 'review failed') return t('securityReasonReviewFailed');
   if (reason === 'unparseable answer') return t('securityReasonUnparseableAnswer');
   if (reason === 'review returned no decision') return t('securityReasonNoDecision');
+  if (reason === '缺少 PoW 解答') return t('securityReasonPoWMissing');
+  if (reason === 'PoW 挑战已过期') return t('securityReasonPoWExpired');
+  if (reason === 'PoW 签名无效') return t('securityReasonPoWInvalidSignature');
+  if (reason === 'PoW 步数超出上限') return t('securityReasonPoWMaxExceeded');
+  if (reason === 'PoW 计算结果不匹配') return t('securityReasonPoWInvalidNonce');
+  if (reason === 'PoW 挑战已被使用') return t('securityReasonPoWReplayed');
+  if (reason === 'PoW 校验失败') return t('securityReasonPoWFailed');
+  if (reason === 'Turnstile 人机验证未通过') return t('securityReasonTurnstileFailed');
   return reason;
 }
 
@@ -579,6 +604,8 @@ function eventLabel(event: string): string {
   if (event === 'two_factor') return t('securityEventTwoFactor');
   if (event === 'new_device') return t('securityEventNewDevice');
   if (event === 'console_command') return t('securityEventConsoleCommand');
+  if (event === 'pow_challenge') return t('securityEventPoWChallenge');
+  if (event === 'turnstile_challenge') return t('securityEventTurnstileChallenge');
   return event;
 }
 
@@ -817,6 +844,7 @@ async function load(): Promise<void> {
       adminApi.settings(), adminApi.modelOptions(), loadEvents(), loadApplications(), loadAdoption(), loadMail(), loadUserCheck(),
     ]);
     const values = data.settings;
+    defaultReviewPrompt.value = data.signup_review_prompt_default ?? '';
     mailConfigured.value = data.mail_configured ?? false;
     groups.value = data.groups ?? [];
     models.value = modelsResult.models;
@@ -841,6 +869,10 @@ async function load(): Promise<void> {
       turnstileOnAPIKey: values['turnstile.on_api_key'] === 'true',
       turnstileOnRedeem: values['turnstile.on_redeem'] === 'true',
       turnstileOnFeedback: values['turnstile.on_feedback'] === 'true',
+      captchaMode: (values['registration.captcha_mode'] as any) || (values['turnstile.on_signup'] === 'true' ? 'turnstile' : 'off'),
+      powBaseMaxNumber: Number(values['security.pow_base_max_number'] || 50000),
+      powElevatedMaxNumber: Number(values['security.pow_elevated_max_number'] || 500000),
+      powThreshold: Number(values['security.pow_threshold'] || 10),
       chatChallengeRequests: Number(values['security.chat_challenge_requests'] ?? 0),
       chatChallengeWindowSecs: Number(values['security.chat_challenge_window_seconds'] ?? 60),
       chatChallengeClearMins: Number(values['security.chat_challenge_clear_minutes'] ?? 30),
@@ -1022,10 +1054,19 @@ onMounted(load);
         <OaTextArea
           v-model="form.reviewPrompt"
           :label="t('signupReviewPrompt')"
-          :rows="4"
+          :rows="8"
           :placeholder="t('signupReviewPromptPlaceholder')"
           :hint="t('signupReviewPromptHint')"
         />
+        <button
+          v-if="defaultReviewPrompt"
+          type="button"
+          class="oa-btn"
+          :disabled="reviewPromptIsDefault"
+          @click="restoreReviewPrompt"
+        >
+          {{ t('signupReviewPromptRestore') }}
+        </button>
         <OaTextArea
           v-model="form.reviewRefusal"
           :label="t('signupReviewRefusal')"
@@ -1138,15 +1179,41 @@ onMounted(load);
         />
       </AdminControlCard>
       <AdminControlCard id="secVerificationScenes" v-show="visible('secVerificationScenes')" :title="t('controlVerificationScenes')" :icon="IconLock" :hint="t('controlVerificationScenesHint')">
+        <OaSelectField
+          v-model="form.captchaMode"
+          :label="t('captchaMode')"
+          :hint="t('captchaModeHint')"
+          :options="[
+            { value: 'off', label: t('captchaModeOff') },
+            { value: 'turnstile', label: t('captchaModeTurnstile') },
+            { value: 'pow', label: t('captchaModePoW') },
+            { value: 'both', label: t('captchaModeBoth') },
+          ]"
+        />
+        <template v-if="form.captchaMode === 'pow' || form.captchaMode === 'both'">
+          <OaNumberField
+            v-model="form.powBaseMaxNumber"
+            :label="t('powBaseMaxNumber')"
+            :min="1"
+            :hint="t('powBaseMaxNumberHint')"
+          />
+          <OaNumberField
+            v-model="form.powElevatedMaxNumber"
+            :label="t('powElevatedMaxNumber')"
+            :min="1"
+            :hint="t('powElevatedMaxNumberHint')"
+          />
+          <OaNumberField
+            v-model="form.powThreshold"
+            :label="t('powThreshold')"
+            :min="1"
+            :hint="t('powThresholdHint')"
+          />
+        </template>
         <OaSwitchField
           v-model="form.turnstileOnLogin"
           :label="t('turnstileOnLogin')"
           :hint="t('turnstileOnLoginHint')"
-        />
-        <OaSwitchField
-          v-model="form.turnstileOnSignup"
-          :label="t('turnstileOnSignup')"
-          :hint="t('turnstileOnSignupHint')"
         />
         <OaSwitchField
           v-model="form.turnstileOnAPIKey"

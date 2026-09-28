@@ -105,6 +105,15 @@ func ClientIP(r *http.Request, trust ProxyTrust) string {
 		return addrString(peer, r.RemoteAddr)
 	}
 
+	// Cloudflare sets CF-Connecting-IP to the visitor's authentic address.
+	// When arriving through a trusted proxy (such as Caddy or a local reverse proxy),
+	// this header holds the actual client address that Cloudflare observed.
+	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+		if address, err := netip.ParseAddr(stripPort(cf)); err == nil {
+			return address.Unmap().String()
+		}
+	}
+
 	// Right to left: each entry was appended by the hop that received the
 	// request from the address to its left. Walking back past the proxies we
 	// trust lands on the first address none of them vouched for, which is the

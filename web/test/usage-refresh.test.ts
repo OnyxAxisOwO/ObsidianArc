@@ -282,4 +282,118 @@ describe('AdminUsage', () => {
       visibility.mockRestore();
     }
   });
+
+  it('aborts in-flight usage and records requests when range changes quickly', async () => {
+    let resolveFirst!: (val: unknown) => void;
+    const firstPromise = new Promise((resolve) => { resolveFirst = resolve; });
+    const usageSignals: AbortSignal[] = [];
+
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (url.startsWith('/api/admin/usage?')) {
+        if (options?.signal) usageSignals.push(options.signal);
+        if (usageSignals.length === 1) return firstPromise;
+        return adminPayload(10);
+      }
+      return adminRoutes(null)(url);
+    });
+
+    mountAdmin();
+    await advance(0);
+    expect(usageSignals).toHaveLength(1);
+    expect(usageSignals[0]?.aborted).toBe(false);
+
+    // Click '7d' preset while initial load is in flight
+    const rangeButtons = document.querySelectorAll('.oa-range button');
+    rangeButtons[2]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await advance(0);
+
+    expect(usageSignals[0]?.aborted).toBe(true);
+    expect(usageSignals).toHaveLength(2);
+    expect(usageSignals[1]?.aborted).toBe(false);
+
+    resolveFirst(adminPayload(1));
+  });
+
+  it('aborts in-flight requests when unmounted', async () => {
+    let resolveSlow!: (val: unknown) => void;
+    const slowPromise = new Promise((resolve) => { resolveSlow = resolve; });
+    let activeSignal: AbortSignal | undefined;
+
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (url.startsWith('/api/admin/usage?')) {
+        activeSignal = options?.signal;
+        return slowPromise;
+      }
+      return adminRoutes(null)(url);
+    });
+
+    mountAdmin();
+    await advance(0);
+    expect(activeSignal).toBeDefined();
+    expect(activeSignal?.aborted).toBe(false);
+
+    app?.unmount();
+    app = null;
+    expect(activeSignal?.aborted).toBe(true);
+
+    resolveSlow(adminPayload(1));
+  });
+
+  it('aborts in-flight records requests when range changes quickly', async () => {
+    let resolveRecords1!: (val: unknown) => void;
+    const records1Promise = new Promise((resolve) => { resolveRecords1 = resolve; });
+    const recordsSignals: AbortSignal[] = [];
+
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (url.startsWith('/api/admin/usage?')) return adminPayload(10);
+      if (url.startsWith('/api/admin/usage/records')) {
+        if (options?.signal) recordsSignals.push(options.signal);
+        if (recordsSignals.length === 1) return records1Promise;
+        return { records: [], total: 100 };
+      }
+      return adminRoutes(null)(url);
+    });
+
+    mountAdmin();
+    await advance(0);
+    expect(recordsSignals).toHaveLength(1);
+    expect(recordsSignals[0]?.aborted).toBe(false);
+
+    // Switch range preset to 7d while records request is in flight
+    const rangeButtons = document.querySelectorAll('.oa-range button');
+    rangeButtons[2]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await advance(0);
+
+    expect(recordsSignals[0]?.aborted).toBe(true);
+    expect(recordsSignals).toHaveLength(2);
+    expect(recordsSignals[1]?.aborted).toBe(false);
+
+    resolveRecords1({ records: [], total: 100 });
+  });
+
+  it('does not display error banner when requests are aborted', async () => {
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (url.startsWith('/api/admin/usage?')) {
+        if (options?.signal?.aborted) {
+          throw new DOMException('The operation was aborted.', 'AbortError');
+        }
+        return new Promise((_, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        });
+      }
+      return adminRoutes(null)(url);
+    });
+
+    mountAdmin();
+    await advance(0);
+
+    // Switch range preset to abort initial request
+    const rangeButtons = document.querySelectorAll('.oa-range button');
+    rangeButtons[2]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await advance(0);
+
+    expect(document.querySelector('.oa-banner-error')).toBeNull();
+  });
 });

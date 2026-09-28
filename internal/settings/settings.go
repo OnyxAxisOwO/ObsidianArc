@@ -24,11 +24,18 @@ import (
 const (
 	SiteName        = "site.name"
 	SiteDescription = "site.description"
+	// Layout position of the sign-in / registration card on the auth page:
+	// "center" by default, or "left" / "right" when docked beside wallpaper.
+	SiteAuthCardPosition = "site.auth_card_position"
 	// The About panel's heading and Markdown introduction. Empty is the normal
 	// state and means "use the instance name and the built-in introduction",
 	// so an operator who never opens this screen still gets a sensible page.
 	AboutTitle = "about.title"
 	AboutBody  = "about.body"
+	// Whether the About drawer reveals version, uptime, and the contributors
+	// list to non-admin users. Enabled by default as a way to support and credit
+	// the Obsidian Arc project.
+	AboutShowSoftwareInfo = "about.show_software_info"
 	// A standing notice above the chat. Unlike an announcement, which is a
 	// dated thing someone reads once, this is a property of the instance: it
 	// stays until an operator takes it down. Empty means there is none.
@@ -92,6 +99,19 @@ const (
 	// challenge only on an instance that has actually been spammed.
 	TurnstileOnFeedback = "turnstile.on_feedback"
 
+	// Registration Captcha mode and self-developed Proof-of-Work settings.
+	// Captcha mode controls the challenge required at sign-up: "off",
+	// "turnstile", "pow", or "both".
+	RegistrationCaptchaMode = "registration.captcha_mode"
+	CaptchaModeOff          = "off"
+	CaptchaModeTurnstile    = "turnstile"
+	CaptchaModePoW          = "pow"
+	CaptchaModeBoth         = "both"
+
+	PoWBaseMaxNumber     = "security.pow_base_max_number"
+	PoWElevatedMaxNumber = "security.pow_elevated_max_number"
+	PoWThreshold         = "security.pow_threshold"
+
 	// Signing in with an account somebody already holds somewhere else. Each
 	// provider is a switch and a pair of credentials from its own console;
 	// the secret is write-only, the way the Turnstile one is.
@@ -144,9 +164,9 @@ const (
 	SignupReview              = "security.signup_review"
 	SignupReviewModel         = "security.signup_review_model"
 	SignupReviewMode          = "security.signup_review_mode"
+	SignupReviewPrompt        = "security.signup_review_prompt"
 	SignupReviewRefusal       = "security.signup_review_refusal"
 	SignupReviewRestrictHours = "security.signup_review_restrict_hours"
-	SignupReviewPrompt        = "security.signup_review_prompt"
 	// Two-step sign-in. Who must switch it on, the name an authenticator
 	// app files the entry under, and how many days a browser may skip the
 	// code once somebody has typed one on it.
@@ -293,6 +313,24 @@ func ValidLandingMode(value string) bool {
 	return false
 }
 
+// Where the sign-in / registration card sits on the screen.
+const (
+	AuthCardPositionCenter = "center"
+	AuthCardPositionLeft   = "left"
+	AuthCardPositionRight  = "right"
+)
+
+var AuthCardPositions = []string{AuthCardPositionCenter, AuthCardPositionLeft, AuthCardPositionRight}
+
+func ValidAuthCardPosition(value string) bool {
+	for _, candidate := range AuthCardPositions {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 // The ceiling on a trial, enforced here rather than trusted from the
 // form: every trial turn is spent from the operator's own credit by
 // someone who has not identified themselves.
@@ -420,6 +458,43 @@ func ValidQQRequirement(value string) bool {
 	return false
 }
 
+func ValidCaptchaMode(value string) bool {
+	switch value {
+	case CaptchaModeOff, CaptchaModeTurnstile, CaptchaModePoW, CaptchaModeBoth:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) RegistrationCaptchaMode() string {
+	mode := s.Get(RegistrationCaptchaMode)
+	if ValidCaptchaMode(mode) {
+		return mode
+	}
+	return CaptchaModeTurnstile
+}
+
+func (s *Service) PoWBaseMaxNumber() int64 {
+	val, err := strconv.ParseInt(s.Get(PoWBaseMaxNumber), 10, 64)
+	if err != nil || val <= 0 {
+		return 50000
+	}
+	return val
+}
+
+func (s *Service) PoWElevatedMaxNumber() int64 {
+	val, err := strconv.ParseInt(s.Get(PoWElevatedMaxNumber), 10, 64)
+	if err != nil || val <= 0 {
+		return 500000
+	}
+	return val
+}
+
+func (s *Service) PoWThreshold() int {
+	return s.Int(PoWThreshold, 10)
+}
+
 // What the backoffice's one registration-mode select actually means, and
 // what GET /api/site tells a visitor before they type anything.
 const (
@@ -478,11 +553,13 @@ func ValidPWAIconURL(value string) bool {
 // Defaults are what a fresh instance behaves like, and what a deleted row
 // falls back to. Nothing reads a setting without one.
 var Defaults = map[string]string{
-	SiteName:        "Obsidian Arc",
-	SiteDescription: "",
-	AboutTitle:      "",
-	AboutBody:       "",
-	HomeNotice:      "",
+	SiteName:              "Obsidian Arc",
+	SiteDescription:       "",
+	SiteAuthCardPosition:  AuthCardPositionCenter,
+	AboutTitle:            "",
+	AboutBody:             "",
+	AboutShowSoftwareInfo: "true",
+	HomeNotice:            "",
 	// Dismissible unless an operator says otherwise: a strip that cannot be
 	// put away is the exception, and defaults should not be the exception.
 	HomeNoticeDismissible: "true",
@@ -516,12 +593,16 @@ var Defaults = map[string]string{
 	// is configuring, not yet switching on, and a challenge that appeared the
 	// moment a key was saved would lock out the half-finished setup it was
 	// saved during.
-	TurnstileOnLogin:      "false",
-	TurnstileOnSignup:     "false",
-	TurnstileOnAPIKey:     "false",
-	TurnstileOnRedeem:     "false",
-	TurnstileOnFeedback:   "false",
-	FeedbackShowStaffName: "true",
+	TurnstileOnLogin:        "false",
+	TurnstileOnSignup:       "false",
+	TurnstileOnAPIKey:       "false",
+	TurnstileOnRedeem:       "false",
+	TurnstileOnFeedback:     "false",
+	RegistrationCaptchaMode: CaptchaModeTurnstile,
+	PoWBaseMaxNumber:        "50000",
+	PoWElevatedMaxNumber:    "500000",
+	PoWThreshold:            "10",
+	FeedbackShowStaffName:   "true",
 	// Off, and off even once the credentials are filled in, for the reason
 	// the challenge switches above are: pasting a key is not the same as
 	// opening the door.
@@ -750,6 +831,16 @@ func (s *Service) BrowserTitle() string {
 		return title
 	}
 	return s.Get(SiteName)
+}
+
+// AuthCardPosition returns the effective layout position of the sign-in card.
+// Falls back to "center" when empty or unrecognised.
+func (s *Service) AuthCardPosition() string {
+	pos := s.Get(SiteAuthCardPosition)
+	if ValidAuthCardPosition(pos) {
+		return pos
+	}
+	return AuthCardPositionCenter
 }
 
 // All returns every known key with its effective value, so the admin screen

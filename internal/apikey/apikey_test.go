@@ -72,6 +72,29 @@ func TestIssuedTokenResolvesBackToItsKey(t *testing.T) {
 	if resolved.ID != created.ID || resolved.UserID != owner {
 		t.Errorf("resolved %+v, want the key just issued for %s", resolved, owner)
 	}
+	if len(resolved.ModelIDs) != 0 {
+		t.Errorf("unrestricted key resolved model limits %v, want none", resolved.ModelIDs)
+	}
+}
+
+func TestNeedsTouchHonorsOneMinuteWindow(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000)
+	for _, test := range []struct {
+		name      string
+		lastUsed  int64
+		wantTouch bool
+	}{
+		{name: "never used", lastUsed: 0, wantTouch: true},
+		{name: "older than a minute", lastUsed: now.Add(-time.Minute - time.Millisecond).UnixMilli(), wantTouch: true},
+		{name: "exactly one minute", lastUsed: now.Add(-time.Minute).UnixMilli(), wantTouch: false},
+		{name: "recently used", lastUsed: now.UnixMilli(), wantTouch: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := (Key{LastUsedAt: test.lastUsed}).NeedsTouch(now); got != test.wantTouch {
+				t.Errorf("NeedsTouch() = %v, want %v", got, test.wantTouch)
+			}
+		})
+	}
 }
 
 // The property the whole design rests on: the value is not recoverable from

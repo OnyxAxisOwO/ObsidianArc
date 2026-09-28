@@ -940,10 +940,16 @@
   padding: 14px 10px 14px 18px;
 }
 
+/* Full screen widens the head to the whole frame rather than the 920px band
+   the body keeps: the title belongs at the far left edge and the fullscreen
+   and close controls at the far right, so the reader's eye finds them at the
+   window's corners once there is a window's worth of room. The body stays
+   centred at 920px on its own rule; only the head reaches the edges. Driven by
+   the same `.fullscreen` class that the drawer layout toggles mid-zoom, so the
+   move rides the existing frame animation with nothing extra to time. */
 .oa-panel.fullscreen .oa-panel-head {
-  max-width: 920px;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
   padding: 16px 24px 8px;
   box-sizing: border-box;
 }
@@ -3799,10 +3805,14 @@
 /* --- uptime panel ----------------------------------------------------------- */
 
 // Maximized uptime panel: expands beyond the 920px settings width to align
-// the header and multi-column cards cleanly.
+// the header and multi-column cards cleanly. It re-centres the head that the
+// general full-screen rule now pushes to the frame edges, because here the
+// head is meant to line up with the wide centred grid below it, not with the
+// window's corners.
 .oa-panel.fullscreen:has(.oa-uptime-content) .oa-panel-head,
 .oa-panel.fullscreen:has(.oa-uptime-body) .oa-panel-head {
   max-width: 1480px;
+  margin: 0 auto;
 }
 
 .oa-panel.fullscreen .oa-panel-body.oa-uptime-body {

@@ -30,5 +30,6 @@ Thumbs.db
 # 2026-09-20 被 `git add -A` 卷进去过一次，所以写下来而不是靠记性。
 .agents/
 docs/SECURITY_AUDIT.md
+/veil/
 .demo-user/
 data-demo/

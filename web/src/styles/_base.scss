@@ -143,6 +143,11 @@ body.has-auth-page #app {
   padding: 0;
 }
 
+/* Visitors should meet the built-in landing page edge to edge; the app inset makes it feel boxed in. */
+#app:has(.oa-front) {
+  padding: 0;
+}
+
 @media (max-width: 640px) {
   #app {
     padding: 8px;

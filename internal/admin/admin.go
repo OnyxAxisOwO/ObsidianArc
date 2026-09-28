@@ -14,6 +14,9 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
@@ -37,6 +40,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/systembackup"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
@@ -84,6 +88,17 @@ type Handlers struct {
 	// administrator, that something happened. Set by the wiring; nil means
 	// "push nothing", which is every instance predating this feature.
 	Notify *notify.Store
+	// SystemBackup covers the complete instance and is restricted to the
+	// single super administrator rather than delegated settings operators.
+	SystemBackup *systembackup.Service
+
+	UsageLimiter *httpx.TokenBucketLimiter
+
+	usageCacheMu        sync.RWMutex
+	usageSummaryCache   map[string]*cachedUsageSummary
+	usageBreakdownCache map[string]*cachedUsageBreakdown
+	usageSummarySF      singleflight.Group
+	usageBreakdownSF    singleflight.Group
 
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
@@ -113,26 +128,29 @@ func NewHandlers(
 	invites *invite.Store,
 ) *Handlers {
 	return &Handlers{
-		db:            db,
-		users:         users,
-		groups:        groups,
-		providers:     providers,
-		models:        models,
-		settings:      set,
-		registry:      registry,
-		auth:          authService,
-		usage:         usageStore,
-		quota:         quotaService,
-		conversations: conversations,
-		announcements: announcements,
-		keys:          keys,
-		requests:      requests,
-		security:      securityLog,
-		cards:         cards,
-		health:        healthStore,
-		feedback:      feedbackStore,
-		apps:          apps,
-		invites:       invites,
+		db:                  db,
+		users:               users,
+		groups:              groups,
+		providers:           providers,
+		models:              models,
+		settings:            set,
+		registry:            registry,
+		auth:                authService,
+		usage:               usageStore,
+		quota:               quotaService,
+		conversations:       conversations,
+		announcements:       announcements,
+		keys:                keys,
+		requests:            requests,
+		security:            securityLog,
+		cards:               cards,
+		health:              healthStore,
+		feedback:            feedbackStore,
+		apps:                apps,
+		invites:             invites,
+		UsageLimiter:        httpx.NewTokenBucketLimiter(5, 10),
+		usageSummaryCache:   make(map[string]*cachedUsageSummary),
+		usageBreakdownCache: make(map[string]*cachedUsageBreakdown),
 	}
 }
 
@@ -154,7 +172,11 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 			if h.auth.BackofficeLocked(r.Context(), actor) {
 				return backofficeLocked()
 			}
-			if !hasPermission(actor, permission) {
+			if permission == "super_admin" {
+				if !actor.IsSuperAdmin() {
+					return permissionDenied()
+				}
+			} else if !hasPermission(actor, permission) {
 				return permissionDenied()
 			}
 			h.auth.KeepBackofficeOpen(r.Context(), actor)
@@ -271,6 +293,10 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/references", protected("", h.references))
 	mux.Handle("GET /api/admin/member-options", protected("groups", h.listMemberOptions))
 	mux.Handle("GET /api/admin/meta", protected("", h.meta))
+	mux.Handle("GET /api/admin/backup", protected("super_admin", h.getSystemBackup))
+	mux.Handle("PUT /api/admin/backup", protected("super_admin", h.saveSystemBackup))
+	mux.Handle("POST /api/admin/backup/test", protected("super_admin", h.testSystemBackup))
+	mux.Handle("POST /api/admin/backup/run", protected("super_admin", h.runSystemBackup))
 }
 
 // meta is the reference data the admin forms need: which provider kinds this

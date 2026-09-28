@@ -15,6 +15,36 @@
   padding: 24px 16px;
   box-sizing: border-box;
 
+  // Horizontal docking positions when configured in settings.
+  // Left/right positioning leaves space for wallpaper focal art on wide viewports,
+  // while mobile screens reset to center where width is constrained.
+  &.position-left {
+    justify-content: flex-start;
+    padding-left: clamp(24px, 8vw, 120px);
+    padding-right: 16px;
+  }
+
+  &.position-right {
+    justify-content: flex-end;
+    padding-left: 16px;
+    padding-right: clamp(24px, 8vw, 120px);
+  }
+
+  &.position-center {
+    justify-content: center;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  @media (max-width: 640px) {
+    &.position-left,
+    &.position-right {
+      justify-content: center;
+      padding-left: 16px;
+      padding-right: 16px;
+    }
+  }
+
   &.has-login-bg {
     background-size: cover;
     background-position: center;
@@ -37,6 +67,11 @@
   padding: 28px 26px 26px;
   border-radius: 18px;
   background: var(--ai-surface-container);
+  // Auto vertical margins keep the card centered vertically when viewport
+  // height permits, but allow it to start from the top when the card is
+  // taller than the viewport so the header/title is never cut off.
+  margin-top: auto;
+  margin-bottom: auto;
   /* The same rise the transcript uses when a conversation is switched, so
      arriving at this page feels like the rest of the interface. */
   animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
@@ -363,6 +398,7 @@
   position: fixed;
   top: 12px;
   right: 12px;
+  z-index: 10;
 }
 
 /* --- modal overlay for auth / permission dialogs ---------------------------- */

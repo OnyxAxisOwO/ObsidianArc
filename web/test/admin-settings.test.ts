@@ -116,4 +116,98 @@ describe('admin settings payload', () => {
     expectSaveState(false);
     expect(button(actions, t('saved')).disabled).toBe(false);
   });
+
+  it('updates auth card position setting', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    const expectedSettings = { ...settingsFixture, 'site.auth_card_position': 'left' };
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: expectedSettings });
+    await mountSettings();
+    expectSaveState(false);
+
+    expect(host.querySelector<HTMLElement>('#secLoginBg')?.style.display).not.toBe('none');
+    const selectTrigger = host.querySelector<HTMLButtonElement>('#secLoginBg .oa-select');
+    expect(selectTrigger).not.toBeNull();
+    expect(selectTrigger?.textContent).toContain(t('authCardPositionCenter'));
+
+    selectTrigger!.click();
+    await nextTick();
+    const leftOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find((node) => node.textContent?.includes(t('authCardPositionLeft')));
+    expect(leftOption).toBeDefined();
+    leftOption!.click();
+    await nextTick();
+    expectSaveState(true);
+
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(expectedSettings);
+    expectSaveState(false);
+  });
+
+  it('filters to secLoginBg when searching for auth card position keywords', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    await mountSettings();
+
+    const searchInput = host.querySelector<HTMLInputElement>('.oa-search input');
+    expect(searchInput).not.toBeNull();
+
+    searchInput!.value = 'auth card position';
+    searchInput!.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+
+    expect(host.querySelector<HTMLElement>('#secLoginBg')?.style.display).not.toBe('none');
+    expect(host.querySelector<HTMLElement>('#secAbout')?.style.display).toBe('none');
+  });
+
+  it('opens confirmation modal when disabling showSoftwareInfo and respects user decision', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    await mountSettings();
+
+    const aboutCard = host.querySelector('#secAbout');
+    expect(aboutCard).not.toBeNull();
+    const checkbox = aboutCard?.querySelector<HTMLInputElement>('.oa-switch-field input[type="checkbox"]');
+    expect(checkbox).not.toBeNull();
+    expect(checkbox!.checked).toBe(true);
+
+    // Click checkbox to turn it OFF
+    checkbox!.click();
+    await nextTick();
+
+    // Confirmation modal should now be visible in body
+    const modal = document.body.querySelector('.oa-modal-card');
+    expect(modal).not.toBeNull();
+    expect(modal?.querySelector('.oa-auth-title')?.textContent).toBe(t('aboutDisableModalTitle'));
+
+    // 1. Click "Keep Enabled" (cancel)
+    const keepBtn = [...modal!.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent?.trim() === t('aboutDisableModalKeep'),
+    );
+    expect(keepBtn).not.toBeUndefined();
+    keepBtn!.click();
+    await nextTick();
+
+    // Modal is dismissed, setting remains true, form is not dirty
+    expect(document.body.querySelector('.oa-modal-card')).toBeNull();
+    expect(checkbox!.checked).toBe(true);
+    expectSaveState(false);
+
+    // 2. Click checkbox again to turn it OFF, then confirm
+    checkbox!.click();
+    await nextTick();
+
+    const modal2 = document.body.querySelector('.oa-modal-card');
+    expect(modal2).not.toBeNull();
+    const confirmBtn = [...modal2!.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent?.trim() === t('aboutDisableModalConfirm'),
+    );
+    expect(confirmBtn).not.toBeUndefined();
+    confirmBtn!.click();
+    await nextTick();
+
+    // Modal is dismissed, setting is now false, form is dirty
+    expect(document.body.querySelector('.oa-modal-card')).toBeNull();
+    expect(checkbox!.checked).toBe(false);
+    expectSaveState(true);
+  });
 });

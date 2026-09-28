@@ -44,6 +44,8 @@ const (
 	EventAPIRestriction     = "api_restriction"
 	EventAPIRestrictionLift = "api_restriction_lifted"
 	EventChatChallenge      = "chat_challenge"
+	EventPoWChallenge       = "pow_challenge"
+	EventTurnstileChallenge = "turnstile_challenge"
 	// One command run in the administrative console, over the web terminal
 	// or over SSH. Recorded because the console can do everything the
 	// backoffice can from a surface that leaves no screen to look at

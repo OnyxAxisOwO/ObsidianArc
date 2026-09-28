@@ -55,6 +55,26 @@ func TestAnUnconfiguredReviewerAllows(t *testing.T) {
 	}
 }
 
+func TestStrictModeRefusesGenericNumberedUsernamesWithoutAReviewCall(t *testing.T) {
+	for _, username := range []string{"user12345", "User_88291", "guest9982", "member00123", "test1234"} {
+		verdict, err := (Reviewer{}).Review(t.Context(), Strict, Facts{Username: username, Email: "person@example.com"})
+		if err != nil || verdict.Decision != DecisionRefuse {
+			t.Errorf("strict review of %q = %+v, %v; want refusal", username, verdict, err)
+		}
+	}
+	for _, username := range []string{"user123", "username12345", "zhang_wei12345", "123456789"} {
+		if strictNumberedPlaceholder(username) {
+			t.Errorf("%q matched the strict placeholder rule", username)
+		}
+	}
+	for _, mode := range []Mode{Loose, Normal} {
+		verdict, err := (Reviewer{}).Review(t.Context(), mode, Facts{Username: "user12345"})
+		if err != nil || verdict.Decision != DecisionAllow {
+			t.Errorf("%s acquired the strict placeholder rule: %+v, %v", mode, verdict, err)
+		}
+	}
+}
+
 // A submitted value must not be able to forge a line of the fact list, which
 // is the shape a prompt injection would take here: a username containing a
 // newline and a line of its own.
@@ -180,6 +200,23 @@ func TestEachModeCarriesItsOwnBiasAndTheCommonRules(t *testing.T) {
 
 	if !strings.Contains(strings.ToUpper(strict), "STRICT") {
 		t.Error("the strict instruction does not say which mode it is")
+	}
+}
+
+func TestCustomPromptUsesTheSavedTextAndKeepsModeRules(t *testing.T) {
+	const custom = "Use the operator's extra registration context."
+	got := instructionForPrompt(Normal, custom)
+	if !strings.Contains(got, custom) {
+		t.Error("the saved prompt was not sent to the reviewer")
+	}
+	if strings.Contains(got, "You review sign-ups for a small self-hosted chat service.") {
+		t.Error("a custom prompt was combined with the built-in base instead of replacing it")
+	}
+	if !strings.Contains(got, "You are set to NORMAL.") {
+		t.Error("the server-owned mode rules were removed by the custom prompt")
+	}
+	if instructionForPrompt(Normal, DefaultPrompt()) != instructionFor(Normal) {
+		t.Error("restoring the displayed default does not reproduce the built-in instruction")
 	}
 }
 

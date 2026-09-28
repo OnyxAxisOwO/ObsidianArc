@@ -6,6 +6,7 @@ import * as consentApi from '../src/api/consent';
 import * as oauthApi from '../src/api/oauth';
 import { signInURL } from '../src/api/oauth';
 import * as backupApi from '../src/api/backup';
+import { ApiError } from '../src/api/client';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { safeNext } from '../src/lib/next';
@@ -13,6 +14,8 @@ import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import AuthView from '../src/views/AuthView.vue';
 import CompleteSignupView from '../src/views/CompleteSignupView.vue';
 import ConsentView from '../src/views/ConsentView.vue';
+import TwoFactorEnrolView from '../src/views/TwoFactorEnrolView.vue';
+import VerifyView from '../src/views/VerifyView.vue';
 import AccountSection from '../src/views/settings/AccountSection.vue';
 
 // Signing in with an account from elsewhere, and letting somebody else's site
@@ -95,6 +98,43 @@ const NEW_ACCOUNT: Account = {
   email_verified: true, allow_stats: true, allow_delete_conversations: true,
   api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
 };
+
+describe('password sign-in errors', () => {
+  it('shows a localized message for an incorrect password', async () => {
+    await changeLanguage('zh');
+    vi.spyOn(authApi, 'login').mockRejectedValue(new ApiError(
+      401,
+      'unauthorized',
+      'Incorrect username or password.',
+      { code_detail: 'invalid_credentials' },
+    ));
+    await mount(AuthView, { mode: 'login' });
+
+    type(fieldInput(t('usernameOrEmail')), 'visitor');
+    type(fieldInput(t('password')), 'wrong-password');
+    button(host, t('signIn')).click();
+    await settle();
+
+    expect(host.querySelector('.oa-auth-error')?.textContent).toBe(t('invalidCredentials'));
+  });
+
+  it('localizes network failures instead of showing browser error text', async () => {
+    await changeLanguage('zh');
+    vi.spyOn(authApi, 'login').mockRejectedValue(new ApiError(
+      0,
+      'network',
+      'Could not reach the server: Failed to fetch',
+    ));
+    await mount(AuthView, { mode: 'login' });
+
+    type(fieldInput(t('usernameOrEmail')), 'visitor');
+    type(fieldInput(t('password')), 'secret');
+    button(host, t('signIn')).click();
+    await settle();
+
+    expect(host.querySelector('.oa-auth-error')?.textContent).toBe(t('connectionFailed'));
+  });
+});
 
 describe('signing in with an account from elsewhere', () => {
   it('draws a button for each provider the operator switched on', async () => {
@@ -638,5 +678,131 @@ describe('finishing a sign-up the provider could not', () => {
 
     expect(host.textContent).toContain(t('signupCompleteGoneTitle'));
     expect(host.querySelector('input')).toBeNull();
+  });
+});
+
+describe('auth card layout position', () => {
+  it.each([
+    { position: undefined, expectedClass: 'position-center' },
+    { position: 'center', expectedClass: 'position-center' },
+    { position: 'left', expectedClass: 'position-left' },
+    { position: 'right', expectedClass: 'position-right' },
+  ] as const)('applies $expectedClass to AuthView (login) when auth_card_position is $position', async ({ position, expectedClass }) => {
+    site.value = { ...siteInfo.value };
+    if (position === undefined) delete site.value.auth_card_position;
+    else site.value.auth_card_position = position;
+    await mount(AuthView, { mode: 'login' });
+    const authElement = host.querySelector('.oa-auth');
+    expect(authElement?.classList.contains(expectedClass)).toBe(true);
+  });
+
+  it.each([
+    { position: 'left', expectedClass: 'position-left' },
+    { position: 'right', expectedClass: 'position-right' },
+    { position: 'center', expectedClass: 'position-center' },
+  ] as const)('applies $expectedClass to AuthView (register) when auth_card_position is $position', async ({ position, expectedClass }) => {
+    site.value = { ...siteInfo.value, auth_card_position: position };
+    await mount(AuthView, { mode: 'register' });
+    const authElement = host.querySelector('.oa-auth');
+    expect(authElement?.classList.contains(expectedClass)).toBe(true);
+  });
+
+  it('applies position class to CompleteSignupView', async () => {
+    site.value = { ...siteInfo.value, auth_card_position: 'left' };
+    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue({
+      provider: 'github',
+      provider_name: 'GitHub',
+      login: 'octocat',
+      email: '',
+      needs: { qq: true, email: false },
+      email_domains: [],
+      verify_email: false,
+    });
+    await mount(CompleteSignupView);
+    const authElement = host.querySelector('.oa-auth');
+    expect(authElement?.classList.contains('position-left')).toBe(true);
+  });
+
+  it('applies position class to TwoFactorEnrolView', async () => {
+    site.value = { ...siteInfo.value, auth_card_position: 'right' };
+    await mount(TwoFactorEnrolView);
+    const authElement = host.querySelector('.oa-auth');
+    expect(authElement?.classList.contains('position-right')).toBe(true);
+  });
+
+  it('applies position class to VerifyView', async () => {
+    site.value = { ...siteInfo.value, auth_card_position: 'left' };
+    await mount(VerifyView);
+    const authElement = host.querySelector('.oa-auth');
+    expect(authElement?.classList.contains('position-left')).toBe(true);
+  });
+});
+
+describe('registering with proof-of-work (PoW)', () => {
+  it('fetches PoW challenge and submits solved nonce when pow_on_signup is active', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true };
+
+    const salt = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    const nonce = 3;
+    const challenge = (await import('node:crypto')).createHash('sha256').update(salt + nonce).digest('hex');
+
+    const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue({
+      challenge,
+      salt,
+      maxNumber: 10,
+      expires: Date.now() + 300000,
+      signature: 'test-sig',
+    });
+
+    const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
+      user: { id: 'u1', username: 'alice', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', qq: '', nickname: '', avatar: '', bio: '' },
+    });
+
+    await mount(AuthView, { mode: 'register' });
+    expect(fetchSpy).toHaveBeenCalled();
+
+    type(fieldInput(t('username')), 'alice');
+    type(fieldInput(t('password')), 'super-secret-password');
+
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(regSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        username: 'alice',
+        password: 'super-secret-password',
+        pow: expect.objectContaining({
+          nonce: 3,
+          challenge,
+          salt,
+          maxNumber: 10,
+          signature: 'test-sig',
+        }),
+      }),
+    );
+  });
+
+  it('does not fetch or send PoW when pow_on_signup is disabled', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: false };
+
+    const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge');
+    const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
+      user: { id: 'u1', username: 'bob', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', qq: '', nickname: '', avatar: '', bio: '' },
+    });
+
+    await mount(AuthView, { mode: 'register' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    type(fieldInput(t('username')), 'bob');
+    type(fieldInput(t('password')), 'super-secret-password');
+
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(regSpy).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        pow: expect.anything(),
+      }),
+    );
   });
 });

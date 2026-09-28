@@ -42,6 +42,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/oauth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/project"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
@@ -50,6 +51,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/systembackup"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/trial"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
@@ -69,18 +71,19 @@ type Deps struct {
 // work (the janitor) and the HTTP handler share one set of stores rather than
 // each constructing its own.
 type Server struct {
-	deps          Deps
-	handler       http.Handler
-	settings      *settings.Service
-	auth          *auth.Service
-	users         *user.Store
-	conversations *conversation.Store
-	quota         *quota.Service
-	requests      *reqlog.Store
-	idp           *idp.Store
-	notify        *notify.Store
-	invites       *invite.Store
-	health        *health.Checker
+	deps           Deps
+	handler        http.Handler
+	settings       *settings.Service
+	auth           *auth.Service
+	users          *user.Store
+	conversations  *conversation.Store
+	quota          *quota.Service
+	requests       *reqlog.Store
+	idp            *idp.Store
+	notify         *notify.Store
+	invites        *invite.Store
+	instanceBackup *systembackup.Service
+	health         *health.Checker
 	// nil when no SSH address is configured, which is the default.
 	ssh *consolessh.Server
 	// What the console dispatches into: the API with no Attach in front of
@@ -315,11 +318,18 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		if err := db.Pool().PingContext(r.Context()); err != nil {
 			return httpx.Unavailable("Database is not reachable.").WithCause(err)
 		}
-		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"status":     "ok",
-			"version":    deps.Version,
-			"uptime_sec": int64(time.Since(deps.Started).Seconds()),
-		})
+		account, _ := auth.UserFrom(r.Context())
+		isAdmin := account.Role == user.RoleAdmin || account.Role == user.RoleSuperAdmin
+		showInfo := settingsService.Bool(settings.AboutShowSoftwareInfo)
+
+		res := map[string]any{
+			"status": "ok",
+		}
+		if isAdmin || showInfo {
+			res["version"] = deps.Version
+			res["uptime_sec"] = int64(time.Since(deps.Started).Seconds())
+		}
+		return httpx.WriteJSON(w, http.StatusOK, res)
 	}))
 
 	authHandlers := auth.NewHandlers(authService, users, groups, preferences, settingsService, proxyTrust)
@@ -517,10 +527,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			sec = 0
 		}
 
-		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"uptime_sec": sec,
-			"models":     result,
-		})
+		resp := map[string]any{
+			"models": result,
+		}
+		if account.CanAdmin("availability") || settingsService.Bool(settings.AboutShowSoftwareInfo) {
+			resp["uptime_sec"] = sec
+		} else {
+			resp["uptime_sec"] = 0
+		}
+
+		return httpx.WriteJSON(w, http.StatusOK, resp)
 	}))
 	// One client for every Turnstile check, so registration, key creation and
 	// a burst challenge reuse connections to Cloudflare.
@@ -578,6 +594,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	usageHandlers := usage.NewHandlers(usageStore)
 	usageHandlers.Routes(mux)
 	leaderboardHandlers := leaderboard.NewHandlers(settingsService, usageStore, users, models)
+	leaderboardHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	leaderboardHandlers.Routes(mux)
 
 	cardHandlers := card.NewHandlers(cards)
@@ -617,11 +634,32 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
 	}
 
+	powKey, err := secret.DeriveKey(cfg.SecretKey, "obsidian-arc/pow-challenge")
+	if err != nil {
+		powKey = cfg.SecretKey
+	}
+	powManager := pow.NewManager(powKey, pow.NewTracker())
+	authService.PoW = powManager
+
+	authService.OnChallengeFailure = func(ctx context.Context, event, ip, username, reason string) {
+		ev := securityevents.Event{
+			Event: event, Severity: securityevents.SeverityWarning,
+			Username: username, IP: ip, Decision: "refuse",
+			Reason: reason,
+		}
+		if err := securityLog.Record(ctx, nil, ev); err != nil {
+			slog.ErrorContext(ctx, "could not record challenge failure", "error", err)
+		}
+	}
+
 	// Asking a model whether a sign-up looks like a person. A restriction is
 	// the middle answer: the account exists and can use the website, but the
 	// programmatic surface stays closed until the configured time passes.
 	reviewer := screening.Reviewer{
 		Registry: registry,
+		CustomPrompt: func() string {
+			return settingsService.Get(settings.SignupReviewPrompt)
+		},
 		Resolve: func(ctx context.Context) (adapter.Provider, adapter.ModelSpec, error) {
 			record, err := models.ByID(ctx, settingsService.Get(settings.SignupReviewModel))
 			if err != nil {
@@ -637,16 +675,40 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			return settingsService.Get(settings.SignupReviewPrompt)
 		},
 	}
+	// The model needs to see a repeated registration template, not other
+	// people's contact details. Read a bounded recent sample and send only
+	// its aggregate pattern to the reviewer.
+	recentSignupFacts := func(ctx context.Context, email string) ([]screening.RecentSignup, error) {
+		recent, err := users.RecentSignups(ctx, nil, email, time.Now().Add(-3*time.Hour).UnixMilli(), 256)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]screening.RecentSignup, 0, len(recent))
+		for _, account := range recent {
+			out = append(out, screening.RecentSignup{
+				Username: account.Username, Email: account.Email,
+				Status: account.Status, APIRestricted: account.APIRestricted,
+				APIRestrictedUntil:   account.APIRestrictedUntil,
+				APIRestrictionSource: account.APIRestrictionSource,
+				CreatedAt:            account.CreatedAt,
+			})
+		}
+		return out, nil
+	}
 	authService.ReviewSignup = func(ctx context.Context, in auth.RegisterInput, fromAddress int) (auth.SignupReview, error) {
 		if !settingsService.Bool(settings.SignupReview) ||
 			settingsService.Get(settings.SignupReviewModel) == "" {
 			return auth.SignupReview{Decision: auth.SignupAllow}, nil
 		}
 
+		recent, err := recentSignupFacts(ctx, in.Email)
+		if err != nil {
+			slog.WarnContext(ctx, "recent signups unavailable to reviewer", "error", err)
+		}
 		mode := screening.ParseMode(settingsService.Get(settings.SignupReviewMode))
 		verdict, err := reviewer.Review(ctx, mode, screening.Facts{
 			Username: in.Username, Email: in.Email, QQ: in.QQ, Nickname: in.Nickname,
-			IP: in.IP, UserAgent: in.UA, FromThisAddress: fromAddress,
+			IP: in.IP, UserAgent: in.UA, FromThisAddress: fromAddress, Recent: recent,
 		})
 		if err != nil {
 			// The fallback is part of the verdict: loose allows, normal restricts,
@@ -765,11 +827,15 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 
 	adminTryReview := func(ctx context.Context, in admin.ReviewTrial) (string, string, error) {
+		recent, err := recentSignupFacts(ctx, in.Email)
+		if err != nil {
+			return "", "", err
+		}
 		verdict, err := reviewer.Review(ctx,
 			screening.ParseMode(settingsService.Get(settings.SignupReviewMode)),
 			screening.Facts{
 				Username: in.Username, Email: in.Email, QQ: in.QQ, Nickname: in.Nickname,
-				UserAgent: in.UserAgent, FromThisAddress: in.FromThisAddress,
+				UserAgent: in.UserAgent, FromThisAddress: in.FromThisAddress, Recent: recent,
 			})
 		return string(verdict.Decision), verdict.Reason, err
 	}
@@ -893,6 +959,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	idpHandlers.Routes(mux)
 
 	trial.NewHandlers(settingsService, models, registry, proxyTrust, cfg.SecretKey).Routes(mux)
+	instanceBackup, err := systembackup.NewService(db, cfg.SecretKey, deps.Version)
+	if err != nil {
+		return nil, err
+	}
 	adminHandlers := admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, securityLog, cards, healthStore, feedbackStore, idpStore, invites)
 	adminHandlers.Mail = mailManager
 	adminHandlers.UserCheck = userCheckManager
@@ -900,6 +970,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	adminHandlers.Origin = publicOrigin
 	adminHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	adminHandlers.Notify = notifyStore
+	adminHandlers.SystemBackup = instanceBackup
 	adminHandlers.Routes(mux)
 
 	// The browser's own inbox. Behind auth.RequireUser alone — never the
@@ -1111,8 +1182,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			// Exactly when a widget can appear. A key with both switches off
 			// draws nothing, and an instance that draws nothing keeps the
 			// policy it had before this feature existed.
+			mode := settingsService.RegistrationCaptchaMode()
+			turnstileOnSignup := mode == settings.CaptchaModeTurnstile || mode == settings.CaptchaModeBoth
 			return settingsService.Get(settings.TurnstileSiteKey) != "" &&
-				(settingsService.Bool(settings.TurnstileOnSignup) ||
+				(turnstileOnSignup ||
 					settingsService.Bool(settings.TurnstileOnLogin) ||
 					settingsService.Bool(settings.TurnstileOnAPIKey) ||
 					settingsService.Bool(settings.TurnstileOnRedeem) ||
@@ -1139,19 +1212,20 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	)
 
 	return &Server{
-		deps:          deps,
-		handler:       handler,
-		ssh:           sshServer,
-		settings:      settingsService,
-		auth:          authService,
-		users:         users,
-		conversations: conversations,
-		quota:         quotaService,
-		requests:      requestLog,
-		idp:           idpStore,
-		notify:        notifyStore,
-		invites:       invites,
-		consoleAPI:    consoleAPI,
+		deps:           deps,
+		handler:        handler,
+		ssh:            sshServer,
+		settings:       settingsService,
+		auth:           authService,
+		users:          users,
+		conversations:  conversations,
+		quota:          quotaService,
+		requests:       requestLog,
+		idp:            idpStore,
+		notify:         notifyStore,
+		invites:        invites,
+		instanceBackup: instanceBackup,
+		consoleAPI:     consoleAPI,
 		health: &health.Checker{
 			Store: healthStore, Models: models, Providers: providers, Registry: registry, Notify: notifyStore,
 		},
@@ -1255,14 +1329,12 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // starts and stops it alongside the HTTP server; nothing else touches it.
 func (s *Server) SSH() *consolessh.Server { return s.ssh }
 
-// StartJanitor runs the one piece of periodic work this server has: expiring
-// sessions. It is a single goroutine on a ticker, not a scheduler, and it
-// stops when the context does.
-// StartJanitor also starts the request log's writer, which is a goroutine
-// with the same lifetime: it drains the queue while the context lives and
-// writes whatever is left when it ends.
+// StartJanitor starts the three idle application loops: request-log writing,
+// backup scheduling and periodic cleanup. Sharing ctx lets shutdown signal
+// all three together; the request logger drains its queue when it stops.
 func (s *Server) StartJanitor(ctx context.Context) {
 	go s.requests.Run(ctx)
+	s.instanceBackup.Start(ctx)
 
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)

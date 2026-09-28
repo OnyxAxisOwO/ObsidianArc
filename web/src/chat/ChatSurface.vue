@@ -11,11 +11,12 @@ import { useResizeObserver } from '@vueuse/core';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import { t, type StringKey } from '@/composables/useI18n';
-import { isWork, pendingMode, setMode, type Mode } from '@/stores/workspace';
+import { isWork, pendingMode } from '@/stores/workspace';
 import { IconMenu, IconPlus } from '@/icons';
 import ChatComposer from './ChatComposer.vue';
 import ChatChallenge from './ChatChallenge.vue';
 import ChatMessage from './ChatMessage.vue';
+import ChatModeSwitch from './ChatModeSwitch.vue';
 import ChatPending from './ChatPending.vue';
 import ChatSidebar from './ChatSidebar.vue';
 import {
@@ -26,11 +27,6 @@ import {
   cancelAllFlights, captureComposerRect, lastComposerRect, markFlying, playSendAnimation,
 } from './useSendAnimation';
 import { currentUser, isAdmin } from '@/stores/session';
-
-// The two surfaces, in the order they are offered. A list rather than two
-// hand-written buttons so the strip cannot drift out of step with the store
-// that holds which one is chosen.
-const MODES: Mode[] = ['chat', 'work'];
 
 let route: ReturnType<typeof useRoute> | undefined;
 try {
@@ -259,24 +255,9 @@ defineExpose({ focus: () => composer.value?.focus() });
         <!-- Only on the empty state, because that is the only moment the
              choice is still open: once a conversation exists it carries its
              own mode, and a toggle over a running thread would offer to
-             change something it cannot. -->
-        <div class="ai-mode-switch" role="tablist" :aria-label="t('modeChat')">
-          <span
-            class="ai-mode-pill"
-            :class="{ 'mode-work': pendingMode === 'work' }"
-            aria-hidden="true"
-          />
-          <button
-            v-for="option in MODES"
-            :key="option"
-            type="button"
-            role="tab"
-            class="ai-mode-choice"
-            :class="{ active: pendingMode === option }"
-            :aria-selected="pendingMode === option"
-            @click="setMode(option)"
-          >{{ t(option === 'work' ? 'modeWork' : 'modeChat') }}</button>
-        </div>
+             change something it cannot. Its own component so the drag's window
+             listeners are torn down when this v-if drops it — see the file. -->
+        <ChatModeSwitch />
 
         <div class="ai-chat-empty-intro-wrap">
           <Transition name="ai-mode-text" mode="out-in">

@@ -235,9 +235,9 @@ func (r *registry) visible(actor user.User) []*Command {
 const Anyone = "anyone"
 
 // hasPermission mirrors internal/admin/permissions.go's hasPermission
-// exactly, with one addition this package needs and that one does not: any
-// one grant in the comma list is enough, "" means any administrator, and
-// Anyone means any signed-in account. It is copied rather than shared
+// except for two console-specific selectors: Anyone means any signed-in
+// account, and super_admin checks that exact role. Any one ordinary grant
+// in the comma list is enough and "" means any administrator. It is copied rather than shared
 // because the admin package does not export it — this copy is only ever the
 // console's own early, friendly refusal; the dispatched request re-checks
 // the real one from inside the mux, which is the actual control, and for an
@@ -246,6 +246,9 @@ const Anyone = "anyone"
 func hasPermission(actor user.User, permissions string) bool {
 	if permissions == Anyone {
 		return true
+	}
+	if permissions == "super_admin" {
+		return actor.IsSuperAdmin()
 	}
 	if permissions == "" {
 		return actor.IsAdmin()

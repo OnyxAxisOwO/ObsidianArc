@@ -10,17 +10,18 @@
 // sign-in arrives at that stage by redirect, with the session store already
 // saying a code is wanted, so the card opens on it.
 
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { safeNext, serverOwned } from '@/lib/next';
-import { completeSignIn, login, logout, register, type LoginResult } from '@/api/auth';
+import { completeSignIn, fetchPoWChallenge, login, logout, register, type LoginResult, type PoWSolution } from '@/api/auth';
+import { solvePoW, type PoWTask } from '@/lib/pow';
 import { signInURL } from '@/api/oauth';
 import OaField from '@/components/OaField.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { ApiError } from '@/api/client';
-import { refusalText } from '@/lib/refusal';
+import { loginRefusalText, refusalText } from '@/lib/refusal';
 import { IconGithub, IconGoogle, IconKey, IconSpark, type OaIcon } from '@/icons';
 import { adopt, forget, pendingSecondFactor, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
@@ -78,6 +79,51 @@ const buttonLabel = ref('');
 const identifierField = ref<HTMLInputElement | null>(null);
 const passwordField = ref<HTMLInputElement | null>(null);
 const guard = ref<InstanceType<typeof OaTurnstile> | null>(null);
+
+let currentPoWTask: PoWTask | null = null;
+let powPromise: Promise<PoWSolution> | null = null;
+let powSolution: PoWSolution | null = null;
+
+function startPoWIfNeeded(): void {
+  if (!registering.value || !site.value.pow_on_signup) return;
+  if (powSolution || powPromise) return;
+
+  powPromise = fetchPoWChallenge()
+    .then((challenge) => {
+      currentPoWTask = solvePoW(challenge);
+      return currentPoWTask.promise;
+    })
+    .then((solution) => {
+      powSolution = solution;
+      return solution;
+    })
+    .catch((err) => {
+      powPromise = null;
+      currentPoWTask = null;
+      throw err;
+    });
+}
+
+function resetPoW(): void {
+  if (currentPoWTask) {
+    currentPoWTask.cancel();
+    currentPoWTask = null;
+  }
+  powPromise = null;
+  powSolution = null;
+}
+
+watch(
+  [registering, () => site.value.pow_on_signup],
+  ([isReg, isPoW]) => {
+    if (isReg && isPoW) {
+      startPoWIfNeeded();
+    } else {
+      resetPoW();
+    }
+  },
+  { immediate: true },
+);
 
 // --- the second stage ----------------------------------------------------------
 
@@ -234,6 +280,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  resetPoW();
   if (typeof document !== 'undefined') {
     document.body.classList.remove('has-auth-page');
   }
@@ -270,6 +317,29 @@ async function onSubmit(): Promise<void> {
 
   busy.value = true;
   error.value = '';
+
+  let solution: PoWSolution | undefined;
+  if (registering.value && site.value.pow_on_signup) {
+    if (!powSolution) {
+      buttonLabel.value = t('powSolving');
+      if (!powPromise) startPoWIfNeeded();
+      try {
+        if (powPromise) {
+          solution = await powPromise;
+        }
+      } catch (failure) {
+        busy.value = false;
+        buttonLabel.value = '';
+        error.value = refusalText(failure, domains.value);
+        resetPoW();
+        startPoWIfNeeded();
+        return;
+      }
+    } else {
+      solution = powSolution;
+    }
+  }
+
   buttonLabel.value = registering.value ? t('creatingAccount') : t('signingIn');
   // A review takes seconds. Saying so beats a button that sits on "creating
   // account" long enough to read as a form that has hung.
@@ -286,6 +356,7 @@ async function onSubmit(): Promise<void> {
           qq: qqValue,
           turnstile: guard.value?.token() ?? '',
           inviteCode: inviteCode.value.trim(),
+          ...(solution ? { pow: solution } : {}),
         })
       : await login(identity, secret, guard.value?.token() ?? '');
 
@@ -307,7 +378,11 @@ async function onSubmit(): Promise<void> {
     // taken username as much as a failed challenge — leaves a spent token
     // behind that would fail the next attempt on its own.
     guard.value?.reset();
-    error.value = refusalText(failure, domains.value);
+    resetPoW();
+    startPoWIfNeeded();
+    error.value = registering.value
+      ? refusalText(failure, domains.value)
+      : loginRefusalText(failure);
     busy.value = false;
     buttonLabel.value = '';
     await nextTick();
@@ -320,7 +395,10 @@ async function onSubmit(): Promise<void> {
 <template>
   <div
     class="oa-auth"
-    :class="{ 'has-login-bg': !!loginBgUrl }"
+    :class="[
+      { 'has-login-bg': !!loginBgUrl },
+      `position-${site.auth_card_position || 'center'}`,
+    ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
     <form class="oa-auth-card" novalidate @submit.prevent="stage === 'code' ? onCode() : onSubmit()">

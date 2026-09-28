@@ -5,14 +5,14 @@
 // operator wants. The facts below do not change with that copy: they identify
 // the software a rebranded server is actually running and where it came from.
 
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { health } from '@/api/client';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
 import { formatUptime } from '@/lib/format';
-import { siteInfo } from '@/stores/session';
+import { siteInfo, isAdmin } from '@/stores/session';
 
 const PRODUCT = 'Obsidian Arc';
 const SOURCE_URL = 'https://github.com/OnyxAxisOwO/ObsidianArc';
@@ -45,11 +45,21 @@ const router = useRouter();
 const version = ref('—');
 const uptime = ref('—');
 
+// Whether software facts (version, runtime, contributors) are visible.
+// Administrators always see them; regular users see them only when enabled.
+const showSoftwareInfo = computed(() => {
+  if (isAdmin.value) return true;
+  return siteInfo.value.about?.show_software_info !== false;
+});
+
 onMounted(() => {
+  if (!showSoftwareInfo.value) {
+    return;
+  }
   void health()
     .then((status) => {
-      version.value = status.version;
-      uptime.value = formatUptime(status.uptime_sec);
+      version.value = status.version ?? '—';
+      uptime.value = status.uptime_sec ? formatUptime(status.uptime_sec) : '—';
     })
     .catch(() => {
       // The facts box just keeps its placeholders; nothing else on the page
@@ -82,9 +92,18 @@ onMounted(() => {
       </section>
 
       <div class="oa-about-facts">
-        <div class="oa-about-fact">
+        <div v-if="showSoftwareInfo" class="oa-about-fact">
           <span class="oa-about-fact-label">{{ t('aboutVersionOf', { product: PRODUCT }) }}</span>
-          <span class="oa-about-fact-value">{{ version }}</span>
+          <span class="oa-about-fact-value">
+            {{ version }}
+            <span
+              v-if="isAdmin && siteInfo.about?.show_software_info === false"
+              class="oa-badge oa-badge-muted"
+              style="margin-left: 6px; font-size: 11px;"
+            >
+              {{ t('aboutAdminOnlyBadge') }}
+            </span>
+          </span>
         </div>
 
         <!-- Directly under the version, and showing the address rather than
@@ -100,9 +119,18 @@ onMounted(() => {
           >{{ SOURCE_URL.replace('https://', '') }}</a>
         </div>
 
-        <div class="oa-about-fact">
+        <div v-if="showSoftwareInfo" class="oa-about-fact">
           <span class="oa-about-fact-label">{{ t('aboutRuntime') }}</span>
-          <span class="oa-about-fact-value">{{ uptime }}</span>
+          <span class="oa-about-fact-value">
+            {{ uptime }}
+            <span
+              v-if="isAdmin && siteInfo.about?.show_software_info === false"
+              class="oa-badge oa-badge-muted"
+              style="margin-left: 6px; font-size: 11px;"
+            >
+              {{ t('aboutAdminOnlyBadge') }}
+            </span>
+          </span>
         </div>
         <div class="oa-about-fact">
           <span class="oa-about-fact-label">{{ t('aboutLicense') }}</span>
@@ -110,8 +138,17 @@ onMounted(() => {
         </div>
       </div>
 
-      <section class="oa-about-details">
-        <h3 class="oa-drawer-subhead">{{ t('aboutContributors') }}</h3>
+      <section v-if="showSoftwareInfo" class="oa-about-details">
+        <h3 class="oa-drawer-subhead">
+          {{ t('aboutContributors') }}
+          <span
+            v-if="isAdmin && siteInfo.about?.show_software_info === false"
+            class="oa-badge oa-badge-muted"
+            style="margin-left: 6px; font-size: 11px;"
+          >
+            {{ t('aboutAdminOnlyBadge') }}
+          </span>
+        </h3>
         <p class="oa-about-lede">{{ t('aboutContributorsThanks') }}</p>
         <ul class="oa-about-people">
           <li v-for="handle in CONTRIBUTORS" :key="handle">

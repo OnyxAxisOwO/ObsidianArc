@@ -50,6 +50,10 @@ export interface Leaderboard {
   models?: LeaderboardModel[];
 }
 
-export function fetchLeaderboard(period: LeaderboardPeriod, metric: LeaderboardMetric): Promise<Leaderboard> {
-  return api.get<Leaderboard>(`/api/leaderboard?period=${period}&metric=${metric}`);
+export function fetchLeaderboard(
+  period: LeaderboardPeriod,
+  metric: LeaderboardMetric,
+  signal?: AbortSignal,
+): Promise<Leaderboard> {
+  return api.get<Leaderboard>(`/api/leaderboard?period=${period}&metric=${metric}`, signal ? { signal } : undefined);
 }
