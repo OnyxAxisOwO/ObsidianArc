@@ -14,6 +14,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/riskcontrol"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
@@ -29,7 +30,12 @@ var (
 	ErrSignupIPBlocked            = errors.New("auth: too many accounts have been created from this address")
 	// The review said no. The words a visitor sees are the operator's, set in
 	// the security screen; this only carries the fact.
-	ErrSignupRefused        = errors.New("auth: this registration was not accepted")
+	ErrSignupRefused = errors.New("auth: this registration was not accepted")
+	// The self-hosted risk-control service returned a verdict of "block".
+	// Unlike a challenge the visitor failed — turnstile.ErrFailed's case —
+	// there is nothing for them to retry: the service judged the request
+	// and the judgment was no.
+	ErrRiskRejected         = errors.New("auth: the risk control service rejected this request")
 	ErrEmailRequired        = errors.New("auth: an email address is required to register here")
 	ErrPasswordUnchanged    = errors.New("auth: the new password is the same as the current one")
 	ErrCurrentPasswordWrong = errors.New("auth: current password is incorrect")
@@ -73,6 +79,11 @@ type Service struct {
 	// challenge rather than a broken one.
 	Challenge      turnstile.Gate
 	LoginChallenge turnstile.Gate
+	// The self-hosted risk-control service, the same shape as the Turnstile
+	// gates above. RiskChallenge is the sign-up check, governed by the
+	// captcha-mode setting; RiskLogin stands in front of the password form.
+	RiskChallenge riskcontrol.Gate
+	RiskLogin     riskcontrol.Gate
 	// Self-developed proof-of-work manager. Nil is off.
 	PoW *pow.Manager
 	// Challenge failure hook for recording to security events.
@@ -185,6 +196,9 @@ type RegisterInput struct {
 	UA       string
 	// Turnstile's token, when the operator has switched the challenge on.
 	Turnstile string
+	// The self-hosted risk-control service's token, when the sign-up mode
+	// selects it. The browser's execute('register') produced it.
+	RC string
 	// PoW solution, when proof-of-work challenge is required.
 	PoW *pow.Solution
 	// Empty unless this instance's registration mode asks for one — see
@@ -328,6 +342,31 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			}
 		}
 
+		// 3. The self-hosted risk control service. Its verdict is a band
+		// rather than a boolean: "block" refuses here, and "challenge" —
+		// a score the service was not sure enough about to reject — is
+		// carried into the review below, where it becomes the same middle
+		// answer the AI reviewer has: the account exists, the programmatic
+		// surface stays closed. Nothing here distinguishes a token the
+		// service refused from one that never arrived; both are ErrFailed.
+		riskChallenge := false
+		if captchaMode == settings.CaptchaModeRisk {
+			result, err := s.RiskChallenge.Check(ctx, in.RC, riskcontrol.ActionRegister, in.IP)
+			if err != nil {
+				if s.OnChallengeFailure != nil {
+					s.OnChallengeFailure(ctx, "risk_challenge", in.IP, in.Username, "风控验证未通过")
+				}
+				return user.User{}, "", err
+			}
+			if result.Decision == riskcontrol.DecisionBlock {
+				if s.OnChallengeFailure != nil {
+					s.OnChallengeFailure(ctx, "risk_challenge", in.IP, in.Username, "风控判定拒绝")
+				}
+				return user.User{}, "", ErrRiskRejected
+			}
+			riskChallenge = result.Decision == riskcontrol.DecisionChallenge
+		}
+
 		if s.PoW != nil && s.PoW.Tracker() != nil {
 			s.PoW.Tracker().RecordAttempt(in.IP, time.Now())
 		}
@@ -367,6 +406,14 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 				s.recordSignupReview(ctx, in, nil, review)
 				return user.User{}, "", ErrSignupRefused
 			}
+		}
+		// The risk service's middle band, applied whatever the AI review
+		// said — and whether or not it ran. A refusal from either side
+		// still wins: restricted is the softer answer, and a refusal was
+		// already returned above.
+		if riskChallenge && review.Decision == SignupAllow {
+			review.Decision = SignupRestrict
+			review.Reason = "风控评分落在二次验证区间"
 		}
 	}
 	screened := false
@@ -849,7 +896,10 @@ func (s *Service) applyInvite(ctx context.Context, tx *database.Tx, grant *Invit
 }
 
 type LoginInput struct {
-	Turnstile  string
+	Turnstile string
+	// The self-hosted risk-control service's token, when the operator has
+	// switched that check on for sign-in.
+	RC         string
 	Identifier string
 	Password   string
 	IP         string
@@ -870,6 +920,19 @@ type LoginInput struct {
 func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, error) {
 	if err := s.LoginChallenge.Check(ctx, in.Turnstile, in.IP); err != nil {
 		return user.User{}, "", err
+	}
+	// The risk service's middle band does not apply here: there is no
+	// per-request second factor to hand a "maybe" at the door, and locking
+	// an account out of its own sign-in costs more than the occasional
+	// marginal one costs the instance. Only "block" refuses. The service's
+	// browser side has already put the visitor through its interactive
+	// check by the time a token exists at all.
+	result, err := s.RiskLogin.Check(ctx, in.RC, riskcontrol.ActionLogin, in.IP)
+	if err != nil {
+		return user.User{}, "", err
+	}
+	if result.Decision == riskcontrol.DecisionBlock {
+		return user.User{}, "", ErrRiskRejected
 	}
 
 	attempt, err := s.limiter.Begin(in.IP, in.Identifier)

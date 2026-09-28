@@ -108,7 +108,12 @@ const form = ref({
   turnstileOnAPIKey: false,
   turnstileOnRedeem: false,
   turnstileOnFeedback: false,
-  captchaMode: 'turnstile' as 'off' | 'turnstile' | 'pow' | 'both',
+  captchaMode: 'turnstile' as 'off' | 'turnstile' | 'pow' | 'risk' | 'both',
+  riskBaseURL: '',
+  riskSite: '',
+  riskSecret: '',
+  riskSecretHint: '',
+  riskOnLogin: false,
   powBaseMaxNumber: 50000 as number | null,
   powElevatedMaxNumber: 500000 as number | null,
   powThreshold: 10 as number | null,
@@ -373,6 +378,13 @@ function collect(): Record<string, string> {
     'turnstile.on_redeem': String(form.value.turnstileOnRedeem),
     'turnstile.on_feedback': String(form.value.turnstileOnFeedback),
     'registration.captcha_mode': form.value.captchaMode,
+    // Empty keeps what is stored, the same bargain the Turnstile secret
+    // makes: the field was never shown the secret, so sending its emptiness
+    // back would erase it.
+    'risk.secret_key': form.value.riskSecret.trim(),
+    'risk.base_url': form.value.riskBaseURL.trim(),
+    'risk.site': form.value.riskSite.trim(),
+    'risk.on_login': String(form.value.riskOnLogin),
     'security.pow_base_max_number': String(form.value.powBaseMaxNumber ?? 50000),
     'security.pow_elevated_max_number': String(form.value.powElevatedMaxNumber ?? 500000),
     'security.pow_threshold': String(form.value.powThreshold ?? 10),
@@ -594,6 +606,8 @@ function formatEventReason(reason: string): string {
   if (reason === 'PoW 挑战已被使用') return t('securityReasonPoWReplayed');
   if (reason === 'PoW 校验失败') return t('securityReasonPoWFailed');
   if (reason === 'Turnstile 人机验证未通过') return t('securityReasonTurnstileFailed');
+  if (reason === '风控验证未通过') return t('securityReasonRiskFailed');
+  if (reason === '风控判定拒绝') return t('securityReasonRiskBlocked');
   return reason;
 }
 
@@ -625,6 +639,7 @@ function eventLabel(event: string): string {
   if (event === 'console_command') return t('securityEventConsoleCommand');
   if (event === 'pow_challenge') return t('securityEventPoWChallenge');
   if (event === 'turnstile_challenge') return t('securityEventTurnstileChallenge');
+  if (event === 'risk_challenge') return t('securityEventRiskChallenge');
   return event;
 }
 
@@ -889,6 +904,11 @@ async function load(): Promise<void> {
       turnstileOnRedeem: values['turnstile.on_redeem'] === 'true',
       turnstileOnFeedback: values['turnstile.on_feedback'] === 'true',
       captchaMode: (values['registration.captcha_mode'] as any) || (values['turnstile.on_signup'] === 'true' ? 'turnstile' : 'off'),
+      riskBaseURL: values['risk.base_url'] ?? '',
+      riskSite: values['risk.site'] ?? '',
+      riskSecret: '',
+      riskSecretHint: values['risk.secret_key'] ?? '',
+      riskOnLogin: values['risk.on_login'] === 'true',
       powBaseMaxNumber: Number(values['security.pow_base_max_number'] || 50000),
       powElevatedMaxNumber: Number(values['security.pow_elevated_max_number'] || 500000),
       powThreshold: Number(values['security.pow_threshold'] || 10),
@@ -951,14 +971,14 @@ async function load(): Promise<void> {
 
 const categories: WorkbenchGroup[] = [
   { id: 'accounts', label: 'controlAccounts', hint: 'controlAccountsHint', icon: IconUsers, sections: ['secAccounts', 'secRegistration', 'secRegistrationLimits'] },
-  { id: 'verification', label: 'controlVerification', hint: 'controlVerificationHint', icon: IconLock, sections: ['secTurnstile', 'secVerificationScenes', 'secChatChallenge', 'secMail', 'secUserCheck'] },
+  { id: 'verification', label: 'controlVerification', hint: 'controlVerificationHint', icon: IconLock, sections: ['secTurnstile', 'secRisk', 'secVerificationScenes', 'secChatChallenge', 'secMail', 'secUserCheck'] },
   { id: 'review', label: 'controlReview', hint: 'controlReviewHint', icon: IconSpark, sections: ['secSignupReview', 'secReviewTrial'] },
   { id: 'signin', label: 'controlSignIn', hint: 'controlSignInHint', icon: IconGithub, sections: ['secOAuth', 'secApplications'] },
   { id: 'twofactor', label: 'controlTwoFactor', hint: 'controlTwoFactorHint', icon: IconShield, sections: ['secTwoFactorPolicy', 'secBackofficeVerify', 'secTwoFactorAdoption'] },
   { id: 'events', label: 'controlEvents', hint: 'controlEventsHint', icon: IconFile, sections: ['secSecurityLog'] },
 ];
 
-const columns: [string[], string[]] = [['secAccounts', 'secRegistrationLimits', 'secTurnstile', 'secChatChallenge', 'secSignupReview', 'secTwoFactorPolicy', 'secBackofficeVerify'], ['secRegistration', 'secVerificationScenes', 'secReviewTrial', 'secTwoFactorAdoption', 'secMail', 'secUserCheck']];
+const columns: [string[], string[]] = [['secAccounts', 'secRegistrationLimits', 'secTurnstile', 'secRisk', 'secChatChallenge', 'secSignupReview', 'secTwoFactorPolicy', 'secBackofficeVerify'], ['secRegistration', 'secVerificationScenes', 'secReviewTrial', 'secTwoFactorAdoption', 'secMail', 'secUserCheck']];
 
 onMounted(load);
 </script>
@@ -1023,6 +1043,35 @@ onMounted(load);
           :placeholder="form.turnstileSecretHint || '0x4AAAAAAA…'"
           :hint="t('turnstileSecretHint')"
           monospace
+        />
+      </AdminControlCard>
+      <AdminControlCard id="secRisk" v-show="visible('secRisk')" :title="t('secRisk')" :icon="IconKey" :hint="t('riskHint')">
+        <OaTextField
+          v-model="form.riskBaseURL"
+          :label="t('riskBaseURL')"
+          placeholder="https://risk.example.com"
+          :hint="t('riskBaseURLHint')"
+          monospace
+        />
+        <OaTextField
+          v-model="form.riskSite"
+          :label="t('riskSite')"
+          placeholder="shop-a"
+          :hint="t('riskSiteHint')"
+          monospace
+        />
+        <OaTextField
+          v-model="form.riskSecret"
+          type="password"
+          :label="t('riskSecretKey')"
+          :placeholder="form.riskSecretHint || 'rk_live_…'"
+          :hint="t('riskSecretHint')"
+          monospace
+        />
+        <OaSwitchField
+          v-model="form.riskOnLogin"
+          :label="t('riskOnLogin')"
+          :hint="t('riskOnLoginHint')"
         />
       </AdminControlCard>
       <AdminControlCard id="secChatChallenge" v-show="visible('secChatChallenge')" :title="t('controlChatChallenge')" :icon="IconSpark" :hint="t('controlChatChallengeHint')">
@@ -1230,6 +1279,7 @@ onMounted(load);
             { value: 'off', label: t('captchaModeOff') },
             { value: 'turnstile', label: t('captchaModeTurnstile') },
             { value: 'pow', label: t('captchaModePoW') },
+            { value: 'risk', label: t('captchaModeRisk') },
             { value: 'both', label: t('captchaModeBoth') },
           ]"
         />

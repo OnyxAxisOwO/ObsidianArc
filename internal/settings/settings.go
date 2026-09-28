@@ -112,12 +112,28 @@ const (
 
 	// Registration Captcha mode and self-developed Proof-of-Work settings.
 	// Captcha mode controls the challenge required at sign-up: "off",
-	// "turnstile", "pow", or "both".
+	// "turnstile", "pow", "risk", or "both".
 	RegistrationCaptchaMode = "registration.captcha_mode"
 	CaptchaModeOff          = "off"
 	CaptchaModeTurnstile    = "turnstile"
 	CaptchaModePoW          = "pow"
+	CaptchaModeRisk         = "risk"
 	CaptchaModeBoth         = "both"
+
+	// A self-hosted anti-abuse service of the reCAPTCHA shape — see
+	// internal/riskcontrol. The base is where the browser loads the
+	// service's SDK from and where this server verifies tokens; a path
+	// rather than a URL means the service is reverse-proxied under this
+	// instance's own domain. The site key is public — the browser's init()
+	// call carries it — and the secret is write-only, the way the
+	// Turnstile one is. Sign-up is governed by RegistrationCaptchaMode
+	// above, not by a switch here: one select owns which challenge a
+	// sign-up needs, and a second switch for the same thing would be a
+	// second source of truth.
+	RiskBaseURL   = "risk.base_url"
+	RiskSite      = "risk.site"
+	RiskSecretKey = "risk.secret_key"
+	RiskOnLogin   = "risk.on_login"
 
 	PoWBaseMaxNumber     = "security.pow_base_max_number"
 	PoWElevatedMaxNumber = "security.pow_elevated_max_number"
@@ -504,7 +520,7 @@ func ValidDepartMode(value string) bool {
 
 func ValidCaptchaMode(value string) bool {
 	switch value {
-	case CaptchaModeOff, CaptchaModeTurnstile, CaptchaModePoW, CaptchaModeBoth:
+	case CaptchaModeOff, CaptchaModeTurnstile, CaptchaModePoW, CaptchaModeRisk, CaptchaModeBoth:
 		return true
 	default:
 		return false
@@ -648,10 +664,18 @@ var Defaults = map[string]string{
 	TurnstileOnRedeem:       "false",
 	TurnstileOnFeedback:     "false",
 	RegistrationCaptchaMode: CaptchaModeTurnstile,
-	PoWBaseMaxNumber:        "50000",
-	PoWElevatedMaxNumber:    "500000",
-	PoWThreshold:            "10",
-	FeedbackShowStaffName:   "true",
+	// Unconfigured, and the sign-up mode does not select the service until
+	// an operator points it somewhere — the same bargain the Turnstile
+	// keys below keep. The login switch is off even once configured:
+	// pasting credentials is configuring, not yet challenging people.
+	RiskBaseURL:           "",
+	RiskSite:              "",
+	RiskSecretKey:         "",
+	RiskOnLogin:           "false",
+	PoWBaseMaxNumber:      "50000",
+	PoWElevatedMaxNumber:  "500000",
+	PoWThreshold:          "10",
+	FeedbackShowStaffName: "true",
 	// Off, and off even once the credentials are filled in, for the reason
 	// the challenge switches above are: pasting a key is not the same as
 	// opening the door.

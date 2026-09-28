@@ -52,6 +52,12 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       return t('challengeFailed');
     case 'challenge_unavailable':
       return t('challengeUnavailable');
+    case 'risk_blocked':
+      // The self-hosted risk service judged this request and refused it.
+      // Distinct from a failed challenge, which can be retried: this one
+      // says nothing about trying again, because trying again answers to
+      // the service, not to the form.
+      return t('riskBlocked');
     case 'pow_required':
       return t('powRequired');
     case 'pow_expired':

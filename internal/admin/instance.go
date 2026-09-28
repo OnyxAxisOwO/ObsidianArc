@@ -194,6 +194,10 @@ var writableSettings = map[string]bool{
 	settings.TurnstileOnRedeem:          true,
 	settings.TurnstileOnFeedback:        true,
 	settings.RegistrationCaptchaMode:    true,
+	settings.RiskBaseURL:                true,
+	settings.RiskSite:                   true,
+	settings.RiskSecretKey:              true,
+	settings.RiskOnLogin:                true,
 	settings.PoWBaseMaxNumber:           true,
 	settings.PoWElevatedMaxNumber:       true,
 	settings.PoWThreshold:               true,
@@ -748,6 +752,7 @@ func (h *Handlers) deleteLogo(w http.ResponseWriter, r *http.Request) error {
 // never read back out of it.
 var secretSettings = []string{
 	settings.TurnstileSecretKey,
+	settings.RiskSecretKey,
 	settings.OAuthGitHubSecret,
 	settings.OAuthGoogleSecret,
 	settings.OAuthOIDCClientSecret,
