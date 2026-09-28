@@ -239,6 +239,13 @@ describe('email verification controls', () => {
     expect(refusalText(new ApiError(503, 'email_screening_unavailable', 'raw'))).toBe(t('emailScreeningUnavailable'));
   });
 
+  it('translates account_banned with and without a custom reason', () => {
+    expect(refusalText(new ApiError(403, 'account_banned', 'banned'))).toBe(t('accountBanned'));
+    expect(refusalText(new ApiError(403, 'account_banned', 'banned', { ban_reason: 'Abuse of resources' }))).toBe(
+      t('accountBannedWithReason', { reason: 'Abuse of resources' }),
+    );
+  });
+
   it('explains the link and six-digit code on the registration form in both languages', async () => {
     await mount({ setup: () => () => h(AuthView, { mode: 'register' }) }, '/register');
     const email = host.querySelector<HTMLInputElement>('.oa-field input[type="email"]');

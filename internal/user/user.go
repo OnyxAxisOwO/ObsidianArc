@@ -54,6 +54,9 @@ type User struct {
 	GroupID          string   `json:"group_id"`
 	GroupExpiresAt   int64    `json:"group_expires_at"`
 	Status           Status   `json:"status"`
+	// An administrator-supplied explanation shown to the account owner when
+	// sign-in is refused. Empty when no reason was provided.
+	BanReason string `json:"ban_reason"`
 	// Whether the address above has been confirmed. True for every
 	// account that predates verification, and for one with no address:
 	// there is nothing to confirm and nothing to hold back.
@@ -122,8 +125,9 @@ const (
 	// An avatar is a URL or a small inline image. The cap is what keeps the
 	// users table — read on every authenticated request — from growing a
 	// megabyte-per-row column.
-	MaxAvatarChars = 8 * 1024
-	MaxEmailChars  = 254
+	MaxAvatarChars    = 8 * 1024
+	MaxEmailChars     = 254
+	MaxBanReasonChars = 500
 	// The value comes from an untrusted request header and the user row is read
 	// on every authenticated request, so it gets the same bound as session UAs.
 	MaxSignupUserAgentChars = 200
@@ -172,7 +176,7 @@ func NewStore(db *database.DB) *Store { return &Store{db: db} }
 const columns = `id, username, email, qq, nickname, avatar, bio, role, group_id, status,
 	email_verified, created_at, updated_at, last_login_at, signup_ip, signup_user_agent,
 	api_restricted, api_restricted_until, api_restriction_source, group_expires_at, admin_permissions, last_active_at,
-	two_factor_at`
+	two_factor_at, ban_reason`
 
 type CreateInput struct {
 	Username     string
@@ -186,6 +190,7 @@ type CreateInput struct {
 	Unverified bool
 	GroupID    string
 	Status     Status
+	BanReason  string
 	// The address this account was created from, for the per-address
 	// registration limit. Empty where it could not be resolved.
 	SignupIP        string
@@ -219,14 +224,15 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 
 	now := time.Now().UnixMilli()
 	record := User{
-		ID:       id.New(),
-		Username: username,
-		Email:    email,
-		QQ:       qq,
-		Nickname: nickname,
-		Role:     orDefault(in.Role, RoleUser),
-		GroupID:  in.GroupID,
-		Status:   orDefault(in.Status, StatusActive),
+		ID:        id.New(),
+		Username:  username,
+		Email:     email,
+		QQ:        qq,
+		Nickname:  nickname,
+		Role:      orDefault(in.Role, RoleUser),
+		GroupID:   in.GroupID,
+		Status:    orDefault(in.Status, StatusActive),
+		BanReason: strings.TrimSpace(in.BanReason),
 		// An account with no address has nothing to confirm, so it is
 		// never held back for not having confirmed it.
 		EmailVerified: !in.Unverified || email == "",
@@ -246,13 +252,13 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 	_, err = q.Exec(ctx, `INSERT INTO users
 		(id, username, username_lower, email, email_lower, qq, password_hash, nickname, avatar, bio,
 		 role, group_id, status, email_verified, created_at, updated_at, last_login_at, signup_ip,
-		 signup_user_agent, api_restricted, api_restricted_until, api_restriction_source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+		 signup_user_agent, api_restricted, api_restricted_until, api_restriction_source, ban_reason)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.Username, strings.ToLower(record.Username),
 		record.Email, strings.ToLower(record.Email), record.QQ, in.PasswordHash, record.Nickname,
 		record.Role, nullable(record.GroupID), record.Status, record.EmailVerified,
 		record.CreatedAt, record.UpdatedAt, in.SignupIP, record.SignupUserAgent, record.APIRestricted,
-		record.APIRestrictedUntil, record.APIRestrictionSource)
+		record.APIRestrictedUntil, record.APIRestrictionSource, record.BanReason)
 	if err != nil {
 		// Both engines report a violated unique index without naming a
 		// portable error code, so the message is matched instead. The check
@@ -360,7 +366,7 @@ func (s *Store) CredentialsByLogin(ctx context.Context, identifier string) (User
 		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP,
 		&record.SignupUserAgent, &record.APIRestricted, &record.APIRestrictedUntil,
 		&record.APIRestrictionSource, &record.GroupExpiresAt, &permissions, &record.LastActiveAt,
-		&record.TwoFactorAt, &hash)
+		&record.TwoFactorAt, &record.BanReason, &hash)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return User{}, "", ErrNotFound
@@ -494,6 +500,7 @@ type AdminUpdate struct {
 	GroupExpiresAt   *int64
 	Status           *Status
 	QQ               *string
+	BanReason        *string
 }
 
 func (s *Store) UpdateAdminFields(ctx context.Context, q database.Queryer, userID string, in AdminUpdate) (User, error) {
@@ -532,6 +539,10 @@ func (s *Store) UpdateAdminFields(ctx context.Context, q database.Queryer, userI
 	if in.Status != nil {
 		sets = append(sets, "status = ?")
 		args = append(args, orDefault(*in.Status, StatusActive))
+	}
+	if in.BanReason != nil {
+		sets = append(sets, "ban_reason = ?")
+		args = append(args, strings.TrimSpace(*in.BanReason))
 	}
 	if in.QQ != nil {
 		value := strings.TrimSpace(*in.QQ)
@@ -797,7 +808,7 @@ func scanUser(row rowScanner) (User, error) {
 		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP,
 		&record.SignupUserAgent, &record.APIRestricted, &record.APIRestrictedUntil,
 		&record.APIRestrictionSource, &record.GroupExpiresAt, &permissions, &record.LastActiveAt,
-		&record.TwoFactorAt)
+		&record.TwoFactorAt, &record.BanReason)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return User{}, ErrNotFound

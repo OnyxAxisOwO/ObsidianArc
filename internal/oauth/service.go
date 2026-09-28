@@ -283,7 +283,7 @@ func (s *Service) resolve(
 					return err
 				}
 				if !account.IsActive() {
-					return auth.ErrAccountDisabled
+					return &auth.AccountDisabledError{Reason: account.BanReason}
 				}
 				return s.store.Touch(ctx, tx, identity)
 			}
@@ -307,7 +307,7 @@ func (s *Service) resolve(
 					return err
 				}
 				if !account.IsActive() {
-					return auth.ErrAccountDisabled
+					return &auth.AccountDisabledError{Reason: account.BanReason}
 				}
 				return s.store.Touch(ctx, tx, identity)
 			} else if !errors.Is(err, ErrNoIdentity) {
@@ -324,7 +324,7 @@ func (s *Service) resolve(
 						return ErrAddressTaken
 					}
 					if !existing.IsActive() {
-						return auth.ErrAccountDisabled
+						return &auth.AccountDisabledError{Reason: existing.BanReason}
 					}
 					if err := s.store.Link(ctx, tx, existing.ID, identity); err != nil {
 						// The account already answers to a different account at
@@ -355,7 +355,7 @@ func (s *Service) resolve(
 						return ErrAddressTaken
 					}
 					if !byQQ.IsActive() {
-						return auth.ErrAccountDisabled
+						return &auth.AccountDisabledError{Reason: byQQ.BanReason}
 					}
 					if err := s.store.Link(ctx, tx, byQQ.ID, identity); err != nil {
 						if errors.Is(err, ErrAlreadyLinked) {

@@ -20,6 +20,24 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
+// AccountDisabledError is returned when an authentication attempt is made
+// against an account marked StatusDisabled. It carries the optional ban reason
+// supplied by an administrator so user-facing refusals can explain why.
+type AccountDisabledError struct {
+	Reason string
+}
+
+func (e *AccountDisabledError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("auth: this account has been disabled: %s", e.Reason)
+	}
+	return "auth: this account has been disabled"
+}
+
+func (e *AccountDisabledError) Is(target error) bool {
+	return target == ErrAccountDisabled
+}
+
 var (
 	ErrInvalidCredentials         = errors.New("auth: incorrect username or password")
 	ErrAccountDisabled            = errors.New("auth: this account has been disabled")
@@ -911,7 +929,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 	// Checked after verification on purpose: telling an anonymous caller that
 	// an account is disabled would confirm the account exists.
 	if !account.IsActive() {
-		return user.User{}, "", ErrAccountDisabled
+		return user.User{}, "", &AccountDisabledError{Reason: account.BanReason}
 	}
 
 	attempt.finish(attemptSucceeded)
@@ -976,7 +994,7 @@ func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip
 		return user.User{}, ErrInvalidCredentials
 	}
 	if !account.IsActive() {
-		return user.User{}, ErrAccountDisabled
+		return user.User{}, &AccountDisabledError{Reason: account.BanReason}
 	}
 
 	attempt.finish(attemptSucceeded)
@@ -1093,7 +1111,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (user.User, Se
 		return user.User{}, Session{}, err
 	}
 	if !account.IsActive() {
-		return user.User{}, Session{}, ErrAccountDisabled
+		return user.User{}, Session{}, &AccountDisabledError{Reason: account.BanReason}
 	}
 	if session.TwoFactorPending {
 		return user.User{}, Session{}, ErrSignInIncomplete

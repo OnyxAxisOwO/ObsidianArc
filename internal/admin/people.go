@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
@@ -150,6 +151,7 @@ type userRequest struct {
 	GroupID          *string      `json:"group_id"`
 	GroupExpiresAt   *int64       `json:"group_expires_at"`
 	Status           *user.Status `json:"status"`
+	BanReason        *string      `json:"ban_reason"`
 
 	APIRestricted       *bool `json:"api_restricted"`
 	APIRestrictionHours *int  `json:"api_restriction_hours"`
@@ -338,6 +340,9 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 	if body.Status != nil && *body.Status != user.StatusActive && *body.Status != user.StatusDisabled {
 		return httpx.BadRequest("Status must be active or disabled.")
 	}
+	if body.BanReason != nil && utf8.RuneCountInString(strings.TrimSpace(*body.BanReason)) > user.MaxBanReasonChars {
+		return httpx.BadRequest("Ban reason must be %d characters or fewer.", user.MaxBanReasonChars)
+	}
 	if body.APIRestrictionHours != nil &&
 		(*body.APIRestrictionHours < 0 || *body.APIRestrictionHours > 24*365) {
 		return httpx.BadRequest("API restriction hours must be between 0 and 8760.")
@@ -469,13 +474,19 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 
-		if body.Role != nil || body.GroupID != nil || body.Status != nil || body.AdminPermissions != nil {
+		if body.Role != nil || body.GroupID != nil || body.Status != nil || body.AdminPermissions != nil || body.BanReason != nil {
+			banReason := body.BanReason
+			if body.Status != nil && *body.Status == user.StatusActive && banReason == nil {
+				empty := ""
+				banReason = &empty
+			}
 			updated, err = h.users.UpdateAdminFields(r.Context(), tx, userID, user.AdminUpdate{
 				Role:             body.Role,
 				AdminPermissions: body.AdminPermissions,
 				GroupID:          body.GroupID,
 				GroupExpiresAt:   body.GroupExpiresAt,
 				Status:           body.Status,
+				BanReason:        banReason,
 			})
 			if err != nil {
 				return err

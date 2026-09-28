@@ -230,6 +230,7 @@ const form = ref({
   role: 'user' as Role,
   permissions: [] as string[],
   status: 'active' as AccountStatus,
+  banReason: '',
   group: '',
   groupExpiresAt: '',
   apiRestricted: false,
@@ -320,6 +321,9 @@ const identity = computed<Array<[string, string, boolean]>>(() => {
   // an empty row reads as a missing value rather than an absent one.
   if (row.signup_ip) rows.push([t('colSignupIP'), maskLog(row.signup_ip), true]);
   if (row.signup_user_agent) rows.push([t('registrationUserAgent'), maskLog(row.signup_user_agent), true]);
+  if (row.status === 'disabled' && row.ban_reason) {
+    rows.push([t('banReason'), row.ban_reason, false]);
+  }
   return rows;
 });
 
@@ -413,6 +417,7 @@ async function open(id: string): Promise<void> {
     role: row.role,
     permissions: [...(row.admin_permissions ?? [])],
     status: row.status,
+    banReason: row.ban_reason || '',
     group: row.group_id,
     groupExpiresAt: row.group_expires_at ? dateTimeLocal(row.group_expires_at) : '',
     apiRestricted: restrictionActive,
@@ -451,6 +456,7 @@ async function save(): Promise<void> {
       avatar: form.value.avatar.trim(),
 
       status: form.value.status,
+      ban_reason: form.value.status === 'disabled' ? form.value.banReason.trim() : '',
     };
     if (canAdmin('administrators') && form.value.role !== row.role) patch.role = form.value.role;
     if (canAdmin('administrators') && (form.value.role === 'admin') &&
@@ -835,7 +841,7 @@ const state = { q: '', role: '', status: '', group: '' };
         <OaBadgeRow>
           <OaBadge v-if="row.role === 'super_admin'">{{ t('superAdmin') }}</OaBadge>
           <OaBadge v-if="row.role === 'admin'">{{ t('admin') }}</OaBadge>
-          <OaBadge v-if="row.status === 'disabled'" tone="danger">{{ t('disabled') }}</OaBadge>
+          <OaBadge v-if="row.status === 'disabled'" tone="danger" :title="row.ban_reason || undefined">{{ t('disabled') }}</OaBadge>
           <OaBadge v-if="apiRestrictionActive(row)" tone="warning">{{ t('apiRestrictedBadge') }}</OaBadge>
           <OaBadge v-if="row.two_factor_at" tone="muted">{{ t('twoFactorBadge') }}</OaBadge>
         </OaBadgeRow>
@@ -1059,6 +1065,14 @@ const state = { q: '', role: '', status: '', group: '' };
           { value: 'active', label: t('statusActive') },
           { value: 'disabled', label: t('statusDisabled') },
         ]"
+      />
+      <OaTextField
+        v-if="form.status === 'disabled'"
+        v-model="form.banReason"
+        :label="t('banReason')"
+        :placeholder="t('banReasonPlaceholder')"
+        :hint="t('banReasonHint')"
+        :max-length="500"
       />
       <OaSelectField
         v-model="form.group"

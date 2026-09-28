@@ -602,7 +602,20 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 		// Coded, not just worded: the sign-in page says this in the reader's
 		// own language, and the server has no idea what that is.
 		if errors.Is(err, ErrAccountDisabled) {
-			return httpx.ForbiddenCode("account_banned", "This account has been banned. Contact an administrator.")
+			reason := ""
+			var disabledErr *AccountDisabledError
+			if errors.As(err, &disabledErr) {
+				reason = disabledErr.Reason
+			}
+			msg := "This account has been banned. Contact an administrator."
+			if reason != "" {
+				msg = fmt.Sprintf("This account has been banned: %s", reason)
+			}
+			resp := httpx.ForbiddenCode("account_banned", msg)
+			if reason != "" {
+				resp = resp.WithDetails(map[string]any{"ban_reason": reason})
+			}
+			return resp
 		}
 		if errors.Is(err, turnstile.ErrFailed) {
 			return httpx.ForbiddenCode("challenge_failed",

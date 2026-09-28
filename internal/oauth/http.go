@@ -3,6 +3,7 @@ package oauth
 import (
 	"crypto/hmac"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -230,6 +231,11 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 			h.askForDetails(w, r, more.Identity, value.Next)
 			return
 		}
+		var disabledErr *auth.AccountDisabledError
+		if errors.As(err, &disabledErr) && disabledErr.Reason != "" {
+			h.failWithReason(w, r, false, "disabled", disabledErr.Reason)
+			return
+		}
 		h.fail(w, r, false, signInFailure(err))
 		return
 	}
@@ -444,13 +450,21 @@ func (h *Handlers) finishLink(w http.ResponseWriter, r *http.Request, value stat
 // path carries one: the server has no idea what language the reader has the
 // interface in.
 func (h *Handlers) fail(w http.ResponseWriter, r *http.Request, linking bool, code string) {
+	h.failWithReason(w, r, linking, code, "")
+}
+
+func (h *Handlers) failWithReason(w http.ResponseWriter, r *http.Request, linking bool, code, reason string) {
 	page := "/login"
 	if linking {
 		page = "/settings"
 	} else if r.URL.Query().Get("register") == "1" {
 		page = "/register"
 	}
-	http.Redirect(w, r, page+"?oauth_error="+url.QueryEscape(code), http.StatusFound)
+	u := page + "?oauth_error=" + url.QueryEscape(code)
+	if reason != "" {
+		u += "&ban_reason=" + url.QueryEscape(reason)
+	}
+	http.Redirect(w, r, u, http.StatusFound)
 }
 
 func providerFailure(err error) string {
@@ -524,8 +538,20 @@ func completionError(err error) error {
 	case errors.Is(err, ErrPasswordNotAllowed):
 		return httpx.ForbiddenCode("password_not_allowed", "Password setting is not enabled on this server.")
 	case errors.Is(err, auth.ErrAccountDisabled):
-		return httpx.ForbiddenCode("account_banned",
-			"This account has been banned. Contact an administrator.")
+		reason := ""
+		var disabledErr *auth.AccountDisabledError
+		if errors.As(err, &disabledErr) {
+			reason = disabledErr.Reason
+		}
+		msg := "This account has been banned. Contact an administrator."
+		if reason != "" {
+			msg = fmt.Sprintf("This account has been banned: %s", reason)
+		}
+		resp := httpx.ForbiddenCode("account_banned", msg)
+		if reason != "" {
+			resp = resp.WithDetails(map[string]any{"ban_reason": reason})
+		}
+		return resp
 	default:
 		return httpx.Internal(err)
 	}

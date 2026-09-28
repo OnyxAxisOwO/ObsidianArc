@@ -695,7 +695,7 @@ func (s *Service) CompleteSignIn(ctx context.Context, token, code, ip, ua string
 		return user.User{}, "", err
 	}
 	if !account.IsActive() {
-		return user.User{}, "", ErrAccountDisabled
+		return user.User{}, "", &AccountDisabledError{Reason: account.BanReason}
 	}
 	if !account.TwoFactorEnabled() {
 		// Switched off by an administrator while this sign-in was waiting.

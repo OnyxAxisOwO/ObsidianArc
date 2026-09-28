@@ -21,6 +21,7 @@ export interface Account {
   /** Whether the operator configured this group to show expiry date in usage drawer. */
   group_show_expiry?: boolean;
   status: AccountStatus;
+  ban_reason?: string;
   created_at: number;
   updated_at: number;
   last_login_at: number;

@@ -288,7 +288,12 @@ onMounted(() => {
   }
   const code = route.query['oauth_error'];
   if (typeof code === 'string' && code) {
-    error.value = t(OAUTH_REFUSALS[code] ?? 'oauthFailed');
+    const banReason = route.query['ban_reason'];
+    if (code === 'disabled' && typeof banReason === 'string' && banReason.trim()) {
+      error.value = t('accountBannedWithReason', { reason: banReason.trim() });
+    } else {
+      error.value = t(OAUTH_REFUSALS[code] ?? 'oauthFailed');
+    }
     // Out of the address bar: a reload should not raise a message about a
     // sign-in that is long over.
     void router.replace({ path: route.path, query: {} });

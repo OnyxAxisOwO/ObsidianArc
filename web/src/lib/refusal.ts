@@ -21,8 +21,13 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
   switch (failure.code) {
     case 'network':
       return t('connectionFailed');
-    case 'account_banned':
+    case 'account_banned': {
+      const reason = failure.details['ban_reason'];
+      if (typeof reason === 'string' && reason.trim()) {
+        return t('accountBannedWithReason', { reason: reason.trim() });
+      }
       return t('accountBanned');
+    }
     case 'signup_ip_blocked':
       return t('signupBlocked');
     case 'registration_closed':

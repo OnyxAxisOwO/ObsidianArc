@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -163,7 +164,20 @@ func TranslateTwoFactorError(w http.ResponseWriter, err error) error {
 		return httpx.UnauthorizedCode("two_factor_expired",
 			"That sign-in has expired. Enter your password again.")
 	case errors.Is(err, ErrAccountDisabled):
-		return httpx.ForbiddenCode("account_banned", "This account has been banned. Contact an administrator.")
+		reason := ""
+		var disabledErr *AccountDisabledError
+		if errors.As(err, &disabledErr) {
+			reason = disabledErr.Reason
+		}
+		msg := "This account has been banned. Contact an administrator."
+		if reason != "" {
+			msg = fmt.Sprintf("This account has been banned: %s", reason)
+		}
+		resp := httpx.ForbiddenCode("account_banned", msg)
+		if reason != "" {
+			resp = resp.WithDetails(map[string]any{"ban_reason": reason})
+		}
+		return resp
 	case errors.Is(err, ErrTwoFactorEnabled):
 		return httpx.Conflict("two_factor_enabled", "Two-step sign-in is already on.")
 	case errors.Is(err, ErrTwoFactorDisabled):

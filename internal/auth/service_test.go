@@ -444,6 +444,36 @@ func TestDisabledAccountCannotSignIn(t *testing.T) {
 	}
 }
 
+func TestLoginRejectsDisabledAccountCarriesBanReason(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, _, err := f.auth.Register(ctx, RegisterInput{Username: "banned", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := user.StatusDisabled
+	reason := "Abuse of resources"
+	if _, err := f.users.UpdateAdminFields(ctx, nil, account.ID, user.AdminUpdate{
+		Status:    &disabled,
+		BanReason: &reason,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = f.auth.Login(ctx, LoginInput{Identifier: "banned", Password: "a-good-password"})
+	if !errors.Is(err, ErrAccountDisabled) {
+		t.Fatalf("want ErrAccountDisabled, got %v", err)
+	}
+	var disabledErr *AccountDisabledError
+	if !errors.As(err, &disabledErr) {
+		t.Fatalf("want *AccountDisabledError, got %T", err)
+	}
+	if disabledErr.Reason != reason {
+		t.Fatalf("want reason %q, got %q", reason, disabledErr.Reason)
+	}
+}
+
 // A session issued before an account was disabled has to stop working on its
 // next request, not at its next expiry.
 func TestAuthenticateRejectsDisabledAccountMidSession(t *testing.T) {
