@@ -325,10 +325,18 @@ func (s *Store) finish(ctx context.Context, token, status, failure string, now t
 	if len(failure) > 600 {
 		failure = failure[:600]
 	}
-	_, err := s.db.Exec(ctx, `UPDATE system_backups SET lease_token = '', lease_until = 0,
-		last_finished_at = ?, last_success_at = CASE WHEN ? > 0 THEN ? ELSE last_success_at END,
-		last_status = ?, last_error = ? WHERE id = ? AND lease_token = ?`,
-		now.UnixMilli(), uploadedAt, uploadedAt, status, failure, singletonID, token)
+	var err error
+	if uploadedAt > 0 {
+		_, err = s.db.Exec(ctx, `UPDATE system_backups SET lease_token = '', lease_until = 0,
+			last_finished_at = ?, last_success_at = ?,
+			last_status = ?, last_error = ? WHERE id = ? AND lease_token = ?`,
+			now.UnixMilli(), uploadedAt, status, failure, singletonID, token)
+	} else {
+		_, err = s.db.Exec(ctx, `UPDATE system_backups SET lease_token = '', lease_until = 0,
+			last_finished_at = ?,
+			last_status = ?, last_error = ? WHERE id = ? AND lease_token = ?`,
+			now.UnixMilli(), status, failure, singletonID, token)
+	}
 	if err != nil {
 		return fmt.Errorf("system backup: release scheduler lease: %w", err)
 	}
