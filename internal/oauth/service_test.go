@@ -676,7 +676,7 @@ func TestSignInRecordsWhereTheAccountCameFrom(t *testing.T) {
 	}
 }
 
-func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
+func TestThirdPartyOnlySignupAllowsAllProviders(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
@@ -686,11 +686,11 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 		t.Fatalf("first user sign-in: %v", err)
 	}
 
-	// Turn on OIDC and OIDC-only signup.
+	// Turn on third-party only signup.
 	if err := f.settings.Set(ctx, settings.OAuthOIDCEnabled, "true"); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "true"); err != nil {
+	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -703,12 +703,16 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 		t.Fatalf("existing user ID = %q, want %q", again.ID, firstUser.ID)
 	}
 
-	// New user trying to sign in via GitHub is rejected with auth.ErrOIDCOnlyRegistration.
-	if _, err := f.service.SignIn(ctx, identity("gh-2", "stranger", ""), "", ""); !errors.Is(err, auth.ErrOIDCOnlyRegistration) {
-		t.Fatalf("new github user want ErrOIDCOnlyRegistration, got %v", err)
+	// New user signing in via GitHub succeeds (third-party signup is allowed for GitHub).
+	ghUser, err := f.service.SignIn(ctx, identity("gh-2", "ghuser", ""), "", "")
+	if err != nil {
+		t.Fatalf("new github user sign-in failed: %v", err)
+	}
+	if ghUser.Username != "ghuser" {
+		t.Fatalf("github user username = %q, want 'ghuser'", ghUser.Username)
 	}
 
-	// New user signing in via OIDC succeeds.
+	// New user signing in via OIDC also succeeds.
 	oidcIdent := Identity{
 		Provider: "oidc",
 		Subject:  "oidc-sub-1",
@@ -722,17 +726,5 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 	}
 	if oidcUser.Username != "oidcuser" {
 		t.Fatalf("oidc user username = %q, want 'oidcuser'", oidcUser.Username)
-	}
-
-	// Toggle OIDC-only switch off. New user can sign in via GitHub again.
-	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "false"); err != nil {
-		t.Fatal(err)
-	}
-	ghUser, err := f.service.SignIn(ctx, identity("gh-3", "ghuser", ""), "", "")
-	if err != nil {
-		t.Fatalf("new github user sign-in after turning off oidc-only failed: %v", err)
-	}
-	if ghUser.Username != "ghuser" {
-		t.Fatalf("github user username = %q, want 'ghuser'", ghUser.Username)
 	}
 }

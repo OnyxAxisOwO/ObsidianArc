@@ -923,6 +923,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	oauthHandlers.Origin = publicOrigin
 	oauthHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	oauthHandlers.Challenge = authService.Challenge
+	oauthHandlers.SignupChallenge = authService.Challenge
+	oauthHandlers.LoginChallenge = authService.LoginChallenge
 	oauthHandlers.Routes(mux)
 	// Which buttons the sign-in card draws. Read per request, so switching a
 	// provider on takes effect on the next visitor rather than the next

@@ -59,8 +59,9 @@ func (e *MoreDetailsNeeded) Error() string {
 
 // Details are those answers.
 type Details struct {
-	QQ    string
-	Email string
+	Username string
+	QQ       string
+	Email    string
 	// Empty unless MissingFor asked for one (an invite-only instance) and
 	// the completion form was shown it.
 	Invite string
@@ -380,18 +381,6 @@ func (s *Service) resolve(
 				}
 			}
 
-			// When OIDC is enforced for all new accounts, other third-party providers
-			// cannot open an account either; only OIDC signups are allowed.
-			if s.settings.Bool(settings.OAuthOIDCOnlySignup) && s.settings.Bool(settings.OAuthOIDCEnabled) && identity.Provider != "oidc" {
-				populated, err := s.users.Any(ctx, tx)
-				if err != nil {
-					return err
-				}
-				if populated {
-					return auth.ErrOIDCOnlyRegistration
-				}
-			}
-
 			// What this instance requires that the provider could not supply. On
 			// the first pass that is a question to go and ask; on the second the
 			// answers are in hand and Provision checks them itself.
@@ -400,7 +389,7 @@ func (s *Service) resolve(
 				if err != nil {
 					return err
 				}
-				if missing.Any() {
+				if missing.Any() || user.ValidateUsername(identity.Login) != nil {
 					return &MoreDetailsNeeded{Identity: identity, Missing: missing}
 				}
 			}
@@ -438,15 +427,23 @@ func (s *Service) resolve(
 				}
 			}
 
+			explicitUsername := false
+			desiredUsername := strings.TrimSpace(details.Username)
+			if desiredUsername != "" {
+				explicitUsername = true
+			} else {
+				desiredUsername = identity.Login
+			}
 			created, err := s.auth.Provision(ctx, tx, auth.ProvisionInput{
-				Username:      identity.Login,
-				Email:         address,
-				EmailVerified: identity.Email != "",
-				QQ:            qq,
-				Nickname:      strings.TrimSpace(identity.Name),
-				IP:            ip,
-				UA:            ua,
-				InviteCode:    strings.TrimSpace(details.Invite),
+				Username:         desiredUsername,
+				ExplicitUsername: explicitUsername,
+				Email:            address,
+				EmailVerified:    identity.Email != "",
+				QQ:               qq,
+				Nickname:         strings.TrimSpace(identity.Name),
+				IP:               ip,
+				UA:               ua,
+				InviteCode:       strings.TrimSpace(details.Invite),
 			})
 			if err != nil {
 				return err

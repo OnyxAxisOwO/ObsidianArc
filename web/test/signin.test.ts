@@ -194,8 +194,54 @@ describe('signing in with an account from elsewhere', () => {
     expect(host.querySelector('input[type="password"]')).toBeNull();
     const oidcButton = host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
     expect(oidcButton).not.toBeNull();
-    expect(oidcButton.getAttribute('href')).toBe('/api/auth/oauth/start/oidc');
+    expect(oidcButton.getAttribute('href')).toBe('/api/auth/oauth/start/oidc?register=1');
     expect(oidcButton.textContent).toContain('Company SSO');
+  });
+
+  it('renders all configured OAuth providers on register page when oauth_only_signup is active', async () => {
+    site.value = {
+      ...siteInfo.value,
+      registration_enabled: true,
+      oauth_only_signup: true,
+      oauth: [
+        { id: 'github', name: 'GitHub' },
+        { id: 'google', name: 'Google' },
+        { id: 'oidc', name: 'Company SSO' },
+      ],
+    };
+    route.path = '/register';
+    await mount(AuthView, { mode: 'register' });
+
+    expect(host.querySelector('.oa-auth-sub')!.textContent).toBe(t('oauthThirdPartyOnlyNotice'));
+    expect(host.querySelector('input[type="password"]')).toBeNull();
+    const buttons = host.querySelectorAll<HTMLAnchorElement>('.oa-auth-provider');
+    expect(buttons).toHaveLength(3);
+    expect(buttons[0]!.getAttribute('href')).toBe('/api/auth/oauth/start/github?register=1');
+    expect(buttons[1]!.getAttribute('href')).toBe('/api/auth/oauth/start/google?register=1');
+    expect(buttons[2]!.getAttribute('href')).toBe('/api/auth/oauth/start/oidc?register=1');
+  });
+
+  it('requires captcha verification before clicking provider button when guarded', async () => {
+    site.value = {
+      ...siteInfo.value,
+      turnstile_on_login: true,
+      turnstile_site_key: '0x4AAAAAAABBBBBBB',
+      oauth: [{ id: 'github', name: 'GitHub' }],
+    };
+    route.path = '/login';
+    await mount(AuthView, { mode: 'login' });
+
+    const assign = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true, writable: true, value: { assign, href: '' },
+    });
+
+    const link = host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
+    link.click();
+    await settle();
+
+    expect(assign).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('challengeRequired'));
   });
 
   it('falls back to a general sentence for a code it does not know', async () => {
@@ -344,7 +390,7 @@ describe('finishing a sign-up with an invite code', () => {
     button(host, t('signupCompleteSubmit')).click();
     await settle();
 
-    expect(complete).toHaveBeenCalledWith({ qq: '', email: '', inviteCode: 'PARTNERX' });
+    expect(complete).toHaveBeenCalledWith({ username: 'octocat', qq: '', email: '', inviteCode: 'PARTNERX' });
   });
 });
 
@@ -627,11 +673,11 @@ describe('finishing a sign-up the provider could not', () => {
       .mockResolvedValue({ redirect: '/oauth/consent?request=abc' });
     await mount(CompleteSignupView);
 
-    type(host.querySelector<HTMLInputElement>('input[type="text"]')!, '87654321');
+    type(fieldInput(t('qq')), '87654321');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
 
-    expect(complete).toHaveBeenCalledWith({ qq: '87654321', email: '', inviteCode: '' });
+    expect(complete).toHaveBeenCalledWith({ username: 'octocat', qq: '87654321', email: '', inviteCode: '' });
     // A whole navigation, not a route change: the session cookie has just been
     // set and the application reads the account once, at boot.
     expect(window.location.href).toBe('/oauth/consent?request=abc');
@@ -647,7 +693,7 @@ describe('finishing a sign-up the provider could not', () => {
     expect(complete).not.toHaveBeenCalled();
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('qqRequiredHere'));
 
-    type(host.querySelector<HTMLInputElement>('input[type="text"]')!, 'nonsense');
+    type(fieldInput(t('qq')), 'nonsense');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
     expect(complete).not.toHaveBeenCalled();
@@ -661,13 +707,49 @@ describe('finishing a sign-up the provider could not', () => {
       .mockRejectedValue(new ApiError(409, 'qq_taken', 'That QQ number is already registered.', {}));
     await mount(CompleteSignupView);
 
-    type(host.querySelector<HTMLInputElement>('input[type="text"]')!, '87654321');
+    type(fieldInput(t('qq')), '87654321');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
 
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('qqTaken'));
     // Still on the form, with what was typed still in it.
-    expect(host.querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe('87654321');
+    expect(fieldInput(t('qq')).value).toBe('87654321');
+  });
+
+  it('allows customizing username and validates username format', async () => {
+    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue(pending);
+    const complete = vi.spyOn(oauthApi, 'completeSignup')
+      .mockResolvedValue({ redirect: '/' });
+    await mount(CompleteSignupView);
+
+    // Initial prefill from suggested/login
+    expect(fieldInput(t('username')).value).toBe('octocat');
+
+    // Clear username and submit -> requires username
+    type(fieldInput(t('username')), '');
+    type(fieldInput(t('qq')), '87654321');
+    button(host, t('signupCompleteSubmit')).click();
+    await settle();
+    expect(complete).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('usernameRequired'));
+
+    // Invalid username format -> rejected
+    type(fieldInput(t('username')), 'bad@username!');
+    button(host, t('signupCompleteSubmit')).click();
+    await settle();
+    expect(complete).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('usernameInvalid'));
+
+    // Valid custom username -> sent to server
+    type(fieldInput(t('username')), 'my_custom_name');
+    button(host, t('signupCompleteSubmit')).click();
+    await settle();
+    expect(complete).toHaveBeenCalledWith({
+      username: 'my_custom_name',
+      qq: '87654321',
+      email: '',
+      inviteCode: '',
+    });
   });
 
   it('says so when the sign-in is no longer in progress', async () => {

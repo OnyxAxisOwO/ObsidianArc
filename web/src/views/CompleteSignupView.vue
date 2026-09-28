@@ -36,6 +36,7 @@ const gone = ref('');
 const error = ref('');
 const busy = ref(false);
 
+const username = ref('');
 const qq = ref('');
 const email = ref('');
 
@@ -59,6 +60,11 @@ onMounted(() => {
       // An IdP that vouches with the QQ number itself fills the field; the
       // answer still goes through the button, so it stays editable.
       if (result.qq) qq.value = result.qq;
+      if (result.suggested_username) {
+        username.value = result.suggested_username;
+      } else if (result.login && /^[A-Za-z0-9._-]{3,32}$/.test(result.login)) {
+        username.value = result.login;
+      }
     })
     .catch(() => { gone.value = t('signupCompleteGone'); });
   const invite = route.query['invite'];
@@ -70,6 +76,16 @@ onMounted(() => {
 
 async function submit(): Promise<void> {
   if (busy.value || !pending.value) return;
+
+  const chosenUsername = username.value.trim();
+  if (!chosenUsername) {
+    error.value = t('usernameRequired');
+    return;
+  }
+  if (!/^[A-Za-z0-9._-]{3,32}$/.test(chosenUsername)) {
+    error.value = t('usernameInvalid');
+    return;
+  }
 
   // Checked here only so the answer is immediate; the server decides.
   const number = qq.value.trim();
@@ -94,7 +110,12 @@ async function submit(): Promise<void> {
   busy.value = true;
   error.value = '';
   try {
-    const { redirect } = await completeSignup({ qq: number, email: address, inviteCode: inviteCode.value.trim() });
+    const { redirect } = await completeSignup({
+      username: chosenUsername,
+      qq: number,
+      email: address,
+      inviteCode: inviteCode.value.trim(),
+    });
     // A full navigation rather than a route change: the session cookie has
     // just been set, and everything on the other side of this reads the
     // account once at boot.
@@ -151,6 +172,18 @@ async function submit(): Promise<void> {
         </div>
 
         <div class="oa-auth-form">
+          <OaField :label="t('username')">
+            <input
+              v-model="username"
+              type="text"
+              spellcheck="false"
+              :placeholder="t('usernameHint')"
+              autocomplete="username"
+              maxlength="32"
+              required
+            >
+          </OaField>
+
           <OaField v-if="pending.needs.qq" :label="t('qq')">
             <input
               v-model="qq"

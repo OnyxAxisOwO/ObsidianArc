@@ -39,6 +39,9 @@ type ProvisionInput struct {
 	// pressing "continue with GitHub" chose a username here, so there is
 	// nobody to tell that theirs is unavailable.
 	Username string
+	// ExplicitUsername says the person typed this username into the completion
+	// form, so an invalid or taken one must be refused rather than suffixed.
+	ExplicitUsername bool
 	// The address, from whichever of the two places it came: proved by the
 	// provider, or typed by the person when this instance asked for one the
 	// provider could not supply.
@@ -157,24 +160,46 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		}
 	}
 
-	username, err := s.availableUsername(ctx, tx, in.Username)
-	if err != nil {
-		return user.User{}, err
-	}
-	// The address and the number are the two things here somebody else may
-	// already hold. For an address the caller looks first and links instead
-	// where it does, so reaching this with a taken one means the two accounts
-	// are not the same person; a number is simply taken.
-	if strings.TrimSpace(in.Email) != "" || strings.TrimSpace(in.QQ) != "" {
-		_, emailTaken, qqTaken, err := s.users.Exists(ctx, tx, username, in.Email, in.QQ)
+	var username string
+	if in.ExplicitUsername {
+		if err := user.ValidateUsername(in.Username); err != nil {
+			return user.User{}, err
+		}
+		usernameTaken, emailTaken, qqTaken, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.QQ)
 		if err != nil {
 			return user.User{}, err
+		}
+		if usernameTaken {
+			return user.User{}, user.ErrUsernameTaken
 		}
 		if emailTaken {
 			return user.User{}, user.ErrEmailTaken
 		}
 		if qqTaken {
 			return user.User{}, user.ErrQQTaken
+		}
+		username = in.Username
+	} else {
+		var err error
+		username, err = s.availableUsername(ctx, tx, in.Username)
+		if err != nil {
+			return user.User{}, err
+		}
+		// The address and the number are the two things here somebody else may
+		// already hold. For an address the caller looks first and links instead
+		// where it does, so reaching this with a taken one means the two accounts
+		// are not the same person; a number is simply taken.
+		if strings.TrimSpace(in.Email) != "" || strings.TrimSpace(in.QQ) != "" {
+			_, emailTaken, qqTaken, err := s.users.Exists(ctx, tx, username, in.Email, in.QQ)
+			if err != nil {
+				return user.User{}, err
+			}
+			if emailTaken {
+				return user.User{}, user.ErrEmailTaken
+			}
+			if qqTaken {
+				return user.User{}, user.ErrQQTaken
+			}
 		}
 	}
 

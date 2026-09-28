@@ -10,6 +10,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
 )
@@ -46,6 +47,10 @@ type Handlers struct {
 	// One client for every provider call, so a token exchange reuses the
 	// connection the identity lookup just opened.
 	Client *http.Client
+
+	Challenge       turnstile.Gate
+	SignupChallenge turnstile.Gate
+	LoginChallenge  turnstile.Gate
 }
 
 func NewHandlers(service *Service, secret []byte) *Handlers {
@@ -94,6 +99,22 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	if !h.service.Enabled(provider.ID) {
 		h.fail(w, r, linking, "unavailable")
 		return
+	}
+
+	if !linking {
+		gate := h.LoginChallenge
+		if r.URL.Query().Get("register") == "1" {
+			gate = h.SignupChallenge
+		}
+		if gate.Enabled == nil && h.Challenge.Enabled != nil {
+			gate = h.Challenge
+		}
+		if gate.Enabled != nil && gate.Enabled() {
+			if err := gate.Check(r.Context(), r.URL.Query().Get("turnstile"), h.address(r)); err != nil {
+				h.fail(w, r, linking, "challenge_failed")
+				return
+			}
+		}
 	}
 
 	creds, err := h.service.ResolveCredentials(r.Context(), h.Client, provider.ID)
@@ -285,10 +306,11 @@ func (h *Handlers) pendingSignup(w http.ResponseWriter, r *http.Request) error {
 		"provider_name": name,
 		// What the provider calls them, so the form can say whose sign-in
 		// this is finishing rather than asking a stranger for their QQ number.
-		"login": held.Login,
-		"qq":    suggestedQQ,
-		"email": held.Email,
-		"needs": map[string]any{"qq": missing.QQ, "email": missing.Email, "invite": missing.Invite},
+		"login":              held.Login,
+		"suggested_username": suggestedUsername(held.Login, held.Name),
+		"qq":                 suggestedQQ,
+		"email":              held.Email,
+		"needs":              map[string]any{"qq": missing.QQ, "email": missing.Email, "invite": missing.Invite},
 		// The same two things the sign-up form says about an address, for the
 		// same reason: they are worth knowing before typing rather than after.
 		"email_domains": h.service.emailDomains(),
@@ -303,9 +325,10 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	var body struct {
-		QQ     string `json:"qq"`
-		Email  string `json:"email"`
-		Invite string `json:"invite_code"`
+		Username string `json:"username"`
+		QQ       string `json:"qq"`
+		Email    string `json:"email"`
+		Invite   string `json:"invite_code"`
 	}
 	if err := httpx.DecodeJSON(w, r, &body, 8*1024); err != nil {
 		return err
@@ -317,7 +340,12 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 		Login:    held.Login,
 		Name:     held.Name,
 		Email:    held.Email,
-	}, Details{QQ: body.QQ, Email: body.Email, Invite: body.Invite}, h.address(r), r.UserAgent())
+	}, Details{
+		Username: body.Username,
+		QQ:       body.QQ,
+		Email:    body.Email,
+		Invite:   body.Invite,
+	}, h.address(r), r.UserAgent())
 	if err != nil {
 		return completionError(err)
 	}
@@ -409,6 +437,8 @@ func (h *Handlers) fail(w http.ResponseWriter, r *http.Request, linking bool, co
 	page := "/login"
 	if linking {
 		page = "/settings"
+	} else if r.URL.Query().Get("register") == "1" {
+		page = "/register"
 	}
 	http.Redirect(w, r, page+"?oauth_error="+url.QueryEscape(code), http.StatusFound)
 }
@@ -448,6 +478,10 @@ func completionError(err error) error {
 		return httpx.UnavailableCode("email_screening_unavailable", "Email screening is temporarily unavailable. Try again shortly.")
 	}
 	switch {
+	case errors.Is(err, user.ErrUsernameTaken):
+		return httpx.Conflict("username_taken", "That username is already taken.")
+	case errors.Is(err, user.ErrInvalidUsername):
+		return httpx.BadRequestCode("invalid_username", "That username is not valid.")
 	case errors.Is(err, user.ErrQQRequired):
 		return httpx.BadRequestCode("qq_required", "A QQ number is required on this server.")
 	case errors.Is(err, user.ErrInvalidQQ):
@@ -462,8 +496,8 @@ func completionError(err error) error {
 		return httpx.BadRequestCode("email_required", "An email address is required on this server.")
 	case errors.Is(err, auth.ErrRegistrationClosed):
 		return httpx.ForbiddenCode("registration_closed", "Registration is closed on this server.")
-	case errors.Is(err, auth.ErrOIDCOnlyRegistration):
-		return httpx.ForbiddenCode("oidc_only_registration", "Registration is only permitted via OIDC.")
+	case errors.Is(err, auth.ErrThirdPartyOnlyRegistration):
+		return httpx.ForbiddenCode("third_party_only_registration", "Registration is only permitted via third-party providers.")
 	case errors.Is(err, auth.ErrInviteRequired):
 		return httpx.BadRequestCode("invite_required", "An invite code is required to register here.")
 	case errors.Is(err, auth.ErrInviteInvalid):
@@ -499,8 +533,8 @@ func signInFailure(err error) string {
 		return "email_screening_unavailable"
 	}
 	switch {
-	case errors.Is(err, auth.ErrOIDCOnlyRegistration):
-		return "oidc_only"
+	case errors.Is(err, auth.ErrThirdPartyOnlyRegistration):
+		return "third_party_only"
 	case errors.Is(err, ErrAddressTaken):
 		return "address_taken"
 	case errors.Is(err, ErrSignupClosed):
@@ -609,4 +643,16 @@ func isAllDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+func suggestedUsername(login, name string) string {
+	candidate := strings.TrimSpace(login)
+	if user.ValidateUsername(candidate) == nil {
+		return candidate
+	}
+	candidate = strings.TrimSpace(name)
+	if user.ValidateUsername(candidate) == nil {
+		return candidate
+	}
+	return ""
 }

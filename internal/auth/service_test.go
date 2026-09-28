@@ -876,3 +876,65 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 		t.Fatalf("third username = %q, want 'third'", third.Username)
 	}
 }
+
+func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// Initial setup account is exempt.
+	if err := f.settings.Set(ctx, settings.OAuthGitHubEnabled, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	admin, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("first account should succeed: %v", err)
+	}
+	if !admin.IsAdmin() {
+		t.Fatalf("first user role = %q, want admin", admin.Role)
+	}
+
+	// Subsequent normal registrations fail with ErrThirdPartyOnlyRegistration.
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"}); !errors.Is(err, ErrThirdPartyOnlyRegistration) {
+		t.Fatalf("second registration want ErrThirdPartyOnlyRegistration, got %v", err)
+	}
+
+	// Existing user can still log in with password.
+	logged, token, err := f.auth.Login(ctx, LoginInput{Identifier: "admin", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("existing user login failed: %v", err)
+	}
+	if logged.ID != admin.ID || token == "" {
+		t.Fatalf("existing user login id = %q, want %q", logged.ID, admin.ID)
+	}
+
+	// Toggle third-party only switch off. Normal registration is allowed again.
+	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "false"); err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("registration after turning off third-party only failed: %v", err)
+	}
+	if second.Username != "second" {
+		t.Fatalf("second username = %q, want 'second'", second.Username)
+	}
+
+	// If no OAuth providers are enabled, third-party only signup does not deadlock registration.
+	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.settings.Set(ctx, settings.OAuthGitHubEnabled, "false"); err != nil {
+		t.Fatal(err)
+	}
+	third, _, err := f.auth.Register(ctx, RegisterInput{Username: "third", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("registration when providers disabled failed: %v", err)
+	}
+	if third.Username != "third" {
+		t.Fatalf("third username = %q, want 'third'", third.Username)
+	}
+}

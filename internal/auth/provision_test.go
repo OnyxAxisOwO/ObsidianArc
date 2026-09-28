@@ -161,6 +161,36 @@ func TestProvisionFindsAFreeSpellingOfATakenName(t *testing.T) {
 	}
 }
 
+func TestProvisionExplicitUsername(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// Taken username with ExplicitUsername returns user.ErrUsernameTaken directly.
+	if _, err := provision(t, f, ProvisionInput{Username: "founder", ExplicitUsername: true}); !errors.Is(err, user.ErrUsernameTaken) {
+		t.Errorf("provision with taken explicit username = %v, want ErrUsernameTaken", err)
+	}
+
+	// Invalid username format with ExplicitUsername returns user.ErrInvalidUsername directly.
+	if _, err := provision(t, f, ProvisionInput{Username: "bad@name!", ExplicitUsername: true}); !errors.Is(err, user.ErrInvalidUsername) {
+		t.Errorf("provision with invalid explicit username = %v, want ErrInvalidUsername", err)
+	}
+
+	// Valid custom username succeeds with that exact name.
+	account, err := provision(t, f, ProvisionInput{Username: "custom_reader", ExplicitUsername: true})
+	if err != nil {
+		t.Fatalf("provision valid explicit username: %v", err)
+	}
+	if account.Username != "custom_reader" {
+		t.Errorf("username = %q, want custom_reader", account.Username)
+	}
+}
+
 // Nobody types the name here, so a name this column cannot hold is not an
 // error to report — there is nobody to report it to. It becomes one that can.
 func TestProvisionMakesAUsableNameOutOfAnUnusableOne(t *testing.T) {

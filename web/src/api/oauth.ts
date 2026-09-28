@@ -45,10 +45,15 @@ export interface OAuthConnections {
  * `next` is where to land afterwards, and the server keeps it to a path of
  * this site whatever is passed.
  */
-export function signInURL(provider: string, options: { link?: boolean; next?: string } = {}): string {
+export function signInURL(
+  provider: string,
+  options: { link?: boolean; next?: string; turnstile?: string; register?: boolean } = {},
+): string {
   const query = new URLSearchParams();
   if (options.link) query.set('link', '1');
   if (options.next) query.set('next', options.next);
+  if (options.turnstile) query.set('turnstile', options.turnstile);
+  if (options.register) query.set('register', '1');
   const suffix = query.toString();
   return `/api/auth/oauth/start/${encodeURIComponent(provider)}${suffix ? `?${suffix}` : ''}`;
 }
@@ -65,6 +70,7 @@ export interface PendingSignup {
   provider_name: string;
   /** What the provider calls them, so the form can say whose sign-in this is. */
   login: string;
+  suggested_username?: string;
   /**
    * A QQ number the provider has already answered with — an IdP whose subject
    * is one, verified before it vouched. Prefilled, still confirmed by hand.
@@ -84,9 +90,10 @@ export function fetchPendingSignup(): Promise<PendingSignup> {
 
 /** Opens the account, and answers with where to go next. */
 export function completeSignup(
-  details: { qq?: string; email?: string; inviteCode?: string },
+  details: { username?: string; qq?: string; email?: string; inviteCode?: string },
 ): Promise<{ redirect: string }> {
   return api.post<{ redirect: string }>('/api/auth/oauth/signup', {
+    username: details.username ?? '',
     qq: details.qq ?? '',
     email: details.email ?? '',
     invite_code: details.inviteCode ?? '',

@@ -528,9 +528,9 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     pageSlug: 'security',
     titleKey: 'secOAuth',
     searchKeys: ['oauthHint', 'oauthGitHub', 'oauthGoogle', 'oauthOIDC', 'oauthClientID', 'oauthClientSecret',
-      'oauthAllowSignup', 'oauthLinkByEmail', 'oauthOIDCOnlySignup', 'oauthOIDCRequireForAll'],
+      'oauthAllowSignup', 'oauthLinkByEmail', 'oauthThirdPartyOnlySignup', 'oauthOIDCOnlySignup', 'oauthOIDCRequireForAll'],
     keywords: ['第三方登录', 'GitHub 登录', '谷歌登录', 'Google 登录', 'OIDC 登录', 'OpenID Connect', 'Keycloak', 'Authentik', '社交登录', '单点登录',
-      'oauth', 'oidc', 'social login', 'sign in with github', 'sign in with google', 'sso', '强制oidc', 'oidc注册',
+      'oauth', 'oidc', 'social login', 'sign in with github', 'sign in with google', 'sso', '只允许第三方注册', '第三方注册', 'third party only', '强制oidc', 'oidc注册',
       '强制绑定', '所有用户绑定', 'require oidc for all', 'force everyone to link'],
   },
   {

@@ -60,6 +60,7 @@ const FALLBACK_SITE: SiteInfo = {
   home_notice: { text: '', dismissible: true },
   logo_url: '',
   auth_card_position: 'center',
+  oauth_only_signup: false,
   oidc_only_signup: false,
 };
 

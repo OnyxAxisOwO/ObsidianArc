@@ -221,10 +221,32 @@ const guarded = computed(() =>
 // is the administrator, and a provider cannot be configured before there is
 // one to configure it.
 const providers = computed(() => (setup.value ? [] : site.value.oauth ?? []));
-const oidcProviders = computed(() => {
-  const oidc = providers.value.filter((p) => p.id === 'oidc');
-  return oidc.length ? oidc : providers.value;
-});
+const thirdPartyOnlySignup = computed(() => !!(site.value.oauth_only_signup || site.value.oidc_only_signup));
+
+function onTurnstileSolved(): void {
+  if (error.value === t('challengeRequired') || error.value === t('challengeFailed')) {
+    error.value = '';
+  }
+}
+
+function onProviderClick(event: MouseEvent, providerId: string): void {
+  if (guarded.value) {
+    const token = guard.value?.token() ?? '';
+    if (!token) {
+      event.preventDefault();
+      error.value = t('challengeRequired');
+      return;
+    }
+    event.preventDefault();
+    window.location.assign(
+      signInURL(providerId, {
+        next: safeNext(route.query['next']),
+        turnstile: token,
+        register: registering.value,
+      }),
+    );
+  }
+}
 
 const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
 function mark(id: string): OaIcon {
@@ -248,6 +270,8 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
   signup_closed: 'oauthSignupClosed',
   registration_closed: 'registrationClosed',
   oidc_only: 'oauthOIDCOnly',
+  third_party_only: 'oauthThirdPartyOnly',
+  challenge_failed: 'challengeFailed',
   disabled: 'accountBanned',
   ip_blocked: 'signupBlocked',
   throttled: 'oauthThrottled',
@@ -460,22 +484,29 @@ async function onSubmit(): Promise<void> {
           {{
             setup
               ? t('firstAccountBody')
-              : registering && site.oidc_only_signup
-                ? t('oidcOnlySignupNotice')
+              : registering && thirdPartyOnlySignup
+                ? t('oauthThirdPartyOnlyNotice')
                 : registering
                   ? t('createAccountBody')
                   : t('welcomeBackBody')
           }}
         </p>
 
-        <div v-if="registering && site.oidc_only_signup" class="oa-auth-form">
+        <div v-if="registering && thirdPartyOnlySignup" class="oa-auth-form">
+          <OaTurnstile
+            v-if="guarded"
+            ref="guard"
+            :site-key="site.turnstile_site_key ?? ''"
+            @solved="onTurnstileSolved"
+          />
           <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
           <div class="oa-auth-providers">
             <a
-              v-for="provider in oidcProviders"
+              v-for="provider in providers"
               :key="provider.id"
               class="oa-btn primary oa-btn-block oa-auth-provider"
-              :href="signInURL(provider.id, { next: safeNext(route.query['next']) })"
+              :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: true })"
+              @click="onProviderClick($event, provider.id)"
             >
               <component :is="mark(provider.id)" :size="15" />
               <span>{{ t('continueWith', { provider: provider.name }) }}</span>
@@ -560,6 +591,7 @@ async function onSubmit(): Promise<void> {
             v-if="guarded"
             ref="guard"
             :site-key="site.turnstile_site_key ?? ''"
+            @solved="onTurnstileSolved"
           />
 
           <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
@@ -583,7 +615,8 @@ async function onSubmit(): Promise<void> {
                 v-for="provider in providers"
                 :key="provider.id"
                 class="oa-btn oa-auth-provider"
-                :href="signInURL(provider.id, { next: safeNext(route.query['next']) })"
+                :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: registering })"
+                @click="onProviderClick($event, provider.id)"
               >
                 <component :is="mark(provider.id)" :size="15" />
                 <span>{{ t('continueWith', { provider: provider.name }) }}</span>
@@ -597,7 +630,7 @@ async function onSubmit(): Promise<void> {
             <span>{{ t('haveAccount') }}</span>
             <button type="button" @click="router.push('/login')">{{ t('signIn') }}</button>
           </template>
-          <template v-else-if="site.registration_enabled || site.oidc_only_signup">
+          <template v-else-if="site.registration_enabled || thirdPartyOnlySignup">
             <span>{{ t('noAccount') }}</span>
             <button type="button" @click="router.push('/register')">{{ t('createOne') }}</button>
           </template>

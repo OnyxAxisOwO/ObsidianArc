@@ -27,8 +27,13 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       return t('signupBlocked');
     case 'registration_closed':
       return t('registrationClosed');
+    case 'third_party_only_registration':
     case 'oidc_only_registration':
-      return t('oidcOnlyRegistration');
+      return t('oauthThirdPartyOnly');
+    case 'username_taken':
+      return t('usernameTaken');
+    case 'invalid_username':
+      return t('usernameInvalid');
     case 'signup_closed':
       return t('oauthSignupClosed');
     case 'address_taken':

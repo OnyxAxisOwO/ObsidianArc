@@ -21,11 +21,12 @@ import (
 )
 
 var (
-	ErrInvalidCredentials   = errors.New("auth: incorrect username or password")
-	ErrAccountDisabled      = errors.New("auth: this account has been disabled")
-	ErrRegistrationClosed   = errors.New("auth: registration is closed on this server")
-	ErrOIDCOnlyRegistration = errors.New("auth: registration is only permitted via OIDC")
-	ErrSignupIPBlocked      = errors.New("auth: too many accounts have been created from this address")
+	ErrInvalidCredentials         = errors.New("auth: incorrect username or password")
+	ErrAccountDisabled            = errors.New("auth: this account has been disabled")
+	ErrRegistrationClosed         = errors.New("auth: registration is closed on this server")
+	ErrThirdPartyOnlyRegistration = errors.New("auth: registration is only permitted via third-party providers")
+	ErrOIDCOnlyRegistration       = ErrThirdPartyOnlyRegistration
+	ErrSignupIPBlocked            = errors.New("auth: too many accounts have been created from this address")
 	// The review said no. The words a visitor sees are the operator's, set in
 	// the security screen; this only carries the fact.
 	ErrSignupRefused        = errors.New("auth: this registration was not accepted")
@@ -249,8 +250,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		if !s.settings.Bool(settings.RegistrationEnabled) {
 			return user.User{}, "", ErrRegistrationClosed
 		}
-		if s.settings.Bool(settings.OAuthOIDCOnlySignup) && s.settings.Bool(settings.OAuthOIDCEnabled) {
-			return user.User{}, "", ErrOIDCOnlyRegistration
+		if s.isThirdPartyOnlySignup() && s.hasOAuthProviders() {
+			return user.User{}, "", ErrThirdPartyOnlyRegistration
 		}
 		if err := checkEmail(s.settings, in.Email); err != nil {
 			return user.User{}, "", err
@@ -409,8 +410,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			if !first && !s.settings.Bool(settings.RegistrationEnabled) {
 				return ErrRegistrationClosed
 			}
-			if !first && s.settings.Bool(settings.OAuthOIDCOnlySignup) && s.settings.Bool(settings.OAuthOIDCEnabled) {
-				return ErrOIDCOnlyRegistration
+			if !first && s.isThirdPartyOnlySignup() && s.hasOAuthProviders() {
+				return ErrThirdPartyOnlyRegistration
 			}
 			// None of the registration controls apply to the first account.
 			// It is the one that turns an empty instance into an
@@ -1190,4 +1191,14 @@ func (s *Service) countRecentFromIP(ctx context.Context, ip string) (int, error)
 	}
 	since := time.Now().Add(-time.Duration(minutes) * time.Minute).UnixMilli()
 	return s.users.CountFromIP(ctx, nil, ip, since)
+}
+
+func (s *Service) isThirdPartyOnlySignup() bool {
+	return s.settings.Bool(settings.OAuthThirdPartyOnlySignup) || s.settings.Bool(settings.OAuthOIDCOnlySignup)
+}
+
+func (s *Service) hasOAuthProviders() bool {
+	return s.settings.Bool(settings.OAuthGitHubEnabled) ||
+		s.settings.Bool(settings.OAuthGoogleEnabled) ||
+		s.settings.Bool(settings.OAuthOIDCEnabled)
 }

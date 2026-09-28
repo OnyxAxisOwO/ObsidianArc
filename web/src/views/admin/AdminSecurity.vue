@@ -140,7 +140,7 @@ const form = ref({
   oidcTokenURL: '',
   oidcUserInfoURL: '',
   oidcTrustEmail: false,
-  oidcOnlySignup: false,
+  thirdPartyOnlySignup: false,
   oidcRequireForAll: false,
   oauthAllowSignup: true,
   oauthLinkByEmail: true,
@@ -399,7 +399,8 @@ function collect(): Record<string, string> {
     'oauth.oidc_token_url': form.value.oidcTokenURL.trim(),
     'oauth.oidc_userinfo_url': form.value.oidcUserInfoURL.trim(),
     'oauth.oidc_trust_email': String(form.value.oidcTrustEmail),
-    'oauth.oidc_only_signup': String(form.value.oidcOnlySignup),
+    'oauth.third_party_only_signup': String(form.value.thirdPartyOnlySignup),
+    'oauth.oidc_only_signup': String(form.value.thirdPartyOnlySignup),
     'oauth.oidc_require_for_all': String(form.value.oidcRequireForAll),
     'oauth.allow_signup': String(form.value.oauthAllowSignup),
     'oauth.link_by_email': String(form.value.oauthLinkByEmail),
@@ -903,7 +904,7 @@ async function load(): Promise<void> {
       oidcTokenURL: values['oauth.oidc_token_url'] ?? '',
       oidcUserInfoURL: values['oauth.oidc_userinfo_url'] ?? '',
       oidcTrustEmail: values['oauth.oidc_trust_email'] === 'true',
-      oidcOnlySignup: values['oauth.oidc_only_signup'] === 'true',
+      thirdPartyOnlySignup: (values['oauth.third_party_only_signup'] ?? values['oauth.oidc_only_signup']) === 'true',
       oidcRequireForAll: values['oauth.oidc_require_for_all'] === 'true',
       oauthAllowSignup: (values['oauth.allow_signup'] ?? 'true') === 'true',
       oauthLinkByEmail: (values['oauth.link_by_email'] ?? 'true') === 'true',
@@ -1485,11 +1486,6 @@ onMounted(load);
               :hint="t('oauthOIDCTrustEmailHint')"
             />
             <OaSwitchField
-              v-model="form.oidcOnlySignup"
-              :label="t('oauthOIDCOnlySignup')"
-              :hint="t('oauthOIDCOnlySignupHint')"
-            />
-            <OaSwitchField
               v-model="form.oidcRequireForAll"
               :label="t('oauthOIDCRequireForAll')"
               :hint="t('oauthOIDCRequireForAllHint')"
@@ -1514,6 +1510,11 @@ onMounted(load);
             />
           </div>
         </div>
+        <OaSwitchField
+          v-model="form.thirdPartyOnlySignup"
+          :label="t('oauthThirdPartyOnlySignup')"
+          :hint="t('oauthThirdPartyOnlySignupHint')"
+        />
         <OaSwitchField
           v-model="form.oauthAllowSignup"
           :label="t('oauthAllowSignup')"

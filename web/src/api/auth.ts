@@ -151,7 +151,9 @@ export interface SiteInfo {
   logo_url?: string;
   /** Layout position of the sign-in / registration card ('center' | 'left' | 'right'). */
   auth_card_position?: 'center' | 'left' | 'right';
-  /** Whether new user registrations are forced to use OIDC. */
+  /** Whether new user registrations are forced to use third-party OAuth/OIDC. */
+  oauth_only_signup?: boolean;
+  /** Whether new user registrations are forced to use OIDC (compatibility alias). */
   oidc_only_signup?: boolean;
 }
 
