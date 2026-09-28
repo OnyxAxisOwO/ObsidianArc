@@ -16,6 +16,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/riskcontrol"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -262,6 +263,14 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"turnstile_on_redeem":       h.settings.Bool(settings.TurnstileOnRedeem),
 		"turnstile_on_feedback":     h.settings.Bool(settings.TurnstileOnFeedback),
 		"turnstile_on_chat_speed":   h.settings.Int(settings.ChatChallengeRequests, 0) > 0,
+		// The self-hosted risk control service, served on the same terms as
+		// the Turnstile key above: the address and the site key are what the
+		// browser's init() call carries, and a page with no risk check on it
+		// is not handed them. The secret stays server-side.
+		"risk_base_url":  h.riskBaseURL(!populated),
+		"risk_site":      h.riskSiteKey(!populated),
+		"risk_on_signup": populated && h.settings.RegistrationCaptchaMode() == settings.CaptchaModeRisk,
+		"risk_on_login":  populated && h.settings.Bool(settings.RiskOnLogin),
 		// So the code step can offer "don't ask again on this browser" only
 		// where the operator allows it, and say for how long.
 		"two_factor_remember_days": h.service.RememberDays(),
@@ -518,7 +527,9 @@ func verificationError(err error) error {
 type registerRequest struct {
 	// The Turnstile token, where the operator has switched the challenge on.
 	Turnstile string `json:"turnstile"`
-	// PoW solution, when proof-of-work challenge is required.
+	// The self-hosted risk-control service's token, where the sign-up mode
+	// selects it.
+	RC       string        `json:"rc_token"`
 	PoW      *pow.Solution `json:"pow"`
 	Username string        `json:"username"`
 	Email    string        `json:"email"`
@@ -541,6 +552,7 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 	ua := r.UserAgent()
 	account, token, err := h.service.Register(r.Context(), RegisterInput{
 		Turnstile:  body.Turnstile,
+		RC:         body.RC,
 		PoW:        body.PoW,
 		Username:   body.Username,
 		Email:      body.Email,
@@ -564,6 +576,7 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 
 type loginRequest struct {
 	Turnstile  string `json:"turnstile"`
+	RC         string `json:"rc_token"`
 	Identifier string `json:"identifier"`
 	Password   string `json:"password"`
 }
@@ -578,6 +591,7 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 	ua := r.UserAgent()
 	account, token, err := h.service.Login(r.Context(), LoginInput{
 		Turnstile:  body.Turnstile,
+		RC:         body.RC,
 		Identifier: body.Identifier,
 		Password:   body.Password,
 		IP:         ip,
@@ -622,6 +636,18 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 				"The verification could not be completed. Try again.")
 		}
 		if errors.Is(err, turnstile.ErrUnavailable) {
+			return httpx.UnavailableCode("challenge_unavailable",
+				"Verification is unavailable right now. Try again shortly.")
+		}
+		if errors.Is(err, ErrRiskRejected) {
+			return httpx.ForbiddenCode("risk_blocked",
+				"This request was rejected by risk control.")
+		}
+		if errors.Is(err, riskcontrol.ErrFailed) {
+			return httpx.ForbiddenCode("challenge_failed",
+				"The verification could not be completed. Try again.")
+		}
+		if errors.Is(err, riskcontrol.ErrUnavailable) {
 			return httpx.UnavailableCode("challenge_unavailable",
 				"Verification is unavailable right now. Try again shortly.")
 		}
@@ -949,6 +975,21 @@ func (h *Handlers) registrationError(err error) error {
 		// tell an outage at Cloudflare from a wave of bots.
 		return httpx.UnavailableCode("challenge_unavailable",
 			"Verification is unavailable right now. Try again shortly.")
+	case errors.Is(err, ErrRiskRejected):
+		// The risk service judged this request and said no. A code of its
+		// own, because "the challenge failed" would invite a retry that
+		// the service is going to refuse again.
+		return httpx.ForbiddenCode("risk_blocked",
+			"This request was rejected by risk control.")
+	case errors.Is(err, riskcontrol.ErrFailed):
+		return httpx.ForbiddenCode("challenge_failed",
+			"The verification could not be completed. Try again.")
+	case errors.Is(err, riskcontrol.ErrUnavailable):
+		// Not the visitor's fault either, and the same monitor distinction
+		// as the Turnstile outage above: an operator watching 503s knows
+		// their risk service is down, not that bots have arrived.
+		return httpx.UnavailableCode("challenge_unavailable",
+			"Verification is unavailable right now. Try again shortly.")
 	case errors.Is(err, ErrSignupRefused):
 		// The operator's own words travel in the details, because the client
 		// falls back to its own sentence when they have not written any and
@@ -1081,4 +1122,37 @@ func (h *Handlers) turnstileSiteKey(firstAccount bool) string {
 		return ""
 	}
 	return h.settings.Get(settings.TurnstileSiteKey)
+}
+
+// riskInUse reports whether any surface currently asks for a risk-control
+// token: the sign-up mode selects the service, or the sign-in switch is on.
+// Half a configuration — an address with no site key, say — is not in use,
+// so a challenge nobody can complete never reaches a browser.
+func (h *Handlers) riskInUse(firstAccount bool) bool {
+	if firstAccount || h.settings == nil {
+		return false
+	}
+	if h.settings.Get(settings.RiskBaseURL) == "" ||
+		h.settings.Get(settings.RiskSite) == "" ||
+		h.settings.Get(settings.RiskSecretKey) == "" {
+		return false
+	}
+	return h.settings.RegistrationCaptchaMode() == settings.CaptchaModeRisk ||
+		h.settings.Bool(settings.RiskOnLogin)
+}
+
+// riskBaseURL is where the browser's SDK loads from — public wherever the
+// check is in use, because the visitor's own browser fetches boot.js there.
+func (h *Handlers) riskBaseURL(firstAccount bool) string {
+	if !h.riskInUse(firstAccount) {
+		return ""
+	}
+	return h.settings.Get(settings.RiskBaseURL)
+}
+
+func (h *Handlers) riskSiteKey(firstAccount bool) string {
+	if !h.riskInUse(firstAccount) {
+		return ""
+	}
+	return h.settings.Get(settings.RiskSite)
 }

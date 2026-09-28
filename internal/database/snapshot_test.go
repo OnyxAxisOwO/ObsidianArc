@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -36,8 +37,14 @@ func TestSQLiteSnapshotIsPrivatePointInTimeCopy(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if got := info.Mode().Perm(); got != 0600 {
-			t.Errorf("snapshot file mode = %04o, want 0600", got)
+		// Windows files carry no Unix permission bits — os.Stat reports 0666
+		// for every regular file, so this assertion would fail whatever the
+		// code did. The property it checks is a POSIX one, and CI runs where
+		// the bits are real.
+		if runtime.GOOS != "windows" {
+			if got := info.Mode().Perm(); got != 0600 {
+				t.Errorf("snapshot file mode = %04o, want 0600", got)
+			}
 		}
 		if _, err := db.Exec(ctx, `UPDATE settings SET value = ? WHERE key = ?`, "after", "snapshot.test"); err != nil {
 			return err

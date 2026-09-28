@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/riskcontrol"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/screening"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
@@ -648,6 +650,42 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnLogin) },
 		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
 	}
+	// The self-hosted risk control service, on its own client: a pool per
+	// destination is what keeps a slow service here from sitting in front
+	// of a Turnstile check the way it does for the provider calls above.
+	riskClient := &http.Client{}
+	// Where the token check happens. A path-only base means the service is
+	// reverse-proxied under this instance's own domain, and the absolute
+	// form is built from the configured public URL — the same origin the
+	// OAuth callbacks resolve against, and the one the visitor's browser
+	// loaded the service's SDK from.
+	riskEndpoint := func() string {
+		return riskcontrol.Endpoint(settingsService.Get(settings.RiskBaseURL), mailer.PublicURL())
+	}
+	// All three credentials at once. A gate that only half of them can
+	// serve would challenge a browser and then fail every token it
+	// collected, so half a configuration reads as off.
+	riskReady := func() bool {
+		return settingsService.Get(settings.RiskBaseURL) != "" &&
+			settingsService.Get(settings.RiskSite) != "" &&
+			settingsService.Get(settings.RiskSecretKey) != ""
+	}
+	authService.RiskChallenge = riskcontrol.Gate{
+		Client: riskClient,
+		Enabled: func() bool {
+			return riskReady() && settingsService.RegistrationCaptchaMode() == settings.CaptchaModeRisk
+		},
+		Endpoint: riskEndpoint,
+		Site:     func() string { return settingsService.Get(settings.RiskSite) },
+		Secret:   func() string { return settingsService.Get(settings.RiskSecretKey) },
+	}
+	authService.RiskLogin = riskcontrol.Gate{
+		Client:   riskClient,
+		Enabled:  func() bool { return riskReady() && settingsService.Bool(settings.RiskOnLogin) },
+		Endpoint: riskEndpoint,
+		Site:     func() string { return settingsService.Get(settings.RiskSite) },
+		Secret:   func() string { return settingsService.Get(settings.RiskSecretKey) },
+	}
 
 	powKey, err := secret.DeriveKey(cfg.SecretKey, "obsidian-arc/pow-challenge")
 	if err != nil {
@@ -1213,6 +1251,23 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 					settingsService.Bool(settings.TurnstileOnRedeem) ||
 					settingsService.Bool(settings.TurnstileOnFeedback) ||
 					settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
+		}, func() string {
+			// The risk service's origin, and only while a browser would
+			// actually be sent there — the same rule the Turnstile
+			// exception above keeps. The site endpoint hands out the base
+			// and site key on the same terms, so the CSP and the page can
+			// never disagree about what is being loaded.
+			mode := settingsService.RegistrationCaptchaMode()
+			if !riskReady() ||
+				(mode != settings.CaptchaModeRisk && !settingsService.Bool(settings.RiskOnLogin)) {
+				return ""
+			}
+			endpoint := riskEndpoint()
+			parsed, err := url.Parse(endpoint)
+			if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+				return ""
+			}
+			return parsed.Scheme + "://" + parsed.Host
 		}),
 		httpx.SameOrigin(cfg.AllowedOrigins),
 		// Last, so the session lookup only happens for requests that survived

@@ -5,11 +5,20 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 )
+
+// cspCache holds the last header this middleware built, keyed on the inputs
+// that produced it. See SecurityHeaders.
+type cspCache struct {
+	key    string
+	policy string
+}
 
 // Middleware is the usual decorator shape. Chain applies them so the first
 // argument is the outermost — the order they appear in main is the order a
@@ -167,74 +176,99 @@ func Logger() Middleware {
 // of script-src entirely.
 // Cloudflare Turnstile needs three of the directives widened: the script it
 // loads, the iframe it draws the challenge in, and the origin that iframe
-// reports the result to. Nothing else is relaxed, and none of it is relaxed
-// on an instance that has not configured a challenge — which is why this
-// takes a function rather than a flag: the widening follows the setting, and
-// switching the challenge off takes the exception away with it.
+// reports the result to. The self-hosted risk control service (see
+// internal/riskcontrol) needs a different three — its script, its telemetry
+// connections, and the images its puzzles are drawn from; its checks render
+// in the page, so no frame is involved. Nothing else is relaxed, and none of
+// it is relaxed on an instance that has not configured a challenge — which
+// is why both take functions rather than flags: the widening follows the
+// setting, and switching a challenge off takes its exception away with it.
 const challengeOrigin = "https://challenges.cloudflare.com"
 
-// challenging reports whether a challenge is configured. Nil means never.
-func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool) Middleware {
-	scriptSrc := "script-src 'self'"
+// challenging reports whether the Turnstile challenge is configured. Nil
+// means never; the same is true of riskOrigin, which reports the scheme and
+// host of the risk control service, or empty for none.
+func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, riskOrigin func() string) Middleware {
+	// The digests joined once; the policy below is the only consumer.
+	hashList := ""
 	if len(scriptHashes) > 0 {
-		scriptSrc += " " + strings.Join(scriptHashes, " ")
+		hashList = " " + strings.Join(scriptHashes, " ")
 	}
 
-	policy := strings.Join([]string{
-		"default-src 'self'",
-		scriptSrc,
-		"worker-src 'self' blob:",
-		"style-src 'self' 'unsafe-inline'",
-		"img-src 'self' data: blob:",
-		"font-src 'self' data:",
-		"connect-src 'self'",
-		"base-uri 'none'",
-		"form-action 'self'",
-		"frame-ancestors 'none'",
-		"object-src 'none'",
-	}, "; ")
-
-	// Built once rather than per request: the only thing that varies is which
-	// of the two strings gets written.
-	withChallenge := strings.Join([]string{
-		"default-src 'self'",
-		scriptSrc + " " + challengeOrigin,
-		"worker-src 'self' blob:",
-		"style-src 'self' 'unsafe-inline'",
-		"img-src 'self' data: blob:",
-		"font-src 'self' data:",
-		"connect-src 'self' " + challengeOrigin,
-		"frame-src " + challengeOrigin,
-		"base-uri 'none'",
-		"form-action 'self'",
-		"frame-ancestors 'none'",
-		"object-src 'none'",
-	}, "; ")
-
-	if dev {
-		// Vite serves modules over its own origin and opens a websocket for
-		// hot reload; neither survives the production policy.
-		policy = strings.Join([]string{
+	// assemble is the one place the policy exists. Every directive is fixed
+	// except the origins the script, connection and image lists carry and
+	// whether a frame list exists at all — so whatever combination of
+	// challenges an operator runs, the output is readable here in one place
+	// rather than reconstructed per combination.
+	assemble := func(challenge bool, risk string) string {
+		script := "script-src 'self'"
+		connect := "connect-src 'self'"
+		img := "img-src 'self' data: blob:"
+		frame := ""
+		if dev {
+			// Vite serves modules over its own origin and opens a websocket
+			// for hot reload; neither survives the production policy.
+			script += " 'unsafe-inline' 'unsafe-eval'"
+			connect += " ws: wss:"
+		} else if hashList != "" {
+			script += hashList
+		}
+		if challenge {
+			script += " " + challengeOrigin
+			connect += " " + challengeOrigin
+			frame = "frame-src " + challengeOrigin
+		}
+		if risk != "" {
+			script += " " + risk
+			connect += " " + risk
+			img += " " + risk
+		}
+		parts := []string{
 			"default-src 'self'",
-			"script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+			script,
 			"worker-src 'self' blob:",
 			"style-src 'self' 'unsafe-inline'",
-			"img-src 'self' data: blob:",
+			img,
 			"font-src 'self' data:",
-			"connect-src 'self' ws: wss:",
+			connect,
+		}
+		if frame != "" {
+			parts = append(parts, frame)
+		}
+		parts = append(parts,
 			"base-uri 'none'",
+			"form-action 'self'",
 			"frame-ancestors 'none'",
 			"object-src 'none'",
-		}, "; ")
+		)
+		return strings.Join(parts, "; ")
 	}
+
+	// The inputs change about never, and building the string on every
+	// request would be the only allocation in this middleware — so the last
+	// answer is kept and reused until the inputs move. A racy store is
+	// harmless: two requests computing the same policy store the same thing.
+	var memo atomic.Pointer[cspCache]
+	memo.Store(&cspCache{})
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			header := w.Header()
-			active := policy
-			if challenging != nil && challenging() {
-				active = withChallenge
+			challenge := challenging != nil && challenging()
+			risk := ""
+			if riskOrigin != nil {
+				risk = strings.TrimSpace(riskOrigin())
 			}
+
+			key := strconv.FormatBool(challenge) + "|" + risk
+			active := ""
+			if got := memo.Load(); got != nil && got.key == key {
+				active = got.policy
+			} else {
+				active = assemble(challenge, risk)
+				memo.Store(&cspCache{key: key, policy: active})
+			}
+
+			header := w.Header()
 			header.Set("Content-Security-Policy", active)
 			header.Set("X-Content-Type-Options", "nosniff")
 			// Verification links carry a one-time secret in their query string.

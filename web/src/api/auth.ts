@@ -104,17 +104,27 @@ export interface SiteInfo {
   email_domains?: string[];
   require_qq?: boolean;
   qq_requirement?: 'off' | 'optional' | 'required';
-  captcha_mode?: 'off' | 'turnstile' | 'pow' | 'both';
-  registration_captcha_mode?: 'off' | 'turnstile' | 'pow' | 'both';
+  captcha_mode?: 'off' | 'turnstile' | 'pow' | 'risk' | 'both';
+  registration_captcha_mode?: 'off' | 'turnstile' | 'pow' | 'risk' | 'both';
   pow_on_signup?: boolean;
   /** Served only where a challenge is actually switched on. */
   turnstile_site_key?: string;
   turnstile_on_login?: boolean;
   turnstile_on_signup?: boolean;
   turnstile_on_api_key?: boolean;
-  turnstile_on_feedback?: boolean;
   turnstile_on_redeem?: boolean;
+  turnstile_on_feedback?: boolean;
   turnstile_on_chat_speed?: boolean;
+  /**
+   * The self-hosted risk control service, on the same terms as the
+   * Turnstile key: the address the SDK loads from and the site key init()
+   * carries, served only where a check is actually switched on. Empty means
+   * the instance runs no risk check and no boot.js is ever fetched.
+   */
+  risk_base_url?: string;
+  risk_site?: string;
+  risk_on_signup?: boolean;
+  risk_on_login?: boolean;
   /** How long a browser may skip the sign-in code after one is entered; zero
    *  means the code step offers no such choice. */
   two_factor_remember_days?: number;
@@ -197,11 +207,17 @@ export interface LoginResult {
   two_factor?: true;
 }
 
-export function login(identifier: string, password: string, turnstile?: string): Promise<LoginResult> {
+export function login(
+  identifier: string,
+  password: string,
+  turnstile?: string,
+  rcToken?: string,
+): Promise<LoginResult> {
   return api.post<LoginResult>('/api/auth/login', {
     identifier,
     password,
     ...(turnstile ? { turnstile } : {}),
+    ...(rcToken ? { rc_token: rcToken } : {}),
   });
 }
 
@@ -238,6 +254,8 @@ export interface RegisterInput {
   qq?: string;
   nickname?: string;
   turnstile?: string;
+  /** The self-hosted risk control service's token, where sign-up asks for one. */
+  rcToken?: string;
   inviteCode?: string;
   pow?: PoWSolution;
 }
@@ -250,6 +268,7 @@ export function register(input: RegisterInput): Promise<{ user: Account }> {
     qq: input.qq ?? '',
     nickname: input.nickname ?? '',
     turnstile: input.turnstile ?? '',
+    ...(input.rcToken ? { rc_token: input.rcToken } : {}),
     invite_code: input.inviteCode ?? '',
     ...(input.pow ? { pow: input.pow } : {}),
   });

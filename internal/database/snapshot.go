@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -90,7 +91,11 @@ func (db *DB) readSQLiteSnapshot(ctx context.Context, maxBytes int64, fn func(Qu
 	if !sqliteEnabled {
 		return errors.New("database: SQLite snapshot unavailable in a nosqlite build")
 	}
-	uri := (&url.URL{Scheme: "file", Path: path}).String() + "?mode=ro&immutable=1"
+	// The URI's authority must stay empty. A Windows path has no leading
+	// slash, so a bare url.URL hands the drive letter to the authority and
+	// the open dies on "invalid uri authority" — slash the separators and
+	// pin the leading one, which leaves a Linux path unchanged.
+	uri := (&url.URL{Scheme: "file", Path: "/" + strings.TrimPrefix(filepath.ToSlash(path), "/")}).String() + "?mode=ro&immutable=1"
 	snapshot, err := Open(ctx, config.Database{
 		Driver: "sqlite", DSN: uri, MaxOpenConns: 1, MaxIdleConns: 1,
 	})

@@ -356,6 +356,83 @@ describe('registering with an invite code', () => {
   });
 });
 
+// The self-hosted risk control service stands in front of the same form.
+// The SDK is fake here — a real boot.js would be somebody else's server on
+// the page, and the loader resolves to whatever window.RiskControl already
+// holds — so what is under test is the wiring: init on the way in, a token
+// on the way out, and a refusal that never reaches the server.
+describe('the self-hosted risk control service', () => {
+  let init: ReturnType<typeof vi.fn>;
+  let execute: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    route.path = '/register';
+    init = vi.fn();
+    execute = vi.fn(async () => 'rc-token-1');
+    (window as unknown as { RiskControl: unknown }).RiskControl = { init, execute };
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { RiskControl?: unknown }).RiskControl;
+  });
+
+  function riskSite(): void {
+    site.value = {
+      ...siteInfo.value,
+      risk_base_url: 'https://risk.example.com',
+      risk_site: 'arc-test',
+      risk_on_signup: true,
+      risk_on_login: true,
+    };
+  }
+
+  it('inits the SDK when the card opens and submits the token it mints', async () => {
+    riskSite();
+    const register = vi.spyOn(authApi, 'register').mockResolvedValue({ user: NEW_ACCOUNT });
+    await mount(AuthView, { mode: 'register' });
+
+    type(fieldInput(t('username')), 'newperson');
+    type(fieldInput(t('password')), 'a-strong-password');
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(init).toHaveBeenCalledWith({ base: 'https://risk.example.com', site: 'arc-test' });
+    expect(execute).toHaveBeenCalledWith('register', expect.any(HTMLFormElement));
+    expect(register).toHaveBeenCalledWith(expect.objectContaining({ rcToken: 'rc-token-1' }));
+  });
+
+  it('ends the attempt with its own words when the service refuses this browser', async () => {
+    riskSite();
+    execute = vi.fn(async () => { throw new Error('rejected'); });
+    (window as unknown as { RiskControl: unknown }).RiskControl = { init, execute };
+    const register = vi.spyOn(authApi, 'register');
+    await mount(AuthView, { mode: 'register' });
+
+    type(fieldInput(t('username')), 'newperson');
+    type(fieldInput(t('password')), 'a-strong-password');
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(register).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('riskFailed'));
+  });
+
+  it('stands in front of sign-in too, and names the action it is checking', async () => {
+    riskSite();
+    route.path = '/login';
+    const login = vi.spyOn(authApi, 'login').mockResolvedValue({ user: NEW_ACCOUNT });
+    await mount(AuthView, { mode: 'login' });
+
+    type(fieldInput(t('usernameOrEmail')), 'somebody');
+    type(fieldInput(t('password')), 'a-strong-password');
+    button(host, t('signIn')).click();
+    await settle();
+
+    expect(execute).toHaveBeenCalledWith('login', expect.any(HTMLFormElement));
+    expect(login).toHaveBeenCalledWith('somebody', 'a-strong-password', '', 'rc-token-1');
+  });
+});
+
 // The same rule applies to the other door an account gets created through:
 // a provider sign-in the server has no way to finish without asking first.
 describe('finishing a sign-up with an invite code', () => {

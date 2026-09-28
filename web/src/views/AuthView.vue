@@ -19,6 +19,7 @@ import { signInURL } from '@/api/oauth';
 import OaField from '@/components/OaField.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
+import { beginRiskControl, type RiskControlAPI } from '@/composables/useRiskControl';
 import { t, type StringKey } from '@/composables/useI18n';
 import { ApiError } from '@/api/client';
 import { loginRefusalText, refusalText } from '@/lib/refusal';
@@ -217,6 +218,38 @@ const guarded = computed(() =>
     : !setup.value && !!site.value.turnstile_on_login,
 );
 
+// The self-hosted risk control service, on the same terms. The SDK starts
+// as soon as the card opens rather than on submit — it scores behaviour,
+// and telemetry that starts at submit time has nothing to score.
+const riskBase = computed(() => site.value.risk_base_url ?? '');
+const riskSite = computed(() => site.value.risk_site ?? '');
+const riskGuarded = computed(() =>
+  registering.value
+    ? !setup.value && !!site.value.risk_on_signup
+    : !setup.value && !!site.value.risk_on_login,
+);
+const riskAction = computed(() => (registering.value ? 'register' : 'login'));
+const formEl = ref<HTMLFormElement | null>(null);
+let riskReady: Promise<RiskControlAPI | null> | null = null;
+
+watch(
+  [riskGuarded, riskBase, riskSite],
+  ([on, base, key]) => {
+    riskReady = on && base && key ? beginRiskControl(base, key) : null;
+  },
+  { immediate: true },
+);
+
+/** The token this submission carries, or undefined when no check applies. */
+async function riskToken(): Promise<string | undefined> {
+  if (!riskGuarded.value) return undefined;
+  const ready = riskReady ?? beginRiskControl(riskBase.value, riskSite.value);
+  riskReady = ready;
+  const api = await ready;
+  if (!api) throw new Error('the risk control service could not be loaded');
+  return api.execute(riskAction.value, formEl.value ?? undefined);
+}
+
 // The sign-ins that do not start here. Never during setup: the first account
 // is the administrator, and a provider cannot be configured before there is
 // one to configure it.
@@ -369,6 +402,24 @@ async function onSubmit(): Promise<void> {
     }
   }
 
+  // The risk service's interactive check, where it asks for one, runs
+  // inside this call — the button says what the reader is waiting on.
+  // A refusal here ends the attempt before anything is submitted: the
+  // service is fail-closed by design, and resubmitting would only carry
+  // a verdict it has already given.
+  let rcToken: string | undefined;
+  if (riskGuarded.value) {
+    buttonLabel.value = t('riskChecking');
+    try {
+      rcToken = await riskToken();
+    } catch {
+      busy.value = false;
+      buttonLabel.value = '';
+      error.value = t('riskFailed');
+      return;
+    }
+  }
+
   buttonLabel.value = registering.value ? t('creatingAccount') : t('signingIn');
   // A review takes seconds. Saying so beats a button that sits on "creating
   // account" long enough to read as a form that has hung.
@@ -384,10 +435,11 @@ async function onSubmit(): Promise<void> {
           email: email.value.trim(),
           qq: qqValue,
           turnstile: guard.value?.token() ?? '',
+          ...(rcToken ? { rcToken } : {}),
           inviteCode: inviteCode.value.trim(),
           ...(solution ? { pow: solution } : {}),
         })
-      : await login(identity, secret, guard.value?.token() ?? '');
+      : await login(identity, secret, guard.value?.token() ?? '', rcToken);
 
     window.clearTimeout(reviewNote);
     guard.value?.reset();
@@ -430,7 +482,7 @@ async function onSubmit(): Promise<void> {
     ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
-    <form class="oa-auth-card" novalidate @submit.prevent="stage === 'code' ? onCode() : onSubmit()">
+    <form ref="formEl" class="oa-auth-card" novalidate @submit.prevent="stage === 'code' ? onCode() : onSubmit()">
       <div class="oa-auth-brand">
         <img v-if="site.logo_url" :src="site.logo_url" class="oa-auth-brand-logo" alt="">
         <span v-else class="oa-auth-mark"><IconSpark :size="15" /></span>
