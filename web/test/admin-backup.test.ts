@@ -29,6 +29,7 @@ const backup: AdminBackup = {
   last_success_at: Date.UTC(2026, 8, 27, 1, 1),
   next_run_at: Date.UTC(2026, 8, 28, 1, 1),
   last_error: '',
+  last_log: '',
 };
 
 beforeEach(async () => {
@@ -305,5 +306,19 @@ describe('admin instance backup', () => {
     expect(runBtn.disabled).toBe(false);
     expect(host.textContent).not.toContain(t('backupActionsHint'));
     expect(host.textContent).not.toContain(t('backupStorageMissing'));
+  });
+
+  it('displays the execution log and live running indicator', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue({
+      ...backup,
+      running: true,
+      last_log: '[12:00:00] Backup initiated.\n[12:00:01] Uploading...',
+    });
+    await mountBackup();
+
+    expect(host.textContent).toContain(t('backupLog'));
+    expect(host.textContent).toContain(t('backupStatusRunning'));
+    const pre = host.querySelector('.oa-backup-log-body');
+    expect(pre?.textContent).toContain('[12:00:01] Uploading...');
   });
 });

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -532,5 +533,54 @@ func TestConcurrentCredentialRotationKeepsBothNewValues(t *testing.T) {
 	}
 	if bytes.Contains(sealedAccess, []byte("new-access")) || bytes.Contains(sealedSecret, []byte("new-secret")) {
 		t.Fatal("database credential columns contain plaintext")
+	}
+}
+
+func TestStoreAppendLogAndTimeoutDiagnostics(t *testing.T) {
+	db := openBackupTestDB(t, t.TempDir())
+	box, err := secret.New(testMasterKey, "obsidian-arc/system-backup-credentials")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(db, box)
+	ctx := context.Background()
+	if err := store.Save(ctx, Config{
+		Enabled: true, Endpoint: "https://s3.example.test", Bucket: "arc-backups",
+		Region: "us-east-1", Prefix: "arc", AccessKeyID: "access", SecretKey: "secret",
+		IntervalHours: 24, RetentionDays: 7,
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	now := time.Now()
+	token, err := store.claim(ctx, now, true)
+	if err != nil || token == "" {
+		t.Fatalf("claim: %v (token: %q)", err, token)
+	}
+	status, err := store.Status(ctx)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(status.LastLog, "Backup initiated (manual)") {
+		t.Errorf("last_log missing initiation line: %q", status.LastLog)
+	}
+	if err := store.appendLog(ctx, token, "Staging database snapshot..."); err != nil {
+		t.Fatalf("appendLog: %v", err)
+	}
+	status, err = store.Status(ctx)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(status.LastLog, "Staging database snapshot...") {
+		t.Errorf("last_log missing appended line: %q", status.LastLog)
+	}
+	if err := store.finish(ctx, token, "success", "", now.Add(time.Second), now.UnixMilli()); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	status, err = store.Status(ctx)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.LastStatus != "success" || status.Running {
+		t.Errorf("unexpected status after finish: %+v", status)
 	}
 }

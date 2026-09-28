@@ -44,6 +44,7 @@ const busy = ref(false);
 const error = ref('');
 const actionError = ref('');
 const notice = ref('');
+const logRef = ref<HTMLPreElement | null>(null);
 
 function collect(): AdminBackupInput {
   return {
@@ -98,6 +99,15 @@ watch(dirty, (isDirty) => {
     notice.value = '';
   }
 });
+watch(
+  () => snapshot.value?.last_log,
+  () => {
+    if (logRef.value && snapshot.value?.running) {
+      logRef.value.scrollTop = logRef.value.scrollHeight;
+    }
+  },
+  { flush: 'post' },
+);
 
 function message(failure: unknown): string {
   return failure instanceof ApiError ? failure.message : String(failure);
@@ -290,6 +300,15 @@ onMounted(load);
         <p v-else-if="!snapshot?.configured" class="oa-field-hint">{{ t('backupStorageMissing') }}</p>
         <p v-if="actionError" class="oa-field-hint" role="alert">{{ actionError }}</p>
         <p v-else-if="notice" class="oa-field-hint" role="status">{{ notice }}</p>
+        <div class="oa-backup-log-section">
+          <div class="oa-backup-log-head">
+            <span class="oa-field-label">{{ t('backupLog') }}</span>
+            <span v-if="snapshot?.running" class="oa-backup-log-live">
+              <span class="oa-dashboard-dot" />{{ t('backupStatusRunning') }}
+            </span>
+          </div>
+          <pre ref="logRef" class="oa-backup-log-body" role="log">{{ snapshot?.last_log || t('backupLogEmpty') }}</pre>
+        </div>
       </AdminControlCard>
     </div>
   </div>

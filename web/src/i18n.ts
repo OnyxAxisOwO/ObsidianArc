@@ -1551,6 +1551,8 @@ const en = {
   backupSaved: 'Backup settings saved.',
   backupTestSucceeded: 'Storage connection succeeded.',
   backupRunStarted: 'Backup started.',
+  backupLog: 'Run log',
+  backupLogEmpty: 'No run log recorded yet.',
 
   // --- scheduled cleanup
   secCleanup: 'Scheduled cleanup',

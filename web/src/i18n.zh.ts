@@ -1517,6 +1517,8 @@ export const zh: Record<StringKey, string> = {
   backupSaved: '备份设置已保存。',
   backupTestSucceeded: '存储连接成功。',
   backupRunStarted: '备份已开始。',
+  backupLog: '运行日志',
+  backupLogEmpty: '暂无运行日志。',
 
   // --- scheduled cleanup
   secCleanup: '定时清理',

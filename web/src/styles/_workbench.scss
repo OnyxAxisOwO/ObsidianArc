@@ -41,6 +41,12 @@
 .oa-control-save-state { display: inline-flex; gap: 6px; align-items: center; color: var(--ai-text-secondary); font-size: 11px; white-space: nowrap; }
 .oa-control-save-state.dirty { color: var(--ai-text); }
 .oa-control-save-state:not(.dirty) .oa-dashboard-dot { opacity: .45; }
+/* Run log viewer for instance backups. */
+.oa-backup-log-section { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.oa-backup-log-head { display: flex; align-items: center; justify-content: space-between; }
+.oa-backup-log-head .oa-field-label { font-size: 12px; font-weight: 550; }
+.oa-backup-log-live { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ai-warning); }
+.oa-backup-log-body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.6; padding: 12px 14px; border-radius: 11px; background: var(--ai-field-bg); color: var(--ai-text-secondary); white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow-y: auto; margin: 0; }
 /* Clean status strip below the workbench: pure text without the card background or shadow outline. */
 .oa-control-flash { margin: 16px auto 0; max-width: 1432px; padding: 4px 2px; font-size: 13px; line-height: 1.6; background: transparent; box-shadow: none; border: none; }
 .oa-health-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }

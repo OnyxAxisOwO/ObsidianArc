@@ -68,6 +68,7 @@ type Status struct {
 	LastSuccessAt    int64  `json:"last_success_at"`
 	NextRunAt        int64  `json:"next_run_at"`
 	LastError        string `json:"last_error"`
+	LastLog          string `json:"last_log"`
 	LeaseUntil       int64  `json:"-"`
 }
 
@@ -99,12 +100,12 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 	var enabled bool
 	err := s.db.QueryRow(ctx, `SELECT instance_id, enabled, endpoint, bucket, region,
 		prefix, access_key_id_enc, secret_access_key_enc, interval_hours, retention_days,
-		lease_until, last_status, last_started_at, last_finished_at, last_success_at, last_error
+		lease_until, last_status, last_started_at, last_finished_at, last_success_at, last_error, last_log
 		FROM system_backups WHERE id = ?`, singletonID).Scan(
 		&status.InstanceID, &enabled, &status.Endpoint, &status.Bucket, &status.Region,
 		&status.Prefix, &access, &secretValue, &status.IntervalHours, &status.RetentionDays,
 		&status.LeaseUntil, &status.LastStatus, &status.LastStartedAt,
-		&status.LastFinishedAt, &status.LastSuccessAt, &status.LastError)
+		&status.LastFinishedAt, &status.LastSuccessAt, &status.LastError, &status.LastLog)
 	if err != nil {
 		return Status{}, fmt.Errorf("system backup: read status: %w", err)
 	}
@@ -116,6 +117,12 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 		status.LastStatus = "error"
 		if status.LastError == "" {
 			status.LastError = "The previous backup stopped before it finished."
+		}
+		if !strings.Contains(status.LastLog, "The previous backup stopped before it finished") {
+			if status.LastLog != "" && !strings.HasSuffix(status.LastLog, "\n") {
+				status.LastLog += "\n"
+			}
+			status.LastLog += fmt.Sprintf("[%s] Backup stopped: the previous backup stopped before it finished.\n", time.Now().UTC().Format("15:04:05"))
 		}
 	}
 	status.IntervalHours = defaultInt(status.IntervalHours, DefaultIntervalHours)
@@ -287,9 +294,14 @@ func (s *Store) claim(ctx context.Context, now time.Time, manual bool) (string, 
 				return nil
 			}
 		}
+		trigger := "scheduled"
+		if manual {
+			trigger = "manual"
+		}
+		initialLog := fmt.Sprintf("[%s] Backup initiated (%s).\n", now.UTC().Format("2006-01-02 15:04:05"), trigger)
 		result, err := tx.Exec(ctx, `UPDATE system_backups SET lease_token = ?, lease_until = ?,
-			last_started_at = ?, last_status = 'running', last_error = ''
-			WHERE id = ? AND lease_until <= ?`, token, now.Add(LeaseDuration).UnixMilli(), nowMS, singletonID, nowMS)
+			last_started_at = ?, last_status = 'running', last_error = '', last_log = ?
+			WHERE id = ? AND lease_until <= ?`, token, now.Add(LeaseDuration).UnixMilli(), nowMS, initialLog, singletonID, nowMS)
 		if err != nil {
 			return fmt.Errorf("system backup: claim scheduler lease: %w", err)
 		}
@@ -319,6 +331,17 @@ func (s *Store) finish(ctx context.Context, token, status, failure string, now t
 		now.UnixMilli(), uploadedAt, uploadedAt, status, failure, singletonID, token)
 	if err != nil {
 		return fmt.Errorf("system backup: release scheduler lease: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) appendLog(ctx context.Context, token, message string) error {
+	now := time.Now().UTC().Format("15:04:05")
+	line := fmt.Sprintf("[%s] %s\n", now, message)
+	_, err := s.db.Exec(ctx, `UPDATE system_backups SET last_log = last_log || ?
+		WHERE id = ? AND lease_token = ?`, line, singletonID, token)
+	if err != nil {
+		return fmt.Errorf("system backup: append log: %w", err)
 	}
 	return nil
 }

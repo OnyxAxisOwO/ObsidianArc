@@ -667,6 +667,7 @@ export interface AdminBackup {
   last_success_at: number;
   next_run_at: number;
   last_error: string;
+  last_log: string;
 }
 
 export interface AdminBackupInput {

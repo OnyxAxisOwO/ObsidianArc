@@ -45,7 +45,7 @@ func TestPruneExpiredDeletesOnlyOldGeneratedObjectsOwnedByInstance(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pruneExpired(context.Background(), client, cfg, instanceID, now); err != nil {
+	if _, err := pruneExpired(context.Background(), client, cfg, instanceID, now); err != nil {
 		t.Fatalf("prune expired objects: %v", err)
 	}
 	if len(deleted) != 1 || deleted[0] != old {

@@ -87,6 +87,7 @@ func (s *Service) startAutomatic(ctx context.Context) {
 		err = ValidateConfig(cfg)
 	}
 	if err != nil {
+		_ = s.store.appendLog(ctx, token, fmt.Sprintf("Backup configuration invalid: %s", err.Error()))
 		s.complete(ctx, token, "error", err.Error(), 0)
 		return
 	}
@@ -168,6 +169,11 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 	ctx, cancel := context.WithTimeout(parent, MaxRunDuration)
 	defer cancel()
 
+	log := func(msg string) {
+		_ = s.store.appendLog(ctx, token, msg)
+	}
+
+	log("Staging database snapshot...")
 	file, err := os.CreateTemp("", "obsidian-arc-instance-backup-*.arcbackup")
 	if err == nil {
 		_ = file.Chmod(0600)
@@ -187,6 +193,13 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 		size, digest, err = hashFile(file)
 	}
 	if err == nil {
+		hashPrefix := digest
+		if len(hashPrefix) > 16 {
+			hashPrefix = hashPrefix[:16]
+		}
+		log(fmt.Sprintf("Snapshot archived and encrypted (size: %s, digest: %s).", formatByteSize(size), hashPrefix))
+	}
+	if err == nil {
 		var status Status
 		status, err = s.store.Status(ctx)
 		if err == nil {
@@ -194,19 +207,27 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 			client, err = NewS3Client(cfg)
 			if err == nil {
 				objectKey := backupObjectKey(cfg, status.InstanceID, time.Now())
+				log(fmt.Sprintf("Uploading archive to S3 (bucket: %s, key: %s)...", cfg.Bucket, objectKey))
 				err = client.PutObject(ctx, objectKey, io.NewSectionReader(file, 0, size), size, digest)
 				if err == nil {
 					uploadedAt = time.Now().UnixMilli()
-					err = pruneExpired(ctx, client, cfg, status.InstanceID, time.Now())
+					log(fmt.Sprintf("Upload completed. Checking retention policy (%d days)...", cfg.RetentionDays))
+					var pruned int
+					pruned, err = pruneExpired(ctx, client, cfg, status.InstanceID, time.Now())
+					if err == nil {
+						log(fmt.Sprintf("Retention policy applied (pruned %d expired backup(s)).", pruned))
+					}
 				}
 			}
 		}
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "instance backup failed", "error", err)
+		log(fmt.Sprintf("Backup failed: %s", err.Error()))
 		s.complete(ctx, token, "error", err.Error(), uploadedAt)
 		return
 	}
+	log("Backup completed successfully.")
 	s.complete(ctx, token, "success", "", uploadedAt)
 }
 
@@ -218,23 +239,42 @@ func (s *Service) complete(ctx context.Context, token, state, failure string, up
 	}
 }
 
+func formatByteSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
 func backupObjectKey(cfg Config, instanceID string, now time.Time) string {
 	return fmt.Sprintf("%s/%s/instance-%s-%s.arcbackup", cfg.Prefix, instanceID,
 		now.UTC().Format("20060102T150405Z"), id.New())
 }
 
-func pruneExpired(ctx context.Context, client *S3Client, cfg Config, instanceID string, now time.Time) error {
+func pruneExpired(ctx context.Context, client *S3Client, cfg Config, instanceID string, now time.Time) (int, error) {
 	// List the instance-owned directory; generatedBackupTime then accepts
 	// only the exact generated filename pattern within that boundary.
 	ownedPrefix := fmt.Sprintf("%s/%s/", cfg.Prefix, instanceID)
 	cutoff := now.Add(-time.Duration(cfg.RetentionDays) * 24 * time.Hour)
-	return client.ListObjects(ctx, ownedPrefix, func(object listedObject) error {
+	pruned := 0
+	err := client.ListObjects(ctx, ownedPrefix, func(object listedObject) error {
 		at, ok := generatedBackupTime(object.Key, ownedPrefix)
 		if !ok || !at.Before(cutoff) {
 			return nil
 		}
-		return client.DeleteObject(ctx, object.Key)
+		if err := client.DeleteObject(ctx, object.Key); err != nil {
+			return err
+		}
+		pruned++
+		return nil
 	})
+	return pruned, err
 }
 
 func generatedBackupTime(key, prefix string) (time.Time, bool) {
