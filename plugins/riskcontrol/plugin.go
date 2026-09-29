@@ -26,10 +26,11 @@ const Name = "riskcontrol"
 // the browser's init() call carries it — and the secret is write-only, the
 // way the Turnstile one is.
 const (
-	BaseURL   = "risk.base_url"
-	Site      = "risk.site"
-	SecretKey = "risk.secret_key"
-	OnLogin   = "risk.on_login"
+	BaseURL    = "risk.base_url"
+	Site       = "risk.site"
+	SecretKey  = "risk.secret_key"
+	AdminToken = "risk.admin_token"
+	OnLogin    = "risk.on_login"
 	// The registration.captcha_mode value that selects the service at
 	// sign-up. One select owns which challenge a sign-up needs, so sign-up
 	// has no switch of its own here.
@@ -44,6 +45,7 @@ func init() {
 	settings.Define(settings.Definition{Key: BaseURL, Plugin: Name})
 	settings.Define(settings.Definition{Key: Site, Plugin: Name})
 	settings.Define(settings.Definition{Key: SecretKey, Secret: true, Plugin: Name})
+	settings.Define(settings.Definition{Key: AdminToken, Secret: true, Permission: "security", Plugin: Name})
 	settings.Define(settings.Definition{Key: OnLogin, Default: "false", Plugin: Name})
 	settings.AddCaptchaMode(Name, CaptchaMode)
 	plugin.Register(riskPlugin{})
@@ -157,6 +159,9 @@ func (riskPlugin) Setup(h *plugin.Host) error {
 		}
 		return parsed.Scheme + "://" + parsed.Host
 	})
+
+	admin := newAdminHandlers(h)
+	admin.mount(h.Admin)
 	return nil
 }
 
