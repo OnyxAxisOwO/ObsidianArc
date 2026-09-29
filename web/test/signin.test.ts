@@ -417,6 +417,20 @@ describe('the self-hosted risk control service', () => {
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('riskFailed'));
   });
 
+  it('notifies the reader specifically when devtools guard locked the page', async () => {
+    riskSite();
+    execute = vi.fn(async () => { throw new Error('devtools-locked'); });
+    (window as unknown as { RiskControl: unknown }).RiskControl = { init, execute };
+    await mount(AuthView, { mode: 'register' });
+
+    type(fieldInput(t('username')), 'newperson');
+    type(fieldInput(t('password')), 'a-strong-password');
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('riskDevtoolsLocked'));
+  });
+
   it('stands in front of sign-in too, and names the action it is checking', async () => {
     riskSite();
     route.path = '/login';

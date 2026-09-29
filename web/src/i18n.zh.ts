@@ -1657,6 +1657,7 @@ export const zh: Record<StringKey, string> = {
   riskChecking: '正在进行风控检测…',
   riskFailed: '风控检测未通过，请使用正常浏览器重试。',
   riskBlocked: '本次请求被风控拒绝。',
+  riskDevtoolsLocked: '检测到开发者工具已启用，请关闭后刷新页面重试。',
   securityEventRiskChallenge: '超级风控',
   securityReasonRiskFailed: '风控验证未通过',
   securityReasonRiskBlocked: '风控判定拒绝',

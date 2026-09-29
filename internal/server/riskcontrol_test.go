@@ -151,6 +151,15 @@ func TestRiskControlGateOnRegistrationAndSignIn(t *testing.T) {
 		t.Fatalf("an allow-verdict account was restricted: %s", allowed.Body.String())
 	}
 
+	// Upstream compatibility: rcToken (camelCase) from sample implementations
+	// is accepted just like rc_token.
+	camelRegister := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user5", "password": "valid-password", "rcToken": "rc-allow",
+	}, nil)
+	if camelRegister.Code != http.StatusCreated {
+		t.Fatalf("register with camelCase rcToken: %d %s", camelRegister.Code, camelRegister.Body.String())
+	}
+
 	// What reached the service: the credentials of this instance, the
 	// action the token was minted for, and the visitor's own address.
 	for _, body := range stub.sent() {
@@ -177,6 +186,13 @@ func TestRiskControlGateOnRegistrationAndSignIn(t *testing.T) {
 	}, nil)
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("login with allow verdict: %d %s", accepted.Code, accepted.Body.String())
+	}
+
+	camelLogin := in.do(http.MethodPost, "/api/auth/login", map[string]any{
+		"identifier": "user5", "password": "valid-password", "rcToken": "rc-allow",
+	}, nil)
+	if camelLogin.Code != http.StatusOK {
+		t.Fatalf("login with camelCase rcToken: %d %s", camelLogin.Code, camelLogin.Body.String())
 	}
 
 	rejected := in.do(http.MethodPost, "/api/auth/login", map[string]any{

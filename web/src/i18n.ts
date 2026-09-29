@@ -1691,6 +1691,7 @@ const en = {
   riskChecking: 'Running risk check...',
   riskFailed: 'The risk check did not pass. Please try again with a normal browser.',
   riskBlocked: 'This request was rejected by risk control.',
+  riskDevtoolsLocked: 'Developer tools detected. Please close developer tools and refresh.',
   securityEventRiskChallenge: 'Super risk control',
   securityReasonRiskFailed: 'Risk verification failed',
   securityReasonRiskBlocked: 'Rejected by risk verdict',

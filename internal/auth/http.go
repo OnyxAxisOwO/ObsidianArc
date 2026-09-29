@@ -528,8 +528,10 @@ type registerRequest struct {
 	// The Turnstile token, where the operator has switched the challenge on.
 	Turnstile string `json:"turnstile"`
 	// The self-hosted risk-control service's token, where the sign-up mode
-	// selects it.
+	// selects it. Supports both snake_case and camelCase for integration
+	// compatibility with external sample code.
 	RC       string        `json:"rc_token"`
+	RCToken  string        `json:"rcToken"`
 	PoW      *pow.Solution `json:"pow"`
 	Username string        `json:"username"`
 	Email    string        `json:"email"`
@@ -550,9 +552,13 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 
 	ip := httpx.ClientIP(r, h.trust)
 	ua := r.UserAgent()
+	rc := body.RC
+	if rc == "" {
+		rc = body.RCToken
+	}
 	account, token, err := h.service.Register(r.Context(), RegisterInput{
 		Turnstile:  body.Turnstile,
-		RC:         body.RC,
+		RC:         rc,
 		PoW:        body.PoW,
 		Username:   body.Username,
 		Email:      body.Email,
@@ -577,6 +583,7 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 type loginRequest struct {
 	Turnstile  string `json:"turnstile"`
 	RC         string `json:"rc_token"`
+	RCToken    string `json:"rcToken"`
 	Identifier string `json:"identifier"`
 	Password   string `json:"password"`
 }
@@ -589,9 +596,13 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 
 	ip := httpx.ClientIP(r, h.trust)
 	ua := r.UserAgent()
+	rc := body.RC
+	if rc == "" {
+		rc = body.RCToken
+	}
 	account, token, err := h.service.Login(r.Context(), LoginInput{
 		Turnstile:  body.Turnstile,
-		RC:         body.RC,
+		RC:         rc,
 		Identifier: body.Identifier,
 		Password:   body.Password,
 		IP:         ip,

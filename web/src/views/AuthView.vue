@@ -420,10 +420,11 @@ async function onSubmit(): Promise<void> {
     buttonLabel.value = t('riskChecking');
     try {
       rcToken = await riskToken();
-    } catch {
+    } catch (err: unknown) {
       busy.value = false;
       buttonLabel.value = '';
-      error.value = t('riskFailed');
+      const message = err instanceof Error ? err.message : String(err ?? '');
+      error.value = message === 'devtools-locked' ? t('riskDevtoolsLocked') : t('riskFailed');
       return;
     }
   }
