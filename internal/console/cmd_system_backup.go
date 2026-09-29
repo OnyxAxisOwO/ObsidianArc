@@ -32,7 +32,7 @@ func init() {
 				{"region", asStr(state["region"])},
 				{"prefix", asStr(state["prefix"])},
 				{"interval_hours", fmt.Sprint(asNum(state["interval_hours"]))},
-				{"retention_days", fmt.Sprint(asNum(state["retention_days"]))},
+				{"retention_hours", fmt.Sprint(asNum(state["retention_hours"]))},
 				{"running", yesNo(asBoolVal(state["running"]))},
 				{"last_status", asStr(state["last_status"])},
 				{"last_success_at", formatMS(state["last_success_at"])},
@@ -46,7 +46,7 @@ func init() {
 		Name:    "backup configure",
 		Group:   "backup",
 		Summary: Text{EN: "Update instance backup destination and schedule", ZH: "修改实例备份目标和计划"},
-		Usage:   "backup configure [--enabled BOOL] [--endpoint URL] [--bucket NAME] [--region NAME] [--prefix PATH] [--interval-hours N] [--retention-days N]",
+		Usage:   "backup configure [--enabled BOOL] [--endpoint URL] [--bucket NAME] [--region NAME] [--prefix PATH] [--interval-hours N] [--retention-hours N]",
 		Help: Text{
 			EN: "Changes only the supplied fields. Existing access and secret keys are preserved. To add or rotate storage credentials, use the super-admin Backup page; accepting secrets on a command line would save them in terminal history.",
 			ZH: "只修改给出的字段，并保留已保存的 Access Key 和 Secret Key。添加或更换凭据请使用超级管理员的“备份”页面；命令行输入密钥会将其留在终端历史中。",
@@ -58,9 +58,10 @@ func init() {
 			{Name: "--region", Hint: Text{EN: "region; use auto for Cloudflare R2", ZH: "区域；Cloudflare R2 填 auto"}, Value: "NAME"},
 			{Name: "--prefix", Hint: Text{EN: "relative object prefix", ZH: "相对对象前缀"}, Value: "PATH"},
 			{Name: "--interval-hours", Hint: Text{EN: "1-168 hours", ZH: "1-168 小时"}, Value: "N"},
+			{Name: "--retention-hours", Hint: Text{EN: "1-87600 hours", ZH: "1-87600 小时"}, Value: "N"},
 			{Name: "--retention-days", Hint: Text{EN: "1-3650 days", ZH: "1-3650 天"}, Value: "N"},
 		},
-		Examples:   []string{"backup configure --enabled true --interval-hours 24 --retention-days 7", "backup configure --region auto --prefix arc/prod"},
+		Examples:   []string{"backup configure --enabled true --interval-hours 24 --retention-hours 168", "backup configure --region auto --prefix arc/prod"},
 		SeeAlso:    []string{"backup status", "backup test"},
 		Permission: "super_admin",
 		Endpoints:  []string{"PUT /api/admin/backup"},
@@ -72,7 +73,7 @@ func init() {
 				return rt.Errorf("credentials can only be entered on the super-admin Backup page")
 			}
 			if !rt.Present("enabled") && !rt.Present("endpoint") && !rt.Present("bucket") && !rt.Present("region") &&
-				!rt.Present("prefix") && !rt.Present("interval-hours") && !rt.Present("retention-days") {
+				!rt.Present("prefix") && !rt.Present("interval-hours") && !rt.Present("retention-hours") && !rt.Present("retention-days") {
 				return rt.Errorf("supply at least one setting to change")
 			}
 			currentData, _, err := rt.Call(http.MethodGet, "/api/admin/backup", nil)
@@ -89,7 +90,7 @@ func init() {
 				"access_key_id":     "",
 				"secret_access_key": "",
 				"interval_hours":    int(asNum(current["interval_hours"])),
-				"retention_days":    int(asNum(current["retention_days"])),
+				"retention_hours":   int(asNum(current["retention_hours"])),
 			}
 			if rt.Present("enabled") {
 				value, err := strconv.ParseBool(rt.String("enabled"))
@@ -105,7 +106,10 @@ func init() {
 					body[field] = rt.String(flag)
 				}
 			}
-			for flag, field := range map[string]string{"interval-hours": "interval_hours", "retention-days": "retention_days"} {
+			for flag, field := range map[string]string{
+				"interval-hours":  "interval_hours",
+				"retention-hours": "retention_hours",
+			} {
 				if rt.Present(flag) {
 					value, err := strconv.Atoi(rt.String(flag))
 					if err != nil {
@@ -113,6 +117,13 @@ func init() {
 					}
 					body[field] = value
 				}
+			}
+			if rt.Present("retention-days") {
+				value, err := strconv.Atoi(rt.String("retention-days"))
+				if err != nil {
+					return rt.Errorf("--retention-days must be a whole number")
+				}
+				body["retention_hours"] = value * 24
 			}
 			if _, _, err := rt.Call(http.MethodPut, "/api/admin/backup", body); err != nil {
 				return err
@@ -129,7 +140,7 @@ func init() {
 				{"region", asStr(state["region"])},
 				{"prefix", asStr(state["prefix"])},
 				{"interval_hours", fmt.Sprint(asNum(state["interval_hours"]))},
-				{"retention_days", fmt.Sprint(asNum(state["retention_days"]))},
+				{"retention_hours", fmt.Sprint(asNum(state["retention_hours"]))},
 			})
 		},
 	})

@@ -75,10 +75,32 @@ func TestInstanceBackupCredentialsStayWriteOnlyAndSurviveSettingsEdit(t *testing
 	status := decode[struct {
 		Configured       bool `json:"configured"`
 		SecretConfigured bool `json:"secret_configured"`
+		RetentionHours   int  `json:"retention_hours"`
 		RetentionDays    int  `json:"retention_days"`
 	}](t, response)
-	if !status.Configured || !status.SecretConfigured || status.RetentionDays != 14 {
+	if !status.Configured || !status.SecretConfigured || status.RetentionDays != 14 || status.RetentionHours != 336 {
 		t.Fatalf("saved status = %+v", status)
+	}
+
+	// Directly setting retention_hours in hours
+	delete(input, "retention_days")
+	input["retention_hours"] = 48
+	response = in.do(http.MethodPut, "/api/admin/backup", input, founder)
+	if response.Code != http.StatusOK {
+		t.Fatalf("edit retention hours: %d %s", response.Code, response.Body.String())
+	}
+	response = in.do(http.MethodGet, "/api/admin/backup", nil, founder)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read backup: %d %s", response.Code, response.Body.String())
+	}
+	status = decode[struct {
+		Configured       bool `json:"configured"`
+		SecretConfigured bool `json:"secret_configured"`
+		RetentionHours   int  `json:"retention_hours"`
+		RetentionDays    int  `json:"retention_days"`
+	}](t, response)
+	if status.RetentionHours != 48 || status.RetentionDays != 2 {
+		t.Fatalf("saved retention hours = %+v, want hours=48 days=2", status)
 	}
 	var afterAccess, afterSecret []byte
 	if err := in.db.QueryRow(context.Background(),

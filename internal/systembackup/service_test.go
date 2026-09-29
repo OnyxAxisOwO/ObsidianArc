@@ -15,7 +15,7 @@ func TestPruneExpiredDeletesOnlyOldGeneratedObjectsOwnedByInstance(t *testing.T)
 	now := time.Date(2026, time.July, 12, 12, 0, 0, 0, time.UTC)
 	cfg := Config{
 		Endpoint: "", Bucket: "qa-backups", Region: "auto", Prefix: "operator/backups",
-		AccessKeyID: "test-access", SecretKey: "test-secret", RetentionDays: 7,
+		AccessKeyID: "test-access", SecretKey: "test-secret", IntervalHours: 24, RetentionHours: 168,
 	}
 	old := backupObjectKey(cfg, instanceID, now.Add(-9*24*time.Hour))
 	fresh := backupObjectKey(cfg, instanceID, now.Add(-time.Hour))

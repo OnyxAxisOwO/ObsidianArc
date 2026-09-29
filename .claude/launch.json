@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "obsidian-arc-fresh",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "OBSIDIAN_DATA_DIR=./data-demo exec ./bin/obsidian-arc"],
+      "port": 8080
+    },
+    {
       "name": "obsidian-arc",
       "runtimeExecutable": "go",
       "runtimeArgs": ["run", "-tags", "plugin_qqgroup plugin_riskcontrol plugin_cardgrant", "./cmd/server"],
