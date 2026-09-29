@@ -159,6 +159,12 @@ func (riskPlugin) Setup(h *plugin.Host) error {
 		}
 		return parsed.Scheme + "://" + parsed.Host
 	})
+	h.AllowOrigin(func() string {
+		if !inUse() {
+			return ""
+		}
+		return "blob:"
+	})
 
 	admin := newAdminHandlers(h)
 	admin.mount(h.Admin)
