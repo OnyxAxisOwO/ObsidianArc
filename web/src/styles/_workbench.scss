@@ -81,6 +81,10 @@
 .oa-resource-definition { margin: 0; display: grid; gap: 16px; }
 .oa-resource-definition > div { display: flex; gap: 12px; justify-content: space-between; align-items: baseline; padding-bottom: 14px; border-bottom: 1px solid var(--ai-border); }
 .oa-resource-definition > div:last-child { border: 0; padding-bottom: 0; }
+/* A plugin's manifest lists route patterns and migration names, which have no
+   spaces to wrap at; right-aligned like the other values, and broken anywhere
+   rather than pushing the panel wider than it was dragged to. */
+.oa-plugin-list { text-align: right; overflow-wrap: anywhere; font-size: 12px; }
 .oa-resource-definition dt { font-size: 12px; }
 .oa-resource-definition dt > small { display: block; margin-top: 6px; font-size: 10px; line-height: 1.7; color: var(--ai-text-secondary); }
 .oa-resource-definition dd { margin: 0; font-size: 18px; font-weight: 550; white-space: nowrap; font-variant-numeric: tabular-nums; }

@@ -5,7 +5,7 @@
 // out the address and site key only while one is — see plugin.go there — so
 // an instance that has not configured the service never fetches boot.js.
 
-import { IconKey } from '@/icons';
+import { IconKey, IconShield } from '@/icons';
 import { pluginStrings } from '../registry';
 import type { ArcPlugin, GuardAction, PluginConfig } from '../types';
 import { beginRiskControl, type RiskControlAPI } from './sdk';
@@ -70,6 +70,7 @@ function begin(config: PluginConfig): Promise<RiskControlAPI | null> {
 
 const plugin: ArcPlugin = {
   name: 'riskcontrol',
+  icon: IconShield,
   guards: [{
     name: 'riskcontrol',
     // Guarded, and handed what the SDK needs: the server withholds the

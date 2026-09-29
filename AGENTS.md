@@ -64,17 +64,35 @@ is the rule set.
   directories, `settings.Define`/`AddCaptchaMode`, `user.DefineField`,
   `auth.Service.AddGuard`/`SetFieldRule`, `auth.Handlers.Extend`,
   `oauth.Service.BindSubject`, `admin.Handlers.Mount`, `console.Register`,
-  `invite.Handlers.DecorateInvitees`, `plugin.Host.AllowOrigin`. A plugin
-  that needs a seam nobody offers adds it to the module — generically, named
-  for what it does rather than for the plugin — never a reach into internals.
+  `invite.Handlers.DecorateInvitees`, `plugin.Host.Handle`/`AllowOrigin`. A
+  plugin that needs a seam nobody offers adds it to the module — generically,
+  named for what it does rather than for the plugin — never a reach into
+  internals.
+- **Every seam is gated.** A compiled-in plugin is installed, switched and
+  removed at runtime (`plugin.Manager`, the `plugin_installs` table), and it
+  is set up at boot whatever its state — so everything it attaches is inert
+  until the gate says otherwise. Each registration carries its owner
+  (`Plugin: Name` on a `settings.Definition`, `user.Field`, `auth.Guard`,
+  `admin.Route`, `console.Command`; the name argument of `AddCaptchaMode`,
+  `Extend`, `DecorateInvitees`), and the module asks its `plugingate.Gate`
+  before running it. A registration that forgets its owner is core and
+  always on, which is the bug to look for. A new seam takes the owner and
+  asks the gate the same way; the gate is per server, never a package
+  global, because the tests build many servers in one process.
+- **A plugin with tables ships its undo.** `Purge()` returns the SQL an
+  uninstall-with-data runs (`plugins/qqgroup/purge` is the shape: indexes
+  before columns, because SQLite refuses to drop an indexed column), and the
+  manager forgets the migrations afterwards so a reinstall runs them again.
 - **Migrations keep their versions when they move.** A migration that leaves
   the core for a plugin keeps its file name, so a database that ran it as
   core does not run it twice; a plugin's new migrations are
   `<name>_NNNN_*.sql`. `migrations_test.go` in `plugins/qqgroup` is the shape.
 - **Settings keys, columns and tables keep their names** for the same reason.
 - **The browser half declares; the core draws.** `web/src/plugins/<name>/<name>.plugin.ts`
-  describes fields, guards, settings cards, lists and account actions (see
-  `plugins/types.ts`), and the core renders them with its own components. A
+  describes fields, guards, settings cards, lists, account actions and its
+  own backoffice pages (see `plugins/types.ts`; a card or list placed on
+  `plugin:<slug>` lands on that page, drawn by `PluginAdminPage.vue`), and
+  the core renders them with its own components. A
   plugin module imports only what the entry already has — `@/api/client`,
   `@/icons`, `@/lib/*`, and `pluginStrings` from `plugins/registry.ts` — never
   `views/admin/`, or the bundler splits a shared chunk out and the file count
@@ -82,8 +100,10 @@ is the rule set.
 - **A plugin's strings are its own**, in `pluginStrings(en, zh)`, typed the way
   `i18n.ts` is. They never go into the core dictionaries.
 - **Tests come with it**, in the plugin's own package: `servertest` builds a
-  whole server with the plugin compiled in, and `parity_test.go` holds the
-  browser half's setting keys to the ones the plugin defines.
+  whole server with the plugin compiled in — `New` with it installed and
+  enabled, `NewFresh` with nothing installed, `NewLegacy` as an upgrade from
+  before plugins could be switched — and `parity_test.go` holds the browser
+  half's setting keys to the ones the plugin defines.
 
 ## Before you say you are done
 
@@ -298,7 +318,7 @@ for a week. Do not write anything into the README that claims otherwise.
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 22.7 MB binary with the default plugins (22.6 MB core alone); 220.72
+Current: 22.9 MB binary with the default plugins (22.7 MB core alone); 221.71
 kB on the wire to open the chat, against a target of 135. The target used to be 80 and the figure used to be 59.5;
 adopting Vue moved both, and `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.

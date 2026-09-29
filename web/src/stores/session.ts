@@ -131,6 +131,15 @@ export async function startSession(): Promise<void> {
   }
 }
 
+// Reads /api/site again and loads the plugins it now names — after the
+// plugins screen switched one, so the backoffice that did it is the first to
+// draw the change.
+export async function refreshSite(): Promise<void> {
+  const info = await fetchSite();
+  site.value = info;
+  await loadPlugins(info.plugins);
+}
+
 // The account's stored theme and accent win over whatever this browser had,
 // so signing in on a new device brings the interface with it. Applied only
 // when the server actually has a value: a fresh account should not reset a

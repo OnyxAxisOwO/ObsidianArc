@@ -219,12 +219,25 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 22.66 MB with the default plugins, 22.55 MB core alone (18.95 / 18.84 MB `-tags nosqlite`, Linux amd64) |
-| Frontend, on the wire | < 135 kB | 220.72 kB to open the chat (182.76 JS + 37.96 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 22.86 MB with the default plugins, 22.75 MB core alone (19.16 / 19.04 MB `-tags nosqlite`, Linux amd64) |
+| Frontend, on the wire | < 135 kB | 221.71 kB to open the chat (183.74 JS + 37.97 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
-Remeasured on 2026-09-29 (UTC), after the QQ-group and risk-control features
+Remeasured on 2026-09-29 (UTC), after plugins became installable from the
+backoffice. The first paint is 221.71 kB (183.74 kB JS + 37.97 kB CSS), up
+0.99 kB: the plugins screen's English strings, which the core dictionary
+keeps in the entry like every other, the puzzle glyph, and the session's
+re-read of `/api/site` after a plugin changes state. The screen itself and
+the generic page a plugin's own sub-page is drawn with are in the backoffice
+chunk, now 102.96 kB; the Chinese dictionary is 44.06 kB, `qqgroup` 3.85 kB
+and `riskcontrol` 2.29 kB. The binary measures 22,864,135 bytes with both
+plugins and 22,749,447 with none (19,157,255 and 19,042,567 with
+`-tags nosqlite`; Go 1.27.0) — the plugin manager, its routes and its console
+commands are core, since a build without any plugin still has the screen
+that says so.
+
+Remeasured earlier on 2026-09-29 (UTC), after the QQ-group and risk-control features
 moved out of the core into plugins (`plugins/qqgroup`, `plugins/riskcontrol`;
 see `docs/architecture/plugins.md`). The first paint is 220.72 kB (182.76 kB JS
 + 37.96 kB CSS), down 0.58 kB from the tree before the move: the two features'

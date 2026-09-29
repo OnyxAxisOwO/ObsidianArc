@@ -19,6 +19,8 @@ const s = pluginStrings({
   pinned: 'An OpenID Connect connection cannot be removed — it is what proves this account\'s QQ number.',
   pinnedHint: 'Bound for the life of the account — it proves the QQ number.',
   settingsTitle: 'QQ group',
+  pageTitle: 'QQ group',
+  pageHint: 'The QQ number on accounts, the group bot, and every processed departure.',
   settingsHint: 'Members carry their QQ number, and a member leaving the group ends their account.',
   requirement: 'QQ number',
   requirementHint: 'Whether new accounts must provide a QQ number upon registration.',
@@ -72,6 +74,8 @@ const s = pluginStrings({
   pinned: 'OIDC 连接无法解绑——它就是这个账户 QQ 号的凭证。',
   pinnedHint: '账户存续期间保持绑定——它是 QQ 号的凭证。',
   settingsTitle: 'QQ 群',
+  pageTitle: 'QQ 群',
+  pageHint: '账户上的 QQ 号、群机器人，以及所有已处理的退群。',
   settingsHint: '成员账户带有 QQ 号；成员退群时结束其账户。',
   requirement: 'QQ 号',
   requirementHint: '新账户注册时是否必须填写 QQ 号。',
@@ -137,6 +141,20 @@ async function depart(userId: string, mode: 'disable' | 'delete'): Promise<strin
 
 const plugin: ArcPlugin = {
   name: 'qqgroup',
+  icon: IconUsers,
+  // Its own page rather than a card on the security page and a list on the
+  // invites one: everything this plugin does is one operator's concern, and
+  // it now reads as one place — which leaves when the plugin is switched off.
+  // Either grant opens it; the server still gives each only its own keys and
+  // its own list, as it did when the two lived apart.
+  adminPages: [{
+    slug: 'qqgroup',
+    title: () => s('pageTitle'),
+    hint: () => s('pageHint'),
+    icon: IconUsers,
+    permission: 'security,invites',
+    keywords: ['QQ', 'QQ群', '退群', 'group departure'],
+  }],
   fields: {
     qq: {
       label: () => s('qq'),
@@ -183,9 +201,9 @@ const plugin: ArcPlugin = {
   },
   settings: [{
     id: 'secQQGroup',
-    page: 'security',
+    page: 'plugin:qqgroup',
     category: 'accounts',
-    column: 1,
+    column: 0,
     title: () => s('settingsTitle'),
     hint: () => s('settingsHint'),
     icon: IconUsers,
@@ -212,7 +230,7 @@ const plugin: ArcPlugin = {
   }],
   lists: [{
     id: 'secDepartures',
-    page: 'invites',
+    page: 'plugin:qqgroup',
     title: () => s('listTitle'),
     hint: () => s('listHint'),
     empty: () => s('listEmpty'),

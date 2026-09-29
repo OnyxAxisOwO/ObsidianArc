@@ -12,8 +12,17 @@ export interface AdminPageSpec {
   /** The path segment after /admin, empty for the dashboard. */
   slug: string;
   label: StringKey;
+  /**
+   * The label, for a page whose words are not the core's: a plugin's page
+   * brings its own, resolved at render like everything else it says.
+   */
+  title?: () => string;
   icon: OaIcon;
   component: Component;
+  /** Handed to the component, for one component that draws several pages. */
+  props?: Record<string, unknown>;
+  /** Extra words the search should find the page itself by. */
+  keywords?: string[];
   /**
    * The grant this section needs, when it is not simply the slug.
    *
@@ -40,6 +49,11 @@ export interface SearchGroup {
   page: AdminPageSpec;
   matchedSelf: boolean;
   items: AdminFeatureItem[];
+}
+
+/** What the rail and the heading call a page. */
+export function pageLabel(page: AdminPageSpec): string {
+  return page.title ? page.title() : t(page.label);
 }
 
 /** Pages marked `'*'` expose instance-wide data and are visible only to the
@@ -721,8 +735,8 @@ export function searchAdminFeatures(
   const results: SearchGroup[] = [];
 
   for (const page of pages) {
-    const pageTitle = t(page.label);
-    const pageMatched = matchesSearch(q, pageTitle);
+    const pageTitle = pageLabel(page);
+    const pageMatched = matchesSearch(q, pageTitle, ...(page.keywords ?? []));
     const pageFeatures = ADMIN_FEATURES.filter((item) => item.pageSlug === page.slug);
     const matchedFeatures = pageFeatures.filter((item) => {
       const texts: string[] = [

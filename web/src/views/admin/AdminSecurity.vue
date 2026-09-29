@@ -628,6 +628,7 @@ function eventLabel(event: string): string {
   if (event === 'two_factor') return t('securityEventTwoFactor');
   if (event === 'new_device') return t('securityEventNewDevice');
   if (event === 'console_command') return t('securityEventConsoleCommand');
+  if (event === 'plugin') return t('securityEventPlugin');
   if (event === 'pow_challenge') return t('securityEventPoWChallenge');
   if (event === 'turnstile_challenge') return t('securityEventTurnstileChallenge');
   return pluginSecurityEvent(event) ?? event;

@@ -1,12 +1,14 @@
 // Which plugins this instance runs, and what they said.
 //
-// The server names its compiled-in plugins in /api/site ("plugins"), and only
+// The server names its enabled plugins in /api/site ("plugins"), and only
 // those are fetched: every plugin's browser half is built into the bundle,
-// each as a chunk of its own, and an
-// instance whose binary has none of them never downloads a byte of any.
+// each as a chunk of its own, and an instance that runs none of them never
+// downloads a byte of any.
 //
-// The list is fixed once the session starts, because the server's is fixed
-// once the process does.
+// The list changes when an administrator switches a plugin on or off; the
+// plugins screen asks the session to read /api/site again, and this module
+// loads whatever it now names. Everybody else meets the change on their next
+// page load, which is when the server's own answer changed for them too.
 
 import { shallowRef } from 'vue';
 import { currentLanguage } from '@/composables/useI18n';
@@ -30,17 +32,25 @@ let configs: Record<string, PluginConfig> = {};
 export async function loadPlugins(blocks: Record<string, PluginConfig> | undefined): Promise<void> {
   configs = blocks ?? {};
   const names = Object.keys(configs).sort();
-  const found = await Promise.all(names.map(async (name) => {
-    const load = modules[`./${name}/${name}.plugin.ts`];
-    if (!load) return null;
-    try {
-      return (await load()).default;
-    } catch (failure) {
-      console.warn(`plugin ${name} could not be loaded`, failure);
-      return null;
-    }
-  }));
+  const found = await Promise.all(names.map(loadPluginModule));
   loaded.value = found.filter((plugin): plugin is ArcPlugin => plugin !== null);
+}
+
+/**
+ * One plugin's browser half whether or not the server runs it, for the
+ * plugins screen: its install dialog draws the settings the plugin declares
+ * before there is anything running to declare them. Null when this build has
+ * no browser half for it.
+ */
+export async function loadPluginModule(name: string): Promise<ArcPlugin | null> {
+  const load = modules[`./${name}/${name}.plugin.ts`];
+  if (!load) return null;
+  try {
+    return (await load()).default;
+  } catch (failure) {
+    console.warn(`plugin ${name} could not be loaded`, failure);
+    return null;
+  }
 }
 
 /** Every loaded plugin, in name order. Reactive: reading it subscribes. */

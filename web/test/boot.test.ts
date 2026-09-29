@@ -714,8 +714,9 @@ describe('what moves, and what does not', () => {
     await nextTick();
     expect(searchBox.classList.contains('expanded')).toBe(false);
     // Backup joins terminal, invites and leaderboard on the rail, and is
-    // super-admin-only because it contains the whole instance.
-    expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(17);
+    // super-admin-only because it contains the whole instance; the plugins
+    // screen is the last of the core's pages.
+    expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(18);
     expect(host.querySelector('a[href="/admin/administrators"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });

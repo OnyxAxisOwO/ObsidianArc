@@ -18,4 +18,7 @@ export const ADMIN_PERMISSIONS: Array<{ value: string; label: StringKey }> = [
   { value: 'announcements', label: 'announcements' },
   { value: 'feedback', label: 'navFeedback' },
   { value: 'administrators', label: 'manageAdministrators' },
+  { value: 'plugins', label: 'permPlugins' },
+  { value: 'plugins_manage', label: 'permPluginsManage' },
+  { value: 'plugins_remove', label: 'permPluginsRemove' },
 ];

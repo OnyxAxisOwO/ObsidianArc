@@ -77,13 +77,19 @@ export type SettingControl =
   | { kind: 'select'; key: string; label: Text; hint?: Text; options: Array<{ value: string; label: Text }> };
 
 /**
+ * Where a card or a list goes: one of the core pages that has room for them,
+ * or the slug of one of the plugin's own pages (see AdminPluginPage).
+ */
+export type PluginPlacement = 'security' | 'invites' | `plugin:${string}`;
+
+/**
  * A card of settings on one of the backoffice's workbench pages. The page
  * loads and saves these keys with its own; the section is only a layout.
  */
 export interface SettingsSection {
   /** The card's anchor, unique across the page. */
   id: string;
-  page: 'security' | 'invites';
+  page: PluginPlacement;
   /** The workbench category it is listed under (a group id on that page). */
   category: string;
   /** Which of the page's two columns, where it has two. */
@@ -110,7 +116,7 @@ export interface ListCell {
 /** A read-only, paged table on a backoffice page. */
 export interface AdminListSpec {
   id: string;
-  page: 'invites';
+  page: PluginPlacement;
   title: Text;
   hint?: Text;
   icon?: OaIcon;
@@ -138,6 +144,24 @@ export interface UserActionSpec {
   }>;
 }
 
+/**
+ * A page of the plugin's own in the backoffice's rail, at /admin/<slug>.
+ * The core draws it: the settings sections and lists placed on
+ * `plugin:<slug>`, loaded and saved the way a core page's are. A plugin that
+ * only lends a card to an existing page needs none.
+ */
+export interface AdminPluginPage {
+  /** The path segment; conventionally the plugin's name. */
+  slug: string;
+  title: Text;
+  hint?: Text;
+  icon?: OaIcon;
+  /** The grant, or comma-separated grants any one of which opens it. */
+  permission: string;
+  /** Extra words the backoffice's search should find the page by. */
+  keywords?: string[];
+}
+
 /** A bell notification, worded from its kind and params. */
 export interface NotificationText {
   title: string;
@@ -146,6 +170,8 @@ export interface NotificationText {
 
 export interface ArcPlugin {
   name: string;
+  /** Drawn on its card on the plugins screen. */
+  icon?: OaIcon;
   fields?: Record<string, AccountFieldSpec>;
   guards?: GuardSpec[];
   /** Extra values for registration.captcha_mode (settings.AddCaptchaMode). */
@@ -169,4 +195,5 @@ export interface ArcPlugin {
   settings?: SettingsSection[];
   lists?: AdminListSpec[];
   userActions?: UserActionSpec[];
+  adminPages?: AdminPluginPage[];
 }
