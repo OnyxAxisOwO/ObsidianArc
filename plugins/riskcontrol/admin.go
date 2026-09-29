@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -72,17 +73,18 @@ func (h *adminHandlers) mount(backoffice *admin.Handlers) {
 	})
 }
 
-func (h *adminHandlers) targetURL(path string) string {
+func (h *adminHandlers) candidateURLs(path string) []string {
 	set := h.host.Settings
 	base := strings.TrimRight(strings.TrimSpace(set.Get(BaseURL)), "/")
 	if base == "" || strings.HasPrefix(base, "/") || strings.Contains(base, "ai.onyxaxis.org") || strings.Contains(base, "127.0.0.1") || strings.Contains(base, "localhost") {
-		return "http://127.0.0.1:23471" + path
+		return []string{
+			"http://browser-risk-control:23471" + path,
+			"http://172.18.0.1:23471" + path,
+			"http://127.0.0.1:23471" + path,
+		}
 	}
 	base = strings.TrimSuffix(base, "/rc")
-	if strings.HasPrefix(base, "http://") || strings.HasPrefix(base, "https://") {
-		return base + path
-	}
-	return "http://127.0.0.1:23471" + path
+	return []string{base + path}
 }
 
 func (h *adminHandlers) token() string {
@@ -95,20 +97,34 @@ func (h *adminHandlers) token() string {
 }
 
 func (h *adminHandlers) doRequest(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
-	u := h.targetURL(path)
-	var reader io.Reader
-	if len(body) > 0 {
-		reader = bytes.NewReader(body)
+	urls := h.candidateURLs(path)
+	var lastErr error
+	for _, u := range urls {
+		var reader io.Reader
+		if len(body) > 0 {
+			reader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, u, reader)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Authorization", "Bearer "+h.token())
+		if len(body) > 0 {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := h.client.Do(req)
+		if err == nil && resp.StatusCode < 500 {
+			return resp, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
+		}
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, reader)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+h.token())
-	if len(body) > 0 {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	return h.client.Do(req)
+	return nil, lastErr
 }
 
 func (h *adminHandlers) proxyStatus(w http.ResponseWriter, r *http.Request) error {
