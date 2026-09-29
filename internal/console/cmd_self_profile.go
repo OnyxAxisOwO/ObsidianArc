@@ -41,20 +41,19 @@ func init() {
 				group = "-"
 			}
 
-			return rt.Fields([][2]string{
+			return rt.Fields(append([][2]string{
 				{"id", asStr(u["id"])},
 				{"username", asStr(u["username"])},
 				{"nickname", asStr(u["nickname"])},
 				{"email", asStr(u["email"])},
 				{"email_verified", yesNo(asBoolVal(u["email_verified"]))},
-				{"qq", asStr(u["qq"])},
 				{"role", asStr(u["role"])},
 				{"group", group},
 				{"group_expires_at", formatMS(u["group_expires_at"])},
 				{"status", asStr(u["status"])},
 				{"created_at", formatMS(u["created_at"])},
 				{"last_login_at", formatMS(u["last_login_at"])},
-			})
+			}, fieldRows(u)...))
 		},
 	})
 

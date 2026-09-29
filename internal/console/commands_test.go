@@ -109,7 +109,6 @@ var consoleExempt = map[string]string{
 	"GET /api/notifications":                        "the browser's notification feed",
 	"GET /api/notifications/poll":                   "the browser's notification feed",
 	"POST /api/notifications/read":                  "the browser's notification feed",
-	"POST /api/bot/departure":                       "the QQ bot's bearer-token webhook — it authenticates by token, not by any session the terminal could hold",
 }
 
 // TestEveryAccountRouteIsClaimedOrExempt is the account-side twin of the

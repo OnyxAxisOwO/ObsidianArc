@@ -45,7 +45,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	if _, err := db.Migrate(ctx); err != nil {
+	if _, err := db.Migrate(ctx, badgeMigration); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -70,12 +70,21 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	users := user.NewStore(db)
+	service := NewService(db, users, groups, set, mail.New(mail.Config{}), cfg)
+	// Off unless a test sets the rule, which is how a plugin's own setting
+	// would start out.
+	service.SetFieldRule(badge, func() string {
+		if rule := set.Get(badgeRule); rule != "" {
+			return rule
+		}
+		return FieldOff
+	})
 	return &fixture{
 		db:       db,
 		users:    users,
 		groups:   groups,
 		settings: set,
-		auth:     NewService(db, users, groups, set, mail.New(mail.Config{}), cfg),
+		auth:     service,
 	}
 }
 
@@ -345,7 +354,7 @@ func TestSignupReviewCanRefuseWithoutCreatingAnAccount(t *testing.T) {
 	if !called {
 		t.Error("refused review was not reported")
 	}
-	found, _, _, lookupErr := f.users.Exists(ctx, nil, "definitely-a-bot", "", "")
+	found, _, _, lookupErr := f.users.Exists(ctx, nil, "definitely-a-bot", "", nil)
 	if lookupErr != nil || found {
 		t.Fatalf("refused account exists = %v, lookup error = %v", found, lookupErr)
 	}
@@ -711,7 +720,7 @@ func TestExpiredSessionsArePruned(t *testing.T) {
 	}
 }
 
-func TestRegisterQQRequirement(t *testing.T) {
+func TestRegisterFieldRequirement(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
@@ -724,71 +733,71 @@ func TestRegisterQQRequirement(t *testing.T) {
 		t.Fatalf("first account role = %q, want admin", admin.Role)
 	}
 
-	// 1. By default QQ is disabled (off)
-	// Empty QQ succeeds
+	// 1. By default badge is disabled (off)
+	// Empty badge succeeds
 	user1, _, err := f.auth.Register(ctx, RegisterInput{Username: "user1", Password: "a-good-password"})
 	if err != nil {
-		t.Fatalf("register with empty QQ when off: %v", err)
+		t.Fatalf("register with empty badge when off: %v", err)
 	}
-	if user1.QQ != "" {
-		t.Errorf("user1 QQ = %q, want empty", user1.QQ)
-	}
-
-	// Invalid QQ format is rejected
-	_, _, err = f.auth.Register(ctx, RegisterInput{Username: "user-invalid-qq", Password: "a-good-password", QQ: "123"})
-	if !errors.Is(err, user.ErrInvalidQQ) {
-		t.Fatalf("expected ErrInvalidQQ, got %v", err)
+	if user1.Fields[badge] != "" {
+		t.Errorf("user1 badge = %q, want empty", user1.Fields[badge])
 	}
 
-	// Valid QQ succeeds
-	user2, _, err := f.auth.Register(ctx, RegisterInput{Username: "user2", Password: "a-good-password", QQ: "10001"})
+	// Invalid badge format is rejected
+	_, _, err = f.auth.Register(ctx, RegisterInput{Username: "user-invalid-badge", Password: "a-good-password", Fields: badgeOf("123")})
+	if !errors.Is(err, user.ErrFieldInvalid) {
+		t.Fatalf("expected ErrFieldInvalid, got %v", err)
+	}
+
+	// Valid badge succeeds
+	user2, _, err := f.auth.Register(ctx, RegisterInput{Username: "user2", Password: "a-good-password", Fields: badgeOf("10001")})
 	if err != nil {
-		t.Fatalf("register with valid QQ when off: %v", err)
+		t.Fatalf("register with valid badge when off: %v", err)
 	}
-	if user2.QQ != "10001" {
-		t.Errorf("user2 QQ = %q, want 10001", user2.QQ)
-	}
-
-	// Duplicate QQ is rejected
-	_, _, err = f.auth.Register(ctx, RegisterInput{Username: "user-dup-qq", Password: "a-good-password", QQ: "10001"})
-	if !errors.Is(err, user.ErrQQTaken) {
-		t.Fatalf("expected ErrQQTaken, got %v", err)
+	if user2.Fields[badge] != "10001" {
+		t.Errorf("user2 badge = %q, want 10001", user2.Fields[badge])
 	}
 
-	// 2. Set QQRequirement to optional
-	if err := f.settings.Set(ctx, settings.QQRequirement, settings.QQOptional); err != nil {
+	// Duplicate badge is rejected
+	_, _, err = f.auth.Register(ctx, RegisterInput{Username: "user-dup-badge", Password: "a-good-password", Fields: badgeOf("10001")})
+	if !errors.Is(err, user.ErrFieldTaken) {
+		t.Fatalf("expected ErrFieldTaken, got %v", err)
+	}
+
+	// 2. Set the badge rule to optional
+	if err := f.settings.Set(ctx, badgeRule, FieldOptional); err != nil {
 		t.Fatal(err)
 	}
 	user3, _, err := f.auth.Register(ctx, RegisterInput{Username: "user3", Password: "a-good-password"})
 	if err != nil {
-		t.Fatalf("register with empty QQ when optional: %v", err)
+		t.Fatalf("register with empty badge when optional: %v", err)
 	}
-	if user3.QQ != "" {
-		t.Errorf("user3 QQ = %q, want empty", user3.QQ)
+	if user3.Fields[badge] != "" {
+		t.Errorf("user3 badge = %q, want empty", user3.Fields[badge])
 	}
-	user4, _, err := f.auth.Register(ctx, RegisterInput{Username: "user4", Password: "a-good-password", QQ: "123456789"})
+	user4, _, err := f.auth.Register(ctx, RegisterInput{Username: "user4", Password: "a-good-password", Fields: badgeOf("123456789")})
 	if err != nil {
-		t.Fatalf("register with valid QQ when optional: %v", err)
+		t.Fatalf("register with valid badge when optional: %v", err)
 	}
-	if user4.QQ != "123456789" {
-		t.Errorf("user4 QQ = %q, want 123456789", user4.QQ)
+	if user4.Fields[badge] != "123456789" {
+		t.Errorf("user4 badge = %q, want 123456789", user4.Fields[badge])
 	}
 
-	// 3. Set QQRequirement to required
-	if err := f.settings.Set(ctx, settings.QQRequirement, settings.QQRequired); err != nil {
+	// 3. Set the badge rule to required
+	if err := f.settings.Set(ctx, badgeRule, FieldRequired); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = f.auth.Register(ctx, RegisterInput{Username: "user-no-qq", Password: "a-good-password"})
-	if !errors.Is(err, user.ErrQQRequired) {
-		t.Fatalf("expected ErrQQRequired, got %v", err)
+	_, _, err = f.auth.Register(ctx, RegisterInput{Username: "user-no-badge", Password: "a-good-password"})
+	if !errors.Is(err, user.ErrFieldRequired) {
+		t.Fatalf("expected ErrFieldRequired, got %v", err)
 	}
 
-	user5, _, err := f.auth.Register(ctx, RegisterInput{Username: "user5", Password: "a-good-password", QQ: "987654321"})
+	user5, _, err := f.auth.Register(ctx, RegisterInput{Username: "user5", Password: "a-good-password", Fields: badgeOf("987654321")})
 	if err != nil {
-		t.Fatalf("register with valid QQ when required: %v", err)
+		t.Fatalf("register with valid badge when required: %v", err)
 	}
-	if user5.QQ != "987654321" {
-		t.Errorf("user5 QQ = %q, want 987654321", user5.QQ)
+	if user5.Fields[badge] != "987654321" {
+		t.Errorf("user5 badge = %q, want 987654321", user5.Fields[badge])
 	}
 }
 

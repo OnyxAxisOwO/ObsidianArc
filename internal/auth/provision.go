@@ -54,9 +54,10 @@ type ProvisionInput struct {
 	// the completion form is exactly as unproven as one typed into the
 	// sign-up form, and is held back the same way.
 	EmailVerified bool
-	// Likewise: a provider has no QQ number to offer, so this is empty unless
-	// the person was asked for one.
-	QQ       string
+	// Plugin account fields. A provider has none of these to offer, so they
+	// are empty unless the person was asked — or a plugin knows how to read
+	// one off the identity (see oauth.Service.BindSubject).
+	Fields   map[string]string
 	Nickname string
 	IP       string
 	UA       string
@@ -67,15 +68,16 @@ type ProvisionInput struct {
 // Missing is what an instance requires that a provider cannot answer.
 //
 // It exists so the caller can ask before it starts rather than discover it by
-// being refused: a sign-in that needs a QQ number should end at a form asking
-// for one, not at an apology.
+// being refused: a sign-in that needs a field a plugin added should end at a
+// form asking for it, not at an apology.
 type Missing struct {
-	QQ     bool
+	// The keys of required plugin fields.
+	Fields []string
 	Email  bool
 	Invite bool
 }
 
-func (m Missing) Any() bool { return m.QQ || m.Email || m.Invite }
+func (m Missing) Any() bool { return len(m.Fields) > 0 || m.Email || m.Invite }
 
 // MissingFor reports what has to be asked of somebody arriving with this
 // identity before an account can be opened for them.
@@ -92,7 +94,7 @@ func (s *Service) MissingFor(ctx context.Context, q database.Queryer, email stri
 		return Missing{}, nil
 	}
 	return Missing{
-		QQ:     s.settings.Get(settings.QQRequirement) == settings.QQRequired,
+		Fields: s.requiredFields(),
 		Email:  strings.TrimSpace(email) == "" && (s.settings.Bool(settings.RequireEmail) || s.VerificationRequired()),
 		Invite: s.settings.Bool(settings.InvitesRequired),
 	}, nil
@@ -138,7 +140,7 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		// to offer, so by the time a caller reaches here it has either asked
 		// the person or it is about to be refused — and being refused is the
 		// right answer for a caller that did not ask.
-		if err := checkQQ(s.settings, in.QQ); err != nil {
+		if err := s.checkFields(in.Fields); err != nil {
 			return user.User{}, err
 		}
 		if allowed, retryAfter := s.signups.allow(
@@ -168,7 +170,7 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		if err := user.ValidateUsername(in.Username); err != nil {
 			return user.User{}, err
 		}
-		usernameTaken, emailTaken, qqTaken, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.QQ)
+		usernameTaken, emailTaken, heldField, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.Fields)
 		if err != nil {
 			return user.User{}, err
 		}
@@ -178,8 +180,8 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		if emailTaken {
 			return user.User{}, user.ErrEmailTaken
 		}
-		if qqTaken {
-			return user.User{}, user.ErrQQTaken
+		if heldField != "" {
+			return user.User{}, takenError(heldField)
 		}
 		username = in.Username
 	} else {
@@ -188,20 +190,20 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		if err != nil {
 			return user.User{}, err
 		}
-		// The address and the number are the two things here somebody else may
-		// already hold. For an address the caller looks first and links instead
-		// where it does, so reaching this with a taken one means the two accounts
-		// are not the same person; a number is simply taken.
-		if strings.TrimSpace(in.Email) != "" || strings.TrimSpace(in.QQ) != "" {
-			_, emailTaken, qqTaken, err := s.users.Exists(ctx, tx, username, in.Email, in.QQ)
+		// The address and the unique fields are the things here somebody else
+		// may already hold. For an address the caller looks first and links
+		// instead where it does, so reaching this with a taken one means the
+		// two accounts are not the same person; a field value is simply taken.
+		if strings.TrimSpace(in.Email) != "" || len(in.Fields) > 0 {
+			_, emailTaken, heldField, err := s.users.Exists(ctx, tx, username, in.Email, in.Fields)
 			if err != nil {
 				return user.User{}, err
 			}
 			if emailTaken {
 				return user.User{}, user.ErrEmailTaken
 			}
-			if qqTaken {
-				return user.User{}, user.ErrQQTaken
+			if heldField != "" {
+				return user.User{}, takenError(heldField)
 			}
 		}
 	}
@@ -233,7 +235,7 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 	created, err := s.users.Create(ctx, tx, user.CreateInput{
 		Username: username,
 		Email:    in.Email,
-		QQ:       in.QQ,
+		Fields:   in.Fields,
 		Nickname: in.Nickname,
 		// No password unless chosen. A third-party account can either set one
 		// during completion or leave it blank to remain OAuth-only.
@@ -305,7 +307,7 @@ func (s *Service) availableUsername(ctx context.Context, q database.Queryer, sug
 		if err := user.ValidateUsername(candidate); err != nil {
 			continue
 		}
-		taken, _, _, err := s.users.Exists(ctx, q, candidate, "", "")
+		taken, _, _, err := s.users.Exists(ctx, q, candidate, "", nil)
 		if err != nil {
 			return "", err
 		}

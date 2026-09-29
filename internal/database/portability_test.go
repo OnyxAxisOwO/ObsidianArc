@@ -3,43 +3,17 @@ package database
 import (
 	"context"
 	"io/fs"
-	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 )
 
-// The migrations run on two engines from one set of files. Nothing checks
-// that at compile time, and the failure mode is a deployment that will not
-// start — so the syntax that only works on one of them is checked here.
+// The lint itself is PortabilityProblems, in portable.go, so a plugin's
+// tests can hold its migrations to the same list.
 //
 // This is a lint, not a substitute for running against Postgres. That is what
 // TestPostgresMigrations below does, when a database is available.
 func TestMigrationsAvoidEngineSpecificSyntax(t *testing.T) {
-	banned := []struct {
-		pattern *regexp.Regexp
-		why     string
-	}{
-		{regexp.MustCompile(`(?i)\bAUTOINCREMENT\b`), "SQLite only; identifiers here are ULIDs"},
-		{regexp.MustCompile(`(?i)\b(BIG)?SERIAL\b`), "Postgres only; identifiers here are ULIDs"},
-		{regexp.MustCompile(`(?i)\bCURRENT_TIMESTAMP\b`), "spelled differently per engine; timestamps here are epoch milliseconds from Go"},
-		{regexp.MustCompile(`(?i)\bNOW\(\)`), "Postgres only"},
-		{regexp.MustCompile(`(?i)\bILIKE\b`), "Postgres only; use LOWER(...) LIKE"},
-		{regexp.MustCompile(`(?i)\bJSONB\b`), "Postgres only; JSON is stored as TEXT"},
-		{regexp.MustCompile(`(?i)\bTIMESTAMPTZ\b`), "Postgres only"},
-		{regexp.MustCompile(`(?i)\bDATETIME\b`), "SQLite only"},
-		{regexp.MustCompile(`(?i)\bAUTO_INCREMENT\b`), "MySQL only"},
-		{regexp.MustCompile(`(?i)\bNULLS\s+(FIRST|LAST)\b`), "Postgres only"},
-		{regexp.MustCompile(`(?i)\bWITHOUT\s+ROWID\b`), "SQLite only"},
-		// BLOB and BYTEA are the one real difference, and the migration
-		// runner substitutes %BLOB% for whichever the engine wants. The token
-		// itself is stripped before these run, so only a literal spelling
-		// trips them.
-		{regexp.MustCompile(`(?i)\bBYTEA\b`), "use the %BLOB% token"},
-		{regexp.MustCompile(`(?i)\bBLOB\b`), "use the %BLOB% token"},
-	}
-
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
 		t.Fatalf("read migrations: %v", err)
@@ -53,29 +27,19 @@ func TestMigrationsAvoidEngineSpecificSyntax(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", entry.Name(), err)
 		}
-
-		// Comments explain the rules, so they are allowed to name them; the
-		// dialect token is a substitution rather than a spelling.
-		body := strings.ReplaceAll(stripComments(string(raw)), "%BLOB%", "")
-
-		for _, rule := range banned {
-			if match := rule.pattern.FindString(body); match != "" {
-				t.Errorf("%s: %q is not portable — %s", entry.Name(), match, rule.why)
-			}
+		for _, problem := range PortabilityProblems(string(raw)) {
+			t.Errorf("%s: %s", entry.Name(), problem)
 		}
 	}
 }
 
-func stripComments(sql string) string {
-	var out strings.Builder
-	for _, line := range strings.Split(sql, "\n") {
-		if index := strings.Index(line, "--"); index >= 0 {
-			line = line[:index]
-		}
-		out.WriteString(line)
-		out.WriteByte('\n')
+func TestPortabilityLintCatchesEngineSpecificSQL(t *testing.T) {
+	if got := PortabilityProblems("CREATE TABLE t (id BIGSERIAL PRIMARY KEY)"); len(got) == 0 {
+		t.Error("BIGSERIAL passed the lint")
 	}
-	return out.String()
+	if got := PortabilityProblems("-- no AUTOINCREMENT here\nCREATE TABLE t (data %BLOB%)"); len(got) != 0 {
+		t.Errorf("a comment and the dialect token were flagged: %v", got)
+	}
 }
 
 // Every migration has to apply cleanly to a fresh database and be a no-op on

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,12 +42,12 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/oauth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/project"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/riskcontrol"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/screening"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
@@ -157,11 +156,6 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	cards := card.NewStore(db)
 	invites := invite.NewStore(db, users, cards, groups, settingsService)
 	invites.Notify = notifyStore
-	// Departures end accounts and must leave a trace: the sessions are
-	// cleared inside the departure transaction, and the decision lands in
-	// the security log beside every other account-ending action.
-	invites.Sessions = authService.Sessions()
-	invites.Security = securityLog
 	quotaService := quota.NewService(db, quota.NewStore(db), settingsService)
 	projects := project.NewStore(db)
 
@@ -626,16 +620,6 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	inviteHandlers := invite.NewHandlers(invites)
 	inviteHandlers.Routes(mux)
 
-	// The QQ bot's view of the same closure: one externally reachable route
-	// that processes a group departure. Bearer-token gated and inert until
-	// an operator sets a token; see internal/invite/bot.go. The burst
-	// absorbs a bot catching up on a backlog of events; the sustained rate
-	// is one departure every few seconds, far above any real group's pace.
-	botHandlers := invite.NewBotHandlers(invites)
-	botHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
-	botHandlers.Limiter = httpx.NewTokenBucketLimiter(0.2, 10)
-	botHandlers.Routes(mux)
-
 	// Programmatic access. The key store is what an account manages from the
 	// interface; the compatibility surface is what the key is then presented
 	// to, and the two are separate because one is a browser screen and the
@@ -650,43 +634,6 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnLogin) },
 		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
 	}
-	// The self-hosted risk control service, on its own client: a pool per
-	// destination is what keeps a slow service here from sitting in front
-	// of a Turnstile check the way it does for the provider calls above.
-	riskClient := &http.Client{}
-	// Where the token check happens. A path-only base means the service is
-	// reverse-proxied under this instance's own domain, and the absolute
-	// form is built from the configured public URL — the same origin the
-	// OAuth callbacks resolve against, and the one the visitor's browser
-	// loaded the service's SDK from.
-	riskEndpoint := func() string {
-		return riskcontrol.Endpoint(settingsService.Get(settings.RiskBaseURL), mailer.PublicURL())
-	}
-	// All three credentials at once. A gate that only half of them can
-	// serve would challenge a browser and then fail every token it
-	// collected, so half a configuration reads as off.
-	riskReady := func() bool {
-		return settingsService.Get(settings.RiskBaseURL) != "" &&
-			settingsService.Get(settings.RiskSite) != "" &&
-			settingsService.Get(settings.RiskSecretKey) != ""
-	}
-	authService.RiskChallenge = riskcontrol.Gate{
-		Client: riskClient,
-		Enabled: func() bool {
-			return riskReady() && settingsService.RegistrationCaptchaMode() == settings.CaptchaModeRisk
-		},
-		Endpoint: riskEndpoint,
-		Site:     func() string { return settingsService.Get(settings.RiskSite) },
-		Secret:   func() string { return settingsService.Get(settings.RiskSecretKey) },
-	}
-	authService.RiskLogin = riskcontrol.Gate{
-		Client:   riskClient,
-		Enabled:  func() bool { return riskReady() && settingsService.Bool(settings.RiskOnLogin) },
-		Endpoint: riskEndpoint,
-		Site:     func() string { return settingsService.Get(settings.RiskSite) },
-		Secret:   func() string { return settingsService.Get(settings.RiskSecretKey) },
-	}
-
 	powKey, err := secret.DeriveKey(cfg.SecretKey, "obsidian-arc/pow-challenge")
 	if err != nil {
 		powKey = cfg.SecretKey
@@ -760,7 +707,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 		mode := screening.ParseMode(settingsService.Get(settings.SignupReviewMode))
 		verdict, err := reviewer.Review(ctx, mode, screening.Facts{
-			Username: in.Username, Email: in.Email, QQ: in.QQ, Nickname: in.Nickname,
+			Username: in.Username, Email: in.Email, Fields: in.Fields, Nickname: in.Nickname,
 			IP: in.IP, UserAgent: in.UA, FromThisAddress: fromAddress, Recent: recent,
 		})
 		if err != nil {
@@ -887,7 +834,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		verdict, err := reviewer.Review(ctx,
 			screening.ParseMode(settingsService.Get(settings.SignupReviewMode)),
 			screening.Facts{
-				Username: in.Username, Email: in.Email, QQ: in.QQ, Nickname: in.Nickname,
+				Username: in.Username, Email: in.Email, Fields: in.Fields, Nickname: in.Nickname,
 				UserAgent: in.UserAgent, FromThisAddress: in.FromThisAddress, Recent: recent,
 			})
 		return string(verdict.Decision), verdict.Reason, err
@@ -1031,6 +978,28 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	adminHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	adminHandlers.Notify = notifyStore
 	adminHandlers.SystemBackup = instanceBackup
+
+	// The compiled-in plugins, attached now: every module they reach is
+	// built, and nothing has mounted the backoffice's table yet, so a route
+	// a plugin adds there is mounted with the rest of it.
+	host := &plugin.Host{
+		DB: db, Settings: settingsService, Users: users, Security: securityLog,
+		Notify: notifyStore, Cards: cards,
+		Auth: authService, AuthHandlers: authHandlers,
+		OAuth: oauthService, OAuthHandlers: oauthHandlers,
+		Invites: invites, InviteHandlers: inviteHandlers,
+		Admin:     adminHandlers,
+		Mux:       mux,
+		ClientIP:  func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
+		PublicURL: mailer.PublicURL,
+	}
+	if err := plugin.SetupAll(host); err != nil {
+		return nil, err
+	}
+	for _, name := range plugin.Names() {
+		authHandlers.Advertise(name)
+	}
+
 	adminHandlers.Routes(mux)
 
 	// The browser's own inbox. Behind auth.RequireUser alone — never the
@@ -1251,24 +1220,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 					settingsService.Bool(settings.TurnstileOnRedeem) ||
 					settingsService.Bool(settings.TurnstileOnFeedback) ||
 					settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
-		}, func() string {
-			// The risk service's origin, and only while a browser would
-			// actually be sent there — the same rule the Turnstile
-			// exception above keeps. The site endpoint hands out the base
-			// and site key on the same terms, so the CSP and the page can
-			// never disagree about what is being loaded.
-			mode := settingsService.RegistrationCaptchaMode()
-			if !riskReady() ||
-				(mode != settings.CaptchaModeRisk && !settingsService.Bool(settings.RiskOnLogin)) {
-				return ""
-			}
-			endpoint := riskEndpoint()
-			parsed, err := url.Parse(endpoint)
-			if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-				return ""
-			}
-			return parsed.Scheme + "://" + parsed.Host
-		}),
+		}, host.Origins),
 		httpx.SameOrigin(cfg.AllowedOrigins),
 		// Last, so the session lookup only happens for requests that survived
 		// the origin check.

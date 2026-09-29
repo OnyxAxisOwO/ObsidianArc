@@ -429,7 +429,7 @@ func init() {
 		Name:    "security review",
 		Group:   "instance",
 		Summary: Text{EN: "Trial-run the sign-up reviewer against a hypothetical account", ZH: "对一个假设账户试运行注册审核"},
-		Usage:   "security review --username TEXT [--email TEXT] [--qq TEXT] [--nickname TEXT] [--user-agent TEXT] [--from-this-address N]",
+		Usage:   "security review --username TEXT [--email TEXT] [--field K=V] [--nickname TEXT] [--user-agent TEXT] [--from-this-address N]",
 		Help: Text{
 			EN: "Nothing is created; this only asks the configured reviewer what it would decide. " +
 				"400s if this build has no reviewer configured.",
@@ -438,12 +438,12 @@ func init() {
 		Flags: []Flag{
 			{Name: "--username", Hint: Text{EN: "required", ZH: "必填"}, Value: "TEXT"},
 			{Name: "--email", Hint: Text{EN: "", ZH: ""}, Value: "TEXT"},
-			{Name: "--qq", Hint: Text{EN: "", ZH: ""}, Value: "TEXT"},
+			{Name: "--field", Hint: Text{EN: "plugin account fields, key=value[,key=value]", ZH: "插件账户字段，key=value[,key=value]"}, Value: "LIST"},
 			{Name: "--nickname", Hint: Text{EN: "", ZH: ""}, Value: "TEXT"},
 			{Name: "--user-agent", Hint: Text{EN: "what the client would have claimed", ZH: "客户端本会声称的 UA"}, Value: "TEXT"},
 			{Name: "--from-this-address", Hint: Text{EN: "how many prior sign-ups from that IP to simulate", ZH: "模拟该 IP 之前的注册次数"}, Value: "N"},
 		},
-		Examples:   []string{"security review --username testuser123", "security review --username testuser123 --qq 12345678 --from-this-address 3"},
+		Examples:   []string{"security review --username testuser123", "security review --username testuser123 --from-this-address 3"},
 		SeeAlso:    []string{"security events"},
 		Permission: "security",
 		Endpoints:  []string{"POST /api/admin/security/review"},
@@ -456,7 +456,9 @@ func init() {
 			}
 			body := bodyBuilder{"username": rt.String("username")}
 			body.str(rt, "email", "email")
-			body.str(rt, "qq", "qq")
+			if err := body.fields(rt); err != nil {
+				return err
+			}
 			body.str(rt, "nickname", "nickname")
 			body.str(rt, "user-agent", "user_agent")
 			body.intv(rt, "from-this-address", "from_this_address")

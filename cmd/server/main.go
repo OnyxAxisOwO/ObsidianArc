@@ -18,6 +18,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/systembackup"
 )
@@ -72,7 +73,7 @@ func restoreBackup(args []string) error {
 		return err
 	}
 	defer db.Close()
-	if _, err := db.Migrate(ctx); err != nil {
+	if _, err := db.Migrate(ctx, plugin.Migrations()...); err != nil {
 		return err
 	}
 	return systembackup.RestoreArchive(ctx, db, *archivePath, cfg.SecretKey)
@@ -127,7 +128,9 @@ func run() error {
 	}
 	defer db.Close()
 
-	applied, err := db.Migrate(bootCtx)
+	// The compiled-in plugins' migrations run in the same sequence as the
+	// core's — see database.Migrate for why one sequence rather than two.
+	applied, err := db.Migrate(bootCtx, plugin.Migrations()...)
 	if err != nil {
 		return err
 	}

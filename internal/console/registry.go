@@ -185,6 +185,21 @@ func registerCommand(cmd Command) {
 	allCommands = append(allCommands, cmd)
 }
 
+// Register is registerCommand for a plugin, which lives outside this package
+// and adds its commands from its own init the same way a cmd_*.go file does.
+// Commands for a plugin's routes belong with the plugin: the route-parity
+// test here reads admin.go alone, and a plugin's routes are not in it.
+func Register(cmd Command) { registerCommand(cmd) }
+
+// ResolveUser is how a plugin's command reads an account argument: an id as
+// it stands, or a username looked up through the same admin list the core
+// commands use, with the same "no such user" and "which one" answers.
+func ResolveUser(rt *Runtime, ref string) (string, error) { return resolveUserRef(rt, ref) }
+
+// RequireArg is the first positional argument, or the error the core
+// commands give when it is missing; what names it for that message.
+func RequireArg(rt *Runtime, what string) (string, error) { return requireRef(rt, what) }
+
 // registry is the engine's own view of allCommands: a lookup by flat name,
 // plus the registration order help and completion iterate in.
 type registry struct {

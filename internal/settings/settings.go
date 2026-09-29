@@ -46,7 +46,6 @@ const (
 	RegistrationEnabled   = "registration.enabled"
 	RegistrationGroup     = "registration.default_group"
 	RequireEmail          = "registration.require_email"
-	QQRequirement         = "registration.qq_requirement"
 	VerifyEmail           = "registration.verify_email"
 	EmailDomains          = "registration.email_domains"
 	SignupsPerMinute      = "registration.per_minute"
@@ -85,17 +84,6 @@ const (
 	// scheme wants a small one often.
 	InvitesRewardEvery = "invites.reward_every"
 
-	// The QQ bot's webhook. The token is what authenticates POST
-	// /api/bot/departure — the one externally reachable way to process a
-	// group departure — and empty means the endpoint answers nothing at all,
-	// which is the default: an instance that has no bot has no reason to
-	// expose the route. Write-only, like the other credentials.
-	BotWebhookToken = "bot.webhook_token"
-	// What the bot's call does when the event itself does not say: disable
-	// the account (reversible, and it keeps the QQ number occupied against
-	// instant re-registration) or delete it outright.
-	BotDepartureMode = "bot.departure_mode"
-
 	// Cloudflare Turnstile. The site key is public — it is in the page's
 	// markup — and the secret is write-only: it is redacted out of every
 	// response, the way a provider's API key is.
@@ -112,28 +100,13 @@ const (
 
 	// Registration Captcha mode and self-developed Proof-of-Work settings.
 	// Captcha mode controls the challenge required at sign-up: "off",
-	// "turnstile", "pow", "risk", or "both".
+	// "turnstile", "pow", or "both" — or a mode a plugin added (see
+	// AddCaptchaMode), which the plugin's own guard answers for.
 	RegistrationCaptchaMode = "registration.captcha_mode"
 	CaptchaModeOff          = "off"
 	CaptchaModeTurnstile    = "turnstile"
 	CaptchaModePoW          = "pow"
-	CaptchaModeRisk         = "risk"
 	CaptchaModeBoth         = "both"
-
-	// A self-hosted anti-abuse service of the reCAPTCHA shape — see
-	// internal/riskcontrol. The base is where the browser loads the
-	// service's SDK from and where this server verifies tokens; a path
-	// rather than a URL means the service is reverse-proxied under this
-	// instance's own domain. The site key is public — the browser's init()
-	// call carries it — and the secret is write-only, the way the
-	// Turnstile one is. Sign-up is governed by RegistrationCaptchaMode
-	// above, not by a switch here: one select owns which challenge a
-	// sign-up needs, and a second switch for the same thing would be a
-	// second source of truth.
-	RiskBaseURL   = "risk.base_url"
-	RiskSite      = "risk.site"
-	RiskSecretKey = "risk.secret_key"
-	RiskOnLogin   = "risk.on_login"
 
 	PoWBaseMaxNumber     = "security.pow_base_max_number"
 	PoWElevatedMaxNumber = "security.pow_elevated_max_number"
@@ -479,51 +452,26 @@ func ValidBackofficeVerifyMode(value string) bool {
 // "once in a while" rather than a lock anybody would notice.
 const MaxTwoFactorBackofficeMinutes = 7 * 24 * 60
 
-// What new accounts are required to provide regarding QQ numbers.
-const (
-	QQDisabled = "off"
-	QQOptional = "optional"
-	QQRequired = "required"
-)
+var pluginCaptchaModes = map[string]bool{}
 
-var QQRequirements = []string{QQDisabled, QQOptional, QQRequired}
-
-func ValidQQRequirement(value string) bool {
-	for _, candidate := range QQRequirements {
-		if value == candidate {
-			return true
-		}
+// AddCaptchaMode makes value a valid registration.captcha_mode. A plugin that
+// stands a challenge in front of sign-up offers it as one of the choices in
+// the same select rather than as a switch of its own: one setting owns which
+// challenge a sign-up needs, and a second switch for the same thing would be
+// a second source of truth. Called from init.
+func AddCaptchaMode(value string) {
+	if ValidCaptchaMode(value) {
+		panic("settings: captcha mode " + value + " already exists")
 	}
-	return false
-}
-
-// What processing a group departure does to the departing account. Shared by
-// the backoffice's action and the bot's webhook so neither can invent a third
-// one: disable keeps the account (and, with it, the QQ number that a fresh
-// registration would otherwise claim immediately), delete removes it and
-// everything cascading from it.
-const (
-	DepartModeDisable = "disable"
-	DepartModeDelete  = "delete"
-)
-
-var DepartModes = []string{DepartModeDisable, DepartModeDelete}
-
-func ValidDepartMode(value string) bool {
-	for _, candidate := range DepartModes {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
+	pluginCaptchaModes[value] = true
 }
 
 func ValidCaptchaMode(value string) bool {
 	switch value {
-	case CaptchaModeOff, CaptchaModeTurnstile, CaptchaModePoW, CaptchaModeRisk, CaptchaModeBoth:
+	case CaptchaModeOff, CaptchaModeTurnstile, CaptchaModePoW, CaptchaModeBoth:
 		return true
 	default:
-		return false
+		return pluginCaptchaModes[value]
 	}
 }
 
@@ -626,7 +574,6 @@ var Defaults = map[string]string{
 	RegistrationEnabled:   "true",
 	RegistrationGroup:     "",
 	RequireEmail:          "false",
-	QQRequirement:         QQDisabled,
 	// Inert without SMTP, whatever it says: see auth.VerificationRequired.
 	VerifyEmail:  "false",
 	EmailDomains: "",
@@ -647,13 +594,8 @@ var Defaults = map[string]string{
 	InvitesRewardCards:    "0",
 	InvitesRewardCardDays: "30",
 	InvitesRewardEvery:    "1",
-	// Off: a token nobody has set means the bot route answers nothing, and
-	// the default mode is the reversible one — a bot misfire should cost an
-	// administrator a re-enable, not an account.
-	BotWebhookToken:    "",
-	BotDepartureMode:   DepartModeDisable,
-	TurnstileSiteKey:   "",
-	TurnstileSecretKey: "",
+	TurnstileSiteKey:      "",
+	TurnstileSecretKey:    "",
 	// Off, and off even once the keys are filled in: an operator pasting keys
 	// is configuring, not yet switching on, and a challenge that appeared the
 	// moment a key was saved would lock out the half-finished setup it was
@@ -664,18 +606,10 @@ var Defaults = map[string]string{
 	TurnstileOnRedeem:       "false",
 	TurnstileOnFeedback:     "false",
 	RegistrationCaptchaMode: CaptchaModeTurnstile,
-	// Unconfigured, and the sign-up mode does not select the service until
-	// an operator points it somewhere — the same bargain the Turnstile
-	// keys below keep. The login switch is off even once configured:
-	// pasting credentials is configuring, not yet challenging people.
-	RiskBaseURL:           "",
-	RiskSite:              "",
-	RiskSecretKey:         "",
-	RiskOnLogin:           "false",
-	PoWBaseMaxNumber:      "50000",
-	PoWElevatedMaxNumber:  "500000",
-	PoWThreshold:          "10",
-	FeedbackShowStaffName: "true",
+	PoWBaseMaxNumber:        "50000",
+	PoWElevatedMaxNumber:    "500000",
+	PoWThreshold:            "10",
+	FeedbackShowStaffName:   "true",
 	// Off, and off even once the credentials are filled in, for the reason
 	// the challenge switches above are: pasting a key is not the same as
 	// opening the door.
@@ -812,6 +746,68 @@ var Defaults = map[string]string{
 	PWAIconURL:         "",
 }
 
+// Definition is a setting that arrives with a plugin rather than with the
+// core: its default, whether it is a credential, which backoffice grant owns
+// it, and what counts as a valid value.
+//
+// Registered from the plugin's init, before any Service exists, so Defaults
+// is complete by the time anything reads it and the maps below need no lock.
+type Definition struct {
+	Key     string
+	Default string
+	// Write-only: redacted out of every response, the way the provider keys
+	// and the Turnstile secret are.
+	Secret bool
+	// The backoffice grant, comma-separated as the admin module reads it,
+	// that may read and write this key. Empty falls back to the key's prefix,
+	// the same rule the core settings follow.
+	Permission string
+	// Refuses a value before it is stored. Nil accepts anything under the
+	// length cap every setting has.
+	Validate func(string) error
+}
+
+var definitions = map[string]Definition{}
+
+// Define adds a plugin's setting. A key that collides with a core one, or
+// with another plugin's, panics: two owners of one key is the bug this
+// registry exists to make impossible, and init is the moment to find out.
+func Define(d Definition) {
+	if d.Key == "" {
+		panic("settings: Define with an empty key")
+	}
+	if _, core := Defaults[d.Key]; core {
+		panic("settings: " + d.Key + " is already defined")
+	}
+	definitions[d.Key] = d
+	Defaults[d.Key] = d.Default
+}
+
+// Defined reports the plugin definition for key, if a plugin brought one.
+func Defined(key string) (Definition, bool) {
+	d, ok := definitions[key]
+	return d, ok
+}
+
+// Definitions lists every plugin setting, in no particular order.
+func Definitions() []Definition {
+	out := make([]Definition, 0, len(definitions))
+	for _, d := range definitions {
+		out = append(out, d)
+	}
+	return out
+}
+
+// Known reports whether key is a setting this build reads — a core default or
+// a plugin definition. A row left behind by a plugin that is no longer
+// compiled in is not known, and nothing should show it to anybody: it may be
+// that plugin's credential, and the redaction that would have masked it
+// left with the plugin.
+func Known(key string) bool {
+	_, ok := Defaults[key]
+	return ok
+}
+
 type Service struct {
 	db *database.DB
 
@@ -923,7 +919,8 @@ func (s *Service) AuthCardPosition() string {
 }
 
 // All returns every known key with its effective value, so the admin screen
-// can render settings that have never been written.
+// can render settings that have never been written. Stored rows no key in
+// this build claims are left out — see Known.
 func (s *Service) All() map[string]string {
 	out := make(map[string]string, len(Defaults))
 	for key, value := range Defaults {
@@ -931,7 +928,9 @@ func (s *Service) All() map[string]string {
 	}
 	s.mu.RLock()
 	for key, value := range s.values {
-		out[key] = value
+		if Known(key) {
+			out[key] = value
+		}
 	}
 	s.mu.RUnlock()
 	return out

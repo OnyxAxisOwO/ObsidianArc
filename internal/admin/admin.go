@@ -103,6 +103,28 @@ type Handlers struct {
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
 	cpu cpuSampler
+
+	// Endpoints a plugin brought, mounted by Routes behind the same wrapper
+	// as the table there.
+	extra []Route
+}
+
+// Route is one administrative endpoint a plugin adds. Pattern is the full
+// ServeMux pattern and must sit under /api/admin/; Permission is a grant
+// list as the table in Routes spells it.
+type Route struct {
+	Pattern    string
+	Permission string
+	Handler    httpx.Handler
+}
+
+// Mount adds a plugin's endpoint. It has to be called before Routes, which is
+// the only thing that reads the list: the wiring sets plugins up first.
+func (h *Handlers) Mount(route Route) {
+	if !strings.Contains(route.Pattern, " /api/admin/") {
+		panic("admin: a plugin route must live under /api/admin/: " + route.Pattern)
+	}
+	h.extra = append(h.extra, route)
 }
 
 func NewHandlers(
@@ -214,8 +236,6 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/admin/users/{id}", protected("users", h.deleteUser))
 	mux.Handle("POST /api/admin/users", protected("users", h.createUser))
 	mux.Handle("POST /api/admin/users/{id}/password", protected("users", h.resetPassword))
-	mux.Handle("POST /api/admin/users/{id}/departure", protected("users", h.departUser))
-	mux.Handle("GET /api/admin/departures", protected("invites", h.listDepartures))
 	mux.Handle("DELETE /api/admin/users/{id}/two-factor", protected("users", h.resetTwoFactor))
 	mux.Handle("GET /api/admin/users/{id}/keys", protected("users", h.userKeys))
 	mux.Handle("DELETE /api/admin/users/{id}/keys/{key}", protected("users", h.revokeUserKey))
@@ -299,6 +319,10 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("PUT /api/admin/backup", protected("super_admin", h.saveSystemBackup))
 	mux.Handle("POST /api/admin/backup/test", protected("super_admin", h.testSystemBackup))
 	mux.Handle("POST /api/admin/backup/run", protected("super_admin", h.runSystemBackup))
+
+	for _, route := range h.extra {
+		mux.Handle(route.Pattern, protected(route.Permission, route.Handler))
+	}
 }
 
 // meta is the reference data the admin forms need: which provider kinds this

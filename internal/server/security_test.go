@@ -188,8 +188,6 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodPatch, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{"nickname": "x"}},
 		{http.MethodDelete, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
 		{http.MethodPost, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/password", map[string]any{"new_password": "a-good-password"}},
-		{http.MethodPost, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/departure", map[string]any{"mode": "disable"}},
-		{http.MethodGet, "/api/admin/departures", nil},
 		{http.MethodDelete, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/two-factor", nil},
 		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/conversations", nil},
 		{http.MethodGet, "/api/admin/groups", nil},

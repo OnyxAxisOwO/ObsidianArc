@@ -17,6 +17,27 @@ import (
 // handlers, so they need no browser session either.
 type Handlers struct {
 	store *Store
+	// Set during setup by a plugin that has something to add to the
+	// invitee list; read afterwards.
+	decorators []InviteeDecorator
+}
+
+// Invitee is one row of an inviter's own list, as a decorator sees it. The
+// account id is the join key and never reaches the browser; Entry is the
+// row as it will be sent.
+type Invitee struct {
+	UserID string
+	Entry  map[string]any
+}
+
+// InviteeDecorator may change the rows of inviterID's list, or add rows
+// about accounts that no longer have an invite_uses row to be listed from —
+// a plugin that deletes accounts keeps its own record of who they were.
+type InviteeDecorator func(ctx context.Context, inviterID string, invitees []Invitee) ([]Invitee, error)
+
+// DecorateInvitees adds fn to the list's decorators, run in the order added.
+func (h *Handlers) DecorateInvitees(fn InviteeDecorator) {
+	h.decorators = append(h.decorators, fn)
 }
 
 func NewHandlers(store *Store) *Handlers { return &Handlers{store: store} }
@@ -70,51 +91,26 @@ func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]an
 	out["counted"] = counted
 	out["next_reward_in"] = nextRewardIn(counted, rewardEvery, rewardCards)
 
-	// Every departure that names this inviter. A disabled invitee still has
-	// its invite_uses row and is badged beside it; a deleted one has neither
-	// the row nor the account any more, so the tombstone is the only place
-	// the list can still show them from.
-	departed, err := h.store.DeparturesForInviter(ctx, nil, accountID)
-	if err != nil {
-		return nil, err
-	}
-	departedByID := make(map[string]Departure, len(departed))
-	seen := make(map[string]bool, len(departed))
-	for _, departure := range departed {
-		departedByID[departure.UserID] = departure
-	}
-
-	invitees := make([]map[string]any, 0, len(uses)+len(departed))
+	invitees := make([]Invitee, 0, len(uses))
 	for _, use := range uses {
-		entry := map[string]any{
+		invitees = append(invitees, Invitee{UserID: use.UserID, Entry: map[string]any{
 			"nickname": use.Nickname, "username": use.Username, "created_at": use.CreatedAt,
 			"counted":        use.RewardedAt != 0 && use.RewardSkipped == "",
 			"reward_cards":   use.RewardCards,
 			"reward_skipped": use.RewardSkipped,
-		}
-		if departure, ok := departedByID[use.UserID]; ok {
-			seen[use.UserID] = true
-			entry["departed"] = true
-			entry["departure_mode"] = departure.Mode
-			entry["cards_revoked"] = departure.CardsRevoked
-		}
-		invitees = append(invitees, entry)
+		}})
 	}
-	for _, departure := range departed {
-		// Seen covers the disable case; whatever is left here has no
-		// invite_uses row left to be merged into — the delete case.
-		if seen[departure.UserID] {
-			continue
+	for _, decorate := range h.decorators {
+		invitees, err = decorate(ctx, accountID, invitees)
+		if err != nil {
+			return nil, err
 		}
-		invitees = append(invitees, map[string]any{
-			"nickname": "", "username": departure.Username, "created_at": departure.CreatedAt,
-			"counted": false, "reward_cards": 0, "reward_skipped": "",
-			"departed":       true,
-			"departure_mode": departure.Mode,
-			"cards_revoked":  departure.CardsRevoked,
-		})
 	}
-	out["invitees"] = invitees
+	entries := make([]map[string]any, 0, len(invitees))
+	for _, invitee := range invitees {
+		entries = append(entries, invitee.Entry)
+	}
+	out["invitees"] = entries
 	return out, nil
 }
 

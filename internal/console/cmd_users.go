@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +108,39 @@ func (b bodyBuilder) str(rt *Runtime, flag, key string) {
 	if rt.Present(flag) {
 		b[key] = rt.String(flag)
 	}
+}
+
+// fields reads --field key=value,key=value into the body's "fields" object:
+// the plugin account fields, whose keys this package does not know.
+func (b bodyBuilder) fields(rt *Runtime) error {
+	if !rt.Present("field") {
+		return nil
+	}
+	values := map[string]string{}
+	for _, pair := range splitCSV(rt.String("field")) {
+		key, value, ok := strings.Cut(pair, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			return rt.Errorf("--field takes key=value, got %q", pair)
+		}
+		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	b["fields"] = values
+	return nil
+}
+
+// fieldRows is an account's plugin fields as show-command rows, sorted.
+func fieldRows(u map[string]any) [][2]string {
+	values := asMap(u["fields"])
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	rows := make([][2]string, 0, len(keys))
+	for _, key := range keys {
+		rows = append(rows, [2]string{key, asStr(values[key])})
+	}
+	return rows
 }
 
 func (b bodyBuilder) intv(rt *Runtime, flag, key string) {
@@ -342,9 +376,9 @@ func init() {
 		Summary: Text{EN: "List accounts", ZH: "列出账户"},
 		Usage:   "user list [--q TEXT] [--role ROLE] [--status STATUS] [--group REF] [--limit N] [--offset N]",
 		Help: Text{
-			EN: "Lists accounts, newest first. --q matches username, email, nickname and QQ. --group " +
+			EN: "Lists accounts, newest first. --q matches username, email, nickname and any searchable plugin field. --group " +
 				"accepts a group name or id.",
-			ZH: "按创建时间倒序列出账户。--q 会匹配用户名、邮箱、昵称和 QQ。--group 可以是分组名称或 id。",
+			ZH: "按创建时间倒序列出账户。--q 会匹配用户名、邮箱、昵称和插件提供的可搜索字段。--group 可以是分组名称或 id。",
 		},
 		Flags: []Flag{
 			{Name: "--q", Hint: Text{EN: "search text", ZH: "搜索关键字"}, Value: "TEXT"},
@@ -429,13 +463,12 @@ func init() {
 			for _, p := range asSlice(u["admin_permissions"]) {
 				permNames = append(permNames, asStr(p))
 			}
-			if err := rt.Fields([][2]string{
+			if err := rt.Fields(append([][2]string{
 				{"id", asStr(u["id"])},
 				{"username", asStr(u["username"])},
 				{"nickname", asStr(u["nickname"])},
 				{"email", asStr(u["email"])},
 				{"email_verified", yesNo(asBoolVal(u["email_verified"]))},
-				{"qq", asStr(u["qq"])},
 				{"role", asStr(u["role"])},
 				{"admin_permissions", strings.Join(permNames, ", ")},
 				{"group_id", asStr(u["group_id"])},
@@ -448,7 +481,7 @@ func init() {
 				{"last_login_at", formatMS(u["last_login_at"])},
 				{"last_active_at", formatMS(u["last_active_at"])},
 				{"signup_ip", asStr(u["signup_ip"])},
-			}); err != nil {
+			}, fieldRows(u)...)); err != nil {
 				return err
 			}
 
@@ -509,7 +542,7 @@ func init() {
 			{Name: "--avatar", Hint: Text{EN: "avatar URL or data", ZH: "头像 URL 或数据"}, Value: "TEXT"},
 			{Name: "--bio", Hint: Text{EN: "bio, ≤500 chars", ZH: "简介，≤500 字符"}, Value: "TEXT"},
 			{Name: "--email", Hint: Text{EN: "email address", ZH: "邮箱地址"}, Value: "EMAIL"},
-			{Name: "--qq", Hint: Text{EN: "QQ number, or empty to clear", ZH: "QQ 号，留空可清除"}, Value: "QQ"},
+			{Name: "--field", Hint: Text{EN: "plugin account fields, key=value[,key=value]", ZH: "插件账户字段，key=value[,key=value]"}, Value: "LIST"},
 			{Name: "--role", Hint: Text{EN: "user, admin or super_admin", ZH: "user、admin 或 super_admin"}, Value: "ROLE"},
 			{Name: "--permissions", Hint: Text{EN: "comma-separated grant list, replaces the current one", ZH: "逗号分隔的权限列表，整体替换"}, Value: "LIST"},
 			{Name: "--group", Hint: Text{EN: "group name or id, or '' to clear", ZH: "分组名称或 id，'' 表示清除"}, Value: "REF"},
@@ -539,7 +572,9 @@ func init() {
 			body.str(rt, "avatar", "avatar")
 			body.str(rt, "bio", "bio")
 			body.str(rt, "email", "email")
-			body.str(rt, "qq", "qq")
+			if err := body.fields(rt); err != nil {
+				return err
+			}
 			body.str(rt, "role", "role")
 			if rt.Present("permissions") {
 				body["admin_permissions"] = splitCSV(rt.String("permissions"))
@@ -679,62 +714,6 @@ func init() {
 				rt.Printf("密码已更新。\n")
 			} else {
 				rt.Printf("password updated.\n")
-			}
-			return nil
-		},
-	})
-
-	registerCommand(Command{
-		Name:    "user depart",
-		Group:   "accounts",
-		Summary: Text{EN: "Process a group departure for an account", ZH: "处理账户的退群"},
-		Usage:   "user depart <id|username> [--mode=disable|delete] [--note TEXT] --yes",
-		Help: Text{
-			EN: "Ends the account the way a member leaving the QQ group is handled, and takes back " +
-				"the reset cards their invite earned. --mode=disable keeps the account (reversible; " +
-				"the QQ number stays taken); --mode=delete removes it and everything cascading from " +
-				"it. Cards already spent are not taken from anywhere else — the response says what " +
-				"was due and what actually came back.",
-			ZH: "按成员退出 QQ 群的方式结束该账户，并收回其邀请获得的重置卡。" +
-				"--mode=disable 保留账户（可恢复，QQ 号仍被占用）；--mode=delete 彻底删除账户及其全部数据。" +
-				"已用掉的卡不会从别处补收——响应会分别给出应收回与实际收回的数量。",
-		},
-		Args: []Arg{
-			{Name: "id|username", Hint: Text{EN: "account id or username", ZH: "账户 id 或用户名"}, Required: true},
-		},
-		Flags: []Flag{
-			{Name: "--mode", Hint: Text{EN: "disable (default) or delete", ZH: "disable（默认）或 delete"}, Value: "MODE"},
-			{Name: "--note", Hint: Text{EN: "why, for the audit log", ZH: "原因，记入审计日志"}, Value: "TEXT"},
-		},
-		Examples:    []string{"user depart alice --yes", "user depart alice --mode=delete --note 'left the group' -y"},
-		Permission:  "users",
-		Destructive: true,
-		Endpoints:   []string{"POST /api/admin/users/{id}/departure"},
-		Run: func(_ context.Context, rt *Runtime) error {
-			ref, err := requireRef(rt, "account id or username")
-			if err != nil {
-				return err
-			}
-			uid, err := resolveUserRef(rt, ref)
-			if err != nil {
-				return err
-			}
-			mode := rt.String("mode")
-			if mode == "" {
-				mode = "disable"
-			}
-			data, _, err := rt.Call(http.MethodPost, "/api/admin/users/"+url.PathEscape(uid)+"/departure",
-				map[string]any{"mode": mode, "note": rt.String("note")})
-			if err != nil {
-				return err
-			}
-			departure := asMap(asMap(data)["departure"])
-			if rt.Session.Lang == "zh" {
-				rt.Printf("退群处理完成（%s）。应收回 %s 张重置卡，实际收回 %s 张。\n",
-					asStr(departure["mode"]), asStr(departure["cards_due"]), asStr(departure["cards_revoked"]))
-			} else {
-				rt.Printf("departure processed (%s). %s card(s) due, %s taken back.\n",
-					asStr(departure["mode"]), asStr(departure["cards_due"]), asStr(departure["cards_revoked"]))
 			}
 			return nil
 		},
@@ -931,7 +910,7 @@ func init() {
 		Name:    "user create",
 		Group:   "accounts",
 		Summary: Text{EN: "Create an account", ZH: "新建账户"},
-		Usage:   "user create <username> [--password P] [--email E] [--qq Q] [--nickname N] [--role ROLE] [--permissions LIST] [--group REF]",
+		Usage:   "user create <username> [--password P] [--email E] [--field K=V] [--nickname N] [--role ROLE] [--permissions LIST] [--group REF]",
 		Help: Text{
 			EN: "For the cases registration cannot serve: a service account, or onboarding someone " +
 				"while signups are closed. The registration switch, the per-address limit and the " +
@@ -946,7 +925,7 @@ func init() {
 		Flags: []Flag{
 			{Name: "--password", Hint: Text{EN: "login password; omit for an account without one", ZH: "登录密码；不给则该账户没有密码"}, Value: "TEXT", Sensitive: true},
 			{Name: "--email", Hint: Text{EN: "email address", ZH: "邮箱地址"}, Value: "EMAIL"},
-			{Name: "--qq", Hint: Text{EN: "QQ number", ZH: "QQ 号"}, Value: "QQ"},
+			{Name: "--field", Hint: Text{EN: "plugin account fields, key=value[,key=value]", ZH: "插件账户字段，key=value[,key=value]"}, Value: "LIST"},
 			{Name: "--nickname", Hint: Text{EN: "display nickname, ≤32 chars", ZH: "昵称，≤32 字符"}, Value: "TEXT"},
 			{Name: "--role", Hint: Text{EN: "user, admin or super_admin; default user", ZH: "user、admin 或 super_admin，默认 user"}, Value: "ROLE", Default: "user"},
 			{Name: "--permissions", Hint: Text{EN: "comma-separated grant list, admins only", ZH: "逗号分隔的权限列表，仅对管理员有效"}, Value: "LIST"},
@@ -967,7 +946,9 @@ func init() {
 			body := bodyBuilder{"username": name}
 			body.str(rt, "password", "password")
 			body.str(rt, "email", "email")
-			body.str(rt, "qq", "qq")
+			if err := body.fields(rt); err != nil {
+				return err
+			}
 			body.str(rt, "nickname", "nickname")
 			body.str(rt, "role", "role")
 			body.str(rt, "status", "status")

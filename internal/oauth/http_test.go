@@ -386,7 +386,7 @@ func TestTheAccountsOwnScreenNeedsASession(t *testing.T) {
 func populate(t *testing.T, f *fixture) {
 	t.Helper()
 	if _, _, err := f.auth.Register(context.Background(), auth.RegisterInput{
-		Username: "founder", Email: "founder@example.com", QQ: "12345678",
+		Username: "founder", Email: "founder@example.com", Fields: badgeOf("12345678"),
 		Password: "a-good-password",
 	}); err != nil {
 		t.Fatalf("register the first account: %v", err)
@@ -400,13 +400,13 @@ func require(t *testing.T, f *fixture, key, value string) {
 	}
 }
 
-// A GitHub account has no QQ number and never will. An instance that requires
+// A GitHub account has no badge and never will. An instance that requires
 // one used to be a wall; now it is a question, and nothing is written until it
 // is answered.
 func TestASignInThatNeedsMoreStopsAndAsksRatherThanRefusing(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
-	require(t, f, settings.QQRequirement, settings.QQRequired)
+	require(t, f, badgeRule, auth.FieldRequired)
 	f.configure(t, "github")
 
 	stub(t, "github", func(w http.ResponseWriter, _ *http.Request) {
@@ -450,7 +450,7 @@ func TestASignInThatNeedsMoreStopsAndAsksRatherThanRefusing(t *testing.T) {
 		t.Fatalf("signup = %d %s", asked.Code, asked.Body.String())
 	}
 	body := asked.Body.String()
-	for _, want := range []string{`"qq":true`, `"email":false`, `"login":"octocat"`, `"provider":"github"`} {
+	for _, want := range []string{`"fields":["badge"]`, `"email":false`, `"login":"octocat"`, `"provider":"github"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("signup = %s, want %s in it", body, want)
 		}
@@ -458,7 +458,7 @@ func TestASignInThatNeedsMoreStopsAndAsksRatherThanRefusing(t *testing.T) {
 
 	// Answered: the account is opened and signed in.
 	done := postJSON(mux, "/api/auth/oauth/signup",
-		map[string]any{"qq": "87654321", "email": ""}, []*http.Cookie{ticket})
+		map[string]any{"fields": badgeOf("87654321"), "email": ""}, []*http.Cookie{ticket})
 	if done.Code != http.StatusOK {
 		t.Fatalf("complete = %d %s", done.Code, done.Body.String())
 	}
@@ -482,7 +482,7 @@ func TestASignInThatNeedsMoreStopsAndAsksRatherThanRefusing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the session does not resolve: %v", err)
 	}
-	if account.Username != "octocat" || account.QQ != "87654321" {
+	if account.Username != "octocat" || account.Fields[badge] != "87654321" {
 		t.Errorf("account = %+v, want the provider's name and the number that was typed", account)
 	}
 	// And the provider is connected to it, so the next sign-in asks nothing.
@@ -491,13 +491,13 @@ func TestASignInThatNeedsMoreStopsAndAsksRatherThanRefusing(t *testing.T) {
 	}
 }
 
-// An IdP whose subject is the QQ number — OneAuth, which watches a group
+// An IdP whose subject is the badge — a community sign-in, which watches a group
 // message before vouching — has answered the question already. The form asks
 // for it anyway, but it arrives filled in with what the provider said.
-func TestAnOIDCSubjectThatIsAQQNumberArrivesPrefilled(t *testing.T) {
+func TestAnOIDCSubjectThatIsABadgeArrivesPrefilled(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
-	require(t, f, settings.QQRequirement, settings.QQRequired)
+	require(t, f, badgeRule, auth.FieldRequired)
 	f.configure(t, "oidc")
 
 	server := stub(t, "oidc", func(w http.ResponseWriter, _ *http.Request) {
@@ -535,13 +535,13 @@ func TestAnOIDCSubjectThatIsAQQNumberArrivesPrefilled(t *testing.T) {
 	if asked.Code != http.StatusOK {
 		t.Fatalf("signup = %d %s", asked.Code, asked.Body.String())
 	}
-	if !strings.Contains(asked.Body.String(), `"qq":"123456789"`) {
-		t.Errorf("signup = %s, want the subject offered as the QQ number", asked.Body.String())
+	if !strings.Contains(asked.Body.String(), `"fields":{"badge":"123456789"}`) {
+		t.Errorf("signup = %s, want the subject offered as the badge", asked.Body.String())
 	}
 
 	// Confirming the prefilled answer opens the account with it.
 	done := postJSON(mux, "/api/auth/oauth/signup",
-		map[string]any{"qq": "123456789", "email": ""}, []*http.Cookie{ticket})
+		map[string]any{"fields": badgeOf("123456789"), "email": ""}, []*http.Cookie{ticket})
 	if done.Code != http.StatusOK {
 		t.Fatalf("complete = %d %s", done.Code, done.Body.String())
 	}
@@ -550,17 +550,17 @@ func TestAnOIDCSubjectThatIsAQQNumberArrivesPrefilled(t *testing.T) {
 	}
 }
 
-// An IdP whose subject is the QQ number reaches the account that already
+// An IdP whose subject is the badge reaches the account that already
 // carries it, the way a proved address reaches its account — no form, no
 // second account with the same person behind it.
-func TestASignInWithAQQNumberSubjectReachesTheAccountThatCarriesIt(t *testing.T) {
+func TestASignInWithABadgeSubjectReachesTheAccountThatCarriesIt(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
-	// The founder carries QQ 12345678; the IdP has just proved the same number.
+	// The founder carries badge 12345678; the IdP has just proved the same number.
 	joined, err := f.service.SignIn(context.Background(),
 		Identity{Provider: "oidc", Subject: "12345678", Login: "qq_123456789"}, "203.0.113.5", "a browser")
 	if err != nil {
-		t.Fatalf("sign-in by QQ subject: %v", err)
+		t.Fatalf("sign-in by badge subject: %v", err)
 	}
 	if joined.Username != "founder" {
 		t.Errorf("sign-in opened %q, want it to reach the founder's account", joined.Username)
@@ -574,13 +574,13 @@ func TestASignInWithAQQNumberSubjectReachesTheAccountThatCarriesIt(t *testing.T)
 }
 
 // Binding an OpenID Connect provider from the settings screen writes the
-// subject onto the account when it has no QQ number of its own, and never
+// subject onto the account when it has no badge of its own, and never
 // takes one another account already carries.
-func TestBindingOIDCFromTheSettingsScreenAlsoBindsTheQQNumber(t *testing.T) {
+func TestBindingOIDCFromTheSettingsScreenAlsoBindsTheBadge(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
 
-	// An account created by a provider sign-in has no QQ number yet.
+	// An account created by a provider sign-in has no badge yet.
 	second, err := f.service.SignIn(context.Background(),
 		Identity{Provider: "github", Subject: "4218", Login: "octocat", Email: "cat@example.com"}, "203.0.113.5", "a browser")
 	if err != nil {
@@ -591,8 +591,8 @@ func TestBindingOIDCFromTheSettingsScreenAlsoBindsTheQQNumber(t *testing.T) {
 		t.Fatalf("connect oidc: %v", err)
 	}
 	after, err := f.users.ByID(context.Background(), nil, second.ID)
-	if err != nil || after.QQ != "55512345" {
-		t.Errorf("qq = %q (%v), want the subject the provider proved", after.QQ, err)
+	if err != nil || after.Fields[badge] != "55512345" {
+		t.Errorf("badge = %q (%v), want the subject the provider proved", after.Fields[badge], err)
 	}
 
 	// And unbinding it is not offered: the number would outlive its proof.
@@ -606,7 +606,7 @@ func TestBindingOIDCFromTheSettingsScreenAlsoBindsTheQQNumber(t *testing.T) {
 func TestTheHeldSignUpIsOnlyBelievedWhenThisServerSignedIt(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
-	require(t, f, settings.QQRequirement, settings.QQRequired)
+	require(t, f, badgeRule, auth.FieldRequired)
 	_, mux := handlers(t, f)
 
 	cases := map[string][]*http.Cookie{
@@ -619,7 +619,7 @@ func TestTheHeldSignUpIsOnlyBelievedWhenThisServerSignedIt(t *testing.T) {
 		if asked := get(mux, "/api/auth/oauth/signup", cookies, nil); asked.Code != http.StatusBadRequest {
 			t.Errorf("%s: read = %d, want it refused", name, asked.Code)
 		}
-		done := postJSON(mux, "/api/auth/oauth/signup", map[string]any{"qq": "87654321"}, cookies)
+		done := postJSON(mux, "/api/auth/oauth/signup", map[string]any{"fields": badgeOf("87654321")}, cookies)
 		if done.Code != http.StatusBadRequest {
 			t.Errorf("%s: complete = %d, want it refused", name, done.Code)
 		}
@@ -635,7 +635,7 @@ func TestTheHeldSignUpIsOnlyBelievedWhenThisServerSignedIt(t *testing.T) {
 func TestTheCompletionFormIsHeldToTheSignUpRules(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
-	require(t, f, settings.QQRequirement, settings.QQRequired)
+	require(t, f, badgeRule, auth.FieldRequired)
 	f.configure(t, "github")
 	stub(t, "github", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"access_token":"a-token"}`))
@@ -645,16 +645,16 @@ func TestTheCompletionFormIsHeldToTheSignUpRules(t *testing.T) {
 	ticket := pendingTicket(t, mux)
 	for _, testCase := range []struct {
 		name   string
-		qq     string
+		value  string
 		status int
 		code   string
 	}{
-		{"nothing at all", "", http.StatusBadRequest, "qq_required"},
-		{"not a number", "nonsense", http.StatusBadRequest, "invalid_qq"},
-		{"somebody else's", "12345678", http.StatusConflict, "qq_taken"},
+		{"nothing at all", "", http.StatusBadRequest, "badge_required"},
+		{"not a number", "nonsense", http.StatusBadRequest, "invalid_badge"},
+		{"somebody else's", "12345678", http.StatusConflict, "badge_taken"},
 	} {
 		done := postJSON(mux, "/api/auth/oauth/signup",
-			map[string]any{"qq": testCase.qq}, []*http.Cookie{ticket})
+			map[string]any{"fields": badgeOf(testCase.value)}, []*http.Cookie{ticket})
 		if done.Code != testCase.status || !strings.Contains(done.Body.String(), testCase.code) {
 			t.Errorf("%s = %d %s, want %d %s",
 				testCase.name, done.Code, done.Body.String(), testCase.status, testCase.code)
