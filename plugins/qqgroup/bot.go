@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -43,8 +44,8 @@ func newBotHandlers(departures *Departures, set *settings.Service) *botHandlers 
 	}
 }
 
-func (h *botHandlers) Routes(mux *http.ServeMux) {
-	mux.Handle("POST /api/bot/departure", httpx.Wrap(h.departure))
+func (h *botHandlers) Routes(host *plugin.Host) {
+	host.Handle("POST /api/bot/departure", httpx.Wrap(h.departure))
 }
 
 type botDepartureRequest struct {

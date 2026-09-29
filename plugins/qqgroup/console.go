@@ -25,6 +25,7 @@ func oauthBinding() oauth.SubjectBinding {
 // these two.
 func init() {
 	console.Register(console.Command{
+		Plugin:  Name,
 		Name:    "user depart",
 		Group:   "accounts",
 		Summary: console.Text{EN: "Process a group departure for an account", ZH: "处理账户的退群"},
@@ -82,6 +83,7 @@ func init() {
 	})
 
 	console.Register(console.Command{
+		Plugin:  Name,
 		Name:    "invite departures",
 		Group:   "invites",
 		Summary: console.Text{EN: "List processed group departures", ZH: "列出已处理的退群记录"},

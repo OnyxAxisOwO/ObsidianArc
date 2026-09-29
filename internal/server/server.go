@@ -152,6 +152,18 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	usageStore := usage.NewStore(db)
 	requestLog := reqlog.NewStore(db)
 	securityLog := securityevents.NewStore(db)
+
+	// Which compiled-in plugins are installed and switched on. Loaded before
+	// anything below reads a setting or an account, since both lists depend
+	// on the answer; every extension point is handed the same gate.
+	plugins := plugin.NewManager(db, settingsService, users, securityLog)
+	if err := plugins.Load(ctx); err != nil {
+		return nil, err
+	}
+	pluginGate := plugins.Gate()
+	settingsService.SetPluginGate(pluginGate)
+	users.SetPluginGate(pluginGate)
+	authService.SetPluginGate(pluginGate)
 	keys := apikey.NewStore(db)
 	cards := card.NewStore(db)
 	invites := invite.NewStore(db, users, cards, groups, settingsService)
@@ -981,7 +993,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 
 	// The compiled-in plugins, attached now: every module they reach is
 	// built, and nothing has mounted the backoffice's table yet, so a route
-	// a plugin adds there is mounted with the rest of it.
+	// a plugin adds there is mounted with the rest of it. All of them, in
+	// whatever state: what an uninstalled one attaches is inert behind the
+	// gate until somebody installs it.
+	adminHandlers.SetPluginGate(pluginGate)
+	inviteHandlers.SetPluginGate(pluginGate)
 	host := &plugin.Host{
 		DB: db, Settings: settingsService, Users: users, Security: securityLog,
 		Notify: notifyStore, Cards: cards,
@@ -992,10 +1008,15 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Mux:       mux,
 		ClientIP:  func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
 		PublicURL: mailer.PublicURL,
+		Gate:      pluginGate,
 	}
 	if err := plugin.SetupAll(host); err != nil {
 		return nil, err
 	}
+	plugins.Attach(host)
+	plugin.NewHandlers(plugins, authService, func(r *http.Request) string {
+		return httpx.ClientIP(r, proxyTrust)
+	}).Mount(adminHandlers)
 	for _, name := range plugin.Names() {
 		authHandlers.Advertise(name)
 	}
@@ -1053,6 +1074,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 
 	consoleEngine := console.New(console.Options{
 		Dispatch: console.NewDispatcher(consoleAPI),
+		Plugins:  pluginGate,
 		Version:  deps.Version,
 		SiteName: func() string { return settingsService.Get(settings.SiteName) },
 		SSH:      sshInfo,

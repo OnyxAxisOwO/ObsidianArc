@@ -29,10 +29,10 @@ type adminHandlers struct {
 // invites grant's, as they were when this was part of the core.
 func (h *adminHandlers) mount(backoffice *admin.Handlers) {
 	backoffice.Mount(admin.Route{
-		Pattern: "POST /api/admin/users/{id}/departure", Permission: "users", Handler: h.departUser,
+		Pattern: "POST /api/admin/users/{id}/departure", Permission: "users", Handler: h.departUser, Plugin: Name,
 	})
 	backoffice.Mount(admin.Route{
-		Pattern: "GET /api/admin/departures", Permission: "invites", Handler: h.listDepartures,
+		Pattern: "GET /api/admin/departures", Permission: "invites", Handler: h.listDepartures, Plugin: Name,
 	})
 }
 

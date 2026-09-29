@@ -32,7 +32,7 @@ func hasPermission(account user.User, permissions string) bool {
 // in any of them; which keys each one then sees and saves is decided here,
 // key by key, so a grant reaches its own page's settings and nobody else's.
 func settingPermission(key string) string {
-	if d, ok := settings.Defined(key); ok && d.Permission != "" {
+	if d, ok := settings.Lookup(key); ok && d.Permission != "" {
 		return d.Permission
 	}
 	switch {

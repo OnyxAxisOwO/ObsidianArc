@@ -8,6 +8,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 )
 
 // Handlers is an account's own view of invite codes: its personal code, who
@@ -19,8 +20,18 @@ type Handlers struct {
 	store *Store
 	// Set during setup by a plugin that has something to add to the
 	// invitee list; read afterwards.
-	decorators []InviteeDecorator
+	decorators []decorator
+	gate       plugingate.Gate
 }
+
+type decorator struct {
+	plugin string
+	fn     InviteeDecorator
+}
+
+// SetPluginGate is how the server says which plugins are on; a switched-off
+// plugin's decorator is skipped.
+func (h *Handlers) SetPluginGate(g plugingate.Gate) { h.gate = g }
 
 // Invitee is one row of an inviter's own list, as a decorator sees it. The
 // account id is the join key and never reaches the browser; Entry is the
@@ -35,9 +46,10 @@ type Invitee struct {
 // a plugin that deletes accounts keeps its own record of who they were.
 type InviteeDecorator func(ctx context.Context, inviterID string, invitees []Invitee) ([]Invitee, error)
 
-// DecorateInvitees adds fn to the list's decorators, run in the order added.
-func (h *Handlers) DecorateInvitees(fn InviteeDecorator) {
-	h.decorators = append(h.decorators, fn)
+// DecorateInvitees adds plugin's fn to the list's decorators, run in the
+// order added.
+func (h *Handlers) DecorateInvitees(plugin string, fn InviteeDecorator) {
+	h.decorators = append(h.decorators, decorator{plugin: plugin, fn: fn})
 }
 
 func NewHandlers(store *Store) *Handlers { return &Handlers{store: store} }
@@ -101,7 +113,10 @@ func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]an
 		}})
 	}
 	for _, decorate := range h.decorators {
-		invitees, err = decorate(ctx, accountID, invitees)
+		if !h.gate.Allows(decorate.plugin) {
+			continue
+		}
+		invitees, err = decorate.fn(ctx, accountID, invitees)
 		if err != nil {
 			return nil, err
 		}

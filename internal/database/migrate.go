@@ -89,19 +89,107 @@ func (db *DB) appliedVersions(ctx context.Context) (map[string]bool, error) {
 }
 
 func (db *DB) applyMigration(ctx context.Context, m migration) error {
-	return db.Tx(ctx, func(tx *Tx) error {
-		for i, stmt := range splitStatements(m.body) {
-			if _, err := tx.Exec(ctx, stmt); err != nil {
-				return fmt.Errorf("database: migration %s statement %d: %w", m.version, i+1, err)
+	return db.Tx(ctx, func(tx *Tx) error { return runMigration(ctx, tx, m) })
+}
+
+// MigrateIn applies the migrations in sources that are not yet recorded,
+// inside the caller's transaction, and returns the versions it applied.
+// The core's own files are not among them: this is for installing a plugin
+// on a running server, where the plugin's tables, its first settings and
+// its state have to arrive together or not at all. Both engines this server
+// runs on have transactional DDL, so a failure halfway leaves nothing.
+func (db *DB) MigrateIn(ctx context.Context, tx *Tx, sources ...fs.FS) ([]string, error) {
+	pending, err := readMigrations(db.Dialect(), sources)
+	if err != nil {
+		return nil, err
+	}
+	var applied []string
+	for _, m := range pending {
+		var recorded int
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version).Scan(&recorded); err != nil {
+			return applied, fmt.Errorf("database: read schema_migrations: %w", err)
+		}
+		if recorded > 0 {
+			continue
+		}
+		if err := runMigration(ctx, tx, m); err != nil {
+			return applied, err
+		}
+		applied = append(applied, m.version)
+	}
+	return applied, nil
+}
+
+// Versions lists the migration versions sources hold, sorted.
+func Versions(sources ...fs.FS) ([]string, error) {
+	found, err := readMigrations(SQLite, sources)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(found))
+	for _, m := range found {
+		out = append(out, m.version)
+	}
+	return out, nil
+}
+
+// Applied reports which of versions schema_migrations records.
+func Applied(ctx context.Context, q Queryer, versions []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, version := range versions {
+		var n int
+		if err := q.QueryRow(ctx,
+			`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&n); err != nil {
+			return nil, fmt.Errorf("database: read schema_migrations: %w", err)
+		}
+		out[version] = n > 0
+	}
+	return out, nil
+}
+
+// Unrecord removes versions from schema_migrations, for a plugin whose
+// uninstall dropped what they created: reinstalling it has to run them
+// again rather than trust a record of tables that are gone.
+func Unrecord(ctx context.Context, q Queryer, versions []string) error {
+	for _, version := range versions {
+		if _, err := q.Exec(ctx, `DELETE FROM schema_migrations WHERE version = ?`, version); err != nil {
+			return fmt.Errorf("database: unrecord migration %s: %w", version, err)
+		}
+	}
+	return nil
+}
+
+// RunScripts runs every *.sql file in fsys, in name order, through q, with
+// the same type tokens and statement splitting as a migration and nothing
+// recorded — the undo a plugin ships for its own migrations.
+func RunScripts(ctx context.Context, q Queryer, fsys fs.FS) error {
+	scripts, err := readMigrations(q.Dialect(), []fs.FS{fsys})
+	if err != nil {
+		return err
+	}
+	for _, script := range scripts {
+		for i, stmt := range splitStatements(script.body) {
+			if _, err := q.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("database: script %s statement %d: %w", script.version, i+1, err)
 			}
 		}
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
-			m.version, time.Now().UnixMilli()); err != nil {
-			return fmt.Errorf("database: record migration %s: %w", m.version, err)
+	}
+	return nil
+}
+
+func runMigration(ctx context.Context, q Queryer, m migration) error {
+	for i, stmt := range splitStatements(m.body) {
+		if _, err := q.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("database: migration %s statement %d: %w", m.version, i+1, err)
 		}
-		return nil
-	})
+	}
+	if _, err := q.Exec(ctx,
+		`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
+		m.version, time.Now().UnixMilli()); err != nil {
+		return fmt.Errorf("database: record migration %s: %w", m.version, err)
+	}
+	return nil
 }
 
 func loadMigrations(dialect Dialect, plugins ...fs.FS) ([]migration, error) {
@@ -109,8 +197,10 @@ func loadMigrations(dialect Dialect, plugins ...fs.FS) ([]migration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("database: read migrations: %w", err)
 	}
-	sources := append([]fs.FS{core}, plugins...)
+	return readMigrations(dialect, append([]fs.FS{core}, plugins...))
+}
 
+func readMigrations(dialect Dialect, sources []fs.FS) ([]migration, error) {
 	var out []migration
 	seen := map[string]bool{}
 	for _, source := range sources {

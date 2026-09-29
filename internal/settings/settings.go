@@ -11,12 +11,14 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 )
 
 // Known keys. Anything not listed here is still storable — the admin UI only
@@ -452,32 +454,56 @@ func ValidBackofficeVerifyMode(value string) bool {
 // "once in a while" rather than a lock anybody would notice.
 const MaxTwoFactorBackofficeMinutes = 7 * 24 * 60
 
-var pluginCaptchaModes = map[string]bool{}
+// Which plugin brought each extra mode, so a mode whose plugin is switched
+// off stops being one.
+var pluginCaptchaModes = map[string]string{}
 
-// AddCaptchaMode makes value a valid registration.captcha_mode. A plugin that
-// stands a challenge in front of sign-up offers it as one of the choices in
-// the same select rather than as a switch of its own: one setting owns which
-// challenge a sign-up needs, and a second switch for the same thing would be
-// a second source of truth. Called from init.
-func AddCaptchaMode(value string) {
-	if ValidCaptchaMode(value) {
+// AddCaptchaMode makes value a valid registration.captcha_mode while plugin is
+// enabled. A plugin that stands a challenge in front of sign-up offers it as
+// one of the choices in the same select rather than as a switch of its own:
+// one setting owns which challenge a sign-up needs, and a second switch for
+// the same thing would be a second source of truth. Called from init.
+func AddCaptchaMode(plugin, value string) {
+	if _, taken := pluginCaptchaModes[value]; taken || coreCaptchaMode(value) {
 		panic("settings: captcha mode " + value + " already exists")
 	}
-	pluginCaptchaModes[value] = true
+	pluginCaptchaModes[value] = plugin
 }
 
-func ValidCaptchaMode(value string) bool {
+func coreCaptchaMode(value string) bool {
 	switch value {
 	case CaptchaModeOff, CaptchaModeTurnstile, CaptchaModePoW, CaptchaModeBoth:
 		return true
-	default:
-		return pluginCaptchaModes[value]
 	}
+	return false
 }
 
+// CaptchaModes lists the modes plugins added, by the plugin that owns each.
+func CaptchaModes() map[string]string {
+	out := make(map[string]string, len(pluginCaptchaModes))
+	for mode, plugin := range pluginCaptchaModes {
+		out[mode] = plugin
+	}
+	return out
+}
+
+// ValidCaptchaMode reports whether value is a mode this server answers for
+// now: a core one, or one whose plugin is enabled.
+func (s *Service) ValidCaptchaMode(value string) bool {
+	if coreCaptchaMode(value) {
+		return true
+	}
+	plugin, ok := pluginCaptchaModes[value]
+	return ok && s.gate.Allows(plugin)
+}
+
+// RegistrationCaptchaMode is the stored mode, or Turnstile for one this
+// server cannot answer for — the fallback a value from a newer build always
+// had, and now also a switched-off plugin's: the sign-up keeps a challenge
+// rather than silently losing the one the operator chose.
 func (s *Service) RegistrationCaptchaMode() string {
 	mode := s.Get(RegistrationCaptchaMode)
-	if ValidCaptchaMode(mode) {
+	if s.ValidCaptchaMode(mode) {
 		return mode
 	}
 	return CaptchaModeTurnstile
@@ -755,6 +781,9 @@ var Defaults = map[string]string{
 type Definition struct {
 	Key     string
 	Default string
+	// The plugin that owns the key. While it is switched off the key is not
+	// known to any server: not listed, not writable, not shown.
+	Plugin string
 	// Write-only: redacted out of every response, the way the provider keys
 	// and the Turnstile secret are.
 	Secret bool
@@ -776,21 +805,37 @@ func Define(d Definition) {
 	if d.Key == "" {
 		panic("settings: Define with an empty key")
 	}
-	if _, core := Defaults[d.Key]; core {
+	if _, taken := Defaults[d.Key]; taken {
 		panic("settings: " + d.Key + " is already defined")
 	}
 	definitions[d.Key] = d
 	Defaults[d.Key] = d.Default
 }
 
-// Defined reports the plugin definition for key, if a plugin brought one.
-func Defined(key string) (Definition, bool) {
+// DefinitionsOf lists what one plugin defined, whatever its state — the
+// plugin manager's view, for the manifest and for purging.
+func DefinitionsOf(plugin string) []Definition {
+	var out []Definition
+	for _, d := range definitions {
+		if d.Plugin == plugin {
+			out = append(out, d)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
+}
+
+// Lookup is key's plugin definition whatever the plugin's state: which grant
+// owns a key, or whether it is a credential, does not change while it is
+// switched off.
+func Lookup(key string) (Definition, bool) {
 	d, ok := definitions[key]
 	return d, ok
 }
 
-// Definitions lists every plugin setting, in no particular order.
-func Definitions() []Definition {
+// AllDefinitions is every plugin setting this build defines, whatever state
+// its plugin is in.
+func AllDefinitions() []Definition {
 	out := make([]Definition, 0, len(definitions))
 	for _, d := range definitions {
 		out = append(out, d)
@@ -798,18 +843,47 @@ func Definitions() []Definition {
 	return out
 }
 
-// Known reports whether key is a setting this build reads — a core default or
-// a plugin definition. A row left behind by a plugin that is no longer
-// compiled in is not known, and nothing should show it to anybody: it may be
-// that plugin's credential, and the redaction that would have masked it
-// left with the plugin.
-func Known(key string) bool {
-	_, ok := Defaults[key]
-	return ok
+// Defined reports the plugin definition for key, if an enabled plugin
+// brought one.
+func (s *Service) Defined(key string) (Definition, bool) {
+	d, ok := definitions[key]
+	if !ok || !s.gate.Allows(d.Plugin) {
+		return Definition{}, false
+	}
+	return d, true
 }
 
+// Definitions lists every enabled plugin's settings, in no particular order.
+func (s *Service) Definitions() []Definition {
+	out := make([]Definition, 0, len(definitions))
+	for _, d := range definitions {
+		if s.gate.Allows(d.Plugin) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// Known reports whether key is a setting this server reads — a core default
+// or an enabled plugin's definition. A row left behind by a plugin that is
+// not compiled in, or is switched off, is not known, and nothing should show
+// it to anybody: it may be that plugin's credential, and the redaction that
+// would have masked it is not running.
+func (s *Service) Known(key string) bool {
+	if _, ok := Defaults[key]; !ok {
+		return false
+	}
+	d, plugin := definitions[key]
+	return !plugin || s.gate.Allows(d.Plugin)
+}
+
+// SetPluginGate is how the server tells this service which plugins are on.
+// Set once, before the first request.
+func (s *Service) SetPluginGate(g plugingate.Gate) { s.gate = g }
+
 type Service struct {
-	db *database.DB
+	db   *database.DB
+	gate plugingate.Gate
 
 	mu               sync.RWMutex
 	values           map[string]string
@@ -924,11 +998,13 @@ func (s *Service) AuthCardPosition() string {
 func (s *Service) All() map[string]string {
 	out := make(map[string]string, len(Defaults))
 	for key, value := range Defaults {
-		out[key] = value
+		if s.Known(key) {
+			out[key] = value
+		}
 	}
 	s.mu.RLock()
 	for key, value := range s.values {
-		if Known(key) {
+		if s.Known(key) {
 			out[key] = value
 		}
 	}
@@ -951,25 +1027,69 @@ func (s *Service) Set(ctx context.Context, key, value string) error {
 }
 
 func (s *Service) SetMany(ctx context.Context, values map[string]string) error {
-	now := time.Now().UnixMilli()
-	err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		for key, value := range values {
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-				 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-				key, value, now); err != nil {
-				return fmt.Errorf("settings: set %s: %w", key, err)
-			}
-		}
-		return nil
-	})
+	err := s.db.Tx(ctx, func(tx *database.Tx) error { return s.WriteMany(ctx, tx, values) })
 	if err != nil {
 		return err
 	}
+	s.Remember(values)
+	return nil
+}
+
+// WriteMany stores values through q without touching the cache, for a caller
+// whose transaction writes other rows beside them — installing a plugin
+// writes its first settings with its state. Remember them once it commits:
+// a cache updated before then would serve values a rollback took away.
+func (s *Service) WriteMany(ctx context.Context, q database.Queryer, values map[string]string) error {
+	now := time.Now().UnixMilli()
+	for key, value := range values {
+		if _, err := q.Exec(ctx,
+			`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+			 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+			key, value, now); err != nil {
+			return fmt.Errorf("settings: set %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// DeleteMany removes keys' rows through q, which puts each back to its
+// default. Forget them once the transaction commits.
+func (s *Service) DeleteMany(ctx context.Context, q database.Queryer, keys []string) error {
+	for _, key := range keys {
+		if _, err := q.Exec(ctx, `DELETE FROM settings WHERE key = ?`, key); err != nil {
+			return fmt.Errorf("settings: delete %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// Remember puts committed values into the cache.
+func (s *Service) Remember(values map[string]string) {
 	s.mu.Lock()
 	for key, value := range values {
 		s.values[key] = value
 	}
 	s.mu.Unlock()
-	return nil
+}
+
+// Forget drops committed deletions from the cache.
+func (s *Service) Forget(keys []string) {
+	s.mu.Lock()
+	for _, key := range keys {
+		delete(s.values, key)
+	}
+	s.mu.Unlock()
+}
+
+// Stored reports whether any of keys has a row of its own, as opposed to
+// reading its default.
+func (s *Service) Stored(keys []string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, key := range keys {
+		if _, ok := s.values[key]; ok {
+			return true
+		}
+	}
+	return false
 }

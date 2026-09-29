@@ -231,7 +231,7 @@ func userRoutesFromSource(t *testing.T) map[string]bool {
 // a different, already-reviewed category this task was not asked to
 // re-litigate.
 func TestEveryCommandHasBilingualHelp(t *testing.T) {
-	reg := newRegistry()
+	reg := newRegistry(nil)
 	actor := user.User{ID: id.New(), Username: "root", Role: user.RoleSuperAdmin}
 	s := &Session{Actor: actor, Transport: "web", Lang: "en", Width: 100}
 

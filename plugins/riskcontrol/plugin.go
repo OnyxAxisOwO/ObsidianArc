@@ -41,17 +41,35 @@ func init() {
 	// operator points it somewhere — the same bargain the Turnstile keys
 	// keep. The login switch is off even once configured: pasting
 	// credentials is configuring, not yet challenging people.
-	settings.Define(settings.Definition{Key: BaseURL})
-	settings.Define(settings.Definition{Key: Site})
-	settings.Define(settings.Definition{Key: SecretKey, Secret: true})
-	settings.Define(settings.Definition{Key: OnLogin, Default: "false"})
-	settings.AddCaptchaMode(CaptchaMode)
+	settings.Define(settings.Definition{Key: BaseURL, Plugin: Name})
+	settings.Define(settings.Definition{Key: Site, Plugin: Name})
+	settings.Define(settings.Definition{Key: SecretKey, Secret: true, Plugin: Name})
+	settings.Define(settings.Definition{Key: OnLogin, Default: "false", Plugin: Name})
+	settings.AddCaptchaMode(Name, CaptchaMode)
 	plugin.Register(riskPlugin{})
 }
 
 type riskPlugin struct{}
 
 func (riskPlugin) Name() string { return Name }
+
+// Version is the plugin's own, shown in its manifest and recorded when it is
+// installed.
+const Version = "1.1.0"
+
+func (riskPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Version: Version,
+		Title:   plugin.Text{EN: "Risk control", ZH: "超级风控"},
+		Description: plugin.Text{
+			EN: "A self-hosted risk-control service in front of sign-up and, optionally, sign-in: " +
+				"the browser collects a token, this server has the service judge it.",
+			ZH: "在注册（以及可选的登录）前接入自建风控服务：浏览器获取令牌，由本服务器交给风控服务判定。",
+		},
+		Author:  "Obsidian Arc",
+		License: "MIT",
+	}
+}
 
 func (riskPlugin) Setup(h *plugin.Host) error {
 	set := h.Settings
@@ -89,14 +107,14 @@ func (riskPlugin) Setup(h *plugin.Host) error {
 
 	register := gate(onSignup)
 	h.Auth.AddGuard(auth.GuardRegister, auth.Guard{
-		Name: Name, Event: "risk_challenge",
+		Name: Name, Plugin: Name, Event: "risk_challenge",
 		Check: func(ctx context.Context, req auth.GuardRequest) (auth.Verdict, error) {
 			return judge(ctx, register, req, ActionRegister)
 		},
 	})
 	login := gate(onLogin)
 	h.Auth.AddGuard(auth.GuardLogin, auth.Guard{
-		Name: Name, Event: "risk_challenge",
+		Name: Name, Plugin: Name, Event: "risk_challenge",
 		Check: func(ctx context.Context, req auth.GuardRequest) (auth.Verdict, error) {
 			return judge(ctx, login, req, ActionLogin)
 		},

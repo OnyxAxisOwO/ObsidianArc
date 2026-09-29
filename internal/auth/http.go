@@ -415,7 +415,7 @@ func (h *Handlers) signInProviders() []SignInProvider {
 
 func (h *Handlers) fieldRules(first bool) map[string]string {
 	out := map[string]string{}
-	for _, f := range user.Fields() {
+	for _, f := range h.service.users.Fields() {
 		if first {
 			out[f.Key] = FieldOff
 		} else {

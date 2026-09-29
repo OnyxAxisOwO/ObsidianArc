@@ -254,3 +254,63 @@ func TestRiskControlNeverChallengesTheFirstAccount(t *testing.T) {
 		t.Fatalf("the first account was sent to the service: %v", stub.sent())
 	}
 }
+
+// An instance that configured the service before it could be switched keeps
+// it: a stored setting is the trace the boot adopts it by. One that never
+// touched it is offered the plugin, not given it.
+func TestAConfiguredInstanceAdoptsThePlugin(t *testing.T) {
+	configured := servertest.NewLegacy(t, map[string]string{Site: "arc-test"})
+	founder := configured.Register("founder", "a-good-password")
+	if state := pluginState(t, configured, founder); state != "enabled" {
+		t.Fatalf("a configured instance's plugin is %s", state)
+	}
+
+	untouched := servertest.NewLegacy(t, nil)
+	founder = untouched.Register("founder", "a-good-password")
+	if state := pluginState(t, untouched, founder); state != "available" {
+		t.Fatalf("an instance that never configured it has the plugin %s", state)
+	}
+}
+
+// Switched off, the guard stands aside and the sign-up mode it answered for
+// stops being one: the registration falls back to the core's challenge
+// rather than to none, and the service is never asked.
+func TestASwitchedOffGuardIsNotAsked(t *testing.T) {
+	stub := &riskStub{}
+	service := httptest.NewServer(http.HandlerFunc(stub.handler))
+	t.Cleanup(service.Close)
+	in := servertest.New(t)
+	admin := in.Register("founder", "a-good-password")
+	configure(in, admin, service, true)
+	authenticator := in.EnrolTwoFactor(admin)
+	off := in.Do(http.MethodPost, "/api/admin/plugins/"+Name+"/disable",
+		map[string]any{"two_factor_code": authenticator.Next(t)}, admin)
+	if off.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", off.Code, off.Body.String())
+	}
+
+	site := in.Do(http.MethodGet, "/api/site", nil, nil).Body.String()
+	if strings.Contains(site, `"`+Name+`":`) {
+		t.Fatalf("a switched-off plugin is advertised: %s", site)
+	}
+	in.Do(http.MethodPost, "/api/auth/login", withToken(map[string]any{
+		"identifier": "founder", "password": "a-good-password"}, "rc-block"), nil)
+	in.Do(http.MethodPost, "/api/auth/register", withToken(map[string]any{
+		"username": "visitor", "password": "a-good-password"}, "rc-block"), nil)
+	if len(stub.sent()) != 0 {
+		t.Fatalf("a switched-off guard asked the service: %v", stub.sent())
+	}
+}
+
+func pluginState(t *testing.T, in *servertest.Instance, as *servertest.Session) string {
+	t.Helper()
+	response := in.Do(http.MethodGet, "/api/admin/plugins/"+Name, nil, as)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the plugin: %d %s", response.Code, response.Body.String())
+	}
+	return servertest.Decode[struct {
+		Plugin struct {
+			State string `json:"state"`
+		} `json:"plugin"`
+	}](t, response).Plugin.State
+}

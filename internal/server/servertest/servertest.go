@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -28,6 +29,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/totp"
 )
 
 // Instance is one assembled server.
@@ -45,7 +47,7 @@ type Session struct {
 	UserID string
 }
 
-// New builds a server with every registered plugin set up and migrated.
+// New builds a server with every registered plugin installed and enabled.
 // tweak adjusts the configuration for a test that needs one thing different.
 func New(t *testing.T, tweak ...func(*config.Config)) *Instance {
 	t.Helper()
@@ -56,6 +58,34 @@ func New(t *testing.T, tweak ...func(*config.Config)) *Instance {
 // the state an instance is in when it boots with a configuration already in
 // its database, which no request can put it in before the first account.
 func NewSeeded(t *testing.T, seed map[string]string, tweak ...func(*config.Config)) *Instance {
+	t.Helper()
+	return build(t, installAll, seed, tweak)
+}
+
+// NewFresh builds a server on which no plugin has been installed — a new
+// instance, where the plugins screen is the only way one arrives.
+func NewFresh(t *testing.T, tweak ...func(*config.Config)) *Instance {
+	t.Helper()
+	return build(t, installNone, nil, tweak)
+}
+
+// NewLegacy builds the instance an upgrade meets: every plugin's migrations
+// already run, and seed stored, from before plugins could be switched — and
+// no record of any plugin's state, which the boot has to decide.
+func NewLegacy(t *testing.T, seed map[string]string, tweak ...func(*config.Config)) *Instance {
+	t.Helper()
+	return build(t, installLegacy, seed, tweak)
+}
+
+type install int
+
+const (
+	installAll install = iota
+	installNone
+	installLegacy
+)
+
+func build(t *testing.T, mode install, seed map[string]string, tweak []func(*config.Config)) *Instance {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -84,8 +114,23 @@ func NewSeeded(t *testing.T, seed map[string]string, tweak ...func(*config.Confi
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Migrate(ctx, plugin.Migrations()...); err != nil {
+	var migrations []fs.FS
+	if mode == installLegacy {
+		migrations = plugin.Migrations()
+	}
+	if _, err := db.Migrate(ctx, migrations...); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+	// Recorded as installed before the server loads the states, which then
+	// runs their migrations: the path an installed plugin takes at boot.
+	if mode == installAll {
+		for _, name := range plugin.Names() {
+			if _, err := db.Exec(ctx,
+				`INSERT INTO plugin_installs (name, state, updated_at) VALUES (?, 'enabled', ?)`,
+				name, time.Now().UnixMilli()); err != nil {
+				t.Fatalf("install %s: %v", name, err)
+			}
+		}
 	}
 
 	for key, value := range seed {
@@ -211,6 +256,49 @@ func (in *Instance) sessionFrom(response *httptest.ResponseRecorder) *Session {
 	}
 	in.T.Fatalf("no session cookie in %d %s", response.Code, response.Body.String())
 	return nil
+}
+
+// TwoFactor is an account's authenticator as a test holds it: the secret,
+// the step its enrolment spent, and the recovery codes, one per further
+// confirmation a test needs — the authenticator refuses a step it has
+// already accepted, and a test runs faster than thirty seconds.
+type TwoFactor struct {
+	Secret   string
+	Step     int64
+	Recovery []string
+}
+
+// Next is a code nobody has spent yet.
+func (f *TwoFactor) Next(t *testing.T) string {
+	t.Helper()
+	if len(f.Recovery) == 0 {
+		t.Fatal("out of recovery codes")
+	}
+	code := f.Recovery[0]
+	f.Recovery = f.Recovery[1:]
+	return code
+}
+
+// EnrolTwoFactor switches the second step on for a signed-in account.
+func (in *Instance) EnrolTwoFactor(as *Session) *TwoFactor {
+	in.T.Helper()
+	setup := in.Do(http.MethodPost, "/api/profile/two-factor/setup", nil, as)
+	if setup.Code != http.StatusOK {
+		in.T.Fatalf("two-factor setup: %d %s", setup.Code, setup.Body.String())
+	}
+	secret := Decode[struct {
+		Secret string `json:"secret"`
+	}](in.T, setup).Secret
+	step := totp.Step(time.Now())
+	code, _ := totp.Code(secret, step)
+	enable := in.Do(http.MethodPost, "/api/profile/two-factor/enable", map[string]string{"code": code}, as)
+	if enable.Code != http.StatusOK {
+		in.T.Fatalf("two-factor enable: %d %s", enable.Code, enable.Body.String())
+	}
+	codes := Decode[struct {
+		RecoveryCodes []string `json:"recovery_codes"`
+	}](in.T, enable)
+	return &TwoFactor{Secret: secret, Step: step, Recovery: codes.RecoveryCodes}
 }
 
 // Decode reads a JSON response into T, failing the test if it is not one.

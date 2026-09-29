@@ -24,7 +24,7 @@ func TestEverySettingTheBrowserDeclaresIsDefined(t *testing.T) {
 		t.Fatal("found no setting keys; the scanner has drifted from the source")
 	}
 	for _, match := range matches {
-		if _, ok := settings.Defined(match[1]); !ok {
+		if d, ok := settings.Lookup(match[1]); !ok || d.Plugin != Name {
 			t.Errorf("the browser half sends %q, which this plugin does not define", match[1])
 		}
 	}

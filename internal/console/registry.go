@@ -87,6 +87,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -169,6 +170,10 @@ type Command struct {
 	// once every noun's commands exist) checks against admin.Routes.
 	Endpoints []string
 	Run       func(ctx context.Context, rt *Runtime) error
+	// The plugin that registered it. A switched-off plugin's commands are
+	// not found, not listed and not completed — the same as a build without
+	// it.
+	Plugin string
 }
 
 // allCommands is filled by every cmd_*.go file's init(), before New is ever
@@ -205,10 +210,11 @@ func RequireArg(rt *Runtime, what string) (string, error) { return requireRef(rt
 type registry struct {
 	commands map[string]*Command
 	order    []string
+	gate     plugingate.Gate
 }
 
-func newRegistry() *registry {
-	reg := &registry{commands: make(map[string]*Command, len(allCommands))}
+func newRegistry(gate plugingate.Gate) *registry {
+	reg := &registry{commands: make(map[string]*Command, len(allCommands)), gate: gate}
 	for _, cmd := range allCommands {
 		c := cmd
 		if _, dup := reg.commands[c.Name]; dup {
@@ -222,7 +228,21 @@ func newRegistry() *registry {
 
 func (r *registry) lookup(name string) (*Command, bool) {
 	cmd, ok := r.commands[name]
-	return cmd, ok
+	if !ok || !r.gate.Allows(cmd.Plugin) {
+		return nil, false
+	}
+	return cmd, true
+}
+
+// CommandsOf lists the commands plugin registered, for its manifest.
+func CommandsOf(plugin string) []string {
+	var out []string
+	for _, cmd := range allCommands {
+		if cmd.Plugin == plugin {
+			out = append(out, cmd.Name)
+		}
+	}
+	return out
 }
 
 // visible is what help, Spec and Complete show: every command the actor is
@@ -233,7 +253,7 @@ func (r *registry) visible(actor user.User) []*Command {
 	out := make([]*Command, 0, len(r.order))
 	for _, name := range r.order {
 		cmd := r.commands[name]
-		if hasPermission(actor, cmd.Permission) {
+		if r.gate.Allows(cmd.Plugin) && hasPermission(actor, cmd.Permission) {
 			out = append(out, cmd)
 		}
 	}

@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -63,6 +64,8 @@ type Options struct {
 	// unit test build a Console without a security-events store.
 	Audit func(ctx context.Context, rec AuditRecord)
 	SSH   SSHInfo
+	// Which plugins are on; nil lets every command through.
+	Plugins plugingate.Gate
 }
 
 // Console is the command engine. It holds no per-session state — Session
@@ -78,7 +81,7 @@ type Console struct {
 // a command with no Run — both are programming errors caught the moment
 // anything calls New, never a condition a caller needs to recover from.
 func New(opts Options) *Console {
-	return &Console{reg: newRegistry(), opts: opts}
+	return &Console{reg: newRegistry(opts.Plugins), opts: opts}
 }
 
 // Session is one terminal tab or one SSH channel. It is not safe for

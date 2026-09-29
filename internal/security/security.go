@@ -58,6 +58,10 @@ const (
 	// beside the two-step entries because it is the first thing to look at
 	// when somebody says they never signed in from there.
 	EventNewDevice = "new_device"
+	// A plugin installed, switched on or off, or uninstalled. The decision
+	// says which and the reason names the plugin: turning a sign-up guard
+	// off is a front-door change like any other on this list.
+	EventPlugin = "plugin"
 
 	maxReasonChars = 500
 	MaxPageSize    = 200

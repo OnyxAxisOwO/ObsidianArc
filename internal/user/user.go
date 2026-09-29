@@ -14,12 +14,13 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
@@ -158,7 +159,11 @@ func ValidateEmail(value string) error {
 	return nil
 }
 
-type Store struct{ db *database.DB }
+type Store struct {
+	db   *database.DB
+	gate plugingate.Gate
+	set  atomic.Pointer[fieldSet]
+}
 
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
@@ -205,7 +210,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 	if err := ValidateEmail(email); err != nil {
 		return User{}, err
 	}
-	extra, err := CheckFields(in.Fields)
+	extra, err := s.CheckFields(in.Fields)
 	if err != nil {
 		return User{}, err
 	}
@@ -243,6 +248,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 	// Every defined field is written, empty where no value was given: the
 	// record handed back carries all of them, and a column left to its
 	// default would have to be assumed to be ''.
+	fields := s.active().list
 	fieldColumns, fieldMarks := "", ""
 	fieldArgs := make([]any, 0, len(fields))
 	if len(fields) > 0 {
@@ -272,7 +278,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		// portable error code, so the message is matched instead. The check
 		// is only ever reached after an explicit availability query, so this
 		// path is the concurrent-registration race, not the common case.
-		return User{}, translateUniqueViolation(err, email != "")
+		return User{}, s.translateUniqueViolation(err, email != "")
 	}
 	return record, nil
 }
@@ -281,7 +287,7 @@ func (s *Store) ByID(ctx context.Context, q database.Queryer, userID string) (Us
 	if q == nil {
 		q = s.db
 	}
-	record, err := scanUser(q.QueryRow(ctx, `SELECT `+columnList()+` FROM users WHERE id = ?`, userID))
+	record, err := s.scan(q.QueryRow(ctx, `SELECT `+s.columns()+` FROM users WHERE id = ?`, userID))
 	if err != nil {
 		return User{}, err
 	}
@@ -306,8 +312,8 @@ func (s *Store) ByEmail(ctx context.Context, q database.Queryer, email string) (
 	if folded == "" {
 		return User{}, ErrNotFound
 	}
-	record, err := scanUser(q.QueryRow(ctx,
-		`SELECT `+columnList()+` FROM users WHERE email_lower <> '' AND email_lower = ?`, folded))
+	record, err := s.scan(q.QueryRow(ctx,
+		`SELECT `+s.columns()+` FROM users WHERE email_lower <> '' AND email_lower = ?`, folded))
 	if err != nil {
 		return User{}, err
 	}
@@ -324,7 +330,7 @@ func (s *Store) ByField(ctx context.Context, q database.Queryer, key, value stri
 	}
 	value = strings.TrimSpace(value)
 	unique := false
-	for _, f := range fields {
+	for _, f := range s.active().list {
 		if f.Key == key && f.Unique {
 			unique = true
 		}
@@ -332,8 +338,8 @@ func (s *Store) ByField(ctx context.Context, q database.Queryer, key, value stri
 	if value == "" || !unique {
 		return User{}, ErrNotFound
 	}
-	record, err := scanUser(q.QueryRow(ctx,
-		`SELECT `+columnList()+` FROM users WHERE `+key+` <> '' AND `+key+` = ?`, value))
+	record, err := s.scan(q.QueryRow(ctx,
+		`SELECT `+s.columns()+` FROM users WHERE `+key+` <> '' AND `+key+` = ?`, value))
 	if err != nil {
 		return User{}, err
 	}
@@ -366,12 +372,12 @@ func (s *Store) PasswordHash(ctx context.Context, q database.Queryer, userID str
 func (s *Store) CredentialsByLogin(ctx context.Context, identifier string) (User, string, error) {
 	folded := strings.ToLower(strings.TrimSpace(identifier))
 	row := s.db.QueryRow(ctx,
-		`SELECT `+columnList()+`, password_hash FROM users
+		`SELECT `+s.columns()+`, password_hash FROM users
 		 WHERE username_lower = ? OR (email_lower <> '' AND email_lower = ?)`,
 		folded, folded)
 
 	var hash string
-	record, err := scanUser(row, &hash)
+	record, err := s.scan(row, &hash)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return User{}, "", ErrNotFound
@@ -400,7 +406,7 @@ func (s *Store) Exists(ctx context.Context, q database.Queryer, username, email 
 	selects := "username_lower, email_lower"
 	where := "username_lower = ? OR (email_lower <> '' AND email_lower = ?)"
 	args := []any{wantUser, wantMail}
-	for _, f := range fields {
+	for _, f := range s.active().list {
 		value := strings.TrimSpace(values[f.Key])
 		if !f.Unique || value == "" {
 			continue
@@ -495,11 +501,11 @@ func (s *Store) UpdateProfile(ctx context.Context, q database.Queryer, userID st
 		args = append(args, value, strings.ToLower(value))
 	}
 	if len(in.Fields) > 0 {
-		values, err := CheckFields(in.Fields)
+		values, err := s.CheckFields(in.Fields)
 		if err != nil {
 			return User{}, err
 		}
-		more, moreArgs := fieldSets(values)
+		more, moreArgs := s.fieldSets(values)
 		sets = append(sets, more...)
 		args = append(args, moreArgs...)
 	}
@@ -513,7 +519,7 @@ func (s *Store) UpdateProfile(ctx context.Context, q database.Queryer, userID st
 
 	if _, err := q.Exec(ctx,
 		`UPDATE users SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
-		return User{}, translateUniqueViolation(err, in.Email != nil)
+		return User{}, s.translateUniqueViolation(err, in.Email != nil)
 	}
 	return s.ByID(ctx, q, userID)
 }
@@ -572,11 +578,11 @@ func (s *Store) UpdateAdminFields(ctx context.Context, q database.Queryer, userI
 		args = append(args, strings.TrimSpace(*in.BanReason))
 	}
 	if len(in.Fields) > 0 {
-		values, err := CheckFields(in.Fields)
+		values, err := s.CheckFields(in.Fields)
 		if err != nil {
 			return User{}, err
 		}
-		more, moreArgs := fieldSets(values)
+		more, moreArgs := s.fieldSets(values)
 		sets = append(sets, more...)
 		args = append(args, moreArgs...)
 	}
@@ -589,7 +595,7 @@ func (s *Store) UpdateAdminFields(ctx context.Context, q database.Queryer, userI
 
 	if _, err := q.Exec(ctx,
 		`UPDATE users SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
-		if key := takenField(strings.ToLower(err.Error())); key != "" {
+		if key := s.takenField(strings.ToLower(err.Error())); key != "" {
 			return User{}, &FieldError{Key: key, Reason: ErrFieldTaken}
 		}
 		return User{}, fmt.Errorf("user: admin update: %w", err)
@@ -655,7 +661,7 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error
 	if err := s.ExpireMemberships(ctx, nil, time.Now()); err != nil {
 		return nil, 0, err
 	}
-	where, args := filter.clauses()
+	where, args := filter.clauses(s.active().list)
 
 	var total int
 	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM users`+where, args...).Scan(&total); err != nil {
@@ -667,7 +673,7 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error
 		limit = 50
 	}
 	rows, err := s.db.Query(ctx,
-		`SELECT `+columnList()+` FROM users`+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+		`SELECT `+s.columns()+` FROM users`+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
 		append(append([]any{}, args...), limit, max(0, filter.Offset))...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("user: list: %w", err)
@@ -676,7 +682,7 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error
 
 	var out []User
 	for rows.Next() {
-		record, err := scanUserRows(rows)
+		record, err := s.scan(rows)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -693,7 +699,7 @@ func escapeLike(value string) string {
 	return strings.ReplaceAll(value, "_", "\\_")
 }
 
-func (filter ListFilter) clauses() (string, []any) {
+func (filter ListFilter) clauses(fields []Field) (string, []any) {
 	conditions := []string{}
 	args := []any{}
 
@@ -825,28 +831,32 @@ func (s *Store) MoveGroupMembers(ctx context.Context, q database.Queryer, from, 
 //
 // The session lookup calls this on every authenticated request with the same
 // alias, so each alias's list is built once and kept.
-func JoinColumns(alias string) string {
-	if cached, ok := joinedColumns.Load(alias); ok {
+func (s *Store) JoinColumns(alias string) string {
+	set := s.active()
+	if cached, ok := set.joined.Load(alias); ok {
 		return cached.(string)
 	}
-	parts := strings.Split(columnList(), ",")
+	parts := strings.Split(set.columns, ",")
 	for i, part := range parts {
 		parts[i] = alias + "." + strings.TrimSpace(part)
 	}
 	joined := strings.Join(parts, ", ")
-	joinedColumns.Store(alias, joined)
+	set.joined.Store(alias, joined)
 	return joined
 }
 
-var joinedColumns sync.Map
-
-func ScanRow(row interface{ Scan(dest ...any) error }) (User, error) { return scanUser(row) }
+// ScanRow reads what JoinColumns selected. A plugin switched between the two
+// calls would misalign them, so a caller builds its query and scans within
+// one request — the window is a query long, and the scan fails loudly
+// rather than reading one column as another.
+func (s *Store) ScanRow(row interface{ Scan(dest ...any) error }) (User, error) { return s.scan(row) }
 
 type rowScanner interface{ Scan(dest ...any) error }
 
-// scanUser reads what columnList selects, then fills extra from whatever the
-// query selected after it.
-func scanUser(row rowScanner, extra ...any) (User, error) {
+// scan reads what columns selects, then fills extra from whatever the query
+// selected after it.
+func (s *Store) scan(row rowScanner, extra ...any) (User, error) {
+	fields := s.active().list
 	var (
 		record      User
 		group       sql.NullString
@@ -882,8 +892,6 @@ func scanUser(row rowScanner, extra ...any) (User, error) {
 	return record, nil
 }
 
-func scanUserRows(rows *sql.Rows) (User, error) { return scanUser(rows) }
-
 // --- helpers ----------------------------------------------------------------
 
 func checkNickname(value string) (string, error) {
@@ -910,12 +918,12 @@ func orDefault[T ~string](value, fallback T) T {
 	return value
 }
 
-func translateUniqueViolation(err error, hadEmail bool) error {
+func (s *Store) translateUniqueViolation(err error, hadEmail bool) error {
 	message := strings.ToLower(err.Error())
 	if !strings.Contains(message, "unique") && !strings.Contains(message, "duplicate") {
 		return fmt.Errorf("user: write: %w", err)
 	}
-	if key := takenField(message); key != "" {
+	if key := s.takenField(message); key != "" {
 		return &FieldError{Key: key, Reason: ErrFieldTaken}
 	}
 	switch {

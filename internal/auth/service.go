@@ -13,6 +13,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -81,8 +82,10 @@ type InviteGrant struct {
 }
 
 type Service struct {
-	db       *database.DB
-	users    *user.Store
+	db    *database.DB
+	users *user.Store
+	// Which plugins are on, for their guards and their sign-in blocks.
+	gate     plugingate.Gate
 	groups   *group.Store
 	settings *settings.Service
 	sessions *SessionStore
@@ -176,7 +179,7 @@ func NewService(
 		users:    users,
 		groups:   groups,
 		settings: set,
-		sessions: NewSessionStore(db),
+		sessions: NewSessionStore(db, users),
 		hasher:   NewHasher(cfg.Password),
 		cfg:      cfg.Session,
 		limiter:  NewLimiter(),
@@ -253,7 +256,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	if err := user.ValidateEmail(in.Email); err != nil {
 		return user.User{}, "", err
 	}
-	if _, err := user.CheckFields(in.Fields); err != nil {
+	if _, err := s.users.CheckFields(in.Fields); err != nil {
 		return user.User{}, "", err
 	}
 	if err := ValidatePassword(in.Password); err != nil {
@@ -716,7 +719,7 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 				}
 			}
 			if len(changed) > 0 {
-				if _, err := user.CheckFields(changed); err != nil {
+				if _, err := s.users.CheckFields(changed); err != nil {
 					return err
 				}
 				for key, value := range changed {

@@ -73,6 +73,9 @@ func restoreBackup(args []string) error {
 		return err
 	}
 	defer db.Close()
+	// Every compiled-in plugin's, installed or not: the archive may carry any
+	// of their tables, and plugin_installs, restored with the rest, is what
+	// then says which of them this instance has.
 	if _, err := db.Migrate(ctx, plugin.Migrations()...); err != nil {
 		return err
 	}
@@ -128,9 +131,10 @@ func run() error {
 	}
 	defer db.Close()
 
-	// The compiled-in plugins' migrations run in the same sequence as the
-	// core's — see database.Migrate for why one sequence rather than two.
-	applied, err := db.Migrate(bootCtx, plugin.Migrations()...)
+	// The core's alone. An installed plugin's run when the server loads the
+	// plugin states, and an uninstalled one's run when somebody installs
+	// it — its tables are not this instance's until then.
+	applied, err := db.Migrate(bootCtx)
 	if err != nil {
 		return err
 	}

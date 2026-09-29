@@ -313,7 +313,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		if !hasPermission(auth.MustUser(r.Context()), settingPermission(key)) {
 			return permissionDenied()
 		}
-		if !writable(key) {
+		if !h.writable(key) {
 			return httpx.BadRequest("Unknown setting %q.", key)
 		}
 		if len(value) > 8*1024 {
@@ -438,7 +438,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 
-	if err := validateDefined(body); err != nil {
+	if err := h.validateDefined(body); err != nil {
 		return err
 	}
 
@@ -483,7 +483,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		if !hasPermission(auth.MustUser(r.Context()), settingPermission(key)) {
 			return permissionDenied()
 		}
-		if !writable(key) || len(value) > 8*1024 {
+		if !h.writable(key) || len(value) > 8*1024 {
 			skipped = append(skipped, key)
 			continue
 		}
@@ -589,7 +589,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	for key, value := range applied {
-		if d, ok := settings.Defined(key); ok && d.Validate != nil && d.Validate(value) != nil {
+		if d, ok := h.settings.Defined(key); ok && d.Validate != nil && d.Validate(value) != nil {
 			delete(applied, key)
 			skipped = append(skipped, key)
 		}
@@ -745,21 +745,21 @@ func (h *Handlers) deleteLogo(w http.ResponseWriter, r *http.Request) error {
 }
 
 // writable reports whether an administrator may write key: a core key in
-// the table above, or one a compiled-in plugin defined.
-func writable(key string) bool {
+// the table above, or one an enabled plugin defined.
+func (h *Handlers) writable(key string) bool {
 	if writableSettings[key] {
 		return true
 	}
-	_, defined := settings.Defined(key)
+	_, defined := h.settings.Defined(key)
 	return defined
 }
 
 // validateDefined runs each plugin setting's own validator. The core keys
 // are checked one by one above; a plugin's rules travel with its definition
 // so this file never has to learn them.
-func validateDefined(body map[string]string) error {
+func (h *Handlers) validateDefined(body map[string]string) error {
 	for key, value := range body {
-		if d, ok := settings.Defined(key); ok && d.Validate != nil {
+		if d, ok := h.settings.Defined(key); ok && d.Validate != nil {
 			if err := d.Validate(value); err != nil {
 				return httpx.BadRequest("Setting %q: %s", key, err.Error())
 			}
@@ -768,10 +768,12 @@ func validateDefined(body map[string]string) error {
 	return nil
 }
 
-// secretKeys is every credential this build knows about, core and plugin.
+// secretKeys is every credential this build knows about, core and plugin —
+// a switched-off plugin's too: redacting a key nothing shows costs nothing,
+// and missing one would hand its credential out.
 func secretKeys() []string {
 	out := append([]string(nil), secretSettings...)
-	for _, d := range settings.Definitions() {
+	for _, d := range settings.AllDefinitions() {
 		if d.Secret {
 			out = append(out, d.Key)
 		}

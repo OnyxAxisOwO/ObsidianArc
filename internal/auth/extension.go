@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -51,6 +52,9 @@ type Verdict struct {
 // succeed.
 type Guard struct {
 	Name string
+	// The plugin that stands it there. A switched-off plugin's guard is
+	// skipped, as if it had never been added.
+	Plugin string
 	// The security log's event name for a refusal.
 	Event string
 	Check func(context.Context, GuardRequest) (Verdict, error)
@@ -82,11 +86,38 @@ func (s *Service) AddGuard(action string, g Guard) {
 	}
 }
 
+// SetPluginGate is how the server tells sign-up and sign-in which plugins are
+// on. Set once, before the first request; the handlers read the same gate.
+func (s *Service) SetPluginGate(g plugingate.Gate) { s.gate = g }
+
+// GuardInfo names a guard for the plugin manifest.
+type GuardInfo struct {
+	Action string `json:"action"`
+	Name   string `json:"name"`
+}
+
+// GuardsOf lists the guards plugin stood in front of either door.
+func (s *Service) GuardsOf(plugin string) []GuardInfo {
+	var out []GuardInfo
+	for action, guards := range map[string][]Guard{GuardRegister: s.signupGuards, GuardLogin: s.loginGuards} {
+		for _, g := range guards {
+			if g.Plugin == plugin {
+				out = append(out, GuardInfo{Action: action, Name: g.Name})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Action > out[j].Action })
+	return out
+}
+
 // runGuards asks each guard in turn and stops at the first refusal. The
 // strongest restriction any of them asked for is what comes back.
 func (s *Service) runGuards(ctx context.Context, guards []Guard, action string, tokens map[string]string, ip, username string) (Verdict, error) {
 	var out Verdict
 	for _, g := range guards {
+		if !s.gate.Allows(g.Plugin) {
+			continue
+		}
 		verdict, err := g.Check(ctx, GuardRequest{
 			Action: action, Token: tokens[g.Name], IP: ip, Username: username,
 		})
@@ -118,8 +149,9 @@ func (s *Service) runGuards(ctx context.Context, guards []Guard, action string, 
 // should say nothing it would ask the first visitor to do.
 //
 // A nil fn advertises the plugin with an empty block: the browser loads a
-// plugin's own code only for the names it finds here, so every compiled-in
-// plugin is advertised whether or not it has anything to say.
+// plugin's own code only for the names it finds here, so every enabled
+// plugin is advertised whether or not it has anything to say, and a
+// switched-off one is not — its code stays on the server.
 func (h *Handlers) Extend(name string, fn func(firstAccount bool) map[string]any) {
 	if h.extensions == nil {
 		h.extensions = map[string]func(bool) map[string]any{}
@@ -139,7 +171,9 @@ func (h *Handlers) pluginConfig(firstAccount bool) map[string]any {
 	out := make(map[string]any, len(h.extensions))
 	names := make([]string, 0, len(h.extensions))
 	for name := range h.extensions {
-		names = append(names, name)
+		if h.service.gate.Allows(name) {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	for _, name := range names {
@@ -189,7 +223,7 @@ func (s *Service) FieldRule(key string) string {
 // requiredFields is every field an account opened now has to carry.
 func (s *Service) requiredFields() []string {
 	var out []string
-	for _, f := range user.Fields() {
+	for _, f := range s.users.Fields() {
 		if s.FieldRule(f.Key) == FieldRequired {
 			out = append(out, f.Key)
 		}
@@ -205,7 +239,7 @@ func (s *Service) checkFields(values map[string]string) error {
 			return &user.FieldError{Key: key, Reason: user.ErrFieldRequired}
 		}
 	}
-	_, err := user.CheckFields(values)
+	_, err := s.users.CheckFields(values)
 	return err
 }
 

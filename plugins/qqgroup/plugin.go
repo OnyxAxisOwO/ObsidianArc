@@ -69,12 +69,16 @@ var qqRE = regexp.MustCompile(`^[1-9][0-9]{4,14}$`)
 // digits, no leading zero.
 func ValidQQ(value string) bool { return qqRE.MatchString(value) }
 
-//go:embed migrations/*.sql
+//go:embed migrations/*.sql purge/*.sql
 var migrations embed.FS
+
+// Version is the plugin's own, shown in its manifest and recorded when it is
+// installed.
+const Version = "1.1.0"
 
 func init() {
 	user.DefineField(user.Field{
-		Key: Field, Unique: true, Searchable: true,
+		Key: Field, Unique: true, Searchable: true, Plugin: Name,
 		Validate: func(v string) error {
 			if !ValidQQ(v) {
 				return errors.New("a QQ number is five to fifteen digits")
@@ -83,7 +87,7 @@ func init() {
 		},
 	})
 	settings.Define(settings.Definition{
-		Key: Requirement, Default: auth.FieldOff,
+		Key: Requirement, Default: auth.FieldOff, Plugin: Name,
 		Validate: func(v string) error {
 			switch v {
 			case auth.FieldOff, auth.FieldOptional, auth.FieldRequired:
@@ -95,13 +99,13 @@ func init() {
 	// Write-only, like the other credentials, and on the security screen
 	// with them: the bot can disable or delete accounts, which is a
 	// front-door concern.
-	settings.Define(settings.Definition{Key: BotWebhookToken, Secret: true, Permission: "security"})
+	settings.Define(settings.Definition{Key: BotWebhookToken, Secret: true, Permission: "security", Plugin: Name})
 	// The reversible one by default: a bot misfire should cost an
 	// administrator a re-enable, not an account. A mode nothing reads would
 	// silently do the wrong thing to every account the bot reports, so it is
 	// refused rather than defaulted.
 	settings.Define(settings.Definition{
-		Key: BotDepartureMode, Default: ModeDisable, Permission: "security",
+		Key: BotDepartureMode, Default: ModeDisable, Permission: "security", Plugin: Name,
 		Validate: func(v string) error {
 			if !validMode(v) {
 				return errors.New("must be disable or delete")
@@ -116,12 +120,31 @@ type qqPlugin struct{}
 
 func (qqPlugin) Name() string { return Name }
 
-func (qqPlugin) Migrations() fs.FS {
-	sub, err := fs.Sub(migrations, "migrations")
+func (qqPlugin) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Version: Version,
+		Title:   plugin.Text{EN: "QQ group", ZH: "QQ 群"},
+		Description: plugin.Text{
+			EN: "Accounts carry their QQ number; a community sign-in that vouches for the number binds it; " +
+				"a member leaving the group ends their account and takes back what their invitation earned.",
+			ZH: "账户携带 QQ 号；为号码担保的社区登录会自动绑定；成员退群时结束其账户并收回其邀请所得。",
+		},
+		Author:  "Obsidian Arc",
+		License: "MIT",
+	}
+}
+
+func (qqPlugin) Migrations() fs.FS { return sub("migrations") }
+
+// Purge drops the column and the table, the two migrations in reverse.
+func (qqPlugin) Purge() fs.FS { return sub("purge") }
+
+func sub(dir string) fs.FS {
+	out, err := fs.Sub(migrations, dir)
 	if err != nil {
 		panic(err)
 	}
-	return sub
+	return out
 }
 
 func (qqPlugin) Setup(h *plugin.Host) error {
@@ -143,8 +166,8 @@ func (qqPlugin) Setup(h *plugin.Host) error {
 
 	bot := newBotHandlers(departures, set)
 	bot.ClientIP = h.ClientIP
-	bot.Routes(h.Mux)
+	bot.Routes(h)
 
-	h.InviteHandlers.DecorateInvitees(departures.decorateInvitees)
+	h.InviteHandlers.DecorateInvitees(Name, departures.decorateInvitees)
 	return nil
 }

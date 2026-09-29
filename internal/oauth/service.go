@@ -137,15 +137,26 @@ func (s *Service) BindSubject(b SubjectBinding) {
 	s.binding = &b
 }
 
+// bound is the binding in force: installed, and its field one the accounts
+// table is read with now. A binding whose plugin is switched off would write
+// a column no query names — or one uninstalling has dropped.
+func (s *Service) bound() *SubjectBinding {
+	if s.binding == nil || !s.users.HasField(s.binding.Field) {
+		return nil
+	}
+	return s.binding
+}
+
 // boundValue is the field and value identity's subject stands for, or "".
 func (s *Service) boundValue(identity Identity) (string, string) {
-	if s.binding == nil || identity.Provider != s.binding.Provider {
+	binding := s.bound()
+	if binding == nil || identity.Provider != binding.Provider {
 		return "", ""
 	}
-	if s.binding.Matches != nil && !s.binding.Matches(identity.Subject) {
+	if binding.Matches != nil && !binding.Matches(identity.Subject) {
 		return "", ""
 	}
-	return s.binding.Field, identity.Subject
+	return binding.Field, identity.Subject
 }
 
 // SuggestedFields is what the completion form arrives filled with: the
@@ -652,7 +663,7 @@ func (s *Service) Disconnect(ctx context.Context, userID, provider string) error
 	// A connection whose subject is bound to an account field is the proof
 	// behind that value; unbinding it would leave the value without a way to
 	// prove it. Deleting the account is the only way it comes off.
-	if s.binding != nil && provider == s.binding.Provider {
+	if binding := s.bound(); binding != nil && provider == binding.Provider {
 		return ErrOIDCPinned
 	}
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
