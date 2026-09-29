@@ -85,6 +85,49 @@
    spaces to wrap at; right-aligned like the other values, and broken anywhere
    rather than pushing the panel wider than it was dragged to. */
 .oa-plugin-list { text-align: right; overflow-wrap: anywhere; font-size: 12px; }
+/* Plugin details drawer: hero header, structured metadata tiles, and categorized capability chips. */
+.oa-plugin-detail { display: flex; flex-direction: column; gap: 18px; }
+.oa-plugin-detail-hero { display: flex; align-items: flex-start; gap: 14px; padding: 16px; border-radius: 14px; background: var(--ai-surface-container); }
+.oa-plugin-detail-icon { display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; border-radius: 12px; background: var(--ai-surface-card); color: var(--ai-primary); }
+.oa-plugin-detail-lead { flex: 1; min-width: 0; }
+.oa-plugin-detail-header-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.oa-plugin-detail-name { margin: 0; font-size: 16px; font-weight: 650; color: var(--ai-text); line-height: 1.3; }
+.oa-plugin-detail-slug { font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ai-text-secondary); }
+.oa-plugin-detail-badge-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.oa-plugin-detail-version { font-size: 11px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ai-text-secondary); background: var(--ai-surface-card); padding: 2px 7px; border-radius: 6px; }
+.oa-plugin-detail-desc { margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: var(--ai-text-secondary); }
+.oa-plugin-detail-action-bar { display: flex; flex-wrap: wrap; gap: 8px; }
+.oa-plugin-page-jump { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.oa-plugin-detail-section { display: flex; flex-direction: column; gap: 10px; }
+.oa-plugin-detail-section-head { display: flex; align-items: center; justify-content: space-between; }
+.oa-plugin-detail-section-head .oa-field-label { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .02em; color: var(--ai-text-secondary); text-transform: uppercase; }
+.oa-plugin-meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.oa-plugin-meta-item { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; background: var(--ai-surface-container); min-width: 0; }
+.oa-plugin-meta-item.wide { grid-column: 1 / -1; }
+.oa-plugin-meta-label { font-size: 11px; color: var(--ai-text-secondary); }
+.oa-plugin-meta-value { font-size: 12.5px; font-weight: 550; color: var(--ai-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oa-plugin-meta-value.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.oa-plugin-meta-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ai-primary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oa-plugin-meta-link:hover { text-decoration: underline; }
+.oa-plugin-contrib-total-badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--ai-surface-container); color: var(--ai-text-secondary); }
+.oa-plugin-contrib-list { display: flex; flex-direction: column; gap: 10px; }
+.oa-plugin-contrib-group { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 12px; background: var(--ai-surface-container); }
+.oa-plugin-contrib-head { display: flex; align-items: center; justify-content: space-between; }
+.oa-plugin-contrib-title { font-size: 12px; font-weight: 600; color: var(--ai-text); }
+.oa-plugin-contrib-count { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--ai-surface-card); color: var(--ai-text-secondary); }
+.oa-plugin-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.oa-plugin-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 7px; background: var(--ai-surface-card); font-size: 11.5px; line-height: 1.4; color: var(--ai-text); word-break: break-all; }
+.oa-plugin-chip.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.oa-plugin-chip.link { color: var(--ai-primary); text-decoration: none; cursor: pointer; transition: background-color .15s ease; }
+.oa-plugin-chip.link:hover { background: var(--ai-field-bg-hover); }
+.oa-plugin-chip-method { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; padding: 1px 4px; border-radius: 4px; background: var(--ai-surface-container-high); color: var(--ai-primary); }
+.oa-plugin-chip-secret { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--ai-surface-container-high); color: var(--ai-text-secondary); }
+/* Controls declared by a plugin: separated with subtle borders so hint text does not crowd the next field. */
+.oa-plugin-controls { display: flex; flex-direction: column; gap: 16px; }
+.oa-control-card-wide .oa-plugin-controls { max-width: 640px; }
+.oa-plugin-control-item { display: flex; flex-direction: column; gap: 8px; padding-bottom: 16px; border-bottom: 1px solid var(--ai-border); }
+.oa-plugin-control-item:last-child { padding-bottom: 0; border-bottom: 0; }
+.oa-plugin-control-item .oa-switch-field { padding: 0; border-bottom: 0; }
 .oa-resource-definition dt { font-size: 12px; }
 .oa-resource-definition dt > small { display: block; margin-top: 6px; font-size: 10px; line-height: 1.7; color: var(--ai-text-secondary); }
 .oa-resource-definition dd { margin: 0; font-size: 18px; font-weight: 550; white-space: nowrap; font-variant-numeric: tabular-nums; }

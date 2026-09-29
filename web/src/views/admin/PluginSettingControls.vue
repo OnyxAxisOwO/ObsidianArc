@@ -27,40 +27,42 @@ function set(key: string, value: string): void {
 </script>
 
 <template>
-  <template v-for="control in section.controls" :key="control.key">
-    <OaTextField
-      v-if="control.kind === 'text'"
-      :model-value="draft[control.key] ?? ''"
-      :label="control.label()"
-      :hint="control.hint?.()"
-      :placeholder="control.placeholder"
-      @update:model-value="set(control.key, $event)"
-    />
-    <OaTextField
-      v-else-if="control.kind === 'secret'"
-      type="password"
-      autocomplete="off"
-      :model-value="draft[control.key] ?? ''"
-      :label="control.label()"
-      :hint="control.hint?.()"
-      :placeholder="hints[control.key] || control.placeholder"
-      @update:model-value="set(control.key, $event)"
-    />
-    <OaSwitchField
-      v-else-if="control.kind === 'switch'"
-      :model-value="draft[control.key] === 'true'"
-      :label="control.label()"
-      :hint="control.hint?.()"
-      @update:model-value="set(control.key, String($event))"
-    />
-    <OaSelectField
-      v-else-if="control.kind === 'select'"
-      :model-value="draft[control.key] ?? ''"
-      :label="control.label()"
-      :hint="control.hint?.()"
-      :searchable="false"
-      :options="control.options.map((option) => ({ value: option.value, label: option.label() }))"
-      @update:model-value="set(control.key, $event)"
-    />
-  </template>
+  <div class="oa-plugin-controls">
+    <div v-for="control in section.controls" :key="control.key" class="oa-plugin-control-item">
+      <OaTextField
+        v-if="control.kind === 'text'"
+        :model-value="draft[control.key] ?? ''"
+        :label="control.label()"
+        :hint="control.hint?.()"
+        :placeholder="control.placeholder"
+        @update:model-value="set(control.key, $event)"
+      />
+      <OaTextField
+        v-else-if="control.kind === 'secret'"
+        type="password"
+        autocomplete="off"
+        :model-value="draft[control.key] ?? ''"
+        :label="control.label()"
+        :hint="control.hint?.()"
+        :placeholder="hints[control.key] || control.placeholder"
+        @update:model-value="set(control.key, $event)"
+      />
+      <OaSwitchField
+        v-else-if="control.kind === 'switch'"
+        :model-value="draft[control.key] === 'true'"
+        :label="control.label()"
+        :hint="control.hint?.()"
+        @update:model-value="set(control.key, String($event))"
+      />
+      <OaSelectField
+        v-else-if="control.kind === 'select'"
+        :model-value="draft[control.key] ?? ''"
+        :label="control.label()"
+        :hint="control.hint?.()"
+        :searchable="false"
+        :options="control.options.map((option) => ({ value: option.value, label: option.label() }))"
+        @update:model-value="set(control.key, $event)"
+      />
+    </div>
+  </div>
 </template>

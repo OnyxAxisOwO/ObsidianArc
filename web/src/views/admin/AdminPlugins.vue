@@ -21,8 +21,9 @@ import OaPanel from '@/components/OaPanel.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { currentLanguage, t } from '@/composables/useI18n';
-import { IconPuzzle } from '@/icons';
+import { IconArrowUpRight, IconPuzzle } from '@/icons';
 import { absoluteTime } from '@/lib/format';
+import { RouterLink } from 'vue-router';
 import { loadPluginModule } from '@/plugins/registry';
 import type { ArcPlugin } from '@/plugins/types';
 import { canAdmin, currentUser, refreshSite } from '@/stores/session';
@@ -118,25 +119,117 @@ function openDetail(plugin: AdminPlugin): void {
   detail.value = plugin;
 }
 
-function listed(values: string[]): string {
-  return values.length ? values.join(', ') : t('pluginNothing');
+const detailPages = computed(() => {
+  const plugin = detail.value;
+  if (!plugin) return [];
+  return modules[plugin.name]?.adminPages ?? [];
+});
+
+interface ContributionItem {
+  text: string;
+  sub?: string;
+  secret?: boolean;
+  method?: string;
+  to?: string;
 }
 
-const detailRows = computed(() => {
+interface ContributionGroup {
+  key: string;
+  label: string;
+  count: number;
+  items: ContributionItem[];
+}
+
+const contributionGroups = computed<ContributionGroup[]>(() => {
   const plugin = detail.value;
   if (!plugin) return [];
   const c = plugin.contributions;
-  const pages = modules[plugin.name]?.adminPages?.map((page) => page.title()) ?? [];
-  return [
-    { label: t('pluginSettingsKeys'), value: listed(c.settings.map((s) => s.secret ? `${s.key} (${t('pluginSecret')})` : s.key)) },
-    { label: t('pluginFields'), value: listed(c.fields) },
-    { label: t('pluginGuards'), value: listed(c.guards) },
-    { label: t('pluginCaptchaModes'), value: listed(c.captcha_modes) },
-    { label: t('pluginRoutes'), value: listed([...c.admin_routes.map((r) => r.pattern), ...c.public_routes]) },
-    { label: t('pluginCommands'), value: listed(c.commands) },
-    { label: t('pluginMigrations'), value: listed(c.migrations) },
-    { label: t('pluginPages'), value: listed(pages) },
+  const groups: ContributionGroup[] = [];
+
+  const pages = modules[plugin.name]?.adminPages ?? [];
+  if (pages.length) {
+    groups.push({
+      key: 'pages',
+      label: t('pluginPages'),
+      count: pages.length,
+      items: pages.map((page) => ({
+        text: page.title(),
+        to: `/admin/${page.slug}`,
+      })),
+    });
+  }
+
+  if (c.settings.length) {
+    groups.push({
+      key: 'settings',
+      label: t('pluginSettingsKeys'),
+      count: c.settings.length,
+      items: c.settings.map((s) => ({
+        text: s.key,
+        secret: !!s.secret,
+      })),
+    });
+  }
+
+  if (c.fields.length) {
+    groups.push({
+      key: 'fields',
+      label: t('pluginFields'),
+      count: c.fields.length,
+      items: c.fields.map((f) => ({ text: f })),
+    });
+  }
+
+  if (c.guards.length) {
+    groups.push({
+      key: 'guards',
+      label: t('pluginGuards'),
+      count: c.guards.length,
+      items: c.guards.map((g) => ({ text: g })),
+    });
+  }
+
+  if (c.captcha_modes.length) {
+    groups.push({
+      key: 'captcha',
+      label: t('pluginCaptchaModes'),
+      count: c.captcha_modes.length,
+      items: c.captcha_modes.map((m) => ({ text: m })),
+    });
+  }
+
+  const routes: ContributionItem[] = [
+    ...c.admin_routes.map((r) => ({ text: r.pattern, method: 'ADMIN' })),
+    ...c.public_routes.map((p) => ({ text: p, method: 'API' })),
   ];
+  if (routes.length) {
+    groups.push({
+      key: 'routes',
+      label: t('pluginRoutes'),
+      count: routes.length,
+      items: routes,
+    });
+  }
+
+  if (c.migrations.length) {
+    groups.push({
+      key: 'migrations',
+      label: t('pluginMigrations'),
+      count: c.migrations.length,
+      items: c.migrations.map((m) => ({ text: m })),
+    });
+  }
+
+  if (c.commands.length) {
+    groups.push({
+      key: 'commands',
+      label: t('pluginCommands'),
+      count: c.commands.length,
+      items: c.commands.map((cmd) => ({ text: cmd })),
+    });
+  }
+
+  return groups;
 });
 
 // --- install ----------------------------------------------------------------
@@ -275,24 +368,120 @@ onMounted(load);
     v-if="detail"
     :title="title(detail)"
     :footer="false"
-    :width="460"
+    :width="480"
     @close="detail = null"
   >
-    <p class="oa-field-hint">{{ text(detail.manifest.description) }}</p>
-    <h4 class="oa-field-label">{{ t('pluginManifest') }}</h4>
-    <dl class="oa-resource-definition">
-      <div><dt>{{ t('pluginVersionLabel') }}</dt><dd>{{ detail.manifest.version || '—' }}</dd></div>
-      <div v-if="detail.manifest.author"><dt>{{ t('pluginAuthor') }}</dt><dd>{{ detail.manifest.author }}</dd></div>
-      <div v-if="detail.manifest.license"><dt>{{ t('pluginLicense') }}</dt><dd>{{ detail.manifest.license }}</dd></div>
-      <div v-if="detail.manifest.homepage"><dt>{{ t('pluginHomepage') }}</dt><dd>{{ detail.manifest.homepage }}</dd></div>
-      <div><dt>{{ t('status') }}</dt><dd><OaBadge :tone="stateTone(detail)">{{ stateLabel(detail) }}</OaBadge></dd></div>
-      <div v-if="detail.installed.at"><dt>{{ t('pluginInstalledAt') }}</dt><dd>{{ absoluteTime(detail.installed.at) }}</dd></div>
-      <div v-if="detail.installed.version"><dt>{{ t('pluginInstalledVersion') }}</dt><dd>{{ detail.installed.version }}</dd></div>
-    </dl>
-    <h4 class="oa-field-label">{{ t('pluginContributes') }}</h4>
-    <dl class="oa-resource-definition">
-      <div v-for="row in detailRows" :key="row.label"><dt>{{ row.label }}</dt><dd class="oa-plugin-list">{{ row.value }}</dd></div>
-    </dl>
+    <div class="oa-plugin-detail">
+      <div class="oa-plugin-detail-hero">
+        <div class="oa-plugin-detail-icon">
+          <component :is="modules[detail.name]?.icon ?? IconPuzzle" :size="24" />
+        </div>
+        <div class="oa-plugin-detail-lead">
+          <div class="oa-plugin-detail-header-row">
+            <h3 class="oa-plugin-detail-name">{{ title(detail) }}</h3>
+            <span class="oa-plugin-detail-slug">{{ detail.name }}</span>
+          </div>
+          <div class="oa-plugin-detail-badge-row">
+            <span class="oa-plugin-detail-version">v{{ detail.manifest.version || detail.installed.version || '—' }}</span>
+            <OaBadge :tone="stateTone(detail)">{{ stateLabel(detail) }}</OaBadge>
+          </div>
+          <p class="oa-plugin-detail-desc">
+            {{ detail.missing ? t('pluginMissingHint') : text(detail.manifest.description) }}
+          </p>
+        </div>
+      </div>
+
+      <div v-if="detail.state === 'enabled' && detailPages.length" class="oa-plugin-detail-action-bar">
+        <RouterLink
+          v-for="page in detailPages"
+          :key="page.slug"
+          :to="`/admin/${page.slug}`"
+          class="oa-btn small primary oa-plugin-page-jump"
+          @click="detail = null"
+        >
+          <span>{{ page.title() }}</span>
+          <IconArrowUpRight :size="13" />
+        </RouterLink>
+      </div>
+
+      <div class="oa-plugin-detail-section">
+        <div class="oa-plugin-detail-section-head">
+          <h4 class="oa-field-label">{{ t('pluginManifest') }}</h4>
+        </div>
+        <div class="oa-plugin-meta-grid">
+          <div class="oa-plugin-meta-item">
+            <span class="oa-plugin-meta-label">{{ t('pluginVersionLabel') }}</span>
+            <span class="oa-plugin-meta-value mono">{{ detail.manifest.version || '—' }}</span>
+          </div>
+          <div v-if="detail.manifest.author" class="oa-plugin-meta-item">
+            <span class="oa-plugin-meta-label">{{ t('pluginAuthor') }}</span>
+            <span class="oa-plugin-meta-value">{{ detail.manifest.author }}</span>
+          </div>
+          <div v-if="detail.manifest.license" class="oa-plugin-meta-item">
+            <span class="oa-plugin-meta-label">{{ t('pluginLicense') }}</span>
+            <span class="oa-plugin-meta-value">{{ detail.manifest.license }}</span>
+          </div>
+          <div class="oa-plugin-meta-item">
+            <span class="oa-plugin-meta-label">{{ t('status') }}</span>
+            <span class="oa-plugin-meta-value">
+              <OaBadge :tone="stateTone(detail)">{{ stateLabel(detail) }}</OaBadge>
+            </span>
+          </div>
+          <div v-if="detail.installed.version" class="oa-plugin-meta-item">
+            <span class="oa-plugin-meta-label">{{ t('pluginInstalledVersion') }}</span>
+            <span class="oa-plugin-meta-value mono">{{ detail.installed.version }}</span>
+          </div>
+          <div v-if="detail.installed.at" class="oa-plugin-meta-item wide">
+            <span class="oa-plugin-meta-label">{{ t('pluginInstalledAt') }}</span>
+            <span class="oa-plugin-meta-value mono">{{ absoluteTime(detail.installed.at) }}</span>
+          </div>
+          <div v-if="detail.manifest.homepage" class="oa-plugin-meta-item wide">
+            <span class="oa-plugin-meta-label">{{ t('pluginHomepage') }}</span>
+            <a :href="detail.manifest.homepage" target="_blank" rel="noopener noreferrer" class="oa-plugin-meta-link">
+              <span>{{ detail.manifest.homepage }}</span>
+              <IconArrowUpRight :size="12" />
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div class="oa-plugin-detail-section">
+        <div class="oa-plugin-detail-section-head">
+          <h4 class="oa-field-label">{{ t('pluginContributes') }}</h4>
+          <span v-if="contributionGroups.length" class="oa-plugin-contrib-total-badge">
+            {{ contributionGroups.reduce((acc, g) => acc + g.count, 0) }}
+          </span>
+        </div>
+
+        <p v-if="!contributionGroups.length" class="oa-field-hint">{{ t('pluginNothing') }}</p>
+        <div v-else class="oa-plugin-contrib-list">
+          <div v-for="group in contributionGroups" :key="group.key" class="oa-plugin-contrib-group">
+            <div class="oa-plugin-contrib-head">
+              <span class="oa-plugin-contrib-title">{{ group.label }}</span>
+              <span class="oa-plugin-contrib-count">{{ group.count }}</span>
+            </div>
+            <div class="oa-plugin-chips">
+              <template v-for="item in group.items" :key="item.text">
+                <RouterLink
+                  v-if="item.to && detail.state === 'enabled'"
+                  :to="item.to"
+                  class="oa-plugin-chip link"
+                  @click="detail = null"
+                >
+                  <span>{{ item.text }}</span>
+                  <IconArrowUpRight :size="12" />
+                </RouterLink>
+                <div v-else class="oa-plugin-chip" :class="{ mono: item.secret !== undefined || item.method }">
+                  <span v-if="item.method" class="oa-plugin-chip-method">{{ item.method }}</span>
+                  <span>{{ item.text }}</span>
+                  <span v-if="item.secret" class="oa-plugin-chip-secret">{{ t('pluginSecret') }}</span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </OaPanel>
 
   <OaPanel

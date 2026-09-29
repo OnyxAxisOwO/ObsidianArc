@@ -13,6 +13,7 @@ import { ApiError } from '@/api/client';
 import { t } from '@/composables/useI18n';
 import type { AdminPluginPage } from '@/plugins/types';
 import AdminFailure from './AdminFailure.vue';
+import PluginActionCard from './PluginActionCard.vue';
 import PluginList from './PluginList.vue';
 import PluginSettingsCard from './PluginSettingsCard.vue';
 import { usePluginSettings } from './pluginSettings';
@@ -26,8 +27,15 @@ view.setTitle(props.page.title(), props.page.hint?.());
 
 const placement = `plugin:${props.page.slug}` as const;
 const settings = usePluginSettings(placement);
+const actionCards = computed(() =>
+  plugins().flatMap((plugin) => plugin.actionCards ?? []).filter((card) => card.page === placement));
 const lists = computed(() =>
   plugins().flatMap((plugin) => plugin.lists ?? []).filter((list) => list.page === placement));
+
+const listRevision = ref(0);
+function onActionDone(): void {
+  listRevision.value++;
+}
 
 const loaded = ref(false);
 const error = ref('');
@@ -90,15 +98,27 @@ onMounted(load);
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
   <div v-else class="oa-workbench">
     <p v-if="saveError" class="oa-field-hint" role="alert">{{ saveError }}</p>
-    <div v-if="settings.sections.value.length" class="oa-workbench-grid">
+    <div v-if="settings.sections.value.length || actionCards.length || lists.length" class="oa-workbench-grid">
+      <PluginActionCard
+        v-for="card in actionCards"
+        :key="card.id"
+        :card="card"
+        class="oa-control-card-wide"
+        @done="onActionDone"
+      />
       <PluginSettingsCard
         v-for="section in settings.sections.value"
         :key="section.id"
         :section="section"
         :draft="settings.draft"
         :hints="settings.hints"
+        :class="{ 'oa-control-card-wide': settings.sections.value.length === 1 }"
+      />
+      <PluginList
+        v-for="spec in lists"
+        :key="spec.id + ':' + listRevision"
+        :spec="spec"
       />
     </div>
-    <PluginList v-for="spec in lists" :key="spec.id" :spec="spec" />
   </div>
 </template>

@@ -105,6 +105,36 @@ export interface SettingsSection {
   defaults: Record<string, string>;
 }
 
+/** One control in an action card. */
+export type ActionControl =
+  | { kind: 'text'; key: string; label: Text; hint?: Text; placeholder?: string; required?: boolean }
+  | { kind: 'select'; key: string; label: Text; hint?: Text; options: Array<{ value: string; label: Text }> }
+  | { kind: 'datetime'; key: string; label: Text; hint?: Text; presets?: boolean; required?: boolean };
+
+/**
+ * An action card on a workbench page: inputs and an action button that executes
+ * an operation (such as a mass card grant or batch task) and reports back.
+ */
+export interface ActionCardSpec {
+  id: string;
+  page: PluginPlacement;
+  title: Text;
+  hint?: Text;
+  icon?: OaIcon;
+  keywords?: string[];
+  controls: ActionControl[];
+  defaults?: Record<string, string>;
+  button: {
+    label: Text;
+    /** Optional confirmation question or title. */
+    confirm?: (draft: Record<string, string>) => string;
+    /** Optional label shown while the button is armed. */
+    armedLabel?: Text;
+    danger?: boolean;
+    run(draft: Record<string, string>): Promise<string>;
+  };
+}
+
 /** What a list cell shows. Masked values are passed through the backoffice's safe mode. */
 export interface ListCell {
   title: string;
@@ -194,6 +224,7 @@ export interface ArcPlugin {
    */
   pinnedProviders?: Record<string, { hint: Text; refused: Text }>;
   settings?: SettingsSection[];
+  actionCards?: ActionCardSpec[];
   lists?: AdminListSpec[];
   userActions?: UserActionSpec[];
   adminPages?: AdminPluginPage[];
