@@ -218,9 +218,12 @@ const guarded = computed(() =>
     : !setup.value && !!site.value.turnstile_on_login,
 );
 
-// The self-hosted risk control service, on the same terms. The SDK starts
-// as soon as the card opens rather than on submit — it scores behaviour,
-// and telemetry that starts at submit time has nothing to score.
+// The self-hosted risk control service. The SDK is loaded and init-ed as
+// soon as we know where it lives — not only once the guarded flag says a
+// check is required. The service scores behaviour; a SDK that starts at
+// submit has nothing to score. The token is only attached to the request
+// when riskGuarded is true, so early loading costs nothing when the operator
+// has the check switched off.
 const riskBase = computed(() => site.value.risk_base_url ?? '');
 const riskSite = computed(() => site.value.risk_site ?? '');
 const riskGuarded = computed(() =>
@@ -232,10 +235,15 @@ const riskAction = computed(() => (registering.value ? 'register' : 'login'));
 const formEl = ref<HTMLFormElement | null>(null);
 let riskReady: Promise<RiskControlAPI | null> | null = null;
 
+// Watch only base and site — not the guarded flag — so that boot.js is
+// fetched the moment the /api/site response arrives with the service
+// address, well before the user presses submit.
 watch(
-  [riskGuarded, riskBase, riskSite],
-  ([on, base, key]) => {
-    riskReady = on && base && key ? beginRiskControl(base, key) : null;
+  [riskBase, riskSite],
+  ([base, key]) => {
+    if (base && key) {
+      riskReady = beginRiskControl(base, key);
+    }
   },
   { immediate: true },
 );
@@ -412,10 +420,11 @@ async function onSubmit(): Promise<void> {
     buttonLabel.value = t('riskChecking');
     try {
       rcToken = await riskToken();
-    } catch {
+    } catch (err: unknown) {
       busy.value = false;
       buttonLabel.value = '';
-      error.value = t('riskFailed');
+      const message = err instanceof Error ? err.message : String(err ?? '');
+      error.value = message === 'devtools-locked' ? t('riskDevtoolsLocked') : t('riskFailed');
       return;
     }
   }

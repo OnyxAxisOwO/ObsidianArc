@@ -124,7 +124,8 @@ func verifyAt(ctx context.Context, client *http.Client, endpoint, site, secret, 
 		// function will not quietly pass a request it did not verify.
 		return Result{}, ErrUnavailable
 	}
-	if strings.TrimSpace(token) == "" {
+	// Overlong tokens cannot be genuine and waste connection buffers and downstream service memory.
+	if strings.TrimSpace(token) == "" || len(token) > 65536 {
 		return Result{}, ErrFailed
 	}
 
@@ -184,6 +185,12 @@ func verifyAt(ctx context.Context, client *http.Client, endpoint, site, secret, 
 				return Result{}, fmt.Errorf("%w: %s", ErrUnavailable, code)
 			}
 		}
+		return Result{}, ErrFailed
+	}
+
+	// Action mismatch: a token minted for another action (e.g. login token
+	// presented at register, or vice versa) is not valid for this verification.
+	if verdict.Action != "" && verdict.Action != action {
 		return Result{}, ErrFailed
 	}
 
