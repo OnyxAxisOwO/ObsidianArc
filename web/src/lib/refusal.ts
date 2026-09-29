@@ -1,5 +1,6 @@
 import { ApiError } from '@/api/client';
 import { t } from '@/composables/useI18n';
+import { pluginRefusal } from '@/plugins/registry';
 
 /**
  * Why an authentication request was refused, in the reader's own language.
@@ -57,12 +58,6 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       return t('challengeFailed');
     case 'challenge_unavailable':
       return t('challengeUnavailable');
-    case 'risk_blocked':
-      // The self-hosted risk service judged this request and refused it.
-      // Distinct from a failed challenge, which can be retried: this one
-      // says nothing about trying again, because trying again answers to
-      // the service, not to the form.
-      return t('riskBlocked');
     case 'pow_required':
       return t('powRequired');
     case 'pow_expired':
@@ -74,12 +69,6 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       return t('powVerificationFailed');
     case 'pow_rate_limited':
       return t('powRateLimited');
-    case 'qq_required':
-      return t('qqRequiredHere');
-    case 'invalid_qq':
-      return t('qqInvalid');
-    case 'qq_taken':
-      return t('qqTaken');
     case 'email_required':
       return t('emailRequiredHere');
     case 'email_domain':
@@ -97,6 +86,9 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
     case 'two_factor_expired':
       return t('twoFactorExpired');
     default: {
+      // A plugin's own codes, and its fields' <key>_taken and friends.
+      const plugin = pluginRefusal(failure.code);
+      if (plugin) return plugin;
       const named = allowed(failure, []);
       if (named.length) return t('emailDomainRejected', { domains: named.join(', ') });
       // A server that refused an address without saying which are acceptable,

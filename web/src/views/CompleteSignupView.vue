@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The step a provider sign-in stops at when this server wants something the
-// provider had no way to supply — a QQ number, or an address where GitHub
-// proved none.
+// provider had no way to supply — an account field a plugin requires, or an
+// address where GitHub proved none.
 //
 // It is the sign-up form with everything a provider already answered taken
 // out, which is usually one field. Nothing has been written when somebody
@@ -11,7 +11,10 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { completeSignup, fetchPendingSignup, type PendingSignup } from '@/api/oauth';
+import OaAccountFields from '@/components/OaAccountFields.vue';
 import OaField from '@/components/OaField.vue';
+import { fieldProblem, fieldValues, type FieldPlan } from '@/lib/account-fields';
+import { fieldSpec } from '@/plugins/registry';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import { t } from '@/composables/useI18n';
 import { IconGithub, IconGoogle, IconKey, IconSpark, type OaIcon } from '@/icons';
@@ -38,8 +41,15 @@ const busy = ref(false);
 
 const username = ref('');
 const password = ref('');
-const qq = ref('');
+const fields = ref<Record<string, string>>({});
 const email = ref('');
+
+// The required fields are asked for; a value the provider already answered
+// (a subject a plugin binds to a field) rides along whether or not it is.
+const fieldPlan = computed<FieldPlan>(() => {
+  const required = (pending.value?.needs.fields ?? []).filter((key) => fieldSpec(key));
+  return { keys: required, required };
+});
 
 const showPassword = computed(() => pending.value?.needs_password !== false);
 const passwordRequired = computed(() => !!pending.value?.password_required);
@@ -61,9 +71,9 @@ onMounted(() => {
   void fetchPendingSignup()
     .then((result) => {
       pending.value = result;
-      // An IdP that vouches with the QQ number itself fills the field; the
+      // A provider that vouches with a field's value itself fills it; the
       // answer still goes through the button, so it stays editable.
-      if (result.qq) qq.value = result.qq;
+      fields.value = { ...(result.fields ?? {}) };
       if (result.suggested_username) {
         username.value = result.suggested_username;
       } else if (result.login && /^[A-Za-z0-9._-]{3,32}$/.test(result.login)) {
@@ -104,13 +114,9 @@ async function submit(): Promise<void> {
   }
 
   // Checked here only so the answer is immediate; the server decides.
-  const number = qq.value.trim();
-  if (pending.value.needs.qq && !number) {
-    error.value = t('qqRequiredHere');
-    return;
-  }
-  if (number && !/^[1-9][0-9]{4,14}$/.test(number)) {
-    error.value = t('qqInvalid');
+  const fieldError = fieldProblem(fields.value, fieldPlan.value);
+  if (fieldError) {
+    error.value = fieldError;
     return;
   }
   const address = email.value.trim();
@@ -126,9 +132,11 @@ async function submit(): Promise<void> {
   busy.value = true;
   error.value = '';
   try {
-    const details: { username: string; password?: string; qq: string; email: string; inviteCode: string } = {
+    const details: {
+      username: string; password?: string; fields: Record<string, string>; email: string; inviteCode: string;
+    } = {
       username: chosenUsername,
-      qq: number,
+      fields: { ...fields.value, ...fieldValues(fields.value, fieldPlan.value) },
       email: address,
       inviteCode: inviteCode.value.trim(),
     };
@@ -182,7 +190,7 @@ async function submit(): Promise<void> {
         </p>
 
         <!-- Whose sign-in this is finishing. Without it the page is a stranger
-             asking for a QQ number. -->
+             asking for details. -->
         <div class="oa-connection oa-signup-who">
           <span class="oa-connection-mark"><component :is="mark" :size="16" /></span>
           <span class="oa-connection-body">
@@ -219,16 +227,7 @@ async function submit(): Promise<void> {
             >
           </OaField>
 
-          <OaField v-if="pending.needs.qq" :label="t('qq')">
-            <input
-              v-model="qq"
-              type="text"
-              spellcheck="false"
-              :placeholder="t('qqPlaceholder')"
-              autocomplete="off"
-              maxlength="15"
-            >
-          </OaField>
+          <OaAccountFields v-model="fields" :plan="fieldPlan" />
 
           <OaField v-if="pending.needs.email" :label="t('email')" :hint="emailHint">
             <input

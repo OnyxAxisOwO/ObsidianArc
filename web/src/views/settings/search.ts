@@ -16,7 +16,7 @@ const TERMS = {
     'effortMedium', 'effortHigh', 'showStats', 'showStatsHint',
   ],
   profile: [
-    'secProfile', 'nickname', 'nicknameHint', 'email', 'qq', 'qqPlaceholder', 'bio', 'avatar',
+    'secProfile', 'nickname', 'nicknameHint', 'email', 'bio', 'avatar',
     'avatarPlaceholderUser', 'avatarHint', 'registrationUserAgent', 'save',
   ],
   password: [

@@ -1,13 +1,17 @@
 import { api } from './client';
 
 export type Role = 'user' | 'admin' | 'super_admin';
+
+/** How a form treats a plugin account field (auth.FieldOff and friends). */
+export type FieldRule = 'off' | 'optional' | 'required';
 export type AccountStatus = 'active' | 'disabled';
 
 export interface Account {
   id: string;
   username: string;
   email: string;
-  qq: string;
+  /** Plugin account fields, by key — whatever the server's plugins defined. */
+  fields?: Record<string, string>;
   nickname: string;
   avatar: string;
   bio: string;
@@ -102,10 +106,11 @@ export interface SiteInfo {
   // instance still has no accounts.
   require_email?: boolean;
   email_domains?: string[];
-  require_qq?: boolean;
-  qq_requirement?: 'off' | 'optional' | 'required';
-  captcha_mode?: 'off' | 'turnstile' | 'pow' | 'risk' | 'both';
-  registration_captcha_mode?: 'off' | 'turnstile' | 'pow' | 'risk' | 'both';
+  /** Each plugin account field and whether the sign-up form asks for it. */
+  fields?: Record<string, FieldRule>;
+  /** 'off' | 'turnstile' | 'pow' | 'both', or a mode a plugin added. */
+  captcha_mode?: string;
+  registration_captcha_mode?: string;
   pow_on_signup?: boolean;
   /** Served only where a challenge is actually switched on. */
   turnstile_site_key?: string;
@@ -116,15 +121,10 @@ export interface SiteInfo {
   turnstile_on_feedback?: boolean;
   turnstile_on_chat_speed?: boolean;
   /**
-   * The self-hosted risk control service, on the same terms as the
-   * Turnstile key: the address the SDK loads from and the site key init()
-   * carries, served only where a check is actually switched on. Empty means
-   * the instance runs no risk check and no boot.js is ever fetched.
+   * The plugins compiled into this server, each with whatever its browser
+   * half needs. Only these are fetched — see plugins/registry.ts.
    */
-  risk_base_url?: string;
-  risk_site?: string;
-  risk_on_signup?: boolean;
-  risk_on_login?: boolean;
+  plugins?: Record<string, Record<string, unknown>>;
   /** How long a browser may skip the sign-in code after one is entered; zero
    *  means the code step offers no such choice. */
   two_factor_remember_days?: number;
@@ -211,13 +211,13 @@ export function login(
   identifier: string,
   password: string,
   turnstile?: string,
-  rcToken?: string,
+  guards?: Record<string, string>,
 ): Promise<LoginResult> {
   return api.post<LoginResult>('/api/auth/login', {
     identifier,
     password,
     ...(turnstile ? { turnstile } : {}),
-    ...(rcToken ? { rc_token: rcToken } : {}),
+    ...(guards && Object.keys(guards).length ? { guards } : {}),
   });
 }
 
@@ -251,11 +251,11 @@ export interface RegisterInput {
   username: string;
   password: string;
   email?: string;
-  qq?: string;
+  fields?: Record<string, string>;
   nickname?: string;
   turnstile?: string;
-  /** The self-hosted risk control service's token, where sign-up asks for one. */
-  rcToken?: string;
+  /** Each plugin guard's token, by guard name. */
+  guards?: Record<string, string>;
   inviteCode?: string;
   pow?: PoWSolution;
 }
@@ -265,10 +265,10 @@ export function register(input: RegisterInput): Promise<{ user: Account }> {
     username: input.username,
     password: input.password,
     email: input.email ?? '',
-    qq: input.qq ?? '',
+    ...(input.fields && Object.keys(input.fields).length ? { fields: input.fields } : {}),
     nickname: input.nickname ?? '',
     turnstile: input.turnstile ?? '',
-    ...(input.rcToken ? { rc_token: input.rcToken } : {}),
+    ...(input.guards && Object.keys(input.guards).length ? { guards: input.guards } : {}),
     invite_code: input.inviteCode ?? '',
     ...(input.pow ? { pow: input.pow } : {}),
   });
@@ -283,7 +283,7 @@ export interface ProfilePatch {
   avatar?: string;
   bio?: string;
   email?: string;
-  qq?: string;
+  fields?: Record<string, string>;
 }
 
 export function updateProfile(patch: ProfilePatch): Promise<{ user: Account }> {

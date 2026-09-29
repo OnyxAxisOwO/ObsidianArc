@@ -11,6 +11,8 @@ const props = withDefaults(defineProps<{
   page: string;
   groups: WorkbenchGroup[];
   terms?: Record<string, StringKey[]>;
+  /** Already-translated words, for sections that have no dictionary keys: a plugin's. */
+  words?: Record<string, string[]>;
   searchable?: boolean;
   columns?: [string[], string[]];
 }>(), { searchable: true });
@@ -23,7 +25,8 @@ const visibleIds = computed(() => new Set(props.groups.flatMap((group) => group.
   if (!query.value.trim()) return group.id === selected.value;
   const feature = ADMIN_FEATURES.find((item) => item.pageSlug === props.page && item.id === id);
   const keys = props.terms?.[id] ?? (feature ? [feature.titleKey, ...(feature.searchKeys ?? [])] : []);
-  return matchesSearch(query.value, t(group.label), ...keys.map((key) => t(key)), ...(feature?.keywords ?? []));
+  return matchesSearch(query.value, t(group.label), ...keys.map((key) => t(key)), ...(feature?.keywords ?? []),
+    ...(props.words?.[id] ?? []));
 }))));
 function visible(id: string): boolean { return visibleIds.value.has(id); }
 function select(id: string): void {

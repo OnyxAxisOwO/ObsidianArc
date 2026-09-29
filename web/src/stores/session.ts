@@ -11,6 +11,7 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
 import { ApiError } from '@/api/client';
 import { fetchMe, fetchSite, savePreferences, type Account, type Preferences, type SiteInfo } from '@/api/auth';
+import { loadPlugins } from '@/plugins/registry';
 import {
   accentPreference,
   setAccentPreference,
@@ -46,8 +47,7 @@ const FALLBACK_SITE: SiteInfo = {
   require_email: false,
   email_domains: [],
   verify_email: false,
-  require_qq: false,
-  qq_requirement: 'off',
+  fields: {},
   turnstile_on_login: false,
   turnstile_on_signup: false,
   turnstile_on_api_key: false,
@@ -123,7 +123,12 @@ export async function startSession(): Promise<void> {
     console.warn('session lookup failed', me.reason);
   }
 
-  if (info.status === 'fulfilled') site.value = info.value;
+  if (info.status === 'fulfilled') {
+    site.value = info.value;
+    // Before the first render, so a sign-up card that a plugin adds a field
+    // to is drawn with the field rather than growing one a moment later.
+    await loadPlugins(info.value.plugins);
+  }
 }
 
 // The account's stored theme and accent win over whatever this browser had,

@@ -16,7 +16,7 @@ import { refusalText } from '../src/lib/refusal';
 import { verificationErrorText } from '../src/lib/verification-error';
 
 const ACCOUNT: Account = {
-  id: 'u1', username: 'ada', email: 'ada@example.com', qq: '', nickname: 'Ada', avatar: '', bio: '',
+  id: 'u1', username: 'ada', email: 'ada@example.com', nickname: 'Ada', avatar: '', bio: '',
   role: 'user', group_id: 'g1', group_expires_at: 0, group_name: 'Default', status: 'active',
   created_at: 1, updated_at: 1, last_login_at: 1, email_verified: false,
   allow_stats: true, allow_delete_conversations: true, api_restricted: false,

@@ -29,7 +29,6 @@ const ACCOUNT: Account = {
   id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
   username: 'ada',
   email: '',
-  qq: '',
   nickname: 'Ada',
   avatar: '',
   bio: '',

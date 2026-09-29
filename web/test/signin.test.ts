@@ -17,6 +17,12 @@ import ConsentView from '../src/views/ConsentView.vue';
 import TwoFactorEnrolView from '../src/views/TwoFactorEnrolView.vue';
 import VerifyView from '../src/views/VerifyView.vue';
 import AccountSection from '../src/views/settings/AccountSection.vue';
+import { installPlugins } from '../src/plugins/registry';
+import qqgroup from '../src/plugins/qqgroup/qqgroup.plugin';
+import riskcontrol from '../src/plugins/riskcontrol/riskcontrol.plugin';
+
+// The QQ-group plugin's field, as the forms label and refuse it.
+const qqField = qqgroup.fields!['qq']!;
 
 // Signing in with an account from elsewhere, and letting somebody else's site
 // sign people in with an account here. Two features pointing opposite ways,
@@ -49,6 +55,7 @@ afterEach(() => {
   document.body.textContent = '';
   vi.restoreAllMocks();
   site.value = null;
+  installPlugins([]);
   forget();
 });
 
@@ -92,7 +99,7 @@ function fieldInput(label: string): HTMLInputElement {
 }
 
 const NEW_ACCOUNT: Account = {
-  id: 'u2', username: 'newperson', email: '', qq: '', nickname: '', avatar: '', bio: '',
+  id: 'u2', username: 'newperson', email: '', nickname: '', avatar: '', bio: '',
   role: 'user', group_id: '', group_expires_at: 0, group_name: '',
   status: 'active', created_at: 0, updated_at: 0, last_login_at: 0,
   email_verified: true, allow_stats: true, allow_delete_conversations: true,
@@ -376,14 +383,11 @@ describe('the self-hosted risk control service', () => {
     delete (window as unknown as { RiskControl?: unknown }).RiskControl;
   });
 
+  // An instance running the plugin, as /api/site would describe it.
   function riskSite(): void {
-    site.value = {
-      ...siteInfo.value,
-      risk_base_url: 'https://risk.example.com',
-      risk_site: 'arc-test',
-      risk_on_signup: true,
-      risk_on_login: true,
-    };
+    const block = { base_url: 'https://risk.example.com', site: 'arc-test', on_signup: true, on_login: true };
+    site.value = { ...siteInfo.value, plugins: { riskcontrol: block } };
+    installPlugins([riskcontrol], { riskcontrol: block });
   }
 
   it('inits the SDK when the card opens and submits the token it mints', async () => {
@@ -398,7 +402,7 @@ describe('the self-hosted risk control service', () => {
 
     expect(init).toHaveBeenCalledWith({ base: 'https://risk.example.com', site: 'arc-test' });
     expect(execute).toHaveBeenCalledWith('register', expect.any(HTMLFormElement));
-    expect(register).toHaveBeenCalledWith(expect.objectContaining({ rcToken: 'rc-token-1' }));
+    expect(register).toHaveBeenCalledWith(expect.objectContaining({ guards: { riskcontrol: 'rc-token-1' } }));
   });
 
   it('ends the attempt with its own words when the service refuses this browser', async () => {
@@ -414,7 +418,24 @@ describe('the self-hosted risk control service', () => {
     await settle();
 
     expect(register).not.toHaveBeenCalled();
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('riskFailed'));
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(riskcontrol.guards![0]!.failed());
+  });
+
+  it('asks for nothing on an instance whose plugin block says the door is open', async () => {
+    const block = { base_url: '', site: '', on_signup: false, on_login: false };
+    site.value = { ...siteInfo.value, plugins: { riskcontrol: block } };
+    installPlugins([riskcontrol], { riskcontrol: block });
+    const register = vi.spyOn(authApi, 'register').mockResolvedValue({ user: NEW_ACCOUNT });
+    await mount(AuthView, { mode: 'register' });
+
+    type(fieldInput(t('username')), 'newperson');
+    type(fieldInput(t('password')), 'a-strong-password');
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(init).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(register).toHaveBeenCalledWith(expect.objectContaining({ guards: {} }));
   });
 
   it('stands in front of sign-in too, and names the action it is checking', async () => {
@@ -429,7 +450,7 @@ describe('the self-hosted risk control service', () => {
     await settle();
 
     expect(execute).toHaveBeenCalledWith('login', expect.any(HTMLFormElement));
-    expect(login).toHaveBeenCalledWith('somebody', 'a-strong-password', '', 'rc-token-1');
+    expect(login).toHaveBeenCalledWith('somebody', 'a-strong-password', '', { riskcontrol: 'rc-token-1' });
   });
 });
 
@@ -438,7 +459,7 @@ describe('the self-hosted risk control service', () => {
 describe('finishing a sign-up with an invite code', () => {
   const pending = {
     provider: 'github', provider_name: 'GitHub', login: 'octocat', email: '',
-    needs: { qq: false, email: false }, email_domains: [] as string[], verify_email: false,
+    needs: { fields: [] as string[], email: false }, email_domains: [] as string[], verify_email: false,
   };
 
   beforeEach(() => {
@@ -467,13 +488,13 @@ describe('finishing a sign-up with an invite code', () => {
     button(host, t('signupCompleteSubmit')).click();
     await settle();
 
-    expect(complete).toHaveBeenCalledWith({ username: 'octocat', qq: '', email: '', inviteCode: 'PARTNERX' });
+    expect(complete).toHaveBeenCalledWith({ username: 'octocat', fields: {}, email: '', inviteCode: 'PARTNERX' });
   });
 });
 
 describe('the connections an account holds', () => {
   const account = {
-    id: 'u1', username: 'reader', email: '', qq: '', nickname: '', avatar: '', bio: '',
+    id: 'u1', username: 'reader', email: '', nickname: '', avatar: '', bio: '',
     role: 'user' as const, group_id: '', group_expires_at: 0, group_name: '',
     status: 'active' as const, created_at: 0, updated_at: 0, last_login_at: 0,
     email_verified: true, allow_stats: true, allow_delete_conversations: true,
@@ -703,12 +724,15 @@ describe('finishing a sign-up the provider could not', () => {
     provider_name: 'GitHub',
     login: 'octocat',
     email: '',
-    needs: { qq: true, email: false },
+    needs: { fields: ['qq'], email: false },
     email_domains: [] as string[],
     verify_email: false,
   };
 
+  // What is missing here is the QQ-group plugin's field: an instance that
+  // requires a QQ number, which no provider has to give.
   beforeEach(() => {
+    installPlugins([qqgroup]);
     route.path = '/oauth/complete';
     Object.defineProperty(window, 'location', {
       configurable: true, writable: true, value: { href: '' },
@@ -720,25 +744,25 @@ describe('finishing a sign-up the provider could not', () => {
     await mount(CompleteSignupView);
 
     expect(host.textContent).toContain(t('signupCompleteBody', { provider: 'GitHub' }));
-    // Whose it is: without this the page is a stranger asking for a QQ number.
+    // Whose it is: without this the page is a stranger asking for details.
     expect(host.querySelector('.oa-signup-who')!.textContent).toContain('octocat');
 
     const labels = [...host.querySelectorAll('.oa-field-label')].map((node) => node.textContent);
-    expect(labels).toContain(t('qq'));
+    expect(labels).toContain(qqField.label());
     expect(labels).not.toContain(t('email'));
   });
 
   it('asks for an address instead when that is the missing one', async () => {
     vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue({
       ...pending,
-      needs: { qq: false, email: true },
+      needs: { fields: [], email: true },
       email_domains: ['company.com'],
     });
     await mount(CompleteSignupView);
 
     const labels = [...host.querySelectorAll('.oa-field-label')].map((node) => node.textContent);
     expect(labels).toContain(t('email'));
-    expect(labels).not.toContain(t('qq'));
+    expect(labels).not.toContain(qqField.label());
     // And which addresses would be accepted, before it is typed rather than
     // after it is refused.
     expect(host.textContent).toContain(t('emailAccepted', { domains: 'company.com' }));
@@ -750,11 +774,11 @@ describe('finishing a sign-up the provider could not', () => {
       .mockResolvedValue({ redirect: '/oauth/consent?request=abc' });
     await mount(CompleteSignupView);
 
-    type(fieldInput(t('qq')), '87654321');
+    type(fieldInput(qqField.label()), '87654321');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
 
-    expect(complete).toHaveBeenCalledWith({ username: 'octocat', qq: '87654321', email: '', inviteCode: '' });
+    expect(complete).toHaveBeenCalledWith({ username: 'octocat', fields: { qq: '87654321' }, email: '', inviteCode: '' });
     // A whole navigation, not a route change: the session cookie has just been
     // set and the application reads the account once, at boot.
     expect(window.location.href).toBe('/oauth/consent?request=abc');
@@ -768,13 +792,13 @@ describe('finishing a sign-up the provider could not', () => {
     button(host, t('signupCompleteSubmit')).click();
     await settle();
     expect(complete).not.toHaveBeenCalled();
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('qqRequiredHere'));
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(qqField.required());
 
-    type(fieldInput(t('qq')), 'nonsense');
+    type(fieldInput(qqField.label()), 'nonsense');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
     expect(complete).not.toHaveBeenCalled();
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('qqInvalid'));
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(qqField.invalid());
   });
 
   it('words the server\'s refusal in the reader\'s own language', async () => {
@@ -784,13 +808,13 @@ describe('finishing a sign-up the provider could not', () => {
       .mockRejectedValue(new ApiError(409, 'qq_taken', 'That QQ number is already registered.', {}));
     await mount(CompleteSignupView);
 
-    type(fieldInput(t('qq')), '87654321');
+    type(fieldInput(qqField.label()), '87654321');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
 
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('qqTaken'));
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(qqField.taken());
     // Still on the form, with what was typed still in it.
-    expect(fieldInput(t('qq')).value).toBe('87654321');
+    expect(fieldInput(qqField.label()).value).toBe('87654321');
   });
 
   it('allows customizing username and validates username format', async () => {
@@ -804,7 +828,7 @@ describe('finishing a sign-up the provider could not', () => {
 
     // Clear username and submit -> requires username
     type(fieldInput(t('username')), '');
-    type(fieldInput(t('qq')), '87654321');
+    type(fieldInput(qqField.label()), '87654321');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
     expect(complete).not.toHaveBeenCalled();
@@ -823,7 +847,7 @@ describe('finishing a sign-up the provider could not', () => {
     await settle();
     expect(complete).toHaveBeenCalledWith({
       username: 'my_custom_name',
-      qq: '87654321',
+      fields: { qq: '87654321' },
       email: '',
       inviteCode: '',
     });
@@ -839,7 +863,7 @@ describe('finishing a sign-up the provider could not', () => {
     expect(pwdInput).not.toBeNull();
 
     // Short password -> rejected
-    type(fieldInput(t('qq')), '87654321');
+    type(fieldInput(qqField.label()), '87654321');
     type(pwdInput, '123');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
@@ -853,7 +877,7 @@ describe('finishing a sign-up the provider could not', () => {
     expect(complete).toHaveBeenCalledWith({
       username: 'octocat',
       password: 'securepassword123',
-      qq: '87654321',
+      fields: { qq: '87654321' },
       email: '',
       inviteCode: '',
     });
@@ -871,7 +895,7 @@ describe('finishing a sign-up the provider could not', () => {
     const pwdInput = fieldInput(t('password'));
     expect(pwdInput).not.toBeNull();
 
-    type(fieldInput(t('qq')), '87654321');
+    type(fieldInput(qqField.label()), '87654321');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
     expect(complete).not.toHaveBeenCalled();
@@ -935,7 +959,7 @@ describe('auth card layout position', () => {
       provider_name: 'GitHub',
       login: 'octocat',
       email: '',
-      needs: { qq: true, email: false },
+      needs: { fields: [], email: false },
       email_domains: [],
       verify_email: false,
     });
@@ -976,7 +1000,7 @@ describe('registering with proof-of-work (PoW)', () => {
     });
 
     const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
-      user: { id: 'u1', username: 'alice', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', qq: '', nickname: '', avatar: '', bio: '' },
+      user: { id: 'u1', username: 'alice', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', nickname: '', avatar: '', bio: '' },
     });
 
     await mount(AuthView, { mode: 'register' });
@@ -1008,7 +1032,7 @@ describe('registering with proof-of-work (PoW)', () => {
 
     const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge');
     const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
-      user: { id: 'u1', username: 'bob', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', qq: '', nickname: '', avatar: '', bio: '' },
+      user: { id: 'u1', username: 'bob', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', nickname: '', avatar: '', bio: '' },
     });
 
     await mount(AuthView, { mode: 'register' });

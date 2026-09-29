@@ -67,7 +67,7 @@ function code(value: string, at: string): RedemptionCode {
 
 describe('administrator roles on the user detail panel', () => {
   const member: Account = {
-    id: 'member', username: 'member', nickname: 'Member', email: '', qq: '', bio: '', avatar: '',
+    id: 'member', username: 'member', nickname: 'Member', email: '', bio: '', avatar: '',
     role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
     created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
     email_verified: true, allow_stats: true, allow_delete_conversations: true,
@@ -214,7 +214,7 @@ describe('administrator roles on the user detail panel', () => {
 // not be able to disagree about which date they read.
 describe('moving the expiry on cards an account already holds', () => {
   const holder: Account = {
-    id: 'holder', username: 'holder', nickname: 'Holder', email: '', qq: '', bio: '', avatar: '',
+    id: 'holder', username: 'holder', nickname: 'Holder', email: '', bio: '', avatar: '',
     role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
     created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
     email_verified: true, allow_stats: true, allow_delete_conversations: true,

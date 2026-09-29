@@ -17,13 +17,16 @@ import {
   disconnectProvider, fetchConnections, signInURL,
   type OAuthConnection, type OAuthProvider,
 } from '@/api/oauth';
+import OaAccountFields from '@/components/OaAccountFields.vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { IconGithub, IconGoogle, IconKey, type OaIcon } from '@/icons';
+import { allFields, fieldProblem, fieldValues } from '@/lib/account-fields';
 import { absoluteTime } from '@/lib/format';
-import { adopt, currentPreferences, currentUser, requireUser } from '@/stores/session';
+import { pinnedProvider, pluginRefusal } from '@/plugins/registry';
+import { adopt, currentPreferences, currentUser, requireUser, siteInfo } from '@/stores/session';
 import { matchesSettings } from './search';
 
 const props = withDefaults(defineProps<{ query?: string }>(), { query: '' });
@@ -34,7 +37,11 @@ const router = useRouter();
 
 const nickname = ref(account.nickname);
 const email = ref(account.email);
-const qq = ref(account.qq ?? '');
+// Every field a plugin added, whether or not sign-up asks for it: this is
+// where an owner changes the value they gave. Required ones cannot be
+// cleared, which is the rule the server holds them to as well.
+const fieldPlan = computed(() => allFields(siteInfo.value));
+const fields = ref<Record<string, string>>({ ...(account.fields ?? {}) });
 const bio = ref(account.bio);
 const avatar = ref(account.avatar);
 
@@ -113,7 +120,7 @@ function disconnect(provider: string): void {
       connectionFlash.value = error instanceof ApiError && error.code === 'last_way_in'
         ? t('oauthLastWayIn')
         : error instanceof ApiError && error.code === 'oidc_pinned'
-          ? t('oauthOIDCPinned')
+          ? pinnedProvider(provider)?.refused() ?? error.message
           : error instanceof ApiError ? error.message : String(error);
     })
     .finally(() => { connectionsBusy.value = false; });
@@ -167,9 +174,9 @@ onMounted(() => {
 });
 
 async function saveProfile(): Promise<void> {
-  const qqValue = qq.value.trim();
-  if (qqValue && !/^[1-9][0-9]{4,14}$/.test(qqValue)) {
-    profileFlash.value = t('qqInvalid');
+  const fieldError = fieldProblem(fields.value, fieldPlan.value);
+  if (fieldError) {
+    profileFlash.value = fieldError;
     return;
   }
 
@@ -179,7 +186,7 @@ async function saveProfile(): Promise<void> {
     const { user } = await updateProfile({
       nickname: nickname.value.trim(),
       email: email.value.trim(),
-      qq: qqValue,
+      ...(fieldPlan.value.keys.length ? { fields: fieldValues(fields.value, fieldPlan.value) } : {}),
       bio: bio.value.trim(),
       avatar: avatar.value.trim(),
     });
@@ -188,9 +195,7 @@ async function saveProfile(): Promise<void> {
     window.setTimeout(() => { profileLabel.value = ''; }, 1500);
   } catch (error) {
     if (error instanceof ApiError) {
-      profileFlash.value = error.code === 'invalid_qq'
-        ? t('qqInvalid')
-        : error.code === 'qq_taken' ? t('qqTaken') : error.message;
+      profileFlash.value = pluginRefusal(error.code ?? '') ?? error.message;
     } else {
       profileFlash.value = String(error);
     }
@@ -285,7 +290,7 @@ function importData(): void {
       :max-length="32"
     />
     <OaTextField v-model="email" :label="t('email')" type="email" />
-    <OaTextField v-model="qq" :label="t('qq')" :placeholder="t('qqPlaceholder')" :max-length="15" />
+    <OaAccountFields v-model="fields" :plan="fieldPlan" />
     <OaTextArea v-model="bio" :label="t('bio')" :rows="3" />
     <OaTextField
       v-model="avatar"
@@ -333,11 +338,11 @@ function importData(): void {
           class="oa-btn"
           :href="signInURL(provider.id, { link: true, next: '/settings' })"
         >{{ t('connect') }}</a>
-        <!-- A bound OpenID Connect identity proves the account's QQ number,
-             so it has no remove control at all — deleting the account is the
-             only way it comes off. -->
-        <span v-else-if="provider.id === 'oidc'" class="oa-connection-meta">
-          {{ t('oauthOIDCPinnedHint') }}
+        <!-- A connection a plugin made permanent proves a detail of the
+             account, so it has no remove control at all — deleting the
+             account is the only way it comes off. -->
+        <span v-else-if="pinnedProvider(provider.id)" class="oa-connection-meta">
+          {{ pinnedProvider(provider.id)!.hint() }}
         </span>
         <OaConfirmButton
           v-else

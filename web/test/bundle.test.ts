@@ -31,17 +31,31 @@ describe('code splitting invariants in production bundle', () => {
     return fs.readdirSync(assetsDir);
   }
 
+  // Every plugin's browser half is a chunk of its own, named for its entry
+  // (src/plugins/<name>/<name>.plugin.ts), and nothing else: see
+  // src/plugins/registry.ts. They are counted from the source tree, so adding
+  // a plugin adds its chunk here without anyone editing a number.
+  const pluginNames = fs.readdirSync(path.resolve(__dirname, '../src/plugins'), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const pluginChunk = (name: string) => new RegExp(`^${name}\\.plugin-[^.]+\\.js$`);
+
   it('contains the expected chunk files without extra fragments', () => {
     const files = builtAssets();
+    const pluginFiles = files.filter((f) => pluginNames.some((name) => pluginChunk(name).test(f)));
+    expect(pluginFiles, `plugin chunks: ${pluginFiles.join(', ')}`).toHaveLength(pluginNames.length);
+    const core = files.filter((f) => !pluginFiles.includes(f));
 
-    // Exactly seven, and deliberately exact: the project ships no fonts, no
+    // Exactly seven besides the plugins', and deliberately exact: the project ships no fonts, no
     // images and no other chunks, so an eighth file is either a split that
     // was not meant to happen or an asset nobody decided to ship. Route-level
     // splitting in particular produces a dozen of these on its own and is
     // switched off for everything but the backoffice and the terminal — see
     // src/router. It was five until the terminal moved out of the backoffice
     // into every account's menu, and six until the front page arrived.
-    expect(files, `unexpected build output: ${files.join(', ')}`).toHaveLength(7);
+    // A chunk shared between two plugins — a helper both import — shows up
+    // here as an eighth file: keep such helpers in the entry instead.
+    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(7);
 
     const indexJs = files.filter((f) => /^index-[^.]+\.js$/.test(f));
     const indexCss = files.filter((f) => /^index-[^.]+\.css$/.test(f));
@@ -128,5 +142,28 @@ describe('code splitting invariants in production bundle', () => {
     const marker = 'http://www.w3.org/1998/Math/MathML';
     expect(fs.readFileSync(path.join(assetsDir, indexJsFile), 'utf8')).toContain(marker);
     expect(fs.readFileSync(path.join(assetsDir, adminJsFile), 'utf8')).not.toContain(marker);
+  });
+
+  it('keeps each plugin out of the main bundle, and the framework out of each plugin', () => {
+    const files = builtAssets();
+    const indexJsFile = files.find((f) => /^index-[^.]+\.js$/.test(f))!;
+    const indexContent = fs.readFileSync(path.join(assetsDir, indexJsFile), 'utf8');
+    const marker = 'http://www.w3.org/1998/Math/MathML';
+
+    for (const name of pluginNames) {
+      const file = files.find((f) => pluginChunk(name).test(f))!;
+      const content = fs.readFileSync(path.join(assetsDir, file), 'utf8');
+      // A plugin that pulled the framework, or anything else the entry
+      // already has, into its own chunk would ship it twice.
+      expect(content, `${name} carries a copy of the framework`).not.toContain(marker);
+      expect(content.length, `${name}'s chunk is suspiciously large`).toBeLessThan(40_000);
+      // Its own name is in its chunk as the plugin's registered name, and
+      // nowhere in the entry but the registry's list of loaders.
+      expect(content).toContain(`name:"${name}"`);
+    }
+    // The strings the two plugins brought used to be in the entry.
+    expect(indexContent).not.toContain('/api/bot/departure');
+    expect(indexContent).not.toContain('boot.js');
+    expect(indexContent).not.toContain('/api/admin/departures');
   });
 });

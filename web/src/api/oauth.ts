@@ -61,8 +61,8 @@ export function signInURL(
 /**
  * A sign-in that stopped to ask something.
  *
- * The provider has said who this is; what is missing is a QQ number or an
- * address it could not supply. Nothing exists on the server yet — the identity
+ * The provider has said who this is; what is missing is a plugin's account
+ * field or an address it could not supply. Nothing exists on the server yet — the identity
  * is held in a signed cookie, and the account is opened by completeSignup.
  */
 export interface PendingSignup {
@@ -72,13 +72,15 @@ export interface PendingSignup {
   login: string;
   suggested_username?: string;
   /**
-   * A QQ number the provider has already answered with — an IdP whose subject
-   * is one, verified before it vouched. Prefilled, still confirmed by hand.
+   * Account fields the provider has already answered — a subject a plugin
+   * bound to a field, verified before it vouched. Prefilled, still confirmed
+   * by hand.
    */
-  qq?: string;
+  fields?: Record<string, string>;
   /** Only ever an address the provider proved. Empty otherwise. */
   email: string;
-  needs: { qq: boolean; email: boolean; invite?: boolean };
+  /** fields: the keys of required plugin fields. */
+  needs: { fields?: string[]; email: boolean; invite?: boolean };
   needs_password?: boolean;
   password_required?: boolean;
   username_required?: boolean;
@@ -93,12 +95,12 @@ export function fetchPendingSignup(): Promise<PendingSignup> {
 
 /** Opens the account, and answers with where to go next. */
 export function completeSignup(
-  details: { username?: string; password?: string; qq?: string; email?: string; inviteCode?: string },
+  details: { username?: string; password?: string; fields?: Record<string, string>; email?: string; inviteCode?: string },
 ): Promise<{ redirect: string }> {
   return api.post<{ redirect: string }>('/api/auth/oauth/signup', {
     username: details.username ?? '',
     password: details.password ?? '',
-    qq: details.qq ?? '',
+    ...(details.fields && Object.keys(details.fields).length ? { fields: details.fields } : {}),
     email: details.email ?? '',
     invite_code: details.inviteCode ?? '',
   });

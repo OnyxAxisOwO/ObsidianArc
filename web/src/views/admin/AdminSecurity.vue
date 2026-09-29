@@ -9,7 +9,7 @@
 
 import { computed, nextTick, onMounted, ref } from 'vue';
 import { adminApi, type AdminMailSettings, type AdminModel, type AdminUserCheckSettings, type Group, type SecurityEvent, type SignInApplication, type TwoFactorAdoption } from '@/admin/api';
-import { fetchSite } from '@/api/auth';
+import { fetchSite, type SiteInfo } from '@/api/auth';
 import { ApiError } from '@/api/client';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaOverlay from '@/components/OaOverlay.vue';
@@ -36,6 +36,11 @@ import { currentUser, site } from '@/stores/session';
 import { maskUser, maskLog, maskCredential } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { minutesLabel } from './shared';
+import PluginSettingsCard from './PluginSettingsCard.vue';
+import { usePluginSettings } from './pluginSettings';
+import OaAccountFields from '@/components/OaAccountFields.vue';
+import { allFields, fieldValues } from '@/lib/account-fields';
+import { plugins, pluginSecurityEvent, pluginSecurityReason } from '@/plugins/registry';
 import { useAdminView } from './adminView';
 
 const view = useAdminView();
@@ -95,7 +100,6 @@ const form = ref({
   requireEmail: false,
   verifyEmail: false,
   emailDomains: '',
-  qqRequirement: 'off',
   perMinute: 0 as number | null,
   perHour: 0 as number | null,
   perIP: 0 as number | null,
@@ -108,12 +112,8 @@ const form = ref({
   turnstileOnAPIKey: false,
   turnstileOnRedeem: false,
   turnstileOnFeedback: false,
-  captchaMode: 'turnstile' as 'off' | 'turnstile' | 'pow' | 'risk' | 'both',
-  riskBaseURL: '',
-  riskSite: '',
-  riskSecret: '',
-  riskSecretHint: '',
-  riskOnLogin: false,
+  // 'off' | 'turnstile' | 'pow' | 'both', or a mode a plugin added.
+  captchaMode: 'turnstile' as string,
   powBaseMaxNumber: 50000 as number | null,
   powElevatedMaxNumber: 500000 as number | null,
   powThreshold: 10 as number | null,
@@ -161,9 +161,6 @@ const form = ref({
   backofficeNetwork: false,
   backofficeBrowser: false,
   newDeviceEmail: false,
-  botToken: '',
-  botTokenHint: '',
-  botDepartureMode: 'disable' as 'disable' | 'delete',
 });
 
 // --- two-step verification ------------------------------------------------------
@@ -341,7 +338,12 @@ function removeApplication(app: SignInApplication): void {
 }
 
 // Trying the reviewer on an account that is not being created.
-const trial = ref({ username: '', email: '', qq: '', fromThisAddress: 0, answer: '', running: false });
+const trial = ref({
+  username: '', email: '', fields: {} as Record<string, string>, fromThisAddress: 0, answer: '', running: false,
+});
+// Every field a plugin added, so a trial can be the whole of what a sign-up
+// form would have sent.
+const trialFields = computed(() => allFields(site.value ?? ({ fields: {} } as unknown as SiteInfo)));
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
 const reviewPromptIsDefault = computed(() =>
@@ -350,6 +352,9 @@ const reviewPromptIsDefault = computed(() =>
 function restoreReviewPrompt(): void {
   form.value.reviewPrompt = defaultReviewPrompt.value;
 }
+
+// A plugin's cards on this page, loaded and saved with the page's own keys.
+const pluginSettings = usePluginSettings('security');
 
 /**
  * Only this page's keys. The settings endpoint writes what it is given and
@@ -363,7 +368,6 @@ function collect(): Record<string, string> {
     'registration.require_email': String(form.value.requireEmail),
     'registration.verify_email': String(form.value.verifyEmail),
     'registration.email_domains': form.value.emailDomains.trim(),
-    'registration.qq_requirement': form.value.qqRequirement,
     'registration.per_minute': String(form.value.perMinute ?? 0),
     'registration.per_hour': String(form.value.perHour ?? 0),
     'registration.per_ip': String(form.value.perIP ?? 0),
@@ -378,13 +382,6 @@ function collect(): Record<string, string> {
     'turnstile.on_redeem': String(form.value.turnstileOnRedeem),
     'turnstile.on_feedback': String(form.value.turnstileOnFeedback),
     'registration.captcha_mode': form.value.captchaMode,
-    // Empty keeps what is stored, the same bargain the Turnstile secret
-    // makes: the field was never shown the secret, so sending its emptiness
-    // back would erase it.
-    'risk.secret_key': form.value.riskSecret.trim(),
-    'risk.base_url': form.value.riskBaseURL.trim(),
-    'risk.site': form.value.riskSite.trim(),
-    'risk.on_login': String(form.value.riskOnLogin),
     'security.pow_base_max_number': String(form.value.powBaseMaxNumber ?? 50000),
     'security.pow_elevated_max_number': String(form.value.powElevatedMaxNumber ?? 500000),
     'security.pow_threshold': String(form.value.powThreshold ?? 10),
@@ -435,11 +432,7 @@ function collect(): Record<string, string> {
     'security.two_factor_backoffice_network': String(form.value.backofficeNetwork),
     'security.two_factor_backoffice_browser': String(form.value.backofficeBrowser),
     'security.new_device_email': String(form.value.newDeviceEmail),
-    // Empty keeps what is stored, the same bargain every other secret on
-    // this page makes: the field was never shown the token, so sending its
-    // emptiness back would switch the bot endpoint off by accident.
-    'bot.webhook_token': form.value.botToken.trim(),
-    'bot.departure_mode': form.value.botDepartureMode,
+    ...pluginSettings.collect(),
   };
 }
 
@@ -563,7 +556,7 @@ function runTrial(): void {
   void adminApi.tryReview({
     username: trial.value.username.trim(),
     email: trial.value.email.trim(),
-    qq: trial.value.qq.trim(),
+    fields: fieldValues(trial.value.fields, trialFields.value),
     from_this_address: trial.value.fromThisAddress || 0,
     // What a browser would have sent, so the answer is about the details and
     // not about a missing user agent.
@@ -606,9 +599,7 @@ function formatEventReason(reason: string): string {
   if (reason === 'PoW 挑战已被使用') return t('securityReasonPoWReplayed');
   if (reason === 'PoW 校验失败') return t('securityReasonPoWFailed');
   if (reason === 'Turnstile 人机验证未通过') return t('securityReasonTurnstileFailed');
-  if (reason === '风控验证未通过') return t('securityReasonRiskFailed');
-  if (reason === '风控判定拒绝') return t('securityReasonRiskBlocked');
-  return reason;
+  return pluginSecurityReason(reason) ?? reason;
 }
 
 function reviewDecision(decision: string): string {
@@ -639,8 +630,7 @@ function eventLabel(event: string): string {
   if (event === 'console_command') return t('securityEventConsoleCommand');
   if (event === 'pow_challenge') return t('securityEventPoWChallenge');
   if (event === 'turnstile_challenge') return t('securityEventTurnstileChallenge');
-  if (event === 'risk_challenge') return t('securityEventRiskChallenge');
-  return event;
+  return pluginSecurityEvent(event) ?? event;
 }
 
 async function loadEvents(): Promise<void> {
@@ -890,7 +880,6 @@ async function load(): Promise<void> {
       requireEmail: values['registration.require_email'] === 'true',
       verifyEmail: values['registration.verify_email'] === 'true',
       emailDomains: values['registration.email_domains'] ?? '',
-      qqRequirement: values['registration.qq_requirement'] ?? 'off',
       perMinute: Number(values['registration.per_minute'] ?? 0),
       perHour: Number(values['registration.per_hour'] ?? 0),
       perIP: Number(values['registration.per_ip'] ?? 0),
@@ -903,12 +892,7 @@ async function load(): Promise<void> {
       turnstileOnAPIKey: values['turnstile.on_api_key'] === 'true',
       turnstileOnRedeem: values['turnstile.on_redeem'] === 'true',
       turnstileOnFeedback: values['turnstile.on_feedback'] === 'true',
-      captchaMode: (values['registration.captcha_mode'] as any) || (values['turnstile.on_signup'] === 'true' ? 'turnstile' : 'off'),
-      riskBaseURL: values['risk.base_url'] ?? '',
-      riskSite: values['risk.site'] ?? '',
-      riskSecret: '',
-      riskSecretHint: values['risk.secret_key'] ?? '',
-      riskOnLogin: values['risk.on_login'] === 'true',
+      captchaMode: values['registration.captcha_mode'] || (values['turnstile.on_signup'] === 'true' ? 'turnstile' : 'off'),
       powBaseMaxNumber: Number(values['security.pow_base_max_number'] || 50000),
       powElevatedMaxNumber: Number(values['security.pow_elevated_max_number'] || 500000),
       powThreshold: Number(values['security.pow_threshold'] || 10),
@@ -956,10 +940,8 @@ async function load(): Promise<void> {
       backofficeNetwork: values['security.two_factor_backoffice_network'] === 'true',
       backofficeBrowser: values['security.two_factor_backoffice_browser'] === 'true',
       newDeviceEmail: values['security.new_device_email'] === 'true',
-      botToken: '',
-      botTokenHint: values['bot.webhook_token'] ?? '',
-      botDepartureMode: (values['bot.departure_mode'] as 'disable' | 'delete') || 'disable',
     };
+    pluginSettings.load(values);
     initialReviewPrompt.value = values['security.signup_review_prompt'] ?? '';
     accept();
   } catch (failure) {
@@ -969,16 +951,28 @@ async function load(): Promise<void> {
   }
 }
 
-const categories: WorkbenchGroup[] = [
+const coreCategories: WorkbenchGroup[] = [
   { id: 'accounts', label: 'controlAccounts', hint: 'controlAccountsHint', icon: IconUsers, sections: ['secAccounts', 'secRegistration', 'secRegistrationLimits'] },
-  { id: 'verification', label: 'controlVerification', hint: 'controlVerificationHint', icon: IconLock, sections: ['secTurnstile', 'secRisk', 'secVerificationScenes', 'secChatChallenge', 'secMail', 'secUserCheck'] },
+  { id: 'verification', label: 'controlVerification', hint: 'controlVerificationHint', icon: IconLock, sections: ['secTurnstile', 'secVerificationScenes', 'secChatChallenge', 'secMail', 'secUserCheck'] },
   { id: 'review', label: 'controlReview', hint: 'controlReviewHint', icon: IconSpark, sections: ['secSignupReview', 'secReviewTrial'] },
   { id: 'signin', label: 'controlSignIn', hint: 'controlSignInHint', icon: IconGithub, sections: ['secOAuth', 'secApplications'] },
   { id: 'twofactor', label: 'controlTwoFactor', hint: 'controlTwoFactorHint', icon: IconShield, sections: ['secTwoFactorPolicy', 'secBackofficeVerify', 'secTwoFactorAdoption'] },
   { id: 'events', label: 'controlEvents', hint: 'controlEventsHint', icon: IconFile, sections: ['secSecurityLog'] },
 ];
 
-const columns: [string[], string[]] = [['secAccounts', 'secRegistrationLimits', 'secTurnstile', 'secRisk', 'secChatChallenge', 'secSignupReview', 'secTwoFactorPolicy', 'secBackofficeVerify'], ['secRegistration', 'secVerificationScenes', 'secReviewTrial', 'secTwoFactorAdoption', 'secMail', 'secUserCheck']];
+const coreColumns: [string[], string[]] = [['secAccounts', 'secRegistrationLimits', 'secTurnstile', 'secChatChallenge', 'secSignupReview', 'secTwoFactorPolicy', 'secBackofficeVerify'], ['secRegistration', 'secVerificationScenes', 'secReviewTrial', 'secTwoFactorAdoption', 'secMail', 'secUserCheck']];
+const categories = computed(() => pluginSettings.withSections(coreCategories));
+const columns = computed(() => pluginSettings.withColumns(coreColumns));
+
+// The sign-up challenge select, with whatever modes plugins added between
+// the core's single challenges and "both".
+const captchaModes = computed(() => [
+  { value: 'off', label: t('captchaModeOff') },
+  { value: 'turnstile', label: t('captchaModeTurnstile') },
+  { value: 'pow', label: t('captchaModePoW') },
+  ...plugins().flatMap((plugin) => plugin.captchaModes ?? []).map((mode) => ({ value: mode.value, label: mode.label() })),
+  { value: 'both', label: t('captchaModeBoth') },
+]);
 
 onMounted(load);
 </script>
@@ -994,8 +988,16 @@ onMounted(load);
   </Teleport>
   <AdminFailure v-if="error" :message="error" @retry="load" />
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
-  <AdminWorkbench v-else page="security" :groups="categories" :columns="columns">
+  <AdminWorkbench v-else page="security" :groups="categories" :columns="columns" :words="pluginSettings.words.value">
     <template #left="{ visible }">
+      <PluginSettingsCard
+        v-for="section in pluginSettings.sections.value.filter((entry) => entry.column === 0)"
+        v-show="visible(section.id)"
+        :key="section.id"
+        :section="section"
+        :draft="pluginSettings.draft"
+        :hints="pluginSettings.hints"
+      />
       <AdminControlCard id="secAccounts" v-show="visible('secAccounts')" :title="t('secAccounts')" :icon="IconUsers">
         <OaSwitchField
           v-model="form.registration"
@@ -1043,35 +1045,6 @@ onMounted(load);
           :placeholder="form.turnstileSecretHint || '0x4AAAAAAA…'"
           :hint="t('turnstileSecretHint')"
           monospace
-        />
-      </AdminControlCard>
-      <AdminControlCard id="secRisk" v-show="visible('secRisk')" :title="t('secRisk')" :icon="IconKey" :hint="t('riskHint')">
-        <OaTextField
-          v-model="form.riskBaseURL"
-          :label="t('riskBaseURL')"
-          placeholder="https://risk.example.com"
-          :hint="t('riskBaseURLHint')"
-          monospace
-        />
-        <OaTextField
-          v-model="form.riskSite"
-          :label="t('riskSite')"
-          placeholder="shop-a"
-          :hint="t('riskSiteHint')"
-          monospace
-        />
-        <OaTextField
-          v-model="form.riskSecret"
-          type="password"
-          :label="t('riskSecretKey')"
-          :placeholder="form.riskSecretHint || 'rk_live_…'"
-          :hint="t('riskSecretHint')"
-          monospace
-        />
-        <OaSwitchField
-          v-model="form.riskOnLogin"
-          :label="t('riskOnLogin')"
-          :hint="t('riskOnLoginHint')"
         />
       </AdminControlCard>
       <AdminControlCard id="secChatChallenge" v-show="visible('secChatChallenge')" :title="t('controlChatChallenge')" :icon="IconSpark" :hint="t('controlChatChallengeHint')">
@@ -1224,6 +1197,14 @@ onMounted(load);
       </AdminControlCard>
     </template>
     <template #right="{ visible }">
+      <PluginSettingsCard
+        v-for="section in pluginSettings.sections.value.filter((entry) => entry.column === 1)"
+        v-show="visible(section.id)"
+        :key="section.id"
+        :section="section"
+        :draft="pluginSettings.draft"
+        :hints="pluginSettings.hints"
+      />
       <AdminControlCard id="secRegistration" v-show="visible('secRegistration')" :title="t('secRegistration')" :icon="IconUsers">
         <OaSwitchField v-model="form.requireEmail" :label="t('requireEmail')" :hint="t('requireEmailHint')" />
         <!-- Offered but inert without SMTP, and the hint says so. The server
@@ -1243,45 +1224,13 @@ onMounted(load);
           :placeholder="t('emailDomainsPlaceholder')"
           :hint="t('emailDomainsHint')"
         />
-        <OaSelectField
-          v-model="form.qqRequirement"
-          :label="t('qqRequirement')"
-          :hint="t('qqRequirementHint')"
-          :options="[
-            { value: 'off', label: t('qqRequirementOff') },
-            { value: 'optional', label: t('qqRequirementOptional') },
-            { value: 'required', label: t('qqRequirementRequired') },
-          ]"
-        />
-        <OaTextField
-          v-model="form.botToken"
-          :label="t('botTokenLabel')"
-          type="password"
-          :placeholder="form.botTokenHint || '••••••••'"
-          :hint="t('botTokenHint')"
-        />
-        <OaSelectField
-          v-model="form.botDepartureMode"
-          :label="t('botDepartureModeLabel')"
-          :hint="t('botDepartureModeHint')"
-          :options="[
-            { value: 'disable', label: t('departureModeDisable') },
-            { value: 'delete', label: t('departureModeDelete') },
-          ]"
-        />
       </AdminControlCard>
       <AdminControlCard id="secVerificationScenes" v-show="visible('secVerificationScenes')" :title="t('controlVerificationScenes')" :icon="IconLock" :hint="t('controlVerificationScenesHint')">
         <OaSelectField
           v-model="form.captchaMode"
           :label="t('captchaMode')"
           :hint="t('captchaModeHint')"
-          :options="[
-            { value: 'off', label: t('captchaModeOff') },
-            { value: 'turnstile', label: t('captchaModeTurnstile') },
-            { value: 'pow', label: t('captchaModePoW') },
-            { value: 'risk', label: t('captchaModeRisk') },
-            { value: 'both', label: t('captchaModeBoth') },
-          ]"
+          :options="captchaModes"
         />
         <template v-if="form.captchaMode === 'pow' || form.captchaMode === 'both'">
           <OaNumberField
@@ -1447,7 +1396,7 @@ onMounted(load);
         <div class="oa-field">
           <OaTextField v-model="trial.username" :label="t('username')" placeholder="123123123123" />
           <OaTextField v-model="trial.email" :label="t('email')" placeholder="123123123123@qq.com" />
-          <OaTextField v-model="trial.qq" :label="t('qq')" placeholder="123123123123" />
+          <OaAccountFields v-model="trial.fields" :plan="trialFields" />
           <OaNumberField
             v-model="trial.fromThisAddress"
             :label="t('reviewTrialFromAddress')"
