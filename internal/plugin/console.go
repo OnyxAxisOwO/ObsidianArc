@@ -120,7 +120,7 @@ func init() {
 		Name:    "plugin install",
 		Group:   "instance",
 		Summary: console.Text{EN: "Install a plugin", ZH: "安装插件"},
-		Usage:   "plugin install <name> [--off]",
+		Usage:   "plugin install <name> [--off] [--code CODE]",
 		Help: console.Text{
 			EN: "Runs the plugin's migrations and records it as installed, switched on unless --off is given. " +
 				"Its settings are configured afterwards, like any other.",
@@ -128,6 +128,7 @@ func init() {
 		},
 		Args: nameArg,
 		Flags: []console.Flag{
+			codeFlag,
 			{Name: "--off", Hint: console.Text{EN: "install it switched off", ZH: "安装后保持禁用"}},
 		},
 		Examples:   []string{"plugin install qqgroup", "plugin install riskcontrol --off"},
@@ -135,7 +136,10 @@ func init() {
 		Permission: PermissionManage,
 		Endpoints:  []string{"POST /api/admin/plugins/{name}/install"},
 		Run: func(_ context.Context, rt *console.Runtime) error {
-			return change(rt, "install", map[string]any{"enable": !rt.Bool("off")})
+			return change(rt, "install", map[string]any{
+				"enable":          !rt.Bool("off"),
+				"two_factor_code": rt.String("code"),
+			})
 		},
 	})
 

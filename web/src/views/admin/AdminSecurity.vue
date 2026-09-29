@@ -161,6 +161,7 @@ const form = ref({
   backofficeNetwork: false,
   backofficeBrowser: false,
   newDeviceEmail: false,
+  twoFactorPluginManage: false,
 });
 
 // --- two-step verification ------------------------------------------------------
@@ -432,6 +433,7 @@ function collect(): Record<string, string> {
     'security.two_factor_backoffice_network': String(form.value.backofficeNetwork),
     'security.two_factor_backoffice_browser': String(form.value.backofficeBrowser),
     'security.new_device_email': String(form.value.newDeviceEmail),
+    'security.two_factor_plugin_manage': String(form.value.twoFactorPluginManage),
     ...pluginSettings.collect(),
   };
 }
@@ -941,6 +943,7 @@ async function load(): Promise<void> {
       backofficeNetwork: values['security.two_factor_backoffice_network'] === 'true',
       backofficeBrowser: values['security.two_factor_backoffice_browser'] === 'true',
       newDeviceEmail: values['security.new_device_email'] === 'true',
+      twoFactorPluginManage: values['security.two_factor_plugin_manage'] === 'true',
     };
     pluginSettings.load(values);
     initialReviewPrompt.value = values['security.signup_review_prompt'] ?? '';
@@ -1166,6 +1169,11 @@ onMounted(load);
             :hint="mailConfigured ? t('newDeviceEmailHint') : t('verifyEmailNoMail')"
           />
         </div>
+        <OaSwitchField
+          v-model="form.twoFactorPluginManage"
+          :label="t('twoFactorPluginManageLabel')"
+          :hint="t('twoFactorPluginManageHint')"
+        />
       </AdminControlCard>
       <AdminControlCard id="secBackofficeVerify" v-show="visible('secBackofficeVerify')" :title="t('secBackofficeVerify')" :icon="IconLock" :hint="t('backofficeVerifyHint')">
         <OaSelectField

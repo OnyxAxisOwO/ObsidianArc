@@ -55,7 +55,6 @@ import AdminFeedback from './AdminFeedback.vue';
 import AdminSafeMode from './AdminSafeMode.vue';
 import AdminBackup from './AdminBackup.vue';
 import AdminPlugins from './AdminPlugins.vue';
-import PluginAdminPage from './PluginAdminPage.vue';
 
 // Labels are looked up at render rather than stored, because this table is
 // evaluated at import time — before the language is known.
@@ -80,32 +79,31 @@ const PAGES: AdminPageSpec[] = [
   {
     slug: 'plugins', label: 'navPlugins', icon: IconPuzzle, component: markRaw(AdminPlugins),
     permission: 'plugins,plugins_manage,plugins_remove',
+    keywords: ['插件', 'plugins', 'QQ', 'QQ群', '退群', '风控', '超级风控'],
   },
 ];
 
-// The pages enabled plugins bring, after the core's. Computed from the
-// session's plugin list, so switching a plugin on or off on the plugins
-// screen adds or removes its page here without a reload. A slug a core page
-// already has is the core's: a plugin cannot take a page over.
-const pages = computed<AdminPageSpec[]>(() => {
-  const taken = new Set(PAGES.map((entry) => entry.slug));
-  const extra: AdminPageSpec[] = [];
-  for (const plugin of plugins()) {
-    for (const page of plugin.adminPages ?? []) {
-      if (taken.has(page.slug)) continue;
-      taken.add(page.slug);
-      extra.push({
-        slug: page.slug, label: 'navPlugins', title: page.title, icon: page.icon ?? IconPuzzle,
-        component: markRaw(PluginAdminPage), permission: page.permission, props: { page },
-        ...(page.keywords ? { keywords: page.keywords } : {}),
-      });
-    }
-  }
-  return [...PAGES, ...extra];
-});
+// Core pages only in the sidebar rail. Individual plugin pages are accessed
+// as tabs inside the Plugins screen instead of crowding the main navigation.
+const pages = computed<AdminPageSpec[]>(() => PAGES);
 
 const route = useRoute();
 const router = useRouter();
+
+// Route redirect: /admin/<pluginSlug> -> /admin/plugins?tab=<pluginSlug>
+watch(
+  () => route.path,
+  (path) => {
+    const slug = path.replace(/^\/admin\/?/, '').split('/')[0];
+    if (slug && !PAGES.some((p) => p.slug === slug)) {
+      const isPluginPage = plugins().some((plugin) => plugin.adminPages?.some((page) => page.slug === slug));
+      if (isPluginPage) {
+        void router.replace({ path: '/admin/plugins', query: { ...route.query, tab: slug }, hash: route.hash });
+      }
+    }
+  },
+  { immediate: true },
+);
 const query = ref('');
 const narrow = useMediaQuery('(max-width: 900px)');
 const visiblePages = computed(() => visibleAdminPages(pages.value, isSuperAdmin.value));

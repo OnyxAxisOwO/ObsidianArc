@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "obsidian-arc",
-      "runtimeExecutable": "C:\\Program Files\\Go\\bin\\go.exe",
-      "runtimeArgs": ["run", "./cmd/server"],
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["run", "-tags", "plugin_qqgroup plugin_riskcontrol plugin_cardgrant", "./cmd/server"],
       "port": 8080
     }
   ]

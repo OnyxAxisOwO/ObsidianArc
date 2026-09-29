@@ -229,6 +229,7 @@ var writableSettings = map[string]bool{
 	settings.TwoFactorPolicy:            true,
 	settings.TwoFactorIssuer:            true,
 	settings.TwoFactorRememberDays:      true,
+	settings.TwoFactorPluginManage:      true,
 	settings.TwoFactorBackofficeMode:    true,
 	settings.TwoFactorBackofficeMinutes: true,
 	settings.TwoFactorBackofficeNetwork: true,

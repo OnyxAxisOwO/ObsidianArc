@@ -1014,7 +1014,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, err
 	}
 	plugins.Attach(host)
-	plugin.NewHandlers(plugins, authService, func(r *http.Request) string {
+	plugin.NewHandlers(plugins, authService, settingsService, func(r *http.Request) string {
 		return httpx.ClientIP(r, proxyTrust)
 	}).Mount(adminHandlers)
 	for _, name := range plugin.Names() {

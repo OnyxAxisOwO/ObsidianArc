@@ -699,12 +699,16 @@ export interface AdminPlugin {
 export interface PluginChange {
   plugin: AdminPlugin;
   plugins: AdminPlugin[];
+  two_factor_required?: boolean;
 }
 
 export const adminApi = {
-  plugins: () => api.get<{ plugins: AdminPlugin[] }>('/api/admin/plugins'),
-  installPlugin: (name: string, enable: boolean, settings: Record<string, string>) =>
-    api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/install`, { enable, settings }),
+  plugins: () => api.get<{ plugins: AdminPlugin[]; two_factor_required?: boolean }>('/api/admin/plugins'),
+  installPlugin: (name: string, enable: boolean, settings: Record<string, string>, code?: string) => {
+    const body: Record<string, unknown> = { enable, settings };
+    if (code) body['two_factor_code'] = code;
+    return api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/install`, body);
+  },
   enablePlugin: (name: string) =>
     api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/enable`, {}),
   disablePlugin: (name: string, code: string) =>

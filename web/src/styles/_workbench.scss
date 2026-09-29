@@ -85,6 +85,12 @@
    spaces to wrap at; right-aligned like the other values, and broken anywhere
    rather than pushing the panel wider than it was dragged to. */
 .oa-plugin-list { text-align: right; overflow-wrap: anywhere; font-size: 12px; }
+/* Tab strip inside Plugins screen for switching between Plugin Management and individual plugin pages. */
+.oa-plugin-tabstrip { display: flex; align-items: center; flex-shrink: 0; gap: 8px; margin-bottom: 20px; }
+.oa-plugin-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.oa-plugin-tab { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px; border-radius: 999px; background: var(--ai-field-bg); color: var(--ai-text-secondary); font-size: 12.5px; font-weight: 500; border: none; outline: none; cursor: pointer; transition: background-color .15s ease, color .15s ease; font: inherit; }
+.oa-plugin-tab:hover { background: var(--ai-field-bg-hover); color: var(--ai-text); }
+.oa-plugin-tab.active { background: var(--ai-badge-bg); color: var(--ai-badge-text); font-weight: 600; }
 /* Plugin details drawer: hero header, structured metadata tiles, and categorized capability chips. */
 .oa-plugin-detail { display: flex; flex-direction: column; gap: 18px; }
 .oa-plugin-detail-hero { display: flex; align-items: flex-start; gap: 14px; padding: 16px; border-radius: 14px; background: var(--ai-surface-container); }
@@ -128,6 +134,14 @@
 .oa-plugin-control-item { display: flex; flex-direction: column; gap: 8px; padding-bottom: 16px; border-bottom: 1px solid var(--ai-border); }
 .oa-plugin-control-item:last-child { padding-bottom: 0; border-bottom: 0; }
 .oa-plugin-control-item .oa-switch-field { padding: 0; border-bottom: 0; }
+.oa-plugin-guide { display: flex; flex-direction: column; gap: 16px; }
+.oa-plugin-guide-banner { display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: 14px; background: var(--ai-surface-container); }
+.oa-plugin-guide-icon { color: var(--ai-primary); flex-shrink: 0; }
+.oa-plugin-guide-text { margin: 0; font-size: 13px; line-height: 1.6; color: var(--ai-text); }
+.oa-plugin-guide-section { display: flex; flex-direction: column; gap: 10px; }
+.oa-plugin-guide-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; line-height: 1.6; color: var(--ai-text-secondary); }
+.oa-plugin-guide-steps li { margin: 0; }
+.oa-plugin-guide-code { display: block; margin-top: 6px; padding: 6px 10px; border-radius: 8px; background: var(--ai-surface-container); color: var(--ai-text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; word-break: break-all; }
 .oa-resource-definition dt { font-size: 12px; }
 .oa-resource-definition dt > small { display: block; margin-top: 6px; font-size: 10px; line-height: 1.7; color: var(--ai-text-secondary); }
 .oa-resource-definition dd { margin: 0; font-size: 18px; font-weight: 550; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -173,3 +187,7 @@
 @media (prefers-reduced-motion: reduce) {
   .oa-workbench-tab { transition: none; }
 }
+
+.oa-plugin-dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 30px; border: 2px dashed var(--ai-border); border-radius: 12px; color: var(--ai-text-secondary); cursor: pointer; transition: background-color 0.2s, border-color 0.2s, color 0.2s; }
+.oa-plugin-dropzone:hover, .oa-plugin-dropzone.dragover { background: var(--ai-surface-container); border-color: var(--ai-primary); color: var(--ai-primary); }
+.oa-plugin-dropzone p { margin: 0; font-size: 12.5px; }

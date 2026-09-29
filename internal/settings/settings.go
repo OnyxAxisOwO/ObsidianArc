@@ -187,6 +187,8 @@ const (
 	TwoFactorPolicy       = "security.two_factor_policy"
 	TwoFactorIssuer       = "security.two_factor_issuer"
 	TwoFactorRememberDays = "security.two_factor_remember_days"
+	// Whether installing, disabling or uninstalling plugins requires a two-step code.
+	TwoFactorPluginManage = "security.two_factor_plugin_manage"
 	// Asking for a code again at the backoffice's door, not just at sign-in:
 	// how often (one of the BackofficeVerify modes below), and the minutes
 	// that mode counts.
@@ -686,6 +688,8 @@ var Defaults = map[string]string{
 	// Off. Remembering a browser trades the second factor for a cookie, and
 	// that is a trade an operator should make on purpose.
 	TwoFactorRememberDays: "0",
+	// Off: plugin management works without asking for a code unless an operator turns it on.
+	TwoFactorPluginManage: "false",
 	// Off: a code at the backoffice's door is a real cost to the people who
 	// use it all day, and one an operator should choose to pay.
 	TwoFactorBackofficeMode: BackofficeVerifyOff,

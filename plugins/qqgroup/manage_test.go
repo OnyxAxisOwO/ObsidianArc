@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/servertest"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
 // The plugin's whole life through the backoffice, on an instance that has
@@ -123,8 +124,10 @@ func TestInstallSwitchOffAndRemoveThroughTheBackoffice(t *testing.T) {
 		t.Fatalf("the field is not on the account: %s", me)
 	}
 
-	// Switching it off needs the second step, which the founder has not set
-	// up yet — and then a code from it.
+	// With plugin operations requiring two-step verification, switching it
+	// off needs the second step, which the founder has not set up yet —
+	// and then a code from it.
+	in.SetSettings(founder, map[string]string{settings.TwoFactorPluginManage: "true"})
 	off := in.Do(http.MethodPost, "/api/admin/plugins/"+Name+"/disable", map[string]any{}, founder)
 	if off.Code != http.StatusForbidden || servertest.ErrorCode(t, off) != "two_factor_required" {
 		t.Fatalf("disable without two-step: %d %s", off.Code, off.Body.String())
@@ -171,7 +174,7 @@ func TestInstallSwitchOffAndRemoveThroughTheBackoffice(t *testing.T) {
 
 	// And it can come back, from nothing.
 	if again := in.Do(http.MethodPost, "/api/admin/plugins/"+Name+"/install",
-		map[string]any{"enable": true}, founder); again.Code != http.StatusOK {
+		map[string]any{"enable": true, "two_factor_code": authenticator.Next(t)}, founder); again.Code != http.StatusOK {
 		t.Fatalf("reinstall: %d %s", again.Code, again.Body.String())
 	}
 	if !hasColumn(t, in) {
@@ -234,7 +237,8 @@ func TestThePluginGrantsAreSeparate(t *testing.T) {
 		map[string]any{"two_factor_code": "123456"}, manager).Code; code != http.StatusForbidden {
 		t.Fatalf("the manage grant reached uninstall: %d", code)
 	}
-	// The remove grant gets as far as its own two-step check.
+	// The remove grant gets as far as its own two-step check when 2FA is required.
+	in.SetSettings(founder, map[string]string{settings.TwoFactorPluginManage: "true"})
 	response := in.Do(http.MethodPost, "/api/admin/plugins/"+Name+"/uninstall", map[string]any{}, remover)
 	if servertest.ErrorCode(t, response) != "two_factor_required" {
 		t.Fatalf("the remove grant: %d %s", response.Code, response.Body.String())
