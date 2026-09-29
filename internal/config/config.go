@@ -212,7 +212,14 @@ func Load() (Config, error) {
 			Driver:       driver,
 			DSN:          dsn,
 			MaxOpenConns: envInt("DB_MAX_CONNS", maxConns),
-			MaxIdleConns: envInt("DB_MAX_IDLE_CONNS", 2),
+			// As many idle as open. database/sql closes a released connection
+			// whenever the idle set is full, so an idle cap below the open cap
+			// means every burst above it pays for a new connection — a TCP
+			// handshake, authentication and a fresh backend on Postgres, the
+			// schema and pragmas again on SQLite — and throws away that
+			// connection's prepared statements. ConnMaxIdle below is what lets
+			// a quiet instance give them back.
+			MaxIdleConns: envInt("DB_MAX_IDLE_CONNS", maxConns),
 			ConnMaxIdle:  envDuration("DB_CONN_MAX_IDLE", 5*time.Minute),
 		},
 		Session: Session{

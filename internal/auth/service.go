@@ -1171,10 +1171,16 @@ func (s *Service) Authenticate(ctx context.Context, token string) (user.User, Se
 	}
 	if time.Since(time.UnixMilli(account.LastActiveAt)) >= time.Minute {
 		now := time.Now().UnixMilli()
+		// Bookkeeping, not the answer. A write that fails — a SQLite writer
+		// holding the lock past busy_timeout, a Postgres blip — used to fail
+		// the whole lookup, and Attach then served a signed-in reader as
+		// anonymous: a 401 for their chat because a timestamp did not land.
+		// The next request a minute on tries again.
 		if err := s.users.MarkActive(ctx, account.ID, now); err != nil {
-			return user.User{}, Session{}, err
+			slog.WarnContext(ctx, "could not record account activity", "user", account.ID, "error", err)
+		} else {
+			account.LastActiveAt = now
 		}
-		account.LastActiveAt = now
 	}
 
 	if time.Since(time.UnixMilli(session.LastSeenAt)) > s.cfg.TouchInterval {

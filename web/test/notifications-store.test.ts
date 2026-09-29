@@ -86,6 +86,29 @@ describe('the notifications store', () => {
     expect(notificationList.value).toHaveLength(1);
   });
 
+  it('does not poll from a tab nobody can see, and catches up once it is shown', async () => {
+    get.mockImplementation(async (url: string) =>
+      (url.includes('/poll') ? { notifications: [row('c', 3000)], unread: 1, now: 3000 } :
+        { notifications: [], unread: 0, seen_at: 0, now: 1000 }));
+    const state = vi.spyOn(document, 'visibilityState', 'get');
+
+    startNotifications();
+    await vi.advanceTimersByTimeAsync(0);
+    state.mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    get.mockClear();
+
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3);
+    expect(get).not.toHaveBeenCalled();
+
+    state.mockReturnValue('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get.mock.calls.some(([url]) => String(url).includes('/poll'))).toBe(true);
+    expect(activeToasts.value.map((toast) => toast.id)).toEqual(['c']);
+    state.mockRestore();
+  });
+
   it('forgets everything on sign-out, for the next account', async () => {
     get.mockResolvedValue({ notifications: [row('a', 1000)], unread: 1, seen_at: 0, now: 1000 });
     startNotifications();

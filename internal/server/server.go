@@ -1192,7 +1192,45 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	mux.Handle("/", frontend)
 
-	handler := httpx.Chain(mux,
+	// Who is asking, for every request that could care. The fingerprinted
+	// bundle under /assets/ and the two root files are the same bytes for
+	// every visitor and anonymous-readable by design, but the session cookie
+	// is Path=/, so each of them used to pay for a session-and-account lookup
+	// — and on first load there are a dozen of them. They skip it; nothing
+	// they serve reads the account.
+	withSession := httpx.Chain(mux,
+		// The session lookup only happens for requests that survived the
+		// origin check, which sits outside this chain.
+		authService.Attach(),
+		// Right after it: an account the two-step policy says must enrol
+		// reaches nothing but the enrolment endpoints, whichever handler it
+		// was asking for.
+		authService.EnrolmentGate(),
+		// Then: an account the operator's OIDC policy says must link an
+		// identity reaches nothing but the connect flow and the endpoints
+		// that read who it is. After the two-step gate rather than before,
+		// so an account owing both factors first proves the one that
+		// protects the account before it pins an identity to it for life.
+		oauthService.BindingGate(),
+		// After it, because the account it names only exists in the context
+		// Attach created — which the log's own layer, further out, never sees.
+		reqlog.Identify(func(r *http.Request) (string, string) {
+			account, ok := auth.UserFrom(r.Context())
+			if !ok {
+				return "", ""
+			}
+			return account.ID, account.Username
+		}),
+	)
+	routed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if staticAsset(r) {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		withSession.ServeHTTP(w, r)
+	})
+
+	handler := httpx.Chain(routed,
 		httpx.RequestID(),
 		httpx.Recover(),
 		httpx.Logger(),
@@ -1222,28 +1260,6 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 					settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
 		}, host.Origins),
 		httpx.SameOrigin(cfg.AllowedOrigins),
-		// Last, so the session lookup only happens for requests that survived
-		// the origin check.
-		authService.Attach(),
-		// Right after it: an account the two-step policy says must enrol
-		// reaches nothing but the enrolment endpoints, whichever handler it
-		// was asking for.
-		authService.EnrolmentGate(),
-		// Then: an account the operator's OIDC policy says must link an
-		// identity reaches nothing but the connect flow and the endpoints
-		// that read who it is. After the two-step gate rather than before,
-		// so an account owing both factors first proves the one that
-		// protects the account before it pins an identity to it for life.
-		oauthService.BindingGate(),
-		// After it, because the account it names only exists in the context
-		// Attach created — which the log's own layer, further out, never sees.
-		reqlog.Identify(func(r *http.Request) (string, string) {
-			account, ok := auth.UserFrom(r.Context())
-			if !ok {
-				return "", ""
-			}
-			return account.ID, account.Username
-		}),
 	)
 
 	return &Server{
@@ -1350,6 +1366,18 @@ func archiveAllowed(_ context.Context, set *settings.Service, account user.User)
 // skipFromLog drops the requests nobody audits: the compiled frontend's own
 // assets. Everything else is recorded, including the ones that never reached
 // a handler.
+// staticAsset is a request for a file that is the same for every visitor:
+// the fingerprinted bundle and the two root files a browser asks for on its
+// own. Only reads — anything else goes the whole way through, so a method
+// the file server would refuse is refused by the chain that knows who asked.
+func staticAsset(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	path := r.URL.Path
+	return strings.HasPrefix(path, "/assets/") || path == "/favicon.ico" || path == "/robots.txt"
+}
+
 func skipFromLog(r *http.Request) bool {
 	path := r.URL.Path
 	return strings.HasPrefix(path, "/assets/") ||

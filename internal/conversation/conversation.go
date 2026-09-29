@@ -422,6 +422,93 @@ func (s *Store) Messages(ctx context.Context, q database.Queryer, userID, conver
 	return messages, attachments.Err()
 }
 
+// ForRequest is the part of a transcript the next turn re-sends: the newest
+// limit messages the model should see, oldest first, with their attachments.
+//
+// Failed assistant turns are left out here, in the query — replaying "I could
+// not reach the API" as though the assistant had said it teaches the model
+// that refusing is a valid answer shape — and so is everything older than the
+// limit. Messages reads the whole transcript, which the chat gateway used to
+// do on every turn only to discard all but the tail in Go: a long
+// conversation cost its whole history in reads, JSON decoding and memory each
+// time a message was sent. The (conversation_id, seq) unique index answers
+// this one walking backwards from the newest row. A limit of zero or less
+// means the whole usable transcript.
+func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conversationID string, limit int) ([]Message, error) {
+	if q == nil {
+		q = s.db
+	}
+	query := `SELECT ` + messageColumns + `
+		 FROM messages m
+		 WHERE m.conversation_id = ? AND m.user_id = ?
+		   AND NOT (m.role = ? AND (m.error <> '' OR m.content = ''))
+		 ORDER BY m.seq DESC`
+	args := []any{conversationID, userID, RoleAssistant}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := q.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("conversation: messages for request: %w", err)
+	}
+	defer rows.Close()
+
+	messages := []Message{}
+	for rows.Next() {
+		record, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Newest first off the index, oldest first for the model.
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+	if len(messages) == 0 {
+		return messages, nil
+	}
+
+	index := make(map[string]int, len(messages))
+	marks := make([]string, 0, len(messages))
+	ids := make([]any, 0, len(messages)+1)
+	ids = append(ids, userID)
+	for position, message := range messages {
+		index[message.ID] = position
+		marks = append(marks, "?")
+		ids = append(ids, message.ID)
+	}
+	attachments, err := q.Query(ctx,
+		`SELECT a.id, a.message_id, a.mime, a.width, a.height, a.size, a.discarded_at
+		 FROM attachments a
+		 WHERE a.user_id = ? AND a.message_id IN (`+strings.Join(marks, ", ")+`)
+		 ORDER BY a.created_at`, ids...)
+	if err != nil {
+		return nil, fmt.Errorf("conversation: attachments for request: %w", err)
+	}
+	defer attachments.Close()
+	for attachments.Next() {
+		var (
+			record      Attachment
+			messageID   string
+			discardedAt int64
+		)
+		if err := attachments.Scan(&record.ID, &messageID, &record.Mime,
+			&record.Width, &record.Height, &record.Size, &discardedAt); err != nil {
+			return nil, fmt.Errorf("conversation: attachment scan: %w", err)
+		}
+		record.Discarded = discardedAt > 0
+		if position, ok := index[messageID]; ok {
+			messages[position].Attachments = append(messages[position].Attachments, record)
+		}
+	}
+	return messages, attachments.Err()
+}
+
 // AppendInput is one message to add. Seq is assigned by the store so two
 // concurrent turns cannot land on the same position.
 type AppendInput struct {

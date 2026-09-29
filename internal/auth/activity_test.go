@@ -70,3 +70,33 @@ func TestConcurrentActivityNeverMovesBackwards(t *testing.T) {
 		t.Fatalf("concurrent activity: %+v %v", stored, err)
 	}
 }
+
+// Recording activity is bookkeeping. A write that cannot land must not turn
+// a valid session into an anonymous request — the reader would see a 401
+// for their own chat because a timestamp failed.
+func TestAFailedActivityWriteStillAuthenticates(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "active", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour).UnixMilli()
+	if _, err := f.db.Exec(ctx, `UPDATE users SET last_active_at = ? WHERE id = ?`, old, account.ID); err != nil {
+		t.Fatal(err)
+	}
+	// SQLite's own way to make exactly that write fail.
+	if _, err := f.db.Exec(ctx, `CREATE TRIGGER refuse_activity BEFORE UPDATE OF last_active_at ON users
+		BEGIN SELECT RAISE(ABORT, 'activity refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	active, _, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatalf("a failed activity write failed the sign-in: %v", err)
+	}
+	if active.ID != account.ID || active.LastActiveAt != old {
+		t.Fatalf("authenticated %q with last_active_at %d, want %q and the stored %d",
+			active.ID, active.LastActiveAt, account.ID, old)
+	}
+}
