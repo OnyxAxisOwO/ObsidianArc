@@ -75,7 +75,7 @@ func (h *adminHandlers) mount(backoffice *admin.Handlers) {
 func (h *adminHandlers) targetURL(path string) string {
 	set := h.host.Settings
 	base := strings.TrimRight(strings.TrimSpace(set.Get(BaseURL)), "/")
-	if base == "" || strings.HasPrefix(base, "/") {
+	if base == "" || strings.HasPrefix(base, "/") || strings.Contains(base, "ai.onyxaxis.org") || strings.Contains(base, "127.0.0.1") || strings.Contains(base, "localhost") {
 		return "http://127.0.0.1:23471" + path
 	}
 	base = strings.TrimSuffix(base, "/rc")
