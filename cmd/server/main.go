@@ -18,6 +18,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/systembackup"
 )
@@ -72,7 +73,10 @@ func restoreBackup(args []string) error {
 		return err
 	}
 	defer db.Close()
-	if _, err := db.Migrate(ctx); err != nil {
+	// Every compiled-in plugin's, installed or not: the archive may carry any
+	// of their tables, and plugin_installs, restored with the rest, is what
+	// then says which of them this instance has.
+	if _, err := db.Migrate(ctx, plugin.Migrations()...); err != nil {
 		return err
 	}
 	return systembackup.RestoreArchive(ctx, db, *archivePath, cfg.SecretKey)
@@ -127,6 +131,9 @@ func run() error {
 	}
 	defer db.Close()
 
+	// The core's alone. An installed plugin's run when the server loads the
+	// plugin states, and an uninstalled one's run when somebody installs
+	// it — its tables are not this instance's until then.
 	applied, err := db.Migrate(bootCtx)
 	if err != nil {
 		return err

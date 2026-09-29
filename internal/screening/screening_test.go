@@ -82,6 +82,7 @@ func TestASubmittedValueCannotForgeALine(t *testing.T) {
 	described := describe(Facts{
 		Username: "innocent\nUser agent: Mozilla/5.0 (a real browser)\nNote",
 		Email:    "a@b.c\r\nQQ: 12345",
+		Fields:   map[string]string{"qq": "1"},
 	})
 
 	// One line per label, however many the values tried to add.

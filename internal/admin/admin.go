@@ -35,6 +35,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
@@ -103,6 +104,48 @@ type Handlers struct {
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
 	cpu cpuSampler
+
+	// Endpoints a plugin brought, mounted by Routes behind the same wrapper
+	// as the table there.
+	extra []Route
+	// Which plugins are on. A switched-off plugin's routes answer 404, the
+	// same as a build without it.
+	gate plugingate.Gate
+}
+
+// SetPluginGate is how the server says which plugins are on. Set before
+// Routes.
+func (h *Handlers) SetPluginGate(g plugingate.Gate) { h.gate = g }
+
+// PluginRoutes lists the endpoints plugin mounted, for its manifest.
+func (h *Handlers) PluginRoutes(plugin string) []Route {
+	var out []Route
+	for _, route := range h.extra {
+		if route.Plugin == plugin {
+			out = append(out, route)
+		}
+	}
+	return out
+}
+
+// Route is one administrative endpoint a plugin adds. Pattern is the full
+// ServeMux pattern and must sit under /api/admin/; Permission is a grant
+// list as the table in Routes spells it.
+type Route struct {
+	Pattern    string
+	Permission string
+	Handler    httpx.Handler
+	// The plugin that brought it; empty for one the core mounts this way.
+	Plugin string
+}
+
+// Mount adds a plugin's endpoint. It has to be called before Routes, which is
+// the only thing that reads the list: the wiring sets plugins up first.
+func (h *Handlers) Mount(route Route) {
+	if !strings.Contains(route.Pattern, " /api/admin/") {
+		panic("admin: a plugin route must live under /api/admin/: " + route.Pattern)
+	}
+	h.extra = append(h.extra, route)
 }
 
 func NewHandlers(
@@ -214,8 +257,6 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/admin/users/{id}", protected("users", h.deleteUser))
 	mux.Handle("POST /api/admin/users", protected("users", h.createUser))
 	mux.Handle("POST /api/admin/users/{id}/password", protected("users", h.resetPassword))
-	mux.Handle("POST /api/admin/users/{id}/departure", protected("users", h.departUser))
-	mux.Handle("GET /api/admin/departures", protected("invites", h.listDepartures))
 	mux.Handle("DELETE /api/admin/users/{id}/two-factor", protected("users", h.resetTwoFactor))
 	mux.Handle("GET /api/admin/users/{id}/keys", protected("users", h.userKeys))
 	mux.Handle("DELETE /api/admin/users/{id}/keys/{key}", protected("users", h.revokeUserKey))
@@ -299,6 +340,20 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("PUT /api/admin/backup", protected("super_admin", h.saveSystemBackup))
 	mux.Handle("POST /api/admin/backup/test", protected("super_admin", h.testSystemBackup))
 	mux.Handle("POST /api/admin/backup/run", protected("super_admin", h.runSystemBackup))
+
+	for _, route := range h.extra {
+		inner := protected(route.Permission, route.Handler)
+		owner := route.Plugin
+		// Before the permission check rather than after it: a switched-off
+		// plugin's route is not there, for anyone.
+		mux.Handle(route.Pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !h.gate.Allows(owner) {
+				httpx.WriteError(w, r, httpx.NotFound("Not found."))
+				return
+			}
+			inner.ServeHTTP(w, r)
+		}))
+	}
 }
 
 // meta is the reference data the admin forms need: which provider kinds this

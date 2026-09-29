@@ -52,9 +52,16 @@ const TokenBytes = 32
 // MaxUserAgentChars bounds what is stored from a client-supplied header.
 const MaxUserAgentChars = user.MaxSignupUserAgentChars
 
-type SessionStore struct{ db *database.DB }
+type SessionStore struct {
+	db *database.DB
+	// The account half of the joined lookup is the user store's column
+	// list, which plugins widen and narrow as they are switched.
+	users *user.Store
+}
 
-func NewSessionStore(db *database.DB) *SessionStore { return &SessionStore{db: db} }
+func NewSessionStore(db *database.DB, users *user.Store) *SessionStore {
+	return &SessionStore{db: db, users: users}
+}
 
 // HashToken maps a cookie value to its row key.
 func HashToken(token string) string {
@@ -153,10 +160,10 @@ func (s *SessionStore) GetWithUser(ctx context.Context, token string) (Session, 
 	key := HashToken(token)
 
 	var record Session
-	account, err := user.ScanRow(scanBoth{s.db.QueryRow(ctx,
+	account, err := s.users.ScanRow(scanBoth{s.db.QueryRow(ctx,
 		`SELECT s.id, s.user_id, s.created_at, s.expires_at, s.last_seen_at, s.ip, s.user_agent,
 		 s.two_factor_pending, s.backoffice_at, s.backoffice_ip, s.backoffice_ua, s.device_id, `+
-			user.JoinColumns("u")+
+			s.users.JoinColumns("u")+
 			` FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?`, key),
 		[]any{&record.ID, &record.UserID, &record.CreatedAt, &record.ExpiresAt,
 			&record.LastSeenAt, &record.IP, &record.UserAgent, &record.TwoFactorPending,

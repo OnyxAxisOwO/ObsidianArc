@@ -13,8 +13,8 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/riskcontrol"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
@@ -53,7 +53,6 @@ var (
 	// Unlike a challenge the visitor failed — turnstile.ErrFailed's case —
 	// there is nothing for them to retry: the service judged the request
 	// and the judgment was no.
-	ErrRiskRejected         = errors.New("auth: the risk control service rejected this request")
 	ErrEmailRequired        = errors.New("auth: an email address is required to register here")
 	ErrPasswordUnchanged    = errors.New("auth: the new password is the same as the current one")
 	ErrCurrentPasswordWrong = errors.New("auth: current password is incorrect")
@@ -83,8 +82,10 @@ type InviteGrant struct {
 }
 
 type Service struct {
-	db       *database.DB
-	users    *user.Store
+	db    *database.DB
+	users *user.Store
+	// Which plugins are on, for their guards and their sign-in blocks.
+	gate     plugingate.Gate
 	groups   *group.Store
 	settings *settings.Service
 	sessions *SessionStore
@@ -97,11 +98,11 @@ type Service struct {
 	// challenge rather than a broken one.
 	Challenge      turnstile.Gate
 	LoginChallenge turnstile.Gate
-	// The self-hosted risk-control service, the same shape as the Turnstile
-	// gates above. RiskChallenge is the sign-up check, governed by the
-	// captcha-mode setting; RiskLogin stands in front of the password form.
-	RiskChallenge riskcontrol.Gate
-	RiskLogin     riskcontrol.Gate
+	// A plugin's checks, in front of the same two doors — see AddGuard.
+	signupGuards []Guard
+	loginGuards  []Guard
+	// How sign-up treats each plugin account field — see SetFieldRule.
+	fieldRules map[string]func() string
 	// Self-developed proof-of-work manager. Nil is off.
 	PoW *pow.Manager
 	// Challenge failure hook for recording to security events.
@@ -178,7 +179,7 @@ func NewService(
 		users:    users,
 		groups:   groups,
 		settings: set,
-		sessions: NewSessionStore(db),
+		sessions: NewSessionStore(db, users),
 		hasher:   NewHasher(cfg.Password),
 		cfg:      cfg.Session,
 		limiter:  NewLimiter(),
@@ -207,16 +208,16 @@ func (s *Service) Hasher() *Hasher         { return s.hasher }
 type RegisterInput struct {
 	Username string
 	Email    string
-	QQ       string
+	// Plugin account fields, by key — see user.DefineField.
+	Fields   map[string]string
 	Password string
 	Nickname string
 	IP       string
 	UA       string
 	// Turnstile's token, when the operator has switched the challenge on.
 	Turnstile string
-	// The self-hosted risk-control service's token, when the sign-up mode
-	// selects it. The browser's execute('register') produced it.
-	RC string
+	// Each plugin guard's token, by guard name — see AddGuard.
+	Guards map[string]string
 	// PoW solution, when proof-of-work challenge is required.
 	PoW *pow.Solution
 	// Empty unless this instance's registration mode asks for one — see
@@ -255,7 +256,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	if err := user.ValidateEmail(in.Email); err != nil {
 		return user.User{}, "", err
 	}
-	if err := user.ValidateQQ(in.QQ); err != nil {
+	if _, err := s.users.CheckFields(in.Fields); err != nil {
 		return user.User{}, "", err
 	}
 	if err := ValidatePassword(in.Password); err != nil {
@@ -291,7 +292,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		if s.VerificationRequired() && strings.TrimSpace(in.Email) == "" {
 			return user.User{}, "", ErrEmailRequired
 		}
-		if err := checkQQ(s.settings, in.QQ); err != nil {
+		if err := s.checkFields(in.Fields); err != nil {
 			return user.User{}, "", err
 		}
 		// Free, so it happens before the throttle counts anything: a request
@@ -360,29 +361,14 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			}
 		}
 
-		// 3. The self-hosted risk control service. Its verdict is a band
-		// rather than a boolean: "block" refuses here, and "challenge" —
-		// a score the service was not sure enough about to reject — is
+		// 3. A plugin's guards. A refusal ends it here; a restriction — a
+		// guard that let the request through without being sure of it — is
 		// carried into the review below, where it becomes the same middle
 		// answer the AI reviewer has: the account exists, the programmatic
-		// surface stays closed. Nothing here distinguishes a token the
-		// service refused from one that never arrived; both are ErrFailed.
-		riskChallenge := false
-		if captchaMode == settings.CaptchaModeRisk {
-			result, err := s.RiskChallenge.Check(ctx, in.RC, riskcontrol.ActionRegister, in.IP)
-			if err != nil {
-				if s.OnChallengeFailure != nil {
-					s.OnChallengeFailure(ctx, "risk_challenge", in.IP, in.Username, "风控验证未通过")
-				}
-				return user.User{}, "", err
-			}
-			if result.Decision == riskcontrol.DecisionBlock {
-				if s.OnChallengeFailure != nil {
-					s.OnChallengeFailure(ctx, "risk_challenge", in.IP, in.Username, "风控判定拒绝")
-				}
-				return user.User{}, "", ErrRiskRejected
-			}
-			riskChallenge = result.Decision == riskcontrol.DecisionChallenge
+		// surface stays closed.
+		guarded, err := s.runGuards(ctx, s.signupGuards, GuardRegister, in.Guards, in.IP, in.Username)
+		if err != nil {
+			return user.User{}, "", err
 		}
 
 		if s.PoW != nil && s.PoW.Tracker() != nil {
@@ -391,7 +377,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		// This pass only saves paid screening and review calls for an address
 		// already held here. The transaction still repeats the uniqueness
 		// check under the registration lock before writing the account.
-		usernameTaken, emailTaken, qqTaken, err := s.users.Exists(ctx, nil, in.Username, in.Email, in.QQ)
+		usernameTaken, emailTaken, heldField, err := s.users.Exists(ctx, nil, in.Username, in.Email, in.Fields)
 		if err != nil {
 			return user.User{}, "", err
 		}
@@ -401,8 +387,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		if emailTaken {
 			return user.User{}, "", user.ErrEmailTaken
 		}
-		if qqTaken {
-			return user.User{}, "", user.ErrQQTaken
+		if heldField != "" {
+			return user.User{}, "", takenError(heldField)
 		}
 
 		// Last of the gates and outside the transaction, for the same two
@@ -425,13 +411,13 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 				return user.User{}, "", ErrSignupRefused
 			}
 		}
-		// The risk service's middle band, applied whatever the AI review
-		// said — and whether or not it ran. A refusal from either side
-		// still wins: restricted is the softer answer, and a refusal was
-		// already returned above.
-		if riskChallenge && review.Decision == SignupAllow {
+		// A guard's middle band, applied whatever the AI review said — and
+		// whether or not it ran. A refusal from either side still wins:
+		// restricted is the softer answer, and a refusal was already
+		// returned above.
+		if guarded.Restrict && review.Decision == SignupAllow {
 			review.Decision = SignupRestrict
-			review.Reason = "风控评分落在二次验证区间"
+			review.Reason = guarded.Reason
 		}
 	}
 	screened := false
@@ -492,7 +478,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 				if s.VerificationRequired() && strings.TrimSpace(in.Email) == "" {
 					return ErrEmailRequired
 				}
-				if err := checkQQ(s.settings, in.QQ); err != nil {
+				if err := s.checkFields(in.Fields); err != nil {
 					return err
 				}
 				allowed, retryAfter := s.signups.allow(
@@ -530,7 +516,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 				}
 			}
 
-			usernameTaken, emailTaken, qqTaken, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.QQ)
+			usernameTaken, emailTaken, heldField, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.Fields)
 			if err != nil {
 				return err
 			}
@@ -540,8 +526,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			if emailTaken {
 				return user.ErrEmailTaken
 			}
-			if qqTaken {
-				return user.ErrQQTaken
+			if heldField != "" {
+				return takenError(heldField)
 			}
 
 			groupID, err := s.registrationGroup(ctx, tx)
@@ -568,7 +554,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			created, err = s.users.Create(ctx, tx, user.CreateInput{
 				Username:             in.Username,
 				Email:                in.Email,
-				QQ:                   in.QQ,
+				Fields:               in.Fields,
 				PasswordHash:         hash,
 				Nickname:             in.Nickname,
 				Role:                 role,
@@ -723,9 +709,23 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 					return errNeedsEmailScreening
 				}
 			}
-			if in.QQ != nil && strings.TrimSpace(*in.QQ) != current.QQ {
-				if err := checkQQ(s.settings, *in.QQ); err != nil {
+			// Only a value being changed answers to the current rules: a
+			// field that became required after this account opened does not
+			// lock the owner out of saving their nickname.
+			changed := map[string]string{}
+			for key, value := range in.Fields {
+				if strings.TrimSpace(value) != current.Fields[key] {
+					changed[key] = value
+				}
+			}
+			if len(changed) > 0 {
+				if _, err := s.users.CheckFields(changed); err != nil {
 					return err
+				}
+				for key, value := range changed {
+					if strings.TrimSpace(value) == "" && s.FieldRule(key) == FieldRequired {
+						return &user.FieldError{Key: key, Reason: user.ErrFieldRequired}
+					}
 				}
 			}
 
@@ -915,9 +915,8 @@ func (s *Service) applyInvite(ctx context.Context, tx *database.Tx, grant *Invit
 
 type LoginInput struct {
 	Turnstile string
-	// The self-hosted risk-control service's token, when the operator has
-	// switched that check on for sign-in.
-	RC         string
+	// Each plugin guard's token, by guard name — see AddGuard.
+	Guards     map[string]string
 	Identifier string
 	Password   string
 	IP         string
@@ -939,18 +938,12 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 	if err := s.LoginChallenge.Check(ctx, in.Turnstile, in.IP); err != nil {
 		return user.User{}, "", err
 	}
-	// The risk service's middle band does not apply here: there is no
-	// per-request second factor to hand a "maybe" at the door, and locking
-	// an account out of its own sign-in costs more than the occasional
-	// marginal one costs the instance. Only "block" refuses. The service's
-	// browser side has already put the visitor through its interactive
-	// check by the time a token exists at all.
-	result, err := s.RiskLogin.Check(ctx, in.RC, riskcontrol.ActionLogin, in.IP)
-	if err != nil {
+	// A guard's middle band does not apply here: there is no per-request
+	// second factor to hand a "maybe" at the door, and locking an account out
+	// of its own sign-in costs more than the occasional marginal one costs
+	// the instance. Only a refusal refuses.
+	if _, err := s.runGuards(ctx, s.loginGuards, GuardLogin, in.Guards, in.IP, in.Identifier); err != nil {
 		return user.User{}, "", err
-	}
-	if result.Decision == riskcontrol.DecisionBlock {
-		return user.User{}, "", ErrRiskRejected
 	}
 
 	attempt, err := s.limiter.Begin(in.IP, in.Identifier)
@@ -1181,10 +1174,16 @@ func (s *Service) Authenticate(ctx context.Context, token string) (user.User, Se
 	}
 	if time.Since(time.UnixMilli(account.LastActiveAt)) >= time.Minute {
 		now := time.Now().UnixMilli()
+		// Bookkeeping, not the answer. A write that fails — a SQLite writer
+		// holding the lock past busy_timeout, a Postgres blip — used to fail
+		// the whole lookup, and Attach then served a signed-in reader as
+		// anonymous: a 401 for their chat because a timestamp did not land.
+		// The next request a minute on tries again.
 		if err := s.users.MarkActive(ctx, account.ID, now); err != nil {
-			return user.User{}, Session{}, err
+			slog.WarnContext(ctx, "could not record account activity", "user", account.ID, "error", err)
+		} else {
+			account.LastActiveAt = now
 		}
-		account.LastActiveAt = now
 	}
 
 	if time.Since(time.UnixMilli(session.LastSeenAt)) > s.cfg.TouchInterval {

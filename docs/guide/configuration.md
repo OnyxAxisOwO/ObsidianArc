@@ -23,7 +23,7 @@
 | `OBSIDIAN_DB_DRIVER` | `sqlite` | SQLite 或 PostgreSQL |
 | `OBSIDIAN_DB_DSN` | 数据目录下的 `obsidian.db` | PostgreSQL 模式必填 |
 | `OBSIDIAN_DB_MAX_CONNS` | SQLite 为 `4`，PostgreSQL 为 `10` | 最大打开连接数 |
-| `OBSIDIAN_DB_MAX_IDLE_CONNS` | `2` | 最大空闲连接数，不高于打开连接上限 |
+| `OBSIDIAN_DB_MAX_IDLE_CONNS` | 与 `OBSIDIAN_DB_MAX_CONNS` 相同 | 最大空闲连接数，不高于打开连接上限；低于它会让突发请求反复新建连接 |
 | `OBSIDIAN_DB_CONN_MAX_IDLE` | `5m` | 空闲连接的最长保留时间 |
 
 驱动别名支持 `sqlite3`、`postgresql` 和 `pgx`，分别归一为 `sqlite` 或 `postgres`。

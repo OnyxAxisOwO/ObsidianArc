@@ -237,23 +237,23 @@ func TestConfirmingLeavesTheFoldedAddressUsable(t *testing.T) {
 	}
 }
 
-func TestClearingAQQNumberIsHeldToTheRegistrationRequirement(t *testing.T) {
+func TestClearingARequiredFieldIsHeldToTheRegistrationRequirement(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
 	account, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "founder", QQ: "1234567", Password: "a-good-password",
+		Username: "founder", Fields: badgeOf("1234567"), Password: "a-good-password",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.settings.Set(ctx, settings.QQRequirement, settings.QQRequired); err != nil {
+	if err := f.settings.Set(ctx, badgeRule, FieldRequired); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{
-		QQ: ptr(""),
-	}); !errors.Is(err, user.ErrQQRequired) {
-		t.Fatalf("err = %v, want user.ErrQQRequired", err)
+		Fields: badgeOf(""),
+	}); !errors.Is(err, user.ErrFieldRequired) {
+		t.Fatalf("err = %v, want user.ErrFieldRequired", err)
 	}
 }

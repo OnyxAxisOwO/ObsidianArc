@@ -640,27 +640,13 @@ func (s *Service) systemPrompt(ctx context.Context, req TurnRequest, resolved mo
 
 // buildRequest turns the stored transcript into what an adapter takes.
 func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved model.Resolved, state prepared) (adapter.ChatRequest, error) {
-	messages, err := s.conversations.Messages(ctx, nil, req.User.ID, state.conversationID)
+	// A cap on how much history is re-sent, and therefore re-billed, on every
+	// turn, applied in the query along with leaving failed turns out — see
+	// conversation.Store.ForRequest for why neither is done here any more.
+	usable, err := s.conversations.ForRequest(ctx, nil, req.User.ID, state.conversationID,
+		s.settings.Int(settings.ConversationMaxTurns, 40))
 	if err != nil {
 		return adapter.ChatRequest{}, err
-	}
-
-	// Failed turns are left out entirely. Replaying "I could not reach the
-	// API" as though the assistant had said it teaches the model that
-	// refusing is a valid answer shape.
-	usable := make([]conversation.Message, 0, len(messages))
-	for _, message := range messages {
-		if message.Role == conversation.RoleAssistant && (message.Error != "" || message.Content == "") {
-			continue
-		}
-		usable = append(usable, message)
-	}
-
-	// A cap on how much history is re-sent, and therefore re-billed, on every
-	// turn. Trimming from the front keeps the most recent context.
-	maxTurns := s.settings.Int(settings.ConversationMaxTurns, 40)
-	if maxTurns > 0 && len(usable) > maxTurns {
-		usable = usable[len(usable)-maxTurns:]
 	}
 
 	// Collected after the trim, not before. Gathered first, this asked the

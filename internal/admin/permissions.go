@@ -7,6 +7,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -31,6 +32,9 @@ func hasPermission(account user.User, permissions string) bool {
 // in any of them; which keys each one then sees and saves is decided here,
 // key by key, so a grant reaches its own page's settings and nobody else's.
 func settingPermission(key string) string {
+	if d, ok := settings.Lookup(key); ok && d.Permission != "" {
+		return d.Permission
+	}
 	switch {
 	case strings.HasPrefix(key, "health."):
 		return "availability"
@@ -48,11 +52,6 @@ func settingPermission(key string) string {
 		return "security"
 	case strings.HasPrefix(key, "invites."):
 		return "invites"
-	// The bot's webhook token and its default departure mode: the bot can
-	// disable or delete accounts, which is a front-door concern, and the
-	// token lives on the same screen as the other credentials.
-	case strings.HasPrefix(key, "bot."):
-		return "security"
 	default:
 		return "settings"
 	}

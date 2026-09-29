@@ -16,7 +16,6 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/riskcontrol"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -45,6 +44,10 @@ type Handlers struct {
 	// question. Nil reports false, the way a build with no oauth wiring at
 	// all has always answered "no third-party sign-ins" to SignInProviders.
 	MustBindOIDC func(ctx context.Context, account user.User) (bool, error)
+
+	// Each compiled-in plugin's block of the public configuration — see
+	// Extend. Written during setup only, read afterwards.
+	extensions map[string]func(firstAccount bool) map[string]any
 }
 
 // SignInProvider is one button on the sign-in card. Nothing secret: the whole
@@ -239,9 +242,11 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// So the sign-up form can mark the field required and say which
 		// addresses will be accepted, instead of finding out on submit.
 		// Neither applies to the first account.
-		"require_email":  populated && h.settings.Bool(settings.RequireEmail),
-		"require_qq":     populated && h.settings.Get(settings.QQRequirement) == settings.QQRequired,
-		"qq_requirement": h.qqRequirement(!populated),
+		"require_email": populated && h.settings.Bool(settings.RequireEmail),
+		// Each plugin account field and how the form should treat it. Off
+		// for the first account, which none of the registration controls
+		// apply to.
+		"fields": h.fieldRules(!populated),
 		// So the sign-up card can say a link is coming, rather than the
 		// banner being the first anyone hears of it.
 		"verify_email":  populated && h.service.VerificationRequired(),
@@ -263,14 +268,10 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"turnstile_on_redeem":       h.settings.Bool(settings.TurnstileOnRedeem),
 		"turnstile_on_feedback":     h.settings.Bool(settings.TurnstileOnFeedback),
 		"turnstile_on_chat_speed":   h.settings.Int(settings.ChatChallengeRequests, 0) > 0,
-		// The self-hosted risk control service, served on the same terms as
-		// the Turnstile key above: the address and the site key are what the
-		// browser's init() call carries, and a page with no risk check on it
-		// is not handed them. The secret stays server-side.
-		"risk_base_url":  h.riskBaseURL(!populated),
-		"risk_site":      h.riskSiteKey(!populated),
-		"risk_on_signup": populated && h.settings.RegistrationCaptchaMode() == settings.CaptchaModeRisk,
-		"risk_on_login":  populated && h.settings.Bool(settings.RiskOnLogin),
+		// The compiled-in plugins, each with whatever its browser half needs
+		// — see Extend. A plugin that is not in this build is not named, and
+		// the browser fetches none of its code.
+		"plugins": h.pluginConfig(!populated),
 		// So the code step can offer "don't ask again on this browser" only
 		// where the operator allows it, and say for how long.
 		"two_factor_remember_days": h.service.RememberDays(),
@@ -412,15 +413,16 @@ func (h *Handlers) signInProviders() []SignInProvider {
 	return h.SignInProviders()
 }
 
-func (h *Handlers) qqRequirement(first bool) string {
-	if first {
-		return settings.QQDisabled
+func (h *Handlers) fieldRules(first bool) map[string]string {
+	out := map[string]string{}
+	for _, f := range h.service.users.Fields() {
+		if first {
+			out[f.Key] = FieldOff
+		} else {
+			out[f.Key] = h.service.FieldRule(f.Key)
+		}
 	}
-	val := h.settings.Get(settings.QQRequirement)
-	if val == settings.QQOptional || val == settings.QQRequired {
-		return val
-	}
-	return settings.QQDisabled
+	return out
 }
 
 func emailDomains(populated bool, raw string) []string {
@@ -527,17 +529,15 @@ func verificationError(err error) error {
 type registerRequest struct {
 	// The Turnstile token, where the operator has switched the challenge on.
 	Turnstile string `json:"turnstile"`
-	// The self-hosted risk-control service's token, where the sign-up mode
-	// selects it. Supports both snake_case and camelCase for integration
-	// compatibility with external sample code.
-	RC       string        `json:"rc_token"`
-	RCToken  string        `json:"rcToken"`
-	PoW      *pow.Solution `json:"pow"`
-	Username string        `json:"username"`
-	Email    string        `json:"email"`
-	QQ       string        `json:"qq"`
-	Password string        `json:"password"`
-	Nickname string        `json:"nickname"`
+	// Each plugin guard's token, by guard name.
+	Guards   map[string]string `json:"guards"`
+	PoW      *pow.Solution     `json:"pow"`
+	Username string            `json:"username"`
+	Email    string            `json:"email"`
+	// Plugin account fields, by key — see user.DefineField.
+	Fields   map[string]string `json:"fields"`
+	Password string            `json:"password"`
+	Nickname string            `json:"nickname"`
 	// Empty unless this instance's registration mode asks for one, or the
 	// visitor arrived through a partner link and typed or carried one along
 	// anyway. See Service.Register.
@@ -552,17 +552,13 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 
 	ip := httpx.ClientIP(r, h.trust)
 	ua := r.UserAgent()
-	rc := body.RC
-	if rc == "" {
-		rc = body.RCToken
-	}
 	account, token, err := h.service.Register(r.Context(), RegisterInput{
 		Turnstile:  body.Turnstile,
-		RC:         rc,
+		Guards:     body.Guards,
 		PoW:        body.PoW,
 		Username:   body.Username,
 		Email:      body.Email,
-		QQ:         body.QQ,
+		Fields:     body.Fields,
 		Password:   body.Password,
 		Nickname:   body.Nickname,
 		IP:         ip,
@@ -581,11 +577,10 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 }
 
 type loginRequest struct {
-	Turnstile  string `json:"turnstile"`
-	RC         string `json:"rc_token"`
-	RCToken    string `json:"rcToken"`
-	Identifier string `json:"identifier"`
-	Password   string `json:"password"`
+	Turnstile  string            `json:"turnstile"`
+	Guards     map[string]string `json:"guards"`
+	Identifier string            `json:"identifier"`
+	Password   string            `json:"password"`
 }
 
 func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
@@ -596,13 +591,9 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 
 	ip := httpx.ClientIP(r, h.trust)
 	ua := r.UserAgent()
-	rc := body.RC
-	if rc == "" {
-		rc = body.RCToken
-	}
 	account, token, err := h.service.Login(r.Context(), LoginInput{
 		Turnstile:  body.Turnstile,
-		RC:         rc,
+		Guards:     body.Guards,
 		Identifier: body.Identifier,
 		Password:   body.Password,
 		IP:         ip,
@@ -650,17 +641,11 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 			return httpx.UnavailableCode("challenge_unavailable",
 				"Verification is unavailable right now. Try again shortly.")
 		}
-		if errors.Is(err, ErrRiskRejected) {
-			return httpx.ForbiddenCode("risk_blocked",
-				"This request was rejected by risk control.")
-		}
-		if errors.Is(err, riskcontrol.ErrFailed) {
-			return httpx.ForbiddenCode("challenge_failed",
-				"The verification could not be completed. Try again.")
-		}
-		if errors.Is(err, riskcontrol.ErrUnavailable) {
-			return httpx.UnavailableCode("challenge_unavailable",
-				"Verification is unavailable right now. Try again shortly.")
+		// A plugin guard's refusal is already worded and coded by the
+		// plugin that refused.
+		var apiErr *httpx.Error
+		if errors.As(err, &apiErr) {
+			return apiErr
 		}
 		if errors.Is(err, ErrInvalidCredentials) {
 			return httpx.Unauthorized("Incorrect username or password.").
@@ -707,7 +692,8 @@ type profileRequest struct {
 	Avatar   *string `json:"avatar"`
 	Bio      *string `json:"bio"`
 	Email    *string `json:"email"`
-	QQ       *string `json:"qq"`
+	// Plugin account fields to change, by key.
+	Fields map[string]string `json:"fields"`
 }
 
 func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
@@ -728,7 +714,7 @@ func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
 		Avatar:   body.Avatar,
 		Bio:      body.Bio,
 		Email:    body.Email,
-		QQ:       body.QQ,
+		Fields:   body.Fields,
 	})
 	if err != nil {
 		return profileError(err)
@@ -986,21 +972,10 @@ func (h *Handlers) registrationError(err error) error {
 		// tell an outage at Cloudflare from a wave of bots.
 		return httpx.UnavailableCode("challenge_unavailable",
 			"Verification is unavailable right now. Try again shortly.")
-	case errors.Is(err, ErrRiskRejected):
-		// The risk service judged this request and said no. A code of its
-		// own, because "the challenge failed" would invite a retry that
-		// the service is going to refuse again.
-		return httpx.ForbiddenCode("risk_blocked",
-			"This request was rejected by risk control.")
-	case errors.Is(err, riskcontrol.ErrFailed):
-		return httpx.ForbiddenCode("challenge_failed",
-			"The verification could not be completed. Try again.")
-	case errors.Is(err, riskcontrol.ErrUnavailable):
-		// Not the visitor's fault either, and the same monitor distinction
-		// as the Turnstile outage above: an operator watching 503s knows
-		// their risk service is down, not that bots have arrived.
-		return httpx.UnavailableCode("challenge_unavailable",
-			"Verification is unavailable right now. Try again shortly.")
+	case errors.As(err, new(*GuardRefusal)):
+		// A plugin guard's refusal is already worded and coded by the plugin
+		// that refused; WriteError finds the *httpx.Error inside it.
+		return err
 	case errors.Is(err, ErrSignupRefused):
 		// The operator's own words travel in the details, because the client
 		// falls back to its own sentence when they have not written any and
@@ -1019,8 +994,6 @@ func (h *Handlers) registrationError(err error) error {
 		return httpx.Conflict("username_taken", "That username is already taken.")
 	case errors.Is(err, user.ErrEmailTaken):
 		return httpx.Conflict("email_taken", "That email address is already registered.")
-	case errors.Is(err, user.ErrQQTaken):
-		return httpx.Conflict("qq_taken", "That QQ number is already registered.")
 	default:
 		return profileError(err)
 	}
@@ -1034,6 +1007,9 @@ func profileError(err error) error {
 		return httpx.BadRequest("%s", domain.Error()).
 			WithDetails(map[string]any{"allowed_domains": domain.Allowed})
 	}
+	if fieldErr := FieldHTTPError(err); fieldErr != nil {
+		return fieldErr
+	}
 
 	switch {
 	case errors.Is(err, usercheck.ErrDisposable):
@@ -1042,11 +1018,8 @@ func profileError(err error) error {
 		return httpx.UnavailableCode("email_screening_unavailable", "Email screening is temporarily unavailable. Try again shortly.")
 	case errors.Is(err, ErrEmailRequired):
 		return httpx.BadRequest("An email address is required on this server.")
-	case errors.Is(err, user.ErrQQRequired):
-		return httpx.BadRequest("A QQ number is required on this server.")
 	case errors.Is(err, user.ErrInvalidUsername),
 		errors.Is(err, user.ErrInvalidEmail),
-		errors.Is(err, user.ErrInvalidQQ),
 		errors.Is(err, user.ErrNicknameTooLong),
 		errors.Is(err, user.ErrBioTooLong),
 		errors.Is(err, user.ErrAvatarTooLong),
@@ -1055,8 +1028,6 @@ func profileError(err error) error {
 		return httpx.BadRequest("%s", trimPackagePrefix(err.Error()))
 	case errors.Is(err, user.ErrEmailTaken):
 		return httpx.Conflict("email_taken", "That email address is already registered.")
-	case errors.Is(err, user.ErrQQTaken):
-		return httpx.Conflict("qq_taken", "That QQ number is already registered.")
 	case errors.Is(err, user.ErrNotFound):
 		return httpx.NotFound("No such account.")
 	default:
@@ -1133,37 +1104,4 @@ func (h *Handlers) turnstileSiteKey(firstAccount bool) string {
 		return ""
 	}
 	return h.settings.Get(settings.TurnstileSiteKey)
-}
-
-// riskInUse reports whether any surface currently asks for a risk-control
-// token: the sign-up mode selects the service, or the sign-in switch is on.
-// Half a configuration — an address with no site key, say — is not in use,
-// so a challenge nobody can complete never reaches a browser.
-func (h *Handlers) riskInUse(firstAccount bool) bool {
-	if firstAccount || h.settings == nil {
-		return false
-	}
-	if h.settings.Get(settings.RiskBaseURL) == "" ||
-		h.settings.Get(settings.RiskSite) == "" ||
-		h.settings.Get(settings.RiskSecretKey) == "" {
-		return false
-	}
-	return h.settings.RegistrationCaptchaMode() == settings.CaptchaModeRisk ||
-		h.settings.Bool(settings.RiskOnLogin)
-}
-
-// riskBaseURL is where the browser's SDK loads from — public wherever the
-// check is in use, because the visitor's own browser fetches boot.js there.
-func (h *Handlers) riskBaseURL(firstAccount bool) string {
-	if !h.riskInUse(firstAccount) {
-		return ""
-	}
-	return h.settings.Get(settings.RiskBaseURL)
-}
-
-func (h *Handlers) riskSiteKey(firstAccount bool) string {
-	if !h.riskInUse(firstAccount) {
-		return ""
-	}
-	return h.settings.Get(settings.RiskSite)
 }

@@ -18,7 +18,7 @@ import { t } from '@/composables/useI18n';
 import {
   IconArchive, IconChart, IconChevron, IconCpu, IconFile, IconHome, IconKey, IconLayers, IconLock,
   IconMenu, IconMessage, IconPulse, IconSend, IconServer, IconSliders, IconSpark,
-  IconTrophy,
+  IconPuzzle, IconTrophy,
   IconUsers,
 } from '@/icons';
 import AppShell from '@/layouts/AppShell.vue';
@@ -33,7 +33,8 @@ import AdminUnlock from './AdminUnlock.vue';
 import UnauthorizedModal from '@/views/UnauthorizedModal.vue';
 import ChatLayout from '@/layouts/ChatLayout.vue';
 import { provideAdminView } from './adminView';
-import { searchAdminFeatures, type AdminPageSpec, visibleAdminPages } from './features';
+import { pageLabel, searchAdminFeatures, type AdminPageSpec, visibleAdminPages } from './features';
+import { plugins } from '@/plugins/registry';
 
 import AdminDashboard from './AdminDashboard.vue';
 import AdminUsers from './AdminUsers.vue';
@@ -53,6 +54,8 @@ import AdminAnnouncements from './AdminAnnouncements.vue';
 import AdminFeedback from './AdminFeedback.vue';
 import AdminSafeMode from './AdminSafeMode.vue';
 import AdminBackup from './AdminBackup.vue';
+import AdminPlugins from './AdminPlugins.vue';
+import PluginAdminPage from './PluginAdminPage.vue';
 
 // Labels are looked up at render rather than stored, because this table is
 // evaluated at import time — before the language is known.
@@ -74,13 +77,38 @@ const PAGES: AdminPageSpec[] = [
   { slug: 'settings', label: 'navSettings', icon: IconSliders, component: markRaw(AdminSettings) },
   { slug: 'announcements', label: 'announcements', icon: IconFile, component: markRaw(AdminAnnouncements) },
   { slug: 'feedback', label: 'navFeedback', icon: IconMessage, component: markRaw(AdminFeedback) },
+  {
+    slug: 'plugins', label: 'navPlugins', icon: IconPuzzle, component: markRaw(AdminPlugins),
+    permission: 'plugins,plugins_manage,plugins_remove',
+  },
 ];
+
+// The pages enabled plugins bring, after the core's. Computed from the
+// session's plugin list, so switching a plugin on or off on the plugins
+// screen adds or removes its page here without a reload. A slug a core page
+// already has is the core's: a plugin cannot take a page over.
+const pages = computed<AdminPageSpec[]>(() => {
+  const taken = new Set(PAGES.map((entry) => entry.slug));
+  const extra: AdminPageSpec[] = [];
+  for (const plugin of plugins()) {
+    for (const page of plugin.adminPages ?? []) {
+      if (taken.has(page.slug)) continue;
+      taken.add(page.slug);
+      extra.push({
+        slug: page.slug, label: 'navPlugins', title: page.title, icon: page.icon ?? IconPuzzle,
+        component: markRaw(PluginAdminPage), permission: page.permission, props: { page },
+        ...(page.keywords ? { keywords: page.keywords } : {}),
+      });
+    }
+  }
+  return [...PAGES, ...extra];
+});
 
 const route = useRoute();
 const router = useRouter();
 const query = ref('');
 const narrow = useMediaQuery('(max-width: 900px)');
-const visiblePages = computed(() => visibleAdminPages(PAGES, isSuperAdmin.value));
+const visiblePages = computed(() => visibleAdminPages(pages.value, isSuperAdmin.value));
 const searchGroups = computed(() => searchAdminFeatures(query.value, visiblePages.value));
 
 const bodyScroll = ref<InstanceType<typeof OaScrollArea> | null>(null);
@@ -163,13 +191,15 @@ function keepRail(node: unknown): void {
 }
 
 const segments = computed(() => route.path.replace(/^\/admin\/?/, '').split('/').filter(Boolean));
-const current = computed(() => PAGES.find((entry) => entry.slug === (segments.value[0] ?? '')) ?? PAGES[0]!);
+const current = computed(() => pages.value.find((entry) => entry.slug === (segments.value[0] ?? '')) ?? PAGES[0]!);
 
-// A section's grant is its slug unless it says otherwise. The backup page
-// spans the whole instance, so its `*` marker is reserved for the super admin.
+// A section's grant is its slug unless it says otherwise, and any one of a
+// comma-separated list opens it — the plugins screen is three grants. The
+// backup page spans the whole instance, so its `*` marker is reserved for
+// the super admin.
 const allowed = computed(() => {
   const needs = current.value.permission ?? (current.value.slug || 'dashboard');
-  return needs === '*' ? isSuperAdmin.value : canAdmin(needs);
+  return needs === '*' ? isSuperAdmin.value : needs.split(',').some((grant) => canAdmin(grant.trim()));
 });
 
 // The operator's policy wants a second sign-in step before the backoffice
@@ -281,10 +311,10 @@ provideAdminView({
 // belonging to the previous section. Remounting the page on the key below
 // takes care of the body; these two are the shell's own.
 watch(current, (next, previous) => {
-  const from = PAGES.indexOf(previous);
-  const to = PAGES.indexOf(next);
+  const from = pages.value.indexOf(previous);
+  const to = pages.value.indexOf(next);
   direction.value = to > from ? 'forward' : to < from ? 'back' : 'rise';
-  title.value = t(next.label);
+  title.value = pageLabel(next);
   subtitle.value = '';
 });
 
@@ -292,7 +322,7 @@ const bodyKey = computed(() => `${current.value.slug}:${reloadCount.value}`);
 
 onMounted(() => {
   void checkVisit();
-  title.value = t(current.value.label);
+  title.value = pageLabel(current.value);
   // Which build is running, from the server rather than from the bundle: the
   // two can differ behind a stale cache, and the server's answer is the one
   // that matters.
@@ -371,7 +401,7 @@ onMounted(() => {
             :to="entry.slug ? `/admin/${entry.slug}` : '/admin'"
           >
             <component :is="entry.icon" :size="15" />
-            <span>{{ t(entry.label) }}</span>
+            <span>{{ pageLabel(entry) }}</span>
           </RouterLink>
         </template>
         <template v-else>
@@ -388,7 +418,7 @@ onMounted(() => {
               @click="onPageClick(group.page.slug)"
             >
               <component :is="group.page.icon" :size="15" />
-              <span>{{ t(group.page.label) }}</span>
+              <span>{{ pageLabel(group.page) }}</span>
             </RouterLink>
 
             <div v-if="group.items.length" class="oa-admin-subnav-list">
@@ -452,7 +482,7 @@ onMounted(() => {
           <p v-else-if="visit === 'checking'" class="oa-table-empty">{{ t('backofficeChecking') }}</p>
           <AdminUnlock v-else @unlocked="unlocked" />
         </div>
-        <component v-else-if="allowed" :is="current.component" :key="bodyKey" />
+        <component v-else-if="allowed" :is="current.component" v-bind="current.props ?? {}" :key="bodyKey" />
         <div v-else class="oa-permission-empty" role="alert">
           <IconLock :size="28" />
           <h2>{{ t('permissionDeniedTitle') }}</h2>

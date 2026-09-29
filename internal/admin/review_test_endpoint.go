@@ -18,11 +18,12 @@ import (
 // the operator wrote.
 
 type reviewTrialRequest struct {
-	Username  string `json:"username"`
-	Email     string `json:"email"`
-	QQ        string `json:"qq"`
-	Nickname  string `json:"nickname"`
-	UserAgent string `json:"user_agent"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	// Plugin account fields, by key, as the sign-up form would send them.
+	Fields    map[string]string `json:"fields"`
+	Nickname  string            `json:"nickname"`
+	UserAgent string            `json:"user_agent"`
 	// What the real check would have counted. Typed rather than measured,
 	// because the point is to try a case, not to reproduce one.
 	FromThisAddress int `json:"from_this_address"`
@@ -42,7 +43,7 @@ func (h *Handlers) trialReview(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	decision, reason, err := h.TryReview(r.Context(), ReviewTrial{
-		Username: body.Username, Email: body.Email, QQ: body.QQ,
+		Username: body.Username, Email: body.Email, Fields: body.Fields,
 		Nickname: body.Nickname, UserAgent: body.UserAgent,
 		FromThisAddress: body.FromThisAddress,
 	})
@@ -65,7 +66,7 @@ func (h *Handlers) trialReview(w http.ResponseWriter, r *http.Request) error {
 type ReviewTrial struct {
 	Username        string
 	Email           string
-	QQ              string
+	Fields          map[string]string
 	Nickname        string
 	UserAgent       string
 	FromThisAddress int

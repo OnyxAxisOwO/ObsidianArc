@@ -33,9 +33,9 @@ var (
 	ErrSignupClosed = errors.New("oauth: this server does not open accounts from a provider sign-in")
 	// Removing this connection would leave no way into the account.
 	ErrLastWayIn = errors.New("oauth: this is the only way left into this account")
-	// An OpenID Connect connection is bound for the life of the account: its
-	// subject is the QQ number the account answers to, and removing it would
-	// leave a QQ on the account that no longer has a way to prove it.
+	// A connection whose subject a plugin bound to an account field (see
+	// BindSubject) is kept for the life of the account: removing it would
+	// leave the field's value on the account with no way left to prove it.
 	ErrOIDCPinned          = errors.New("oauth: an OpenID Connect connection cannot be removed")
 	ErrNotConnected        = errors.New("oauth: that provider is not connected to this account")
 	errNeedsEmailScreening = errors.New("oauth: email screening must run before opening this account")
@@ -44,8 +44,8 @@ var (
 
 // MoreDetailsNeeded says the sign-in stopped one step short.
 //
-// The instance requires something no provider has to give — a QQ number, or an
-// address where the provider proved none — so the person has to be asked
+// The instance requires something no provider has to give — a plugin's
+// account field, or an address where the provider proved none — so the person has to be asked
 // before an account can be opened for them. Nothing has been written when this
 // is returned: the answer is a form, not an apology, and the account is opened
 // by Complete once it comes back.
@@ -62,8 +62,9 @@ func (e *MoreDetailsNeeded) Error() string {
 type Details struct {
 	Username string
 	Password string
-	QQ       string
-	Email    string
+	// Plugin account fields the completion form asked for, by key.
+	Fields map[string]string
+	Email  string
 	// Empty unless MissingFor asked for one (an invite-only instance) and
 	// the completion form was shown it.
 	Invite string
@@ -105,6 +106,67 @@ type Service struct {
 	cachedIssuer  string
 	cachedDoc     oidcDiscovery
 	cachedExpires time.Time
+
+	// Set during setup by the plugin that owns it, if any; read afterwards.
+	binding *SubjectBinding
+}
+
+// SubjectBinding ties one provider's subject to an account field: an
+// identity provider that vouches for the value itself — a community's own
+// sign-in, whose subject is the member's number there — proves it the way a
+// confirmed address is proved. With a binding in place, a sign-in whose
+// subject Matches reaches the account already carrying that value, a new
+// account opens with it filled in, connecting from the settings screen writes
+// it onto an account that has none, and the connection can no longer be
+// removed.
+type SubjectBinding struct {
+	Provider string
+	// The key of a unique user field (see user.DefineField).
+	Field string
+	// Whether this subject is a value of the field at all. A provider that
+	// sometimes hands out something else is left to behave like any other.
+	Matches func(subject string) bool
+}
+
+// BindSubject installs b. One binding per instance: two plugins that both
+// claimed a provider's subject would each be right about a different field.
+func (s *Service) BindSubject(b SubjectBinding) {
+	if s.binding != nil {
+		panic("oauth: a subject binding is already installed")
+	}
+	s.binding = &b
+}
+
+// bound is the binding in force: installed, and its field one the accounts
+// table is read with now. A binding whose plugin is switched off would write
+// a column no query names — or one uninstalling has dropped.
+func (s *Service) bound() *SubjectBinding {
+	if s.binding == nil || !s.users.HasField(s.binding.Field) {
+		return nil
+	}
+	return s.binding
+}
+
+// boundValue is the field and value identity's subject stands for, or "".
+func (s *Service) boundValue(identity Identity) (string, string) {
+	binding := s.bound()
+	if binding == nil || identity.Provider != binding.Provider {
+		return "", ""
+	}
+	if binding.Matches != nil && !binding.Matches(identity.Subject) {
+		return "", ""
+	}
+	return binding.Field, identity.Subject
+}
+
+// SuggestedFields is what the completion form arrives filled with: the
+// bound field's value, when this identity's subject is one.
+func (s *Service) SuggestedFields(provider, subject string) map[string]string {
+	field, value := s.boundValue(Identity{Provider: provider, Subject: subject})
+	if field == "" {
+		return map[string]string{}
+	}
+	return map[string]string{field: value}
 }
 
 func NewService(
@@ -342,28 +404,27 @@ func (s *Service) resolve(
 				}
 			}
 
-			// An IdP whose subject is the QQ number — verified upstream by a
-			// group message before it vouches — has proved that number the way
-			// a confirmed address is proved. An account here that already
-			// carries the same number is the same person, arriving a different
+			// A subject bound to an account field has proved that value the
+			// way a confirmed address is proved. An account here that already
+			// carries the same value is the same person, arriving a different
 			// way, and is linked under the same switch as the address case.
-			if identity.Provider == "oidc" && isAllDigits(identity.Subject) {
-				byQQ, err := s.users.ByQQ(ctx, tx, identity.Subject)
+			if field, value := s.boundValue(identity); field != "" {
+				holder, err := s.users.ByField(ctx, tx, field, value)
 				switch {
 				case err == nil:
 					if !s.settings.Bool(settings.OAuthLinkByEmail) {
 						return ErrAddressTaken
 					}
-					if !byQQ.IsActive() {
-						return &auth.AccountDisabledError{Reason: byQQ.BanReason}
+					if !holder.IsActive() {
+						return &auth.AccountDisabledError{Reason: holder.BanReason}
 					}
-					if err := s.store.Link(ctx, tx, byQQ.ID, identity); err != nil {
+					if err := s.store.Link(ctx, tx, holder.ID, identity); err != nil {
 						if errors.Is(err, ErrAlreadyLinked) {
 							return ErrAddressTaken
 						}
 						return err
 					}
-					account = byQQ
+					account = holder
 					return nil
 				case !errors.Is(err, user.ErrNotFound):
 					return err
@@ -410,13 +471,16 @@ func (s *Service) resolve(
 			if address == "" {
 				address = strings.TrimSpace(details.Email)
 			}
-			// A subject that is the QQ number rides into the account the same
-			// way Connect writes it on a settings-screen bind — the number is
-			// what the IdP proved. An answer typed into the completion form
-			// wins over it, because that is the answer the person confirmed.
-			qq := strings.TrimSpace(details.QQ)
-			if qq == "" && identity.Provider == "oidc" && isAllDigits(identity.Subject) {
-				qq = identity.Subject
+			// A bound subject rides into the account the same way Connect
+			// writes it on a settings-screen bind — the value is what the
+			// provider proved. An answer typed into the completion form wins
+			// over it, because that is the answer the person confirmed.
+			fields := map[string]string{}
+			for key, value := range details.Fields {
+				fields[key] = value
+			}
+			if field, value := s.boundValue(identity); field != "" && strings.TrimSpace(fields[field]) == "" {
+				fields[field] = value
 			}
 			populated, err := s.users.Any(ctx, tx)
 			if err != nil {
@@ -464,7 +528,7 @@ func (s *Service) resolve(
 				Password:         password,
 				Email:            address,
 				EmailVerified:    identity.Email != "",
-				QQ:               qq,
+				Fields:           fields,
 				Nickname:         strings.TrimSpace(identity.Name),
 				IP:               ip,
 				UA:               ua,
@@ -523,9 +587,9 @@ func (s *Service) verificationRequired() bool { return s.auth.VerificationRequir
 
 // Connect adds a provider to an account that is already signed in.
 //
-// Binding an OpenID Connect provider whose subject is the QQ number also
-// writes that number onto the account when it has none — the settings screen
-// binds the account the same way a group-verified sign-in would. A number
+// Connecting a provider whose subject is bound to an account field (see
+// BindSubject) also writes that value onto the account when it has none — the
+// settings screen binds the account the same way a sign-in would. A value
 // another account already carries is left alone rather than stolen.
 func (s *Service) Connect(ctx context.Context, userID string, identity Identity) error {
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -549,17 +613,19 @@ func (s *Service) Connect(ctx context.Context, userID string, identity Identity)
 		if err := s.store.Link(ctx, tx, userID, identity); err != nil {
 			return err
 		}
-		// The QQ association rides along with the connection. Only a first
-		// binding writes it: the account's own number, if any, is the one it
+		// The bound value rides along with the connection. Only a first
+		// binding writes it: the account's own value, if any, is the one it
 		// answered to first.
-		if identity.Provider == "oidc" && isAllDigits(identity.Subject) {
+		if field, value := s.boundValue(identity); field != "" {
 			current, err := s.users.ByID(ctx, tx, userID)
 			if err != nil {
 				return err
 			}
-			if current.QQ == "" {
-				if _, err := s.users.ByQQ(ctx, tx, identity.Subject); errors.Is(err, user.ErrNotFound) {
-					if _, err := s.users.UpdateProfile(ctx, tx, userID, user.ProfileUpdate{QQ: &identity.Subject}); err != nil {
+			if current.Fields[field] == "" {
+				if _, err := s.users.ByField(ctx, tx, field, value); errors.Is(err, user.ErrNotFound) {
+					if _, err := s.users.UpdateProfile(ctx, tx, userID, user.ProfileUpdate{
+						Fields: map[string]string{field: value},
+					}); err != nil {
 						return err
 					}
 				} else if err != nil {
@@ -594,10 +660,10 @@ func (s *Service) Connections(ctx context.Context, userID string) ([]Connection,
 // lock, because two clicks on two providers would otherwise each see the
 // other still there and both go through.
 func (s *Service) Disconnect(ctx context.Context, userID, provider string) error {
-	// A bound OpenID Connect identity is the proof behind the account's QQ
-	// number; unbinding it would leave the number without a way to prove it.
-	// Deleting the account is the only way it comes off.
-	if provider == "oidc" {
+	// A connection whose subject is bound to an account field is the proof
+	// behind that value; unbinding it would leave the value without a way to
+	// prove it. Deleting the account is the only way it comes off.
+	if binding := s.bound(); binding != nil && provider == binding.Provider {
 		return ErrOIDCPinned
 	}
 	return s.db.Tx(ctx, func(tx *database.Tx) error {

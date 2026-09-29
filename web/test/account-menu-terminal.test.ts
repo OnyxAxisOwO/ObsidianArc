@@ -14,7 +14,7 @@ vi.mock('../src/stores/feedback', () => ({
 }));
 
 const base: Account = {
-  id: 'member', username: 'member', nickname: 'Member', email: '', qq: '', bio: '', avatar: '',
+  id: 'member', username: 'member', nickname: 'Member', email: '', bio: '', avatar: '',
   role: 'user', status: 'active', group_id: 'g', group_expires_at: 0, group_name: 'Default',
   created_at: 0, updated_at: 0, last_login_at: 0, email_verified: true,
   allow_stats: true, allow_delete_conversations: true,

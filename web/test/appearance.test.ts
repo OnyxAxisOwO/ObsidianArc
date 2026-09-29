@@ -13,7 +13,7 @@ vi.mock('../src/chat/image', async (original) => ({
 }));
 
 const account: auth.Account = {
-  id: 'member', username: 'member', email: '', qq: '', nickname: '', avatar: '', bio: '', role: 'user',
+  id: 'member', username: 'member', email: '', nickname: '', avatar: '', bio: '', role: 'user',
   group_id: '', group_expires_at: 0, group_name: '', status: 'active', created_at: 0, updated_at: 0,
   last_login_at: 0, email_verified: true, allow_stats: true, allow_delete_conversations: true,
   api_restricted: false, api_restricted_until: 0, api_restriction_source: '',

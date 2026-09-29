@@ -10,7 +10,7 @@
 // docs/ARCHITECTURE.md on why that line gets drawn carefully here.
 
 import { ref, watch, type Ref } from 'vue';
-import { useIntervalFn, useWindowFocus } from '@vueuse/core';
+import { useDocumentVisibility, useIntervalFn, useWindowFocus } from '@vueuse/core';
 import { fetchNotifications, markNotificationsRead, pollNotifications, type Notification } from '@/api/notifications';
 import { router } from '@/router';
 
@@ -123,7 +123,17 @@ async function poll(): Promise<void> {
   }
 }
 
-const interval = useIntervalFn(poll, POLL_MS, { immediate: false });
+// A tab nobody can see does not poll. Every open tab used to ask every thirty
+// seconds, hidden or not, and each ask is a session lookup and three queries
+// on the server — a reader with a dozen tabs open paid for all of them. The
+// visible tab still polls, and a hidden one catches up the moment it is shown.
+const visibility = useDocumentVisibility();
+const interval = useIntervalFn(() => {
+  if (visibility.value !== 'hidden') void poll();
+}, POLL_MS, { immediate: false });
+watch(visibility, (now, was) => {
+  if (now === 'visible' && was === 'hidden') void poll();
+});
 
 // "Immediately when the window regains focus": a tab put down for an hour
 // and picked back up should not wait up to thirty seconds to say so.

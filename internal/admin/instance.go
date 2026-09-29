@@ -171,7 +171,6 @@ var writableSettings = map[string]bool{
 	settings.RegistrationEnabled:        true,
 	settings.RegistrationGroup:          true,
 	settings.RequireEmail:               true,
-	settings.QQRequirement:              true,
 	settings.VerifyEmail:                true,
 	settings.EmailDomains:               true,
 	settings.SignupsPerMinute:           true,
@@ -184,8 +183,6 @@ var writableSettings = map[string]bool{
 	settings.InvitesRewardCards:         true,
 	settings.InvitesRewardCardDays:      true,
 	settings.InvitesRewardEvery:         true,
-	settings.BotWebhookToken:            true,
-	settings.BotDepartureMode:           true,
 	settings.TurnstileSiteKey:           true,
 	settings.TurnstileSecretKey:         true,
 	settings.TurnstileOnLogin:           true,
@@ -194,10 +191,6 @@ var writableSettings = map[string]bool{
 	settings.TurnstileOnRedeem:          true,
 	settings.TurnstileOnFeedback:        true,
 	settings.RegistrationCaptchaMode:    true,
-	settings.RiskBaseURL:                true,
-	settings.RiskSite:                   true,
-	settings.RiskSecretKey:              true,
-	settings.RiskOnLogin:                true,
 	settings.PoWBaseMaxNumber:           true,
 	settings.PoWElevatedMaxNumber:       true,
 	settings.PoWThreshold:               true,
@@ -320,7 +313,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		if !hasPermission(auth.MustUser(r.Context()), settingPermission(key)) {
 			return permissionDenied()
 		}
-		if !writableSettings[key] {
+		if !h.writable(key) {
 			return httpx.BadRequest("Unknown setting %q.", key)
 		}
 		if len(value) > 8*1024 {
@@ -333,7 +326,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	// challenge after would fail for everybody with nothing on screen to say
 	// why. An empty value keeps what is stored, the way a provider's API key
 	// field does; clearing one is done by switching the challenge off.
-	for _, key := range secretSettings {
+	for _, key := range secretKeys() {
 		if value, present := body[key]; present && (value == "" || value == secretMask) {
 			delete(body, key)
 		}
@@ -364,14 +357,6 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 				return auth.TranslateTwoFactorError(w, err)
 			}
 		}
-	}
-	if req, present := body[settings.QQRequirement]; present && !settings.ValidQQRequirement(req) {
-		return httpx.BadRequest("Unknown QQ requirement %q.", req)
-	}
-	// A bot mode nothing reads would silently do the wrong thing to every
-	// account the bot reports, so it is refused here rather than defaulted.
-	if mode, present := body[settings.BotDepartureMode]; present && !settings.ValidDepartMode(mode) {
-		return httpx.BadRequest("Unknown departure mode %q.", mode)
 	}
 	// Empty is allowed for both — it means "no override", not "black" — so
 	// only a non-empty value that fails the format is refused.
@@ -453,6 +438,10 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 
+	if err := h.validateDefined(body); err != nil {
+		return err
+	}
+
 	if err := h.settings.SetMany(r.Context(), body); err != nil {
 		return httpx.Internal(err)
 	}
@@ -494,7 +483,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		if !hasPermission(auth.MustUser(r.Context()), settingPermission(key)) {
 			return permissionDenied()
 		}
-		if !writableSettings[key] || len(value) > 8*1024 {
+		if !h.writable(key) || len(value) > 8*1024 {
 			skipped = append(skipped, key)
 			continue
 		}
@@ -596,6 +585,13 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		} else if _, err := h.groups.ByID(r.Context(), nil, groupID); err != nil {
 			applied[settings.RegistrationGroup] = ""
 			skipped = append(skipped, settings.RegistrationGroup)
+		}
+	}
+
+	for key, value := range applied {
+		if d, ok := h.settings.Defined(key); ok && d.Validate != nil && d.Validate(value) != nil {
+			delete(applied, key)
+			skipped = append(skipped, key)
 		}
 	}
 
@@ -748,15 +744,50 @@ func (h *Handlers) deleteLogo(w http.ResponseWriter, r *http.Request) error {
 	return httpx.NoContent(w)
 }
 
+// writable reports whether an administrator may write key: a core key in
+// the table above, or one an enabled plugin defined.
+func (h *Handlers) writable(key string) bool {
+	if writableSettings[key] {
+		return true
+	}
+	_, defined := h.settings.Defined(key)
+	return defined
+}
+
+// validateDefined runs each plugin setting's own validator. The core keys
+// are checked one by one above; a plugin's rules travel with its definition
+// so this file never has to learn them.
+func (h *Handlers) validateDefined(body map[string]string) error {
+	for key, value := range body {
+		if d, ok := h.settings.Defined(key); ok && d.Validate != nil {
+			if err := d.Validate(value); err != nil {
+				return httpx.BadRequest("Setting %q: %s", key, err.Error())
+			}
+		}
+	}
+	return nil
+}
+
+// secretKeys is every credential this build knows about, core and plugin —
+// a switched-off plugin's too: redacting a key nothing shows costs nothing,
+// and missing one would hand its credential out.
+func secretKeys() []string {
+	out := append([]string(nil), secretSettings...)
+	for _, d := range settings.AllDefinitions() {
+		if d.Secret {
+			out = append(out, d.Key)
+		}
+	}
+	return out
+}
+
 // Settings that are credentials. They are written through this endpoint and
 // never read back out of it.
 var secretSettings = []string{
 	settings.TurnstileSecretKey,
-	settings.RiskSecretKey,
 	settings.OAuthGitHubSecret,
 	settings.OAuthGoogleSecret,
 	settings.OAuthOIDCClientSecret,
-	settings.BotWebhookToken,
 }
 
 // Enough to show a field is filled in and nothing an attacker could use. A
@@ -777,7 +808,7 @@ func redacted(all map[string]string) map[string]string {
 	for key, value := range all {
 		out[key] = value
 	}
-	for _, key := range secretSettings {
+	for _, key := range secretKeys() {
 		if out[key] != "" {
 			out[key] = secretMask
 		}

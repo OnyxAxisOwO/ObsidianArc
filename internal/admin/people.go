@@ -144,7 +144,8 @@ type userRequest struct {
 	Avatar   *string `json:"avatar"`
 	Bio      *string `json:"bio"`
 	Email    *string `json:"email"`
-	QQ       *string `json:"qq"`
+	// Plugin account fields to change, by key.
+	Fields map[string]string `json:"fields"`
 
 	Role             *user.Role   `json:"role"`
 	AdminPermissions *[]string    `json:"admin_permissions"`
@@ -171,15 +172,15 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 	actor := auth.MustUser(r.Context())
 
 	var body struct {
-		Username         string      `json:"username"`
-		Password         string      `json:"password"`
-		Email            string      `json:"email"`
-		QQ               string      `json:"qq"`
-		Nickname         string      `json:"nickname"`
-		Role             user.Role   `json:"role"`
-		AdminPermissions []string    `json:"admin_permissions"`
-		GroupID          string      `json:"group_id"`
-		Status           user.Status `json:"status"`
+		Username         string            `json:"username"`
+		Password         string            `json:"password"`
+		Email            string            `json:"email"`
+		Fields           map[string]string `json:"fields"`
+		Nickname         string            `json:"nickname"`
+		Role             user.Role         `json:"role"`
+		AdminPermissions []string          `json:"admin_permissions"`
+		GroupID          string            `json:"group_id"`
+		Status           user.Status       `json:"status"`
 	}
 	if err := httpx.DecodeJSON(w, r, &body, 16*1024); err != nil {
 		return err
@@ -273,7 +274,7 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 		created, err = h.users.Create(r.Context(), tx, user.CreateInput{
 			Username:     body.Username,
 			Email:        body.Email,
-			QQ:           body.QQ,
+			Fields:       body.Fields,
 			Nickname:     body.Nickname,
 			PasswordHash: hash,
 			Role:         body.Role,
@@ -468,7 +469,7 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 			Avatar:   body.Avatar,
 			Bio:      body.Bio,
 			Email:    body.Email,
-			QQ:       body.QQ,
+			Fields:   body.Fields,
 		})
 		if err != nil {
 			return err
@@ -894,6 +895,9 @@ func (h *Handlers) deleteGroup(w http.ResponseWriter, r *http.Request) error {
 // --- error translation --------------------------------------------------------------
 
 func translateUserError(err error) error {
+	if fieldErr := auth.FieldHTTPError(err); fieldErr != nil {
+		return fieldErr
+	}
 	switch {
 	case errors.Is(err, user.ErrNotFound):
 		return httpx.NotFound("No such account.")

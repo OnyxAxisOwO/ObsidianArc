@@ -38,7 +38,11 @@ import { t, tn } from '@/composables/useI18n';
 import { IconTrash } from '@/icons';
 import { absoluteTime, compactNumber, relativeTime } from '@/lib/format';
 import { describeUserAgent } from '@/lib/ua';
-import { currentUser, canAdmin, isSuperAdmin } from '@/stores/session';
+import { currentUser, canAdmin, isSuperAdmin, siteInfo } from '@/stores/session';
+import OaAccountFields from '@/components/OaAccountFields.vue';
+import { allFields, fieldValues } from '@/lib/account-fields';
+import { fieldSpec, plugins } from '@/plugins/registry';
+import PluginUserActions from './PluginUserActions.vue';
 import { isMasked, maskUser, maskLog, maskBilling, maskCredential } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
@@ -226,7 +230,7 @@ function defaultGrantExpiry(): string {
 
 
 const form = ref({
-  nickname: '', email: '', qq: '', bio: '', avatar: '',
+  nickname: '', email: '', fields: {} as Record<string, string>, bio: '', avatar: '',
   role: 'user' as Role,
   permissions: [] as string[],
   status: 'active' as AccountStatus,
@@ -411,7 +415,7 @@ async function open(id: string): Promise<void> {
   form.value = {
     nickname: row.nickname,
     email: row.email,
-    qq: row.qq || '',
+    fields: { ...(row.fields ?? {}) },
     bio: row.bio,
     avatar: row.avatar,
     role: row.role,
@@ -451,7 +455,7 @@ async function save(): Promise<void> {
     const patch: Record<string, unknown> = {
       nickname: form.value.nickname.trim(),
       email: form.value.email.trim(),
-      qq: form.value.qq.trim(),
+      ...(fieldPlan.value.keys.length ? { fields: fieldValues(form.value.fields, fieldPlan.value) } : {}),
       bio: form.value.bio.trim(),
       avatar: form.value.avatar.trim(),
 
@@ -542,40 +546,28 @@ async function remove(): Promise<void> {
   }
 }
 
-// --- processing a group departure ------------------------------------------
+// --- what plugins add ---------------------------------------------------------
 
-const departureFlash = ref('');
+// The account fields plugins added. Every one of them, whatever sign-up asks
+// for: an operator is correcting the value, not registering it.
+const fieldPlan = computed(() => allFields(siteInfo.value));
 
-/**
- * Ends an account on purpose because the member has left the community's
- * group chat. Disable keeps the account — and the QQ number it occupies,
- * which is what stops an instant re-registration — for a possible return;
- * delete removes it and everything cascading from it. Both take back the
- * reward this account's invite earned, and the response reports what was
- * due separately from what came back, because cards already spent are gone
- * rather than taken from anywhere else.
- */
-async function depart(mode: 'disable' | 'delete'): Promise<void> {
-  const row = account.value;
-  if (!row) return;
-  busy.value = true;
-  departureFlash.value = '';
-  panelError.value = '';
-  try {
-    const { departure } = await adminApi.departUser(row.id, mode);
-    departureFlash.value = t('departureDone', {
-      due: departure.reward_cards_due, revoked: departure.cards_revoked,
-    });
-    if (mode === 'delete') {
-      panelOpen.value = false;
-    }
-    view.reload();
-  } catch (failure) {
-    departureFlash.value = '';
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-  } finally {
-    busy.value = false;
-  }
+/** "QQ 12345"-style parts for the list's second line, masked like the name. */
+function fieldSummary(values: Record<string, string> | undefined): string[] {
+  return fieldPlan.value.keys
+    .filter((key) => values?.[key])
+    .map((key) => `${fieldSpec(key)!.label()} ${maskUser(values![key])}`);
+}
+
+const userActions = computed(() => plugins().flatMap((plugin) => plugin.userActions ?? []));
+
+function actionDone(closePanel: boolean): void {
+  if (closePanel) panelOpen.value = false;
+  view.reload();
+}
+
+function actionFailed(message: string): void {
+  panelError.value = message;
 }
 
 /**
@@ -834,7 +826,7 @@ const state = { q: '', role: '', status: '', group: '' };
       <template #cell-account="{ row }">
         <OaCellStack
           :title="maskUser(row.nickname || row.username)"
-          :sub="row.qq ? `@${maskUser(row.username)} · QQ ${maskUser(row.qq)}` : `@${maskUser(row.username)}`"
+          :sub="[`@${maskUser(row.username)}`, ...fieldSummary(row.fields)].join(' · ')"
         />
       </template>
       <template #cell-role="{ row }">
@@ -1021,13 +1013,7 @@ const state = { q: '', role: '', status: '', group: '' };
            the operator actually clicks in, same as a screen share would need. -->
       <OaTextField v-model="form.nickname" :class="{ 'oa-safe-blur': isMasked('users') }" :label="t('nickname')" :max-length="32" />
       <OaTextField v-model="form.email" :class="{ 'oa-safe-blur': isMasked('users') }" :label="t('email')" type="email" />
-      <OaTextField
-        v-model="form.qq"
-        :class="{ 'oa-safe-blur': isMasked('users') }"
-        :label="t('qq')"
-        :placeholder="t('qqPlaceholder')"
-        :max-length="15"
-      />
+      <OaAccountFields v-model="form.fields" :class="{ 'oa-safe-blur': isMasked('users') }" :plan="fieldPlan" />
       <OaTextArea v-model="form.bio" :label="t('bio')" :rows="2" />
       <OaTextField
         v-model="form.avatar"
@@ -1258,32 +1244,19 @@ const state = { q: '', role: '', status: '', group: '' };
         @confirm="signOutEverywhere"
       />
 
-      <OaFormSection v-if="!self" :title="t('secDeparture')" :hint="t('departureHint')" />
-      <!-- Two buttons because the two ends are different decisions, not two
-           flavours of one: disable is reversible and holds the QQ number
-           against a quick re-registration, delete is not and does not. Each
-           asks in place, the way every other account-ending action does. -->
-      <div v-if="!self" class="oa-2fa-admin-row">
-        <OaConfirmButton
-          class="oa-btn"
-          :label="t('departureDisableLabel')"
-          :armed-label="t('confirmWord')"
-          :armed-title="t('departureDisableConfirm', { name: maskUser(account.username) })"
-          :resting-title="t('departureDisableLabel')"
-          :disabled="busy"
-          @confirm="depart('disable')"
+      <!-- A plugin's account-ending actions, never offered on oneself: the
+           same rule every other one here keeps. -->
+      <template v-if="!self">
+        <PluginUserActions
+          v-for="spec in userActions"
+          :key="spec.id"
+          :spec="spec"
+          :user-id="account.id"
+          :username="account.username"
+          @done="actionDone"
+          @failed="actionFailed"
         />
-        <OaConfirmButton
-          class="oa-btn oa-btn-danger"
-          :label="t('departureDeleteLabel')"
-          :armed-label="t('confirmWord')"
-          :armed-title="t('departureDeleteConfirm', { name: maskUser(account.username) })"
-          :resting-title="t('departureDeleteLabel')"
-          :disabled="busy"
-          @confirm="depart('delete')"
-        />
-      </div>
-      <p v-if="!self && departureFlash" class="oa-field-hint" role="status">{{ departureFlash }}</p>
+      </template>
 
       <OaFormSection :title="t('secConversations')" :hint="t('conversationsHint')" />
       <button type="button" class="oa-btn" @click="openConversations">

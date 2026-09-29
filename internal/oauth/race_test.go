@@ -55,11 +55,11 @@ func TestConcurrentArrivalsOfOneIdentityOpenOneAccount(t *testing.T) {
 	}
 }
 
-// Distinct identities whose subjects are distinct QQ numbers, arriving at
+// Distinct identities whose subjects are distinct badges, arriving at
 // once on an instance that allows signups: one account each, and the unique
 // index plus the instance lock keep any two of them from claiming the same
 // number.
-func TestConcurrentSignupsClaimDistinctQQNumbers(t *testing.T) {
+func TestConcurrentSignupsClaimDistinctBadges(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
 	if err := f.settings.Set(context.Background(), settings.OAuthAllowSignup, "true"); err != nil {
@@ -68,9 +68,9 @@ func TestConcurrentSignupsClaimDistinctQQNumbers(t *testing.T) {
 
 	const arrivals = 12
 	var (
-		wg  sync.WaitGroup
-		qqs = make([]string, arrivals)
-		err = make([]error, arrivals)
+		wg     sync.WaitGroup
+		badges = make([]string, arrivals)
+		err    = make([]error, arrivals)
 	)
 	for i := 0; i < arrivals; i++ {
 		subject := "90000000" + strconv.Itoa(i)
@@ -80,7 +80,7 @@ func TestConcurrentSignupsClaimDistinctQQNumbers(t *testing.T) {
 			account, signErr := f.service.SignIn(context.Background(),
 				Identity{Provider: "oidc", Subject: sub, Login: "qq_" + sub},
 				"203.0.113.5", "a browser")
-			qqs[slot], err[slot] = account.QQ, signErr
+			badges[slot], err[slot] = account.Fields[badge], signErr
 		}(i, subject)
 	}
 	wg.Wait()
@@ -90,10 +90,10 @@ func TestConcurrentSignupsClaimDistinctQQNumbers(t *testing.T) {
 		if signErr != nil {
 			t.Fatalf("arrival %d: %v", slot, signErr)
 		}
-		if seen[qqs[slot]] {
-			t.Errorf("arrival %d holds QQ %q, already claimed", slot, qqs[slot])
+		if seen[badges[slot]] {
+			t.Errorf("arrival %d holds badge %q, already claimed", slot, badges[slot])
 		}
-		seen[qqs[slot]] = true
+		seen[badges[slot]] = true
 	}
 	if total, _ := f.users.Count(context.Background(), nil); total != 1+arrivals {
 		t.Errorf("accounts = %d, want the founder plus %d", total, arrivals)
@@ -138,7 +138,7 @@ func TestConcurrentConnectsToTheSameNumberLeaveOneWinner(t *testing.T) {
 	wg.Wait()
 
 	// One account wins the identity; the other is told it is spoken for, and
-	// its QQ write never happens because Connect refused before it.
+	// its badge write never happens because Connect refused before it.
 	linked, refused := 0, 0
 	for _, connectErr := range errs {
 		switch {
@@ -159,7 +159,7 @@ func TestConcurrentConnectsToTheSameNumberLeaveOneWinner(t *testing.T) {
 		if readErr != nil {
 			t.Fatalf("read %s: %v", accountID, readErr)
 		}
-		if account.QQ == "55512345" {
+		if account.Fields[badge] == "55512345" {
 			carriers++
 		}
 	}

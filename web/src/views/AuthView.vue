@@ -19,7 +19,10 @@ import { signInURL } from '@/api/oauth';
 import OaField from '@/components/OaField.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
-import { beginRiskControl, type RiskControlAPI } from '@/composables/useRiskControl';
+import OaAccountFields from '@/components/OaAccountFields.vue';
+import { fieldProblem, fieldValues, signupFields } from '@/lib/account-fields';
+import { guards, pluginOAuthError } from '@/plugins/registry';
+import type { GuardAction } from '@/plugins/types';
 import { t, type StringKey } from '@/composables/useI18n';
 import { ApiError } from '@/api/client';
 import { loginRefusalText, refusalText } from '@/lib/refusal';
@@ -42,10 +45,9 @@ const registering = computed(() => props.mode === 'register' || setup.value);
 
 const domains = computed(() => site.value.email_domains ?? []);
 const emailRequired = computed(() => !setup.value && (site.value.require_email ?? false));
-const qqRequirement = computed(() =>
-  site.value.qq_requirement ?? (site.value.require_qq ? 'required' : 'off'));
-const qqRequired = computed(() => !setup.value && qqRequirement.value === 'required');
-const qqEnabled = computed(() => !setup.value && qqRequirement.value !== 'off');
+// The account fields a plugin added, where sign-up asks for them. None for
+// the first account, which no registration control applies to.
+const fieldPlan = computed(() => (setup.value ? { keys: [], required: [] } : signupFields(site.value)));
 
 // Registration mode, as the server derived it from registration.enabled and
 // invites.required. Absent (an older server) reads as 'open' — the behaviour
@@ -71,7 +73,7 @@ const emailHint = computed(() => {
 
 const identifier = ref('');
 const email = ref('');
-const qq = ref('');
+const fields = ref<Record<string, string>>({});
 const password = ref('');
 const error = ref('');
 const busy = ref(false);
@@ -218,45 +220,18 @@ const guarded = computed(() =>
     : !setup.value && !!site.value.turnstile_on_login,
 );
 
-// The self-hosted risk control service. The SDK is loaded and init-ed as
-// soon as we know where it lives — not only once the guarded flag says a
-// check is required. The service scores behaviour; a SDK that starts at
-// submit has nothing to score. The token is only attached to the request
-// when riskGuarded is true, so early loading costs nothing when the operator
-// has the check switched off.
-const riskBase = computed(() => site.value.risk_base_url ?? '');
-const riskSite = computed(() => site.value.risk_site ?? '');
-const riskGuarded = computed(() =>
-  registering.value
-    ? !setup.value && !!site.value.risk_on_signup
-    : !setup.value && !!site.value.risk_on_login,
-);
-const riskAction = computed(() => (registering.value ? 'register' : 'login'));
+// A plugin's guards, on the same terms. Each is prepared as soon as the card
+// opens on a door it stands at, rather than on submit: a service that scores
+// behaviour has nothing to score if it starts at submit time.
+const guardAction = computed<GuardAction>(() => (registering.value ? 'register' : 'login'));
+const activeGuards = computed(() => (setup.value
+  ? []
+  : guards().filter(({ guard, config }) => guard.active(guardAction.value, config))));
 const formEl = ref<HTMLFormElement | null>(null);
-let riskReady: Promise<RiskControlAPI | null> | null = null;
 
-// Watch only base and site — not the guarded flag — so that boot.js is
-// fetched the moment the /api/site response arrives with the service
-// address, well before the user presses submit.
-watch(
-  [riskBase, riskSite],
-  ([base, key]) => {
-    if (base && key) {
-      riskReady = beginRiskControl(base, key);
-    }
-  },
-  { immediate: true },
-);
-
-/** The token this submission carries, or undefined when no check applies. */
-async function riskToken(): Promise<string | undefined> {
-  if (!riskGuarded.value) return undefined;
-  const ready = riskReady ?? beginRiskControl(riskBase.value, riskSite.value);
-  riskReady = ready;
-  const api = await ready;
-  if (!api) throw new Error('the risk control service could not be loaded');
-  return api.execute(riskAction.value, formEl.value ?? undefined);
-}
+watch(activeGuards, (list) => {
+  for (const { guard, config } of list) guard.prepare?.(guardAction.value, config);
+}, { immediate: true });
 
 // The sign-ins that do not start here. Never during setup: the first account
 // is the administrator, and a provider cannot be configured before there is
@@ -320,7 +295,6 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
   disposable_email: 'disposableEmailRejected',
   email_screening_unavailable: 'emailScreeningUnavailable',
   email_required: 'oauthEmailRequired',
-  qq_required: 'oauthQQRequired',
 };
 
 onMounted(() => {
@@ -333,7 +307,8 @@ onMounted(() => {
     if (code === 'disabled' && typeof banReason === 'string' && banReason.trim()) {
       error.value = t('accountBannedWithReason', { reason: banReason.trim() });
     } else {
-      error.value = t(OAUTH_REFUSALS[code] ?? 'oauthFailed');
+      const known = OAUTH_REFUSALS[code];
+      error.value = known ? t(known) : pluginOAuthError(code) ?? t('oauthFailed');
     }
     // Out of the address bar: a reload should not raise a message about a
     // sign-in that is long over.
@@ -371,13 +346,9 @@ async function onSubmit(): Promise<void> {
     error.value = t('emailRequiredHere');
     return;
   }
-  const qqValue = qq.value.trim();
-  if (registering.value && qqRequired.value && !qqValue) {
-    error.value = t('qqRequiredHere');
-    return;
-  }
-  if (registering.value && qqValue && !/^[1-9][0-9]{4,14}$/.test(qqValue)) {
-    error.value = t('qqInvalid');
+  const fieldError = registering.value ? fieldProblem(fields.value, fieldPlan.value) : null;
+  if (fieldError) {
+    error.value = fieldError;
     return;
   }
   if (registering.value && inviteMode.value === 'invite' && !inviteCode.value.trim()) {
@@ -410,21 +381,19 @@ async function onSubmit(): Promise<void> {
     }
   }
 
-  // The risk service's interactive check, where it asks for one, runs
-  // inside this call — the button says what the reader is waiting on.
-  // A refusal here ends the attempt before anything is submitted: the
-  // service is fail-closed by design, and resubmitting would only carry
-  // a verdict it has already given.
-  let rcToken: string | undefined;
-  if (riskGuarded.value) {
-    buttonLabel.value = t('riskChecking');
+  // A guard's interactive check, where one asks, runs inside this call —
+  // the button says what the reader is waiting on. A refusal here ends the
+  // attempt before anything is submitted: resubmitting would only carry a
+  // verdict the guard has already given.
+  const guardTokens: Record<string, string> = {};
+  for (const { guard, config } of activeGuards.value) {
+    buttonLabel.value = guard.checking();
     try {
-      rcToken = await riskToken();
-    } catch (err: unknown) {
+      guardTokens[guard.name] = await guard.token(guardAction.value, config, formEl.value ?? undefined);
+    } catch (failure: unknown) {
       busy.value = false;
       buttonLabel.value = '';
-      const message = err instanceof Error ? err.message : String(err ?? '');
-      error.value = message === 'devtools-locked' ? t('riskDevtoolsLocked') : t('riskFailed');
+      error.value = guard.failed(failure);
       return;
     }
   }
@@ -442,13 +411,13 @@ async function onSubmit(): Promise<void> {
           username: identity,
           password: secret,
           email: email.value.trim(),
-          qq: qqValue,
+          fields: fieldValues(fields.value, fieldPlan.value),
           turnstile: guard.value?.token() ?? '',
-          ...(rcToken ? { rcToken } : {}),
+          guards: guardTokens,
           inviteCode: inviteCode.value.trim(),
           ...(solution ? { pow: solution } : {}),
         })
-      : await login(identity, secret, guard.value?.token() ?? '', rcToken);
+      : await login(identity, secret, guard.value?.token() ?? '', guardTokens);
 
     window.clearTimeout(reviewNote);
     guard.value?.reset();
@@ -612,17 +581,7 @@ async function onSubmit(): Promise<void> {
             >
           </OaField>
 
-          <OaField v-if="registering && qqEnabled" :label="qqRequired ? t('qq') : t('qqOptional')">
-            <input
-              v-model="qq"
-              type="text"
-              spellcheck="false"
-              :placeholder="t('qqPlaceholder')"
-              autocomplete="off"
-              maxlength="15"
-              :required="qqRequired"
-            >
-          </OaField>
+          <OaAccountFields v-if="registering" v-model="fields" :plan="fieldPlan" />
 
           <!-- Required in invite-only mode; otherwise a collapsed link, so a
                field almost nobody fills in does not sit open on every visit. -->

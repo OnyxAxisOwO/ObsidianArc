@@ -14,6 +14,7 @@ import {
 import type { Notification } from '@/api/notifications';
 import type { StringKey } from '@/i18n';
 import { describeUserAgent } from '@/lib/ua';
+import { pluginNotification } from '@/plugins/registry';
 
 export interface NotificationText {
   title: string;
@@ -134,22 +135,6 @@ export function describeNotification(n: Notification): NotificationText {
           : t('notifyBodyInviteJoinedPlain', { username });
       return { title: t('notifyTitleInviteJoined'), body, icon: IconUsers };
     }
-    case 'invite_departed': {
-      // Three shapes again, by what the claw-back managed: some cards came
-      // back, none did because the inviter had already spent them, or there
-      // was never a reward on this invite at all.
-      const username = text(params['username']);
-      const taken = count(params['cards_revoked']);
-      const due = count(params['cards_due']);
-      const body = taken > 0
-        ? tn(taken, 'notifyBodyInviteDepartedCardsOne', 'notifyBodyInviteDepartedCardsOther', {
-            username, cards: taken,
-          })
-        : due > 0
-          ? t('notifyBodyInviteDepartedSpent', { username })
-          : t('notifyBodyInviteDepartedPlain', { username });
-      return { title: t('notifyTitleInviteDeparted'), body, icon: IconUsers };
-    }
     case 'two_factor_changed': {
       const kind = text(params['kind']);
       return {
@@ -158,10 +143,14 @@ export function describeNotification(n: Notification): NotificationText {
         icon: IconLock,
       };
     }
-    default:
+    default: {
+      // A plugin's own kind, worded by the plugin that raises it.
+      const plugin = pluginNotification(n.kind, params);
+      if (plugin) return { ...plugin, icon: IconBell };
       // A kind this build has never heard of — an older client after a
       // server adds one. Shown rather than dropped: a blank title reads as a
       // bug, a generic one reads as "something happened".
       return { title: t('notifyTitleGeneric'), body: n.kind, icon: IconBell };
+    }
   }
 }

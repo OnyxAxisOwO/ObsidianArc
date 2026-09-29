@@ -250,45 +250,45 @@ func TestProvisionObeysTheRegistrationControls(t *testing.T) {
 		}
 	})
 
-	// A provider has no QQ number to offer, so an instance that requires one
+	// A provider has no badge to offer, so an instance that requires one
 	// has to ask the person — which is the caller's job, and MissingFor is how
 	// it is told to. Provision itself refuses a caller that did not ask, so
 	// that the rule holds even where somebody forgets.
-	t.Run("a required QQ number", func(t *testing.T) {
+	t.Run("a required badge", func(t *testing.T) {
 		f := newFixture(t)
 		if _, _, err := f.auth.Register(ctx, RegisterInput{
-			Username: "founder", Password: "a-good-password", QQ: "12345678",
+			Username: "founder", Password: "a-good-password", Fields: badgeOf("12345678"),
 		}); err != nil {
 			t.Fatalf("register: %v", err)
 		}
-		if err := f.settings.Set(ctx, settings.QQRequirement, settings.QQRequired); err != nil {
-			t.Fatalf("require qq: %v", err)
+		if err := f.settings.Set(ctx, badgeRule, FieldRequired); err != nil {
+			t.Fatalf("require badge: %v", err)
 		}
 
 		missing, err := f.auth.MissingFor(ctx, nil, "cat@example.com")
 		if err != nil {
 			t.Fatalf("missing: %v", err)
 		}
-		if !missing.QQ || missing.Email || !missing.Any() {
-			t.Errorf("missing = %+v, want the QQ number and nothing else", missing)
+		if !(len(missing.Fields) == 1) || missing.Email || !missing.Any() {
+			t.Errorf("missing = %+v, want the badge and nothing else", missing)
 		}
 
-		if _, err := provision(t, f, ProvisionInput{Username: "octocat"}); !errors.Is(err, user.ErrQQRequired) {
+		if _, err := provision(t, f, ProvisionInput{Username: "octocat"}); !errors.Is(err, user.ErrFieldRequired) {
 			t.Errorf("provision without asking = %v, want it refused", err)
 		}
-		account, err := provision(t, f, ProvisionInput{Username: "octocat", QQ: "87654321"})
+		account, err := provision(t, f, ProvisionInput{Username: "octocat", Fields: badgeOf("87654321")})
 		if err != nil {
 			t.Fatalf("provision with the answer: %v", err)
 		}
-		if account.QQ != "87654321" {
-			t.Errorf("qq = %q, want the one that was given", account.QQ)
+		if account.Fields[badge] != "87654321" {
+			t.Errorf("badge = %q, want the one that was given", account.Fields[badge])
 		}
 		// And it is a real number, held to the same rules the form holds one
 		// to: the shape, and nobody else already having it.
-		if _, err := provision(t, f, ProvisionInput{Username: "other", QQ: "87654321"}); !errors.Is(err, user.ErrQQTaken) {
+		if _, err := provision(t, f, ProvisionInput{Username: "other", Fields: badgeOf("87654321")}); !errors.Is(err, user.ErrFieldTaken) {
 			t.Errorf("provision with a taken number = %v, want it refused", err)
 		}
-		if _, err := provision(t, f, ProvisionInput{Username: "third", QQ: "nonsense"}); !errors.Is(err, user.ErrInvalidQQ) {
+		if _, err := provision(t, f, ProvisionInput{Username: "third", Fields: badgeOf("nonsense")}); !errors.Is(err, user.ErrFieldInvalid) {
 			t.Errorf("provision with a malformed number = %v, want it refused", err)
 		}
 	})
@@ -333,8 +333,8 @@ func TestProvisionObeysTheRegistrationControls(t *testing.T) {
 	// administered one.
 	t.Run("the first account is asked for nothing", func(t *testing.T) {
 		f := newFixture(t)
-		if err := f.settings.Set(ctx, settings.QQRequirement, settings.QQRequired); err != nil {
-			t.Fatalf("require qq: %v", err)
+		if err := f.settings.Set(ctx, badgeRule, FieldRequired); err != nil {
+			t.Fatalf("require badge: %v", err)
 		}
 		missing, err := f.auth.MissingFor(ctx, nil, "")
 		if err != nil {

@@ -22,13 +22,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
-	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -275,13 +273,6 @@ type Store struct {
 	// "push nothing", which is every instance predating this feature and
 	// every test with no reason to exercise it.
 	Notify *notify.Store
-	// Departure bookkeeping. A departure ends an account, which means the
-	// sessions go in the same transaction as the status change, and the
-	// decision lands in the security log. Both are set by the wiring; nil
-	// keeps a store that can still be constructed standalone (the console
-	// and tests that do not exercise Depart).
-	Sessions *auth.SessionStore
-	Security *securityevents.Store
 }
 
 func NewStore(db *database.DB, users *user.Store, cards *card.Store, groups *group.Store, set *settings.Service) *Store {

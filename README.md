@@ -55,6 +55,7 @@
 - **用户反馈**：账户菜单内置反馈入口，用户提交 Bug 或建议后可在同一条会话里追加说明；管理员在后台统一查看、回复与处理全部反馈，形成可追溯的往来记录而非散落在邮箱里。
 - **实例备份与个人数据导出**：超级管理员可配置到 S3 兼容存储（含 Cloudflare R2）的定时全量备份与保留策略，也支持从归档离线恢复；账户可随时导出或导入自己的对话数据与偏好设置。
 - **界面与安全设计**：前端采用 Vue 模板插值渲染，不使用 `innerHTML` 与 `v-html`；上游 API Key 在数据库中加密存储；提供浅色、深色与跟随系统的界面配色。
+- **插件**：只有部分站点需要的功能放在 `plugins/` 下、按构建标签编译进二进制，不编译就不带任何代码、路由、数据表和界面文字。目前有 `qqgroup`（账户 QQ 号字段、OIDC 主体号绑定、退群处理与机器人 Webhook）与 `riskcontrol`（自建超级风控）；默认构建两个都带，`make build PLUGINS=` 只构建核心。编译进来的插件在后台「插件」页像浏览器扩展一样安装、启用、禁用和卸载（禁用与卸载需要两步验证，卸载可选同时删除数据），插件也可以带自己的后台子页面。详见[插件](docs/architecture/plugins.md)。
 
 ---
 
@@ -159,6 +160,7 @@ Online documentation is hosted on Cloudflare Pages:
 - **User Feedback**: A feedback panel in the account menu lets anyone file a bug or an idea and keep following up in the same thread; administrators triage, reply, and resolve every submission from one backoffice page instead of a scattered inbox.
 - **Instance Backups and Personal Export**: Super administrators can schedule full-instance backups to an S3-compatible store (including Cloudflare R2) with a configurable retention window, and restore from an archive offline; any account can export or import its own conversations and preferences.
 - **Security and Rendering**: Frontend uses Vue template bindings with no `innerHTML` or `v-html`; upstream credentials stored encrypted; dark, light, and system theme options.
+- **Plugins**: Features only some instances want live under `plugins/` and are compiled in by build tag; one left out carries no code, routes, tables or strings. Currently `qqgroup` (a QQ-number account field, OIDC subject binding, group departures and the bot webhook) and `riskcontrol` (a self-hosted risk-control service). The default build carries both; `make build PLUGINS=` builds the core alone. A compiled-in plugin is installed, switched on and off, and uninstalled from the backoffice's Plugins screen, the way a browser's extensions page works (switching off and uninstalling need a two-step code, and an uninstall can take the plugin's data with it); a plugin can also bring backoffice pages of its own. See [plugins](docs/architecture/plugins.md).
 
 ---
 
@@ -168,11 +170,11 @@ Online documentation is hosted on Cloudflare Pages:
 
 | 指标 / Metric | 实测数据 / Measurement |
 | --- | --- |
-| 二进制体积 / Binary size | 22.43 MB（Linux amd64；使用 `-tags nosqlite` 为 18.71 MB） |
+| 二进制体积 / Binary size | 22.86 MB（Linux amd64，含默认插件；纯核心 22.75 MB；使用 `-tags nosqlite` 为 19.16 / 19.04 MB） |
 | 冷启动就绪时间 / Cold start | ~28 ms |
 | 空闲内存占用 / Idle RSS | ~16 MB |
 | 20 并发流式峰值 / Peak under 20 concurrency | ~54 MB 内存，11 个 OS 线程 |
-| 首次加载传输体积 / Wire payload | 打开对话界面传输 218.39 kB（180.54 kB JS + 37.85 kB CSS）；中文语言包 (43.01 kB)、管理后台 (97.40 kB)、终端 (7.20 kB)、公式渲染器 (3.65 kB)、访客官网首页 (3.99 kB) 按需分包加载 |
+| 首次加载传输体积 / Wire payload | 打开对话界面传输 221.71 kB（183.74 kB JS + 37.97 kB CSS）；中文语言包 (44.06 kB)、管理后台 (102.96 kB)、终端 (7.20 kB)、公式渲染器 (3.65 kB)、访客官网首页 (3.99 kB)、各插件 (qqgroup 3.85 kB、riskcontrol 2.29 kB) 按需分包加载 |
 | 后台常驻协程 / Background goroutines | 3 个（请求日志写入、10 分钟清理、备份调度） |
 | Go 直接依赖 / Direct Go dependencies | 3 个（SQLite 驱动、pgx、x/crypto） |
 | 前端运行时依赖 / Frontend runtime dependencies | 4 个（`vue`、`vue-router`、`@vueuse/core`、`lucide-vue-next`） |

@@ -7,9 +7,9 @@
 // answers "can I send this", which is a question asked mid-sentence and does
 // not want a screen.
 
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { useIntervalFn } from '@vueuse/core';
+import { useDocumentVisibility, useIntervalFn } from '@vueuse/core';
 import { ApiError, api } from '@/api/client';
 import { fetchUsage, type UsageSummary } from '@/api/usage';
 import OaFormSection from '@/components/OaFormSection.vue';
@@ -395,7 +395,16 @@ onMounted(() => {
   void loadCards();
 });
 
-useIntervalFn(refreshQuietly, REFRESH_MS);
+// Not while the tab is hidden — three endpoints every fifteen seconds for a
+// panel nobody is looking at — and at once when it is shown again, the rule
+// the backoffice's own live pages already keep.
+const visibility = useDocumentVisibility();
+useIntervalFn(() => {
+  if (visibility.value !== 'hidden') refreshQuietly();
+}, REFRESH_MS);
+watch(visibility, (now, was) => {
+  if (now === 'visible' && was === 'hidden') refreshQuietly();
+});
 </script>
 
 <template>

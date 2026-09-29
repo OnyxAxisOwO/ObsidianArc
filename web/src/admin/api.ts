@@ -160,27 +160,6 @@ export interface InviteStats {
   partners: InvitePartnerStat[];
 }
 
-/** One processed group departure. The names are snapshots taken at departure
- *  time — in the delete case the account they describe no longer exists, so
- *  `inviter_name` is empty whenever the inviter has gone too. */
-export interface Departure {
-  id: string;
-  user_id: string;
-  username: string;
-  qq: string;
-  inviter_id: string;
-  inviter_name: string;
-  /** 'disable' | 'delete'. */
-  mode: string;
-  reward_cards_due: number;
-  cards_revoked: number;
-  /** 'admin' | 'bot'. */
-  source: string;
-  actor_id: string;
-  note: string;
-  created_at: number;
-}
-
 export interface GroupModelGrant {
   model_id: string;
   access: 'use' | 'view';
@@ -682,7 +661,56 @@ export interface AdminBackupInput {
   retention_days: number;
 }
 
+/** Where a compiled-in plugin stands on this instance. */
+export type PluginState = 'available' | 'enabled' | 'disabled';
+
+export interface PluginText {
+  en: string;
+  zh: string;
+}
+
+/** One plugin as the plugins screen lists it; see plugin.Info on the server. */
+export interface AdminPlugin {
+  name: string;
+  state: PluginState;
+  missing?: boolean;
+  manifest: {
+    version: string;
+    title: PluginText;
+    description: PluginText;
+    author?: string;
+    homepage?: string;
+    license?: string;
+  };
+  installed: { version?: string; at?: number; by?: string; updated_at?: number; updated_by?: string };
+  contributions: {
+    settings: Array<{ key: string; default: string; secret?: boolean }>;
+    fields: string[];
+    guards: string[];
+    captcha_modes: string[];
+    admin_routes: Array<{ pattern: string; permission: string }>;
+    public_routes: string[];
+    commands: string[];
+    migrations: string[];
+    purges: boolean;
+  };
+}
+
+export interface PluginChange {
+  plugin: AdminPlugin;
+  plugins: AdminPlugin[];
+}
+
 export const adminApi = {
+  plugins: () => api.get<{ plugins: AdminPlugin[] }>('/api/admin/plugins'),
+  installPlugin: (name: string, enable: boolean, settings: Record<string, string>) =>
+    api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/install`, { enable, settings }),
+  enablePlugin: (name: string) =>
+    api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/enable`, {}),
+  disablePlugin: (name: string, code: string) =>
+    api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/disable`, { two_factor_code: code }),
+  uninstallPlugin: (name: string, purge: boolean, code: string) =>
+    api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/uninstall`, { purge, two_factor_code: code }),
   mail: () => api.get<AdminMailSettings>('/api/admin/mail'),
   saveMail: (body: AdminMailUpdate) => api.put<AdminMailSettings>('/api/admin/mail', body),
   testMail: (to: string) => api.post<void>('/api/admin/mail/test', { to }),
@@ -823,14 +851,6 @@ export const adminApi = {
   inviteUses: (id: string) =>
     api.get<{ uses: InviteUse[] }>(`/api/admin/invites/${encodeURIComponent(id)}/uses`),
   inviteStats: () => api.get<InviteStats>('/api/admin/invites/stats'),
-  // Processes a group departure: ends the account (mode decides how hard)
-  // and claws back the reward this account's invite earned. The response
-  // reports due and actually-taken separately, because cards already spent
-  // are gone rather than taken from anywhere else.
-  departUser: (id: string, mode: 'disable' | 'delete', note = '') =>
-    api.post<{ departure: Departure }>(`/api/admin/users/${id}/departure`, { mode, note }),
-  departures: (query = '') =>
-    api.get<{ departures: Departure[]; total: number }>(`/api/admin/departures${query}`),
   grantCards: (userID: string, body: { name?: string; windows?: string[]; cards: number; expires_at: number }) =>
     api.post<void>(`/api/admin/users/${userID}/cards`, body),
   // Moves cards the account already holds. Omitting card_ids means every

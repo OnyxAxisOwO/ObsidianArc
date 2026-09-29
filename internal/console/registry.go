@@ -87,6 +87,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -169,6 +170,10 @@ type Command struct {
 	// once every noun's commands exist) checks against admin.Routes.
 	Endpoints []string
 	Run       func(ctx context.Context, rt *Runtime) error
+	// The plugin that registered it. A switched-off plugin's commands are
+	// not found, not listed and not completed — the same as a build without
+	// it.
+	Plugin string
 }
 
 // allCommands is filled by every cmd_*.go file's init(), before New is ever
@@ -185,15 +190,31 @@ func registerCommand(cmd Command) {
 	allCommands = append(allCommands, cmd)
 }
 
+// Register is registerCommand for a plugin, which lives outside this package
+// and adds its commands from its own init the same way a cmd_*.go file does.
+// Commands for a plugin's routes belong with the plugin: the route-parity
+// test here reads admin.go alone, and a plugin's routes are not in it.
+func Register(cmd Command) { registerCommand(cmd) }
+
+// ResolveUser is how a plugin's command reads an account argument: an id as
+// it stands, or a username looked up through the same admin list the core
+// commands use, with the same "no such user" and "which one" answers.
+func ResolveUser(rt *Runtime, ref string) (string, error) { return resolveUserRef(rt, ref) }
+
+// RequireArg is the first positional argument, or the error the core
+// commands give when it is missing; what names it for that message.
+func RequireArg(rt *Runtime, what string) (string, error) { return requireRef(rt, what) }
+
 // registry is the engine's own view of allCommands: a lookup by flat name,
 // plus the registration order help and completion iterate in.
 type registry struct {
 	commands map[string]*Command
 	order    []string
+	gate     plugingate.Gate
 }
 
-func newRegistry() *registry {
-	reg := &registry{commands: make(map[string]*Command, len(allCommands))}
+func newRegistry(gate plugingate.Gate) *registry {
+	reg := &registry{commands: make(map[string]*Command, len(allCommands)), gate: gate}
 	for _, cmd := range allCommands {
 		c := cmd
 		if _, dup := reg.commands[c.Name]; dup {
@@ -207,7 +228,21 @@ func newRegistry() *registry {
 
 func (r *registry) lookup(name string) (*Command, bool) {
 	cmd, ok := r.commands[name]
-	return cmd, ok
+	if !ok || !r.gate.Allows(cmd.Plugin) {
+		return nil, false
+	}
+	return cmd, true
+}
+
+// CommandsOf lists the commands plugin registered, for its manifest.
+func CommandsOf(plugin string) []string {
+	var out []string
+	for _, cmd := range allCommands {
+		if cmd.Plugin == plugin {
+			out = append(out, cmd.Name)
+		}
+	}
+	return out
 }
 
 // visible is what help, Spec and Complete show: every command the actor is
@@ -218,7 +253,7 @@ func (r *registry) visible(actor user.User) []*Command {
 	out := make([]*Command, 0, len(r.order))
 	for _, name := range r.order {
 		cmd := r.commands[name]
-		if hasPermission(actor, cmd.Permission) {
+		if r.gate.Allows(cmd.Plugin) && hasPermission(actor, cmd.Permission) {
 			out = append(out, cmd)
 		}
 	}

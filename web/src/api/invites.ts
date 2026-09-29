@@ -21,16 +21,8 @@ export interface ProfileInvitee {
    *  'limit', 'disabled', 'inviter_gone' or 'inviter_disabled'. Empty while
    *  pending as much as while counted — `counted` is what disambiguates. */
   reward_skipped: string;
-  /** Set when this invitee has processed a group departure. A disabled
-   *  invitee rides on its own invite_uses row; a deleted one is the
-   *  departure record speaking for an account that no longer exists — the
-   *  rest of the fields are still there, but the nickname rides empty. */
-  departed?: boolean;
-  /** 'disable' or 'delete' — how the departure ended the account. */
-  departure_mode?: string;
-  /** Cards actually taken back from the inviter — what was due minus what
-   *  the inviter had already spent. */
-  cards_revoked?: number;
+  /** Whatever a plugin decorated the row with (invite.DecorateInvitees). */
+  [extra: string]: unknown;
 }
 
 export interface ProfileInvites {

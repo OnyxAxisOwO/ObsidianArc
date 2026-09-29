@@ -42,7 +42,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Migrate(ctx); err != nil {
+	if _, err := db.Migrate(ctx, badgeMigration); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -68,11 +68,19 @@ func newFixture(t *testing.T) *fixture {
 		Session: config.Session{TTL: time.Hour, CookieName: "obsidian_session", TouchInterval: time.Hour},
 	}
 	authService := auth.NewService(db, users, groups, set, mail.New(mail.Config{}), cfg)
+	authService.SetFieldRule(badge, func() string {
+		if rule := set.Get(badgeRule); rule != "" {
+			return rule
+		}
+		return auth.FieldOff
+	})
 	store := NewStore(db)
+	service := NewService(db, store, users, authService, set)
+	service.BindSubject(SubjectBinding{Provider: "oidc", Field: badge, Matches: allDigits})
 
 	return &fixture{
 		db: db, users: users, settings: set, auth: authService, store: store,
-		service: NewService(db, store, users, authService, set),
+		service: service,
 	}
 }
 

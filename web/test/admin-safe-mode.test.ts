@@ -39,6 +39,9 @@ import {
   MASK_PLACEHOLDER,
 } from '../src/admin/safeMode';
 import AdminSafeMode from '../src/views/admin/AdminSafeMode.vue';
+import { installPlugins } from '../src/plugins/registry';
+import qqgroup from '../src/plugins/qqgroup/qqgroup.plugin';
+import { site, siteInfo } from '../src/stores/session';
 
 describe('Admin Safe Mode store & utilities', () => {
   beforeEach(() => {
@@ -648,7 +651,7 @@ describe('editable fields blur under safe mode instead of being replaced', () =>
   let panels: HTMLElement;
 
   const member: Account = {
-    id: 'member', username: 'member', nickname: 'Member', email: 'member@example.com', qq: '10001', bio: '', avatar: '',
+    id: 'member', username: 'member', nickname: 'Member', email: 'member@example.com', fields: { qq: '10001' }, bio: '', avatar: '',
     role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
     created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
     email_verified: true, allow_stats: true, allow_delete_conversations: true,
@@ -666,6 +669,10 @@ describe('editable fields blur under safe mode instead of being replaced', () =>
     localStorage.clear();
     safeModeEnabled.value = false;
     setAllCategories(true);
+    // An instance running the QQ-group plugin, so the panel has a plugin
+    // account field to blur along with the core's.
+    installPlugins([qqgroup]);
+    site.value = { ...siteInfo.value, fields: { qq: 'optional' } };
     host = document.createElement('div');
     panels = document.createElement('div');
     document.body.append(host, panels);
@@ -678,6 +685,8 @@ describe('editable fields blur under safe mode instead of being replaced', () =>
     panels.remove();
     localStorage.clear();
     safeModeEnabled.value = false;
+    installPlugins([]);
+    site.value = null;
     vi.restoreAllMocks();
   });
 
@@ -688,7 +697,7 @@ describe('editable fields blur under safe mode instead of being replaced', () =>
     return field;
   }
 
-  it("blurs the user detail panel's nickname, email, QQ and avatar fields — never the value itself", async () => {
+  it("blurs the user detail panel's nickname, email, plugin field and avatar — never the value itself", async () => {
     const policy = emptyPolicy('user', member.id);
     vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
     vi.spyOn(adminApi, 'users').mockResolvedValue({ users: [member], total: 1 });
@@ -721,7 +730,10 @@ describe('editable fields blur under safe mode instead of being replaced', () =>
     await nextTick();
     expect(fieldFor(t('nickname')).classList.contains('oa-safe-blur')).toBe(true);
     expect(fieldFor(t('email')).classList.contains('oa-safe-blur')).toBe(true);
-    expect(fieldFor(t('qq')).classList.contains('oa-safe-blur')).toBe(true);
+    // A plugin's field, drawn by the core's component, blurs the same way.
+    const qqLabel = qqgroup.fields!['qq']!.optionalLabel();
+    expect(fieldFor(qqLabel).classList.contains('oa-safe-blur')).toBe(true);
+    expect(fieldFor(qqLabel).querySelector<HTMLInputElement>('input')!.value).toBe('10001');
     expect(fieldFor(t('avatar')).classList.contains('oa-safe-blur')).toBe(true);
     // Bio is prose, not one of the listed user fields, so it is left alone.
     expect(fieldFor(t('bio')).classList.contains('oa-safe-blur')).toBe(false);

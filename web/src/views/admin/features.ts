@@ -12,8 +12,17 @@ export interface AdminPageSpec {
   /** The path segment after /admin, empty for the dashboard. */
   slug: string;
   label: StringKey;
+  /**
+   * The label, for a page whose words are not the core's: a plugin's page
+   * brings its own, resolved at render like everything else it says.
+   */
+  title?: () => string;
   icon: OaIcon;
   component: Component;
+  /** Handed to the component, for one component that draws several pages. */
+  props?: Record<string, unknown>;
+  /** Extra words the search should find the page itself by. */
+  keywords?: string[];
   /**
    * The grant this section needs, when it is not simply the slug.
    *
@@ -42,6 +51,11 @@ export interface SearchGroup {
   items: AdminFeatureItem[];
 }
 
+/** What the rail and the heading call a page. */
+export function pageLabel(page: AdminPageSpec): string {
+  return page.title ? page.title() : t(page.label);
+}
+
 /** Pages marked `'*'` expose instance-wide data and are visible only to the
  *  super administrator. The same filtered list drives navigation and search. */
 export function visibleAdminPages(pages: AdminPageSpec[], superAdmin: boolean): AdminPageSpec[] {
@@ -65,11 +79,11 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['反馈署名', '显示管理员名字', '匿名回复', '回复署名', 'staff name', 'sign replies', 'anonymous'],
   },
   { id: 'secRegistrationLimits', pageSlug: 'security', titleKey: 'controlRegistrationLimits', searchKeys: ['signupsPerMinute', 'signupsPerHour', 'signupsPerIP', 'signupsIPWindow'] },
-  { id: 'secVerificationScenes', pageSlug: 'security', titleKey: 'controlVerificationScenes', searchKeys: ['captchaMode', 'captchaModeRisk', 'turnstileOnLogin', 'turnstileOnSignup', 'turnstileOnAPIKey', 'turnstileOnRedeem', 'turnstileOnFeedback'] },
+  { id: 'secVerificationScenes', pageSlug: 'security', titleKey: 'controlVerificationScenes', searchKeys: ['captchaMode', 'turnstileOnLogin', 'turnstileOnSignup', 'turnstileOnAPIKey', 'turnstileOnRedeem', 'turnstileOnFeedback'] },
   { id: 'secMail', pageSlug: 'security', titleKey: 'mailSettings', searchKeys: ['mailSettingsHint', 'mailHost', 'mailPort', 'mailUsername', 'mailFrom', 'mailPublicURL', 'mailTestSend'], keywords: ['邮件服务器', '验证邮件', '邮箱配置', 'SMTP', 'mail', 'email verification'] },
   { id: 'secUserCheck', pageSlug: 'security', titleKey: 'userCheckSettings', searchKeys: ['userCheckSettingsHint', 'userCheckEnabled', 'userCheckAPIKey', 'userCheckExemptDomains', 'userCheckFailureMode', 'userCheckTest'], keywords: ['临时邮箱', '一次性邮箱', '临时邮件', 'UserCheck', 'disposable email', 'disposable address'] },
   { id: 'secChatChallenge', pageSlug: 'security', titleKey: 'controlChatChallenge', searchKeys: ['chatChallengeRequests', 'chatChallengeWindow', 'chatChallengeClearance'] },
-  { id: 'secReviewTrial', pageSlug: 'security', titleKey: 'reviewTry', searchKeys: ['reviewTryHint', 'reviewTryRun', 'username', 'email', 'qq', 'reviewTrialFromAddress'] },
+  { id: 'secReviewTrial', pageSlug: 'security', titleKey: 'reviewTry', searchKeys: ['reviewTryHint', 'reviewTryRun', 'username', 'email', 'reviewTrialFromAddress'] },
 
   // --- Dashboard
   {
@@ -484,16 +498,6 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
       'generate invite codes', 'revoke invite',
     ],
   },
-  {
-    id: 'secDepartures',
-    pageSlug: 'invites',
-    titleKey: 'departuresTitle',
-    searchKeys: ['departuresHint', 'colDepartureMode', 'colDepartureCards', 'colDepartureSource'],
-    keywords: [
-      '退群', '退群记录', '收回重置卡', '封禁账号', '删除账号', 'QQ机器人',
-      'group departure', 'left the group', 'claw back', 'bot webhook',
-    ],
-  },
 
   // --- Logs
   {
@@ -523,8 +527,8 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     id: 'secRegistration',
     pageSlug: 'security',
     titleKey: 'secRegistration',
-    searchKeys: ['requireEmail', 'verifyEmail', 'emailDomains', 'qqRequirement'],
-    keywords: ['强制邮箱', '邮箱验证码', '邮箱域名白名单', 'QQ号验证', 'registration policy', 'email verification', 'whitelist'],
+    searchKeys: ['requireEmail', 'verifyEmail', 'emailDomains'],
+    keywords: ['强制邮箱', '邮箱验证码', '邮箱域名白名单', 'registration policy', 'email verification', 'whitelist'],
   },
   {
     id: 'secTurnstile',
@@ -532,13 +536,6 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     titleKey: 'secTurnstile',
     searchKeys: ['turnstileSiteKey', 'turnstileSecretKey'],
     keywords: ['人机验证', 'Cloudflare Turnstile', '验证码', '防刷', 'turnstile', 'captcha', 'bot challenge', 'anti-spam'],
-  },
-  {
-    id: 'secRisk',
-    pageSlug: 'security',
-    titleKey: 'secRisk',
-    searchKeys: ['riskBaseURL', 'riskSite', 'riskSecretKey', 'riskOnLogin'],
-    keywords: ['超级风控', '自建风控', '风控服务', '人机验证', '风险控制', 'siteverify', 'rcToken', 'super risk control', 'risk control', 'anti-bot', 'boot.js'],
   },
   {
     id: 'secOAuth',
@@ -738,8 +735,8 @@ export function searchAdminFeatures(
   const results: SearchGroup[] = [];
 
   for (const page of pages) {
-    const pageTitle = t(page.label);
-    const pageMatched = matchesSearch(q, pageTitle);
+    const pageTitle = pageLabel(page);
+    const pageMatched = matchesSearch(q, pageTitle, ...(page.keywords ?? []));
     const pageFeatures = ADMIN_FEATURES.filter((item) => item.pageSlug === page.slug);
     const matchedFeatures = pageFeatures.filter((item) => {
       const texts: string[] = [

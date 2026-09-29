@@ -55,16 +55,16 @@ func TestTheChallengeOriginIsAllowedOnlyWhileAChallengeIsConfigured(t *testing.T
 	}
 }
 
-// The self-hosted risk control service is a script, a telemetry connection
-// and the images its puzzles are drawn from — no frame of its own, which is
-// the one difference from the Turnstile widening above. Its exception
-// follows the same rule: granted only while the service is configured, gone
-// the moment it is not.
-func TestTheRiskOriginIsAllowedOnlyWhileARiskServiceIsConfigured(t *testing.T) {
+// An in-page service a plugin runs — the self-hosted risk control one is the
+// example — is a script, a telemetry connection and the images its puzzles
+// are drawn from, with no frame of its own, which is the one difference from
+// the Turnstile widening above. Its exception follows the same rule: granted
+// only while the service is configured, gone the moment it is not.
+func TestAPluginOriginIsAllowedOnlyWhileItsServiceIsConfigured(t *testing.T) {
 	const origin = "https://risk.example.com"
 
 	originNow := ""
-	handler := SecurityHeaders(false, nil, nil, func() string { return originNow })(
+	handler := SecurityHeaders(false, nil, nil, func() []string { return []string{originNow} })(
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	policy := func() string {
@@ -108,7 +108,7 @@ func TestBothChallengeOriginsCompose(t *testing.T) {
 
 	handler := SecurityHeaders(false, nil,
 		func() bool { return true },
-		func() string { return risk },
+		func() []string { return []string{risk} },
 	)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	recorder := httptest.NewRecorder()
@@ -124,5 +124,25 @@ func TestBothChallengeOriginsCompose(t *testing.T) {
 		if !strings.Contains(granted, directive) {
 			t.Errorf("missing %q in %s", directive, granted)
 		}
+	}
+}
+
+// An origin is one token of the header. A value carrying a separator would
+// end the directive and start one of its own, so it is dropped rather than
+// written — and two plugins' origins compose in the order given.
+func TestPluginOriginsCannotInjectADirective(t *testing.T) {
+	handler := SecurityHeaders(false, nil, nil, func() []string {
+		return []string{"https://a.example.com", "https://b.example.com; script-src *", "", "https://c.example.com"}
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	granted := recorder.Header().Get("Content-Security-Policy")
+
+	if !strings.Contains(granted, "script-src 'self' https://a.example.com https://c.example.com;") {
+		t.Errorf("the clean origins did not compose: %s", granted)
+	}
+	if strings.Contains(granted, "b.example.com") || strings.Contains(granted, "script-src *") {
+		t.Errorf("an origin with a separator reached the header: %s", granted)
 	}
 }

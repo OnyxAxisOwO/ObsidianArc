@@ -20,6 +20,21 @@ type cspCache struct {
 	policy string
 }
 
+// joinOrigins is the extra origins as one space-separated list, blanks and
+// anything carrying a space or a semicolon dropped: an origin is one token
+// of the header, and a value that could end a directive is not an origin.
+func joinOrigins(origins []string) string {
+	kept := make([]string, 0, len(origins))
+	for _, origin := range origins {
+		origin = strings.TrimSpace(origin)
+		if origin == "" || strings.ContainsAny(origin, " ;,\t\r\n") {
+			continue
+		}
+		kept = append(kept, origin)
+	}
+	return strings.Join(kept, " ")
+}
+
 // Middleware is the usual decorator shape. Chain applies them so the first
 // argument is the outermost — the order they appear in main is the order a
 // request passes through them.
@@ -176,19 +191,20 @@ func Logger() Middleware {
 // of script-src entirely.
 // Cloudflare Turnstile needs three of the directives widened: the script it
 // loads, the iframe it draws the challenge in, and the origin that iframe
-// reports the result to. The self-hosted risk control service (see
-// internal/riskcontrol) needs a different three — its script, its telemetry
-// connections, and the images its puzzles are drawn from; its checks render
-// in the page, so no frame is involved. Nothing else is relaxed, and none of
-// it is relaxed on an instance that has not configured a challenge — which
-// is why both take functions rather than flags: the widening follows the
-// setting, and switching a challenge off takes its exception away with it.
+// reports the result to. A plugin that runs a service's SDK in the page —
+// the self-hosted risk control one is the example — needs a different three:
+// its script, its connections, and the images it draws from; such checks
+// render in the page, so no frame is involved. Nothing else is relaxed, and
+// none of it is relaxed on an instance that has not configured a challenge —
+// which is why both take functions rather than flags: the widening follows
+// the setting, and switching a challenge off takes its exception away with
+// it.
 const challengeOrigin = "https://challenges.cloudflare.com"
 
 // challenging reports whether the Turnstile challenge is configured. Nil
-// means never; the same is true of riskOrigin, which reports the scheme and
-// host of the risk control service, or empty for none.
-func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, riskOrigin func() string) Middleware {
+// means never; the same is true of origins, which reports the scheme and host
+// of every in-page service currently in use, or nothing.
+func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, origins func() []string) Middleware {
 	// The digests joined once; the policy below is the only consumer.
 	hashList := ""
 	if len(scriptHashes) > 0 {
@@ -200,7 +216,7 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, r
 	// whether a frame list exists at all — so whatever combination of
 	// challenges an operator runs, the output is readable here in one place
 	// rather than reconstructed per combination.
-	assemble := func(challenge bool, risk string) string {
+	assemble := func(challenge bool, extra string) string {
 		script := "script-src 'self'"
 		connect := "connect-src 'self'"
 		img := "img-src 'self' data: blob:"
@@ -218,10 +234,10 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, r
 			connect += " " + challengeOrigin
 			frame = "frame-src " + challengeOrigin
 		}
-		if risk != "" {
-			script += " " + risk
-			connect += " " + risk
-			img += " " + risk
+		if extra != "" {
+			script += " " + extra
+			connect += " " + extra
+			img += " " + extra
 		}
 		parts := []string{
 			"default-src 'self'",
@@ -254,17 +270,17 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, r
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			challenge := challenging != nil && challenging()
-			risk := ""
-			if riskOrigin != nil {
-				risk = strings.TrimSpace(riskOrigin())
+			extra := ""
+			if origins != nil {
+				extra = joinOrigins(origins())
 			}
 
-			key := strconv.FormatBool(challenge) + "|" + risk
+			key := strconv.FormatBool(challenge) + "|" + extra
 			active := ""
 			if got := memo.Load(); got != nil && got.key == key {
 				active = got.policy
 			} else {
-				active = assemble(challenge, risk)
+				active = assemble(challenge, extra)
 				memo.Store(&cspCache{key: key, policy: active})
 			}
 

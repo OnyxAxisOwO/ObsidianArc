@@ -20,6 +20,7 @@ import {
 } from '@/api/invites';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import { t, tn } from '@/composables/useI18n';
+import { pluginInviteeNote } from '@/plugins/registry';
 import { IconCheck, IconCopy, IconKey, IconUsers } from '@/icons';
 import { copyToClipboard } from '@/chat/markdown';
 import { absoluteTime } from '@/lib/format';
@@ -181,20 +182,11 @@ const progressPercent = computed(() => {
 });
 
 /** One line per invitee: counted (with any cards that row itself earned),
- *  why it was skipped, still pending — or gone: the invitee processed a
- *  group departure, and what the inviter sees is how it ended and what was
- *  taken back. */
+ *  why it was skipped, still pending — or whatever a plugin has to say about
+ *  it, which wins: a plugin that ends accounts knows how this one ended. */
 function statusLine(invitee: ProfileInvitee): string {
-  if (invitee.departed) {
-    const base = invitee.departure_mode === 'delete'
-      ? t('inviteeDepartedDeleted')
-      : t('inviteeDeparted');
-    const taken = invitee.cards_revoked ?? 0;
-    const cards = taken > 0
-      ? tn(taken, 'inviteeDepartedCardsOne', 'inviteeDepartedCardsOther', { cards: taken })
-      : '';
-    return cards ? `${base} · ${cards}` : base;
-  }
+  const note = pluginInviteeNote(invitee as unknown as Record<string, unknown>);
+  if (note) return note;
   const status = invitee.counted ? t('inviteeCounted') : skipLabel(invitee.reward_skipped);
   const cards = invitee.reward_cards > 0
     ? tn(invitee.reward_cards, 'inviteeCardsOne', 'inviteeCardsOther', { cards: invitee.reward_cards })

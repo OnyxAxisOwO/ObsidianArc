@@ -109,7 +109,6 @@ var consoleExempt = map[string]string{
 	"GET /api/notifications":                        "the browser's notification feed",
 	"GET /api/notifications/poll":                   "the browser's notification feed",
 	"POST /api/notifications/read":                  "the browser's notification feed",
-	"POST /api/bot/departure":                       "the QQ bot's bearer-token webhook — it authenticates by token, not by any session the terminal could hold",
 }
 
 // TestEveryAccountRouteIsClaimedOrExempt is the account-side twin of the
@@ -232,7 +231,7 @@ func userRoutesFromSource(t *testing.T) map[string]bool {
 // a different, already-reviewed category this task was not asked to
 // re-litigate.
 func TestEveryCommandHasBilingualHelp(t *testing.T) {
-	reg := newRegistry()
+	reg := newRegistry(nil)
 	actor := user.User{ID: id.New(), Username: "root", Role: user.RoleSuperAdmin}
 	s := &Session{Actor: actor, Transport: "web", Lang: "en", Width: 100}
 

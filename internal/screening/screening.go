@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,9 +27,11 @@ import (
 // Facts are what the reviewer is given. Recent accounts are reduced to a
 // cohort summary before the message is built; their identities stay here.
 type Facts struct {
-	Username  string
-	Email     string
-	QQ        string
+	Username string
+	Email    string
+	// Plugin account fields, by key — labelled by the key in capitals,
+	// which is what the reviewer's instructions call them.
+	Fields    map[string]string
 	Nickname  string
 	IP        string
 	UserAgent string
@@ -451,7 +454,14 @@ func describe(facts Facts) string {
 	write("Username", facts.Username)
 	write("Nickname", facts.Nickname)
 	write("Email", facts.Email)
-	write("QQ", facts.QQ)
+	keys := make([]string, 0, len(facts.Fields))
+	for key := range facts.Fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		write(strings.ToUpper(key), facts.Fields[key])
+	}
 	write("User agent", facts.UserAgent)
 	fmt.Fprintf(&out, "Accounts already created from this address recently: %d\n", facts.FromThisAddress)
 	write("Recent registration cohort (past three hours)", cohortFor(facts).description())
