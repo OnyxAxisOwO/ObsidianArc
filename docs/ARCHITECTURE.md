@@ -174,7 +174,10 @@ internal/
   settings/    global key/value settings
   admin/       admin-only handlers over the modules above
   web/         embed.FS of the built frontend + SPA fallback
+  plugin/      the plugin registry and the Host a plugin's Setup attaches to
+plugins/       optional features, one package each, compiled in by build tag
 web/           Vue 3 + SCSS frontend source, built by Vite
+               (web/src/plugins/: each plugin's browser half, a chunk of its own)
 ```
 
 Handlers live with their module. There is no `handlers/` dump and no
@@ -216,10 +219,22 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 22.43 MB (18.71 MB `-tags nosqlite`, Linux amd64) |
-| Frontend, on the wire | < 135 kB | 218.39 kB to open the chat (180.54 JS + 37.85 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 22.66 MB with the default plugins, 22.55 MB core alone (18.95 / 18.84 MB `-tags nosqlite`, Linux amd64) |
+| Frontend, on the wire | < 135 kB | 220.72 kB to open the chat (182.76 JS + 37.96 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-09-29 (UTC), after the QQ-group and risk-control features
+moved out of the core into plugins (`plugins/qqgroup`, `plugins/riskcontrol`;
+see `docs/architecture/plugins.md`). The first paint is 220.72 kB (182.76 kB JS
++ 37.96 kB CSS), down 0.58 kB from the tree before the move: the two features'
+screens and strings left the entry, and the plugin registry and the
+declarative renderers that replace them arrived in it. Each plugin is a chunk
+of its own, fetched only by an instance whose server names it — 3.73 kB for
+`qqgroup`, 2.28 kB for `riskcontrol`. The backoffice chunk is 99.94 kB and the
+Chinese dictionary 43.22 kB. The Linux amd64 binary measures 22,659,232 bytes
+with both plugins and 22,552,736 with none (18,948,256 and 18,841,760 with
+`-tags nosqlite`; Go 1.27.0). Gzip figures are Vite's, in decimal kB.
 
 Remeasured on 2026-09-26 (UTC), after adding both email verification methods,
 administrator SMTP and UserCheck configuration, and registration screening.

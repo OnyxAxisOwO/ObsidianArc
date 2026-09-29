@@ -45,6 +45,46 @@ paint, which is written down in `docs/ARCHITECTURE.md` rather than absorbed
 quietly. That was a decision, not a precedent: a fifth is the same
 conversation the first four were.
 
+## Plugins: what only some instances want
+
+The core is a general AI chat site. A feature that only one kind of instance
+needs — the QQ number and group departures of a site run around a QQ group,
+one operator's self-hosted risk-control service — is a **plugin** under
+`plugins/<name>/`, compiled in by the `plugin_<name>` build tag
+(`cmd/server/plugin_<name>.go`) and chosen by `PLUGINS` in the Makefile and
+the Dockerfile. `docs/architecture/plugins.md` is the operator's view; this
+is the rule set.
+
+- **The arrow points one way.** Plugins import the core; nothing under
+  `internal/` or in the core frontend names a plugin, its settings, its
+  column, its routes or its strings. `internal/server`'s tests build servers
+  with no plugin at all, and `core_only_test.go` holds that line. If a grep
+  of `internal/` for a plugin's name finds something, that is a bug.
+- **A plugin only uses seams a module exports**: `database.Migrate`'s plugin
+  directories, `settings.Define`/`AddCaptchaMode`, `user.DefineField`,
+  `auth.Service.AddGuard`/`SetFieldRule`, `auth.Handlers.Extend`,
+  `oauth.Service.BindSubject`, `admin.Handlers.Mount`, `console.Register`,
+  `invite.Handlers.DecorateInvitees`, `plugin.Host.AllowOrigin`. A plugin
+  that needs a seam nobody offers adds it to the module — generically, named
+  for what it does rather than for the plugin — never a reach into internals.
+- **Migrations keep their versions when they move.** A migration that leaves
+  the core for a plugin keeps its file name, so a database that ran it as
+  core does not run it twice; a plugin's new migrations are
+  `<name>_NNNN_*.sql`. `migrations_test.go` in `plugins/qqgroup` is the shape.
+- **Settings keys, columns and tables keep their names** for the same reason.
+- **The browser half declares; the core draws.** `web/src/plugins/<name>/<name>.plugin.ts`
+  describes fields, guards, settings cards, lists and account actions (see
+  `plugins/types.ts`), and the core renders them with its own components. A
+  plugin module imports only what the entry already has — `@/api/client`,
+  `@/icons`, `@/lib/*`, and `pluginStrings` from `plugins/registry.ts` — never
+  `views/admin/`, or the bundler splits a shared chunk out and the file count
+  in `test/bundle.test.ts` catches it.
+- **A plugin's strings are its own**, in `pluginStrings(en, zh)`, typed the way
+  `i18n.ts` is. They never go into the core dictionaries.
+- **Tests come with it**, in the plugin's own package: `servertest` builds a
+  whole server with the plugin compiled in, and `parity_test.go` holds the
+  browser half's setting keys to the ones the plugin defines.
+
 ## Before you say you are done
 
 ```bash
@@ -223,8 +263,9 @@ or state from them:
 
 ```
 web/src/components/   web/src/layouts/    web/src/router/
-web/src/composables/  web/src/stores/
+web/src/composables/  web/src/stores/     web/src/plugins/registry.ts
 internal/httpx/       internal/database/  internal/server/server.go
+internal/plugin/
 ```
 
 A worked example of the failure they invite: the hand-written router used to
@@ -257,8 +298,8 @@ for a week. Do not write anything into the README that claims otherwise.
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 21.6 MB binary; 208.00 kB on the wire to open the chat, against a
-target of 135. The target used to be 80 and the figure used to be 59.5;
+Current: 22.7 MB binary with the default plugins (22.6 MB core alone); 220.72
+kB on the wire to open the chat, against a target of 135. The target used to be 80 and the figure used to be 59.5;
 adopting Vue moved both, and `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.
 
@@ -271,7 +312,8 @@ splits. `web/src/lib/format.ts` holds
 `formatUptime` for exactly that reason: one import of one four-line helper
 used to pull the whole backoffice back into the main bundle.
 
-`test/bundle.test.ts` asserts the build produces exactly seven files. Route-level
+`test/bundle.test.ts` asserts the build produces exactly seven files, plus one
+per directory under `web/src/plugins/` — each plugin's own chunk. Route-level
 lazy loading produces a dozen and is switched off for everything but the
 backoffice, the terminal and the front page; if that count changes, it should be because
 somebody decided it should.
