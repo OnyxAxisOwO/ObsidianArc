@@ -25,6 +25,7 @@ const s = pluginStrings({
   checking: 'Running risk check...',
   failed: 'The risk check did not pass. Please try again with a normal browser.',
   blocked: 'This request was rejected by risk control.',
+  devtoolsLocked: 'Developer tools detected. Please close developer tools and refresh.',
   event: 'Super risk control',
   reasonFailed: 'Risk verification failed',
   reasonBlocked: 'Rejected by risk verdict',
@@ -43,6 +44,7 @@ const s = pluginStrings({
   checking: '正在进行风控检测…',
   failed: '风控检测未通过，请使用正常浏览器重试。',
   blocked: '本次请求被风控拒绝。',
+  devtoolsLocked: '检测到开发者工具已启用，请关闭后刷新页面重试。',
   event: '超级风控',
   reasonFailed: '风控验证未通过',
   reasonBlocked: '风控判定拒绝',
@@ -91,7 +93,10 @@ const plugin: ArcPlugin = {
       return api.execute(action, form);
     },
     checking: () => s('checking'),
-    failed: () => s('failed'),
+    // The service locks the page while developer tools are open, which is a
+    // different instruction from "try another browser".
+    failed: (failure) => (failure instanceof Error && failure.message === 'devtools-locked'
+      ? s('devtoolsLocked') : s('failed')),
   }],
   captchaModes: [{ value: 'risk', label: () => s('captchaMode') }],
   refusals: {

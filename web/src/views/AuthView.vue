@@ -390,10 +390,10 @@ async function onSubmit(): Promise<void> {
     buttonLabel.value = guard.checking();
     try {
       guardTokens[guard.name] = await guard.token(guardAction.value, config, formEl.value ?? undefined);
-    } catch {
+    } catch (failure: unknown) {
       busy.value = false;
       buttonLabel.value = '';
-      error.value = guard.failed();
+      error.value = guard.failed(failure);
       return;
     }
   }

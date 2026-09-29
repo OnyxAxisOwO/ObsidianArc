@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -108,6 +109,10 @@ func TestVerifyMapsTheDecisionBands(t *testing.T) {
 			verdict: verifyResponse{Success: false, Codes: []string{"invalid-input-secret"}},
 			wantErr: ErrUnavailable,
 		},
+		"an action mismatch is refused": {
+			verdict: verifyResponse{Success: true, Score: 0.9, Action: ActionLogin, Decision: DecisionAllow},
+			wantErr: ErrFailed,
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -145,6 +150,11 @@ func TestVerifyRefusesAnUnusableGate(t *testing.T) {
 	// A token that cannot exist — there was no check to pass.
 	if _, err := Verify(ctx, nil, "https://risk.example.com/api/siteverify", "site", "secret", "", ActionLogin, ""); !errors.Is(err, ErrFailed) {
 		t.Fatalf("err = %v, want ErrFailed for an empty token", err)
+	}
+	// A token that is excessively large is refused before calling out.
+	huge := strings.Repeat("a", 70000)
+	if _, err := Verify(ctx, nil, "https://risk.example.com/api/siteverify", "site", "secret", huge, ActionLogin, ""); !errors.Is(err, ErrFailed) {
+		t.Fatalf("err = %v, want ErrFailed for an oversized token", err)
 	}
 	// Half a configuration is not a check this server can stand behind.
 	if _, err := Verify(ctx, nil, "https://risk.example.com/api/siteverify", "site", "", "t", ActionLogin, ""); !errors.Is(err, ErrUnavailable) {

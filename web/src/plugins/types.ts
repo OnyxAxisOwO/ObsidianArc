@@ -65,7 +65,8 @@ export interface GuardSpec {
   /** What the submit button says while token() runs. */
   checking: Text;
   /** What the card says when token() rejects. */
-  failed: Text;
+  /** What the card says when token() rejects; the rejection is passed for a guard with more than one way to fail. */
+  failed: (failure?: unknown) => string;
 }
 
 /** One control in a settings section. */
