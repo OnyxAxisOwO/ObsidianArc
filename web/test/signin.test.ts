@@ -9,6 +9,7 @@ import * as backupApi from '../src/api/backup';
 import { ApiError } from '../src/api/client';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
+import { beginRiskControl } from '../src/composables/useRiskControl';
 import { safeNext } from '../src/lib/next';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import AuthView from '../src/views/AuthView.vue';
@@ -429,6 +430,35 @@ describe('the self-hosted risk control service', () => {
     await settle();
 
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('riskDevtoolsLocked'));
+  });
+
+  it('loads boot.js with siteKey header and sets __RC_BOOT_BASE__', async () => {
+    delete (window as unknown as { RiskControl?: unknown }).RiskControl;
+    delete (window as unknown as { __RC_BOOT_BASE__?: unknown }).__RC_BOOT_BASE__;
+
+    const fakeInit = vi.fn();
+    const fakeExecute = vi.fn(async () => 'token-from-fetch');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/boot.js')) {
+        expect(init?.headers).toEqual(expect.objectContaining({ siteKey: 'arc-test' }));
+        expect(init?.cache).toBe('no-store');
+        (window as unknown as { RiskControl: unknown }).RiskControl = { init: fakeInit, execute: fakeExecute };
+        return {
+          ok: true,
+          text: async () => 'window.RiskControl = { init: () => {}, execute: () => {} };',
+        } as unknown as Response;
+      }
+      return { ok: false } as unknown as Response;
+    });
+
+    const api = await beginRiskControl('https://risk.example.com', 'arc-test');
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(window.__RC_BOOT_BASE__).toBe('https://risk.example.com');
+    expect(api).toBeDefined();
+    expect(fakeInit).toHaveBeenCalledWith({ base: 'https://risk.example.com', site: 'arc-test' });
+
+    fetchSpy.mockRestore();
   });
 
   it('stands in front of sign-in too, and names the action it is checking', async () => {

@@ -22,11 +22,13 @@ export interface RiskControlAPI {
 declare global {
   interface Window {
     RiskControl?: RiskControlAPI;
+    __RC_BOOT_BASE__?: string;
   }
 }
 
 let loading: Promise<RiskControlAPI | null> | null = null;
 let loadedBase = '';
+let loadedSite = '';
 
 /**
  * Loads the script once per page, however many surfaces ask for it.
@@ -36,19 +38,53 @@ let loadedBase = '';
  * not a page that failed to render. The same rule the Turnstile loader
  * keeps, for the same reason.
  */
-export function loadRiskControl(base: string): Promise<RiskControlAPI | null> {
+export function loadRiskControl(base: string, site: string): Promise<RiskControlAPI | null> {
   if (window.RiskControl) return Promise.resolve(window.RiskControl);
-  if (loading && loadedBase === base) return loading;
+  if (loading && loadedBase === base && loadedSite === site) return loading;
 
-  loading = new Promise<RiskControlAPI | null>((resolve) => {
-    const script = document.createElement('script');
-    script.src = base.replace(/\/+$/, '') + '/boot.js';
-    script.async = true;
-    script.onload = () => resolve(window.RiskControl ?? null);
-    script.onerror = () => resolve(null);
-    document.head.appendChild(script);
-  });
+  const baseClean = base.replace(/\/+$/, '');
+  const url = `${baseClean}/boot.js`;
   loadedBase = base;
+  loadedSite = site;
+
+  loading = (async (): Promise<RiskControlAPI | null> => {
+    try {
+      const response = await fetch(url, {
+        headers: { siteKey: site },
+        cache: 'no-store',
+      });
+      if (!response.ok) return null;
+
+      window.__RC_BOOT_BASE__ = baseClean;
+      const text = await response.text();
+      const script = document.createElement('script');
+      script.text = text;
+      document.head.appendChild(script);
+
+      if (!window.RiskControl) {
+        // Fallback for strict CSP environments where dynamic inline script is blocked.
+        try {
+          const blob = new Blob([text], { type: 'application/javascript' });
+          const blobUrl = URL.createObjectURL(blob);
+          const blobScript = document.createElement('script');
+          blobScript.src = blobUrl;
+          await new Promise<void>((resolve) => {
+            blobScript.onload = () => resolve();
+            blobScript.onerror = () => resolve();
+            document.head.appendChild(blobScript);
+          });
+          URL.revokeObjectURL(blobUrl);
+        } catch {
+          // Fallback failed or not supported.
+        }
+      }
+
+      return window.RiskControl ?? null;
+    } catch {
+      return null;
+    }
+  })();
+
   return loading;
 }
 
@@ -64,7 +100,7 @@ let initialisedFor: RiskControlAPI | null = null;
  * to score.
  */
 export async function beginRiskControl(base: string, site: string): Promise<RiskControlAPI | null> {
-  const api = await loadRiskControl(base);
+  const api = await loadRiskControl(base, site);
   if (api && initialisedFor !== api) {
     api.init({ base, site });
     initialisedFor = api;
