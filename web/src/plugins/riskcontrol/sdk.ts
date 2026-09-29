@@ -57,9 +57,13 @@ export function loadRiskControl(base: string, site: string): Promise<RiskControl
 
       window.__RC_BOOT_BASE__ = baseClean;
       const text = await response.text();
-      const script = document.createElement('script');
-      script.text = text;
-      document.head.appendChild(script);
+      try {
+        const script = document.createElement('script');
+        script.text = text;
+        document.head.appendChild(script);
+      } catch {
+        // CSP blocked inline script.
+      }
 
       if (!window.RiskControl) {
         // Fallback for strict CSP environments where dynamic inline script is blocked.
