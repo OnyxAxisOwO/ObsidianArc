@@ -19,6 +19,18 @@ VERSION := $(VERSION)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
+# Which plugins under plugins/ the binary carries. Each is compiled in by its
+# build tag (cmd/server/plugin_<name>.go); one left out contributes no code,
+# no route and no table. The default is what this repository's own
+# deployment runs, so `make deploy` keeps serving what it served before the
+# features became plugins. `PLUGINS=` builds the core alone, which is also
+# what a bare `go build ./cmd/server` produces.
+PLUGINS ?= qqgroup riskcontrol
+PLUGIN_TAGS := $(strip $(foreach p,$(PLUGINS),plugin_$(p)))
+TAGS := -tags "$(PLUGIN_TAGS)"
+# Every plugin in the tree, for vetting the tagged files whatever PLUGINS is.
+ALL_PLUGIN_TAGS := $(foreach p,$(notdir $(wildcard plugins/*)),plugin_$(p))
+
 # Where `make deploy` sends a release. The directory is the Arc Compose
 # project on the production host (see AGENTS.md: Arc, never Chat); the host
 # has no default, because guessing one is how a build lands on the wrong box.
@@ -32,7 +44,7 @@ all: build
 
 ## build: the release artifact — frontend compiled and embedded, symbols stripped
 build: web
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/server
+	go build $(GOFLAGS) $(TAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/server
 
 ## web: compile the SPA into internal/web/dist, where //go:embed picks it up
 web:
@@ -50,11 +62,12 @@ web-ci:
 
 ## server: rebuild only the Go side, reusing whatever frontend is already embedded
 server:
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/$(BINARY) ./cmd/server
+	go build $(TAGS) -ldflags "-X main.version=$(VERSION)" -o bin/$(BINARY) ./cmd/server
 
-## version: print the version this build would carry
+## version: print the version this build would carry, and its plugins
 version:
 	@echo $(VERSION)
+	@echo plugins: $(if $(PLUGINS),$(PLUGINS),none)
 
 ## run: production-shaped local run against the embedded bundle
 run: server
@@ -63,7 +76,7 @@ run: server
 ## dev: Go server on :8080 proxying to Vite on :5173, so both hot-reload.
 ## Run `npm --prefix web run dev` alongside it.
 dev:
-	OBSIDIAN_DEV=1 OBSIDIAN_LOG_LEVEL=debug go run ./cmd/server
+	OBSIDIAN_DEV=1 OBSIDIAN_LOG_LEVEL=debug go run $(TAGS) ./cmd/server
 
 ## test: fast local gate with bounded test concurrency
 ##
@@ -84,10 +97,11 @@ test-full: test
 
 vet:
 	go vet ./...
-	@test -z "$$(gofmt -l cmd internal)" || { echo "gofmt would rewrite:"; gofmt -l cmd internal; echo "run: make fmt"; exit 1; }
+	go vet -tags "$(ALL_PLUGIN_TAGS)" ./cmd/server
+	@test -z "$$(gofmt -l cmd internal plugins)" || { echo "gofmt would rewrite:"; gofmt -l cmd internal plugins; echo "run: make fmt"; exit 1; }
 
 fmt:
-	gofmt -w cmd internal
+	gofmt -w cmd internal plugins
 
 typecheck:
 	npm --prefix web run typecheck
@@ -100,7 +114,7 @@ clean:
 	find internal/web/dist -mindepth 1 ! -name .gitkeep -delete
 
 docker:
-	docker build --build-arg VERSION=$(VERSION) -t obsidian-arc:$(VERSION) -t obsidian-arc:latest .
+	docker build --build-arg VERSION=$(VERSION) --build-arg PLUGINS="$(PLUGINS)" -t obsidian-arc:$(VERSION) -t obsidian-arc:latest .
 
 ## release: compile here what the server would otherwise compile for minutes —
 ## the frontend and a static Linux binary — into dist/, with the image recipe
@@ -112,10 +126,11 @@ release: web package
 package:
 	rm -rf dist
 	mkdir -p dist
-	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY) ./cmd/server
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build $(GOFLAGS) $(TAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY) ./cmd/server
 	cp Dockerfile.release dist/Dockerfile
 	echo $(VERSION) > dist/VERSION
 	echo $(ARCH) > dist/ARCH
+	echo $(PLUGINS) > dist/PLUGINS
 
 ## deploy: release, then ship dist/ to DEPLOY_HOST and replace the Arc server
 ## container with one built from it — seconds on the server, not minutes

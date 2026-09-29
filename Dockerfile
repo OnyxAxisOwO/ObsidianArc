@@ -31,6 +31,7 @@ RUN go mod download
 
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+COPY plugins/ ./plugins/
 COPY --from=web /src/internal/web/dist/ ./internal/web/dist/
 
 # yyyy.MM.dd.HH.mm.ss, supplied by `make docker`. The default is what a bare
@@ -40,12 +41,18 @@ COPY --from=web /src/internal/web/dist/ ./internal/web/dist/
 # from `docker compose up --build` still says when it was built.
 ARG VERSION=
 ARG TARGETARCH
+# Which plugins the binary carries, as the Makefile's PLUGINS names them. The
+# default matches the Makefile's, so a server that still builds its own image
+# with `docker compose up --build` gets the binary `make deploy` would ship.
+# Empty builds the core alone.
+ARG PLUGINS="qqgroup riskcontrol"
 
 # CGO_ENABLED=0 because the SQLite driver is pure Go: that is what allows a
 # scratch-like final image and a binary that runs anywhere.
 ENV CGO_ENABLED=0
-RUN GOARCH=${TARGETARCH:-amd64} go build \
-      -trimpath \
+RUN tags=""; for p in ${PLUGINS}; do tags="$tags plugin_$p"; done; \
+    GOARCH=${TARGETARCH:-amd64} go build \
+      -trimpath -tags "$tags" \
       -ldflags "-s -w -X main.version=${VERSION:-v$(TZ=CST-8 date +%Y.%m.%d.%H.%M.%S)}" \
       -o /out/obsidian-arc ./cmd/server
 
