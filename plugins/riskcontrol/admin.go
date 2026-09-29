@@ -64,6 +64,12 @@ func (h *adminHandlers) mount(backoffice *admin.Handlers) {
 		Handler:    h.proxySitePut,
 		Plugin:     Name,
 	})
+	backoffice.Mount(admin.Route{
+		Pattern:    "DELETE /api/admin/riskcontrol/sites/{key}",
+		Permission: "security",
+		Handler:    h.proxySiteDelete,
+		Plugin:     Name,
+	})
 }
 
 func (h *adminHandlers) targetURL(path string) string {
@@ -142,7 +148,21 @@ func (h *adminHandlers) proxySitesGet(w http.ResponseWriter, r *http.Request) er
 		return httpx.Unavailable("Risk control service is unreachable.")
 	}
 	defer resp.Body.Close()
-	return h.forward(w, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		return h.forward(w, resp)
+	}
+
+	var data struct {
+		Sites []map[string]any `json:"sites"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"rows":  data.Sites,
+		"total": len(data.Sites),
+	})
 }
 
 func (h *adminHandlers) proxySitePut(w http.ResponseWriter, r *http.Request) error {
@@ -152,6 +172,16 @@ func (h *adminHandlers) proxySitePut(w http.ResponseWriter, r *http.Request) err
 		return httpx.BadRequest("Failed to read body.")
 	}
 	resp, err := h.doRequest(r.Context(), http.MethodPut, "/admin/sites/"+url.PathEscape(key), body)
+	if err != nil {
+		return httpx.Unavailable("Risk control service is unreachable.")
+	}
+	defer resp.Body.Close()
+	return h.forward(w, resp)
+}
+
+func (h *adminHandlers) proxySiteDelete(w http.ResponseWriter, r *http.Request) error {
+	key := r.PathValue("key")
+	resp, err := h.doRequest(r.Context(), http.MethodDelete, "/admin/sites/"+url.PathEscape(key), nil)
 	if err != nil {
 		return httpx.Unavailable("Risk control service is unreachable.")
 	}

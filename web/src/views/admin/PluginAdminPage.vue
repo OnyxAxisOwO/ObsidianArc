@@ -103,7 +103,6 @@ onMounted(load);
         v-for="card in actionCards"
         :key="card.id"
         :card="card"
-        class="oa-control-card-wide"
         @done="onActionDone"
       />
       <PluginSettingsCard
@@ -112,7 +111,6 @@ onMounted(load);
         :section="section"
         :draft="settings.draft"
         :hints="settings.hints"
-        :class="{ 'oa-control-card-wide': settings.sections.value.length === 1 }"
       />
       <PluginList
         v-for="spec in lists"
