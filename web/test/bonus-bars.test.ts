@@ -70,11 +70,17 @@ async function mount(): Promise<{ refresh: () => Promise<void> }> {
   return { refresh: async () => { key.value += 1; await settle(); } };
 }
 
-function serve(bars: BonusBar[]): void {
+function serve(bars: BonusBar[], display?: 'absolute' | 'remaining' | 'used'): void {
   get.mockImplementation(async (url: string) => {
-    if (url === '/api/bonus') return { bars };
+    if (url === '/api/bonus') return { bars, ...(display ? { display } : {}) };
     throw new Error(`unexpected ${url}`);
   });
+}
+
+/** The width the meter is drawn at, as the number of percent. */
+function meter(index = 0): number {
+  const fill = host.querySelectorAll<HTMLElement>('.oa-meter-fill')[index]!;
+  return Number.parseFloat(fill.style.width);
 }
 
 describe('OaBonusBars', () => {
@@ -96,9 +102,90 @@ describe('OaBonusBars', () => {
     // the figure from anything else, such as the percentage.
     serve([bar({ show_total: false, total: null, remaining: null, percent: 37 })]);
     await mount();
-    expect(host.textContent).toContain(t('bonusPercentLeft', { percent: 37 }));
+    expect(host.textContent).toContain(t('quotaRemaining', { percent: 37 }));
     expect(host.textContent).not.toContain('1000');
     expect(host.textContent).not.toContain('640');
+  });
+
+  // The allowance above is worded by one instance-wide setting, and a bar that
+  // read "9 / 9" under windows reading "60% left" was two answers to one question.
+  it('words a bar as what is left when the instance words the allowance that way, amounts public or not', async () => {
+    serve([
+      bar({ bar_id: 'a', name: 'Public', total: 10, remaining: 6, percent: 60 }),
+      bar({ bar_id: 'b', name: 'Private', show_total: false, total: null, remaining: null, percent: 60 }),
+    ], 'remaining');
+    await mount();
+    const rows = [...host.querySelectorAll('.oa-bonus-bar')].map((node) => node.textContent ?? '');
+    for (const row of rows) expect(row).toContain(t('quotaRemaining', { percent: 60 }));
+    // The figures are what the wording replaces, not what it sits beside.
+    expect(rows[0]).not.toContain('6 of 10');
+    expect(meter(0)).toBe(60);
+  });
+
+  it('words a bar as what has gone, and fills the meter as it is spent', async () => {
+    serve([bar({ total: 10, remaining: 6, percent: 60 })], 'used');
+    await mount();
+    expect(host.textContent).toContain(t('quotaUsed', { percent: 40 }));
+    expect(host.textContent).not.toContain('6 of 10');
+    // "40% used" over a bar 60% full would be two answers to one question.
+    expect(meter()).toBe(40);
+  });
+
+  it('keeps the figures for the amounts a bar shares, and a share for the ones it keeps back, when the instance shows figures', async () => {
+    serve([
+      bar({ bar_id: 'a', name: 'Public', total: 9, remaining: 9, percent: 100 }),
+      bar({ bar_id: 'b', name: 'Private', show_total: false, total: null, remaining: null, percent: 60 }),
+    ], 'absolute');
+    await mount();
+    const rows = [...host.querySelectorAll('.oa-bonus-bar')].map((node) => node.textContent ?? '');
+    expect(rows[0]).toContain(t('bonusLeft', { left: '9', total: '9' }));
+    expect(rows[1]).toContain(t('quotaRemaining', { percent: 60 }));
+    expect(meter(1)).toBe(60);
+  });
+
+  it('is worded as the figures by a server that does not say', async () => {
+    serve([bar({ total: 9, remaining: 9, percent: 100 })]);
+    await mount();
+    expect(host.textContent).toContain(t('bonusLeft', { left: '9', total: '9' }));
+  });
+
+  it('says used up in every wording', async () => {
+    for (const display of ['absolute', 'remaining', 'used'] as const) {
+      serve([bar({ exhausted: true, remaining: 0, percent: 0 })], display);
+      await mount();
+      expect(host.textContent, display).toContain(t('bonusExhausted'));
+      expect(host.textContent, display).not.toMatch(/\d+%/);
+      app?.unmount();
+      app = null;
+      host.textContent = '';
+    }
+  });
+
+  // The server rounds the share, and 0.3 of 100 rounds to nothing while every
+  // request still succeeds: a bar with anything in it does not read as empty.
+  it('never reads a bar with something left as empty', async () => {
+    serve([bar({ total: 100, remaining: 0.3, percent: 0, exhausted: false })], 'remaining');
+    await mount();
+    expect(host.textContent).toContain(t('quotaRemaining', { percent: 1 }));
+    app?.unmount();
+    app = null;
+    host.textContent = '';
+
+    serve([bar({ total: 100, remaining: 0.3, percent: 0, exhausted: false })], 'used');
+    await mount();
+    expect(host.textContent).toContain(t('quotaUsed', { percent: 99 }));
+    expect(meter()).toBe(99);
+  });
+
+  it('follows the instance when it changes its wording between reads', async () => {
+    serve([bar({ total: 10, remaining: 6, percent: 60 })], 'absolute');
+    const { refresh } = await mount();
+    expect(host.textContent).toContain(t('bonusLeft', { left: '6', total: '10' }));
+
+    serve([bar({ total: 10, remaining: 6, percent: 60 })], 'remaining');
+    await refresh();
+    expect(host.textContent).toContain(t('quotaRemaining', { percent: 60 }));
+    expect(host.textContent).not.toContain('6 of 10');
   });
 
   it('says a bar is used up rather than showing an empty figure', async () => {

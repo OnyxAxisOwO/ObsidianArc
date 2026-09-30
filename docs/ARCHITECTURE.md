@@ -219,22 +219,22 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 25.84 MB (22.14 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 227.17 kB to open the chat (187.76 JS + 39.41 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 25.85 MB (22.14 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 227.24 kB to open the chat (187.83 JS + 39.41 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
 Remeasured on 2026-09-30 (UTC), after the bonus bars and the daily check-in.
-The Linux amd64 binary measures 25,841,824 bytes, or 22,139,040 with
-`-tags nosqlite` (Go 1.27.1), up 0.27 MB: two packages of Go (`bonus`,
+The Linux amd64 binary measures 25,845,920 bytes, or 22,139,040 with
+`-tags nosqlite` (Go 1.27.1), up 0.28 MB: two packages of Go (`bonus`,
 `checkin`), a migration and the frontend they come with. Memory and start-up
 were not re-measured: nothing was added that runs at idle beyond the sweep that
-already runs. The first paint is 227.17 kB (187.76 kB JS + 39.41 kB CSS), up
-3.67 kB: the two panels drawn on the usage screen, the notification wording,
+already runs. The first paint is 227.24 kB (187.83 kB JS + 39.41 kB CSS), up
+3.74 kB: the two panels drawn on the usage screen, the notification wording,
 and the English strings for both screens, which the core dictionary keeps in
 the entry like every other. The backoffice chunk is 111.59 kB (from 107.58),
 the page that edits bars, grants and check-in rewards; the Chinese dictionary
-is 46.03 kB (from 44.37); the terminal and the maths renderer did not move
+is 46.02 kB (from 44.37); the terminal and the maths renderer did not move
 (7.22 and 3.61 kB) and the front page is 3.95 kB.
 
 Remeasured on 2026-09-30 (UTC), before that, after plugins became packages that are

@@ -66,6 +66,28 @@ func TestBrowserTitleFallsBackToSiteName(t *testing.T) {
 	}
 }
 
+// A row the admin form would never have accepted — an import, an older build,
+// a hand edit — must not leave every account looking at a blank figure: the
+// allowance and the bonus bars both word themselves by this.
+func TestUsageDisplayFallsBackToTheFiguresWhenTheStoredValueIsNotOneOfTheThree(t *testing.T) {
+	s := &Service{values: map[string]string{}}
+	if got := s.UsageDisplay(); got != UsageAbsolute {
+		t.Errorf("with nothing configured, UsageDisplay() = %q, want the figures", got)
+	}
+	for _, want := range UsageDisplays {
+		s.values[UsageDisplay] = want
+		if got := s.UsageDisplay(); got != want {
+			t.Errorf("UsageDisplay() = %q, want %q", got, want)
+		}
+	}
+	for _, bad := range []string{"", "percent", "REMAINING", " remaining"} {
+		s.values[UsageDisplay] = bad
+		if got := s.UsageDisplay(); got != UsageAbsolute {
+			t.Errorf("a stored %q gave %q, want the figures", bad, got)
+		}
+	}
+}
+
 // The front door's modes are a closed set on both sides: the frontend's
 // `Landing.mode` union names the same four, and admin.instance refuses a save
 // that is not one of them. A mode added to one side and not the other is a

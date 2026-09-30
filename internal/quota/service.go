@@ -680,13 +680,9 @@ func (s *Service) SummaryFor(ctx context.Context, account user.User) (Summary, e
 	}
 
 	now := time.Now()
-	display := s.settings.Get(settings.UsageDisplay)
-	if !settings.ValidUsageDisplay(display) {
-		display = settings.UsageAbsolute
-	}
 	summary := Summary{
 		Unlimited: policy.Unlimited(),
-		Display:   display,
+		Display:   s.settings.UsageDisplay(),
 		Windows:   make([]WindowUsage, 0, len(AllowanceWindows)),
 	}
 	anchor, err := allowanceAnchor(ctx, s.db, account.CreatedAt)

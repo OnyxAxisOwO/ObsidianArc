@@ -2553,7 +2553,6 @@ const en = {
   bonusBeforeAllowance: 'Used before your allowance',
   bonusAfterAllowance: 'Used after your allowance',
   bonusLeft: '{left} of {total} left',
-  bonusPercentLeft: '{percent}% left',
   bonusExhausted: 'Used up',
   bonusExpires: 'Expires {when}',
   bonusNoExpiry: 'Does not expire',

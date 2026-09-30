@@ -108,3 +108,36 @@ func TestOnlyAnAdministratorWithTheUsageGrantMakesBars(t *testing.T) {
 		t.Fatalf("a plain account made a bar: %d", res.Code)
 	}
 }
+
+// The bars are worded the way the allowance is, so the display setting travels
+// with them — the same value the allowance's own summary carries, from the same
+// place — rather than being something the screen has to fetch separately and
+// draw a moment late.
+func TestTheBarsAreSentWithTheWayTheInstanceWordsAnAllowance(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("bonus-admin", "a-good-password")
+	reader := in.register("bonus-reader", "a-good-password")
+
+	word := func(path string) string {
+		t.Helper()
+		res := in.do(http.MethodGet, path, nil, reader)
+		if res.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, res.Code, res.Body.String())
+		}
+		return decode[struct {
+			Display string `json:"display"`
+		}](t, res).Display
+	}
+
+	if got := word("/api/bonus"); got != "absolute" {
+		t.Fatalf("with nothing chosen the bars are worded as %q, want the figures", got)
+	}
+	for _, chosen := range []string{"remaining", "used", "absolute"} {
+		if res := in.do(http.MethodPut, "/api/admin/settings", map[string]string{"quota.usage_display": chosen}, admin); res.Code != http.StatusOK {
+			t.Fatalf("choose %s: %d %s", chosen, res.Code, res.Body.String())
+		}
+		if bars, allowance := word("/api/bonus"), word("/api/usage/me"); bars != chosen || allowance != chosen {
+			t.Fatalf("chosen %q: the bars say %q and the allowance %q", chosen, bars, allowance)
+		}
+	}
+}

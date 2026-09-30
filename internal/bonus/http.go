@@ -10,7 +10,13 @@ import (
 
 // Handlers is what an account does with its own bars. Making bars and granting
 // into them is administrative and lives in internal/admin.
-type Handlers struct{ store *Store }
+type Handlers struct {
+	store *Store
+	// How the instance words an allowance. It is sent with the bars, like the
+	// allowance's own summary sends it with the windows, because it is only ever
+	// read alongside the figures it words; left nil it is the figures.
+	Display func() string
+}
 
 func NewHandlers(store *Store) *Handlers { return &Handlers{store: store} }
 
@@ -28,7 +34,11 @@ func (h *Handlers) mine(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"bars": views})
+	display := "absolute"
+	if h.Display != nil {
+		display = h.Display()
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"bars": views, "display": display})
 }
 
 func (h *Handlers) choose(w http.ResponseWriter, r *http.Request) error {

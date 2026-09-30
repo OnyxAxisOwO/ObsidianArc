@@ -641,6 +641,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	cardHandlers.Routes(mux)
 	bonusHandlers := bonus.NewHandlers(bonusStore)
+	bonusHandlers.Display = settingsService.UsageDisplay
 	bonusHandlers.Routes(mux)
 	checkinHandlers := checkin.NewHandlers(checkinService)
 	checkinHandlers.VerificationRequired = authService.VerificationRequired

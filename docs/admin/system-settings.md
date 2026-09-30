@@ -69,7 +69,7 @@
 | --- | --- | --- |
 | `api.enabled` | `false` | 全站 API 开关，也限制管理员 |
 | `quota.admins_bypass` | `true` | 管理员是否绕过额度限制 |
-| `quota.usage_display` | `absolute` | 具体数值、已用比例或剩余比例 |
+| `quota.usage_display` | `absolute` | 具体数值、已用比例或剩余比例；额度窗口和赠金条都按它措辞 |
 | `quota.max_concurrent` | `0` | 全站最大并发流式请求数限制；0 表示不限 |
 
 API 开关与额度豁免是两项独立设置。用户组还需要 `api_access` 权限；额度上限在全局、用户组或用户策略中配置。

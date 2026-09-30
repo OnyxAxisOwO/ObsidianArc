@@ -5,6 +5,7 @@
 // bonus-and-checkin.md sets down.
 
 import { api } from './client';
+import type { UsageDisplay } from './usage';
 
 export interface BonusBar {
   bar_id: string;
@@ -29,8 +30,18 @@ export interface BonusBar {
   exhausted: boolean;
 }
 
-export function fetchBonus(): Promise<{ bars: BonusBar[] }> {
-  return api.get<{ bars: BonusBar[] }>('/api/bonus');
+export interface BonusSummary {
+  bars: BonusBar[];
+  /**
+   * How the instance words an allowance, sent with the bars for the reason the
+   * allowance's own summary sends it: it is only ever read beside the figures it
+   * words. Older builds do not send it; the figures are what they always did.
+   */
+  display?: UsageDisplay;
+}
+
+export function fetchBonus(): Promise<BonusSummary> {
+  return api.get<BonusSummary>('/api/bonus');
 }
 
 export function setBonusChoice(barId: string, enabled: boolean): Promise<void> {

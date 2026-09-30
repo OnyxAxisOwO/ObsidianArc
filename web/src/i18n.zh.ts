@@ -2503,7 +2503,6 @@ export const zh: Record<StringKey, string> = {
   bonusBeforeAllowance: '先于额度使用',
   bonusAfterAllowance: '额度用完后使用',
   bonusLeft: '剩余 {left} / {total}',
-  bonusPercentLeft: '剩余 {percent}%',
   bonusExhausted: '已用完',
   bonusExpires: '{when} 到期',
   bonusNoExpiry: '不会过期',

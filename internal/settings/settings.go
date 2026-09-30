@@ -985,6 +985,16 @@ func (s *Service) Bool(key string) bool {
 	return value
 }
 
+// UsageDisplay is how the instance words an allowance: the figures, what is
+// left, or what has gone. A stored value the server would not accept falls back
+// to the figures, so a bad row cannot leave every account looking at a blank.
+func (s *Service) UsageDisplay() string {
+	if display := s.Get(UsageDisplay); ValidUsageDisplay(display) {
+		return display
+	}
+	return UsageAbsolute
+}
+
 func (s *Service) Int(key string, fallback int) int {
 	value, err := strconv.Atoi(strings.TrimSpace(s.Get(key)))
 	if err != nil {
