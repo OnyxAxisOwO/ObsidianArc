@@ -40,9 +40,10 @@ func Demo(t *testing.T) []byte {
 	return demoRaw
 }
 
-// Build compiles the plugin whose sources are in dir (a main package of the
-// SDK module, with manifest.json, migrations/, purge/ and web/ beside it) and
-// packs it. dir must be inside the SDK module.
+// Build compiles the plugin whose sources are in dir (a main package, with
+// manifest.json, migrations/, purge/ and web/ beside it) and packs it. dir is
+// either inside the SDK module or a module of its own that requires the SDK,
+// which is how an instance's plugins are laid out.
 func Build(dir string) ([]byte, error) {
 	work, err := os.MkdirTemp("", "arcx-build")
 	if err != nil {
