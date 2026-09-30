@@ -42,6 +42,11 @@ import (
 type callState struct {
 	tx      *database.Tx
 	console *console.Runtime
+	// The console's own error from the last operation that failed, as it was
+	// before it became a message a backend could read: what the terminal draws
+	// (the endpoint's code beside its sentence, JSON when asked) is made from
+	// it, and a command that only passes the failure on should get exactly that.
+	consoleErr error
 }
 
 // finish ends whatever the invocation left open. A transaction the backend
@@ -273,7 +278,7 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if st.console == nil {
 				return nil, &wasm.HostError{Code: "no_console", Message: "this call is not running a console command"}
 			}
-			return m.consoleOp(st.console, op, raw)
+			return m.consoleOp(st, op, raw)
 		}
 		return nil, &wasm.HostError{Code: "unknown_op", Message: "the server has no host call named " + op}
 	}
@@ -561,7 +566,8 @@ func (m *Manager) userOp(c *wasm.Call, st *callState, op string, raw json.RawMes
 	}
 }
 
-func (m *Manager) consoleOp(rt *console.Runtime, op string, raw json.RawMessage) (any, error) {
+func (m *Manager) consoleOp(st *callState, op string, raw json.RawMessage) (any, error) {
+	rt := st.console
 	switch op {
 	case "console.resolve_user":
 		var a struct {
@@ -572,6 +578,7 @@ func (m *Manager) consoleOp(rt *console.Runtime, op string, raw json.RawMessage)
 		}
 		id, err := console.ResolveUser(rt, a.Ref)
 		if err != nil {
+			st.consoleErr = err
 			return nil, &wasm.HostError{Code: "console", Message: err.Error()}
 		}
 		return id, nil
@@ -589,6 +596,7 @@ func (m *Manager) consoleOp(rt *console.Runtime, op string, raw json.RawMessage)
 		}
 		data, _, err := rt.Call(a.Method, a.Path, a.Body)
 		if err != nil {
+			st.consoleErr = err
 			return nil, &wasm.HostError{Code: "console", Message: err.Error()}
 		}
 		return map[string]any{"data": data}, nil

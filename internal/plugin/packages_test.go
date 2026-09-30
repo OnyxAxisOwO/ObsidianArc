@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1179,5 +1180,21 @@ func TestABackendIsToldTheHostTheClientAddressed(t *testing.T) {
 	res := a.in.Do(http.MethodGet, "http://ai.example.test/api/x/demo/echo", nil, nil)
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"host":"ai.example.test"`) {
 		t.Fatalf("echo: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// A command that lets a refused Call escape is drawn the way a compiled-in
+// command's failure is: the endpoint's sentence with its code beside it.
+func TestACommandThatPassesOnARefusedCallIsDrawnWithTheEndpointsCode(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+
+	out, ok := consoleLine(t, a, "demo add")
+	plain := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(out, "")
+	if ok || !strings.Contains(plain, "error: A name is required. (name_required)") {
+		t.Fatalf("a refused call: ok=%v %q", ok, out)
+	}
+	if out, ok := consoleLine(t, a, "demo add gadget"); !ok || !strings.Contains(out, "added gadget") {
+		t.Fatalf("an accepted call: ok=%v %q", ok, out)
 	}
 }

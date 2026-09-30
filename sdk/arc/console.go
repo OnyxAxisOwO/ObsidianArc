@@ -57,7 +57,12 @@ func (c *Console) Table(headers []string, rows [][]string) {
 }
 
 // Call runs an administrative endpoint as the operator, through the same
-// checks a browser request passes. It needs the "console" permission.
+// checks a browser request passes. It needs the "console" permission. Numbers
+// in the answer are json.Number, exact, rather than floats.
+//
+// A refusal by the endpoint comes back as an error; a command that returns it
+// as it is has the console draw the endpoint's own error — its sentence and
+// its code — as it would for a command that was compiled in.
 func (c *Console) Call(method, path string, body any) (map[string]any, error) {
 	raw, err := hostCall("console.call", map[string]any{"method": method, "path": path, "body": body})
 	if err != nil {

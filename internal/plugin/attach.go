@@ -338,10 +338,17 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 		} `json:"out"`
 	}
 	info := wasm.CallInfo{Lang: rt.Session.Lang, IP: rt.Session.IP, Actor: actorOf(rt.Session.Actor)}
-	err := m.invoke(ctx, l, info, "console", arg, &out, &callState{console: rt})
+	st := &callState{console: rt}
+	err := m.invoke(ctx, l, info, "console", arg, &out, st)
 	if err != nil {
 		var ge *wasm.GuestError
 		if errors.As(err, &ge) && deliberate(ge) {
+			// A command that passed a refused Call on: what the console draws
+			// is the endpoint's own error, code and all, as it is for a
+			// command that was compiled in.
+			if ge.Code == "console" && st.consoleErr != nil {
+				return st.consoleErr
+			}
 			return errors.New(ge.Message)
 		}
 		return fmt.Errorf("the plugin failed: %w", err)

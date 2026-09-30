@@ -28,6 +28,7 @@ func init() {
 	arc.OnDescribe(describe)
 	arc.OnDecorateInvitees(decorate)
 	arc.Command("demo things", things)
+	arc.Command("demo add", add)
 }
 
 // guard is the sign-up and sign-in check: a token of "block" is refused,
@@ -289,4 +290,14 @@ func unavailable(*arc.Ctx, *arc.Request) (*arc.Response, error) {
 // explode is one nobody chose, whose text must stay out of the client's hands.
 func explode(*arc.Ctx, *arc.Request) (*arc.Response, error) {
 	return nil, errors.New("the demo database password is hunter2")
+}
+
+// add creates a thing through the admin API, so a refusal by that endpoint is
+// a failure a command has to pass on.
+func add(_ *arc.Ctx, cmd *arc.Console) error {
+	if _, err := cmd.Call("POST", "/api/admin/x/demo/things", map[string]string{"name": cmd.Arg(0)}); err != nil {
+		return err
+	}
+	cmd.Printf("added %s", cmd.Arg(0))
+	return nil
 }

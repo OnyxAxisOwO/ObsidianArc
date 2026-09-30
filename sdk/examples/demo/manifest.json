@@ -51,6 +51,15 @@
       "flags": [{ "name": "--limit", "value": "N", "hint": { "en": "how many, default 50" } }],
       "permission": "users",
       "endpoints": ["GET /api/admin/x/demo/things"]
+    },
+    {
+      "name": "demo add",
+      "group": "accounts",
+      "summary": { "en": "Add a thing", "zh": "添加一个条目" },
+      "usage": "demo add <name>",
+      "args": [{ "name": "name", "hint": { "en": "what to call it" } }],
+      "permission": "users",
+      "endpoints": ["POST /api/admin/x/demo/things"]
     }
   ],
   "ui": { "module": "web/ui.js" }
