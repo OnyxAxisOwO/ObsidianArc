@@ -481,6 +481,7 @@ export const zh: Record<StringKey, string> = {
   pluginRemovePurgeConfirm: '删除 {name} 并清除它的全部数据？',
   pluginFault: '未运行：{reason}',
   pluginPackagesEmpty: '还没有插件。把插件包拖到这里就能安装。',
+  pluginInstalledTitle: '已安装的插件',
   pluginDone: '{name} {version} 已安装。',
   pluginDoneUpdate: '{name} 已更新到 {version}。',
   securityEventPlugin: '插件变更',

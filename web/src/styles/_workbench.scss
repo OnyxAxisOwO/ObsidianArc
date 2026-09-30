@@ -3,39 +3,50 @@
    The page head these used to enlarge is now every section's, in
    _surfaces.scss. */
 .oa-workbench, .oa-resource-page { max-width: 1480px; margin: 0 auto; container: workbench / inline-size; }
-.oa-workbench-nav { display: grid; grid-template-columns: repeat(var(--control-groups), minmax(0, 1fr)); gap: 12px; }
-.oa-workbench-tab { min-width: 0; display: flex; flex-direction: column; gap: 7px; text-align: left; padding: 21px; border: none; outline: none; border-radius: 18px; font: inherit; color: var(--ai-text); background: var(--ai-surface-card); cursor: pointer; transition: background-color .15s ease, color .15s ease; }
-.oa-workbench-tab:hover { background: var(--ai-state-hover); }
+/* The categories are a row of pills — the same shape as the plugin tabs — and
+   no longer four tiles with a paragraph each: the paragraph was the heading
+   below it, said twice, and the tiles were the largest thing on the page. */
+.oa-workbench-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.oa-workbench-tab { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 15px; border: none; outline: none; border-radius: 999px; font: inherit; font-size: 12.5px; color: var(--ai-text-secondary); background: var(--ai-surface-card); cursor: pointer; transition: background-color .15s ease, color .15s ease; }
+.oa-workbench-tab > strong { font-weight: 600; }
+.oa-workbench-tab:hover { background: var(--ai-state-hover); color: var(--ai-text); }
 .oa-workbench-tab:focus-visible { box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
 .oa-workbench-tab.active { background: var(--ai-primary); color: var(--ai-primary-text); }
-.oa-workbench-tab-top { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 12px; }
-.oa-workbench-tab-top > span { font-size: 10px; opacity: .55; letter-spacing: .08em; font-variant-numeric: tabular-nums; }
-.oa-workbench-tab > strong { font-size: 14px; font-weight: 600; }
-.oa-workbench-tab-hint { font-size: 11px; line-height: 1.65; color: var(--ai-text-secondary); }
-.oa-workbench-tab.active .oa-workbench-tab-hint { color: inherit; opacity: .75; }
 .oa-workbench-section-head { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin: 28px 2px 17px; }
 .oa-workbench-section-head h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.3px; }
 .oa-workbench-section-head p { margin: 6px 0 0; font-size: 11px; line-height: 1.7; color: var(--ai-text-secondary); }
 .oa-workbench-section-head > .oa-search { width: 270px; flex: 0 1 270px; }
-.oa-workbench-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
-.oa-control-card { min-width: 0; padding: 23px; border-radius: 18px; background: var(--ai-surface-card); scroll-margin-top: 14px; }
-.oa-control-card-wide { grid-column: 1 / -1; }
-.oa-workbench-column { display: flex; flex-direction: column; min-width: 0; gap: 16px; }
-.oa-control-card-head { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 24px; }
-.oa-control-card-head > div:first-of-type { flex: 1; min-width: 0; }
-.oa-control-card-head h3 { font-size: 14px; line-height: 1.5; font-weight: 600; margin: 2px 0 0; }
-.oa-control-card-head p { font-size: 11px; color: var(--ai-text-secondary); line-height: 1.75; margin: 6px 0 0; }
-.oa-control-card-icon { display: grid; place-items: center; width: 34px; height: 34px; flex-shrink: 0; border-radius: 11px; background: var(--ai-surface-container); color: var(--ai-text-secondary); }
-.oa-control-card-body { gap: 20px; }
-.oa-control-card-body .oa-field { margin: 0; gap: 8px; min-width: 0; }
-.oa-control-card-body .oa-field-label { font-size: 12px; font-weight: 550; }
-.oa-control-card-body .oa-field-hint { font-size: 11px; line-height: 1.75; }
-.oa-control-card-body .oa-switch-field { padding: 0 0 17px; border-bottom: 1px solid var(--ai-border); }
-.oa-control-card-body .oa-switch-field:last-child { padding-bottom: 0; border-bottom: 0; }
-.oa-control-card-body .oa-checkbox-field { gap: 14px; }
-.oa-control-card-body input:not([type='checkbox']), .oa-control-card-body .oa-select { min-height: 40px; }
-.oa-control-card-body textarea { resize: vertical; line-height: 1.7; }
-.oa-control-card-body > .oa-btn, .oa-control-card-body > .oa-field > .oa-btn { align-self: flex-start; }
+/* One column of groups: a settings page is read down, not across, and two
+   columns of unequal height left ragged holes between cards. The width is the
+   width a form wants; a group of rows does not get better by being wider. */
+.oa-workbench-grid { display: flex; flex-direction: column; gap: 26px; max-width: 960px; }
+.oa-workbench-column { display: flex; flex-direction: column; min-width: 0; gap: 26px; }
+.oa-control-card { scroll-margin-top: 14px; }
+
+/* What sits directly in a card is a row. Fields, switches, a paragraph, a row
+   of buttons, a table — each is padded and divided from the next by the card's
+   own hairline, so a page does not have to wrap each control itself. The two
+   wrappers below hold rows of their own, and are a card inside the card. */
+.oa-control-card > .oa-group-card > * { margin: 0; padding: 13px 16px; min-width: 0; }
+.oa-control-card > .oa-group-card > :is(.oa-plugin-controls, .oa-resource-definition) { display: flex; flex-direction: column; gap: 1px; padding: 0; background: var(--oa-group-line); }
+.oa-control-card > .oa-group-card > :is(.oa-plugin-controls, .oa-resource-definition) > * { margin: 0; padding: 13px 16px; border: 0; background: var(--ai-surface-card); }
+.oa-control-card > .oa-group-card > .oa-field-hint { padding: 10px 16px; font-size: 11.5px; line-height: 1.6; }
+.oa-control-card .oa-field { margin: 0; gap: 8px; min-width: 0; }
+.oa-control-card .oa-field-label { font-size: 12px; font-weight: 550; }
+.oa-control-card .oa-field-hint { font-size: 11.5px; line-height: 1.6; }
+.oa-control-card .oa-checkbox-field { gap: 14px; }
+.oa-control-card .oa-group-card input:not([type='checkbox']), .oa-control-card .oa-group-card .oa-select { min-height: 40px; }
+.oa-control-card .oa-group-card textarea { resize: vertical; line-height: 1.7; }
+.oa-control-card > .oa-group-card > .oa-btn, .oa-control-card > .oa-group-card > .oa-field > .oa-btn { align-self: flex-start; }
+/* A plugin on the list: what it is, then what can be done to it. The actions
+   drop under the text when the page is too narrow for both, rather than
+   squeezing the description to a column of single words. */
+.oa-plugin-row { flex-wrap: wrap; }
+.oa-plugin-row > .oa-group-row-text { flex-basis: 200px; }
+.oa-plugin-row > .oa-group-row-control { flex-wrap: wrap; margin-left: auto; }
+.oa-plugin-row .oa-plugin-notice { margin-top: 6px; }
+/* In a card the facts are read as a list, not shown as figures. */
+.oa-control-card .oa-resource-definition dd { font-size: 13px; font-weight: 600; }
 .oa-control-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .oa-control-actions a { text-decoration: none; }
 .oa-control-save-state { display: inline-flex; gap: 6px; align-items: center; color: var(--ai-text-secondary); font-size: 11px; white-space: nowrap; }
@@ -155,23 +166,16 @@
 .oa-resource-storage-totals strong { font-size: 23px; font-weight: 550; font-variant-numeric: tabular-nums; }
 .oa-resource-page > .oa-field-hint { display: block; margin: 20px 2px 0; line-height: 1.8; }
 @container workbench (max-width: 850px) {
-  .oa-workbench-tab { padding: 16px; }
-  .oa-workbench-tab-hint { font-size: 10px; }
+  .oa-control-card > .oa-group-head { flex-wrap: wrap; }
+  .oa-control-card > .oa-group-head > .oa-control-actions { flex-basis: 100%; }
   .oa-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .oa-resource-layout { grid-template-columns: 1fr; }
   .oa-resource-details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .oa-control-card-head:has(.oa-control-actions) { flex-wrap: wrap; }
-  .oa-control-card-head > .oa-control-actions { flex-basis: 100%; }
 }
 @container workbench (max-width: 600px) {
-  .oa-workbench-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .oa-workbench-tab { padding: 16px; }
-  .oa-workbench-tab-top { margin-bottom: 5px; }
-  .oa-workbench-tab-hint { font-size: 11px; }
-  .oa-workbench-grid, .oa-resource-details { grid-template-columns: 1fr; }
+  .oa-resource-details { grid-template-columns: 1fr; }
   .oa-workbench-section-head { flex-wrap: wrap; gap: 14px; margin-top: 24px; }
   .oa-workbench-section-head > .oa-search { flex-basis: 100%; width: 100%; }
-  .oa-control-card { padding: 20px; }
   .oa-health-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .oa-health-summary > div { padding: 18px; }
   .oa-health-grid { grid-template-columns: 1fr; }

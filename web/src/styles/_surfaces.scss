@@ -6494,3 +6494,151 @@
     transition: none;
   }
 }
+
+/* A titled group of rows in one card (OaGroup, OaRow). The shape the security,
+   invites and usage screens already had, so a screen with fields lying loose on
+   the panel can be given it. The heading and its explanation are outside, above
+   the card; inside, rows are divided by a hairline that is the card's own
+   background showing through a 1px gap — so a row that is hidden leaves no
+   stray line behind it, which a border on each row could not promise. The card
+   is the card token, which stands clear of the panel (the container tone) it
+   sits on. */
+.oa-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.oa-group-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.oa-group-head-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.oa-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+}
+
+.oa-group-hint {
+  margin: 3px 0 0;
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.oa-group-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+  border-radius: 16px;
+  --oa-group-line: color-mix(in srgb, var(--ai-text) 9%, var(--ai-surface-card));
+  background: var(--oa-group-line);
+}
+
+.oa-group-card > * {
+  margin: 0;
+  background: var(--ai-surface-card);
+}
+
+.oa-group-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  min-width: 0;
+}
+
+.oa-group-row.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.oa-group-row-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text);
+}
+
+.oa-group-row-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.oa-group-row-title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.oa-group-row-meta {
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.oa-group-row-control {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.oa-group-row.stacked > .oa-group-row-control {
+  flex: 1;
+  align-items: stretch;
+  flex-direction: column;
+  width: 100%;
+}
+
+/* A line of reading in the card that is not a row with something to do. */
+.oa-group-note {
+  padding: 11px 16px;
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* What a row reports back — saved, or why not — at the foot of the card where
+   the eye already is after pressing its button. */
+.oa-group-flash {
+  padding: 10px 16px;
+  color: var(--ai-danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.oa-group-flash.ok {
+  color: var(--ai-text-secondary);
+}
+
+/* A row with nothing but a control — a Save — has no text to push it, so it
+   goes to the end of the row where the eye expects the action. */
+.oa-group-row > .oa-group-row-control:only-child {
+  margin-left: auto;
+}

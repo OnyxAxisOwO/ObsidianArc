@@ -113,7 +113,7 @@ async function runAction(): Promise<void> {
         </template>
       </div>
 
-      <div class="oa-card-actions" style="margin-top: 14px;">
+      <div class="oa-card-actions">
         <OaConfirmButton
           v-if="card.button.confirm"
           class="oa-btn"

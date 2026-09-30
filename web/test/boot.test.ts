@@ -261,10 +261,10 @@ describe('the application, mounted', () => {
     expect(panel).not.toBeNull();
     expect(panel?.parentElement?.classList.contains('oa-chat-root')).toBe(true);
     expect(host.querySelector('.oa-settings-tabs')).not.toBeNull();
-    const registrationAgent = Array.from(host.querySelectorAll('.oa-fact')).find(
-      (fact) => fact.querySelector('.oa-fact-label')?.textContent === t('registrationUserAgent'),
+    const registrationAgent = Array.from(host.querySelectorAll('.oa-group-row')).find(
+      (row) => row.querySelector('.oa-group-row-title')?.textContent === t('registrationUserAgent'),
     );
-    expect(registrationAgent?.querySelector('.oa-fact-value')?.textContent)
+    expect(registrationAgent?.querySelector('.oa-group-row-meta')?.textContent)
       .toBe('Mozilla/5.0 ObsidianArcTest/1.0');
   });
 
@@ -389,6 +389,10 @@ describe('what moves, and what does not', () => {
     return input;
   }
 
+  // A settings section is a flat panel (appearance) or a group of rows (the
+  // rest); a search hides either by the same means.
+  const PANELS = '.oa-settings-panel, .oa-group';
+
   function shown(selector: string): Element[] {
     return Array.from(host.querySelectorAll<HTMLElement>(selector)).filter((node) => {
       for (let parent: HTMLElement | null = node; parent; parent = parent.parentElement) {
@@ -433,22 +437,22 @@ describe('what moves, and what does not', () => {
     adopt(ACCOUNT);
     await mountAt('/settings');
     await search('.oa-settings-search input', 'nickname');
-    expect(shown('.oa-settings-panel')).toHaveLength(1);
-    const nickname = shown('.oa-settings-panel')[0]!.querySelector<HTMLInputElement>('input')!;
+    expect(shown(PANELS)).toHaveLength(1);
+    const nickname = shown(PANELS)[0]!.querySelector<HTMLInputElement>('input')!;
     nickname.value = 'Unsaved nickname';
     nickname.dispatchEvent(new Event('input', { bubbles: true }));
     await search('.oa-settings-search input', 'wallpaper');
     expect(shown('.oa-wallpaper-upload')).toHaveLength(1);
     expect(shown('.oa-range-field')).toHaveLength(0);
     await search('.oa-settings-search input', 'nothing-matches-this');
-    expect(shown('.oa-settings-panel')).toHaveLength(0);
+    expect(shown(PANELS)).toHaveLength(0);
     expect(host.querySelector('.oa-settings .oa-search-empty')?.textContent).toBe(t('noSearchResults'));
     await search('.oa-settings-search input', 'nickname');
-    expect(shown('.oa-settings-panel')[0]!.querySelector<HTMLInputElement>('input')).toBe(nickname);
+    expect(shown(PANELS)[0]!.querySelector<HTMLInputElement>('input')).toBe(nickname);
     expect(nickname.value).toBe('Unsaved nickname');
     host.querySelector<HTMLButtonElement>('.oa-settings-search button')!.click();
     await nextTick();
-    expect(shown('.oa-settings-panel')).toHaveLength(1);
+    expect(shown(PANELS)).toHaveLength(1);
     expect(shown('.oa-wallpaper-upload')).toHaveLength(1);
     expect(shown('.oa-range-field')).toHaveLength(0);
     expect(host.querySelector('.oa-panel')).not.toBeNull();
@@ -459,7 +463,7 @@ describe('what moves, and what does not', () => {
     adopt(ACCOUNT);
     await mountAt('/settings');
     await search('.oa-settings-search input', '壁纸');
-    expect(shown('.oa-settings-panel')).toHaveLength(0);
+    expect(shown(PANELS)).toHaveLength(0);
     await changeLanguage('zh');
     await nextTick();
     expect(shown('.oa-wallpaper-upload')).toHaveLength(1);

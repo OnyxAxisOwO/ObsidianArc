@@ -4,6 +4,8 @@
 import { computed, onMounted, ref } from 'vue';
 import { api } from '@/api/client';
 import OaField from '@/components/OaField.vue';
+import OaGroup from '@/components/OaGroup.vue';
+import OaRow from '@/components/OaRow.vue';
 import OaSelect from '@/components/OaSelect.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
@@ -46,36 +48,38 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="oa-settings-panel">
-    <h2 class="oa-admin-section-title">{{ t('secChatDefaults') }}</h2>
-    <p class="oa-field-hint">{{ t('chatDefaultsHint') }}</p>
+  <OaGroup :title="t('secChatDefaults')" :hint="t('chatDefaultsHint')">
+    <OaRow stacked>
+      <OaField :label="t('defaultModel')">
+        <OaSelect
+          v-model="model"
+          :choices="choices"
+          @update:model-value="syncPreferences({ default_model_id: $event })"
+        />
+      </OaField>
+    </OaRow>
 
-    <OaField :label="t('defaultModel')">
-      <OaSelect
-        v-model="model"
-        :choices="choices"
-        @update:model-value="syncPreferences({ default_model_id: $event })"
+    <OaRow stacked>
+      <OaSelectField
+        v-model="effort"
+        :label="t('defaultEffort')"
+        :hint="t('defaultEffortHint')"
+        :options="[
+          { value: 'low', label: t('effortLow') },
+          { value: 'medium', label: t('effortMedium') },
+          { value: 'high', label: t('effortHigh') },
+        ]"
+        @update:model-value="syncPreferences({ reasoning_effort: $event })"
       />
-    </OaField>
+    </OaRow>
 
-    <OaSelectField
-      v-model="effort"
-      :label="t('defaultEffort')"
-      :hint="t('defaultEffortHint')"
-      :options="[
-        { value: 'low', label: t('effortLow') },
-        { value: 'medium', label: t('effortMedium') },
-        { value: 'high', label: t('effortHigh') },
-      ]"
-      @update:model-value="syncPreferences({ reasoning_effort: $event })"
-    />
-
-    <OaSwitchField
-      v-if="statsAllowed"
-      v-model="stats"
-      :label="t('showStats')"
-      :hint="t('showStatsHint')"
-      @update:model-value="syncPreferences({ show_stats: $event })"
-    />
-  </div>
+    <OaRow v-if="statsAllowed" stacked>
+      <OaSwitchField
+        v-model="stats"
+        :label="t('showStats')"
+        :hint="t('showStatsHint')"
+        @update:model-value="syncPreferences({ show_stats: $event })"
+      />
+    </OaRow>
+  </OaGroup>
 </template>

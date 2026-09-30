@@ -492,6 +492,7 @@ const en = {
   pluginRemovePurgeConfirm: 'Remove {name} and delete all of its data?',
   pluginFault: 'Not running: {reason}',
   pluginPackagesEmpty: 'No plugins yet. Drop a package here to install one.',
+  pluginInstalledTitle: 'Installed plugins',
   pluginDone: '{name} {version} is installed.',
   pluginDoneUpdate: '{name} is now {version}.',
   securityEventPlugin: 'Plugin change',

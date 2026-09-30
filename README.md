@@ -174,7 +174,7 @@ Online documentation is hosted on Cloudflare Pages:
 | 冷启动就绪时间 / Cold start | ~28 ms |
 | 空闲内存占用 / Idle RSS | ~16 MB |
 | 20 并发流式峰值 / Peak under 20 concurrency | ~54 MB 内存，11 个 OS 线程 |
-| 首次加载传输体积 / Wire payload | 打开对话界面传输 228.81 kB（188.87 kB JS + 39.94 kB CSS）；中文语言包 (46.24 kB)、管理后台 (111.78 kB)、终端 (7.22 kB)、公式渲染器 (3.61 kB)、访客官网首页 (3.95 kB)，以及每个编进二进制的插件各一个小分包，按需加载；以插件包安装的插件，其浏览器端模块只在启用后才取 |
+| 首次加载传输体积 / Wire payload | 打开对话界面传输 228.26 kB（188.66 kB JS + 39.60 kB CSS）；中文语言包 (46.24 kB)、管理后台 (111.26 kB)、终端 (7.22 kB)、公式渲染器 (3.61 kB)、访客官网首页 (3.95 kB)，以及每个编进二进制的插件各一个小分包，按需加载；以插件包安装的插件，其浏览器端模块只在启用后才取 |
 | 后台常驻协程 / Background goroutines | 3 个（请求日志写入、10 分钟清理、备份调度） |
 | Go 直接依赖 / Direct Go dependencies | 4 个（SQLite 驱动、pgx、x/crypto、wazero——插件包的沙箱） |
 | 前端运行时依赖 / Frontend runtime dependencies | 4 个（`vue`、`vue-router`、`@vueuse/core`、`lucide-vue-next`） |

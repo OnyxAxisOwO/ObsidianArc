@@ -220,9 +220,19 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 25.86 MB (22.16 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 228.81 kB to open the chat (188.87 JS + 39.94 CSS) |
+| Frontend, on the wire | < 135 kB | 228.26 kB to open the chat (188.66 JS + 39.60 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-01 (UTC), after the settings and the backoffice were
+redrawn as titled groups of rows. The first paint is 228.26 kB (188.66 kB JS +
+39.60 kB CSS), down 0.55 kB: the two settings screens that became rows are
+shorter than the flat panels they replaced, and the stylesheet lost the four
+tiles of the backoffice's category bar (now a row of pills) and the two-column
+card grid more than it gained the group and row rules. The backoffice chunk is
+111.26 kB (from 111.78), the plugin list being one group of rows where it was
+a card each. The Linux amd64 binary is unchanged at 25,858,208 bytes, or
+22,155,424 with `-tags nosqlite`.
 
 Remeasured on 2026-09-30 (UTC), after the bonus bars and the daily check-in.
 The Linux amd64 binary measures 25,858,208 bytes, or 22,155,424 with

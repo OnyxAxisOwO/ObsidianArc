@@ -20,8 +20,9 @@ import { useEventListener } from '@vueuse/core';
 import { adminApi, type AdminPlugin, type PluginChange, type PluginPreview, type PluginText } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
-import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaGroup from '@/components/OaGroup.vue';
 import OaPanel from '@/components/OaPanel.vue';
+import OaRow from '@/components/OaRow.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { currentLanguage, t } from '@/composables/useI18n';
@@ -30,7 +31,6 @@ import { absoluteTime } from '@/lib/format';
 import { loadPluginModule, plugins } from '@/plugins/registry';
 import type { ArcPlugin } from '@/plugins/types';
 import { canAdmin, currentUser, refreshSite } from '@/stores/session';
-import AdminControlCard from './AdminControlCard.vue';
 import AdminFailure from './AdminFailure.vue';
 import PluginAdminPage from './PluginAdminPage.vue';
 import PluginInstallPackage from './PluginInstallPackage.vue';
@@ -562,50 +562,49 @@ onMounted(load);
       </button>
 
       <p v-if="!list.length" class="oa-table-empty">{{ t('pluginPackagesEmpty') }}</p>
-      <div v-else class="oa-workbench-grid">
-        <AdminControlCard
+      <OaGroup v-else :title="t('pluginInstalledTitle')" class="oa-plugin-group">
+        <OaRow
           v-for="plugin in list"
           :id="`plugin-${plugin.name}`"
           :key="plugin.name"
-          :title="title(plugin)"
-          :hint="t('pluginVersion', { version: plugin.manifest.version || plugin.installed.version || '—' })"
+          class="oa-plugin-row"
           :icon="modules[plugin.name]?.icon ?? IconPuzzle"
+          :title="title(plugin)"
+          :meta="[
+            t('pluginVersion', { version: plugin.manifest.version || plugin.installed.version || '—' }),
+            !plugin.missing && plugin.manifest.author ? `${plugin.manifest.author} · ${sourceLabel(plugin)}` : '',
+          ].filter(Boolean).join(' · ')"
         >
-          <template #actions>
-            <OaBadgeRow><OaBadge :tone="stateTone(plugin)">{{ stateLabel(plugin) }}</OaBadge></OaBadgeRow>
+          <template #text>
+            <span class="oa-group-row-meta">{{ plugin.missing ? t('pluginMissingHint') : text(plugin.manifest.description) }}</span>
+            <p v-if="plugin.fault" class="oa-plugin-notice warn" role="alert">
+              <IconInfo :size="14" /><span>{{ t('pluginFault', { reason: plugin.fault }) }}</span>
+            </p>
           </template>
-          <p class="oa-field-hint">{{ plugin.missing ? t('pluginMissingHint') : text(plugin.manifest.description) }}</p>
-          <p v-if="plugin.fault" class="oa-plugin-notice warn" role="alert">
-            <IconInfo :size="14" /><span>{{ t('pluginFault', { reason: plugin.fault }) }}</span>
-          </p>
-          <p v-if="!plugin.missing && plugin.manifest.author" class="oa-field-hint">
-            {{ plugin.manifest.author }} · {{ sourceLabel(plugin) }}
-          </p>
-          <div class="oa-control-actions">
-            <template v-if="plugin.kind === 'package' && !plugin.missing">
-              <OaSwitchField
-                :model-value="plugin.state === 'enabled'"
-                :label="t('pluginEnabledSwitch')"
-                :disabled="!canManage || !!plugin.fault"
-                @update:model-value="toggle(plugin, $event)"
-              />
-              <button type="button" class="oa-btn" @click="openDetail(plugin)">{{ t('pluginDetails') }}</button>
-              <button type="button" class="oa-btn oa-btn-danger" :disabled="!canRemove" @click="openConfirm(plugin, 'uninstall')">{{ t('pluginRemove') }}</button>
+          <OaBadge :tone="stateTone(plugin)">{{ stateLabel(plugin) }}</OaBadge>
+          <template v-if="plugin.kind === 'package' && !plugin.missing">
+            <OaSwitchField
+              :model-value="plugin.state === 'enabled'"
+              :label="t('pluginEnabledSwitch')"
+              :disabled="!canManage || !!plugin.fault"
+              @update:model-value="toggle(plugin, $event)"
+            />
+            <button type="button" class="oa-btn" @click="openDetail(plugin)">{{ t('pluginDetails') }}</button>
+            <button type="button" class="oa-btn oa-btn-danger" :disabled="!canRemove" @click="openConfirm(plugin, 'uninstall')">{{ t('pluginRemove') }}</button>
+          </template>
+          <template v-else>
+            <button v-if="!plugin.missing" type="button" class="oa-btn" @click="openDetail(plugin)">{{ t('pluginDetails') }}</button>
+            <template v-if="!plugin.missing && plugin.state === 'available'">
+              <button type="button" class="oa-btn primary" :disabled="!canManage" @click="openInstall(plugin)">{{ t('pluginInstall') }}</button>
             </template>
-            <template v-else>
-              <button v-if="!plugin.missing" type="button" class="oa-btn" @click="openDetail(plugin)">{{ t('pluginDetails') }}</button>
-              <template v-if="!plugin.missing && plugin.state === 'available'">
-                <button type="button" class="oa-btn primary" :disabled="!canManage" @click="openInstall(plugin)">{{ t('pluginInstall') }}</button>
-              </template>
-              <template v-else-if="!plugin.missing">
-                <button v-if="plugin.state === 'disabled'" type="button" class="oa-btn primary" :disabled="!canManage" @click="enable(plugin)">{{ t('pluginEnable') }}</button>
-                <button v-else type="button" class="oa-btn" :disabled="!canManage" @click="openConfirm(plugin, 'disable')">{{ t('pluginDisable') }}</button>
-                <button type="button" class="oa-btn oa-btn-danger" :disabled="!canRemove" @click="openConfirm(plugin, 'uninstall')">{{ t('pluginUninstall') }}</button>
-              </template>
+            <template v-else-if="!plugin.missing">
+              <button v-if="plugin.state === 'disabled'" type="button" class="oa-btn primary" :disabled="!canManage" @click="enable(plugin)">{{ t('pluginEnable') }}</button>
+              <button v-else type="button" class="oa-btn" :disabled="!canManage" @click="openConfirm(plugin, 'disable')">{{ t('pluginDisable') }}</button>
+              <button type="button" class="oa-btn oa-btn-danger" :disabled="!canRemove" @click="openConfirm(plugin, 'uninstall')">{{ t('pluginUninstall') }}</button>
             </template>
-          </div>
-        </AdminControlCard>
-      </div>
+          </template>
+        </OaRow>
+      </OaGroup>
     </div>
   </template>
 

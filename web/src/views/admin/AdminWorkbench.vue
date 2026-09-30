@@ -44,12 +44,11 @@ watch(() => route.hash, (hash) => {
 
 <template>
   <div class="oa-workbench" :class="{ 'is-searching': query.trim() }">
-    <nav class="oa-workbench-nav" :aria-label="t('controlCategories')" :style="{ '--control-groups': groups.length }">
-      <button v-for="(group, index) in groups" :key="group.id" type="button"
+    <nav class="oa-workbench-nav" :aria-label="t('controlCategories')">
+      <button v-for="group in groups" :key="group.id" type="button"
         class="oa-workbench-tab" :class="{ active: selected === group.id && !query.trim() }"
         :aria-pressed="selected === group.id && !query.trim()" @click="select(group.id)">
-        <span class="oa-workbench-tab-top"><component :is="group.icon" :size="19" /><span>0{{ index + 1 }}</span></span>
-        <strong>{{ t(group.label) }}</strong><span class="oa-workbench-tab-hint">{{ t(group.hint) }}</span>
+        <component :is="group.icon" :size="15" /><strong>{{ t(group.label) }}</strong>
       </button>
     </nav>
     <div class="oa-workbench-section-head">

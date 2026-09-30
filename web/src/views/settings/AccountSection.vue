@@ -19,6 +19,8 @@ import {
 } from '@/api/oauth';
 import OaAccountFields from '@/components/OaAccountFields.vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
+import OaGroup from '@/components/OaGroup.vue';
+import OaRow from '@/components/OaRow.vue';
 import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
@@ -83,6 +85,20 @@ function mark(id: string): OaIcon {
 }
 
 const linked = computed(() => new Map(connections.value.map((item) => [item.provider, item])));
+
+/** The line under a provider's name: who it is here, and since when — or that it is not connected. */
+function connectionMeta(id: string): string {
+  const link = linked.value.get(id);
+  if (!link) return t('notConnected');
+  const who = link.login || link.email || t('connected');
+  return link.created_at ? `${who} · ${t('connectedOn', { date: absoluteTime(link.created_at) })}` : who;
+}
+
+/** The line under an application's name: when it was let in, and when it was last used. */
+function authorizationMeta(grant: Authorization): string {
+  const since = t('connectedOn', { date: absoluteTime(grant.created_at) });
+  return grant.last_used_at ? `${since} · ${t('lastUsedOn', { date: absoluteTime(grant.last_used_at) })}` : since;
+}
 // A provider this server has switched off is still listed while it is
 // connected: it is a way into this account, and hiding it would hide the only
 // control that can remove it.
@@ -280,149 +296,125 @@ function importData(): void {
 </script>
 
 <template>
-  <div v-show="matchesSettings(props.query, 'profile')" class="oa-settings-panel">
-    <h2 class="oa-admin-section-title">{{ t('secProfile') }}</h2>
-    <OaTextField
-      v-model="nickname"
-      :label="t('nickname')"
-      :placeholder="currentUser?.username"
-      :hint="t('nicknameHint')"
-      :max-length="32"
-    />
-    <OaTextField v-model="email" :label="t('email')" type="email" />
-    <OaAccountFields v-model="fields" :plan="fieldPlan" />
-    <OaTextArea v-model="bio" :label="t('bio')" :rows="3" />
-    <OaTextField
-      v-model="avatar"
-      :label="t('avatar')"
-      :placeholder="t('avatarPlaceholderUser')"
-      :hint="t('avatarHint')"
-    />
-    <div class="oa-facts">
-      <div class="oa-fact">
-        <span class="oa-fact-label">{{ t('registrationUserAgent') }}</span>
-        <span class="oa-fact-value mono">{{ account.signup_user_agent || '—' }}</span>
-      </div>
-    </div>
-    <p class="oa-drawer-flash" :class="{ visible: !!profileFlash }">{{ profileFlash }}</p>
-    <div class="oa-button-row">
+  <OaGroup v-show="matchesSettings(props.query, 'profile')" :title="t('secProfile')">
+    <OaRow stacked>
+      <OaTextField
+        v-model="nickname"
+        :label="t('nickname')"
+        :placeholder="currentUser?.username"
+        :hint="t('nicknameHint')"
+        :max-length="32"
+      />
+    </OaRow>
+    <OaRow stacked><OaTextField v-model="email" :label="t('email')" type="email" /></OaRow>
+    <OaRow v-if="fieldPlan.keys.length" stacked><OaAccountFields v-model="fields" :plan="fieldPlan" /></OaRow>
+    <OaRow stacked><OaTextArea v-model="bio" :label="t('bio')" :rows="3" /></OaRow>
+    <OaRow stacked>
+      <OaTextField
+        v-model="avatar"
+        :label="t('avatar')"
+        :placeholder="t('avatarPlaceholderUser')"
+        :hint="t('avatarHint')"
+      />
+    </OaRow>
+    <OaRow :title="t('registrationUserAgent')">
+      <template #text><span class="oa-group-row-meta mono">{{ account.signup_user_agent || '—' }}</span></template>
+    </OaRow>
+    <p v-if="profileFlash" class="oa-group-flash" role="alert">{{ profileFlash }}</p>
+    <OaRow>
       <button type="button" class="oa-btn primary" :disabled="profileBusy" @click="saveProfile">
         {{ profileLabel || t('save') }}
       </button>
-    </div>
-  </div>
+    </OaRow>
+  </OaGroup>
 
-  <div v-show="matchesSettings(props.query, 'connections')" class="oa-settings-panel">
-    <h2 class="oa-admin-section-title">{{ t('secConnections') }}</h2>
-    <p class="oa-field-hint">{{ t('connectionsHint') }}</p>
-    <p v-if="!rows.length" class="oa-field-hint">{{ t('connectionsNone') }}</p>
-    <div v-else class="oa-connections">
-      <div v-for="provider in rows" :key="provider.id" class="oa-connection">
-        <span class="oa-connection-mark"><component :is="mark(provider.id)" :size="16" /></span>
-        <span class="oa-connection-body">
-          <span class="oa-connection-name">{{ provider.name }}</span>
-          <span class="oa-connection-meta">
-            <template v-if="linked.get(provider.id)">
-              {{ linked.get(provider.id)?.login || linked.get(provider.id)?.email || t('connected') }}
-              <template v-if="linked.get(provider.id)?.created_at">
-                · {{ t('connectedOn', { date: absoluteTime(linked.get(provider.id)!.created_at) }) }}
-              </template>
-            </template>
-            <template v-else>{{ t('notConnected') }}</template>
-          </span>
-        </span>
-        <!-- A link, not a button: connecting is a trip to the provider and
-             back, which the browser has to navigate itself. -->
-        <a
-          v-if="!linked.has(provider.id)"
-          class="oa-btn"
-          :href="signInURL(provider.id, { link: true, next: '/settings' })"
-        >{{ t('connect') }}</a>
-        <!-- A connection a plugin made permanent proves a detail of the
-             account, so it has no remove control at all — deleting the
-             account is the only way it comes off. -->
-        <span v-else-if="pinnedProvider(provider.id)" class="oa-connection-meta">
-          {{ pinnedProvider(provider.id)!.hint() }}
-        </span>
-        <OaConfirmButton
-          v-else
-          class="oa-btn"
-          :label="t('disconnect')"
-          :armed-label="t('confirmWord')"
-          :armed-title="t('disconnectConfirm', { provider: provider.name })"
-          :resting-title="t('disconnect')"
-          :disabled="connectionsBusy"
-          @confirm="disconnect(provider.id)"
-        />
-      </div>
-    </div>
-    <p class="oa-drawer-flash" :class="{ visible: !!connectionFlash }">{{ connectionFlash }}</p>
-  </div>
+  <OaGroup v-show="matchesSettings(props.query, 'connections')" :title="t('secConnections')" :hint="t('connectionsHint')">
+    <p v-if="!rows.length" class="oa-group-note">{{ t('connectionsNone') }}</p>
+    <OaRow
+      v-for="provider in rows"
+      :key="provider.id"
+      class="oa-connection"
+      :icon="mark(provider.id)"
+      :title="provider.name"
+      :meta="connectionMeta(provider.id)"
+    >
+      <!-- A link, not a button: connecting is a trip to the provider and
+           back, which the browser has to navigate itself. -->
+      <a
+        v-if="!linked.has(provider.id)"
+        class="oa-btn"
+        :href="signInURL(provider.id, { link: true, next: '/settings' })"
+      >{{ t('connect') }}</a>
+      <!-- A connection a plugin made permanent proves a detail of the
+           account, so it has no remove control at all — deleting the
+           account is the only way it comes off. -->
+      <span v-else-if="pinnedProvider(provider.id)" class="oa-group-row-meta">
+        {{ pinnedProvider(provider.id)!.hint() }}
+      </span>
+      <OaConfirmButton
+        v-else
+        class="oa-btn"
+        :label="t('disconnect')"
+        :armed-label="t('confirmWord')"
+        :armed-title="t('disconnectConfirm', { provider: provider.name })"
+        :resting-title="t('disconnect')"
+        :disabled="connectionsBusy"
+        @confirm="disconnect(provider.id)"
+      />
+    </OaRow>
+    <p v-if="connectionFlash" class="oa-group-flash" role="alert">{{ connectionFlash }}</p>
+  </OaGroup>
 
-  <div v-show="matchesSettings(props.query, 'authorizations')" class="oa-settings-panel">
-    <h2 class="oa-admin-section-title">{{ t('secAuthorizations') }}</h2>
-    <p class="oa-field-hint">{{ t('authorizationsHint') }}</p>
-    <p v-if="!authorizations.length" class="oa-field-hint">{{ t('authorizationsNone') }}</p>
-    <div v-else class="oa-connections">
-      <div v-for="grant in authorizations" :key="grant.app_id" class="oa-connection">
-        <span class="oa-connection-mark"><IconKey :size="16" /></span>
-        <span class="oa-connection-body">
-          <span class="oa-connection-name">{{ grant.name }}</span>
-          <span class="oa-connection-meta">
-            {{ t('connectedOn', { date: absoluteTime(grant.created_at) }) }}
-            <template v-if="grant.last_used_at">
-              · {{ t('lastUsedOn', { date: absoluteTime(grant.last_used_at) }) }}
-            </template>
-          </span>
-        </span>
-        <OaConfirmButton
-          class="oa-btn"
-          :label="t('withdraw')"
-          :armed-label="t('confirmWord')"
-          :armed-title="t('withdrawConfirm', { application: grant.name })"
-          :resting-title="t('withdraw')"
-          :disabled="authorizationsBusy"
-          @confirm="withdraw(grant.app_id)"
-        />
-      </div>
-    </div>
-    <p class="oa-drawer-flash" :class="{ visible: !!authorizationFlash }">{{ authorizationFlash }}</p>
-  </div>
+  <OaGroup v-show="matchesSettings(props.query, 'authorizations')" :title="t('secAuthorizations')" :hint="t('authorizationsHint')">
+    <p v-if="!authorizations.length" class="oa-group-note">{{ t('authorizationsNone') }}</p>
+    <OaRow
+      v-for="grant in authorizations"
+      :key="grant.app_id"
+      :icon="IconKey"
+      :title="grant.name"
+      :meta="authorizationMeta(grant)"
+    >
+      <OaConfirmButton
+        class="oa-btn"
+        :label="t('withdraw')"
+        :armed-label="t('confirmWord')"
+        :armed-title="t('withdrawConfirm', { application: grant.name })"
+        :resting-title="t('withdraw')"
+        :disabled="authorizationsBusy"
+        @confirm="withdraw(grant.app_id)"
+      />
+    </OaRow>
+    <p v-if="authorizationFlash" class="oa-group-flash" role="alert">{{ authorizationFlash }}</p>
+  </OaGroup>
 
-  <div v-show="matchesSettings(props.query, 'password')" class="oa-settings-panel">
-    <h2 class="oa-admin-section-title">{{ hasPassword ? t('secPassword') : t('setPassword') }}</h2>
-    <p class="oa-field-hint">{{ hasPassword ? t('passwordSectionHint') : t('setPasswordHint') }}</p>
-    <OaTextField
-      v-if="hasPassword"
-      v-model="currentPassword"
-      :label="t('currentPassword')"
-      type="password"
-    />
-    <OaTextField
-      v-model="newPassword"
-      :label="t('newPassword')"
-      type="password"
-      :hint="t('newPasswordHint')"
-    />
-    <p class="oa-drawer-flash" :class="{ visible: !!passwordFlash }">{{ passwordFlash }}</p>
-    <div class="oa-button-row">
+  <OaGroup
+    v-show="matchesSettings(props.query, 'password')"
+    :title="hasPassword ? t('secPassword') : t('setPassword')"
+    :hint="hasPassword ? t('passwordSectionHint') : t('setPasswordHint')"
+  >
+    <OaRow v-if="hasPassword" stacked>
+      <OaTextField v-model="currentPassword" :label="t('currentPassword')" type="password" />
+    </OaRow>
+    <OaRow stacked>
+      <OaTextField v-model="newPassword" :label="t('newPassword')" type="password" :hint="t('newPasswordHint')" />
+    </OaRow>
+    <p v-if="passwordFlash" class="oa-group-flash" role="alert">{{ passwordFlash }}</p>
+    <OaRow>
       <button type="button" class="oa-btn" :disabled="passwordBusy" @click="savePassword">
         {{ passwordLabel || (hasPassword ? t('changePassword') : t('setPassword')) }}
       </button>
-    </div>
-  </div>
+    </OaRow>
+  </OaGroup>
 
-  <div v-show="matchesSettings(props.query, 'data')" class="oa-settings-panel">
-    <h2 class="oa-admin-section-title">{{ t('secData') }}</h2>
-    <p class="oa-field-hint">{{ t('dataHint') }}</p>
-    <div class="oa-button-row">
+  <OaGroup v-show="matchesSettings(props.query, 'data')" :title="t('secData')" :hint="t('dataHint')">
+    <OaRow>
       <button type="button" class="oa-btn" :disabled="exporting" @click="exportData">
         {{ t('exportData') }}
       </button>
       <button type="button" class="oa-btn" :disabled="importing" @click="importData">
         {{ t('importData') }}
       </button>
-    </div>
-    <p class="oa-field-hint">{{ dataStatus }}</p>
-  </div>
+    </OaRow>
+    <p v-if="dataStatus" class="oa-group-note">{{ dataStatus }}</p>
+  </OaGroup>
 </template>
