@@ -68,7 +68,10 @@ func build(args []string) error {
 			return err
 		}
 	}
-	cmd := exec.Command("go", "build", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
+	// -trimpath keeps the directory the build ran in out of the binary, so the
+	// same source gives the same package from any checkout — which is what lets
+	// a deploy tell "the bundled package changed" from "it was built elsewhere".
+	cmd := exec.Command("go", "build", "-trimpath", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
 	cmd.Stderr = os.Stderr

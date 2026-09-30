@@ -64,7 +64,7 @@ func Build(dir string) ([]byte, error) {
 	if err := os.WriteFile(filepath.Join(stage, "manifest.json"), manifest, 0o644); err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("go", "build", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
+	cmd := exec.Command("go", "build", "-trimpath", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
 	if out, err := cmd.CombinedOutput(); err != nil {
