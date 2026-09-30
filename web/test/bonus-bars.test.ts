@@ -36,6 +36,7 @@ let host: HTMLElement;
 
 beforeEach(async () => {
   await changeLanguage('en');
+  localStorage.clear();
   host = document.createElement('div');
   document.body.appendChild(host);
 });
@@ -96,7 +97,7 @@ describe('OaBonusBars', () => {
   it('draws nothing for an account that holds no bonus, and no heading either', async () => {
     serve([]);
     await mount();
-    expect(host.querySelector('.oa-bonus')).toBeNull();
+    expect(host.querySelector('.oa-collapsible')).toBeNull();
     expect(host.textContent).toBe('');
   });
 

@@ -33,6 +33,7 @@ let changed = 0;
 
 beforeEach(async () => {
   await changeLanguage('en');
+  localStorage.clear();
   changed = 0;
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -97,7 +98,7 @@ describe('OaCheckin', () => {
     expect(host.textContent).toContain(t('checkinStreak', { count: 3 }));
   });
 
-  it('draws the section as one card: the day, the month, and a row for each milestone', async () => {
+  it('draws the section as one card: what a check-in earns, the month, and a row for each milestone', async () => {
     serve(status({
       daily: { kind: 'bonus', bar_id: 'b1', amount: 1, valid_days: 3 },
       rules: [
@@ -112,23 +113,61 @@ describe('OaCheckin', () => {
     expect(cards).toHaveLength(1);
     const rows = [...cards[0]!.querySelectorAll(':scope > .oa-usage-card-row')];
     expect(rows).toHaveLength(4);
-    expect(rows[0]!.querySelector('button')).not.toBeNull();
+    expect(rows[0]!.textContent).toContain(t('checkinDaily', { reward: t('checkinRewardBonus', { amount: '1', days: 3 }) }));
     expect(rows[1]!.querySelector('.oa-checkin-days')).not.toBeNull();
     expect(rows[2]!.textContent).toContain('A');
     expect(rows[3]!.textContent).toContain('B');
   });
 
-  it('says what the button starts when there is no streak yet, and how long it is when there is one', async () => {
-    serve(status({ streak: 0, checked_in_today: false }));
+  it('puts the day\'s button and the streak in the heading, beside what folds and not inside it', async () => {
+    serve(status({ streak: 4 }));
     await mount();
-    expect(host.querySelector('.oa-checkin-title')?.textContent).toBe(t('checkinNoStreak'));
+    const head = host.querySelector('.oa-collapsible-head')!;
+    expect(head.querySelector('.oa-card-total')?.textContent).toBe(t('checkinStreak', { count: 4 }));
+    const toggle = head.querySelector<HTMLButtonElement>('.oa-collapsible-toggle')!;
+    const press = button(t('checkinNow'));
+    expect(head.contains(press)).toBe(true);
+    expect(toggle.contains(press)).toBe(false);
+
+    serve(status({ streak: 0 }));
+    app?.unmount();
+    app = null;
+    host.textContent = '';
+    await mount();
+    expect(host.querySelector('.oa-card-total')).toBeNull();
+  });
+
+  it('says in the heading that something can be claimed, for a reader who keeps the section folded', async () => {
+    const rule = { id: 'a', title: 'A', basis: 'streak' as const, days: 1, progress: 1, claimed: false, reward: { kind: 'card' as const, cards: 1, valid_days: 30 } };
+    serve(status({ rules: [{ ...rule, claimable: true }] }));
+    await mount();
+    expect(host.querySelector('.oa-collapsible-head')!.textContent).toContain(t('checkinClaimable'));
     app?.unmount();
     app = null;
     host.textContent = '';
 
-    serve(status({ streak: 4 }));
+    serve(status({ rules: [{ ...rule, claimable: false }] }));
     await mount();
-    expect(host.querySelector('.oa-checkin-title')?.textContent).toBe(t('checkinStreak', { count: 4 }));
+    expect(host.querySelector('.oa-collapsible-head')!.textContent).not.toContain(t('checkinClaimable'));
+  });
+
+  it('checks in from the heading while the section is folded, and opens it for a refusal without changing what was kept', async () => {
+    localStorage.setItem('obsidian-arc-fold-usage-checkin', '1');
+    const { ApiError } = await import('@/api/client');
+    serve(status(), status({ checked_in_today: true }));
+    post.mockRejectedValue(new ApiError(409, 'already_checked_in', 'Already checked in today.'));
+    await mount();
+    const toggle = host.querySelector<HTMLButtonElement>('.oa-collapsible-toggle')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+    button(t('checkinNow')).click();
+    await settle();
+
+    expect(post).toHaveBeenCalledWith('/api/checkin', {});
+    // The reason is inside the section, so the section opens to show it — for now.
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(host.textContent).toContain('Already checked in today.');
+    expect(localStorage.getItem('obsidian-arc-fold-usage-checkin')).toBe('1');
   });
 
   it('marks only a milestone that can be claimed as the thing to press', async () => {

@@ -14,7 +14,7 @@ import { ApiError, api } from '@/api/client';
 import { fetchUsage, type UsageSummary } from '@/api/usage';
 import OaBonusBars from '@/components/OaBonusBars.vue';
 import OaCheckin from '@/components/OaCheckin.vue';
-import OaFormSection from '@/components/OaFormSection.vue';
+import OaCollapsible from '@/components/OaCollapsible.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import OaOverlay from '@/components/OaOverlay.vue';
@@ -90,6 +90,7 @@ const redeemOpen = ref(false);
 const redeemCode = ref('');
 const redeeming = ref(false);
 const redeemInput = ref<HTMLInputElement | null>(null);
+const cardsSection = ref<InstanceType<typeof OaCollapsible> | null>(null);
 const redeemChallenge = ref(false);
 const redeemChallengeError = ref('');
 const redeemGuard = ref<InstanceType<typeof OaTurnstile> | null>(null);
@@ -392,7 +393,11 @@ async function spend(card: Card): Promise<void> {
 
 function toggleRedeem(): void {
   redeemOpen.value = !redeemOpen.value;
-  if (redeemOpen.value) void nextTick(() => redeemInput.value?.focus());
+  if (!redeemOpen.value) return;
+  // The field is inside the section, which the reader may have folded: open it
+  // for now, without changing what they chose to keep.
+  cardsSection.value?.reveal();
+  void nextTick(() => redeemInput.value?.focus());
 }
 
 onMounted(() => {
@@ -438,53 +443,53 @@ watch(visibility, (now, was) => {
       </p>
     </section>
 
-    <div class="oa-usage-head">
-      <h3 class="oa-drawer-subhead">{{ t('secAllowance') }}</h3>
-      <span class="oa-header-spacer" />
-      <OaIconButton
-        class="oa-icon-btn"
-        :label="t('refresh')"
-        :disabled="refreshingAllowance"
-        @click="refreshAllowance"
-      >
-        <IconRefresh :size="14" :class="{ 'is-refreshing': refreshingAllowance }" />
-      </OaIconButton>
-    </div>
-    <div class="oa-usage-list">
-      <p v-if="allowanceError" class="oa-field-hint">{{ allowanceError }}</p>
-      <span v-else-if="unlimited" class="oa-usage-reset">{{ t('quotaUnlimited') }}</span>
-      <!-- The large form here, the compact one in the composer: this screen is
-           where somebody has come to look at exactly this, and a 4px hairline
-           is what you draw when the reader is halfway through a sentence. -->
-      <OaUsageWindow
-        v-for="window in enforced"
-        :key="window.kind"
-        :window="window"
-        :display="summary?.display ?? 'absolute'"
-        size="large"
-      />
-    </div>
+    <OaCollapsible id="usage-allowance" :title="t('secAllowance')">
+      <template #actions>
+        <OaIconButton
+          class="oa-icon-btn"
+          :label="t('refresh')"
+          :disabled="refreshingAllowance"
+          @click="refreshAllowance"
+        >
+          <IconRefresh :size="14" :class="{ 'is-refreshing': refreshingAllowance }" />
+        </OaIconButton>
+      </template>
+      <div class="oa-usage-list">
+        <p v-if="allowanceError" class="oa-field-hint">{{ allowanceError }}</p>
+        <span v-else-if="unlimited" class="oa-usage-reset">{{ t('quotaUnlimited') }}</span>
+        <!-- The large form here, the compact one in the composer: this screen is
+             where somebody has come to look at exactly this, and a 4px hairline
+             is what you draw when the reader is halfway through a sentence. -->
+        <OaUsageWindow
+          v-for="window in enforced"
+          :key="window.kind"
+          :window="window"
+          :display="summary?.display ?? 'absolute'"
+          size="large"
+        />
+      </div>
+    </OaCollapsible>
 
     <OaBonusBars :refresh-key="bonusKey" />
     <!-- A check-in can hand out cards and bonus, so it tells the two above and
          below it to read again. -->
     <OaCheckin @changed="afterCheckin" />
 
-    <div>
+    <OaCollapsible id="usage-cards" ref="cardsSection" :title="t('secCards')">
+      <!-- The total beside the name, because "how many do I have" is the
+           question this section is opened with and the list below only
+           answered it by counting. -->
+      <template #meta>
+        <span v-if="cardsLeft" class="oa-card-total">{{ t('cardsHeldCount', { count: cardsLeft }) }}</span>
+      </template>
       <!-- The plus is beside the heading rather than under the list, because
            it is the thing to reach for when the list is empty — which is when
            somebody with a code in their hand is looking at this screen. -->
-      <div class="oa-card-head">
-        <h3 class="oa-drawer-subhead">{{ t('secCards') }}</h3>
-        <!-- The total beside the name, because "how many do I have" is the
-             question this section is opened with and the list below only
-             answered it by counting. -->
-        <span v-if="cardsLeft" class="oa-card-total">{{ t('cardsHeldCount', { count: cardsLeft }) }}</span>
-        <span class="oa-header-spacer" />
+      <template #actions>
         <OaIconButton class="oa-icon-btn" :label="t('redeemAdd')" @click="toggleRedeem">
           <IconPlus :size="15" />
         </OaIconButton>
-      </div>
+      </template>
 
       <div class="oa-redeem-row oa-input-row" :hidden="!redeemOpen">
         <input
@@ -533,20 +538,22 @@ watch(visibility, (now, was) => {
         :label="t('autoUseResetCard')"
         :hint="t('autoUseResetCardHint')"
       />
-    </div>
+    </OaCollapsible>
 
-    <OaFormSection :title="t('secTotals')" />
-    <OaStatGrid :stats="statCards" />
+    <OaCollapsible id="usage-totals" :title="t('secTotals')">
+      <OaStatGrid :stats="statCards" />
+    </OaCollapsible>
 
-    <OaFormSection :title="t('secRecentTurns')" />
-    <p v-if="historyError" class="oa-field-hint">{{ historyError }}</p>
-    <OaTable
-      v-else
-      :columns="columns"
-      :rows="turns"
-      :empty="t('noTurnsYet')"
-      :muted="(row) => row.status !== 'ok'"
-    />
+    <OaCollapsible id="usage-history" :title="t('secRecentTurns')">
+      <p v-if="historyError" class="oa-field-hint">{{ historyError }}</p>
+      <OaTable
+        v-else
+        :columns="columns"
+        :rows="turns"
+        :empty="t('noTurnsYet')"
+        :muted="(row) => row.status !== 'ok'"
+      />
+    </OaCollapsible>
   </OaPanel>
 
   <OaOverlay

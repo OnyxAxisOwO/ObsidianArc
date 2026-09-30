@@ -12,10 +12,13 @@ import {
   checkInNow, claimMilestone, fetchCheckin,
   type CheckinReward, type CheckinRule, type CheckinStatus,
 } from '@/api/checkin';
+import OaBadge from '@/components/OaBadge.vue';
+import OaCollapsible from '@/components/OaCollapsible.vue';
 import { t } from '@/composables/useI18n';
 
 const emit = defineEmits<{ changed: [] }>();
 
+const section = ref<InstanceType<typeof OaCollapsible> | null>(null);
 const status = ref<CheckinStatus | null>(null);
 const error = ref('');
 const notice = ref('');
@@ -60,6 +63,7 @@ async function checkIn(): Promise<void> {
     // error, which would erase the reason the account is looking for.
     await load();
     error.value = caught instanceof ApiError ? caught.message : t('checkinFailed');
+    section.value?.reveal();
   } finally {
     busy.value = '';
   }
@@ -77,6 +81,7 @@ async function claim(rule: CheckinRule): Promise<void> {
   } catch (caught) {
     await load();
     error.value = caught instanceof ApiError ? caught.message : t('checkinFailed');
+    section.value?.reveal();
   } finally {
     busy.value = '';
   }
@@ -100,34 +105,42 @@ const monthDays = computed(() => {
 const todayNumber = computed(() => Number(status.value?.today.slice(8) ?? 0));
 const checked = computed(() => new Set(status.value?.month_days ?? []));
 const dailyText = computed(() => rewardText(status.value?.daily ?? { kind: '' }));
+/** Something is waiting to be claimed: said in the heading, for a section that is folded. */
+const claimable = computed(() => !!status.value?.rules.some((rule) => rule.claimable));
 
 onMounted(load);
 </script>
 
 <template>
-  <div v-if="status?.enabled" class="oa-checkin">
-    <h3 class="oa-drawer-subhead">{{ t('secCheckin') }}</h3>
-    <!-- One card, the way the settings screen draws two-step verification: the
-         day's button and what it earns on top, the month under it, and a row
-         for each milestone, divided by hairlines. -->
+  <OaCollapsible v-if="status?.enabled" id="usage-checkin" ref="section" :title="t('secCheckin')">
+    <!-- The streak, what is waiting and the day's button are in the heading, so a
+         reader who keeps the section folded can still check in and see that
+         there is something to claim. -->
+    <template #meta>
+      <span v-if="status.streak" class="oa-card-total">{{ t('checkinStreak', { count: status.streak }) }}</span>
+      <OaBadge v-if="claimable">{{ t('checkinClaimable') }}</OaBadge>
+    </template>
+    <template #actions>
+      <button
+        type="button"
+        class="oa-btn"
+        :class="{ primary: !status.checked_in_today }"
+        :disabled="status.checked_in_today || busy === 'now'"
+        @click="checkIn"
+      >{{ status.checked_in_today ? t('checkinDone') : t('checkinNow') }}</button>
+    </template>
+
+    <!-- One card, the way the settings screen draws two-step verification: what
+         a check-in earns, the month, and a row for each milestone, divided by
+         hairlines. -->
     <div class="oa-usage-card">
-      <div class="oa-usage-card-row oa-checkin-head">
-        <div class="oa-checkin-head-text">
-          <span class="oa-checkin-title">{{ status.streak ? t('checkinStreak', { count: status.streak }) : t('checkinNoStreak') }}</span>
-          <span v-if="dailyText" class="oa-checkin-meta">{{ t('checkinDaily', { reward: dailyText }) }}</span>
-        </div>
-        <button
-          type="button"
-          class="oa-btn"
-          :class="{ primary: !status.checked_in_today }"
-          :disabled="status.checked_in_today || busy === 'now'"
-          @click="checkIn"
-        >{{ status.checked_in_today ? t('checkinDone') : t('checkinNow') }}</button>
+      <div v-if="dailyText || notice || error" class="oa-usage-card-row">
+        <p v-if="notice" class="oa-usage-note" role="status">{{ notice }}</p>
+        <p v-if="error" class="oa-usage-note error" role="alert">{{ error }}</p>
+        <p v-if="dailyText" class="oa-checkin-meta">{{ t('checkinDaily', { reward: dailyText }) }}</p>
       </div>
 
       <div class="oa-usage-card-row">
-        <p v-if="notice" class="oa-usage-note" role="status">{{ notice }}</p>
-        <p v-if="error" class="oa-usage-note error" role="alert">{{ error }}</p>
         <div class="oa-checkin-days" :aria-label="t('checkinMonth', { count: status.month_count })">
           <span
             v-for="day in monthDays"
@@ -153,5 +166,5 @@ onMounted(load);
         >{{ rule.claimed ? t('checkinClaimed') : t('checkinClaim') }}</button>
       </div>
     </div>
-  </div>
+  </OaCollapsible>
 </template>

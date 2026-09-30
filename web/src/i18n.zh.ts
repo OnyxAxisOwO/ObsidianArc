@@ -2514,7 +2514,7 @@ export const zh: Record<StringKey, string> = {
   checkinNow: '签到',
   checkinDone: '今日已签到',
   checkinStreak: '连续 {count} 天',
-  checkinNoStreak: '开始连续签到',
+  checkinClaimable: '有奖励可领',
   checkinMonth: '本月已签 {count} 天',
   checkinDaily: '每次签到可得：{reward}',
   checkinClaim: '领取',

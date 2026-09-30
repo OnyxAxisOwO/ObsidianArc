@@ -23,6 +23,7 @@ import { ApiError } from '@/api/client';
 import { fetchBonus, setBonusChoice, type BonusBar } from '@/api/bonus';
 import type { UsageDisplay } from '@/api/usage';
 import OaBadge from '@/components/OaBadge.vue';
+import OaCollapsible from '@/components/OaCollapsible.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import { t, tn } from '@/composables/useI18n';
 import { absoluteTime } from '@/lib/format';
@@ -109,9 +110,8 @@ watch(() => props.refreshKey, () => load(true));
 </script>
 
 <template>
-  <div v-if="visible.length || error" class="oa-bonus">
-    <h3 class="oa-drawer-subhead">{{ t('secBonus') }}</h3>
-    <p v-if="error" class="oa-field-hint">{{ error }}</p>
+  <OaCollapsible v-if="visible.length || error" id="usage-bonus" :title="t('secBonus')">
+    <p v-if="error" class="oa-usage-note error" role="alert">{{ error }}</p>
     <!-- One card with a row per bar, the way the settings screen draws the
          signed-in devices: the allowance's own rows are a shade off the panel,
          and a bar with a switch and a description in it needs more edge than
@@ -147,5 +147,5 @@ watch(() => props.refreshKey, () => load(true));
         </div>
       </div>
     </div>
-  </div>
+  </OaCollapsible>
 </template>

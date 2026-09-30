@@ -6270,19 +6270,6 @@
    container-low tone, a shade off the panel — enough for a bar, and not enough
    for a section with a button, a calendar and a row per milestone, which read
    as text lying loose on the panel. */
-.oa-bonus,
-.oa-checkin {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.oa-bonus .oa-drawer-subhead,
-.oa-checkin .oa-drawer-subhead {
-  margin: 0;
-  line-height: 18px;
-}
-
 .oa-usage-card {
   display: flex;
   flex-direction: column;
@@ -6337,25 +6324,18 @@
   border-top: 1px solid var(--ai-border);
 }
 
-.oa-checkin-head,
 .oa-checkin-milestone {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-.oa-checkin-head-text,
 .oa-checkin-milestone-text {
   display: flex;
   flex: 1;
   flex-direction: column;
   gap: 3px;
   min-width: 0;
-}
-
-.oa-checkin-title {
-  font-size: 13.5px;
-  font-weight: 600;
 }
 
 .oa-checkin-milestone-title {
@@ -6365,6 +6345,7 @@
 
 .oa-checkin-meta,
 .oa-checkin-milestone-meta {
+  margin: 0;
   color: var(--ai-text-secondary);
   font-size: 12px;
   line-height: 1.55;
@@ -6418,4 +6399,98 @@
   margin: 10px 0 0;
   color: var(--ai-text-secondary);
   font-size: 11.5px;
+}
+
+/* A section of a panel that folds (OaCollapsible). The heading is one button —
+   chevron and title — with the section's other controls beside it, and the body
+   animates its height the way the uptime accordion does: a grid whose one row
+   goes from 0fr to 1fr, so the content is never measured or given a height. The
+   content's own padding sits inside the clipped box, so a folded section is
+   exactly its heading, and the sides of the clipped box are given back with a
+   negative margin so a focus ring at the edge of the content is not cut off. */
+.oa-collapsible-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.oa-collapsible-title {
+  margin: 0;
+  font: inherit;
+}
+
+.oa-collapsible-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: -6px;
+  padding: 4px 8px 4px 4px;
+  border: none;
+  outline: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.oa-collapsible-toggle:hover {
+  background: var(--ai-state-hover);
+}
+
+.oa-collapsible-toggle:focus-visible {
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-collapsible-toggle .oa-drawer-subhead {
+  margin: 0;
+  line-height: 18px;
+}
+
+.oa-collapsible-chevron {
+  display: inline-flex;
+  color: var(--ai-text-secondary);
+  transform: rotate(-90deg);
+  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-collapsible.open .oa-collapsible-chevron {
+  transform: rotate(0deg);
+}
+
+.oa-collapsible-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-collapsible.open .oa-collapsible-body {
+  grid-template-rows: 1fr;
+}
+
+.oa-collapsible-inner {
+  min-height: 0;
+  margin: 0 -6px;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-collapsible.open .oa-collapsible-inner {
+  opacity: 1;
+}
+
+.oa-collapsible-content {
+  padding: 10px 6px 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-collapsible-toggle,
+  .oa-collapsible-chevron,
+  .oa-collapsible-body,
+  .oa-collapsible-inner {
+    transition: none;
+  }
 }

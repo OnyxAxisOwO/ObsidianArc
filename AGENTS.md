@@ -401,7 +401,7 @@ change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
 Current: 25.8 MB binary (this repository ships no plugin; 2.8 MB of it is
-the plugin runtime); 227.49 kB on the wire to open the chat, against a target
+the plugin runtime); 228.07 kB on the wire to open the chat, against a target
 of 135. The target used to be 80 and the figure used to be 59.5;
 adopting Vue moved both, and `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.

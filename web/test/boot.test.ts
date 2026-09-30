@@ -797,7 +797,10 @@ describe('what moves, and what does not', () => {
     adopt(ACCOUNT);
     await mountAt('/usage');
 
-    host.querySelector<HTMLButtonElement>('.oa-card-head button')!.click();
+    // The plus beside the reset cards heading, found by what it says: the first
+    // button in that row is now the one that folds the section.
+    [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.getAttribute('aria-label') === t('redeemAdd'))!.click();
     await nextTick();
     const input = host.querySelector<HTMLInputElement>('.oa-redeem-row input')!;
     input.value = 'HUMAN';
