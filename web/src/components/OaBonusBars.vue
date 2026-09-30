@@ -112,8 +112,17 @@ watch(() => props.refreshKey, () => load(true));
   <div v-if="visible.length || error" class="oa-bonus">
     <h3 class="oa-drawer-subhead">{{ t('secBonus') }}</h3>
     <p v-if="error" class="oa-field-hint">{{ error }}</p>
-    <div class="oa-bonus-list">
-      <div v-for="bar in visible" :key="bar.bar_id" class="oa-bonus-bar" :class="{ 'is-spent': bar.exhausted }">
+    <!-- One card with a row per bar, the way the settings screen draws the
+         signed-in devices: the allowance's own rows are a shade off the panel,
+         and a bar with a switch and a description in it needs more edge than
+         that. -->
+    <div v-if="visible.length" class="oa-usage-card">
+      <div
+        v-for="bar in visible"
+        :key="bar.bar_id"
+        class="oa-usage-card-row oa-bonus-bar"
+        :class="{ 'is-spent': bar.exhausted }"
+      >
         <div class="oa-usage-row">
           <span class="oa-bonus-name">
             {{ bar.name }}
@@ -127,14 +136,15 @@ watch(() => props.refreshKey, () => load(true));
         <div class="oa-usage-reset">{{ detail(bar) }}</div>
         <!-- Operator-written, so text and never markup. -->
         <div v-if="bar.description" class="oa-usage-reset">{{ bar.description }}</div>
-        <OaSwitchField
-          v-if="bar.choosable"
-          :model-value="bar.enabled"
-          :label="t('bonusUseFirst')"
-          :hint="t('bonusUseFirstHint')"
-          :disabled="busy === bar.bar_id"
-          @update:model-value="choose(bar, $event)"
-        />
+        <div v-if="bar.choosable" class="oa-bonus-switch">
+          <OaSwitchField
+            :model-value="bar.enabled"
+            :label="t('bonusUseFirst')"
+            :hint="t('bonusUseFirstHint')"
+            :disabled="busy === bar.bar_id"
+            @update:model-value="choose(bar, $event)"
+          />
+        </div>
       </div>
     </div>
   </div>

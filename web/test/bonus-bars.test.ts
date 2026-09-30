@@ -84,6 +84,15 @@ function meter(index = 0): number {
 }
 
 describe('OaBonusBars', () => {
+  it('draws the bars as rows of one card, so the section stands apart from the panel', async () => {
+    serve([bar({ bar_id: 'a', name: 'A' }), bar({ bar_id: 'b', name: 'B' })]);
+    await mount();
+    const cards = host.querySelectorAll('.oa-usage-card');
+    expect(cards).toHaveLength(1);
+    const rows = cards[0]!.querySelectorAll(':scope > .oa-usage-card-row.oa-bonus-bar');
+    expect(rows).toHaveLength(2);
+  });
+
   it('draws nothing for an account that holds no bonus, and no heading either', async () => {
     serve([]);
     await mount();

@@ -2564,6 +2564,7 @@ const en = {
   checkinNow: 'Check in',
   checkinDone: 'Checked in today',
   checkinStreak: '{count}-day streak',
+  checkinNoStreak: 'Start a streak',
   checkinMonth: '{count} days checked in this month',
   checkinDaily: 'Each check-in gives: {reward}',
   checkinClaim: 'Claim',

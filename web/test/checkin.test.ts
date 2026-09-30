@@ -97,6 +97,53 @@ describe('OaCheckin', () => {
     expect(host.textContent).toContain(t('checkinStreak', { count: 3 }));
   });
 
+  it('draws the section as one card: the day, the month, and a row for each milestone', async () => {
+    serve(status({
+      daily: { kind: 'bonus', bar_id: 'b1', amount: 1, valid_days: 3 },
+      rules: [
+        { id: 'a', title: 'A', basis: 'streak', days: 3, progress: 1, claimable: false, claimed: false, reward: { kind: 'card', cards: 1, valid_days: 30 } },
+        { id: 'b', title: 'B', basis: 'streak', days: 5, progress: 1, claimable: false, claimed: false, reward: { kind: 'card', cards: 1, valid_days: 30 } },
+      ],
+    }));
+    await mount();
+    // One container, so the section stands apart from the panel it sits on the
+    // way the settings screen's cards do, and not as text lying loose on it.
+    const cards = host.querySelectorAll('.oa-usage-card');
+    expect(cards).toHaveLength(1);
+    const rows = [...cards[0]!.querySelectorAll(':scope > .oa-usage-card-row')];
+    expect(rows).toHaveLength(4);
+    expect(rows[0]!.querySelector('button')).not.toBeNull();
+    expect(rows[1]!.querySelector('.oa-checkin-days')).not.toBeNull();
+    expect(rows[2]!.textContent).toContain('A');
+    expect(rows[3]!.textContent).toContain('B');
+  });
+
+  it('says what the button starts when there is no streak yet, and how long it is when there is one', async () => {
+    serve(status({ streak: 0, checked_in_today: false }));
+    await mount();
+    expect(host.querySelector('.oa-checkin-title')?.textContent).toBe(t('checkinNoStreak'));
+    app?.unmount();
+    app = null;
+    host.textContent = '';
+
+    serve(status({ streak: 4 }));
+    await mount();
+    expect(host.querySelector('.oa-checkin-title')?.textContent).toBe(t('checkinStreak', { count: 4 }));
+  });
+
+  it('marks only a milestone that can be claimed as the thing to press', async () => {
+    serve(status({
+      rules: [
+        { id: 'a', title: 'A', basis: 'streak', days: 1, progress: 1, claimable: true, claimed: false, reward: { kind: 'card', cards: 1, valid_days: 30 } },
+        { id: 'b', title: 'B', basis: 'streak', days: 9, progress: 1, claimable: false, claimed: false, reward: { kind: 'card', cards: 1, valid_days: 30 } },
+      ],
+    }));
+    await mount();
+    const [ready, waiting] = [...host.querySelectorAll<HTMLButtonElement>('.oa-checkin-milestone button')];
+    expect(ready!.classList.contains('primary')).toBe(true);
+    expect(waiting!.classList.contains('primary')).toBe(false);
+  });
+
   it('turns the button off once today is done', async () => {
     serve(status({ checked_in_today: true }));
     await mount();
@@ -170,7 +217,7 @@ describe('OaCheckin', () => {
     post.mockResolvedValue({ reward: { kind: 'card', cards: 2, valid_days: 30 } });
     await mount();
 
-    const rows = [...host.querySelectorAll('.oa-card-row')];
+    const rows = [...host.querySelectorAll('.oa-checkin-milestone')];
     expect(rows).toHaveLength(3);
     expect(rows[0]!.querySelector('button')!.disabled).toBe(false);
     expect(rows[1]!.querySelector('button')!.disabled).toBe(true);

@@ -106,42 +106,48 @@ onMounted(load);
 
 <template>
   <div v-if="status?.enabled" class="oa-checkin">
-    <div class="oa-card-head">
-      <h3 class="oa-drawer-subhead">{{ t('secCheckin') }}</h3>
-      <span v-if="status.streak" class="oa-card-total">{{ t('checkinStreak', { count: status.streak }) }}</span>
-      <span class="oa-header-spacer" />
-      <button
-        type="button"
-        class="oa-btn"
-        :class="{ primary: !status.checked_in_today }"
-        :disabled="status.checked_in_today || busy === 'now'"
-        @click="checkIn"
-      >{{ status.checked_in_today ? t('checkinDone') : t('checkinNow') }}</button>
-    </div>
-    <p v-if="dailyText" class="oa-field-hint">{{ t('checkinDaily', { reward: dailyText }) }}</p>
-    <p v-if="notice" class="oa-field-hint" role="status">{{ notice }}</p>
-    <p v-if="error" class="oa-field-hint">{{ error }}</p>
-
-    <div class="oa-checkin-days" :aria-label="t('checkinMonth', { count: status.month_count })">
-      <span
-        v-for="day in monthDays"
-        :key="day"
-        class="oa-checkin-day"
-        :class="{ on: checked.has(day), today: day === todayNumber }"
-      >{{ day }}</span>
-    </div>
-    <p class="oa-field-hint">{{ t('checkinMonth', { count: status.month_count }) }}</p>
-
-    <div v-if="status.rules.length" class="oa-card-list">
-      <div v-for="rule in status.rules" :key="rule.id" class="oa-card-row">
-        <div>
-          <span class="oa-card-title">{{ ruleTitle(rule) }}</span>
-          <span class="oa-card-sub">{{ rule.progress }} / {{ rule.days }} · {{ rewardText(rule.reward) }}</span>
+    <h3 class="oa-drawer-subhead">{{ t('secCheckin') }}</h3>
+    <!-- One card, the way the settings screen draws two-step verification: the
+         day's button and what it earns on top, the month under it, and a row
+         for each milestone, divided by hairlines. -->
+    <div class="oa-usage-card">
+      <div class="oa-usage-card-row oa-checkin-head">
+        <div class="oa-checkin-head-text">
+          <span class="oa-checkin-title">{{ status.streak ? t('checkinStreak', { count: status.streak }) : t('checkinNoStreak') }}</span>
+          <span v-if="dailyText" class="oa-checkin-meta">{{ t('checkinDaily', { reward: dailyText }) }}</span>
         </div>
-        <span class="oa-header-spacer" />
         <button
           type="button"
           class="oa-btn"
+          :class="{ primary: !status.checked_in_today }"
+          :disabled="status.checked_in_today || busy === 'now'"
+          @click="checkIn"
+        >{{ status.checked_in_today ? t('checkinDone') : t('checkinNow') }}</button>
+      </div>
+
+      <div class="oa-usage-card-row">
+        <p v-if="notice" class="oa-usage-note" role="status">{{ notice }}</p>
+        <p v-if="error" class="oa-usage-note error" role="alert">{{ error }}</p>
+        <div class="oa-checkin-days" :aria-label="t('checkinMonth', { count: status.month_count })">
+          <span
+            v-for="day in monthDays"
+            :key="day"
+            class="oa-checkin-day"
+            :class="{ on: checked.has(day), today: day === todayNumber }"
+          >{{ day }}</span>
+        </div>
+        <p class="oa-checkin-count">{{ t('checkinMonth', { count: status.month_count }) }}</p>
+      </div>
+
+      <div v-for="rule in status.rules" :key="rule.id" class="oa-usage-card-row oa-checkin-milestone">
+        <div class="oa-checkin-milestone-text">
+          <span class="oa-checkin-milestone-title">{{ ruleTitle(rule) }}</span>
+          <span class="oa-checkin-milestone-meta">{{ rule.progress }} / {{ rule.days }} · {{ rewardText(rule.reward) }}</span>
+        </div>
+        <button
+          type="button"
+          class="oa-btn"
+          :class="{ primary: rule.claimable }"
           :disabled="!rule.claimable || busy === rule.id"
           @click="claim(rule)"
         >{{ rule.claimed ? t('checkinClaimed') : t('checkinClaim') }}</button>

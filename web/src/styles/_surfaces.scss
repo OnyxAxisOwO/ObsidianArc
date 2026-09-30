@@ -6263,19 +6263,62 @@
 
 
 
-/* Bonus bars and the check-in month, on the usage screen. They borrow the
-   allowance's meter and the cards' rows; what is theirs is the spacing between
-   bars and the little calendar. */
-.oa-bonus-list {
+/* Bonus bars and the check-in, on the usage screen. Each is one card, the way the
+   settings screen draws two-step verification and the signed-in devices
+   (.oa-2fa-panel): the card token, which stands clear of the panel, with the
+   rows inside divided by a hairline. The allowance windows above are the
+   container-low tone, a shade off the panel — enough for a bar, and not enough
+   for a section with a button, a calendar and a row per milestone, which read
+   as text lying loose on the panel. */
+.oa-bonus,
+.oa-checkin {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
 
-.oa-bonus-bar {
+.oa-bonus .oa-drawer-subhead,
+.oa-checkin .oa-drawer-subhead {
+  margin: 0;
+  line-height: 18px;
+}
+
+.oa-usage-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--ai-surface-card);
+}
+
+.oa-usage-card-row {
+  padding: 14px 16px;
+}
+
+.oa-usage-card-row + .oa-usage-card-row {
+  border-top: 1px solid var(--ai-border);
+}
+
+/* A bar is drawn the way a large allowance window is: the figure over a slim
+   meter, with the small print under it. */
+.oa-bonus-bar .oa-usage-row {
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.oa-bonus-bar .oa-usage-value {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.oa-bonus-bar .oa-meter {
+  height: 8px;
+}
+
+.oa-bonus-bar .oa-usage-reset {
+  display: block;
+  margin-top: 8px;
+  font-size: 11.5px;
 }
 
 .oa-bonus-bar.is-spent .oa-meter-fill {
@@ -6288,11 +6331,65 @@
   gap: 6px;
 }
 
+.oa-bonus-switch {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ai-border);
+}
+
+.oa-checkin-head,
+.oa-checkin-milestone {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.oa-checkin-head-text,
+.oa-checkin-milestone-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.oa-checkin-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.oa-checkin-milestone-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.oa-checkin-meta,
+.oa-checkin-milestone-meta {
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* What just happened, or what went wrong, above the month: the field tone, so
+   it stands apart from the card the way the two-step card's notes do. */
+.oa-usage-note {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-radius: 11px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.oa-usage-note.error {
+  color: var(--ai-danger);
+}
+
 .oa-checkin-days {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(26px, 1fr));
   gap: 4px;
-  margin: 8px 0 4px;
 }
 
 .oa-checkin-day {
@@ -6315,4 +6412,10 @@
 .oa-checkin-day.today:not(.on) {
   box-shadow: inset 0 0 0 1.5px var(--ai-primary);
   color: var(--ai-text);
+}
+
+.oa-checkin-count {
+  margin: 10px 0 0;
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
 }
