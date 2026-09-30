@@ -211,7 +211,7 @@ func (m *Manager) judge(ctx context.Context, l *loaded, name string, req auth.Gu
 	}, &out, nil)
 	if err != nil {
 		var ge *wasm.GuestError
-		if errors.As(err, &ge) && ge.Status > 0 && ge.Status < 500 {
+		if errors.As(err, &ge) && deliberate(ge) {
 			return auth.Verdict{}, &auth.GuardRefusal{Err: guestHTTPError(ge), Reason: ge.Code}
 		}
 		return auth.Verdict{}, &auth.GuardRefusal{
@@ -221,8 +221,10 @@ func (m *Manager) judge(ctx context.Context, l *loaded, name string, req auth.Gu
 	}
 	switch out.Verdict {
 	case "refuse":
+		// Any error status: a check that is down is told apart from a visitor
+		// who failed it by a 503, which a monitor can count.
 		status := out.Status
-		if status < 400 || status > 499 {
+		if status < 400 || status > 599 {
 			status = 403
 		}
 		return auth.Verdict{}, &auth.GuardRefusal{
@@ -339,7 +341,7 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 	err := m.invoke(ctx, l, info, "console", arg, &out, &callState{console: rt})
 	if err != nil {
 		var ge *wasm.GuestError
-		if errors.As(err, &ge) && ge.Status < 500 {
+		if errors.As(err, &ge) && deliberate(ge) {
 			return errors.New(ge.Message)
 		}
 		return fmt.Errorf("the plugin failed: %w", err)

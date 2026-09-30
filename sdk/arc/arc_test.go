@@ -224,6 +224,22 @@ func TestAConsoleCommandPrintsAndCallsTheHost(t *testing.T) {
 
 // An endpoint that refuses what a command asked is the operator's answer, not
 // the plugin crashing: the handler may simply return the error from Call.
+// The server shows a client what a backend chose to say and hides what it did
+// not, so it has to be told which is which: an *Error is a choice, whatever its
+// status, and anything else — an error nobody worded, a panic — is not.
+func TestOnlyAFailureNobodyChoseIsMarkedInternal(t *testing.T) {
+	reset(t)
+	Route("GET /a", func(*Ctx, *Request) (*Response, error) { return nil, Err(503, "down", "The service is down.") })
+	Route("GET /b", func(*Ctx, *Request) (*Response, error) { return nil, errors.New("the password is hunter2") })
+	Route("GET /c", func(*Ctx, *Request) (*Response, error) { panic("boom") })
+	for route, want := range map[string]bool{"GET /a": false, "GET /b": true, "GET /c": true} {
+		_, e := serve(t, "http", map[string]any{"route": route, "method": "GET", "path": "/x"})
+		if e == nil || e.Internal != want {
+			t.Errorf("%s: error %+v; want Internal=%v", route, e, want)
+		}
+	}
+}
+
 func TestARefusedEndpointCallReadsAsTheEndpointsSentence(t *testing.T) {
 	reset(t)
 	useHost(t, map[string]any{

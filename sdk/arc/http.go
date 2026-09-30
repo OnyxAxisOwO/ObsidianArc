@@ -8,13 +8,19 @@ import (
 )
 
 // Error is an error a route or a guard wants a client to see: the same
-// status, code and message the server's own endpoints answer with. Any other
-// error a handler returns is a 500 whose cause is logged and not shown.
+// status, code and message the server's own endpoints answer with — a 503
+// because the service it stands in front of is down is as much its own answer
+// as a 404. Any other error a handler returns is a 500 whose cause is logged
+// and not shown.
 type Error struct {
 	Status  int            `json:"status"`
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
 	Details map[string]any `json:"details,omitempty"`
+	// Set by the SDK on a failure nobody chose (a panic, an error that was not
+	// an *Error), whose message is for the log: the server answers with its
+	// own 500 instead of showing it.
+	Internal bool `json:"internal,omitempty"`
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -28,7 +34,11 @@ func Err(status int, code, message string) *Error {
 // session and permission checks the route's manifest entry asked for.
 type Request struct {
 	Method string `json:"method"`
-	Path   string `json:"path"`
+	// The Host the client addressed — the site's own name for itself as this
+	// visitor reached it, which is what a plugin needs to tell "on this
+	// instance's own domain" from elsewhere.
+	Host string `json:"host"`
+	Path string `json:"path"`
 	// The raw query string, without the "?".
 	RawQuery string `json:"query"`
 	// Request headers, by canonical name, first value only.

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"net/url"
 	"strconv"
 	"strings"
@@ -21,13 +22,18 @@ func init() {
 	arc.Route("POST /api/admin/x/demo/retire/{id}", retire)
 	arc.Route("POST /api/x/demo/hook", hook)
 	arc.Route("GET /api/x/demo/upstream", upstream)
+	arc.Route("GET /api/x/demo/echo", echo)
+	arc.Route("POST /api/admin/x/demo/unavailable", unavailable)
+	arc.Route("POST /api/admin/x/demo/explode", explode)
 	arc.OnDescribe(describe)
 	arc.OnDecorateInvitees(decorate)
 	arc.Command("demo things", things)
 }
 
 // guard is the sign-up and sign-in check: a token of "block" is refused,
-// "grey" is let through restricted, and a closed plugin wants some token.
+// "grey" is let through restricted, and a closed plugin wants some token. "down"
+// is a refusal with a 5xx status, as a check whose service is unreachable
+// gives, and "explode" a failure nobody chose.
 func guard(c *arc.Ctx, req arc.GuardRequest) (arc.GuardResult, error) {
 	mode, err := c.Setting("demo.mode")
 	if err != nil {
@@ -36,6 +42,10 @@ func guard(c *arc.Ctx, req arc.GuardRequest) (arc.GuardResult, error) {
 	switch {
 	case req.Token == "block":
 		return arc.GuardResult{}, &arc.Refusal{Status: 403, Code: "demo_blocked", Message: "The demo check refused this request.", Reason: "blocked"}
+	case req.Token == "down":
+		return arc.GuardResult{}, &arc.Refusal{Status: 503, Code: "demo_unavailable", Message: "The demo check is down.", Reason: "down"}
+	case req.Token == "explode":
+		return arc.GuardResult{}, errors.New("the demo database password is hunter2")
 	case req.Token == "" && mode == "closed":
 		return arc.GuardResult{}, &arc.Refusal{Status: 403, Code: "demo_closed", Message: "The demo check needs a token.", Reason: "no token"}
 	case req.Token == "grey" && req.Action == "register":
@@ -262,4 +272,21 @@ func things(_ *arc.Ctx, cmd *arc.Console) error {
 	}
 	cmd.Table([]string{"id", "name"}, rows)
 	return nil
+}
+
+// echo says what the server told the backend about the request, which is what
+// a plugin has to go on.
+func echo(_ *arc.Ctx, r *arc.Request) (*arc.Response, error) {
+	return arc.JSON(200, map[string]string{"host": r.Host, "method": r.Method, "path": r.Path})
+}
+
+// unavailable is an error the backend chose, with a status of the server's
+// own kind: the client is told exactly this.
+func unavailable(*arc.Ctx, *arc.Request) (*arc.Response, error) {
+	return nil, arc.Err(503, "demo_unavailable", "The demo service is down.")
+}
+
+// explode is one nobody chose, whose text must stay out of the client's hands.
+func explode(*arc.Ctx, *arc.Request) (*arc.Response, error) {
+	return nil, errors.New("the demo database password is hunter2")
 }

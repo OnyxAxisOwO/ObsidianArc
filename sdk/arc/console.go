@@ -97,7 +97,7 @@ func serveConsole(c *Ctx, raw json.RawMessage) (any, error) {
 	}
 	h, ok := commands[arg.Command]
 	if !ok {
-		return nil, &Error{Status: 500, Code: "no_handler", Message: "no handler registered for " + arg.Command}
+		return nil, &Error{Status: 500, Code: "no_handler", Message: "no handler registered for " + arg.Command, Internal: true}
 	}
 	run := &Console{Command: arg.Command, Args: arg.Args, Flags: arg.Flags, JSON: arg.JSON, Yes: arg.Yes, Lang: c.Lang, ctx: c}
 	if err := h(c, run); err != nil {

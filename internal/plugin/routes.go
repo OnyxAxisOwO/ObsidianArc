@@ -143,7 +143,7 @@ func (m *Manager) routeHandler(name string, route arcx.Route) httpx.Handler {
 			Body   string            `json:"body"`
 		}
 		err := m.invoke(r.Context(), l, info, "http", map[string]any{
-			"route": route.Pattern, "method": r.Method, "path": r.URL.Path, "query": r.URL.RawQuery,
+			"route": route.Pattern, "method": r.Method, "host": r.Host, "path": r.URL.Path, "query": r.URL.RawQuery,
 			"header": header, "params": params, "body": base64.StdEncoding.EncodeToString(body),
 		}, &out, nil)
 		if err != nil {
@@ -183,18 +183,27 @@ var responseHeaders = map[string]bool{
 func allowedResponseHeader(name string) bool { return responseHeaders[strings.ToLower(name)] }
 
 // translateGuest turns what a backend's failure looks like into what a client
-// is told: its own 4xx as it said it, and anything else — a crash, a
-// timeout, a 5xx — as the server's own internal error, whose cause goes to
-// the log and not the client.
+// is told: an error it chose to return as it said it, and anything else — a
+// crash, a timeout, a failure nobody chose — as the server's own internal
+// error, whose cause goes to the log and not the client.
 func translateGuest(err error) error {
 	var ge *wasm.GuestError
-	if errors.As(err, &ge) && ge.Status >= 400 && ge.Status < 500 {
+	if errors.As(err, &ge) && deliberate(ge) {
 		return guestHTTPError(ge)
 	}
 	if errors.Is(err, ErrNoBackend) || errors.Is(err, errPluginFault) {
 		return httpx.NotFound("No such endpoint.")
 	}
 	return httpx.Internal(err)
+}
+
+// deliberate is whether a backend's error is one it chose to return, with a
+// status and a sentence for the client — a 503 because the service it stands
+// in front of is down is as much its own answer as a 404. What the SDK words
+// itself, for a panic or an error that was not an *arc.Error, is marked
+// internal: its message is a cause for the log, not for a client.
+func deliberate(ge *wasm.GuestError) bool {
+	return !ge.Internal && ge.Status >= 400 && ge.Status <= 599
 }
 
 func guestHTTPError(ge *wasm.GuestError) *httpx.Error {

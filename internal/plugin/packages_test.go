@@ -1137,3 +1137,47 @@ func TestABackendStampsRowsWithTheRealTime(t *testing.T) {
 		t.Fatalf("the backend stamped %s; the server's clock says %s", time.UnixMilli(created).UTC(), time.UnixMilli(before).UTC())
 	}
 }
+
+// A backend's own error reaches the client whatever its status — a 503 because
+// the service it stands in front of is down is its answer as much as a 404 is —
+// while a failure nobody worded, whose text may be a database password, is the
+// server's own 500 and the text goes to the log.
+func TestABackendsChosenErrorsAreShownAndUnchosenOnesAreHidden(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+
+	res := a.do(http.MethodPost, "/api/admin/x/demo/unavailable", nil)
+	if res.Code != http.StatusServiceUnavailable || code(t, res) != "demo_unavailable" ||
+		!strings.Contains(res.Body.String(), "The demo service is down.") {
+		t.Fatalf("a chosen 503: %d %s", res.Code, res.Body.String())
+	}
+	res = a.do(http.MethodPost, "/api/admin/x/demo/explode", nil)
+	if res.Code != http.StatusInternalServerError || strings.Contains(res.Body.String(), "hunter2") {
+		t.Fatalf("an unchosen failure: %d %s", res.Code, res.Body.String())
+	}
+
+	register := func(token string) *httptest.ResponseRecorder {
+		return a.in.Do(http.MethodPost, "/api/auth/register", map[string]any{
+			"username": "guest-" + token, "password": founderPassword, "guards": map[string]string{"demo": token},
+		}, nil)
+	}
+	res = register("down")
+	if res.Code != http.StatusServiceUnavailable || code(t, res) != "demo_unavailable" {
+		t.Fatalf("a guard's own 503: %d %s", res.Code, res.Body.String())
+	}
+	res = register("explode")
+	if res.Code != http.StatusServiceUnavailable || code(t, res) != "plugin_unavailable" || strings.Contains(res.Body.String(), "hunter2") {
+		t.Fatalf("a guard that failed unchosen must refuse without saying why: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// The Host the client addressed is what tells a backend whether a request came
+// in on this instance's own domain.
+func TestABackendIsToldTheHostTheClientAddressed(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	res := a.in.Do(http.MethodGet, "http://ai.example.test/api/x/demo/echo", nil, nil)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"host":"ai.example.test"`) {
+		t.Fatalf("echo: %d %s", res.Code, res.Body.String())
+	}
+}

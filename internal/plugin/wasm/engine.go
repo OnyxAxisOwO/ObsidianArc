@@ -145,6 +145,9 @@ type GuestError struct {
 	Message string
 	Status  int
 	Details map[string]any
+	// The guest says the failure is one nobody chose — a panic, an error it
+	// did not word for a client — and that its message is for the log.
+	Internal bool
 }
 
 func (e *GuestError) Error() string {
@@ -255,10 +258,11 @@ type reply struct {
 	OK     bool            `json:"ok"`
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  *struct {
-		Code    string         `json:"code"`
-		Message string         `json:"message"`
-		Status  int            `json:"status,omitempty"`
-		Details map[string]any `json:"details,omitempty"`
+		Code     string         `json:"code"`
+		Message  string         `json:"message"`
+		Status   int            `json:"status,omitempty"`
+		Details  map[string]any `json:"details,omitempty"`
+		Internal bool           `json:"internal,omitempty"`
 	} `json:"error,omitempty"`
 }
 
@@ -336,7 +340,7 @@ func (b *Backend) Invoke(ctx context.Context, info CallInfo, kind string, arg, o
 		if r.Error == nil {
 			return &GuestError{Message: "the plugin failed without saying why"}
 		}
-		return &GuestError{Code: r.Error.Code, Message: r.Error.Message, Status: r.Error.Status, Details: r.Error.Details}
+		return &GuestError{Code: r.Error.Code, Message: r.Error.Message, Status: r.Error.Status, Details: r.Error.Details, Internal: r.Error.Internal}
 	}
 	if out != nil && len(r.Result) > 0 {
 		if err := json.Unmarshal(r.Result, out); err != nil {

@@ -37,7 +37,10 @@
     { "pattern": "POST /api/admin/x/demo/disable/{id}", "access": "admin", "permission": "users" },
     { "pattern": "POST /api/admin/x/demo/retire/{id}", "access": "admin", "permission": "users" },
     { "pattern": "POST /api/x/demo/hook", "access": "public" },
-    { "pattern": "GET /api/x/demo/upstream", "access": "public" }
+    { "pattern": "GET /api/x/demo/upstream", "access": "public" },
+    { "pattern": "GET /api/x/demo/echo", "access": "public" },
+    { "pattern": "POST /api/admin/x/demo/unavailable", "access": "admin", "permission": "users" },
+    { "pattern": "POST /api/admin/x/demo/explode", "access": "admin", "permission": "users" }
   ],
   "console": [
     {

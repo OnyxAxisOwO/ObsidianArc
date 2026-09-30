@@ -106,8 +106,8 @@ go run ./cmd/arcpack inspect demo.arcx                      # 看它要什么
 
 **每次调用是一个全新的模块实例**（约 2.5 毫秒），互不相通，没有跨调用的内存。状态放在数据库、设置里。`time.Now()` 是服务器的真实时间，`crypto/rand` 是真随机数（wazero 默认给的是假时钟和确定的随机源，运行时已经替换掉了）；没有文件系统、没有环境变量。SDK 里一次调用的全部能力都是 `*arc.Ctx` 的方法：`Query`/`QueryRow`/`Exec`/`Tx`、`Fetch`、`Setting`、`NewID`、`Log`、`RevokeSessions`、`Notify`、`RecordSecurity`、`SetStatus`、`DeleteUser`、`CountActiveAdmins`、`RevokeCards`。`Tx` 之内的调用自动并入事务。
 
-- **守卫**：注册或登录前被调用。返回 `*arc.Refusal` 拒绝（自己定状态码、错误码、话），返回 `GuardResult{Restrict: true}` 放行但让新账户的 API 保持关闭；后端崩了或超时则按拒绝处理——检查挂了，门不能开着。
-- **路由**：拿到已经过会话和权限检查的请求。返回 `*arc.Error` 是你想给客户端看的错误；其他错误是 500，原因进日志、不给客户端。
+- **守卫**：注册或登录前被调用。返回 `*arc.Refusal` 拒绝（自己定状态码、错误码、话；检查所依赖的服务挂了时用 503，监控就能把它和一波机器人分开），返回 `GuardResult{Restrict: true}` 放行但让新账户的 API 保持关闭；后端崩了或超时则按拒绝处理——检查挂了，门不能开着。
+- **路由**：拿到已经过会话和权限检查的请求（含客户端访问的 `Host`）。返回 `*arc.Error` 是你想给客户端看的错误，任何 4xx、5xx 状态都原样给出；其他错误（没有措辞过的错误、panic）是 500，原因进日志、不给客户端。
 - **`OnDescribe`**：告诉服务器「浏览器该看到的 `/api/site` 区块」和「页面的 Content-Security-Policy 现在该信任哪些来源」。**只在插件启用时和它自己的设置变化时被问，不是每个请求**——所以只能从设置算，不能读会变的东西。
 - **`OnDecorateInvitees`**：拿到邀请人自己的邀请列表，返回整张列表；可以改、可以加（比如加上已删除账户的记录）。
 - **控制台命令**：`arc.Command("demo things", …)`，用 `Console.Call` 去调后台接口，`Table`、`Printf` 出结果。接口拒绝了命令要做的事时，把 `Call` 的错误原样返回即可，控制台显示的是接口自己的那句话，而不是「插件崩溃」。

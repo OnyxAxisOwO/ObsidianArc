@@ -165,7 +165,7 @@ func Serve(in []byte) (out []byte) {
 			// Written where the host collects what a module prints, so an
 			// operator finds it beside the error.
 			fmt.Fprintf(os.Stderr, "panic: %v\n%s", r, debug.Stack())
-			out = fail(&Error{Status: 500, Code: "panic", Message: fmt.Sprint(r)})
+			out = fail(&Error{Status: 500, Code: "panic", Message: fmt.Sprint(r), Internal: true})
 		}
 	}()
 	var env envelope
@@ -212,7 +212,7 @@ func Serve(in []byte) (out []byte) {
 func fail(err error) []byte {
 	e, ok := err.(*Error)
 	if !ok {
-		e = &Error{Status: 500, Code: "internal", Message: err.Error()}
+		e = &Error{Status: 500, Code: "internal", Message: err.Error(), Internal: true}
 	}
 	body, _ := json.Marshal(struct {
 		OK    bool   `json:"ok"`
@@ -231,7 +231,7 @@ func serveGuard(c *Ctx, raw json.RawMessage) (any, error) {
 	}
 	h, ok := guards[req.Name]
 	if !ok {
-		return nil, &Error{Status: 500, Code: "no_handler", Message: "no guard registered as " + req.Name}
+		return nil, &Error{Status: 500, Code: "no_handler", Message: "no guard registered as " + req.Name, Internal: true}
 	}
 	res, err := h(c, req.GuardRequest)
 	if r, refused := err.(*Refusal); refused {
@@ -257,7 +257,7 @@ func serveDescribe(c *Ctx) (any, error) {
 
 func serveDecorate(c *Ctx, raw json.RawMessage) (any, error) {
 	if decorate == nil {
-		return nil, &Error{Status: 500, Code: "no_handler", Message: "no invitee decorator registered"}
+		return nil, &Error{Status: 500, Code: "no_handler", Message: "no invitee decorator registered", Internal: true}
 	}
 	var in struct {
 		InviterID string    `json:"inviter_id"`
