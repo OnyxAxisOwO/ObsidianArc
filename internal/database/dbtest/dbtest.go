@@ -69,6 +69,19 @@ func Postgres(t *testing.T, why string) config.Database {
 	}
 }
 
+// Either is the database for a test whose subject is the queries and not the
+// engine: a Postgres schema of its own when a DSN is named, and otherwise the
+// SQLite file at sqlitePath. The same test then runs twice in CI, once on each
+// engine the server supports, and only once — on the one everybody has — on a
+// machine with no Postgres.
+func Either(t *testing.T, sqlitePath string) config.Database {
+	t.Helper()
+	if os.Getenv(DSNVariable) != "" {
+		return Postgres(t, "")
+	}
+	return config.Database{Driver: "sqlite", DSN: sqlitePath, MaxOpenConns: 8, MaxIdleConns: 4}
+}
+
 // schemaName is derived from the test's own name so a schema left behind by a
 // crash says which test left it.
 func schemaName(t *testing.T) string {

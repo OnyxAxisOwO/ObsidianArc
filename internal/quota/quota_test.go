@@ -15,14 +15,21 @@ import (
 
 func newService(t *testing.T) (*Service, *database.DB) {
 	t.Helper()
-	ctx := context.Background()
-
-	db, err := database.Open(ctx, config.Database{
+	return newServiceOn(t, config.Database{
 		Driver:       "sqlite",
 		DSN:          filepath.Join(t.TempDir(), "quota.db"),
 		MaxOpenConns: 4,
 		MaxIdleConns: 2,
 	})
+}
+
+// newServiceOn is newService on the database the caller chose, for the tests
+// that run on Postgres as well.
+func newServiceOn(t *testing.T, cfg config.Database) (*Service, *database.DB) {
+	t.Helper()
+	ctx := context.Background()
+
+	db, err := database.Open(ctx, cfg)
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}

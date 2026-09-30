@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -25,9 +25,7 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "bonus.db"), MaxOpenConns: 8, MaxIdleConns: 4,
-	})
+	db, err := database.Open(ctx, dbtest.Either(t, filepath.Join(t.TempDir(), "bonus.db")))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,11 +3,13 @@ package quota
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -24,7 +26,7 @@ type bonusFixture struct {
 // bonus bars beside it.
 func newBonusFixture(t *testing.T, windowCredits float64) *bonusFixture {
 	t.Helper()
-	svc, db := newService(t)
+	svc, db := newServiceOn(t, dbtest.Either(t, filepath.Join(t.TempDir(), "quota-bonus.db")))
 	b := bonus.NewStore(db)
 	svc.SetBonus(b)
 	ctx := context.Background()
