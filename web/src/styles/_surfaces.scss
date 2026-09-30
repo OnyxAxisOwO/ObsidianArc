@@ -2353,6 +2353,34 @@
   background: var(--ai-field-bg);
 }
 
+/* The warning that is answered by typing (OaTypedConfirm). The word is drawn
+   from an attribute instead of written in the page, which is what keeps it out
+   of any selection; user-select is off as well, for a browser that would put
+   generated content in one. */
+.oa-typed-word {
+  align-self: flex-start;
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1.4;
+  -webkit-user-select: none;
+  user-select: none;
+  pointer-events: none;
+}
+
+.oa-typed-word::before {
+  content: attr(data-word);
+}
+
+.oa-typed-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .oa-key-token {
   display: flex;
   align-items: center;

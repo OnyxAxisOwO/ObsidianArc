@@ -16,7 +16,7 @@ import { currentLanguage } from '@/composables/useI18n';
 import * as icons from '@/icons';
 import { absoluteTime } from '@/lib/format';
 import type {
-  AccountFieldSpec, ArcPlugin, GuardSpec, NotificationText, PluginConfig, PluginFactory, PluginHost, Text,
+  AccountFieldSpec, ArcPlugin, GuardSpec, KeyIssuingSpec, NotificationText, PluginConfig, PluginFactory, PluginHost, Text,
 } from './types';
 
 
@@ -131,6 +131,11 @@ export function fieldSpec(key: string): AccountFieldSpec | undefined {
     if (spec) return spec;
   }
   return undefined;
+}
+
+/** What the loaded plugins add to the API keys screen, in plugin name order. */
+export function keyIssuing(): KeyIssuingSpec[] {
+  return loaded.value.flatMap((plugin) => (plugin.keyIssuing ? [plugin.keyIssuing] : []));
 }
 
 export function guards(): Array<{ guard: GuardSpec; config: PluginConfig }> {

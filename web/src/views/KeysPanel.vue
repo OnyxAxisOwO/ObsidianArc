@@ -22,12 +22,15 @@ import OaIconButton from '@/components/OaIconButton.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaTextField from '@/components/OaTextField.vue';
+import OaTypedConfirm from '@/components/OaTypedConfirm.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
 import type { ListItem } from '@/components/list-items';
 import { t, type StringKey } from '@/composables/useI18n';
 import { IconCheck, IconCopy, IconGear, IconPause, IconPlay, IconTrash } from '@/icons';
 import { openCCSwitch, type CCSwitchApp } from '@/lib/cc-switch';
 import { absoluteTime, relativeTime } from '@/lib/format';
+import { keyIssuing } from '@/plugins/registry';
+import type { KeyConfirmation } from '@/plugins/types';
 import { currentUser, siteInfo } from '@/stores/session';
 
 /** Expiry choices, as days from now. Zero is "never". */
@@ -78,6 +81,30 @@ const editStatus = ref<'active' | 'paused'>('active');
 const editModels = ref<string[]>([]);
 
 const full = computed(() => keys.value.length >= max.value);
+
+// What plugins say around the moment a key is made. Read at render, so a
+// plugin switched on while the panel is open is heard on the next look.
+const notices = computed(() => keyIssuing().flatMap((spec) => (spec.notice ? [spec.notice()] : [])));
+const confirmations = computed(() => keyIssuing().flatMap((spec) => (spec.confirmation ? [spec.confirmation] : [])));
+
+/** The question on screen, and the way its answer gets back to create(). */
+const asking = ref<{ question: KeyConfirmation; answer: (confirmed: boolean) => void } | null>(null);
+
+function ask(question: KeyConfirmation): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    asking.value = { question, answer: (confirmed) => { asking.value = null; resolve(confirmed); } };
+  });
+}
+
+// Every key, every time: nothing is remembered between one creation and the
+// next, because a question asked once is one the reader has learned to click
+// through. The promise is settled by the dialog and by nothing else.
+async function confirmIssuing(): Promise<boolean> {
+  for (const question of confirmations.value) {
+    if (!(await ask(question))) return false;
+  }
+  return true;
+}
 const apiWarning = computed(() => {
   const account = currentUser.value;
   if (account?.api_restricted &&
@@ -224,6 +251,10 @@ async function create(): Promise<void> {
   busy.value = true;
   error.value = '';
   try {
+    // After the name is known to be good, so a refusal for an empty one is not
+    // preceded by a warning; before the human-verification token is read, which
+    // would otherwise go stale while the question is being answered.
+    if (!(await confirmIssuing())) return;
     issued.value = await createKey(
       label,
       days > 0 ? Date.now() + days * DAY_MS : 0,
@@ -476,6 +507,8 @@ onMounted(() => void refresh());
     <p v-else-if="!loaded" class="oa-menu-empty">{{ t('loading') }}</p>
 
     <template v-else>
+      <p v-for="notice in (enabled ? notices : [])" :key="notice" class="oa-key-warning" role="note">{{ notice }}</p>
+
       <section class="oa-keys-intro">
         <p class="oa-field-hint">{{ t('apiKeysIntro') }}</p>
         <p v-if="!enabled" class="oa-key-warning">{{ apiWarning }}</p>
@@ -596,5 +629,15 @@ onMounted(() => void refresh());
         </div>
       </section>
     </template>
+
+    <OaTypedConfirm
+      v-if="asking"
+      :title="asking.question.title()"
+      :body="asking.question.body()"
+      :prompt="asking.question.prompt()"
+      :word="asking.question.word()"
+      :proceed="asking.question.proceed()"
+      @answer="asking.answer"
+    />
   </OaPanel>
 </template>

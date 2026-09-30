@@ -193,6 +193,32 @@ export interface AdminPluginPage {
   keywords?: string[];
 }
 
+/**
+ * Something the account must type before a key is made. The word is drawn
+ * rather than written into the page, so it cannot be selected and copied — it
+ * has to be read and typed, which is the whole of what this asks. The prompt
+ * does not contain the word: the word is drawn under it.
+ */
+export interface KeyConfirmation {
+  title: Text;
+  body: Text;
+  prompt: Text;
+  /** What has to be typed, compared without regard to case or surrounding space. */
+  word: Text;
+  /** The button that goes on, once the word has been typed. */
+  proceed: Text;
+}
+
+/**
+ * What a plugin adds to the screen where API keys are made (views/KeysPanel.vue).
+ * The confirmation is asked before every key, not once: nothing is remembered.
+ */
+export interface KeyIssuingSpec {
+  /** A line at the top of the screen. */
+  notice?: Text;
+  confirmation?: KeyConfirmation;
+}
+
 /** A bell notification, worded from its kind and params. */
 export interface NotificationText {
   title: string;
@@ -247,4 +273,6 @@ export interface ArcPlugin {
   lists?: AdminListSpec[];
   userActions?: UserActionSpec[];
   adminPages?: AdminPluginPage[];
+  /** A notice and a confirmation on the API keys screen. */
+  keyIssuing?: KeyIssuingSpec;
 }
