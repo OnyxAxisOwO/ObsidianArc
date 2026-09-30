@@ -379,6 +379,7 @@ onMounted(() => void refresh());
           <div class="oa-key-endpoint-text">
             <span class="oa-field-label">{{ t('apiBaseUrl') }}</span>
             <code>{{ endpoint }}</code>
+            <span class="oa-key-endpoint-hint">{{ t('apiProtocols') }}</span>
           </div>
           <OaIconButton
             class="oa-icon-btn"
@@ -486,6 +487,7 @@ onMounted(() => void refresh());
           <div class="oa-key-endpoint-text">
             <span class="oa-field-label">{{ t('apiBaseUrl') }}</span>
             <code>{{ endpoint }}</code>
+            <span class="oa-key-endpoint-hint">{{ t('apiProtocols') }}</span>
           </div>
           <OaIconButton
             class="oa-icon-btn"

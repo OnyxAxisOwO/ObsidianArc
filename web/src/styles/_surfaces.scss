@@ -2182,6 +2182,11 @@
   background: var(--ai-state-hover);
 }
 
+.oa-key-endpoint-hint {
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
 .oa-key-endpoint code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;

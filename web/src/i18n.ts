@@ -1463,6 +1463,7 @@ const en = {
   apiKeys: 'API keys',
   apiKeysIntro: 'Point any OpenAI-compatible client at this server. Send the key as a bearer token.',
   apiBaseUrl: 'Base URL',
+  apiProtocols: 'Compatible with OpenAI Chat Completions, OpenAI Responses and Anthropic Messages',
   apiDisabledForYou: 'The API is not available to your account. Ask an administrator about it.',
   apiRestrictedUntil: 'Your API access is restricted until {when}. Web chat remains available.',
   apiRestrictedIndefinitely: 'Your API access is restricted until an administrator lifts it. Web chat remains available.',
