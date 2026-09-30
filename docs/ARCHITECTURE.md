@@ -219,13 +219,34 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 22.72 MB (19.01 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 222.03 kB to open the chat (183.16 JS + 38.87 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 25.56 MB (21.85 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 223.50 kB to open the chat (184.31 JS + 39.19 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
-Remeasured on 2026-09-30 (UTC), after the plugins this repository carried moved
-out to the instance that runs them. The first paint is 222.03 kB (183.16 kB JS
+Remeasured on 2026-09-30 (UTC), after plugins became packages that are
+dragged into the backoffice and run as WebAssembly. The Linux amd64 binary
+measures 25,555,104 bytes, or 21,852,320 with `-tags nosqlite` (Go 1.27.1),
+up 2.83 MB from the core alone: that is wazero, the fourth direct Go
+dependency and the one that makes a plugin installable without a rebuild. It
+is pure Go — no cgo, so the binary stays static and cross-compiles — and it
+is a fixed cost of the plugin runtime whether or not an instance ever installs
+a package. Nothing else on the server side moved: idle resident memory with no
+package installed is 0.8 MB above the previous build (29.4 to 30.2 MB, median
+of five, macOS arm64 — the ~16 MB in the table was taken on another host and is
+not restated), and cold start to serving is unchanged. A package that is
+installed and enabled costs what its module costs once compiled, and each call
+a fresh instance (about 2.5 ms); the plugin runtime's documentation says so
+where the operator reads it. The first paint is 223.50 kB (184.31 kB JS + 39.19
+kB CSS), up 1.47 kB: the loader that imports a plugin's browser module when
+`/api/site` names one, the host object the module is handed, and the install
+dialog's English strings, which the core dictionary keeps in the entry like
+every other. The upload panel, the permission dialog and the update flow are in the backoffice chunk,
+now 107.58 kB (from 105.95); the Chinese dictionary is 44.37 kB (from 43.78),
+the terminal 7.22 kB, the maths renderer 3.61 kB and the front page 3.96 kB.
+
+Remeasured on 2026-09-30 (UTC), before that, after the plugins this repository
+carried moved out to the instance that runs them. The first paint is 222.03 kB (183.16 kB JS
 + 38.87 kB CSS): the JavaScript is 0.58 kB smaller, and the CSS 0.90 kB larger
 because the last remeasure predates the plugins screen's upload panel and the
 backoffice styles that came with it, which this figure now counts. The

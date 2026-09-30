@@ -38,9 +38,9 @@ agreements explicit instead of guessed.
 database, no sidecars, no cache tier, no broker. When two designs do the same
 job, the one with fewer moving parts wins.
 
-Three direct Go dependencies (`modernc.org/sqlite`, `pgx`, `x/crypto`) and
-four on the frontend: `vue`, `vue-router`, `@vueuse/core` and
-`lucide-vue-next`. Routing on the server is `net/http`. Migrations are
+Four direct Go dependencies (`modernc.org/sqlite`, `pgx`, `x/crypto` and
+`github.com/tetratelabs/wazero`) and four on the frontend: `vue`,
+`vue-router`, `@vueuse/core` and `lucide-vue-next`. Routing on the server is `net/http`. Migrations are
 numbered `.sql` files. There is no ORM, no logging framework and no config
 library on one side, and no component library, no CSS framework and no
 state-management library on the other. None of those absences is an oversight.
@@ -53,6 +53,13 @@ from hand-written DOM calls to Vue — and they cost about 45 kB on every first
 paint, which is written down in `docs/ARCHITECTURE.md` rather than absorbed
 quietly. That was a decision, not a precedent: a fifth is the same
 conversation the first four were.
+
+The same goes for wazero, the Go side's fourth: it is what lets a plugin be
+installed from the backoffice without a rebuild, running as WebAssembly in a
+sandbox instead of as code with the server's own hands. It is pure Go, so the
+binary stays static and cross-compiles, and it costs 2.8 MB of that binary,
+also written down in `docs/ARCHITECTURE.md`. A fifth is that conversation
+again.
 
 ## Plugins: what only some instances want
 
@@ -67,6 +74,10 @@ this tree when it is built (Go only lets code inside the tree import
 seams below are a contract with code that is not here: change one and the
 instances that build on it break where this repository's tests cannot see.
 `docs/architecture/plugins.md` is the operator's view; this is the rule set.
+
+There is a second kind, installed at run time and needing no build: a
+**plugin package** (`.arcx`, see below). It uses the same seams, and the rules
+here hold for it unchanged; what differs is where the code comes from.
 
 - **The arrow points one way.** Plugins import the core; nothing under
   `internal/` or in the core frontend names a plugin, its settings, its
@@ -326,14 +337,56 @@ so locally they are still unexercised; trust the CI run, not your laptop.
 What remains genuinely unproven is time. Nothing here has carried real traffic
 for a week. Do not write anything into the README that claims otherwise.
 
+### Plugin packages: code that arrives as data
+
+A package is a zip in the `plugin_packages` table: a manifest, a backend
+compiled to WebAssembly against `sdk/`, a browser module, migrations and an
+undo. `docs/architecture/plugin-packages.md` is the operator's view. The code
+is `internal/plugin/arcx` (the format and every check on it),
+`internal/plugin/wasm` (the sandbox), and `internal/plugin` (`package.go`
+bridges a package to the seams, `hostops.go` is everything a backend can ask
+of the server, `attach.go`/`routes.go` put it on and take it off, `packages.go`
+installs, updates and removes).
+
+- **A package gets what it declared and nothing else.** Every host operation
+  checks the permission it needs, in `hostops.go`, at the call — not at
+  install. A new operation names its permission first, is added to the table
+  in the operator's document (each permission is a risk the install dialog
+  shows), and comes with a test that it is refused without it. `db` is the
+  broad one: the schema is not a stable interface, and the dialog says so.
+- **No call outlives itself.** A backend call is a fresh module instance with
+  a deadline, a memory ceiling and no state that survives; whatever it left
+  open — a transaction — is rolled back when it returns. A backend that
+  crashes or times out fails that call, and a guard that cannot answer
+  refuses. Do not add a way for one call to leave something for the next.
+- **The package is never a file.** It is bytes in the database, so a backup
+  carries it and a second instance finds it; nothing is unpacked, and a
+  removed package leaves nothing behind but the data the operator chose to
+  keep. `systembackup.PrepareRestore` is the other half of that: it builds
+  the destination's schema from the archive's own `plugin_packages`.
+- **The SDK and the host are one contract.** `sdk/` is a separate Go module
+  with no dependencies, importable by anyone writing a plugin; changing a
+  host operation or an envelope changes what every installed package does, so
+  it moves `arcx.APILevel` (manifests say what they `requires`).
+- **The browser half runs with the page's authority.** `web/ui.js` is
+  imported only when the plugin is enabled, and it can call whatever the
+  signed-in user can; the install dialog says so. `PluginHost` therefore
+  hands it nothing the page does not already have, and adds nothing to it
+  lightly.
+- **Tests build a real package.** `pkgtest.Build` compiles one from source
+  the way an author would; `internal/plugin/packages_test.go` installs it into
+  whole servers and drives it over HTTP. A test that never reaches the
+  WebAssembly proves nothing about a package.
+
 ## Measurements are claims
 
 `README.md` and `docs/ARCHITECTURE.md` carry a table of measured costs. If a
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 22.7 MB binary (this repository ships no plugin); 222.03
-kB on the wire to open the chat, against a target of 135. The target used to be 80 and the figure used to be 59.5;
+Current: 25.6 MB binary (this repository ships no plugin; 2.8 MB of it is
+the plugin runtime); 223.50 kB on the wire to open the chat, against a target
+of 135. The target used to be 80 and the figure used to be 59.5;
 adopting Vue moved both, and `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.
 
