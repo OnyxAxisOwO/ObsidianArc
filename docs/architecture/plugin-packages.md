@@ -104,7 +104,7 @@ go run ./cmd/arcpack build path/to/plugin -o demo.arcx     # 编译后端、打�
 go run ./cmd/arcpack inspect demo.arcx                      # 看它要什么
 ```
 
-**每次调用是一个全新的模块实例**（约 2.5 毫秒），互不相通，没有跨调用的内存。状态放在数据库、设置里。SDK 里一次调用的全部能力都是 `*arc.Ctx` 的方法：`Query`/`QueryRow`/`Exec`/`Tx`、`Fetch`、`Setting`、`NewID`、`Log`、`RevokeSessions`、`Notify`、`RecordSecurity`、`SetStatus`、`DeleteUser`、`CountActiveAdmins`、`RevokeCards`。`Tx` 之内的调用自动并入事务。
+**每次调用是一个全新的模块实例**（约 2.5 毫秒），互不相通，没有跨调用的内存。状态放在数据库、设置里。`time.Now()` 是服务器的真实时间，`crypto/rand` 是真随机数（wazero 默认给的是假时钟和确定的随机源，运行时已经替换掉了）；没有文件系统、没有环境变量。SDK 里一次调用的全部能力都是 `*arc.Ctx` 的方法：`Query`/`QueryRow`/`Exec`/`Tx`、`Fetch`、`Setting`、`NewID`、`Log`、`RevokeSessions`、`Notify`、`RecordSecurity`、`SetStatus`、`DeleteUser`、`CountActiveAdmins`、`RevokeCards`。`Tx` 之内的调用自动并入事务。
 
 - **守卫**：注册或登录前被调用。返回 `*arc.Refusal` 拒绝（自己定状态码、错误码、话），返回 `GuardResult{Restrict: true}` 放行但让新账户的 API 保持关闭；后端崩了或超时则按拒绝处理——检查挂了，门不能开着。
 - **路由**：拿到已经过会话和权限检查的请求。返回 `*arc.Error` 是你想给客户端看的错误；其他错误是 500，原因进日志、不给客户端。

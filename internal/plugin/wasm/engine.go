@@ -4,7 +4,8 @@
 //
 // The module is a Go program built for wasip1 as a reactor, so the plugin is
 // written in the language the rest of this project is. It sees no
-// filesystem, no network, no environment and no clock it can set: the only
+// filesystem, no network, no environment and no clock it can set (it reads the
+// host's, which is what time.Now() must answer): the only
 // way out is the import below, and what that reaches is decided by the
 // HostFunc the server hands in and the permissions the operator granted.
 //
@@ -35,6 +36,7 @@ package wasm
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -287,9 +289,18 @@ func (b *Backend) Invoke(ctx context.Context, info CallInfo, kind string, arg, o
 	call := &Call{Ctx: ctx, Info: info, State: state}
 	ctx = context.WithValue(ctx, callKey{}, call)
 
+	// The host's real clocks (read-only) and real randomness. wazero's defaults
+	// are fakes for reproducible tests: a clock that starts at 2022-01-01 and
+	// ticks a millisecond per reading, and a deterministic random source. With
+	// them a guest's time.Now() would stamp every row and work out every expiry
+	// from the wrong year, and crypto/rand would hand every call the same
+	// "random" token.
 	cfg := wazero.NewModuleConfig().
 		WithName("").
 		WithStartFunctions("_initialize").
+		WithSysWalltime().
+		WithSysNanotime().
+		WithRandSource(rand.Reader).
 		WithStdout(io.Discard).
 		WithStderr(&call.stderr)
 	mod, err := b.rt.InstantiateModule(ctx, b.compiled, cfg)

@@ -202,6 +202,33 @@ func TestTheGuestSeesNoFilesystemAndNoEnvironment(t *testing.T) {
 	}
 }
 
+// wazero's default clock is a fake that reads 2022-01-01 and ticks a
+// millisecond a reading. A plugin that stamped a row or worked out an expiry
+// with time.Now() would be wrong by years, silently, so the guest is given the
+// host's clock — and its random bytes are checked to be really random while
+// the two are in question.
+func TestTheGuestReadsTheHostsClockAndRealRandomness(t *testing.T) {
+	b := load(t, Limits{}, nil)
+	before := time.Now().UnixMilli()
+	var now int64
+	if err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "now", nil, &now, nil); err != nil {
+		t.Fatal(err)
+	}
+	if after := time.Now().UnixMilli(); now < before-1 || now > after+1 {
+		t.Fatalf("the guest's time.Now() = %d, outside the host's %d..%d", now, before, after)
+	}
+	var first, second string
+	if err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "random", nil, &first, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "random", nil, &second, nil); err != nil {
+		t.Fatal(err)
+	}
+	if first == second || len(first) != 32 {
+		t.Fatalf("the guest's random bytes repeat or are the wrong size: %q %q", first, second)
+	}
+}
+
 func TestCallsRunInParallelOnSeparateInstances(t *testing.T) {
 	b := load(t, Limits{}, func(c *Call, _ string, _ json.RawMessage) (any, error) {
 		return c.Info.Plugin, nil

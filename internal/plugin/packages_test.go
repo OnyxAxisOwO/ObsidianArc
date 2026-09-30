@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -1115,5 +1116,24 @@ func TestBundledMigrationsOffersEveryValidPackageInTheBundle(t *testing.T) {
 	}
 	if got := plugin.BundledMigrations(""); len(got) != 0 {
 		t.Errorf("no bundle directory configured offered %d sources", len(got))
+	}
+}
+
+// The runtime's defaults are fakes — a clock that reads 2022-01-01 and a
+// deterministic random source — and a plugin could not tell: its rows would be
+// stamped with the wrong year and its tokens would repeat. Checked through a
+// whole server, where the row is written.
+func TestABackendStampsRowsWithTheRealTime(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	before := time.Now().UnixMilli()
+	a.mustDo(http.MethodPost, "/api/admin/x/demo/things", map[string]string{"name": "clock"}, http.StatusCreated)
+	after := time.Now().UnixMilli()
+	var created int64
+	if err := a.in.DB.QueryRow(t.Context(), `SELECT created_at FROM demo_things WHERE name = 'clock'`).Scan(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created < before-1000 || created > after+1000 {
+		t.Fatalf("the backend stamped %s; the server's clock says %s", time.UnixMilli(created).UTC(), time.UnixMilli(before).UTC())
 	}
 }

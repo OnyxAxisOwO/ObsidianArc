@@ -4,8 +4,11 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
+	"time"
 	"unsafe"
 )
 
@@ -97,6 +100,14 @@ func handle(kind string, ctx map[string]any, arg json.RawMessage) []byte {
 		return ok("read it")
 	case "env":
 		return ok(len(os.Environ()))
+	case "now":
+		return ok(time.Now().UnixMilli())
+	case "random":
+		b := make([]byte, 16)
+		if _, err := rand.Read(b); err != nil {
+			return fail("random", err.Error())
+		}
+		return ok(hex.EncodeToString(b))
 	case "guesterr":
 		return fail("nope", "the guest says no")
 	case "hosterr":
