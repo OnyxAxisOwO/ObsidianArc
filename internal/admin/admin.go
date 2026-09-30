@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/checkin"
 	"net/http"
 	"strings"
 	"sync"
@@ -93,6 +94,8 @@ type Handlers struct {
 	Notify *notify.Store
 	// The bonus bars; nil on a server built without them, which answers 404.
 	Bonus *bonus.Store
+	// The check-in rewards, edited from the backoffice.
+	Checkin *checkin.Service
 	// SystemBackup covers the complete instance and is restricted to the
 	// single super administrator rather than delegated settings operators.
 	SystemBackup *systembackup.Service
@@ -325,6 +328,8 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/usage/breakdown", protected("usage", h.usageBreakdown))
 	mux.Handle("GET /api/admin/usage/records", protected("usage", h.usageRecords))
 	mux.Handle("POST /api/admin/usage/reset", protected("usage", h.resetQuota))
+	mux.Handle("GET /api/admin/checkin", protected("usage", h.checkinSettings))
+	mux.Handle("PUT /api/admin/checkin", protected("usage", h.saveCheckinSettings))
 	mux.Handle("GET /api/admin/bonus/bars", protected("usage", h.bonusBars))
 	mux.Handle("POST /api/admin/bonus/bars", protected("usage", h.createBonusBar))
 	mux.Handle("PUT /api/admin/bonus/bars/{id}", protected("usage", h.updateBonusBar))

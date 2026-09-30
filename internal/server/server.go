@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/checkin"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -181,6 +182,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	quotaService := quota.NewService(db, quota.NewStore(db), settingsService)
 	bonusStore := bonus.NewStore(db)
 	quotaService.SetBonus(bonusStore)
+	checkinService := checkin.NewService(db, settingsService, bonusStore, cards)
 	projects := project.NewStore(db)
 
 	chatService := chat.NewService(db, conversations, models, registry, settingsService)
@@ -639,6 +641,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	cardHandlers.Routes(mux)
 	bonusHandlers := bonus.NewHandlers(bonusStore)
 	bonusHandlers.Routes(mux)
+	checkinHandlers := checkin.NewHandlers(checkinService)
+	checkinHandlers.VerificationRequired = authService.VerificationRequired
+	checkinHandlers.Routes(mux)
 
 	// An account's own invite code and who has used it. Behind
 	// auth.RequireUser alone, like notify's and card's own account-facing
@@ -1004,6 +1009,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	adminHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	adminHandlers.Notify = notifyStore
 	adminHandlers.Bonus = bonusStore
+	adminHandlers.Checkin = checkinService
 	adminHandlers.SystemBackup = instanceBackup
 
 	// The compiled-in plugins, attached now: every module they reach is
@@ -1071,6 +1077,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	usageHandlers.Routes(consoleAPI)
 	cardHandlers.Routes(consoleAPI)
 	bonusHandlers.Routes(consoleAPI)
+	checkinHandlers.Routes(consoleAPI)
 	inviteHandlers.Routes(consoleAPI)
 	backupHandlers.Routes(consoleAPI)
 	projectHandlers.Routes(consoleAPI)

@@ -210,6 +210,12 @@ const (
 	AdminsBypassQuota       = "quota.admins_bypass"
 	UsageDisplay            = "quota.usage_display"
 	QuotaMaxConcurrent      = "quota.max_concurrent"
+	// The check-in feature: whether it is on, the time zone a "day" is counted
+	// in, and its rewards as one JSON document the administrator's page edits
+	// through its own endpoint (internal/checkin), not the generic settings one.
+	CheckinEnabled  = "checkin.enabled"
+	CheckinTimezone = "checkin.timezone"
+	CheckinConfig   = "checkin.config"
 	// How many times one work-surface turn may call the model. Each round
 	// is a real provider request that a tool result made necessary, so this
 	// is the ceiling on what a single question can cost.
@@ -718,6 +724,9 @@ var Defaults = map[string]string{
 	AdminsBypassQuota:       "true",
 	UsageDisplay:            UsageAbsolute,
 	QuotaMaxConcurrent:      "4",
+	CheckinEnabled:          "false",
+	CheckinTimezone:         "Asia/Shanghai",
+	CheckinConfig:           "",
 	ChatAgentMaxRounds:      "8",
 	LandingMode:             LandingLogin,
 	LandingIntro:            "",

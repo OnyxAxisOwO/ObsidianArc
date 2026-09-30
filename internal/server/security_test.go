@@ -203,6 +203,8 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodGet, "/api/admin/usage/breakdown?dimension=user", nil},
 		{http.MethodGet, "/api/admin/usage/records", nil},
 		{http.MethodPost, "/api/admin/usage/reset", map[string]any{"scope": "user", "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}},
+		{http.MethodGet, "/api/admin/checkin", nil},
+		{http.MethodPut, "/api/admin/checkin", map[string]any{"enabled": true, "timezone": "UTC"}},
 		{http.MethodGet, "/api/admin/bonus/bars", nil},
 		{http.MethodPost, "/api/admin/bonus/bars", map[string]any{"name": "X"}},
 		{http.MethodPut, "/api/admin/bonus/bars/01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{"name": "X"}},
