@@ -76,6 +76,8 @@ func (r *GuardRefusal) Unwrap() error { return r.Err }
 // the server takes its first request; guards run in the order they were
 // added.
 func (s *Service) AddGuard(action string, g Guard) {
+	s.extMu.Lock()
+	defer s.extMu.Unlock()
 	switch action {
 	case GuardRegister:
 		s.signupGuards = append(s.signupGuards, g)
@@ -84,6 +86,53 @@ func (s *Service) AddGuard(action string, g Guard) {
 	default:
 		panic("auth: no such guard action " + action)
 	}
+}
+
+// ReplaceGuards swaps everything plugin stood in front of the two doors for
+// register and login, in one step, so an update of a plugin that guards
+// sign-up never leaves the door unguarded between taking the old check away
+// and standing the new one there.
+func (s *Service) ReplaceGuards(plugin string, register, login []Guard) {
+	s.extMu.Lock()
+	defer s.extMu.Unlock()
+	swap := func(current, added []Guard) []Guard {
+		out := make([]Guard, 0, len(current)+len(added))
+		for _, g := range current {
+			if g.Plugin != plugin {
+				out = append(out, g)
+			}
+		}
+		return append(out, added...)
+	}
+	s.signupGuards, s.loginGuards = swap(s.signupGuards, register), swap(s.loginGuards, login)
+}
+
+// RemoveGuards takes every guard plugin stood in front of either door away,
+// for a plugin that is being removed while the server runs.
+func (s *Service) RemoveGuards(plugin string) {
+	s.extMu.Lock()
+	defer s.extMu.Unlock()
+	drop := func(guards []Guard) []Guard {
+		kept := make([]Guard, 0, len(guards))
+		for _, g := range guards {
+			if g.Plugin != plugin {
+				kept = append(kept, g)
+			}
+		}
+		return kept
+	}
+	s.signupGuards, s.loginGuards = drop(s.signupGuards), drop(s.loginGuards)
+}
+
+// guardsFor is a copy of the guards in front of action, so a guard can run —
+// and take as long as it likes — without the list being held.
+func (s *Service) guardsFor(action string) []Guard {
+	s.extMu.RLock()
+	defer s.extMu.RUnlock()
+	if action == GuardRegister {
+		return append([]Guard(nil), s.signupGuards...)
+	}
+	return append([]Guard(nil), s.loginGuards...)
 }
 
 // SetPluginGate is how the server tells sign-up and sign-in which plugins are
@@ -99,8 +148,8 @@ type GuardInfo struct {
 // GuardsOf lists the guards plugin stood in front of either door.
 func (s *Service) GuardsOf(plugin string) []GuardInfo {
 	var out []GuardInfo
-	for action, guards := range map[string][]Guard{GuardRegister: s.signupGuards, GuardLogin: s.loginGuards} {
-		for _, g := range guards {
+	for _, action := range []string{GuardRegister, GuardLogin} {
+		for _, g := range s.guardsFor(action) {
 			if g.Plugin == plugin {
 				out = append(out, GuardInfo{Action: action, Name: g.Name})
 			}
@@ -112,9 +161,9 @@ func (s *Service) GuardsOf(plugin string) []GuardInfo {
 
 // runGuards asks each guard in turn and stops at the first refusal. The
 // strongest restriction any of them asked for is what comes back.
-func (s *Service) runGuards(ctx context.Context, guards []Guard, action string, tokens map[string]string, ip, username string) (Verdict, error) {
+func (s *Service) runGuards(ctx context.Context, action string, tokens map[string]string, ip, username string) (Verdict, error) {
 	var out Verdict
-	for _, g := range guards {
+	for _, g := range s.guardsFor(action) {
 		if !s.gate.Allows(g.Plugin) {
 			continue
 		}
@@ -153,6 +202,8 @@ func (s *Service) runGuards(ctx context.Context, guards []Guard, action string, 
 // plugin is advertised whether or not it has anything to say, and a
 // switched-off one is not — its code stays on the server.
 func (h *Handlers) Extend(name string, fn func(firstAccount bool) map[string]any) {
+	h.extMu.Lock()
+	defer h.extMu.Unlock()
 	if h.extensions == nil {
 		h.extensions = map[string]func(bool) map[string]any{}
 	}
@@ -162,23 +213,41 @@ func (h *Handlers) Extend(name string, fn func(firstAccount bool) map[string]any
 // Advertise is Extend with nothing to say, and it never replaces a block a
 // plugin has already registered.
 func (h *Handlers) Advertise(name string) {
-	if _, ok := h.extensions[name]; !ok {
+	h.extMu.RLock()
+	_, ok := h.extensions[name]
+	h.extMu.RUnlock()
+	if !ok {
 		h.Extend(name, nil)
 	}
 }
 
+// Unextend takes a plugin's block away, for one being removed while the
+// server runs.
+func (h *Handlers) Unextend(name string) {
+	h.extMu.Lock()
+	defer h.extMu.Unlock()
+	delete(h.extensions, name)
+}
+
 func (h *Handlers) pluginConfig(firstAccount bool) map[string]any {
-	out := make(map[string]any, len(h.extensions))
-	names := make([]string, 0, len(h.extensions))
-	for name := range h.extensions {
+	h.extMu.RLock()
+	fns := make(map[string]func(bool) map[string]any, len(h.extensions))
+	for name, fn := range h.extensions {
 		if h.service.gate.Allows(name) {
-			names = append(names, name)
+			fns[name] = fn
 		}
+	}
+	h.extMu.RUnlock()
+
+	out := make(map[string]any, len(fns))
+	names := make([]string, 0, len(fns))
+	for name := range fns {
+		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
 		block := map[string]any{}
-		if fn := h.extensions[name]; fn != nil {
+		if fn := fns[name]; fn != nil {
 			if got := fn(firstAccount); got != nil {
 				block = got
 			}
@@ -202,15 +271,28 @@ const (
 // registration, because it is a setting an operator changes while the
 // process runs. A field with no rule is optional.
 func (s *Service) SetFieldRule(key string, rule func() string) {
+	s.extMu.Lock()
+	defer s.extMu.Unlock()
 	if s.fieldRules == nil {
 		s.fieldRules = map[string]func() string{}
 	}
 	s.fieldRules[key] = rule
 }
 
+// RemoveFieldRule forgets how sign-up treated a field, for a plugin being
+// removed while the server runs.
+func (s *Service) RemoveFieldRule(key string) {
+	s.extMu.Lock()
+	defer s.extMu.Unlock()
+	delete(s.fieldRules, key)
+}
+
 // FieldRule is the current rule for key, as the forms should present it.
 func (s *Service) FieldRule(key string) string {
-	if rule := s.fieldRules[key]; rule != nil {
+	s.extMu.RLock()
+	rule := s.fieldRules[key]
+	s.extMu.RUnlock()
+	if rule != nil {
 		switch value := rule(); value {
 		case FieldOff, FieldOptional, FieldRequired:
 			return value

@@ -1,0 +1,591 @@
+package plugin
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
+	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
+)
+
+// What a backend can ask of the server, one call at a time. Each family of
+// calls needs the permission the manifest declared for it (see arcx); a call
+// without one is refused with the code "permission_denied", which the SDK
+// turns into a value a plugin can test for.
+//
+// Nothing here hands a backend a handle: a transaction, a request, a session
+// exist for the length of one call and are closed when it ends, whatever the
+// backend did with them.
+
+// callState is what the host functions of one invocation share.
+type callState struct {
+	tx      *database.Tx
+	console *console.Runtime
+}
+
+// finish ends whatever the invocation left open. A transaction the backend
+// did not commit is rolled back: committing is something it has to have said.
+func (st *callState) finish() {
+	if st.tx != nil {
+		_ = st.tx.Rollback()
+		st.tx = nil
+	}
+}
+
+// The core settings a backend may read even though it does not own them: what
+// a sign-up check needs to know about the door it stands at, and nothing that
+// is a credential.
+var readableCoreSettings = map[string]bool{
+	settings.RegistrationCaptchaMode: true,
+	settings.SiteName:                true,
+}
+
+const (
+	// A backend that selects a million rows gets an error, not an outage.
+	maxRows = 20000
+	// A single outgoing response, kept in memory and handed to the guest.
+	maxFetchBody = 4 << 20
+)
+
+func denied(perm string) error {
+	return &wasm.HostError{Code: "permission_denied", Message: "the plugin's manifest does not declare the " + perm + " permission"}
+}
+
+func badArg(format string, args ...any) error {
+	return &wasm.HostError{Code: "bad_argument", Message: fmt.Sprintf(format, args...)}
+}
+
+// hostFunc is the answer to every call l's backend makes.
+func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
+	man := l.pkg.Manifest
+	need := func(perm string) error {
+		if !man.Has(perm) {
+			return denied(perm)
+		}
+		return nil
+	}
+	ownKeys := map[string]bool{}
+	for _, s := range man.Settings {
+		ownKeys[s.Key] = true
+	}
+
+	return func(c *wasm.Call, op string, raw json.RawMessage) (any, error) {
+		st, _ := c.State.(*callState)
+		if st == nil {
+			st = &callState{}
+			c.State = st
+		}
+		switch op {
+		case "log":
+			var a struct {
+				Level string         `json:"level"`
+				Msg   string         `json:"msg"`
+				Attrs map[string]any `json:"attrs"`
+			}
+			if err := json.Unmarshal(raw, &a); err != nil {
+				return nil, badArg("log: %v", err)
+			}
+			attrs := []any{"plugin", l.name}
+			for k, v := range a.Attrs {
+				attrs = append(attrs, k, v)
+			}
+			level := slog.LevelInfo
+			switch a.Level {
+			case "debug":
+				level = slog.LevelDebug
+			case "warn":
+				level = slog.LevelWarn
+			case "error":
+				level = slog.LevelError
+			}
+			slog.Log(c.Ctx, level, truncate(a.Msg, 1000), attrs...)
+			return nil, nil
+
+		case "id.new":
+			return id.New(), nil
+
+		case "client.public_url":
+			if m.host == nil || m.host.PublicURL == nil {
+				return "", nil
+			}
+			return m.host.PublicURL(), nil
+
+		case "settings.get":
+			var a struct {
+				Key string `json:"key"`
+			}
+			if err := json.Unmarshal(raw, &a); err != nil {
+				return nil, badArg("settings.get: %v", err)
+			}
+			if !ownKeys[a.Key] && !readableCoreSettings[a.Key] {
+				return nil, &wasm.HostError{Code: "permission_denied", Message: "a plugin reads its own settings and a few core ones, not " + a.Key}
+			}
+			return m.settings.Get(a.Key), nil
+
+		case "db.begin", "db.commit", "db.rollback", "db.query", "db.exec":
+			if err := need(arcx.PermDB); err != nil {
+				return nil, err
+			}
+			return m.dbOp(c, st, op, raw)
+
+		case "http.fetch":
+			if err := need(arcx.PermNetwork); err != nil {
+				return nil, err
+			}
+			if st.tx != nil {
+				return nil, &wasm.HostError{Code: "tx_open", Message: "an outgoing request cannot be made while a transaction is open"}
+			}
+			return m.fetch(c.Ctx, raw)
+
+		case "sessions.revoke_user":
+			if err := need(arcx.PermSessions); err != nil {
+				return nil, err
+			}
+			var a struct {
+				UserID string `json:"user_id"`
+				TX     bool   `json:"tx"`
+			}
+			if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" {
+				return nil, badArg("sessions.revoke_user needs a user_id")
+			}
+			q, err := m.queryer(st, a.TX)
+			if err != nil {
+				return nil, err
+			}
+			return nil, m.host.Auth.Sessions().DeleteByUser(c.Ctx, q, a.UserID)
+
+		case "notify.push":
+			if err := need(arcx.PermNotify); err != nil {
+				return nil, err
+			}
+			var a struct {
+				UserID string         `json:"user_id"`
+				Kind   string         `json:"kind"`
+				Params map[string]any `json:"params"`
+				Link   string         `json:"link"`
+				TX     bool           `json:"tx"`
+			}
+			if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" || a.Kind == "" {
+				return nil, badArg("notify.push needs a user_id and a kind")
+			}
+			q, err := m.queryer(st, a.TX)
+			if err != nil {
+				return nil, err
+			}
+			return nil, m.host.Notify.Push(c.Ctx, q, notify.Notification{
+				Audience: notify.AudienceUser, UserID: a.UserID, Kind: a.Kind, Params: a.Params, Link: a.Link,
+			})
+
+		case "security.record":
+			if err := need(arcx.PermSecurityLog); err != nil {
+				return nil, err
+			}
+			var a struct {
+				Event         string `json:"event"`
+				Severity      string `json:"severity"`
+				UserID        string `json:"user_id"`
+				Username      string `json:"username"`
+				ActorID       string `json:"actor_id"`
+				ActorUsername string `json:"actor_username"`
+				IP            string `json:"ip"`
+				Source        string `json:"source"`
+				Decision      string `json:"decision"`
+				Reason        string `json:"reason"`
+				TX            bool   `json:"tx"`
+			}
+			if err := json.Unmarshal(raw, &a); err != nil || a.Event == "" {
+				return nil, badArg("security.record needs an event")
+			}
+			severity := securityevents.Severity(a.Severity)
+			switch severity {
+			case "", securityevents.SeverityInfo, securityevents.SeverityWarning, securityevents.SeverityDanger:
+			default:
+				return nil, badArg("security.record: severity must be info, warning or danger")
+			}
+			q, err := m.queryer(st, a.TX)
+			if err != nil {
+				return nil, err
+			}
+			return nil, m.host.Security.Record(c.Ctx, q, securityevents.Event{
+				Event: a.Event, Severity: severity, UserID: a.UserID, Username: a.Username,
+				ActorID: a.ActorID, ActorUsername: a.ActorUsername, IP: a.IP, Source: a.Source,
+				Decision: a.Decision, Reason: truncate(a.Reason, 500),
+			})
+
+		case "users.count_active_admins", "users.set_status", "users.delete":
+			if err := need(arcx.PermUsers); err != nil {
+				return nil, err
+			}
+			return m.userOp(c, st, op, raw)
+
+		case "cards.revoke_available":
+			if err := need(arcx.PermCards); err != nil {
+				return nil, err
+			}
+			var a struct {
+				UserID string `json:"user_id"`
+				Count  int    `json:"count"`
+				TX     bool   `json:"tx"`
+			}
+			if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" || a.Count < 0 {
+				return nil, badArg("cards.revoke_available needs a user_id and a count")
+			}
+			q, err := m.queryer(st, a.TX)
+			if err != nil {
+				return nil, err
+			}
+			revoked, err := m.host.Cards.RevokeAvailable(c.Ctx, q, a.UserID, a.Count)
+			if err != nil {
+				return nil, &wasm.HostError{Code: "cards", Message: err.Error()}
+			}
+			return revoked, nil
+
+		case "console.call", "console.resolve_user":
+			if err := need(arcx.PermConsole); err != nil {
+				return nil, err
+			}
+			if st.console == nil {
+				return nil, &wasm.HostError{Code: "no_console", Message: "this call is not running a console command"}
+			}
+			return m.consoleOp(st.console, op, raw)
+		}
+		return nil, &wasm.HostError{Code: "unknown_op", Message: "the server has no host call named " + op}
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+// queryer is the database the call is talking to: the open transaction when
+// the backend said its statement belongs to it, the pool otherwise.
+func (m *Manager) queryer(st *callState, useTx bool) (database.Queryer, error) {
+	if useTx {
+		if st.tx == nil {
+			return nil, &wasm.HostError{Code: "no_tx", Message: "there is no open transaction"}
+		}
+		return st.tx, nil
+	}
+	return m.db, nil
+}
+
+func (m *Manager) dbOp(c *wasm.Call, st *callState, op string, raw json.RawMessage) (any, error) {
+	switch op {
+	case "db.begin":
+		if st.tx != nil {
+			return nil, &wasm.HostError{Code: "tx_open", Message: "transactions do not nest"}
+		}
+		tx, err := m.db.Begin(c.Ctx)
+		if err != nil {
+			return nil, err
+		}
+		st.tx = tx
+		return nil, nil
+	case "db.commit", "db.rollback":
+		if st.tx == nil {
+			return nil, &wasm.HostError{Code: "no_tx", Message: "there is no open transaction"}
+		}
+		tx := st.tx
+		st.tx = nil
+		if op == "db.rollback" {
+			return nil, tx.Rollback()
+		}
+		return nil, tx.Commit()
+	}
+
+	var a struct {
+		SQL  string `json:"sql"`
+		Args []any  `json:"args"`
+		TX   bool   `json:"tx"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&a); err != nil || strings.TrimSpace(a.SQL) == "" {
+		return nil, badArg("%s needs a statement", op)
+	}
+	args, err := bindArgs(a.Args)
+	if err != nil {
+		return nil, badArg("%v", err)
+	}
+	q, err := m.queryer(st, a.TX)
+	if err != nil {
+		return nil, err
+	}
+	if op == "db.exec" {
+		res, err := q.Exec(c.Ctx, a.SQL, args...)
+		if err != nil {
+			return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
+		}
+		n, _ := res.RowsAffected()
+		return map[string]int64{"rows_affected": n}, nil
+	}
+	rows, err := q.Query(c.Ctx, a.SQL, args...)
+	if err != nil {
+		return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
+	}
+	defer rows.Close()
+	return rowsToJSON(rows)
+}
+
+// bindArgs turns JSON values into what the driver binds. Numbers arrive as
+// json.Number so a 64-bit integer is not rounded on the way through.
+func bindArgs(in []any) ([]any, error) {
+	out := make([]any, len(in))
+	for i, v := range in {
+		switch x := v.(type) {
+		case json.Number:
+			if n, err := strconv.ParseInt(x.String(), 10, 64); err == nil {
+				out[i] = n
+			} else if f, err := x.Float64(); err == nil {
+				out[i] = f
+			} else {
+				return nil, fmt.Errorf("argument %d is not a number", i+1)
+			}
+		case map[string]any:
+			enc, ok := x["$b64"].(string)
+			if !ok {
+				return nil, fmt.Errorf("argument %d is an object", i+1)
+			}
+			b, err := base64.StdEncoding.DecodeString(enc)
+			if err != nil {
+				return nil, fmt.Errorf("argument %d: %v", i+1, err)
+			}
+			out[i] = b
+		case []any:
+			return nil, fmt.Errorf("argument %d is a list", i+1)
+		default:
+			out[i] = v
+		}
+	}
+	return out, nil
+}
+
+func rowsToJSON(rows *sql.Rows) (any, error) {
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	data := [][]any{}
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
+		}
+		for i, v := range vals {
+			switch x := v.(type) {
+			case []byte:
+				vals[i] = map[string]string{"$b64": base64.StdEncoding.EncodeToString(x)}
+			case time.Time:
+				vals[i] = x.UTC().Format(time.RFC3339Nano)
+			}
+		}
+		data = append(data, vals)
+		if len(data) > maxRows {
+			return nil, &wasm.HostError{Code: "too_many_rows", Message: fmt.Sprintf("a query may return at most %d rows", maxRows)}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
+	}
+	return map[string]any{"columns": cols, "rows": data}, nil
+}
+
+// fetchClient is what backends make their outgoing requests with. It refuses
+// the addresses no plugin has a use for and every server has reason to
+// guard: the link-local range where cloud hosts keep their credentials.
+var fetchClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 10 * time.Second,
+			Control: func(_, address string, _ syscall.RawConn) error {
+				host, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return err
+				}
+				ip := net.ParseIP(host)
+				if ip != nil && (ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()) {
+					return errors.New("that address is not reachable from a plugin")
+				}
+				return nil
+			},
+		}).DialContext,
+		MaxIdleConns:          16,
+		IdleConnTimeout:       60 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+	},
+	CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		return nil
+	},
+}
+
+func (m *Manager) fetch(ctx context.Context, raw json.RawMessage) (any, error) {
+	var a struct {
+		Method    string            `json:"method"`
+		URL       string            `json:"url"`
+		Header    map[string]string `json:"header"`
+		Body      string            `json:"body"`
+		TimeoutMS int64             `json:"timeout_ms"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return nil, badArg("http.fetch: %v", err)
+	}
+	method := strings.ToUpper(a.Method)
+	switch method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD":
+	default:
+		return nil, badArg("http.fetch: method %q is not supported", a.Method)
+	}
+	u, err := url.Parse(a.URL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, badArg("http.fetch: %q is not an http or https address", a.URL)
+	}
+	timeout := time.Duration(a.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	timeout = min(timeout, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var body io.Reader
+	if a.Body != "" {
+		b, err := base64.StdEncoding.DecodeString(a.Body)
+		if err != nil {
+			return nil, badArg("http.fetch: the body is not base64")
+		}
+		body = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
+	if err != nil {
+		return nil, badArg("http.fetch: %v", err)
+	}
+	for k, v := range a.Header {
+		req.Header.Set(k, v)
+	}
+	res, err := fetchClient.Do(req)
+	if err != nil {
+		return nil, &wasm.HostError{Code: "network", Message: err.Error()}
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(res.Body, maxFetchBody+1))
+	if err != nil {
+		return nil, &wasm.HostError{Code: "network", Message: err.Error()}
+	}
+	if len(data) > maxFetchBody {
+		return nil, &wasm.HostError{Code: "too_large", Message: "the response is larger than the plugin may read"}
+	}
+	header := map[string]string{}
+	for k := range res.Header {
+		header[k] = res.Header.Get(k)
+	}
+	return map[string]any{"status": res.StatusCode, "header": header, "body": base64.StdEncoding.EncodeToString(data)}, nil
+}
+
+// userOp is what a plugin that ends accounts is given: the operations
+// themselves, done by the rules the backoffice's own are, rather than the
+// statements to write — what "the last administrator" means, or what a delete
+// cascades to, is the core's to say.
+func (m *Manager) userOp(c *wasm.Call, st *callState, op string, raw json.RawMessage) (any, error) {
+	var a struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		TX     bool   `json:"tx"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return nil, badArg("%s: %v", op, err)
+	}
+	q, err := m.queryer(st, a.TX)
+	if err != nil {
+		return nil, err
+	}
+	switch op {
+	case "users.count_active_admins":
+		n, err := m.users.CountActiveAdmins(c.Ctx, q, a.ID)
+		if err != nil {
+			return nil, &wasm.HostError{Code: "users", Message: err.Error()}
+		}
+		return n, nil
+	case "users.set_status":
+		status := user.Status(a.Status)
+		if a.ID == "" || (status != user.StatusActive && status != user.StatusDisabled) {
+			return nil, badArg("users.set_status needs an id and a status of active or disabled")
+		}
+		if _, err := m.users.UpdateAdminFields(c.Ctx, q, a.ID, user.AdminUpdate{Status: &status}); err != nil {
+			return nil, &wasm.HostError{Code: "users", Message: err.Error()}
+		}
+		return nil, nil
+	default:
+		if a.ID == "" {
+			return nil, badArg("users.delete needs an id")
+		}
+		if err := m.users.Delete(c.Ctx, q, a.ID); err != nil {
+			return nil, &wasm.HostError{Code: "users", Message: err.Error()}
+		}
+		return nil, nil
+	}
+}
+
+func (m *Manager) consoleOp(rt *console.Runtime, op string, raw json.RawMessage) (any, error) {
+	switch op {
+	case "console.resolve_user":
+		var a struct {
+			Ref string `json:"ref"`
+		}
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, badArg("console.resolve_user: %v", err)
+		}
+		id, err := console.ResolveUser(rt, a.Ref)
+		if err != nil {
+			return nil, &wasm.HostError{Code: "console", Message: err.Error()}
+		}
+		return id, nil
+	default:
+		var a struct {
+			Method string `json:"method"`
+			Path   string `json:"path"`
+			Body   any    `json:"body"`
+		}
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, badArg("console.call: %v", err)
+		}
+		if !strings.HasPrefix(a.Path, "/api/admin/") {
+			return nil, badArg("console.call reaches administrative endpoints only")
+		}
+		data, _, err := rt.Call(a.Method, a.Path, a.Body)
+		if err != nil {
+			return nil, &wasm.HostError{Code: "console", Message: err.Error()}
+		}
+		return map[string]any{"data": data}, nil
+	}
+}

@@ -160,6 +160,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	if err := plugins.Load(ctx); err != nil {
 		return nil, err
 	}
+	// What the deployment ships with, installed or updated or taken over
+	// before the first request: a plugin the instance ran under an earlier
+	// build must not go a moment without.
+	if err := plugins.LoadBundled(ctx, cfg.PluginDir); err != nil {
+		return nil, err
+	}
 	pluginGate := plugins.Gate()
 	settingsService.SetPluginGate(pluginGate)
 	users.SetPluginGate(pluginGate)
@@ -1014,6 +1020,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, err
 	}
 	plugins.Attach(host)
+	adminHandlers.SetFallback(plugins.ServePlugins)
 	plugin.NewHandlers(plugins, authService, settingsService, func(r *http.Request) string {
 		return httpx.ClientIP(r, proxyTrust)
 	}).Mount(adminHandlers)
@@ -1098,6 +1105,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			}
 		},
 	})
+	// The commands of plugins installed as packages are added to it now, and
+	// as they arrive and leave.
+	plugins.AttachConsole(consoleEngine)
 	// The work surface's tools are the console's own commands, filtered to
 	// what the account may run. Set here rather than at construction
 	// because the engine is built from the mux the handlers above are
@@ -1161,9 +1171,17 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 	}
 
-	// Anything under /api that no module claimed is a client bug, and should
-	// read as one instead of quietly returning the SPA shell.
+	// A plugin's browser half, while the plugin is on: the files of its
+	// package's web/ directory.
+	mux.HandleFunc("GET /api/x/{name}/web/{path...}", plugins.Assets)
+
+	// Anything under /api that no module claimed is either an endpoint of a
+	// plugin installed as a package, or a client bug, and should read as one
+	// instead of quietly returning the SPA shell.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		if plugins.ServePlugins(w, r) {
+			return
+		}
 		httpx.WriteError(w, r, httpx.NotFound("No such endpoint."))
 	})
 

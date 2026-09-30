@@ -311,7 +311,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	for key, value := range body {
-		if !hasPermission(auth.MustUser(r.Context()), settingPermission(key)) {
+		if !hasPermission(auth.MustUser(r.Context()), h.settingPermission(key)) {
 			return permissionDenied()
 		}
 		if !h.writable(key) {
@@ -327,7 +327,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	// challenge after would fail for everybody with nothing on screen to say
 	// why. An empty value keeps what is stored, the way a provider's API key
 	// field does; clearing one is done by switching the challenge off.
-	for _, key := range secretKeys() {
+	for _, key := range h.secretKeys() {
 		if value, present := body[key]; present && (value == "" || value == secretMask) {
 			delete(body, key)
 		}
@@ -481,7 +481,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 	skipped := []string{}
 
 	for key, value := range body {
-		if !hasPermission(auth.MustUser(r.Context()), settingPermission(key)) {
+		if !hasPermission(auth.MustUser(r.Context()), h.settingPermission(key)) {
 			return permissionDenied()
 		}
 		if !h.writable(key) || len(value) > 8*1024 {
@@ -782,6 +782,18 @@ func secretKeys() []string {
 	return out
 }
 
+// secretKeys is the same list for this server: the compiled-in ones, and
+// those of plugins installed while it runs.
+func (h *Handlers) secretKeys() []string {
+	out := append([]string(nil), secretSettings...)
+	for _, d := range h.settings.AllDefinitions() {
+		if d.Secret {
+			out = append(out, d.Key)
+		}
+	}
+	return out
+}
+
 // Settings that are credentials. They are written through this endpoint and
 // never read back out of it.
 var secretSettings = []string{
@@ -804,12 +816,14 @@ const secretMask = "••••••••"
 // reads, so the mask is not about them — it is about the response existing at
 // all: a secret in a JSON body is a secret in a proxy log, a browser cache
 // and whatever the operator pasted the response into.
-func redacted(all map[string]string) map[string]string {
+func redacted(all map[string]string) map[string]string { return redactedWith(all, secretKeys()) }
+
+func redactedWith(all map[string]string, secrets []string) map[string]string {
 	out := make(map[string]string, len(all))
 	for key, value := range all {
 		out[key] = value
 	}
-	for _, key := range secretKeys() {
+	for _, key := range secrets {
 		if out[key] != "" {
 			out[key] = secretMask
 		}

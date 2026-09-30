@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -163,6 +164,11 @@ type Store struct {
 	db   *database.DB
 	gate plugingate.Gate
 	set  atomic.Pointer[fieldSet]
+
+	// The fields plugins installed while the server runs added; see
+	// AddPluginFields.
+	dynMu   sync.Mutex
+	dynamic []Field
 }
 
 func NewStore(db *database.DB) *Store { return &Store{db: db} }

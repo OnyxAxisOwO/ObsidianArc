@@ -101,16 +101,120 @@ type fieldSet struct {
 	joined sync.Map
 }
 
-func buildFieldSet(gate plugingate.Gate) *fieldSet {
+func (s *Store) buildFieldSet() *fieldSet {
 	fieldsFrozen.Store(true)
 	set := &fieldSet{columns: baseColumns}
-	for _, f := range fields {
-		if gate.Allows(f.Plugin) {
+	s.dynMu.Lock()
+	all := append(append([]Field(nil), fields...), s.dynamic...)
+	s.dynMu.Unlock()
+	for _, f := range all {
+		if s.gate.Allows(f.Plugin) {
 			set.list = append(set.list, f)
 			set.columns += ", " + f.Key
 		}
 	}
 	return set
+}
+
+// AddPluginFields adds the fields of a plugin installed while the server
+// runs, replacing what the same plugin had added before — an update — in one
+// step. Compiled-in fields are package state, registered once from init and
+// frozen when the first store reads; these belong to one store, because an
+// install can be undone and because a process that builds several servers
+// must not show one's install to the next. Nothing changes unless every
+// field can be added, and the store's column list is rebuilt before the call
+// returns — the plugin's migration has to have run first, since the next
+// query names the columns.
+func (s *Store) AddPluginFields(plugin string, added []Field) error {
+	s.dynMu.Lock()
+	if err := s.checkPluginFields(plugin, added); err != nil {
+		s.dynMu.Unlock()
+		return err
+	}
+	kept := make([]Field, 0, len(s.dynamic)+len(added))
+	for _, f := range s.dynamic {
+		if f.Plugin != plugin {
+			kept = append(kept, f)
+		}
+	}
+	for _, f := range added {
+		f.Plugin = plugin
+		kept = append(kept, f)
+	}
+	s.dynamic = kept
+	s.dynMu.Unlock()
+	s.RefreshFields()
+	return nil
+}
+
+// CheckPluginFields is AddPluginFields without adding: whether it would be
+// accepted.
+func (s *Store) CheckPluginFields(plugin string, added []Field) error {
+	s.dynMu.Lock()
+	defer s.dynMu.Unlock()
+	return s.checkPluginFields(plugin, added)
+}
+
+// checkPluginFields: the caller holds dynMu.
+func (s *Store) checkPluginFields(plugin string, added []Field) error {
+	for _, f := range added {
+		if err := s.checkNewField(f, plugin); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkNewField is DefineField's checks, as errors. The caller holds dynMu.
+func (s *Store) checkNewField(f Field, plugin string) error {
+	if !fieldKeyRE.MatchString(f.Key) {
+		return fmt.Errorf("user: invalid field key %s", f.Key)
+	}
+	for _, core := range strings.Split(baseColumns, ",") {
+		if strings.TrimSpace(core) == f.Key {
+			return fmt.Errorf("user: field %s is a core column", f.Key)
+		}
+	}
+	for _, other := range fields {
+		if other.Key == f.Key {
+			return fmt.Errorf("user: field %s is already defined", f.Key)
+		}
+	}
+	for _, other := range s.dynamic {
+		if other.Key == f.Key && other.Plugin != plugin {
+			return fmt.Errorf("user: field %s already belongs to plugin %s", f.Key, other.Plugin)
+		}
+	}
+	return nil
+}
+
+// RemovePluginFields forgets what a plugin added and rebuilds the column
+// list, so no query names a column the plugin's uninstall may be about to
+// drop. Call it before the purge runs.
+func (s *Store) RemovePluginFields(plugin string) {
+	s.dynMu.Lock()
+	kept := s.dynamic[:0]
+	for _, f := range s.dynamic {
+		if f.Plugin != plugin {
+			kept = append(kept, f)
+		}
+	}
+	s.dynamic = kept
+	s.dynMu.Unlock()
+	s.RefreshFields()
+}
+
+// PluginFields lists the fields a plugin installed at runtime added.
+func (s *Store) PluginFields(plugin string) []Field {
+	s.dynMu.Lock()
+	defer s.dynMu.Unlock()
+	var out []Field
+	for _, f := range s.dynamic {
+		if f.Plugin == plugin {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func (set *fieldSet) field(key string) *Field {
@@ -131,13 +235,13 @@ func (s *Store) SetPluginGate(g plugingate.Gate) {
 	s.RefreshFields()
 }
 
-func (s *Store) RefreshFields() { s.set.Store(buildFieldSet(s.gate)) }
+func (s *Store) RefreshFields() { s.set.Store(s.buildFieldSet()) }
 
 func (s *Store) active() *fieldSet {
 	if set := s.set.Load(); set != nil {
 		return set
 	}
-	set := buildFieldSet(s.gate)
+	set := s.buildFieldSet()
 	if s.set.CompareAndSwap(nil, set) {
 		return set
 	}

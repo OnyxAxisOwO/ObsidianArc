@@ -1,0 +1,192 @@
+// arcpack builds and inspects plugin packages.
+//
+//	arcpack build <dir> [-o file.arcx]  compile the Go backend in <dir> and pack it
+//	arcpack pack <dir> [-o file.arcx]   pack a directory that already holds plugin.wasm
+//	arcpack inspect <file.arcx>         print what a package asks for and says
+//
+// A plugin's source directory holds manifest.json, a Go main package (the
+// backend, written against the SDK) and any of migrations/, purge/ and web/.
+// build compiles the backend with GOOS=wasip1 GOARCH=wasm and packs the
+// result; pack is for a directory where plugin.wasm is already. What either
+// writes has been through the same checks the server runs when the file is
+// uploaded, so a package that packs is a package that installs.
+package main
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
+)
+
+func main() {
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "arcpack:", err)
+		os.Exit(1)
+	}
+}
+
+func run(args []string) error {
+	if len(args) == 0 {
+		return usage()
+	}
+	switch args[0] {
+	case "build":
+		return build(args[1:])
+	case "pack":
+		return pack(args[1:])
+	case "inspect":
+		return inspect(args[1:])
+	}
+	return usage()
+}
+
+func usage() error {
+	return fmt.Errorf("usage: arcpack build <dir> [-o file.arcx] | arcpack pack <dir> [-o file.arcx] | arcpack inspect <file.arcx>")
+}
+
+// build stages the plugin's files beside a freshly compiled backend and packs
+// the stage, so the source directory is never written to.
+func build(args []string) error {
+	dir, out, err := dirAndOutput("build", args)
+	if err != nil {
+		return err
+	}
+	work, err := os.MkdirTemp("", "arcpack")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(work)
+	stage := filepath.Join(work, "stage")
+	for _, entry := range []string{"manifest.json", "migrations", "purge", "web"} {
+		if err := copyTree(filepath.Join(dir, entry), filepath.Join(stage, entry)); err != nil {
+			return err
+		}
+	}
+	cmd := exec.Command("go", "build", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("compiling the backend: %w", err)
+	}
+	return writePackage(stage, dir, out)
+}
+
+func copyTree(from, to string) error {
+	info, err := os.Stat(from)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		data, err := os.ReadFile(from)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(to, data, 0o644)
+	}
+	entries, err := os.ReadDir(from)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if err := copyTree(filepath.Join(from, e.Name()), filepath.Join(to, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dirAndOutput reads "<dir> [-o file]" in either order.
+func dirAndOutput(name string, args []string) (dir, out string, err error) {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	target := flags.String("o", "", "output file (default: <name>-<version>.arcx beside the directory)")
+	var dirs []string
+	for len(args) > 0 {
+		if err := flags.Parse(args); err != nil {
+			return "", "", err
+		}
+		args = flags.Args()
+		if len(args) > 0 {
+			dirs = append(dirs, args[0])
+			args = args[1:]
+		}
+	}
+	if len(dirs) != 1 {
+		return "", "", usage()
+	}
+	return dirs[0], *target, nil
+}
+
+// writePackage packs stage and writes it to out, or beside the plugin's
+// source directory under the name its manifest gives it.
+func writePackage(stage, sourceDir, out string) error {
+	raw, err := arcx.Pack(stage)
+	if err != nil {
+		return err
+	}
+	pkg, err := arcx.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if out == "" {
+		out = filepath.Join(filepath.Dir(filepath.Clean(sourceDir)), fmt.Sprintf("%s-%s.arcx", pkg.Manifest.Name, pkg.Manifest.Version))
+	}
+	if err := os.WriteFile(out, raw, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("%s  %d bytes  sha256 %s\n", out, len(raw), pkg.SHA256)
+	return nil
+}
+
+func pack(args []string) error {
+	dir, out, err := dirAndOutput("pack", args)
+	if err != nil {
+		return err
+	}
+	return writePackage(dir, dir, out)
+}
+
+func inspect(args []string) error {
+	if len(args) != 1 {
+		return usage()
+	}
+	raw, err := os.ReadFile(args[0])
+	if err != nil {
+		return err
+	}
+	pkg, err := arcx.Parse(raw)
+	if err != nil {
+		return err
+	}
+	m := pkg.Manifest
+	fmt.Printf("%s %s — %s\n", m.Name, m.Version, m.Title.EN)
+	fmt.Printf("sha256       %s\n", pkg.SHA256)
+	fmt.Printf("permissions  %s\n", orNone(strings.Join(m.Permissions, ", ")))
+	fmt.Printf("backend      %s (%d bytes)\n", orNone(m.Backend), len(pkg.Backend))
+	fmt.Printf("browser half %v\n", m.UI != nil)
+	fmt.Printf("settings     %d, fields %d, guards %d, routes %d, console commands %d\n",
+		len(m.Settings), len(m.Fields), len(m.Guards), len(m.Routes), len(m.Console))
+	return nil
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}

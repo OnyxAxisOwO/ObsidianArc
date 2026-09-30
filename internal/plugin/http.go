@@ -1,17 +1,15 @@
 package plugin
 
 import (
-	"archive/zip"
 	"errors"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/admin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
@@ -51,7 +49,8 @@ func (h *Handlers) Mount(backoffice *admin.Handlers) {
 	for _, route := range []admin.Route{
 		{Pattern: "GET /api/admin/plugins", Permission: view, Handler: h.list},
 		{Pattern: "GET /api/admin/plugins/{name}", Permission: view, Handler: h.show},
-		{Pattern: "POST /api/admin/plugins/upload", Permission: PermissionManage, Handler: h.upload},
+		{Pattern: "POST /api/admin/plugins/preview", Permission: PermissionManage, Handler: h.preview},
+		{Pattern: "POST /api/admin/plugins/install-package", Permission: PermissionManage, Handler: h.installPackage},
 		{Pattern: "POST /api/admin/plugins/{name}/install", Permission: PermissionManage, Handler: h.install},
 		{Pattern: "POST /api/admin/plugins/{name}/enable", Permission: PermissionManage, Handler: h.enable},
 		{Pattern: "POST /api/admin/plugins/{name}/disable", Permission: PermissionManage, Handler: h.disable},
@@ -148,7 +147,21 @@ func (h *Handlers) uninstall(w http.ResponseWriter, r *http.Request) error {
 	if err := h.manager.Uninstall(r.Context(), h.actor(r), name, body.Purge); err != nil {
 		return translate(err)
 	}
-	return h.answer(w, name)
+	// A package that was removed is not there to be described: the answer is
+	// the list without it. A compiled-in plugin stays in the list, as
+	// available, and is described as that.
+	if info, err := h.manager.Info(name); err == nil {
+		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"plugin":              info,
+			"plugins":             h.manager.List(),
+			"two_factor_required": h.twoFactorRequired(),
+		})
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"plugin":              nil,
+		"plugins":             h.manager.List(),
+		"two_factor_required": h.twoFactorRequired(),
+	})
 }
 
 func (h *Handlers) verify(w http.ResponseWriter, r *http.Request, code string) error {
@@ -194,11 +207,84 @@ func (h *Handlers) ip(r *http.Request) string {
 	return h.clientIP(r)
 }
 
+// preview reads an uploaded package and answers with what it asks for and
+// says, holding the archive so the confirmation does not upload it twice.
+// Nothing is stored and nothing runs.
+func (h *Handlers) preview(w http.ResponseWriter, r *http.Request) error {
+	r.Body = http.MaxBytesReader(w, r.Body, arcx.MaxArchive+(1<<20))
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		return httpx.BadRequestCode("invalid_package", "The upload could not be read; the package may be larger than %d MiB.", arcx.MaxArchive>>20)
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		return httpx.BadRequestCode("invalid_package", "Choose a plugin package to upload.")
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, arcx.MaxArchive+1))
+	if err != nil {
+		return httpx.BadRequestCode("invalid_package", "The upload could not be read.")
+	}
+	info, err := h.manager.Preview(h.actor(r), raw)
+	if err != nil {
+		return translate(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"preview": info})
+}
+
+type installPackageBody struct {
+	Token         string            `json:"token"`
+	Enable        bool              `json:"enable"`
+	Settings      map[string]string `json:"settings"`
+	TwoFactorCode string            `json:"two_factor_code"`
+}
+
+// installPackage installs what the actor previewed. Running somebody's code
+// on this server is the most that can be asked of it, so it takes the same
+// two-step code as switching a plugin off does, when that is required.
+func (h *Handlers) installPackage(w http.ResponseWriter, r *http.Request) error {
+	var body installPackageBody
+	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
+		return err
+	}
+	if h.twoFactorRequired() {
+		if err := h.verify(w, r, body.TwoFactorCode); err != nil {
+			return err
+		}
+	}
+	name, op, err := h.manager.ConfirmUpload(r.Context(), h.actor(r), body.Token, InstallOptions{
+		Enable: body.Enable, Settings: body.Settings,
+	})
+	if err != nil {
+		return translate(err)
+	}
+	info, err := h.manager.Info(name)
+	if err != nil {
+		return translate(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"plugin":              info,
+		"plugins":             h.manager.List(),
+		"two_factor_required": h.twoFactorRequired(),
+		"did":                 op,
+	})
+}
+
 func translate(err error) error {
 	var setting *SettingError
+	var preflight *PreflightError
 	switch {
 	case errors.As(err, &setting):
 		return httpx.BadRequestCode("plugin_setting_invalid", "Setting %q: %s", setting.Key, setting.Reason)
+	case errors.Is(err, arcx.ErrInvalid):
+		return httpx.BadRequestCode("invalid_package", "%s", strings.TrimPrefix(err.Error(), arcx.ErrInvalid.Error()+": "))
+	case errors.As(err, &preflight):
+		return httpx.BadRequestCode("plugin_cannot_install", "%s", preflight.Reason)
+	case errors.Is(err, ErrNameTaken):
+		return httpx.Conflict("plugin_name_taken", "A built-in plugin already has that name.")
+	case errors.Is(err, ErrUnchanged):
+		return httpx.Conflict("plugin_unchanged", "That package is already installed.")
+	case errors.Is(err, ErrNoPending):
+		return httpx.BadRequestCode("upload_expired", "That upload has expired; choose the file again.")
 	case errors.Is(err, ErrUnknown):
 		return httpx.NotFound("No such plugin in this build.")
 	case errors.Is(err, ErrInstalled):
@@ -209,89 +295,4 @@ func translate(err error) error {
 		return httpx.Conflict("plugin_unchanged", "That plugin is already in that state.")
 	}
 	return httpx.Internal(err)
-}
-
-func (h *Handlers) upload(w http.ResponseWriter, r *http.Request) error {
-	// Parse multipart
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		return httpx.BadRequest("Failed to parse form.")
-	}
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		return httpx.BadRequest("Missing file.")
-	}
-	defer file.Close()
-
-	if !strings.HasSuffix(header.Filename, ".zip") {
-		return httpx.BadRequest("Only .zip files are supported.")
-	}
-
-	// Verify we are in an environment with the source code.
-	info, err := os.Stat("plugins")
-	if err != nil || !info.IsDir() {
-		return httpx.BadRequestCode("no_source_tree",
-			"The plugins/ directory could not be found. Uploading source code requires the server to be running from the source tree rather than as a standalone production binary.")
-	}
-
-	// Write zip to temporary file
-	tmpFile, err := os.CreateTemp("", "plugin-*.zip")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
-
-	if _, err := io.Copy(tmpFile, file); err != nil {
-		return err
-	}
-
-	// Open zip
-	zr, err := zip.OpenReader(tmpFile.Name())
-	if err != nil {
-		return httpx.BadRequest("Invalid zip file.")
-	}
-	defer zr.Close()
-
-	var extractedName string
-	// Validate and extract
-	for _, f := range zr.File {
-		// Basic zipslip protection
-		if strings.Contains(f.Name, "..") {
-			return httpx.BadRequest("Invalid file path in zip.")
-		}
-		path := filepath.Join("plugins", f.Name)
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(path, 0755)
-			continue
-		}
-		// grab the top-level folder name as plugin name
-		parts := strings.Split(filepath.ToSlash(f.Name), "/")
-		if len(parts) > 0 && extractedName == "" {
-			extractedName = parts[0]
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		dest, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		_, err = io.Copy(dest, rc)
-		dest.Close()
-		rc.Close()
-		if err != nil {
-			return err
-		}
-	}
-
-	if extractedName == "" {
-		return httpx.BadRequest("Empty zip file.")
-	}
-
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"name": extractedName})
 }

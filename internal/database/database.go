@@ -161,6 +161,35 @@ func (db *DB) Tx(ctx context.Context, fn func(*Tx) error) error {
 	return nil
 }
 
+// Begin opens a transaction that the caller ends with Commit or Rollback,
+// for the one caller whose transaction is not a function: a plugin's backend
+// opens it with one host call and ends it with another. Everything else uses
+// Tx, which cannot leave one open.
+func (db *DB) Begin(ctx context.Context) (*Tx, error) {
+	tx, err := db.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("database: begin: %w", err)
+	}
+	return &Tx{binder: binder{raw: tx, dialect: db.dialect}, tx: tx}, nil
+}
+
+// Commit ends a transaction opened with Begin.
+func (t *Tx) Commit() error {
+	if err := t.tx.Commit(); err != nil {
+		return fmt.Errorf("database: commit: %w", err)
+	}
+	return nil
+}
+
+// Rollback ends a transaction opened with Begin without applying it. It is
+// safe after Commit, where it does nothing.
+func (t *Tx) Rollback() error {
+	if err := t.tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return fmt.Errorf("database: rollback: %w", err)
+	}
+	return nil
+}
+
 // Rebind converts the `?` placeholders every query in this project is written
 // with into whatever the dialect wants. Postgres gets `$1`, `$2`, …
 //

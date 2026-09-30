@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
@@ -45,8 +46,10 @@ type Handlers struct {
 	// all has always answered "no third-party sign-ins" to SignInProviders.
 	MustBindOIDC func(ctx context.Context, account user.User) (bool, error)
 
-	// Each compiled-in plugin's block of the public configuration — see
-	// Extend. Written during setup only, read afterwards.
+	// Each plugin's block of the public configuration — see Extend. Written
+	// at setup, and again when a plugin is installed or removed while the
+	// server runs.
+	extMu      sync.RWMutex
 	extensions map[string]func(firstAccount bool) map[string]any
 }
 

@@ -56,6 +56,10 @@ type Host struct {
 	// same gate; Host asks it for the two it hands out itself.
 	Gate plugingate.Gate
 
+	// The origins of the packages installed on this server, asked for on every
+	// response like the compiled-in plugins' own. Set by the manager.
+	dynamicOrigins func() []string
+
 	// The plugin this copy of the host was handed to (see SetupAll).
 	name string
 	// What every plugin's copy writes to. Written by Setup, read by every
@@ -126,10 +130,13 @@ func (h *Host) AllowOrigin(fn func() string) {
 
 // Origins is every origin the enabled plugins currently ask for.
 func (h *Host) Origins() []string {
-	if h.shared == nil || len(h.shared.origins) == 0 {
-		return nil
-	}
 	var out []string
+	if h.dynamicOrigins != nil {
+		out = append(out, h.dynamicOrigins()...)
+	}
+	if h.shared == nil {
+		return out
+	}
 	for _, o := range h.shared.origins {
 		if !h.Gate.Allows(o.plugin) {
 			continue

@@ -107,8 +107,10 @@ type Service struct {
 	cachedDoc     oidcDiscovery
 	cachedExpires time.Time
 
-	// Set during setup by the plugin that owns it, if any; read afterwards.
-	binding *SubjectBinding
+	// Set by the plugin that owns it, if any: during setup, or when one is
+	// installed or removed while the server runs.
+	bindingMu sync.RWMutex
+	binding   *SubjectBinding
 }
 
 // SubjectBinding ties one provider's subject to an account field: an
@@ -131,20 +133,57 @@ type SubjectBinding struct {
 // BindSubject installs b. One binding per instance: two plugins that both
 // claimed a provider's subject would each be right about a different field.
 func (s *Service) BindSubject(b SubjectBinding) {
+	if err := s.TryBindSubject(b); err != nil {
+		panic(err.Error())
+	}
+}
+
+// TryBindSubject is BindSubject for a plugin installed while the server
+// runs, where a second claim on the provider is an answer for the operator
+// and not a bug to crash on.
+func (s *Service) TryBindSubject(b SubjectBinding) error {
+	s.bindingMu.Lock()
+	defer s.bindingMu.Unlock()
 	if s.binding != nil {
-		panic("oauth: a subject binding is already installed")
+		return errors.New("oauth: a subject binding is already installed")
 	}
 	s.binding = &b
+	return nil
+}
+
+// SubjectBindingField is the account field the installed binding writes, or
+// "" when there is none — how an install finds out whether the provider's
+// subject is already spoken for.
+func (s *Service) SubjectBindingField() string {
+	s.bindingMu.RLock()
+	defer s.bindingMu.RUnlock()
+	if s.binding == nil {
+		return ""
+	}
+	return s.binding.Field
+}
+
+// UnbindSubject removes the binding on field, if that is the one installed,
+// for the plugin that owns the field being removed.
+func (s *Service) UnbindSubject(field string) {
+	s.bindingMu.Lock()
+	defer s.bindingMu.Unlock()
+	if s.binding != nil && s.binding.Field == field {
+		s.binding = nil
+	}
 }
 
 // bound is the binding in force: installed, and its field one the accounts
 // table is read with now. A binding whose plugin is switched off would write
 // a column no query names — or one uninstalling has dropped.
 func (s *Service) bound() *SubjectBinding {
-	if s.binding == nil || !s.users.HasField(s.binding.Field) {
+	s.bindingMu.RLock()
+	binding := s.binding
+	s.bindingMu.RUnlock()
+	if binding == nil || !s.users.HasField(binding.Field) {
 		return nil
 	}
-	return s.binding
+	return binding
 }
 
 // boundValue is the field and value identity's subject stands for, or "".

@@ -1,0 +1,54 @@
+{
+  "arcx": 1,
+  "name": "demo",
+  "version": "1.0.0",
+  "title": { "en": "Demo", "zh": "演示" },
+  "description": {
+    "en": "The plugin the server's own tests install: one of everything a plugin can add.",
+    "zh": "服务器自己的测试用来安装的插件：插件能加的东西，每样一个。"
+  },
+  "author": "Obsidian Arc",
+  "license": "MIT",
+  "requires": { "api": 1 },
+  "permissions": ["db", "network", "users", "cards", "sessions", "notify", "security_log", "console"],
+  "backend": "plugin.wasm",
+  "hooks": ["describe", "decorate_invitees"],
+  "settings": [
+    {
+      "key": "demo.mode", "default": "open", "enum": ["open", "closed"], "initial": true,
+      "label": { "en": "Mode", "zh": "模式" },
+      "hint": { "en": "Closed refuses sign-ups that carry no token.", "zh": "关闭时拒绝不带令牌的注册。" }
+    },
+    { "key": "demo.handle_rule", "default": "off", "enum": ["off", "optional", "required"] },
+    { "key": "demo.secret", "secret": true, "permission": "security" },
+    { "key": "demo.upstream", "default": "" }
+  ],
+  "captcha_modes": ["demo"],
+  "fields": [{ "key": "handle", "unique": true, "searchable": true, "pattern": "^[0-9]{5,15}$" }],
+  "field_rules": [{ "field": "handle", "setting": "demo.handle_rule" }],
+  "oauth_bindings": [{ "provider": "oidc", "field": "handle", "pattern": "^[0-9]{5,15}$" }],
+  "guards": [
+    { "action": "register", "name": "demo", "event": "demo_challenge" },
+    { "action": "login", "name": "demo", "event": "demo_challenge" }
+  ],
+  "routes": [
+    { "pattern": "GET /api/admin/x/demo/things", "access": "admin", "permission": "users" },
+    { "pattern": "POST /api/admin/x/demo/things", "access": "admin", "permission": "users" },
+    { "pattern": "POST /api/admin/x/demo/disable/{id}", "access": "admin", "permission": "users" },
+    { "pattern": "POST /api/admin/x/demo/retire/{id}", "access": "admin", "permission": "users" },
+    { "pattern": "POST /api/x/demo/hook", "access": "public" },
+    { "pattern": "GET /api/x/demo/upstream", "access": "public" }
+  ],
+  "console": [
+    {
+      "name": "demo things",
+      "group": "accounts",
+      "summary": { "en": "List the demo plugin's things", "zh": "列出演示插件的条目" },
+      "usage": "demo things [--limit N]",
+      "flags": [{ "name": "--limit", "value": "N", "hint": { "en": "how many, default 50" } }],
+      "permission": "users",
+      "endpoints": ["GET /api/admin/x/demo/things"]
+    }
+  ],
+  "ui": { "module": "web/ui.js" }
+}

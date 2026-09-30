@@ -35,6 +35,19 @@ func settingPermission(key string) string {
 	if d, ok := settings.Lookup(key); ok && d.Permission != "" {
 		return d.Permission
 	}
+	return corePermission(key)
+}
+
+// settingPermission is the same answer for this server, whose plugins may
+// have been installed after it started.
+func (h *Handlers) settingPermission(key string) string {
+	if d, ok := h.settings.LookupDefinition(key); ok && d.Permission != "" {
+		return d.Permission
+	}
+	return corePermission(key)
+}
+
+func corePermission(key string) string {
 	switch {
 	case strings.HasPrefix(key, "health."):
 		return "availability"
@@ -66,9 +79,9 @@ func canPolicy(actor user.User, scope quota.Scope) bool {
 }
 
 func (h *Handlers) visibleSettings(account user.User) map[string]string {
-	values := redacted(h.settings.All())
+	values := redactedWith(h.settings.All(), h.secretKeys())
 	for key := range values {
-		if !hasPermission(account, settingPermission(key)) {
+		if !hasPermission(account, h.settingPermission(key)) {
 			delete(values, key)
 		}
 	}

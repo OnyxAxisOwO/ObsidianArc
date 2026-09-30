@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -18,8 +19,9 @@ import (
 // handlers, so they need no browser session either.
 type Handlers struct {
 	store *Store
-	// Set during setup by a plugin that has something to add to the
-	// invitee list; read afterwards.
+	// Set by a plugin that has something to add to the invitee list: during
+	// setup, or when one is installed or removed while the server runs.
+	decMu      sync.RWMutex
 	decorators []decorator
 	gate       plugingate.Gate
 }
@@ -49,7 +51,23 @@ type InviteeDecorator func(ctx context.Context, inviterID string, invitees []Inv
 // DecorateInvitees adds plugin's fn to the list's decorators, run in the
 // order added.
 func (h *Handlers) DecorateInvitees(plugin string, fn InviteeDecorator) {
+	h.decMu.Lock()
+	defer h.decMu.Unlock()
 	h.decorators = append(h.decorators, decorator{plugin: plugin, fn: fn})
+}
+
+// RemoveDecorators takes plugin's decorators away, for a plugin being
+// removed while the server runs.
+func (h *Handlers) RemoveDecorators(plugin string) {
+	h.decMu.Lock()
+	defer h.decMu.Unlock()
+	kept := make([]decorator, 0, len(h.decorators))
+	for _, d := range h.decorators {
+		if d.plugin != plugin {
+			kept = append(kept, d)
+		}
+	}
+	h.decorators = kept
 }
 
 func NewHandlers(store *Store) *Handlers { return &Handlers{store: store} }
@@ -112,7 +130,10 @@ func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]an
 			"reward_skipped": use.RewardSkipped,
 		}})
 	}
-	for _, decorate := range h.decorators {
+	h.decMu.RLock()
+	decorators := append([]decorator(nil), h.decorators...)
+	h.decMu.RUnlock()
+	for _, decorate := range decorators {
 		if !h.gate.Allows(decorate.plugin) {
 			continue
 		}

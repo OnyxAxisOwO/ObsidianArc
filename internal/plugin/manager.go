@@ -12,6 +12,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -93,6 +94,20 @@ type Manager struct {
 	// Set by the server once the plugins are set up, for the manifest's
 	// view of what each one attached.
 	host *Host
+
+	// The plugins that are packages rather than compiled in, by name.
+	// Replaced whole under mu, read without it by every request that is
+	// routed to one.
+	pkgs atomic.Pointer[map[string]*loaded]
+	// The backends' engine, made when the first one needs it.
+	eng     *wasm.Engine
+	engOnce sync.Once
+	// The console the packages' commands are added to, once there is one.
+	console *console.Console
+	// Where requests for a package's routes are served from; see routes.go.
+	router atomic.Pointer[routeTable]
+	// Uploads the operator has looked at and not yet confirmed.
+	pending pendingUploads
 }
 
 type record struct {
@@ -108,8 +123,30 @@ func NewManager(db *database.DB, set *settings.Service, users *user.Store, secur
 	m := &Manager{db: db, settings: set, users: users, security: security}
 	empty := map[string]record{}
 	m.states.Store(&empty)
+	none := map[string]*loaded{}
+	m.pkgs.Store(&none)
 	return m
 }
+
+// engine is the wasm engine the packages' backends run on.
+func (m *Manager) engine() *wasm.Engine {
+	m.engOnce.Do(func() { m.eng = wasm.NewEngine(wasm.Limits{}) })
+	return m.eng
+}
+
+// plugin is the compiled-in plugin called name, or the package's stand-in for
+// an installed one: whichever this server has.
+func (m *Manager) plugin(name string) (Plugin, bool) {
+	if p, ok := Lookup(name); ok {
+		return p, true
+	}
+	if l := (*m.pkgs.Load())[name]; l != nil {
+		return packagePlugin{l}, true
+	}
+	return nil, false
+}
+
+func (m *Manager) loadedPackage(name string) *loaded { return (*m.pkgs.Load())[name] }
 
 // Gate is the question every extension point asks.
 func (m *Manager) Gate() plugingate.Gate { return m.Enabled }
@@ -120,7 +157,13 @@ func (m *Manager) Enabled(name string) bool {
 	if name == "" {
 		return true
 	}
-	return (*m.states.Load())[name].State == StateEnabled
+	if (*m.states.Load())[name].State != StateEnabled {
+		return false
+	}
+	if l := (*m.pkgs.Load())[name]; l != nil && l.faulted() != "" {
+		return false
+	}
+	return true
 }
 
 // State is name's state; a compiled-in plugin never decided is available.
@@ -186,6 +229,9 @@ func (m *Manager) Load(ctx context.Context) error {
 		}
 	}
 	m.states.Store(&rows)
+	if err := m.loadPackages(ctx); err != nil {
+		return err
+	}
 	m.users.RefreshFields()
 	return nil
 }
@@ -320,7 +366,7 @@ func (m *Manager) Disable(ctx context.Context, actor Actor, name string) error {
 }
 
 func (m *Manager) toggle(ctx context.Context, actor Actor, name string, to State, decision string) error {
-	if _, ok := Lookup(name); !ok {
+	if _, ok := m.plugin(name); !ok {
 		return ErrUnknown
 	}
 	m.mu.Lock()
@@ -354,6 +400,12 @@ func (m *Manager) toggle(ctx context.Context, actor Actor, name string, to State
 		return err
 	}
 	kept.State, kept.UpdatedAt, kept.UpdatedBy = to, now, actor.ID
+	// What a package's backend tells the browser and the page's policy is
+	// asked for before the gate opens, so the first request after it does
+	// not see an empty answer.
+	if l := m.loadedPackage(name); l != nil && to == StateEnabled {
+		m.refreshDescribe(l)
+	}
 	m.set(name, kept)
 	return nil
 }
@@ -369,10 +421,11 @@ func (m *Manager) toggle(ctx context.Context, actor Actor, name string, to State
 // from here on has to stop naming it before it goes. A failed uninstall
 // puts the state back.
 func (m *Manager) Uninstall(ctx context.Context, actor Actor, name string, purge bool) error {
-	p, ok := Lookup(name)
+	p, ok := m.plugin(name)
 	if !ok {
 		return ErrUnknown
 	}
+	pkg := m.loadedPackage(name)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	before := (*m.states.Load())[name]
@@ -381,7 +434,7 @@ func (m *Manager) Uninstall(ctx context.Context, actor Actor, name string, purge
 		off.State = StateDisabled
 		m.set(name, off)
 	}
-	keys := settingKeys(name)
+	keys := m.settingKeys(name)
 	decision := "uninstall"
 	if purge {
 		decision = "uninstall_purge"
@@ -418,6 +471,14 @@ func (m *Manager) Uninstall(ctx context.Context, actor Actor, name string, purge
 			stateRemoved, time.Now().UnixMilli(), actor.ID, name); err != nil {
 			return fmt.Errorf("plugin: uninstall %s: %w", name, err)
 		}
+		// A package is not something an uninstall leaves behind for a
+		// reinstall to find: it goes, and what the operator dragged in is
+		// gone from the list. Its data stays unless they asked otherwise.
+		if pkg != nil {
+			if _, err := tx.Exec(ctx, `DELETE FROM plugin_packages WHERE name = ?`, name); err != nil {
+				return fmt.Errorf("plugin: remove package %s: %w", name, err)
+			}
+		}
 		return m.audit(ctx, tx, actor, name, decision)
 	})
 	if err != nil {
@@ -426,6 +487,9 @@ func (m *Manager) Uninstall(ctx context.Context, actor Actor, name string, purge
 	}
 	if purge {
 		m.settings.Forget(keys)
+	}
+	if pkg != nil {
+		m.detachPackage(pkg)
 	}
 	m.set(name, record{State: StateAvailable, UpdatedAt: time.Now().UnixMilli(), UpdatedBy: actor.ID})
 	return nil
@@ -463,12 +527,26 @@ func settingKeys(name string) []string {
 	return out
 }
 
+// settingKeys is the keys a plugin owns on this server, compiled in or
+// installed.
+func (m *Manager) settingKeys(name string) []string {
+	var out []string
+	for _, d := range m.settings.DefinitionsOf(name) {
+		out = append(out, d.Key)
+	}
+	return out
+}
+
 // checkSettings holds an install's first settings to the plugin's own
 // definitions: a key it does not define is refused rather than stored, and
 // each value passes the definition's validator.
 func checkSettings(name string, values map[string]string) (map[string]string, error) {
+	return checkAgainst(settings.DefinitionsOf(name), values)
+}
+
+func checkAgainst(definitions []settings.Definition, values map[string]string) (map[string]string, error) {
 	defined := map[string]settings.Definition{}
-	for _, d := range settings.DefinitionsOf(name) {
+	for _, d := range definitions {
 		defined[d.Key] = d
 	}
 	out := make(map[string]string, len(values))
@@ -500,6 +578,19 @@ type Info struct {
 	// A row for a plugin this build does not carry: installed on this
 	// instance by a build that did, and inert until one does again.
 	Missing bool `json:"missing,omitempty"`
+
+	// "builtin" for a plugin compiled into this binary, "package" for one
+	// installed from an archive.
+	Kind string `json:"kind"`
+	// Of a package: what it asked for and was granted, which archive it is,
+	// where it came from, and whether it has a browser half.
+	Permissions []string `json:"permissions"`
+	SHA256      string   `json:"sha256,omitempty"`
+	Size        int      `json:"size,omitempty"`
+	Source      string   `json:"source,omitempty"`
+	HasUI       bool     `json:"has_ui,omitempty"`
+	// Why a package that is installed is not running, when it is not.
+	Fault string `json:"fault,omitempty"`
 }
 
 // InstallRecord is who installed it and when, and the version they did.
@@ -536,23 +627,36 @@ type RouteInfo struct {
 	Permission string `json:"permission"`
 }
 
-// List is every compiled-in plugin, then any row for one this build lacks.
+// List is every compiled-in plugin, then every installed package, then any
+// row for one this build lacks.
 func (m *Manager) List() []Info {
 	states := *m.states.Load()
+	pkgs := *m.pkgs.Load()
 	out := []Info{}
 	for _, p := range All() {
 		out = append(out, m.info(p, states[p.Name()]))
 	}
+	names := make([]string, 0, len(pkgs))
+	for name := range pkgs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		out = append(out, m.packageInfo(pkgs[name], states[name]))
+	}
 	var missing []string
 	for name, r := range states {
-		if _, ok := Lookup(name); !ok && r.State != StateAvailable {
+		if _, ok := Lookup(name); ok {
+			continue
+		}
+		if _, isPackage := pkgs[name]; !isPackage && r.State != StateAvailable {
 			missing = append(missing, name)
 		}
 	}
 	sort.Strings(missing)
 	for _, name := range missing {
 		r := states[name]
-		out = append(out, Info{Name: name, State: r.State, Missing: true,
+		out = append(out, Info{Name: name, State: r.State, Missing: true, Kind: "builtin", Permissions: []string{},
 			Manifest: Manifest{Title: Text{EN: name, ZH: name}},
 			Installed: InstallRecord{Version: r.Version, At: r.InstalledAt, By: r.InstalledBy,
 				UpdatedAt: r.UpdatedAt, UpdatedBy: r.UpdatedBy}})
@@ -560,8 +664,11 @@ func (m *Manager) List() []Info {
 	return out
 }
 
-// Info is one compiled-in plugin.
+// Info is one plugin, compiled in or installed.
 func (m *Manager) Info(name string) (Info, error) {
+	if l := m.loadedPackage(name); l != nil {
+		return m.packageInfo(l, (*m.states.Load())[name]), nil
+	}
 	p, ok := Lookup(name)
 	if !ok {
 		return Info{}, ErrUnknown
@@ -574,7 +681,7 @@ func (m *Manager) info(p Plugin, r record) Info {
 	if state == "" {
 		state = StateAvailable
 	}
-	info := Info{Name: p.Name(), Manifest: p.Manifest(), State: state}
+	info := Info{Name: p.Name(), Manifest: p.Manifest(), State: state, Kind: "builtin", Permissions: []string{}}
 	if state != StateAvailable {
 		info.Installed = InstallRecord{Version: r.Version, At: r.InstalledAt, By: r.InstalledBy,
 			UpdatedAt: r.UpdatedAt, UpdatedBy: r.UpdatedBy}
@@ -630,7 +737,3 @@ func (m *Manager) contributions(p Plugin) Contributions {
 	}
 	return c
 }
-
-// Attach tells the manager about the host the plugins were set up against,
-// for the public routes their manifests list.
-func (m *Manager) Attach(h *Host) { m.host = h }

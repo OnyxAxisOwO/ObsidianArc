@@ -85,6 +85,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
@@ -207,7 +208,12 @@ func RequireArg(rt *Runtime, what string) (string, error) { return requireRef(rt
 
 // registry is the engine's own view of allCommands: a lookup by flat name,
 // plus the registration order help and completion iterate in.
+//
+// The lock is for the commands of plugins installed while the server runs,
+// which arrive and leave through AddCommands and RemoveCommands; everything
+// else is filled once, in New.
 type registry struct {
+	mu       sync.RWMutex
 	commands map[string]*Command
 	order    []string
 	gate     plugingate.Gate
@@ -227,7 +233,9 @@ func newRegistry(gate plugingate.Gate) *registry {
 }
 
 func (r *registry) lookup(name string) (*Command, bool) {
+	r.mu.RLock()
 	cmd, ok := r.commands[name]
+	r.mu.RUnlock()
 	if !ok || !r.gate.Allows(cmd.Plugin) {
 		return nil, false
 	}
@@ -250,6 +258,8 @@ func CommandsOf(plugin string) []string {
 // not merely unlisted here — running it by name still answers "permission
 // denied", which is Execute's job (it calls lookup directly, not visible).
 func (r *registry) visible(actor user.User) []*Command {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]*Command, 0, len(r.order))
 	for _, name := range r.order {
 		cmd := r.commands[name]
@@ -259,6 +269,97 @@ func (r *registry) visible(actor user.User) []*Command {
 	}
 	return out
 }
+
+// add registers commands under plugin, refusing the whole batch if any name
+// is taken.
+func (r *registry) add(plugin string, cmds []Command) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.check(plugin, cmds); err != nil {
+		return err
+	}
+	// What the plugin registered before and no longer does — an update.
+	next := map[string]bool{}
+	for _, cmd := range cmds {
+		next[cmd.Name] = true
+	}
+	kept := r.order[:0]
+	for _, name := range r.order {
+		if r.commands[name].Plugin == plugin && !next[name] {
+			delete(r.commands, name)
+			continue
+		}
+		kept = append(kept, name)
+	}
+	r.order = kept
+	for _, cmd := range cmds {
+		c := cmd
+		c.Plugin = plugin
+		if _, dup := r.commands[c.Name]; !dup {
+			r.order = append(r.order, c.Name)
+		}
+		r.commands[c.Name] = &c
+	}
+	return nil
+}
+
+// check is add without adding. The caller holds the lock.
+func (r *registry) check(plugin string, cmds []Command) error {
+	for _, cmd := range cmds {
+		if cmd.Name == "" || cmd.Run == nil {
+			return fmt.Errorf("console: a command of %s has no name or no Run", plugin)
+		}
+		if existing, dup := r.commands[cmd.Name]; dup && existing.Plugin != plugin {
+			return fmt.Errorf("console: %s is already a command", cmd.Name)
+		}
+	}
+	return nil
+}
+
+// remove drops everything plugin registered.
+func (r *registry) remove(plugin string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kept := r.order[:0]
+	for _, name := range r.order {
+		if r.commands[name].Plugin == plugin {
+			delete(r.commands, name)
+			continue
+		}
+		kept = append(kept, name)
+	}
+	r.order = kept
+}
+
+// AddCommands registers the console commands of a plugin installed while
+// the server runs. Compiled-in plugins add theirs from init, before New;
+// these belong to one Console, so an install can be undone and a process
+// that builds several servers does not show one's to the next.
+func (c *Console) AddCommands(plugin string, cmds []Command) error { return c.reg.add(plugin, cmds) }
+
+// CheckCommands is AddCommands without adding: whether it would be accepted.
+func (c *Console) CheckCommands(plugin string, cmds []Command) error {
+	c.reg.mu.RLock()
+	defer c.reg.mu.RUnlock()
+	return c.reg.check(plugin, cmds)
+}
+
+// CommandNamesOf lists the commands plugin has registered, compiled in or
+// added while the server runs, for its manifest.
+func (c *Console) CommandNamesOf(plugin string) []string {
+	c.reg.mu.RLock()
+	defer c.reg.mu.RUnlock()
+	var out []string
+	for _, name := range c.reg.order {
+		if c.reg.commands[name].Plugin == plugin {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// RemoveCommands drops every command plugin registered through AddCommands.
+func (c *Console) RemoveCommands(plugin string) { c.reg.remove(plugin) }
 
 // Anyone is the Permission of a command every signed-in account may run —
 // the ones that act on the caller's own account and nothing else.

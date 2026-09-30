@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -98,11 +99,14 @@ type Service struct {
 	// challenge rather than a broken one.
 	Challenge      turnstile.Gate
 	LoginChallenge turnstile.Gate
-	// A plugin's checks, in front of the same two doors — see AddGuard.
+	// A plugin's checks, in front of the same two doors — see AddGuard —
+	// and how sign-up treats each plugin account field — see SetFieldRule.
+	// Written at setup, and again when a plugin is installed or removed
+	// while the server runs, so every read goes through extMu.
+	extMu        sync.RWMutex
 	signupGuards []Guard
 	loginGuards  []Guard
-	// How sign-up treats each plugin account field — see SetFieldRule.
-	fieldRules map[string]func() string
+	fieldRules   map[string]func() string
 	// Self-developed proof-of-work manager. Nil is off.
 	PoW *pow.Manager
 	// Challenge failure hook for recording to security events.
@@ -366,7 +370,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		// carried into the review below, where it becomes the same middle
 		// answer the AI reviewer has: the account exists, the programmatic
 		// surface stays closed.
-		guarded, err := s.runGuards(ctx, s.signupGuards, GuardRegister, in.Guards, in.IP, in.Username)
+		guarded, err := s.runGuards(ctx, GuardRegister, in.Guards, in.IP, in.Username)
 		if err != nil {
 			return user.User{}, "", err
 		}
@@ -942,7 +946,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 	// second factor to hand a "maybe" at the door, and locking an account out
 	// of its own sign-in costs more than the occasional marginal one costs
 	// the instance. Only a refusal refuses.
-	if _, err := s.runGuards(ctx, s.loginGuards, GuardLogin, in.Guards, in.IP, in.Identifier); err != nil {
+	if _, err := s.runGuards(ctx, GuardLogin, in.Guards, in.IP, in.Identifier); err != nil {
 		return user.User{}, "", err
 	}
 

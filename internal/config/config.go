@@ -45,6 +45,12 @@ type Config struct {
 	// Extra origins accepted on state-changing requests, beyond the request's
 	// own Host. Only needed when the SPA is served from somewhere else.
 	AllowedOrigins []string
+	// A directory of plugin packages (*.arcx) the deployment ships with,
+	// read at boot: what the instance runs as plugins of an earlier build is
+	// taken over, what is new is installed switched off, what an operator
+	// installed or removed themselves is left as they decided. Empty, or a
+	// directory that is not there, is none.
+	PluginDir string
 
 	Database  Database
 	Session   Session
@@ -204,6 +210,7 @@ func Load() (Config, error) {
 		TrustProxy:     envBool("TRUST_PROXY", false),
 		TrustedProxies: envList("TRUSTED_PROXIES"),
 		AllowedOrigins: envList("ALLOWED_ORIGINS"),
+		PluginDir:      env("PLUGIN_DIR", ""),
 		SecretKey:      secret,
 
 		generatedSecret: generated,

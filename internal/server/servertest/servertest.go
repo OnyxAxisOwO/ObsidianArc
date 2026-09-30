@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"io"
 	"io/fs"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -38,6 +39,8 @@ type Instance struct {
 	Handler http.Handler
 	DB      *database.DB
 	Server  *server.Server
+
+	config config.Config
 }
 
 // Session is a signed-in browser: its cookie, and the account it belongs to
@@ -69,6 +72,15 @@ func NewFresh(t *testing.T, tweak ...func(*config.Config)) *Instance {
 	return build(t, installNone, nil, tweak)
 }
 
+// NewPrepared builds a fresh server after prepare has been run against its
+// database — migrated, with no plugin installed — for the tests that need an
+// instance to be in some state before the server boots, and after it: a
+// plugin an earlier build ran, a package the deployment ships.
+func NewPrepared(t *testing.T, prepare func(*database.DB), tweak ...func(*config.Config)) *Instance {
+	t.Helper()
+	return buildWith(t, installNone, nil, tweak, prepare)
+}
+
 // NewLegacy builds the instance an upgrade meets: every plugin's migrations
 // already run, and seed stored, from before plugins could be switched — and
 // no record of any plugin's state, which the boot has to decide.
@@ -86,6 +98,11 @@ const (
 )
 
 func build(t *testing.T, mode install, seed map[string]string, tweak []func(*config.Config)) *Instance {
+	t.Helper()
+	return buildWith(t, mode, seed, tweak, nil)
+}
+
+func buildWith(t *testing.T, mode install, seed map[string]string, tweak []func(*config.Config), prepare func(*database.DB)) *Instance {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -141,11 +158,14 @@ func build(t *testing.T, mode install, seed map[string]string, tweak []func(*con
 		}
 	}
 
+	if prepare != nil {
+		prepare(db)
+	}
 	app, err := server.New(ctx, server.Deps{Config: cfg, DB: db, Version: "test", Started: time.Now()})
 	if err != nil {
 		t.Fatalf("build server: %v", err)
 	}
-	return &Instance{T: t, Handler: app.Handler(), DB: db, Server: app}
+	return &Instance{T: t, Handler: app.Handler(), DB: db, Server: app, config: cfg}
 }
 
 // Do issues a request. A session sends its cookie; every unsafe method
@@ -201,6 +221,73 @@ func (in *Instance) do(ip, method, path string, body any, as *Session, header ht
 	recorder := httptest.NewRecorder()
 	in.Handler.ServeHTTP(recorder, request)
 	return recorder
+}
+
+// DoMultipart uploads one file as a browser's form would, for the endpoints
+// that take one.
+func (in *Instance) DoMultipart(method, path, field, filename string, data []byte, as *Session) *httptest.ResponseRecorder {
+	in.T.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile(field, filename)
+	if err != nil {
+		in.T.Fatalf("multipart: %v", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		in.T.Fatalf("multipart: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		in.T.Fatalf("multipart: %v", err)
+	}
+	request := httptest.NewRequest(method, path, &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
+	if as != nil {
+		request.AddCookie(as.Cookie)
+	}
+	recorder := httptest.NewRecorder()
+	in.Handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// InstallPackage installs a plugin package the way the backoffice does: the
+// file is uploaded and looked at, and then confirmed with the settings the
+// operator chose. It fails the test on anything but success and returns the
+// plugin as the confirmation answered.
+func (in *Instance) InstallPackage(admin *Session, archive []byte, enable bool, values map[string]string) map[string]any {
+	in.T.Helper()
+	preview := in.DoMultipart(http.MethodPost, "/api/admin/plugins/preview", "file", "plugin.arcx", archive, admin)
+	if preview.Code != http.StatusOK {
+		in.T.Fatalf("preview: %d %s", preview.Code, preview.Body.String())
+	}
+	token := Decode[struct {
+		Preview struct{ Token string } `json:"preview"`
+	}](in.T, preview).Preview.Token
+	installed := in.Do(http.MethodPost, "/api/admin/plugins/install-package", map[string]any{
+		"token": token, "enable": enable, "settings": values,
+	}, admin)
+	if installed.Code != http.StatusOK {
+		in.T.Fatalf("install package: %d %s", installed.Code, installed.Body.String())
+	}
+	return Decode[struct {
+		Plugin map[string]any `json:"plugin"`
+	}](in.T, installed).Plugin
+}
+
+// Reboot builds a second server over the same database and data directory,
+// the way a restart does: whatever the first one stored is what the second
+// finds.
+func (in *Instance) Reboot(tweak ...func(*config.Config)) *Instance {
+	in.T.Helper()
+	cfg := in.config
+	for _, apply := range tweak {
+		apply(&cfg)
+	}
+	app, err := server.New(context.Background(), server.Deps{Config: cfg, DB: in.DB, Version: "test", Started: time.Now()})
+	if err != nil {
+		in.T.Fatalf("reboot: %v", err)
+	}
+	return &Instance{T: in.T, Handler: app.Handler(), DB: in.DB, Server: app, config: cfg}
 }
 
 // Register signs up through the public form and fails the test unless an

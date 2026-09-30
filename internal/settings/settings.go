@@ -496,6 +496,11 @@ func (s *Service) ValidCaptchaMode(value string) bool {
 		return true
 	}
 	plugin, ok := pluginCaptchaModes[value]
+	if !ok {
+		s.dyn.mu.RLock()
+		plugin, ok = s.dyn.modes[value]
+		s.dyn.mu.RUnlock()
+	}
 	return ok && s.gate.Allows(plugin)
 }
 
@@ -850,7 +855,7 @@ func AllDefinitions() []Definition {
 // Defined reports the plugin definition for key, if an enabled plugin
 // brought one.
 func (s *Service) Defined(key string) (Definition, bool) {
-	d, ok := definitions[key]
+	d, ok := s.definition(key)
 	if !ok || !s.gate.Allows(d.Plugin) {
 		return Definition{}, false
 	}
@@ -860,7 +865,7 @@ func (s *Service) Defined(key string) (Definition, bool) {
 // Definitions lists every enabled plugin's settings, in no particular order.
 func (s *Service) Definitions() []Definition {
 	out := make([]Definition, 0, len(definitions))
-	for _, d := range definitions {
+	for _, d := range s.AllDefinitions() {
 		if s.gate.Allows(d.Plugin) {
 			out = append(out, d)
 		}
@@ -874,11 +879,12 @@ func (s *Service) Definitions() []Definition {
 // it to anybody: it may be that plugin's credential, and the redaction that
 // would have masked it is not running.
 func (s *Service) Known(key string) bool {
-	if _, ok := Defaults[key]; !ok {
-		return false
+	d, plugin := s.definition(key)
+	if plugin {
+		return s.gate.Allows(d.Plugin)
 	}
-	d, plugin := definitions[key]
-	return !plugin || s.gate.Allows(d.Plugin)
+	_, core := Defaults[key]
+	return core
 }
 
 // SetPluginGate is how the server tells this service which plugins are on.
@@ -888,6 +894,10 @@ func (s *Service) SetPluginGate(g plugingate.Gate) { s.gate = g }
 type Service struct {
 	db   *database.DB
 	gate plugingate.Gate
+
+	// What plugins installed while the server runs brought; see dynamic.go.
+	dyn       dynamicSet
+	listeners []func(keys []string)
 
 	mu               sync.RWMutex
 	values           map[string]string
@@ -955,7 +965,7 @@ func (s *Service) Get(key string) string {
 	if ok {
 		return value
 	}
-	return Defaults[key]
+	return s.defaultOf(key)
 }
 
 func (s *Service) Bool(key string) bool {
@@ -1006,6 +1016,11 @@ func (s *Service) All() map[string]string {
 			out[key] = value
 		}
 	}
+	for _, d := range s.Definitions() {
+		if _, compiledIn := Defaults[d.Key]; !compiledIn {
+			out[d.Key] = d.Default
+		}
+	}
 	s.mu.RLock()
 	for key, value := range s.values {
 		if s.Known(key) {
@@ -1027,6 +1042,7 @@ func (s *Service) Set(ctx context.Context, key, value string) error {
 	s.mu.Lock()
 	s.values[key] = value
 	s.mu.Unlock()
+	s.changed([]string{key})
 	return nil
 }
 
@@ -1070,10 +1086,13 @@ func (s *Service) DeleteMany(ctx context.Context, q database.Queryer, keys []str
 // Remember puts committed values into the cache.
 func (s *Service) Remember(values map[string]string) {
 	s.mu.Lock()
+	keys := make([]string, 0, len(values))
 	for key, value := range values {
 		s.values[key] = value
+		keys = append(keys, key)
 	}
 	s.mu.Unlock()
+	s.changed(keys)
 }
 
 // Forget drops committed deletions from the cache.
@@ -1083,6 +1102,7 @@ func (s *Service) Forget(keys []string) {
 		delete(s.values, key)
 	}
 	s.mu.Unlock()
+	s.changed(keys)
 }
 
 // Stored reports whether any of keys has a row of its own, as opposed to

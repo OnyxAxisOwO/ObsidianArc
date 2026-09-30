@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/sync/singleflight"
 
@@ -111,6 +112,9 @@ type Handlers struct {
 	// Which plugins are on. A switched-off plugin's routes answer 404, the
 	// same as a build without it.
 	gate plugingate.Gate
+	// Where the routes of plugins installed while the server runs are
+	// served from; see SetFallback.
+	fallback atomic.Pointer[func(w http.ResponseWriter, r *http.Request) bool]
 }
 
 // SetPluginGate is how the server says which plugins are on. Set before
@@ -197,6 +201,40 @@ func NewHandlers(
 	}
 }
 
+// Protect wraps handler in the backoffice's checks: a signed-in administrator,
+// the two-step policy, and permission — a grant list as the table in Routes
+// spells it, or "super_admin". Routes applies it to every endpoint it
+// mounts, and it is exported for the plugins that are installed while the
+// server runs, whose routes cannot be in that table.
+func (h *Handlers) Protect(permission string, handler httpx.Handler) http.Handler {
+	return auth.RequireAdmin(httpx.Wrap(func(w http.ResponseWriter, r *http.Request) error {
+		actor := auth.MustUser(r.Context())
+		if h.auth.BackofficeNeedsTwoFactor(actor) {
+			return backofficeNeedsTwoFactor()
+		}
+		if h.auth.BackofficeLocked(r.Context(), actor) {
+			return backofficeLocked()
+		}
+		if permission == "super_admin" {
+			if !actor.IsSuperAdmin() {
+				return permissionDenied()
+			}
+		} else if !hasPermission(actor, permission) {
+			return permissionDenied()
+		}
+		h.auth.KeepBackofficeOpen(r.Context(), actor)
+		return handler(w, r)
+	}))
+}
+
+// SetFallback installs the answer to "does a plugin installed while the
+// server runs serve this?", asked for every /api/admin/ request no route in
+// the table claimed. It reports whether it did; if not the request is a 404
+// like any other.
+func (h *Handlers) SetFallback(fn func(w http.ResponseWriter, r *http.Request) bool) {
+	h.fallback.Store(&fn)
+}
+
 // Routes mounts every administrative endpoint behind RequireAdmin. One
 // wrapper, applied here, rather than a check inside each handler: a new
 // endpoint added to this list is protected by being on the list.
@@ -206,26 +244,7 @@ func NewHandlers(
 // so this is the one place the backoffice's second lock cannot be walked
 // around.
 func (h *Handlers) Routes(mux *http.ServeMux) {
-	protected := func(permission string, handler httpx.Handler) http.Handler {
-		return auth.RequireAdmin(httpx.Wrap(func(w http.ResponseWriter, r *http.Request) error {
-			actor := auth.MustUser(r.Context())
-			if h.auth.BackofficeNeedsTwoFactor(actor) {
-				return backofficeNeedsTwoFactor()
-			}
-			if h.auth.BackofficeLocked(r.Context(), actor) {
-				return backofficeLocked()
-			}
-			if permission == "super_admin" {
-				if !actor.IsSuperAdmin() {
-					return permissionDenied()
-				}
-			} else if !hasPermission(actor, permission) {
-				return permissionDenied()
-			}
-			h.auth.KeepBackofficeOpen(r.Context(), actor)
-			return handler(w, r)
-		}))
-	}
+	protected := h.Protect
 
 	mux.Handle("GET /api/admin/dashboard", protected("dashboard", h.dashboard))
 	mux.Handle("GET /api/admin/resources", protected("resources", h.resources))
@@ -354,6 +373,15 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 			inner.ServeHTTP(w, r)
 		}))
 	}
+
+	// Whatever else is under /api/admin/: a plugin installed since the server
+	// started, or nothing at all.
+	mux.HandleFunc("/api/admin/", func(w http.ResponseWriter, r *http.Request) {
+		if fn := h.fallback.Load(); fn != nil && (*fn)(w, r) {
+			return
+		}
+		httpx.WriteError(w, r, httpx.NotFound("No such endpoint."))
+	})
 }
 
 // meta is the reference data the admin forms need: which provider kinds this
