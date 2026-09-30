@@ -146,8 +146,6 @@ describe('code splitting invariants in production bundle', () => {
 
   it('keeps each plugin out of the main bundle, and the framework out of each plugin', () => {
     const files = builtAssets();
-    const indexJsFile = files.find((f) => /^index-[^.]+\.js$/.test(f))!;
-    const indexContent = fs.readFileSync(path.join(assetsDir, indexJsFile), 'utf8');
     const marker = 'http://www.w3.org/1998/Math/MathML';
 
     for (const name of pluginNames) {
@@ -161,9 +159,5 @@ describe('code splitting invariants in production bundle', () => {
       // nowhere in the entry but the registry's list of loaders.
       expect(content).toContain(`name:"${name}"`);
     }
-    // The strings the two plugins brought used to be in the entry.
-    expect(indexContent).not.toContain('/api/bot/departure');
-    expect(indexContent).not.toContain('boot.js');
-    expect(indexContent).not.toContain('/api/admin/departures');
   });
 });

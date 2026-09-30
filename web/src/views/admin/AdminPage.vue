@@ -81,7 +81,7 @@ const PAGES: AdminPageSpec[] = [
   {
     slug: 'plugins', label: 'navPlugins', icon: IconPuzzle, component: markRaw(AdminPlugins),
     permission: 'plugins,plugins_manage,plugins_remove',
-    keywords: ['插件', 'plugins', 'QQ', 'QQ群', '退群', '风控', '超级风控'],
+    keywords: ['插件', 'plugins', 'extension', '扩展'],
   },
 ];
 

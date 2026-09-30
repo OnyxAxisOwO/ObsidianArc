@@ -22,16 +22,8 @@ func TestACoreBuildKnowsNothingOfAnyPlugin(t *testing.T) {
 		t.Fatalf("a core build advertises plugins %v and fields %v", site.Plugins, site.Fields)
 	}
 
-	// The routes the QQ-group plugin brings are not there to answer.
-	if res := in.do(http.MethodPost, "/api/bot/departure", map[string]string{"qq": "12345678"}, nil); res.Code != http.StatusNotFound {
-		t.Fatalf("POST /api/bot/departure on a core build: %d", res.Code)
-	}
-	if res := in.do(http.MethodGet, "/api/admin/departures", nil, admin); res.Code != http.StatusNotFound {
-		t.Fatalf("GET /api/admin/departures on a core build: %d", res.Code)
-	}
-
 	// A plugin's settings are unknown keys here, refused like any typo.
-	if res := in.do(http.MethodPut, "/api/admin/settings", map[string]string{"risk.base_url": "/risk"}, admin); res.Code != http.StatusBadRequest {
+	if res := in.do(http.MethodPut, "/api/admin/settings", map[string]string{"some_plugin.key": "x"}, admin); res.Code != http.StatusBadRequest {
 		t.Fatalf("a plugin setting was writable on a core build: %d", res.Code)
 	}
 
@@ -59,7 +51,7 @@ func TestAnOrphanedPluginSettingIsNeverShown(t *testing.T) {
 	in := newInstance(t)
 	admin := in.register("founder", "a-good-password")
 	if _, err := in.db.Exec(t.Context(),
-		`INSERT INTO settings (key, value, updated_at) VALUES ('risk.secret_key', 'left-behind-secret', 0)`); err != nil {
+		`INSERT INTO settings (key, value, updated_at) VALUES ('some_plugin.secret', 'left-behind-secret', 0)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := in.server.settings.Load(t.Context()); err != nil {
@@ -69,7 +61,7 @@ func TestAnOrphanedPluginSettingIsNeverShown(t *testing.T) {
 	if listed.Code != http.StatusOK {
 		t.Fatalf("list settings: %d", listed.Code)
 	}
-	if body := listed.Body.String(); strings.Contains(body, "left-behind-secret") || strings.Contains(body, "risk.secret_key") {
+	if body := listed.Body.String(); strings.Contains(body, "left-behind-secret") || strings.Contains(body, "some_plugin.secret") {
 		t.Fatalf("an orphaned plugin setting is in the backoffice: %s", body)
 	}
 }
