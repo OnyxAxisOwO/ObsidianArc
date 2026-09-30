@@ -142,7 +142,7 @@ package:
 	for f in $(PACKAGES); do cp "$$f" dist/plugins/; done
 	echo $(VERSION) > dist/VERSION
 	echo $(ARCH) > dist/ARCH
-	echo $(PLUGINS) $(PACKAGE_NAMES) > dist/PLUGINS
+	echo $(PLUGINS) $(PACKAGE_NAMES) > dist/PLUGIN_LIST
 
 ## deploy: release, then ship dist/ to DEPLOY_HOST and replace the Arc server
 ## container with one built from it — seconds on the server, not minutes

@@ -26,7 +26,7 @@ arch=$(cat dist/ARCH)
 version=$(cat dist/VERSION)
 # What this build carries, and whether the caller has accepted losing some of
 # what the running server has.
-plugins=$(cat dist/PLUGINS 2>/dev/null || true)
+plugins=$(cat dist/PLUGIN_LIST 2>/dev/null || true)
 drop=${DROP_PLUGINS:-}
 
 # macOS tar would otherwise add AppleDouble files and extended attributes,
@@ -52,9 +52,16 @@ COPYFILE_DISABLE=1 tar -czf - -C dist . | $ssh_command "$host" "set -e
   # under the people using it — a registration field gone, a sign-up check
   # no longer standing in front of the form — with nothing on the way
   # saying so. The person deploying has to have decided that.
-  if [ -f dist/PLUGINS ] && [ -z '$drop' ]; then
+  # The list is not called PLUGINS: dist/plugins holds the bundled packages,
+  # and on a case-insensitive file system (a Mac's, where this is built) the
+  # two are the same name. A server last deployed before the rename still has
+  # the old file, which is read once more.
+  previous=
+  if [ -f dist/PLUGIN_LIST ]; then previous=\$(cat dist/PLUGIN_LIST)
+  elif [ -f dist/PLUGINS ]; then previous=\$(cat dist/PLUGINS); fi
+  if [ -n \"\$previous\" ] && [ -z '$drop' ]; then
     lost=
-    for p in \$(cat dist/PLUGINS); do
+    for p in \$previous; do
       case ' $plugins ' in
         *\" \$p \"*) ;;
         *) lost=\"\$lost \$p\" ;;
