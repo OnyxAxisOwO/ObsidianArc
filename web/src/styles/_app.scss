@@ -1616,6 +1616,31 @@ body.oa-resizing * {
   height: 100%;
   min-height: 0;
   box-sizing: border-box;
+  /* The gutter, here and not on #app — see the note there. On the page rather
+     than the viewport because a page in the middle of a slide is laid out
+     absolutely against the viewport's whole box, and would otherwise lose its
+     gutter for the length of the transition. */
+  padding: 16px;
+}
+
+/* The sign-in card and the landing page meet the window edge to edge; the
+   inset would make them feel boxed in. */
+.oa-app-page:has(.oa-auth),
+body.has-auth-page .oa-app-page,
+.oa-app-page:has(.oa-front) {
+  padding: 0;
+}
+
+@media (max-width: 640px) {
+  .oa-app-page {
+    padding: 8px;
+  }
+
+  .oa-app-page:has(.oa-auth),
+  body.has-auth-page .oa-app-page,
+  .oa-app-page:has(.oa-front) {
+    padding: 0;
+  }
 }
 
 /* Hardware-accelerated sliding layers during transition */

@@ -25,7 +25,7 @@ import OaPanel from '@/components/OaPanel.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { currentLanguage, t } from '@/composables/useI18n';
-import { IconArrowUpRight, IconDownload, IconInfo, IconPlus, IconPuzzle, IconRefresh } from '@/icons';
+import { IconArrowUpRight, IconDownload, IconInfo, IconPuzzle, IconRefresh } from '@/icons';
 import { absoluteTime } from '@/lib/format';
 import { loadPluginModule, plugins } from '@/plugins/registry';
 import type { ArcPlugin } from '@/plugins/types';
@@ -540,18 +540,6 @@ onMounted(load);
   </div>
 
   <template v-if="activeTab === 'manage'">
-    <Teleport :to="view.actionsHost">
-      <button
-        type="button"
-        class="oa-btn primary"
-        :disabled="!canManage || reading"
-        @click="choosePackage"
-      >
-        <IconPlus :size="13" />
-        <span>{{ t('pluginInstallNew') }}</span>
-      </button>
-    </Teleport>
-
     <AdminFailure v-if="error && !loaded" :message="error" @retry="load" />
     <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
     <div v-else class="oa-workbench">

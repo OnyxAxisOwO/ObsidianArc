@@ -132,31 +132,16 @@ textarea:placeholder-shown::selection {
    person who had just set it. An explicit choice outranks an ambient one, and
    the way to turn this off is to put the slider back to zero. */
 
+/* The gutter around the interface is the page's, not #app's. `.oa-app-viewport`
+   contains its layout, which makes it the box every `position: fixed` thing
+   inside it — a modal's scrim, the settings drawer, a side panel below three
+   columns — is placed against; with the gutter on #app that box was the
+   window less sixteen pixels a side, and each of them stopped short of the
+   edge it was written to reach. So #app fills the window and the page inside
+   carries the padding (see .oa-app-page). */
 #app {
   box-sizing: border-box;
   height: 100%;
-  padding: 16px;
-}
-
-#app:has(.oa-auth),
-body.has-auth-page #app {
-  padding: 0;
-}
-
-/* Visitors should meet the built-in landing page edge to edge; the app inset makes it feel boxed in. */
-#app:has(.oa-front) {
-  padding: 0;
-}
-
-@media (max-width: 640px) {
-  #app {
-    padding: 8px;
-  }
-
-  #app:has(.oa-auth),
-  body.has-auth-page #app {
-    padding: 0;
-  }
 }
 
 /* Shown until main.ts replaces it. A blank page during the first paint reads
