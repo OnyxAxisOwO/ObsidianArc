@@ -1430,6 +1430,7 @@ export const zh: Record<StringKey, string> = {
   apiKeys: 'API 密钥',
   apiKeysIntro: '任何兼容 OpenAI 的客户端都可以接到这台服务器，把密钥作为 Bearer Token 发送即可。',
   apiBaseUrl: '接口地址',
+  apiProtocols: '兼容 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 协议',
   apiDisabledForYou: '你的账户暂时不能使用 API，请联系管理员。',
   apiRestrictedUntil: '你的 API 权限受限至 {when}；网页聊天仍可正常使用。',
   apiRestrictedIndefinitely: '你的 API 权限已被限制，需由管理员解除；网页聊天仍可正常使用。',
