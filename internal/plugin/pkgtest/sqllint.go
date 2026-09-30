@@ -77,7 +77,7 @@ func SQLProblems(dir string) ([]string, error) {
 			if !ok {
 				return true
 			}
-			if !looksLikeSQL.MatchString(sql) {
+			if !looksLikeSQL.MatchString(stripLineComments(sql)) {
 				// A literal that is one side of a larger concatenation is
 				// visited on its own too, so nothing is lost by moving on.
 				return true
