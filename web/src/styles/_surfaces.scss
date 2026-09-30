@@ -1866,38 +1866,8 @@
   box-sizing: border-box;
 }
 
-/* --- the providers this instance signs in with ------------------------------
-
-   Two panels side by side rather than six stacked fields: each provider is
-   one thing to configure, and a wall of Client ID / Client secret pairs makes
-   the reader work out which pair belongs to which. */
-
-.oa-providers {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 14px;
-}
-
-.oa-provider {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  min-width: 0;
-  padding: 18px;
-  border-radius: 14px;
-  background: var(--ai-surface-container);
-}
-
-.oa-provider-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 11px;
-  background: var(--ai-surface-card);
-  color: var(--ai-text);
-}
+/* The sign-in providers are rows of their card, each under a line naming it:
+   see .oa-provider in _workbench.scss. */
 
 /* The client secret, for the one moment it exists. */
 .oa-app-secret {
@@ -5877,7 +5847,8 @@
    for what came before, so the seam between the grid and the code list below
    still needs its own rule; 26px matches .oa-admin-section's own rhythm. */
 .oa-workbench + #secInviteCodes {
-  margin-top: 26px;
+  max-width: 1040px;
+  margin: 26px auto 0;
 }
 
 /* --- personal invite rows (settings) */
@@ -5909,17 +5880,13 @@
 }
 
 /* --- Login background controls in admin settings ------------------------ */
+/* Four thumbnails in a row, not four screens: the picture is there to be
+   recognised, and the page it belongs to is a settings page. */
 .oa-login-bg-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
   width: 100%;
-}
-
-@media (max-width: 640px) {
-  .oa-login-bg-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 .oa-login-bg-card {
@@ -5929,7 +5896,6 @@
   padding: 14px;
   border-radius: 14px;
   background: var(--ai-surface-container);
-  border: 1px solid var(--ai-border);
 }
 
 .oa-login-bg-card-head {
@@ -5966,12 +5932,9 @@
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.oa-login-bg-preview.landscape {
-  aspect-ratio: 16 / 10;
-}
-
+.oa-login-bg-preview.landscape,
 .oa-login-bg-preview.portrait {
-  aspect-ratio: 3 / 4;
+  height: 104px;
 }
 
 .oa-login-bg-preview:hover,

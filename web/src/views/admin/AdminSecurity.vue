@@ -1111,15 +1111,11 @@ onMounted(load);
           :placeholder="t('signupReviewPromptPlaceholder')"
           :hint="t('signupReviewPromptHint')"
         />
-        <button
-          v-if="defaultReviewPrompt"
-          type="button"
-          class="oa-btn"
-          :disabled="reviewPromptIsDefault"
-          @click="restoreReviewPrompt"
-        >
-          {{ t('signupReviewPromptRestore') }}
-        </button>
+        <div v-if="defaultReviewPrompt" class="oa-control-actions">
+          <button type="button" class="oa-btn" :disabled="reviewPromptIsDefault" @click="restoreReviewPrompt">
+            {{ t('signupReviewPromptRestore') }}
+          </button>
+        </div>
         <OaTextArea
           v-model="form.reviewRefusal"
           :label="t('signupReviewRefusal')"
@@ -1305,18 +1301,20 @@ onMounted(load);
             :hint="mailForm.password_set ? t('mailPasswordSetHint') : t('mailPasswordHint')"
             autocomplete="new-password"
           />
-          <OaConfirmButton
-            v-if="mailForm.password_set"
-            class="oa-btn oa-btn-danger"
-            :label="t('mailClearPassword')"
-            :armed-label="t('mailClearPasswordConfirm')"
-            :armed-title="t('mailClearPasswordConfirm')"
-            :disabled="mailBusy"
-            @confirm="clearMailPassword"
-          />
-          <button type="button" class="oa-btn primary" :disabled="mailBusy" @click="saveMail">
-            {{ mailBusy ? t('saving') : t('save') }}
-          </button>
+          <div class="oa-control-actions">
+            <OaConfirmButton
+              v-if="mailForm.password_set"
+              class="oa-btn oa-btn-danger"
+              :label="t('mailClearPassword')"
+              :armed-label="t('mailClearPasswordConfirm')"
+              :armed-title="t('mailClearPasswordConfirm')"
+              :disabled="mailBusy"
+              @confirm="clearMailPassword"
+            />
+            <button type="button" class="oa-btn primary" :disabled="mailBusy" @click="saveMail">
+              {{ mailBusy ? t('saving') : t('save') }}
+            </button>
+          </div>
           <OaTextField
             v-model="mailTestTo"
             :label="t('mailTestTo')"
@@ -1324,9 +1322,11 @@ onMounted(load);
             type="email"
             autocomplete="email"
           />
-          <button type="button" class="oa-btn" :disabled="mailBusy || mailTestBusy || mailSettingsDirty || !mailTestTo.trim()" @click="sendMailTest">
-            {{ mailTestBusy ? t('sending') : t('mailTestSend') }}
-          </button>
+          <div class="oa-control-actions">
+            <button type="button" class="oa-btn" :disabled="mailBusy || mailTestBusy || mailSettingsDirty || !mailTestTo.trim()" @click="sendMailTest">
+              {{ mailTestBusy ? t('sending') : t('mailTestSend') }}
+            </button>
+          </div>
           <p
             v-if="mailFlash"
             class="oa-drawer-flash visible oa-control-flash"
@@ -1352,15 +1352,16 @@ onMounted(load);
             :hint="userCheckForm.api_key_set ? t('userCheckAPIKeySetHint') : t('userCheckAPIKeyMissingHint')"
             autocomplete="new-password"
           />
-          <OaConfirmButton
-            v-if="userCheckForm.api_key_set"
-            class="oa-btn oa-btn-danger"
-            :label="t('userCheckClearAPIKey')"
-            :armed-label="t('userCheckClearAPIKeyConfirm')"
-            :armed-title="t('userCheckClearAPIKeyConfirm')"
-            :disabled="userCheckBusy"
-            @confirm="clearUserCheckAPIKey"
-          />
+          <div v-if="userCheckForm.api_key_set" class="oa-control-actions">
+            <OaConfirmButton
+              class="oa-btn oa-btn-danger"
+              :label="t('userCheckClearAPIKey')"
+              :armed-label="t('userCheckClearAPIKeyConfirm')"
+              :armed-title="t('userCheckClearAPIKeyConfirm')"
+              :disabled="userCheckBusy"
+              @confirm="clearUserCheckAPIKey"
+            />
+          </div>
           <OaTextArea
             v-model="userCheckForm.exempt_domains"
             :label="t('userCheckExemptDomains')"
@@ -1377,9 +1378,11 @@ onMounted(load);
               { value: 'allow', label: t('userCheckFailureAllow') },
             ]"
           />
-          <button type="button" class="oa-btn primary" :disabled="userCheckBusy" @click="saveUserCheck">
-            {{ userCheckBusy ? t('saving') : t('save') }}
-          </button>
+          <div class="oa-control-actions">
+            <button type="button" class="oa-btn primary" :disabled="userCheckBusy" @click="saveUserCheck">
+              {{ userCheckBusy ? t('saving') : t('save') }}
+            </button>
+          </div>
           <OaTextField
             v-model="userCheckTestEmail"
             :label="t('userCheckTestEmail')"
@@ -1387,12 +1390,14 @@ onMounted(load);
             autocomplete="email"
             :hint="t('userCheckTestHint')"
           />
-          <button
-            type="button"
-            class="oa-btn"
-            :disabled="userCheckTestBusy || !userCheckTestEmail.trim() || !userCheckForm.api_key_set"
-            @click="sendUserCheckTest"
-          >{{ userCheckTestBusy ? t('checking') : t('userCheckTest') }}</button>
+          <div class="oa-control-actions">
+            <button
+              type="button"
+              class="oa-btn"
+              :disabled="userCheckTestBusy || !userCheckTestEmail.trim() || !userCheckForm.api_key_set"
+              @click="sendUserCheckTest"
+            >{{ userCheckTestBusy ? t('checking') : t('userCheckTest') }}</button>
+          </div>
           <p
             v-if="userCheckFlash"
             class="oa-drawer-flash visible oa-control-flash"
@@ -1455,7 +1460,7 @@ onMounted(load);
       <AdminControlCard id="secOAuth" v-show="visible('secOAuth')" :title="t('secOAuth')" :icon="IconGithub" :hint="t('oauthHint')" class="oa-control-card-wide">
         <div class="oa-providers">
           <div class="oa-provider">
-            <span class="oa-provider-mark"><IconGithub :size="15" /></span>
+            <div class="oa-provider-head"><IconGithub :size="15" />GitHub</div>
             <OaSwitchField v-model="form.githubEnabled" :label="t('oauthGitHub')" :hint="t('oauthGitHubHint')" />
             <OaTextField
               v-model="form.githubClientID"
@@ -1473,7 +1478,7 @@ onMounted(load);
             />
           </div>
           <div class="oa-provider">
-            <span class="oa-provider-mark"><IconGoogle :size="15" /></span>
+            <div class="oa-provider-head"><IconGoogle :size="15" />Google</div>
             <OaSwitchField v-model="form.googleEnabled" :label="t('oauthGoogle')" :hint="t('oauthGoogleHint')" />
             <OaTextField
               v-model="form.googleClientID"
@@ -1491,7 +1496,7 @@ onMounted(load);
             />
           </div>
           <div class="oa-provider">
-            <span class="oa-provider-mark"><IconKey :size="15" /></span>
+            <div class="oa-provider-head"><IconKey :size="15" />OpenID Connect</div>
             <OaSwitchField v-model="form.oidcEnabled" :label="t('oauthOIDC')" :hint="t('oauthOIDCHint')" />
             <OaTextField
               v-model="form.oidcDisplayName"
