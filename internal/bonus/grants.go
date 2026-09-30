@@ -17,6 +17,8 @@ type Target struct {
 	All     bool
 	GroupID string
 	UserIDs []string
+	// Names, as a person types them; case does not matter.
+	Usernames []string
 }
 
 // Result is what a grant did.
@@ -125,22 +127,36 @@ func (s *Store) recipients(ctx context.Context, q database.Queryer, t Target) ([
 		rows, err = q.Query(ctx, `SELECT id FROM users ORDER BY id`)
 	case t.GroupID != "":
 		rows, err = q.Query(ctx, `SELECT id FROM users WHERE group_id = ? ORDER BY id`, t.GroupID)
-	case len(t.UserIDs) > 0:
+	case len(t.UserIDs) > 0 || len(t.Usernames) > 0:
 		seen := map[string]bool{}
-		out := make([]string, 0, len(t.UserIDs))
-		for _, userID := range t.UserIDs {
-			if userID = strings.TrimSpace(userID); userID == "" || seen[userID] {
-				continue
+		var out []string
+		find := func(ref, query string) error {
+			ref = strings.TrimSpace(ref)
+			if ref == "" {
+				return nil
 			}
-			seen[userID] = true
 			var found string
-			if err := q.QueryRow(ctx, `SELECT id FROM users WHERE id = ?`, userID).Scan(&found); err != nil {
+			if err := q.QueryRow(ctx, query, ref).Scan(&found); err != nil {
 				if database.IsNotFound(err) {
-					return nil, fmt.Errorf("%w: no account %s", ErrNotFound, userID)
+					return fmt.Errorf("%w: no account %s", ErrNotFound, ref)
 				}
+				return err
+			}
+			if !seen[found] {
+				seen[found] = true
+				out = append(out, found)
+			}
+			return nil
+		}
+		for _, userID := range t.UserIDs {
+			if err := find(userID, `SELECT id FROM users WHERE id = ?`); err != nil {
 				return nil, err
 			}
-			out = append(out, found)
+		}
+		for _, name := range t.Usernames {
+			if err := find(strings.ToLower(name), `SELECT id FROM users WHERE username_lower = ?`); err != nil {
+				return nil, err
+			}
 		}
 		return out, nil
 	default:

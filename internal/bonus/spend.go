@@ -113,7 +113,10 @@ func (s *Store) candidates(ctx context.Context, q database.Queryer, userID, mode
 		if a.expiresAt != b.expiresAt {
 			return a.expiresAt < b.expiresAt
 		}
-		return a.created < b.created
+		if a.created != b.created {
+			return a.created < b.created
+		}
+		return a.grantID < b.grantID
 	})
 	return out, nil
 }

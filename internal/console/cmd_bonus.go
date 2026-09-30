@@ -192,7 +192,7 @@ func init() {
 		Name:    "bonus grant",
 		Group:   "bonus",
 		Summary: Text{EN: "Grant credits in a bonus bar", ZH: "向赠金条里发放积分"},
-		Usage:   "bonus grant <id|name> --amount N (--all | --group ID | --users ID,ID) [--days D | --expires-at MS] [--note TEXT] --yes",
+		Usage:   "bonus grant <id|name> --amount N (--all | --group ID | --users NAME,NAME) [--days D | --expires-at MS] [--note TEXT] --yes",
 		Help: Text{
 			EN: "All or nothing. Without --days or --expires-at the bar's default expiry applies. Each account is told.",
 			ZH: "要么全发要么都不发。没有 --days 和 --expires-at 时用赠金条的默认到期时间。每个收到的账户都会收到通知。",
@@ -202,12 +202,12 @@ func init() {
 			{Name: "--amount", Hint: Text{EN: "credits per account", ZH: "每个账户的积分数"}, Value: "N"},
 			{Name: "--all", Hint: Text{EN: "every account", ZH: "所有账户"}},
 			{Name: "--group", Hint: Text{EN: "one group's id", ZH: "某个用户组的 id"}, Value: "ID"},
-			{Name: "--users", Hint: Text{EN: "account ids, comma-separated", ZH: "账户 id，逗号分隔"}, Value: "IDS"},
+			{Name: "--users", Hint: Text{EN: "usernames, comma-separated", ZH: "用户名，逗号分隔"}, Value: "NAMES"},
 			{Name: "--days", Hint: Text{EN: "days from now until it expires", ZH: "自现在起多少天后过期"}, Value: "D"},
 			{Name: "--expires-at", Hint: Text{EN: "explicit expiry, epoch ms", ZH: "明确的到期时间（毫秒时间戳）"}, Value: "MS"},
 			{Name: "--note", Hint: Text{EN: "a line the account sees", ZH: "给用户看的一句话"}, Value: "TEXT"},
 		},
-		Examples:    []string{"bonus grant 新用户礼包 --amount 50 --all --days 30 --yes", "bonus grant 备用额度 --amount 5 --users alice_id,bob_id --note 补偿 --yes"},
+		Examples:    []string{"bonus grant 新用户礼包 --amount 50 --all --days 30 --yes", "bonus grant 备用额度 --amount 5 --users alice,bob --note 补偿 --yes"},
 		Permission:  "usage",
 		Destructive: true,
 		Endpoints:   []string{"POST /api/admin/bonus/bars/{id}/grants"},
@@ -226,7 +226,7 @@ func init() {
 				body["all"] = true
 			}
 			if rt.Present("users") {
-				body["user_ids"] = splitCSV(rt.String("users"))
+				body["usernames"] = splitCSV(rt.String("users"))
 			}
 			data, _, err := rt.Call(http.MethodPost, "/api/admin/bonus/bars/"+url.PathEscape(asStr(bar["id"]))+"/grants", map[string]any(body))
 			if err != nil {

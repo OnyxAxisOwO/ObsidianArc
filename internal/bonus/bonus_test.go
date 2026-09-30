@@ -372,7 +372,9 @@ func TestTheViewShowsAmountsOnlyWhereTheBarSaysSo(t *testing.T) {
 	a := f.account(t, "alice")
 	shown := f.bar(t, Bar{Name: "shown", ToggleMode: ModeUser, ShowTotal: true, DefaultOn: true})
 	hidden := f.bar(t, Bar{Name: "hidden", ToggleMode: ModeOn, ShowTotal: false})
-	f.give(t, shown.ID, a.ID, 1000, 0)
+	// The one that expires first is spent first, which is what makes it the one
+	// the take below reaches.
+	f.give(t, shown.ID, a.ID, 1000, time.Now().Add(48*time.Hour).UnixMilli())
 	f.give(t, hidden.ID, a.ID, 1000, 0)
 	if _, err := f.take(t, a.ID, "m", 250, Priority); err != nil {
 		t.Fatal(err)

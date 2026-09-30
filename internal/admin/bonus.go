@@ -3,6 +3,7 @@ package admin
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
@@ -87,7 +88,9 @@ func (h *Handlers) grantBonus(w http.ResponseWriter, r *http.Request) error {
 		All     bool     `json:"all"`
 		GroupID string   `json:"group_id"`
 		UserIDs []string `json:"user_ids"`
-		Amount  float64  `json:"amount"`
+		// Or by name, which is what a person has to hand.
+		Usernames []string `json:"usernames"`
+		Amount    float64  `json:"amount"`
 		// One of the two: an explicit moment, or a number of days from now.
 		ExpiresAt int64  `json:"expires_at"`
 		Days      int    `json:"days"`
@@ -109,7 +112,7 @@ func (h *Handlers) grantBonus(w http.ResponseWriter, r *http.Request) error {
 		expires = bar.DefaultExpiresAt
 	}
 	targets := 0
-	for _, set := range []bool{body.All, body.GroupID != "", len(body.UserIDs) > 0} {
+	for _, set := range []bool{body.All, body.GroupID != "", len(body.UserIDs)+len(body.Usernames) > 0} {
 		if set {
 			targets++
 		}
@@ -119,7 +122,7 @@ func (h *Handlers) grantBonus(w http.ResponseWriter, r *http.Request) error {
 	}
 	actor := auth.MustUser(r.Context())
 	result, err := h.Bonus.Grant(r.Context(), barID,
-		bonus.Target{All: body.All, GroupID: body.GroupID, UserIDs: body.UserIDs},
+		bonus.Target{All: body.All, GroupID: body.GroupID, UserIDs: body.UserIDs, Usernames: body.Usernames},
 		body.Amount, expires, "admin", body.Note, actor.ID)
 	if err != nil {
 		return bonus.TranslateError(err)
@@ -130,7 +133,7 @@ func (h *Handlers) grantBonus(w http.ResponseWriter, r *http.Request) error {
 	case body.All:
 		h.push(r.Context(), notify.Notification{Audience: notify.AudienceAll, Kind: "bonus_granted", Params: params, Link: "/usage"})
 	default:
-		for _, userID := range h.bonusRecipients(r, body.GroupID, body.UserIDs) {
+		for _, userID := range h.bonusRecipients(r, body.GroupID, body.UserIDs, body.Usernames) {
 			h.tellAccount(r.Context(), actor, userID, "bonus_granted", "/usage", params)
 		}
 	}
@@ -140,11 +143,19 @@ func (h *Handlers) grantBonus(w http.ResponseWriter, r *http.Request) error {
 }
 
 // bonusRecipients is who to tell about a grant that did not go to everyone.
-func (h *Handlers) bonusRecipients(r *http.Request, groupID string, userIDs []string) []string {
+func (h *Handlers) bonusRecipients(r *http.Request, groupID string, userIDs, usernames []string) []string {
+	query, args := `SELECT id FROM users WHERE group_id = ?`, []any{groupID}
 	if groupID == "" {
-		return userIDs
+		out := append([]string(nil), userIDs...)
+		for _, name := range usernames {
+			var id string
+			if err := h.db.QueryRow(r.Context(), `SELECT id FROM users WHERE username_lower = ?`, strings.ToLower(strings.TrimSpace(name))).Scan(&id); err == nil {
+				out = append(out, id)
+			}
+		}
+		return out
 	}
-	rows, err := h.db.Query(r.Context(), `SELECT id FROM users WHERE group_id = ?`, groupID)
+	rows, err := h.db.Query(r.Context(), query, args...)
 	if err != nil {
 		return nil
 	}
