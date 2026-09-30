@@ -21,11 +21,11 @@ GOFLAGS := -trimpath
 
 # Which plugins under plugins/ the binary carries. Each is compiled in by its
 # build tag (cmd/server/plugin_<name>.go); one left out contributes no code,
-# no route and no table. The default is what this repository's own
-# deployment runs, so `make deploy` keeps serving what it served before the
-# features became plugins. `PLUGINS=` builds the core alone, which is also
-# what a bare `go build ./cmd/server` produces.
-PLUGINS ?= qqgroup riskcontrol cardgrant
+# no route and no table. This repository ships none, so the default is the
+# core alone — which is also what a bare `go build ./cmd/server` produces.
+# An instance that runs plugins builds from wherever they live, with them
+# laid over this tree, and passes PLUGINS itself.
+PLUGINS ?=
 PLUGIN_TAGS := $(strip $(foreach p,$(PLUGINS),plugin_$(p)))
 TAGS := -tags "$(PLUGIN_TAGS)"
 # Every plugin in the tree, for vetting the tagged files whatever PLUGINS is.
@@ -37,6 +37,9 @@ ALL_PLUGIN_TAGS := $(foreach p,$(notdir $(wildcard plugins/*)),plugin_$(p))
 ARCH        ?= amd64
 DEPLOY_HOST ?=
 DEPLOY_DIR  ?= /data/obsidian-arc
+# Set to deploy a build that lacks a plugin the running server carries; the
+# deploy refuses otherwise (see scripts/deploy.sh).
+DROP_PLUGINS ?=
 
 .PHONY: all build web web-ci server run dev test test-full vet fmt typecheck web-test clean docker version docs docs-dev release package deploy
 
@@ -88,6 +91,7 @@ dev:
 ## there and cannot rewrite the lockfile behind its back.
 test: vet
 	@test -d internal/web/dist/assets || $(MAKE) web
+	sh scripts/deploy_test.sh
 	go test -p 4 ./...
 	npm --prefix web run test
 
@@ -135,7 +139,7 @@ package:
 ## deploy: release, then ship dist/ to DEPLOY_HOST and replace the Arc server
 ## container with one built from it — seconds on the server, not minutes
 deploy: release
-	DEPLOY_HOST=$(DEPLOY_HOST) DEPLOY_DIR=$(DEPLOY_DIR) sh scripts/deploy.sh
+	DEPLOY_HOST=$(DEPLOY_HOST) DEPLOY_DIR=$(DEPLOY_DIR) DROP_PLUGINS=$(DROP_PLUGINS) sh scripts/deploy.sh
 
 ## docs: build VitePress documentation site
 docs:

@@ -12,8 +12,6 @@ import {
   installPlugins, loadPlugins, pinnedProvider, pluginInviteeNote, pluginOAuthError, pluginRefusal, pluginStrings,
   plugins,
 } from '../src/plugins/registry';
-import qqgroup from '../src/plugins/qqgroup/qqgroup.plugin';
-import riskcontrol from '../src/plugins/riskcontrol/riskcontrol.plugin';
 import type { ArcPlugin } from '../src/plugins/types';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import AuthView from '../src/views/AuthView.vue';
@@ -21,10 +19,12 @@ import AdminSecurity from '../src/views/admin/AdminSecurity.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import PluginList from '../src/views/admin/PluginList.vue';
 import PluginUserActions from '../src/views/admin/PluginUserActions.vue';
+import example from './fixtures/example.plugin';
 
 // The plugin framework's browser half: which plugins load, how the core
 // forms draw what a plugin declares, and that a plugin's settings travel
-// with the page's own save.
+// with the page's own save. The plugin is a made-up one (fixtures/), because
+// the core ships none; each real plugin's tests live with it.
 
 const ADMIN: Account = {
   id: 'admin', username: 'founder', email: '', nickname: '', avatar: '', bio: '',
@@ -97,9 +97,9 @@ afterEach(() => {
 });
 
 describe('loading plugins', () => {
-  it('fetches the plugins the server names, and skips a name this build has no code for', async () => {
-    await loadPlugins({ qqgroup: {}, riskcontrol: { on_signup: false }, nosuchplugin: {} });
-    expect(plugins().map((plugin) => plugin.name)).toEqual(['qqgroup', 'riskcontrol']);
+  it('skips a name this build has no code for', async () => {
+    await loadPlugins({ nosuchplugin: {} });
+    expect(plugins()).toEqual([]);
   });
 
   it('loads nothing for a server that names nothing', async () => {
@@ -110,37 +110,36 @@ describe('loading plugins', () => {
 
 describe('what the core asks a plugin', () => {
   it('words a field\'s refusals from its spec, and a plugin\'s own codes from its table', () => {
-    installPlugins([qqgroup, riskcontrol]);
-    const qq = qqgroup.fields!['qq']!;
-    expect(pluginRefusal('qq_taken')).toBe(qq.taken());
-    expect(pluginRefusal('invalid_qq')).toBe(qq.invalid());
-    expect(pluginRefusal('qq_required')).toBe(qq.required());
-    expect(pluginRefusal('risk_blocked')).toBe(riskcontrol.refusals!['risk_blocked']!());
+    installPlugins([example]);
+    const ref = example.fields!['ref']!;
+    expect(pluginRefusal('ref_taken')).toBe(ref.taken());
+    expect(pluginRefusal('invalid_ref')).toBe(ref.invalid());
+    expect(pluginRefusal('ref_required')).toBe(ref.required());
+    expect(pluginRefusal('example_blocked')).toBe(example.refusals!['example_blocked']!());
     expect(pluginRefusal('badge_taken')).toBeNull();
-    expect(refusalText(new ApiError(409, 'qq_taken', 'That qq is already registered.', {}))).toBe(qq.taken());
-    expect(pluginOAuthError('qq_required')).toBe(qqgroup.oauthErrors!['qq_required']!());
-    expect(pinnedProvider('oidc')?.hint()).toBe(qqgroup.pinnedProviders!['oidc']!.hint());
+    expect(refusalText(new ApiError(409, 'ref_taken', 'That reference is already registered.', {}))).toBe(ref.taken());
+    expect(pluginOAuthError('ref_required')).toBe(example.oauthErrors!['ref_required']!());
+    expect(pinnedProvider('oidc')?.hint()).toBe(example.pinnedProviders!['oidc']!.hint());
     expect(pinnedProvider('github')).toBeNull();
   });
 
   it('says nothing of a plugin that is not loaded', () => {
-    expect(pluginRefusal('qq_taken')).toBeNull();
+    expect(pluginRefusal('ref_taken')).toBeNull();
     expect(pinnedProvider('oidc')).toBeNull();
     // The code a server without the plugin would never send reads as the
     // generic refusal rather than a key.
-    expect(refusalText(new ApiError(409, 'qq_taken', 'x', {}))).toBe(t('authRequestFailed'));
+    expect(refusalText(new ApiError(409, 'ref_taken', 'x', {}))).toBe(t('authRequestFailed'));
   });
 
   it('lets a plugin word its own notifications and invitee rows', () => {
-    installPlugins([qqgroup]);
+    installPlugins([example]);
     const text = describeNotification({
-      id: 'n1', kind: 'invite_departed', params: { username: 'ada', cards_due: 2, cards_revoked: 2 },
+      id: 'n1', kind: 'example_departed', params: { username: 'ada', count: 2 },
       link: '', created_at: 1, read: false,
     } as unknown as Parameters<typeof describeNotification>[0]);
     expect(text.body).toContain('ada');
     expect(text.body).toContain('2');
-    expect(pluginInviteeNote({ departed: true, departure_mode: 'delete', cards_revoked: 1 }))
-      .toContain('account removed');
+    expect(pluginInviteeNote({ flagged: true })).toContain('account removed');
     expect(pluginInviteeNote({ counted: true })).toBeNull();
   });
 
@@ -154,51 +153,51 @@ describe('what the core asks a plugin', () => {
 
 describe('a plugin account field on the sign-up form', () => {
   beforeEach(() => {
-    installPlugins([qqgroup]);
+    installPlugins([example]);
   });
 
   it('is drawn only where the server asks for it, and marked required when it must be', async () => {
-    site.value = { ...siteInfo.value, fields: { qq: 'off' } };
+    site.value = { ...siteInfo.value, fields: { ref: 'off' } };
     await mount(AuthView, { mode: 'register' });
-    expect(() => field(host, qqgroup.fields!['qq']!.label())).toThrow();
+    expect(() => field(host, example.fields!['ref']!.label())).toThrow();
     app!.unmount();
     app = undefined;
 
-    site.value = { ...siteInfo.value, fields: { qq: 'required' } };
+    site.value = { ...siteInfo.value, fields: { ref: 'required' } };
     await mount(AuthView, { mode: 'register' });
-    expect(field(host, qqgroup.fields!['qq']!.label()).required).toBe(true);
+    expect(field(host, example.fields!['ref']!.label()).required).toBe(true);
   });
 
   it('is checked before submitting and sent under "fields"', async () => {
-    site.value = { ...siteInfo.value, fields: { qq: 'required' } };
+    site.value = { ...siteInfo.value, fields: { ref: 'required' } };
     const register = vi.spyOn(authApi, 'register').mockResolvedValue({ user: ADMIN });
     await mount(AuthView, { mode: 'register' });
-    const qq = qqgroup.fields!['qq']!;
+    const ref = example.fields!['ref']!;
 
     type(field(host, t('username')), 'newperson');
     type(field(host, t('password')), 'a-strong-password');
     button(host, t('createAccount')).click();
     await settle();
     expect(register).not.toHaveBeenCalled();
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(qq.required());
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(ref.required());
 
-    type(field(host, qq.label()), '0123');
+    type(field(host, ref.label()), '0123');
     button(host, t('createAccount')).click();
     await settle();
     expect(register).not.toHaveBeenCalled();
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(qq.invalid());
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(ref.invalid());
 
-    type(field(host, qq.label()), '10001');
+    type(field(host, ref.label()), '10001');
     button(host, t('createAccount')).click();
     await settle();
-    expect(register).toHaveBeenCalledWith(expect.objectContaining({ fields: { qq: '10001' } }));
+    expect(register).toHaveBeenCalledWith(expect.objectContaining({ fields: { ref: '10001' } }));
   });
 
   it('is not drawn for a field the server names but no plugin describes', async () => {
     installPlugins([]);
-    site.value = { ...siteInfo.value, fields: { qq: 'required' } };
+    site.value = { ...siteInfo.value, fields: { ref: 'required' } };
     await mount(AuthView, { mode: 'register' });
-    expect(host.querySelector('input[name="field-qq"]')).toBeNull();
+    expect(host.querySelector('input[name="field-ref"]')).toBeNull();
   });
 });
 
@@ -237,12 +236,12 @@ describe('a plugin\'s settings on a backoffice page', () => {
   });
 
   it('draws the card under its category and saves its keys with the page\'s, secrets only when typed', async () => {
-    installPlugins([riskcontrol]);
-    await mountSecurity({ 'risk.base_url': '/rc', 'risk.site': 'arc', 'risk.secret_key': '••••••••', 'risk.on_login': 'true' });
+    installPlugins([example]);
+    await mountSecurity({ 'example.base_url': '/rc', 'example.site': 'arc', 'example.secret_key': '••••••••', 'example.on_login': 'true' });
     openCategory(t('controlVerification'));
     await nextTick();
 
-    const card = host.querySelector<HTMLElement>('#secRisk');
+    const card = host.querySelector<HTMLElement>('#secExample');
     if (!card) throw new Error('the plugin card was not drawn');
     expect(field(card, 'Service address').value).toBe('/rc');
     // The secret is shown as the stored mask, never as its value.
@@ -254,51 +253,50 @@ describe('a plugin\'s settings on a backoffice page', () => {
     button(actions, t('save')).click();
     await settle();
     expect(saved).toHaveBeenCalledWith(expect.objectContaining({
-      'risk.base_url': '/rc', 'risk.site': 'arc-2', 'risk.secret_key': '', 'risk.on_login': 'true',
+      'example.base_url': '/rc', 'example.site': 'arc-2', 'example.secret_key': '', 'example.on_login': 'true',
     }));
   });
 
   it('offers a plugin\'s sign-up challenge in the page\'s own select', async () => {
-    installPlugins([riskcontrol]);
-    await mountSecurity({ 'registration.captcha_mode': 'risk' });
+    installPlugins([example]);
+    await mountSecurity({ 'registration.captcha_mode': 'example' });
     openCategory(t('controlVerification'));
     await nextTick();
-    expect(host.querySelector('#secVerificationScenes')!.textContent).toContain('Super risk control only');
+    expect(host.querySelector('#secVerificationScenes')!.textContent).toContain('Example check only');
   });
 
   it('draws and sends nothing of a plugin that is not loaded', async () => {
     await mountSecurity({});
-    expect(host.querySelector('#secRisk')).toBeNull();
+    expect(host.querySelector('#secExample')).toBeNull();
     const saved = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
     button(actions, t('save')).click();
     await settle();
     const sent = saved.mock.calls[0]![0];
-    expect(Object.keys(sent).some((key) => key.startsWith('risk.') || key.startsWith('bot.'))).toBe(false);
-    expect('registration.qq_requirement' in sent).toBe(false);
+    expect(Object.keys(sent).some((key) => key.startsWith('example.'))).toBe(false);
   });
 });
 
 describe('a plugin\'s list and actions in the backoffice', () => {
-  const spec = qqgroup.lists![0]!;
+  const spec = example.lists![0]!;
 
   it('pages the plugin\'s endpoint and draws its cells', async () => {
-    installPlugins([qqgroup]);
+    installPlugins([example]);
     const get = vi.spyOn(api, 'get').mockResolvedValue({
-      departures: [{ username: 'ada', qq: '10001', inviter_name: '', mode: 'delete', reward_cards_due: 1, cards_revoked: 1, source: 'bot', created_at: 0 }],
+      records: [{ username: 'ada', mode: 'delete' }],
       total: 1,
     });
     await mount(PluginList, { spec });
-    expect(get).toHaveBeenCalledWith('/api/admin/departures?limit=20&offset=0');
+    expect(get).toHaveBeenCalledWith('/api/admin/example/records?limit=20&offset=0');
     expect(host.textContent).toContain('ada');
-    expect(host.textContent).toContain('1 / 1');
+    expect(host.textContent).toContain('1–1 of 1');
     expect(host.querySelector('.oa-badge')!.textContent).toContain('Deleted');
   });
 
   it('asks in place before an account-ending action, then reports what it did', async () => {
-    const action = qqgroup.userActions![0]!;
-    const post = vi.spyOn(api, 'post').mockResolvedValue({ departure: { cards_due: 2, cards_revoked: 1 } });
+    const action = example.userActions![0]!;
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ result: { due: 2, taken: 1 } });
     const done = vi.fn();
-    const plugin: ArcPlugin = qqgroup;
+    const plugin: ArcPlugin = example;
     installPlugins([plugin]);
     await mount({ setup: () => () => h(PluginUserActions, { spec: action, userId: 'u1', username: 'ada', onDone: done }) });
 
@@ -309,8 +307,8 @@ describe('a plugin\'s list and actions in the backoffice', () => {
     expect(post).not.toHaveBeenCalled();
     button(host, t('confirmWord')).click();
     await settle();
-    expect(post).toHaveBeenCalledWith('/api/admin/users/u1/departure', { mode: 'disable', note: '' });
+    expect(post).toHaveBeenCalledWith('/api/admin/users/u1/process', { mode: 'disable', note: '' });
     expect(done).toHaveBeenCalledWith(false);
-    expect(host.textContent).toContain('2 card(s) due, 1 taken back');
+    expect(host.textContent).toContain('2 due, 1 taken back');
   });
 });

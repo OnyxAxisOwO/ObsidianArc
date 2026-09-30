@@ -42,10 +42,9 @@ COPY --from=web /src/internal/web/dist/ ./internal/web/dist/
 ARG VERSION=
 ARG TARGETARCH
 # Which plugins the binary carries, as the Makefile's PLUGINS names them. The
-# default matches the Makefile's, so a server that still builds its own image
-# with `docker compose up --build` gets the binary `make deploy` would ship.
-# Empty builds the core alone.
-ARG PLUGINS="qqgroup riskcontrol cardgrant"
+# default matches the Makefile's: none, since this repository ships none. An
+# instance that has plugins lays them over this tree and passes them here.
+ARG PLUGINS=""
 
 # CGO_ENABLED=0 because the SQLite driver is pure Go: that is what allows a
 # scratch-like final image and a binary that runs anywhere.

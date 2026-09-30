@@ -6,15 +6,24 @@
 Arc is the AI chat application. Never treat their services, containers,
 ports, data, or deployment directories as interchangeable.
 
-When the user asks to deploy **Arc**, deploy this repository to the Arc Docker
-Compose project (`/data/obsidian-arc` on the production host) and operate only
-the `obsidian-arc-server` container and its PostgreSQL companion. Build it on
-the local machine with `make deploy DEPLOY_HOST=…`, not on the server: the
+When the user asks to deploy **Arc**, deploy to the Arc Docker Compose project
+(`/data/obsidian-arc` on the production host) and operate only the
+`obsidian-arc-server` container and its PostgreSQL companion. Build it on the
+local machine with `make deploy DEPLOY_HOST=…`, not on the server: the
 server's own `docker compose up --build` compiles the frontend and the binary
 there, which is minutes on that host and seconds here. `make deploy` ships a
-cross-compiled binary and replaces the server container alone. Do not touch
-the Chat service (`obsidianchat.service`, its `/opt/obsidianchat` releases, or
-its port 8090). When the user asks to repair or deploy **Chat**, operate that
+cross-compiled binary and replaces the server container alone.
+
+**Axis AI's production instance runs plugins that are not in this
+repository.** They live in `../AxisAI` (`/Users/onyxaxis/Documents/GitHub/AxisAI`),
+which lays them over this tree and calls this Makefile, so production is
+deployed with `make deploy DEPLOY_HOST=…` *there*. Deploying from here ships
+the core alone, which switches those features off under the people using
+them; `scripts/deploy.sh` refuses when the running server carries a plugin
+the build does not, and `DROP_PLUGINS=1` is for the day one is meant to go.
+
+Do not touch the Chat service (`obsidianchat.service`, its `/opt/obsidianchat`
+releases, or its port 8090). When the user asks to repair or deploy **Chat**, operate that
 systemd service only; never substitute the Arc binary or Arc container.
 
 Read this before changing anything. It is the shared context — several agents
@@ -48,12 +57,16 @@ conversation the first four were.
 ## Plugins: what only some instances want
 
 The core is a general AI chat site. A feature that only one kind of instance
-needs — the QQ number and group departures of a site run around a QQ group,
-one operator's self-hosted risk-control service — is a **plugin** under
-`plugins/<name>/`, compiled in by the `plugin_<name>` build tag
-(`cmd/server/plugin_<name>.go`) and chosen by `PLUGINS` in the Makefile and
-the Dockerfile. `docs/architecture/plugins.md` is the operator's view; this
-is the rule set.
+needs — an account field for one community, one operator's self-hosted
+risk-control service — is a **plugin** under `plugins/<name>/`, compiled in
+by the `plugin_<name>` build tag (`cmd/server/plugin_<name>.go`) and chosen
+by `PLUGINS` in the Makefile and the Dockerfile. **This repository ships
+none.** An instance's plugins live in its own repository and are laid over
+this tree when it is built (Go only lets code inside the tree import
+`internal/`, which is why they are laid over rather than imported), so the
+seams below are a contract with code that is not here: change one and the
+instances that build on it break where this repository's tests cannot see.
+`docs/architecture/plugins.md` is the operator's view; this is the rule set.
 
 - **The arrow points one way.** Plugins import the core; nothing under
   `internal/` or in the core frontend names a plugin, its settings, its
@@ -80,13 +93,14 @@ is the rule set.
   asks the gate the same way; the gate is per server, never a package
   global, because the tests build many servers in one process.
 - **A plugin with tables ships its undo.** `Purge()` returns the SQL an
-  uninstall-with-data runs (`plugins/qqgroup/purge` is the shape: indexes
-  before columns, because SQLite refuses to drop an indexed column), and the
-  manager forgets the migrations afterwards so a reinstall runs them again.
+  uninstall-with-data runs (indexes before columns, because SQLite refuses to
+  drop an indexed column), and the manager forgets the migrations afterwards
+  so a reinstall runs them again.
 - **Migrations keep their versions when they move.** A migration that leaves
   the core for a plugin keeps its file name, so a database that ran it as
   core does not run it twice; a plugin's new migrations are
-  `<name>_NNNN_*.sql`. `migrations_test.go` in `plugins/qqgroup` is the shape.
+  `<name>_NNNN_*.sql`, and a test in the plugin holds the moved ones to their
+  old names.
 - **Settings keys, columns and tables keep their names** for the same reason.
 - **The browser half declares; the core draws.** `web/src/plugins/<name>/<name>.plugin.ts`
   describes fields, guards, settings cards, lists, account actions and its
@@ -318,7 +332,7 @@ for a week. Do not write anything into the README that claims otherwise.
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 22.9 MB binary with the default plugins (22.7 MB core alone); 221.71
+Current: 22.7 MB binary (this repository ships no plugin); 222.03
 kB on the wire to open the chat, against a target of 135. The target used to be 80 and the figure used to be 59.5;
 adopting Vue moved both, and `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.

@@ -732,7 +732,7 @@ onMounted(load);
           <li>{{ t('pluginInstallNewGuideStep1') }}</li>
           <li>
             <span>{{ t('pluginInstallNewGuideStep2') }}</span>
-            <code class="oa-plugin-guide-code">make build PLUGINS="qqgroup riskcontrol &lt;name&gt;"</code>
+            <code class="oa-plugin-guide-code">make build PLUGINS="&lt;name&gt; &lt;name&gt;"</code>
           </li>
           <li>{{ t('pluginInstallNewGuideStep3') }}</li>
         </ol>

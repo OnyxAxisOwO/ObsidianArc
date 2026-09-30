@@ -219,10 +219,21 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 22.86 MB with the default plugins, 22.75 MB core alone (19.16 / 19.04 MB `-tags nosqlite`, Linux amd64) |
-| Frontend, on the wire | < 135 kB | 221.71 kB to open the chat (183.74 JS + 37.97 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 22.72 MB (19.01 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 222.03 kB to open the chat (183.16 JS + 38.87 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-09-30 (UTC), after the plugins this repository carried moved
+out to the instance that runs them. The first paint is 222.03 kB (183.16 kB JS
++ 38.87 kB CSS): the JavaScript is 0.58 kB smaller, and the CSS 0.90 kB larger
+because the last remeasure predates the plugins screen's upload panel and the
+backoffice styles that came with it, which this figure now counts. The
+backoffice chunk is 105.95 kB, the Chinese dictionary 43.78 kB, the terminal
+7.22 kB, the maths renderer 3.61 kB and the front page 3.96 kB; there is no
+plugin chunk, since there is no plugin. The Linux amd64 binary measures
+22,720,672 bytes, or 19,009,696 with `-tags nosqlite` (Go 1.27.1) — the core
+alone, which is now also the default build.
 
 Remeasured on 2026-09-29 (UTC), after plugins became installable from the
 backoffice. The first paint is 221.71 kB (183.74 kB JS + 37.97 kB CSS), up

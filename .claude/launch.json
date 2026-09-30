@@ -10,7 +10,7 @@
     {
       "name": "obsidian-arc",
       "runtimeExecutable": "go",
-      "runtimeArgs": ["run", "-tags", "plugin_qqgroup plugin_riskcontrol plugin_cardgrant", "./cmd/server"],
+      "runtimeArgs": ["run", "./cmd/server"],
       "port": 8080
     }
   ]

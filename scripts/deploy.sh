@@ -24,6 +24,10 @@ if [ ! -f dist/obsidian-arc ] || [ ! -f dist/Dockerfile ]; then
 fi
 arch=$(cat dist/ARCH)
 version=$(cat dist/VERSION)
+# What this build carries, and whether the caller has accepted losing some of
+# what the running server has.
+plugins=$(cat dist/PLUGINS 2>/dev/null || true)
+drop=${DROP_PLUGINS:-}
 
 # macOS tar would otherwise add AppleDouble files and extended attributes,
 # which GNU tar on the server warns about and extracts as clutter.
@@ -43,6 +47,25 @@ COPYFILE_DISABLE=1 tar -czf - -C dist . | $ssh_command "$host" "set -e
     exit 1
   fi
   cd '$dir'
+  # The last deploy left its plugin list beside its binary. A plugin the
+  # running server carries and this build does not would be switched off
+  # under the people using it — a registration field gone, a sign-up check
+  # no longer standing in front of the form — with nothing on the way
+  # saying so. The person deploying has to have decided that.
+  if [ -f dist/PLUGINS ] && [ -z '$drop' ]; then
+    lost=
+    for p in \$(cat dist/PLUGINS); do
+      case ' $plugins ' in
+        *\" \$p \"*) ;;
+        *) lost=\"\$lost \$p\" ;;
+      esac
+    done
+    if [ -n \"\$lost\" ]; then
+      cat >/dev/null
+      echo \"the running server carries\$lost, which this build does not; build with it, or uninstall it in the backoffice and run again with DROP_PLUGINS=1\" >&2
+      exit 1
+    fi
+  fi
   # dist/ because both the server's .gitignore and .dockerignore already
   # leave it out: a checkout there stays clean, and a later source build
   # does not drag the binary into its context.
