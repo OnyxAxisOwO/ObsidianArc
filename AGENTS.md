@@ -359,6 +359,15 @@ installs, updates and removes).
   open — a transaction — is rolled back when it returns. A backend that
   crashes or times out fails that call, and a guard that cannot answer
   refuses. Do not add a way for one call to leave something for the next.
+- **Compiled code is a cache, not a resource the server holds.** A backend
+  compiles when a call needs it and gives the code back after
+  `wasm.Limits.IdleEvict` idle (three minutes): warm, a package is ~60 MB
+  resident, and what they serve is used now and then. So nothing may keep a
+  compiled module alive beside the backend — no cache that cannot drop an
+  entry (`wasm.ShareCompiledCode` is for tests, and only `servertest` calls
+  it), no call at boot that compiles what will not be used. An update or a
+  removal must give its code back, and a test holds that eviction and calls
+  race safely.
 - **What a backend chose to say and what it failed to say are kept apart.**
   An `*arc.Error` reaches the client as written, whatever its status — a 503
   because the service it stands in front of is down is an answer. What the SDK

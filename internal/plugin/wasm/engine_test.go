@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,11 @@ var (
 	guestWasm []byte
 	guestErr  error
 )
+
+func TestMain(m *testing.M) {
+	ShareCompiledCode()
+	os.Exit(m.Run())
+}
 
 // guest builds testdata/guest once for the whole run. It needs the Go
 // toolchain, which a machine running these tests has by definition.
@@ -278,4 +284,126 @@ func TestACallOnARemovedBackendFails(t *testing.T) {
 		t.Fatal("a closed backend answered")
 	}
 	b.Close() // twice is fine
+}
+
+func (b *Backend) isWarm() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.warm != nil
+}
+
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("gave up waiting until %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The compiled code is tens of megabytes a backend and what these backends serve
+// is used now and then, so an idle one gives it back and the next call pays for
+// compiling it again — without the caller seeing anything but the delay.
+func TestAnIdleBackendGivesItsCompiledCodeBackAndTheNextCallCompilesItAgain(t *testing.T) {
+	b := load(t, Limits{IdleEvict: 40 * time.Millisecond}, nil)
+	waitUntil(t, "the idle backend is evicted", func() bool { return !b.isWarm() })
+
+	var out struct{ Plugin string }
+	if err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", map[string]string{"a": "b"}, &out, nil); err != nil || out.Plugin != "demo" {
+		t.Fatalf("a call on an evicted backend: %+v, %v", out, err)
+	}
+	if !b.isWarm() {
+		t.Fatal("the call did not compile it again")
+	}
+	waitUntil(t, "it is evicted again", func() bool { return !b.isWarm() })
+}
+
+func TestABackendThatIsNeverEvictedKeepsItsCode(t *testing.T) {
+	b := load(t, Limits{IdleEvict: -1}, nil)
+	time.Sleep(150 * time.Millisecond)
+	if !b.isWarm() {
+		t.Fatal("a backend told never to evict lost its code")
+	}
+}
+
+// Taking the code out from under a call would fail a request that had done
+// nothing wrong: only a backend nobody is inside is given back.
+func TestACallInsideABackendKeepsItsCodeFromBeingTakenBack(t *testing.T) {
+	inside, release := make(chan struct{}), make(chan struct{})
+	b := load(t, Limits{IdleEvict: 20 * time.Millisecond}, func(*Call, string, json.RawMessage) (any, error) {
+		close(inside)
+		<-release
+		return "done", nil
+	})
+	result := make(chan error, 1)
+	go func() {
+		var out map[string]any
+		result <- b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, &out, nil)
+	}()
+	<-inside
+	time.Sleep(200 * time.Millisecond)
+	if !b.isWarm() {
+		t.Fatal("the code was taken back from under a call")
+	}
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatalf("the call that was inside failed: %v", err)
+	}
+	waitUntil(t, "it is evicted once the call is over", func() bool { return !b.isWarm() })
+}
+
+// Calls, compiles and evictions racing each other is what a busy site with a
+// short idle time would be; every call has to succeed whichever it lands in.
+func TestCallsAcrossEvictionsAllSucceed(t *testing.T) {
+	b := load(t, Limits{IdleEvict: 15 * time.Millisecond}, nil)
+	var wg sync.WaitGroup
+	errs := make(chan error, 64)
+	for g := 0; g < 3; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 6; i++ {
+				time.Sleep(time.Duration((g*7+i*11)%30) * time.Millisecond)
+				var out struct{ Plugin string }
+				if err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, &out, nil); err != nil || out.Plugin != "demo" {
+					errs <- fmt.Errorf("goroutine %d call %d: %+v, %v", g, i, out, err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+}
+
+// A removal that lands in the middle of a compile has to leave nothing behind:
+// what the compile made is thrown away, and nothing starts afterwards.
+func TestClosingABackendWhileItCompilesLeavesNothingRunning(t *testing.T) {
+	b := NewEngine(Limits{}).Load("demo", guest(t), func(*Call, string, json.RawMessage) (any, error) { return nil, nil })
+	ready := make(chan error, 1)
+	go func() { ready <- b.Ready(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	b.Close()
+	<-ready
+	if b.isWarm() {
+		t.Fatal("a backend closed during its compile was left warm")
+	}
+	if err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, nil, nil); err == nil {
+		t.Fatal("a call started on a removed backend")
+	}
+}
+
+func TestABackendThatDoesNotCompileSaysSoEveryTime(t *testing.T) {
+	b := NewEngine(Limits{}).Load("bad", []byte("not webassembly"), func(*Call, string, json.RawMessage) (any, error) { return nil, nil })
+	t.Cleanup(b.Close)
+	first := b.Ready(context.Background())
+	second := b.Ready(context.Background())
+	if first == nil || second == nil || first.Error() != second.Error() {
+		t.Fatalf("Ready = %v, then %v", first, second)
+	}
 }

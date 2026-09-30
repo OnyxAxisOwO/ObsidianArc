@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,22 +61,36 @@ type Limits struct {
 	CallTimeout time.Duration
 	// The largest request or response either side will read.
 	MaxMessage int
+	// How long a backend may go unused before its compiled code is given back.
+	// The next call compiles it again. Negative means never.
+	IdleEvict time.Duration
 }
 
-// DefaultLimits are 64 MiB, 15 seconds and 8 MiB.
+// DefaultLimits are 64 MiB, 15 seconds, 8 MiB, and three minutes of idleness.
 func DefaultLimits() Limits {
-	return Limits{MemoryPages: 1024, CallTimeout: 15 * time.Second, MaxMessage: 8 << 20}
+	return Limits{MemoryPages: 1024, CallTimeout: 15 * time.Second, MaxMessage: 8 << 20, IdleEvict: 3 * time.Minute}
 }
 
-// Engine compiles backends. The compiled code is cached across backends and
-// across engines, keyed by the module's bytes, so a process that builds many
-// servers around one plugin compiles it once — which is seconds saved per
-// test and, in production, per boot.
+// Engine compiles backends.
 type Engine struct {
 	limits Limits
 }
 
-var sharedCache = wazero.NewCompilationCache()
+// shared is the compiled code kept across backends, keyed by the module's
+// bytes, once ShareCompiledCode has been called.
+var shared atomic.Pointer[wazero.CompilationCache]
+
+// ShareCompiledCode makes every backend compiled from here on draw on one
+// cache, so a process that builds many servers around one plugin compiles it
+// once: seconds saved per test. A server does not call it. Such a cache cannot
+// drop an entry, so a plugin that was updated or removed would leave its old
+// native code in memory — tens of megabytes each — until the process ended;
+// without it, closing a backend gives the code back.
+func ShareCompiledCode() {
+	shared.CompareAndSwap(nil, ptrTo(wazero.NewCompilationCache()))
+}
+
+func ptrTo[T any](v T) *T { return &v }
 
 // NewEngine returns an engine with limits; a zero field takes its default.
 func NewEngine(limits Limits) *Engine {
@@ -88,6 +103,9 @@ func NewEngine(limits Limits) *Engine {
 	}
 	if limits.MaxMessage == 0 {
 		limits.MaxMessage = d.MaxMessage
+	}
+	if limits.IdleEvict == 0 {
+		limits.IdleEvict = d.IdleEvict
 	}
 	return &Engine{limits: limits}
 }
@@ -161,87 +179,210 @@ func (e *GuestError) Error() string {
 // past its limit. What it printed on the way down is in the message.
 var ErrTrap = errors.New("wasm: the plugin's backend crashed")
 
-// Backend is one plugin's compiled backend.
+// Backend is one plugin's backend: its WebAssembly, and — while it is in use —
+// the native code compiled from it.
+//
+// The code is the cost. A Go module is around five megabytes of WebAssembly
+// and tens of megabytes once compiled, resident for as long as it is kept, and
+// what the backends of a site's plugins serve is mostly things somebody does
+// now and then: an operator on a backoffice page, a sign-up. So the compile is
+// done when a call needs it and given back when the backend has been idle for
+// a while (Limits.IdleEvict); the next call pays for it again, which is under a
+// second. A backend that is never called costs the bytes it was loaded from.
 type Backend struct {
 	name   string
 	engine *Engine
 	host   HostFunc
+	wasm   []byte
 
+	mu        sync.Mutex
+	warm      *warm         // the compiled code, nil while there is none
+	compiling chan struct{} // closed when the compile in progress is over
+	err       error         // a module that does not compile does not start to
+	users     int           // calls inside warm, which is not taken from under them
+	idle      *time.Timer
+	closed    bool
+}
+
+// warm is what a compile produces: a runtime with the host's imports and the
+// module compiled on it.
+type warm struct {
 	rt       wazero.Runtime
 	compiled wazero.CompiledModule
-	ready    chan struct{}
-	err      error
-	closed   atomic.Bool
-	mu       sync.Mutex
 }
 
-// Load starts compiling wasm in the background and returns at once, so a
-// server with several plugins boots in the time it takes to read them. The
-// first call waits for the compile; Ready lets an installer wait for it
-// before it commits to anything.
+var errRemoved = errors.New("wasm: the backend has been removed")
+
+// Load returns a backend for wasm. It compiles nothing yet: Ready does, for an
+// installer that wants to know the module is sound before it commits to
+// anything, and otherwise the first call does.
 func (e *Engine) Load(name string, wasm []byte, host HostFunc) *Backend {
-	b := &Backend{name: name, engine: e, host: host, ready: make(chan struct{})}
-	go b.compile(wasm)
-	return b
+	return &Backend{name: name, engine: e, host: host, wasm: wasm}
 }
 
-func (b *Backend) compile(wasm []byte) {
-	defer close(b.ready)
+// build compiles the module. It holds no lock: it takes most of a second.
+func (b *Backend) build() (*warm, error) {
 	ctx := context.Background()
+	// The host's real clocks (read-only) and real randomness are given to each
+	// call's instance below; what is configured here is the runtime.
 	cfg := wazero.NewRuntimeConfig().
-		WithCompilationCache(sharedCache).
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(b.engine.limits.MemoryPages)
+	if cache := shared.Load(); cache != nil {
+		cfg = cfg.WithCompilationCache(*cache)
+	}
 	rt := wazero.NewRuntimeWithConfig(ctx, cfg)
-	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
-		b.err = fmt.Errorf("wasm: %w", err)
+	fail := func(err error) (*warm, error) {
 		_ = rt.Close(ctx)
-		return
+		return nil, err
+	}
+	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
+		return fail(fmt.Errorf("wasm: %w", err))
 	}
 	if _, err := rt.NewHostModuleBuilder("arc").
 		NewFunctionBuilder().WithFunc(b.hostCall).Export("host").
 		NewFunctionBuilder().WithFunc(b.hostRead).Export("host_read").
 		Instantiate(ctx); err != nil {
-		b.err = fmt.Errorf("wasm: %w", err)
-		_ = rt.Close(ctx)
-		return
+		return fail(fmt.Errorf("wasm: %w", err))
 	}
-	compiled, err := rt.CompileModule(ctx, wasm)
+	compiled, err := rt.CompileModule(ctx, b.wasm)
 	if err != nil {
-		b.err = fmt.Errorf("wasm: the backend does not compile: %w", err)
-		_ = rt.Close(ctx)
-		return
+		return fail(fmt.Errorf("wasm: the backend does not compile: %w", err))
 	}
 	exports := compiled.ExportedFunctions()
 	for _, name := range []string{"_initialize", "arc_alloc", "arc_call"} {
 		if _, ok := exports[name]; !ok {
-			b.err = fmt.Errorf("wasm: the backend does not export %s — it is not built against the plugin SDK", name)
-			_ = rt.Close(ctx)
-			return
+			return fail(fmt.Errorf("wasm: the backend does not export %s — it is not built against the plugin SDK", name))
 		}
 	}
-	b.rt, b.compiled = rt, compiled
+	return &warm{rt: rt, compiled: compiled}, nil
 }
 
-// Ready blocks until the compile has finished, and reports how it went.
-func (b *Backend) Ready(ctx context.Context) error {
-	select {
-	case <-b.ready:
-		return b.err
-	case <-ctx.Done():
-		return ctx.Err()
+// acquire returns the compiled code, compiling it first if there is none, and
+// counts the caller as inside it until release. Callers that arrive while a
+// compile is running wait for that one rather than starting another.
+func (b *Backend) acquire(ctx context.Context) (*warm, error) {
+	b.mu.Lock()
+	for {
+		switch {
+		case b.closed:
+			b.mu.Unlock()
+			return nil, errRemoved
+		case b.err != nil:
+			b.mu.Unlock()
+			return nil, b.err
+		case b.warm != nil:
+			b.users++
+			if b.idle != nil {
+				b.idle.Stop()
+				b.idle = nil
+			}
+			w := b.warm
+			b.mu.Unlock()
+			return w, nil
+		case b.compiling != nil:
+			done := b.compiling
+			b.mu.Unlock()
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			b.mu.Lock()
+		default:
+			done := make(chan struct{})
+			b.compiling = done
+			b.mu.Unlock()
+			w, err := b.build()
+			b.mu.Lock()
+			b.compiling = nil
+			close(done)
+			switch {
+			case err != nil:
+				b.err = err
+			case b.closed:
+				closeWarm(w)
+			default:
+				b.warm = w
+			}
+		}
 	}
 }
 
-// Close releases the compiled code. Calls in flight finish or fail; none
-// starts afterwards.
-func (b *Backend) Close() {
-	if !b.closed.CompareAndSwap(false, true) {
+// release ends one caller's stay inside the compiled code, and starts the
+// clock that gives the code back if nobody comes.
+func (b *Backend) release() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.users--
+	b.armIdle()
+}
+
+// armIdle starts the countdown to eviction when nothing is using the code.
+// The caller holds the lock.
+func (b *Backend) armIdle() {
+	after := b.engine.limits.IdleEvict
+	if b.users > 0 || b.warm == nil || b.closed || after < 0 {
 		return
 	}
-	<-b.ready
-	if b.rt != nil {
-		_ = b.rt.Close(context.Background())
+	if b.idle != nil {
+		b.idle.Stop()
+	}
+	b.idle = time.AfterFunc(after, b.evict)
+}
+
+// evict gives the compiled code back, unless a call arrived in the meantime.
+func (b *Backend) evict() {
+	b.mu.Lock()
+	if b.users > 0 || b.warm == nil || b.closed {
+		b.mu.Unlock()
+		return
+	}
+	w := b.warm
+	b.warm, b.idle = nil, nil
+	b.mu.Unlock()
+	closeWarm(w)
+	// The native code is unmapped by the runtime's Close; what the compile
+	// left in the Go heap is the collector's to take, and the process is
+	// otherwise idle, which is why it is being evicted.
+	debug.FreeOSMemory()
+}
+
+func closeWarm(w *warm) { _ = w.rt.Close(context.Background()) }
+
+// Ready compiles the module if that has not been done, and reports how it
+// went. An installer calls it before it commits.
+func (b *Backend) Ready(ctx context.Context) error {
+	if _, err := b.acquire(ctx); err != nil {
+		return err
+	}
+	b.release()
+	return nil
+}
+
+// Close releases the compiled code and the bytes. Calls in flight finish or
+// fail; none starts afterwards.
+func (b *Backend) Close() {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
+	b.closed = true
+	if b.idle != nil {
+		b.idle.Stop()
+		b.idle = nil
+	}
+	w := b.warm
+	b.warm, b.wasm = nil, nil
+	compiling := b.compiling
+	b.mu.Unlock()
+	if compiling != nil {
+		// Whoever compiled sees the backend closed and discards what it made.
+		<-compiling
+	}
+	if w != nil {
+		closeWarm(w)
 	}
 }
 
@@ -270,12 +411,11 @@ type reply struct {
 // guest, and unmarshals what comes back into out (nil to ignore it). state is
 // what host functions find in Call.State.
 func (b *Backend) Invoke(ctx context.Context, info CallInfo, kind string, arg, out, state any) error {
-	if err := b.Ready(ctx); err != nil {
+	w, err := b.acquire(ctx)
+	if err != nil {
 		return err
 	}
-	if b.closed.Load() {
-		return errors.New("wasm: the backend has been removed")
-	}
+	defer b.release()
 	raw, err := json.Marshal(arg)
 	if err != nil {
 		return fmt.Errorf("wasm: %w", err)
@@ -307,7 +447,7 @@ func (b *Backend) Invoke(ctx context.Context, info CallInfo, kind string, arg, o
 		WithRandSource(rand.Reader).
 		WithStdout(io.Discard).
 		WithStderr(&call.stderr)
-	mod, err := b.rt.InstantiateModule(ctx, b.compiled, cfg)
+	mod, err := w.rt.InstantiateModule(ctx, w.compiled, cfg)
 	if err != nil {
 		return b.trapped(ctx, call, err)
 	}

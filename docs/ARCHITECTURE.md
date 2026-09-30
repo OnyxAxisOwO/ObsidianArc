@@ -235,9 +235,13 @@ a package. Nothing else on the server side moved: idle resident memory with no
 package installed is 0.8 MB above the previous build (29.4 to 30.2 MB, median
 of five, macOS arm64 — the ~16 MB in the table was taken on another host and is
 not restated), and cold start to serving is unchanged. A package that is
-installed and enabled costs what its module costs once compiled, and each call
-a fresh instance (about 2.5 ms); the plugin runtime's documentation says so
-where the operator reads it. The first paint is 223.50 kB (184.31 kB JS + 39.19
+installed and enabled costs about 60 MB while its code is compiled — three
+Axis AI packages of ~5 MB of WebAssembly each took the process from 28 to 212 MB
+of physical memory — and a backend compiles when a call needs it and gives the
+code back after three idle minutes, so an instance that is not being used is at
+65 MB with those three installed, and the first call after that pays a compile
+of about 0.7 s; each call is then a fresh instance (3 to 5 ms). The plugin
+runtime's documentation says so where the operator reads it. The first paint is 223.50 kB (184.31 kB JS + 39.19
 kB CSS), up 1.47 kB: the loader that imports a plugin's browser module when
 `/api/site` names one, the host object the module is handed, and the install
 dialog's English strings, which the core dictionary keeps in the entry like

@@ -29,9 +29,14 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/totp"
 )
+
+// A test run builds hundreds of servers around the same few plugins, and
+// compiling one is most of a second. Nothing but tests imports this package.
+func init() { wasm.ShareCompiledCode() }
 
 // Instance is one assembled server.
 type Instance struct {
