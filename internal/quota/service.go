@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -34,6 +36,8 @@ type Service struct {
 	db       *database.DB
 	policies *Store
 	settings *settings.Service
+	// The bonus bars spent beside the windows; nil means there are none.
+	bonus *bonus.Store
 
 	// Generations in flight per account. See Begin.
 	mu       sync.Mutex
@@ -43,6 +47,9 @@ type Service struct {
 func NewService(db *database.DB, policies *Store, set *settings.Service) *Service {
 	return &Service{db: db, policies: policies, settings: set}
 }
+
+// SetBonus turns on spending from bonus bars. It is set once, at start.
+func (s *Service) SetBonus(store *bonus.Store) { s.bonus = store }
 
 // Policies returns the store, for the administration handlers.
 func (s *Service) Policies() *Store { return s.policies }
@@ -114,7 +121,7 @@ type AutoReset func(ctx context.Context, q database.Queryer, needed Window) (win
 // ended. Reserving the ceiling means the tenth is refused while the first
 // nine are still streaming, and Settle hands back the difference.
 func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estimate) (Reservation, error) {
-	return s.reserve(ctx, account, estimate, nil)
+	return s.reserve(ctx, account, "", estimate, nil)
 }
 
 // ReserveWithAutoReset retries one rejected reservation after atomically
@@ -124,11 +131,25 @@ func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estim
 func (s *Service) ReserveWithAutoReset(
 	ctx context.Context, account user.User, estimate Estimate, reset AutoReset,
 ) (Reservation, error) {
-	return s.reserve(ctx, account, estimate, reset)
+	return s.reserve(ctx, account, "", estimate, reset)
+}
+
+// ReserveFor is Reserve for a request to a particular model, which is what
+// decides which bonus bars may pay for it. reset may be nil.
+//
+// The order is written down in docs/architecture/bonus-and-checkin.md: the
+// bars that are switched on, then the windows, then the bars that were kept
+// back, then a reset card. Each step is its own transaction that either
+// reserves the whole request or leaves nothing behind, so a step that fails
+// has cost nothing and the next one starts clean.
+func (s *Service) ReserveFor(
+	ctx context.Context, account user.User, modelID string, estimate Estimate, reset AutoReset,
+) (Reservation, error) {
+	return s.reserve(ctx, account, modelID, estimate, reset)
 }
 
 func (s *Service) reserve(
-	ctx context.Context, account user.User, estimate Estimate, reset AutoReset,
+	ctx context.Context, account user.User, modelID string, estimate Estimate, reset AutoReset,
 ) (Reservation, error) {
 	policy, err := s.PolicyFor(ctx, nil, account)
 	if err != nil {
@@ -149,11 +170,60 @@ func (s *Service) reserve(
 		estimate.Credits = 0
 	}
 
+	res, err := s.reserveOnce(ctx, account, modelID, estimate, nil, policy)
+	if err == nil {
+		return res, nil
+	}
+	exceeded, ok := AsExceeded(err)
+	if !ok || exceeded.Window == WindowRPM || exceeded.Window == WindowTPM {
+		// A burst-rate refusal clears in a minute; neither a bar kept back nor a
+		// card is spent on it.
+		return Reservation{}, err
+	}
+	if s.bonus != nil && estimate.Credits > 0 {
+		if fallback, ferr := s.reserveFallback(ctx, account, modelID, estimate); ferr == nil {
+			return fallback, nil
+		} else if !errors.Is(ferr, bonus.ErrInsufficient) {
+			return Reservation{}, ferr
+		}
+	}
+	if reset != nil {
+		return s.reserveOnce(ctx, account, modelID, estimate, reset, policy)
+	}
+	return Reservation{}, err
+}
+
+// reserveFallback pays for a request out of the bars that were kept back,
+// whole or not at all. The windows are not touched: they have nothing left, and
+// counting the request against them would only push them further over.
+func (s *Service) reserveFallback(ctx context.Context, account user.User, modelID string, estimate Estimate) (Reservation, error) {
+	var holds []bonus.Hold
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		var err error
+		holds, err = s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Fallback)
+		return err
+	})
+	if err != nil {
+		return Reservation{}, err
+	}
+	return s.noted(ctx, Reservation{funding: &funding{holds: holds}}), nil
+}
+
+func (s *Service) reserveOnce(
+	ctx context.Context, account user.User, modelID string, estimate Estimate, reset AutoReset, policy Policy,
+) (Reservation, error) {
 	now := time.Now()
 	key := scopeKey(account.ID)
 	anchor := account.CreatedAt
 
+	var (
+		holds   []bonus.Hold
+		charged = estimate
+		whole   bool
+		err     error
+	)
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		holds, charged, whole = nil, estimate, false
 		anchor, err = lockedAllowanceAnchor(ctx, tx, account.CreatedAt)
 		if err != nil {
 			return err
@@ -165,7 +235,20 @@ func (s *Service) reserve(
 			}
 		}
 
-		reserveErr := reserveCounters(ctx, tx, policy, key, anchor, estimate, now)
+		// The bars that are switched on pay first, and what they pay does not
+		// count against the windows. What they cannot cover is the windows'.
+		if s.bonus != nil && estimate.Credits > 0 {
+			holds, err = s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Priority)
+			if err != nil {
+				return err
+			}
+			charged, whole = uncovered(estimate, bonus.Total(holds))
+			if whole {
+				return nil
+			}
+		}
+
+		reserveErr := reserveCounters(ctx, tx, policy, key, anchor, charged, now)
 		if reset == nil || reserveErr == nil {
 			return reserveErr
 		}
@@ -187,14 +270,33 @@ func (s *Service) reserve(
 		if err := deleteScopeCounters(ctx, tx, key, resetWindows); err != nil {
 			return fmt.Errorf("quota: automatic reset: %w", err)
 		}
-		return reserveCounters(ctx, tx, policy, key, anchor, estimate, now)
+		return reserveCounters(ctx, tx, policy, key, anchor, charged, now)
 	})
 	if err != nil {
 		// The transaction rolled back, so nothing is outstanding and a failed
 		// replacement reservation did not consume the card.
 		return Reservation{}, err
 	}
-	return Reservation{at: now, estimate: estimate, taken: true, anchor: anchor}, nil
+	res := Reservation{at: now, estimate: charged, taken: !whole, anchor: anchor}
+	if len(holds) > 0 {
+		res.funding = &funding{holds: holds, windows: !whole}
+	}
+	return s.noted(ctx, res), nil
+}
+
+// uncovered is what of an estimate the windows still have to carry once the
+// bars have paid covered credits of it, and whether the bars paid all of it.
+// Tokens are carried in proportion, because a request half paid for out of a
+// bar should not count all its tokens against the window.
+func uncovered(estimate Estimate, covered float64) (Estimate, bool) {
+	if covered <= 0 {
+		return estimate, false
+	}
+	if covered >= estimate.Credits-1e-9 {
+		return Estimate{}, true
+	}
+	share := 1 - covered/estimate.Credits
+	return Estimate{Tokens: int64(math.Round(float64(estimate.Tokens) * share)), Credits: estimate.Credits - covered}, false
 }
 
 func deleteScopeCounters(ctx context.Context, tx database.Queryer, key string, windows []string) error {
@@ -321,6 +423,10 @@ type Reservation struct {
 	// bucket the reservation came out of. The windows are per account now,
 	// so the moment alone no longer identifies one.
 	anchor int64
+	// What bonus bars paid of it, if any. A pointer, so that releasing the
+	// reservation and settling the turn — which happen in either order, on
+	// copies of this value — see each other.
+	funding *funding
 }
 
 // Settle corrects a finished turn to what it actually cost. It runs after the
@@ -339,8 +445,10 @@ type Reservation struct {
 // bucket and the reset's new epoch ignores it. Unrelated completions do not
 // queue on the reset row.
 func (s *Service) Settle(ctx context.Context, account user.User, reserved, actual Estimate) error {
-	tokens := actual.Tokens - reserved.Tokens
-	credits := actual.Credits - reserved.Credits
+	return s.settleWindows(ctx, account, actual.Tokens-reserved.Tokens, actual.Credits-reserved.Credits)
+}
+
+func (s *Service) settleWindows(ctx context.Context, account user.User, tokens int64, credits float64) error {
 	if tokens == 0 && credits == 0 {
 		return nil
 	}
@@ -361,6 +469,37 @@ func (s *Service) Settle(ctx context.Context, account user.User, reserved, actua
 	})
 }
 
+// SettleTurn is Settle for a turn whose reservation may have been paid for,
+// in whole or part, by bonus bars: what the bars cover is charged to them, and
+// only the rest reaches the windows. ctx is the request's, which is where the
+// reservation was noted; a turn with nothing noted — one that was never
+// reserved, or paid for wholly by the windows — settles as Settle does.
+func (s *Service) SettleTurn(ctx context.Context, account user.User, actual Estimate) error {
+	f := takeFunding(ctx)
+	if f == nil || s.bonus == nil {
+		return s.Settle(ctx, account, Estimate{}, actual)
+	}
+	f.mu.Lock()
+	released := f.released
+	f.mu.Unlock()
+
+	var covered float64
+	if err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		var err error
+		covered, err = s.bonus.Settle(ctx, tx, f.holds, actual.Credits, released)
+		return err
+	}); err != nil {
+		return err
+	}
+	// The rest of the cost, and the same share of the tokens. A turn that cost
+	// nothing in credits was not paid for by a bar and counts in full.
+	share := 1.0
+	if actual.Credits > 1e-9 {
+		share = math.Max(0, 1-covered/actual.Credits)
+	}
+	return s.settleWindows(ctx, account, int64(math.Round(float64(actual.Tokens)*share)), math.Max(0, actual.Credits-covered))
+}
+
 // Release gives a reservation back — for a turn that never ran, and for the
 // part of one that was reserved and not spent.
 //
@@ -369,11 +508,21 @@ func (s *Service) Settle(ctx context.Context, account user.User, reserved, actua
 // cost belongs; the two together leave the old bucket even and the new one
 // carrying the turn.
 func (s *Service) Release(ctx context.Context, userID string, reserved Reservation) error {
-	if !reserved.taken || reserved.estimate.empty() {
+	f := reserved.funding
+	windows := reserved.taken && !reserved.estimate.empty()
+	if !windows && f == nil {
 		return nil
 	}
 	key := scopeKey(userID)
-	return s.db.Tx(ctx, func(tx *database.Tx) error {
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if f != nil {
+			if err := s.bonus.Refund(ctx, tx, f.holds); err != nil {
+				return err
+			}
+		}
+		if !windows {
+			return nil
+		}
 		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
 			if _, err := bump(ctx, tx, key, window, bucketStart(window, reserved.at, reserved.anchor),
 				0, -reserved.estimate.Tokens, -reserved.estimate.Credits); err != nil {
@@ -382,6 +531,12 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 		}
 		return nil
 	})
+	if err == nil && f != nil {
+		f.mu.Lock()
+		f.released = true
+		f.mu.Unlock()
+	}
+	return err
 }
 
 // RecordRejection counts a refused request against the rate window only, so a

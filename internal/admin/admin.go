@@ -12,6 +12,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"net/http"
 	"strings"
 	"sync"
@@ -90,6 +91,8 @@ type Handlers struct {
 	// administrator, that something happened. Set by the wiring; nil means
 	// "push nothing", which is every instance predating this feature.
 	Notify *notify.Store
+	// The bonus bars; nil on a server built without them, which answers 404.
+	Bonus *bonus.Store
 	// SystemBackup covers the complete instance and is restricted to the
 	// single super administrator rather than delegated settings operators.
 	SystemBackup *systembackup.Service
@@ -322,6 +325,13 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/usage/breakdown", protected("usage", h.usageBreakdown))
 	mux.Handle("GET /api/admin/usage/records", protected("usage", h.usageRecords))
 	mux.Handle("POST /api/admin/usage/reset", protected("usage", h.resetQuota))
+	mux.Handle("GET /api/admin/bonus/bars", protected("usage", h.bonusBars))
+	mux.Handle("POST /api/admin/bonus/bars", protected("usage", h.createBonusBar))
+	mux.Handle("PUT /api/admin/bonus/bars/{id}", protected("usage", h.updateBonusBar))
+	mux.Handle("DELETE /api/admin/bonus/bars/{id}", protected("usage", h.deleteBonusBar))
+	mux.Handle("POST /api/admin/bonus/bars/{id}/grants", protected("usage", h.grantBonus))
+	mux.Handle("GET /api/admin/bonus/bars/{id}/grants", protected("usage", h.bonusGrants))
+	mux.Handle("DELETE /api/admin/bonus/grants/{id}", protected("usage", h.revokeBonusGrant))
 	mux.Handle("GET /api/admin/codes", protected("codes", h.listCodes))
 	mux.Handle("POST /api/admin/codes", protected("codes", h.createCode))
 	mux.Handle("GET /api/admin/codes/{id}/redemptions", protected("codes", h.codeRedemptions))

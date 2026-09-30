@@ -24,6 +24,7 @@ var groupTitles = map[string]Text{
 	"chat":        {EN: "Chat", ZH: "对话"},
 	"projects":    {EN: "Projects", ZH: "项目"},
 	"credit":      {EN: "Credit & Quota", ZH: "额度与用量"},
+	"bonus":       {EN: "Bonus", ZH: "赠金"},
 	"keys":        {EN: "API Keys", ZH: "API 密钥"},
 	"preferences": {EN: "Preferences", ZH: "偏好设置"},
 	"profile":     {EN: "Profile", ZH: "个人资料"},

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -178,6 +179,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	invites := invite.NewStore(db, users, cards, groups, settingsService)
 	invites.Notify = notifyStore
 	quotaService := quota.NewService(db, quota.NewStore(db), settingsService)
+	bonusStore := bonus.NewStore(db)
+	quotaService.SetBonus(bonusStore)
 	projects := project.NewStore(db)
 
 	chatService := chat.NewService(db, conversations, models, registry, settingsService)
@@ -235,7 +238,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 
 		var reserved quota.Reservation
 		if autoReset {
-			reserved, err = quotaService.ReserveWithAutoReset(ctx, account, estimate,
+			reserved, err = quotaService.ReserveFor(ctx, account, chosen.ID, estimate,
 				func(ctx context.Context, q database.Queryer, needed quota.Window) ([]string, bool, error) {
 					spentCard, err := cards.SpendNextForWindow(ctx, q, account.ID, string(needed))
 					if errors.Is(err, card.ErrNotFound) {
@@ -247,7 +250,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 					return spentCard.Windows, true, nil
 				})
 		} else {
-			reserved, err = quotaService.Reserve(ctx, account, estimate)
+			reserved, err = quotaService.ReserveFor(ctx, account, chosen.ID, estimate, nil)
 		}
 		if err != nil {
 			freeSlot()
@@ -312,7 +315,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// before it started is given back separately by the release, so this
 		// is a plain addition and the two can happen in either order.
 		actual := quota.Estimate{Tokens: int64(record.Usage.Total()), Credits: record.Credits}
-		if err := quotaService.Settle(ctx, record.User, quota.Estimate{}, actual); err != nil {
+		if err := quotaService.SettleTurn(ctx, record.User, actual); err != nil {
 			slog.ErrorContext(ctx, "could not settle quota", "error", err, "user", record.User.ID)
 		}
 	}
@@ -634,6 +637,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
 	}
 	cardHandlers.Routes(mux)
+	bonusHandlers := bonus.NewHandlers(bonusStore)
+	bonusHandlers.Routes(mux)
 
 	// An account's own invite code and who has used it. Behind
 	// auth.RequireUser alone, like notify's and card's own account-facing
@@ -998,6 +1003,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	adminHandlers.Origin = publicOrigin
 	adminHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	adminHandlers.Notify = notifyStore
+	adminHandlers.Bonus = bonusStore
 	adminHandlers.SystemBackup = instanceBackup
 
 	// The compiled-in plugins, attached now: every module they reach is
@@ -1064,6 +1070,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	quotaHandlers.Routes(consoleAPI)
 	usageHandlers.Routes(consoleAPI)
 	cardHandlers.Routes(consoleAPI)
+	bonusHandlers.Routes(consoleAPI)
 	inviteHandlers.Routes(consoleAPI)
 	backupHandlers.Routes(consoleAPI)
 	projectHandlers.Routes(consoleAPI)
@@ -1275,6 +1282,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 
 	handler := httpx.Chain(routed,
 		httpx.RequestID(),
+		// Where a turn's bonus reservation is filed until the turn is recorded.
+		func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r.WithContext(quota.WithLedger(r.Context())))
+			})
+		},
 		httpx.Recover(),
 		httpx.Logger(),
 		// Outside the session lookup so the duration it measures is the whole
