@@ -249,6 +249,12 @@
   padding: 24px 30px 16px;
 }
 
+/* The heading of a centered page lines up with the column below it: the same
+   inset the column has, never less than the page's own padding. */
+.oa-admin-main-centered .oa-admin-head {
+  padding-inline: max(30px, calc((100% - 1040px) / 2));
+}
+
 .oa-admin-title {
   margin: 0;
   font-size: 24px;

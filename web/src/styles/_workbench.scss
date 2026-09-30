@@ -3,6 +3,12 @@
    The page head these used to enlarge is now every section's, in
    _surfaces.scss. */
 .oa-workbench, .oa-resource-page { max-width: 1480px; margin: 0 auto; container: workbench / inline-size; }
+/* The pages made of groups sit in the middle, head, categories and cards
+   alike, at the width a form wants. Left-aligned at the same width they left
+   the search box adrift at the far edge of a wide window, a long way from
+   the heading it belongs to. The resources page, which is figures rather than
+   forms, keeps the whole window. */
+.oa-workbench { max-width: 1040px; }
 /* The categories are a row of pills — the same shape as the plugin tabs — and
    no longer four tiles with a paragraph each: the paragraph was the heading
    below it, said twice, and the tiles were the largest thing on the page. */
@@ -19,7 +25,7 @@
 /* One column of groups: a settings page is read down, not across, and two
    columns of unequal height left ragged holes between cards. The width is the
    width a form wants; a group of rows does not get better by being wider. */
-.oa-workbench-grid { display: flex; flex-direction: column; gap: 26px; max-width: 960px; }
+.oa-workbench-grid { display: flex; flex-direction: column; gap: 26px; }
 .oa-workbench-column { display: flex; flex-direction: column; min-width: 0; gap: 26px; }
 .oa-control-card { scroll-margin-top: 14px; }
 
@@ -27,9 +33,18 @@
    of buttons, a table — each is padded and divided from the next by the card's
    own hairline, so a page does not have to wrap each control itself. The two
    wrappers below hold rows of their own, and are a card inside the card. */
-.oa-control-card > .oa-group-card > * { margin: 0; padding: 13px 16px; min-width: 0; }
+/* border-box, because several of these (a table block, a search) are width: 100%, and
+   padding on top of that made them wider than the card — the last column was cut. */
+.oa-control-card > .oa-group-card > * { box-sizing: border-box; margin: 0; padding: 13px 16px; min-width: 0; }
 .oa-control-card > .oa-group-card > :is(.oa-plugin-controls, .oa-resource-definition) { display: flex; flex-direction: column; gap: 1px; padding: 0; background: var(--oa-group-line); }
 .oa-control-card > .oa-group-card > :is(.oa-plugin-controls, .oa-resource-definition) > * { margin: 0; padding: 13px 16px; border: 0; background: var(--ai-surface-card); }
+/* A table is the card's own width from edge to edge, with its scroll inside it:
+   padded like a field it was wider than the card by the padding, and the last
+   column was cut off. A search field stood in a row of its own is a strip the
+   width of the card, not a pill whose corners the card clips. */
+.oa-control-card > .oa-group-card > .oa-table-block { padding: 0; }
+.oa-control-card > .oa-group-card > .oa-table-block > .oa-pagination { padding: 12px 16px; }
+.oa-control-card > .oa-group-card > .oa-search { padding: 0 16px; min-height: 48px; border-radius: 0; }
 .oa-control-card > .oa-group-card > .oa-field-hint { padding: 10px 16px; font-size: 11.5px; line-height: 1.6; }
 .oa-control-card .oa-field { margin: 0; gap: 8px; min-width: 0; }
 .oa-control-card .oa-field-label { font-size: 12px; font-weight: 550; }

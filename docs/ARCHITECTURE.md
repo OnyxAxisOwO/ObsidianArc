@@ -220,11 +220,16 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 25.86 MB (22.16 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 229.13 kB to open the chat (189.47 JS + 39.66 CSS) |
+| Frontend, on the wire | < 135 kB | 229.20 kB to open the chat (189.47 JS + 39.73 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
-Remeasured on 2026-10-01 (UTC), later the same day, after the API keys screen
+Remeasured on 2026-10-01 (UTC), after the grouped backoffice pages were centred
+under their headings and their tables made the card's own width: 229.20 kB
+(189.47 kB JS + 39.73 kB CSS), up 0.07 kB of CSS; the backoffice chunk is
+111.31 kB.
+
+Remeasured on 2026-10-01 (UTC), earlier the same day, after the API keys screen
 learned to carry a plugin's notice and a confirmation that is answered by
 typing (`keyIssuing`, `OaTypedConfirm`). The first paint is 229.13 kB (189.47
 kB JS + 39.66 kB CSS), up 0.87 kB: the dialog, the gate in front of Create, and

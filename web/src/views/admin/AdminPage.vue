@@ -85,6 +85,12 @@ const PAGES: AdminPageSpec[] = [
   },
 ];
 
+// The pages made of groups of rows, which sit in the middle of the window at
+// the width a form wants — heading included, or the heading and the page
+// below it would start at different edges. The rest are tables and figures,
+// and take the whole window.
+const CENTERED = new Set(['security', 'backup', 'settings', 'availability', 'leaderboard', 'bonus', 'invites', 'plugins']);
+
 // Core pages only in the sidebar rail. Individual plugin pages are accessed
 // as tabs inside the Plugins screen instead of crowding the main navigation.
 const pages = computed<AdminPageSpec[]>(() => PAGES);
@@ -456,7 +462,7 @@ onMounted(() => {
 
     <!-- The whole section arrives together, including its heading and actions.
          Keying only navigation keeps saves from replaying the entrance. -->
-    <div :key="current.slug" class="oa-admin-main" :class="[`enter-${direction}`, { 'oa-admin-main-dashboard': !current.slug && allowed && !gated && visit === 'open' }]">
+    <div :key="current.slug" class="oa-admin-main" :class="[`enter-${direction}`, { 'oa-admin-main-centered': CENTERED.has(current.slug), 'oa-admin-main-dashboard': !current.slug && allowed && !gated && visit === 'open' }]">
       <!-- The overview owns its editorial heading; other pages keep the shared toolbar. -->
       <!-- None while a card stands in for the page: it says what it is itself,
            and a heading above an empty page is what made it look lost. -->
