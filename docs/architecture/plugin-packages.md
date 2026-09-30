@@ -110,7 +110,7 @@ go run ./cmd/arcpack inspect demo.arcx                      # 看它要什么
 - **路由**：拿到已经过会话和权限检查的请求。返回 `*arc.Error` 是你想给客户端看的错误；其他错误是 500，原因进日志、不给客户端。
 - **`OnDescribe`**：告诉服务器「浏览器该看到的 `/api/site` 区块」和「页面的 Content-Security-Policy 现在该信任哪些来源」。**只在插件启用时和它自己的设置变化时被问，不是每个请求**——所以只能从设置算，不能读会变的东西。
 - **`OnDecorateInvitees`**：拿到邀请人自己的邀请列表，返回整张列表；可以改、可以加（比如加上已删除账户的记录）。
-- **控制台命令**：`arc.Command("demo things", …)`，用 `Console.Call` 去调后台接口，`Table`、`Printf` 出结果。
+- **控制台命令**：`arc.Command("demo things", …)`，用 `Console.Call` 去调后台接口，`Table`、`Printf` 出结果。接口拒绝了命令要做的事时，把 `Call` 的错误原样返回即可，控制台显示的是接口自己的那句话，而不是「插件崩溃」。
 
 ## 浏览器端
 

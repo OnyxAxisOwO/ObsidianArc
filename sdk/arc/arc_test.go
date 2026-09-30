@@ -222,6 +222,23 @@ func TestAConsoleCommandPrintsAndCallsTheHost(t *testing.T) {
 	}
 }
 
+// An endpoint that refuses what a command asked is the operator's answer, not
+// the plugin crashing: the handler may simply return the error from Call.
+func TestARefusedEndpointCallReadsAsTheEndpointsSentence(t *testing.T) {
+	reset(t)
+	useHost(t, map[string]any{
+		"console.call": &HostError{Code: "console", Message: "Quota window must be 5h, 1w, 1m, or full."},
+	})
+	Command("demo run", func(c *Ctx, cmd *Console) error {
+		_, err := cmd.Call("POST", "/api/admin/x", nil)
+		return err
+	})
+	_, e := serve(t, "console", map[string]any{"command": "demo run"})
+	if e == nil || e.Status != 400 || e.Message != "Quota window must be 5h, 1w, 1m, or full." {
+		t.Fatalf("error = %+v", e)
+	}
+}
+
 func TestATransactionCommitsRollsBackAndDoesNotNest(t *testing.T) {
 	reset(t)
 	host := useHost(t, map[string]any{

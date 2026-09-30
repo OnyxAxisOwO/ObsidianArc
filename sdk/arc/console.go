@@ -2,6 +2,7 @@ package arc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 )
@@ -100,6 +101,13 @@ func serveConsole(c *Ctx, raw json.RawMessage) (any, error) {
 	}
 	run := &Console{Command: arg.Command, Args: arg.Args, Flags: arg.Flags, JSON: arg.JSON, Yes: arg.Yes, Lang: c.Lang, ctx: c}
 	if err := h(c, run); err != nil {
+		// A command that lets a refused Call escape means the endpoint said no
+		// to what the operator asked. Its sentence is the answer; passed on as
+		// an ordinary error it would be printed as the plugin having crashed.
+		var host *HostError
+		if errors.As(err, &host) && host.Code == "console" {
+			return nil, &Error{Status: 400, Code: host.Code, Message: host.Message}
+		}
 		return nil, err
 	}
 	return map[string]any{"out": run.out}, nil

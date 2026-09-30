@@ -64,7 +64,8 @@ func (c *Ctx) RevokeSessions(userID string) error {
 type Notification struct {
 	// The account it is for. Empty with All set means everybody.
 	UserID string
-	// Everybody, including accounts made later: one entry every inbox shows.
+	// Everybody who has an account now: one entry every inbox shows, however
+	// many accounts there are. An account made afterwards does not see it.
 	All    bool
 	Kind   string
 	Params map[string]any
@@ -86,7 +87,8 @@ func (c *Ctx) Notify(n Notification) error {
 type SecurityEvent struct {
 	// The event name the log's filters and the plugin's browser half know.
 	Event string
-	// "info", "warn" or "critical"; empty is info.
+	// "info", "warning" or "danger"; empty is info. Anything else is refused,
+	// as the security log's own severities are these three.
 	Severity      string
 	UserID        string
 	Username      string
