@@ -11,7 +11,9 @@
 | `site.browser_title` | 空 | 浏览器标签页标题；空值使用 `site.name` |
 | `site.auth_card_position` | `center` | 登录与注册卡片停靠位置；可选 `center`、`left` 或 `right` |
 | `about.title` / `about.body` | 空 | 关于页面标题与 Markdown 详细介绍；空值使用内置内容 |
-| `home.notice` | 空 | 首页纯文本通知 |
+| `home.notice` | 空 | 首页通知横条上的一行字（最多 300 字符），登录前也可见 |
+| `home.notice_body` | 空 | 点开横条后的 Markdown 正文（最多 4000 字符） |
+| `home.notice_tone` | `info` | 横条样式：`info` 或 `warning` |
 | `home.notice_dismissible` | `true` | 是否允许关闭通知 |
 | `registration.enabled` | `true` | 是否开放注册 |
 | `registration.default_group` | 空 | 注册分组覆盖值；未设置时使用默认组 |

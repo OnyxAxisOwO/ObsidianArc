@@ -1093,6 +1093,59 @@ func TestHomeNoticeIsServedToEveryoneAndCanBeMadePermanent(t *testing.T) {
 	}
 }
 
+// The strip has something behind it: the text that opens from it and the tone
+// it is drawn in. Both travel with the notice to people who are not signed in,
+// which is why the limits are the server's and a value it would never have
+// accepted is drawn as the quiet one rather than as nothing.
+func TestHomeNoticeCarriesItsTextAndToneAndRefusesWhatWouldNotFit(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("founder", "a-good-password")
+
+	served := func() (body, tone string) {
+		t.Helper()
+		response := in.do(http.MethodGet, "/api/site", nil, nil)
+		var payload struct {
+			HomeNotice struct {
+				Body string `json:"body"`
+				Tone string `json:"tone"`
+			} `json:"home_notice"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.HomeNotice.Body, payload.HomeNotice.Tone
+	}
+	if body, tone := served(); body != "" || tone != "info" {
+		t.Fatalf("a fresh instance served body %q, tone %q", body, tone)
+	}
+
+	saved := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"home.notice":      "Maintenance on Sunday",
+		"home.notice_body": "## When\n\n02:00–03:00 UTC.",
+		"home.notice_tone": "warning",
+	}, admin)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", saved.Code, saved.Body.String())
+	}
+	if body, tone := served(); body != "## When\n\n02:00–03:00 UTC." || tone != "warning" {
+		t.Fatalf("anonymous reader got body %q, tone %q", body, tone)
+	}
+
+	for name, change := range map[string]map[string]string{
+		"a tone nobody defined":   {"home.notice_tone": "rainbow"},
+		"a line that is too long": {"home.notice": strings.Repeat("字", 301)},
+		"a body that is too long": {"home.notice_body": strings.Repeat("字", 4001)},
+	} {
+		if response := in.do(http.MethodPut, "/api/admin/settings", change, admin); response.Code != http.StatusBadRequest {
+			t.Errorf("%s: got %d, want a refusal", name, response.Code)
+		}
+	}
+	// Refused whole: the notice that was there is still the one being served.
+	if body, tone := served(); body == "" || tone != "warning" {
+		t.Fatalf("a refused save changed what is served: %q, %q", body, tone)
+	}
+}
+
 // A malformed identifier must be refused before it reaches a query.
 func TestMalformedIdentifiersAreRejected(t *testing.T) {
 	in := newInstance(t)

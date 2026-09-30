@@ -1219,32 +1219,114 @@ body.oa-resizing * {
   flex-wrap: wrap;
 }
 
-/* The instance's standing notice. Quieter than the verification strip above
-   it — that one is a thing to do, this one is a thing to know — so it takes
-   the plain container fill rather than the badge's. */
+/* The instance's standing notice: a thin strip. Quieter than the verification
+   strip above it — that one is a thing to do, this one is a thing to know — so
+   it takes the plain container fill rather than the badge's. A warning is the
+   danger token mixed into that fill, so it is still drawn from the interface's
+   own colours and never from one an operator chose. */
 .oa-home-notice {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
-  padding: 10px 16px;
-  border-radius: 14px;
+  padding: 4px 6px 4px 12px;
+  border-radius: 12px;
   background: var(--ai-surface-container);
   font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.oa-home-notice.tone-warning {
+  background: color-mix(in srgb, var(--ai-danger) 12%, var(--ai-surface-container));
+}
+
+.oa-home-notice-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--ai-text-secondary);
+}
+
+.oa-home-notice.tone-warning .oa-home-notice-icon {
+  color: var(--ai-danger);
+}
+
+.oa-home-notice-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button.oa-home-notice-main {
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+button.oa-home-notice-main:focus-visible {
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 .oa-home-notice-text {
   flex: 1;
   min-width: 0;
-  /* Written in a plain textarea, so the line breaks the operator typed are
-     the ones they meant. Still text: nothing here parses markup. */
+  /* Written in a plain textarea, so the line breaks the operator typed are the
+     ones they meant. Still text: nothing here parses markup. */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.oa-home-notice-close {
+/* With a text behind it the strip is one line: the rest is what the click is
+   for. Without one there is nothing to open, so the line is shown whole. */
+.oa-home-notice.has-body .oa-home-notice-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Turned to point right, "there is more this way", rather than the down of a
+   control that folds something. */
+.oa-home-notice-go {
   flex-shrink: 0;
-  margin-top: -2px;
+  color: var(--ai-text-secondary);
+  transform: rotate(-90deg);
+}
+
+.oa-home-notice-close {
+  width: 26px;
+  height: 26px;
+}
+
+/* On a page that is one centred card there is no flow to put a strip in, so it
+   is fixed to the top of the window; the page makes room for it so a card that
+   is nearly as tall as the window is not drawn under it. */
+.oa-home-notice.floating {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  z-index: 30;
+  width: min(640px, calc(100% - 32px));
+  box-sizing: border-box;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--ai-surface-container) 92%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.12);
+}
+
+.oa-home-notice.floating.tone-warning {
+  background: color-mix(in srgb, var(--ai-danger) 12%, color-mix(in srgb, var(--ai-surface-container) 92%, transparent));
+}
+
+.oa-auth:has(.oa-home-notice.floating) {
+  padding-top: 64px;
 }
 
 .oa-verify-text {

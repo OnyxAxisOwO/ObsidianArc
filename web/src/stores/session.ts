@@ -57,7 +57,7 @@ const FALLBACK_SITE: SiteInfo = {
   oauth: [],
   landing: { mode: 'login', intro: '', trial: false, trial_turns: 0 },
   about: { title: '', body: '', show_software_info: true },
-  home_notice: { text: '', dismissible: true },
+  home_notice: { text: '', dismissible: true, body: '', tone: 'info' },
   logo_url: '',
   auth_card_position: 'center',
   oauth_only_signup: false,

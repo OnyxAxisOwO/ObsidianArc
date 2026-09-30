@@ -45,13 +45,18 @@ const (
 	// Whether a reader may put it away. Off is for a notice that has to keep
 	// saying itself — a maintenance window, a policy nobody may miss.
 	HomeNoticeDismissible = "home.notice_dismissible"
-	RegistrationEnabled   = "registration.enabled"
-	RegistrationGroup     = "registration.default_group"
-	RequireEmail          = "registration.require_email"
-	VerifyEmail           = "registration.verify_email"
-	EmailDomains          = "registration.email_domains"
-	SignupsPerMinute      = "registration.per_minute"
-	SignupsPerHour        = "registration.per_hour"
+	// The notice is a strip of one line, and this is what opens from it: the
+	// whole text, in Markdown. Empty means the strip has nothing behind it.
+	HomeNoticeBody = "home.notice_body"
+	// How loudly the strip says it: HomeNoticeTones.
+	HomeNoticeTone      = "home.notice_tone"
+	RegistrationEnabled = "registration.enabled"
+	RegistrationGroup   = "registration.default_group"
+	RequireEmail        = "registration.require_email"
+	VerifyEmail         = "registration.verify_email"
+	EmailDomains        = "registration.email_domains"
+	SignupsPerMinute    = "registration.per_minute"
+	SignupsPerHour      = "registration.per_hour"
 	// Per address, unlike the two above, which are one counter for the whole
 	// instance: a flood from one place should not lock out everybody else.
 	SignupsPerIP       = "registration.per_ip"
@@ -335,6 +340,25 @@ func ValidLandingMode(value string) bool {
 	return false
 }
 
+// The two ways a notice can ask for attention. Two, and drawn from the
+// interface's own tokens, so a warning is the danger tone and never a colour an
+// operator picked.
+const (
+	HomeNoticeToneInfo    = "info"
+	HomeNoticeToneWarning = "warning"
+)
+
+func ValidHomeNoticeTone(value string) bool {
+	return value == HomeNoticeToneInfo || value == HomeNoticeToneWarning
+}
+
+// The most a notice may say. The strip is one line and the body a screenful;
+// both are served to people who have not signed in, so neither is unbounded.
+const (
+	MaxHomeNoticeTitleChars = 300
+	MaxHomeNoticeBodyChars  = 4000
+)
+
 // Where the sign-in / registration card sits on the screen.
 const (
 	AuthCardPositionCenter = "center"
@@ -610,6 +634,8 @@ var Defaults = map[string]string{
 	// Dismissible unless an operator says otherwise: a strip that cannot be
 	// put away is the exception, and defaults should not be the exception.
 	HomeNoticeDismissible: "true",
+	HomeNoticeBody:        "",
+	HomeNoticeTone:        HomeNoticeToneInfo,
 	RegistrationEnabled:   "true",
 	RegistrationGroup:     "",
 	RequireEmail:          "false",

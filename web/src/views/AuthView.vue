@@ -16,6 +16,7 @@ import { safeNext, serverOwned } from '@/lib/next';
 import { completeSignIn, fetchPoWChallenge, login, logout, register, type LoginResult, type PoWSolution } from '@/api/auth';
 import { solvePoW, type PoWTask } from '@/lib/pow';
 import { signInURL } from '@/api/oauth';
+import HomeNotice from '@/announce/HomeNotice.vue';
 import OaField from '@/components/OaField.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
@@ -460,6 +461,9 @@ async function onSubmit(): Promise<void> {
     ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
+    <!-- The instance's standing notice, for somebody who has not signed in
+         either: this is the first page most of them see. -->
+    <HomeNotice floating />
     <form ref="formEl" class="oa-auth-card" novalidate @submit.prevent="stage === 'code' ? onCode() : onSubmit()">
       <div class="oa-auth-brand">
         <img v-if="site.logo_url" :src="site.logo_url" class="oa-auth-brand-logo" alt="">

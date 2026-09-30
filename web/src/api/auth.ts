@@ -150,9 +150,10 @@ export interface SiteInfo {
   // The About panel as the operator wrote it. Either field may be empty, which
   // means "use the built-in wording" rather than "render nothing".
   about?: { title: string; body: string; show_software_info?: boolean };
-  // The standing notice above the chat. Not an announcement: no read state,
-  // no date, and it stays until an operator clears it.
-  home_notice?: { text: string; dismissible: boolean };
+  // The standing notice: a strip of one line, and what opens from it. Not an
+  // announcement: no read state, no date, and it stays until an operator clears
+  // it. Older servers send only the text and whether it may be closed.
+  home_notice?: { text: string; dismissible: boolean; body?: string; tone?: 'info' | 'warning' };
   /** Derived from registration.enabled + invites.required: whether signing up
    *  needs no code, needs one, or is off altogether. Absent reads as 'open',
    *  the behaviour a server without the setting always had. */

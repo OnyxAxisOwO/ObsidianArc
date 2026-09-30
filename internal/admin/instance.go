@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
@@ -168,6 +169,8 @@ var writableSettings = map[string]bool{
 	settings.AboutShowSoftwareInfo:      true,
 	settings.HomeNotice:                 true,
 	settings.HomeNoticeDismissible:      true,
+	settings.HomeNoticeBody:             true,
+	settings.HomeNoticeTone:             true,
 	settings.RegistrationEnabled:        true,
 	settings.RegistrationGroup:          true,
 	settings.RequireEmail:               true,
@@ -424,6 +427,18 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	if display, present := body[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
 		return httpx.BadRequest("Unknown usage display %q.", display)
 	}
+	// The notice is served to people who have not signed in, so how much of it
+	// there can be is decided here and not by whatever the form happened to send.
+	if tone, present := body[settings.HomeNoticeTone]; present && !settings.ValidHomeNoticeTone(tone) {
+		return httpx.BadRequest("Unknown notice tone %q.", tone)
+	}
+	if text, present := body[settings.HomeNotice]; present && utf8.RuneCountInString(text) > settings.MaxHomeNoticeTitleChars {
+		return httpx.BadRequest("The notice line is at most %d characters; put the rest in the text that opens from it.",
+			settings.MaxHomeNoticeTitleChars)
+	}
+	if text, present := body[settings.HomeNoticeBody]; present && utf8.RuneCountInString(text) > settings.MaxHomeNoticeBodyChars {
+		return httpx.BadRequest("The notice text is at most %d characters.", settings.MaxHomeNoticeBodyChars)
+	}
 	if identity, present := body[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
 		return httpx.BadRequest("Unknown leaderboard identity %q.", identity)
 	}
@@ -502,6 +517,10 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 	if display, present := applied[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
 		delete(applied, settings.UsageDisplay)
 		skipped = append(skipped, settings.UsageDisplay)
+	}
+	if tone, present := applied[settings.HomeNoticeTone]; present && !settings.ValidHomeNoticeTone(tone) {
+		delete(applied, settings.HomeNoticeTone)
+		skipped = append(skipped, settings.HomeNoticeTone)
 	}
 	if identity, present := applied[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
 		delete(applied, settings.LeaderboardIdentity)

@@ -70,7 +70,7 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     searchKeys: ['aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint', 'aboutShowSoftwareInfo', 'aboutShowSoftwareInfoHint'],
     keywords: ['版本号', '已运行时间', '贡献者', '隐藏版本', '隐藏运行时间', '支持 Obsidian Arc', '致谢', 'version', 'uptime', 'contributors', 'credits'],
   },
-  { id: 'secHomeNotice', pageSlug: 'settings', titleKey: 'homeNotice', searchKeys: ['homeNoticeHint', 'homeNoticeDismissible', 'homeNoticeDismissibleHint'] },
+  { id: 'secHomeNotice', pageSlug: 'settings', titleKey: 'homeNotice', searchKeys: ['homeNoticeHint', 'homeNoticeLine', 'homeNoticeBody', 'homeNoticeBodyHint', 'homeNoticeTone', 'homeNoticeDismissible', 'homeNoticeDismissibleHint'] },
   {
     id: 'secFeedback',
     pageSlug: 'settings',

@@ -48,7 +48,10 @@ const SEARCH_GROUPS = {
     'pwaIconUrl', 'pwaIconUrlHint',
   ],
   secAbout: ['controlAbout', 'aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint', 'aboutShowSoftwareInfo', 'aboutShowSoftwareInfoHint'],
-  secHomeNotice: ['homeNotice', 'homeNoticeHint', 'homeNoticeDismissible', 'homeNoticeDismissibleHint'],
+  secHomeNotice: [
+    'homeNotice', 'homeNoticeHint', 'homeNoticeLine', 'homeNoticeBody', 'homeNoticeBodyHint', 'homeNoticeTone', 'homeNoticeToneHint',
+    'homeNoticeToneInfo', 'homeNoticeToneWarning', 'homeNoticeDismissible', 'homeNoticeDismissibleHint',
+  ],
   secFeedback: ['navFeedback', 'feedbackShowStaffName', 'feedbackShowStaffNameHint'],
   secLanding: [
     'secLanding', 'landingMode', 'landingModeHint', 'landingLogin', 'landingIntro', 'landingChat',
@@ -117,6 +120,8 @@ const form = ref({
   aboutText: '',
   aboutShowSoftwareInfo: true,
   homeNotice: '',
+  homeNoticeBody: '',
+  homeNoticeTone: 'info',
   homeNoticeDismissible: true,
   feedbackShowStaffName: true,
   landingMode: 'login',
@@ -170,6 +175,8 @@ function collect(): Record<string, string> {
     'about.body': form.value.aboutText.trim(),
     'about.show_software_info': String(form.value.aboutShowSoftwareInfo),
     'home.notice': form.value.homeNotice.trim(),
+    'home.notice_body': form.value.homeNoticeBody.trim(),
+    'home.notice_tone': form.value.homeNoticeTone,
     'home.notice_dismissible': String(form.value.homeNoticeDismissible),
     'feedback.show_staff_name': String(form.value.feedbackShowStaffName),
     'landing.mode': form.value.landingMode,
@@ -553,6 +560,8 @@ async function load(): Promise<void> {
       aboutText: values['about.body'] ?? '',
       aboutShowSoftwareInfo: values['about.show_software_info'] !== 'false',
       homeNotice: values['home.notice'] ?? '',
+      homeNoticeBody: values['home.notice_body'] ?? '',
+      homeNoticeTone: values['home.notice_tone'] ?? 'info',
       homeNoticeDismissible: (values['home.notice_dismissible'] ?? 'true') === 'true',
       feedbackShowStaffName: (values['feedback.show_staff_name'] ?? 'true') === 'true',
       landingMode: values['landing.mode'] ?? 'login',
@@ -862,7 +871,18 @@ onMounted(load);
         />
       </AdminControlCard>
       <AdminControlCard id="secHomeNotice" v-show="visible('secHomeNotice')" :title="t('homeNotice')" :icon="IconBell" :hint="t('controlNoticeHint')">
-        <OaTextArea v-model="form.homeNotice" :label="t('homeNotice')" :rows="3" :hint="t('homeNoticeHint')" />
+        <OaTextArea v-model="form.homeNotice" :label="t('homeNoticeLine')" :rows="2" :hint="t('homeNoticeHint')" />
+        <OaTextArea v-model="form.homeNoticeBody" :label="t('homeNoticeBody')" :rows="6" :hint="t('homeNoticeBodyHint')" />
+        <OaSelectField
+          v-model="form.homeNoticeTone"
+          :label="t('homeNoticeTone')"
+          :hint="t('homeNoticeToneHint')"
+          :searchable="false"
+          :options="[
+            { value: 'info', label: t('homeNoticeToneInfo') },
+            { value: 'warning', label: t('homeNoticeToneWarning') },
+          ]"
+        />
         <OaSwitchField
           v-model="form.homeNoticeDismissible"
           :label="t('homeNoticeDismissible')"

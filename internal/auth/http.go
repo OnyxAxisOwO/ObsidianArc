@@ -328,6 +328,8 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		// before anyone has signed in.
 		"home_notice": map[string]any{
 			"text":        h.settings.Get(settings.HomeNotice),
+			"body":        h.settings.Get(settings.HomeNoticeBody),
+			"tone":        homeNoticeTone(h.settings.Get(settings.HomeNoticeTone)),
 			"dismissible": h.settings.Bool(settings.HomeNoticeDismissible),
 		},
 		"login_background": h.loginBackgrounds(),
@@ -1107,4 +1109,14 @@ func (h *Handlers) turnstileSiteKey(firstAccount bool) string {
 		return ""
 	}
 	return h.settings.Get(settings.TurnstileSiteKey)
+}
+
+// homeNoticeTone is the stored tone, or the quiet one for a value the form
+// would never have accepted: the strip is drawn from it on every page, so a bad
+// row must not be able to make it draw as nothing.
+func homeNoticeTone(stored string) string {
+	if settings.ValidHomeNoticeTone(stored) {
+		return stored
+	}
+	return settings.HomeNoticeToneInfo
 }

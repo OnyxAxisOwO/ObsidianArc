@@ -219,22 +219,22 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 25.85 MB (22.14 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 228.07 kB to open the chat (188.33 JS + 39.74 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 25.86 MB (22.16 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 228.81 kB to open the chat (188.87 JS + 39.94 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
 Remeasured on 2026-09-30 (UTC), after the bonus bars and the daily check-in.
-The Linux amd64 binary measures 25,850,016 bytes, or 22,143,136 with
-`-tags nosqlite` (Go 1.27.1), up 0.28 MB: two packages of Go (`bonus`,
+The Linux amd64 binary measures 25,858,208 bytes, or 22,155,424 with
+`-tags nosqlite` (Go 1.27.1), up 0.29 MB: two packages of Go (`bonus`,
 `checkin`), a migration and the frontend they come with. Memory and start-up
 were not re-measured: nothing was added that runs at idle beyond the sweep that
-already runs. The first paint is 228.07 kB (188.33 kB JS + 39.74 kB CSS), up
-4.57 kB: the two panels drawn on the usage screen and the fold that wraps each
-of its sections, the notification wording, and the English strings for both
-screens, which the core dictionary keeps in the entry like every other. The backoffice chunk is 111.59 kB (from 107.58),
+already runs. The first paint is 228.81 kB (188.87 kB JS + 39.94 kB CSS), up
+5.31 kB: the two panels drawn on the usage screen and the fold that wraps each
+of its sections, the notice strip and the text that opens from it, the
+notification wording, and the English strings for those screens, which the core dictionary keeps in the entry like every other. The backoffice chunk is 111.78 kB (from 107.58),
 the page that edits bars, grants and check-in rewards; the Chinese dictionary
-is 46.03 kB (from 44.37); the terminal and the maths renderer did not move
+is 46.24 kB (from 44.37); the terminal and the maths renderer did not move
 (7.22 and 3.61 kB) and the front page is 3.95 kB.
 
 Remeasured on 2026-09-30 (UTC), before that, after plugins became packages that are
