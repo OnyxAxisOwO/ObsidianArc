@@ -6,12 +6,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 )
 
@@ -35,6 +37,90 @@ func VerifyArchiveKey(path string, masterKey []byte) error {
 		return err
 	}
 	return verifyKeyCheck(manifest, masterKey)
+}
+
+// PrepareRestore migrates an empty destination to the schema the archive was
+// taken from, which is not always this binary's own: the instance may have had
+// plugin packages installed, and their tables and columns are in the archive
+// with nothing in a fresh database to create them.
+//
+// The packages the archive carries (plugin_packages) supply their own
+// migrations. extra is what this binary and its deployment can supply —
+// compiled-in plugins, bundled packages — and is consulted only for the
+// versions the archive names, after the archive's own packages, so an
+// instance that removed a plugin's data or never installed it does not get its
+// tables back and fail the schema check on them.
+func PrepareRestore(ctx context.Context, db *database.DB, path string, masterKey []byte, extra ...fs.FS) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("system backup: open restore file: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("system backup: inspect restore file: %w", err)
+	}
+	if info.Size() < 1 || info.Size() > MaxArchiveBytes {
+		return fmt.Errorf("system backup: archive must be between 1 byte and %d bytes", MaxArchiveBytes)
+	}
+	archive, manifest, err := readManifest(file, info.Size())
+	if err != nil {
+		return err
+	}
+	if manifest.Dialect != db.Dialect() {
+		return fmt.Errorf("system backup: archive uses %s but destination uses %s; restore with the same database engine", manifest.Dialect, db.Dialect())
+	}
+	// Before running any SQL the archive brought along, not after.
+	if err := verifyKeyCheck(manifest, masterKey); err != nil {
+		return err
+	}
+	carried, err := archivedPackages(ctx, archive, manifest)
+	if err != nil {
+		return err
+	}
+	_, err = db.MigrateFor(ctx, manifest.Migration, append(carried, extra...)...)
+	return err
+}
+
+// archivedPackages reads the plugin packages out of the archive's
+// plugin_packages table and returns each one's migrations. An archive from
+// before packages existed has no such table, which is not an error.
+func archivedPackages(ctx context.Context, archive *zip.Reader, manifest archiveManifest) ([]fs.FS, error) {
+	const table, column = "plugin_packages", "archive"
+	meta := manifestTable(manifest, table)
+	entry := archiveEntries(archive)[table]
+	if meta.Name == "" || entry == nil {
+		return nil, nil
+	}
+	position := -1
+	for i, name := range meta.Columns {
+		if name == column {
+			position = i
+		}
+	}
+	if position < 0 {
+		return nil, fmt.Errorf("system backup: %s has no %s column", table, column)
+	}
+	var sources []fs.FS
+	err := scanArchiveRows(ctx, entry, len(meta.Columns), func(cells []archiveCell) error {
+		value, err := decodeCell(cells[position])
+		if err != nil {
+			return fmt.Errorf("system backup: decode %s row: %w", table, err)
+		}
+		raw, ok := value.([]byte)
+		if !ok {
+			return fmt.Errorf("system backup: %s.%s is not binary", table, column)
+		}
+		pkg, err := arcx.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("system backup: a plugin package in the archive is not valid: %w", err)
+		}
+		if pkg.HasMigrations() {
+			sources = append(sources, pkg.Migrations())
+		}
+		return nil
+	})
+	return sources, err
 }
 
 // RestoreArchive replaces an empty, migrated database from one instance

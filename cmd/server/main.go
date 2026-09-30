@@ -73,10 +73,13 @@ func restoreBackup(args []string) error {
 		return err
 	}
 	defer db.Close()
-	// Every compiled-in plugin's, installed or not: the archive may carry any
-	// of their tables, and plugin_installs, restored with the rest, is what
-	// then says which of them this instance has.
-	if _, err := db.Migrate(ctx, plugin.Migrations()...); err != nil {
+	// The schema the archive was taken from, not this binary's: the packages
+	// it carries bring their own migrations, and what was compiled in or is
+	// bundled with this deployment is offered for the versions it names.
+	// plugin_installs, restored with the rest, then says which plugins the
+	// instance has.
+	extra := append(plugin.Migrations(), plugin.BundledMigrations(cfg.PluginDir)...)
+	if err := systembackup.PrepareRestore(ctx, db, *archivePath, cfg.SecretKey, extra...); err != nil {
 		return err
 	}
 	return systembackup.RestoreArchive(ctx, db, *archivePath, cfg.SecretKey)

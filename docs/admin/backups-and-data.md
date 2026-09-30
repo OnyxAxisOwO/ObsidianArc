@@ -36,7 +36,9 @@ OBSIDIAN_DB_DSN='file:/restore/obsidian.db' \
 ./bin/obsidian-arc restore-backup --file ./instance.arcbackup
 ```
 
-PostgreSQL 目标也可以使用 `OBSIDIAN_DB_DRIVER=postgres` 和 `OBSIDIAN_DB_DSN` 指定一个空数据库。命令先运行迁移，再检查引擎、迁移版本、表结构和目标为空，最后在一个事务中导入数据；数据导入事务中的错误会回滚导入。此前已运行的数据库迁移不属于该事务。成功后将服务指向恢复好的目标并启动，检查登录、历史对话、附件和模型调用。不要在仍运行的实例上恢复，也不要将归档解压到数据库文件目录。
+PostgreSQL 目标也可以使用 `OBSIDIAN_DB_DRIVER=postgres` 和 `OBSIDIAN_DB_DSN` 指定一个空数据库。命令先运行迁移，再检查引擎、迁移版本、表结构和目标为空，最后在一个事务中导入数据；数据导入事务中的错误会回滚导入。此前已运行的数据库迁移不属于该事务。
+
+迁移只建出归档那个实例当时有的表：以[插件包](../architecture/plugin-packages)装的插件，它的包本身就在归档里（`plugin_packages` 表），它的表和列由包里的迁移建出，不需要另外准备。有一种情况归档里没有包：插件被删除时选择了保留数据，表还在、包已经没了。这时命令会在写入任何数据之前停下，并写出缺哪一条迁移；把那个插件的 `.arcx` 放进 `OBSIDIAN_PLUGIN_DIR`（镜像里默认是 `/usr/local/share/obsidian-arc/plugins`，随部署自带的包就在那里）再运行即可。成功后将服务指向恢复好的目标并启动，检查登录、历史对话、附件和模型调用。不要在仍运行的实例上恢复，也不要将归档解压到数据库文件目录。
 
 ## 数据保存在哪里
 

@@ -444,6 +444,42 @@ func (m *Manager) LoadBundled(ctx context.Context, dir string) error {
 	return nil
 }
 
+// BundledMigrations is the migrations of every package in the deployment's
+// bundle directory, for restoring a backup: a plugin whose package is not in
+// the backup — one an earlier build had compiled in, or one removed keeping
+// its data — still has tables in it, and the bundle is where this deployment
+// keeps the SQL that creates them. Packages that will not parse are skipped,
+// as LoadBundled skips them; a restore that needed one says so by version.
+func BundledMigrations(dir string) []fs.FS {
+	if dir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	var out []fs.FS
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".arcx") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		pkg, err := arcx.Parse(raw)
+		if err != nil {
+			slog.Warn("bundled plugin package is not valid; its migrations are not offered to the restore", "file", entry.Name(), "error", err)
+			continue
+		}
+		if pkg.HasMigrations() {
+			out = append(out, pkg.Migrations())
+		}
+	}
+	return out
+}
+
 // everDecided reports whether the operator has a decision on record for name:
 // a row in plugin_installs, which an uninstall leaves as "removed".
 func (m *Manager) everDecided(name string) bool {

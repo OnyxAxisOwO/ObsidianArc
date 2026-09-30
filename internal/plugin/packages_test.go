@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/pkgtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/servertest"
@@ -1083,5 +1085,35 @@ func TestABackendEndsAccountsWithTheOperationsTheServerOffers(t *testing.T) {
 	}
 	if res := weak.in.Do(http.MethodGet, "/api/auth/me", nil, other); res.Code != http.StatusOK {
 		t.Fatalf("the account was touched by a call that was refused: %d", res.Code)
+	}
+}
+
+// A restore reads the bundle for the migrations of plugins the backup names
+// but does not carry. The bundle may hold files that are not packages, and a
+// package that will not parse must not stop the ones beside it being offered.
+func TestBundledMigrationsOffersEveryValidPackageInTheBundle(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "demo.arcx"), pkgtest.Demo(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.arcx"), []byte("not a zip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("ignored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sources := plugin.BundledMigrations(dir)
+	if len(sources) != 1 {
+		t.Fatalf("BundledMigrations offered %d sources; want the demo's alone", len(sources))
+	}
+	if body, err := fs.ReadFile(sources[0], "demo_0001_things.sql"); err != nil || !strings.Contains(string(body), "demo_things") {
+		t.Errorf("demo's first migration was not offered: %v", err)
+	}
+	if got := plugin.BundledMigrations(filepath.Join(dir, "missing")); len(got) != 0 {
+		t.Errorf("a bundle directory that does not exist offered %d sources", len(got))
+	}
+	if got := plugin.BundledMigrations(""); len(got) != 0 {
+		t.Errorf("no bundle directory configured offered %d sources", len(got))
 	}
 }

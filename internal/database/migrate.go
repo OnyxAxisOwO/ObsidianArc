@@ -56,7 +56,10 @@ func (db *DB) Migrate(ctx context.Context, plugins ...fs.FS) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return db.applyPending(ctx, pending, done)
+}
 
+func (db *DB) applyPending(ctx context.Context, pending []migration, done map[string]bool) ([]string, error) {
 	applied := make([]string, 0, len(pending))
 	for _, m := range pending {
 		if done[m.version] {
@@ -68,6 +71,65 @@ func (db *DB) Migrate(ctx context.Context, plugins ...fs.FS) ([]string, error) {
 		applied = append(applied, m.version)
 	}
 	return applied, nil
+}
+
+// MigrateFor brings a database to the schema a backup was taken from: the
+// core's files, and of the plugins' only the versions the backup's instance
+// had applied. Migrate would apply every plugin file it is handed, which is
+// wrong here — the schema check that follows compares tables and columns, so
+// a plugin the instance never installed, or removed with its data, would
+// leave tables behind that the archive does not have.
+//
+// The first source to hold a version supplies it, so the copy a backup
+// carried outranks one the deployment bundles. A version nobody supplies is
+// an error that names it: the archive holds tables nothing here can create.
+func (db *DB) MigrateFor(ctx context.Context, versions []string, plugins ...fs.FS) ([]string, error) {
+	if _, err := db.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    TEXT PRIMARY KEY,
+		applied_at BIGINT NOT NULL
+	)`); err != nil {
+		return nil, fmt.Errorf("database: create schema_migrations: %w", err)
+	}
+	done, err := db.appliedVersions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pending, err := loadMigrations(db.Dialect())
+	if err != nil {
+		return nil, err
+	}
+	have := make(map[string]bool, len(pending))
+	for _, m := range pending {
+		have[m.version] = true
+	}
+	wanted := make(map[string]bool, len(versions))
+	for _, version := range versions {
+		wanted[version] = true
+	}
+	for _, source := range plugins {
+		found, err := readMigrations(db.Dialect(), []fs.FS{source})
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range found {
+			if wanted[m.version] && !have[m.version] {
+				have[m.version] = true
+				pending = append(pending, m)
+			}
+		}
+	}
+	var missing []string
+	for _, version := range versions {
+		if !have[version] {
+			missing = append(missing, version)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("database: the backup's instance had applied %s, which nothing here can supply — a plugin package it had installed and later removed keeping its data must be provided again, or restore with the Obsidian Arc build that made the backup",
+			strings.Join(missing, ", "))
+	}
+	sort.Slice(pending, func(i, j int) bool { return pending[i].version < pending[j].version })
+	return db.applyPending(ctx, pending, done)
 }
 
 func (db *DB) appliedVersions(ctx context.Context) (map[string]bool, error) {
