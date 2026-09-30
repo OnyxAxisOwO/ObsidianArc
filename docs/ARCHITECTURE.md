@@ -219,15 +219,15 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 25.56 MB (21.85 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Binary (SQLite + embedded SPA) | < 30 MB | 25.57 MB (21.86 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
 | Frontend, on the wire | < 135 kB | 223.50 kB to open the chat (184.31 JS + 39.19 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
 Remeasured on 2026-09-30 (UTC), after plugins became packages that are
 dragged into the backoffice and run as WebAssembly. The Linux amd64 binary
-measures 25,555,104 bytes, or 21,852,320 with `-tags nosqlite` (Go 1.27.1),
-up 2.83 MB from the core alone: that is wazero, the fourth direct Go
+measures 25,567,392 bytes, or 21,860,512 with `-tags nosqlite` (Go 1.27.1),
+up 2.85 MB from the core alone: that is wazero, the fourth direct Go
 dependency and the one that makes a plugin installable without a rebuild. It
 is pure Go — no cgo, so the binary stays static and cross-compiles — and it
 is a fixed cost of the plugin runtime whether or not an instance ever installs
