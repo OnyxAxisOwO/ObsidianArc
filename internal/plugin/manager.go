@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -100,8 +101,9 @@ type Manager struct {
 	// routed to one.
 	pkgs atomic.Pointer[map[string]*loaded]
 	// The backends' engine, made when the first one needs it.
-	eng     *wasm.Engine
-	engOnce sync.Once
+	eng      *wasm.Engine
+	engOnce  sync.Once
+	cacheDir string
 	// The console the packages' commands are added to, once there is one.
 	console *console.Console
 	// Where requests for a package's routes are served from; see routes.go.
@@ -128,9 +130,32 @@ func NewManager(db *database.DB, set *settings.Service, users *user.Store, secur
 	return m
 }
 
+// SetCacheDir names the directory compiled backends are kept in, so that
+// compiling one again is reading a file. It has to be called before the first
+// backend is loaded; a Manager without one compiles every time.
+func (m *Manager) SetCacheDir(dir string) { m.cacheDir = dir }
+
+// Warm compiles the backends of the packages that are switched on, one after
+// another in the background, so the first request that needs one does not wait
+// for it: on an ordinary server core a compile is most of a minute for three.
+// With a cache directory the result is kept, and this is a few file reads.
+func (m *Manager) Warm() {
+	go func() {
+		ctx := context.Background()
+		for _, l := range *m.pkgs.Load() {
+			if l.backend == nil || (*m.states.Load())[l.name].State != StateEnabled {
+				continue
+			}
+			if err := l.backend.Ready(ctx); err != nil {
+				slog.Warn("plugin backend did not compile", "plugin", l.name, "error", err)
+			}
+		}
+	}()
+}
+
 // engine is the wasm engine the packages' backends run on.
 func (m *Manager) engine() *wasm.Engine {
-	m.engOnce.Do(func() { m.eng = wasm.NewEngine(wasm.Limits{}) })
+	m.engOnce.Do(func() { m.eng = wasm.NewEngine(wasm.Limits{CacheDir: m.cacheDir}) })
 	return m.eng
 }
 

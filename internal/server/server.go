@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -157,6 +158,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// anything below reads a setting or an account, since both lists depend
 	// on the answer; every extension point is handed the same gate.
 	plugins := plugin.NewManager(db, settingsService, users, securityLog)
+	plugins.SetCacheDir(filepath.Join(cfg.DataDir, "wasm-cache"))
 	if err := plugins.Load(ctx); err != nil {
 		return nil, err
 	}
@@ -166,6 +168,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	if err := plugins.LoadBundled(ctx, cfg.PluginDir); err != nil {
 		return nil, err
 	}
+	plugins.Warm()
 	pluginGate := plugins.Gate()
 	settingsService.SetPluginGate(pluginGate)
 	users.SetPluginGate(pluginGate)

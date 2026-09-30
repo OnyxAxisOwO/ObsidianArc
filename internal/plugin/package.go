@@ -279,7 +279,9 @@ func (m *Manager) refreshDescribe(l *loaded) {
 		l.described.Store(&described{})
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Long enough for a compile that has to be done from nothing, which on a
+	// small server is most of a minute.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	var d described
 	if err := m.invoke(ctx, l, wasm.CallInfo{}, "describe", nil, &d, nil); err != nil {

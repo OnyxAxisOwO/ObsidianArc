@@ -64,6 +64,11 @@ type Limits struct {
 	// How long a backend may go unused before its compiled code is given back.
 	// The next call compiles it again. Negative means never.
 	IdleEvict time.Duration
+	// A directory to keep compiled code in, so that compiling again — after an
+	// eviction, after a restart — is reading a file instead of the seventeen
+	// seconds a 5 MB module takes an ordinary server core. Empty keeps none.
+	// Nothing in it is anything but a cache: it can be deleted at any time.
+	CacheDir string
 }
 
 // DefaultLimits are 64 MiB, 15 seconds, 8 MiB, and three minutes of idleness.
@@ -209,6 +214,10 @@ type Backend struct {
 type warm struct {
 	rt       wazero.Runtime
 	compiled wazero.CompiledModule
+	// This warm state's own handle on the cache directory. The runtime keeps
+	// what it compiled in memory for as long as the handle lives, so closing
+	// the handle with the runtime is what gives the code back; the files stay.
+	cache wazero.CompilationCache
 }
 
 var errRemoved = errors.New("wasm: the backend has been removed")
@@ -228,12 +237,23 @@ func (b *Backend) build() (*warm, error) {
 	cfg := wazero.NewRuntimeConfig().
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(b.engine.limits.MemoryPages)
+	var dirCache wazero.CompilationCache
 	if cache := shared.Load(); cache != nil {
 		cfg = cfg.WithCompilationCache(*cache)
+	} else if dir := b.engine.limits.CacheDir; dir != "" {
+		if c, err := wazero.NewCompilationCacheWithDir(dir); err != nil {
+			slog.Warn("plugin compile cache unavailable; compiling without it", "dir", dir, "error", err)
+		} else {
+			dirCache = c
+			cfg = cfg.WithCompilationCache(c)
+		}
 	}
 	rt := wazero.NewRuntimeWithConfig(ctx, cfg)
 	fail := func(err error) (*warm, error) {
 		_ = rt.Close(ctx)
+		if dirCache != nil {
+			_ = dirCache.Close(ctx)
+		}
 		return nil, err
 	}
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
@@ -255,7 +275,7 @@ func (b *Backend) build() (*warm, error) {
 			return fail(fmt.Errorf("wasm: the backend does not export %s — it is not built against the plugin SDK", name))
 		}
 	}
-	return &warm{rt: rt, compiled: compiled}, nil
+	return &warm{rt: rt, compiled: compiled, cache: dirCache}, nil
 }
 
 // acquire returns the compiled code, compiling it first if there is none, and
@@ -348,7 +368,12 @@ func (b *Backend) evict() {
 	debug.FreeOSMemory()
 }
 
-func closeWarm(w *warm) { _ = w.rt.Close(context.Background()) }
+func closeWarm(w *warm) {
+	_ = w.rt.Close(context.Background())
+	if w.cache != nil {
+		_ = w.cache.Close(context.Background())
+	}
+}
 
 // Ready compiles the module if that has not been done, and reports how it
 // went. An installer calls it before it commits.

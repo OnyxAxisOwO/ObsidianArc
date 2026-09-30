@@ -407,3 +407,36 @@ func TestABackendThatDoesNotCompileSaysSoEveryTime(t *testing.T) {
 		t.Fatalf("Ready = %v, then %v", first, second)
 	}
 }
+
+// A compile that has to start from nothing is most of a minute on a small
+// server, so what it made is kept in a directory, and a backend loaded again —
+// after an eviction, a restart, an update that changed nothing — reads it. The
+// directory is only ever a cache: it holds files, not the compiled code that a
+// closed backend gave back.
+func TestCompiledCodeIsKeptInTheCacheDirectoryAndReadBack(t *testing.T) {
+	old := shared.Swap(nil)
+	t.Cleanup(func() { shared.Store(old) })
+	dir := t.TempDir()
+	host := func(*Call, string, json.RawMessage) (any, error) { return nil, nil }
+
+	first := NewEngine(Limits{CacheDir: dir}).Load("demo", guest(t), host)
+	if err := first.Ready(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("nothing was kept in the cache directory: %v %v", entries, err)
+	}
+
+	second := NewEngine(Limits{CacheDir: dir, IdleEvict: 30 * time.Millisecond}).Load("demo", guest(t), host)
+	t.Cleanup(second.Close)
+	var out struct{ Plugin string }
+	if err := second.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, &out, nil); err != nil || out.Plugin != "demo" {
+		t.Fatalf("a call on a backend compiled from the cache: %+v, %v", out, err)
+	}
+	waitUntil(t, "it is evicted", func() bool { return !second.isWarm() })
+	if err := second.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, &out, nil); err != nil {
+		t.Fatalf("a call after eviction: %v", err)
+	}
+}
