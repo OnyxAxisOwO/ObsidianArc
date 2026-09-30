@@ -181,7 +181,7 @@ func (s *Service) reserve(
 		return Reservation{}, err
 	}
 	if s.bonus != nil && estimate.Credits > 0 {
-		if fallback, ferr := s.reserveFallback(ctx, account, modelID, estimate); ferr == nil {
+		if fallback, ferr := s.reserveFallback(ctx, account, modelID, estimate, policy); ferr == nil {
 			return fallback, nil
 		} else if !errors.Is(ferr, bonus.ErrInsufficient) {
 			return Reservation{}, ferr
@@ -194,11 +194,18 @@ func (s *Service) reserve(
 }
 
 // reserveFallback pays for a request out of the bars that were kept back,
-// whole or not at all. The windows are not touched: they have nothing left, and
-// counting the request against them would only push them further over.
-func (s *Service) reserveFallback(ctx context.Context, account user.User, modelID string, estimate Estimate) (Reservation, error) {
+// whole or not at all. The allowance windows are not touched: they have nothing
+// left, and counting the request against them would only push them further
+// over. The burst limits are: a bar is more allowance, not a way round them.
+func (s *Service) reserveFallback(
+	ctx context.Context, account user.User, modelID string, estimate Estimate, policy Policy,
+) (Reservation, error) {
 	var holds []bonus.Hold
+	now := time.Now()
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := reserveRate(ctx, tx, policy, scopeKey(account.ID), estimate.Tokens, now); err != nil {
+			return err
+		}
 		var err error
 		holds, err = s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Fallback)
 		return err
@@ -206,7 +213,11 @@ func (s *Service) reserveFallback(ctx context.Context, account user.User, modelI
 	if err != nil {
 		return Reservation{}, err
 	}
-	return s.noted(ctx, Reservation{funding: &funding{holds: holds}}), nil
+	res := Reservation{at: now, funding: &funding{holds: holds}}
+	if policy.tokenRateOn() {
+		res.covered = estimate.Tokens
+	}
+	return s.noted(ctx, res), nil
 }
 
 func (s *Service) reserveOnce(
@@ -236,19 +247,27 @@ func (s *Service) reserveOnce(
 		}
 
 		// The bars that are switched on pay first, and what they pay does not
-		// count against the windows. What they cannot cover is the windows'.
+		// count against the allowance windows. What they cannot cover is the
+		// windows'. The burst limits count the whole request whoever pays.
 		if s.bonus != nil && estimate.Credits > 0 {
 			holds, err = s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Priority)
 			if err != nil {
 				return err
 			}
 			charged, whole = uncovered(estimate, bonus.Total(holds))
+		}
+
+		reserve := func() error {
+			if err := reserveRate(ctx, tx, policy, key, estimate.Tokens, now); err != nil {
+				return err
+			}
 			if whole {
 				return nil
 			}
+			return reserveAllowance(ctx, tx, policy, key, anchor, charged, now)
 		}
 
-		reserveErr := reserveCounters(ctx, tx, policy, key, anchor, charged, now)
+		reserveErr := reserve()
 		if reset == nil || reserveErr == nil {
 			return reserveErr
 		}
@@ -270,7 +289,7 @@ func (s *Service) reserveOnce(
 		if err := deleteScopeCounters(ctx, tx, key, resetWindows); err != nil {
 			return fmt.Errorf("quota: automatic reset: %w", err)
 		}
-		return reserveCounters(ctx, tx, policy, key, anchor, charged, now)
+		return reserve()
 	})
 	if err != nil {
 		// The transaction rolled back, so nothing is outstanding and a failed
@@ -278,6 +297,9 @@ func (s *Service) reserveOnce(
 		return Reservation{}, err
 	}
 	res := Reservation{at: now, estimate: charged, taken: !whole, anchor: anchor}
+	if policy.tokenRateOn() {
+		res.covered = estimate.Tokens - charged.Tokens
+	}
 	if len(holds) > 0 {
 		res.funding = &funding{holds: holds, windows: !whole}
 	}
@@ -327,7 +349,49 @@ func deleteScopeCounters(ctx context.Context, tx database.Queryer, key string, w
 	return err
 }
 
-func reserveCounters(
+// tokenRateOn is whether the per-minute token limit is in force, and so
+// whether a reservation put anything in its bucket to give back.
+func (p Policy) tokenRateOn() bool { return p.TPM != nil && *p.TPM > 0 }
+
+// reserveRate charges the two burst limits: one request, and tokens. They are
+// held to every request the server admits, whoever ends up paying for it —
+// they protect the providers behind the server, which a bonus bar does not
+// change.
+func reserveRate(ctx context.Context, tx database.Queryer, policy Policy, key string, tokens int64, now time.Time) error {
+	// The per-minute buckets are wall-clock, so they need no account anchor.
+	if policy.RPM != nil && *policy.RPM > 0 {
+		counter, err := bump(ctx, tx, key, WindowRPM, bucketStart(WindowRPM, now, 0), 1, 0, 0)
+		if err != nil {
+			return err
+		}
+		if counter.Requests > *policy.RPM {
+			return &ExceededError{
+				Window: WindowRPM, Dimension: "requests",
+				Used: float64(counter.Requests), Limit: float64(*policy.RPM),
+				ResetsAt: bucketEnd(WindowRPM, now, 0),
+			}
+		}
+	}
+
+	if policy.TPM != nil && *policy.TPM > 0 {
+		counter, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, now, 0), 0, tokens, 0)
+		if err != nil {
+			return err
+		}
+		if counter.Tokens > *policy.TPM {
+			return &ExceededError{
+				Window: WindowTPM, Dimension: "tokens",
+				Used: float64(counter.Tokens), Limit: float64(*policy.TPM),
+				ResetsAt: bucketEnd(WindowTPM, now, 0),
+			}
+		}
+	}
+	return nil
+}
+
+// reserveAllowance charges the three allowance windows what the request costs
+// them: the whole estimate, or the part of it the bonus bars did not pay.
+func reserveAllowance(
 	ctx context.Context,
 	tx database.Queryer,
 	policy Policy,
@@ -336,35 +400,6 @@ func reserveCounters(
 	estimate Estimate,
 	now time.Time,
 ) error {
-	if policy.RPM != nil && *policy.RPM > 0 {
-		counter, err := bump(ctx, tx, key, WindowRPM, bucketStart(WindowRPM, now, anchor), 1, 0, 0)
-		if err != nil {
-			return err
-		}
-		if counter.Requests > *policy.RPM {
-			return &ExceededError{
-				Window: WindowRPM, Dimension: "requests",
-				Used: float64(counter.Requests), Limit: float64(*policy.RPM),
-				ResetsAt: bucketEnd(WindowRPM, now, anchor),
-			}
-		}
-	}
-
-	if policy.TPM != nil && *policy.TPM > 0 {
-		counter, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, now, anchor),
-			0, estimate.Tokens, 0)
-		if err != nil {
-			return err
-		}
-		if counter.Tokens > *policy.TPM {
-			return &ExceededError{
-				Window: WindowTPM, Dimension: "tokens",
-				Used: float64(counter.Tokens), Limit: float64(*policy.TPM),
-				ResetsAt: bucketEnd(WindowTPM, now, anchor),
-			}
-		}
-	}
-
 	for _, window := range AllowanceWindows {
 		limits := policy.Windows[window]
 		if !limits.isOn() {
@@ -423,6 +458,9 @@ type Reservation struct {
 	// bucket the reservation came out of. The windows are per account now,
 	// so the moment alone no longer identifies one.
 	anchor int64
+	// The tokens of the request that bonus bars paid for, which the allowance
+	// windows do not carry and the per-minute window does.
+	covered int64
 	// What bonus bars paid of it, if any. A pointer, so that releasing the
 	// reservation and settling the turn — which happen in either order, on
 	// copies of this value — see each other.
@@ -449,7 +487,14 @@ func (s *Service) Settle(ctx context.Context, account user.User, reserved, actua
 }
 
 func (s *Service) settleWindows(ctx context.Context, account user.User, tokens int64, credits float64) error {
-	if tokens == 0 && credits == 0 {
+	return s.settleWindowsMinute(ctx, account, tokens, credits, 0)
+}
+
+// settleWindowsMinute is settleWindows for a turn bonus bars paid part of:
+// minuteOnly are the tokens they paid for, which count toward the per-minute
+// limit and toward no allowance window.
+func (s *Service) settleWindowsMinute(ctx context.Context, account user.User, tokens int64, credits float64, minuteOnly int64) error {
+	if tokens == 0 && credits == 0 && minuteOnly == 0 {
 		return nil
 	}
 	now := time.Now()
@@ -462,6 +507,11 @@ func (s *Service) settleWindows(ctx context.Context, account user.User, tokens i
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
 			if _, err := bump(ctx, tx, key, window, bucketStart(window, now, anchor), 0, tokens, credits); err != nil {
+				return err
+			}
+		}
+		if minuteOnly != 0 {
+			if _, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, now, 0), 0, minuteOnly, 0); err != nil {
 				return err
 			}
 		}
@@ -492,12 +542,15 @@ func (s *Service) SettleTurn(ctx context.Context, account user.User, actual Esti
 		return err
 	}
 	// The rest of the cost, and the same share of the tokens. A turn that cost
-	// nothing in credits was not paid for by a bar and counts in full.
+	// nothing in credits was not paid for by a bar and counts in full. The
+	// tokens a bar paid for still count toward the per-minute limit, which is
+	// what the reservation charged it.
 	share := 1.0
 	if actual.Credits > 1e-9 {
 		share = math.Max(0, 1-covered/actual.Credits)
 	}
-	return s.settleWindows(ctx, account, int64(math.Round(float64(actual.Tokens)*share)), math.Max(0, actual.Credits-covered))
+	carried := int64(math.Round(float64(actual.Tokens) * share))
+	return s.settleWindowsMinute(ctx, account, carried, math.Max(0, actual.Credits-covered), actual.Tokens-carried)
 }
 
 // Release gives a reservation back — for a turn that never ran, and for the
@@ -510,13 +563,19 @@ func (s *Service) SettleTurn(ctx context.Context, account user.User, actual Esti
 func (s *Service) Release(ctx context.Context, userID string, reserved Reservation) error {
 	f := reserved.funding
 	windows := reserved.taken && !reserved.estimate.empty()
-	if !windows && f == nil {
+	if !windows && reserved.covered == 0 && f == nil {
 		return nil
 	}
 	key := scopeKey(userID)
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
 		if f != nil {
 			if err := s.bonus.Refund(ctx, tx, f.holds); err != nil {
+				return err
+			}
+		}
+		if reserved.covered > 0 {
+			if _, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, reserved.at, 0),
+				0, -reserved.covered, 0); err != nil {
 				return err
 			}
 		}

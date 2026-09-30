@@ -85,6 +85,28 @@ func (f *bonusFixture) barUsed(t *testing.T, bar bonus.Bar) float64 {
 
 func within(a, b float64) bool { d := a - b; return d < 1e-6 && d > -1e-6 }
 
+// rates replaces the instance policy with burst limits beside the window, for
+// the tests that hold a bar to them.
+func (f *bonusFixture) rates(t *testing.T, rpm, tpm *int64, windowCredits float64) {
+	t.Helper()
+	if _, err := f.svc.Policies().Save(context.Background(), Policy{Scope: ScopeGlobal, RPM: rpm, TPM: tpm, Windows: map[Window]Limits{
+		Window5H: limits(true, nil, nil, ptrFloat(windowCredits)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// minute is what the per-minute counters hold for an account.
+func (f *bonusFixture) minute(t *testing.T, u user.User, window Window) (requests, tokens int64) {
+	t.Helper()
+	if err := f.db.QueryRow(context.Background(),
+		`SELECT COALESCE(SUM(requests), 0), COALESCE(SUM(tokens), 0) FROM usage_counters WHERE scope_key = ? AND window_kind = ?`,
+		scopeKey(u.ID), string(window)).Scan(&requests, &tokens); err != nil {
+		t.Fatal(err)
+	}
+	return requests, tokens
+}
+
 // A bar that is switched on pays first, and what it pays does not count
 // against the window: that is what makes it worth switching on.
 func TestABarSwitchedOnPaysBeforeTheWindowAndTheWindowIsUntouched(t *testing.T) {
@@ -316,5 +338,176 @@ func TestConcurrentRequestsNeverOverSpendABarOrTheWindow(t *testing.T) {
 	}
 	if ok != 20 {
 		t.Fatalf("%d of 40 requests were paid for; the bar and the window can cover exactly 20", ok)
+	}
+}
+
+// A bar is more allowance, not a way round the burst limits that protect the
+// providers behind the server: a request it pays for whole still counts.
+func TestABarDoesNotTakeARequestOutOfTheRequestRate(t *testing.T) {
+	f := newBonusFixture(t, 10)
+	f.rates(t, ptrInt(2), nil, 10)
+	a := f.person(t, "alice")
+	bar := f.bar(t, "gift", bonus.KindBonus, bonus.ModeOn, 100, a)
+	ctx := WithLedger(context.Background())
+
+	for i := 0; i < 2; i++ {
+		if _, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Tokens: 10, Credits: 1}, nil); err != nil {
+			t.Fatalf("request %d: %v", i+1, err)
+		}
+	}
+	_, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Tokens: 10, Credits: 1}, nil)
+	exceeded, ok := AsExceeded(err)
+	if !ok || exceeded.Window != WindowRPM {
+		t.Fatalf("the third request in a minute was not refused by the rate: %v", err)
+	}
+	// What was refused took nothing from the bar, and the window never saw any of it.
+	if !within(f.barUsed(t, bar), 2) || f.windowCredits(t, a) != 0 {
+		t.Fatalf("bar used %v, window %v", f.barUsed(t, bar), f.windowCredits(t, a))
+	}
+}
+
+func TestABarPaidRequestCountsTowardTheTokenRateAndGivesItBack(t *testing.T) {
+	for _, settleFirst := range []bool{false, true} {
+		f := newBonusFixture(t, 10)
+		f.rates(t, nil, ptrInt(1000), 10)
+		a := f.person(t, "alice")
+		bar := f.bar(t, "gift", bonus.KindBonus, bonus.ModeOn, 100, a)
+		ctx := WithLedger(context.Background())
+
+		res, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Tokens: 600, Credits: 1}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, tokens := f.minute(t, a, WindowTPM); tokens != 600 {
+			t.Fatalf("settleFirst=%v: the minute holds %d tokens for a request the bar paid", settleFirst, tokens)
+		}
+		// Room for 400 more, not 1000: the bar paid for the first request and
+		// the limit still counted it.
+		_, err = f.svc.ReserveFor(WithLedger(context.Background()), a, "m", Estimate{Tokens: 600, Credits: 1}, nil)
+		if exceeded, ok := AsExceeded(err); !ok || exceeded.Window != WindowTPM {
+			t.Fatalf("settleFirst=%v: the token rate did not refuse it: %v", settleFirst, err)
+		}
+		if !within(f.barUsed(t, bar), 1) {
+			t.Fatalf("settleFirst=%v: a refused request left %v in the bar", settleFirst, f.barUsed(t, bar))
+		}
+
+		// The turn used 300 tokens of the 600 held: whichever of the two comes
+		// first, the minute ends holding what was used, and the window nothing.
+		if settleFirst {
+			_ = f.svc.SettleTurn(ctx, a, Estimate{Tokens: 300, Credits: 0.5})
+			_ = f.svc.Release(ctx, a.ID, res)
+		} else {
+			_ = f.svc.Release(ctx, a.ID, res)
+			_ = f.svc.SettleTurn(ctx, a, Estimate{Tokens: 300, Credits: 0.5})
+		}
+		if _, tokens := f.minute(t, a, WindowTPM); tokens != 300 {
+			t.Fatalf("settleFirst=%v: the minute holds %d tokens, want the 300 used", settleFirst, tokens)
+		}
+		if !within(f.barUsed(t, bar), 0.5) || f.windowCredits(t, a) != 0 {
+			t.Fatalf("settleFirst=%v: bar used %v, window %v", settleFirst, f.barUsed(t, bar), f.windowCredits(t, a))
+		}
+	}
+}
+
+// A bar that only pays part of a request leaves the rest to the window, and
+// the per-minute limit still counts all of it.
+func TestAPartlyPaidRequestCountsWholeTowardTheTokenRate(t *testing.T) {
+	f := newBonusFixture(t, 10)
+	f.rates(t, nil, ptrInt(10000), 10)
+	a := f.person(t, "alice")
+	f.bar(t, "small", bonus.KindBonus, bonus.ModeOn, 1, a)
+	ctx := WithLedger(context.Background())
+
+	res, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Tokens: 800, Credits: 4}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, tokens := f.minute(t, a, WindowTPM); tokens != 800 {
+		t.Fatalf("the minute holds %d tokens of an 800-token request", tokens)
+	}
+	if err := f.svc.Release(ctx, a.ID, res); err != nil {
+		t.Fatal(err)
+	}
+	if _, tokens := f.minute(t, a, WindowTPM); tokens != 0 {
+		t.Fatalf("released, the minute still holds %d tokens", tokens)
+	}
+}
+
+// The same holds for a bar kept back and spent when the window is empty: it
+// pays for the request, it does not exempt it from the rate.
+func TestAFallbackBarIsHeldToTheRequestRateToo(t *testing.T) {
+	f := newBonusFixture(t, 5)
+	f.rates(t, ptrInt(3), nil, 5)
+	a := f.person(t, "alice")
+	off := f.bar(t, "kept back", bonus.KindBonus, bonus.ModeOff, 100, a)
+	ctx := WithLedger(context.Background())
+
+	if _, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Credits: 5}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Credits: 1}, nil); err != nil {
+			t.Fatalf("fallback request %d: %v", i+1, err)
+		}
+	}
+	if requests, _ := f.minute(t, a, WindowRPM); requests != 3 {
+		t.Fatalf("the minute counted %d requests of three", requests)
+	}
+	_, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Credits: 1}, nil)
+	if exceeded, ok := AsExceeded(err); !ok || exceeded.Window != WindowRPM {
+		t.Fatalf("the fourth request in a minute was not refused by the rate: %v", err)
+	}
+	if !within(f.barUsed(t, off), 2) {
+		t.Fatalf("the bar carries %v, want the two requests that ran", f.barUsed(t, off))
+	}
+}
+
+func TestAFallbackRequestGivesItsTokensBackToTheMinuteToo(t *testing.T) {
+	f := newBonusFixture(t, 5)
+	f.rates(t, nil, ptrInt(10000), 5)
+	a := f.person(t, "alice")
+	f.bar(t, "kept back", bonus.KindBonus, bonus.ModeOff, 100, a)
+	ctx := WithLedger(context.Background())
+	if _, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Tokens: 100, Credits: 5}, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, base := f.minute(t, a, WindowTPM)
+
+	res, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Tokens: 400, Credits: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, tokens := f.minute(t, a, WindowTPM); tokens != base+400 {
+		t.Fatalf("the minute holds %d, want %d", tokens, base+400)
+	}
+	if err := f.svc.Release(ctx, a.ID, res); err != nil {
+		t.Fatal(err)
+	}
+	if _, tokens := f.minute(t, a, WindowTPM); tokens != base {
+		t.Fatalf("released, the minute holds %d, want %d", tokens, base)
+	}
+}
+
+// With no token limit in force nothing was put in the minute, so nothing is
+// given back: a release must not write a negative figure where there was none.
+func TestReleasingABarPaidRequestWritesNothingWhereNoTokenLimitApplies(t *testing.T) {
+	f := newBonusFixture(t, 10)
+	a := f.person(t, "alice")
+	f.bar(t, "gift", bonus.KindBonus, bonus.ModeOn, 100, a)
+	ctx := WithLedger(context.Background())
+	res, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Tokens: 500, Credits: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Release(ctx, a.ID, res); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := f.db.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM usage_counters WHERE scope_key = ? AND window_kind = ?`, scopeKey(a.ID), string(WindowTPM)).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("a per-minute row was written for an account with no token limit: %d", rows)
 	}
 }
