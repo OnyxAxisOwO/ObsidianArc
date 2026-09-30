@@ -359,6 +359,13 @@ installs, updates and removes).
   open — a transaction — is rolled back when it returns. A backend that
   crashes or times out fails that call, and a guard that cannot answer
   refuses. Do not add a way for one call to leave something for the next.
+- **What a backend chose to say and what it failed to say are kept apart.**
+  An `*arc.Error` reaches the client as written, whatever its status — a 503
+  because the service it stands in front of is down is an answer. What the SDK
+  worded itself (a panic, an error that was not an `*arc.Error`) is marked
+  `Internal` and answered with the server's own 500, its text going to the log:
+  it may be a database password. Do not widen what is shown by looking at the
+  message, and do not narrow it by clamping statuses.
 - **The package is never a file.** It is bytes in the database, so a backup
   carries it and a second instance finds it; nothing is unpacked, and a
   removed package leaves nothing behind but the data the operator chose to
