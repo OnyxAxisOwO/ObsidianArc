@@ -181,20 +181,25 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			}
 			var a struct {
 				UserID string         `json:"user_id"`
+				All    bool           `json:"all"`
 				Kind   string         `json:"kind"`
 				Params map[string]any `json:"params"`
 				Link   string         `json:"link"`
 				TX     bool           `json:"tx"`
 			}
-			if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" || a.Kind == "" {
-				return nil, badArg("notify.push needs a user_id and a kind")
+			if err := json.Unmarshal(raw, &a); err != nil || a.Kind == "" || (a.UserID == "" && !a.All) {
+				return nil, badArg("notify.push needs a kind, and a user_id or all")
 			}
 			q, err := m.queryer(st, a.TX)
 			if err != nil {
 				return nil, err
 			}
+			audience := notify.AudienceUser
+			if a.All {
+				audience = notify.AudienceAll
+			}
 			return nil, m.host.Notify.Push(c.Ctx, q, notify.Notification{
-				Audience: notify.AudienceUser, UserID: a.UserID, Kind: a.Kind, Params: a.Params, Link: a.Link,
+				Audience: audience, UserID: a.UserID, Kind: a.Kind, Params: a.Params, Link: a.Link,
 			})
 
 		case "security.record":

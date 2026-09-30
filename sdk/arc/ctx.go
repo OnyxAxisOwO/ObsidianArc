@@ -62,7 +62,10 @@ func (c *Ctx) RevokeSessions(userID string) error {
 // Notification is an entry in an account's inbox. Kind and Params are what
 // the plugin's browser half words it from.
 type Notification struct {
+	// The account it is for. Empty with All set means everybody.
 	UserID string
+	// Everybody, including accounts made later: one entry every inbox shows.
+	All    bool
 	Kind   string
 	Params map[string]any
 	// A path inside the application the entry links to; may be empty.
@@ -74,7 +77,7 @@ type Notification struct {
 // notification can be exactly as durable as the change it announces.
 func (c *Ctx) Notify(n Notification) error {
 	_, err := hostCall("notify.push", map[string]any{
-		"user_id": n.UserID, "kind": n.Kind, "params": n.Params, "link": n.Link, "tx": c.inTx,
+		"user_id": n.UserID, "all": n.All, "kind": n.Kind, "params": n.Params, "link": n.Link, "tx": c.inTx,
 	})
 	return err
 }
