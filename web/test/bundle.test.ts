@@ -161,9 +161,5 @@ describe('code splitting invariants in production bundle', () => {
       // nowhere in the entry but the registry's list of loaders.
       expect(content).toContain(`name:"${name}"`);
     }
-    // The strings the two plugins brought used to be in the entry.
-    expect(indexContent).not.toContain('/api/bot/departure');
-    expect(indexContent).not.toContain('boot.js');
-    expect(indexContent).not.toContain('/api/admin/departures');
   });
 });

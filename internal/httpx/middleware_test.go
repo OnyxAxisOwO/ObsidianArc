@@ -55,13 +55,13 @@ func TestTheChallengeOriginIsAllowedOnlyWhileAChallengeIsConfigured(t *testing.T
 	}
 }
 
-// An in-page service a plugin runs — the self-hosted risk control one is the
+// An in-page service a plugin runs — a self-hosted CAPTCHA one, say, is the
 // example — is a script, a telemetry connection and the images its puzzles
 // are drawn from, with no frame of its own, which is the one difference from
 // the Turnstile widening above. Its exception follows the same rule: granted
 // only while the service is configured, gone the moment it is not.
 func TestAPluginOriginIsAllowedOnlyWhileItsServiceIsConfigured(t *testing.T) {
-	const origin = "https://risk.example.com"
+	const origin = "https://service.example.com"
 
 	originNow := ""
 	handler := SecurityHeaders(false, nil, nil, func() []string { return []string{originNow} })(
@@ -91,7 +91,7 @@ func TestAPluginOriginIsAllowedOnlyWhileItsServiceIsConfigured(t *testing.T) {
 	// Nothing of the service's renders in a frame, so the policy still has
 	// no frame-src to hand out.
 	if strings.Contains(granted, "frame-src") {
-		t.Errorf("the risk origin opened a frame exception: %s", granted)
+		t.Errorf("the service origin opened a frame exception: %s", granted)
 	}
 
 	originNow = ""
@@ -104,11 +104,11 @@ func TestAPluginOriginIsAllowedOnlyWhileItsServiceIsConfigured(t *testing.T) {
 // the two exceptions neither overwrite nor duplicate each other.
 func TestBothChallengeOriginsCompose(t *testing.T) {
 	const turnstile = "https://challenges.cloudflare.com"
-	const risk = "https://risk.example.com"
+	const service = "https://service.example.com"
 
 	handler := SecurityHeaders(false, nil,
 		func() bool { return true },
-		func() []string { return []string{risk} },
+		func() []string { return []string{service} },
 	)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	recorder := httptest.NewRecorder()
@@ -116,9 +116,9 @@ func TestBothChallengeOriginsCompose(t *testing.T) {
 	granted := recorder.Header().Get("Content-Security-Policy")
 
 	for _, directive := range []string{
-		"script-src 'self' " + turnstile + " " + risk,
-		"connect-src 'self' " + turnstile + " " + risk,
-		"img-src 'self' data: blob: " + risk,
+		"script-src 'self' " + turnstile + " " + service,
+		"connect-src 'self' " + turnstile + " " + service,
+		"img-src 'self' data: blob: " + service,
 		"frame-src " + turnstile,
 	} {
 		if !strings.Contains(granted, directive) {

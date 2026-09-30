@@ -1,6 +1,7 @@
 # Build output
 /bin/
 /dist/
+/server
 
 # Runtime state: the database, the generated secret key, uploads.
 /data/

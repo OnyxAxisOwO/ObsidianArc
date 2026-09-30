@@ -9,7 +9,6 @@ import * as backupApi from '../src/api/backup';
 import { ApiError } from '../src/api/client';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
-import { beginRiskControl } from '../src/plugins/riskcontrol/sdk';
 import { safeNext } from '../src/lib/next';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import AuthView from '../src/views/AuthView.vue';
@@ -19,11 +18,26 @@ import TwoFactorEnrolView from '../src/views/TwoFactorEnrolView.vue';
 import VerifyView from '../src/views/VerifyView.vue';
 import AccountSection from '../src/views/settings/AccountSection.vue';
 import { installPlugins } from '../src/plugins/registry';
-import qqgroup from '../src/plugins/qqgroup/qqgroup.plugin';
-import riskcontrol from '../src/plugins/riskcontrol/riskcontrol.plugin';
+import type { ArcPlugin } from '../src/plugins/types';
 
-// The QQ-group plugin's field, as the forms label and refuse it.
-const qqField = qqgroup.fields!['qq']!;
+// A plugin's field, as the forms label and refuse it.
+// A stand-in for a plugin that adds a numeric account field.
+const badgePlugin: ArcPlugin = {
+  name: 'fixture',
+  fields: {
+    badge: {
+      label: () => 'Badge',
+      optionalLabel: () => 'Badge (optional)',
+      maxLength: 15,
+      inputMode: 'numeric',
+      pattern: /^[1-9][0-9]{4,14}$/,
+      invalid: () => 'Badge must be 5–15 digits.',
+      required: () => 'A badge is required to register here.',
+      taken: () => 'That badge is already registered.',
+    },
+  },
+};
+const badgeField = badgePlugin.fields!['badge']!;
 
 // Signing in with an account from elsewhere, and letting somebody else's site
 // sign people in with an account here. Two features pointing opposite ways,
@@ -364,142 +378,6 @@ describe('registering with an invite code', () => {
   });
 });
 
-// The self-hosted risk control service stands in front of the same form.
-// The SDK is fake here — a real boot.js would be somebody else's server on
-// the page, and the loader resolves to whatever window.RiskControl already
-// holds — so what is under test is the wiring: init on the way in, a token
-// on the way out, and a refusal that never reaches the server.
-describe('the self-hosted risk control service', () => {
-  let init: ReturnType<typeof vi.fn>;
-  let execute: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    route.path = '/register';
-    init = vi.fn();
-    execute = vi.fn(async () => 'rc-token-1');
-    (window as unknown as { RiskControl: unknown }).RiskControl = { init, execute };
-  });
-
-  afterEach(() => {
-    delete (window as unknown as { RiskControl?: unknown }).RiskControl;
-  });
-
-  // An instance running the plugin, as /api/site would describe it.
-  function riskSite(): void {
-    const block = { base_url: 'https://risk.example.com', site: 'arc-test', on_signup: true, on_login: true };
-    site.value = { ...siteInfo.value, plugins: { riskcontrol: block } };
-    installPlugins([riskcontrol], { riskcontrol: block });
-  }
-
-  it('inits the SDK when the card opens and submits the token it mints', async () => {
-    riskSite();
-    const register = vi.spyOn(authApi, 'register').mockResolvedValue({ user: NEW_ACCOUNT });
-    await mount(AuthView, { mode: 'register' });
-
-    type(fieldInput(t('username')), 'newperson');
-    type(fieldInput(t('password')), 'a-strong-password');
-    button(host, t('createAccount')).click();
-    await settle();
-
-    expect(init).toHaveBeenCalledWith({ base: 'https://risk.example.com', site: 'arc-test' });
-    expect(execute).toHaveBeenCalledWith('register', expect.any(HTMLFormElement));
-    expect(register).toHaveBeenCalledWith(expect.objectContaining({ guards: { riskcontrol: 'rc-token-1' } }));
-  });
-
-  it('ends the attempt with its own words when the service refuses this browser', async () => {
-    riskSite();
-    execute = vi.fn(async () => { throw new Error('rejected'); });
-    (window as unknown as { RiskControl: unknown }).RiskControl = { init, execute };
-    const register = vi.spyOn(authApi, 'register');
-    await mount(AuthView, { mode: 'register' });
-
-    type(fieldInput(t('username')), 'newperson');
-    type(fieldInput(t('password')), 'a-strong-password');
-    button(host, t('createAccount')).click();
-    await settle();
-
-    expect(register).not.toHaveBeenCalled();
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(riskcontrol.guards![0]!.failed());
-  });
-
-  it('asks for nothing on an instance whose plugin block says the door is open', async () => {
-    const block = { base_url: '', site: '', on_signup: false, on_login: false };
-    site.value = { ...siteInfo.value, plugins: { riskcontrol: block } };
-    installPlugins([riskcontrol], { riskcontrol: block });
-    const register = vi.spyOn(authApi, 'register').mockResolvedValue({ user: NEW_ACCOUNT });
-    await mount(AuthView, { mode: 'register' });
-
-    type(fieldInput(t('username')), 'newperson');
-    type(fieldInput(t('password')), 'a-strong-password');
-    button(host, t('createAccount')).click();
-    await settle();
-
-    expect(init).not.toHaveBeenCalled();
-    expect(execute).not.toHaveBeenCalled();
-    expect(register).toHaveBeenCalledWith(expect.objectContaining({ guards: {} }));
-  });
-
-  it('notifies the reader specifically when devtools guard locked the page', async () => {
-    riskSite();
-    execute = vi.fn(async () => { throw new Error('devtools-locked'); });
-    (window as unknown as { RiskControl: unknown }).RiskControl = { init, execute };
-    await mount(AuthView, { mode: 'register' });
-
-    type(fieldInput(t('username')), 'newperson');
-    type(fieldInput(t('password')), 'a-strong-password');
-    button(host, t('createAccount')).click();
-    await settle();
-
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe('Developer tools detected. Please close developer tools and refresh.');
-  });
-
-  it('loads boot.js with siteKey header and sets __RC_BOOT_BASE__', async () => {
-    delete (window as unknown as { RiskControl?: unknown }).RiskControl;
-    delete (window as unknown as { __RC_BOOT_BASE__?: unknown }).__RC_BOOT_BASE__;
-
-    const fakeInit = vi.fn();
-    const fakeExecute = vi.fn(async () => 'token-from-fetch');
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url.endsWith('/boot.js')) {
-        expect(init?.headers).toEqual(expect.objectContaining({ siteKey: 'arc-test' }));
-        expect(init?.cache).toBe('no-store');
-        (window as unknown as { RiskControl: unknown }).RiskControl = { init: fakeInit, execute: fakeExecute };
-        return {
-          ok: true,
-          text: async () => 'window.RiskControl = { init: () => {}, execute: () => {} };',
-        } as unknown as Response;
-      }
-      return { ok: false } as unknown as Response;
-    });
-
-    const api = await beginRiskControl('https://risk.example.com', 'arc-test');
-    expect(fetchSpy).toHaveBeenCalled();
-    expect(window.__RC_BOOT_BASE__).toBe('https://risk.example.com');
-    expect(api).toBeDefined();
-    expect(fakeInit).toHaveBeenCalledWith({ base: 'https://risk.example.com', site: 'arc-test' });
-
-    fetchSpy.mockRestore();
-  });
-
-  it('stands in front of sign-in too, and names the action it is checking', async () => {
-    riskSite();
-    route.path = '/login';
-    const login = vi.spyOn(authApi, 'login').mockResolvedValue({ user: NEW_ACCOUNT });
-    await mount(AuthView, { mode: 'login' });
-
-    type(fieldInput(t('usernameOrEmail')), 'somebody');
-    type(fieldInput(t('password')), 'a-strong-password');
-    button(host, t('signIn')).click();
-    await settle();
-
-    expect(execute).toHaveBeenCalledWith('login', expect.any(HTMLFormElement));
-    expect(login).toHaveBeenCalledWith('somebody', 'a-strong-password', '', { riskcontrol: 'rc-token-1' });
-  });
-});
-
-// The same rule applies to the other door an account gets created through:
-// a provider sign-in the server has no way to finish without asking first.
 describe('finishing a sign-up with an invite code', () => {
   const pending = {
     provider: 'github', provider_name: 'GitHub', login: 'octocat', email: '',
@@ -768,15 +646,15 @@ describe('finishing a sign-up the provider could not', () => {
     provider_name: 'GitHub',
     login: 'octocat',
     email: '',
-    needs: { fields: ['qq'], email: false },
+    needs: { fields: ['badge'], email: false },
     email_domains: [] as string[],
     verify_email: false,
   };
 
-  // What is missing here is the QQ-group plugin's field: an instance that
-  // requires a QQ number, which no provider has to give.
+  // What is missing here is a plugin's field: an instance that
+  // requires a badge number, which no provider has to give.
   beforeEach(() => {
-    installPlugins([qqgroup]);
+    installPlugins([badgePlugin]);
     route.path = '/oauth/complete';
     Object.defineProperty(window, 'location', {
       configurable: true, writable: true, value: { href: '' },
@@ -792,7 +670,7 @@ describe('finishing a sign-up the provider could not', () => {
     expect(host.querySelector('.oa-signup-who')!.textContent).toContain('octocat');
 
     const labels = [...host.querySelectorAll('.oa-field-label')].map((node) => node.textContent);
-    expect(labels).toContain(qqField.label());
+    expect(labels).toContain(badgeField.label());
     expect(labels).not.toContain(t('email'));
   });
 
@@ -806,7 +684,7 @@ describe('finishing a sign-up the provider could not', () => {
 
     const labels = [...host.querySelectorAll('.oa-field-label')].map((node) => node.textContent);
     expect(labels).toContain(t('email'));
-    expect(labels).not.toContain(qqField.label());
+    expect(labels).not.toContain(badgeField.label());
     // And which addresses would be accepted, before it is typed rather than
     // after it is refused.
     expect(host.textContent).toContain(t('emailAccepted', { domains: 'company.com' }));
@@ -818,11 +696,11 @@ describe('finishing a sign-up the provider could not', () => {
       .mockResolvedValue({ redirect: '/oauth/consent?request=abc' });
     await mount(CompleteSignupView);
 
-    type(fieldInput(qqField.label()), '87654321');
+    type(fieldInput(badgeField.label()), '87654321');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
 
-    expect(complete).toHaveBeenCalledWith({ username: 'octocat', fields: { qq: '87654321' }, email: '', inviteCode: '' });
+    expect(complete).toHaveBeenCalledWith({ username: 'octocat', fields: { badge: '87654321' }, email: '', inviteCode: '' });
     // A whole navigation, not a route change: the session cookie has just been
     // set and the application reads the account once, at boot.
     expect(window.location.href).toBe('/oauth/consent?request=abc');
@@ -836,29 +714,29 @@ describe('finishing a sign-up the provider could not', () => {
     button(host, t('signupCompleteSubmit')).click();
     await settle();
     expect(complete).not.toHaveBeenCalled();
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(qqField.required());
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(badgeField.required());
 
-    type(fieldInput(qqField.label()), 'nonsense');
+    type(fieldInput(badgeField.label()), 'nonsense');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
     expect(complete).not.toHaveBeenCalled();
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(qqField.invalid());
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(badgeField.invalid());
   });
 
   it('words the server\'s refusal in the reader\'s own language', async () => {
     const { ApiError } = await import('../src/api/client');
     vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue(pending);
     vi.spyOn(oauthApi, 'completeSignup')
-      .mockRejectedValue(new ApiError(409, 'qq_taken', 'That QQ number is already registered.', {}));
+      .mockRejectedValue(new ApiError(409, 'badge_taken', 'That badge is already registered.', {}));
     await mount(CompleteSignupView);
 
-    type(fieldInput(qqField.label()), '87654321');
+    type(fieldInput(badgeField.label()), '87654321');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
 
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(qqField.taken());
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(badgeField.taken());
     // Still on the form, with what was typed still in it.
-    expect(fieldInput(qqField.label()).value).toBe('87654321');
+    expect(fieldInput(badgeField.label()).value).toBe('87654321');
   });
 
   it('allows customizing username and validates username format', async () => {
@@ -872,7 +750,7 @@ describe('finishing a sign-up the provider could not', () => {
 
     // Clear username and submit -> requires username
     type(fieldInput(t('username')), '');
-    type(fieldInput(qqField.label()), '87654321');
+    type(fieldInput(badgeField.label()), '87654321');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
     expect(complete).not.toHaveBeenCalled();
@@ -891,7 +769,7 @@ describe('finishing a sign-up the provider could not', () => {
     await settle();
     expect(complete).toHaveBeenCalledWith({
       username: 'my_custom_name',
-      fields: { qq: '87654321' },
+      fields: { badge: '87654321' },
       email: '',
       inviteCode: '',
     });
@@ -907,7 +785,7 @@ describe('finishing a sign-up the provider could not', () => {
     expect(pwdInput).not.toBeNull();
 
     // Short password -> rejected
-    type(fieldInput(qqField.label()), '87654321');
+    type(fieldInput(badgeField.label()), '87654321');
     type(pwdInput, '123');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
@@ -921,7 +799,7 @@ describe('finishing a sign-up the provider could not', () => {
     expect(complete).toHaveBeenCalledWith({
       username: 'octocat',
       password: 'securepassword123',
-      fields: { qq: '87654321' },
+      fields: { badge: '87654321' },
       email: '',
       inviteCode: '',
     });
@@ -939,7 +817,7 @@ describe('finishing a sign-up the provider could not', () => {
     const pwdInput = fieldInput(t('password'));
     expect(pwdInput).not.toBeNull();
 
-    type(fieldInput(qqField.label()), '87654321');
+    type(fieldInput(badgeField.label()), '87654321');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
     expect(complete).not.toHaveBeenCalled();

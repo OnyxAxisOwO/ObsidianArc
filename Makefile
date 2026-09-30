@@ -25,7 +25,7 @@ GOFLAGS := -trimpath
 # deployment runs, so `make deploy` keeps serving what it served before the
 # features became plugins. `PLUGINS=` builds the core alone, which is also
 # what a bare `go build ./cmd/server` produces.
-PLUGINS ?= qqgroup riskcontrol cardgrant
+PLUGINS ?= cardgrant
 PLUGIN_TAGS := $(strip $(foreach p,$(PLUGINS),plugin_$(p)))
 TAGS := -tags "$(PLUGIN_TAGS)"
 # Every plugin in the tree, for vetting the tagged files whatever PLUGINS is.

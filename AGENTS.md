@@ -48,8 +48,7 @@ conversation the first four were.
 ## Plugins: what only some instances want
 
 The core is a general AI chat site. A feature that only one kind of instance
-needs — the QQ number and group departures of a site run around a QQ group,
-one operator's self-hosted risk-control service — is a **plugin** under
+needs — mass distribution of reset cards, say — is a **plugin** under
 `plugins/<name>/`, compiled in by the `plugin_<name>` build tag
 (`cmd/server/plugin_<name>.go`) and chosen by `PLUGINS` in the Makefile and
 the Dockerfile. `docs/architecture/plugins.md` is the operator's view; this
@@ -80,13 +79,13 @@ is the rule set.
   asks the gate the same way; the gate is per server, never a package
   global, because the tests build many servers in one process.
 - **A plugin with tables ships its undo.** `Purge()` returns the SQL an
-  uninstall-with-data runs (`plugins/qqgroup/purge` is the shape: indexes
+  uninstall-with-data runs (`plugins/cardgrant/purge` is the shape: indexes
   before columns, because SQLite refuses to drop an indexed column), and the
   manager forgets the migrations afterwards so a reinstall runs them again.
 - **Migrations keep their versions when they move.** A migration that leaves
   the core for a plugin keeps its file name, so a database that ran it as
   core does not run it twice; a plugin's new migrations are
-  `<name>_NNNN_*.sql`. `migrations_test.go` in `plugins/qqgroup` is the shape.
+  `<name>_NNNN_*.sql`. `plugins/cardgrant` is the shape.
 - **Settings keys, columns and tables keep their names** for the same reason.
 - **The browser half declares; the core draws.** `web/src/plugins/<name>/<name>.plugin.ts`
   describes fields, guards, settings cards, lists, account actions and its
@@ -318,7 +317,7 @@ for a week. Do not write anything into the README that claims otherwise.
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 22.9 MB binary with the default plugins (22.7 MB core alone); 221.71
+Current: 22.8 MB binary with the default plugin (22.8 MB core alone); 222.72
 kB on the wire to open the chat, against a target of 135. The target used to be 80 and the figure used to be 59.5;
 adopting Vue moved both, and `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.

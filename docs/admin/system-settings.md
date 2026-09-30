@@ -18,9 +18,6 @@
 | `registration.require_email` | `false` | 注册是否要求邮箱 |
 | `registration.verify_email` | `false` | 是否要求邮件验证；开启后新账户必须提供邮箱，需先配置并测试邮件服务 |
 | `registration.email_domains` | 空 | 允许注册的邮箱域名 |
-| `registration.qq_requirement` | `off` | QQ 关闭、选填或必填（`qqgroup` 插件） |
-| `bot.webhook_token` | 空 | QQ 机器人 Webhook 的 Bearer 令牌；留空表示关闭接口，见[退群处理](./departures)（`qqgroup` 插件） |
-| `bot.departure_mode` | `disable` | 机器人上报的退群事件未指定方式时的默认档位（`qqgroup` 插件） |
 
 注册频率、Turnstile 和模型审核见[注册与安全](../features/security)。
 

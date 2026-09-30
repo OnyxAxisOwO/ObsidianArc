@@ -45,7 +45,7 @@ ARG TARGETARCH
 # default matches the Makefile's, so a server that still builds its own image
 # with `docker compose up --build` gets the binary `make deploy` would ship.
 # Empty builds the core alone.
-ARG PLUGINS="qqgroup riskcontrol cardgrant"
+ARG PLUGINS="cardgrant"
 
 # CGO_ENABLED=0 because the SQLite driver is pure Go: that is what allows a
 # scratch-like final image and a binary that runs anywhere.

@@ -12,7 +12,7 @@
 // everyone who existed when it was created, and 'admins' reaches every
 // administrator or — when permission is set — only the ones holding that
 // grant. A fan-out table would need a write per recipient and a delete per
-// departure; this needs neither.
+// removal; this needs neither.
 package notify
 
 import (

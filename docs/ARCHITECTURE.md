@@ -219,35 +219,21 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 22.86 MB with the default plugins, 22.75 MB core alone (19.16 / 19.04 MB `-tags nosqlite`, Linux amd64) |
-| Frontend, on the wire | < 135 kB | 221.71 kB to open the chat (183.74 JS + 37.97 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 22.80 MB with the default plugin, 22.77 MB core alone (19.10 / 19.06 MB `-tags nosqlite`, Linux amd64) |
+| Frontend, on the wire | < 135 kB | 222.72 kB to open the chat (183.94 JS + 38.78 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
-Remeasured on 2026-09-29 (UTC), after plugins became installable from the
-backoffice. The first paint is 221.71 kB (183.74 kB JS + 37.97 kB CSS), up
-0.99 kB: the plugins screen's English strings, which the core dictionary
-keeps in the entry like every other, the puzzle glyph, and the session's
-re-read of `/api/site` after a plugin changes state. The screen itself and
-the generic page a plugin's own sub-page is drawn with are in the backoffice
-chunk, now 102.96 kB; the Chinese dictionary is 44.06 kB, `qqgroup` 3.85 kB
-and `riskcontrol` 2.29 kB. The binary measures 22,864,135 bytes with both
-plugins and 22,749,447 with none (19,157,255 and 19,042,567 with
-`-tags nosqlite`; Go 1.27.0) — the plugin manager, its routes and its console
-commands are core, since a build without any plugin still has the screen
-that says so.
-
-Remeasured earlier on 2026-09-29 (UTC), after the QQ-group and risk-control features
-moved out of the core into plugins (`plugins/qqgroup`, `plugins/riskcontrol`;
-see `docs/architecture/plugins.md`). The first paint is 220.72 kB (182.76 kB JS
-+ 37.96 kB CSS), down 0.58 kB from the tree before the move: the two features'
-screens and strings left the entry, and the plugin registry and the
-declarative renderers that replace them arrived in it. Each plugin is a chunk
-of its own, fetched only by an instance whose server names it — 3.73 kB for
-`qqgroup`, 2.28 kB for `riskcontrol`. The backoffice chunk is 99.94 kB and the
-Chinese dictionary 43.22 kB. The Linux amd64 binary measures 22,659,232 bytes
-with both plugins and 22,552,736 with none (18,948,256 and 18,841,760 with
-`-tags nosqlite`; Go 1.27.0). Gzip figures are Vite's, in decimal kB.
+Remeasured on 2026-09-30 (UTC), on the tree with plugins installable from the
+backoffice and the site-specific plugins taken out of the repository. The first
+paint is 222.72 kB (183.94 kB JS + 38.78 kB CSS). The backoffice chunk is
+106.49 kB, the Chinese dictionary 44.33 kB, and the one plugin the repository
+carries, `cardgrant`, 2.12 kB, fetched only by an instance whose server names
+it. The plugin manager, its routes and its console commands are core, since a
+build without any plugin still has the screen that says so. The Linux amd64
+binary measures 22,802,695 bytes with `cardgrant` and 22,769,927 with none
+(19,099,911 and 19,063,047 with `-tags nosqlite`; Go 1.27.0). Gzip figures are
+Vite's, in decimal kB.
 
 Remeasured on 2026-09-26 (UTC), after adding both email verification methods,
 administrator SMTP and UserCheck configuration, and registration screening.

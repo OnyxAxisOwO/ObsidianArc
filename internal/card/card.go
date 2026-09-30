@@ -490,9 +490,9 @@ func (s *Store) Revoke(ctx context.Context, userID, cardID string) error {
 
 // RevokeAvailable takes back up to max of an account's unused, unexpired
 // cards — soonest-expiring first — and reports how many it actually took.
-// This is the claw-back spelling: a departure takes from the inviter what an
-// invitee's reward paid, without knowing which rows those were, and cards
-// already spent are gone rather than taken from anywhere else.
+// This is the claw-back spelling: it takes from an account what a reward
+// paid, without knowing which rows those were, and cards already spent are
+// gone rather than taken from anywhere else.
 //
 // The read-then-delete is safe against a concurrent spend the same way
 // Revoke is: used_at = 0 stays in the DELETE's predicate, so a card that
