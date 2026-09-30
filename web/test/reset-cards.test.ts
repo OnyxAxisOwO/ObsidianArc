@@ -102,6 +102,9 @@ function routes(cards: ReturnType<typeof card>[]): (url: string) => unknown {
     if (url === '/api/usage/me') return { unlimited: false, windows: [] };
     if (url === '/api/usage/me/history') return { totals: emptyTotals, turns: [] };
     if (url === '/api/usage/cards') return { cards };
+    // Read by the same panel, and not what these tests are about.
+    if (url === '/api/bonus') return { bars: [] };
+    if (url === '/api/checkin') return { enabled: false };
     throw new Error(`unexpected ${url}`);
   };
 }
@@ -185,7 +188,8 @@ describe('held reset cards', () => {
 
     mountPanel();
     await settle();
-    expect(get).toHaveBeenCalledTimes(3);
+    // The allowance, the history, the cards, the bonus bars and the check-in.
+    expect(get).toHaveBeenCalledTimes(5);
     get.mockClear();
 
     const refresh = [...document.querySelectorAll<HTMLButtonElement>('button')]
@@ -198,5 +202,8 @@ describe('held reset cards', () => {
     expect(asked).toContain('/api/usage/me');
     expect(asked).toContain('/api/usage/me/history');
     expect(asked).toContain('/api/usage/cards');
+    // The bars beside the allowance move with it, or the button looks like it
+    // refreshed half a screen.
+    expect(asked).toContain('/api/bonus');
   });
 });

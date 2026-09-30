@@ -78,6 +78,13 @@ function fill(name: string, paths: readonly string[]): OaIcon {
 }
 
 export const IconMenu = draw('Menu', ['M3 6h18', 'M3 12h18', 'M3 18h18']);
+export const IconGift = draw('Gift', [
+  'M20 12v10H4V12',
+  'M2 7h20v5H2z',
+  'M12 22V7',
+  'M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7Z',
+  'M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7Z',
+]);
 export const IconPlus = draw('Plus', ['M12 5v14', 'M5 12h14']);
 export const IconClose = draw('X', ['M18 6L6 18', 'M6 6l12 12']);
 export const IconBell = draw('Bell', [

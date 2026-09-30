@@ -6262,3 +6262,57 @@
 }
 
 
+
+/* Bonus bars and the check-in month, on the usage screen. They borrow the
+   allowance's meter and the cards' rows; what is theirs is the spacing between
+   bars and the little calendar. */
+.oa-bonus-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.oa-bonus-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oa-bonus-bar.is-spent .oa-meter-fill {
+  opacity: 0.4;
+}
+
+.oa-bonus-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oa-checkin-days {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(26px, 1fr));
+  gap: 4px;
+  margin: 8px 0 4px;
+}
+
+.oa-checkin-day {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ai-text-secondary);
+  background: var(--ai-state-hover);
+}
+
+.oa-checkin-day.on {
+  color: var(--ai-primary-text);
+  background: var(--ai-primary);
+}
+
+.oa-checkin-day.today:not(.on) {
+  box-shadow: inset 0 0 0 1.5px var(--ai-primary);
+  color: var(--ai-text);
+}

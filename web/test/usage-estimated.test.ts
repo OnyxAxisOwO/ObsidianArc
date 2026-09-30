@@ -46,6 +46,8 @@ it('shows the mark on the turns the provider never counted', async () => {
   vi.mocked(api.get).mockImplementation(async (url: string) => {
     if (url === '/api/usage/me') return { unlimited: true, windows: [] };
     if (url === '/api/usage/cards') return { cards: [] };
+    if (url === '/api/bonus') return { bars: [] };
+    if (url === '/api/checkin') return { enabled: false };
     return {
       totals: { requests: 2, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0, credits: 0, errors: 0 },
       turns: [turn('counted', 1500, false), turn('guessed', 2500, true)],

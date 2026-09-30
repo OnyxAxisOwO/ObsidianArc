@@ -25,6 +25,7 @@ const sidebar = [
     { text: '服务商与模型', link: '/admin/providers-and-models' },
     { text: '用户与分组', link: '/admin/users-and-groups' },
     { text: '兑换码', link: '/admin/codes' },
+    { text: '赠金与签到', link: '/admin/bonus-and-checkin' },
     { text: '邀请码', link: '/admin/invites' },
     { text: '可用性管理', link: '/admin/availability' },
     { text: '系统设置', link: '/admin/system-settings' },
@@ -48,6 +49,7 @@ const sidebar = [
     { text: '前端开发', link: '/architecture/frontend' },
     { text: '插件（编译进二进制）', link: '/architecture/plugins' },
     { text: '插件包（拖拽安装）', link: '/architecture/plugin-packages' },
+    { text: '赠金与签到（设计）', link: '/architecture/bonus-and-checkin' },
   ] },
 ];
 

@@ -16,7 +16,7 @@ import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t } from '@/composables/useI18n';
 import {
-  IconArchive, IconChart, IconChevron, IconCpu, IconFile, IconHome, IconKey, IconLayers, IconLock,
+  IconArchive, IconChart, IconChevron, IconCpu, IconFile, IconGift, IconHome, IconKey, IconLayers, IconLock,
   IconMenu, IconMessage, IconPulse, IconSend, IconServer, IconSliders, IconSpark,
   IconPuzzle, IconTrophy,
   IconUsers,
@@ -42,6 +42,7 @@ import AdminGroups from './AdminGroups.vue';
 import AdminProviders from './AdminProviders.vue';
 import AdminModels from './AdminModels.vue';
 import AdminAvailability from './AdminAvailability.vue';
+import AdminBonus from './AdminBonus.vue';
 import AdminLeaderboard from './AdminLeaderboard.vue';
 import AdminUsage from './AdminUsage.vue';
 import AdminResources from './AdminResources.vue';
@@ -66,6 +67,7 @@ const PAGES: AdminPageSpec[] = [
   { slug: 'models', label: 'navModels', icon: IconSpark, component: markRaw(AdminModels) },
   { slug: 'availability', label: 'navAvailability', icon: IconPulse, component: markRaw(AdminAvailability) },
   { slug: 'usage', label: 'navUsage', icon: IconChart, component: markRaw(AdminUsage) },
+  { slug: 'bonus', label: 'navBonus', icon: IconGift, component: markRaw(AdminBonus) },
   { slug: 'leaderboard', label: 'navLeaderboard', icon: IconTrophy, component: markRaw(AdminLeaderboard) },
   { slug: 'resources', label: 'navResources', icon: IconCpu, component: markRaw(AdminResources) },
   { slug: 'codes', label: 'navCodes', icon: IconKey, component: markRaw(AdminCodes) },

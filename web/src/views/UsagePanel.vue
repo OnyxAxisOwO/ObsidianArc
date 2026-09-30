@@ -12,6 +12,8 @@ import { useRouter } from 'vue-router';
 import { useDocumentVisibility, useIntervalFn } from '@vueuse/core';
 import { ApiError, api } from '@/api/client';
 import { fetchUsage, type UsageSummary } from '@/api/usage';
+import OaBonusBars from '@/components/OaBonusBars.vue';
+import OaCheckin from '@/components/OaCheckin.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
@@ -93,6 +95,12 @@ const redeemChallengeError = ref('');
 const redeemGuard = ref<InstanceType<typeof OaTurnstile> | null>(null);
 const pendingRedeemCode = ref('');
 const spending = ref('');
+const bonusKey = ref(0);
+
+function afterCheckin(): void {
+  bonusKey.value += 1;
+  void loadCards();
+}
 
 const enforced = computed(() => summary.value?.windows.filter((window) => window.enforced) ?? []);
 const unlimited = computed(() => !!summary.value && (summary.value.unlimited || !enforced.value.length));
@@ -256,6 +264,7 @@ async function refreshAllowance(): Promise<void> {
   if (refreshingAllowance.value) return;
   refreshingAllowance.value = true;
   try {
+    bonusKey.value += 1;
     await Promise.all([loadAllowance(), loadHistory(), loadCards()]);
   } finally {
     refreshingAllowance.value = false;
@@ -290,11 +299,12 @@ async function loadCards(): Promise<void> {
   }
 }
 
-// The same three reads without the error handling: a failed refresh leaves
+// The same reads without the error handling: a failed refresh leaves
 // what is on screen, because the last good figures are a better answer than
 // an error where they were. Success clears the errors, so a panel that
 // opened while the server was unreachable recovers on its own.
 function refreshQuietly(): void {
+  bonusKey.value += 1;
   fetchUsage().then((next) => {
     summary.value = next;
     allowanceError.value = '';
@@ -395,7 +405,7 @@ onMounted(() => {
   void loadCards();
 });
 
-// Not while the tab is hidden — three endpoints every fifteen seconds for a
+// Not while the tab is hidden — five endpoints every fifteen seconds for a
 // panel nobody is looking at — and at once when it is shown again, the rule
 // the backoffice's own live pages already keep.
 const visibility = useDocumentVisibility();
@@ -454,6 +464,11 @@ watch(visibility, (now, was) => {
         size="large"
       />
     </div>
+
+    <OaBonusBars :refresh-key="bonusKey" />
+    <!-- A check-in can hand out cards and bonus, so it tells the two above and
+         below it to read again. -->
+    <OaCheckin @changed="afterCheckin" />
 
     <div>
       <!-- The plus is beside the heading rather than under the list, because

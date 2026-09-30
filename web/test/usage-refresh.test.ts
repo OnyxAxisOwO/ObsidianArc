@@ -89,6 +89,8 @@ function panelRoutes(history: unknown, cards: unknown = { cards: [] }): (url: st
     if (url === '/api/usage/me') return { unlimited: false, windows: [] };
     if (url === '/api/usage/me/history') return history;
     if (url === '/api/usage/cards') return cards;
+    if (url === '/api/bonus') return { bars: [] };
+    if (url === '/api/checkin') return { enabled: false };
     throw new Error(`unexpected ${url}`);
   };
 }
@@ -115,13 +117,15 @@ describe('UsagePanel', () => {
     mountPanel();
     await advance(0);
 
-    expect(get).toHaveBeenCalledTimes(3);
+    // The allowance, the history, the cards, the bonus bars and the check-in
+    // (which is read once: it changes when its own button is pressed).
+    expect(get).toHaveBeenCalledTimes(5);
     expect(document.body.textContent).toContain('1');
 
     requests = 7;
     await advance(REFRESH_MS);
 
-    expect(get).toHaveBeenCalledTimes(6);
+    expect(get).toHaveBeenCalledTimes(9);
     expect(document.body.textContent).toContain('7');
   });
 

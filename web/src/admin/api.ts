@@ -170,6 +170,71 @@ export interface ModelGroupGrant {
   access: 'use' | 'view';
 }
 
+/** A bonus bar: the rules; what accounts hold in it is grants. */
+export interface BonusBarRow {
+  id: string;
+  name: string;
+  description: string;
+  kind: 'bonus' | 'reserve';
+  toggle_mode: 'user' | 'on' | 'off';
+  default_on: boolean;
+  show_total: boolean;
+  model_ids: string[];
+  default_expires_at: number;
+  active: boolean;
+  created_at: number;
+  granted: number;
+  used: number;
+  holders: number;
+}
+
+export interface BonusGrantRow {
+  id: string;
+  bar_id: string;
+  user_id: string;
+  username: string;
+  amount: number;
+  used: number;
+  expires_at: number;
+  source: string;
+  note: string;
+  created_at: number;
+}
+
+export interface BonusGrantBody {
+  all?: boolean;
+  group_id?: string;
+  usernames?: string[];
+  amount: number;
+  days?: number;
+  note?: string;
+}
+
+export interface CheckinRewardBody {
+  kind: '' | 'bonus' | 'card';
+  bar_id?: string;
+  amount?: number;
+  valid_days?: number;
+  name?: string;
+  windows?: string[];
+  cards?: number;
+}
+
+export interface CheckinRuleBody {
+  id: string;
+  title: string;
+  basis: 'streak' | 'month';
+  days: number;
+  reward: CheckinRewardBody;
+}
+
+export interface CheckinSettings {
+  enabled: boolean;
+  timezone: string;
+  daily: CheckinRewardBody;
+  rules: CheckinRuleBody[];
+}
+
 export interface AdminModel {
   id: string;
   provider_id: string;
@@ -901,6 +966,22 @@ export const adminApi = {
       '/api/admin/models/import', { models }),
   updateModel: (id: string, body: Record<string, unknown>) =>
     api.patch<{ model: AdminModel }>(`/api/admin/models/${id}`, body),
+  bonusBars: () => api.get<{ bars: BonusBarRow[] }>('/api/admin/bonus/bars'),
+  saveBonusBar: (id: string | null, body: Record<string, unknown>) =>
+    id
+      ? api.put<{ bar: BonusBarRow }>(`/api/admin/bonus/bars/${encodeURIComponent(id)}`, body)
+      : api.post<{ bar: BonusBarRow }>('/api/admin/bonus/bars', body),
+  deleteBonusBar: (id: string) => api.delete<void>(`/api/admin/bonus/bars/${encodeURIComponent(id)}`),
+  grantBonus: (id: string, body: BonusGrantBody) =>
+    api.post<{ granted: number; amount: number; expires_at: number }>(
+      `/api/admin/bonus/bars/${encodeURIComponent(id)}/grants`, body),
+  bonusGrants: (id: string, offset = 0) =>
+    api.get<{ grants: BonusGrantRow[]; total: number }>(
+      `/api/admin/bonus/bars/${encodeURIComponent(id)}/grants?limit=20&offset=${offset}`),
+  revokeBonusGrant: (id: string) =>
+    api.delete<{ revoked: number }>(`/api/admin/bonus/grants/${encodeURIComponent(id)}`),
+  checkinSettings: () => api.get<CheckinSettings>('/api/admin/checkin'),
+  saveCheckinSettings: (body: CheckinSettings) => api.put<CheckinSettings>('/api/admin/checkin', body),
   codes: () => api.get<{ codes: RedemptionCode[] }>('/api/admin/codes'),
   createCode: (body: Record<string, unknown>) =>
     api.post<{ codes: RedemptionCode[] }>('/api/admin/codes', body),

@@ -215,3 +215,16 @@
 .oa-plugin-fingerprint dt { font-weight: 600; }
 .oa-plugin-fingerprint dd { margin: 0; overflow-wrap: anywhere; }
 .oa-control-actions .oa-switch-field { padding: 0; border-bottom: 0; }
+
+/* What checking in earns, on the bonus page: the reward given for every
+   check-in and each milestone's, which is the same editor. A milestone is one
+   filled block inside the card, so where it ends does not depend on reading the
+   labels; the block is the container tone, a step under the card, so the
+   fields in it still stand out on their own fill. */
+.oa-reward-editor { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; align-items: end; }
+.oa-checkin-rule { display: flex; flex-direction: column; gap: 16px; padding: 16px; border-radius: 14px; background: var(--ai-surface-container); }
+.oa-checkin-rule-basis { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px; align-items: end; }
+.oa-checkin-rule-foot { display: flex; justify-content: flex-end; }
+@container workbench (max-width: 600px) {
+  .oa-checkin-rule-basis { grid-template-columns: minmax(0, 1fr); }
+}

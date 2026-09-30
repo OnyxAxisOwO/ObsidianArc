@@ -30,7 +30,7 @@ group edit Default --terminal false
 
 ## 它能做什么
 
-终端覆盖全部 83 个后台管理接口，以及账户页面能调用的 70 个用户端接口中凡是「设置」或「更改」的那部分，共 151 条命令。按功能分组：
+终端覆盖全部 106 个后台管理接口，以及账户页面能调用的 79 个用户端接口中凡是「设置」或「更改」的那部分，共 179 条命令。按功能分组：
 
 | 分组 | 命令 | 适用对象 |
 | --- | --- | --- |
@@ -46,7 +46,8 @@ group edit Default --terminal false
 | 对话 (Chat) | `chat list` `show` `rename` `edit` `delete` `delete-all` `archive` `unarchive` | 所有用户 |
 | 项目 (Projects) | `project list` `show` `create` `edit` `delete` | 所有用户 |
 | 生图 (Images) | `image list` `delete` | 所有用户 |
-| 额度与卡密 (Credit) | `credit show` `history` `cards` `use` `redeem` | 所有用户 |
+| 赠金 (Bonus) | `bonus list` `create` `edit` `delete` `grant` `grants` `revoke` · `checkin config` `config set`，见[赠金与签到](./bonus-and-checkin) | 管理员 (`usage`) |
+| 额度与卡密 (Credit) | `credit show` `history` `cards` `use` `redeem` `bonus` `bonus switch` · `checkin` `checkin now` `checkin claim` | 所有用户 |
 | API 密钥 (Keys) | `key list` `create` `edit` `delete` | 所有用户 |
 | 偏好与资料 (Profile) | `pref list` `set` `wallpaper-clear` · `me show` `edit` `passwd` `verify` `invite` `invite regenerate` `invite claim` · `2fa status` `setup` `enable` `disable` `recovery` `backoffice` · `oauth list` `unlink` | 所有用户 |
 | 备份与恢复 (Backup) | `backup export` `backup import` | 所有用户 |

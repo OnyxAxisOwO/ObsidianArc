@@ -8,13 +8,19 @@
 
 import { t, tn } from '@/composables/useI18n';
 import {
-  IconBell, IconInfo, IconLayers, IconLock, IconMessage, IconPulse, IconRefresh, IconShield, IconUser,
+  IconBell, IconGift, IconInfo, IconLayers, IconLock, IconMessage, IconPulse, IconRefresh, IconShield, IconUser,
   IconUsers, type OaIcon,
 } from '@/icons';
 import type { Notification } from '@/api/notifications';
 import type { StringKey } from '@/i18n';
 import { describeUserAgent } from '@/lib/ua';
+import { absoluteTime } from '@/lib/format';
 import { pluginNotification } from '@/plugins/registry';
+
+/** A credit amount as it is shown: two places at most. */
+function credits(value: unknown): string {
+  return String(Math.round(Number(value ?? 0) * 100) / 100);
+}
 
 export interface NotificationText {
   title: string;
@@ -81,6 +87,20 @@ export function describeNotification(n: Notification): NotificationText {
         title: t('notifyTitleCardsGranted'),
         body: tn(count(params['count']), 'notifyBodyCardsGrantedOne', 'notifyBodyCardsGrantedOther'),
         icon: IconLayers,
+      };
+    case 'bonus_granted':
+      return {
+        title: t('notifyTitleBonusGranted'),
+        body: t('notifyBodyBonusGranted', { name: text(params['name']), amount: credits(params['amount']) }),
+        icon: IconGift,
+      };
+    case 'bonus_expiring':
+      return {
+        title: t('notifyTitleBonusExpiring'),
+        body: t('notifyBodyBonusExpiring', {
+          name: text(params['name']), amount: credits(params['amount']), when: absoluteTime(Number(params['expires_at'] ?? 0)),
+        }),
+        icon: IconGift,
       };
     case 'quota_reset':
       return { title: t('notifyTitleQuotaReset'), body: t('notifyBodyQuotaReset'), icon: IconRefresh };

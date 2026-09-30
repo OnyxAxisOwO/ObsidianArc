@@ -36,6 +36,23 @@ describe('describeNotification', () => {
       .toBe('An administrator changed something about your account.');
   });
 
+  it('names the bar and the amount of a bonus that arrived, to two places at most', () => {
+    const received = describeNotification(note('bonus_granted', { name: 'Launch gift', amount: 2.5 }));
+    expect(received.body).toBe('Launch gift: 2.5 credits');
+    expect(describeNotification(note('bonus_granted', { name: 'Gift', amount: 0.1 + 0.2 })).body).toBe('Gift: 0.3 credits');
+    // A param that never arrived reads as an empty name and no credit, never as a placeholder.
+    expect(describeNotification(note('bonus_granted', {})).body).not.toContain('{');
+  });
+
+  it('says what is about to lapse, in which bar, and when', () => {
+    const body = describeNotification(note('bonus_expiring', {
+      name: 'Launch gift', amount: 7, expires_at: Date.UTC(2031, 0, 15, 12),
+    })).body;
+    expect(body).toContain('7 credits in Launch gift expire');
+    expect(body).not.toContain('{');
+    expect(body).toMatch(/2031/);
+  });
+
   it('puts the held-back username in the title', () => {
     expect(describeNotification(note('signup_flagged', { username: 'mallory' })).title).toContain('mallory');
   });
