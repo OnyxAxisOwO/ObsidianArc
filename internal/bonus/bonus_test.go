@@ -394,3 +394,24 @@ func TestTheViewShowsAmountsOnlyWhereTheBarSaysSo(t *testing.T) {
 		}
 	}
 }
+
+// A person is told once that something is about to lapse, and only about what
+// they still have.
+func TestAnAccountIsToldOnceWhatIsAboutToExpire(t *testing.T) {
+	f := newFixture(t)
+	a := f.account(t, "alice")
+	bar := f.bar(t, Bar{Name: "gift", ToggleMode: ModeOn})
+	soon := time.Now().Add(48 * time.Hour).UnixMilli()
+	f.give(t, bar.ID, a.ID, 4, soon)
+	f.give(t, bar.ID, a.ID, 1, soon)
+	f.give(t, bar.ID, a.ID, 9, time.Now().Add(30*24*time.Hour).UnixMilli()) // not soon
+	f.give(t, bar.ID, a.ID, 7, 0)                                           // never
+
+	got, err := f.store.TakeExpiring(context.Background(), 72*time.Hour)
+	if err != nil || len(got) != 1 || !near(got[0].Remaining, 5) || got[0].BarName != "gift" {
+		t.Fatalf("expiring: %+v %v", got, err)
+	}
+	if again, _ := f.store.TakeExpiring(context.Background(), 72*time.Hour); len(again) != 0 {
+		t.Fatalf("told twice: %+v", again)
+	}
+}

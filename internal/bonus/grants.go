@@ -243,3 +243,62 @@ func (s *Store) SetChoice(ctx context.Context, userID, barID string, enabled boo
 	}
 	return nil
 }
+
+// Expiring is what an account is about to lose in one bar.
+type Expiring struct {
+	UserID    string
+	BarName   string
+	Remaining float64
+	ExpiresAt int64
+}
+
+// TakeExpiring returns what is unspent in grants that expire within the given
+// time and whose holders have not been told, one entry per account and bar, and
+// marks those grants as told. Marking comes first: a notice lost is better
+// than the same one sent every ten minutes.
+func (s *Store) TakeExpiring(ctx context.Context, within time.Duration) ([]Expiring, error) {
+	now := time.Now().UnixMilli()
+	until := now + within.Milliseconds()
+	var out []Expiring
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT g.id, g.user_id, b.name, g.amount - g.used, g.expires_at
+			FROM bonus_grants g JOIN bonus_bars b ON b.id = g.bar_id
+			WHERE b.active = ? AND g.warned_at = 0 AND g.amount - g.used > 0 AND g.expires_at > ? AND g.expires_at <= ?
+			ORDER BY g.expires_at`, true, now, until)
+		if err != nil {
+			return fmt.Errorf("bonus: find expiring: %w", err)
+		}
+		var ids []string
+		index := map[string]int{}
+		for rows.Next() {
+			var (
+				id string
+				e  Expiring
+			)
+			if err := rows.Scan(&id, &e.UserID, &e.BarName, &e.Remaining, &e.ExpiresAt); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+			key := e.UserID + "|" + e.BarName
+			if i, ok := index[key]; ok {
+				out[i].Remaining += e.Remaining
+				continue
+			}
+			index[key] = len(out)
+			out = append(out, e)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, id := range ids {
+			if _, err := tx.Exec(ctx, `UPDATE bonus_grants SET warned_at = ? WHERE id = ?`, now, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return out, err
+}

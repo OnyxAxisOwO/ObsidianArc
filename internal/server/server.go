@@ -85,6 +85,7 @@ type Server struct {
 	requests       *reqlog.Store
 	idp            *idp.Store
 	notify         *notify.Store
+	bonus          *bonus.Store
 	invites        *invite.Store
 	instanceBackup *systembackup.Service
 	health         *health.Checker
@@ -1337,6 +1338,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		requests:       requestLog,
 		idp:            idpStore,
 		notify:         notifyStore,
+		bonus:          bonusStore,
 		invites:        invites,
 		instanceBackup: instanceBackup,
 		consoleAPI:     consoleAPI,
@@ -1503,6 +1505,21 @@ func (s *Server) sweep(ctx context.Context) {
 	if s.notify != nil {
 		if _, err := s.notify.Prune(sweepCtx, time.Now().Add(-30*24*time.Hour)); err != nil {
 			slog.ErrorContext(sweepCtx, "could not prune notifications", "error", err)
+		}
+	}
+	// Bonus a person is about to lose is worth a line in the bell, once.
+	if s.notify != nil && s.bonus != nil {
+		expiring, err := s.bonus.TakeExpiring(sweepCtx, 3*24*time.Hour)
+		if err != nil {
+			slog.ErrorContext(sweepCtx, "could not look for expiring bonus", "error", err)
+		}
+		for _, e := range expiring {
+			if err := s.notify.Push(sweepCtx, nil, notify.Notification{
+				Audience: notify.AudienceUser, UserID: e.UserID, Kind: "bonus_expiring", Link: "/usage",
+				Params: map[string]any{"name": e.BarName, "amount": e.Remaining, "expires_at": e.ExpiresAt},
+			}); err != nil {
+				slog.ErrorContext(sweepCtx, "could not tell an account its bonus is expiring", "error", err, "user", e.UserID)
+			}
 		}
 	}
 	// Invite rewards waiting on something no request announces — a signup
