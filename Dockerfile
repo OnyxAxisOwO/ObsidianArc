@@ -70,7 +70,8 @@ USER nonroot:nonroot
 EXPOSE 8080
 
 ENV OBSIDIAN_ADDR=:8080 \
-    OBSIDIAN_DATA_DIR=/data
+    OBSIDIAN_DATA_DIR=/data \
+    OBSIDIAN_PLUGIN_DIR=/usr/local/share/obsidian-arc/plugins
 
 # No HEALTHCHECK: there is no shell or curl in the image to run one, and an
 # orchestrator should probe /api/health itself rather than have the container

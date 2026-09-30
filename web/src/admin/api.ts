@@ -663,7 +663,7 @@ export interface AdminBackupInput {
   retention_days?: number;
 }
 
-/** Where a compiled-in plugin stands on this instance. */
+/** Where a plugin stands on this instance. Only a compiled-in one is ever `available`. */
 export type PluginState = 'available' | 'enabled' | 'disabled';
 
 export interface PluginText {
@@ -685,6 +685,17 @@ export interface AdminPlugin {
     license?: string;
   };
   installed: { version?: string; at?: number; by?: string; updated_at?: number; updated_by?: string };
+  /** "builtin" is compiled into the binary; "package" was installed from an archive. */
+  kind: 'builtin' | 'package';
+  /** What a package asked for, and was granted. */
+  permissions: string[];
+  sha256?: string;
+  size?: number;
+  /** "upload" for what an operator installed, "bundled" for what the deployment shipped. */
+  source?: 'upload' | 'bundled';
+  has_ui?: boolean;
+  /** Why an installed package is not running, when it is not. */
+  fault?: string;
   contributions: {
     settings: Array<{ key: string; default: string; secret?: boolean }>;
     fields: string[];
@@ -699,9 +710,47 @@ export interface AdminPlugin {
 }
 
 export interface PluginChange {
-  plugin: AdminPlugin;
+  /** Null when the change removed a package: there is nothing left to describe. */
+  plugin: AdminPlugin | null;
   plugins: AdminPlugin[];
   two_factor_required?: boolean;
+}
+
+/** One setting of a package, as its manifest describes it for the install dialog. */
+export interface PackageSetting {
+  key: string;
+  default?: string;
+  secret?: boolean;
+  enum?: string[];
+  pattern?: string;
+  initial?: boolean;
+  label?: Partial<PluginText>;
+  hint?: Partial<PluginText>;
+}
+
+/** What the server read out of an uploaded package: everything it asks for and says. */
+export interface PluginPreview {
+  /** Confirms it; the archive is held on the server for a while under this. */
+  token: string;
+  manifest: {
+    name: string;
+    version: string;
+    title: Partial<PluginText>;
+    description: Partial<PluginText>;
+    author?: string;
+    homepage?: string;
+    license?: string;
+    permissions?: string[];
+    settings?: PackageSetting[];
+    ui?: { module: string };
+    backend?: string;
+  };
+  sha256: string;
+  size: number;
+  action: 'install' | 'update' | 'unchanged';
+  existing?: { version: string; state: PluginState; source: string; sha256: string };
+  /** Things to know that are not reasons to refuse: "ui", "downgrade". */
+  warnings: string[];
 }
 
 export const adminApi = {
@@ -710,6 +759,16 @@ export const adminApi = {
     const body: Record<string, unknown> = { enable, settings };
     if (code) body['two_factor_code'] = code;
     return api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/install`, body);
+  },
+  previewPlugin: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.upload<{ preview: PluginPreview }>('/api/admin/plugins/preview', form);
+  },
+  installPluginPackage: (token: string, enable: boolean, settings: Record<string, string>, code?: string) => {
+    const body: Record<string, unknown> = { token, enable, settings };
+    if (code) body['two_factor_code'] = code;
+    return api.post<PluginChange & { did: 'install' | 'update' | 'adopt' }>('/api/admin/plugins/install-package', body);
   },
   enablePlugin: (name: string) =>
     api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/enable`, {}),

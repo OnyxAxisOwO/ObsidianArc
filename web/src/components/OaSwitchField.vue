@@ -3,6 +3,7 @@ const props = defineProps<{
   modelValue: boolean;
   label: string;
   hint?: string | undefined;
+  disabled?: boolean;
 }>();
 
 const emit = defineEmits<{ (event: 'update:modelValue', value: boolean): void }>();
@@ -21,6 +22,7 @@ function onChange(event: Event): void {
       <input
         type="checkbox"
         :checked="props.modelValue"
+        :disabled="props.disabled"
         @change="onChange"
       >
       <span>{{ props.label }}</span>

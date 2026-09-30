@@ -9,8 +9,8 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import { describeNotification } from '../src/lib/notification-text';
 import { refusalText } from '../src/lib/refusal';
 import {
-  installPlugins, loadPlugins, pinnedProvider, pluginInviteeNote, pluginOAuthError, pluginRefusal, pluginStrings,
-  plugins,
+  installPlugins, loadPlugins, pinnedProvider, pluginHost, pluginInviteeNote, pluginOAuthError, pluginRefusal,
+  pluginStrings, plugins, setModuleImporter,
 } from '../src/plugins/registry';
 import type { ArcPlugin } from '../src/plugins/types';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
@@ -92,6 +92,7 @@ afterEach(() => {
   document.body.textContent = '';
   vi.restoreAllMocks();
   installPlugins([]);
+  setModuleImporter(null);
   forget();
   site.value = null;
 });
@@ -105,6 +106,53 @@ describe('loading plugins', () => {
   it('loads nothing for a server that names nothing', async () => {
     await loadPlugins(undefined);
     expect(plugins()).toEqual([]);
+  });
+});
+
+describe('a package\'s browser half', () => {
+  it('is fetched from the address the server gave and called with what the page lends it', async () => {
+    const seen: string[] = [];
+    let lent: ReturnType<typeof pluginHost> | undefined;
+    setModuleImporter(async (url) => {
+      seen.push(url);
+      return { default: (host: ReturnType<typeof pluginHost>) => { lent = host; return example; } };
+    });
+    await loadPlugins({ example: { _ui: '/api/x/example/web/ui.js?v=abc', mode: 'open' } });
+
+    expect(seen).toEqual(['/api/x/example/web/ui.js?v=abc']);
+    expect(plugins().map((plugin) => plugin.name)).toEqual(['example']);
+    // The block's other keys stay what they were: the page's own config for the plugin.
+    expect(lent!.api.get).toBe(api.get);
+    expect(typeof lent!.icons.IconUsers).toBe('function');
+    expect(lent!.format.absoluteTime(0)).toEqual(expect.any(String));
+    expect(lent!.language()).toBe('en');
+    const s = lent!.strings({ hello: 'Hello {name}' }, { hello: '你好 {name}' });
+    expect(s('hello', { name: 'Ada' })).toBe('Hello Ada');
+    await changeLanguage('zh');
+    expect(lent!.language()).toBe('zh');
+    expect(s('hello', { name: 'Ada' })).toBe('你好 Ada');
+  });
+
+  it('may be built asynchronously', async () => {
+    setModuleImporter(async () => ({ default: async () => example }));
+    await loadPlugins({ example: { _ui: '/x.js' } });
+    expect(plugins()).toHaveLength(1);
+  });
+
+  it('is left out, with the rest still loading, when it cannot be used', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setModuleImporter(async (url) => {
+      if (url.includes('broken')) throw new Error('404');
+      if (url.includes('notafunction')) return { default: { name: 'notafunction' } };
+      if (url.includes('impostor')) return { default: () => ({ name: 'somebodyelse' }) };
+      return { default: () => example };
+    });
+    await loadPlugins({
+      broken: { _ui: '/broken.js' }, notafunction: { _ui: '/notafunction.js' },
+      impostor: { _ui: '/impostor.js' }, example: { _ui: '/example.js' },
+    });
+    expect(plugins().map((plugin) => plugin.name)).toEqual(['example']);
+    expect(warn).toHaveBeenCalledTimes(3);
   });
 });
 

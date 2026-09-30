@@ -46,7 +46,8 @@ const sidebar = [
   { text: '开发与架构', collapsed: false, items: [
     { text: '架构设计', link: '/architecture/design-philosophy' },
     { text: '前端开发', link: '/architecture/frontend' },
-    { text: '插件', link: '/architecture/plugins' },
+    { text: '插件（编译进二进制）', link: '/architecture/plugins' },
+    { text: '插件包（拖拽安装）', link: '/architecture/plugin-packages' },
   ] },
 ];
 

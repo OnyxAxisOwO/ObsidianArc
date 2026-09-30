@@ -26,6 +26,11 @@ GOFLAGS := -trimpath
 # An instance that runs plugins builds from wherever they live, with them
 # laid over this tree, and passes PLUGINS itself.
 PLUGINS ?=
+# Plugin packages (*.arcx) the deployment ships with, as paths, named the way
+# `arcpack build` names them (<name>-<version>.arcx). They travel in the image
+# and are installed, updated or taken over at boot — see OBSIDIAN_PLUGIN_DIR.
+PACKAGES ?=
+PACKAGE_NAMES := $(foreach f,$(PACKAGES),$(firstword $(subst -, ,$(basename $(notdir $(f))))))
 PLUGIN_TAGS := $(strip $(foreach p,$(PLUGINS),plugin_$(p)))
 TAGS := -tags "$(PLUGIN_TAGS)"
 # Every plugin in the tree, for vetting the tagged files whatever PLUGINS is.
@@ -70,7 +75,7 @@ server:
 ## version: print the version this build would carry, and its plugins
 version:
 	@echo $(VERSION)
-	@echo plugins: $(if $(PLUGINS),$(PLUGINS),none)
+	@echo plugins: $(if $(strip $(PLUGINS) $(PACKAGE_NAMES)),$(PLUGINS) $(PACKAGE_NAMES),none)
 
 ## run: production-shaped local run against the embedded bundle
 run: server
@@ -132,9 +137,12 @@ package:
 	mkdir -p dist
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build $(GOFLAGS) $(TAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY) ./cmd/server
 	cp Dockerfile.release dist/Dockerfile
+	mkdir -p dist/plugins
+	touch dist/plugins/.keep
+	for f in $(PACKAGES); do cp "$$f" dist/plugins/; done
 	echo $(VERSION) > dist/VERSION
 	echo $(ARCH) > dist/ARCH
-	echo $(PLUGINS) > dist/PLUGINS
+	echo $(PLUGINS) $(PACKAGE_NAMES) > dist/PLUGINS
 
 ## deploy: release, then ship dist/ to DEPLOY_HOST and replace the Arc server
 ## container with one built from it — seconds on the server, not minutes

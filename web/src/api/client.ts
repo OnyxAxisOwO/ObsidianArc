@@ -37,6 +37,9 @@ export interface RequestOptions {
   signal?: AbortSignal;
   // Sent as JSON. Undefined means no body at all, which is what a GET wants.
   body?: unknown;
+  // Sent as a multipart form, for the one kind of request that carries a file.
+  // The browser writes the Content-Type, boundary included.
+  form?: FormData;
 }
 
 async function request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
@@ -48,7 +51,9 @@ async function request<T>(method: string, path: string, options: RequestOptions 
     headers: { Accept: 'application/json' },
   };
   if (options.signal) init.signal = options.signal;
-  if (options.body !== undefined) {
+  if (options.form) {
+    init.body = options.form;
+  } else if (options.body !== undefined) {
     init.headers = { ...init.headers, 'Content-Type': 'application/json' };
     init.body = JSON.stringify(options.body);
   }
@@ -107,6 +112,9 @@ export const api = {
   put: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     request<T>('PUT', path, { ...options, body }),
   delete: <T>(path: string, options?: RequestOptions) => request<T>('DELETE', path, options ?? {}),
+  /** POST a file, as a form. */
+  upload: <T>(path: string, form: FormData, options?: RequestOptions) =>
+    request<T>('POST', path, { ...options, form }),
 };
 
 export interface Health {

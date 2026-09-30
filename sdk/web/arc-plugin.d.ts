@@ -1,18 +1,8 @@
-// What a plugin's browser half can say to the core.
-//
-// Declarations, not components. A plugin describes its account fields, its
-// settings, its lists and its buttons, and the core draws them with the same
-// components it draws everything else with — so a plugin never imports from
-// the backoffice's chunk, never ships a second copy of a control, and cannot
-// drift from the interface language by bringing markup of its own. The one
-// thing a plugin does run is code the core cannot: a third party's SDK, a
-// request to the plugin's own endpoints.
-//
-// Every string is a function, resolved at render, for the reason PAGES in
-// views/admin/AdminPage.vue stores keys rather than text: the language is
-// not known when the module is evaluated. See pluginStrings in registry.ts.
+// The types of a plugin package's browser half — the declaration web/ui.js
+// returns, and the host it is handed. Kept beside the SDK so an author gets
+// completion without the server's source; the server's own copy is
+// web/src/plugins/types.ts, and a test there holds the two together.
 
-import type { OaIcon } from '@/icons';
 
 /** A sentence in the reader's language, resolved when it is drawn. */
 export type Text = () => string;
@@ -199,23 +189,42 @@ export interface NotificationText {
   body: string;
 }
 
+/** A drawing component from the page's icon set; pass it to a spec's `icon`. */
+export type OaIcon = (props: { size?: number }) => unknown;
+
+/** What the API client answers with when a request fails. */
+export declare class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly details: Record<string, unknown>;
+}
+
 /**
- * What the page lends a plugin that arrived as a package, when it calls the
- * default export of its web/ui.js. A compiled-in plugin imports what it needs;
- * a package cannot, because it is a file the page fetches at run time, so this
- * is the whole of what it is handed: the API client, the icons, the
- * dictionary helper, one formatter.
+ * What the page lends a plugin when it calls the default export of its
+ * web/ui.js: the whole of what a package's browser half can reach. Nothing
+ * else is importable — it is a file the page fetches at run time.
  */
 export interface PluginHost {
-  api: typeof import('@/api/client').api;
-  ApiError: typeof import('@/api/client').ApiError;
-  icons: typeof import('@/icons');
-  strings: typeof import('./registry').pluginStrings;
+  api: {
+    get<T>(path: string): Promise<T>;
+    post<T>(path: string, body?: unknown): Promise<T>;
+    put<T>(path: string, body?: unknown): Promise<T>;
+    patch<T>(path: string, body?: unknown): Promise<T>;
+    delete<T>(path: string): Promise<T>;
+  };
+  ApiError: typeof ApiError;
+  /** The icon set, by export name: `host.icons.IconUsers`. */
+  icons: Record<string, OaIcon>;
+  /** A two-language dictionary: `strings({ hello: 'Hello' }, { hello: '你好' })` returns a lookup. */
+  strings<const E extends Record<string, string>>(
+    en: E,
+    zh: Record<keyof E, string>,
+  ): (key: keyof E, vars?: Record<string, string | number>) => string;
   format: { absoluteTime(ms: number): string };
   language(): 'en' | 'zh';
 }
 
-/** The module a package's browser half is: a function from the host to the declaration. */
+/** What web/ui.js's default export is. */
 export type PluginFactory = (host: PluginHost) => ArcPlugin | Promise<ArcPlugin>;
 
 export interface ArcPlugin {

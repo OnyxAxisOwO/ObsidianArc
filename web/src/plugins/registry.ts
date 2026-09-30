@@ -11,8 +11,13 @@
 // page load, which is when the server's own answer changed for them too.
 
 import { shallowRef } from 'vue';
+import { api, ApiError } from '@/api/client';
 import { currentLanguage } from '@/composables/useI18n';
-import type { AccountFieldSpec, ArcPlugin, GuardSpec, NotificationText, PluginConfig, Text } from './types';
+import * as icons from '@/icons';
+import { absoluteTime } from '@/lib/format';
+import type {
+  AccountFieldSpec, ArcPlugin, GuardSpec, NotificationText, PluginConfig, PluginFactory, PluginHost, Text,
+} from './types';
 
 
 // Each plugin's entry is <name>/<name>.plugin.ts rather than index.ts, so the
@@ -25,15 +30,65 @@ const loaded = shallowRef<readonly ArcPlugin[]>([]);
 let configs: Record<string, PluginConfig> = {};
 
 /**
- * Fetches the named plugins' code. A name this build has no code for is
+ * How a package's module is fetched: a dynamic import of the address the
+ * server gave. A test replaces it, since the address is served by a server
+ * the test does not have.
+ */
+type ModuleImporter = (url: string) => Promise<{ default?: unknown }>;
+
+let importModule: ModuleImporter = (url) => import(/* @vite-ignore */ url);
+
+export function setModuleImporter(importer: ModuleImporter | null): void {
+  importModule = importer ?? ((url) => import(/* @vite-ignore */ url));
+}
+
+/** What a package's module is handed; see PluginHost. */
+export function pluginHost(): PluginHost {
+  return {
+    api, ApiError, icons, strings: pluginStrings, format: { absoluteTime },
+    language: () => (currentLanguage() === 'zh' ? 'zh' : 'en'),
+  };
+}
+
+/**
+ * Fetches the named plugins' code: a package's from the address its block
+ * carries (`_ui`), a compiled-in one's from this build. A name with neither is
  * skipped: a server newer than its frontend is not a reason to stop booting,
  * and the core works without any plugin's half.
  */
 export async function loadPlugins(blocks: Record<string, PluginConfig> | undefined): Promise<void> {
   configs = blocks ?? {};
   const names = Object.keys(configs).sort();
-  const found = await Promise.all(names.map(loadPluginModule));
+  const found = await Promise.all(names.map((name) => {
+    const ui = configs[name]?.['_ui'];
+    return typeof ui === 'string' && ui ? loadPackageModule(name, ui) : loadPluginModule(name);
+  }));
   loaded.value = found.filter((plugin): plugin is ArcPlugin => plugin !== null);
+}
+
+/**
+ * A package's browser half: its module fetched from the server, called with
+ * what the page lends it. A module that fails to load, is not a function, or
+ * answers with a declaration for another plugin is left out with a warning —
+ * the plugin's server half still works; only its screens are missing.
+ */
+export async function loadPackageModule(name: string, url: string): Promise<ArcPlugin | null> {
+  try {
+    const module = await importModule(url);
+    if (typeof module.default !== 'function') {
+      console.warn(`plugin ${name}: its browser half does not export a function`);
+      return null;
+    }
+    const plugin = await (module.default as PluginFactory)(pluginHost());
+    if (!plugin || plugin.name !== name) {
+      console.warn(`plugin ${name}: its browser half declares ${plugin?.name ?? 'nothing'}`);
+      return null;
+    }
+    return plugin;
+  } catch (failure) {
+    console.warn(`plugin ${name} could not be loaded`, failure);
+    return null;
+  }
 }
 
 /**

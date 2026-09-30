@@ -13,6 +13,8 @@
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --chown=nonroot:nonroot obsidian-arc /usr/local/bin/obsidian-arc
+# The plugin packages this deployment ships with; read at boot.
+COPY --chown=nonroot:nonroot plugins /usr/local/share/obsidian-arc/plugins
 
 WORKDIR /data
 VOLUME /data
@@ -21,6 +23,7 @@ USER nonroot:nonroot
 EXPOSE 8080
 
 ENV OBSIDIAN_ADDR=:8080 \
-    OBSIDIAN_DATA_DIR=/data
+    OBSIDIAN_DATA_DIR=/data \
+    OBSIDIAN_PLUGIN_DIR=/usr/local/share/obsidian-arc/plugins
 
 ENTRYPOINT ["/usr/local/bin/obsidian-arc"]

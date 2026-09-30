@@ -1,12 +1,14 @@
 <script setup lang="ts">
-// The plugins screen: every plugin this build carries, the way a browser's
-// extensions page lists them — installed or not, on or off, what each one
-// is and what it would attach.
+// The plugins screen, the way a browser's extensions page works: drag a
+// package onto the page and it is read, not installed; the panel that opens
+// says what it asks to be allowed to do, and only a yes installs it. Each
+// installed plugin has a switch, and can be removed for good — the package
+// leaves the list and the database, and its data with it if you say so.
 //
-// Installing asks the two questions an install cannot take back quietly:
-// switch it on straight away, and what its first settings are. Switching
-// one off and taking one away each ask for a two-step code, because a
-// plugin can be the check standing in front of sign-up.
+// A plugin compiled into this build has no package to drop and is listed the
+// way it always was: not installed, or on, or off. Switching one off and
+// taking one away each ask for a two-step code when the instance requires
+// it, because a plugin can be the check standing in front of sign-up.
 //
 // A change redraws from the server's answer and then reloads the session's
 // plugins, so a page the plugin brings appears in the rail — or leaves it —
@@ -14,7 +16,8 @@
 
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { adminApi, type AdminPlugin, type PluginChange, type PluginText } from '@/admin/api';
+import { useEventListener } from '@vueuse/core';
+import { adminApi, type AdminPlugin, type PluginChange, type PluginPreview, type PluginText } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
@@ -22,7 +25,7 @@ import OaPanel from '@/components/OaPanel.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { currentLanguage, t } from '@/composables/useI18n';
-import { IconArrowUpRight, IconPlus, IconPuzzle, IconDownload, IconRefresh } from '@/icons';
+import { IconArrowUpRight, IconDownload, IconInfo, IconPlus, IconPuzzle, IconRefresh } from '@/icons';
 import { absoluteTime } from '@/lib/format';
 import { loadPluginModule, plugins } from '@/plugins/registry';
 import type { ArcPlugin } from '@/plugins/types';
@@ -30,8 +33,10 @@ import { canAdmin, currentUser, refreshSite } from '@/stores/session';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminFailure from './AdminFailure.vue';
 import PluginAdminPage from './PluginAdminPage.vue';
+import PluginInstallPackage from './PluginInstallPackage.vue';
 import PluginSettingControls from './PluginSettingControls.vue';
 import { useAdminView } from './adminView';
+import { permissionsOf } from './pluginPermissions';
 
 const view = useAdminView();
 view.setTitle(t('navPlugins'), t('pluginsSubtitle'));
@@ -178,7 +183,7 @@ function closePanels(): void {
   detail.value = null;
   installing.value = null;
   confirming.value = null;
-  showNewPluginModal.value = false;
+  previewing.value = null;
 }
 
 function openDetail(plugin: AdminPlugin): void {
@@ -310,65 +315,111 @@ const noHints: Record<string, string> = {};
 const busy = ref(false);
 const panelError = ref('');
 const needCode = computed(() => twoFactorRequired.value);
-const availablePlugins = computed(() => list.value.filter((p) => p.state === 'available' && !p.missing));
-const showNewPluginModal = ref(false);
-const dragover = ref(false);
-const uploading = ref(false);
-const uploadError = ref('');
 
-function choosePlugin(): void {
+// --- a package dragged onto the page ------------------------------------------
+
+const previewing = ref<PluginPreview | null>(null);
+const reading = ref(false);
+const dragging = ref(false);
+const notice = ref('');
+// Enter and leave fire for every element the pointer crosses, so a counter
+// says whether it is still over the page at all.
+let depth = 0;
+
+function hasFiles(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types ?? []).includes('Files');
+}
+
+function isPackage(file: File): boolean {
+  return /\.(arcx|zip)$/i.test(file.name);
+}
+
+async function readPackage(file: File): Promise<void> {
+  notice.value = '';
+  error.value = '';
+  if (!isPackage(file)) {
+    error.value = t('pluginUploadWrongType');
+    return;
+  }
+  closePanels();
+  reading.value = true;
+  try {
+    previewing.value = (await adminApi.previewPlugin(file)).preview;
+  } catch (failure) {
+    error.value = message(failure);
+  } finally {
+    reading.value = false;
+  }
+}
+
+function choosePackage(): void {
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.zip';
-  input.onchange = (e) => {
-    const file = (e.target as HTMLInputElement).files?.[0];
-    if (file) void uploadPlugin(file);
+  input.accept = '.arcx,.zip';
+  input.onchange = () => {
+    const file = input.files?.[0];
+    if (file) void readPackage(file);
   };
   input.click();
 }
 
-function onDropPlugin(event: DragEvent): void {
-  dragover.value = false;
+function onDragEnter(event: DragEvent): void {
+  if (!canManage.value || activeTab.value !== 'manage' || !hasFiles(event)) return;
+  event.preventDefault();
+  depth += 1;
+  dragging.value = true;
+}
+
+function onDragOver(event: DragEvent): void {
+  if (dragging.value) event.preventDefault();
+}
+
+function onDragLeave(): void {
+  depth = Math.max(0, depth - 1);
+  if (depth === 0) dragging.value = false;
+}
+
+function onDrop(event: DragEvent): void {
+  if (!dragging.value) return;
+  event.preventDefault();
+  depth = 0;
+  dragging.value = false;
   const file = event.dataTransfer?.files?.[0];
-  if (file && file.name.endsWith('.zip')) {
-    void uploadPlugin(file);
-  } else {
-    uploadError.value = '只支持 .zip 文件。';
+  if (file) void readPackage(file);
+}
+
+// On the window, not on an element: the whole page is the drop target, the
+// way a browser's extensions page is, and a file dropped a little off the
+// card must not be opened as a download by the browser instead.
+useEventListener(window, 'dragenter', onDragEnter);
+useEventListener(window, 'dragover', onDragOver);
+useEventListener(window, 'dragleave', onDragLeave);
+useEventListener(window, 'drop', onDrop);
+
+async function packageDone(change: PluginChange & { did: 'install' | 'update' | 'adopt' }): Promise<void> {
+  const done = previewing.value;
+  previewing.value = null;
+  await applied(change);
+  if (done) {
+    const name = text(done.manifest.title as PluginText) || done.manifest.name;
+    notice.value = change.did === 'update'
+      ? t('pluginDoneUpdate', { name, version: done.manifest.version })
+      : t('pluginDone', { name, version: done.manifest.version });
   }
 }
 
-async function uploadPlugin(file: File): Promise<void> {
-  uploading.value = true;
-  uploadError.value = '';
-  const formData = new FormData();
-  formData.append('file', file);
-  try {
-    const res = await fetch('/api/admin/plugins/upload', {
-      method: 'POST',
-      body: formData,
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error?.message || `HTTP ${res.status}`);
-    }
-    const data = await res.json();
-    uploadError.value = `源码上传并解压成功 ( ${data.name} )！请回到终端执行 'make build' 重新编译，完成后刷新本页即可安装启动它。`;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    uploadError.value = msg;
-  } finally {
-    uploading.value = false;
+/** The switch on a card. Switching off asks first, as it always has. */
+async function toggle(plugin: AdminPlugin, on: boolean): Promise<void> {
+  if (on) {
+    await enable(plugin);
+  } else {
+    openConfirm(plugin, 'disable');
   }
 }
 
-function openInstallNewPlugin(): void {
-  closePanels();
-  const available = availablePlugins.value;
-  if (available.length > 0) {
-    openInstall(available[0]!);
-  } else {
-    showNewPluginModal.value = true;
-  }
+function sourceLabel(plugin: AdminPlugin): string {
+  if (plugin.kind === 'builtin') return t('pluginSourceBuiltin');
+  return plugin.source === 'bundled' ? t('pluginSourceBundled') : t('pluginSourceUpload');
 }
 
 function openInstall(plugin: AdminPlugin): void {
@@ -437,7 +488,8 @@ const confirmTitle = computed(() => {
   const current = confirming.value;
   if (!current) return '';
   const name = title(current.plugin);
-  return current.action === 'disable' ? t('pluginDisableTitle', { name }) : t('pluginUninstallTitle', { name });
+  if (current.action === 'disable') return t('pluginDisableTitle', { name });
+  return current.plugin.kind === 'package' ? t('pluginRemoveTitle', { name }) : t('pluginUninstallTitle', { name });
 });
 
 async function confirm(): Promise<void> {
@@ -492,8 +544,8 @@ onMounted(load);
       <button
         type="button"
         class="oa-btn primary"
-        :disabled="!canManage"
-        @click="openInstallNewPlugin"
+        :disabled="!canManage || reading"
+        @click="choosePackage"
       >
         <IconPlus :size="13" />
         <span>{{ t('pluginInstallNew') }}</span>
@@ -502,10 +554,27 @@ onMounted(load);
 
     <AdminFailure v-if="error && !loaded" :message="error" @retry="load" />
     <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
-    <p v-else-if="!list.length" class="oa-table-empty">{{ t('pluginsEmpty') }}</p>
     <div v-else class="oa-workbench">
       <p v-if="error" class="oa-field-hint" role="alert">{{ error }}</p>
-      <div class="oa-workbench-grid">
+      <p v-if="notice" class="oa-plugin-notice ok" role="status">
+        <IconInfo :size="14" /><span>{{ notice }}</span>
+      </p>
+
+      <button
+        v-if="canManage"
+        type="button"
+        class="oa-plugin-dropcard"
+        :disabled="reading"
+        @click="choosePackage"
+      >
+        <IconRefresh v-if="reading" :size="22" class="oa-spin" />
+        <IconDownload v-else :size="22" />
+        <span class="oa-plugin-dropcard-title">{{ reading ? t('pluginUploadReading') : t('pluginDropTitle') }}</span>
+        <span class="oa-plugin-dropcard-hint">{{ t('pluginDropHint') }}</span>
+      </button>
+
+      <p v-if="!list.length" class="oa-table-empty">{{ t('pluginPackagesEmpty') }}</p>
+      <div v-else class="oa-workbench-grid">
         <AdminControlCard
           v-for="plugin in list"
           :id="`plugin-${plugin.name}`"
@@ -518,15 +587,33 @@ onMounted(load);
             <OaBadgeRow><OaBadge :tone="stateTone(plugin)">{{ stateLabel(plugin) }}</OaBadge></OaBadgeRow>
           </template>
           <p class="oa-field-hint">{{ plugin.missing ? t('pluginMissingHint') : text(plugin.manifest.description) }}</p>
+          <p v-if="plugin.fault" class="oa-plugin-notice warn" role="alert">
+            <IconInfo :size="14" /><span>{{ t('pluginFault', { reason: plugin.fault }) }}</span>
+          </p>
+          <p v-if="!plugin.missing && plugin.manifest.author" class="oa-field-hint">
+            {{ plugin.manifest.author }} · {{ sourceLabel(plugin) }}
+          </p>
           <div class="oa-control-actions">
-            <button v-if="!plugin.missing" type="button" class="oa-btn" @click="openDetail(plugin)">{{ t('pluginDetails') }}</button>
-            <template v-if="!plugin.missing && plugin.state === 'available'">
-              <button type="button" class="oa-btn primary" :disabled="!canManage" @click="openInstall(plugin)">{{ t('pluginInstall') }}</button>
+            <template v-if="plugin.kind === 'package' && !plugin.missing">
+              <OaSwitchField
+                :model-value="plugin.state === 'enabled'"
+                :label="t('pluginEnabledSwitch')"
+                :disabled="!canManage || !!plugin.fault"
+                @update:model-value="toggle(plugin, $event)"
+              />
+              <button type="button" class="oa-btn" @click="openDetail(plugin)">{{ t('pluginDetails') }}</button>
+              <button type="button" class="oa-btn oa-btn-danger" :disabled="!canRemove" @click="openConfirm(plugin, 'uninstall')">{{ t('pluginRemove') }}</button>
             </template>
-            <template v-else-if="!plugin.missing">
-              <button v-if="plugin.state === 'disabled'" type="button" class="oa-btn primary" :disabled="!canManage" @click="enable(plugin)">{{ t('pluginEnable') }}</button>
-              <button v-else type="button" class="oa-btn" :disabled="!canManage" @click="openConfirm(plugin, 'disable')">{{ t('pluginDisable') }}</button>
-              <button type="button" class="oa-btn oa-btn-danger" :disabled="!canRemove" @click="openConfirm(plugin, 'uninstall')">{{ t('pluginUninstall') }}</button>
+            <template v-else>
+              <button v-if="!plugin.missing" type="button" class="oa-btn" @click="openDetail(plugin)">{{ t('pluginDetails') }}</button>
+              <template v-if="!plugin.missing && plugin.state === 'available'">
+                <button type="button" class="oa-btn primary" :disabled="!canManage" @click="openInstall(plugin)">{{ t('pluginInstall') }}</button>
+              </template>
+              <template v-else-if="!plugin.missing">
+                <button v-if="plugin.state === 'disabled'" type="button" class="oa-btn primary" :disabled="!canManage" @click="enable(plugin)">{{ t('pluginEnable') }}</button>
+                <button v-else type="button" class="oa-btn" :disabled="!canManage" @click="openConfirm(plugin, 'disable')">{{ t('pluginDisable') }}</button>
+                <button type="button" class="oa-btn oa-btn-danger" :disabled="!canRemove" @click="openConfirm(plugin, 'uninstall')">{{ t('pluginUninstall') }}</button>
+              </template>
             </template>
           </div>
         </AdminControlCard>
@@ -609,6 +696,14 @@ onMounted(load);
             <span class="oa-plugin-meta-label">{{ t('pluginInstalledAt') }}</span>
             <span class="oa-plugin-meta-value mono">{{ absoluteTime(detail.installed.at) }}</span>
           </div>
+          <div class="oa-plugin-meta-item">
+            <span class="oa-plugin-meta-label">{{ t('pluginSource') }}</span>
+            <span class="oa-plugin-meta-value">{{ sourceLabel(detail) }}</span>
+          </div>
+          <div v-if="detail.sha256" class="oa-plugin-meta-item wide">
+            <span class="oa-plugin-meta-label">{{ t('pluginFingerprint') }}</span>
+            <span class="oa-plugin-meta-value mono">{{ detail.sha256 }}</span>
+          </div>
           <div v-if="detail.manifest.homepage" class="oa-plugin-meta-item wide">
             <span class="oa-plugin-meta-label">{{ t('pluginHomepage') }}</span>
             <a :href="detail.manifest.homepage" target="_blank" rel="noopener noreferrer" class="oa-plugin-meta-link">
@@ -617,6 +712,22 @@ onMounted(load);
             </a>
           </div>
         </div>
+      </div>
+
+      <div v-if="detail.kind === 'package'" class="oa-plugin-detail-section">
+        <div class="oa-plugin-detail-section-head">
+          <h4 class="oa-field-label">{{ t('pluginPermissionsGranted') }}</h4>
+        </div>
+        <p v-if="!permissionsOf(detail.permissions).length" class="oa-field-hint">{{ t('pluginNoPermissions') }}</p>
+        <ul v-else class="oa-plugin-permissions">
+          <li v-for="permission in permissionsOf(detail.permissions)" :key="permission.id" :class="{ risky: permission.risky }">
+            <span class="oa-plugin-permission-text">{{ t(permission.label) }}</span>
+            <OaBadge v-if="permission.risky" tone="warning">{{ t('pluginRiskHigh') }}</OaBadge>
+          </li>
+        </ul>
+        <p v-if="detail.has_ui" class="oa-plugin-notice warn">
+          <IconInfo :size="14" /><span><strong>{{ t('pluginRunsInPage') }}</strong> — {{ t('pluginRunsInPageHint') }}</span>
+        </p>
       </div>
 
       <div class="oa-plugin-detail-section">
@@ -682,9 +793,13 @@ onMounted(load);
     :title="confirmTitle"
     :confirmable="confirming.action === 'disable' && (!needCode || hasTwoFactor)"
     :confirm-label="t('pluginDisable')"
-    :destructive-label="confirming.action === 'uninstall' && (!needCode || hasTwoFactor) ? t('pluginUninstall') : undefined"
+    :destructive-label="confirming.action === 'uninstall' && (!needCode || hasTwoFactor)
+      ? (confirming.plugin.kind === 'package' ? t('pluginRemove') : t('pluginUninstall'))
+      : undefined"
     :destructive-confirm="confirming.action === 'uninstall'
-      ? (purge ? t('pluginPurgeConfirm', { name: title(confirming.plugin) }) : t('pluginUninstallConfirm', { name: title(confirming.plugin) }))
+      ? (confirming.plugin.kind === 'package'
+        ? (purge ? t('pluginRemovePurgeConfirm', { name: title(confirming.plugin) }) : t('pluginRemoveConfirm', { name: title(confirming.plugin) }))
+        : (purge ? t('pluginPurgeConfirm', { name: title(confirming.plugin) }) : t('pluginUninstallConfirm', { name: title(confirming.plugin) })))
       : undefined"
     :width="440"
     :busy="busy"
@@ -693,7 +808,7 @@ onMounted(load);
     @confirm="confirm"
     @destructive="confirm"
   >
-    <p class="oa-field-hint">{{ confirming.action === 'disable' ? t('pluginDisableHint') : t('pluginUninstallHint') }}</p>
+    <p class="oa-field-hint">{{ confirming.action === 'disable' ? t('pluginDisableHint') : (confirming.plugin.kind === 'package' ? t('pluginRemoveHint') : t('pluginUninstallHint')) }}</p>
     <OaSwitchField
       v-if="confirming.action === 'uninstall'"
       v-model="purge"
@@ -713,47 +828,21 @@ onMounted(load);
     </template>
   </OaPanel>
 
-  <OaPanel
-    v-if="showNewPluginModal"
-    :title="t('pluginInstallNewTitle')"
-    :footer="false"
-    :width="460"
-    @close="showNewPluginModal = false"
-  >
-    <div class="oa-plugin-guide">
-      <div class="oa-plugin-guide-banner">
-        <IconPuzzle :size="28" class="oa-plugin-guide-icon" />
-        <p class="oa-plugin-guide-text">{{ t('pluginInstallNewAllInstalled') }}</p>
-      </div>
+  <PluginInstallPackage
+    v-if="previewing"
+    :preview="previewing"
+    :two-factor-required="needCode"
+    :has-two-factor="hasTwoFactor"
+    @close="previewing = null"
+    @done="packageDone"
+  />
 
-      <div class="oa-plugin-guide-section">
-        <h4 class="oa-field-label">{{ t('pluginInstallNewGuideTitle') }}</h4>
-        <ol class="oa-plugin-guide-steps">
-          <li>{{ t('pluginInstallNewGuideStep1') }}</li>
-          <li>
-            <span>{{ t('pluginInstallNewGuideStep2') }}</span>
-            <code class="oa-plugin-guide-code">make build PLUGINS="&lt;name&gt; &lt;name&gt;"</code>
-          </li>
-          <li>{{ t('pluginInstallNewGuideStep3') }}</li>
-        </ol>
-      </div>
-
-      <div class="oa-plugin-guide-section">
-        <h4 class="oa-field-label">一键上传（仅本地或源码环境）</h4>
-        <div
-          class="oa-plugin-dropzone"
-          :class="{ dragover }"
-          @dragover.prevent="dragover = true"
-          @dragleave="dragover = false"
-          @drop.prevent="onDropPlugin"
-          @click="choosePlugin"
-        >
-          <IconDownload v-if="!uploading" :size="24" />
-          <IconRefresh v-else :size="24" class="oa-spin" />
-          <p>{{ uploading ? '正在上传...' : '将 .zip 插件包拖拽至此处，或点击选择文件' }}</p>
-        </div>
-        <p class="oa-field-hint" v-if="uploadError" role="alert">{{ uploadError }}</p>
+  <Teleport to="body">
+    <div v-if="dragging" class="oa-plugin-dropoverlay" aria-hidden="true">
+      <div class="oa-plugin-dropoverlay-box">
+        <IconDownload :size="30" />
+        <span>{{ t('pluginDropRelease') }}</span>
       </div>
     </div>
-  </OaPanel>
+  </Teleport>
 </template>
