@@ -17,9 +17,9 @@ import AdminControlCard from './AdminControlCard.vue';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 
-type BackupForm = Omit<AdminBackupInput, 'interval_hours' | 'retention_days'> & {
+type BackupForm = Omit<AdminBackupInput, 'interval_hours' | 'retention_hours'> & {
   interval_hours: number | null;
-  retention_days: number | null;
+  retention_hours: number | null;
 };
 
 const view = useAdminView();
@@ -35,7 +35,7 @@ const form = ref<BackupForm>({
   access_key_id: '',
   secret_access_key: '',
   interval_hours: 24,
-  retention_days: 7,
+  retention_hours: 168,
 });
 const baseline = ref('');
 const loaded = ref(false);
@@ -50,7 +50,7 @@ function collect(): AdminBackupInput {
   return {
     ...form.value,
     interval_hours: form.value.interval_hours ?? 24,
-    retention_days: form.value.retention_days ?? 7,
+    retention_hours: form.value.retention_hours ?? 168,
   };
 }
 
@@ -135,7 +135,7 @@ async function load(): Promise<void> {
       access_key_id: '',
       secret_access_key: '',
       interval_hours: data.interval_hours,
-      retention_days: data.retention_days,
+      retention_hours: data.retention_hours,
     };
     baseline.value = JSON.stringify(collect());
     loaded.value = true;
@@ -251,7 +251,7 @@ onMounted(load);
         <OaTextField v-model="form.secret_access_key" type="password" :label="t('backupSecretKey')" autocomplete="new-password" />
         <p class="oa-field-hint">{{ t('backupCredentialsHint') }}</p>
         <OaNumberField v-model="form.interval_hours" :label="t('backupInterval')" :hint="t('backupIntervalHint')" :min="1" :step="1" />
-        <OaNumberField v-model="form.retention_days" :label="t('backupRetention')" :hint="t('backupRetentionHint')" :min="1" :step="1" />
+        <OaNumberField v-model="form.retention_hours" :label="t('backupRetention')" :hint="t('backupRetentionHint')" :min="1" :step="1" />
       </AdminControlCard>
 
       <AdminControlCard id="backupStatus" :title="t('backupStatus')" :hint="t('backupStatusHint')" :icon="IconServer">

@@ -637,7 +637,8 @@ export interface AdminBackup {
   region: string;
   prefix: string;
   interval_hours: number;
-  retention_days: number;
+  retention_hours: number;
+  retention_days?: number;
   secret_configured: boolean;
   running: boolean;
   last_status: '' | 'running' | 'success' | 'error';
@@ -658,7 +659,8 @@ export interface AdminBackupInput {
   access_key_id: string;
   secret_access_key: string;
   interval_hours: number;
-  retention_days: number;
+  retention_hours: number;
+  retention_days?: number;
 }
 
 /** Where a compiled-in plugin stands on this instance. */

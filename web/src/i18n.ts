@@ -1573,7 +1573,7 @@ const en = {
   backupCredentialsHint: 'Credentials are write-only. Saved values are never shown; leave either field blank to keep its saved value.',
   backupInterval: 'Backup interval (hours)',
   backupIntervalHint: 'How often scheduled backups run.',
-  backupRetention: 'Keep backups for (days)',
+  backupRetention: 'Keep backups for (hours)',
   backupRetentionHint: 'Older backups are removed during a successful backup run.',
   backupStatus: 'Backup status',
   backupStatusHint: 'The most recent backup run and the current storage configuration.',

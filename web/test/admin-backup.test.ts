@@ -20,6 +20,7 @@ const backup: AdminBackup = {
   region: 'auto',
   prefix: 'production',
   interval_hours: 24,
+  retention_hours: 168,
   retention_days: 7,
   secret_configured: true,
   running: false,
@@ -119,7 +120,7 @@ describe('admin instance backup', () => {
       access_key_id: '',
       secret_access_key: '',
       interval_hours: backup.interval_hours,
-      retention_days: backup.retention_days,
+      retention_hours: backup.retention_hours,
     });
     expect(fieldInput(t('backupAccessKey')).value).toBe('');
     expect(fieldInput(t('backupSecretKey')).value).toBe('');

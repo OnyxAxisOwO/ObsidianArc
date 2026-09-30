@@ -211,7 +211,14 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 				err = client.PutObject(ctx, objectKey, io.NewSectionReader(file, 0, size), size, digest)
 				if err == nil {
 					uploadedAt = time.Now().UnixMilli()
-					log(fmt.Sprintf("Upload completed. Checking retention policy (%d days)...", cfg.RetentionDays))
+					retentionHours := cfg.RetentionHours
+					if retentionHours == 0 && cfg.RetentionDays > 0 {
+						retentionHours = cfg.RetentionDays * 24
+					}
+					if retentionHours == 0 {
+						retentionHours = DefaultRetentionHours
+					}
+					log(fmt.Sprintf("Upload completed. Checking retention policy (%d hours)...", retentionHours))
 					var pruned int
 					pruned, err = pruneExpired(ctx, client, cfg, status.InstanceID, time.Now())
 					if err == nil {
@@ -261,7 +268,14 @@ func pruneExpired(ctx context.Context, client *S3Client, cfg Config, instanceID 
 	// List the instance-owned directory; generatedBackupTime then accepts
 	// only the exact generated filename pattern within that boundary.
 	ownedPrefix := fmt.Sprintf("%s/%s/", cfg.Prefix, instanceID)
-	cutoff := now.Add(-time.Duration(cfg.RetentionDays) * 24 * time.Hour)
+	retentionHours := cfg.RetentionHours
+	if retentionHours == 0 && cfg.RetentionDays > 0 {
+		retentionHours = cfg.RetentionDays * 24
+	}
+	if retentionHours == 0 {
+		retentionHours = DefaultRetentionHours
+	}
+	cutoff := now.Add(-time.Duration(retentionHours) * time.Hour)
 	pruned := 0
 	err := client.ListObjects(ctx, ownedPrefix, func(object listedObject) error {
 		at, ok := generatedBackupTime(object.Key, ownedPrefix)

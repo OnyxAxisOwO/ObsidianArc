@@ -20,6 +20,7 @@ type systemBackupInput struct {
 	AccessKeyID     string `json:"access_key_id"`
 	SecretAccessKey string `json:"secret_access_key"`
 	IntervalHours   int    `json:"interval_hours"`
+	RetentionHours  int    `json:"retention_hours"`
 	RetentionDays   int    `json:"retention_days"`
 }
 
@@ -42,11 +43,15 @@ func (h *Handlers) saveSystemBackup(w http.ResponseWriter, r *http.Request) erro
 	if err := httpx.DecodeJSON(w, r, &input, 16<<10); err != nil {
 		return err
 	}
+	retentionHours := input.RetentionHours
+	if retentionHours == 0 && input.RetentionDays > 0 {
+		retentionHours = input.RetentionDays * 24
+	}
 	cfg := systembackup.Config{
 		Enabled: input.Enabled, Endpoint: input.Endpoint, Bucket: input.Bucket,
 		Region: input.Region, Prefix: input.Prefix, AccessKeyID: input.AccessKeyID,
 		SecretKey: input.SecretAccessKey, IntervalHours: input.IntervalHours,
-		RetentionDays: input.RetentionDays,
+		RetentionHours: retentionHours,
 	}
 	if err := h.SystemBackup.Save(r.Context(), cfg); err != nil {
 		return backupAPIError(err)

@@ -1539,7 +1539,7 @@ export const zh: Record<StringKey, string> = {
   backupCredentialsHint: '凭据仅可写入，不会回显。留空即可保留对应的已保存值。',
   backupInterval: '备份间隔（小时）',
   backupIntervalHint: '定时备份的运行间隔。',
-  backupRetention: '备份保留时间（天）',
+  backupRetention: '备份保留时间（小时）',
   backupRetentionHint: '成功创建备份时会删除超出保留时间的旧备份。',
   backupStatus: '备份状态',
   backupStatusHint: '最近一次备份运行情况与当前存储配置。',

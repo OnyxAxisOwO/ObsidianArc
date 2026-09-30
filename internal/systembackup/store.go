@@ -18,17 +18,20 @@ const singletonID = "instance"
 const schedulerLockKey = "system_backup.lock"
 
 const (
-	DefaultRegion              = "us-east-1"
-	DefaultPrefix              = "obsidian-arc-backups"
-	DefaultIntervalHours       = 24
-	DefaultRetentionDays       = 7
-	MinIntervalHours           = 1
-	MaxIntervalHours           = 168
-	MinRetentionDays           = 1
-	MaxRetentionDays           = 3650
-	MaxRunDuration             = 60 * time.Minute
-	LeaseDuration              = 70 * time.Minute
-	MaxArchiveBytes      int64 = 4 << 30
+	DefaultRegion               = "us-east-1"
+	DefaultPrefix               = "obsidian-arc-backups"
+	DefaultIntervalHours        = 24
+	DefaultRetentionHours       = 168
+	DefaultRetentionDays        = 7
+	MinIntervalHours            = 1
+	MaxIntervalHours            = 168
+	MinRetentionHours           = 1
+	MaxRetentionHours           = 87600
+	MinRetentionDays            = 1
+	MaxRetentionDays            = 3650
+	MaxRunDuration              = 60 * time.Minute
+	LeaseDuration               = 70 * time.Minute
+	MaxArchiveBytes       int64 = 4 << 30
 )
 
 var (
@@ -45,15 +48,16 @@ func (e *ValidationError) Error() string { return e.Message }
 func invalidConfig(message string) error { return &ValidationError{Message: message} }
 
 type Config struct {
-	Enabled       bool   `json:"enabled"`
-	Endpoint      string `json:"endpoint"`
-	Bucket        string `json:"bucket"`
-	Region        string `json:"region"`
-	Prefix        string `json:"prefix"`
-	AccessKeyID   string `json:"-"`
-	SecretKey     string `json:"-"`
-	IntervalHours int    `json:"interval_hours"`
-	RetentionDays int    `json:"retention_days"`
+	Enabled        bool   `json:"enabled"`
+	Endpoint       string `json:"endpoint"`
+	Bucket         string `json:"bucket"`
+	Region         string `json:"region"`
+	Prefix         string `json:"prefix"`
+	AccessKeyID    string `json:"-"`
+	SecretKey      string `json:"-"`
+	IntervalHours  int    `json:"interval_hours"`
+	RetentionHours int    `json:"retention_hours"`
+	RetentionDays  int    `json:"retention_days,omitempty"`
 }
 
 type Status struct {
@@ -99,11 +103,11 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 	var access, secretValue []byte
 	var enabled bool
 	err := s.db.QueryRow(ctx, `SELECT instance_id, enabled, endpoint, bucket, region,
-		prefix, access_key_id_enc, secret_access_key_enc, interval_hours, retention_days,
+		prefix, access_key_id_enc, secret_access_key_enc, interval_hours, retention_hours,
 		lease_until, last_status, last_started_at, last_finished_at, last_success_at, last_error, last_log
 		FROM system_backups WHERE id = ?`, singletonID).Scan(
 		&status.InstanceID, &enabled, &status.Endpoint, &status.Bucket, &status.Region,
-		&status.Prefix, &access, &secretValue, &status.IntervalHours, &status.RetentionDays,
+		&status.Prefix, &access, &secretValue, &status.IntervalHours, &status.RetentionHours,
 		&status.LeaseUntil, &status.LastStatus, &status.LastStartedAt,
 		&status.LastFinishedAt, &status.LastSuccessAt, &status.LastError, &status.LastLog)
 	if err != nil {
@@ -126,7 +130,8 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 		}
 	}
 	status.IntervalHours = defaultInt(status.IntervalHours, DefaultIntervalHours)
-	status.RetentionDays = defaultInt(status.RetentionDays, DefaultRetentionDays)
+	status.RetentionHours = defaultInt(status.RetentionHours, DefaultRetentionHours)
+	status.RetentionDays = (status.RetentionHours + 23) / 24
 	if status.Region == "" {
 		status.Region = DefaultRegion
 	}
@@ -153,10 +158,10 @@ func (s *Store) Load(ctx context.Context) (Config, error) {
 	var cfg Config
 	var access, secretValue []byte
 	err := s.db.QueryRow(ctx, `SELECT enabled, endpoint, bucket, region, prefix,
-		access_key_id_enc, secret_access_key_enc, interval_hours, retention_days
+		access_key_id_enc, secret_access_key_enc, interval_hours, retention_hours
 		FROM system_backups WHERE id = ?`, singletonID).Scan(
 		&cfg.Enabled, &cfg.Endpoint, &cfg.Bucket, &cfg.Region, &cfg.Prefix,
-		&access, &secretValue, &cfg.IntervalHours, &cfg.RetentionDays)
+		&access, &secretValue, &cfg.IntervalHours, &cfg.RetentionHours)
 	if err != nil {
 		return Config{}, fmt.Errorf("system backup: read configuration: %w", err)
 	}
@@ -173,7 +178,8 @@ func (s *Store) Load(ctx context.Context) (Config, error) {
 		}
 	}
 	cfg.IntervalHours = defaultInt(cfg.IntervalHours, DefaultIntervalHours)
-	cfg.RetentionDays = defaultInt(cfg.RetentionDays, DefaultRetentionDays)
+	cfg.RetentionHours = defaultInt(cfg.RetentionHours, DefaultRetentionHours)
+	cfg.RetentionDays = (cfg.RetentionHours + 23) / 24
 	if cfg.Region == "" {
 		cfg.Region = DefaultRegion
 	}
@@ -186,11 +192,14 @@ func (s *Store) Load(ctx context.Context) (Config, error) {
 // Save replaces editable settings while blank credential inputs keep their
 // sealed values. The API never has to decrypt a credential just to preserve it.
 func (s *Store) Save(ctx context.Context, cfg Config) error {
+	if cfg.RetentionHours == 0 && cfg.RetentionDays > 0 {
+		cfg.RetentionHours = cfg.RetentionDays * 24
+	}
 	if cfg.IntervalHours < MinIntervalHours || cfg.IntervalHours > MaxIntervalHours {
 		return invalidConfig(fmt.Sprintf("Interval must be between %d and %d hours.", MinIntervalHours, MaxIntervalHours))
 	}
-	if cfg.RetentionDays < MinRetentionDays || cfg.RetentionDays > MaxRetentionDays {
-		return invalidConfig(fmt.Sprintf("Retention must be between %d and %d days.", MinRetentionDays, MaxRetentionDays))
+	if cfg.RetentionHours < MinRetentionHours || cfg.RetentionHours > MaxRetentionHours {
+		return invalidConfig(fmt.Sprintf("Retention must be between %d and %d hours.", MinRetentionHours, MaxRetentionHours))
 	}
 	cfg.Endpoint = strings.TrimSpace(cfg.Endpoint)
 	cfg.Bucket = strings.TrimSpace(cfg.Bucket)
@@ -253,9 +262,10 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 		}
 		if _, err := tx.Exec(ctx, `UPDATE system_backups SET enabled = ?, endpoint = ?, bucket = ?,
 			region = ?, prefix = ?, access_key_id_enc = ?, secret_access_key_enc = ?,
-			interval_hours = ?, retention_days = ? WHERE id = ?`,
+			interval_hours = ?, retention_hours = ?, retention_days = ? WHERE id = ?`,
 			cfg.Enabled, cfg.Endpoint, cfg.Bucket, cfg.Region, cfg.Prefix,
-			nilIfEmpty(access), nilIfEmpty(secretValue), cfg.IntervalHours, cfg.RetentionDays, singletonID); err != nil {
+			nilIfEmpty(access), nilIfEmpty(secretValue), cfg.IntervalHours, cfg.RetentionHours,
+			(cfg.RetentionHours+23)/24, singletonID); err != nil {
 			return fmt.Errorf("system backup: save configuration: %w", err)
 		}
 		return nil

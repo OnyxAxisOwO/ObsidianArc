@@ -146,8 +146,6 @@ describe('code splitting invariants in production bundle', () => {
 
   it('keeps each plugin out of the main bundle, and the framework out of each plugin', () => {
     const files = builtAssets();
-    const indexJsFile = files.find((f) => /^index-[^.]+\.js$/.test(f))!;
-    const indexContent = fs.readFileSync(path.join(assetsDir, indexJsFile), 'utf8');
     const marker = 'http://www.w3.org/1998/Math/MathML';
 
     for (const name of pluginNames) {
