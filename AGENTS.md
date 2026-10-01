@@ -427,6 +427,64 @@ silence, so the list is the one place to be careful.
 
 ## Versions
 
-`vyyyy.MM.dd.HH.mm.ss`, UTC, zero-padded, stamped by the Makefile. They sort
-chronologically as plain text and need no tag or counter. The `v` is there so
-a version reads as one anywhere it appears on its own.
+[Semantic Versioning](https://semver.org): `vMAJOR.MINOR.PATCH`, the `v` there
+so a version reads as one anywhere it appears on its own. The git tag is the
+only place a version is written down. The Makefile reads it with `git describe`
+and stamps it into the binary (an administrator's `/api/health`, the terminal's
+`version` command) and the image tag; nothing else in the tree repeats it, so
+there is nothing to forget to bump. `web/package.json` and `docs/package.json`
+carry a `version` of their own — both packages are private and never
+published, and neither number is this one.
+
+A build that is not exactly a tag says so: `v0.9.0-14-g1a2b3c4` is fourteen
+commits past `v0.9.0`, and a trailing `-dirty` is uncommitted changes. Deploying
+`main` between releases is fine and its version shows what it is; a deploy
+whose version has a suffix is not a release, and should not be called one.
+
+What the number promises, since it is the only way an operator can tell
+whether an upgrade is safe:
+
+- **Major** — something an operator or integrator relies on stops working as
+  it did: a `/v1` endpoint or the shape of its request or response, an
+  `OBSIDIAN_*` setting or a stored settings key, the data directory or the
+  backup archive format, or the plugin contract (`arcx.APILevel` raised past
+  what packages already installed were built for, or a manifest field going
+  away). A migration that existing data cannot pass through on its own
+  belongs here too.
+- **Minor** — something is added and everything that worked still does: a
+  feature, an endpoint, a setting whose default keeps today's behaviour, a
+  migration that applies by itself at boot.
+- **Patch** — a fix that changes no contract.
+
+Until 1.0.0 the first of those is not promised: a minor release may break any
+of it, and says so in `CHANGELOG.md`. A patch release still changes no
+contract. `v0.9.0` is the first version, tagged over a history of more than
+two hundred builds that carried only the moment they were compiled
+(`v2026.09.29.15.44.24`) and never a tag, which is why it is not `v0.1.0`:
+the number says where the project is, not that it started today.
+
+1.0.0 is a promise, so it waits until the promise can be kept:
+
+- the plugin contract (`sdk/` and `arcx.APILevel`) has gone several weeks
+  without a breaking change — it is the youngest of the three, and the one
+  most likely to be wrong the first time;
+- an upgrade from the oldest release still in use, and a backup restore, have
+  each been rehearsed on a real instance rather than only in tests;
+- "Known unverified ground" above says what has been proven, not what has not.
+
+Plugin packages are versioned by their own manifest. What ties one to the core
+is `Requires.API` against `arcx.APILevel`, an integer that is not this version.
+
+Cutting a release is a decision, never a side effect of deploying:
+
+1. `main` is green in CI — `make test-full` and the image job.
+2. In `CHANGELOG.md`, `Unreleased` becomes the new version with its date, and
+   an empty `Unreleased` goes above it. Commit that.
+3. Tag that commit — `git tag -a v1.2.3 -m v1.2.3` — and `git push origin
+   v1.2.3`. A pushed tag is never moved or reused; a mistake is fixed by the
+   next patch.
+4. Deploy from the tag with a clean tree. What the server reports must be
+   exactly `v1.2.3`.
+
+A release candidate is `v1.3.0-rc.1`; `git describe` follows it like any other
+tag.

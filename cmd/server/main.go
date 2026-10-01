@@ -24,11 +24,11 @@ import (
 )
 
 // The build's identity, stamped in by the Makefile as
-// `-ldflags "-X main.version=vyyyy.MM.dd.HH.mm.ss"` — the UTC moment it was
-// compiled. Zero-padded, so it sorts chronologically as plain text, and
-// unique per build,
-// so "which build is this server running" is answerable from /api/health
-// without a tag or a counter to keep up to date.
+// `-ldflags "-X main.version=v1.2.3"` — the git tag the build was cut from,
+// or `git describe`'s account of how far past one it is (v1.2.3-14-g1a2b3c4,
+// with -dirty on the end for uncommitted changes). So "which build is this
+// server running" is answerable from /api/health, and the answer can be found
+// again in git.
 //
 // A plain `go build` leaves it as "dev", which is the honest answer for one.
 var version = "dev"

@@ -34,11 +34,11 @@ COPY internal/ ./internal/
 COPY plugins/ ./plugins/
 COPY --from=web /src/internal/web/dist/ ./internal/web/dist/
 
-# yyyy.MM.dd.HH.mm.ss, supplied by `make docker`. The default is what a bare
-# `docker build` gets.
-# Empty rather than a word: the build below stamps the same kind of version
-# the Makefile does when nothing was passed in, so an image built straight
-# from `docker compose up --build` still says when it was built.
+# The git version, supplied by `make docker`; .git is not in this build's
+# context, so the image cannot work it out for itself.
+# Empty rather than a word: a bare `docker build` or `docker compose up
+# --build` is not a release, and the build below says so — dev-<UTC moment>,
+# so such an image still says when it was built without looking like a tag.
 ARG VERSION=
 ARG TARGETARCH
 # Which plugins the binary carries, as the Makefile's PLUGINS names them. The
@@ -52,7 +52,7 @@ ENV CGO_ENABLED=0
 RUN tags=""; for p in ${PLUGINS}; do tags="$tags plugin_$p"; done; \
     GOARCH=${TARGETARCH:-amd64} go build \
       -trimpath -tags "$tags" \
-      -ldflags "-s -w -X main.version=${VERSION:-v$(TZ=CST-8 date +%Y.%m.%d.%H.%M.%S)}" \
+      -ldflags "-s -w -X main.version=${VERSION:-dev-$(date -u +%Y%m%d%H%M%S)}" \
       -o /out/obsidian-arc ./cmd/server
 
 # --- the image ------------------------------------------------------------------

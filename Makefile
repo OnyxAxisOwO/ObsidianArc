@@ -6,15 +6,19 @@
 
 BINARY  := obsidian-arc
 
-# The version is the moment the binary was built, in UTC:
-# yyyy.MM.dd.HH.mm.ss. Zero-padded, so every version is the same width and
-# sorts chronologically as plain text; unique per build; and needing no tag
-# or counter to maintain — which is what makes "which build is this server
-# running" answerable from the health endpoint alone.
-VERSION ?= v$(shell date -u +%Y.%m.%d.%H.%M.%S)
-# Expanded once, here. `?=` reads the clock every time VERSION is mentioned,
-# and a deploy mentions it twice — the binary's stamp and the image's tag —
-# which could otherwise land either side of a second and disagree.
+# The version is the git tag, and nowhere else: vMAJOR.MINOR.PATCH, cut as
+# AGENTS.md (Versions) describes. A build from a commit past the newest tag
+# says how far past — v1.0.0-14-g1a2b3c4 — and one from a tree with
+# uncommitted changes ends in -dirty, so whatever a server reports is either a
+# release that can be checked out again or plainly marked as not being one.
+# Before the first tag it is the bare commit, and outside a checkout "dev",
+# which is also what a plain `go build` leaves in.
+VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --dirty --always 2>/dev/null || echo dev)
+# Expanded once, here. `?=` runs git every time VERSION is mentioned, and a
+# deploy mentions it twice — the binary's stamp and the image's tag — so a
+# commit landing between the two could make them disagree; and the frontend
+# build that runs in between can rewrite the lockfile and turn a clean tree
+# -dirty.
 VERSION := $(VERSION)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
