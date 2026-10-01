@@ -1768,7 +1768,7 @@ export const zh: Record<StringKey, string> = {
   colUptime: '可用性',
   modelUnstableTag: '不稳定',
   modelUnstableNotice: '这个模型最近不太稳定，回答可能中途失败。',
-  modelUptimeTitle: '最近的请求中这个模型成功响应的比例',
+  modelUptimeTitle: '最近 1 小时内这个模型成功响应的比例',
   healthDisableBelow: '可用率低于多少禁用（%）',
   healthDisableBelowHint: '窗口内成功率低于这个值就关闭该模型，填 0 表示不启用。一个模型可以从不连续失败两次却一直很糟——那是另一条规则数不到的。至少要有五次请求才会做判断。',
   healthShowUsers: '向用户展示可用率',

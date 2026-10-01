@@ -406,6 +406,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			slog.ErrorContext(ctx, "liveness for readers", "error", err)
 			return livenessSeen
 		}
+		// The published figure is the last hour, not the day: it is what a
+		// reader choosing a model right now wants to know, and a day of good
+		// answers hides a model that has just gone down. The warning keeps the
+		// day, so one bad minute does not flag a model as unstable.
+		hourSince := max(time.Now().Add(-time.Hour).UnixMilli(), since)
+		hourRates, err := healthStore.Rates(ctx, hourSince)
+		if err != nil {
+			slog.ErrorContext(ctx, "liveness for readers", "error", err)
+			return livenessSeen
+		}
 
 		seen := make(map[string]model.Liveness, len(rates))
 		for modelID, rate := range rates {
@@ -417,8 +427,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			entry := model.Liveness{
 				Unstable: warnBelow > 0 && share*100 < float64(warnBelow),
 			}
-			if show {
-				value := share
+			if hour, ok := hourRates[modelID]; show && ok && hour.Total > 0 {
+				value := hour.Share()
 				entry.Uptime = &value
 			}
 			seen[modelID] = entry

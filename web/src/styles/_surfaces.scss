@@ -2310,7 +2310,14 @@
   background: rgba(16, 185, 129, 0.14);
 }
 
-/* Widens to hold the question when armed, so the row does not jump. */
+/* The button is a fixed 34px circle; armed, it becomes a pill that fits the
+   question instead of letting the text spill out of the circle. */
+.oa-icon-btn.armed {
+  width: auto;
+  padding: 0 10px;
+  border-radius: 999px;
+}
+
 .oa-key-confirm {
   font-size: 11.5px;
   font-weight: 600;

@@ -618,6 +618,7 @@ onMounted(() => void refresh());
               ><IconGear :size="15" /></OaIconButton>
               <OaIconButton
                 class="oa-icon-btn danger"
+                :class="{ armed: armed === row.id }"
                 :label="t('keyRevoke')"
                 @click="revoke(row)"
               >

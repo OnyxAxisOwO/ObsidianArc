@@ -1802,7 +1802,7 @@ const en = {
   colUptime: 'Uptime',
   modelUnstableTag: 'unstable',
   modelUnstableNotice: 'This model has been unreliable lately. Answers may fail partway.',
-  modelUptimeTitle: 'Share of recent requests this model answered',
+  modelUptimeTitle: 'Share of requests this model answered in the last hour',
   healthDisableBelow: 'Disable below success rate (%)',
   healthDisableBelowHint: 'Turn a model off when its success rate over the window falls below this. 0 never does. A model can be badly broken without ever failing twice in a row, which is what the other rule counts. Needs at least five requests before it decides anything.',
   healthShowUsers: 'Show readers the figure',
