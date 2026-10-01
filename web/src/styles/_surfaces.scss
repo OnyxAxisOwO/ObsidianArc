@@ -5846,9 +5846,8 @@
    .oa-filters carries a bottom margin for what follows it, never a top one
    for what came before, so the seam between the grid and the code list below
    still needs its own rule; 26px matches .oa-admin-section's own rhythm. */
-.oa-workbench + #secInviteCodes {
-  max-width: 1040px;
-  margin: 26px auto 0;
+.oa-workbench + .oa-invite-codes {
+  margin-top: 26px;
 }
 
 /* --- personal invite rows (settings) */
@@ -5932,9 +5931,30 @@
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
+.oa-login-bg-preview {
+  align-self: center;
+}
+
+/* One height for all four, so the tiles line up; the width follows the shape
+   of the screen the picture is for, so a portrait variant is a small portrait. */
 .oa-login-bg-preview.landscape,
 .oa-login-bg-preview.portrait {
+  width: auto;
   height: 104px;
+}
+
+.oa-login-bg-preview.landscape {
+  aspect-ratio: 16 / 10;
+}
+
+.oa-login-bg-preview.portrait {
+  aspect-ratio: 9 / 16;
+}
+
+/* Too narrow for words: the button under it says what to do. */
+.oa-login-bg-preview.portrait .oa-login-bg-drop-hint,
+.oa-login-bg-preview.portrait .oa-login-bg-formats-hint {
+  display: none;
 }
 
 .oa-login-bg-preview:hover,

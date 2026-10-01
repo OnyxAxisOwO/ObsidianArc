@@ -599,61 +599,68 @@ onMounted(() => {
       </div>
     </div>
 
-    <div id="secInviteCodes" class="oa-filters">
-      <input v-model="filters.q" type="search" :placeholder="t('searchInvites')">
-      <OaSelect
-        v-model="filters.kind"
-        class="oa-filter-select"
-        :choices="[
-          { value: 'all', label: t('inviteKindAll') },
-          { value: 'batch', label: t('inviteKindBatch') },
-          { value: 'partner', label: t('inviteKindPartner') },
-          { value: 'personal', label: t('inviteKindUser') },
-        ]"
-        @update:model-value="filterList"
-      />
-      <OaSelect
-        v-model="filters.status"
-        class="oa-filter-select"
-        :choices="[
-          { value: 'all', label: t('inviteStatusAll') },
-          { value: 'active', label: t('inviteStatusActive') },
-          { value: 'used_up', label: t('inviteStatusUsedUp') },
-          { value: 'expired', label: t('inviteStatusExpired') },
-          { value: 'revoked', label: t('inviteStatusRevoked') },
-        ]"
-        @update:model-value="filterList"
-      />
+    <!-- The list of codes is a card like the ones above it, in the same column:
+         filters and table on the bare panel were wider than the column and
+         drew their corners against nothing. -->
+    <div class="oa-workbench oa-invite-codes">
+      <AdminControlCard id="secInviteCodes" :title="t('secInviteCodes')" :icon="IconSend">
+        <div class="oa-filters">
+          <input v-model="filters.q" type="search" :placeholder="t('searchInvites')">
+          <OaSelect
+            v-model="filters.kind"
+            class="oa-filter-select"
+            :choices="[
+              { value: 'all', label: t('inviteKindAll') },
+              { value: 'batch', label: t('inviteKindBatch') },
+              { value: 'partner', label: t('inviteKindPartner') },
+              { value: 'personal', label: t('inviteKindUser') },
+            ]"
+            @update:model-value="filterList"
+          />
+          <OaSelect
+            v-model="filters.status"
+            class="oa-filter-select"
+            :choices="[
+              { value: 'all', label: t('inviteStatusAll') },
+              { value: 'active', label: t('inviteStatusActive') },
+              { value: 'used_up', label: t('inviteStatusUsedUp') },
+              { value: 'expired', label: t('inviteStatusExpired') },
+              { value: 'revoked', label: t('inviteStatusRevoked') },
+            ]"
+            @update:model-value="filterList"
+          />
+        </div>
+
+        <p v-if="listing" class="oa-table-empty">{{ t('loading') }}</p>
+        <p v-if="listError" class="oa-table-empty">{{ listError }}</p>
+        <OaTable
+          :pagination="{ ...paging, total }"
+          :busy="listing"
+          @page="changePage"
+          :columns="columns"
+          :rows="codes"
+          :empty="t('noInvites')"
+          :muted="(row) => row.status !== 'active'"
+          selectable
+          @select="openExisting($event)"
+        >
+          <template #cell-code="{ row }">
+            <OaCellStack :title="maskCredential(formatCode(row.code, row.kind))" :sub="row.note || undefined" monospace />
+          </template>
+          <template #cell-owner="{ row }">
+            <OaCellStack :title="ownerTitle(row)" :sub="ownerSub(row)" />
+          </template>
+          <template #cell-group="{ row }">
+            <OaCellStack :title="row.group_id ? (row.group_name || '—') : t('inviteGroupNone')" :sub="row.group_id ? daysLabel(row) : undefined" />
+          </template>
+          <template #cell-status="{ row }">
+            <OaBadge :tone="statusTone(row.status)">{{ statusLabel(row.status) }}</OaBadge>
+          </template>
+        </OaTable>
+
+        <p v-if="saveFlash" class="oa-drawer-flash visible oa-control-flash" role="alert">{{ saveFlash }}</p>
+      </AdminControlCard>
     </div>
-
-    <p v-if="listing" class="oa-table-empty">{{ t('loading') }}</p>
-    <p v-if="listError" class="oa-table-empty">{{ listError }}</p>
-    <OaTable
-      :pagination="{ ...paging, total }"
-      :busy="listing"
-      @page="changePage"
-      :columns="columns"
-      :rows="codes"
-      :empty="t('noInvites')"
-      :muted="(row) => row.status !== 'active'"
-      selectable
-      @select="openExisting($event)"
-    >
-      <template #cell-code="{ row }">
-        <OaCellStack :title="maskCredential(formatCode(row.code, row.kind))" :sub="row.note || undefined" monospace />
-      </template>
-      <template #cell-owner="{ row }">
-        <OaCellStack :title="ownerTitle(row)" :sub="ownerSub(row)" />
-      </template>
-      <template #cell-group="{ row }">
-        <OaCellStack :title="row.group_id ? (row.group_name || '—') : t('inviteGroupNone')" :sub="row.group_id ? daysLabel(row) : undefined" />
-      </template>
-      <template #cell-status="{ row }">
-        <OaBadge :tone="statusTone(row.status)">{{ statusLabel(row.status) }}</OaBadge>
-      </template>
-    </OaTable>
-
-    <p v-if="saveFlash" class="oa-drawer-flash visible oa-control-flash" role="alert">{{ saveFlash }}</p>
   </template>
 
   <OaPanel

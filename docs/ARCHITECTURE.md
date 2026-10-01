@@ -220,14 +220,14 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 25.86 MB (22.16 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 229.17 kB to open the chat (189.47 JS + 39.70 CSS) |
+| Frontend, on the wire | < 135 kB | 229.26 kB to open the chat (189.47 JS + 39.79 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
 Remeasured on 2026-10-01 (UTC), after the grouped backoffice pages were centred
 under their headings, the sign-in providers made rows of their card and the
-login backgrounds four thumbnails: 229.17 kB (189.47 kB JS + 39.70 kB CSS); the
-backoffice chunk is 111.42 kB.
+login backgrounds four thumbnails: 229.26 kB (189.47 kB JS + 39.79 kB CSS); the
+backoffice chunk is 111.45 kB.
 
 Remeasured on 2026-10-01 (UTC), earlier the same day, after the API keys screen
 learned to carry a plugin's notice and a confirmation that is answered by
