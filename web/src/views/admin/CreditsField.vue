@@ -19,17 +19,14 @@ const TOP = 5;
 
 const top = ref<AdminModel[]>([]);
 
-const note = computed(() => {
-  const model = top.value[0];
+const rows = computed(() => {
   const limit = props.modelValue;
-  if (!model || limit === null || limit <= 0) return '';
-  const cost = worstCase(model);
-  const list = top.value
-    .map((entry) => `${entry.display_name} ${round(worstCase(entry))}`)
-    .join(' · ');
-  return limit < cost
-    ? t('creditsTooSmall', { name: model.display_name, cost: round(cost), list })
-    : t('creditsBuys', { turns: Math.floor(limit / cost), list });
+  if (limit === null || limit <= 0) return [];
+  return top.value.map((entry) => {
+    const cost = worstCase(entry);
+    const args = { name: entry.display_name, cost: round(cost), turns: Math.floor(limit / cost) };
+    return args.turns > 0 ? t('creditsRow', args) : t('creditsRowShort', args);
+  });
 });
 
 onMounted(() => {
@@ -47,7 +44,10 @@ onMounted(() => {
     @update:model-value="$emit('update:modelValue', $event)"
   >
     <template #after>
-      <span class="oa-field-hint">{{ note }}</span>
+      <div v-if="rows.length" class="oa-field-hint">
+        <div>{{ t('creditsTop') }}</div>
+        <div v-for="row in rows" :key="row">{{ row }}</div>
+      </div>
     </template>
   </OaNumberField>
 </template>
