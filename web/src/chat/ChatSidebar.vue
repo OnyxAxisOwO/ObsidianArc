@@ -32,11 +32,28 @@ const filteredConversations = computed(() => conversations.value.filter((entry) 
 
 const openUpMap = ref<Record<string, boolean>>({});
 
+// Roughly three rows and their padding; the menu is measured against the list
+// it hangs in, not the window, because that list clips it.
+const MENU_HEIGHT = 124;
+
 function handleMenuTrigger(event: MouseEvent, id: string, toggle: () => void): void {
   const target = event.currentTarget as HTMLElement | null;
   if (target) {
     const rect = target.getBoundingClientRect();
-    openUpMap.value[id] = (window.innerHeight - rect.bottom) < 160;
+    const box = target.closest('.ai-chat-list')?.getBoundingClientRect();
+    const below = (box ? box.bottom : window.innerHeight) - rect.bottom;
+    const above = rect.top - (box ? box.top : 0);
+    openUpMap.value[id] = below < MENU_HEIGHT && above > below;
+    // A short list has room in neither direction, and the menu would sit
+    // half under the list's edge. It does extend the list's scrollable area,
+    // so bring it into view once its opening transition has sized it.
+    if (below < MENU_HEIGHT && above < MENU_HEIGHT) {
+      window.setTimeout(() => {
+        target.closest('.ai-chat-list-item')
+          ?.querySelector('.ai-chat-context-menu')
+          ?.scrollIntoView({ block: 'nearest' });
+      }, 180);
+    }
   }
   toggle();
 }
