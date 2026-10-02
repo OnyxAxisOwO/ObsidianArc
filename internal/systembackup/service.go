@@ -121,6 +121,14 @@ func (s *Service) runContext() context.Context {
 	return s.root
 }
 
+func (s *Service) Store() *Store {
+	return s.store
+}
+
+func (s *Service) newBackend(ctx context.Context, cfg Config) (StorageBackend, error) {
+	return newBackend(ctx, cfg)
+}
+
 func (s *Service) TestConnection(ctx context.Context) error {
 	cfg, err := s.store.Load(ctx)
 	if err != nil {
@@ -133,18 +141,19 @@ func (s *Service) TestConnection(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	client, err := NewS3Client(cfg)
+	backend, err := s.newBackend(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	key := fmt.Sprintf("%s/%s/probe/%s", cfg.Prefix, status.InstanceID, id.New())
+	keyPrefix := cfg.Prefix
+	key := fmt.Sprintf("%s/%s/probe/%s", keyPrefix, status.InstanceID, id.New())
 	payload := []byte("Obsidian Arc storage connection check")
 	payloadSum := sha256.Sum256(payload)
-	if err := client.PutObject(ctx, key, strings.NewReader(string(payload)), int64(len(payload)), hex.EncodeToString(payloadSum[:])); err != nil {
+	if err := backend.PutObject(ctx, key, strings.NewReader(string(payload)), int64(len(payload)), hex.EncodeToString(payloadSum[:])); err != nil {
 		return err
 	}
 	var found bool
-	listErr := client.ListObjects(ctx, key, func(object listedObject) error {
+	listErr := backend.ListObjects(ctx, key, func(object listedObject) error {
 		if object.Key == key {
 			found = true
 		}
@@ -152,12 +161,12 @@ func (s *Service) TestConnection(ctx context.Context) error {
 	})
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	deleteErr := client.DeleteObject(cleanupCtx, key)
+	deleteErr := backend.DeleteObject(cleanupCtx, key)
 	if listErr != nil {
 		return listErr
 	}
 	if !found {
-		return errors.New("storage test object was not visible in the bucket listing")
+		return errors.New("storage test object was not visible in the storage listing")
 	}
 	if deleteErr != nil {
 		return deleteErr
@@ -203,12 +212,12 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 		var status Status
 		status, err = s.store.Status(ctx)
 		if err == nil {
-			var client *S3Client
-			client, err = NewS3Client(cfg)
+			var backend StorageBackend
+			backend, err = s.newBackend(ctx, cfg)
 			if err == nil {
 				objectKey := backupObjectKey(cfg, status.InstanceID, time.Now())
-				log(fmt.Sprintf("Uploading archive to S3 (bucket: %s, key: %s)...", cfg.Bucket, objectKey))
-				err = client.PutObject(ctx, objectKey, io.NewSectionReader(file, 0, size), size, digest)
+				log(fmt.Sprintf("Uploading archive to storage (%s, key: %s)...", cfg.Type, objectKey))
+				err = backend.PutObject(ctx, objectKey, io.NewSectionReader(file, 0, size), size, digest)
 				if err == nil {
 					uploadedAt = time.Now().UnixMilli()
 					retentionHours := cfg.RetentionHours
@@ -220,7 +229,7 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 					}
 					log(fmt.Sprintf("Upload completed. Checking retention policy (%d hours)...", retentionHours))
 					var pruned int
-					pruned, err = pruneExpired(ctx, client, cfg, status.InstanceID, time.Now())
+					pruned, err = pruneExpired(ctx, backend, cfg, status.InstanceID, time.Now())
 					if err == nil {
 						log(fmt.Sprintf("Retention policy applied (pruned %d expired backup(s)).", pruned))
 					}
@@ -264,9 +273,7 @@ func backupObjectKey(cfg Config, instanceID string, now time.Time) string {
 		now.UTC().Format("20060102T150405Z"), id.New())
 }
 
-func pruneExpired(ctx context.Context, client *S3Client, cfg Config, instanceID string, now time.Time) (int, error) {
-	// List the instance-owned directory; generatedBackupTime then accepts
-	// only the exact generated filename pattern within that boundary.
+func pruneExpired(ctx context.Context, client StorageBackend, cfg Config, instanceID string, now time.Time) (int, error) {
 	ownedPrefix := fmt.Sprintf("%s/%s/", cfg.Prefix, instanceID)
 	retentionHours := cfg.RetentionHours
 	if retentionHours == 0 && cfg.RetentionDays > 0 {

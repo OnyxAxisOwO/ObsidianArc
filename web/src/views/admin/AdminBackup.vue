@@ -4,12 +4,14 @@
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useDocumentVisibility, useIntervalFn } from '@vueuse/core';
-import { adminApi, type AdminBackup, type AdminBackupInput } from '@/admin/api';
+import { adminApi, type AdminBackup, type AdminBackupInput, type StorageType } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
+import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
+import type { Choice } from '@/components/choice';
 import { t } from '@/composables/useI18n';
 import { IconArchive, IconServer } from '@/icons';
 import { absoluteTime } from '@/lib/format';
@@ -17,16 +19,28 @@ import AdminControlCard from './AdminControlCard.vue';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 
-type BackupForm = Omit<AdminBackupInput, 'interval_hours' | 'retention_hours'> & {
+interface BackupForm {
+  type: StorageType;
+  enabled: boolean;
+  endpoint: string;
+  bucket: string;
+  region: string;
+  prefix: string;
+  access_key_id: string;
+  secret_access_key: string;
+  webdav_url: string;
+  webdav_username: string;
+  webdav_password: string;
   interval_hours: number | null;
   retention_hours: number | null;
-};
+}
 
 const view = useAdminView();
 view.setTitle(t('navBackup'), t('backupSubtitle'));
 
 const snapshot = ref<AdminBackup | null>(null);
 const form = ref<BackupForm>({
+  type: 's3',
   enabled: false,
   endpoint: '',
   bucket: '',
@@ -34,6 +48,9 @@ const form = ref<BackupForm>({
   prefix: '',
   access_key_id: '',
   secret_access_key: '',
+  webdav_url: '',
+  webdav_username: '',
+  webdav_password: '',
   interval_hours: 24,
   retention_hours: 168,
 });
@@ -46,9 +63,15 @@ const actionError = ref('');
 const notice = ref('');
 const logRef = ref<HTMLPreElement | null>(null);
 
+const storageTypeChoices = computed<ReadonlyArray<Choice<StorageType>>>(() => [
+  { value: 's3', label: t('backupTypeS3') },
+  { value: 'webdav', label: t('backupTypeWebDAV') },
+]);
+
 function collect(): AdminBackupInput {
   return {
     ...form.value,
+    type: form.value.type || 's3',
     interval_hours: form.value.interval_hours ?? 24,
     retention_hours: form.value.retention_hours ?? 168,
   };
@@ -71,6 +94,18 @@ const statusTone = computed<'default' | 'muted' | 'danger' | 'warning'>(() => {
   if (snapshot.value?.running) return 'warning';
   if (snapshot.value?.last_status === 'error') return 'danger';
   return snapshot.value?.last_status === 'success' ? 'default' : 'muted';
+});
+const credentialsLabel = computed(() => {
+  if (snapshot.value?.type === 'webdav') {
+    return snapshot.value?.webdav_secret_configured ? t('backupCredentialsSaved') : t('backupCredentialsMissing');
+  }
+  return snapshot.value?.secret_configured ? t('backupCredentialsSaved') : t('backupCredentialsMissing');
+});
+const credentialsTone = computed<'default' | 'warning'>(() => {
+  if (snapshot.value?.type === 'webdav') {
+    return snapshot.value?.webdav_secret_configured ? 'default' : 'warning';
+  }
+  return snapshot.value?.secret_configured ? 'default' : 'warning';
 });
 const nextRunLabel = computed(() => {
   const current = snapshot.value;
@@ -127,6 +162,7 @@ async function load(): Promise<void> {
     // lets a write preserve the stored credentials unless the operator enters
     // replacements.
     form.value = {
+      type: data.type || 's3',
       enabled: data.enabled,
       endpoint: data.endpoint,
       bucket: data.bucket,
@@ -134,6 +170,9 @@ async function load(): Promise<void> {
       prefix: data.prefix,
       access_key_id: '',
       secret_access_key: '',
+      webdav_url: data.webdav_url || '',
+      webdav_username: data.webdav_username || '',
+      webdav_password: '',
       interval_hours: data.interval_hours,
       retention_hours: data.retention_hours,
     };
@@ -182,7 +221,13 @@ async function save(): Promise<void> {
     // next save.
     if (form.value.access_key_id === input.access_key_id) form.value.access_key_id = '';
     if (form.value.secret_access_key === input.secret_access_key) form.value.secret_access_key = '';
-    baseline.value = JSON.stringify({ ...input, access_key_id: '', secret_access_key: '' });
+    if (form.value.webdav_password === input.webdav_password) form.value.webdav_password = '';
+    baseline.value = JSON.stringify({
+      ...input,
+      access_key_id: '',
+      secret_access_key: '',
+      webdav_password: '',
+    });
     notice.value = t('backupSaved');
     await refreshStatus(true);
   } catch (failure) {
@@ -243,13 +288,28 @@ onMounted(load);
     <div class="oa-workbench-grid">
       <AdminControlCard id="backupConfig" :title="t('backupConfig')" :hint="t('backupConfigHint')" :icon="IconArchive">
         <OaSwitchField v-model="form.enabled" :label="t('backupEnabled')" :hint="t('backupEnabledHint')" />
-        <OaTextField v-model="form.endpoint" :label="t('backupEndpoint')" :hint="t('backupEndpointHint')" placeholder="https://storage.example.com" monospace />
-        <OaTextField v-model="form.bucket" :label="t('backupBucket')" :hint="t('backupBucketHint')" />
-        <OaTextField v-model="form.region" :label="t('backupRegion')" :hint="t('backupRegionHint')" />
-        <OaTextField v-model="form.prefix" :label="t('backupPrefix')" :hint="t('backupPrefixHint')" monospace />
-        <OaTextField v-model="form.access_key_id" :label="t('backupAccessKey')" autocomplete="off" />
-        <OaTextField v-model="form.secret_access_key" type="password" :label="t('backupSecretKey')" autocomplete="new-password" />
-        <p class="oa-field-hint">{{ t('backupCredentialsHint') }}</p>
+        <OaSelectField v-model="form.type" :label="t('backupType')" :options="storageTypeChoices" :searchable="false" />
+
+        <!-- S3 Compatible Storage Fields -->
+        <template v-if="form.type === 's3' || !form.type">
+          <OaTextField v-model="form.endpoint" :label="t('backupEndpoint')" :hint="t('backupEndpointHint')" placeholder="https://storage.example.com" monospace />
+          <OaTextField v-model="form.bucket" :label="t('backupBucket')" :hint="t('backupBucketHint')" />
+          <OaTextField v-model="form.region" :label="t('backupRegion')" :hint="t('backupRegionHint')" />
+          <OaTextField v-model="form.prefix" :label="t('backupPrefix')" :hint="t('backupPrefixHint')" monospace />
+          <OaTextField v-model="form.access_key_id" :label="t('backupAccessKey')" autocomplete="off" />
+          <OaTextField v-model="form.secret_access_key" type="password" :label="t('backupSecretKey')" autocomplete="new-password" />
+          <p class="oa-field-hint">{{ t('backupCredentialsHint') }}</p>
+        </template>
+
+        <!-- WebDAV Storage Fields -->
+        <template v-else-if="form.type === 'webdav'">
+          <OaTextField v-model="form.webdav_url" :label="t('backupWebDAVUrl')" :hint="t('backupWebDAVUrlHint')" placeholder="https://dav.example.com/remote.php/webdav" monospace />
+          <OaTextField v-model="form.prefix" :label="t('backupPrefix')" :hint="t('backupPrefixHint')" monospace />
+          <OaTextField v-model="form.webdav_username" :label="t('backupWebDAVUsername')" autocomplete="off" />
+          <OaTextField v-model="form.webdav_password" type="password" :label="t('backupWebDAVPassword')" autocomplete="new-password" />
+          <p class="oa-field-hint">{{ t('backupCredentialsHint') }}</p>
+        </template>
+
         <OaNumberField v-model="form.interval_hours" :label="t('backupInterval')" :hint="t('backupIntervalHint')" :min="1" :step="1" />
         <OaNumberField v-model="form.retention_hours" :label="t('backupRetention')" :hint="t('backupRetentionHint')" :min="1" :step="1" />
       </AdminControlCard>
@@ -266,7 +326,7 @@ onMounted(load);
           </div>
           <div>
             <dt>{{ t('backupCredentialsStatus') }}</dt>
-            <dd><OaBadge :tone="snapshot?.secret_configured ? 'default' : 'warning'">{{ snapshot?.secret_configured ? t('backupCredentialsSaved') : t('backupCredentialsMissing') }}</OaBadge></dd>
+            <dd><OaBadge :tone="credentialsTone">{{ credentialsLabel }}</OaBadge></dd>
           </div>
           <div>
             <dt>{{ t('backupLastStarted') }}</dt>

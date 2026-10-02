@@ -12,6 +12,7 @@ import (
 )
 
 type systemBackupInput struct {
+	Type            string `json:"type"`
 	Enabled         bool   `json:"enabled"`
 	Endpoint        string `json:"endpoint"`
 	Bucket          string `json:"bucket"`
@@ -19,6 +20,9 @@ type systemBackupInput struct {
 	Prefix          string `json:"prefix"`
 	AccessKeyID     string `json:"access_key_id"`
 	SecretAccessKey string `json:"secret_access_key"`
+	WebDAVURL       string `json:"webdav_url"`
+	WebDAVUsername  string `json:"webdav_username"`
+	WebDAVPassword  string `json:"webdav_password"`
 	IntervalHours   int    `json:"interval_hours"`
 	RetentionHours  int    `json:"retention_hours"`
 	RetentionDays   int    `json:"retention_days"`
@@ -48,10 +52,11 @@ func (h *Handlers) saveSystemBackup(w http.ResponseWriter, r *http.Request) erro
 		retentionHours = input.RetentionDays * 24
 	}
 	cfg := systembackup.Config{
-		Enabled: input.Enabled, Endpoint: input.Endpoint, Bucket: input.Bucket,
+		Type: input.Type, Enabled: input.Enabled, Endpoint: input.Endpoint, Bucket: input.Bucket,
 		Region: input.Region, Prefix: input.Prefix, AccessKeyID: input.AccessKeyID,
-		SecretKey: input.SecretAccessKey, IntervalHours: input.IntervalHours,
-		RetentionHours: retentionHours,
+		SecretKey: input.SecretAccessKey, WebDAVURL: input.WebDAVURL,
+		WebDAVUsername: input.WebDAVUsername, WebDAVPassword: input.WebDAVPassword,
+		IntervalHours: input.IntervalHours, RetentionHours: retentionHours,
 	}
 	if err := h.SystemBackup.Save(r.Context(), cfg); err != nil {
 		return backupAPIError(err)
@@ -86,7 +91,7 @@ func backupAPIError(err error) error {
 		return httpx.Conflict("backup_running", "An instance backup is already running.")
 	}
 	if errors.Is(err, systembackup.ErrNotConfigured) {
-		return httpx.BadRequest("Enter a storage endpoint, bucket, and credentials first.")
+		return httpx.BadRequest("Enter storage credentials and configuration first.")
 	}
 	var validation *systembackup.ValidationError
 	if errors.As(err, &validation) {
@@ -95,8 +100,5 @@ func backupAPIError(err error) error {
 	if strings.HasPrefix(err.Error(), "system backup:") {
 		return httpx.Internal(err)
 	}
-	// Storage errors exclude response bodies and signed headers, so returning
-	// their short protocol message makes the connection test useful without
-	// exposing either credential.
 	return httpx.Unavailable("Backup storage request failed: " + err.Error())
 }

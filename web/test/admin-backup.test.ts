@@ -112,6 +112,7 @@ describe('admin instance backup', () => {
     await settle();
 
     expect(save).toHaveBeenCalledWith({
+      type: 's3',
       enabled: true,
       endpoint: backup.endpoint,
       bucket: backup.bucket,
@@ -119,6 +120,9 @@ describe('admin instance backup', () => {
       prefix: 'weekly',
       access_key_id: '',
       secret_access_key: '',
+      webdav_url: '',
+      webdav_username: '',
+      webdav_password: '',
       interval_hours: backup.interval_hours,
       retention_hours: backup.retention_hours,
     });
