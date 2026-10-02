@@ -501,6 +501,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			if account.CanAdmin("availability") && !m.Enabled && !m.AutoDisabled {
 				continue
 			}
+			// A model marked hidden is withdrawn from the people using the
+			// site; the card is what they read, and an administrator looking
+			// at it would otherwise see rows the model list never shows.
+			if m.Hidden {
+				continue
+			}
 			rate, hasRate := rates[m.ID]
 			item := modelUptimeItem{
 				ID:          m.ID,

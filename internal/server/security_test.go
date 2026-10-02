@@ -1260,8 +1260,8 @@ func TestUptimeAccessControl(t *testing.T) {
 			hasProvider = true
 		}
 	}
-	if !hasHidden {
-		t.Error("admin uptime response missing hidden model")
+	if hasHidden {
+		t.Error("admin uptime response listed a hidden model")
 	}
 	if !hasProvider {
 		t.Error("admin uptime response missing provider_name")
