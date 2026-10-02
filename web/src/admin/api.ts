@@ -692,19 +692,25 @@ export interface AdminUserCheckTestResult {
   skipped?: boolean;
 }
 
+export type StorageType = 's3' | 'webdav';
+
 /** Instance-wide backup settings and the most recent run. Credential values
  *  are deliberately absent: the API accepts them only on writes. */
 export interface AdminBackup {
+  type?: StorageType;
   enabled: boolean;
   configured: boolean;
   endpoint: string;
   bucket: string;
   region: string;
   prefix: string;
+  webdav_url?: string;
+  webdav_username?: string;
   interval_hours: number;
   retention_hours: number;
   retention_days?: number;
   secret_configured: boolean;
+  webdav_secret_configured?: boolean;
   running: boolean;
   last_status: '' | 'running' | 'success' | 'error';
   last_started_at: number;
@@ -716,6 +722,7 @@ export interface AdminBackup {
 }
 
 export interface AdminBackupInput {
+  type?: StorageType;
   enabled: boolean;
   endpoint: string;
   bucket: string;
@@ -723,6 +730,9 @@ export interface AdminBackupInput {
   prefix: string;
   access_key_id: string;
   secret_access_key: string;
+  webdav_url?: string;
+  webdav_username?: string;
+  webdav_password?: string;
   interval_hours: number;
   retention_hours: number;
   retention_days?: number;

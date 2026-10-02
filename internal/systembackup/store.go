@@ -48,6 +48,7 @@ func (e *ValidationError) Error() string { return e.Message }
 func invalidConfig(message string) error { return &ValidationError{Message: message} }
 
 type Config struct {
+	Type           string `json:"type"`
 	Enabled        bool   `json:"enabled"`
 	Endpoint       string `json:"endpoint"`
 	Bucket         string `json:"bucket"`
@@ -55,6 +56,9 @@ type Config struct {
 	Prefix         string `json:"prefix"`
 	AccessKeyID    string `json:"-"`
 	SecretKey      string `json:"-"`
+	WebDAVURL      string `json:"webdav_url"`
+	WebDAVUsername string `json:"webdav_username"`
+	WebDAVPassword string `json:"-"`
 	IntervalHours  int    `json:"interval_hours"`
 	RetentionHours int    `json:"retention_hours"`
 	RetentionDays  int    `json:"retention_days,omitempty"`
@@ -62,18 +66,19 @@ type Config struct {
 
 type Status struct {
 	Config
-	InstanceID       string `json:"-"`
-	Configured       bool   `json:"configured"`
-	SecretConfigured bool   `json:"secret_configured"`
-	Running          bool   `json:"running"`
-	LastStatus       string `json:"last_status"`
-	LastStartedAt    int64  `json:"last_started_at"`
-	LastFinishedAt   int64  `json:"last_finished_at"`
-	LastSuccessAt    int64  `json:"last_success_at"`
-	NextRunAt        int64  `json:"next_run_at"`
-	LastError        string `json:"last_error"`
-	LastLog          string `json:"last_log"`
-	LeaseUntil       int64  `json:"-"`
+	InstanceID             string `json:"-"`
+	Configured             bool   `json:"configured"`
+	SecretConfigured       bool   `json:"secret_configured"`
+	WebDAVSecretConfigured bool   `json:"webdav_secret_configured"`
+	Running                bool   `json:"running"`
+	LastStatus             string `json:"last_status"`
+	LastStartedAt          int64  `json:"last_started_at"`
+	LastFinishedAt         int64  `json:"last_finished_at"`
+	LastSuccessAt          int64  `json:"last_success_at"`
+	NextRunAt              int64  `json:"next_run_at"`
+	LastError              string `json:"last_error"`
+	LastLog                string `json:"last_log"`
+	LeaseUntil             int64  `json:"-"`
 }
 
 type Store struct {
@@ -84,6 +89,8 @@ type Store struct {
 func NewStore(db *database.DB, box *secret.Box) *Store {
 	return &Store{db: db, box: box}
 }
+
+func (s *Store) Box() *secret.Box { return s.box }
 
 func (s *Store) ensure(ctx context.Context) error {
 	_, err := s.db.Exec(ctx,
@@ -100,22 +107,35 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	var status Status
-	var access, secretValue []byte
+	var access, secretValue, webdavPass []byte
 	var enabled bool
 	err := s.db.QueryRow(ctx, `SELECT instance_id, enabled, endpoint, bucket, region,
 		prefix, access_key_id_enc, secret_access_key_enc, interval_hours, retention_hours,
-		lease_until, last_status, last_started_at, last_finished_at, last_success_at, last_error, last_log
+		lease_until, last_status, last_started_at, last_finished_at, last_success_at, last_error, last_log,
+		storage_type, webdav_url, webdav_username, webdav_password_enc
 		FROM system_backups WHERE id = ?`, singletonID).Scan(
 		&status.InstanceID, &enabled, &status.Endpoint, &status.Bucket, &status.Region,
 		&status.Prefix, &access, &secretValue, &status.IntervalHours, &status.RetentionHours,
 		&status.LeaseUntil, &status.LastStatus, &status.LastStartedAt,
-		&status.LastFinishedAt, &status.LastSuccessAt, &status.LastError, &status.LastLog)
+		&status.LastFinishedAt, &status.LastSuccessAt, &status.LastError, &status.LastLog,
+		&status.Type, &status.WebDAVURL, &status.WebDAVUsername, &webdavPass)
 	if err != nil {
 		return Status{}, fmt.Errorf("system backup: read status: %w", err)
 	}
+	if status.Type == "" {
+		status.Type = StorageTypeS3
+	}
 	status.Enabled = enabled
 	status.SecretConfigured = len(access) > 0 && len(secretValue) > 0
-	status.Configured = status.Endpoint != "" && status.Bucket != "" && status.SecretConfigured
+	status.WebDAVSecretConfigured = len(webdavPass) > 0
+
+	switch status.Type {
+	case StorageTypeWebDAV:
+		status.Configured = status.WebDAVURL != "" && status.WebDAVUsername != "" && status.WebDAVSecretConfigured
+	case StorageTypeS3, "":
+		status.Configured = status.Endpoint != "" && status.Bucket != "" && status.SecretConfigured
+	}
+
 	status.Running = status.LastStatus == "running" && status.LeaseUntil > time.Now().UnixMilli()
 	if status.LastStatus == "running" && !status.Running {
 		status.LastStatus = "error"
@@ -156,14 +176,19 @@ func (s *Store) Load(ctx context.Context) (Config, error) {
 		return Config{}, err
 	}
 	var cfg Config
-	var access, secretValue []byte
+	var access, secretValue, webdavPass []byte
 	err := s.db.QueryRow(ctx, `SELECT enabled, endpoint, bucket, region, prefix,
-		access_key_id_enc, secret_access_key_enc, interval_hours, retention_hours
+		access_key_id_enc, secret_access_key_enc, interval_hours, retention_hours,
+		storage_type, webdav_url, webdav_username, webdav_password_enc
 		FROM system_backups WHERE id = ?`, singletonID).Scan(
 		&cfg.Enabled, &cfg.Endpoint, &cfg.Bucket, &cfg.Region, &cfg.Prefix,
-		&access, &secretValue, &cfg.IntervalHours, &cfg.RetentionHours)
+		&access, &secretValue, &cfg.IntervalHours, &cfg.RetentionHours,
+		&cfg.Type, &cfg.WebDAVURL, &cfg.WebDAVUsername, &webdavPass)
 	if err != nil {
 		return Config{}, fmt.Errorf("system backup: read configuration: %w", err)
+	}
+	if cfg.Type == "" {
+		cfg.Type = StorageTypeS3
 	}
 	if len(access) > 0 {
 		cfg.AccessKeyID, err = s.box.Open(access)
@@ -175,6 +200,12 @@ func (s *Store) Load(ctx context.Context) (Config, error) {
 		cfg.SecretKey, err = s.box.Open(secretValue)
 		if err != nil {
 			return Config{}, fmt.Errorf("system backup: decrypt secret key: %w", err)
+		}
+	}
+	if len(webdavPass) > 0 {
+		cfg.WebDAVPassword, err = s.box.Open(webdavPass)
+		if err != nil {
+			return Config{}, fmt.Errorf("system backup: decrypt webdav password: %w", err)
 		}
 	}
 	cfg.IntervalHours = defaultInt(cfg.IntervalHours, DefaultIntervalHours)
@@ -201,10 +232,15 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 	if cfg.RetentionHours < MinRetentionHours || cfg.RetentionHours > MaxRetentionHours {
 		return invalidConfig(fmt.Sprintf("Retention must be between %d and %d hours.", MinRetentionHours, MaxRetentionHours))
 	}
+	if cfg.Type == "" {
+		cfg.Type = StorageTypeS3
+	}
 	cfg.Endpoint = strings.TrimSpace(cfg.Endpoint)
 	cfg.Bucket = strings.TrimSpace(cfg.Bucket)
 	cfg.Region = strings.TrimSpace(cfg.Region)
 	cfg.Prefix = strings.Trim(cfg.Prefix, "/")
+	cfg.WebDAVURL = strings.TrimRight(strings.TrimSpace(cfg.WebDAVURL), "/")
+	cfg.WebDAVUsername = strings.TrimSpace(cfg.WebDAVUsername)
 	if cfg.Region == "" {
 		cfg.Region = DefaultRegion
 	}
@@ -220,10 +256,11 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 		if err := lockInstance(ctx, tx); err != nil {
 			return err
 		}
-		var access, secretValue []byte
+		var access, secretValue, webdavPass []byte
 		if err := tx.QueryRow(ctx,
-			`SELECT access_key_id_enc, secret_access_key_enc FROM system_backups WHERE id = ?`, singletonID,
-		).Scan(&access, &secretValue); err != nil {
+			`SELECT access_key_id_enc, secret_access_key_enc, webdav_password_enc
+			 FROM system_backups WHERE id = ?`, singletonID,
+		).Scan(&access, &secretValue, &webdavPass); err != nil {
 			return fmt.Errorf("system backup: read sealed credentials: %w", err)
 		}
 		merged := cfg
@@ -239,6 +276,13 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 			merged.SecretKey, err = s.box.Open(secretValue)
 			if err != nil {
 				return fmt.Errorf("system backup: decrypt saved secret key: %w", err)
+			}
+		}
+		if merged.WebDAVPassword == "" && len(webdavPass) > 0 {
+			var err error
+			merged.WebDAVPassword, err = s.box.Open(webdavPass)
+			if err != nil {
+				return fmt.Errorf("system backup: decrypt saved webdav password: %w", err)
 			}
 		}
 		if merged.Enabled {
@@ -260,12 +304,22 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 				return fmt.Errorf("system backup: seal secret key: %w", err)
 			}
 		}
+		if cfg.WebDAVPassword != "" {
+			var err error
+			webdavPass, err = s.box.Seal(cfg.WebDAVPassword)
+			if err != nil {
+				return fmt.Errorf("system backup: seal webdav password: %w", err)
+			}
+		}
 		if _, err := tx.Exec(ctx, `UPDATE system_backups SET enabled = ?, endpoint = ?, bucket = ?,
 			region = ?, prefix = ?, access_key_id_enc = ?, secret_access_key_enc = ?,
-			interval_hours = ?, retention_hours = ?, retention_days = ? WHERE id = ?`,
+			interval_hours = ?, retention_hours = ?, retention_days = ?,
+			storage_type = ?, webdav_url = ?, webdav_username = ?, webdav_password_enc = ?
+			WHERE id = ?`,
 			cfg.Enabled, cfg.Endpoint, cfg.Bucket, cfg.Region, cfg.Prefix,
 			nilIfEmpty(access), nilIfEmpty(secretValue), cfg.IntervalHours, cfg.RetentionHours,
-			(cfg.RetentionHours+23)/24, singletonID); err != nil {
+			(cfg.RetentionHours+23)/24, cfg.Type, cfg.WebDAVURL, cfg.WebDAVUsername,
+			nilIfEmpty(webdavPass), singletonID); err != nil {
 			return fmt.Errorf("system backup: save configuration: %w", err)
 		}
 		return nil
