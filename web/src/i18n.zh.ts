@@ -633,8 +633,8 @@ export const zh: Record<StringKey, string> = {
   enforceIt: '启用限制',
   limitRequests: '请求数',
   limitTokens: 'Tokens',
-  creditsBuys: '≈ {turns} 次对话。最贵的 {name} 每次开始前要预扣 {cost}。',
-  creditsTooSmall: '不够发一次：{name} 每次开始前要预扣 {cost}，会被直接拒绝。',
+  creditsBuys: '≈ {turns} 次对话（按最贵的模型算）。每次开始前预扣最多的五个模型：{list}。',
+  creditsTooSmall: '不够发一次：{name} 每次开始前要预扣 {cost}，会被直接拒绝。预扣最多的五个模型：{list}。',
   limitCredits: '用量上限',
 
   secConversations: '聊天记录',

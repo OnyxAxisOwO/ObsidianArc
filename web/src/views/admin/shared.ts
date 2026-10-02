@@ -45,6 +45,12 @@ export function priciest(models: AdminModel[]): AdminModel | null {
   );
 }
 
+/** The few models that cost the most per turn, dearest first: the readout
+ *  names several because the dearest one alone says nothing about the rest. */
+export function priciestFew(models: AdminModel[], count: number): AdminModel[] {
+  return [...models].sort((a, b) => worstCase(b) - worstCase(a)).slice(0, count);
+}
+
 export function round(value: number): string {
   return String(Math.round(value * 10) / 10);
 }

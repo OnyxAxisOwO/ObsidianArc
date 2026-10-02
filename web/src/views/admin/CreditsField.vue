@@ -10,25 +10,30 @@ import { computed, onMounted, ref } from 'vue';
 import type { AdminModel } from '@/admin/api';
 import OaNumberField from '@/components/OaNumberField.vue';
 import { t } from '@/composables/useI18n';
-import { priciest, pricedModels, round, worstCase } from './shared';
+import { priciestFew, pricedModels, round, worstCase } from './shared';
 
 const props = defineProps<{ modelValue: number | null }>();
 defineEmits<{ (event: 'update:modelValue', value: number | null): void }>();
 
-const worst = ref<AdminModel | null>(null);
+const TOP = 5;
+
+const top = ref<AdminModel[]>([]);
 
 const note = computed(() => {
-  const model = worst.value;
+  const model = top.value[0];
   const limit = props.modelValue;
   if (!model || limit === null || limit <= 0) return '';
   const cost = worstCase(model);
+  const list = top.value
+    .map((entry) => `${entry.display_name} ${round(worstCase(entry))}`)
+    .join(' · ');
   return limit < cost
-    ? t('creditsTooSmall', { name: model.display_name, cost: round(cost) })
-    : t('creditsBuys', { turns: Math.floor(limit / cost), name: model.display_name, cost: round(cost) });
+    ? t('creditsTooSmall', { name: model.display_name, cost: round(cost), list })
+    : t('creditsBuys', { turns: Math.floor(limit / cost), list });
 });
 
 onMounted(() => {
-  void pricedModels().then((models) => { worst.value = priciest(models); });
+  void pricedModels().then((models) => { top.value = priciestFew(models, TOP); });
 });
 </script>
 

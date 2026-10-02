@@ -115,4 +115,11 @@ describe('worstCase and priciest calculations', () => {
 
     expect(priciest([deepseek, claude, small])?.id).toBe('claude');
   });
+
+  it('lists the dearest few, dearest first', async () => {
+    const { priciestFew } = await import('../src/views/admin/shared');
+    const models = [adminModel('a', 0, 1, 0), adminModel('b', 0, 3, 0), adminModel('c', 0, 2, 0)];
+    expect(priciestFew(models, 2).map((m) => m.id)).toEqual(['b', 'c']);
+    expect(models.map((m) => m.id)).toEqual(['a', 'b', 'c']);
+  });
 });

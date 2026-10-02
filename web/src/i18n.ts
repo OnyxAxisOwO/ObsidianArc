@@ -647,8 +647,8 @@ const en = {
   enforceIt: 'Enforce it',
   limitRequests: 'Requests',
   limitTokens: 'Tokens',
-  creditsBuys: '≈ {turns} turns. The priciest, {name}, reserves {cost} for each one before it runs.',
-  creditsTooSmall: 'Not enough for one turn: {name} reserves {cost} before it runs, so it would be refused outright.',
+  creditsBuys: '≈ {turns} turns at the priciest model. Reserved before each turn, top five by cost: {list}.',
+  creditsTooSmall: 'Not enough for one turn: {name} reserves {cost} before it runs, so it would be refused outright. Top five by cost: {list}.',
   limitCredits: 'Credits',
 
   secConversations: 'Conversations',
