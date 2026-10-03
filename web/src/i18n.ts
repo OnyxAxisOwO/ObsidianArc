@@ -996,8 +996,7 @@ const en = {
   boardTokens: '{count} tokens',
   boardSuccess: '{rate} ok',
   boardDrill: 'Show only {name}',
-  boardAll: 'Show all {count}',
-  boardFewer: 'Show fewer',
+  boardCount: '{count} in all · scroll for the rest',
 
   // --- the leaderboard readers open from their own menu
   leaderboardTitle: 'Leaderboard',

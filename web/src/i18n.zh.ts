@@ -977,8 +977,7 @@ export const zh: Record<StringKey, string> = {
   boardTokens: '{count} Tokens',
   boardSuccess: '成功率 {rate}',
   boardDrill: '只看 {name}',
-  boardAll: '显示全部 {count} 项',
-  boardFewer: '收起',
+  boardCount: '共 {count} 项 · 滚动查看全部',
 
   leaderboardTitle: '排行榜',
   boardPeriod: '时间范围',

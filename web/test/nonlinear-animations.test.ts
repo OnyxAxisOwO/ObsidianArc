@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 describe('Non-linear animation & expand/collapse transitions', () => {
-  it('UsageBoard expands and collapses extra rows with animated accordion and chevron', async () => {
+  it('UsageBoard lists every row in one scrolling frame, with no show-all toggle', async () => {
     const rows = Array.from({ length: 10 }, (_, i) => ({
       key: `model-${i}`,
       label: `Model ${i}`,
@@ -36,58 +36,45 @@ describe('Non-linear animation & expand/collapse transitions', () => {
       total_tokens: 1000 * (10 - i),
       errors: 0,
     }));
+    const mount = (list: typeof rows) => {
+      app?.unmount();
+      host.textContent = '';
+      app = createApp({
+        render() {
+          return h(UsageBoard as any, { rows: list, kind: 'model', metric: 'requests', limit: 6, emptyText: 'No models' });
+        },
+      });
+      app.mount(host);
+    };
 
-    app = createApp({
-      render() {
-        return h(UsageBoard as any, {
-          rows,
-          kind: 'model',
-          metric: 'requests',
-          limit: 6,
-          emptyText: 'No models',
-        });
-      },
-    });
-    app.mount(host);
+    mount(rows);
     await nextTick();
 
-    // Limit is 6, total 10. The toggle button should be present.
-    const moreBtn = host.querySelector<HTMLButtonElement>('.oa-board-more');
-    expect(moreBtn).not.toBeNull();
-    expect(moreBtn?.classList.contains('open')).toBe(false);
+    // All ten are in the list at once; `limit` only sets how tall the frame is.
+    expect(host.querySelectorAll('.oa-board > li').length).toBe(10);
+    expect(host.querySelector('.oa-board-more')).toBeNull();
+    expect(host.querySelector('.oa-board-collapse')).toBeNull();
+    expect((host.querySelector('.oa-board-frame') as HTMLElement).style.getPropertyValue('--board-rows')).toBe('6');
 
-    const chevron = moreBtn?.querySelector('.oa-board-more-chevron');
-    expect(chevron).not.toBeNull();
-    expect(chevron?.classList.contains('open')).toBe(false);
-
-    // Accordion container should initially not have .open
-    const collapseContainer = host.querySelector('.oa-board-collapse');
-    expect(collapseContainer).not.toBeNull();
-    expect(collapseContainer?.classList.contains('open')).toBe(false);
-
-    // Top rows are in the main list
-    const topRowItems = host.querySelectorAll('.oa-board > li:not(.oa-board-collapse-item)');
-    expect(topRowItems.length).toBe(6);
-
-    // Extra rows are inside the collapse container
-    const extraRowItems = host.querySelectorAll('.oa-board-sublist > li');
-    expect(extraRowItems.length).toBe(4);
-
-    // Click "显示全部"
-    moreBtn?.click();
+    // It says how many there are, and fades at whichever edge has more past it.
+    expect(host.querySelector('.oa-board-count')?.textContent).toContain('10');
+    const scroller = host.querySelector<HTMLElement>('.oa-board-scroll')!;
+    expect(scroller.classList.contains('fade-bottom')).toBe(true);
+    expect(scroller.classList.contains('fade-top')).toBe(false);
+    Object.defineProperty(scroller, 'scrollHeight', { value: 700, configurable: true });
+    Object.defineProperty(scroller, 'clientHeight', { value: 400, configurable: true });
+    scroller.scrollTop = 300;
+    scroller.dispatchEvent(new Event('scroll'));
     await nextTick();
+    expect(scroller.classList.contains('fade-bottom')).toBe(false);
+    expect(scroller.classList.contains('fade-top')).toBe(true);
 
-    expect(moreBtn?.classList.contains('open')).toBe(true);
-    expect(chevron?.classList.contains('open')).toBe(true);
-    expect(collapseContainer?.classList.contains('open')).toBe(true);
-
-    // Click "收起"
-    moreBtn?.click();
+    // A list that fits is just a list: nothing to count, nothing to fade.
+    mount(rows.slice(0, 4));
     await nextTick();
-
-    expect(moreBtn?.classList.contains('open')).toBe(false);
-    expect(chevron?.classList.contains('open')).toBe(false);
-    expect(collapseContainer?.classList.contains('open')).toBe(false);
+    expect(host.querySelectorAll('.oa-board > li').length).toBe(4);
+    expect(host.querySelector('.oa-board-count')).toBeNull();
+    expect(host.querySelector('.oa-board-scroll')?.className).toBe('oa-board-scroll');
   });
 
   it('ChatToolCall toggles smoothly with aria-expanded and open state', async () => {

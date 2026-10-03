@@ -705,8 +705,8 @@
 .oa-board {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin: 0 -10px;
+  gap: var(--board-gap, 2px);
+  margin: 0;
   padding: 0;
   list-style: none;
 }
@@ -716,8 +716,9 @@
   align-items: center;
   gap: 12px;
   width: 100%;
+  height: var(--board-row, 64px);
   box-sizing: border-box;
-  padding: 10px;
+  padding: 0 10px;
   border: 0;
   border-radius: 12px;
   background: transparent;
@@ -839,84 +840,64 @@ button.oa-board-row:focus-visible {
   opacity: 1;
 }
 
-.oa-board-collapse-item {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+/* The frame is as tall as `--board-rows` rows and a half, whatever the list
+   holds: the half row is the hint that there is more under it. Rows have a
+   fixed height so that sum is exact rather than a guess about line-heights. */
+.oa-board-frame {
+  --board-row: 64px;
+  --board-gap: 2px;
 }
 
-.oa-board-sublist {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+/* A row's hover fill reaches 10px past the text on both sides, which the
+   scroller would clip — so the bleed is the wrapper's and the scroller pads
+   it back, and the overlay scrollbar sits out in the card's own padding. */
+.oa-board-wrap {
+  position: relative;
+  margin: 0 -10px;
 }
 
-.oa-board-collapse {
-  display: grid;
-  grid-template-rows: 0fr;
-  opacity: 0;
-  visibility: hidden;
-  transition:
-    grid-template-rows 0.38s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-    visibility 0.38s;
-  overflow: hidden;
+.oa-board-scroll {
+  max-height: calc((var(--board-rows) + 0.5) * (var(--board-row) + var(--board-gap)));
+  padding: 0 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 
-  &.open {
-    grid-template-rows: 1fr;
-    opacity: 1;
-    visibility: visible;
+  &::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+
+  &.fade-top {
+    --fade-top: 28px;
+  }
+
+  &.fade-bottom {
+    --fade-bottom: 36px;
+  }
+
+  &.fade-top,
+  &.fade-bottom {
+    mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent);
   }
 }
 
-.oa-board-collapse-inner {
-  min-height: 0;
-  overflow: hidden;
+.oa-board-wrap .oa-overlay-track {
+  top: 4px;
+  bottom: 4px;
+  right: 0;
 }
 
-.oa-board-more {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  /* Its own width even where the board sits in a column that stretches
-     its children, as a panel's body does. */
-  align-self: flex-start;
-  height: 28px;
-  margin: 10px 0 0 30px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
+.oa-board-count {
+  margin: 8px 0 0;
   color: var(--ai-text-secondary);
-  font: inherit;
-  font-size: 11.5px;
-  cursor: pointer;
-  transition:
-    background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
-
-  &:hover {
-    background: var(--ai-state-hover);
-    color: var(--ai-text);
-  }
-
-  &:active {
-    transform: scale(0.97);
-  }
-}
-
-.oa-board-more-chevron {
-  display: inline-flex;
-  flex-shrink: 0;
-  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
-
-  &.open {
-    transform: rotate(180deg);
-  }
+  font-size: 10.5px;
+  text-align: center;
 }
 
 .oa-board-empty {
@@ -1043,7 +1024,9 @@ button.oa-board-row:focus-visible {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  align-items: start;
+  /* Level, so a card with a short list does not hang off the top of the one
+     beside it. */
+  align-items: stretch;
 }
 
 .oa-report-row-lead {
