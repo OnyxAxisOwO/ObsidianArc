@@ -373,6 +373,14 @@ function open(row: AdminModel | null, from: AdminModel | null = null): void {
     reasoningStyle: source?.reasoning_style ?? '',
     tiers: source?.reasoning_tiers ?? [],
     requestOverride: source?.request_override ?? '',
+    imageResponseFormat: (() => {
+      try {
+        const parsed = JSON.parse(source?.request_override ?? '{}');
+        return typeof parsed?.image_response_format === 'string' ? parsed.image_response_format : '';
+      } catch {
+        return '';
+      }
+    })(),
     requestWeight: source?.request_weight ?? 0,
     inputWeight: source?.input_token_weight ?? 1,
     outputWeight: source?.output_token_weight ?? 1,
@@ -396,6 +404,7 @@ async function save(): Promise<void> {
   panelError.value = '';
 
   const trimmedOverride = form.value.requestOverride.trim();
+  let overrideObj: Record<string, unknown> = {};
   if (trimmedOverride) {
     try {
       const parsed = JSON.parse(trimmedOverride);
@@ -404,18 +413,28 @@ async function save(): Promise<void> {
         busy.value = false;
         return;
       }
+      overrideObj = parsed as Record<string, unknown>;
     } catch {
       panelError.value = t('invalidRequestOverrideJSON');
       busy.value = false;
       return;
     }
   }
+  // Merge the dedicated selector into the JSON blob so the server sees one
+  // field. An empty selection removes the key rather than writing "" so the
+  // default (b64_json) stays implicit.
+  if (form.value.imageResponseFormat) {
+    overrideObj['image_response_format'] = form.value.imageResponseFormat;
+  } else {
+    delete overrideObj['image_response_format'];
+  }
+  const mergedOverride = Object.keys(overrideObj).length ? JSON.stringify(overrideObj) : '{}';
 
   const payload: Record<string, unknown> = {
     route_to_id: form.value.routeTo,
     reasoning_style: form.value.reasoningStyle,
     reasoning_tiers: form.value.tiers,
-    request_override: trimmedOverride || '{}',
+    request_override: mergedOverride,
     model_id: form.value.modelID.trim(),
     api_name: form.value.apiName.trim(),
     system_prompt: form.value.systemPrompt.trim(),
@@ -975,6 +994,17 @@ let sortState: SortState | null = null;
       placeholder='{"reasoning_effort": "low"}'
       :rows="3"
       :hint="t('requestOverrideFieldHint')"
+    />
+    <OaSelectField
+      v-model="form.imageResponseFormat"
+      :label="t('modelImageResponseFormat')"
+      :options="[
+        { value: '', label: t('modelImageResponseFormatDefault') },
+        { value: 'b64_json', label: t('modelImageResponseFormatB64') },
+        { value: 'url', label: t('modelImageResponseFormatURL') },
+        { value: 'auto', label: t('modelImageResponseFormatAuto') },
+      ]"
+      :hint="t('modelImageResponseFormatHint')"
     />
 
     <OaFormSection id="secWeights" :title="t('secWeights')" :hint="t('weightsHint')" />

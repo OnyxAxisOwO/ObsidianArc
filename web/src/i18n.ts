@@ -2685,6 +2685,16 @@ const en = {
   checkinRewardCardCount: 'Cards',
   checkinSave: 'Save check-in settings',
   checkinSaved: 'Saved.',
+  notifyTitleImageGenComplete: 'Image generated',
+  notifyBodyImageGenComplete: '{count} image(s) ready in the gallery.',
+  notifyTitleImageGenFailed: 'Image generation failed',
+  notifyBodyImageGenFailed: 'The image could not be generated.',
+  modelImageResponseFormat: 'Image response format',
+  modelImageResponseFormatDefault: 'Default (Base64)',
+  modelImageResponseFormatB64: 'Base64 (inline bytes)',
+  modelImageResponseFormatURL: 'URL (server fetches & converts)',
+  modelImageResponseFormatAuto: 'Auto',
+  modelImageResponseFormatHint: 'How the upstream returns image data. Use "URL" for models that only return a signed link; the server downloads and re-encodes so callers never see the upstream URL.',
 } as const;
 
 export type StringKey = keyof typeof en;
