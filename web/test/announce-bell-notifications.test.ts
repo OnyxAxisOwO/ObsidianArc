@@ -132,6 +132,15 @@ describe('the bell, with notifications added', () => {
     await mount();
     await open();
 
+    // Opening the bell marked what was waiting then read — that is the badge
+    // contract now — so the section's own button exists only for something
+    // that lands while the menu is up. Put one there, and forget the open's
+    // own request so the assertion below can only be met by this click.
+    expect(notificationsUnread.value).toBe(0);
+    notificationsUnread.value = 1;
+    post.mockClear();
+    await nextTick();
+
     // Scoped to the notification section specifically: its own "mark all
     // read" reads the same as the announcement one's, so the two are told
     // apart by where they sit rather than by their (identical) English text.

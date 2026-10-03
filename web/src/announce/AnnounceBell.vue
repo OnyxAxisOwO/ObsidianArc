@@ -97,10 +97,14 @@ function dismiss(): void {
  * badge for one tick.
  */
 function onTrigger(wasOpen: boolean): void {
-  if (!wasOpen) {
-    void Promise.allSettled([markAllRead(), markAllNotificationsRead()]);
-    void refresh({ popup: false });
-  }
+  if (wasOpen) return;
+  // The badge repaint is this refresh, so it waits for both marks to settle:
+  // letting it race them would let a stale "unread: 3" land after the marks
+  // and put the dot straight back — the very bug this clears. allSettled
+  // rather than all, so a mark that fails still refreshes; the server's own
+  // count is the truth either way, exactly as the failure case wants.
+  void Promise.allSettled([markAllRead(), markAllNotificationsRead()])
+    .then(() => refresh({ popup: false }));
 }
 
 onMounted(() => void refresh());
