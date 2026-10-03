@@ -155,6 +155,20 @@ func (m Model) Extra() map[string]any {
 	return out
 }
 
+// ImageResponseFormat reads the "image_response_format" key from
+// RequestOverride. Empty means the provider honours b64_json; "url" means the
+// compat layer must fetch and re-encode because the upstream only returns a
+// signed link. Stored inside RequestOverride rather than as its own column so
+// no schema migration is needed for a field only the image path reads.
+func (m Model) ImageResponseFormat() string {
+	extra := m.Extra()
+	if extra == nil {
+		return ""
+	}
+	v, _ := extra["image_response_format"].(string)
+	return v
+}
+
 // DefaultMaxOutput is what a turn is assumed capable of costing when a
 // model declares no ceiling of its own. Generous enough not to refuse
 // ordinary use, small enough that reserving it means something.

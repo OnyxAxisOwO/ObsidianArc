@@ -8,7 +8,7 @@
 
 import { t, tn } from '@/composables/useI18n';
 import {
-  IconBell, IconGift, IconInfo, IconLayers, IconLock, IconMessage, IconPulse, IconRefresh, IconShield, IconUser,
+  IconBell, IconGift, IconImage, IconInfo, IconLayers, IconLock, IconMessage, IconPulse, IconRefresh, IconShield, IconUser,
   IconUsers, type OaIcon,
 } from '@/icons';
 import type { Notification } from '@/api/notifications';
@@ -161,6 +161,22 @@ export function describeNotification(n: Notification): NotificationText {
         title: t('notifyTitleTwoFactorChanged'),
         body: TWO_FACTOR[kind] ? t(TWO_FACTOR[kind]) : t('notifyBodyTwoFactorChanged'),
         icon: IconLock,
+      };
+    }
+    case 'image_generation_complete': {
+      const count = Number(params['count']) || 1;
+      return {
+        title: t('notifyTitleImageGenComplete'),
+        body: t('notifyBodyImageGenComplete', { count }),
+        icon: IconImage,
+      };
+    }
+    case 'image_generation_failed': {
+      const message = String(params['message'] || '');
+      return {
+        title: t('notifyTitleImageGenFailed'),
+        body: message || t('notifyBodyImageGenFailed'),
+        icon: IconImage,
       };
     }
     default: {
