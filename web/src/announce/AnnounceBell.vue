@@ -89,14 +89,18 @@ function dismiss(): void {
 }
 
 /**
- * The feed is fetched once when the header is built. A tab left open since
- * before an announcement was written would otherwise say there are none for
- * as long as it stays open — which is exactly when somebody opens the bell to
- * check. Opening it is the moment the answer is wanted, so that is when it is
- * asked for.
+ * Opening the bell is the moment the reader says "I'm looking now", so that
+ * is when both feeds are marked read — the badge clears immediately rather
+ * than waiting for a separate button click. Failures are swallowed: the next
+ * poll's unread count is the source of truth either way, and a menu that
+ * refuses to open because a mark-read call hiccuped is worse than a stale
+ * badge for one tick.
  */
 function onTrigger(wasOpen: boolean): void {
-  if (!wasOpen) void refresh({ popup: false });
+  if (!wasOpen) {
+    void Promise.allSettled([markAllRead(), markAllNotificationsRead()]);
+    void refresh({ popup: false });
+  }
 }
 
 onMounted(() => void refresh());
