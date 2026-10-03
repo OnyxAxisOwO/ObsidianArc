@@ -174,6 +174,17 @@ export function dismissToast(id: string): void {
 }
 
 /**
+ * Push a transient toast from outside the poll loop — used when an image
+ * generation completes after the reader has navigated away from the lab. The
+ * notification is local-only (never written to the server) and auto-capped by
+ * the same TOAST_CAP as polled arrivals so the stack does not grow unbounded.
+ */
+export function pushToast(notification: Notification): void {
+  const entry = { id: notification.id, notification };
+  toasts.value = [...toasts.value, entry].slice(-TOAST_CAP);
+}
+
+/**
  * The bell's "mark all read": clears the badge locally and moves the
  * server's watermark to the newest row this session has actually shown,
  * rather than to the server's own clock — a poll response still in flight

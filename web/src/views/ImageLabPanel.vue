@@ -35,10 +35,18 @@ import {
   IconTrash,
 } from '@/icons';
 import { relativeTime } from '@/lib/format';
+import { pushToast } from '@/stores/notifications';
 
 const router = useRouter();
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
 const fullscreen = ref(false);
+
+// Tracks whether this component instance is still mounted. A generation that
+// finishes after the reader navigated away cannot update history.value or
+// error.value (the refs are gone), so it pushes a toast instead. The flag is
+// set in onMounted/onUnmounted rather than derived from a lifecycle hook so
+// the generate() closure can read it synchronously after an await.
+let componentMounted = false;
 
 const activeTab = ref<'generate' | 'history'>('generate');
 const gallery = ref<ImageGenerationRecord[]>([]);
@@ -196,7 +204,10 @@ function onPaste(event: ClipboardEvent): void {
 
 // A blob: URL is held by the document until it is released, so leaving the
 // panel with pictures in it would leak the whole downscaled images.
-onUnmounted(clearReferences);
+onUnmounted(() => {
+  componentMounted = false;
+  clearReferences();
+});
 
 const imageCapableModels = computed(() =>
   models.value.filter((m) => m.usable !== false && m.supports_image_gen),
@@ -263,6 +274,7 @@ const sizeOptions = computed(() => SIZES.map((size) => ({
 })));
 
 onMounted(async () => {
+  componentMounted = true;
   if (!models.value.length) {
     try {
       await loadModels();
@@ -325,6 +337,17 @@ async function generate(): Promise<void> {
   const text = prompt.value.trim();
   if (!text || !selectedModelID.value || busy.value || preparing.value) return;
 
+  // Inject an explicit aspect-ratio directive into the prompt so the model
+  // honours the tile the reader picked even when the prompt text mentions a
+  // different ratio. Without this, several image models silently fall back to
+  // their default canvas and centre-crop the content, which is what produced
+  // the "4:3 output with 3:4 content and side blanks" report.
+  let finalPrompt = text;
+  const sizeEntry = SIZES.find((s) => s.value === selectedSize.value);
+  if (sizeEntry && sizeEntry.ratio) {
+    finalPrompt += `\n\n[System: Output aspect ratio: ${sizeEntry.ratio} (${sizeEntry.w}×${sizeEntry.h}). Do not add padding or letterboxing.]`;
+  }
+
   busy.value = true;
   error.value = '';
 
@@ -332,7 +355,7 @@ async function generate(): Promise<void> {
     const images = references.value.map((r) => r.data);
     const res = await generateImages({
       model_id: selectedModelID.value,
-      prompt: text,
+      prompt: finalPrompt,
       style: selectedStyle.value,
       size: selectedSize.value,
       n: 1,
@@ -340,13 +363,39 @@ async function generate(): Promise<void> {
     });
 
     if (res.images && res.images.length) {
-      history.value = [...res.images, ...history.value];
-      void loadGallery();
+      if (componentMounted) {
+        history.value = [...res.images, ...history.value];
+        void loadGallery();
+      } else {
+        // The reader navigated away while the generation was in flight. The
+        // image is already persisted server-side; surface it via a toast so
+        // they know to check the gallery rather than thinking the request
+        // vanished.
+        pushToast({
+          id: `image-gen-${Date.now()}`,
+          kind: 'image_generation_complete',
+          params: { count: res.images.length },
+          link: '/',
+          created_at: Date.now(),
+        });
+      }
     }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : t('failed');
+    if (componentMounted) {
+      error.value = err instanceof Error ? err.message : t('failed');
+    } else {
+      pushToast({
+        id: `image-gen-fail-${Date.now()}`,
+        kind: 'image_generation_failed',
+        params: { message: err instanceof Error ? err.message : String(err) },
+        link: '',
+        created_at: Date.now(),
+      });
+    }
   } finally {
-    busy.value = false;
+    if (componentMounted) {
+      busy.value = false;
+    }
   }
 }
 
