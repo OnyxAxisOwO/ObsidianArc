@@ -262,6 +262,10 @@ const form = ref({
   reasoningStyle: '' as ReasoningStyle | '',
   tiers: [] as ReasoningTier[],
   requestOverride: '',
+  // Mirrors the `image_response_format` key inside requestOverride as its own
+  // control, so an operator does not have to edit JSON to reach it; save()
+  // merges it back into the override object.
+  imageResponseFormat: '',
   requestWeight: 0 as number | null,
   inputWeight: 1 as number | null,
   outputWeight: 1 as number | null,
