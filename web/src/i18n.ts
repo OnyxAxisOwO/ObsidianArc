@@ -997,6 +997,14 @@ const en = {
   boardSuccess: '{rate} ok',
   boardDrill: 'Show only {name}',
   boardCount: '{count} in all · scroll for the rest',
+  allowanceTitle: 'Allowances',
+  allowanceOverview: 'What each account has left, as of now',
+  allowanceSearch: 'Search accounts',
+  allowanceAll: 'Everyone',
+  allowanceLow: 'Running low',
+  allowanceExhausted: 'Used up',
+  allowanceNoLimit: 'No limit',
+  allowanceEmpty: 'No account matches.',
 
   // --- the leaderboard readers open from their own menu
   leaderboardTitle: 'Leaderboard',

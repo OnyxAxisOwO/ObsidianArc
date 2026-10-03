@@ -327,6 +327,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/usage/rpm", protected("usage", h.currentRPM))
 	mux.Handle("GET /api/admin/usage/breakdown", protected("usage", h.usageBreakdown))
 	mux.Handle("GET /api/admin/usage/records", protected("usage", h.usageRecords))
+	mux.Handle("GET /api/admin/usage/allowances", protected("usage", h.usageAllowances))
 	mux.Handle("POST /api/admin/usage/reset", protected("usage", h.resetQuota))
 	mux.Handle("GET /api/admin/checkin", protected("usage", h.checkinSettings))
 	mux.Handle("PUT /api/admin/checkin", protected("usage", h.saveCheckinSettings))

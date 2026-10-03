@@ -304,6 +304,55 @@ func init() {
 	})
 
 	registerCommand(Command{
+		Name:    "usage allowances",
+		Group:   "operations",
+		Summary: Text{EN: "Everyone's allowance, the account closest to its limit first", ZH: "所有账户的额度，离上限最近的排在前面"},
+		Usage:   "usage allowances [--state low|exhausted] [--q TEXT] [--group ID] [--limit N] [--offset N]",
+		Flags: []Flag{
+			{Name: "--state", Hint: Text{EN: "low is 80% or more of a window spent; exhausted is all of it", ZH: "low 为已用 80% 以上；exhausted 为已用尽"}, Value: "STATE"},
+			{Name: "--q", Hint: Text{EN: "search name, nickname or email", ZH: "搜索用户名、昵称或邮箱"}, Value: "TEXT"},
+			{Name: "--group", Hint: Text{EN: "only this group's accounts", ZH: "只看这个用户组的账户"}, Value: "ID"},
+			{Name: "--limit", Hint: Text{EN: "rows to show; default 50", ZH: "显示多少行；默认 50"}, Value: "N"},
+			{Name: "--offset", Hint: Text{EN: "rows to skip", ZH: "跳过多少行"}, Value: "N"},
+		},
+		Examples:   []string{"usage allowances --state exhausted", "usage allowances --q alice"},
+		SeeAlso:    []string{"usage summary", "quota policies"},
+		Permission: "usage",
+		Endpoints:  []string{"GET /api/admin/usage/allowances"},
+		Run: func(_ context.Context, rt *Runtime) error {
+			q := url.Values{}
+			for flag, param := range map[string]string{"state": "state", "q": "q", "group": "group_id", "limit": "limit", "offset": "offset"} {
+				if v := rt.String(flag); v != "" {
+					q.Set(param, v)
+				}
+			}
+			data, _, err := rt.Call(http.MethodGet, "/api/admin/usage/allowances?"+q.Encode(), nil)
+			if err != nil {
+				return err
+			}
+			var rows [][]string
+			for _, raw := range asSlice(asMap(data)["rows"]) {
+				row := asMap(raw)
+				name := asStr(row["nickname"])
+				if name == "" {
+					name = asStr(row["username"])
+				}
+				cells := []string{name}
+				for _, w := range asSlice(row["windows"]) {
+					window := asMap(w)
+					if window["enforced"] != true {
+						cells = append(cells, "-")
+						continue
+					}
+					cells = append(cells, windowFigure(window))
+				}
+				rows = append(rows, cells)
+			}
+			return rt.Table([]string{"account", "5h", "1w", "1m"}, rows)
+		},
+	})
+
+	registerCommand(Command{
 		Name:    "usage breakdown",
 		Group:   "operations",
 		Summary: Text{EN: "Rank usage along one dimension: who uses a model, what an account uses", ZH: "按一个维度排行用量：某个模型谁在用，某个账户在用什么"},
@@ -1002,4 +1051,21 @@ func breakdownRows(v any) [][]string {
 		rows = append(rows, []string{label, fmt.Sprint(asNum(b["requests"])), fmt.Sprint(asNum(b["total_tokens"])), fmt.Sprintf("%.2f", asNum(b["credits"]))})
 	}
 	return rows
+}
+
+// windowFigure is how full one allowance window is, judged on whichever of its
+// limits is closest — the same reading the account's own bars are drawn from.
+func windowFigure(window map[string]any) string {
+	worst := -1.0
+	for _, pair := range [][2]string{
+		{"used_requests", "limit_requests"}, {"used_tokens", "limit_tokens"}, {"used_credits", "limit_credits"},
+	} {
+		if limit := asNum(window[pair[1]]); limit > 0 {
+			worst = max(worst, min(1, asNum(window[pair[0]])/limit))
+		}
+	}
+	if worst < 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d%% used", int(worst*100+0.5))
 }

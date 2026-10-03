@@ -13,11 +13,12 @@
 // the ones the most people use, the heavy accounts the ones that spend the
 // most tokens. The server returns every row either way.
 
-import { computed, ref, watch } from 'vue';
+import { computed, watch } from 'vue';
 import type { UsageBreakdown } from '@/admin/api';
 import { t, tn } from '@/composables/useI18n';
 import { compactNumber, relativeTime } from '@/lib/format';
 import { formatDuration, percent } from './scale';
+import { useScrollFade } from './useScrollFade';
 import { metricOf, type BoardKind, type BoardMetric } from './shape';
 import { maskUser, maskProvider, maskBilling, isMasked } from '@/admin/safeMode';
 import OaScrollArea from '@/components/OaScrollArea.vue';
@@ -52,22 +53,8 @@ const total = computed(() => props.metric === 'users'
   : ranked.value.reduce((sum, row) => sum + metricOf(row, props.metric), 0));
 const overflows = computed(() => ranked.value.length > props.limit);
 
-// The edge row is cut by half a row on purpose, and fades out, so a list that
-// scrolls looks like one before anyone has touched it — a thin overlay
-// scrollbar only shows once it is moving. Each fade goes when that end is
-// reached, because there is nothing past it for the fade to point at.
-const atStart = ref(true);
-const atEnd = ref(false);
-function onScroll(event: Event): void {
-  const element = event.target as HTMLElement;
-  atStart.value = element.scrollTop <= 2;
-  atEnd.value = element.scrollTop + element.clientHeight >= element.scrollHeight - 2;
-}
-watch(() => ranked.value.length, () => { atStart.value = true; atEnd.value = false; });
-const scrollClass = computed(() => {
-  if (!overflows.value) return 'oa-board-scroll';
-  return `oa-board-scroll${atStart.value ? '' : ' fade-top'}${atEnd.value ? '' : ' fade-bottom'}`;
-});
+const { onScroll, reset, scrollClass } = useScrollFade(overflows);
+watch(() => ranked.value.length, reset);
 
 function value(row: UsageBreakdown): string {
   const figure = metricOf(row, props.metric);

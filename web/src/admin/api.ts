@@ -7,7 +7,7 @@
 
 import { api, ApiError, type RequestOptions } from '../api/client';
 import type { ApiKey } from '../api/keys';
-import type { UsageSummary } from '../api/usage';
+import type { UsageDisplay, UsageSummary, UsageWindow } from '../api/usage';
 import { t } from '../composables/useI18n';
 
 // Re-exported so an admin screen imports one module, the way every other
@@ -340,6 +340,28 @@ export interface UsageBreakdown extends UsageTotals {
   /** The provider under a model, the handle under an account's nickname. */
   detail?: string;
   last_at: number;
+}
+
+/** One account's allowance windows, for the overview of everyone's. */
+export interface AllowanceRow {
+  id: string;
+  username: string;
+  nickname: string;
+  group_id: string;
+  last_active_at: number;
+  /** The fullest enforced window, 0-1; null where nothing constrains the account. */
+  pressure: number | null;
+  unlimited: boolean;
+  windows: UsageWindow[];
+}
+
+export interface AllowanceList {
+  rows: AllowanceRow[];
+  total: number;
+  display: UsageDisplay;
+  /** How many accounts are at 80% or more of a window, and how many at all of it. */
+  low: number;
+  exhausted: number;
 }
 
 export interface UsagePoint extends UsageTotals {
@@ -1030,6 +1052,8 @@ export const adminApi = {
     api.get<{ rows: UsageBreakdown[] }>(`/api/admin/usage/breakdown?dimension=${dimension}${query ? `&${query}` : ''}`, options),
   usageRecords: (query: string, options?: RequestOptions) =>
     api.get<{ records: UsageRecord[]; total: number }>(`/api/admin/usage/records${query}`, options),
+  usageAllowances: (query: string, options?: RequestOptions) =>
+    api.get<AllowanceList>(`/api/admin/usage/allowances?${query}`, options),
   rpm: (query = '') =>
     api.get<{ rpm: number }>(`/api/admin/usage/rpm${query}`),
 

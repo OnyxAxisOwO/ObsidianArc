@@ -670,6 +670,10 @@ type Summary struct {
 	Windows []WindowUsage `json:"windows"`
 }
 
+// Display is how the instance phrases an allowance, for a caller that is
+// handing summaries on without the Summary that normally carries it.
+func (s *Service) Display() string { return s.settings.UsageDisplay() }
+
 // SummaryFor is what the composer menu reads. It reports every allowance
 // window, enforced or not, so a user can see their consumption on a server
 // that has set no limits.
@@ -704,19 +708,107 @@ func (s *Service) SummaryFor(ctx context.Context, account user.User) (Summary, e
 			return Summary{}, fmt.Errorf("quota: read counter: %w", err)
 		}
 
-		summary.Windows = append(summary.Windows, WindowUsage{
-			Kind:          window,
-			Enforced:      limits.isOn(),
-			UsedRequests:  used.Requests,
-			UsedTokens:    used.Tokens,
-			UsedCredits:   round(used.Credits),
-			LimitRequests: limits.Requests,
-			LimitTokens:   limits.Tokens,
-			LimitCredits:  limits.Credits,
-			ResetsAt:      bucketEnd(window, now, anchor).UnixMilli(),
-		})
+		summary.Windows = append(summary.Windows, windowUsage(window, limits, used, now, anchor))
 	}
 	return summary, nil
+}
+
+func windowUsage(window Window, limits Limits, used counter, now time.Time, anchor int64) WindowUsage {
+	return WindowUsage{
+		Kind:          window,
+		Enforced:      limits.isOn(),
+		UsedRequests:  used.Requests,
+		UsedTokens:    used.Tokens,
+		UsedCredits:   round(used.Credits),
+		LimitRequests: limits.Requests,
+		LimitTokens:   limits.Tokens,
+		LimitCredits:  limits.Credits,
+		ResetsAt:      bucketEnd(window, now, anchor).UnixMilli(),
+	}
+}
+
+// SummariesFor is SummaryFor for a whole list of accounts, in three queries
+// instead of a few per account: the policies, the global reset, and every
+// live counter. It is what an administrator's overview of everyone's
+// allowance reads, where one query per account per window would make the
+// page's cost grow with the instance.
+//
+// The answers are the ones SummaryFor gives each account — the resolution and
+// the bucket arithmetic are the same code — and a counter for a window that
+// has since rolled over is simply not found, which reads as nothing spent,
+// exactly as it does there.
+func (s *Service) SummariesFor(ctx context.Context, accounts []user.User) (map[string]Summary, error) {
+	policies, err := s.policies.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var global Policy
+	groups := map[string]Policy{}
+	users := map[string]Policy{}
+	for _, policy := range policies {
+		switch policy.Scope {
+		case ScopeGlobal:
+			global = policy
+		case ScopeGroup:
+			groups[policy.ScopeID] = policy
+		case ScopeUser:
+			users[policy.ScopeID] = policy
+		}
+	}
+	resetAt, err := globalResetAt(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+
+	// Bounded by the same two months PruneCounters keeps, which is longer than
+	// any allowance window lives.
+	now := time.Now()
+	type slot struct {
+		scope  string
+		window Window
+		start  int64
+	}
+	counters := map[slot]counter{}
+	rows, err := s.db.Query(ctx,
+		`SELECT scope_key, window_kind, window_start, requests, tokens, credits FROM usage_counters
+		 WHERE window_kind IN (?, ?, ?) AND window_start >= ?`,
+		Window5H, WindowWeek, WindowMonth, now.AddDate(0, -2, 0).UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("quota: read counters: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key slot
+		var used counter
+		if err := rows.Scan(&key.scope, &key.window, &key.start, &used.Requests, &used.Tokens, &used.Credits); err != nil {
+			return nil, fmt.Errorf("quota: scan counter: %w", err)
+		}
+		counters[key] = used
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	display := s.settings.UsageDisplay()
+	out := make(map[string]Summary, len(accounts))
+	for _, account := range accounts {
+		policy := newPolicy(ScopeUser, account.ID)
+		if !s.exempt(account) {
+			layers := []Policy{global}
+			if account.GroupID != "" {
+				layers = append(layers, groups[account.GroupID])
+			}
+			policy = Resolve(append(layers, users[account.ID])...)
+		}
+		anchor := anchorFor(account.CreatedAt, resetAt)
+		summary := Summary{Unlimited: policy.Unlimited(), Display: display, Windows: make([]WindowUsage, 0, len(AllowanceWindows))}
+		for _, window := range AllowanceWindows {
+			used := counters[slot{scopeKey(account.ID), window, bucketStart(window, now, anchor)}]
+			summary.Windows = append(summary.Windows, windowUsage(window, policy.Windows[window], used, now, anchor))
+		}
+		out[account.ID] = summary
+	}
+	return out, nil
 }
 
 // PruneCounters drops buckets that have rolled over. Monthly buckets are the
@@ -744,19 +836,35 @@ func scopeKey(userID string) string { return userScopePrefix + userID }
 const globalResetKey = "quota.global_reset_at"
 
 func allowanceAnchor(ctx context.Context, q database.Queryer, createdAt int64) (int64, error) {
+	resetAt, err := globalResetAt(ctx, q)
+	if err != nil {
+		return 0, err
+	}
+	return anchorFor(createdAt, resetAt), nil
+}
+
+// globalResetAt is zero when no reset has ever been made.
+func globalResetAt(ctx context.Context, q database.Queryer) (int64, error) {
 	var raw string
 	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key = ?`, globalResetKey).Scan(&raw)
 	if database.IsNotFound(err) {
-		return createdAt, nil
+		return 0, nil
 	}
 	if err != nil {
 		return 0, fmt.Errorf("quota: read global reset: %w", err)
 	}
 	resetAt, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || resetAt <= createdAt {
-		return createdAt, nil
+	if err != nil {
+		return 0, nil
 	}
 	return resetAt, nil
+}
+
+func anchorFor(createdAt, resetAt int64) int64 {
+	if resetAt <= createdAt {
+		return createdAt
+	}
+	return resetAt
 }
 
 func lockedAllowanceAnchor(ctx context.Context, tx database.Queryer, createdAt int64) (int64, error) {

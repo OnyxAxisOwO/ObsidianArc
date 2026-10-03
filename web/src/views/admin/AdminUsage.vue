@@ -37,6 +37,7 @@ import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import StatusBadge from './StatusBadge.vue';
 import { useAdminView } from './adminView';
+import UsageAllowances from './usage/UsageAllowances.vue';
 import UsageBoard from './usage/UsageBoard.vue';
 import UsageDelta from './usage/UsageDelta.vue';
 import UsageHeatmap from './usage/UsageHeatmap.vue';
@@ -940,6 +941,8 @@ let savedCustomUntil = 0;
         <span>{{ t('dashboardPeak', { value: trendFormat(trendPeak) }) }}</span>
       </footer>
     </section>
+
+    <UsageAllowances v-if="!filters.user" :group-id="filters.group" @select="setFilter('user', $event)" />
 
     <div class="oa-report-row">
       <section v-if="!filters.model" id="secPopularModels" class="oa-viz-card">
