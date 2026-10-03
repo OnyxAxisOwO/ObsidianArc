@@ -216,12 +216,21 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 	// internal/usage about a turn naming its upstream), and a link is the
 	// plainest way of saying it. Bytes always, which is also what OpenAI's own
 	// current image models return.
+	//
+	// Exception: when the model is configured with image_response_format=url,
+	// the upstream only returns a signed link and refuses b64_json. In that
+	// case we ask for the URL and fetch it ourselves below, so the caller
+	// still receives bytes and never sees the upstream's own link.
+	responseFormat := "b64_json"
+	if resolved.Model.ImageResponseFormat() == "url" {
+		responseFormat = "url"
+	}
 	req := adapter.ImageRequest{
 		Model:          resolved.Upstream.ModelID,
 		Prompt:         body.Prompt,
 		N:              n,
 		Quality:        body.Quality,
-		ResponseFormat: "b64_json",
+		ResponseFormat: responseFormat,
 		Size:           body.Size,
 		Style:          body.Style,
 		Images:         parts,
@@ -244,21 +253,29 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 	}
 
 	for _, img := range result.Data {
-		// A provider that ignored the request and answered with a link is not
-		// relayed either: the whole point of asking for bytes is that this
-		// server, not the caller, is the only thing that talks to the
-		// upstream.
-		if img.B64JSON == "" {
+		b64 := img.B64JSON
+		// When the model is configured for URL-only responses, the upstream
+		// returns a signed link instead of inline bytes. Fetch and re-encode so
+		// the caller receives b64_json regardless of the upstream's format.
+		// The fetched bytes are capped to prevent a malicious or misconfigured
+		// upstream from making this server download arbitrarily large files.
+		if b64 == "" && img.URL != "" && responseFormat == "url" {
+			fetched, fetchErr := fetchImageAsBase64(r.Context(), img.URL)
+			if fetchErr == nil {
+				b64 = fetched
+			}
+		}
+		if b64 == "" {
 			continue
 		}
 		resp.Data = append(resp.Data, openAIImageData{
-			B64JSON:       img.B64JSON,
+			B64JSON:       b64,
 			RevisedPrompt: img.RevisedPrompt,
 		})
 	}
 	if len(resp.Data) == 0 && len(result.Data) > 0 {
 		return badRequest("response_format",
-			"The provider answered with links rather than image data, which this server does not relay.")
+			"The upstream model returned image URLs that this server could not fetch. Try a different model or contact the operator.")
 	}
 
 	reqlog.Annotate(r.Context(), reqlog.Annotation{
@@ -302,4 +319,33 @@ func (h *Handlers) recordImages(
 		StartedAt:    startedAt,
 		FinishedAt:   time.Now(),
 	})
+}
+
+// fetchImageAsBase64 downloads an image from a URL and returns it as a
+// base64-encoded string. Capped at MaxAttachmentBytes to prevent a malicious
+// or misconfigured upstream from making this server download arbitrarily
+// large files. The context carries the original request's deadline so a slow
+// upstream does not hold the connection open indefinitely.
+func fetchImageAsBase64(ctx context.Context, imageURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", errors.New("upstream returned HTTP " + strconv.Itoa(resp.StatusCode))
+	}
+	limited := io.LimitReader(resp.Body, conversation.MaxAttachmentBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return "", err
+	}
+	if int64(len(data)) > conversation.MaxAttachmentBytes {
+		return "", errors.New("upstream image exceeds size limit")
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
 }
