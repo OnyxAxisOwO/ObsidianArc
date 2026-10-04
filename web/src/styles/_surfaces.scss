@@ -596,6 +596,9 @@
    the target so nobody has to aim at sixteen pixels. */
 .oa-table th.oa-table-check,
 .oa-table td.oa-table-check {
+  /* The width has to be said: in a fixed layout a column that names none
+     shares what the sized ones leave with the name, and this one took half. */
+  width: 40px;
   padding: 0 0 0 14px;
   cursor: pointer;
 }
