@@ -22,11 +22,46 @@ describe('relativeTime', () => {
   });
 });
 
+describe('remembered page size', () => {
+  afterEach(() => { localStorage.clear(); document.body.textContent = ''; });
+
+  // Asking for a hundred rows used to last until the next reload, then go
+  // back to twenty.
+  it('keeps the size picked in the pagination across a remount', async () => {
+    const rows = Array.from({ length: 150 }, (_, i) => ({ name: `Row ${i}` }));
+    const mount = () => {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const app = createApp({ render: () => h(OaTable, {
+        columns: [{ key: 'name', header: 'Name', text: (row: { name: string }) => row.name }],
+        rows, empty: 'Empty',
+      }) });
+      app.mount(host);
+      return { host, app };
+    };
+
+    const first = mount();
+    expect(first.host.querySelectorAll('tbody tr')).toHaveLength(20);
+    first.host.querySelector<HTMLButtonElement>('.oa-pagination .oa-select')!.click();
+    await nextTick(); await nextTick();
+    [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((el) => el.textContent?.trim() === '100')!.click();
+    await nextTick();
+    expect(first.host.querySelectorAll('tbody tr')).toHaveLength(100);
+    first.app.unmount();
+
+    const second = mount();
+    expect(second.host.querySelectorAll('tbody tr')).toHaveLength(100);
+    second.app.unmount();
+  });
+});
+
 describe('OaTable sort cycling', () => {
   let app: App | null = null;
   let host: HTMLElement;
 
   beforeEach(() => {
+    // A size picked in one test is remembered, and would be the next one's.
+    localStorage.clear();
     document.body.textContent = '';
     host = document.createElement('div');
     document.body.appendChild(host);

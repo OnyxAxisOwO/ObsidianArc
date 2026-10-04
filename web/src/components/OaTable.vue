@@ -11,6 +11,8 @@
 // them. `text` is the shortcut for the common case where it is a string.
 
 import { computed, ref, watch } from 'vue';
+import { t } from '@/composables/useI18n';
+import { rememberedPageSize } from '@/lib/page-size';
 import type { Column, SortState, PageState } from './table-types';
 import OaPagination from './OaPagination.vue';
 
@@ -37,16 +39,25 @@ const props = defineProps<{
   reorderable?: boolean;
   pagination?: PageState & { total: number };
   busy?: boolean;
+  /**
+   * A checkbox column, for acting on several rows at once. Clicking the row
+   * still opens it; only the box selects. Needs `rowKey`, because a selection
+   * has to outlive the redraw that follows the action it was made for.
+   */
+  multi?: boolean;
+  selected?: readonly string[];
+  rowKey?: (row: T) => string;
 }>();
 
 const emit = defineEmits<{
+  (event: 'update:selected', keys: string[]): void;
   (event: 'select', row: T): void;
   (event: 'sort', next: SortState | null): void;
   (event: 'reorder', rows: T[]): void;
   (event: 'page', next: PageState): void;
 }>();
 
-const local = ref<PageState>({ page: 1, pageSize: 20 });
+const local = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 const paging = computed(() => props.pagination ?? { ...local.value, total: props.rows.length });
 const start = computed(() => (paging.value.page - 1) * paging.value.pageSize);
 const visible = computed(() => props.pagination ? ordered.value : ordered.value.slice(start.value, start.value + paging.value.pageSize));
@@ -61,6 +72,39 @@ watch(() => props.rows, () => {
   local.value.page = Math.min(local.value.page, Math.max(1, Math.ceil(props.rows.length / local.value.pageSize)));
 });
 watch(() => props.sort, () => { local.value.page = 1; });
+
+const chosen = computed(() => new Set(props.selected ?? []));
+const keyOf = (row: T): string => props.rowKey!(row);
+
+function toggleRow(row: T, on: boolean): void {
+  const key = keyOf(row);
+  const next = (props.selected ?? []).filter((entry) => entry !== key);
+  if (on) next.push(key);
+  emit('update:selected', next);
+}
+
+// The header box speaks for the page in front of the reader. Rows on other
+// pages are selected by the bar's own "select all", where the count it prints
+// says how many that is.
+const pageKeys = computed(() => visible.value.map(keyOf));
+const pageAll = computed(() => pageKeys.value.length > 0 && pageKeys.value.every((key) => chosen.value.has(key)));
+const pageSome = computed(() => pageKeys.value.some((key) => chosen.value.has(key)));
+
+function togglePage(on: boolean): void {
+  const page = new Set(pageKeys.value);
+  const next = (props.selected ?? []).filter((entry) => !page.has(entry));
+  if (on) next.push(...pageKeys.value);
+  emit('update:selected', next);
+}
+
+// A row that was filtered out or deleted stays selected otherwise, and the
+// next bulk action would reach something the reader can no longer see.
+watch(() => props.rows, (rows) => {
+  if (!props.multi || !props.selected?.length) return;
+  const live = new Set(rows.map(keyOf));
+  const kept = props.selected.filter((entry) => live.has(entry));
+  if (kept.length !== props.selected.length) emit('update:selected', kept);
+});
 
 /**
  * A copy, never the caller's array: the caller is holding the unsorted list
@@ -163,10 +207,20 @@ function clearMarks(): void {
          sized ones leave — the name, usually — instead of every column being
          stretched in proportion and the figures drifting apart. -->
 
-    <div v-else :style="{ minWidth: `${props.columns.reduce((sum, col) => sum + (Number.parseInt(col.width ?? '') || 140), 0)}px` }">
+    <div v-else :style="{ minWidth: `${(props.multi ? 40 : 0) + props.columns.reduce((sum, col) => sum + (Number.parseInt(col.width ?? '') || 140), 0)}px` }">
     <table class="oa-table">
       <thead>
         <tr>
+          <th v-if="props.multi" class="oa-table-check" @click="togglePage(!pageAll)">
+            <input
+              type="checkbox"
+              :checked="pageAll"
+              :indeterminate="pageSome && !pageAll"
+              :aria-label="t('selectPage')"
+              @click.stop
+              @change="togglePage(($event.target as HTMLInputElement).checked)"
+            >
+          </th>
           <th
             v-for="(column, index) in props.columns"
             :key="column.key"
@@ -195,6 +249,7 @@ function clearMarks(): void {
           :key="index"
           :class="{
             muted: props.muted?.(row),
+            checked: props.multi && chosen.has(keyOf(row)),
             selectable: props.selectable,
             draggable: draggable,
             dragging: dragging === index + start,
@@ -211,6 +266,20 @@ function clearMarks(): void {
           @drop="draggable && onDrop($event, index)"
           @dragend="dragging = null; clearMarks()"
         >
+          <td
+            v-if="props.multi"
+            class="oa-table-check"
+            @click.stop="toggleRow(row, !chosen.has(keyOf(row)))"
+            @keydown.stop
+          >
+            <input
+              type="checkbox"
+              :checked="chosen.has(keyOf(row))"
+              :aria-label="t('selectRow')"
+              @click.stop
+              @change="toggleRow(row, ($event.target as HTMLInputElement).checked)"
+            >
+          </td>
           <td v-for="column in props.columns" :key="column.key" :class="columnClass(column)">
             <slot :name="`cell-${column.key}`" :row="row">{{ column.text?.(row) ?? '' }}</slot>
           </td>

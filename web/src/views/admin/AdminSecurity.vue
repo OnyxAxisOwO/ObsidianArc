@@ -30,6 +30,7 @@ import OaTextField from '@/components/OaTextField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { copyToClipboard } from '@/chat/markdown';
 import { initials } from '@/lib/account';
+import { rememberedPageSize } from '@/lib/page-size';
 import { absoluteTime } from '@/lib/format';
 import { refusalText } from '@/lib/refusal';
 import { currentUser, site } from '@/stores/session';
@@ -89,7 +90,7 @@ const saveLabel = ref('');
 const busy = ref(false);
 const events = ref<SecurityEvent[]>([]);
 const eventsTotal = ref(0);
-const eventPage = ref<PageState>({ page: 1, pageSize: 20 });
+const eventPage = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 let eventRequest = 0;
 function changeEvents(next: PageState): void { eventPage.value = next; void loadEvents(); }
 const eventsLoading = ref(false);

@@ -11,6 +11,7 @@ import { adminApi, type Meta, type Provider, type ProviderKind, type ReasoningSt
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -22,6 +23,8 @@ import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
 import { t, tn } from '@/composables/useI18n';
+import { useBulk } from '@/composables/useBulk';
+import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconCopy } from '@/icons';
 import { relativeTime } from '@/lib/format';
 import { canAdmin } from '@/stores/session';
@@ -38,7 +41,7 @@ const meta = ref<Meta | null>(null);
 const error = ref('');
 const loaded = ref(false);
 
-const panelOpen = ref(false);
+const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const existing = ref<Provider | null>(null);
 /**
  * Values to start from when creating. A copy of a provider is the create form
@@ -111,7 +114,9 @@ function open(row: Provider | null, from: Provider | null = null): void {
     sortOrder: source?.sort_order ?? 0,
   };
 
-  panelOpen.value = true;
+  // Saving leaves this set while the panel slides out.
+  busy.value = false;
+  showPanel();
   void nextTick(() => nameField.value?.focus({ preventScroll: true }));
 }
 
@@ -119,6 +124,27 @@ function duplicate(): void {
   const row = existing.value;
   if (!row) return;
   open(null, { ...row, name: t('copyOfName', { name: row.name }) });
+}
+
+/**
+ * The panel slides away and the table is refetched where it stands, rather
+ * than the page being mounted again — which put the reader back at the top.
+ */
+function finish(): void {
+  hidePanel();
+  void load();
+}
+
+// --- several at once ----------------------------------------------------------------
+
+const bulk = useBulk(() => providers.value, (row) => row.id);
+
+function bulkEnable(on: boolean): Promise<void> {
+  return bulk.run((row) => (row.enabled === on ? Promise.resolve() : adminApi.updateProvider(row.id, { enabled: on })), load);
+}
+
+function bulkRemove(): Promise<void> {
+  return bulk.run((row) => adminApi.deleteProvider(row.id), load);
 }
 
 async function save(): Promise<void> {
@@ -148,8 +174,7 @@ async function save(): Promise<void> {
   try {
     if (creating.value) await adminApi.createProvider(payload);
     else await adminApi.updateProvider(existing.value!.id, payload);
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -162,8 +187,7 @@ async function remove(): Promise<void> {
   busy.value = true;
   try {
     await adminApi.deleteProvider(row.id);
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -233,14 +257,17 @@ onMounted(load);
   <AdminFailure v-if="error" :message="error" @retry="load" />
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
+  <template v-else>
   <OaTable
     id="providersList"
-    v-else
     :columns="columns"
     :rows="providers"
     :empty="t('noProviders')"
     :muted="(row) => !row.enabled"
     selectable
+    multi
+    v-model:selected="bulk.selected.value"
+    :row-key="(row) => row.id"
     @select="open($event)"
   >
     <template #cell-name="{ row }">
@@ -260,9 +287,26 @@ onMounted(load);
       </OaBadgeRow>
     </template>
   </OaTable>
+  <OaBulkBar
+    :count="bulk.selected.value.length"
+    :total="providers.length"
+    :busy="bulk.busy.value"
+    :error="bulk.error.value"
+    deletable
+    :delete-question="t('bulkDeleteProvidersConfirm', { count: bulk.selected.value.length })"
+    @all="bulk.selectAll"
+    @clear="bulk.clear"
+    @delete="bulkRemove"
+  >
+    <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkEnable(true)">{{ t('bulkEnable') }}</button>
+    <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkEnable(false)">{{ t('bulkDisable') }}</button>
+  </OaBulkBar>
+  </template>
 
   <OaPanel
     v-if="panelOpen && meta"
+    ref="panel"
+    :key="panelKey"
     :title="creating ? t('addProvider') : maskProvider(existing!.name)"
     :confirm-label="creating ? t('add') : t('save')"
     :destructive-label="existing ? t('deleteLabel') : undefined"
@@ -271,7 +315,7 @@ onMounted(load);
       : undefined"
     :busy="busy"
     :error="panelError"
-    @close="panelOpen = false"
+    @close="panelClosed"
     @confirm="save"
     @destructive="remove"
   >

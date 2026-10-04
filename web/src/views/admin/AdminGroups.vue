@@ -17,6 +17,7 @@ import {
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
@@ -29,6 +30,8 @@ import OaTierList from '@/components/OaTierList.vue';
 import type { ListItem } from '@/components/list-items';
 import type { Column } from '@/components/table-types';
 import { t, tn } from '@/composables/useI18n';
+import { useBulk } from '@/composables/useBulk';
+import { usePanelSlot } from '@/composables/usePanelSlot';
 import { maskProvider } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
@@ -46,7 +49,7 @@ const models = ref<Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enable
 const error = ref('');
 const loaded = ref(false);
 
-const panelOpen = ref(false);
+const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const existing = ref<Group | null>(null);
 const busy = ref(false);
 const panelError = ref('');
@@ -164,8 +167,27 @@ function open(row: Group | null): void {
     windows,
   };
 
-  panelOpen.value = true;
+  showPanel();
   void nextTick(() => nameField.value?.focus({ preventScroll: true }));
+}
+
+/**
+ * The panel slides away and the table is refetched where it stands, rather
+ * than the page being mounted again — which put the reader back at the top.
+ */
+function finish(): void {
+  hidePanel();
+  void load();
+}
+
+// --- several at once ----------------------------------------------------------------
+
+const bulk = useBulk(() => groups.value, (row) => row.id);
+
+// The default group is not exempted here: the server refuses it with its own
+// reason, which the bar then shows, and the rule stays in one place.
+function bulkRemove(): Promise<void> {
+  return bulk.run((row) => adminApi.deleteGroup(row.id), load);
 }
 
 async function save(): Promise<void> {
@@ -211,8 +233,7 @@ async function save(): Promise<void> {
       }])),
     });
 
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -225,8 +246,7 @@ async function remove(): Promise<void> {
   busy.value = true;
   try {
     await adminApi.deleteGroup(row.id);
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -266,6 +286,9 @@ onMounted(load);
       :rows="groups"
       :empty="t('noGroups')"
       selectable
+      multi
+      v-model:selected="bulk.selected.value"
+      :row-key="(row) => row.id"
       @select="open($event)"
     >
       <!-- The default mark beside the name it qualifies, rather than alone in a
@@ -289,12 +312,24 @@ onMounted(load);
         </OaBadgeRow>
       </template>
     </OaTable>
+    <OaBulkBar
+      :count="bulk.selected.value.length"
+      :total="groups.length"
+      :busy="bulk.busy.value"
+      :error="bulk.error.value"
+      deletable
+      @all="bulk.selectAll"
+      @clear="bulk.clear"
+      @delete="bulkRemove"
+    />
 
     <p class="oa-field-hint">{{ t('groupsFooterHint') }}</p>
   </template>
 
   <OaPanel
     v-if="panelOpen"
+    ref="panel"
+    :key="panelKey"
     :title="creating ? t('addGroup') : existing!.name"
     :confirm-label="creating ? t('add') : t('save')"
     :destructive-label="existing && !existing.is_default ? t('deleteLabel') : undefined"
@@ -304,7 +339,7 @@ onMounted(load);
     :width="460"
     :busy="busy"
     :error="panelError"
-    @close="panelOpen = false"
+    @close="panelClosed"
     @confirm="save"
     @destructive="remove"
   >

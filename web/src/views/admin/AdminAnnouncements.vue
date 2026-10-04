@@ -11,6 +11,7 @@ import { adminApi, type Announcement } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
@@ -21,6 +22,8 @@ import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
+import { useBulk } from '@/composables/useBulk';
+import { usePanelSlot } from '@/composables/usePanelSlot';
 import { relativeTime } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
@@ -84,11 +87,43 @@ function open(record: Announcement | null): void {
     published: record?.published ?? false,
     pinned: record?.pinned ?? false,
   };
-  panelOpen.value = true;
+  // Saving leaves this set while the panel slides out.
+  busy.value = false;
+  showPanel();
   void nextTick(() => titleField.value?.focus({ preventScroll: true }));
 }
 
-const panelOpen = ref(false);
+const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
+
+/**
+ * The panel slides away and the table is refetched where it stands, rather
+ * than the page being mounted again — which put the reader back at the top.
+ */
+function finish(): void {
+  hidePanel();
+  void load();
+}
+
+// --- several at once ----------------------------------------------------------------
+
+const bulk = useBulk(() => announcements.value, (row) => row.id);
+
+// The update replaces the whole announcement, so the row's own fields go back
+// with the one that changed. A partial body would blank the title.
+function bulkPublish(on: boolean): Promise<void> {
+  return bulk.run((row) => (row.published === on ? Promise.resolve() : adminApi.updateAnnouncement(row.id, {
+    title: row.title,
+    body: row.body,
+    display_mode: row.display_mode,
+    dismiss_after_seconds: row.dismiss_after_seconds,
+    published: on,
+    pinned: row.pinned,
+  })), load);
+}
+
+function bulkRemove(): Promise<void> {
+  return bulk.run((row) => adminApi.deleteAnnouncement(row.id), load);
+}
 
 async function save(): Promise<void> {
   busy.value = true;
@@ -104,8 +139,7 @@ async function save(): Promise<void> {
   try {
     if (creating.value) await adminApi.createAnnouncement(payload);
     else await adminApi.updateAnnouncement(editing.value!.id, payload);
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -118,8 +152,7 @@ async function remove(): Promise<void> {
   busy.value = true;
   try {
     await adminApi.deleteAnnouncement(record.id);
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -127,6 +160,9 @@ async function remove(): Promise<void> {
 }
 
 async function load(): Promise<void> {
+  // Only the first load may open the panel from the address's hash: this runs
+  // again after every save, with the hash still there.
+  const first = !loaded.value;
   error.value = '';
   try {
     ({ announcements: announcements.value } = await adminApi.announcements());
@@ -134,7 +170,7 @@ async function load(): Promise<void> {
     error.value = failure instanceof Error ? failure.message : String(failure);
   } finally {
     loaded.value = true;
-    checkDrawerTarget();
+    if (first) checkDrawerTarget();
   }
 }
 
@@ -161,14 +197,17 @@ onMounted(load);
   <AdminFailure v-if="error" :message="error" @retry="load" />
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
+  <template v-else>
   <OaTable
-    v-else
     id="announcementsList"
     :columns="columns"
     :rows="announcements"
     :empty="t('announcementsEmpty')"
     :muted="(row) => !row.published"
     selectable
+    multi
+    v-model:selected="bulk.selected.value"
+    :row-key="(row) => row.id"
     @select="open($event)"
   >
     <template #cell-title="{ row }">
@@ -184,9 +223,25 @@ onMounted(load);
       </OaBadgeRow>
     </template>
   </OaTable>
+  <OaBulkBar
+    :count="bulk.selected.value.length"
+    :total="announcements.length"
+    :busy="bulk.busy.value"
+    :error="bulk.error.value"
+    deletable
+    @all="bulk.selectAll"
+    @clear="bulk.clear"
+    @delete="bulkRemove"
+  >
+    <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkPublish(true)">{{ t('bulkPublish') }}</button>
+    <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkPublish(false)">{{ t('bulkUnpublish') }}</button>
+  </OaBulkBar>
+  </template>
 
   <OaPanel
     v-if="panelOpen"
+    ref="panel"
+    :key="panelKey"
     :title="creating ? t('addAnnouncement') : editing!.title"
     :confirm-label="creating ? t('add') : t('save')"
     :destructive-label="editing ? t('deleteLabel') : undefined"
@@ -194,7 +249,7 @@ onMounted(load);
     :width="480"
     :busy="busy"
     :error="panelError"
-    @close="panelOpen = false"
+    @close="panelClosed"
     @confirm="save"
     @destructive="remove"
   >

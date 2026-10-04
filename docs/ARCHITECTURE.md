@@ -220,9 +220,18 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 25.86 MB (22.16 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 229.26 kB to open the chat (189.47 JS + 39.79 CSS) |
+| Frontend, on the wire | < 135 kB | 231.51 kB to open the chat (190.74 JS + 40.77 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-04 (UTC), after the list screens learned to tick several
+rows and act on them (`OaBulkBar`, `useBulk`, the selection column of
+`OaTable`). The first paint is 231.51 kB (190.74 kB JS + 40.77 kB CSS), up 0.89
+kB from 230.62 kB at the commit before — which was itself up from the figure
+below, the screens added since not having been remeasured. The selection column
+is in the shared table; the bar and the composable are only in the backoffice
+chunk, which is now 115.40 kB (from 113.15 kB). The Chinese pack is 46.52 kB.
+The binary was not remeasured.
 
 Remeasured on 2026-10-01 (UTC), after the grouped backoffice pages were centred
 under their headings, the sign-in providers made rows of their card and the

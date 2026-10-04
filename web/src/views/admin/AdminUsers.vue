@@ -19,6 +19,7 @@ import OaCheckList from '@/components/OaCheckList.vue';
 import type { PageState } from '@/components/table-types';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
@@ -35,8 +36,11 @@ import OaUsageWindow from '@/components/OaUsageWindow.vue';
 import type { Column } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
 import { t, tn } from '@/composables/useI18n';
+import { useBulk } from '@/composables/useBulk';
+import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconTrash } from '@/icons';
 import { absoluteTime, compactNumber, relativeTime } from '@/lib/format';
+import { rememberedPageSize } from '@/lib/page-size';
 import { describeUserAgent } from '@/lib/ua';
 import { currentUser, canAdmin, isSuperAdmin, siteInfo } from '@/stores/session';
 import OaAccountFields from '@/components/OaAccountFields.vue';
@@ -58,7 +62,7 @@ view.setTitle(t('usersTitle'));
 const groups = ref<Pick<Group, 'id' | 'name'>[]>([]);
 const users = ref<Account[]>([]);
 const total = ref(0);
-const paging = ref<PageState>({ page: 1, pageSize: 20 });
+const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 let request = 0;
 function changePage(next: PageState): void { paging.value = next; void list(); }
 function filterList(): void { paging.value.page = 1; ++request; void list(); }
@@ -125,7 +129,7 @@ async function list(): Promise<void> {
 
 type PanelMode = 'account' | 'conversations' | 'transcript';
 
-const panelOpen = ref(false);
+const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const loadingDetail = ref(false);
 // Whether the form below holds this account. Until it does the panel shows
 // nothing editable: an empty form saved by mistake would clear real fields.
@@ -150,7 +154,7 @@ const sessionsError = ref('');
 const revokingSession = ref('');
 const signOutAllBusy = ref(false);
 const conversations = ref<Conversation[] | null>(null);
-const conversationPage = ref<PageState>({ page: 1, pageSize: 20 });
+const conversationPage = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 const conversationTotal = ref(0);
 async function changeConversationPage(next: PageState): Promise<void> { conversationPage.value = next; await openConversations(); }
 const transcript = ref<Message[] | null>(null);
@@ -369,7 +373,9 @@ async function open(id: string): Promise<void> {
   cards.value = null;
   loadingDetail.value = true;
   detailReady.value = false;
-  panelOpen.value = true;
+  // Saving leaves this set while the panel slides out.
+  busy.value = false;
+  showPanel();
 
   let detail;
   try {
@@ -446,6 +452,31 @@ async function open(id: string): Promise<void> {
     });
 }
 
+/**
+ * The panel slides away and the list is fetched again where it stands, rather
+ * than the page being mounted again — which put the reader back at the top and
+ * on the first page of accounts.
+ */
+function finish(): void {
+  hidePanel();
+  void list();
+}
+
+// --- several at once ----------------------------------------------------------------
+
+const bulk = useBulk(() => users.value, (row) => row.id);
+
+// The server refuses what must not be done — one's own account, the last
+// administrator — and the bar shows its reason; nothing is pre-filtered here.
+function bulkStatus(on: boolean): Promise<void> {
+  const status = on ? 'active' : 'disabled';
+  return bulk.run((row) => (row.status === status ? Promise.resolve() : adminApi.updateUser(row.id, { status })), list);
+}
+
+function bulkRemove(): Promise<void> {
+  return bulk.run((row) => adminApi.deleteUser(row.id), list);
+}
+
 async function save(): Promise<void> {
   const row = account.value;
   if (!row) return;
@@ -504,8 +535,7 @@ async function save(): Promise<void> {
         : { enabled: null, requests: null, tokens: null, credits: null }])),
     });
 
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -538,8 +568,7 @@ async function remove(): Promise<void> {
   busy.value = true;
   try {
     await adminApi.deleteUser(row.id);
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -562,8 +591,14 @@ function fieldSummary(values: Record<string, string> | undefined): string[] {
 const userActions = computed(() => plugins().flatMap((plugin) => plugin.userActions ?? []));
 
 function actionDone(closePanel: boolean): void {
-  if (closePanel) panelOpen.value = false;
-  view.reload();
+  if (closePanel) {
+    finish();
+    return;
+  }
+  // The panel stays, so what it shows is fetched again: the action changed
+  // some of it.
+  void list();
+  if (account.value) void open(account.value.id);
 }
 
 function actionFailed(message: string): void {
@@ -810,7 +845,7 @@ const state = { q: '', role: '', status: '', group: '' };
       />
     </div>
 
-    <p v-if="listing" class="oa-table-empty">{{ t('loading') }}</p>
+    <p v-if="listing && !users.length" class="oa-table-empty">{{ t('loading') }}</p>
     <p v-if="listError" class="oa-table-empty">{{ listError }}</p>
     <OaTable
       :pagination="{ ...paging, total }"
@@ -821,6 +856,9 @@ const state = { q: '', role: '', status: '', group: '' };
       :empty="t('noAccountsMatch')"
       :muted="(row) => row.status === 'disabled'"
       selectable
+      multi
+      v-model:selected="bulk.selected.value"
+      :row-key="(row) => row.id"
       @select="open($event.id)"
     >
       <template #cell-account="{ row }">
@@ -839,10 +877,25 @@ const state = { q: '', role: '', status: '', group: '' };
         </OaBadgeRow>
       </template>
     </OaTable>
+    <OaBulkBar
+      :count="bulk.selected.value.length"
+      :total="users.length"
+      :busy="bulk.busy.value"
+      :error="bulk.error.value"
+      deletable
+      @all="bulk.selectAll"
+      @clear="bulk.clear"
+      @delete="bulkRemove"
+    >
+      <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkStatus(true)">{{ t('bulkEnable') }}</button>
+      <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkStatus(false)">{{ t('bulkDisable') }}</button>
+    </OaBulkBar>
   </template>
 
   <OaPanel
     v-if="panelOpen && account"
+    ref="panel"
+    :key="panelKey"
     :title="panelTitle"
     :width="mode === 'transcript' ? 480 : 440"
     :footer="mode === 'account'"
@@ -855,7 +908,7 @@ const state = { q: '', role: '', status: '', group: '' };
     :back="mode !== 'account'"
     :busy="busy || loadingDetail"
     :error="panelError"
-    @close="panelOpen = false"
+    @close="panelClosed"
     @confirm="save"
     @destructive="remove"
     @back="mode === 'transcript' ? openConversations() : (mode = 'account')"

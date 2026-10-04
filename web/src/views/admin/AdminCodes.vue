@@ -12,6 +12,7 @@ import { saveAsFile } from '@/api/backup';
 import { copyToClipboard } from '@/chat/markdown';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaCheckList from '@/components/OaCheckList.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
@@ -22,6 +23,8 @@ import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
+import { useBulk } from '@/composables/useBulk';
+import { usePanelSlot } from '@/composables/usePanelSlot';
 import { relativeTime } from '@/lib/format';
 import { maskCredential, maskUser } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
@@ -64,7 +67,7 @@ function openExport(): void {
   exporting.value = true;
 }
 
-const panelOpen = ref(false);
+const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 // An existing code is shown rather than edited. Changing how many cards a code
 // carries after people have redeemed it is a decision with no honest answer —
 // the ones already handed out do not come back — so the only action offered is
@@ -158,7 +161,9 @@ function open(row: RedemptionCode | null): void {
     cardDays: 30,
     expiresDays: null,
   };
-  panelOpen.value = true;
+  // Deleting leaves this set while the panel slides out.
+  busy.value = false;
+  showPanel();
   if (row) void loadRedemptions(row.id);
 }
 
@@ -198,12 +203,20 @@ async function create(): Promise<void> {
     // Generated codes exist nowhere else until they are copied off this
     // screen, so the panel turns into the list rather than closing over them.
     minted.value = created;
-    view.reload();
+    void load();
   } catch (failure) {
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
   } finally {
     busy.value = false;
   }
+}
+
+// --- several at once ----------------------------------------------------------------
+
+const bulk = useBulk(() => codes.value, (row) => row.id);
+
+function bulkRemove(): Promise<void> {
+  return bulk.run((row) => adminApi.deleteCode(row.id), load);
 }
 
 async function remove(): Promise<void> {
@@ -212,8 +225,8 @@ async function remove(): Promise<void> {
   busy.value = true;
   try {
     await adminApi.deleteCode(row.id);
-    panelOpen.value = false;
-    view.reload();
+    hidePanel();
+    void load();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -250,14 +263,17 @@ onMounted(load);
   <AdminFailure v-if="error" :message="error" @retry="load" />
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
+  <template v-else>
   <OaTable
     id="codesTitle"
-    v-else
     :columns="columns"
     :rows="codes"
     :empty="t('noCodes')"
     :muted="(row) => row.claimed >= row.cards"
     selectable
+    multi
+    v-model:selected="bulk.selected.value"
+    :row-key="(row) => row.id"
     @select="open($event)"
   >
     <template #cell-code="{ row }">
@@ -277,6 +293,17 @@ onMounted(load);
       </OaBadgeRow>
     </template>
   </OaTable>
+  <OaBulkBar
+    :count="bulk.selected.value.length"
+    :total="codes.length"
+    :busy="bulk.busy.value"
+    :error="bulk.error.value"
+    deletable
+    @all="bulk.selectAll"
+    @clear="bulk.clear"
+    @delete="bulkRemove"
+  />
+  </template>
 
   <OaPanel
     v-if="exporting"
@@ -295,6 +322,8 @@ onMounted(load);
 
   <OaPanel
     v-if="panelOpen"
+    ref="panel"
+    :key="panelKey"
     :title="minted ? t('codesMinted', { count: minted.length }) : creating ? t('addCode') : maskCredential(existing!.code)"
     :footer="creating && !minted"
     :confirm-label="t('add')"
@@ -302,7 +331,7 @@ onMounted(load);
     :destructive-confirm="existing ? t('confirmDeleteCode', { code: maskCredential(existing.code) }) : undefined"
     :busy="busy"
     :error="panelError"
-    @close="panelOpen = false"
+    @close="panelClosed"
     @confirm="create"
     @destructive="remove"
   >

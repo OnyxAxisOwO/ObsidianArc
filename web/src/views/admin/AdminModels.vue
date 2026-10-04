@@ -17,6 +17,7 @@ import { pickJSONFile, saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -32,6 +33,8 @@ import OaTierList from '@/components/OaTierList.vue';
 import type { ListItem } from '@/components/list-items';
 import type { Column, SortState } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
+import { useBulk } from '@/composables/useBulk';
+import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconCheck, IconCopy } from '@/icons';
 import { compactNumber } from '@/lib/format';
 import { canAdmin } from '@/stores/session';
@@ -224,12 +227,26 @@ async function reorder(reordered: AdminModel[]): Promise<void> {
   }
   // Either way: on success to show the stored order, and on failure to snap
   // back to it rather than leaving the screen claiming a move never written.
-  view.reload();
+  await load();
+}
+
+// --- several at once ---------------------------------------------------------------
+
+const bulk = useBulk(() => visible.value, (row) => row.id);
+
+// Skips the ones already in the state asked for, so "enable" over a mixed
+// selection does not spend a request on each model that was on.
+function bulkEnable(on: boolean): Promise<void> {
+  return bulk.run((row) => (row.enabled === on ? Promise.resolve() : adminApi.updateModel(row.id, { enabled: on })), load);
+}
+
+function bulkRemove(): Promise<void> {
+  return bulk.run((row) => adminApi.deleteModel(row.id), load);
 }
 
 // --- the editor -------------------------------------------------------------------
 
-const panelOpen = ref(false);
+const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const existing = ref<AdminModel | null>(null);
 const template = ref<AdminModel | null>(null);
 const busy = ref(false);
@@ -379,7 +396,9 @@ function open(row: AdminModel | null, from: AdminModel | null = null): void {
     reasoningWeight: source?.reasoning_token_weight ?? 1,
   };
 
-  panelOpen.value = true;
+  // Saving leaves this set while the panel slides out.
+  busy.value = false;
+  showPanel();
   void nextTick(() => modelIDField.value?.focus({ preventScroll: true }));
 }
 
@@ -389,6 +408,20 @@ function duplicate(): void {
   // The API name is dropped rather than suffixed: it is unique across the
   // instance, and a guessed one would be a second public name nobody asked for.
   open(null, { ...row, api_name: '', display_name: t('copyOfName', { name: row.display_name }) });
+}
+
+/**
+ * What follows a save or a delete: the panel slides away and the table is
+ * redrawn where it stands.
+ *
+ * This used to be `view.reload()`, which mounts the whole page again — back
+ * to the top, back to the first page of rows, the filter's focus gone — so
+ * editing the fortieth model cost the way back down to it. The rows are
+ * refetched into the page that is already here instead.
+ */
+function finish(): void {
+  hidePanel();
+  void load();
 }
 
 async function save(): Promise<void> {
@@ -449,8 +482,7 @@ async function save(): Promise<void> {
   try {
     if (creating.value) await adminApi.createModel(payload);
     else await adminApi.updateModel(existing.value!.id, payload);
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -463,8 +495,7 @@ async function remove(): Promise<void> {
   busy.value = true;
   try {
     await adminApi.deleteModel(row.id);
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -582,7 +613,7 @@ function importModels(): void {
         headline: t('importModelsDone', { created: result.created, updated: result.updated }),
         skipped: result.skipped,
       };
-      view.reload();
+      void load();
     })
     .catch((failure: unknown) => {
       report.value = {
@@ -594,6 +625,10 @@ function importModels(): void {
 }
 
 async function load(): Promise<void> {
+  // Only the first load may open a panel from the address's hash: this runs
+  // again after every save, and a hash still in the address would open the
+  // panel that was just closed.
+  const first = !loaded.value;
   error.value = '';
   try {
     const [modelsResult, providersResult, groupsResult, metaResult] = await Promise.all([
@@ -622,7 +657,7 @@ async function load(): Promise<void> {
   } catch {
     // The column simply says nothing. An operator came here to edit models.
   }
-  checkDrawerTarget();
+  if (first) checkDrawerTarget();
 }
 
 const DRAWER_HASHES = new Set(['#addModel', '#secCapabilities', '#secWeights', '#secGroupAccess', '#secRouting', '#secThinking', '#secRequestOverride']);
@@ -719,6 +754,9 @@ let sortState: SortState | null = null;
       :muted="(row) => !row.enabled"
       selectable
       reorderable
+      multi
+      v-model:selected="bulk.selected.value"
+      :row-key="(row) => row.id"
       @select="open($event)"
       @sort="onSort"
       @reorder="reorder"
@@ -759,17 +797,32 @@ let sortState: SortState | null = null;
         </OaBadgeRow>
       </template>
     </OaTable>
+    <OaBulkBar
+      :count="bulk.selected.value.length"
+      :total="visible.length"
+      :busy="bulk.busy.value"
+      :error="bulk.error.value"
+      deletable
+      @all="bulk.selectAll"
+      @clear="bulk.clear"
+      @delete="bulkRemove"
+    >
+      <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkEnable(true)">{{ t('bulkEnable') }}</button>
+      <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkEnable(false)">{{ t('bulkDisable') }}</button>
+    </OaBulkBar>
   </template>
 
   <OaPanel
     v-if="panelOpen && meta"
+    ref="panel"
+    :key="panelKey"
     :title="creating ? t('addModel') : existing!.display_name"
     :confirm-label="creating ? t('add') : t('save')"
     :destructive-label="existing ? t('deleteLabel') : undefined"
     :destructive-confirm="existing ? t('confirmDeleteModel', { name: existing.display_name }) : undefined"
     :busy="busy"
     :error="panelError"
-    @close="panelOpen = false"
+    @close="panelClosed"
     @confirm="save"
     @destructive="remove"
   >

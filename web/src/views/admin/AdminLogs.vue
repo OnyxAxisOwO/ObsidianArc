@@ -26,11 +26,12 @@ import type { Choice } from '@/components/choice';
 import { RefreshCw } from 'lucide-vue-next';
 import { t, type StringKey } from '@/composables/useI18n';
 import { absoluteTime, relativeTime } from '@/lib/format';
+import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser, maskLog } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 
-const pageSize = ref(20);
+const pageSize = ref(rememberedPageSize());
 
 /**
  * Windows offered for "since". Empty is everything, which is the point of a

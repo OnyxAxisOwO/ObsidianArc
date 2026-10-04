@@ -580,6 +580,26 @@
   outline: none;
 }
 
+/* The ticked rows, in the accent so they read as chosen rather than as
+   hovered. Written out to match the stripe's specificity, which would
+   otherwise win on every other row. */
+.oa-table tbody tr.checked td {
+  background: color-mix(in srgb, var(--ai-primary) 14%, transparent);
+}
+
+/* The selection column: just wide enough for the box, and the whole cell is
+   the target so nobody has to aim at sixteen pixels. */
+.oa-table th.oa-table-check,
+.oa-table td.oa-table-check {
+  padding: 0 0 0 14px;
+  cursor: pointer;
+}
+
+.oa-table td.oa-table-check input,
+.oa-table th.oa-table-check input {
+  display: block;
+}
+
 /* Switched off, not broken: dimmed rather than coloured, because a red row
    for "disabled" reads as an error. */
 .oa-table tr.muted td {
@@ -2114,7 +2134,8 @@
    them stacked in a filled well read as a form inside a form. The row itself
    is the control now: a fill says it is chosen, which is what a fill means
    everywhere else here. */
-.oa-check-row input[type="checkbox"] {
+.oa-check-row input[type="checkbox"],
+.oa-table-check input[type="checkbox"] {
   appearance: none;
   position: relative;
   width: 16px;
@@ -2126,7 +2147,8 @@
   transition: background-color 0.15s ease;
 }
 
-.oa-check-row input[type="checkbox"]::after {
+.oa-check-row input[type="checkbox"]::after,
+.oa-table-check input[type="checkbox"]::after {
   content: "";
   position: absolute;
   top: 4px;
@@ -2140,22 +2162,42 @@
   transition: opacity 0.12s ease, transform 0.12s ease;
 }
 
-.oa-check-row input[type="checkbox"]:checked {
+.oa-check-row input[type="checkbox"]:checked,
+.oa-table-check input[type="checkbox"]:checked {
   background: var(--ai-primary);
 }
 
-.oa-check-row input[type="checkbox"]:checked::after {
+.oa-check-row input[type="checkbox"]:checked::after,
+.oa-table-check input[type="checkbox"]:checked::after {
   opacity: 1;
   transform: rotate(-45deg) scale(1);
 }
 
-.oa-check-row input[type="checkbox"]:focus-visible {
+.oa-check-row input[type="checkbox"]:focus-visible,
+.oa-table-check input[type="checkbox"]:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 .oa-check-row:has(input:checked) {
   background: var(--ai-state-hover);
+}
+
+/* Some of a page ticked: the header box is a dash, because it is neither
+   chosen nor not. */
+.oa-table-check input[type="checkbox"]:indeterminate {
+  background: var(--ai-primary);
+}
+
+.oa-table-check input[type="checkbox"]:indeterminate::after {
+  top: 7px;
+  left: 3px;
+  width: 10px;
+  height: 0;
+  border-left: 0;
+  border-bottom: 2px solid var(--ai-primary-text);
+  transform: none;
+  opacity: 1;
 }
 
 .oa-key-endpoint-hint {
@@ -4601,6 +4643,58 @@
 
 /* The pager stays outside the horizontal scroller so its controls stay on screen. */
 .oa-table-block { min-width: 0; width: 100%; }
+
+/* Under a table, stuck to the bottom of the body that scrolls: the rows are
+   ticked from wherever the reader has got to. A card rather than a strip, so
+   it reads as something laid over the list and not as part of it. */
+.oa-bulk-bar {
+  position: sticky;
+  bottom: 14px;
+  z-index: 5;
+  width: fit-content;
+  max-width: 100%;
+  margin: 12px auto 0;
+  padding: 8px 10px 8px 16px;
+  border-radius: 18px;
+  background: var(--ai-surface-card);
+  box-shadow: var(--ai-shadow-md);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  backdrop-filter: blur(20px) saturate(1.6);
+}
+
+.oa-bulk-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.oa-bulk-count {
+  margin-right: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The one that is never the main thing to do. */
+.oa-bulk-clear {
+  margin-left: 4px;
+}
+
+/* The second click of a delete, where the tint is no longer a warning. */
+.oa-bulk-bar .oa-btn.armed {
+  background: var(--ai-danger);
+  color: var(--ai-surface-card);
+  font-weight: 600;
+}
+
+.oa-bulk-error {
+  margin: 8px 0 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ai-danger);
+}
+
 .oa-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; padding: 14px 0 2px; font-size: 12px; color: var(--ai-text-secondary); }
 .oa-pagination.compact { padding-top: 12px; font-size: 11.5px; }
 /* "Rows per page" is two words, and in a narrow card it was being broken

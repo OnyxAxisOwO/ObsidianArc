@@ -6,6 +6,7 @@
 // such cells and this component masks them.
 
 import { computed, onMounted, ref } from 'vue';
+import { rememberedPageSize } from '@/lib/page-size';
 import { ApiError } from '@/api/client';
 import { maskUser } from '@/admin/safeMode';
 import OaBadge from '@/components/OaBadge.vue';
@@ -22,7 +23,7 @@ const props = defineProps<{ spec: AdminListSpec }>();
 
 const rows = ref<Row[]>([]);
 const total = ref(0);
-const paging = ref<PageState>({ page: 1, pageSize: 20 });
+const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 const error = ref('');
 
 const columns = computed<Array<Column<Row>>>(() => props.spec.columns.map((column) => ({

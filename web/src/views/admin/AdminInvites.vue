@@ -36,6 +36,7 @@ import type { Stat } from '@/components/stat';
 import { t } from '@/composables/useI18n';
 import { IconChart, IconSend, IconUsers } from '@/icons';
 import { compactNumber, relativeTime } from '@/lib/format';
+import { rememberedPageSize } from '@/lib/page-size';
 import { maskCredential, maskUser } from '@/admin/safeMode';
 import { site } from '@/stores/session';
 import AdminFailure from './AdminFailure.vue';
@@ -187,7 +188,7 @@ const partnerStats = computed(() => stats.value?.partners ?? []);
 
 const codes = ref<InviteCode[]>([]);
 const total = ref(0);
-const paging = ref<PageState>({ page: 1, pageSize: 20 });
+const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 const listing = ref(false);
 const listError = ref('');
 let listRequest = 0;

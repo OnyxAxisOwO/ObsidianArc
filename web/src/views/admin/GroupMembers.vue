@@ -11,6 +11,7 @@ import OaSelectField from '@/components/OaSelectField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { t } from '@/composables/useI18n';
 import { absoluteTime } from '@/lib/format';
+import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser } from '@/admin/safeMode';
 import ExpiryPresets from './ExpiryPresets.vue';
 
@@ -27,7 +28,7 @@ const loading = ref(false);
 const busy = ref(false);
 const error = ref('');
 const message = ref('');
-const pageSize = ref(20);
+const pageSize = ref(rememberedPageSize());
 let request = 0;
 let timer = 0;
 
