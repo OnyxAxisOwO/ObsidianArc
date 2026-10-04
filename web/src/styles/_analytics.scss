@@ -954,6 +954,45 @@ button.oa-board-row:focus-visible {
   min-width: 0;
 }
 
+/* Narrow — a phone, or the list beside an open panel. The three windows no
+   longer fit beside the name, and squeezed into what was left they wrapped a
+   character at a time and spilled out of their row into the next. Under the
+   name instead, each with its label above its figure, in a row tall enough
+   to hold them. Sized by the card rather than the viewport: the panel narrows
+   it on a desktop too. */
+#secAllowances {
+  container: allow / inline-size;
+}
+
+@container allow (max-width: 560px) {
+  .oa-allow-frame {
+    --board-row: 128px;
+  }
+
+  .oa-allow-row {
+    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-content: center;
+    row-gap: 10px;
+  }
+
+  .oa-allow-windows {
+    grid-column: 1 / -1;
+    gap: 12px;
+  }
+
+  .oa-allow-windows .oa-usage-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+  }
+
+  .oa-allow-none {
+    flex-direction: column;
+    gap: 1px;
+  }
+}
+
 .oa-allow-none {
   display: flex;
   justify-content: space-between;

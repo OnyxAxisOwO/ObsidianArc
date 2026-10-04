@@ -275,6 +275,11 @@
 }
 
 .oa-admin-actions {
+  /* Without these it is as wide as its widest item, which in a wrapping head
+     is the page's own width plus a bit: the range switch and the buttons ran
+     off the edge of the card on a phone instead of wrapping inside it. */
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
