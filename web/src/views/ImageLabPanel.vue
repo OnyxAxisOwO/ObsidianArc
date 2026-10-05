@@ -40,7 +40,7 @@ import {
 import { relativeTime } from '@/lib/format';
 import { solvePoW } from '@/lib/pow';
 import { guards } from '@/plugins/registry';
-import { siteInfo } from '@/stores/session';
+import { isAdmin, siteInfo } from '@/stores/session';
 
 const router = useRouter();
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
@@ -64,11 +64,15 @@ const stage = ref('');
 // The operator's checks in front of the lab. Each token is good for one
 // picture, so every attempt asks again, whatever became of the last.
 const turnstile = ref<InstanceType<typeof OaTurnstile> | null>(null);
-const needsTurnstile = computed(() =>
-  !!siteInfo.value.turnstile_on_images && !!siteInfo.value.turnstile_site_key);
-const needsPoW = computed(() => !!siteInfo.value.pow_on_images);
-const activeGuards = computed(() =>
-  guards().filter(({ guard, config }) => guard.active('images', config)));
+// Administrators are never asked by the server, so the browser must not ask
+// either: a guard's SDK can take a long while and an administrator has
+// nothing at the other end of it to be checked against.
+const needsTurnstile = computed(() => !isAdmin.value
+  && !!siteInfo.value.turnstile_on_images && !!siteInfo.value.turnstile_site_key);
+const needsPoW = computed(() => !isAdmin.value && !!siteInfo.value.pow_on_images);
+const activeGuards = computed(() => (isAdmin.value
+  ? []
+  : guards().filter(({ guard, config }) => guard.active('images', config))));
 
 // Prepared when the panel opens rather than on submit: a service that scores
 // behaviour has nothing to score if it starts at submit time.

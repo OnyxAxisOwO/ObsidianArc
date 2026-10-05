@@ -4,7 +4,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import * as authApi from '@/api/auth';
 import * as imagesApi from '@/api/images';
 import * as powLib from '@/lib/pow';
-import { site, siteInfo } from '@/stores/session';
+import { currentUser, site, siteInfo } from '@/stores/session';
 import * as chatImage from '@/chat/image';
 import { models } from '@/chat/useModels';
 import { providePanelHost } from '@/composables/usePanelHost';
@@ -267,6 +267,7 @@ describe('Image Lab challenges', () => {
 
   afterEach(() => {
     site.value = null;
+    currentUser.value = null;
   });
 
   it('asks for nothing while the operator has switched nothing on', async () => {
@@ -291,6 +292,19 @@ describe('Image Lab challenges', () => {
 
     expect(fetchChallenge).toHaveBeenCalledOnce();
     expect(generate.mock.calls[0]![0].pow).toEqual(solution);
+  });
+
+  it('never makes an administrator solve or fetch anything the server will not ask for', async () => {
+    currentUser.value = { role: 'admin' } as any;
+    site.value = { ...siteInfo.value, pow_on_images: true, turnstile_on_images: true, turnstile_site_key: 'site' };
+    const fetchChallenge = vi.spyOn(authApi, 'fetchPoWChallenge');
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+
+    await submit('a sunset');
+
+    expect(fetchChallenge).not.toHaveBeenCalled();
+    expect(generate).toHaveBeenCalledOnce();
+    expect(generate.mock.calls[0]![0]).not.toHaveProperty('pow');
   });
 
   it('does not call the server without the Cloudflare token it was asked for', async () => {
