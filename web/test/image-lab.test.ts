@@ -294,17 +294,19 @@ describe('Image Lab challenges', () => {
     expect(generate.mock.calls[0]![0].pow).toEqual(solution);
   });
 
-  it('never makes an administrator solve or fetch anything the server will not ask for', async () => {
+  it('asks an administrator for the same proof as anybody else', async () => {
     currentUser.value = { role: 'admin' } as any;
-    site.value = { ...siteInfo.value, pow_on_images: true, turnstile_on_images: true, turnstile_site_key: 'site' };
-    const fetchChallenge = vi.spyOn(authApi, 'fetchPoWChallenge');
+    site.value = { ...siteInfo.value, pow_on_images: true };
+    const challenge = { challenge: 'c', salt: 's', maxNumber: 10, expires: 1, signature: 'g' };
+    const solution = { ...challenge, nonce: 4 };
+    const fetchChallenge = vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue(challenge);
+    vi.spyOn(powLib, 'solvePoW').mockReturnValue({ promise: Promise.resolve(solution), cancel: () => {} });
     const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
 
     await submit('a sunset');
 
-    expect(fetchChallenge).not.toHaveBeenCalled();
-    expect(generate).toHaveBeenCalledOnce();
-    expect(generate.mock.calls[0]![0]).not.toHaveProperty('pow');
+    expect(fetchChallenge).toHaveBeenCalledOnce();
+    expect(generate.mock.calls[0]![0].pow).toEqual(solution);
   });
 
   it('does not call the server without the Cloudflare token it was asked for', async () => {

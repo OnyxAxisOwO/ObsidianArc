@@ -305,7 +305,7 @@ func TestEnablingAPackageAttachesEverythingItBrought(t *testing.T) {
 
 // The generation lab is the third door a guard can stand in front of: a
 // signed-in account spending provider money, asked before anything is paid
-// for, and never an administrator.
+// for, and an administrator is asked like anybody else.
 func TestAPackagesGuardStandsInFrontOfTheImageLab(t *testing.T) {
 	a := newAdmin(t)
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
@@ -332,8 +332,8 @@ func TestAPackagesGuardStandsInFrontOfTheImageLab(t *testing.T) {
 	if res = ask("fine", visitor); res.Code == http.StatusForbidden {
 		t.Fatalf("an accepted token was refused: %d %s", res.Code, res.Body.String())
 	}
-	if res = ask("", a.s); res.Code == http.StatusForbidden && code(t, res) == "demo_closed" {
-		t.Fatalf("the administrator was asked for a token: %s", res.Body.String())
+	if res = ask("", a.s); res.Code != http.StatusForbidden || code(t, res) != "demo_closed" {
+		t.Fatalf("the administrator was not asked for a token: %d %s", res.Code, res.Body.String())
 	}
 }
 

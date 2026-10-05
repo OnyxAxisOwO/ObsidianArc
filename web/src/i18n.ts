@@ -1733,7 +1733,7 @@ const en = {
   turnstileOnRedeem: 'Challenge on code redemption',
   turnstileOnRedeemHint: 'Show a verification dialog before a signed-in user can redeem a reset-card code.',
   turnstileOnImages: 'Challenge in the image lab',
-  turnstileOnImagesHint: 'A Cloudflare check before every picture, because every picture is provider money. Needs the site key and secret above. Administrators are never asked.',
+  turnstileOnImagesHint: 'A Cloudflare check before every picture, because every picture is provider money. Needs the site key and secret above.',
   powOnImages: 'Proof of work in the image lab',
   powOnImagesHint: 'The browser solves a small puzzle before every picture, with no third party involved. Uses the difficulty above. Super risk control, when installed, has its own switch for the lab on its settings card.',
   turnstileOnFeedback: 'Challenge on feedback',

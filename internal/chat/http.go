@@ -58,7 +58,9 @@ type Handlers struct {
 	ClientIP            func(*http.Request) string
 	// What stands in front of the generation lab, each optional and each
 	// answered by its own settings per request: a Turnstile token, a proof
-	// of work, and the plugin guards' tokens. Administrators are never asked.
+	// of work, and the plugin guards' tokens. Administrators are asked like anybody else:
+	// the lab spends provider money whoever clicks, and a check nobody on the
+	// operator's side ever meets is one nobody on the operator's side can test.
 	ImageChallenge  turnstile.Gate
 	ImagePoW        *pow.Manager
 	ImagePoWEnabled func() bool
@@ -318,9 +320,6 @@ func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, toke
 // plugin guards are calls to somebody's service. Each is a one-shot token, so
 // the browser asks for a fresh one per picture.
 func (h *Handlers) requireImageChallenge(r *http.Request, account user.User, body imageGenRequest) error {
-	if account.IsAdmin() {
-		return nil
-	}
 	ip := ""
 	if h.ClientIP != nil {
 		ip = h.ClientIP(r)

@@ -1699,7 +1699,7 @@ export const zh: Record<StringKey, string> = {
   turnstileOnRedeem: '兑换码兑换时验证',
   turnstileOnRedeemHint: '登录用户兑换重置卡兑换码前，先弹出人机验证窗口。',
   turnstileOnImages: '生图实验室人机验证',
-  turnstileOnImagesHint: '每生成一张图之前先过一次 Cloudflare 验证，因为每张图都是实打实的上游费用。需要上面填好站点密钥。管理员不会被要求验证。',
+  turnstileOnImagesHint: '每生成一张图之前先过一次 Cloudflare 验证，因为每张图都是实打实的上游费用。需要上面填好站点密钥。管理员也一样要验证。',
   powOnImages: '生图实验室 PoW 验证',
   powOnImagesHint: '每生成一张图之前，浏览器先解一道小算力题，不依赖任何第三方。难度沿用上面的设置。安装了超级风控的话，实验室的风控开关在它自己的设置卡片里。',
   turnstileOnFeedback: '提交反馈时人机验证',

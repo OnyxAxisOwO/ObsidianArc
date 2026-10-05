@@ -168,20 +168,21 @@ func TestImageLabGuardsGetTheirTokensAndSpeakForThemselves(t *testing.T) {
 	}
 }
 
-// An administrator testing the lab is not the traffic the challenges are for,
-// the way the chat's speed challenge treats one.
-func TestImageLabChallengesStandAsideForAdministrators(t *testing.T) {
+// An administrator is asked like anybody else: the lab spends provider money
+// whoever clicks, and a check nobody on the operator's side ever meets is one
+// nobody on the operator's side can test.
+func TestImageLabChallengesAskAdministratorsToo(t *testing.T) {
 	lab := newImageLab(t, 1)
 	lab.fixture.account.Role = user.RoleAdmin
-	lab.handlers.ImageGuards = func(context.Context, map[string]string, string, string) error {
-		return errors.New("an administrator was asked")
-	}
 	lab.handlers.ImageChallenge = turnstile.Gate{
 		Enabled: func() bool { return true },
 		Verify:  func(context.Context, string, string) error { return turnstile.ErrFailed },
 	}
-	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
-	if recorder := lab.generate(t, lab.askBody()+`}`); recorder.Code != http.StatusOK {
-		t.Fatalf("got %d %s, want 200", recorder.Code, recorder.Body.String())
+	recorder := lab.generate(t, lab.askBody()+`}`)
+	if recorder.Code != http.StatusForbidden || errorCode(t, recorder.Body.String()) != "challenge_failed" {
+		t.Fatalf("got %d %s, want 403 challenge_failed", recorder.Code, recorder.Body.String())
+	}
+	if lab.paintedOnce() {
+		t.Fatal("the provider was called for an administrator who failed the challenge")
 	}
 }
