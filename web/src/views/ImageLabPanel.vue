@@ -5,7 +5,7 @@
 // model, provide a prompt, pick a visual style and aspect ratio, generate images
 // and download the results directly.
 
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   deleteImageGeneration,
@@ -14,12 +14,15 @@ import {
   type ImageGenerationItem,
   type ImageGenerationRecord,
 } from '@/api/images';
+import { fetchPoWChallenge, type PoWSolution } from '@/api/auth';
+import { ApiError } from '@/api/client';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
+import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t } from '@/composables/useI18n';
 import { ImageError, prepareImage } from '@/chat/image';
 import { loadModels, models } from '@/chat/useModels';
@@ -35,6 +38,9 @@ import {
   IconTrash,
 } from '@/icons';
 import { relativeTime } from '@/lib/format';
+import { solvePoW } from '@/lib/pow';
+import { guards } from '@/plugins/registry';
+import { siteInfo } from '@/stores/session';
 
 const router = useRouter();
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
@@ -52,6 +58,23 @@ const selectedSize = ref('1024x1024');
 
 const busy = ref(false);
 const error = ref('');
+/** What the confirm button says while a challenge, not the model, is the wait. */
+const stage = ref('');
+
+// The operator's checks in front of the lab. Each token is good for one
+// picture, so every attempt asks again, whatever became of the last.
+const turnstile = ref<InstanceType<typeof OaTurnstile> | null>(null);
+const needsTurnstile = computed(() =>
+  !!siteInfo.value.turnstile_on_images && !!siteInfo.value.turnstile_site_key);
+const needsPoW = computed(() => !!siteInfo.value.pow_on_images);
+const activeGuards = computed(() =>
+  guards().filter(({ guard, config }) => guard.active('images', config)));
+
+// Prepared when the panel opens rather than on submit: a service that scores
+// behaviour has nothing to score if it starts at submit time.
+watch(activeGuards, (list) => {
+  for (const { guard, config } of list) guard.prepare?.('images', config);
+}, { immediate: true });
 const history = ref<ImageGenerationItem[]>([]);
 const zoomedImage = ref<{ url: string; alt?: string } | null>(null);
 
@@ -325,10 +348,37 @@ async function generate(): Promise<void> {
   const text = prompt.value.trim();
   if (!text || !selectedModelID.value || busy.value || preparing.value) return;
 
-  busy.value = true;
   error.value = '';
+  let turnstileToken = '';
+  if (needsTurnstile.value) {
+    turnstileToken = turnstile.value?.token() ?? '';
+    if (!turnstileToken) {
+      error.value = t('challengeRequired');
+      return;
+    }
+  }
 
+  busy.value = true;
   try {
+    // Cheapest first, as the server asks them: the arithmetic, then the
+    // plugin guards, whose service may take a moment.
+    let pow: PoWSolution | undefined;
+    if (needsPoW.value) {
+      stage.value = t('powSolving');
+      pow = await solvePoW(await fetchPoWChallenge()).promise;
+    }
+    const guardTokens: Record<string, string> = {};
+    for (const { guard, config } of activeGuards.value) {
+      stage.value = guard.checking();
+      try {
+        guardTokens[guard.name] = await guard.token('images', config);
+      } catch (failure: unknown) {
+        error.value = guard.failed(failure);
+        return;
+      }
+    }
+    stage.value = '';
+
     const images = references.value.map((r) => r.data);
     const res = await generateImages({
       model_id: selectedModelID.value,
@@ -337,6 +387,9 @@ async function generate(): Promise<void> {
       size: selectedSize.value,
       n: 1,
       ...(images.length > 0 ? { images, image: images[0] } : {}),
+      ...(turnstileToken ? { turnstile: turnstileToken } : {}),
+      ...(pow ? { pow } : {}),
+      ...(Object.keys(guardTokens).length ? { guards: guardTokens } : {}),
     });
 
     if (res.images && res.images.length) {
@@ -344,9 +397,15 @@ async function generate(): Promise<void> {
       void loadGallery();
     }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : t('failed');
+    const code = err instanceof ApiError ? err.code : '';
+    if (code === 'challenge_failed' || code.startsWith('pow_')) error.value = t('challengeFailed');
+    else if (code === 'challenge_unavailable') error.value = t('challengeUnavailable');
+    else error.value = err instanceof Error ? err.message : t('failed');
   } finally {
+    stage.value = '';
     busy.value = false;
+    // Spent whether or not it passed.
+    turnstile.value?.reset();
   }
 }
 
@@ -361,7 +420,7 @@ function imageSource(img: ImageGenerationItem): string {
   <OaPanel
     ref="panel"
     :title="t('imageLab')"
-    :confirm-label="activeTab === 'generate' ? (busy ? t('generatingImage') : t('generateImage')) : undefined"
+    :confirm-label="activeTab === 'generate' ? (busy ? (stage || t('generatingImage')) : t('generateImage')) : undefined"
     :confirmable="activeTab === 'generate' && !!prompt.trim() && !!selectedModelID && !preparing"
     :footer="activeTab === 'generate'"
     :busy="busy"
@@ -547,6 +606,12 @@ function imageSource(img: ImageGenerationItem): string {
             @keydown.meta.enter="generate"
           />
         </div>
+
+        <OaTurnstile
+          v-if="needsTurnstile"
+          ref="turnstile"
+          :site-key="siteInfo.turnstile_site_key ?? ''"
+        />
 
         <div v-if="busy" class="ai-chat-pending" style="margin: 16px 0;">
           <span class="ai-chat-spinner" />

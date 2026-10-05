@@ -45,7 +45,7 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | `fields` | 账户上的字段：`key`、`unique`、`searchable`、`pattern`。**列本身由插件自己的迁移创建** |
 | `field_rules` | 哪个设置决定注册时这个字段是 `off`、`optional` 还是 `required` |
 | `oauth_bindings` | OIDC 登录的主体号形如 `pattern` 时，就是这个字段的值（自动绑定，且该连接不可解绑） |
-| `guards` | 注册或登录前的检查：`action`（`register`/`login`）、`name`、`event`（拒绝时写进安全日志的事件名） |
+| `guards` | 注册、登录或生图实验室前的检查：`action`（`register`/`login`/`images`；`images` 需要 `requires.api` ≥ 2，管理员不会被问到）、`name`、`event`（拒绝时写进安全日志的事件名） |
 | `routes` | 后端提供的接口：`pattern`（`POST /api/admin/x/demo/things/{id}`）、`access`（`admin` 走后台的全部检查：会话、两步验证、`permission` 权限；`public` 原样开放，后端自己鉴权） |
 | `console` | 控制台命令：名字、分组、摘要、用法、帮助、参数、标志、权限、是否破坏性 |
 | `ui.module` | 浏览器端模块，`web/ui.js` |

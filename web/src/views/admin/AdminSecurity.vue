@@ -113,6 +113,8 @@ const form = ref({
   turnstileOnAPIKey: false,
   turnstileOnRedeem: false,
   turnstileOnFeedback: false,
+  turnstileOnImages: false,
+  powOnImages: false,
   // 'off' | 'turnstile' | 'pow' | 'both', or a mode a plugin added.
   captchaMode: 'turnstile' as string,
   powBaseMaxNumber: 50000 as number | null,
@@ -383,6 +385,8 @@ function collect(): Record<string, string> {
     'turnstile.on_api_key': String(form.value.turnstileOnAPIKey),
     'turnstile.on_redeem': String(form.value.turnstileOnRedeem),
     'turnstile.on_feedback': String(form.value.turnstileOnFeedback),
+    'turnstile.on_images': String(form.value.turnstileOnImages),
+    'security.pow_on_images': String(form.value.powOnImages),
     'registration.captcha_mode': form.value.captchaMode,
     'security.pow_base_max_number': String(form.value.powBaseMaxNumber ?? 50000),
     'security.pow_elevated_max_number': String(form.value.powElevatedMaxNumber ?? 500000),
@@ -896,6 +900,8 @@ async function load(): Promise<void> {
       turnstileOnAPIKey: values['turnstile.on_api_key'] === 'true',
       turnstileOnRedeem: values['turnstile.on_redeem'] === 'true',
       turnstileOnFeedback: values['turnstile.on_feedback'] === 'true',
+      turnstileOnImages: values['turnstile.on_images'] === 'true',
+      powOnImages: values['security.pow_on_images'] === 'true',
       captchaMode: values['registration.captcha_mode'] || (values['turnstile.on_signup'] === 'true' ? 'turnstile' : 'off'),
       powBaseMaxNumber: Number(values['security.pow_base_max_number'] || 50000),
       powElevatedMaxNumber: Number(values['security.pow_elevated_max_number'] || 500000),
@@ -1277,6 +1283,16 @@ onMounted(load);
           v-model="form.turnstileOnFeedback"
           :label="t('turnstileOnFeedback')"
           :hint="t('turnstileOnFeedbackHint')"
+        />
+        <OaSwitchField
+          v-model="form.turnstileOnImages"
+          :label="t('turnstileOnImages')"
+          :hint="t('turnstileOnImagesHint')"
+        />
+        <OaSwitchField
+          v-model="form.powOnImages"
+          :label="t('powOnImages')"
+          :hint="t('powOnImagesHint')"
         />
       </AdminControlCard>
       <AdminControlCard id="secMail" v-show="visible('secMail')" :title="t('mailSettings')" :icon="IconMessage" :hint="t('mailSettingsHint')">

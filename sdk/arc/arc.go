@@ -60,7 +60,8 @@ type Ctx struct {
 
 // GuardRequest is what a guard judges.
 type GuardRequest struct {
-	// "register" or "login".
+	// "register", "login" or "images". Images is the generation lab, where
+	// Restrict means nothing, as at sign-in.
 	Action string `json:"action"`
 	// What the browser sent under this guard's name; empty when it sent none.
 	Token string `json:"token"`

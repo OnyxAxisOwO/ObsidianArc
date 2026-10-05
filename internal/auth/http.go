@@ -270,6 +270,8 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"turnstile_on_api_key":      h.settings.Bool(settings.TurnstileOnAPIKey),
 		"turnstile_on_redeem":       h.settings.Bool(settings.TurnstileOnRedeem),
 		"turnstile_on_feedback":     h.settings.Bool(settings.TurnstileOnFeedback),
+		"turnstile_on_images":       h.settings.Bool(settings.TurnstileOnImages),
+		"pow_on_images":             h.settings.Bool(settings.PoWOnImages),
 		"turnstile_on_chat_speed":   h.settings.Int(settings.ChatChallengeRequests, 0) > 0,
 		// The compiled-in plugins, each with whatever its browser half needs
 		// — see Extend. A plugin that is not in this build is not named, and
@@ -1105,6 +1107,7 @@ func (h *Handlers) turnstileSiteKey(firstAccount bool) string {
 		!h.settings.Bool(settings.TurnstileOnAPIKey) &&
 		!h.settings.Bool(settings.TurnstileOnRedeem) &&
 		!h.settings.Bool(settings.TurnstileOnFeedback) &&
+		!h.settings.Bool(settings.TurnstileOnImages) &&
 		h.settings.Int(settings.ChatChallengeRequests, 0) <= 0 {
 		return ""
 	}

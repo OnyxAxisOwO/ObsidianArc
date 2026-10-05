@@ -5,6 +5,12 @@
 
 ## Unreleased
 
+- 生图实验室可以加三道验证，各有开关，每生成一张图验证一次：后台「安全」里的 Cloudflare Turnstile
+  （`turnstile.on_images`）和 PoW（`security.pow_on_images`），以及插件守卫（超级风控在自己的设置卡里有「生图实验室启用风控」）。
+  都在选模型、占额度之前检查，管理员不会被要求验证；默认全部关闭。
+- 插件契约：守卫多了一个门 `images`，`arcx.APILevel` 升到 2。声明了 `images` 守卫的包需要 `requires.api` ≥ 2；
+  已装的 `requires.api: 1` 的包照常工作。
+
 ## v0.9.2 — 2026-10-04
 
 补丁版本，不改任何接口。

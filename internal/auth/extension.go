@@ -16,15 +16,21 @@ import (
 // predate plugins and every build has them; what only some instances run
 // arrives through these instead, so this package never names it.
 
-// The two doors a guard can stand in front of.
+// The doors a guard can stand in front of. Images is the generation lab: a
+// signed-in account spending provider money, which is the door a script
+// holding a stolen cookie goes for once sign-up has a challenge on it.
 const (
 	GuardRegister = "register"
 	GuardLogin    = "login"
+	GuardImages   = "images"
 )
+
+// GuardActions is every door, for the places that have to name them all.
+var GuardActions = []string{GuardRegister, GuardLogin, GuardImages}
 
 // GuardRequest is what a guard judges.
 type GuardRequest struct {
-	// GuardRegister or GuardLogin.
+	// GuardRegister, GuardLogin or GuardImages.
 	Action string
 	// What the browser sent under this guard's name, in the request's
 	// "guards" object. Empty when it sent nothing, which is the guard's to
@@ -78,61 +84,54 @@ func (r *GuardRefusal) Unwrap() error { return r.Err }
 func (s *Service) AddGuard(action string, g Guard) {
 	s.extMu.Lock()
 	defer s.extMu.Unlock()
-	switch action {
-	case GuardRegister:
-		s.signupGuards = append(s.signupGuards, g)
-	case GuardLogin:
-		s.loginGuards = append(s.loginGuards, g)
-	default:
+	if !validGuardAction(action) {
 		panic("auth: no such guard action " + action)
 	}
+	if s.guards == nil {
+		s.guards = map[string][]Guard{}
+	}
+	s.guards[action] = append(s.guards[action], g)
 }
 
-// ReplaceGuards swaps everything plugin stood in front of the two doors for
-// register and login, in one step, so an update of a plugin that guards
+func validGuardAction(action string) bool {
+	for _, known := range GuardActions {
+		if action == known {
+			return true
+		}
+	}
+	return false
+}
+
+// ReplaceGuards swaps everything plugin stood in front of the doors for the
+// guards given, by action, in one step, so an update of a plugin that guards
 // sign-up never leaves the door unguarded between taking the old check away
 // and standing the new one there.
-func (s *Service) ReplaceGuards(plugin string, register, login []Guard) {
+func (s *Service) ReplaceGuards(plugin string, added map[string][]Guard) {
 	s.extMu.Lock()
 	defer s.extMu.Unlock()
-	swap := func(current, added []Guard) []Guard {
-		out := make([]Guard, 0, len(current)+len(added))
-		for _, g := range current {
+	next := make(map[string][]Guard, len(GuardActions))
+	for _, action := range GuardActions {
+		out := make([]Guard, 0, len(s.guards[action])+len(added[action]))
+		for _, g := range s.guards[action] {
 			if g.Plugin != plugin {
 				out = append(out, g)
 			}
 		}
-		return append(out, added...)
+		next[action] = append(out, added[action]...)
 	}
-	s.signupGuards, s.loginGuards = swap(s.signupGuards, register), swap(s.loginGuards, login)
+	s.guards = next
 }
 
-// RemoveGuards takes every guard plugin stood in front of either door away,
+// RemoveGuards takes every guard plugin stood in front of any door away,
 // for a plugin that is being removed while the server runs.
-func (s *Service) RemoveGuards(plugin string) {
-	s.extMu.Lock()
-	defer s.extMu.Unlock()
-	drop := func(guards []Guard) []Guard {
-		kept := make([]Guard, 0, len(guards))
-		for _, g := range guards {
-			if g.Plugin != plugin {
-				kept = append(kept, g)
-			}
-		}
-		return kept
-	}
-	s.signupGuards, s.loginGuards = drop(s.signupGuards), drop(s.loginGuards)
-}
+func (s *Service) RemoveGuards(plugin string) { s.ReplaceGuards(plugin, nil) }
 
 // guardsFor is a copy of the guards in front of action, so a guard can run —
 // and take as long as it likes — without the list being held.
 func (s *Service) guardsFor(action string) []Guard {
 	s.extMu.RLock()
 	defer s.extMu.RUnlock()
-	if action == GuardRegister {
-		return append([]Guard(nil), s.signupGuards...)
-	}
-	return append([]Guard(nil), s.loginGuards...)
+	return append([]Guard(nil), s.guards[action]...)
 }
 
 // SetPluginGate is how the server tells sign-up and sign-in which plugins are
@@ -148,7 +147,7 @@ type GuardInfo struct {
 // GuardsOf lists the guards plugin stood in front of either door.
 func (s *Service) GuardsOf(plugin string) []GuardInfo {
 	var out []GuardInfo
-	for _, action := range []string{GuardRegister, GuardLogin} {
+	for _, action := range GuardActions {
 		for _, g := range s.guardsFor(action) {
 			if g.Plugin == plugin {
 				out = append(out, GuardInfo{Action: action, Name: g.Name})
@@ -157,6 +156,15 @@ func (s *Service) GuardsOf(plugin string) []GuardInfo {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Action > out[j].Action })
 	return out
+}
+
+// CheckGuards is runGuards for a door outside this package — the generation
+// lab asks it before a picture is paid for. Only the refusal matters there:
+// a restriction is a sign-up's middle band and means nothing to an account
+// that already exists.
+func (s *Service) CheckGuards(ctx context.Context, action string, tokens map[string]string, ip, username string) error {
+	_, err := s.runGuards(ctx, action, tokens, ip, username)
+	return err
 }
 
 // runGuards asks each guard in turn and stops at the first refusal. The

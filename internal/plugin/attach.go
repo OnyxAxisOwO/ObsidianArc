@@ -93,8 +93,7 @@ func (m *Manager) attach(l *loaded) (err error) {
 		undo = append(undo, func() { h.OAuth.UnbindSubject(field) })
 	}
 
-	register, login := m.guardsOf(l)
-	h.Auth.ReplaceGuards(name, register, login)
+	h.Auth.ReplaceGuards(name, m.guardsOf(l))
 	undo = append(undo, func() { h.Auth.RemoveGuards(name) })
 
 	h.AuthHandlers.Extend(name, m.siteBlock(l))
@@ -174,26 +173,21 @@ func (m *Manager) swapPackages(fn func(map[string]*loaded)) {
 	m.pkgs.Store(&next)
 }
 
-// guardsOf is the guards the manifest lists, each asking the backend.
-func (m *Manager) guardsOf(l *loaded) (register, login []auth.Guard) {
+// guardsOf is the guards the manifest lists, by the door each stands in front
+// of, each asking the backend.
+func (m *Manager) guardsOf(l *loaded) map[string][]auth.Guard {
+	out := map[string][]auth.Guard{}
 	for _, g := range l.pkg.Manifest.Guards {
 		g := g
-		guard := auth.Guard{
+		out[g.Action] = append(out[g.Action], auth.Guard{
 			Name: g.Name, Plugin: l.name, Event: g.Event,
 			Check: func(ctx context.Context, req auth.GuardRequest) (auth.Verdict, error) {
 				return m.judge(ctx, l, g.Name, req)
 			},
-		}
-		if g.Action == arcxRegister {
-			register = append(register, guard)
-		} else {
-			login = append(login, guard)
-		}
+		})
 	}
-	return register, login
+	return out
 }
-
-const arcxRegister = "register"
 
 // judge asks the backend to judge a sign-up or a sign-in and turns its answer
 // into the guard's. A backend that cannot answer refuses: a check that is

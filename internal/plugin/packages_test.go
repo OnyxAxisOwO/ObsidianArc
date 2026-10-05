@@ -303,6 +303,40 @@ func TestEnablingAPackageAttachesEverythingItBrought(t *testing.T) {
 	}
 }
 
+// The generation lab is the third door a guard can stand in front of: a
+// signed-in account spending provider money, asked before anything is paid
+// for, and never an administrator.
+func TestAPackagesGuardStandsInFrontOfTheImageLab(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	visitor := a.in.Register("painter", founderPassword)
+	a.setSettings(map[string]string{"demo.mode": "closed"})
+
+	ask := func(token string, who *servertest.Session) *httptest.ResponseRecorder {
+		body := map[string]any{"model_id": "01JNOSUCHMODEL0000000000000", "prompt": "a sunset"}
+		if token != "" {
+			body["guards"] = map[string]string{"demo": token}
+		}
+		return a.in.Do(http.MethodPost, "/api/images/generate", body, who)
+	}
+	res := ask("", visitor)
+	if res.Code != http.StatusForbidden || code(t, res) != "demo_closed" {
+		t.Fatalf("a picture with no token: %d %s", res.Code, res.Body.String())
+	}
+	res = ask("block", visitor)
+	if res.Code != http.StatusForbidden || code(t, res) != "demo_blocked" {
+		t.Fatalf("a refused token: %d %s", res.Code, res.Body.String())
+	}
+	// Past the guard the model does not exist, which is the answer that
+	// shows nothing was in the way.
+	if res = ask("fine", visitor); res.Code == http.StatusForbidden {
+		t.Fatalf("an accepted token was refused: %d %s", res.Code, res.Body.String())
+	}
+	if res = ask("", a.s); res.Code == http.StatusForbidden && code(t, res) == "demo_closed" {
+		t.Fatalf("the administrator was asked for a token: %s", res.Body.String())
+	}
+}
+
 func TestAPackagesAccountFieldIsCheckedRequiredAndUnique(t *testing.T) {
 	a := newAdmin(t)
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)

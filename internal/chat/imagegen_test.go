@@ -26,6 +26,8 @@ type imageLab struct {
 	fixture *fixture
 	mux     *http.ServeMux
 	painter model.Model
+	// Exposed so a test can stand a challenge in front of the lab.
+	handlers *Handlers
 
 	mu      sync.Mutex
 	records []TurnRecord
@@ -54,6 +56,7 @@ func newImageLab(t *testing.T, requestWeight float64) *imageLab {
 	}
 
 	handlers := NewHandlers(f.service, f.conversations)
+	lab.handlers = handlers
 	lab.mux = http.NewServeMux()
 	handlers.Routes(lab.mux)
 	return lab

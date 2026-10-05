@@ -119,6 +119,8 @@ export interface SiteInfo {
   turnstile_on_api_key?: boolean;
   turnstile_on_redeem?: boolean;
   turnstile_on_feedback?: boolean;
+  turnstile_on_images?: boolean;
+  pow_on_images?: boolean;
   turnstile_on_chat_speed?: boolean;
   /**
    * The plugins compiled into this server, each with whatever its browser

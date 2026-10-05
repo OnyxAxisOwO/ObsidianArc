@@ -1,5 +1,6 @@
 // The image generation API.
 
+import type { PoWSolution } from './auth';
 import { api } from './client';
 
 export interface ImageGenerationItem {
@@ -35,6 +36,10 @@ export interface ImageGenerationRequest {
   image?: string;
   /** Base64, no data: prefix — pictures for the prompt to work from. */
   images?: string[];
+  /** One-shot proofs for the lab's challenges, when the operator asked for them. */
+  turnstile?: string;
+  pow?: PoWSolution;
+  guards?: Record<string, string>;
 }
 
 export interface ImageGenerationResponse {

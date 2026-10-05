@@ -30,7 +30,7 @@ const Format = 1
 // hooks the host calls on it. A package says which it needs (Requires.API);
 // one that needs more than this build offers is refused at install, which is
 // the moment the operator can still do something about it.
-const APILevel = 1
+const APILevel = 2
 
 // Text is one string in both of the interface's languages. An empty ZH falls
 // back to EN when the interface is drawn.
@@ -171,9 +171,10 @@ type OAuthBinding struct {
 	Pattern  string `json:"pattern"`
 }
 
-// Guard is a check the backend runs in front of sign-up or sign-in.
+// Guard is a check the backend runs in front of sign-up, sign-in or the
+// image generation lab.
 type Guard struct {
-	// "register" or "login".
+	// "register", "login" or "images".
 	Action string `json:"action"`
 	// The key the browser's token rides under, and what the backend
 	// registers its handler as.
@@ -442,8 +443,8 @@ func (m *Manifest) validateFields() error {
 func (m *Manifest) validateGuards() error {
 	seen := map[string]bool{}
 	for _, g := range m.Guards {
-		if g.Action != "register" && g.Action != "login" {
-			return fmt.Errorf("guard %q: action must be register or login", g.Name)
+		if g.Action != "register" && g.Action != "login" && g.Action != "images" {
+			return fmt.Errorf("guard %q: action must be register, login or images", g.Name)
 		}
 		if !guardNameRE.MatchString(g.Name) {
 			return fmt.Errorf("guard name %q is not valid", g.Name)

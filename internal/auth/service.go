@@ -103,10 +103,9 @@ type Service struct {
 	// and how sign-up treats each plugin account field — see SetFieldRule.
 	// Written at setup, and again when a plugin is installed or removed
 	// while the server runs, so every read goes through extMu.
-	extMu        sync.RWMutex
-	signupGuards []Guard
-	loginGuards  []Guard
-	fieldRules   map[string]func() string
+	extMu      sync.RWMutex
+	guards     map[string][]Guard
+	fieldRules map[string]func() string
 	// Self-developed proof-of-work manager. Nil is off.
 	PoW *pow.Manager
 	// Challenge failure hook for recording to security events.

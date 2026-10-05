@@ -29,7 +29,8 @@
   "oauth_bindings": [{ "provider": "oidc", "field": "handle", "pattern": "^[0-9]{5,15}$" }],
   "guards": [
     { "action": "register", "name": "demo", "event": "demo_challenge" },
-    { "action": "login", "name": "demo", "event": "demo_challenge" }
+    { "action": "login", "name": "demo", "event": "demo_challenge" },
+    { "action": "images", "name": "demo", "event": "demo_challenge" }
   ],
   "routes": [
     { "pattern": "GET /api/admin/x/demo/things", "access": "admin", "permission": "users" },

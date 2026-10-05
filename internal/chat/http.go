@@ -17,6 +17,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
@@ -55,6 +56,13 @@ type Handlers struct {
 	ChatChallenge       turnstile.Gate
 	ChatChallengePolicy func() securityevents.ChatPolicy
 	ClientIP            func(*http.Request) string
+	// What stands in front of the generation lab, each optional and each
+	// answered by its own settings per request: a Turnstile token, a proof
+	// of work, and the plugin guards' tokens. Administrators are never asked.
+	ImageChallenge  turnstile.Gate
+	ImagePoW        *pow.Manager
+	ImagePoWEnabled func() bool
+	ImageGuards     func(ctx context.Context, tokens map[string]string, ip, username string) error
 	// Slots for in-flight attachment decodes. See uploadAttachment.
 	decoding chan struct{}
 }
@@ -303,6 +311,66 @@ func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, toke
 	}
 	record("passed", "visitor passed the chat speed challenge", securityevents.SeverityInfo)
 	return nil
+}
+
+// requireImageChallenge asks the generation lab's checks in order of cost: the
+// proof of work is arithmetic, Turnstile is a call to Cloudflare, and the
+// plugin guards are calls to somebody's service. Each is a one-shot token, so
+// the browser asks for a fresh one per picture.
+func (h *Handlers) requireImageChallenge(r *http.Request, account user.User, body imageGenRequest) error {
+	if account.IsAdmin() {
+		return nil
+	}
+	ip := ""
+	if h.ClientIP != nil {
+		ip = h.ClientIP(r)
+	}
+
+	if h.ImagePoW != nil && h.ImagePoWEnabled != nil && h.ImagePoWEnabled() {
+		if body.PoW == nil {
+			return httpx.BadRequestCode("pow_required", "Proof of work challenge solution is required.")
+		}
+		if err := h.ImagePoW.Verify(body.PoW); err != nil {
+			return powError(err)
+		}
+	}
+
+	if err := h.ImageChallenge.Check(r.Context(), body.Turnstile, ip); err != nil {
+		switch {
+		case errors.Is(err, turnstile.ErrFailed):
+			return httpx.ForbiddenCode("challenge_failed",
+				"The verification could not be completed. Try again.")
+		case errors.Is(err, turnstile.ErrUnavailable):
+			return httpx.UnavailableCode("challenge_unavailable",
+				"Verification is unavailable right now. Try again shortly.")
+		default:
+			return httpx.Internal(err)
+		}
+	}
+
+	if h.ImageGuards != nil {
+		// A guard's refusal is already worded and coded by the plugin that
+		// refused; WriteError finds the *httpx.Error inside it.
+		return h.ImageGuards(r.Context(), body.Guards, ip, account.Username)
+	}
+	return nil
+}
+
+func powError(err error) error {
+	switch {
+	case errors.Is(err, pow.ErrExpired):
+		return httpx.BadRequestCode("pow_expired", "Proof of work challenge has expired. Please try again.")
+	case errors.Is(err, pow.ErrInvalidSignature):
+		return httpx.BadRequestCode("pow_invalid_signature", "Invalid proof of work challenge signature.")
+	case errors.Is(err, pow.ErrMaxExceeded):
+		return httpx.BadRequestCode("pow_max_exceeded", "Proof of work nonce exceeds maximum allowed number.")
+	case errors.Is(err, pow.ErrInvalidNonce):
+		return httpx.BadRequestCode("pow_invalid_nonce", "Invalid proof of work solution.")
+	case errors.Is(err, pow.ErrReplayed):
+		return httpx.BadRequestCode("pow_replayed", "Proof of work challenge salt has already been used.")
+	default:
+		return httpx.BadRequestCode("pow_invalid", "Proof of work could not be verified.")
+	}
 }
 
 func translatePrepareError(err error) error {
@@ -659,6 +727,11 @@ type imageGenRequest struct {
 	// Present turns the call into an edit rather than a generation.
 	Image  string   `json:"image"`
 	Images []string `json:"images"`
+	// The lab's challenges, in the shapes sign-up takes them in — see
+	// requireImageChallenge.
+	Turnstile string            `json:"turnstile"`
+	PoW       *pow.Solution     `json:"pow"`
+	Guards    map[string]string `json:"guards"`
 }
 
 type imageGenItem struct {
@@ -732,6 +805,12 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	}
 	if body.ModelID == "" {
 		return httpx.BadRequest("Model is required.")
+	}
+
+	// Before the model is authorized and the quota is claimed: a refused
+	// challenge costs nothing, and a script that fails one holds no slot.
+	if err := h.requireImageChallenge(r, account, body); err != nil {
+		return err
 	}
 
 	resolved, err := h.service.models.Authorize(r.Context(), account.GroupID, body.ModelID, account.IsAdmin())

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, shallowRef, type App } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
+import * as authApi from '@/api/auth';
 import * as imagesApi from '@/api/images';
+import * as powLib from '@/lib/pow';
+import { site, siteInfo } from '@/stores/session';
 import * as chatImage from '@/chat/image';
 import { models } from '@/chat/useModels';
 import { providePanelHost } from '@/composables/usePanelHost';
@@ -248,5 +251,55 @@ describe('Image Lab reference image drag and drop', () => {
 
     expect(panels.querySelectorAll('.oa-reference').length).toBe(1);
     expect(panels.querySelector('.oa-reference-count')?.textContent).toBe('1/5');
+  });
+});
+
+describe('Image Lab challenges', () => {
+  async function submit(text: string): Promise<void> {
+    await mountImageLab();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = text;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+  }
+
+  afterEach(() => {
+    site.value = null;
+  });
+
+  it('asks for nothing while the operator has switched nothing on', async () => {
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+    await submit('a sunset');
+    expect(generate).toHaveBeenCalledOnce();
+    const sent = generate.mock.calls[0]![0];
+    expect(sent).not.toHaveProperty('pow');
+    expect(sent).not.toHaveProperty('turnstile');
+    expect(sent).not.toHaveProperty('guards');
+  });
+
+  it('solves a fresh proof of work for the picture and sends it', async () => {
+    site.value = { ...siteInfo.value, pow_on_images: true };
+    const challenge = { challenge: 'c', salt: 's', maxNumber: 10, expires: 1, signature: 'g' };
+    const solution = { ...challenge, nonce: 4 };
+    const fetchChallenge = vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue(challenge);
+    vi.spyOn(powLib, 'solvePoW').mockReturnValue({ promise: Promise.resolve(solution), cancel: () => {} });
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+
+    await submit('a sunset');
+
+    expect(fetchChallenge).toHaveBeenCalledOnce();
+    expect(generate.mock.calls[0]![0].pow).toEqual(solution);
+  });
+
+  it('does not call the server without the Cloudflare token it was asked for', async () => {
+    site.value = { ...siteInfo.value, turnstile_on_images: true, turnstile_site_key: 'site' };
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+
+    await submit('a sunset');
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(panels.textContent).toContain(t('challengeRequired'));
   });
 });

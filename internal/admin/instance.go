@@ -193,6 +193,8 @@ var writableSettings = map[string]bool{
 	settings.TurnstileOnAPIKey:          true,
 	settings.TurnstileOnRedeem:          true,
 	settings.TurnstileOnFeedback:        true,
+	settings.TurnstileOnImages:          true,
+	settings.PoWOnImages:                true,
 	settings.RegistrationCaptchaMode:    true,
 	settings.PoWBaseMaxNumber:           true,
 	settings.PoWElevatedMaxNumber:       true,

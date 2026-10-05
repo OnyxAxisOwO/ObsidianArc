@@ -104,6 +104,11 @@ const (
 	// and with nothing to gain, so it is off by default: it earns its
 	// challenge only on an instance that has actually been spammed.
 	TurnstileOnFeedback = "turnstile.on_feedback"
+	// The generation lab: every picture is provider money, so it has its own
+	// switches for the Turnstile widget and a proof of work, and the plugin
+	// guards ask through the same door (auth.GuardImages).
+	TurnstileOnImages = "turnstile.on_images"
+	PoWOnImages       = "security.pow_on_images"
 
 	// Registration Captcha mode and self-developed Proof-of-Work settings.
 	// Captcha mode controls the challenge required at sign-up: "off",
@@ -670,6 +675,8 @@ var Defaults = map[string]string{
 	TurnstileOnAPIKey:       "false",
 	TurnstileOnRedeem:       "false",
 	TurnstileOnFeedback:     "false",
+	TurnstileOnImages:       "false",
+	PoWOnImages:             "false",
 	RegistrationCaptchaMode: CaptchaModeTurnstile,
 	PoWBaseMaxNumber:        "50000",
 	PoWElevatedMaxNumber:    "500000",

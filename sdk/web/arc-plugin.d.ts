@@ -33,7 +33,7 @@ export interface AccountFieldSpec {
   taken: Text;
 }
 
-export type GuardAction = 'register' | 'login';
+export type GuardAction = 'register' | 'login' | 'images';
 
 /**
  * A check the server-side plugin stands in front of sign-up or sign-in

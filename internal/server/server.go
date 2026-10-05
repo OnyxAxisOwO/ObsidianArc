@@ -623,6 +623,15 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		},
 		Secret: func() string { return settingsService.Get(settings.TurnstileSecretKey) },
 	}
+	chatHandlers.ImageChallenge = turnstile.Gate{
+		Client:  challengeClient,
+		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnImages) },
+		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
+	}
+	chatHandlers.ImagePoWEnabled = func() bool { return settingsService.Bool(settings.PoWOnImages) }
+	chatHandlers.ImageGuards = func(ctx context.Context, tokens map[string]string, ip, username string) error {
+		return authService.CheckGuards(ctx, auth.GuardImages, tokens, ip, username)
+	}
 	chatHandlers.ChatChallengePolicy = func() securityevents.ChatPolicy {
 		return securityevents.ChatPolicy{
 			Requests: settingsService.Int(settings.ChatChallengeRequests, 0),
@@ -689,6 +698,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	powManager := pow.NewManager(powKey, pow.NewTracker())
 	authService.PoW = powManager
+	chatHandlers.ImagePoW = powManager
 
 	authService.OnChallengeFailure = func(ctx context.Context, event, ip, username, reason string) {
 		ev := securityevents.Event{
@@ -1338,6 +1348,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 					settingsService.Bool(settings.TurnstileOnAPIKey) ||
 					settingsService.Bool(settings.TurnstileOnRedeem) ||
 					settingsService.Bool(settings.TurnstileOnFeedback) ||
+					settingsService.Bool(settings.TurnstileOnImages) ||
 					settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
 		}, host.Origins),
 		httpx.SameOrigin(cfg.AllowedOrigins),

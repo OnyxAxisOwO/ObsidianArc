@@ -43,11 +43,13 @@ export interface AccountFieldSpec {
   taken: Text;
 }
 
-export type GuardAction = 'register' | 'login';
+export type GuardAction = 'register' | 'login' | 'images';
 
 /**
- * A check the server-side plugin stands in front of sign-up or sign-in
- * (auth.Service.AddGuard). The token it produces rides in the request's
+ * A check the server-side plugin stands in front of sign-up, sign-in or the
+ * image generation lab (auth.Service.AddGuard). `active` must answer false
+ * for an action it has no switch for rather than falling through to another
+ * door's setting. The token it produces rides in the request's
  * "guards" object under the guard's name.
  */
 export interface GuardSpec {

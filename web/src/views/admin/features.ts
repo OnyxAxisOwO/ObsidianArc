@@ -79,7 +79,7 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['反馈署名', '显示管理员名字', '匿名回复', '回复署名', 'staff name', 'sign replies', 'anonymous'],
   },
   { id: 'secRegistrationLimits', pageSlug: 'security', titleKey: 'controlRegistrationLimits', searchKeys: ['signupsPerMinute', 'signupsPerHour', 'signupsPerIP', 'signupsIPWindow'] },
-  { id: 'secVerificationScenes', pageSlug: 'security', titleKey: 'controlVerificationScenes', searchKeys: ['captchaMode', 'turnstileOnLogin', 'turnstileOnSignup', 'turnstileOnAPIKey', 'turnstileOnRedeem', 'turnstileOnFeedback'] },
+  { id: 'secVerificationScenes', pageSlug: 'security', titleKey: 'controlVerificationScenes', searchKeys: ['captchaMode', 'turnstileOnLogin', 'turnstileOnSignup', 'turnstileOnAPIKey', 'turnstileOnRedeem', 'turnstileOnFeedback', 'turnstileOnImages', 'powOnImages'] },
   { id: 'secMail', pageSlug: 'security', titleKey: 'mailSettings', searchKeys: ['mailSettingsHint', 'mailHost', 'mailPort', 'mailUsername', 'mailFrom', 'mailPublicURL', 'mailTestSend'], keywords: ['邮件服务器', '验证邮件', '邮箱配置', 'SMTP', 'mail', 'email verification'] },
   { id: 'secUserCheck', pageSlug: 'security', titleKey: 'userCheckSettings', searchKeys: ['userCheckSettingsHint', 'userCheckEnabled', 'userCheckAPIKey', 'userCheckExemptDomains', 'userCheckFailureMode', 'userCheckTest'], keywords: ['临时邮箱', '一次性邮箱', '临时邮件', 'UserCheck', 'disposable email', 'disposable address'] },
   { id: 'secChatChallenge', pageSlug: 'security', titleKey: 'controlChatChallenge', searchKeys: ['chatChallengeRequests', 'chatChallengeWindow', 'chatChallengeClearance'] },

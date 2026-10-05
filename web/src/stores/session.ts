@@ -52,6 +52,8 @@ const FALLBACK_SITE: SiteInfo = {
   turnstile_on_signup: false,
   turnstile_on_api_key: false,
   turnstile_on_feedback: false,
+  turnstile_on_images: false,
+  pow_on_images: false,
   turnstile_on_redeem: false,
   turnstile_on_chat_speed: false,
   oauth: [],
