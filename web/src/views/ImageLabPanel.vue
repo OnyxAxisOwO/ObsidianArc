@@ -344,6 +344,22 @@ function usePrompt(item: ImageGenerationRecord): void {
   activeTab.value = 'generate';
 }
 
+// A guard's SDK can take a while and has no deadline of its own, so a check
+// that never answers would leave the button spinning for good.
+const GUARD_DEADLINE_MS = 60_000;
+
+class GuardTimeout extends Error {}
+
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new GuardTimeout()), ms);
+    work.then(
+      (value) => { window.clearTimeout(timer); resolve(value); },
+      (failure: unknown) => { window.clearTimeout(timer); reject(failure); },
+    );
+  });
+}
+
 async function generate(): Promise<void> {
   const text = prompt.value.trim();
   if (!text || !selectedModelID.value || busy.value || preparing.value) return;
@@ -371,9 +387,9 @@ async function generate(): Promise<void> {
     for (const { guard, config } of activeGuards.value) {
       stage.value = guard.checking();
       try {
-        guardTokens[guard.name] = await guard.token('images', config);
+        guardTokens[guard.name] = await withDeadline(guard.token('images', config), GUARD_DEADLINE_MS);
       } catch (failure: unknown) {
-        error.value = guard.failed(failure);
+        error.value = failure instanceof GuardTimeout ? t('guardTimeout') : guard.failed(failure);
         return;
       }
     }
@@ -615,7 +631,7 @@ function imageSource(img: ImageGenerationItem): string {
 
         <div v-if="busy" class="ai-chat-pending" style="margin: 16px 0;">
           <span class="ai-chat-spinner" />
-          <span>{{ t('generatingImage') }}</span>
+          <span>{{ stage || t('generatingImage') }}</span>
         </div>
 
         <div v-if="history.length" class="oa-image-lab-results">

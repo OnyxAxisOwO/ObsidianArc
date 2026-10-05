@@ -1798,6 +1798,7 @@ const en = {
   powVerificationFailed: 'Security verification failed. Please try again.',
   powRateLimited: 'Too many security verification requests. Please try again later.',
   challengeFailed: 'The verification could not be completed. Try again.',
+  guardTimeout: 'The security check took too long. Try again.',
   challengeRequired: 'Please complete the verification challenge before continuing.',
   challengeUnavailable: 'Verification is unavailable right now. Try again shortly.',
   signupBlocked: 'You have been blocked from registering.',

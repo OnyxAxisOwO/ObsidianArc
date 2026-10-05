@@ -4,6 +4,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import * as authApi from '@/api/auth';
 import * as imagesApi from '@/api/images';
 import * as powLib from '@/lib/pow';
+import * as registry from '@/plugins/registry';
 import { currentUser, site, siteInfo } from '@/stores/session';
 import * as chatImage from '@/chat/image';
 import { models } from '@/chat/useModels';
@@ -307,6 +308,38 @@ describe('Image Lab challenges', () => {
 
     expect(fetchChallenge).toHaveBeenCalledOnce();
     expect(generate.mock.calls[0]![0].pow).toEqual(solution);
+  });
+
+  it('says it is checking while a guard works, and gives up on one that never answers', async () => {
+    vi.spyOn(registry, 'guards').mockReturnValue([{
+      guard: {
+        name: 'slow', active: () => true, checking: () => 'CHECKING NOW', failed: () => 'FAILED',
+        token: () => new Promise<string>(() => {}),
+      },
+      config: {},
+    }] as any);
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+    await mountImageLab();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a sunset';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    // Only now, so mounting and settling keep their real timers.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const flush = async () => { for (let i = 0; i < 6; i++) { await Promise.resolve(); await nextTick(); } };
+    try {
+      (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+      await flush();
+      expect(panels.querySelector('.ai-chat-pending')?.textContent).toContain('CHECKING NOW');
+      vi.advanceTimersByTime(60_000);
+      await flush();
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+    expect(generate).not.toHaveBeenCalled();
+    expect(panels.textContent).toContain(t('guardTimeout'));
+    expect(panels.querySelector('.ai-chat-pending')).toBeNull();
   });
 
   it('does not call the server without the Cloudflare token it was asked for', async () => {

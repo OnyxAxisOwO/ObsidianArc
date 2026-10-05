@@ -1763,6 +1763,7 @@ export const zh: Record<StringKey, string> = {
   powExpired: '安全验证已过期，请重试。',
   powVerificationFailed: '安全校验失败，请重试。',
   powRateLimited: '安全校验请求过于频繁，请稍后重试。',
+  guardTimeout: '风控检测超时，请重试。',
   challengeFailed: '验证未能完成，请重试。',
   challengeRequired: '请在继续前完成验证码认证。',
   challengeUnavailable: '验证服务暂时不可用，请稍后再试。',
