@@ -71,7 +71,13 @@ func build(args []string) error {
 	// -trimpath keeps the directory the build ran in out of the binary, so the
 	// same source gives the same package from any checkout — which is what lets
 	// a deploy tell "the bundled package changed" from "it was built elsewhere".
-	cmd := exec.Command("go", "build", "-trimpath", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
+	//
+	// -buildvcs=false for the same reason: Go stamps the enclosing repository's
+	// commit into the binary, and a plugin built inside an instance's own
+	// repository would then change with every commit made there — whether or
+	// not the plugin did. Each such change is a reinstall at the next boot, a
+	// few seconds of compiling per package before the server will listen.
+	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
 	cmd.Stderr = os.Stderr
