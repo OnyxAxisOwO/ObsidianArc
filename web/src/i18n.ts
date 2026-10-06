@@ -1659,6 +1659,13 @@ const en = {
   backupRunStarted: 'Backup started.',
   backupLog: 'Run log',
   backupLogEmpty: 'No run log recorded yet.',
+  backupType: 'Storage type',
+  backupTypeS3: 'S3-compatible',
+  backupTypeWebDAV: 'WebDAV',
+  backupWebDAVUrl: 'WebDAV URL',
+  backupWebDAVUrlHint: 'Base WebDAV endpoint, e.g. https://dav.example.com/remote.php/webdav',
+  backupWebDAVUsername: 'Username',
+  backupWebDAVPassword: 'Password',
 
   // --- scheduled cleanup
   secCleanup: 'Scheduled cleanup',

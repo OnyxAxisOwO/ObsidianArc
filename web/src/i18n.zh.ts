@@ -1625,6 +1625,13 @@ export const zh: Record<StringKey, string> = {
   backupRunStarted: '备份已开始。',
   backupLog: '运行日志',
   backupLogEmpty: '暂无运行日志。',
+  backupType: '存储类型',
+  backupTypeS3: 'S3 兼容存储',
+  backupTypeWebDAV: 'WebDAV',
+  backupWebDAVUrl: 'WebDAV URL',
+  backupWebDAVUrlHint: 'WebDAV 服务端点基础地址，例如 https://dav.example.com/remote.php/webdav',
+  backupWebDAVUsername: '用户名',
+  backupWebDAVPassword: '密码',
 
   // --- scheduled cleanup
   secCleanup: '定时清理',

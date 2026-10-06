@@ -31,7 +31,7 @@ type S3Client struct {
 }
 
 func NewS3Client(cfg Config) (*S3Client, error) {
-	if err := ValidateConfig(cfg); err != nil {
+	if err := validateS3Config(cfg); err != nil {
 		return nil, err
 	}
 	endpoint, err := url.Parse(cfg.Endpoint)
@@ -46,7 +46,7 @@ func NewS3Client(cfg Config) (*S3Client, error) {
 	}, nil
 }
 
-func ValidateConfig(cfg Config) error {
+func validateS3Config(cfg Config) error {
 	endpoint, err := url.Parse(strings.TrimSpace(cfg.Endpoint))
 	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 		return invalidConfig("Storage endpoint must be a base URL without credentials, query, or fragment.")
