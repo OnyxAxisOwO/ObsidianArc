@@ -1701,7 +1701,7 @@ export const zh: Record<StringKey, string> = {
   turnstileOnImages: '生图实验室人机验证',
   turnstileOnImagesHint: '每生成一张图之前先过一次 Cloudflare 验证，因为每张图都是实打实的上游费用。需要上面填好站点密钥。管理员也一样要验证。',
   powOnImages: '生图实验室 PoW 验证',
-  powOnImagesHint: '每生成一张图之前，浏览器先解一道小算力题，不依赖任何第三方。难度沿用上面的设置。安装了超级风控的话，实验室的风控开关在它自己的设置卡片里。',
+  powOnImagesHint: '每生成一张图之前，浏览器先解一道小算力题，不依赖任何第三方。难度沿用上面的设置。',
   turnstileOnFeedback: '提交反馈时人机验证',
   turnstileOnFeedbackHint: '给真的被刷过的站点用。每个账户本来就限制一天十条，这道验证挡的是没人在场、拿着 Cookie 的脚本把这十条用完。',
   chatChallengeRequests: '触发验证的聊天次数',

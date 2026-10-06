@@ -49,11 +49,7 @@ var (
 	ErrSignupIPBlocked            = errors.New("auth: too many accounts have been created from this address")
 	// The review said no. The words a visitor sees are the operator's, set in
 	// the security screen; this only carries the fact.
-	ErrSignupRefused = errors.New("auth: this registration was not accepted")
-	// The self-hosted risk-control service returned a verdict of "block".
-	// Unlike a challenge the visitor failed — turnstile.ErrFailed's case —
-	// there is nothing for them to retry: the service judged the request
-	// and the judgment was no.
+	ErrSignupRefused        = errors.New("auth: this registration was not accepted")
 	ErrEmailRequired        = errors.New("auth: an email address is required to register here")
 	ErrPasswordUnchanged    = errors.New("auth: the new password is the same as the current one")
 	ErrCurrentPasswordWrong = errors.New("auth: current password is incorrect")

@@ -1735,7 +1735,7 @@ const en = {
   turnstileOnImages: 'Challenge in the image lab',
   turnstileOnImagesHint: 'A Cloudflare check before every picture, because every picture is provider money. Needs the site key and secret above.',
   powOnImages: 'Proof of work in the image lab',
-  powOnImagesHint: 'The browser solves a small puzzle before every picture, with no third party involved. Uses the difficulty above. Super risk control, when installed, has its own switch for the lab on its settings card.',
+  powOnImagesHint: 'The browser solves a small puzzle before every picture, with no third party involved. Uses the difficulty above.',
   turnstileOnFeedback: 'Challenge on feedback',
   turnstileOnFeedbackHint: 'For an instance that has actually been spammed. Every account is already capped at ten reports a day, and this is what stops a script spending that allowance with nobody present.',
   chatChallengeRequests: 'Chat turns before challenge',
