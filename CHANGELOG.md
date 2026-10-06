@@ -10,6 +10,13 @@
   都在选模型、占额度之前检查，管理员也一样；默认全部关闭。
 - 插件契约：守卫多了一个门 `images`，`arcx.APILevel` 升到 2。声明了 `images` 守卫的包需要 `requires.api` ≥ 2；
   已装的 `requires.api: 1` 的包照常工作。
+- `/v1/responses` 跟上新版 Codex：
+  - 接受 `input` 里的 `additional_tools` 项，其中的工具和顶层 `tools` 一起提供给模型。之前直接返回
+    `Unsupported input item: additional_tools.`，Codex 的每个会话在第一条请求就失败。同名工具只提供一次。
+  - `custom` 类型的工具（如 Codex 的 `apply_patch`）不再和托管工具一起被丢掉：以带单个 `input` 字段的函数
+    交给上游，模型调用时以 `custom_tool_call` 返回原文，流式时用 `response.custom_tool_call_input.*` 事件。
+    之前模型拿不到 `apply_patch`，只能通过 shell 改文件。
+  - 接受回放的 `custom_tool_call` 和 `custom_tool_call_output` 项。
 
 ## v0.9.2 — 2026-10-04
 

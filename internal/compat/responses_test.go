@@ -465,3 +465,251 @@ func TestResponsesStreamEndsWithIncompleteWhenCutShort(t *testing.T) {
 		t.Errorf("the reason never reached the client:\n%s", raw)
 	}
 }
+
+// --- additional_tools and custom tools -----------------------------------------
+
+// Codex declares some tools at the top level and sends the rest as an
+// additional_tools item inside input. This endpoint refused that item outright,
+// which stopped every Codex session at its first request.
+func TestResponsesOffersToolsFromAnAdditionalToolsItem(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(answer)
+
+	body := `{"model":"` + f.model.ID + `","store":false,` +
+		`"tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}],` +
+		`"input":[` +
+		`{"type":"additional_tools","tools":[` +
+		`{"type":"function","name":"shell","parameters":{"type":"object"}}]},` +
+		`{"type":"message","role":"user","content":"hi"}]}`
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	names := offeredToolNames(t, f)
+	if !names["read_file"] || !names["shell"] {
+		t.Errorf("offered %v, want the top-level tool and the additional one", names)
+	}
+	// Declarations, not a turn: nothing of the item belongs in the transcript.
+	messages, _ := f.upstream.received()["messages"].([]any)
+	for _, message := range messages {
+		entry, _ := message.(map[string]any)
+		if entry["role"] == "user" && entry["content"] != "hi" {
+			t.Errorf("the additional_tools item reached the transcript as %v", entry)
+		}
+	}
+}
+
+// The same tool can arrive in both places. Offering it twice is a request most
+// providers reject outright.
+func TestResponsesOffersADoublyDeclaredToolOnce(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(answer)
+
+	body := `{"model":"` + f.model.ID + `","store":false,` +
+		`"tools":[{"type":"function","name":"shell","parameters":{"type":"object"}}],` +
+		`"input":[` +
+		`{"type":"additional_tools","tools":[` +
+		`{"type":"function","name":"shell","parameters":{"type":"object"}}]},` +
+		`{"type":"message","role":"user","content":"hi"}]}`
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	tools, _ := f.upstream.received()["tools"].([]any)
+	if len(tools) != 1 {
+		t.Errorf("the provider was offered %d tools, want the one tool once", len(tools))
+	}
+}
+
+// A custom tool is run by the client like a function, so it is offered rather
+// than dropped with the hosted tools. Dropping it took apply_patch away from
+// Codex, which then had no way to edit a file but through the shell.
+func TestResponsesOffersACustomTool(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(answer)
+
+	body := `{"model":"` + f.model.ID + `","store":false,` +
+		`"tools":[{"type":"custom","name":"apply_patch","description":"Edit files with a patch.",` +
+		`"format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}],` +
+		`"input":"fix the bug"}`
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	tools, _ := f.upstream.received()["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("the custom tool was not offered: %v", f.upstream.received()["tools"])
+	}
+	entry, _ := tools[0].(map[string]any)
+	function, _ := entry["function"].(map[string]any)
+	if function["name"] != "apply_patch" {
+		t.Errorf("tool name = %v", function["name"])
+	}
+	// The providers only call functions, so the free-form tool travels as one
+	// with a single string field.
+	parameters, _ := function["parameters"].(map[string]any)
+	properties, _ := parameters["properties"].(map[string]any)
+	if _, ok := properties["input"]; !ok {
+		t.Errorf("the custom tool was offered without its input field: %v", parameters)
+	}
+}
+
+// What a provider answers with when the model calls the wrapped custom tool.
+const customToolAnswer = `{"choices":[{"message":{"content":null,"tool_calls":[` +
+	`{"id":"call_provider_side_id","type":"function",` +
+	`"function":{"name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** End Patch\"}"}}]},` +
+	`"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":40,"completion_tokens":9}}`
+
+const customToolBody = `,"store":false,` +
+	`"tools":[{"type":"custom","name":"apply_patch","description":"Edit files."},` +
+	`{"type":"function","name":"read_file","parameters":{"type":"object"}}],` +
+	`"input":"fix the bug"}`
+
+// The client runs a custom tool's input as written, so the call goes back as a
+// custom_tool_call carrying the raw text, not as a function_call carrying the
+// object it travelled to the provider in.
+func TestResponsesAnswersACustomCallAsACustomToolCall(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(customToolAnswer)
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token,
+		`{"model":"`+f.model.ID+`","stream":false`+customToolBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	output, _ := decodeJSON(t, w)["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("output = %v", output)
+	}
+	item, _ := output[0].(map[string]any)
+	if item["type"] != "custom_tool_call" || item["name"] != "apply_patch" {
+		t.Fatalf("item = %v, want a custom_tool_call for apply_patch", item)
+	}
+	if item["input"] != "*** Begin Patch\n*** End Patch" {
+		t.Errorf("input = %q, want the raw patch text unwrapped", item["input"])
+	}
+	if _, ok := item["arguments"]; ok {
+		t.Errorf("a custom call carried function-call arguments: %v", item)
+	}
+	if callID, _ := item["call_id"].(string); callID == "" || callID == item["id"] {
+		t.Errorf("call_id = %v, want one distinct from the item id %v", item["call_id"], item["id"])
+	}
+}
+
+// Streamed, a custom call has its own event names. A client that receives
+// function-call events for one has no arguments object to build from them.
+func TestResponsesStreamsACustomCallUnderItsOwnEvents(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.stream(
+		`{"choices":[{"delta":{"role":"assistant"}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_upstream","type":"function",`+
+			`"function":{"name":"apply_patch","arguments":"{\"input\":\"PATCH TEXT\"}"}}]}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":40,"completion_tokens":9}}`,
+	)
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token,
+		`{"model":"`+f.model.ID+`","stream":true`+customToolBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	raw := w.Body.String()
+
+	for _, event := range []string{
+		"event: response.custom_tool_call_input.delta",
+		"event: response.custom_tool_call_input.done",
+		"event: response.completed",
+	} {
+		if !strings.Contains(raw, event) {
+			t.Errorf("the stream never sent %q:\n%s", event, raw)
+		}
+	}
+	if strings.Contains(raw, "response.function_call_arguments") {
+		t.Errorf("a custom call was streamed as a function call:\n%s", raw)
+	}
+	if !strings.Contains(raw, `"type":"custom_tool_call"`) {
+		t.Errorf("the finished item was not a custom_tool_call:\n%s", raw)
+	}
+	if !strings.Contains(raw, `"input":"PATCH TEXT"`) {
+		t.Errorf("the raw input never went out unwrapped:\n%s", raw)
+	}
+}
+
+// Codex replays the custom call and its output on the next turn. Refusing them
+// would stop a session the moment it first edited a file, and a conversation
+// carried over from another backend arrives with them too.
+func TestResponsesCompletesACustomToolLoop(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(answer)
+
+	body := `{"model":"` + f.model.ID + `","store":false,` +
+		`"tools":[{"type":"custom","name":"apply_patch","description":"Edit files."}],` +
+		`"input":[` +
+		`{"type":"message","role":"user","content":"fix the bug"},` +
+		`{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch",` +
+		`"input":"*** Begin Patch\n*** End Patch","status":"completed"},` +
+		`{"type":"custom_tool_call_output","call_id":"call_1","output":"Done!"}]}`
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	sent, _ := f.upstream.received()["messages"].([]any)
+	if len(sent) != 3 {
+		t.Fatalf("the provider was sent %v, want three messages", f.upstream.received()["messages"])
+	}
+	assistant, _ := sent[1].(map[string]any)
+	calls, _ := assistant["tool_calls"].([]any)
+	if len(calls) != 1 {
+		t.Fatalf("the replayed custom call did not reach the provider: %v", assistant)
+	}
+	call, _ := calls[0].(map[string]any)
+	function, _ := call["function"].(map[string]any)
+	// Rewrapped in the shape the tool was offered under, so the model sees its
+	// own earlier call the way it made it.
+	if function["arguments"] != `{"input":"*** Begin Patch\n*** End Patch"}` {
+		t.Errorf("the replayed call reached the provider as %v", function["arguments"])
+	}
+
+	result, _ := sent[2].(map[string]any)
+	if result["role"] != "tool" || result["tool_call_id"] != "call_1" || result["content"] != "Done!" {
+		t.Errorf("the custom output reached the provider as %v", result)
+	}
+}
+
+func TestCustomInputSurvivesItsWrapper(t *testing.T) {
+	for _, text := range []string{
+		"*** Begin Patch\n*** End Patch",
+		`quotes " and \ backslashes`,
+		"",
+	} {
+		if got := unwrapCustomInput(wrapCustomInput(text)); got != text {
+			t.Errorf("round trip of %q gave %q", text, got)
+		}
+	}
+	// A model that ignored the wrapper still meant its text as the input.
+	if got := unwrapCustomInput("raw text"); got != "raw text" {
+		t.Errorf("unwrapped bare text as %q", got)
+	}
+}
+
+// offeredToolNames lists the tool names the provider was offered.
+func offeredToolNames(t *testing.T, f *fixture) map[string]bool {
+	t.Helper()
+	names := map[string]bool{}
+	tools, _ := f.upstream.received()["tools"].([]any)
+	for _, entry := range tools {
+		tool, _ := entry.(map[string]any)
+		function, _ := tool["function"].(map[string]any)
+		if name, _ := function["name"].(string); name != "" {
+			names[name] = true
+		}
+	}
+	return names
+}

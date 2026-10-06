@@ -66,6 +66,15 @@ type responsesTool struct {
 	Tools []responsesTool `json:"tools"`
 }
 
+// customToolParameters is the schema a custom tool is offered under.
+//
+// A custom tool takes one free-form string rather than JSON arguments — Codex's
+// apply_patch is one, taking the patch text itself. The providers below only
+// call functions, so it travels as a function with a single string field and is
+// unwrapped again on the way back out.
+const customToolParameters = `{"type":"object","properties":{"input":{"type":"string",` +
+	`"description":"The raw text input for this tool."}},"required":["input"]}`
+
 // One item of the input array, in every shape this endpoint reads.
 type responsesItem struct {
 	Type string `json:"type"`
@@ -73,13 +82,18 @@ type responsesItem struct {
 	// A string, or an array of typed parts.
 	Content json.RawMessage `json:"content"`
 
-	// function_call
+	// function_call and custom_tool_call
 	CallID    string `json:"call_id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+	// custom_tool_call carries its payload here rather than in arguments.
+	Input string `json:"input"`
 
-	// function_call_output
+	// function_call_output and custom_tool_call_output
 	Output json.RawMessage `json:"output"`
+
+	// additional_tools
+	Tools []responsesTool `json:"tools"`
 }
 
 type responsesPart struct {
@@ -110,7 +124,7 @@ func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller)
 		return err
 	}
 
-	request, err := h.buildResponsesRequest(body, resolved)
+	request, custom, err := h.buildResponsesRequest(body, resolved)
 	if err != nil {
 		return err
 	}
@@ -123,24 +137,38 @@ func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller)
 
 	label := strings.TrimSpace(body.Model)
 	if request.Stream {
-		return h.responsesStreamed(w, r, who, request, resolved, label)
+		return h.responsesStreamed(w, r, who, request, resolved, label, custom)
 	}
-	return h.responsesBuffered(w, r, who, request, resolved, label)
+	return h.responsesBuffered(w, r, who, request, resolved, label, custom)
 }
 
 // --- request translation ------------------------------------------------------
 
-func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.Resolved) (adapter.ChatRequest, error) {
+// buildResponsesRequest translates the body into a provider request. It also
+// reports which tool names are custom tools, whose calls must go back to the
+// client as custom_tool_call items rather than function_call ones.
+func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.Resolved) (adapter.ChatRequest, map[string]bool, error) {
 	items, err := readResponsesInput(body.Input)
 	if err != nil {
-		return adapter.ChatRequest{}, err
+		return adapter.ChatRequest{}, nil, err
 	}
 	if len(items) == 0 {
-		return adapter.ChatRequest{}, badRequest("input", "At least one input item is required.")
+		return adapter.ChatRequest{}, nil, badRequest("input", "At least one input item is required.")
 	}
 	var system strings.Builder
 	if body.Instructions != "" {
 		system.WriteString(body.Instructions)
+	}
+
+	// Tools arrive in two places. Codex declares some at the top level and
+	// sends the rest as an additional_tools item inside input — refusing that
+	// item stopped every Codex session at its first request. Both halves are
+	// what the model may call, so they are offered together.
+	declared := append([]responsesTool(nil), body.Tools...)
+	for _, item := range items {
+		if item.Type == "additional_tools" {
+			declared = append(declared, item.Tools...)
+		}
 	}
 
 	messages := make([]adapter.Message, 0, len(items))
@@ -160,10 +188,26 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 				}},
 			})
 
-		case "function_call_output":
+		case "custom_tool_call":
+			if item.Name == "" {
+				continue
+			}
+			// Rewrapped in the shape the tool was offered under, so the
+			// model sees its own earlier call the way it made it.
+			messages = append(messages, adapter.Message{
+				Role: adapter.RoleAssistant,
+				Parts: []adapter.Part{{
+					Kind:       adapter.PartToolCall,
+					ToolCallID: item.CallID,
+					ToolName:   item.Name,
+					ToolArgs:   wrapCustomInput(item.Input),
+				}},
+			})
+
+		case "function_call_output", "custom_tool_call_output":
 			if item.CallID == "" {
-				return adapter.ChatRequest{}, badRequest("input",
-					"A function_call_output must name the call it answers in call_id.")
+				return adapter.ChatRequest{}, nil, badRequest("input",
+					"A "+item.Type+" must name the call it answers in call_id.")
 			}
 			messages = append(messages, adapter.Message{
 				Role: adapter.RoleTool,
@@ -179,10 +223,13 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 			// Anthropic surface drops it: what it carries is an encrypted
 			// payload only its author can read.
 
+		case "additional_tools":
+			// Declarations rather than a turn; gathered into the tools above.
+
 		case "message", "":
 			parts, err := readResponsesContent(item.Content)
 			if err != nil {
-				return adapter.ChatRequest{}, err
+				return adapter.ChatRequest{}, nil, err
 			}
 			switch strings.ToLower(strings.TrimSpace(item.Role)) {
 			case "system", "developer":
@@ -205,12 +252,12 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 			}
 
 		default:
-			return adapter.ChatRequest{}, badRequest("input", "Unsupported input item: "+item.Type+".")
+			return adapter.ChatRequest{}, nil, badRequest("input", "Unsupported input item: "+item.Type+".")
 		}
 	}
 
 	if len(messages) == 0 {
-		return adapter.ChatRequest{}, badRequest("input", "At least one message is required.")
+		return adapter.ChatRequest{}, nil, badRequest("input", "At least one message is required.")
 	}
 
 	prompt := system.String()
@@ -218,13 +265,13 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 		prompt = resolved.Model.Prompt(h.settings.Get(settings.DefaultSystemPrompt))
 	}
 
-	tools, err := readResponsesTools(body.Tools)
+	tools, custom, err := readResponsesTools(declared)
 	if err != nil {
-		return adapter.ChatRequest{}, err
+		return adapter.ChatRequest{}, nil, err
 	}
 	choice, err := readToolChoice(body.ToolChoice)
 	if err != nil {
-		return adapter.ChatRequest{}, err
+		return adapter.ChatRequest{}, nil, err
 	}
 
 	reasoning := adapter.Reasoning{}
@@ -251,7 +298,32 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 		Tools:       tools,
 		ToolChoice:  choice,
 		Extra:       resolved.Upstream.Extra(),
-	}, nil
+	}, custom, nil
+}
+
+// wrapCustomInput puts a custom tool's raw text into the one-field object it is
+// offered to the provider as.
+func wrapCustomInput(input string) string {
+	wrapped, err := json.Marshal(map[string]string{"input": input})
+	if err != nil {
+		return `{"input":""}`
+	}
+	return string(wrapped)
+}
+
+// unwrapCustomInput reads the raw text back out of a call to a custom tool.
+//
+// A model that ignored the wrapper and answered with plain text, or with JSON
+// of another shape, still meant that text as the input — passing it through
+// whole is closer to the call than dropping it.
+func unwrapCustomInput(arguments string) string {
+	var wrapped struct {
+		Input *string `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &wrapped); err == nil && wrapped.Input != nil {
+		return *wrapped.Input
+	}
+	return arguments
 }
 
 func responsesCeiling(resolved model.Resolved, asked *int) int {
@@ -361,12 +433,18 @@ func readResponsesOutput(raw json.RawMessage) string {
 	return joinText(parts)
 }
 
-func readResponsesTools(declared []responsesTool) ([]adapter.Tool, error) {
+// readResponsesTools turns the declared tools into the ones offered to the
+// provider, and reports which of them are custom tools.
+func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bool, error) {
 	if len(declared) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	out := make([]adapter.Tool, 0, len(declared))
+	custom := map[string]bool{}
+	// A tool can be declared at the top level and again in additional_tools.
+	// Offering it twice is a request most providers reject outright.
+	seen := map[string]bool{}
 	var walk func(tools []responsesTool, depth int) error
 	walk = func(tools []responsesTool, depth int) error {
 		for _, tool := range tools {
@@ -376,8 +454,32 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, error) {
 				if name == "" {
 					return badRequest("tools", "Every tool needs a name.")
 				}
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
 				out = append(out, adapter.Tool{
 					Name: name, Description: tool.Description, Parameters: tool.Parameters,
+				})
+			case "custom":
+				// Run by the client like a function, so it is offered rather
+				// than dropped with the hosted tools below. Dropping it took
+				// apply_patch away from Codex, which then had no way to edit a
+				// file but through the shell.
+				name := strings.TrimSpace(tool.Name)
+				if name == "" {
+					return badRequest("tools", "Every tool needs a name.")
+				}
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
+				custom[name] = true
+				description := strings.TrimSpace(tool.Description +
+					"\n\nThis tool takes one free-form text input: put the raw text in the `input` field.")
+				out = append(out, adapter.Tool{
+					Name: name, Description: description,
+					Parameters: json.RawMessage(customToolParameters),
 				})
 			case "namespace":
 				// Flattened to the functions inside, which carry their own
@@ -403,19 +505,19 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, error) {
 	}
 
 	if err := walk(declared, 0); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(out) > maxTools {
-		return nil, badRequest("tools", tooManyToolsMessage(len(out)))
+		return nil, nil, badRequest("tools", tooManyToolsMessage(len(out)))
 	}
-	return out, nil
+	return out, custom, nil
 }
 
 // --- the buffered shape -------------------------------------------------------
 
 func (h *Handlers) responsesBuffered(
 	w http.ResponseWriter, r *http.Request, who caller,
-	request adapter.ChatRequest, resolved model.Resolved, label string,
+	request adapter.ChatRequest, resolved model.Resolved, label string, custom map[string]bool,
 ) error {
 	startedAt := time.Now()
 	requestID := id.New()
@@ -462,7 +564,7 @@ func (h *Handlers) responsesBuffered(
 	status, incomplete := responsesStatus(result.FinishReason)
 	return writeJSON(w, http.StatusOK, responseObject(
 		requestID, label, startedAt, status, incomplete,
-		responsesOutput(requestID, thinking.String(), answer.String(), calls), usage,
+		responsesOutput(requestID, thinking.String(), answer.String(), calls, custom), usage,
 	))
 }
 
@@ -477,7 +579,7 @@ func (h *Handlers) responsesBuffered(
 // right even when the deltas in between are not read.
 func (h *Handlers) responsesStreamed(
 	w http.ResponseWriter, r *http.Request, who caller,
-	request adapter.ChatRequest, resolved model.Resolved, label string,
+	request adapter.ChatRequest, resolved model.Resolved, label string, custom map[string]bool,
 ) error {
 	startedAt := time.Now()
 	requestID := id.New()
@@ -624,26 +726,38 @@ func (h *Handlers) responsesStreamed(
 		if err := closeText(); err != nil {
 			return err
 		}
-		item := callItem(requestID, call, position)
+		item := callItem(requestID, call, position, custom)
 		opening := map[string]any{}
 		for key, value := range item {
 			opening[key] = value
 		}
-		opening["arguments"] = ""
 		opening["status"] = "in_progress"
+
+		// A custom call streams its text under its own event names; a client
+		// that receives function-call events for one has no arguments object
+		// to build from them.
+		payloadField, deltaEvent, doneEvent := "arguments",
+			"response.function_call_arguments.delta", "response.function_call_arguments.done"
+		payload := call.Arguments
+		if custom[call.Name] {
+			payloadField, deltaEvent, doneEvent = "input",
+				"response.custom_tool_call_input.delta", "response.custom_tool_call_input.done"
+			payload = unwrapCustomInput(call.Arguments)
+		}
+		opening[payloadField] = ""
 
 		if err := emit("response.output_item.added", map[string]any{
 			"output_index": index, "item": opening,
 		}); err != nil {
 			return err
 		}
-		if err := emit("response.function_call_arguments.delta", map[string]any{
-			"item_id": item["id"], "output_index": index, "delta": call.Arguments,
+		if err := emit(deltaEvent, map[string]any{
+			"item_id": item["id"], "output_index": index, "delta": payload,
 		}); err != nil {
 			return err
 		}
-		if err := emit("response.function_call_arguments.done", map[string]any{
-			"item_id": item["id"], "output_index": index, "arguments": call.Arguments,
+		if err := emit(doneEvent, map[string]any{
+			"item_id": item["id"], "output_index": index, payloadField: payload,
 		}); err != nil {
 			return err
 		}
@@ -741,7 +855,7 @@ func (h *Handlers) responsesStreamed(
 	}
 	_ = emit(closing, map[string]any{
 		"response": responseObject(requestID, label, startedAt, status, incomplete,
-			responsesOutput(requestID, thinking.String(), answer.String(), calls), usage),
+			responsesOutput(requestID, thinking.String(), answer.String(), calls, custom), usage),
 	})
 	return nil
 }
@@ -783,7 +897,7 @@ func responseObject(
 	return object
 }
 
-func responsesOutput(requestID, thinking, text string, calls []adapter.ToolCall) []map[string]any {
+func responsesOutput(requestID, thinking, text string, calls []adapter.ToolCall, custom map[string]bool) []map[string]any {
 	out := make([]map[string]any, 0, len(calls)+2)
 	if thinking != "" {
 		out = append(out, reasoningItem("rs_"+requestID, thinking))
@@ -792,7 +906,7 @@ func responsesOutput(requestID, thinking, text string, calls []adapter.ToolCall)
 		out = append(out, textItem("msg_"+requestID, text))
 	}
 	for position, call := range calls {
-		out = append(out, callItem(requestID, call, position))
+		out = append(out, callItem(requestID, call, position, custom))
 	}
 	return out
 }
@@ -848,10 +962,22 @@ func textItem(itemID, text string) map[string]any {
 	}
 }
 
-func callItem(requestID string, call adapter.ToolCall, position int) map[string]any {
+func callItem(requestID string, call adapter.ToolCall, position int, custom map[string]bool) map[string]any {
 	// `id` names the item and `call_id` names the call the client answers.
 	// They are distinct fields in this protocol and a client that confuses
 	// them addresses its result at nothing.
+	if custom[call.Name] {
+		// The raw text, unwrapped from the object it travelled to the provider
+		// in: a custom tool's client reads `input` and runs it as written.
+		return map[string]any{
+			"type":    "custom_tool_call",
+			"id":      "ctc_" + requestID + "_" + strconv.Itoa(position),
+			"call_id": callID(requestID, position),
+			"name":    call.Name,
+			"input":   unwrapCustomInput(call.Arguments),
+			"status":  "completed",
+		}
+	}
 	return map[string]any{
 		"type":      "function_call",
 		"id":        "fc_" + requestID + "_" + strconv.Itoa(position),
