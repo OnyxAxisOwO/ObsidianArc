@@ -187,6 +187,28 @@ func TestRestoreRejectsWrongKeyBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestRestoreWithNilKeyIsTheDeclaredKeyLostPath(t *testing.T) {
+	source := openBackupTestDB(t, t.TempDir())
+	want := insertSampleData(t, source, "keylost")
+	archive := makeArchive(t, source)
+	destination := openBackupTestDB(t, t.TempDir())
+
+	if err := VerifyArchiveKey(archive, nil); err != nil {
+		t.Fatalf("nil key refused by the check: %v", err)
+	}
+	if err := RestoreArchive(context.Background(), destination, archive, nil); err != nil {
+		t.Fatalf("restore without the key: %v", err)
+	}
+	var content string
+	if err := destination.QueryRow(context.Background(), `SELECT content FROM messages WHERE id = ?`, want.messageID).Scan(&content); err != nil || content != "restore me" {
+		t.Fatalf("restored message = %q, %v", content, err)
+	}
+	// An empty, non-nil key is not "lost", it is wrong, and must still fail.
+	if err := VerifyArchiveKey(archive, []byte{}); err == nil {
+		t.Fatal("empty key unexpectedly accepted")
+	}
+}
+
 func TestCorruptArchiveRollsBackEarlierTableInserts(t *testing.T) {
 	source := openBackupTestDB(t, t.TempDir())
 	insertSampleData(t, source, "corrupt")

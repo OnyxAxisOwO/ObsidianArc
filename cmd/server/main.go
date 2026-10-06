@@ -50,20 +50,28 @@ func main() {
 func restoreBackup(args []string) error {
 	flags := flag.NewFlagSet("restore-backup", flag.ContinueOnError)
 	archivePath := flags.String("file", "", "path to the .arcbackup archive")
+	keyLost := flags.Bool("key-lost", false, "restore although the original OBSIDIAN_SECRET_KEY is gone; sealed values (provider keys, 2FA secrets) become unreadable")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *archivePath == "" || flags.NArg() != 0 {
 		return errors.New("usage: obsidian-arc restore-backup --file <archive.arcbackup>")
 	}
-	if err := requireExistingRestoreKey(); err != nil {
-		return err
+	if !*keyLost {
+		if err := requireExistingRestoreKey(); err != nil {
+			return err
+		}
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	if err := systembackup.VerifyArchiveKey(*archivePath, cfg.SecretKey); err != nil {
+	// nil skips the archive's key check; see verifyKeyCheck.
+	archiveKey := cfg.SecretKey
+	if *keyLost {
+		archiveKey = nil
+	}
+	if err := systembackup.VerifyArchiveKey(*archivePath, archiveKey); err != nil {
 		return err
 	}
 	setupLogging(cfg)
@@ -79,10 +87,10 @@ func restoreBackup(args []string) error {
 	// plugin_installs, restored with the rest, then says which plugins the
 	// instance has.
 	extra := append(plugin.Migrations(), plugin.BundledMigrations(cfg.PluginDir)...)
-	if err := systembackup.PrepareRestore(ctx, db, *archivePath, cfg.SecretKey, extra...); err != nil {
+	if err := systembackup.PrepareRestore(ctx, db, *archivePath, archiveKey, extra...); err != nil {
 		return err
 	}
-	return systembackup.RestoreArchive(ctx, db, *archivePath, cfg.SecretKey)
+	return systembackup.RestoreArchive(ctx, db, *archivePath, archiveKey)
 }
 
 func requireExistingRestoreKey() error {

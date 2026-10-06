@@ -206,7 +206,14 @@ func RestoreArchive(ctx context.Context, db *database.DB, path string, masterKey
 	})
 }
 
+// A nil key means the operator has declared the original lost and chosen to
+// restore without it: everything the key sealed (stored provider credentials,
+// second-factor secrets) stays unreadable and has to be entered again, but the
+// rest of the archive is plain data and is worth more than refusing.
 func verifyKeyCheck(manifest archiveManifest, masterKey []byte) error {
+	if masterKey == nil {
+		return nil
+	}
 	if manifest.KeyCheck == "" {
 		return errors.New("system backup: archive has no instance-key check; it may be from an unsupported format")
 	}
@@ -302,7 +309,7 @@ func validateDestination(ctx context.Context, tx database.Queryer, manifest arch
 	}
 	sort.Strings(currentDataTables)
 	if !equalStrings(currentDataTables, tables) {
-		return errors.New("system backup: destination schema has a different table set")
+		return fmt.Errorf("system backup: destination schema has a different table set (destination has %v, archive has %v)", currentDataTables, tables)
 	}
 	for _, table := range manifest.Tables {
 		columns, err := database.Columns(ctx, tx, table.Name)
