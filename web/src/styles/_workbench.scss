@@ -80,6 +80,18 @@
 .oa-detect-tick { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 999px; background: var(--ai-field-bg); color: transparent; transition: background 0.15s, color 0.15s; }
 .oa-detect-option.picked .oa-detect-tick { background: var(--ai-primary); color: var(--ai-primary-text); }
 .oa-detect-none { margin: 0; padding: 10px; color: var(--ai-text-secondary); font-size: 12px; }
+/* A fact in a card: its name on the left as the row's title, the value at the
+   end where a control would sit, quieter than the name. The name keeps its
+   width and the value gives way, cut short with the whole of it on hover —
+   a User-Agent is a paragraph, and wrapping it made the row a column. */
+.oa-fact-row > .oa-group-row-text { flex: none; }
+.oa-fact-row .oa-group-row-title { white-space: nowrap; }
+.oa-fact-row > .oa-group-row-control { flex: 1; justify-content: flex-end; min-width: 0; }
+.oa-row-value { overflow: hidden; color: var(--ai-text-secondary); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.oa-row-value.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; }
+/* A date and the shortcuts that fill it are one control, so one row. */
+.oa-field-with-presets { display: flex; flex-direction: column; gap: 10px; }
+.oa-group-row-title .oa-badge { margin-left: 6px; vertical-align: 1px; }
 .oa-control-card .oa-group-card textarea { resize: vertical; line-height: 1.7; }
 .oa-control-card > .oa-group-card > .oa-btn, .oa-control-card > .oa-group-card > .oa-field > .oa-btn { align-self: flex-start; }
 /* A plugin on the list: what it is, then what can be done to it. The actions

@@ -22,7 +22,7 @@ import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
-import OaFormSection from '@/components/OaFormSection.vue';
+import OaRow from '@/components/OaRow.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaSelect from '@/components/OaSelect.vue';
@@ -46,6 +46,7 @@ import { currentUser, canAdmin, isSuperAdmin, siteInfo } from '@/stores/session'
 import OaAccountFields from '@/components/OaAccountFields.vue';
 import { allFields, fieldValues } from '@/lib/account-fields';
 import { fieldSpec, plugins } from '@/plugins/registry';
+import AdminControlCard from './AdminControlCard.vue';
 import PluginUserActions from './PluginUserActions.vue';
 import { isMasked, maskUser, maskLog, maskBilling, maskCredential } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
@@ -917,18 +918,19 @@ const state = { q: '', role: '', status: '', group: '' };
     <template v-else-if="mode === 'account' && detailReady">
       <OaStatGrid :stats="summaryStats" />
 
-      <div class="oa-facts">
-        <div v-for="[label, value, mono] in identity" :key="label" class="oa-fact">
-          <span class="oa-fact-label">{{ label }}</span>
-          <span class="oa-fact-value" :class="{ mono }">{{ value }}</span>
-        </div>
-      </div>
+      <!-- Every section is a card of rows, the shape the settings screens
+           use: a label and its answer side by side, lists as rows with their
+           action at the end, fields stacked with their own explanation. -->
+      <AdminControlCard :title="t('account')">
+        <OaRow v-for="[label, value, mono] in identity" :key="label" class="oa-fact-row" :title="label">
+          <span class="oa-row-value" :class="{ mono }" :title="String(value)">{{ value }}</span>
+        </OaRow>
+      </AdminControlCard>
 
       <!-- What the lifetime figures above were spent on. The question after
            "how much" is "on what", and it is cheaper to answer here than to
            send the operator to the usage page to narrow it by hand. -->
-      <template v-if="models.length">
-        <OaFormSection :title="t('boardTheirModels')" :hint="t('boardTheirModelsHint')" />
+      <AdminControlCard v-if="models.length" :title="t('boardTheirModels')" :hint="t('boardTheirModelsHint')">
         <UsageBoard
           :rows="models" kind="model" metric="tokens" :limit="4" :reach="false"
           :selectable="canAdmin('usage') && !!view.open" :empty-text="t('nothingYet')"
@@ -938,13 +940,12 @@ const state = { q: '', role: '', status: '', group: '' };
           v-if="canAdmin('usage') && view.open" type="button" class="oa-btn small oa-panel-link"
           @click="view.open?.('/admin/usage', { user: account.id })"
         >{{ t('viewInUsage') }}</button>
-      </template>
+      </AdminControlCard>
 
       <!-- The same bars the account sees in its own composer, from the same
            summary: an administrator answering "why can this person not send
            anything" should be reading the figure the person is up against. -->
-      <template v-if="usage">
-        <OaFormSection :title="t('secAllowance')" />
+      <AdminControlCard v-if="usage" :title="t('secAllowance')">
         <div class="oa-usage-list">
           <span v-if="unlimited" class="oa-usage-reset">{{ t('quotaUnlimited') }}</span>
           <OaUsageWindow
@@ -955,211 +956,212 @@ const state = { q: '', role: '', status: '', group: '' };
             :masked="isMasked('billing')"
           />
         </div>
-      </template>
+      </AdminControlCard>
 
       <!-- What they are holding, before the control that adds more: an
            operator is usually here because somebody asked, and "you already
            have two" is the answer more often than a third card is. -->
-      <OaFormSection :title="t('secHeldCards')" />
-      <div v-if="cards">
-        <p v-if="cards.total === 0" class="oa-field-hint">{{ t('cardsNone') }}</p>
+      <AdminControlCard v-if="cards" :title="t('secHeldCards')">
+        <OaRow v-if="cards.total === 0" :meta="t('cardsNone')" />
         <template v-else>
-          <p class="oa-card-count">{{ t('cardsAvailable', { count: cards.available }) }}</p>
           <!-- The three together, because "none left" and "never had any" are
                different answers and the first number cannot tell them apart. -->
-          <p class="oa-field-hint">
-            {{ t('cardsBreakdown', { used: cards.used, expired: cards.expired, total: cards.total }) }}
-          </p>
-          <div v-if="cards.cards.length" class="oa-card-list">
-            <div v-for="card in cards.cards" :key="card.id" class="oa-card-row">
-              <div>
-                <span class="oa-card-title">{{ cardTitle(card) }}</span>
-                <span class="oa-card-sub">{{ cardSubtitle(card) }}</span>
-              </div>
-              <span class="oa-header-spacer" />
-              <!-- Moves this one onto the date below. One card at a time is
-                   the "this one runs out tomorrow" case; the button under the
-                   picker is the one that catches the expired ones too. -->
-              <button
-                type="button"
-                class="oa-btn oa-card-move"
-                :disabled="!!rescheduling"
-                @click="reschedule([card.id])"
-              >{{ t('rescheduleOne') }}</button>
-              <!-- Never window.confirm: it answers false on its own in some
-                   browsers, which would turn this into a button that silently
-                   does nothing. -->
-              <OaConfirmButton
-                class="oa-btn oa-card-move oa-card-drop"
-                :label="t('revokeCard')"
-                :armed-label="t('revokeCardConfirm')"
-                :armed-title="t('revokeCardConfirm')"
-                :resting-title="t('revokeCard')"
-                :disabled="!!rescheduling"
-                @confirm="revoke(card.id)"
-              />
-            </div>
-          </div>
+          <OaRow
+            :title="t('cardsAvailable', { count: cards.available })"
+            :meta="t('cardsBreakdown', { used: cards.used, expired: cards.expired, total: cards.total })"
+          />
+          <OaRow v-for="card in cards.cards" :key="card.id" class="oa-held-card" :title="cardTitle(card)" :meta="cardSubtitle(card)">
+            <!-- Moves this one onto the date in the card below. One card at a
+                 time is the "this one runs out tomorrow" case; the button
+                 under the picker is the one that catches the expired ones too. -->
+            <button
+              type="button"
+              class="oa-btn small oa-card-reschedule"
+              :disabled="!!rescheduling"
+              @click="reschedule([card.id])"
+            >{{ t('rescheduleOne') }}</button>
+            <!-- Never window.confirm: it answers false on its own in some
+                 browsers, which would turn this into a button that silently
+                 does nothing. -->
+            <OaConfirmButton
+              class="oa-btn small oa-card-drop"
+              :label="t('revokeCard')"
+              :armed-label="t('revokeCardConfirm')"
+              :armed-title="t('revokeCardConfirm')"
+              :resting-title="t('revokeCard')"
+              :disabled="!!rescheduling"
+              @confirm="revoke(card.id)"
+            />
+          </OaRow>
         </template>
-      </div>
+      </AdminControlCard>
 
-      <OaTextField
-        v-model="grantName"
-        :label="t('cardName')"
-        :placeholder="t('cardNamePlaceholder')"
-        :hint="t('cardNameHint')"
-        :max-length="64"
-      />
-      <OaSelectField
-        v-model="grantScopePreset"
-        :label="t('cardResetScope')"
-        :hint="t('cardResetScopeHint')"
-        :options="[
-          { value: 'full', label: t('cardResetFull') },
-          { value: '5h', label: t('cardReset5H') },
-          { value: '1w', label: t('cardReset1W') },
-          { value: '1m', label: t('cardReset1M') },
-          { value: 'custom', label: t('cardResetCustom') },
-        ]"
-      />
-      <OaCheckList
-        v-if="grantScopePreset === 'custom'"
-        v-model="grantCustomWindows"
-        :label="t('cardResetScope')"
-        :empty-text="t('nothingYet')"
-        :items="[
-          { value: '5h', label: t('cardScopeLabel5H') },
-          { value: '1w', label: t('cardScopeLabel1W') },
-          { value: '1m', label: t('cardScopeLabel1M') },
-        ]"
-      />
-      <OaNumberField
-        v-model="grantCount"
-        :label="t('grantCards')"
-        :min="1"
-        :hint="t('grantCardsHint')"
-      />
-      <OaTextField
-        v-model="grantExpiresAt"
-        :label="t('grantCardExpiry')"
-        :hint="t('grantCardExpiryHint')"
-        type="datetime-local"
-        required
-      />
-      <ExpiryPresets @pick="grantExpiresAt = $event" />
-      <div class="oa-card-actions">
-        <button type="button" class="oa-btn" :disabled="!!grantLabel" @click="grant">
-          {{ grantLabel || t('grantCards') }}
-        </button>
-        <button
-          type="button"
-          class="oa-btn"
-          :disabled="!movableCards || !!rescheduling"
-          @click="reschedule()"
-        >{{ rescheduleLabel || t('rescheduleCards', { count: movableCards }) }}</button>
-      </div>
-      <p class="oa-field-hint">{{ t('rescheduleCardsHint') }}</p>
+      <AdminControlCard :title="t('grantCards')">
+        <OaTextField
+          v-model="grantName"
+          :label="t('cardName')"
+          :placeholder="t('cardNamePlaceholder')"
+          :hint="t('cardNameHint')"
+          :max-length="64"
+        />
+        <OaSelectField
+          v-model="grantScopePreset"
+          :label="t('cardResetScope')"
+          :hint="t('cardResetScopeHint')"
+          :options="[
+            { value: 'full', label: t('cardResetFull') },
+            { value: '5h', label: t('cardReset5H') },
+            { value: '1w', label: t('cardReset1W') },
+            { value: '1m', label: t('cardReset1M') },
+            { value: 'custom', label: t('cardResetCustom') },
+          ]"
+        />
+        <OaCheckList
+          v-if="grantScopePreset === 'custom'"
+          v-model="grantCustomWindows"
+          :label="t('cardResetScope')"
+          :empty-text="t('nothingYet')"
+          :items="[
+            { value: '5h', label: t('cardScopeLabel5H') },
+            { value: '1w', label: t('cardScopeLabel1W') },
+            { value: '1m', label: t('cardScopeLabel1M') },
+          ]"
+        />
+        <OaNumberField
+          v-model="grantCount"
+          :label="t('grantCards')"
+          :min="1"
+          :hint="t('grantCardsHint')"
+        />
+        <!-- The date and its shortcuts are one control, so one row. -->
+        <div class="oa-field-with-presets">
+          <OaTextField
+            v-model="grantExpiresAt"
+            :label="t('grantCardExpiry')"
+            :hint="t('grantCardExpiryHint')"
+            type="datetime-local"
+            required
+          />
+          <ExpiryPresets @pick="grantExpiresAt = $event" />
+        </div>
+        <OaRow>
+          <button
+            type="button"
+            class="oa-btn small"
+            :disabled="!movableCards || !!rescheduling"
+            @click="reschedule()"
+          >{{ rescheduleLabel || t('rescheduleCards', { count: movableCards }) }}</button>
+          <button type="button" class="oa-btn small primary" :disabled="!!grantLabel" @click="grant">
+            {{ grantLabel || t('grantCards') }}
+          </button>
+        </OaRow>
+        <p class="oa-field-hint">{{ t('rescheduleCardsHint') }}</p>
+      </AdminControlCard>
 
-      <OaFormSection :title="t('secProfile')" />
-      <!-- Masking these would break editing them, so the value stays real and
-           only its focus state decides whether it can be read: blurred until
-           the operator actually clicks in, same as a screen share would need. -->
-      <OaTextField v-model="form.nickname" :class="{ 'oa-safe-blur': isMasked('users') }" :label="t('nickname')" :max-length="32" />
-      <OaTextField v-model="form.email" :class="{ 'oa-safe-blur': isMasked('users') }" :label="t('email')" type="email" />
-      <OaAccountFields v-model="form.fields" :class="{ 'oa-safe-blur': isMasked('users') }" :plan="fieldPlan" />
-      <OaTextArea v-model="form.bio" :label="t('bio')" :rows="2" />
-      <OaTextField
-        v-model="form.avatar"
-        :class="{ 'oa-safe-blur': isMasked('users') }"
-        :label="t('avatar')"
-        :placeholder="t('avatarPlaceholder')"
-        :hint="t('avatarHint')"
-      />
+      <AdminControlCard :title="t('secProfile')">
+        <!-- Masking these would break editing them, so the value stays real
+             and only its focus state decides whether it can be read: blurred
+             until the operator actually clicks in, same as a screen share
+             would need. -->
+        <OaTextField v-model="form.nickname" :class="{ 'oa-safe-blur': isMasked('users') }" :label="t('nickname')" :max-length="32" />
+        <OaTextField v-model="form.email" :class="{ 'oa-safe-blur': isMasked('users') }" :label="t('email')" type="email" />
+        <OaAccountFields v-model="form.fields" :class="{ 'oa-safe-blur': isMasked('users') }" :plan="fieldPlan" />
+        <OaTextArea v-model="form.bio" :label="t('bio')" :rows="2" />
+        <OaTextField
+          v-model="form.avatar"
+          :class="{ 'oa-safe-blur': isMasked('users') }"
+          :label="t('avatar')"
+          :placeholder="t('avatarPlaceholder')"
+          :hint="t('avatarHint')"
+        />
+      </AdminControlCard>
 
-      <OaFormSection :title="t('secAccess')" />
-      <OaSelectField
-        v-if="canAdmin('administrators')"
-        v-model="form.role"
-        :label="t('role')"
-        :hint="self ? t('cannotDemoteSelf') : undefined"
-        :options="[
-          { value: 'user', label: t('roleUser') },
-          { value: 'admin', label: t('roleAdmin') },
-          ...(isSuperAdmin ? [{ value: 'super_admin' as const, label: t('superAdmin') }] : []),
-        ]"
-      />
-      <OaCheckList
-        v-if="canAdmin('administrators') && form.role === 'admin'"
-        v-model="form.permissions"
-        :label="t('adminPermissions')"
-        :hint="t('adminPermissionsHint')"
-        :items="ADMIN_PERMISSIONS.filter((entry) => canAdmin(entry.value)).map((entry) => ({ value: entry.value, label: t(entry.label) }))"
-        :empty-text="t('permissionDeniedTitle')"
-      />
-      <OaSelectField
-        v-model="form.status"
-        :label="t('status')"
-        :hint="t('disableHint')"
-        :options="[
-          { value: 'active', label: t('statusActive') },
-          { value: 'disabled', label: t('statusDisabled') },
-        ]"
-      />
-      <OaTextField
-        v-if="form.status === 'disabled'"
-        v-model="form.banReason"
-        :label="t('banReason')"
-        :placeholder="t('banReasonPlaceholder')"
-        :hint="t('banReasonHint')"
-        :max-length="500"
-      />
-      <OaSelectField
-        v-model="form.group"
-        :label="t('group')"
-        :options="groups.map((entry) => ({ value: entry.id, label: entry.name }))"
-        @update:model-value="form.groupExpiresAt = ''"
-      />
-      <OaTextField
-        v-model="form.groupExpiresAt"
-        type="datetime-local"
-        :label="t('membershipExpiry')"
-        :hint="t('membershipExpiryHint')"
-      />
-      <ExpiryPresets permanent @pick="form.groupExpiresAt = $event" />
-      <OaSwitchField
-        v-model="form.apiRestricted"
-        :label="t('apiRestricted')"
-        :hint="t('apiRestrictedHint')"
-        @update:model-value="apiRestrictionTouched = true"
-      />
-      <OaNumberField
-        v-if="form.apiRestricted"
-        v-model="form.apiRestrictionHours"
-        :label="t('apiRestrictionHours')"
-        :hint="t('apiRestrictionHoursHint')"
-        :min="0"
-        :max="8760"
-        @update:model-value="apiRestrictionTouched = true"
-      />
-      <OaTextField
-        v-model="form.newPassword"
-        :label="t('setNewPassword')"
-        type="password"
-        :placeholder="t('keepPassword')"
-        :hint="t('resetPasswordHint')"
-      />
-      <div class="oa-field">
-        <span class="oa-field-label">{{ t('colTwoFactor') }}</span>
-        <div class="oa-2fa-admin-row">
-          <OaBadge :tone="account.two_factor_at ? 'default' : 'muted'">
-            {{ account.two_factor_at ? t('twoFactorOn') : t('twoFactorOff') }}
-          </OaBadge>
-          <span v-if="account.two_factor_at" class="oa-field-hint">
-            {{ t('twoFactorOnSince', { date: absoluteTime(account.two_factor_at) }) }}
-          </span>
+      <AdminControlCard :title="t('secAccess')">
+        <OaSelectField
+          v-if="canAdmin('administrators')"
+          v-model="form.role"
+          :label="t('role')"
+          :hint="self ? t('cannotDemoteSelf') : undefined"
+          :options="[
+            { value: 'user', label: t('roleUser') },
+            { value: 'admin', label: t('roleAdmin') },
+            ...(isSuperAdmin ? [{ value: 'super_admin' as const, label: t('superAdmin') }] : []),
+          ]"
+        />
+        <OaCheckList
+          v-if="canAdmin('administrators') && form.role === 'admin'"
+          v-model="form.permissions"
+          :label="t('adminPermissions')"
+          :hint="t('adminPermissionsHint')"
+          :items="ADMIN_PERMISSIONS.filter((entry) => canAdmin(entry.value)).map((entry) => ({ value: entry.value, label: t(entry.label) }))"
+          :empty-text="t('permissionDeniedTitle')"
+        />
+        <OaSelectField
+          v-model="form.status"
+          :label="t('status')"
+          :hint="t('disableHint')"
+          :options="[
+            { value: 'active', label: t('statusActive') },
+            { value: 'disabled', label: t('statusDisabled') },
+          ]"
+        />
+        <OaTextField
+          v-if="form.status === 'disabled'"
+          v-model="form.banReason"
+          :label="t('banReason')"
+          :placeholder="t('banReasonPlaceholder')"
+          :hint="t('banReasonHint')"
+          :max-length="500"
+        />
+        <OaSelectField
+          v-model="form.group"
+          :label="t('group')"
+          :options="groups.map((entry) => ({ value: entry.id, label: entry.name }))"
+          @update:model-value="form.groupExpiresAt = ''"
+        />
+        <div class="oa-field-with-presets">
+          <OaTextField
+            v-model="form.groupExpiresAt"
+            type="datetime-local"
+            :label="t('membershipExpiry')"
+            :hint="t('membershipExpiryHint')"
+          />
+          <ExpiryPresets permanent @pick="form.groupExpiresAt = $event" />
+        </div>
+        <OaSwitchField
+          v-model="form.apiRestricted"
+          :label="t('apiRestricted')"
+          :hint="t('apiRestrictedHint')"
+          @update:model-value="apiRestrictionTouched = true"
+        />
+        <OaNumberField
+          v-if="form.apiRestricted"
+          v-model="form.apiRestrictionHours"
+          :label="t('apiRestrictionHours')"
+          :hint="t('apiRestrictionHoursHint')"
+          :min="0"
+          :max="8760"
+          @update:model-value="apiRestrictionTouched = true"
+        />
+      </AdminControlCard>
+
+      <AdminControlCard :title="t('secSecurity')">
+        <OaTextField
+          v-model="form.newPassword"
+          :label="t('setNewPassword')"
+          type="password"
+          :placeholder="t('keepPassword')"
+          :hint="t('resetPasswordHint')"
+        />
+        <OaRow
+          :title="t('colTwoFactor')"
+          :meta="account.two_factor_at
+            ? t('twoFactorOnSince', { date: absoluteTime(account.two_factor_at) })
+            : t('twoFactorOff')"
+        >
           <OaConfirmButton
             v-if="account.two_factor_at && !self"
-            class="oa-btn"
+            class="oa-btn small"
             :label="t('twoFactorResetLabel')"
             :armed-label="t('confirmWord')"
             :armed-title="t('twoFactorResetConfirm', { name: maskUser(account.username) })"
@@ -1167,135 +1169,124 @@ const state = { q: '', role: '', status: '', group: '' };
             :disabled="busy"
             @confirm="resetTwoFactor"
           />
-        </div>
-        <span v-if="account.two_factor_at && !self" class="oa-field-hint">{{ t('twoFactorResetHint') }}</span>
-        <span v-if="twoFactorFlash" class="oa-field-hint" role="status">{{ twoFactorFlash }}</span>
-      </div>
+          <OaBadge v-else :tone="account.two_factor_at ? 'default' : 'muted'">
+            {{ account.two_factor_at ? t('twoFactorOn') : t('twoFactorOff') }}
+          </OaBadge>
+        </OaRow>
+        <p v-if="account.two_factor_at && !self" class="oa-field-hint">{{ t('twoFactorResetHint') }}</p>
+        <p v-if="twoFactorFlash" class="oa-group-flash ok" role="status">{{ twoFactorFlash }}</p>
+      </AdminControlCard>
 
-      <OaFormSection :title="t('secAllowanceOverride')" :hint="t('allowanceOverrideHint')" />
-      <OaSwitchField
-        v-model="unlimitedQuota"
-        :label="t('unlimitedQuota')"
-        :hint="t('unlimitedQuotaHint')"
-      />
-      <OaNumberField
-        v-model="form.rpm"
-        :label="t('requestsPerMinute')"
-        :placeholder="t('inherit')"
-        :min="0"
-      />
-      <OaNumberField
-        v-model="form.tpm"
-        :label="t('tokensPerMinute')"
-        :placeholder="t('inherit')"
-        :min="0"
-      />
-      <template v-for="kind in WINDOWS" :key="kind">
-        <OaFormSection :title="kind" />
+      <AdminControlCard :title="t('secAllowanceOverride')" :hint="t('allowanceOverrideHint')">
         <OaSwitchField
-          v-model="form.windows[kind].override"
-          :label="t('overrideWindow', { window: kind })"
+          v-model="unlimitedQuota"
+          :label="t('unlimitedQuota')"
+          :hint="t('unlimitedQuotaHint')"
         />
-        <OaSwitchField v-model="form.windows[kind].enabled" :label="t('enforceIt')" />
         <OaNumberField
-          v-model="form.windows[kind].requests"
-          :label="t('limitRequests')"
-          :placeholder="t('noLimit')"
+          v-model="form.rpm"
+          :label="t('requestsPerMinute')"
+          :placeholder="t('inherit')"
           :min="0"
         />
         <OaNumberField
-          v-model="form.windows[kind].tokens"
-          :label="t('limitTokens')"
-          :placeholder="t('noLimit')"
+          v-model="form.tpm"
+          :label="t('tokensPerMinute')"
+          :placeholder="t('inherit')"
           :min="0"
         />
-        <CreditsField v-model="form.windows[kind].credits" />
-      </template>
+        <!-- Each window's numbers only once it is overridden: three windows
+             of four fields each, all showing, buried the switch that decides
+             whether any of them count. -->
+        <template v-for="kind in WINDOWS" :key="kind">
+          <OaSwitchField
+            v-model="form.windows[kind].override"
+            :label="t('overrideWindow', { window: kind })"
+          />
+          <template v-if="form.windows[kind].override">
+            <OaSwitchField v-model="form.windows[kind].enabled" :label="t('enforceIt')" />
+            <OaNumberField
+              v-model="form.windows[kind].requests"
+              :label="t('limitRequests')"
+              :placeholder="t('noLimit')"
+              :min="0"
+            />
+            <OaNumberField
+              v-model="form.windows[kind].tokens"
+              :label="t('limitTokens')"
+              :placeholder="t('noLimit')"
+              :min="0"
+            />
+            <CreditsField v-model="form.windows[kind].credits" />
+          </template>
+        </template>
+      </AdminControlCard>
 
-      <OaFormSection :title="t('apiKeys')" :hint="t('adminKeysHint')" />
-      <div class="oa-keys-list">
-        <p v-if="keys === null" class="oa-menu-empty">{{ t('loading') }}</p>
-        <p v-else-if="!keys.length" class="oa-menu-empty">{{ t('keysEmpty') }}</p>
-        <div v-for="key in keys ?? []" v-else :key="key.id" class="oa-key-row">
-          <div class="oa-key-info">
-            <div class="oa-key-title">
-              <span class="oa-key-name">{{ key.name }}</span>
-              <OaBadge
-                v-if="key.expires_at > 0 && key.expires_at <= Date.now()"
-                tone="danger"
-              >{{ t('keyExpired') }}</OaBadge>
-            </div>
-            <div class="oa-key-meta">
+      <AdminControlCard :title="t('apiKeys')" :hint="t('adminKeysHint')">
+        <OaRow v-if="keys === null" :meta="t('loading')" />
+        <OaRow v-else-if="!keys.length" :meta="t('keysEmpty')" />
+        <OaRow v-for="key in keys ?? []" v-else :key="key.id">
+          <template #text>
+            <span class="oa-group-row-title">
+              {{ key.name }}
+              <OaBadge v-if="key.expires_at > 0 && key.expires_at <= Date.now()" tone="danger">{{ t('keyExpired') }}</OaBadge>
+            </span>
+            <span class="oa-group-row-meta">
               <code class="oa-key-prefix">{{ maskCredential(key.prefix) }}…</code>
-              <span>
-                {{ key.expires_at
-                  ? t('keyExpiresAt', { when: absoluteTime(key.expires_at) })
-                  : t('keyNoExpiry') }}
-              </span>
-              <span>
-                {{ key.last_used_at
-                  ? t('keyLastUsed', { when: relativeTime(key.last_used_at) })
-                  : t('keyNeverUsed') }}
-              </span>
-            </div>
-          </div>
+              · {{ key.expires_at ? t('keyExpiresAt', { when: absoluteTime(key.expires_at) }) : t('keyNoExpiry') }}
+              · {{ key.last_used_at ? t('keyLastUsed', { when: relativeTime(key.last_used_at) }) : t('keyNeverUsed') }}
+            </span>
+          </template>
           <!-- Revoking somebody else's credential asks first, in place, the
                way every other irreversible action in this interface does. -->
-          <div class="oa-key-actions">
-            <OaConfirmButton
-              class="oa-icon-btn danger"
-              :armed-label="t('keyRevokeConfirm')"
-              :armed-title="t('keyRevoke')"
-              :resting-title="t('keyRevoke')"
-              @confirm="revokeKey(key)"
-            >
-              <IconTrash :size="15" />
-            </OaConfirmButton>
-          </div>
-        </div>
-      </div>
+          <OaConfirmButton
+            class="oa-icon-btn danger"
+            :armed-label="t('keyRevokeConfirm')"
+            :armed-title="t('keyRevoke')"
+            :resting-title="t('keyRevoke')"
+            @confirm="revokeKey(key)"
+          >
+            <IconTrash :size="15" />
+          </OaConfirmButton>
+        </OaRow>
+      </AdminControlCard>
 
-      <OaFormSection :title="t('secDevices')" :hint="t('adminSessionsHint')" />
-      <div class="oa-keys-list">
-        <p v-if="sessionsError" class="oa-menu-empty">{{ sessionsError }}</p>
-        <p v-else-if="sessions === null" class="oa-menu-empty">{{ t('loading') }}</p>
-        <p v-else-if="!sessions.length" class="oa-menu-empty">{{ t('devicesEmpty') }}</p>
-        <div v-for="deviceSession in sessions ?? []" v-else :key="deviceSession.id" class="oa-key-row">
-          <div class="oa-key-info">
-            <div class="oa-key-title">
-              <span class="oa-key-name">{{ describeUserAgent(deviceSession.user_agent) }}</span>
-            </div>
-            <div class="oa-key-meta">
-              <span>{{ maskLog(deviceSession.ip) }}</span>
-              <span>{{ t('deviceLastActive', { when: relativeTime(deviceSession.last_seen_at) }) }}</span>
-            </div>
-          </div>
+      <AdminControlCard :title="t('secDevices')" :hint="t('adminSessionsHint')">
+        <OaRow v-if="sessionsError" :meta="sessionsError" />
+        <OaRow v-else-if="sessions === null" :meta="t('loading')" />
+        <OaRow v-else-if="!sessions.length" :meta="t('devicesEmpty')" />
+        <OaRow
+          v-for="deviceSession in sessions ?? []"
+          v-else
+          :key="deviceSession.id"
+          :title="describeUserAgent(deviceSession.user_agent)"
+          :meta="`${maskLog(deviceSession.ip)} · ${t('deviceLastActive', { when: relativeTime(deviceSession.last_seen_at) })}`"
+        >
           <!-- Signing somebody else out asks first, in place, the way every
                other irreversible action in this interface does. -->
-          <div class="oa-key-actions">
-            <OaConfirmButton
-              class="oa-icon-btn danger"
-              :armed-label="t('confirmWord')"
-              :armed-title="t('deviceSignOutConfirm')"
-              :resting-title="t('deviceSignOut')"
-              :disabled="revokingSession === deviceSession.id"
-              @confirm="revokeSession(deviceSession)"
-            >
-              <IconTrash :size="15" />
-            </OaConfirmButton>
-          </div>
-        </div>
-      </div>
-      <OaConfirmButton
-        v-if="sessions && sessions.length > 1"
-        class="oa-btn"
-        :label="t('signOutEverywhere')"
-        :armed-label="t('confirmWord')"
-        :armed-title="t('signOutEverywhereConfirm', { name: maskUser(account.username) })"
-        :resting-title="t('signOutEverywhere')"
-        :disabled="signOutAllBusy"
-        @confirm="signOutEverywhere"
-      />
+          <OaConfirmButton
+            class="oa-icon-btn danger"
+            :armed-label="t('confirmWord')"
+            :armed-title="t('deviceSignOutConfirm')"
+            :resting-title="t('deviceSignOut')"
+            :disabled="revokingSession === deviceSession.id"
+            @confirm="revokeSession(deviceSession)"
+          >
+            <IconTrash :size="15" />
+          </OaConfirmButton>
+        </OaRow>
+        <OaRow v-if="sessions && sessions.length > 1">
+          <OaConfirmButton
+            class="oa-btn small"
+            :label="t('signOutEverywhere')"
+            :armed-label="t('confirmWord')"
+            :armed-title="t('signOutEverywhereConfirm', { name: maskUser(account.username) })"
+            :resting-title="t('signOutEverywhere')"
+            :disabled="signOutAllBusy"
+            @confirm="signOutEverywhere"
+          />
+        </OaRow>
+      </AdminControlCard>
 
       <!-- A plugin's account-ending actions, never offered on oneself: the
            same rule every other one here keeps. -->
@@ -1311,10 +1302,13 @@ const state = { q: '', role: '', status: '', group: '' };
         />
       </template>
 
-      <OaFormSection :title="t('secConversations')" :hint="t('conversationsHint')" />
-      <button type="button" class="oa-btn" @click="openConversations">
-        {{ t('viewConversations') }}
-      </button>
+      <AdminControlCard :title="t('secConversations')">
+        <OaRow :meta="t('conversationsHint')">
+          <button type="button" class="oa-btn small" @click="openConversations">
+            {{ t('viewConversations') }}
+          </button>
+        </OaRow>
+      </AdminControlCard>
     </template>
 
     <template v-else-if="mode === 'conversations'">

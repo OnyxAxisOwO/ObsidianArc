@@ -272,7 +272,7 @@ describe('moving the expiry on cards an account already holds', () => {
     const move = vi.spyOn(adminApi, 'rescheduleCards').mockResolvedValue({ moved: 1 });
 
     pickDate('2030-01-02T03:04');
-    panels.querySelector<HTMLButtonElement>('.oa-card-row .oa-card-move')!.click();
+    panels.querySelector<HTMLButtonElement>('.oa-held-card .oa-card-reschedule')!.click();
     await settle();
 
     expect(move).toHaveBeenCalledWith(holder.id, {
@@ -288,7 +288,7 @@ describe('moving the expiry on cards an account already holds', () => {
     await openHolder();
     const drop = vi.spyOn(adminApi, 'revokeCard').mockResolvedValue(undefined);
 
-    const button = panels.querySelector<HTMLButtonElement>('.oa-card-row .oa-card-drop')!;
+    const button = panels.querySelector<HTMLButtonElement>('.oa-held-card .oa-card-drop')!;
     button.click();
     await settle();
     expect(drop).not.toHaveBeenCalled();

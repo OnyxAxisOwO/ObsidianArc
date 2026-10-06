@@ -7,8 +7,9 @@ import { ref } from 'vue';
 import { ApiError } from '@/api/client';
 import { maskUser } from '@/admin/safeMode';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
-import OaFormSection from '@/components/OaFormSection.vue';
+import OaRow from '@/components/OaRow.vue';
 import { t } from '@/composables/useI18n';
+import AdminControlCard from './AdminControlCard.vue';
 import type { UserActionSpec } from '@/plugins/types';
 
 const props = defineProps<{
@@ -40,20 +41,23 @@ async function run(button: UserActionSpec['buttons'][number]): Promise<void> {
 </script>
 
 <template>
-  <OaFormSection :title="spec.title()" :hint="spec.hint?.()" />
-  <div class="oa-2fa-admin-row">
-    <OaConfirmButton
-      v-for="(button, index) in spec.buttons"
-      :key="index"
-      class="oa-btn"
-      :class="{ 'oa-btn-danger': button.danger }"
-      :label="button.label()"
-      :armed-label="t('confirmWord')"
-      :armed-title="button.confirm(maskUser(username))"
-      :resting-title="button.label()"
-      :disabled="busy"
-      @confirm="run(button)"
-    />
-  </div>
-  <p v-if="flash" class="oa-field-hint" role="status">{{ flash }}</p>
+  <!-- A card like the user editor's own sections, so a plugin's actions read
+       as one more of them rather than as something bolted on below. -->
+  <AdminControlCard :title="spec.title()" :hint="spec.hint?.()">
+    <OaRow>
+      <OaConfirmButton
+        v-for="(button, index) in spec.buttons"
+        :key="index"
+        class="oa-btn small"
+        :class="{ 'oa-btn-danger': button.danger }"
+        :label="button.label()"
+        :armed-label="t('confirmWord')"
+        :armed-title="button.confirm(maskUser(username))"
+        :resting-title="button.label()"
+        :disabled="busy"
+        @confirm="run(button)"
+      />
+    </OaRow>
+    <p v-if="flash" class="oa-group-flash ok" role="status">{{ flash }}</p>
+  </AdminControlCard>
 </template>

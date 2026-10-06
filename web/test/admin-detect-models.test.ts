@@ -35,7 +35,7 @@ describe('detected models', () => {
   });
 
   function mount(props: Record<string, unknown>) {
-    app = createApp({ render: () => h(AdminDetectModels, { providerId: 'p1', ...props }) });
+    app = createApp({ render: () => h(AdminDetectModels, { providerId: 'p1', mode: 'add', ...props } as never) });
     app.mount(host);
   }
 
