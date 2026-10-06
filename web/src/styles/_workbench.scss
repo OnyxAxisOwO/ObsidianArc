@@ -61,14 +61,25 @@
 .oa-control-card .oa-field-hint { font-size: 11.5px; line-height: 1.6; }
 .oa-control-card .oa-checkbox-field { gap: 14px; }
 .oa-control-card .oa-group-card input:not([type='checkbox']), .oa-control-card .oa-group-card .oa-select { min-height: 40px; }
-/* The detected-models picker, inside the card it now sits in: the card is the
-   container, so the strip it used to draw for itself would be a box in a box. */
-.oa-control-card .oa-detect-block { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
-.oa-control-card .oa-detect-panel { align-self: stretch; margin: 0; padding: 0; background: none; gap: 10px; }
-.oa-control-card .oa-detect-list { max-height: 264px; gap: 1px; }
-.oa-control-card .oa-detect-row { padding: 8px 10px; border-radius: 8px; font-size: 12.5px; }
-.oa-control-card label.oa-detect-row:hover, .oa-control-card button.oa-detect-row:not(:disabled):hover { background: var(--ai-field-bg); }
-.oa-control-card .oa-detect-row .oa-detect-known { margin-left: auto; flex: none; }
+/* Detected models (AdminDetectModels), drawn as rows of the card they sit in.
+   The list is padded so a hovered or ticked row is a rounded fill inside the
+   card, the same as the check lists, rather than a stripe across it. */
+.oa-detect-run.busy svg { animation: ai-chat-spin 0.8s linear infinite; }
+.oa-detect-options { display: flex; flex-direction: column; gap: 2px; max-height: 288px; overflow-y: auto; padding: 6px; }
+.oa-detect-option { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; box-sizing: border-box; padding: 6px 10px; border: 0; border-radius: 10px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.oa-detect-option:not(:disabled):hover, .oa-detect-option.picked { background: var(--ai-state-hover); }
+.oa-detect-option:disabled { cursor: default; }
+.oa-detect-option:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
+.oa-detect-option-text { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
+.oa-detect-option-id { overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.oa-detect-option:disabled .oa-detect-option-id { color: var(--ai-text-secondary); }
+.oa-detect-option-name { overflow: hidden; color: var(--ai-text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.oa-detect-option .oa-detect-known { flex: none; }
+/* The tick is a quiet circle until chosen, then takes the accent the way a
+   switch does when it is on. */
+.oa-detect-tick { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 999px; background: var(--ai-field-bg); color: transparent; transition: background 0.15s, color 0.15s; }
+.oa-detect-option.picked .oa-detect-tick { background: var(--ai-primary); color: var(--ai-primary-text); }
+.oa-detect-none { margin: 0; padding: 10px; color: var(--ai-text-secondary); font-size: 12px; }
 .oa-control-card .oa-group-card textarea { resize: vertical; line-height: 1.7; }
 .oa-control-card > .oa-group-card > .oa-btn, .oa-control-card > .oa-group-card > .oa-field > .oa-btn { align-self: flex-start; }
 /* A plugin on the list: what it is, then what can be done to it. The actions

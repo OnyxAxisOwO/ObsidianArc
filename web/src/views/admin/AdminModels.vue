@@ -22,7 +22,6 @@ import OaCellStack from '@/components/OaCellStack.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
-import OaSearchField from '@/components/OaSearchField.vue';
 import OaSelect from '@/components/OaSelect.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
@@ -36,11 +35,11 @@ import { t } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconCheck, IconCopy } from '@/icons';
-import { filterDetected } from '@/lib/detect-filter';
 import { compactNumber } from '@/lib/format';
 import { canAdmin } from '@/stores/session';
 import { maskProvider } from '@/admin/safeMode';
 import AdminControlCard from './AdminControlCard.vue';
+import AdminDetectModels, { type DetectedModel } from './AdminDetectModels.vue';
 import AdminFailure from './AdminFailure.vue';
 import ReasoningTiers from './ReasoningTiers.vue';
 import { reasoningLabel } from './reasoning-labels';
@@ -348,8 +347,6 @@ function open(row: AdminModel | null, from: AdminModel | null = null): void {
   template.value = from;
   idCopied.value = false;
   panelError.value = '';
-  detected.value = null;
-  detectStatus.value = '';
 
   // Where the fields start. `existing` still decides everything else: the
   // title, the delete button, and whether saving is a POST or a PATCH.
@@ -506,46 +503,9 @@ async function remove(): Promise<void> {
 
 // --- detection ---------------------------------------------------------------------
 
-interface Detected {
-  model_id: string;
-  display_name: string;
-  configured: boolean;
-}
-
-const detecting = ref(false);
-const detected = ref<Detected[] | null>(null);
-const detectStatus = ref('');
-const detectQuery = ref('');
-const shownDetected = computed(() => filterDetected(detected.value ?? [], detectQuery.value));
-
-/**
- * Asks the provider what it serves and lets one row fill the form.
- *
- * The provider editor's version of this adds every ticked row at once. This
- * one is a picker: the panel it opens into is already creating exactly one
- * model, and the two fields it fills are the two nobody can guess.
- */
-async function detect(): Promise<void> {
-  if (!form.value.providerID) return;
-  detecting.value = true;
-  detected.value = null;
-  detectStatus.value = '';
-  detectQuery.value = '';
-  try {
-    const { models: found } = await adminApi.detect(form.value.providerID);
-    detected.value = found;
-    detectStatus.value = t('nModelsFound', { count: found.length });
-  } catch (failure) {
-    detectStatus.value = failure instanceof ApiError ? failure.message : String(failure);
-  } finally {
-    detecting.value = false;
-  }
-}
-
-function useDetected(entry: Detected): void {
+function useDetected(entry: DetectedModel): void {
   form.value.modelID = entry.model_id;
   form.value.displayName = entry.display_name || entry.model_id;
-  detected.value = null;
 }
 
 // --- taking the catalogue in and out -------------------------------------------------
@@ -847,33 +807,7 @@ let sortState: SortState | null = null;
         <!-- Detect belongs here as well as on the provider screen: this is the
              form where an upstream id has to be typed exactly, so it is where
              being handed the list saves the typing. -->
-        <div class="oa-detect-block">
-          <button type="button" class="oa-btn" :disabled="detecting" @click="detect">
-            {{ detecting ? t('detecting') : t('detect') }}
-          </button>
-          <span class="oa-field-hint">{{ t('detectPickHint') }}</span>
-          <div v-if="detectStatus || detected" class="oa-detect-panel">
-            <p class="oa-detect-status">{{ detectStatus }}</p>
-            <template v-if="detected">
-              <OaSearchField v-model="detectQuery" :label="t('searchDetected')" />
-              <div class="oa-detect-list">
-                <button
-                  v-for="entry in shownDetected"
-                  :key="entry.model_id"
-                  type="button"
-                  class="oa-detect-row"
-                  @click="useDetected(entry)"
-                >
-                  <span>
-                    {{ entry.display_name ? `${entry.display_name} — ${entry.model_id}` : entry.model_id }}
-                  </span>
-                  <span v-if="entry.configured" class="oa-detect-known">{{ t('alreadyAdded') }}</span>
-                </button>
-                <p v-if="!shownDetected.length" class="oa-detect-status">{{ t('noMatches') }}</p>
-              </div>
-            </template>
-          </div>
-        </div>
+        <AdminDetectModels :provider-id="form.providerID" mode="pick" @pick="useDetected" />
       </template>
       <!-- A field that shows a value the form cannot change. -->
       <div v-else class="oa-facts">

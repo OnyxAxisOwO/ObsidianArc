@@ -16,7 +16,6 @@ import OaCellStack from '@/components/OaCellStack.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
-import OaSearchField from '@/components/OaSearchField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTable from '@/components/OaTable.vue';
@@ -26,11 +25,11 @@ import { t, tn } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconCopy } from '@/icons';
-import { filterDetected } from '@/lib/detect-filter';
 import { relativeTime } from '@/lib/format';
 import { canAdmin } from '@/stores/session';
 import { isMasked, maskProvider, maskCredential } from '@/admin/safeMode';
 import AdminControlCard from './AdminControlCard.vue';
+import AdminDetectModels from './AdminDetectModels.vue';
 import AdminFailure from './AdminFailure.vue';
 import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
@@ -71,22 +70,6 @@ const form = ref({
 
 const creating = computed(() => existing.value === null);
 
-// --- detection ----------------------------------------------------------------
-
-interface Detected {
-  model_id: string;
-  display_name: string;
-  configured: boolean;
-  picked: boolean;
-}
-
-const detecting = ref(false);
-const detected = ref<Detected[] | null>(null);
-const detectStatus = ref('');
-const addLabel = ref('');
-const detectQuery = ref('');
-const shownDetected = computed(() => filterDetected(detected.value ?? [], detectQuery.value));
-
 const columns = computed<Array<Column<Provider>>>(() => [
   { key: 'name', header: t('colName') },
   { key: 'type', header: t('colType'), width: '110px' },
@@ -100,10 +83,6 @@ function open(row: Provider | null, from: Provider | null = null): void {
   existing.value = row;
   template.value = from;
   panelError.value = '';
-  detected.value = null;
-  detectStatus.value = '';
-  detectQuery.value = '';
-  addLabel.value = '';
 
   const source = row ?? from;
   form.value = {
@@ -196,46 +175,6 @@ async function remove(): Promise<void> {
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-  }
-}
-
-async function detect(): Promise<void> {
-  const row = existing.value;
-  if (!row) return;
-  detecting.value = true;
-  detected.value = null;
-  detectStatus.value = '';
-  detectQuery.value = '';
-  try {
-    const { models } = await adminApi.detect(row.id);
-    detected.value = models.map((model) => ({ ...model, picked: false }));
-    detectStatus.value = t('nModelsFound', { count: models.length });
-  } catch (failure) {
-    detectStatus.value = failure instanceof ApiError ? failure.message : String(failure);
-  } finally {
-    detecting.value = false;
-  }
-}
-
-async function addDetected(): Promise<void> {
-  const row = existing.value;
-  const picked = (detected.value ?? []).filter((entry) => entry.picked);
-  if (!row || !picked.length) return;
-  addLabel.value = t('adding');
-  try {
-    await Promise.all(picked.map((entry) => adminApi.createModel({
-      provider_id: row.id,
-      model_id: entry.model_id,
-      display_name: entry.display_name || entry.model_id,
-    })));
-    addLabel.value = t('addedN', { count: picked.length });
-    for (const entry of picked) {
-      entry.picked = false;
-      entry.configured = true;
-    }
-  } catch (failure) {
-    addLabel.value = '';
-    detectStatus.value = failure instanceof ApiError ? failure.message : String(failure);
   }
 }
 
@@ -396,32 +335,7 @@ onMounted(load);
     </AdminControlCard>
 
     <AdminControlCard v-if="existing" :title="t('navModels')">
-      <div class="oa-detect-block">
-        <button type="button" class="oa-btn" :disabled="detecting" @click="detect">
-          {{ detecting ? t('detecting') : t('detect') }}
-        </button>
-        <div v-if="detectStatus || detected" class="oa-detect-panel">
-          <p class="oa-detect-status">{{ detectStatus }}</p>
-          <template v-if="detected">
-            <OaSearchField v-model="detectQuery" :label="t('searchDetected')" />
-            <div class="oa-detect-list">
-              <label v-for="entry in shownDetected" :key="entry.model_id" class="oa-detect-row">
-                <input v-model="entry.picked" type="checkbox">
-                <span>
-                  {{ entry.display_name ? `${entry.display_name} — ${entry.model_id}` : entry.model_id }}
-                </span>
-                <span v-if="entry.configured" class="oa-detect-known">{{ t('alreadyAdded') }}</span>
-              </label>
-              <p v-if="!shownDetected.length" class="oa-detect-status">{{ t('noMatches') }}</p>
-            </div>
-          </template>
-          <div v-if="detected && canAdmin('models')" class="oa-detect-actions">
-            <button type="button" class="oa-btn primary" @click="addDetected">
-              {{ addLabel || t('addSelected') }}
-            </button>
-          </div>
-        </div>
-      </div>
+      <AdminDetectModels :provider-id="existing.id" mode="add" :can-add="canAdmin('models')" />
     </AdminControlCard>
   </OaPanel>
 </template>
