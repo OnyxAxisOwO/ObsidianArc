@@ -12,16 +12,18 @@ import OaOverlay from '@/components/OaOverlay.vue';
 import { t } from '@/composables/useI18n';
 import { relativeTime } from '@/lib/format';
 
-const props = defineProps<{ announcement: Announcement }>();
+const props = defineProps<{ announcement: Announcement; popup?: boolean }>();
 const emit = defineEmits<{ (event: 'dismiss'): void }>();
 
 /**
- * A delay is there to make somebody read the first line the first time.
- * Reopening one from the history is not that, so it is not made to wait
- * again. The countdown is on the button so the wait reads as finite rather
+ * A delay is there to make somebody read the first line when the sheet is
+ * thrown at them. Reopening one from the history is not that, so it is not
+ * made to wait. Judged by how it was opened rather than by `read`: an "every
+ * visit" announcement is read from its second visit on, and would otherwise
+ * never wait again. The countdown is on the button so the wait reads as finite rather
  * than broken; the server caps how long it can be.
  */
-const remaining = ref(props.announcement.read
+const remaining = ref(!props.popup
   ? 0
   : Math.max(0, Math.min(60, Math.round(props.announcement.dismiss_after_seconds))));
 

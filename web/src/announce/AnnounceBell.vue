@@ -35,6 +35,7 @@ const shownThisVisit = new Set<string>();
 
 const feed = ref<AnnouncementFeed>({ announcements: [], unread: 0, popup: null });
 const showing = ref<Announcement | null>(null);
+const showingAsPopup = ref(false);
 const menu = ref<InstanceType<typeof OaMenu> | null>(null);
 
 // The badge is one dot for two feeds: a reader does not care whether what is
@@ -70,14 +71,15 @@ async function refresh(options: { popup?: boolean } = {}): Promise<void> {
     // Only on the first read of a given announcement per visit. An "every
     // visit" one that has just been dismissed must not come straight back
     // when something else refreshes the feed.
-    if (next.popup && !shownThisVisit.has(next.popup.id)) show(next.popup);
+    if (next.popup && !shownThisVisit.has(next.popup.id)) show(next.popup, true);
   } catch {
     // A bell nobody can ring is not worth an error state.
   }
 }
 
-function show(record: Announcement): void {
+function show(record: Announcement, popup = false): void {
   shownThisVisit.add(record.id);
+  showingAsPopup.value = popup;
   showing.value = record;
 }
 
@@ -169,5 +171,5 @@ onMounted(() => void refresh());
     </template>
   </OaMenu>
 
-  <AnnouncementSheet v-if="showing" :announcement="showing" @dismiss="dismiss" />
+  <AnnouncementSheet v-if="showing" :announcement="showing" :popup="showingAsPopup" @dismiss="dismiss" />
 </template>
