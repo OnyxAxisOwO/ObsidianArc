@@ -13,14 +13,16 @@
 // page, the sign-up page, the front page and the chat, so it says the same
 // thing to whoever arrives wherever they arrive.
 //
-// The strip is one line. If the operator wrote a text behind it, the strip is a
-// button and the text opens over the page, drawn by the renderer the
-// announcements and the transcript use; if not, the line is the whole notice
-// and is shown in full rather than cut short with nothing to open.
+// The strip is one line. If the operator wrote a text behind it, the strip is
+// a button, a line too long for it scrolls, and the text opens over the page,
+// drawn by the renderer the announcements and the transcript use; if not, the
+// line is the whole notice and is shown in full rather than cut short with
+// nothing to open.
 
 import { computed, ref } from 'vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
+import OaMarquee from '@/components/OaMarquee.vue';
 import OaOverlay from '@/components/OaOverlay.vue';
 import { t } from '@/composables/useI18n';
 import { IconChevron, IconClose, IconInfo } from '@/icons';
@@ -106,7 +108,9 @@ function dismiss(): void {
       :aria-label="`${text} — ${t('homeNoticeRead')}`"
       @click="reading = true"
     >
-      <span class="oa-home-notice-text">{{ text }}</span>
+      <!-- One line, so a line wider than a phone runs past rather than being
+           cut off: the end of a notice is often the part that matters. -->
+      <OaMarquee class="oa-home-notice-text" :text="text" />
       <IconChevron class="oa-home-notice-go" :size="14" />
     </button>
     <!-- Plain text with the line breaks preserved in CSS: the operator writes
