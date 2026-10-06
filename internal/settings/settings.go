@@ -241,6 +241,9 @@ const (
 	APIEnabled           = "api.enabled"
 	AttachmentMaxMB      = "attachments.max_mb"
 	AttachmentRetain     = "attachments.retain"
+	// Whether the generation lab keeps what it makes. Off, a picture is shown
+	// once in the answer and never stored: no attachment, no history row.
+	ImageHistory         = "images.history"
 	AttachmentPurgeDays  = "attachments.purge_after_days"
 	AttachmentPurgeDaily = "attachments.purge_daily_at"
 	AttachmentOrphanMins = "attachments.orphan_minutes"
@@ -796,6 +799,8 @@ var Defaults = map[string]string{
 	// which buys one thing: a model that can still see an image several
 	// turns after it was sent.
 	AttachmentRetain: "false",
+	// On, which is what every instance did before there was a switch.
+	ImageHistory: "true",
 	// Zero and empty mean "no scheduled cleanup". The default policy already
 	// drops an image as soon as its turn is sent, so a fresh instance has
 	// nothing for these to do.

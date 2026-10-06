@@ -628,6 +628,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnImages) },
 		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
 	}
+	chatHandlers.ImageHistoryEnabled = func() bool { return settingsService.Bool(settings.ImageHistory) }
 	chatHandlers.ImagePoWEnabled = func() bool { return settingsService.Bool(settings.PoWOnImages) }
 	chatHandlers.ImageGuards = func(ctx context.Context, tokens map[string]string, ip, username string) error {
 		return authService.CheckGuards(ctx, auth.GuardImages, tokens, ip, username)

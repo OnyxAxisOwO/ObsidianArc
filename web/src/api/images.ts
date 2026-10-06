@@ -8,6 +8,7 @@ export interface ImageGenerationItem {
   attachment_id?: string;
   url?: string;
   b64_json?: string;
+  mime?: string;
   revised_prompt?: string;
   created_at?: number;
 }

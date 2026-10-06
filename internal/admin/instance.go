@@ -265,6 +265,7 @@ var writableSettings = map[string]bool{
 	settings.APIEnabled:                 true,
 	settings.AttachmentMaxMB:            true,
 	settings.AttachmentRetain:           true,
+	settings.ImageHistory:               true,
 	settings.AttachmentPurgeDays:        true,
 	settings.AttachmentPurgeDaily:       true,
 	settings.AttachmentOrphanMins:       true,

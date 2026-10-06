@@ -642,7 +642,7 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     id: 'secAttachments',
     pageSlug: 'settings',
     titleKey: 'secAttachments',
-    searchKeys: ['attachmentMaxMB', 'attachmentRetain', 'attachmentsHint'],
+    searchKeys: ['attachmentMaxMB', 'attachmentRetain', 'imageHistory', 'attachmentsHint'],
     keywords: ['附件上传设置', '单文件大小上限', '保留源文件', 'attachment max size', 'retain attachments'],
   },
   {

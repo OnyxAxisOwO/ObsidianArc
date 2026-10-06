@@ -68,7 +68,7 @@ const SEARCH_GROUPS = {
   ],
   secAttachments: [
     'secAttachments', 'attachmentsHint', 'attachmentMaxMB', 'attachmentMaxMBHint', 'attachmentRetain',
-    'attachmentRetainHint',
+    'attachmentRetainHint', 'imageHistory', 'imageHistoryHint',
   ],
   secCleanup: [
     'secCleanup', 'cleanupHint', 'attachmentPurgeDays', 'attachmentPurgeDaysHint', 'attachmentPurgeDaily',
@@ -137,6 +137,7 @@ const form = ref({
   usageDisplay: 'absolute',
   attachmentMaxMB: 6 as number | null,
   attachmentRetain: false,
+  imageHistory: true,
   purgeAfterDays: 0 as number | null,
   purgeDailyAt: '',
   orphanMinutes: 60 as number | null,
@@ -193,6 +194,7 @@ function collect(): Record<string, string> {
     'api.enabled': String(form.value.apiEnabled),
     'attachments.max_mb': String(form.value.attachmentMaxMB ?? 6),
     'attachments.retain': String(form.value.attachmentRetain),
+    'images.history': String(form.value.imageHistory),
     'attachments.purge_after_days': String(form.value.purgeAfterDays ?? 0),
     'attachments.purge_daily_at': form.value.purgeDailyAt.trim(),
     'attachments.orphan_minutes': String(form.value.orphanMinutes ?? 60),
@@ -577,6 +579,7 @@ async function load(): Promise<void> {
       usageDisplay: values['quota.usage_display'] ?? 'absolute',
       attachmentMaxMB: Number(values['attachments.max_mb'] ?? 6),
       attachmentRetain: values['attachments.retain'] === 'true',
+      imageHistory: values['images.history'] !== 'false',
       purgeAfterDays: Number(values['attachments.purge_after_days'] ?? 0),
       purgeDailyAt: values['attachments.purge_daily_at'] ?? '',
       orphanMinutes: Number(values['attachments.orphan_minutes'] ?? 60),
@@ -820,6 +823,11 @@ onMounted(load);
           v-model="form.attachmentRetain"
           :label="t('attachmentRetain')"
           :hint="t('attachmentRetainHint')"
+        />
+        <OaSwitchField
+          v-model="form.imageHistory"
+          :label="t('imageHistory')"
+          :hint="t('imageHistoryHint')"
         />
       </AdminControlCard>
       <AdminControlCard id="apiKeys" v-show="visible('apiKeys')" :title="t('apiKeys')" :icon="IconKey">

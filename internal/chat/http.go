@@ -64,7 +64,9 @@ type Handlers struct {
 	ImageChallenge  turnstile.Gate
 	ImagePoW        *pow.Manager
 	ImagePoWEnabled func() bool
-	ImageGuards     func(ctx context.Context, tokens map[string]string, ip, username string) error
+	// Nil keeps every picture, as before the switch existed.
+	ImageHistoryEnabled func() bool
+	ImageGuards         func(ctx context.Context, tokens map[string]string, ip, username string) error
 	// Slots for in-flight attachment decodes. See uploadAttachment.
 	decoding chan struct{}
 }
@@ -740,6 +742,7 @@ type imageGenItem struct {
 	B64JSON       string `json:"b64_json,omitempty"`
 	RevisedPrompt string `json:"revised_prompt,omitempty"`
 	CreatedAt     int64  `json:"created_at,omitempty"`
+	Mime          string `json:"mime,omitempty"`
 }
 
 // recordImages writes the ledger entry for an image call and settles what it
@@ -937,6 +940,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	}
 	h.recordImages(saveCtx, account, resolved, requestID, startedAt, len(result.Data), StatusOK, "")
 
+	keepHistory := h.ImageHistoryEnabled == nil || h.ImageHistoryEnabled()
 	var images []imageGenItem
 	var undelivered int
 	var lastFailure error
@@ -947,7 +951,12 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		data, mime, err := generatedImageBytes(fetchCtx, img, ceiling)
-		if err == nil {
+		if err == nil && !keepHistory {
+			// Handed over inline, once: nothing is stored, so there is no
+			// attachment to quota or sweep and no row to list later.
+			item.B64JSON = base64.StdEncoding.EncodeToString(data)
+			item.Mime = mime
+		} else if err == nil {
 			var att conversation.Attachment
 			att, err = h.conversations.Upload(saveCtx, conversation.UploadInput{
 				UserID:   account.ID,

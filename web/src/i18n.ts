@@ -1588,6 +1588,8 @@ const en = {
   attachmentMaxMBHint: 'Per file. The browser downscales before uploading, so this is the backstop rather than the usual size.',
   attachmentRetain: 'Keep images after sending',
   attachmentRetainHint: 'Off, an image reaches the model and is then dropped: this server stops being where your users’ pictures live. On, images are kept so a model can still see one several turns later — at the cost of storing every picture anyone sends.',
+  imageHistory: 'Keep image generation history',
+  imageHistoryHint: 'Off, a generated picture is shown once and never stored: nothing appears in the history tab, and a picture that was not saved or downloaded is gone. Existing history stays until its owners delete it.',
   imageDiscarded: 'This image was sent to the model and is no longer kept on the server.',
 
   // --- keys, from administration

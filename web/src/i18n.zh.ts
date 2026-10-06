@@ -1554,6 +1554,8 @@ export const zh: Record<StringKey, string> = {
   attachmentMaxMB: '单张图片上限（MB）',
   attachmentMaxMBHint: '按单个文件计。浏览器上传前会先压缩，所以这是兜底线而不是常见尺寸。',
   attachmentRetain: '发送后保留图片',
+  imageHistory: '保留生图历史',
+  imageHistoryHint: '关闭后，生成的图片只在本次结果中显示，不会存储，也不会出现在历史标签里；没有保存或下载的图片将无法找回。已有的历史保留，直到用户自己删除。',
   attachmentRetainHint: '关闭时，图片发给模型后就丢弃，服务器不再是用户图片的存放地。开启后会保留，模型在几轮之后仍能看到这张图——代价是每一张图都存在服务器上。',
   imageDiscarded: '这张图已发送给模型，服务器不再保留。',
 

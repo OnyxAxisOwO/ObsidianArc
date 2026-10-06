@@ -495,3 +495,48 @@ func TestGeneratedImagesAreNotPrunedAsOrphans(t *testing.T) {
 		t.Errorf("DeleteOrphans removed %d attachments, want 0 for generated image", removed)
 	}
 }
+
+// Off, the picture is handed back inline and nothing is left behind: no
+// attachment for the janitor or the quota to account for, no history row.
+func TestGeneratingAnImageWithHistoryOffStoresNothing(t *testing.T) {
+	lab := newImageLab(t, 1)
+	lab.handlers.ImageHistoryEnabled = func() bool { return false }
+	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
+
+	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+`","prompt":"a sunset"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Images []struct {
+			ID           string `json:"id"`
+			AttachmentID string `json:"attachment_id"`
+			URL          string `json:"url"`
+			B64JSON      string `json:"b64_json"`
+			Mime         string `json:"mime"`
+		} `json:"images"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Images) != 1 || body.Images[0].B64JSON == "" || body.Images[0].Mime == "" {
+		t.Fatalf("picture not returned inline: %+v", body.Images)
+	}
+	if body.Images[0].AttachmentID != "" || body.Images[0].URL != "" || body.Images[0].ID != "" {
+		t.Errorf("something was stored: %+v", body.Images[0])
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/images/generations", nil)
+	req = req.WithContext(auth.WithUser(req.Context(), lab.fixture.account))
+	rec := httptest.NewRecorder()
+	lab.mux.ServeHTTP(rec, req)
+	var list struct {
+		Generations []conversation.ImageGeneration `json:"generations"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Generations) != 0 {
+		t.Errorf("history has %d rows, want 0", len(list.Generations))
+	}
+}

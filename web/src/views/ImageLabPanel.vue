@@ -427,7 +427,7 @@ async function generate(): Promise<void> {
 
 function imageSource(img: ImageGenerationItem): string {
   if (img.url) return img.url;
-  if (img.b64_json) return `data:image/png;base64,${img.b64_json}`;
+  if (img.b64_json) return `data:${img.mime || 'image/png'};base64,${img.b64_json}`;
   return '';
 }
 </script>
