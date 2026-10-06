@@ -98,6 +98,7 @@ make docs
 | `OBSIDIAN_DATA_DIR` | `./data` | 数据库文件与密钥存储路径 |
 | `OBSIDIAN_COOKIE_SECURE` | `true` | 是否仅允许 HTTPS 传输 Cookie；本地 HTTP 测试可设为 `false` |
 | `OBSIDIAN_TRUST_PROXY` | `false` | 是否信任反向代理传递的 `X-Forwarded-For` 报头 |
+| `OBSIDIAN_TRUST_CLOUDFLARE` | `false` | 仅当部署在 Cloudflare 之后才设为 `true`：否则 `CF-Connecting-IP` 报头可被任意客户端伪造 |
 | `OBSIDIAN_PUBLIC_URL` | 空 | 站点公开访问地址（用于邮箱验证链接） |
 | `OBSIDIAN_SMTP_HOST` | 空 | SMTP 服务器地址（用于发送验证邮件） |
 | `OBSIDIAN_SSH_ADDR` | 空 | 终端的 SSH 监听地址（例如 `:2222`） |

@@ -42,6 +42,10 @@ type Config struct {
 	// Exact peers, when the proxy's address is known. Empty with
 	// TrustProxy set falls back to the private ranges.
 	TrustedProxies []string
+	// The operator's claim that Cloudflare terminates in front of this
+	// deployment. CF-Connecting-IP is only honored with it: nothing on the
+	// request can distinguish Cloudflare's header from a forged one.
+	TrustCloudflare bool
 	// Extra origins accepted on state-changing requests, beyond the request's
 	// own Host. Only needed when the SPA is served from somewhere else.
 	AllowedOrigins []string
@@ -203,15 +207,16 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Addr:           env("ADDR", ":8080"),
-		DataDir:        dataDir,
-		Dev:            dev,
-		LogLevel:       strings.ToLower(env("LOG_LEVEL", "info")),
-		TrustProxy:     envBool("TRUST_PROXY", false),
-		TrustedProxies: envList("TRUSTED_PROXIES"),
-		AllowedOrigins: envList("ALLOWED_ORIGINS"),
-		PluginDir:      env("PLUGIN_DIR", ""),
-		SecretKey:      secret,
+		Addr:            env("ADDR", ":8080"),
+		DataDir:         dataDir,
+		Dev:             dev,
+		LogLevel:        strings.ToLower(env("LOG_LEVEL", "info")),
+		TrustProxy:      envBool("TRUST_PROXY", false),
+		TrustedProxies:  envList("TRUSTED_PROXIES"),
+		TrustCloudflare: envBool("TRUST_CLOUDFLARE", false),
+		AllowedOrigins:  envList("ALLOWED_ORIGINS"),
+		PluginDir:       env("PLUGIN_DIR", ""),
+		SecretKey:       secret,
 
 		generatedSecret: generated,
 

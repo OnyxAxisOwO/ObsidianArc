@@ -45,6 +45,11 @@ services:
       # The Docker bridge network your proxy sits on. Narrow it to the
       # proxy's own address if you know it.
       OBSIDIAN_TRUSTED_PROXIES: "${OBSIDIAN_TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,127.0.0.1/32}"
+      # CF-Connecting-IP is only believed on this claim: Cloudflare itself
+      # overwrites the header, but any other proxy in front passes a
+      # caller-supplied one straight through, and the address walk cannot
+      # vet a header that carries no chain of hops.
+      OBSIDIAN_TRUST_CLOUDFLARE: "${OBSIDIAN_TRUST_CLOUDFLARE:-false}"
       OBSIDIAN_COOKIE_SECURE: "${OBSIDIAN_COOKIE_SECURE:-true}"
       # The address this instance answers at, as somebody else's software has
       # to be configured with it: the issuer in the OpenID discovery document,
