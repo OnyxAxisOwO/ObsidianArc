@@ -13,10 +13,10 @@ import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
-import OaFormSection from '@/components/OaFormSection.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
+import OaSearchField from '@/components/OaSearchField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTable from '@/components/OaTable.vue';
@@ -26,9 +26,11 @@ import { t, tn } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconCopy } from '@/icons';
+import { filterDetected } from '@/lib/detect-filter';
 import { relativeTime } from '@/lib/format';
 import { canAdmin } from '@/stores/session';
 import { isMasked, maskProvider, maskCredential } from '@/admin/safeMode';
+import AdminControlCard from './AdminControlCard.vue';
 import AdminFailure from './AdminFailure.vue';
 import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
@@ -82,6 +84,8 @@ const detecting = ref(false);
 const detected = ref<Detected[] | null>(null);
 const detectStatus = ref('');
 const addLabel = ref('');
+const detectQuery = ref('');
+const shownDetected = computed(() => filterDetected(detected.value ?? [], detectQuery.value));
 
 const columns = computed<Array<Column<Provider>>>(() => [
   { key: 'name', header: t('colName') },
@@ -98,6 +102,7 @@ function open(row: Provider | null, from: Provider | null = null): void {
   panelError.value = '';
   detected.value = null;
   detectStatus.value = '';
+  detectQuery.value = '';
   addLabel.value = '';
 
   const source = row ?? from;
@@ -200,6 +205,7 @@ async function detect(): Promise<void> {
   detecting.value = true;
   detected.value = null;
   detectStatus.value = '';
+  detectQuery.value = '';
   try {
     const { models } = await adminApi.detect(row.id);
     detected.value = models.map((model) => ({ ...model, picked: false }));
@@ -325,90 +331,97 @@ onMounted(load);
       </OaIconButton>
     </template>
 
-    <!-- Masking either field would break editing it, so the value stays real
-         and only its focus state decides whether it can be read — blurred
-         until the operator clicks in, same as a name or an endpoint typed on
-         a shared screen would need. -->
-    <OaTextField
-      ref="nameField"
-      v-model="form.name"
-      :class="{ 'oa-safe-blur': isMasked('providers') }"
-      :label="t('name')"
-      placeholder="OpenRouter"
-      :hint="t('providerNameHint')"
-    />
-    <OaSelectField
-      v-model="form.kind"
-      :label="t('protocol')"
-      :hint="t('protocolHint')"
-      :options="meta.provider_kinds.map((value) => ({
-        value,
-        label: value === 'anthropic' ? t('protocolAnthropic') : t('protocolOpenAI'),
-      }))"
-    />
-    <OaTextField
-      v-model="form.baseURL"
-      :class="{ 'oa-safe-blur': isMasked('providers') }"
-      :label="t('baseURL')"
-      placeholder="https://openrouter.ai/api/v1"
-      :hint="t('baseURLHint')"
-      monospace
-    />
-    <OaSwitchField
-      v-model="form.allowInsecure"
-      :label="t('allowInsecure')"
-      :hint="t('allowInsecureHint')"
-    />
-    <OaTextField
-      v-model="form.apiKey"
-      :label="creating ? t('apiKey') : t('replaceAPIKey')"
-      :placeholder="creating ? 'sk-…' : t('apiKeyKeepHint', { hint: maskCredential(existing!.api_key_hint) })"
-      :hint="t('apiKeyHint')"
-      type="password"
-    />
+    <AdminControlCard :title="t('secProviderConnection')">
+      <!-- Masking either field would break editing it, so the value stays real
+           and only its focus state decides whether it can be read — blurred
+           until the operator clicks in, same as a name or an endpoint typed on
+           a shared screen would need. -->
+      <OaTextField
+        ref="nameField"
+        v-model="form.name"
+        :class="{ 'oa-safe-blur': isMasked('providers') }"
+        :label="t('name')"
+        placeholder="OpenRouter"
+        :hint="t('providerNameHint')"
+      />
+      <OaSelectField
+        v-model="form.kind"
+        :label="t('protocol')"
+        :hint="t('protocolHint')"
+        :options="meta.provider_kinds.map((value) => ({
+          value,
+          label: value === 'anthropic' ? t('protocolAnthropic') : t('protocolOpenAI'),
+        }))"
+      />
+      <OaTextField
+        v-model="form.baseURL"
+        :class="{ 'oa-safe-blur': isMasked('providers') }"
+        :label="t('baseURL')"
+        placeholder="https://openrouter.ai/api/v1"
+        :hint="t('baseURLHint')"
+        monospace
+      />
+      <OaSwitchField
+        v-model="form.allowInsecure"
+        :label="t('allowInsecure')"
+        :hint="t('allowInsecureHint')"
+      />
+      <OaTextField
+        v-model="form.apiKey"
+        :label="creating ? t('apiKey') : t('replaceAPIKey')"
+        :placeholder="creating ? 'sk-…' : t('apiKeyKeepHint', { hint: maskCredential(existing!.api_key_hint) })"
+        :hint="t('apiKeyHint')"
+        type="password"
+      />
+    </AdminControlCard>
 
-    <OaFormSection :title="t('secBehaviour')" />
-    <OaSelectField
-      v-model="form.reasoning"
-      :label="t('reasoningStyle')"
-      :hint="t('reasoningStyleHint')"
-      :options="meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) }))"
-    />
-    <OaTextField
-      v-if="form.kind === 'anthropic'"
-      v-model="form.anthropicVersion"
-      :label="t('anthropicVersion')"
-      placeholder="2023-06-01"
-      :hint="t('anthropicVersionHint')"
-      monospace
-    />
-    <OaNumberField v-model="form.timeout" :label="t('timeoutSeconds')" :min="5" :max="900" />
-    <OaSwitchField v-model="form.enabled" :label="t('enabled')" :hint="t('providerEnabledHint')" />
-    <OaNumberField v-model="form.sortOrder" :label="t('sortOrder')" />
+    <AdminControlCard :title="t('secBehaviour')">
+      <OaSelectField
+        v-model="form.reasoning"
+        :label="t('reasoningStyle')"
+        :hint="t('reasoningStyleHint')"
+        :options="meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) }))"
+      />
+      <OaTextField
+        v-if="form.kind === 'anthropic'"
+        v-model="form.anthropicVersion"
+        :label="t('anthropicVersion')"
+        placeholder="2023-06-01"
+        :hint="t('anthropicVersionHint')"
+        monospace
+      />
+      <OaNumberField v-model="form.timeout" :label="t('timeoutSeconds')" :min="5" :max="900" />
+      <OaSwitchField v-model="form.enabled" :label="t('enabled')" :hint="t('providerEnabledHint')" />
+      <OaNumberField v-model="form.sortOrder" :label="t('sortOrder')" />
+    </AdminControlCard>
 
-    <template v-if="existing">
-      <OaFormSection :title="t('navModels')" />
-      <button type="button" class="oa-btn" :disabled="detecting" @click="detect">
-        {{ detecting ? t('detecting') : t('detect') }}
-      </button>
-
-      <div v-if="detectStatus || detected" class="oa-detect-panel">
-        <p class="oa-detect-status">{{ detectStatus }}</p>
-        <div v-if="detected" class="oa-detect-list">
-          <label v-for="entry in detected" :key="entry.model_id" class="oa-detect-row">
-            <input v-model="entry.picked" type="checkbox">
-            <span>
-              {{ entry.display_name ? `${entry.display_name} — ${entry.model_id}` : entry.model_id }}
-            </span>
-            <span v-if="entry.configured" class="oa-detect-known">{{ t('alreadyAdded') }}</span>
-          </label>
-        </div>
-        <div v-if="detected && canAdmin('models')" class="oa-detect-actions">
-          <button type="button" class="oa-btn primary" @click="addDetected">
-            {{ addLabel || t('addSelected') }}
-          </button>
+    <AdminControlCard v-if="existing" :title="t('navModels')">
+      <div class="oa-detect-block">
+        <button type="button" class="oa-btn" :disabled="detecting" @click="detect">
+          {{ detecting ? t('detecting') : t('detect') }}
+        </button>
+        <div v-if="detectStatus || detected" class="oa-detect-panel">
+          <p class="oa-detect-status">{{ detectStatus }}</p>
+          <template v-if="detected">
+            <OaSearchField v-model="detectQuery" :label="t('searchDetected')" />
+            <div class="oa-detect-list">
+              <label v-for="entry in shownDetected" :key="entry.model_id" class="oa-detect-row">
+                <input v-model="entry.picked" type="checkbox">
+                <span>
+                  {{ entry.display_name ? `${entry.display_name} — ${entry.model_id}` : entry.model_id }}
+                </span>
+                <span v-if="entry.configured" class="oa-detect-known">{{ t('alreadyAdded') }}</span>
+              </label>
+              <p v-if="!shownDetected.length" class="oa-detect-status">{{ t('noMatches') }}</p>
+            </div>
+          </template>
+          <div v-if="detected && canAdmin('models')" class="oa-detect-actions">
+            <button type="button" class="oa-btn primary" @click="addDetected">
+              {{ addLabel || t('addSelected') }}
+            </button>
+          </div>
         </div>
       </div>
-    </template>
+    </AdminControlCard>
   </OaPanel>
 </template>

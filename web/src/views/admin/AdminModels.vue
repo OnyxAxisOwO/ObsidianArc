@@ -19,10 +19,10 @@ import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
-import OaFormSection from '@/components/OaFormSection.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
+import OaSearchField from '@/components/OaSearchField.vue';
 import OaSelect from '@/components/OaSelect.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
@@ -36,9 +36,11 @@ import { t } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconCheck, IconCopy } from '@/icons';
+import { filterDetected } from '@/lib/detect-filter';
 import { compactNumber } from '@/lib/format';
 import { canAdmin } from '@/stores/session';
 import { maskProvider } from '@/admin/safeMode';
+import AdminControlCard from './AdminControlCard.vue';
 import AdminFailure from './AdminFailure.vue';
 import ReasoningTiers from './ReasoningTiers.vue';
 import { reasoningLabel } from './reasoning-labels';
@@ -513,6 +515,8 @@ interface Detected {
 const detecting = ref(false);
 const detected = ref<Detected[] | null>(null);
 const detectStatus = ref('');
+const detectQuery = ref('');
+const shownDetected = computed(() => filterDetected(detected.value ?? [], detectQuery.value));
 
 /**
  * Asks the provider what it serves and lets one row fill the form.
@@ -526,6 +530,7 @@ async function detect(): Promise<void> {
   detecting.value = true;
   detected.value = null;
   detectStatus.value = '';
+  detectQuery.value = '';
   try {
     const { models: found } = await adminApi.detect(form.value.providerID);
     detected.value = found;
@@ -832,42 +837,46 @@ let sortState: SortState | null = null;
       </OaIconButton>
     </template>
 
-    <template v-if="creating">
-      <OaSelectField
-        v-model="form.providerID"
-        :label="t('colProvider')"
-        :options="providers.map((provider) => ({ value: provider.id, label: provider.name }))"
-      />
-      <!-- Detect belongs here as well as on the provider screen: this is the
-           form where an upstream id has to be typed exactly, so it is where
-           being handed the list saves the typing. -->
-      <div class="oa-field">
-        <button type="button" class="oa-btn" :disabled="detecting" @click="detect">
-          {{ detecting ? t('detecting') : t('detect') }}
-        </button>
-        <span class="oa-field-hint">{{ t('detectPickHint') }}</span>
-        <div v-if="detectStatus || detected" class="oa-detect-panel">
-          <p class="oa-detect-status">{{ detectStatus }}</p>
-          <div v-if="detected" class="oa-detect-list">
-            <button
-              v-for="entry in detected"
-              :key="entry.model_id"
-              type="button"
-              class="oa-detect-row"
-              @click="useDetected(entry)"
-            >
-              <span>
-                {{ entry.display_name ? `${entry.display_name} — ${entry.model_id}` : entry.model_id }}
-              </span>
-              <span v-if="entry.configured" class="oa-detect-known">{{ t('alreadyAdded') }}</span>
-            </button>
+    <AdminControlCard :title="t('colProvider')">
+      <template v-if="creating">
+        <OaSelectField
+          v-model="form.providerID"
+          :label="t('colProvider')"
+          :options="providers.map((provider) => ({ value: provider.id, label: provider.name }))"
+        />
+        <!-- Detect belongs here as well as on the provider screen: this is the
+             form where an upstream id has to be typed exactly, so it is where
+             being handed the list saves the typing. -->
+        <div class="oa-detect-block">
+          <button type="button" class="oa-btn" :disabled="detecting" @click="detect">
+            {{ detecting ? t('detecting') : t('detect') }}
+          </button>
+          <span class="oa-field-hint">{{ t('detectPickHint') }}</span>
+          <div v-if="detectStatus || detected" class="oa-detect-panel">
+            <p class="oa-detect-status">{{ detectStatus }}</p>
+            <template v-if="detected">
+              <OaSearchField v-model="detectQuery" :label="t('searchDetected')" />
+              <div class="oa-detect-list">
+                <button
+                  v-for="entry in shownDetected"
+                  :key="entry.model_id"
+                  type="button"
+                  class="oa-detect-row"
+                  @click="useDetected(entry)"
+                >
+                  <span>
+                    {{ entry.display_name ? `${entry.display_name} — ${entry.model_id}` : entry.model_id }}
+                  </span>
+                  <span v-if="entry.configured" class="oa-detect-known">{{ t('alreadyAdded') }}</span>
+                </button>
+                <p v-if="!shownDetected.length" class="oa-detect-status">{{ t('noMatches') }}</p>
+              </div>
+            </template>
           </div>
         </div>
-      </div>
-    </template>
-    <!-- A field that shows a value the form cannot change. -->
-    <template v-else>
-      <div class="oa-facts">
+      </template>
+      <!-- A field that shows a value the form cannot change. -->
+      <div v-else class="oa-facts">
         <div class="oa-fact">
           <span class="oa-fact-label">{{ t('modelUniqueID') }}</span>
           <div class="oa-fact-copy">
@@ -887,50 +896,54 @@ let sortState: SortState | null = null;
           <span class="oa-fact-value">{{ maskProvider(existing!.provider_name) }}</span>
         </div>
       </div>
-    </template>
+    </AdminControlCard>
 
-    <OaTextField
-      ref="modelIDField"
-      v-model="form.modelID"
-      :label="t('modelIDLabel')"
-      placeholder="anthropic/claude-opus-5"
-      :hint="t('modelIDHint')"
-      monospace
-    />
-    <OaTextField
-      v-model="form.apiName"
-      :label="t('apiNameLabel')"
-      :placeholder="form.modelID || 'gpt-5.6-sol'"
-      :hint="t('apiNameHint')"
-      monospace
-    />
-    <OaTextField
-      v-model="form.displayName"
-      :label="t('displayName')"
-      placeholder="Claude Opus 5"
-      :hint="t('displayNameHint')"
-      :max-length="80"
-    />
-    <OaTextArea
-      v-model="form.description"
-      :label="t('description')"
-      :placeholder="t('modelDescriptionPlaceholder')"
-      :rows="2"
-      :hint="t('modelDescriptionHint')"
-    />
-    <OaTextArea
-      v-model="form.systemPrompt"
-      :label="t('modelPromptLabel')"
-      :rows="4"
-      :hint="t('modelPromptHint')"
-    />
-    <OaSwitchField v-model="form.enabled" :label="t('enabled')" />
-    <OaSwitchField v-model="form.hidden" :label="t('modelHidden')" :hint="t('modelHiddenHint')" />
-    <OaNumberField v-model="form.sortOrder" :label="t('sortOrder')" />
+    <AdminControlCard :title="t('secModelBasics')">
+      <OaTextField
+        ref="modelIDField"
+        v-model="form.modelID"
+        :label="t('modelIDLabel')"
+        placeholder="anthropic/claude-opus-5"
+        :hint="t('modelIDHint')"
+        monospace
+      />
+      <OaTextField
+        v-model="form.apiName"
+        :label="t('apiNameLabel')"
+        :placeholder="form.modelID || 'gpt-5.6-sol'"
+        :hint="t('apiNameHint')"
+        monospace
+      />
+      <OaTextField
+        v-model="form.displayName"
+        :label="t('displayName')"
+        placeholder="Claude Opus 5"
+        :hint="t('displayNameHint')"
+        :max-length="80"
+      />
+      <OaTextArea
+        v-model="form.description"
+        :label="t('description')"
+        :placeholder="t('modelDescriptionPlaceholder')"
+        :rows="2"
+        :hint="t('modelDescriptionHint')"
+      />
+      <OaTextArea
+        v-model="form.systemPrompt"
+        :label="t('modelPromptLabel')"
+        :rows="4"
+        :hint="t('modelPromptHint')"
+      />
+    </AdminControlCard>
+
+    <AdminControlCard :title="t('secModelShown')">
+      <OaSwitchField v-model="form.enabled" :label="t('enabled')" />
+      <OaSwitchField v-model="form.hidden" :label="t('modelHidden')" :hint="t('modelHiddenHint')" />
+      <OaNumberField v-model="form.sortOrder" :label="t('sortOrder')" />
+    </AdminControlCard>
 
     <!-- Why a model is down, in the panel where somebody is about to act on it. -->
-    <div v-if="existing" class="oa-form-section">
-      <h3 class="oa-drawer-subhead">{{ t('secHealth') }}</h3>
+    <AdminControlCard v-if="existing" :title="t('secHealth')">
       <template v-if="status">
         <p v-if="status.status.samples === 0" class="oa-field-hint">{{ t('healthNoEvidence') }}</p>
         <template v-else>
@@ -954,93 +967,98 @@ let sortState: SortState | null = null;
         class="oa-btn small oa-section-action"
         @click="router.push({ path: '/admin/logs', query: { model_id: existing.id, outcome: 'failed', window: '' } })"
       >{{ t('viewModelErrorHistory') }}</button>
-    </div>
+    </AdminControlCard>
 
     <!-- Who reaches for this model, before the controls that decide who may:
          taking a model away from a group reads differently once the names of
          the people using it are on the screen. -->
-    <template v-if="existing && users && users.length">
-      <OaFormSection id="secWhoUsesIt" :title="t('whoUsesIt')" :hint="t('whoUsesItHint')" />
+    <AdminControlCard v-if="existing && users && users.length" id="secWhoUsesIt" :title="t('whoUsesIt')" :hint="t('whoUsesItHint')">
       <UsageBoard
         :rows="users" kind="user" metric="tokens" :limit="5" :reach="false"
         :selectable="!!view.open" :empty-text="t('nothingYet')"
         @select="view.open?.('/admin/usage', { model: existing.id, user: $event })"
       />
       <button v-if="view.open" type="button" class="oa-btn small oa-panel-link" @click="view.open?.('/admin/usage', { model: existing.id })">{{ t('viewInUsage') }}</button>
-    </template>
+    </AdminControlCard>
 
-    <OaFormSection id="secGroupAccess" :title="t('secGroupAccess')" />
-    <OaTierList
-      v-model="form.groupGrants"
-      :label="t('groupsTitle')"
-      :hint="t('groupAccessHint')"
-      :items="groupItems"
-      :empty-text="t('noGroups')"
-    />
+    <AdminControlCard id="secGroupAccess" :title="t('secGroupAccess')">
+      <OaTierList
+        v-model="form.groupGrants"
+        :label="t('groupsTitle')"
+        :hint="t('groupAccessHint')"
+        :items="groupItems"
+        :empty-text="t('noGroups')"
+      />
+    </AdminControlCard>
 
-    <OaFormSection id="secCapabilities" :title="t('secCapabilities')" :hint="t('capabilitiesHint')" />
-    <OaSwitchField v-model="form.imageGen" :label="t('capImageGen')" :hint="t('capImageGenHint')" />
-    <OaSwitchField
-      v-model="form.chatImageGen"
-      :label="t('capChatImageGen')"
-      :hint="t('capChatImageGenHint')"
-    />
-    <OaSwitchField v-model="form.reasoning" :label="t('capReasoning')" :hint="t('capReasoningHint')" />
-    <OaSwitchField v-model="form.images" :label="t('capImages')" :hint="t('capImagesHint')" />
-    <OaSwitchField v-model="form.vision" :label="t('capVision')" />
-    <OaSwitchField v-model="form.streaming" :label="t('capStreams')" />
-    <OaSwitchField v-model="form.systemPromptSupported" :label="t('capSystemPrompt')" />
-    <OaSwitchField v-model="form.tools" :label="t('capTools')" />
-    <OaSwitchField
-      v-model="form.emulateTools"
-      :label="t('capEmulateTools')"
-      :hint="t('capEmulateToolsHint')"
-    />
-    <OaNumberField v-model="form.contextWindow" :label="t('contextWindow')" placeholder="200000" :min="0" />
-    <OaNumberField v-model="form.maxOutput" :label="t('maxOutputTokens')" placeholder="8192" :min="0" />
+    <AdminControlCard id="secCapabilities" :title="t('secCapabilities')" :hint="t('capabilitiesHint')">
+      <OaSwitchField v-model="form.imageGen" :label="t('capImageGen')" :hint="t('capImageGenHint')" />
+      <OaSwitchField
+        v-model="form.chatImageGen"
+        :label="t('capChatImageGen')"
+        :hint="t('capChatImageGenHint')"
+      />
+      <OaSwitchField v-model="form.reasoning" :label="t('capReasoning')" :hint="t('capReasoningHint')" />
+      <OaSwitchField v-model="form.images" :label="t('capImages')" :hint="t('capImagesHint')" />
+      <OaSwitchField v-model="form.vision" :label="t('capVision')" />
+      <OaSwitchField v-model="form.streaming" :label="t('capStreams')" />
+      <OaSwitchField v-model="form.systemPromptSupported" :label="t('capSystemPrompt')" />
+      <OaSwitchField v-model="form.tools" :label="t('capTools')" />
+      <OaSwitchField
+        v-model="form.emulateTools"
+        :label="t('capEmulateTools')"
+        :hint="t('capEmulateToolsHint')"
+      />
+      <OaNumberField v-model="form.contextWindow" :label="t('contextWindow')" placeholder="200000" :min="0" />
+      <OaNumberField v-model="form.maxOutput" :label="t('maxOutputTokens')" placeholder="8192" :min="0" />
+    </AdminControlCard>
 
-    <OaFormSection id="secRouting" :title="t('secRouting')" />
-    <OaSelectField
-      v-model="form.routeTo"
-      :label="t('routeTo')"
-      :hint="t('routeToHint')"
-      :options="routeChoices"
-    />
+    <AdminControlCard id="secRouting" :title="t('secRouting')">
+      <OaSelectField
+        v-model="form.routeTo"
+        :label="t('routeTo')"
+        :hint="t('routeToHint')"
+        :options="routeChoices"
+      />
+    </AdminControlCard>
 
     <!-- The style and the tiers are one subject — how this model is asked to
          think — and they used to sit under Routing, which is a different one. -->
-    <OaFormSection id="secThinking" :title="t('secThinking')" />
-    <OaSelectField
-      v-model="form.reasoningStyle"
-      :label="t('reasoningStyleModel')"
-      :hint="t('reasoningStyleModelHint')"
-      :options="[
-        { value: '', label: t('styleInherit') },
-        ...meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) })),
-      ]"
-    />
-    <ReasoningTiers v-model="form.tiers" />
+    <AdminControlCard id="secThinking" :title="t('secThinking')">
+      <OaSelectField
+        v-model="form.reasoningStyle"
+        :label="t('reasoningStyleModel')"
+        :hint="t('reasoningStyleModelHint')"
+        :options="[
+          { value: '', label: t('styleInherit') },
+          ...meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) })),
+        ]"
+      />
+      <ReasoningTiers v-model="form.tiers" />
+    </AdminControlCard>
 
-    <OaFormSection id="secRequestOverride" :title="t('secRequestOverride')" :hint="t('requestOverrideHint')" />
-    <OaTextArea
-      v-model="form.requestOverride"
-      :label="t('requestOverride')"
-      placeholder='{"reasoning_effort": "low"}'
-      :rows="3"
-      :hint="t('requestOverrideFieldHint')"
-    />
+    <AdminControlCard id="secRequestOverride" :title="t('secRequestOverride')" :hint="t('requestOverrideHint')">
+      <OaTextArea
+        v-model="form.requestOverride"
+        :label="t('requestOverride')"
+        placeholder='{"reasoning_effort": "low"}'
+        :rows="3"
+        :hint="t('requestOverrideFieldHint')"
+      />
+    </AdminControlCard>
 
-    <OaFormSection id="secWeights" :title="t('secWeights')" :hint="t('weightsHint')" />
-    <OaNumberField
-      v-model="form.requestWeight"
-      :label="t('perRequest')"
-      :step="0.1"
-      :min="0"
-      :hint="t('perRequestHint')"
-    />
-    <OaNumberField v-model="form.inputWeight" :label="t('per1kInput')" :step="0.1" :min="0" />
-    <OaNumberField v-model="form.outputWeight" :label="t('per1kOutput')" :step="0.1" :min="0" />
-    <OaNumberField v-model="form.reasoningWeight" :label="t('per1kReasoning')" :step="0.1" :min="0" />
+    <AdminControlCard id="secWeights" :title="t('secWeights')" :hint="t('weightsHint')">
+      <OaNumberField
+        v-model="form.requestWeight"
+        :label="t('perRequest')"
+        :step="0.1"
+        :min="0"
+        :hint="t('perRequestHint')"
+      />
+      <OaNumberField v-model="form.inputWeight" :label="t('per1kInput')" :step="0.1" :min="0" />
+      <OaNumberField v-model="form.outputWeight" :label="t('per1kOutput')" :step="0.1" :min="0" />
+      <OaNumberField v-model="form.reasoningWeight" :label="t('per1kReasoning')" :step="0.1" :min="0" />
+    </AdminControlCard>
   </OaPanel>
 
   <!-- What an import did, and every entry it would not take. -->

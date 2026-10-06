@@ -61,6 +61,14 @@
 .oa-control-card .oa-field-hint { font-size: 11.5px; line-height: 1.6; }
 .oa-control-card .oa-checkbox-field { gap: 14px; }
 .oa-control-card .oa-group-card input:not([type='checkbox']), .oa-control-card .oa-group-card .oa-select { min-height: 40px; }
+/* The detected-models picker, inside the card it now sits in: the card is the
+   container, so the strip it used to draw for itself would be a box in a box. */
+.oa-control-card .oa-detect-block { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.oa-control-card .oa-detect-panel { align-self: stretch; margin: 0; padding: 0; background: none; gap: 10px; }
+.oa-control-card .oa-detect-list { max-height: 264px; gap: 1px; }
+.oa-control-card .oa-detect-row { padding: 8px 10px; border-radius: 8px; font-size: 12.5px; }
+.oa-control-card label.oa-detect-row:hover, .oa-control-card button.oa-detect-row:not(:disabled):hover { background: var(--ai-field-bg); }
+.oa-control-card .oa-detect-row .oa-detect-known { margin-left: auto; flex: none; }
 .oa-control-card .oa-group-card textarea { resize: vertical; line-height: 1.7; }
 .oa-control-card > .oa-group-card > .oa-btn, .oa-control-card > .oa-group-card > .oa-field > .oa-btn { align-self: flex-start; }
 /* A plugin on the list: what it is, then what can be done to it. The actions
