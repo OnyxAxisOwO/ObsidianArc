@@ -25,7 +25,14 @@ const (
 	archiveFormat      = 1
 	archiveKeyPurpose  = "obsidian-arc/system-backup-key-check"
 	archiveKeySentinel = "Obsidian Arc instance backup key check v1"
-	maxArchiveRowBytes = 64 << 20
+	// Twice the largest attachment an operator may configure
+	// (settings.MaxAttachmentCeilingMB): a blob travels base64-encoded, which
+	// inflates it by a third, and the JSONL wrapper adds a little more. At
+	// the old 64 MiB an attachment at the very ceiling failed every backup
+	// for as long as the row existed. The restore side reads rows through a
+	// scanner bounded by this same constant, so one number keeps both halves
+	// of the round trip in step.
+	maxArchiveRowBytes = 128 << 20
 	maxArchiveExpanded = 8 << 30
 	manifestEntryName  = "manifest.json"
 	archiveEntryPrefix = "data/"
@@ -229,7 +236,7 @@ func writeTable(ctx context.Context, q database.Queryer, archive *zip.Writer, ta
 			return fmt.Errorf("system backup: encode table %s: %w", table, err)
 		}
 		if len(row)+1 > maxArchiveRowBytes {
-			return fmt.Errorf("system backup: a row in %s exceeds the 64 MiB row limit", table)
+			return fmt.Errorf("system backup: a row in %s exceeds the %d MiB row limit", table, maxArchiveRowBytes>>20)
 		}
 		row = append(row, '\n')
 		if err := budget.add(uint64(len(row))); err != nil {
