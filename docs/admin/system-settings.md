@@ -62,6 +62,11 @@
 | `chat.max_turns` | `40` | 发送给上游的历史范围上限 |
 | `chat.allow_archive` | `true` | 是否允许用户归档会话 |
 | `chat.agent_max_rounds` | `8` | 智能体工作流（工具调用）单次提问最大轮数上限 |
+| `chat.canvas_enabled` | `false` | 启用 Canvas：模型可以用可运行的网页作答，读者可在对话旁的沙箱框架中运行 `canvas` / `html` 代码块 |
+
+Canvas 开启后会产生三处变化：系统提示词里多一段说明，告诉模型可以输出 `canvas` 代码块；回答中的 `canvas`、`html` 代码块头部多一个「在 Canvas 中运行」按钮；服务器开始响应 `GET /canvas/frame`（关闭时返回 404）。页面运行在读者自己的浏览器里，框架设置了 `sandbox="allow-scripts"`，并且不带 `allow-same-origin`，所以页面处于不透明来源中，读不到本站的 Cookie、存储和接口，也不能联网、弹窗、提交表单或跳转顶层页面。安全策略的细节见[注册与安全](../features/security#canvas-沙箱)。
+
+需要注意：模型写的代码仍然会占用读者的 CPU 和内存，死循环会卡住这个框架（关闭面板即可结束）。是否开启由管理员权衡。
 
 访客试用只在 `landing.mode=chat` 时提供。`site` 是程序自带的官网首页，内容由程序提供，不读取 `landing.intro`；介绍页支持受控 HTML，首页通知则是纯文本，三者格式不同。详见[访客试用](../features/trial)。
 

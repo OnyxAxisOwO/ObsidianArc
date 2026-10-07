@@ -13,6 +13,8 @@ import OaMarkdown from '@/components/OaMarkdown.vue';
 import { t } from '@/composables/useI18n';
 import { copyToClipboard } from '@/chat/markdown';
 import { IconDownload } from '@/icons';
+import { siteInfo } from '@/stores/session';
+import { openCanvas } from './canvas';
 import ChatAttachments from './ChatAttachments.vue';
 import ChatThinking from './ChatThinking.vue';
 import ChatToolCall from './ChatToolCall.vue';
@@ -31,6 +33,10 @@ const zoomedImage = ref<{ url: string; alt?: string } | null>(null);
 
 const editing = computed(() => editingID.value === props.message.id);
 const images = computed(() => props.message.attachments ?? []);
+// Undefined while the operator has Canvas off, which is what tells the
+// renderer to draw no run button at all — and a stable function while it is
+// on, so the renderer's watch does not repaint the answer on every render.
+const runInCanvas = computed(() => (siteInfo.value.canvas_enabled ? openCanvas : undefined));
 const isHiddenInFlight = computed(() => {
   return isFlying(props.message.id) || (props.message.id === justSentID.value && !hasFlown(props.message.id));
 });
@@ -251,7 +257,7 @@ function describe(value: MessageStats): string {
                 </div>
               </div>
             </div>
-            <OaMarkdown v-if="props.message.content" class="ai-answer" :text="props.message.content" />
+            <OaMarkdown v-if="props.message.content" class="ai-answer" :text="props.message.content" :run="runInCanvas" />
             <div class="ai-msg-actions">
               <button v-if="!busy" type="button" class="ai-chat-mini-btn" @click="beginEdit">
                 {{ t('edit') }}

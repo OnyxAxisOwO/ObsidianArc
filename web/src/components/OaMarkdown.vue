@@ -22,16 +22,26 @@
 import { onMounted, ref, watch } from 'vue';
 import { renderInto } from '@/chat/markdown';
 
-const props = defineProps<{ text: string }>();
+const props = defineProps<{
+  text: string;
+  /**
+   * Offered on every runnable code block. Only the transcript passes it, and
+   * only while Canvas is switched on: every other caller of this component
+   * draws text that nobody should be invited to run.
+   */
+  run?: ((source: string) => void) | undefined;
+}>();
 
 const host = ref<HTMLElement | null>(null);
 
 function paint(): void {
-  if (host.value) renderInto(host.value, props.text);
+  if (host.value) renderInto(host.value, props.text, { run: props.run });
 }
 
 onMounted(paint);
-watch(() => props.text, paint);
+// The switch as well as the text: an operator turning Canvas off must take
+// the buttons off answers already on screen, not only off the next one.
+watch(() => [props.text, props.run] as const, paint);
 
 defineExpose({ host, paint });
 </script>

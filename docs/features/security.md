@@ -42,6 +42,16 @@ Turnstile 可分别用于注册、登录、API 密钥创建，也可在已登录
 
 用户可以绑定身份验证器，登录时在密码之外再输入六位验证码；管理员可以要求管理员或全部用户绑定。完整的绑定步骤和管理设置见 [两步验证](./two-factor)。
 
+## Canvas 沙箱
+
+[Canvas](./chat#canvas) 会在读者浏览器里运行模型写的代码，默认关闭（`chat.canvas_enabled`）。隔离由三层共同完成：
+
+- 框架文档由本站 `GET /canvas/frame` 提供，只在开关开启时存在。它有自己的安全策略：`default-src 'none'`、`connect-src 'none'`、`form-action 'none'`、`frame-ancestors 'self'`，以及 `sandbox allow-scripts`。即使有人在新标签页直接打开这个地址，沙箱也同样生效。
+- 聊天页里的 `<iframe>` 同样只带 `sandbox="allow-scripts"`，从不带 `allow-same-origin`：页面处于不透明来源，不能读取本站 Cookie、存储或以本站身份调用接口。
+- 代码通过 `postMessage` 交给框架，只接受来自父窗口的一次消息；不经过服务器，不进入请求日志。
+
+应用本身的安全策略没有放宽：`script-src` 仍然不含 `'unsafe-inline'`，其他响应仍是 `X-Frame-Options: DENY` 和 `frame-ancestors 'none'`。开启 Turnstile 时 `frame-src` 现在是 `'self' https://challenges.cloudflare.com`，`'self'` 是为了不挡住 Canvas 框架。
+
 ## 密码、密钥与附件
 
 密码使用 Argon2id 哈希保存；服务商密钥使用实例密钥派生的密钥加密；用户 API Key 保存哈希，明文只在创建时提供。

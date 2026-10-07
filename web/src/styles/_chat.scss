@@ -815,6 +815,41 @@
   color: var(--ai-primary);
 }
 
+/* The one control on the bar that does something beyond the block itself, so
+   it carries the accent the way a copied tick does: a reader scanning a long
+   answer finds the runnable blocks by colour rather than by reading labels. */
+.ai-code-btn.ai-code-run {
+  color: var(--ai-primary);
+}
+
+/* The Canvas column lays itself out: a one-line notice, then the frame taking
+   every pixel left. Flex rather than a fixed height, so the frame follows the
+   panel through the resizer and through full screen without a script. */
+.oa-canvas-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+}
+
+.oa-canvas-notice {
+  margin: 0;
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+}
+
+/* A field-coloured well rather than a border, which is how every other
+   control here is marked. The page inside paints its own background; until
+   it does, the well says where it will appear. */
+.oa-canvas-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 320px;
+  border: none;
+  border-radius: 11px;
+  background: var(--ai-field-bg);
+}
+
 .ai-code-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);

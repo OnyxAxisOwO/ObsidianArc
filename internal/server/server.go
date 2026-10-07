@@ -1264,6 +1264,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 	}))
 
+	// The Canvas frame's document. Its own policy and its own sandbox, set
+	// by the handler over what SecurityHeaders gave every other response;
+	// absent unless the operator has switched Canvas on.
+	mux.Handle("GET "+web.CanvasPath, web.CanvasHandler(func() bool {
+		return settingsService.Bool(settings.CanvasEnabled)
+	}))
+
 	frontend, err := web.Handler(web.Options{
 		Dev:        cfg.Dev,
 		DevServer:  devServerURL(cfg),
