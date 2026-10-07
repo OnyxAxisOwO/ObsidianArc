@@ -1101,6 +1101,12 @@ const en = {
   instanceSystemPromptHint: 'Prepended to every conversation on this server, for models that take one. Leave empty for none.',
   agentMaxRounds: 'Tool rounds per work turn',
   agentMaxRoundsHint: 'How many times one question on the work surface may call the model. Each round is a real request that a tool result made necessary, so this is the ceiling on what a single question costs.',
+  canvasEnabled: 'Canvas',
+  canvasEnabledHint: 'Lets the model answer with a runnable web page, and lets readers run HTML blocks, in a sandboxed frame beside the conversation. The page runs in the reader\'s browser with no access to this site, its cookies or the network.',
+  canvasRun: 'Run in Canvas',
+  canvasTitle: 'Canvas',
+  canvasReload: 'Run again',
+  canvasNotice: 'Written by the model and running in a sandbox: it cannot reach this site, your account or the network.',
   turnsResent: 'Turns re-sent per request',
   turnsResentHint: 'How much of a conversation goes back to the provider each time. Higher remembers more and costs more, every turn.',
 

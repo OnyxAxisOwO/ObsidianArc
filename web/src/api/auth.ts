@@ -98,6 +98,9 @@ export interface SiteInfo {
   /** Whether readers may open the leaderboard. Absent on an older server. */
   leaderboard_show_users?: boolean;
   allow_archive_conversations?: boolean;
+  /** Whether the operator lets the transcript run a model's page in the
+   *  sandboxed Canvas frame. Absent on an older server, which means no. */
+  canvas_enabled?: boolean;
   // True while the instance has no accounts at all: the first person to
   // register becomes the administrator.
   setup_required: boolean;

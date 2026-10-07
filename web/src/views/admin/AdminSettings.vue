@@ -60,7 +60,7 @@ const SEARCH_GROUPS = {
   ],
   secChat: [
     'secChat', 'instanceSystemPrompt', 'instanceSystemPromptHint', 'turnsResent', 'turnsResentHint',
-    'agentMaxRounds', 'agentMaxRoundsHint',
+    'agentMaxRounds', 'agentMaxRoundsHint', 'canvasEnabled', 'canvasEnabledHint',
   ],
   secLimits: [
     'secLimits', 'adminsIgnoreLimits', 'adminsIgnoreLimitsHint', 'maxConcurrentPerUser', 'maxConcurrentPerUserHint',
@@ -132,6 +132,7 @@ const form = ref({
   systemPrompt: '',
   maxTurns: 40 as number | null,
   agentMaxRounds: 8 as number | null,
+  canvasEnabled: false,
   adminBypass: false,
   maxConcurrent: 4 as number | null,
   usageDisplay: 'absolute',
@@ -191,6 +192,7 @@ function collect(): Record<string, string> {
     'chat.default_system_prompt': form.value.systemPrompt.trim(),
     'chat.max_turns': String(form.value.maxTurns ?? 40),
     'chat.agent_max_rounds': String(form.value.agentMaxRounds ?? 8),
+    'chat.canvas_enabled': String(form.value.canvasEnabled),
     'api.enabled': String(form.value.apiEnabled),
     'attachments.max_mb': String(form.value.attachmentMaxMB ?? 6),
     'attachments.retain': String(form.value.attachmentRetain),
@@ -223,6 +225,9 @@ async function save(): Promise<void> {
         name,
         browser_title: form.value.browserTitle.trim() || name,
         auth_card_position: form.value.authCardPosition as 'center' | 'left' | 'right',
+        // So the chat in this same tab offers or stops offering Canvas
+        // without waiting for a reload to re-read /api/site.
+        canvas_enabled: form.value.canvasEnabled,
         about: {
           title: form.value.aboutHeading.trim(),
           body: form.value.aboutText.trim(),
@@ -574,6 +579,7 @@ async function load(): Promise<void> {
       systemPrompt: values['chat.default_system_prompt'] ?? '',
       maxTurns: Number(values['chat.max_turns'] ?? 40),
       agentMaxRounds: Number(values['chat.agent_max_rounds'] ?? 8),
+      canvasEnabled: values['chat.canvas_enabled'] === 'true',
       adminBypass: values['quota.admins_bypass'] === 'true',
       maxConcurrent: values['quota.max_concurrent'] !== undefined ? Number(values['quota.max_concurrent']) : 4,
       usageDisplay: values['quota.usage_display'] ?? 'absolute',
@@ -810,6 +816,7 @@ onMounted(load);
           :max="50"
           :hint="t('agentMaxRoundsHint')"
         />
+        <OaSwitchField v-model="form.canvasEnabled" :label="t('canvasEnabled')" :hint="t('canvasEnabledHint')" />
       </AdminControlCard>
       <AdminControlCard id="secAttachments" v-show="visible('secAttachments')" :title="t('secAttachments')" :icon="IconFile" :hint="t('attachmentsHint')">
         <OaNumberField

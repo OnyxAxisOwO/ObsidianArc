@@ -20,8 +20,27 @@
 //     literal text.
 
 import { t } from '../i18n';
-import { IconCheck, IconCopy, IconDownload, iconElement, type OaIcon } from '../icons';
+import { IconCheck, IconCopy, IconDownload, IconPlay, iconElement, type OaIcon } from '../icons';
+import { isRunnable } from './canvas';
 import { describeCode, type CodeLanguage } from './code';
+
+/**
+ * What a caller may switch on for one render.
+ *
+ * Opt-in, because this renderer also draws announcements, feedback threads and
+ * the About panel, and none of those is a model's answer that a reader might
+ * want to run. Only the transcript passes `run`, and only while the operator
+ * has Canvas switched on.
+ */
+export interface RenderOptions {
+  /** Offered on every runnable block; called with the block's source. */
+  run?: ((source: string) => void) | undefined;
+}
+
+// The options of the render in progress. render() is synchronous and never
+// re-entered, so one slot set for its length is enough, and it is cleared
+// before render returns so nothing outside a render can read a stale one.
+let active: RenderOptions = {};
 
 // The LaTeX renderer is a fifth of this file's weight and most conversations
 // never contain a formula, so it arrives as a chunk of its own, requested by
@@ -565,7 +584,7 @@ function saveText(name: string, text: string): void {
  * from the source when it did not, which is most of the time — see
  * `chat/code.ts`.
  */
-function codeHead(language: CodeLanguage, text: string): HTMLDivElement {
+function codeHead(language: CodeLanguage, text: string, tag: string): HTMLDivElement {
   const head = document.createElement('div');
   head.className = 'ai-code-head';
 
@@ -576,6 +595,15 @@ function codeHead(language: CodeLanguage, text: string): HTMLDivElement {
 
   const actions = document.createElement('span');
   actions.className = 'ai-code-actions';
+  // Captured now rather than read from `active` on click: by the time anyone
+  // clicks, the render that drew this button is long over and the slot holds
+  // whatever the last render left there.
+  const run = active.run;
+  if (run && isRunnable(tag)) {
+    const control = codeControl(IconPlay, t('canvasRun'), () => run(text));
+    control.classList.add('ai-code-run');
+    actions.appendChild(control);
+  }
   actions.appendChild(codeControl(IconDownload, t('download'), () => {
     saveText(`snippet.${language.extension}`, text);
   }));
@@ -618,7 +646,7 @@ function renderBlock(block: Block): Node {
       // line the reader scrolled to see.
       const wrap = document.createElement('div');
       wrap.className = 'ai-code';
-      wrap.appendChild(codeHead(language, block.text));
+      wrap.appendChild(codeHead(language, block.text, tag));
       wrap.appendChild(pre);
       return wrap;
     }
@@ -686,18 +714,29 @@ function renderBlock(block: Block): Node {
   }
 }
 
-export function render(text: string): DocumentFragment {
+export function render(text: string, options: RenderOptions = {}): DocumentFragment {
   const fragment = document.createDocumentFragment();
-  for (const block of parse(text)) fragment.appendChild(renderBlock(block));
+  active = options;
+  try {
+    for (const block of parse(text)) fragment.appendChild(renderBlock(block));
+  } finally {
+    active = {};
+  }
   return fragment;
 }
 
+// What each element was last rendered with, so the repaint once the math
+// chunk lands draws the same controls the first paint did.
+const renderedWith = new WeakMap<Element, RenderOptions>();
+
 // Replaces an element's contents. textContent = '' rather than innerHTML = ''
 // for the same reason the renderer avoids innerHTML everywhere else.
-export function renderInto(element: Element, text: string): Element {
+export function renderInto(element: Element, text: string, options?: RenderOptions): Element {
+  const effective = options ?? renderedWith.get(element) ?? {};
+  renderedWith.set(element, effective);
   element.textContent = '';
   drewPlaceholder = false;
-  element.appendChild(render(text));
+  element.appendChild(render(text, effective));
   // Only while the renderer is still in flight. Once it is here nothing draws
   // a placeholder again, so the map empties and stays empty.
   if (drewPlaceholder) awaitingMath.set(element, text);

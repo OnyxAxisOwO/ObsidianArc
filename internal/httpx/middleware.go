@@ -232,7 +232,11 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, o
 		if challenge {
 			script += " " + challengeOrigin
 			connect += " " + challengeOrigin
-			frame = "frame-src " + challengeOrigin
+			// 'self' stays in the list: naming any frame source replaces the
+			// default-src fallback, and without it turning a challenge on
+			// would quietly stop the Canvas frame (served from this origin)
+			// from loading.
+			frame = "frame-src 'self' " + challengeOrigin
 		}
 		if extra != "" {
 			script += " " + extra

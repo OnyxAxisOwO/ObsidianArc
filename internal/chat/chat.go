@@ -623,20 +623,52 @@ func (s *Service) openTurn(ctx context.Context, req TurnRequest) (prepared, erro
 // overrule whom: the model's own or the operator's instance default, and
 // then — appended, so it can add but never remove — whatever the project
 // this conversation lives in says.
+//
+// The Canvas paragraph sits between the two: after the operator's prompt so
+// it reads as part of what the instance offers, and before a project's brief
+// so a project can still ask for something else. It is only there while the
+// switch is on — a model told about a canvas the transcript will not run
+// writes answers that promise a preview nobody can open.
 func (s *Service) systemPrompt(ctx context.Context, req TurnRequest, resolved model.Resolved, state prepared) string {
 	prompt := resolved.Model.Prompt(s.settings.Get(settings.DefaultSystemPrompt))
+	if s.settings.Bool(settings.CanvasEnabled) {
+		prompt = joinPrompt(prompt, canvasBrief)
+	}
 	if s.ProjectInstructions == nil || state.projectID == "" {
 		return prompt
 	}
 	brief := strings.TrimSpace(s.ProjectInstructions(ctx, req.User, state.projectID))
-	if brief == "" {
-		return prompt
-	}
-	if prompt == "" {
-		return brief
-	}
-	return prompt + "\n\n" + brief
+	return joinPrompt(prompt, brief)
 }
+
+// joinPrompt appends one part of the chain to another, leaving out the blank
+// line when either side is empty.
+func joinPrompt(prompt, next string) string {
+	switch {
+	case next == "":
+		return prompt
+	case prompt == "":
+		return next
+	}
+	return prompt + "\n\n" + next
+}
+
+// canvasBrief tells the model what the transcript can run. A fence tag of its
+// own rather than plain html, so an ordinary HTML example in an answer is
+// still only an example: the reader is offered a run for what the model meant
+// to be run, and for an html block only when they ask.
+const canvasBrief = `This chat has a Canvas: a sandboxed frame beside the conversation that runs a
+single self-contained web page in the reader's browser. When a live page would
+answer better than prose — an interactive demo, a visualisation, a small tool
+or game — write the whole page as one fenced block tagged canvas:
+
+` + "```canvas\n<!doctype html>\n<html>...</html>\n```" + `
+
+Put the HTML, the CSS in <style> and the JavaScript in <script> in that one
+block. The page cannot load anything from the network, cannot reach this site,
+its cookies or its storage, and cannot open pop-ups or submit forms; draw
+everything locally and do not reference external scripts, fonts or images.
+Only use a canvas block when a runnable page is genuinely useful.`
 
 // buildRequest turns the stored transcript into what an adapter takes.
 func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved model.Resolved, state prepared) (adapter.ChatRequest, error) {

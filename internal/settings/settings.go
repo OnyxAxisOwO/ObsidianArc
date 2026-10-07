@@ -238,9 +238,17 @@ const (
 	DefaultSystemPrompt  = "chat.default_system_prompt"
 	ConversationMaxTurns = "chat.max_turns"
 	AllowArchive         = "chat.allow_archive"
-	APIEnabled           = "api.enabled"
-	AttachmentMaxMB      = "attachments.max_mb"
-	AttachmentRetain     = "attachments.retain"
+
+	// Whether the model is told it may answer with a runnable page, and the
+	// transcript offers to run one. Off by default: it puts code a model wrote
+	// into every reader's browser, sandboxed in a frame of its own origin, and
+	// that is a thing an operator decides to allow rather than a thing an
+	// upgrade allows for them.
+	CanvasEnabled = "chat.canvas_enabled"
+
+	APIEnabled       = "api.enabled"
+	AttachmentMaxMB  = "attachments.max_mb"
+	AttachmentRetain = "attachments.retain"
 	// Whether the generation lab keeps what it makes. Off, a picture is shown
 	// once in the answer and never stored: no attachment, no history row.
 	ImageHistory         = "images.history"
@@ -772,6 +780,9 @@ var Defaults = map[string]string{
 	DefaultSystemPrompt:     "",
 	ConversationMaxTurns:    "40",
 	AllowArchive:            "true",
+	// Off: running what a model wrote in every reader's browser is a choice
+	// an operator makes on purpose, not one an upgrade makes for them.
+	CanvasEnabled: "false",
 	// On: asking a model nobody has used costs one token and answers the
 	// question the liveness column exists for. Off, a quiet model reads as
 	// "no data" forever, which is the state this feature was built to end.

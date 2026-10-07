@@ -220,9 +220,24 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 25.86 MB (22.16 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 231.51 kB to open the chat (190.74 JS + 40.77 CSS) |
+| Frontend, on the wire | < 135 kB | 235.21 kB to open the chat (194.03 JS + 41.18 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-07 (UTC), after Canvas (`chat.canvas_enabled`). The
+first paint is 235.21 kB (194.03 kB JS + 41.18 kB CSS), measured over the
+built assets with Go's `compress/gzip` at its default level, which is the
+compressor `httpx.Compress` sends them with. Canvas itself is 0.77 kB of
+that: the commit before it, built the same day, was 192.47 kB JS + 41.12 kB
+CSS by Vite's own gzip estimate, and this build is 193.18 + 41.18 by the same
+estimate. It is the Run button, the side panel and its handshake, their
+English strings and four stylesheet rules; it has no chunk of its own, because
+the panel is a column over a chat that is already on screen. The rest of the
+rise from 231.51 kB predates this change — the commit before already built
+larger than that figure — and was not attributed screen by screen. The
+backoffice chunk is 117.31 kB, the Chinese dictionary 48.46 kB, the terminal
+7.23 kB, the maths renderer 3.65 kB and the front page 3.99 kB, all measured
+the same way. The binary was not remeasured.
 
 Remeasured on 2026-10-04 (UTC), after the list screens learned to tick several
 rows and act on them (`OaBulkBar`, `useBulk`, the selection column of

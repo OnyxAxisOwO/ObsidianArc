@@ -262,6 +262,7 @@ var writableSettings = map[string]bool{
 	settings.TrialModel:                 true,
 	settings.DefaultSystemPrompt:        true,
 	settings.ConversationMaxTurns:       true,
+	settings.CanvasEnabled:              true,
 	settings.APIEnabled:                 true,
 	settings.AttachmentMaxMB:            true,
 	settings.AttachmentRetain:           true,

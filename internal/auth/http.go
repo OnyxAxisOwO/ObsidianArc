@@ -242,6 +242,11 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"health_show_users":           h.settings.Bool(settings.HealthShowUsers),
 		"leaderboard_show_users":      h.settings.Bool(settings.LeaderboardShowUsers),
 		"allow_archive_conversations": allowArchive,
+		// So the transcript knows whether to offer running a block, and the
+		// chat knows whether to draw the frame that would run it. The
+		// server enforces nothing with this: the frame is a sandbox either
+		// way, and the switch is what decides whether the model is asked.
+		"canvas_enabled": h.settings.Bool(settings.CanvasEnabled),
 		// So the sign-up form can mark the field required and say which
 		// addresses will be accepted, instead of finding out on submit.
 		// Neither applies to the first account.

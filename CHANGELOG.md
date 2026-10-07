@@ -5,6 +5,12 @@
 
 ## Unreleased
 
+- 新增 Canvas（`chat.canvas_enabled`，在后台「系统设置 → 对话」，默认关闭）。开启后，系统提示词告诉模型可以把可运行的网页写进
+  `canvas` 代码块；回答里的 `canvas` 和 `html` 代码块多一个「在 Canvas 中运行」按钮，页面在对话旁的侧栏里运行。
+  - 框架由新地址 `GET /canvas/frame` 提供，开关关闭时返回 404。它有自己的安全策略（`sandbox allow-scripts`，禁止联网、表单和跳转）；
+    `<iframe>` 不带 `allow-same-origin`，页面拿不到本站的 Cookie、存储和接口。代码用 `postMessage` 交给框架，不经过服务器。
+  - `/api/site` 多了 `canvas_enabled` 字段。
+  - 开启 Turnstile 时，`frame-src` 从 `https://challenges.cloudflare.com` 改为 `'self' https://challenges.cloudflare.com`。其余安全策略不变。
 - 生图实验室可以加三道验证，各有开关，每生成一张图验证一次：后台「安全」里的 Cloudflare Turnstile
   （`turnstile.on_images`）和 PoW（`security.pow_on_images`），以及插件守卫（超级风控在自己的设置卡里有「生图实验室启用风控」）。
   都在选模型、占额度之前检查，管理员也一样；默认全部关闭。

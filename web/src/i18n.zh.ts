@@ -1078,6 +1078,12 @@ export const zh: Record<StringKey, string> = {
   instanceSystemPromptHint: '加在这台服务器上每个对话的最前面（对支持的模型）。留空表示不加。',
   agentMaxRounds: '工作模式单轮工具次数上限',
   agentMaxRoundsHint: '工作模式下一个问题最多可以调用模型几次。每一轮都是一次由工具结果引发的真实请求，所以这是单个问题花费的上限。',
+  canvasEnabled: 'Canvas',
+  canvasEnabledHint: '允许模型以可运行的网页作答，并允许读者在对话旁的沙箱框架中运行 HTML 代码块。页面在读者的浏览器中运行，无法访问本站、Cookie 或网络。',
+  canvasRun: '在 Canvas 中运行',
+  canvasTitle: 'Canvas',
+  canvasReload: '重新运行',
+  canvasNotice: '由模型编写，在沙箱中运行：无法访问本站、你的账号或网络。',
   turnsResent: '每次请求回传的对话轮数',
   turnsResentHint: '每次向服务商回传多少历史。数值越大记得越多，每一轮也越贵。',
 

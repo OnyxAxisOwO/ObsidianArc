@@ -13,8 +13,11 @@ import { useMediaQuery } from '@vueuse/core';
 import { useRoute, useRouter } from 'vue-router';
 import HomeNotice from '@/announce/HomeNotice.vue';
 import VerifyBanner from '@/announce/VerifyBanner.vue';
+import CanvasPanel from '@/chat/CanvasPanel.vue';
+import { canvasSource } from '@/chat/canvas';
 import ChatSurface from '@/chat/ChatSurface.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
+import { siteInfo } from '@/stores/session';
 import { t } from '@/composables/useI18n';
 import { IconChevron, IconMenu } from '@/icons';
 import { dragging, historyOpen, isEmpty, refreshList, startNewConversation } from '@/chat/useChat';
@@ -103,5 +106,10 @@ onMounted(() => {
 
     <ChatSurface @open-setup="router.push('/admin/providers')" />
     <RouterView />
+    <!-- State rather than a child route: the page is a code block already on
+         screen, and putting it in the address would put a model's code in
+         the history and the request log. Gated on the switch as well, so an
+         operator turning Canvas off closes a frame that is already open. -->
+    <CanvasPanel v-if="siteInfo.canvas_enabled && canvasSource !== null" />
   </AppShell>
 </template>
