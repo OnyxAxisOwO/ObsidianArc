@@ -111,6 +111,7 @@ var (
 	commands = map[string]func(*Ctx, *Console) error{}
 	describe func(*Ctx) (Description, error)
 	decorate func(*Ctx, string, []Invitee) ([]Invitee, error)
+	sweep    func(*Ctx) error
 )
 
 // Guard registers the handler for a guard the manifest lists, by its name.
@@ -128,6 +129,16 @@ func Command(name string, h func(*Ctx, *Console) error) { commands[name] = h }
 // and whenever one of its settings changes, not per request: compute from
 // settings, not from anything that moves.
 func OnDescribe(h func(*Ctx) (Description, error)) { describe = h }
+
+// OnSweep registers work done now and then with nobody waiting on it. The
+// manifest lists the "sweep" hook, and the server calls it from its own
+// periodic cleanup — every ten minutes, and once when it starts — while the
+// plugin is switched on. The call says only "now is a time you may do
+// something": a plugin that wants a day between runs keeps the day itself, in
+// its own table. A call has the usual deadline, so a long job does a batch
+// and leaves the rest for the next one. Every instance against one database
+// sweeps, so whatever a sweep takes on, it claims under a row lock first.
+func OnSweep(h func(*Ctx) error) { sweep = h }
 
 // Invitee is one row of an inviter's own invitee list. UserID is the join
 // key and never reaches the browser; Entry is the row as it will be sent.
@@ -190,6 +201,10 @@ func Serve(in []byte) (out []byte) {
 		result, err = serveDescribe(c)
 	case "decorate_invitees":
 		result, err = serveDecorate(c, env.Arg)
+	case "sweep":
+		if sweep != nil {
+			err = sweep(c)
+		}
 	case "console":
 		result, err = serveConsole(c, env.Arg)
 	default:

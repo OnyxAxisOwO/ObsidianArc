@@ -1160,6 +1160,30 @@ func TestBundledMigrationsOffersEveryValidPackageInTheBundle(t *testing.T) {
 // deterministic random source — and a plugin could not tell: its rows would be
 // stamped with the wrong year and its tokens would repeat. Checked through a
 // whole server, where the row is written.
+// A package that lists the sweep hook is given a turn by the server's
+// periodic cleanup while it is switched on, and none while it is off.
+func TestASweepingPackageGetsItsTurnOnlyWhileSwitchedOn(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	swept := func() int {
+		var n int
+		if err := a.in.DB.QueryRow(t.Context(), `SELECT COUNT(*) FROM demo_things WHERE name = 'swept'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	a.in.Server.SweepPlugins(t.Context())
+	a.in.Server.SweepPlugins(t.Context())
+	if n := swept(); n != 2 {
+		t.Fatalf("%d turns from two sweeps", n)
+	}
+	a.mustDo(http.MethodPost, "/api/admin/plugins/demo/disable", map[string]any{}, http.StatusOK)
+	a.in.Server.SweepPlugins(t.Context())
+	if n := swept(); n != 2 {
+		t.Fatal("a switched-off package was given a turn")
+	}
+}
+
 func TestABackendStampsRowsWithTheRealTime(t *testing.T) {
 	a := newAdmin(t)
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)

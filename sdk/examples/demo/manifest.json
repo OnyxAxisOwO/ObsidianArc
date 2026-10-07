@@ -12,7 +12,7 @@
   "requires": { "api": 1 },
   "permissions": ["db", "network", "users", "cards", "rewards", "sessions", "notify", "security_log", "challenge", "console"],
   "backend": "plugin.wasm",
-  "hooks": ["describe", "decorate_invitees"],
+  "hooks": ["describe", "decorate_invitees", "sweep"],
   "settings": [
     {
       "key": "demo.mode", "default": "open", "enum": ["open", "closed"], "initial": true,

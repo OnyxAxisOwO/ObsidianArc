@@ -90,6 +90,7 @@ type Server struct {
 	invites        *invite.Store
 	instanceBackup *systembackup.Service
 	health         *health.Checker
+	plugins        *plugin.Manager
 	// nil when no SSH address is configured, which is the default.
 	ssh *consolessh.Server
 	// What the console dispatches into: the API with no Attach in front of
@@ -1378,6 +1379,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		bonus:          bonusStore,
 		invites:        invites,
 		instanceBackup: instanceBackup,
+		plugins:        plugins,
 		consoleAPI:     consoleAPI,
 		health: &health.Checker{
 			Store: healthStore, Models: models, Providers: providers, Registry: registry, Notify: notifyStore,
@@ -1567,6 +1569,18 @@ func (s *Server) sweep(ctx context.Context) {
 		}
 	}
 	s.sweepHealth(ctx)
+	s.SweepPlugins(ctx)
+}
+
+// SweepPlugins gives each switched-on plugin package that asked for it (the
+// sweep hook) its turn at periodic work. On the janitor's context rather than
+// the 30-second one: every package's call carries its own deadline, and one
+// slow package must not use up the next one's time. Exported so a test can
+// make the turn come now instead of in ten minutes.
+func (s *Server) SweepPlugins(ctx context.Context) {
+	if s.plugins != nil {
+		s.plugins.Sweep(ctx)
+	}
 }
 
 // sweepHealth asks the models nobody has used lately whether they still work,

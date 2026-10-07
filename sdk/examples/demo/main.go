@@ -29,8 +29,20 @@ func init() {
 	arc.Route("POST /api/admin/x/demo/explode", explode)
 	arc.OnDescribe(describe)
 	arc.OnDecorateInvitees(decorate)
+	arc.OnSweep(sweep)
 	arc.Command("demo things", things)
 	arc.Command("demo add", add)
+}
+
+// sweep leaves a thing called "swept" each time the server gives it a turn,
+// so a test can see the turn came — and that it did not while switched off.
+func sweep(c *arc.Ctx) error {
+	id, err := c.NewID()
+	if err != nil {
+		return err
+	}
+	_, err = c.Exec(`INSERT INTO demo_things (id, name, created_at) VALUES (?, 'swept', ?)`, id, time.Now().UnixMilli())
+	return err
 }
 
 // guard is the sign-up and sign-in check: a token of "block" is refused,

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"regexp"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -267,6 +268,31 @@ func (m *Manager) invoke(ctx context.Context, l *loaded, info wasm.CallInfo, kin
 	}
 	defer st.finish()
 	return l.backend.Invoke(ctx, info, kind, arg, out, st)
+}
+
+// Sweep calls every switched-on package that lists the sweep hook, one after
+// another, in name order. It is called from the server's periodic cleanup;
+// each call has the backend's usual deadline, and a package that fails is
+// logged and the next one still runs. A package without the hook is never
+// woken for it — compiling a backend costs memory, and one that has nothing
+// to do now and then should not be made to.
+func (m *Manager) Sweep(ctx context.Context) {
+	pkgs := *m.pkgs.Load()
+	names := make([]string, 0, len(pkgs))
+	for name, l := range pkgs {
+		if l.has(arcx.HookSweep) && l.faulted() == "" && m.Enabled(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := m.invoke(ctx, pkgs[name], wasm.CallInfo{}, "sweep", nil, nil, nil); err != nil {
+			slog.Warn("plugin sweep failed", "plugin", name, "error", err)
+		}
+	}
 }
 
 // refreshDescribe asks the backend what it wants the browser and the page's

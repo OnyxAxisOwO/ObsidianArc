@@ -39,7 +39,7 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | `requires.api` | 必须，插件接口的版本，目前是 `3`；服务器提供的更低则拒绝安装 |
 | `permissions` | 后端要用的权限，见下 |
 | `backend` | 后端文件，`plugin.wasm` |
-| `hooks` | `describe`（后端告诉浏览器和页面策略「现在该说什么」）、`decorate_invitees`（给邀请人自己的邀请列表加内容） |
+| `hooks` | `describe`（后端告诉浏览器和页面策略「现在该说什么」）、`decorate_invitees`（给邀请人自己的邀请列表加内容）、`sweep`（服务器每 10 分钟的例行清理时、以及启动时，给启用的插件一次机会做定期的事，比如复查外部状态；节奏由插件自己记，多实例时各自都会调用，需用行锁认领；需要 API 4） |
 | `settings` | 插件的设置：`key`（`risk.base_url` 这样带点的小写名）、`default`、`secret`（只写，不回显）、`permission`（哪个后台权限可读写，如 `security`）、`enum` 或 `pattern`（校验），以及安装对话框用的 `label`、`hint`、`initial`（安装时询问） |
 | `captcha_modes` | 往「注册验证码模式」的下拉里加的选项 |
 | `fields` | 账户上的字段：`key`、`unique`、`searchable`、`pattern`。**列本身由插件自己的迁移创建** |

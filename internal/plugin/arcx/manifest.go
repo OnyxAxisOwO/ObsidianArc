@@ -30,7 +30,7 @@ const Format = 1
 // hooks the host calls on it. A package says which it needs (Requires.API);
 // one that needs more than this build offers is refused at install, which is
 // the moment the operator can still do something about it.
-const APILevel = 3
+const APILevel = 4
 
 // Text is one string in both of the interface's languages. An empty ZH falls
 // back to EN when the interface is drawn.
@@ -128,6 +128,11 @@ const (
 	HookDescribe = "describe"
 	// The backend adds to the rows of an inviter's own invitee list.
 	HookDecorateInvitees = "decorate_invitees"
+	// The backend is called now and then with nobody waiting on it — from
+	// the server's own periodic cleanup — for work that has to happen
+	// whether or not anybody asks: re-checking something outside, expiring
+	// what the plugin granted.
+	HookSweep = "sweep"
 )
 
 // Setting is a setting the plugin owns: unknown to the server until the
@@ -309,7 +314,7 @@ func (m *Manifest) Validate() error {
 	}
 	for _, hook := range m.Hooks {
 		switch hook {
-		case HookDescribe, HookDecorateInvitees:
+		case HookDescribe, HookDecorateInvitees, HookSweep:
 		default:
 			return fmt.Errorf("unknown hook %q", hook)
 		}
