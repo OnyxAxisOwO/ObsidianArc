@@ -89,6 +89,15 @@
 .oa-fact-row > .oa-group-row-control { flex: 1; justify-content: flex-end; min-width: 0; }
 .oa-row-value { overflow: hidden; color: var(--ai-text-secondary); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
 .oa-row-value.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; }
+/* A field whose label shares its line with a small action on that field —
+   "add a tier" beside "Thinking tiers". */
+.oa-field-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; }
+/* A failure kind, read as an identifier. */
+.oa-error-row .oa-group-row-title { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; font-weight: 500; }
+/* A ranking inside a card: the card already pads and rounds, so the board
+   keeps only enough room for its rows' hover fill and its count line. */
+.oa-control-card > .oa-group-card > .oa-board-frame { padding: 8px 16px 10px; }
+.oa-control-card > .oa-group-card > .oa-board-empty { padding: 13px 16px; }
 /* A date and the shortcuts that fill it are one control, so one row. */
 .oa-field-with-presets { display: flex; flex-direction: column; gap: 10px; }
 .oa-group-row-title .oa-badge { margin-left: 6px; vertical-align: 1px; }

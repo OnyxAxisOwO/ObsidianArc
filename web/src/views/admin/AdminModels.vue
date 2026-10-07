@@ -22,6 +22,7 @@ import OaCellStack from '@/components/OaCellStack.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
+import OaRow from '@/components/OaRow.vue';
 import OaSelect from '@/components/OaSelect.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
@@ -810,26 +811,22 @@ let sortState: SortState | null = null;
         <AdminDetectModels :provider-id="form.providerID" mode="pick" @pick="useDetected" />
       </template>
       <!-- A field that shows a value the form cannot change. -->
-      <div v-else class="oa-facts">
-        <div class="oa-fact">
-          <span class="oa-fact-label">{{ t('modelUniqueID') }}</span>
-          <div class="oa-fact-copy">
-            <span class="oa-fact-value mono">{{ existing!.id }}</span>
-            <OaIconButton
-              class="oa-icon-btn tiny"
-              :label="idCopied ? t('copied') : t('copy')"
-              @click="copyID(existing!.id)"
-            >
-              <IconCheck v-if="idCopied" :size="12" />
-              <IconCopy v-else :size="12" />
-            </OaIconButton>
-          </div>
-        </div>
-        <div class="oa-fact">
-          <span class="oa-fact-label">{{ t('colProvider') }}</span>
-          <span class="oa-fact-value">{{ maskProvider(existing!.provider_name) }}</span>
-        </div>
-      </div>
+      <template v-else>
+        <OaRow class="oa-fact-row" :title="t('colProvider')">
+          <span class="oa-row-value">{{ maskProvider(existing!.provider_name) }}</span>
+        </OaRow>
+        <OaRow class="oa-fact-row" :title="t('modelUniqueID')">
+          <span class="oa-row-value mono" :title="existing!.id">{{ existing!.id }}</span>
+          <OaIconButton
+            class="oa-icon-btn tiny"
+            :label="idCopied ? t('copied') : t('copy')"
+            @click="copyID(existing!.id)"
+          >
+            <IconCheck v-if="idCopied" :size="12" />
+            <IconCopy v-else :size="12" />
+          </OaIconButton>
+        </OaRow>
+      </template>
     </AdminControlCard>
 
     <AdminControlCard :title="t('secModelBasics')">
@@ -878,41 +875,47 @@ let sortState: SortState | null = null;
 
     <!-- Why a model is down, in the panel where somebody is about to act on it. -->
     <AdminControlCard v-if="existing" :title="t('secHealth')">
-      <template v-if="status">
-        <p v-if="status.status.samples === 0" class="oa-field-hint">{{ t('healthNoEvidence') }}</p>
-        <template v-else>
-          <p class="oa-field-hint">
-            {{ t('healthSummary', {
-              uptime: (status.status.uptime * 100).toFixed(1),
-              users: status.status.user_samples,
-              system: status.status.system_samples,
-            }) }}
-          </p>
-          <p v-if="status.auto_disabled" class="oa-field-hint">{{ t('healthAutoDisabled') }}</p>
-          <div v-if="status.status.errors.length" class="oa-code-list">
-            <code v-for="failure in status.status.errors" :key="failure.code" class="oa-code-line">
-              {{ failure.count }}x  {{ failure.code }}{{ failure.message ? '  ' + failure.message : '' }}
-            </code>
-          </div>
-        </template>
-      </template>
-      <button
-        type="button"
-        class="oa-btn small oa-section-action"
-        @click="router.push({ path: '/admin/logs', query: { model_id: existing.id, outcome: 'failed', window: '' } })"
-      >{{ t('viewModelErrorHistory') }}</button>
+      <!-- The verdict and the way to its evidence on one row; then one row per
+           kind of failure, its count where a control would sit. -->
+      <OaRow
+        :meta="!status || status.status.samples === 0
+          ? t('healthNoEvidence')
+          : t('healthSummary', {
+            uptime: (status.status.uptime * 100).toFixed(1),
+            users: status.status.user_samples,
+            system: status.status.system_samples,
+          })"
+      >
+        <button
+          type="button"
+          class="oa-btn small"
+          @click="router.push({ path: '/admin/logs', query: { model_id: existing.id, outcome: 'failed', window: '' } })"
+        >{{ t('viewModelErrorHistory') }}</button>
+      </OaRow>
+      <p v-if="status?.auto_disabled" class="oa-group-flash">{{ t('healthAutoDisabled') }}</p>
+      <OaRow
+        v-for="failure in status?.status.errors ?? []"
+        :key="failure.code"
+        class="oa-error-row"
+        :title="failure.code"
+        :meta="failure.message || undefined"
+      >
+        <OaBadge tone="muted">{{ failure.count }}×</OaBadge>
+      </OaRow>
     </AdminControlCard>
 
     <!-- Who reaches for this model, before the controls that decide who may:
          taking a model away from a group reads differently once the names of
          the people using it are on the screen. -->
     <AdminControlCard v-if="existing && users && users.length" id="secWhoUsesIt" :title="t('whoUsesIt')" :hint="t('whoUsesItHint')">
+      <template v-if="view.open" #actions>
+        <button type="button" class="oa-btn small" @click="view.open?.('/admin/usage', { model: existing.id })">{{ t('viewInUsage') }}</button>
+      </template>
       <UsageBoard
         :rows="users" kind="user" metric="tokens" :limit="5" :reach="false"
         :selectable="!!view.open" :empty-text="t('nothingYet')"
         @select="view.open?.('/admin/usage', { model: existing.id, user: $event })"
       />
-      <button v-if="view.open" type="button" class="oa-btn small oa-panel-link" @click="view.open?.('/admin/usage', { model: existing.id })">{{ t('viewInUsage') }}</button>
     </AdminControlCard>
 
     <AdminControlCard id="secGroupAccess" :title="t('secGroupAccess')">

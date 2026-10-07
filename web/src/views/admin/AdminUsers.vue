@@ -931,15 +931,14 @@ const state = { q: '', role: '', status: '', group: '' };
            "how much" is "on what", and it is cheaper to answer here than to
            send the operator to the usage page to narrow it by hand. -->
       <AdminControlCard v-if="models.length" :title="t('boardTheirModels')" :hint="t('boardTheirModelsHint')">
+        <template v-if="canAdmin('usage') && view.open" #actions>
+          <button type="button" class="oa-btn small" @click="view.open?.('/admin/usage', { user: account.id })">{{ t('viewInUsage') }}</button>
+        </template>
         <UsageBoard
           :rows="models" kind="model" metric="tokens" :limit="4" :reach="false"
           :selectable="canAdmin('usage') && !!view.open" :empty-text="t('nothingYet')"
           @select="view.open?.('/admin/usage', { user: account.id, model: $event })"
         />
-        <button
-          v-if="canAdmin('usage') && view.open" type="button" class="oa-btn small oa-panel-link"
-          @click="view.open?.('/admin/usage', { user: account.id })"
-        >{{ t('viewInUsage') }}</button>
       </AdminControlCard>
 
       <!-- The same bars the account sees in its own composer, from the same
