@@ -38,7 +38,7 @@ func TestTheChallengeOriginIsAllowedOnlyWhileAChallengeIsConfigured(t *testing.T
 	for _, directive := range []string{
 		"script-src 'self' " + origin,
 		"connect-src 'self' " + origin,
-		"frame-src " + origin,
+		"frame-src 'self' " + origin,
 	} {
 		if !strings.Contains(granted, directive) {
 			t.Errorf("missing %q in %s", directive, granted)
@@ -119,7 +119,7 @@ func TestBothChallengeOriginsCompose(t *testing.T) {
 		"script-src 'self' " + turnstile + " " + service,
 		"connect-src 'self' " + turnstile + " " + service,
 		"img-src 'self' data: blob: " + service,
-		"frame-src " + turnstile,
+		"frame-src 'self' " + turnstile,
 	} {
 		if !strings.Contains(granted, directive) {
 			t.Errorf("missing %q in %s", directive, granted)

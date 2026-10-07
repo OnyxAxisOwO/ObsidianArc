@@ -30,13 +30,14 @@ import { loginRefusalText, refusalText } from '@/lib/refusal';
 import { IconGithub, IconGoogle, IconKey, IconSpark, type OaIcon } from '@/icons';
 import { adopt, forget, pendingSecondFactor, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
+import OaBackdrop from '@/components/OaBackdrop.vue';
 
 const props = defineProps<{ mode: 'login' | 'register' }>();
 
 const router = useRouter();
 const route = useRoute();
 const site = computed(() => siteInfo.value);
-const { loginBgUrl } = useLoginBackground();
+const { loginBg, loginBgUrl, loginBgFrame } = useLoginBackground();
 
 // An instance with no accounts is being set up: the person in front of it is
 // about to become the administrator, and saying so removes the "did I just
@@ -456,11 +457,12 @@ async function onSubmit(): Promise<void> {
   <div
     class="oa-auth"
     :class="[
-      { 'has-login-bg': !!loginBgUrl },
+      { 'has-login-bg': !!loginBg },
       `position-${site.auth_card_position || 'center'}`,
     ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
+    <OaBackdrop v-if="loginBgFrame" :key="loginBgFrame" :url="loginBgFrame" />
     <!-- The instance's standing notice, for somebody who has not signed in
          either: this is the first page most of them see. -->
     <HomeNotice floating />

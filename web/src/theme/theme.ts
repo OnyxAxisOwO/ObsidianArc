@@ -30,6 +30,12 @@ const WALLPAPER_KEY = 'obsidian-arc-wallpaper';
 // paint the accent's surfaces before the module loads, and duplicating the
 // colour maths in a blocking script would be worse than storing the answer.
 const PALETTE_KEY = 'obsidian-arc-palette';
+// The instance's own theme, as /api/site last described it. Kept here for the
+// same reason the palette is: the next load paints before it has asked.
+const SITE_THEME_KEY = 'obsidian-arc-site-theme';
+// The scheme actually in force once the instance's default is folded in, for
+// the inline script, which reads it before the reader's own choice.
+const EFFECTIVE_THEME_KEY = 'obsidian-arc-effective-theme';
 
 export type ThemeMode = 'light' | 'dark' | 'auto';
 
@@ -46,6 +52,33 @@ export interface Wallpaper {
   // 0-40px, behind those panels rather than over the wallpaper itself: it is
   // what keeps the picture from competing with the words on top of it.
   panelBlur: number;
+}
+
+// What an operator set for the whole instance (theme.* in the settings
+// store). Each field is a default for a reader who has not chosen; with
+// `enforce` it is the choice, and the reader's own steps aside.
+export interface SiteTheme {
+  mode: ThemeMode;
+  accent: string;
+  custom_accent: string;
+  background_accent: string;
+  dim: number;
+  blur: number;
+  translucency: number;
+  panel_blur: number;
+  enforce: boolean;
+}
+
+// One stored background, as /api/site lists it.
+export interface SiteBackground {
+  url: string;
+  html: boolean;
+}
+
+// The wallpaper actually painted: the reader's own, or the instance's.
+// `html` is a page drawn in a frame rather than a picture (see SiteBackdrop).
+export interface PaintedWallpaper extends Wallpaper {
+  html: boolean;
 }
 
 type Listener = () => void;
@@ -87,9 +120,117 @@ function write(key: string, value: string): void {
 
 // --- theme -----------------------------------------------------------------
 
-export function themeMode(): ThemeMode {
+// --- the instance's theme ----------------------------------------------------
+
+let site: SiteTheme | null = readSiteTheme();
+let siteBackgrounds: Record<string, SiteBackground> = {};
+// Whether anyone is signed in. The instance's signed-in background is that,
+// and the sign-in pages draw their own.
+let signedIn = false;
+
+function readSiteTheme(): SiteTheme | null {
+  const raw = read(SITE_THEME_KEY);
+  if (!raw) return null;
+  try {
+    return normalizeSiteTheme(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSiteTheme(value: unknown): SiteTheme | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Partial<SiteTheme>;
+  const mode = v.mode === 'light' || v.mode === 'dark' ? v.mode : 'auto';
+  const accent = typeof v.accent === 'string' && (v.accent === 'custom' || Object.hasOwn(ACCENTS, v.accent)) ? v.accent : '';
+  const tint = typeof v.background_accent === 'string' && Object.hasOwn(ACCENTS, v.background_accent) ? v.background_accent : '';
+  return {
+    mode,
+    accent,
+    custom_accent: normalizeHex(v.custom_accent, '') ?? '',
+    background_accent: tint,
+    dim: clamp(Number(v.dim ?? 0), 0, 100),
+    blur: clamp(Number(v.blur ?? 0), 0, 40),
+    translucency: clamp(Number(v.translucency ?? 0), 0, 90),
+    panel_blur: clamp(Number(v.panel_blur ?? 0), 0, 40),
+    enforce: v.enforce === true,
+  };
+}
+
+export function siteTheme(): SiteTheme | null {
+  return site;
+}
+
+/** Whether the instance has taken the reader's appearance settings over. */
+export function themeEnforced(): boolean {
+  return site?.enforce === true;
+}
+
+/** Whether the light/dark switch is the instance's rather than the reader's. */
+export function modeLocked(): boolean {
+  return themeEnforced() && site?.mode !== 'auto';
+}
+
+/**
+ * Adopts what /api/site said about the instance's look. Called on every
+ * answer, including after an operator saves the settings page, so the tab
+ * that did it repaints without a reload.
+ */
+export function setSiteAppearance(theme: unknown, backgrounds: Record<string, SiteBackground> | undefined): void {
+  site = normalizeSiteTheme(theme);
+  write(SITE_THEME_KEY, site ? JSON.stringify(site) : '');
+  siteBackgrounds = backgrounds ?? {};
+  applyTheme();
+  applyWallpaper();
+  notify();
+}
+
+export function setSignedIn(next: boolean): void {
+  if (signedIn === next) return;
+  signedIn = next;
+  applyWallpaper();
+  notify();
+}
+
+/**
+ * Picks the variant for this screen from a set of four, falling back the way
+ * a reader would least notice: the other shape in the same brightness before
+ * the same shape in the other one, since a light picture behind dark panels
+ * is the worse mismatch.
+ */
+export function pickBackground(
+  set: Record<string, SiteBackground> | undefined,
+  prefix: '' | 'app_',
+  portrait: boolean,
+  dark: boolean,
+): SiteBackground | null {
+  if (!set) return null;
+  const shape = portrait ? 'portrait' : 'landscape';
+  const other = portrait ? 'landscape' : 'portrait';
+  const tone = dark ? 'dark' : 'light';
+  const opposite = dark ? 'light' : 'dark';
+  for (const key of [`${shape}_${tone}`, `${other}_${tone}`, `${shape}_${opposite}`, `${other}_${opposite}`]) {
+    const found = set[prefix + key];
+    if (found && typeof found.url === 'string' && found.url.startsWith('/') && !found.url.startsWith('//')) return found;
+  }
+  return null;
+}
+
+function portraitScreen(): boolean {
+  return window.matchMedia?.('(orientation: portrait)').matches ?? false;
+}
+
+// --- theme -----------------------------------------------------------------
+
+/** The scheme the reader picked themselves, or null for none. */
+function ownThemeMode(): ThemeMode | null {
   const stored = read(THEME_KEY);
-  return stored === 'light' || stored === 'dark' ? stored : 'auto';
+  return stored === 'light' || stored === 'dark' || stored === 'auto' ? stored : null;
+}
+
+export function themeMode(): ThemeMode {
+  if (modeLocked() && site) return site.mode;
+  return ownThemeMode() ?? site?.mode ?? 'auto';
 }
 
 export function isDark(): boolean {
@@ -128,22 +269,39 @@ function markSwitching(root: HTMLElement): void {
   switching = window.setTimeout(() => root.classList.remove('theme-switching'), 240);
 }
 
+function repaintWallpaper(): void {
+  const before = lastWallpaper;
+  applyWallpaper();
+  if (lastWallpaper !== before) notify();
+}
+
 function applyTheme(): void {
   const root = document.documentElement;
   const mode = themeMode();
   markSwitching(root);
   if (mode === 'auto') root.removeAttribute('data-theme');
   else root.setAttribute('data-theme', mode);
+  write(EFFECTIVE_THEME_KEY, mode);
   // Which lightness the accent hue is clamped to depends on the resolved
   // scheme, not just on which hue was picked, so a theme switch has to
   // re-derive it.
   applyAccent();
+  // And the instance's background comes in a light and a dark variant.
+  if (started) repaintWallpaper();
 }
 
 // --- accent ----------------------------------------------------------------
 
+function siteAccent(): AccentPreference | null {
+  if (!site?.accent) return null;
+  if (site.accent === 'custom' && !site.custom_accent) return null;
+  return { accent: site.accent as AccentName | 'custom', customAccent: site.custom_accent };
+}
+
 export function accentPreference(): AccentPreference {
-  const fallback: AccentPreference = { accent: DEFAULT_ACCENT, customAccent: '' };
+  const instance = siteAccent();
+  if (themeEnforced()) return instance ?? { accent: DEFAULT_ACCENT, customAccent: '' };
+  const fallback: AccentPreference = instance ?? { accent: DEFAULT_ACCENT, customAccent: '' };
   const raw = read(ACCENT_KEY);
   if (!raw) return fallback;
   try {
@@ -165,7 +323,12 @@ export function setAccentPreference(pref: AccentPreference): void {
 }
 
 export function backgroundAccent(): AccentName | '' {
+  const instance = (site?.background_accent ?? '') as AccentName | '';
+  if (themeEnforced()) return instance;
   const value = read(BACKGROUND_KEY);
+  // Null is "never chosen", which takes the instance's; an empty string is
+  // the reader choosing none, which stands.
+  if (value === null) return instance;
   return value && Object.hasOwn(ACCENTS, value) ? value as AccentName : '';
 }
 
@@ -230,7 +393,29 @@ function declarations(palette: Record<string, string>): string {
 
 // --- wallpaper -------------------------------------------------------------
 
-export function wallpaper(): Wallpaper | null {
+/**
+ * What is painted behind the interface: the reader's own picture, unless the
+ * instance has taken appearance over or the reader has none — then the
+ * instance's signed-in background, if it has one for this screen.
+ */
+export function wallpaper(): PaintedWallpaper | null {
+  const own = themeEnforced() ? null : ownWallpaper();
+  if (own) return { ...own, html: false };
+  if (!signedIn || !site) return null;
+  const picked = pickBackground(siteBackgrounds, 'app_', portraitScreen(), isDark());
+  if (!picked) return null;
+  return {
+    url: picked.url,
+    html: picked.html,
+    dim: site.dim,
+    blur: site.blur,
+    translucency: site.translucency,
+    panelBlur: site.panel_blur,
+  };
+}
+
+/** The reader's own wallpaper, whatever the instance paints instead. */
+export function ownWallpaper(): Wallpaper | null {
   const raw = read(WALLPAPER_KEY);
   if (!raw) return null;
   try {
@@ -264,12 +449,17 @@ function safeWallpaperURL(url: string): boolean {
   return /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[A-Za-z0-9+/]+=*$/.test(url);
 }
 
+// Which wallpaper is on screen, so a change of scheme or orientation that
+// picks a different instance variant knows to tell the listeners.
+let lastWallpaper = '';
+
 function applyWallpaper(): void {
   const root = document.documentElement;
   const style = root.style;
   const current = wallpaper();
   root.classList.toggle('has-wallpaper', current !== null);
   if (!current) {
+    lastWallpaper = '';
     style.removeProperty('--ai-wallpaper');
     style.removeProperty('--ai-wallpaper-dim');
     style.removeProperty('--ai-wallpaper-blur');
@@ -277,7 +467,11 @@ function applyWallpaper(): void {
     style.removeProperty('--ai-surface-filter');
     return;
   }
-  style.setProperty('--ai-wallpaper', `url("${cssEscape(current.url)}")`);
+  lastWallpaper = current.url;
+  // A page is drawn by SiteBackdrop in a frame; the picture layer stays
+  // empty under it, and the dim and blur below apply to both.
+  if (current.html) style.removeProperty('--ai-wallpaper');
+  else style.setProperty('--ai-wallpaper', `url("${cssEscape(current.url)}")`);
   style.setProperty('--ai-wallpaper-dim', String(current.dim / 100));
   style.setProperty('--ai-wallpaper-blur', `${current.blur}px`);
   // Opacity rather than translucency, as a percentage the stylesheet can
@@ -308,6 +502,9 @@ export function startTheme(): void {
   applyTheme();
   applyWallpaper();
   window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (themeMode() === 'auto') applyAccent();
+    if (themeMode() === 'auto') applyTheme();
   });
+  // The instance's background comes in a shape per orientation, so turning
+  // a phone may want another picture.
+  window.matchMedia?.('(orientation: portrait)').addEventListener('change', repaintWallpaper);
 }

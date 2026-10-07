@@ -7,6 +7,7 @@
 
 import { api, ApiError, type RequestOptions } from '../api/client';
 import type { ApiKey } from '../api/keys';
+import type { SiteBackground } from '../theme/theme';
 import type { UsageDisplay, UsageSummary, UsageWindow } from '../api/usage';
 import { t } from '../composables/useI18n';
 
@@ -1079,7 +1080,7 @@ export const adminApi = {
       groups?: GroupOption[];
       mail_configured?: boolean;
       attachments?: HeldAttachments;
-      login_background?: Record<string, string>;
+      backgrounds?: Record<string, SiteBackground>;
       logo_url?: string;
       signup_review_prompt_default?: string;
     }>(
@@ -1093,6 +1094,8 @@ export const adminApi = {
   runBackup: () => api.post<{ ok: true; running: true }>('/api/admin/backup/run', {}),
   uploadLoginBackground: (variant: string, mime: string, data: string) =>
     api.put<{ url: string; updated_at: number }>(`/api/admin/login-background/${variant}`, { mime, data }),
+  uploadBackgroundHTML: (variant: string, html: string) =>
+    api.put<{ url: string; html: true; updated_at: number }>(`/api/admin/login-background/${variant}`, { html }),
   deleteLoginBackground: (variant: string) =>
     api.delete<void>(`/api/admin/login-background/${variant}`),
   uploadSiteLogo: (mime: string, data: string) =>

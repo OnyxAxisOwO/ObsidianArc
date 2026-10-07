@@ -21,11 +21,12 @@ import { IconGithub, IconGoogle, IconKey, IconSpark, type OaIcon } from '@/icons
 import { refusalText } from '@/lib/refusal';
 import { siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
+import OaBackdrop from '@/components/OaBackdrop.vue';
 
 const router = useRouter();
 const route = useRoute();
 const site = computed(() => siteInfo.value);
-const { loginBgUrl } = useLoginBackground();
+const { loginBg, loginBgUrl, loginBgFrame } = useLoginBackground();
 
 // Same rule the sign-up form uses: a code is asked for here too, because this
 // screen is the other door an account gets created through.
@@ -159,11 +160,12 @@ async function submit(): Promise<void> {
   <div
     class="oa-auth"
     :class="[
-      { 'has-login-bg': !!loginBgUrl },
+      { 'has-login-bg': !!loginBg },
       `position-${site.auth_card_position || 'center'}`,
     ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
+    <OaBackdrop v-if="loginBgFrame" :key="loginBgFrame" :url="loginBgFrame" />
     <form class="oa-auth-card" novalidate @submit.prevent="submit">
       <div class="oa-auth-brand">
         <img v-if="site.logo_url" :src="site.logo_url" class="oa-auth-brand-logo" alt="">

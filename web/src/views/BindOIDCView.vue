@@ -25,11 +25,12 @@ import { IconSpark } from '@/icons';
 import { safeNext } from '@/lib/next';
 import { adopt, currentUser, forget, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
+import OaBackdrop from '@/components/OaBackdrop.vue';
 
 const route = useRoute();
 const router = useRouter();
 const site = computed(() => siteInfo.value);
-const { loginBgUrl } = useLoginBackground();
+const { loginBg, loginBgUrl, loginBgFrame } = useLoginBackground();
 
 // The one provider this screen ever offers a button for: OIDC is the
 // identity the policy is about, and a GitHub or Google connection would not
@@ -76,11 +77,12 @@ function signOut(): void {
   <div
     class="oa-auth"
     :class="[
-      { 'has-login-bg': !!loginBgUrl },
+      { 'has-login-bg': !!loginBg },
       `position-${site.auth_card_position || 'center'}`,
     ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
+    <OaBackdrop v-if="loginBgFrame" :key="loginBgFrame" :url="loginBgFrame" />
     <div class="oa-auth-card oa-2fa-card">
       <div class="oa-auth-brand">
         <img v-if="site.logo_url" :src="site.logo_url" class="oa-auth-brand-logo" alt="">

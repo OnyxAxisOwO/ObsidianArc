@@ -141,12 +141,7 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 		}
 		out["attachments"] = map[string]any{"held": held, "bytes": bytes}
 		if h.settings != nil {
-			loginBgs := h.settings.LoginBackgrounds()
-			bgs := make(map[string]string, len(loginBgs))
-			for v, at := range loginBgs {
-				bgs[v] = fmt.Sprintf("/api/site/login-background/%s?v=%d", v, at)
-			}
-			out["login_background"] = bgs
+			out["backgrounds"] = auth.BackgroundURLs(h.settings)
 			if h.settings.SiteLogoUpdatedAt() > 0 {
 				out["logo_url"] = fmt.Sprintf("/api/site/logo?v=%d", h.settings.SiteLogoUpdatedAt())
 			} else {
@@ -164,6 +159,15 @@ var writableSettings = map[string]bool{
 	settings.SiteName:                   true,
 	settings.SiteDescription:            true,
 	settings.SiteAuthCardPosition:       true,
+	settings.ThemeMode:                  true,
+	settings.ThemeAccent:                true,
+	settings.ThemeCustomAccent:          true,
+	settings.ThemeBackgroundTint:        true,
+	settings.ThemeWallpaperDim:          true,
+	settings.ThemeWallpaperBlur:         true,
+	settings.ThemeTranslucency:          true,
+	settings.ThemePanelBlur:             true,
+	settings.ThemeEnforce:               true,
 	settings.AboutTitle:                 true,
 	settings.AboutBody:                  true,
 	settings.AboutShowSoftwareInfo:      true,
@@ -302,6 +306,13 @@ var numericBounds = map[string][2]int{
 	settings.TwoFactorRememberDays:      {0, settings.MaxTwoFactorRememberDays},
 	settings.TwoFactorBackofficeMinutes: {1, settings.MaxTwoFactorBackofficeMinutes},
 	settings.LeaderboardSize:            {1, settings.MaxLeaderboardSize},
+	// The ranges the account's own wallpaper sliders have (theme.ts clamps
+	// to the same), so a site default can be nothing a reader could not
+	// have picked for themselves.
+	settings.ThemeWallpaperDim:  {0, 100},
+	settings.ThemeWallpaperBlur: {0, 40},
+	settings.ThemeTranslucency:  {0, 90},
+	settings.ThemePanelBlur:     {0, 40},
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
@@ -344,6 +355,9 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	}
 	if pos, present := body[settings.SiteAuthCardPosition]; present && !settings.ValidAuthCardPosition(pos) {
 		return httpx.BadRequest("Unknown auth card position %q.", pos)
+	}
+	if err := checkThemeSettings(body); err != nil {
+		return err
 	}
 	if err := checkTwoFactorSettings(auth.MustUser(r.Context()), body); err != nil {
 		return err
@@ -517,6 +531,12 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		delete(applied, settings.SiteAuthCardPosition)
 		skipped = append(skipped, settings.SiteAuthCardPosition)
 	}
+	for _, key := range themeChecked {
+		if value, present := applied[key]; present && checkThemeSettings(map[string]string{key: value}) != nil {
+			delete(applied, key)
+			skipped = append(skipped, key)
+		}
+	}
 	if display, present := applied[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
 		delete(applied, settings.UsageDisplay)
 		skipped = append(skipped, settings.UsageDisplay)
@@ -661,6 +681,25 @@ func (h *Handlers) purgeAttachments(w http.ResponseWriter, r *http.Request) erro
 	})
 }
 
+var themeChecked = []string{settings.ThemeMode, settings.ThemeAccent, settings.ThemeBackgroundTint, settings.ThemeCustomAccent}
+
+// checkThemeSettings holds the theme keys to the shapes the browser reads.
+// Only the keys present are checked; a missing one is not being changed.
+func checkThemeSettings(body map[string]string) error {
+	if mode, present := body[settings.ThemeMode]; present && !settings.ValidThemeMode(mode) {
+		return httpx.BadRequest("Unknown theme mode %q.", mode)
+	}
+	for _, key := range []string{settings.ThemeAccent, settings.ThemeBackgroundTint} {
+		if value, present := body[key]; present && !settings.ValidThemeAccent(value) {
+			return httpx.BadRequest("Setting %q must be an accent's name.", key)
+		}
+	}
+	if value, present := body[settings.ThemeCustomAccent]; present && value != "" && !settings.ValidHexColor(value) {
+		return httpx.BadRequest("Setting %q must be a #rrggbb colour.", settings.ThemeCustomAccent)
+	}
+	return nil
+}
+
 func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) error {
 	variant := settings.NormalizeVariant(r.PathValue("variant"))
 	if !settings.ValidLoginBackgroundVariants[variant] {
@@ -670,9 +709,29 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 	var body struct {
 		Mime string `json:"mime"`
 		Data string `json:"data"`
+		// A page instead of a picture. Present means this is one; the two
+		// are not combined.
+		HTML *string `json:"html"`
 	}
 	if err := httpx.DecodeJSON(w, r, &body, settings.MaxLoginBackgroundBytes*4/3+16*1024); err != nil {
 		return err
+	}
+
+	if body.HTML != nil {
+		at, err := h.settings.SetHTMLBackground(r.Context(), variant, *body.HTML)
+		switch {
+		case errors.Is(err, settings.ErrLoginBackgroundTooLarge):
+			return httpx.BadRequest("That page is too large.")
+		case errors.Is(err, settings.ErrLoginBackgroundUnsupported):
+			return httpx.BadRequest("The page is empty.")
+		case err != nil:
+			return httpx.Internal(err)
+		}
+		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"url":        fmt.Sprintf("/api/site/login-background/%s?v=%d", variant, at),
+			"html":       true,
+			"updated_at": at,
+		})
 	}
 
 	raw := body.Data

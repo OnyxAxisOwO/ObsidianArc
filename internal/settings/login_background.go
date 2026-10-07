@@ -11,18 +11,46 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 )
 
+// The signed-out screens' four keep the bare names they shipped with, so a
+// database that stored them before the signed-in set existed still finds
+// them. The signed-in set is the same four behind an "app_" prefix: one
+// table and one endpoint, because the only thing that differs is which
+// screens draw them.
 const (
 	LoginBgLandscapeLight = "landscape_light"
 	LoginBgLandscapeDark  = "landscape_dark"
 	LoginBgPortraitLight  = "portrait_light"
 	LoginBgPortraitDark   = "portrait_dark"
+
+	AppBgPrefix = "app_"
 )
 
 var ValidLoginBackgroundVariants = map[string]bool{
-	LoginBgLandscapeLight: true,
-	LoginBgLandscapeDark:  true,
-	LoginBgPortraitLight:  true,
-	LoginBgPortraitDark:   true,
+	LoginBgLandscapeLight:               true,
+	LoginBgLandscapeDark:                true,
+	LoginBgPortraitLight:                true,
+	LoginBgPortraitDark:                 true,
+	AppBgPrefix + LoginBgLandscapeLight: true,
+	AppBgPrefix + LoginBgLandscapeDark:  true,
+	AppBgPrefix + LoginBgPortraitLight:  true,
+	AppBgPrefix + LoginBgPortraitDark:   true,
+}
+
+// HTMLBackgroundMime marks a background that is a page rather than a
+// picture. It is stored in the same column an image's type is, so the row
+// says which it is and nothing beside it has to agree.
+const HTMLBackgroundMime = "text/html; charset=utf-8"
+
+// MaxHTMLBackgroundBytes is generous for a page of CSS and a script, and
+// small enough that nobody mistakes the field for a place to inline a video.
+const MaxHTMLBackgroundBytes = 512 * 1024
+
+// Background is what the public site description needs about one variant:
+// when it last changed, for the cache-busting query, and whether it is drawn
+// in a frame or as an image.
+type Background struct {
+	UpdatedAt int64
+	HTML      bool
 }
 
 func NormalizeVariant(raw string) string {
@@ -70,15 +98,28 @@ func DetectImageMedia(data []byte) (string, error) {
 	return "", ErrLoginBackgroundUnsupported
 }
 
-// LoginBackgrounds returns a copy of the current login background update timestamps.
-func (s *Service) LoginBackgrounds() map[string]int64 {
+// LoginBackgrounds returns every stored variant, both sets, keyed by name.
+func (s *Service) LoginBackgrounds() map[string]Background {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make(map[string]int64, len(s.loginBackgrounds))
+	out := make(map[string]Background, len(s.loginBackgrounds))
 	for k, v := range s.loginBackgrounds {
 		out[k] = v
 	}
 	return out
+}
+
+// SetHTMLBackground stores a page of markup as a variant. It is not checked
+// or cleaned: it is served under a sandbox that gives it no origin (see
+// auth's getLoginBackground), so what it can do is draw, which is the point.
+func (s *Service) SetHTMLBackground(ctx context.Context, variant, html string) (int64, error) {
+	if len(html) > MaxHTMLBackgroundBytes {
+		return 0, ErrLoginBackgroundTooLarge
+	}
+	if strings.TrimSpace(html) == "" {
+		return 0, ErrLoginBackgroundUnsupported
+	}
+	return s.storeBackground(ctx, variant, HTMLBackgroundMime, []byte(html))
 }
 
 // SetLoginBackground stores or updates a login background image for a given variant.
@@ -95,10 +136,16 @@ func (s *Service) SetLoginBackground(ctx context.Context, variant, mime string, 
 	if err != nil {
 		return 0, ErrLoginBackgroundUnsupported
 	}
-	mime = detectedMime
+	return s.storeBackground(ctx, variant, detectedMime, data)
+}
 
+func (s *Service) storeBackground(ctx context.Context, variant, mime string, data []byte) (int64, error) {
+	variant = NormalizeVariant(variant)
+	if !ValidLoginBackgroundVariants[variant] {
+		return 0, fmt.Errorf("settings: unknown variant %q", variant)
+	}
 	at := time.Now().UnixMilli()
-	_, err = s.db.Exec(ctx,
+	_, err := s.db.Exec(ctx,
 		`INSERT INTO login_backgrounds (variant, mime, data, updated_at)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT (variant) DO UPDATE SET
@@ -112,9 +159,9 @@ func (s *Service) SetLoginBackground(ctx context.Context, variant, mime string, 
 
 	s.mu.Lock()
 	if s.loginBackgrounds == nil {
-		s.loginBackgrounds = map[string]int64{}
+		s.loginBackgrounds = map[string]Background{}
 	}
-	s.loginBackgrounds[variant] = at
+	s.loginBackgrounds[variant] = Background{UpdatedAt: at, HTML: mime == HTMLBackgroundMime}
 	s.mu.Unlock()
 	return at, nil
 }

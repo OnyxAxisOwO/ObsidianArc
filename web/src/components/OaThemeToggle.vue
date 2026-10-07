@@ -20,7 +20,9 @@ const glyph = computed(() => {
 </script>
 
 <template>
-  <OaIconButton class="oa-icon-btn" :label="t('theme')" @click="persistTheme(theme.next())">
+  <!-- Gone rather than inert when the instance fixes the scheme: a switch
+       that does nothing reads as broken. -->
+  <OaIconButton v-if="!theme.modeLocked()" class="oa-icon-btn" :label="t('theme')" @click="persistTheme(theme.next())">
     <component :is="glyph" :size="17" />
   </OaIconButton>
 </template>

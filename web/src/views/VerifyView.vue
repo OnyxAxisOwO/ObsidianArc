@@ -13,10 +13,11 @@ import { IconSpark } from '@/icons';
 import { verificationErrorKey } from '@/lib/verification-error';
 import { adopt, currentUser, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
+import OaBackdrop from '@/components/OaBackdrop.vue';
 
 const route = useRoute();
 const router = useRouter();
-const { loginBgUrl } = useLoginBackground();
+const { loginBg, loginBgUrl, loginBgFrame } = useLoginBackground();
 
 const title = ref<StringKey>('verifyPageReadyTitle');
 const body = ref<StringKey | null>(null);
@@ -101,11 +102,12 @@ function activate(): void {
   <div
     class="oa-auth"
     :class="[
-      { 'has-login-bg': !!loginBgUrl },
+      { 'has-login-bg': !!loginBg },
       `position-${siteInfo.auth_card_position || 'center'}`,
     ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
+    <OaBackdrop v-if="loginBgFrame" :key="loginBgFrame" :url="loginBgFrame" />
     <div class="oa-auth-card">
       <div class="oa-auth-brand">
         <img v-if="siteInfo.logo_url" :src="siteInfo.logo_url" class="oa-auth-brand-logo" alt="">

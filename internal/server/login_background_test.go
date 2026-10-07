@@ -175,13 +175,15 @@ func TestLoginBackgroundCRUDAndVariants(t *testing.T) {
 		}
 	}
 
-	// 9. Admin settings GET returns login_background map
+	// 9. Admin settings GET returns every background, with its kind
 	settingsRes := in.do(http.MethodGet, "/api/admin/settings", nil, admin)
 	if settingsRes.Code != http.StatusOK {
 		t.Fatalf("GET /api/admin/settings: %d", settingsRes.Code)
 	}
 	var adminSettings struct {
-		LoginBackground map[string]string `json:"login_background"`
+		LoginBackground map[string]struct {
+			URL string `json:"url"`
+		} `json:"backgrounds"`
 	}
 	if err := json.Unmarshal(settingsRes.Body.Bytes(), &adminSettings); err != nil {
 		t.Fatalf("unmarshal admin settings: %v", err)
@@ -213,5 +215,121 @@ func TestLoginBackgroundCRUDAndVariants(t *testing.T) {
 	}
 	if _, exists := siteData.LoginBackground["portrait_dark"]; exists {
 		t.Fatalf("portrait_dark should be absent after deletion")
+	}
+}
+
+// A page as a background: stored beside the pictures, listed as one, and
+// served under a sandbox that gives it no origin — the header is the whole
+// of what makes an operator's script safe to serve from this host.
+func TestHTMLBackgroundAndSignedInSet(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("admin", "a-strong-password")
+
+	page := "<!doctype html><style>body{background:#123}</style><script>1</script>"
+	res := in.do(http.MethodPut, "/api/admin/login-background/app_portrait_dark", map[string]string{"html": page}, admin)
+	if res.Code != http.StatusOK {
+		t.Fatalf("upload html: %d %s", res.Code, res.Body.String())
+	}
+	if empty := in.do(http.MethodPut, "/api/admin/login-background/app_portrait_dark", map[string]string{"html": "  "}, admin); empty.Code != http.StatusBadRequest {
+		t.Fatalf("empty page: %d, want 400", empty.Code)
+	}
+
+	var site struct {
+		LoginBackground map[string]string `json:"login_background"`
+		Backgrounds     map[string]struct {
+			URL  string `json:"url"`
+			HTML bool   `json:"html"`
+		} `json:"backgrounds"`
+	}
+	if err := json.Unmarshal(in.do(http.MethodGet, "/api/site", nil, nil).Body.Bytes(), &site); err != nil {
+		t.Fatal(err)
+	}
+	bg, ok := site.Backgrounds["app_portrait_dark"]
+	if !ok || !bg.HTML || !strings.HasPrefix(bg.URL, "/api/site/login-background/app_portrait_dark?v=") {
+		t.Fatalf("backgrounds = %+v", site.Backgrounds)
+	}
+	// The older field is the signed-out pictures alone: a tab running the
+	// previous script would put this page in an <img>.
+	if len(site.LoginBackground) != 0 {
+		t.Fatalf("login_background carries %v", site.LoginBackground)
+	}
+
+	got := in.do(http.MethodGet, "/api/site/login-background/app_portrait_dark", nil, nil)
+	if got.Code != http.StatusOK || got.Body.String() != page {
+		t.Fatalf("serve: %d %q", got.Code, got.Body.String())
+	}
+	if ct := got.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	csp := got.Header().Get("Content-Security-Policy")
+	if !strings.HasPrefix(csp, "sandbox allow-scripts;") || strings.Contains(csp, "allow-same-origin") ||
+		!strings.Contains(csp, "frame-ancestors 'self'") {
+		t.Fatalf("CSP = %q", csp)
+	}
+	if xfo := got.Header().Get("X-Frame-Options"); xfo != "SAMEORIGIN" {
+		t.Fatalf("X-Frame-Options = %q", xfo)
+	}
+
+	// A picture over the same variant replaces the page, and is served as
+	// one: none of the page's relaxations follow it.
+	tinyPNG := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+	if res := in.do(http.MethodPut, "/api/admin/login-background/app_portrait_dark", map[string]string{"mime": "image/png", "data": tinyPNG}, admin); res.Code != http.StatusOK {
+		t.Fatalf("replace with image: %d", res.Code)
+	}
+	img := in.do(http.MethodGet, "/api/site/login-background/app_portrait_dark", nil, nil)
+	if img.Header().Get("Content-Type") != "image/png" || strings.Contains(img.Header().Get("Content-Security-Policy"), "sandbox") ||
+		img.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("image headers: %v", img.Header())
+	}
+}
+
+func TestSiteThemeSettings(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("admin", "a-strong-password")
+
+	for _, bad := range []map[string]string{
+		{"theme.mode": "sepia"},
+		{"theme.accent": "Violet!"},
+		{"theme.custom_accent": "red"},
+		{"theme.wallpaper_dim": "101"},
+		{"theme.surface_translucency": "95"},
+	} {
+		if res := in.do(http.MethodPut, "/api/admin/settings", bad, admin); res.Code != http.StatusBadRequest {
+			t.Fatalf("%v: %d, want 400", bad, res.Code)
+		}
+	}
+
+	res := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"theme.mode":                 "dark",
+		"theme.accent":               "custom",
+		"theme.custom_accent":        "#00696e",
+		"theme.background_accent":    "teal",
+		"theme.wallpaper_dim":        "40",
+		"theme.surface_translucency": "30",
+		"theme.enforce":              "true",
+	}, admin)
+	if res.Code != http.StatusOK {
+		t.Fatalf("save theme: %d %s", res.Code, res.Body.String())
+	}
+
+	// Served to anybody: the palette is painted before anyone signs in.
+	var site struct {
+		Theme struct {
+			Mode         string `json:"mode"`
+			Accent       string `json:"accent"`
+			CustomAccent string `json:"custom_accent"`
+			Tint         string `json:"background_accent"`
+			Dim          int    `json:"dim"`
+			Translucency int    `json:"translucency"`
+			Enforce      bool   `json:"enforce"`
+		} `json:"theme"`
+	}
+	if err := json.Unmarshal(in.do(http.MethodGet, "/api/site", nil, nil).Body.Bytes(), &site); err != nil {
+		t.Fatal(err)
+	}
+	got := site.Theme
+	if got.Mode != "dark" || got.Accent != "custom" || got.CustomAccent != "#00696e" || got.Tint != "teal" ||
+		got.Dim != 40 || got.Translucency != 30 || !got.Enforce {
+		t.Fatalf("theme = %+v", got)
 	}
 }

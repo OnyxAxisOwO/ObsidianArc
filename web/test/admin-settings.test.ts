@@ -125,17 +125,15 @@ describe('admin settings payload', () => {
     expectSaveState(false);
 
     expect(host.querySelector<HTMLElement>('#secLoginBg')?.style.display).not.toBe('none');
-    const selectTrigger = host.querySelector<HTMLButtonElement>('#secLoginBg .oa-select');
-    expect(selectTrigger).not.toBeNull();
-    expect(selectTrigger?.textContent).toContain(t('authCardPositionCenter'));
-
-    selectTrigger!.click();
+    // A segmented control now, not a select: three words fit on one line.
+    const choices = [...host.querySelectorAll<HTMLButtonElement>('#secLoginBg .oa-segment button')];
+    const center = choices.find((node) => node.textContent?.includes(t('authCardPositionCenter')));
+    expect(center?.getAttribute('aria-pressed')).toBe('true');
+    const left = choices.find((node) => node.textContent?.includes(t('authCardPositionLeft')));
+    expect(left).toBeDefined();
+    left!.click();
     await nextTick();
-    const leftOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
-      .find((node) => node.textContent?.includes(t('authCardPositionLeft')));
-    expect(leftOption).toBeDefined();
-    leftOption!.click();
-    await nextTick();
+    expect(left!.getAttribute('aria-pressed')).toBe('true');
     expectSaveState(true);
 
     button(actions, t('save')).click();

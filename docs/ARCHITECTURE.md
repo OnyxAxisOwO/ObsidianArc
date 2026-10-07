@@ -220,9 +220,17 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 25.86 MB (22.16 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 234.02 kB to open the chat (193.18 JS + 40.84 CSS) |
+| Frontend, on the wire | < 135 kB | 236.39 kB to open the chat (194.75 JS + 41.64 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-07 (UTC), after an operator could set the site's own
+theme and a background for the signed-in interface, each variant a picture or
+a page of HTML (`OaBackdrop`, the theme layering in `theme/theme.ts`):
+236.39 kB (194.75 kB JS + 41.64 kB CSS), up 2.37 kB from 234.02 kB, measured
+the same way; most of the CSS is the backoffice's background stage, which
+lives in the shared stylesheet like every other surface. The backoffice chunk
+is 120.31 kB and the Chinese dictionary 47.56 kB. The binary was not remeasured.
 
 Remeasured on 2026-10-07 (UTC), after plugins could bring a panel of their
 own for everybody signed in (`PluginUserPanel`, entered from the account menu):

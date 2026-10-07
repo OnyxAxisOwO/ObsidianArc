@@ -46,6 +46,10 @@
   }
 
   &.has-login-bg {
+    // Its own stacking context, so a page background (OaBackdrop) at -1
+    // sits above this element's fill and below the card, rather than
+    // falling behind the whole page.
+    isolation: isolate;
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;

@@ -232,7 +232,10 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, o
 		if challenge {
 			script += " " + challengeOrigin
 			connect += " " + challengeOrigin
-			frame = "frame-src " + challengeOrigin
+			// 'self' kept: without a frame list default-src grants it, and
+			// a page background drawn in a frame from this origin must not
+			// vanish the moment a challenge is switched on.
+			frame = "frame-src 'self' " + challengeOrigin
 		}
 		if extra != "" {
 			script += " " + extra

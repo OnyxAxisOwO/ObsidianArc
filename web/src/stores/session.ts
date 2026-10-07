@@ -16,6 +16,8 @@ import {
   accentPreference,
   setAccentPreference,
   setBackgroundAccent,
+  setSignedIn,
+  setSiteAppearance,
   setThemeMode,
   setWallpaper,
   themeMode,
@@ -97,6 +99,7 @@ export function adopt(next: Account, prefs: Preferences = {}): void {
   pendingSecondFactor.value = false;
   account.value = next;
   preferences.value = prefs;
+  setSignedIn(true);
   applyServerPreferences(prefs);
 }
 
@@ -104,6 +107,7 @@ export function forget(): void {
   pendingSecondFactor.value = false;
   account.value = null;
   preferences.value = {};
+  setSignedIn(false);
 }
 
 // Resolves the session and the instance's public settings in one round trip
@@ -115,6 +119,7 @@ export async function startSession(): Promise<void> {
   if (me.status === 'fulfilled') {
     account.value = me.value.user;
     preferences.value = me.value.preferences ?? {};
+    setSignedIn(true);
     applyServerPreferences(preferences.value);
   } else if (me.reason instanceof ApiError && me.reason.code === 'two_factor_pending') {
     // Halfway through signing in — a provider sign-in lands here by
@@ -127,6 +132,7 @@ export async function startSession(): Promise<void> {
 
   if (info.status === 'fulfilled') {
     site.value = info.value;
+    setSiteAppearance(info.value.theme, info.value.backgrounds);
     // Before the first render, so a sign-up card that a plugin adds a field
     // to is drawn with the field rather than growing one a moment later.
     await loadPlugins(info.value.plugins);
@@ -139,6 +145,7 @@ export async function startSession(): Promise<void> {
 export async function refreshSite(): Promise<void> {
   const info = await fetchSite();
   site.value = info;
+  setSiteAppearance(info.theme, info.backgrounds);
   await loadPlugins(info.plugins);
 }
 

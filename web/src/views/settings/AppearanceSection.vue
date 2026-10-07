@@ -63,7 +63,10 @@ function onLanguage(next: Language): void {
       <div class="oa-preview-message"><IconSpark :size="17" /><span>{{ t('appearancePreviewHint') }}</span></div>
       <div class="oa-preview-message sent"><IconCheck :size="14" /><span>{{ t('appearanceIntro') }}</span></div>
     </div>
-    <section class="oa-appearance-section">
+    <!-- The instance has taken the look over. Said once, in place of the
+         controls, rather than leaving pickers that change nothing. -->
+    <p v-if="theme.enforced()" class="oa-field-hint">{{ t('themeEnforcedHint') }}</p>
+    <section v-if="!theme.enforced()" class="oa-appearance-section">
       <div class="oa-appearance-heading"><h3>{{ t('chatBackground') }}</h3><button type="button" class="oa-btn" @click="chooseBackground('')">{{ t('reset') }}</button></div>
       <div class="oa-background-grid">
         <button v-for="entry in backgrounds" :key="entry.value" type="button" class="oa-background-choice"
@@ -78,7 +81,7 @@ function onLanguage(next: Language): void {
       <p class="oa-field-hint">{{ t('backgroundHint') }}</p>
       <WallpaperSection />
     </section>
-    <section class="oa-appearance-section">
+    <section v-if="!theme.enforced()" class="oa-appearance-section">
       <div class="oa-appearance-heading"><h3>{{ t('controlColours') }}</h3><Palette :size="16" /></div>
       <div class="oa-color-grid">
         <button v-for="name in ACCENT_NAMES" :key="name" type="button" class="oa-color-dot"
@@ -93,7 +96,7 @@ function onLanguage(next: Language): void {
       <div v-if="custom" class="oa-field oa-custom-hex"><label>{{ t('customColour') }}<input v-model="hex" type="text" maxlength="7" @change="apply('custom', hex)"></label></div>
       <p class="oa-field-hint">{{ t('controlColoursHint') }}</p>
     </section>
-    <section class="oa-appearance-section">
+    <section v-if="!theme.modeLocked()" class="oa-appearance-section">
       <div class="oa-appearance-heading"><h3>{{ t('themeStyle') }}</h3></div>
       <div class="oa-theme-choices">
         <button v-for="entry in modes" :key="entry.value" type="button" class="oa-theme-choice"

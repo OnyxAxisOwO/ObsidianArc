@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
 import AppearanceSection from '../src/views/settings/AppearanceSection.vue';
-import { accentPreference, backgroundAccent, setAccentPreference, setBackgroundAccent, setThemeMode, setWallpaper, wallpaper } from '../src/theme/theme';
+import { accentPreference, backgroundAccent, setAccentPreference, setBackgroundAccent, setThemeMode, setWallpaper, ownWallpaper as wallpaper } from '../src/theme/theme';
 import { t } from '../src/composables/useI18n';
 import * as auth from '../src/api/auth';
 import { api } from '../src/api/client';

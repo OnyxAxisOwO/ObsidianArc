@@ -29,6 +29,19 @@ const (
 	// Layout position of the sign-in / registration card on the auth page:
 	// "center" by default, or "left" / "right" when docked beside wallpaper.
 	SiteAuthCardPosition = "site.auth_card_position"
+	// The instance's own look. Each is what a reader who has never chosen
+	// gets — or, with ThemeEnforce on, what everybody gets: the account's
+	// own appearance settings step aside. Empty accents mean "the built-in
+	// one", so an instance that never opens this card looks as it did.
+	ThemeMode           = "theme.mode"
+	ThemeAccent         = "theme.accent"
+	ThemeCustomAccent   = "theme.custom_accent"
+	ThemeBackgroundTint = "theme.background_accent"
+	ThemeWallpaperDim   = "theme.wallpaper_dim"
+	ThemeWallpaperBlur  = "theme.wallpaper_blur"
+	ThemeTranslucency   = "theme.surface_translucency"
+	ThemePanelBlur      = "theme.panel_blur"
+	ThemeEnforce        = "theme.enforce"
 	// The About panel's heading and Markdown introduction. Empty is the normal
 	// state and means "use the instance name and the built-in introduction",
 	// so an operator who never opens this screen still gets a sensible page.
@@ -601,6 +614,23 @@ func InviteMode(registrationEnabled, invitesRequired bool) string {
 // one form removes the guess.
 var hexColorRE = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
+// ValidThemeMode reports whether value is one of the three schemes the
+// interface's own picker offers.
+func ValidThemeMode(value string) bool {
+	return value == "auto" || value == "light" || value == "dark"
+}
+
+// accentNameRE is the shape of a preset's name. The list itself lives in the
+// browser (theme/color-utils.ts), which ignores a name it does not know; the
+// check here only keeps the value a word rather than something to inject.
+var accentNameRE = regexp.MustCompile(`^[a-z]{1,24}$`)
+
+// ValidThemeAccent reports whether value is empty (the built-in accent),
+// "custom", or a preset's name.
+func ValidThemeAccent(value string) bool {
+	return value == "" || accentNameRE.MatchString(value)
+}
+
 // ValidHexColor reports whether value is a manifest-ready colour. An empty
 // string is not valid on its own terms — callers that treat "no override" as
 // acceptable check for it themselves, the way updateSettings does.
@@ -632,9 +662,21 @@ func ValidPWAIconURL(value string) bool {
 // Defaults are what a fresh instance behaves like, and what a deleted row
 // falls back to. Nothing reads a setting without one.
 var Defaults = map[string]string{
-	SiteName:              "Obsidian Arc",
-	SiteDescription:       "",
-	SiteAuthCardPosition:  AuthCardPositionCenter,
+	SiteName:             "Obsidian Arc",
+	SiteDescription:      "",
+	SiteAuthCardPosition: AuthCardPositionCenter,
+	ThemeMode:            "auto",
+	ThemeAccent:          "",
+	ThemeCustomAccent:    "",
+	ThemeBackgroundTint:  "",
+	ThemeWallpaperDim:    "0",
+	ThemeWallpaperBlur:   "0",
+	// Seen through, a little, so a signed-in background an operator uploads
+	// shows behind the panels and not only around them. Nothing is painted
+	// until there is one, so an instance without it is unchanged.
+	ThemeTranslucency:     "20",
+	ThemePanelBlur:        "12",
+	ThemeEnforce:          "false",
 	AboutTitle:            "",
 	AboutBody:             "",
 	AboutShowSoftwareInfo: "true",
@@ -948,12 +990,12 @@ type Service struct {
 
 	mu               sync.RWMutex
 	values           map[string]string
-	loginBackgrounds map[string]int64
+	loginBackgrounds map[string]Background
 	siteLogoAt       int64
 }
 
 func New(db *database.DB) *Service {
-	return &Service{db: db, values: map[string]string{}, loginBackgrounds: map[string]int64{}, siteLogoAt: 0}
+	return &Service{db: db, values: map[string]string{}, loginBackgrounds: map[string]Background{}, siteLogoAt: 0}
 }
 
 // Load reads the table into memory. Called once at boot; after that the cache
@@ -977,15 +1019,15 @@ func (s *Service) Load(ctx context.Context) error {
 		return fmt.Errorf("settings: load: %w", err)
 	}
 
-	bgRows, err := s.db.Query(ctx, `SELECT variant, updated_at FROM login_backgrounds`)
-	bgs := map[string]int64{}
+	bgRows, err := s.db.Query(ctx, `SELECT variant, mime, updated_at FROM login_backgrounds`)
+	bgs := map[string]Background{}
 	if err == nil {
 		defer bgRows.Close()
 		for bgRows.Next() {
-			var v string
+			var v, mime string
 			var at int64
-			if err := bgRows.Scan(&v, &at); err == nil {
-				bgs[v] = at
+			if err := bgRows.Scan(&v, &mime, &at); err == nil {
+				bgs[v] = Background{UpdatedAt: at, HTML: mime == HTMLBackgroundMime}
 			}
 		}
 	}

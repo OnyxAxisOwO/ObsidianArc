@@ -34,5 +34,14 @@
   "images.history": "true",
   "attachments.purge_after_days": "0",
   "attachments.purge_daily_at": "",
-  "attachments.orphan_minutes": "60"
+  "attachments.orphan_minutes": "60",
+  "theme.mode": "auto",
+  "theme.accent": "",
+  "theme.custom_accent": "",
+  "theme.background_accent": "",
+  "theme.wallpaper_dim": "0",
+  "theme.wallpaper_blur": "0",
+  "theme.surface_translucency": "20",
+  "theme.panel_blur": "12",
+  "theme.enforce": "false"
 }

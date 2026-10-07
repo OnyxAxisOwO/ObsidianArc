@@ -13,10 +13,14 @@ import { onScopeDispose, readonly, ref, type Ref } from 'vue';
 import {
   accentPreference,
   isDark,
+  modeLocked,
   nextThemeMode,
   onThemeChange,
+  ownWallpaper,
+  themeEnforced,
   themeMode,
   wallpaper,
+  type PaintedWallpaper,
   type ThemeMode,
   type Wallpaper,
 } from '@/theme/theme';
@@ -43,7 +47,10 @@ export function useTheme(): {
   mode(): ThemeMode;
   dark(): boolean;
   accent(): AccentPreference;
-  paper(): Wallpaper | null;
+  paper(): PaintedWallpaper | null;
+  ownPaper(): Wallpaper | null;
+  enforced(): boolean;
+  modeLocked(): boolean;
   next(): ThemeMode;
 } {
   subscribe();
@@ -53,6 +60,9 @@ export function useTheme(): {
     dark: () => (void version.value, isDark()),
     accent: () => (void version.value, accentPreference()),
     paper: () => (void version.value, wallpaper()),
+    ownPaper: () => (void version.value, ownWallpaper()),
+    enforced: () => (void version.value, themeEnforced()),
+    modeLocked: () => (void version.value, modeLocked()),
     next: () => nextThemeMode(),
   };
 }

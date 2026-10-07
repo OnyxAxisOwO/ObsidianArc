@@ -1,3 +1,4 @@
+import type { SiteBackground, SiteTheme } from '@/theme/theme';
 import { api } from './client';
 
 export type Role = 'user' | 'admin' | 'super_admin';
@@ -163,8 +164,13 @@ export interface SiteInfo {
   /** Whether an account gets a personal invite code (invites.user_enabled),
    *  so the sign-up form knows an admin-issued code is not the only kind. */
   user_invites?: boolean;
-  /** Background image URLs per variant (landscape_light, landscape_dark, portrait_light, portrait_dark). */
+  /** The signed-out images alone, the shape older servers sent. Superseded by backgrounds. */
   login_background?: Record<string, string>;
+  /** Every stored background by variant: the signed-out four by their bare
+   *  names, the signed-in four behind `app_`. `html` is a page for a frame. */
+  backgrounds?: Record<string, SiteBackground>;
+  /** The instance's own look (theme.* settings). Absent from older servers. */
+  theme?: SiteTheme;
   /** Custom site logo URL, or empty if the built-in mark/favicon is used. */
   logo_url?: string;
   /** Layout position of the sign-in / registration card ('center' | 'left' | 'right'). */

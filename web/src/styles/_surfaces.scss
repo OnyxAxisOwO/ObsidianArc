@@ -6050,137 +6050,417 @@
   transition: color 0.15s ease, background 0.15s ease;
 }
 
-/* --- Login background controls in admin settings ------------------------ */
-/* Four thumbnails in a row, not four screens: the picture is there to be
-   recognised, and the page it belongs to is a settings page. */
-.oa-login-bg-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 12px;
-  width: 100%;
-}
-
-.oa-login-bg-card {
+/* --- Backgrounds and the site theme in admin settings ---------------------- */
+/* One stage per set rather than four tiles: the picture is what an operator is
+   choosing, so it is shown large, the shape of the screen it is for, with a
+   faint outline of the interface that will sit on it. Two small switches pick
+   which of the four is on stage; the actions are quiet and sit underneath. */
+.oa-bg-stage-block {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border-radius: 14px;
-  background: var(--ai-surface-container);
+  gap: 14px;
 }
 
-.oa-login-bg-card-head {
+.oa-bg-stage-switches {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
+  gap: 8px;
 }
 
-.oa-login-bg-card-title {
+.oa-bg-stage-switches .oa-segment button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  font-weight: 550;
-  color: var(--ai-text);
 }
 
-.oa-login-bg-mode-icon {
-  color: var(--ai-text-secondary);
-  flex-shrink: 0;
-}
-
-.oa-login-bg-preview {
+.oa-bg-stage {
   position: relative;
-  width: 100%;
-  border-radius: 10px;
+  isolation: isolate;
   overflow: hidden;
-  background: var(--ai-field-bg);
-  border: 1px dashed var(--ai-border);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-
-.oa-login-bg-preview {
   align-self: center;
-}
-
-/* One height for all four, so the tiles line up; the width follows the shape
-   of the screen the picture is for, so a portrait variant is a small portrait. */
-.oa-login-bg-preview.landscape,
-.oa-login-bg-preview.portrait {
-  width: auto;
-  height: 104px;
-}
-
-.oa-login-bg-preview.landscape {
+  /* Large enough to judge a picture by, not so large on a wide card that the
+     settings around it scroll away. */
+  width: min(100%, 560px);
   aspect-ratio: 16 / 10;
+  border-radius: 14px;
+  /* The empty stage is the plain page a reader would get, in the scheme
+     being looked at — not a dashed drop zone. */
+  background: var(--ai-surface-container-low);
+  box-shadow: inset 0 0 0 1px var(--oa-group-line, var(--ai-border));
 }
 
-.oa-login-bg-preview.portrait {
-  aspect-ratio: 9 / 16;
+/* A phone, at the height the desktop stage has on a card this wide. */
+.oa-bg-stage.portrait {
+  width: auto;
+  height: min(340px, 62vw);
+  aspect-ratio: 9 / 19.5;
+  border-radius: 24px;
 }
 
-/* Too narrow for words: the button under it says what to do. */
-.oa-login-bg-preview.portrait .oa-login-bg-drop-hint,
-.oa-login-bg-preview.portrait .oa-login-bg-formats-hint {
+.oa-bg-stage.dragging {
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-bg-stage-art {
+  position: absolute;
+  z-index: -2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.oa-bg-stage.signed img.oa-bg-stage-art {
+  inset: calc(-2 * var(--stage-blur, 0px));
+  width: calc(100% + 4 * var(--stage-blur, 0px));
+  height: calc(100% + 4 * var(--stage-blur, 0px));
+  filter: blur(var(--stage-blur, 0px));
+}
+
+/* Standing in for an unset variant: shown, but plainly not this one. */
+.oa-bg-stage.stand-in .oa-bg-stage-art {
+  opacity: 0.45;
+  filter: saturate(0.6);
+}
+
+.oa-bg-stage-dim {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: rgba(0, 0, 0, var(--stage-dim, 0));
+  pointer-events: none;
+}
+
+/* The interface, as an outline. The signed-in one takes the translucency and
+   panel blur being set, so the sliders preview here as well as on the page. */
+.oa-bg-stage-ghost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  pointer-events: none;
+}
+
+.oa-bg-stage-ghost span,
+.oa-bg-stage-ghost i {
+  display: block;
+}
+
+.oa-bg-stage-ghost.app {
+  gap: 3%;
+  padding: 7%;
+}
+
+.oa-bg-stage-ghost.app .rail,
+.oa-bg-stage-ghost.app .main {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ai-surface-container) var(--stage-surface, 100%), transparent);
+  -webkit-backdrop-filter: var(--stage-panel-blur, none);
+  backdrop-filter: var(--stage-panel-blur, none);
+}
+
+.oa-bg-stage-ghost.app .rail {
+  flex: 0 0 24%;
+}
+
+.oa-bg-stage-ghost.app .main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 6%;
+  padding: 6%;
+}
+
+.oa-bg-stage-ghost.app .main i {
+  width: 46%;
+  height: 7%;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+}
+
+.oa-bg-stage-ghost.app .main i:nth-child(2) {
+  align-self: flex-end;
+  width: 34%;
+  background: var(--ai-primary);
+  opacity: 0.8;
+}
+
+.oa-bg-stage-ghost.app .main i.composer {
+  width: 100%;
+  height: 13%;
+  border-radius: 10px;
+}
+
+/* On a phone the rail is a drawer, closed. */
+.oa-bg-stage.portrait .oa-bg-stage-ghost.app .rail {
   display: none;
 }
 
-.oa-login-bg-preview:hover,
-.oa-login-bg-preview.dragover {
-  border-color: var(--ai-primary);
-  background: var(--ai-field-bg-hover);
+.oa-bg-stage-ghost.login {
+  align-items: center;
+  justify-content: center;
+  padding: 0 7%;
 }
 
-.oa-login-bg-preview:focus-visible {
+.oa-bg-stage-ghost.login.at-left {
+  justify-content: flex-start;
+}
+
+.oa-bg-stage-ghost.login.at-right {
+  justify-content: flex-end;
+}
+
+.oa-bg-stage.portrait .oa-bg-stage-ghost.login {
+  justify-content: center;
+}
+
+.oa-bg-stage-ghost.login .card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 30%;
+  min-width: 96px;
+  padding: 16px 14px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ai-surface-container) 90%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+
+.oa-bg-stage.portrait .oa-bg-stage-ghost.login .card {
+  width: 78%;
+}
+
+.oa-bg-stage-ghost.login .card i {
+  height: 9px;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+}
+
+.oa-bg-stage-ghost.login .card i:first-child {
+  width: 45%;
+  background: var(--ai-text-secondary);
+  opacity: 0.35;
+}
+
+.oa-bg-stage-ghost.login .card i.button {
+  height: 14px;
+  background: var(--ai-primary);
+}
+
+/* The empty stage is itself the upload target, its words set over the
+   outline on hover rather than in a box of their own. */
+.oa-bg-stage-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.oa-bg-stage-empty small {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.oa-bg-stage-empty:hover,
+.oa-bg-stage-empty:focus-visible,
+.oa-bg-stage.dragging .oa-bg-stage-empty {
+  opacity: 1;
+  background: color-mix(in srgb, var(--ai-surface-container-low) 82%, transparent);
+  outline: none;
+}
+
+.oa-bg-stage-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.oa-bg-stage-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+}
+
+.oa-bg-stage-status .dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+  box-shadow: inset 0 0 0 1px var(--oa-group-line, var(--ai-border));
+}
+
+.oa-bg-stage-status.set {
+  color: var(--ai-text);
+}
+
+.oa-bg-stage-status.set .dot {
+  background: var(--ai-primary);
+  box-shadow: none;
+}
+
+.oa-bg-stage-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oa-bg-stage-actions .oa-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Two columns of sliders under the stage: four full-width rows of one slider
+   each read as a form; side by side they read as one set of adjustments. */
+.oa-bg-sliders {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 28px;
+}
+
+@media (max-width: 560px) {
+  .oa-bg-sliders {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The site's control colour: the reader's own dots, with "built-in" first
+   and set apart by a hairline, since it is not a colour but the absence of
+   a choice. */
+.oa-site-colours {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.oa-site-colour {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: var(--ai-primary);
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+/* A ring on every dot, so the near-black preset is not a hole in a dark card
+   and the near-white one not a hole in a light one. */
+.oa-site-colour:not(.active) {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ai-text) 16%, transparent);
+}
+
+.oa-site-colour:hover {
+  transform: scale(1.06);
+}
+
+.oa-site-colour.builtin,
+.oa-site-colour.custom {
+  background: var(--ai-field-bg);
+}
+
+.oa-site-colour.active {
+  box-shadow: 0 0 0 2px var(--ai-surface-card), 0 0 0 4px var(--ai-primary);
+}
+
+.oa-site-colour:focus-visible,
+.oa-site-colour:focus-within {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
-.oa-login-bg-img {
+.oa-site-colour.custom input {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  display: block;
-  pointer-events: none;
+  opacity: 0;
+  cursor: pointer;
 }
 
-.oa-login-bg-empty {
+.oa-site-colours-rule {
+  width: 1px;
+  height: 18px;
+  background: var(--oa-group-line, var(--ai-border));
+}
+
+/* Six tints with "built-in" among them, not the reader's five. */
+.oa-site-tints {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+@media (max-width: 560px) {
+  .oa-site-tints {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* The HTML editor: a modal card, wider than a sign-in one, holding code in a
+   field of its own rather than a labelled form control. */
+.oa-bg-html-editor {
+  max-width: 680px;
+}
+
+.oa-bg-html-kicker {
+  color: var(--ai-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.oa-bg-html-source {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 300px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  resize: vertical;
+  tab-size: 2;
+}
+
+.oa-bg-html-source:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-bg-html-actions {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 16px 12px;
-  text-align: center;
-  color: var(--ai-text-secondary);
-  pointer-events: none;
-}
-
-.oa-login-bg-empty-icon {
-  opacity: 0.6;
-}
-
-.oa-login-bg-drop-hint {
-  font-size: 11.5px;
-  font-weight: 500;
-  line-height: 1.3;
-}
-
-.oa-login-bg-formats-hint {
-  font-size: 10px;
-  opacity: 0.75;
-  line-height: 1.2;
-}
-
-.oa-login-bg-actions {
-  display: flex;
-  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  margin-top: auto;
+  margin-top: 14px;
 }
 
 /* --- site logo setting ---------------------------------------------------- */

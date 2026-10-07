@@ -16,7 +16,14 @@ import AdminControlCard from './AdminControlCard.vue';
 import AdminWorkbench from './AdminWorkbench.vue';
 import type { WorkbenchGroup } from './workbench';
 import { useSettingsDraft } from './settingsDraft';
-import { IconHome, IconSpark, IconFile, IconKey, IconInfo, IconBell, IconMessage, IconSliders, IconTrash, IconImage, IconSun, IconMoon, IconClose } from '@/icons';
+import { IconHome, IconSpark, IconFile, IconKey, IconInfo, IconBell, IconMessage, IconSliders, IconTrash, IconImage, IconClose } from '@/icons';
+import OaRangeField from '@/components/OaRangeField.vue';
+import BackgroundStage from './BackgroundStage.vue';
+import OaRow from '@/components/OaRow.vue';
+import { Palette } from 'lucide-vue-next';
+import { ACCENT_NAMES, ACCENTS, DEFAULT_ACCENT, accentPalette, normalizeHex, type AccentName } from '@/theme/color-utils';
+import { useTheme } from '@/composables/useTheme';
+import type { SiteBackground } from '@/theme/theme';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
@@ -26,7 +33,7 @@ import { t, type StringKey } from '@/composables/useI18n';
 import { formatBytes } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
-import { site } from '@/stores/session';
+import { refreshSite, site } from '@/stores/session';
 
 const view = useAdminView();
 view.setTitle(t('adminSettingsTitle'), t('controlSettingsSubtitle'));
@@ -40,8 +47,13 @@ const SEARCH_GROUPS = {
     'secLoginBg', 'loginBgHint', 'authCardPosition', 'authCardPositionHint', 'authCardPositionCenter',
     'authCardPositionLeft', 'authCardPositionRight', 'loginBgLandscape', 'loginBgPortrait',
     'loginBgLandscapeLight', 'loginBgLandscapeDark', 'loginBgPortraitLight', 'loginBgPortraitDark',
-    'loginBgFallbackNote',
+    'loginBgFallbackNote', 'bgHtmlEdit', 'bgHtmlTitle',
   ],
+  secSiteTheme: [
+    'secSiteTheme', 'siteThemeHint', 'siteThemeMode', 'siteThemeAccent', 'siteThemeTint', 'siteThemeEnforce',
+    'siteThemeEnforceHint',
+  ],
+  secAppBg: ['appBgTitle', 'appBgHint', 'dim', 'blur', 'panelTranslucency', 'panelBlur', 'bgHtmlEdit', 'bgHtmlTitle'],
   secPWA: [
     'secPWA', 'controlPWAHint', 'pwaName', 'pwaNameHint', 'pwaShortName', 'pwaShortNameHint', 'pwaDescription',
     'pwaDescriptionHint', 'pwaThemeColor', 'pwaThemeColorHint', 'pwaBackgroundColor', 'pwaBackgroundColorHint',
@@ -91,19 +103,64 @@ const flashOK = ref(false);
 const saveLabel = ref('');
 const busy = ref(false);
 const purging = ref(false);
-const loginBackgrounds = ref<Record<string, string>>({});
-const uploadingVariant = ref('');
-const dragOverVariant = ref('');
+const backgrounds = ref<Record<string, SiteBackground>>({});
 const siteLogoUrl = ref('');
 const uploadingLogo = ref(false);
 const dragOverLogo = ref(false);
 
-const BG_VARIANTS = [
-  { id: 'landscape_light', label: 'loginBgLandscapeLight', modeIcon: IconSun },
-  { id: 'landscape_dark', label: 'loginBgLandscapeDark', modeIcon: IconMoon },
-  { id: 'portrait_light', label: 'loginBgPortraitLight', modeIcon: IconSun },
-  { id: 'portrait_dark', label: 'loginBgPortraitDark', modeIcon: IconMoon },
+// The accent pickers offer the presets by name; the empty value is "the
+// built-in one", which is what an instance that never sets this gets.
+const ACCENT_LABELS: Record<string, StringKey> = {
+  violet: 'accentViolet', neutral: 'accentNeutral', red: 'accentRed', pink: 'accentPink',
+  indigo: 'accentIndigo', blue: 'accentBlue', cyan: 'accentCyan', teal: 'accentTeal',
+  green: 'accentGreen', orange: 'accentOrange',
+};
+const CARD_POSITIONS = [
+  { value: 'center', label: 'authCardPositionCenter' },
+  { value: 'left', label: 'authCardPositionLeft' },
+  { value: 'right', label: 'authCardPositionRight' },
 ] as const;
+const THEME_MODES = [
+  { value: 'auto', label: 'themeAuto' },
+  { value: 'light', label: 'themeLight' },
+  { value: 'dark', label: 'themeDark' },
+] as const;
+// The same five tints a reader is offered in their own appearance settings,
+// after "built-in", which follows the control colour.
+const TINTS: Array<{ value: AccentName | ''; label: StringKey }> = [
+  { value: '', label: 'siteThemeDefault' },
+  { value: 'orange', label: 'backgroundVanilla' }, { value: 'teal', label: 'backgroundMint' },
+  { value: 'blue', label: 'backgroundCloud' }, { value: 'violet', label: 'backgroundLilac' },
+  { value: 'pink', label: 'backgroundPeach' },
+];
+
+const pageTheme = useTheme();
+
+const accentName = computed(() => {
+  const accent = form.value.themeAccent;
+  if (!accent) return t('siteThemeDefault');
+  if (accent === 'custom') return form.value.themeCustomAccent.toUpperCase() || t('customColour');
+  return t(ACCENT_LABELS[accent] ?? 'siteThemeDefault');
+});
+
+function pickCustomAccent(value: string): void {
+  const hex = normalizeHex(value, null);
+  if (!hex) return;
+  form.value.themeAccent = 'custom';
+  form.value.themeCustomAccent = hex;
+}
+
+// A tint previews as the field colour it would paint, in the scheme the
+// operator is looking at; built-in is that of the chosen control colour.
+function tintSwatch(tint: AccentName | ''): string {
+  const accent = form.value.themeAccent;
+  const base = tint
+    ? ACCENTS[tint]
+    : accent === 'custom' && form.value.themeCustomAccent
+      ? form.value.themeCustomAccent
+      : ACCENTS[(accent || DEFAULT_ACCENT) as AccentName] ?? ACCENTS[DEFAULT_ACCENT];
+  return accentPalette(base, pageTheme.dark())['--ai-field-bg'] ?? '';
+}
 
 const form = ref({
   siteName: '',
@@ -142,6 +199,15 @@ const form = ref({
   purgeDailyAt: '',
   orphanMinutes: 60 as number | null,
   apiEnabled: false,
+  themeMode: 'auto',
+  themeAccent: '',
+  themeCustomAccent: '',
+  themeTint: '',
+  themeDim: 0,
+  themeBlur: 0,
+  themeTranslucency: 20,
+  themePanelBlur: 12,
+  themeEnforce: false,
 });
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
@@ -198,6 +264,15 @@ function collect(): Record<string, string> {
     'attachments.purge_after_days': String(form.value.purgeAfterDays ?? 0),
     'attachments.purge_daily_at': form.value.purgeDailyAt.trim(),
     'attachments.orphan_minutes': String(form.value.orphanMinutes ?? 60),
+    'theme.mode': form.value.themeMode,
+    'theme.accent': form.value.themeAccent,
+    'theme.custom_accent': form.value.themeAccent === 'custom' ? form.value.themeCustomAccent.trim() : '',
+    'theme.background_accent': form.value.themeTint,
+    'theme.wallpaper_dim': String(form.value.themeDim),
+    'theme.wallpaper_blur': String(form.value.themeBlur),
+    'theme.surface_translucency': String(form.value.themeTranslucency),
+    'theme.panel_blur': String(form.value.themePanelBlur),
+    'theme.enforce': String(form.value.themeEnforce),
   };
 }
 
@@ -230,6 +305,9 @@ async function save(): Promise<void> {
         },
       };
     }
+    // The theme is painted from /api/site, so this tab repaints in what was
+    // just saved rather than waiting for a reload.
+    void refreshSite().catch(() => {});
     saveLabel.value = t('saved');
     window.setTimeout(() => { saveLabel.value = ''; }, 1500);
   } catch (failure) {
@@ -297,114 +375,19 @@ function purge(): void {
     .finally(() => { purging.value = false; });
 }
 
-function detectFileType(file: File): string {
-  const type = file.type.toLowerCase();
-  if (type === 'image/jpeg' || type === 'image/jpg') return 'image/jpeg';
-  if (type === 'image/png') return 'image/png';
-  if (type === 'image/webp') return 'image/webp';
-  if (type === 'image/avif') return 'image/avif';
-  const name = file.name.toLowerCase();
-  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
-  if (name.endsWith('.png')) return 'image/png';
-  if (name.endsWith('.webp')) return 'image/webp';
-  if (name.endsWith('.avif')) return 'image/avif';
-  return '';
+function onBackgroundChanged(variant: string, value: SiteBackground | null): void {
+  const next = { ...backgrounds.value };
+  if (value) next[variant] = value;
+  else delete next[variant];
+  backgrounds.value = next;
+  // The sign-in pages and this very interface read /api/site; asking again
+  // is simpler than patching both shapes it carries.
+  void refreshSite().catch(() => {});
 }
 
-async function uploadFile(variant: string, file: File): Promise<void> {
-  const mime = detectFileType(file);
-  if (!mime) {
-    flashOK.value = false;
-    flash.value = t('loginBgFormats');
-    return;
-  }
-  if (file.size > 6 * 1024 * 1024) {
-    flashOK.value = false;
-    flash.value = t('loginBgFormats');
-    return;
-  }
-
-  uploadingVariant.value = variant;
-  flash.value = '';
-  try {
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const res = String(reader.result ?? '');
-        const comma = res.indexOf(',');
-        resolve(comma !== -1 ? res.slice(comma + 1) : res);
-      };
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsDataURL(file);
-    });
-
-    const res = await adminApi.uploadLoginBackground(variant, mime, base64);
-    loginBackgrounds.value = {
-      ...loginBackgrounds.value,
-      [variant]: res.url,
-    };
-    if (site.value) {
-      site.value = {
-        ...site.value,
-        login_background: {
-          ...(site.value.login_background ?? {}),
-          [variant]: res.url,
-        },
-      };
-    }
-    flashOK.value = true;
-    flash.value = t('loginBgUploaded');
-  } catch (failure) {
-    flashOK.value = false;
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
-  } finally {
-    uploadingVariant.value = '';
-    dragOverVariant.value = '';
-  }
-}
-
-function chooseAndUpload(variant: string): void {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/png,image/jpeg,image/webp,image/avif,.jpg,.jpeg,.png,.webp,.avif';
-  input.onchange = () => {
-    const file = input.files?.[0];
-    if (file) {
-      void uploadFile(variant, file);
-    }
-  };
-  input.click();
-}
-
-async function onDrop(variant: string, event: DragEvent): Promise<void> {
-  dragOverVariant.value = '';
-  const file = event.dataTransfer?.files?.[0];
-  if (file) {
-    await uploadFile(variant, file);
-  }
-}
-
-async function clearLoginBg(variant: string): Promise<void> {
-  uploadingVariant.value = variant;
-  flash.value = '';
-  try {
-    await adminApi.deleteLoginBackground(variant);
-    const updated = { ...loginBackgrounds.value };
-    delete updated[variant];
-    loginBackgrounds.value = updated;
-    if (site.value) {
-      const siteBgs = { ...(site.value.login_background ?? {}) };
-      delete siteBgs[variant];
-      site.value = { ...site.value, login_background: siteBgs };
-    }
-    flashOK.value = true;
-    flash.value = t('loginBgDeleted');
-  } catch (failure) {
-    flashOK.value = false;
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
-  } finally {
-    uploadingVariant.value = '';
-  }
+function onBackgroundStatus(message: string, ok: boolean): void {
+  flashOK.value = ok;
+  flash.value = message;
 }
 
 function detectLogoType(file: File): string {
@@ -544,7 +527,7 @@ async function load(): Promise<void> {
     const values = data.settings;
     models.value = modelsResult.models;
     held.value = data.attachments ?? { held: 0, bytes: 0 };
-    loginBackgrounds.value = data.login_background ?? {};
+    backgrounds.value = data.backgrounds ?? {};
     siteLogoUrl.value = data.logo_url ?? site.value?.logo_url ?? '';
 
     form.value = {
@@ -584,6 +567,15 @@ async function load(): Promise<void> {
       purgeDailyAt: values['attachments.purge_daily_at'] ?? '',
       orphanMinutes: Number(values['attachments.orphan_minutes'] ?? 60),
       apiEnabled: values['api.enabled'] === 'true',
+      themeMode: values['theme.mode'] || 'auto',
+      themeAccent: values['theme.accent'] ?? '',
+      themeCustomAccent: values['theme.custom_accent'] ?? '',
+      themeTint: values['theme.background_accent'] ?? '',
+      themeDim: Number(values['theme.wallpaper_dim'] ?? 0),
+      themeBlur: Number(values['theme.wallpaper_blur'] ?? 0),
+      themeTranslucency: Number(values['theme.surface_translucency'] ?? 20),
+      themePanelBlur: Number(values['theme.panel_blur'] ?? 12),
+      themeEnforce: values['theme.enforce'] === 'true',
     };
     accept();
   } catch (failure) {
@@ -594,13 +586,13 @@ async function load(): Promise<void> {
 }
 
 const categories: WorkbenchGroup[] = [
-  { id: 'site', label: 'controlSite', hint: 'controlSiteHint', icon: IconHome, sections: ['secIdentity', 'secLoginBg', 'secPWA', 'secLanding', 'secAbout', 'secHomeNotice', 'secFeedback'] },
+  { id: 'site', label: 'controlSite', hint: 'controlSiteHint', icon: IconHome, sections: ['secIdentity', 'secLoginBg', 'secSiteTheme', 'secAppBg', 'secPWA', 'secLanding', 'secAbout', 'secHomeNotice', 'secFeedback'] },
   { id: 'chat', label: 'controlChat', hint: 'controlChatHint', icon: IconSpark, sections: ['secChat', 'secLimits'] },
   { id: 'files', label: 'controlFiles', hint: 'controlFilesHint', icon: IconFile, sections: ['secAttachments', 'secCleanup'] },
   { id: 'integrations', label: 'controlIntegrations', hint: 'controlIntegrationsHint', icon: IconKey, sections: ['apiKeys', 'backupSettings'] },
 ];
 
-const columns: [string[], string[]] = [['secIdentity', 'secLoginBg', 'secPWA', 'secAbout', 'secChat', 'secAttachments', 'apiKeys'], ['secLanding', 'secHomeNotice', 'secFeedback', 'secLimits', 'secCleanup', 'backupSettings']];
+const columns: [string[], string[]] = [['secIdentity', 'secLoginBg', 'secSiteTheme', 'secAppBg', 'secPWA', 'secAbout', 'secChat', 'secAttachments', 'apiKeys'], ['secLanding', 'secHomeNotice', 'secFeedback', 'secLimits', 'secCleanup', 'backupSettings']];
 
 onMounted(load);
 </script>
@@ -668,82 +660,114 @@ onMounted(load);
         </div>
       </AdminControlCard>
       <AdminControlCard id="secLoginBg" v-show="visible('secLoginBg')" :title="t('secLoginBg')" :icon="IconImage" :hint="t('loginBgHint')">
-        <OaSelectField
-          v-model="form.authCardPosition"
-          :label="t('authCardPosition')"
-          :hint="t('authCardPositionHint')"
-          :searchable="false"
-          :options="[
-            { value: 'center', label: t('authCardPositionCenter') },
-            { value: 'left', label: t('authCardPositionLeft') },
-            { value: 'right', label: t('authCardPositionRight') },
-          ]"
-        />
-        <p class="oa-field-hint">{{ t('loginBgFallbackNote') }}</p>
-        <div class="oa-login-bg-grid">
-          <div
-            v-for="v in BG_VARIANTS"
-            :key="v.id"
-            class="oa-login-bg-card"
-            :class="{ 'has-image': !!loginBackgrounds[v.id] }"
-          >
-            <div class="oa-login-bg-card-head">
-              <span class="oa-login-bg-card-title">
-                <component :is="v.modeIcon" :size="13" class="oa-login-bg-mode-icon" />
-                {{ t(v.label) }}
-              </span>
-            </div>
-            <div
-              class="oa-login-bg-preview"
-              :class="{
-                empty: !loginBackgrounds[v.id],
-                portrait: v.id.startsWith('portrait'),
-                landscape: v.id.startsWith('landscape'),
-                dragover: dragOverVariant === v.id,
-              }"
-              tabindex="0"
-              role="button"
-              :aria-label="t(v.label)"
-              @dragover.prevent="dragOverVariant = v.id"
-              @dragleave="dragOverVariant = ''"
-              @drop.prevent="onDrop(v.id, $event)"
-              @click="chooseAndUpload(v.id)"
-              @keydown.enter.prevent="chooseAndUpload(v.id)"
-              @keydown.space.prevent="chooseAndUpload(v.id)"
+        <OaRow :title="t('authCardPosition')">
+          <div class="oa-segment" role="group" :aria-label="t('authCardPosition')">
+            <button
+              v-for="entry in CARD_POSITIONS"
+              :key="entry.value"
+              type="button"
+              :aria-pressed="form.authCardPosition === entry.value"
+              @click="form.authCardPosition = entry.value"
             >
-              <img
-                v-if="loginBackgrounds[v.id]"
-                :src="loginBackgrounds[v.id]"
-                :alt="t(v.label)"
-                class="oa-login-bg-img"
-              />
-              <div v-else class="oa-login-bg-empty">
-                <IconImage :size="22" class="oa-login-bg-empty-icon" />
-                <span class="oa-login-bg-drop-hint">{{ t('loginBgDropHint') }}</span>
-                <span class="oa-login-bg-formats-hint">{{ t('loginBgFormats') }}</span>
-              </div>
-            </div>
-            <div class="oa-login-bg-actions">
-              <button
-                type="button"
-                class="oa-btn small"
-                :disabled="uploadingVariant === v.id"
-                @click="chooseAndUpload(v.id)"
-              >
-                {{ loginBackgrounds[v.id] ? t('loginBgReplace') : t('loginBgUpload') }}
-              </button>
-              <OaConfirmButton
-                v-if="loginBackgrounds[v.id]"
-                class="oa-btn small oa-btn-danger"
-                :label="t('loginBgClear')"
-                :armed-label="t('loginBgClearConfirm')"
-                :armed-title="t('loginBgClear')"
-                :resting-title="t('loginBgClear')"
-                :disabled="uploadingVariant === v.id"
-                @confirm="clearLoginBg(v.id)"
-              />
-            </div>
+              {{ t(entry.label) }}
+            </button>
           </div>
+        </OaRow>
+        <BackgroundStage
+          prefix=""
+          :backgrounds="backgrounds"
+          :card-position="form.authCardPosition"
+          @changed="onBackgroundChanged"
+          @status="onBackgroundStatus"
+        />
+      </AdminControlCard>
+      <AdminControlCard id="secSiteTheme" v-show="visible('secSiteTheme')" :title="t('secSiteTheme')" :icon="IconSpark" :hint="t('siteThemeHint')">
+        <OaRow :title="t('siteThemeMode')">
+          <div class="oa-segment" role="group" :aria-label="t('siteThemeMode')">
+            <button
+              v-for="entry in THEME_MODES"
+              :key="entry.value"
+              type="button"
+              :aria-pressed="form.themeMode === entry.value"
+              @click="form.themeMode = entry.value"
+            >
+              {{ t(entry.label) }}
+            </button>
+          </div>
+        </OaRow>
+        <OaRow :title="t('siteThemeAccent')" :meta="accentName" stacked>
+          <div class="oa-site-colours">
+            <button
+              type="button"
+              class="oa-site-colour builtin"
+              :class="{ active: form.themeAccent === '' }"
+              :title="t('siteThemeDefault')"
+              :aria-label="t('siteThemeDefault')"
+              :aria-pressed="form.themeAccent === ''"
+              @click="form.themeAccent = ''"
+            >
+              <IconSpark :size="13" />
+            </button>
+            <span class="oa-site-colours-rule" />
+            <button
+              v-for="name in ACCENT_NAMES"
+              :key="name"
+              type="button"
+              class="oa-site-colour"
+              :class="{ active: form.themeAccent === name }"
+              :style="{ backgroundColor: ACCENTS[name] }"
+              :title="t(ACCENT_LABELS[name]!)"
+              :aria-label="t(ACCENT_LABELS[name]!)"
+              :aria-pressed="form.themeAccent === name"
+              @click="form.themeAccent = name"
+            />
+            <label
+              class="oa-site-colour custom"
+              :class="{ active: form.themeAccent === 'custom' }"
+              :style="form.themeAccent === 'custom' && form.themeCustomAccent ? { backgroundColor: form.themeCustomAccent } : undefined"
+              :title="t('customColour')"
+            >
+              <Palette v-if="form.themeAccent !== 'custom'" :size="14" />
+              <input
+                type="color"
+                :aria-label="t('customColour')"
+                :value="form.themeCustomAccent || ACCENTS.violet"
+                @input="pickCustomAccent(($event.target as HTMLInputElement).value)"
+              >
+            </label>
+          </div>
+        </OaRow>
+        <OaRow :title="t('siteThemeTint')" :meta="t('backgroundHint')" stacked>
+          <div class="oa-background-grid oa-site-tints">
+            <button
+              v-for="entry in TINTS"
+              :key="entry.value"
+              type="button"
+              class="oa-background-choice"
+              :class="{ active: form.themeTint === entry.value }"
+              :aria-pressed="form.themeTint === entry.value"
+              @click="form.themeTint = entry.value"
+            >
+              <span class="oa-background-swatch" :style="{ background: tintSwatch(entry.value) }" />
+              <span>{{ t(entry.label) }}</span>
+            </button>
+          </div>
+        </OaRow>
+        <OaSwitchField v-model="form.themeEnforce" :label="t('siteThemeEnforce')" :hint="t('siteThemeEnforceHint')" />
+      </AdminControlCard>
+      <AdminControlCard id="secAppBg" v-show="visible('secAppBg')" :title="t('appBgTitle')" :icon="IconImage" :hint="t('appBgHint')">
+        <BackgroundStage
+          prefix="app_"
+          :backgrounds="backgrounds"
+          :look="{ dim: form.themeDim, blur: form.themeBlur, translucency: form.themeTranslucency, panelBlur: form.themePanelBlur }"
+          @changed="onBackgroundChanged"
+          @status="onBackgroundStatus"
+        />
+        <div class="oa-bg-sliders">
+          <OaRangeField v-model="form.themeDim" :label="t('dim')" :min="0" :max="100" :format="(value) => `${value}%`" />
+          <OaRangeField v-model="form.themeBlur" :label="t('blur')" :min="0" :max="40" :format="(value) => `${value}px`" />
+          <OaRangeField v-model="form.themeTranslucency" :label="t('panelTranslucency')" :min="0" :max="90" :format="(value) => `${value}%`" />
+          <OaRangeField v-model="form.themePanelBlur" :label="t('panelBlur')" :min="0" :max="40" :format="(value) => `${value}px`" />
         </div>
       </AdminControlCard>
       <AdminControlCard id="secPWA" v-show="visible('secPWA')" :title="t('secPWA')" :icon="IconImage" :hint="t('controlPWAHint')">

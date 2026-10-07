@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -335,6 +336,8 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 			"dismissible": h.settings.Bool(settings.HomeNoticeDismissible),
 		},
 		"login_background": h.loginBackgrounds(),
+		"backgrounds":      BackgroundURLs(h.settings),
+		"theme":            SiteTheme(h.settings),
 		"logo_url":         h.siteLogoURL(),
 	})
 }
@@ -372,16 +375,63 @@ func (h *Handlers) getSiteLogo(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// loginBackgrounds is the shape this field had before pages and the
+// signed-in set existed: the signed-out images by variant. A tab still
+// running the older script reads it; the current one reads backgrounds.
 func (h *Handlers) loginBackgrounds() map[string]string {
 	if h.settings == nil {
 		return map[string]string{}
 	}
-	raw := h.settings.LoginBackgrounds()
-	out := make(map[string]string, len(raw))
-	for v, at := range raw {
-		out[v] = fmt.Sprintf("/api/site/login-background/%s?v=%d", v, at)
+	out := map[string]string{}
+	for v, bg := range h.settings.LoginBackgrounds() {
+		if bg.HTML || strings.HasPrefix(v, settings.AppBgPrefix) {
+			continue
+		}
+		out[v] = fmt.Sprintf("/api/site/login-background/%s?v=%d", v, bg.UpdatedAt)
 	}
 	return out
+}
+
+// BackgroundURL is one stored background as the browser draws it.
+type BackgroundURL struct {
+	URL  string `json:"url"`
+	HTML bool   `json:"html"`
+}
+
+// BackgroundURLs is every stored background, both sets, by variant. Shared
+// with the backoffice's settings listing so the two cannot describe the same
+// row differently.
+func BackgroundURLs(svc *settings.Service) map[string]BackgroundURL {
+	out := map[string]BackgroundURL{}
+	if svc == nil {
+		return out
+	}
+	for v, bg := range svc.LoginBackgrounds() {
+		out[v] = BackgroundURL{
+			URL:  fmt.Sprintf("/api/site/login-background/%s?v=%d", v, bg.UpdatedAt),
+			HTML: bg.HTML,
+		}
+	}
+	return out
+}
+
+// SiteTheme is the instance's own look, for every reader including one who
+// has not signed in: the palette is painted before anybody is known.
+func SiteTheme(svc *settings.Service) map[string]any {
+	if svc == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":              svc.Get(settings.ThemeMode),
+		"accent":            svc.Get(settings.ThemeAccent),
+		"custom_accent":     svc.Get(settings.ThemeCustomAccent),
+		"background_accent": svc.Get(settings.ThemeBackgroundTint),
+		"dim":               svc.Int(settings.ThemeWallpaperDim, 0),
+		"blur":              svc.Int(settings.ThemeWallpaperBlur, 0),
+		"translucency":      svc.Int(settings.ThemeTranslucency, 0),
+		"panel_blur":        svc.Int(settings.ThemePanelBlur, 0),
+		"enforce":           svc.Bool(settings.ThemeEnforce),
+	}
 }
 
 func (h *Handlers) getLoginBackground(w http.ResponseWriter, r *http.Request) error {
@@ -408,6 +458,19 @@ func (h *Handlers) getLoginBackground(w http.ResponseWriter, r *http.Request) er
 	header.Set("Content-Disposition", "inline")
 	header.Set("ETag", fmt.Sprintf(`"%x-%x"`, at, len(data)))
 	header.Set("X-Content-Type-Options", "nosniff")
+	if mime == settings.HTMLBackgroundMime {
+		// An operator's page, run as a page: scripts, inline styles and
+		// whatever it fetches from anywhere, because an animated background
+		// is usually a canvas and a library from a CDN. The sandbox
+		// directive is what makes that safe to serve from this origin — it
+		// gives the document an opaque origin of its own, so it has no
+		// cookies, no storage and no reach into the API, even when somebody
+		// opens the URL directly rather than through the frame. Framed by
+		// this site only, which the shell's DENY would otherwise forbid.
+		header.Set("Content-Security-Policy",
+			"sandbox allow-scripts; default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self'")
+		header.Set("X-Frame-Options", "SAMEORIGIN")
+	}
 
 	http.ServeContent(w, r, "", time.UnixMilli(at), bytes.NewReader(data))
 	return nil

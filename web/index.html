@@ -26,7 +26,11 @@
      this only reads it back. */
   (function () {
     try {
-      var mode = localStorage.getItem('obsidian-arc-theme');
+      /* The scheme in force, which may be the instance's default rather
+         than the reader's own (theme.ts writes it); the reader's key is
+         the fallback for a browser that has not run that code yet. */
+      var mode = localStorage.getItem('obsidian-arc-effective-theme')
+        || localStorage.getItem('obsidian-arc-theme');
       if (mode === 'dark' || mode === 'light') {
         document.documentElement.setAttribute('data-theme', mode);
       }

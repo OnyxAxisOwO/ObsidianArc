@@ -19,7 +19,9 @@ import { setWallpaper, type Wallpaper } from '@/theme/theme';
 import { syncPreferences } from '@/stores/session';
 
 const theme = useTheme();
-const current = computed(() => theme.paper());
+// The reader's own picture, not whatever is painted: the instance may be
+// drawing its own behind a reader who has none.
+const current = computed(() => theme.ownPaper());
 
 // Empty until it has something to report. "A wallpaper is set" is a sentence
 // about a picture the reader can already see behind the panel; this line is
@@ -34,7 +36,7 @@ const translucency = ref(current.value?.translucency ?? 0);
 const panelBlur = ref(current.value?.panelBlur ?? 0);
 
 function readSliders(): Wallpaper | null {
-  const existing = theme.paper();
+  const existing = theme.ownPaper();
   if (!existing) return null;
   return {
     url: existing.url,
