@@ -51,6 +51,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/sandbox"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/screening"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
@@ -89,6 +90,7 @@ type Server struct {
 	invites        *invite.Store
 	instanceBackup *systembackup.Service
 	health         *health.Checker
+	sandbox        *sandbox.Store
 	// nil when no SSH address is configured, which is the default.
 	ssh *consolessh.Server
 	// What the console dispatches into: the API with no Attach in front of
@@ -1161,7 +1163,40 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// what the account may run. Set here rather than at construction
 	// because the engine is built from the mux the handlers above are
 	// mounted on, and the chat service is older than both.
-	chatService.Tools = agent.New(consoleEngine)
+	//
+	// Beside them, the code sandbox's run_code, offered only to a group whose
+	// profile exists and is enabled, and only while the instance-wide switch
+	// is on. Both are read on every call so a change in the backoffice reaches
+	// turns already running. Its compiled interpreters are cached apart from
+	// the plugins', so clearing one cache never costs the other a compile.
+	sandboxStore := sandbox.NewStore(db)
+	sandboxWasm := sandbox.NewWasmExecutor(sandboxStore, filepath.Join(cfg.DataDir, "sandbox-cache"))
+	sandboxExecutors := map[string]sandbox.Executor{
+		sandbox.KindWasm:   sandboxWasm,
+		sandbox.KindRunner: sandbox.NewRunnerExecutor(sandboxStore),
+	}
+	sandboxBroker := sandbox.NewBroker(sandboxStore, sandboxExecutors)
+	// The backoffice's half. Set after its routes were mounted, which is
+	// safe because each handler reads these per request and nothing serves a
+	// request before New returns.
+	adminHandlers.Sandbox = sandboxStore
+	adminHandlers.SandboxTest = func(ctx context.Context, profile sandbox.Profile, job sandbox.Job) (sandbox.Result, error) {
+		executor := sandboxExecutors[profile.Kind]
+		if executor == nil {
+			return sandbox.Result{}, sandbox.ErrUnavailable
+		}
+		return executor.Run(ctx, profile, job)
+	}
+	adminHandlers.SandboxForget = sandboxWasm.Forget
+	sandboxBroker.Enabled = func() bool { return settingsService.Bool(settings.SandboxEnabled) }
+	sandboxBroker.MaxConcurrent = func() int { return settingsService.Int(settings.SandboxMaxConcurrent, 4) }
+	chatService.Tools = chat.Brokers{agent.New(consoleEngine), sandboxBroker}
+	// The Docker runners' side of the protocol. Mounted whether or not the
+	// sandbox is switched on: with it off nothing is ever queued, so a runner
+	// left connected waits on an empty queue rather than being told it is
+	// unwelcome and retrying in a loop. Never on the console's mux: a runner
+	// is not an account and nothing an account runs should reach these.
+	sandbox.NewHandlers(sandboxStore).Routes(mux)
 
 	consoleHandlers := console.NewHandlers(consoleEngine)
 	consoleHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
@@ -1373,6 +1408,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		bonus:          bonusStore,
 		invites:        invites,
 		instanceBackup: instanceBackup,
+		sandbox:        sandboxStore,
 		consoleAPI:     consoleAPI,
 		health: &health.Checker{
 			Store: healthStore, Models: models, Providers: providers, Registry: registry, Notify: notifyStore,
@@ -1522,6 +1558,15 @@ func (s *Server) sweep(ctx context.Context) {
 		slog.ErrorContext(sweepCtx, "could not expire group memberships", "error", err)
 	}
 	s.sweepAttachments(sweepCtx)
+	// Sandbox jobs hold the code people ran and what it printed. Kept only as
+	// long as the operator chose, read here so a change lands on the next
+	// pass rather than the next restart.
+	if s.sandbox != nil {
+		retain := time.Duration(s.settings.Int(settings.SandboxJobRetainMins, 60)) * time.Minute
+		if _, err := s.sandbox.Sweep(sweepCtx, retain); err != nil {
+			slog.ErrorContext(sweepCtx, "could not sweep sandbox jobs", "error", err)
+		}
+	}
 	// Authorisation codes live two minutes and tokens an hour; without this
 	// the two tables grow forever with rows nothing will read again.
 	if s.idp != nil {

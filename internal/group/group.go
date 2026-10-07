@@ -44,10 +44,16 @@ type Group struct {
 	// endpoint their own screens already reach, and is checked there.
 	AllowTerminal bool `json:"allow_terminal"`
 	// Whether members of this group see their group expiry date in the usage panel.
-	ShowExpiry bool  `json:"show_expiry"`
-	SortOrder  int   `json:"sort_order"`
-	CreatedAt  int64 `json:"created_at"`
-	UpdatedAt  int64 `json:"updated_at"`
+	ShowExpiry bool `json:"show_expiry"`
+	// The sandbox profile members' work-mode turns may run code under, or
+	// empty for none. Unlike the flags above it is off unless given: running
+	// code is a new capability, not one existing groups had. An id that no
+	// longer names a profile is read as none by the sandbox, so a stale value
+	// fails closed.
+	SandboxProfileID string `json:"sandbox_profile_id"`
+	SortOrder        int    `json:"sort_order"`
+	CreatedAt        int64  `json:"created_at"`
+	UpdatedAt        int64  `json:"updated_at"`
 }
 
 var (
@@ -64,7 +70,7 @@ const (
 )
 
 const columns = `id, name, description, is_default, allow_all_models, api_access,
-	allow_stats, allow_delete_conversations, allow_terminal, show_expiry, sort_order, created_at, updated_at`
+	allow_stats, allow_delete_conversations, allow_terminal, show_expiry, sandbox_profile_id, sort_order, created_at, updated_at`
 
 type Store struct{ db *database.DB }
 
@@ -88,7 +94,10 @@ type CreateInput struct {
 	AllowDeleteConversations bool
 	AllowTerminal            bool
 	ShowExpiry               bool
-	SortOrder                int
+	// Empty unless given: a new group runs no code until an administrator
+	// says which profile it runs under.
+	SandboxProfileID string
+	SortOrder        int
 }
 
 func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) (Group, error) {
@@ -113,16 +122,17 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		AllowDeleteConversations: in.AllowDeleteConversations,
 		AllowTerminal:            in.AllowTerminal,
 		ShowExpiry:               in.ShowExpiry,
+		SandboxProfileID:         strings.TrimSpace(in.SandboxProfileID),
 
 		SortOrder: in.SortOrder,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 
-	_, err = q.Exec(ctx, `INSERT INTO user_groups (`+columns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = q.Exec(ctx, `INSERT INTO user_groups (`+columns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.Name, record.Description, record.IsDefault, record.AllowAllModels,
 		record.APIAccess, record.AllowStats, record.AllowDeleteConversations, record.AllowTerminal, record.ShowExpiry,
-		record.SortOrder, record.CreatedAt, record.UpdatedAt)
+		record.SandboxProfileID, record.SortOrder, record.CreatedAt, record.UpdatedAt)
 	if err != nil {
 		if isUnique(err) {
 			return Group{}, ErrNameTaken
@@ -202,7 +212,9 @@ type Update struct {
 	AllowDeleteConversations *bool
 	AllowTerminal            *bool
 	ShowExpiry               *bool
-	SortOrder                *int
+	// An empty string clears it, which switches the sandbox off for the group.
+	SandboxProfileID *string
+	SortOrder        *int
 }
 
 func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, in Update) (Group, error) {
@@ -251,6 +263,10 @@ func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, 
 	if in.ShowExpiry != nil {
 		sets = append(sets, "show_expiry = ?")
 		args = append(args, *in.ShowExpiry)
+	}
+	if in.SandboxProfileID != nil {
+		sets = append(sets, "sandbox_profile_id = ?")
+		args = append(args, strings.TrimSpace(*in.SandboxProfileID))
 	}
 	if in.SortOrder != nil {
 		sets = append(sets, "sort_order = ?")
@@ -305,7 +321,7 @@ func scan(row rowScanner) (Group, error) {
 	var record Group
 	err := row.Scan(&record.ID, &record.Name, &record.Description, &record.IsDefault,
 		&record.AllowAllModels, &record.APIAccess, &record.AllowStats,
-		&record.AllowDeleteConversations, &record.AllowTerminal, &record.ShowExpiry, &record.SortOrder, &record.CreatedAt, &record.UpdatedAt)
+		&record.AllowDeleteConversations, &record.AllowTerminal, &record.ShowExpiry, &record.SandboxProfileID, &record.SortOrder, &record.CreatedAt, &record.UpdatedAt)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Group{}, ErrNotFound

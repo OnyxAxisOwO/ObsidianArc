@@ -248,6 +248,16 @@ const (
 	AttachmentPurgeDaily = "attachments.purge_daily_at"
 	AttachmentOrphanMins = "attachments.orphan_minutes"
 
+	// The code sandbox. The switch is instance-wide and off by default: a
+	// group's profile only takes effect while it is on, so turning the
+	// feature off is one setting rather than a visit to every group. The
+	// concurrency ceiling is across every profile and every instance, because
+	// it is counted in sandbox_jobs and not in memory; retention is how long
+	// a finished job's code and output stay before the sweep removes them.
+	SandboxEnabled       = "sandbox.enabled"
+	SandboxMaxConcurrent = "sandbox.max_concurrent"
+	SandboxJobRetainMins = "sandbox.job_retention_minutes"
+
 	// Liveness. The window is both "how far back counts as evidence" and
 	// "how quiet a model has to be before the system asks it directly",
 	// because those are the same question asked from two sides.
@@ -810,6 +820,17 @@ var Defaults = map[string]string{
 	// which this server holds a picture it has no use for.
 	AttachmentOrphanMins: "60",
 	AttachmentPurgeLast:  "0",
+
+	// Off: running code the model wrote is a capability an operator turns on
+	// deliberately, after giving a group a profile, never one an upgrade
+	// switches on for them.
+	SandboxEnabled: "false",
+	// A handful at once is enough for a site where work mode is used now and
+	// then; each wasm run holds its interpreter's memory ceiling while it lasts.
+	SandboxMaxConcurrent: "4",
+	// An hour: long enough to look into a run that went wrong, short enough
+	// that the code and output people ran do not become an archive nobody chose.
+	SandboxJobRetainMins: "60",
 
 	LeaderboardShowUsers:  "false",
 	LeaderboardIdentity:   LeaderboardNickname,

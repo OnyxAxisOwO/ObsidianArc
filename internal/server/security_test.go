@@ -268,6 +268,17 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodDelete, "/api/admin/login-background/landscape_light", nil},
 		{http.MethodPut, "/api/admin/logo", map[string]any{"mime": "image/png", "data": "AA=="}},
 		{http.MethodDelete, "/api/admin/logo", nil},
+		{http.MethodGet, "/api/admin/sandbox/profiles", nil},
+		{http.MethodPost, "/api/admin/sandbox/profiles", map[string]any{"name": "P", "kind": "wasm"}},
+		{http.MethodPut, "/api/admin/sandbox/profiles/01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{"name": "P", "kind": "wasm"}},
+		{http.MethodDelete, "/api/admin/sandbox/profiles/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodPost, "/api/admin/sandbox/profiles/01ARZ3NDEKTSV4RRFFQ69G5FAV/test", map[string]any{"language": "python", "code": "print(1)"}},
+		{http.MethodGet, "/api/admin/sandbox/interpreters", nil},
+		{http.MethodPost, "/api/admin/sandbox/interpreters", map[string]any{"name": "I", "language": "javascript", "module": "AA=="}},
+		{http.MethodDelete, "/api/admin/sandbox/interpreters/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodGet, "/api/admin/sandbox/runners", nil},
+		{http.MethodPost, "/api/admin/sandbox/runners", map[string]any{"profile_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "box"}},
+		{http.MethodDelete, "/api/admin/sandbox/runners/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
 	}
 
 	// The list above is the whole route table, not a sample of it. A new

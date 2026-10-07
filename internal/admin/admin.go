@@ -42,6 +42,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/sandbox"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/systembackup"
@@ -99,6 +100,13 @@ type Handlers struct {
 	// SystemBackup covers the complete instance and is restricted to the
 	// single super administrator rather than delegated settings operators.
 	SystemBackup *systembackup.Service
+	// The code sandbox's profiles, interpreters and runners. Nil on a server
+	// built without it, whose sandbox routes answer 404.
+	Sandbox *sandbox.Store
+	// Runs a profile's "try it" job on the executor its kind names.
+	SandboxTest SandboxTest
+	// Gives a deleted interpreter's compiled code back at once.
+	SandboxForget func(interpreterID string)
 
 	UsageLimiter *httpx.TokenBucketLimiter
 
@@ -296,6 +304,18 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("PATCH /api/admin/groups/{id}", protected("groups", h.updateGroup))
 	mux.Handle("POST /api/admin/groups/{id}/members", protected("groups", h.assignGroupMembers))
 	mux.Handle("DELETE /api/admin/groups/{id}", protected("groups", h.deleteGroup))
+
+	mux.Handle("GET /api/admin/sandbox/profiles", protected("sandbox", h.listSandboxProfiles))
+	mux.Handle("POST /api/admin/sandbox/profiles", protected("sandbox", h.createSandboxProfile))
+	mux.Handle("PUT /api/admin/sandbox/profiles/{id}", protected("sandbox", h.updateSandboxProfile))
+	mux.Handle("DELETE /api/admin/sandbox/profiles/{id}", protected("sandbox", h.deleteSandboxProfile))
+	mux.Handle("POST /api/admin/sandbox/profiles/{id}/test", protected("sandbox", h.testSandboxProfile))
+	mux.Handle("GET /api/admin/sandbox/interpreters", protected("sandbox", h.listSandboxInterpreters))
+	mux.Handle("POST /api/admin/sandbox/interpreters", protected("sandbox", h.createSandboxInterpreter))
+	mux.Handle("DELETE /api/admin/sandbox/interpreters/{id}", protected("sandbox", h.deleteSandboxInterpreter))
+	mux.Handle("GET /api/admin/sandbox/runners", protected("sandbox", h.listSandboxRunners))
+	mux.Handle("POST /api/admin/sandbox/runners", protected("sandbox", h.createSandboxRunner))
+	mux.Handle("DELETE /api/admin/sandbox/runners/{id}", protected("sandbox", h.deleteSandboxRunner))
 
 	mux.Handle("GET /api/admin/settings", protected("settings,security,availability,invites,leaderboard", h.listSettings))
 	mux.Handle("PUT /api/admin/settings", protected("settings,security,availability,invites,leaderboard", h.updateSettings))
