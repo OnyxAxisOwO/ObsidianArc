@@ -199,6 +199,11 @@ type Backend struct {
 	engine *Engine
 	host   HostFunc
 	wasm   []byte
+	// A WASI command (an interpreter the sandbox runs) rather than an SDK
+	// reactor. It shares the compile, the cache and the eviction below, which
+	// matter more for an interpreter than for a plugin, and is entered through
+	// Run instead of Invoke.
+	command bool
 
 	mu        sync.Mutex
 	warm      *warm         // the compiled code, nil while there is none
@@ -270,6 +275,12 @@ func (b *Backend) build() (*warm, error) {
 		return fail(fmt.Errorf("wasm: the backend does not compile: %w", err))
 	}
 	exports := compiled.ExportedFunctions()
+	if b.command {
+		if _, ok := exports["_start"]; !ok {
+			return fail(errors.New("wasm: the module does not export _start — it is not a WASI command"))
+		}
+		return &warm{rt: rt, compiled: compiled, cache: dirCache}, nil
+	}
 	for _, name := range []string{"_initialize", "arc_alloc", "arc_call"} {
 		if _, ok := exports[name]; !ok {
 			return fail(fmt.Errorf("wasm: the backend does not export %s — it is not built against the plugin SDK", name))

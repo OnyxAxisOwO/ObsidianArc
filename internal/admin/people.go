@@ -760,6 +760,11 @@ type groupRequest struct {
 	AllowTerminal            *bool `json:"allow_terminal"`
 	ShowExpiry               *bool `json:"show_expiry"`
 
+	// Empty clears it. Not checked against the profile table here: the
+	// sandbox reads an id that names no profile as none, so a typo fails
+	// closed rather than granting anything.
+	SandboxProfileID *string `json:"sandbox_profile_id"`
+
 	SortOrder   *int                `json:"sort_order"`
 	ModelIDs    *[]string           `json:"model_ids"`
 	ModelGrants *[]model.GroupGrant `json:"model_grants"`
@@ -794,6 +799,9 @@ func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 	in.AllowDeleteConversations = body.AllowDeleteConversations == nil || *body.AllowDeleteConversations
 	in.AllowTerminal = body.AllowTerminal == nil || *body.AllowTerminal
 	in.ShowExpiry = body.ShowExpiry == nil || *body.ShowExpiry
+	if body.SandboxProfileID != nil {
+		in.SandboxProfileID = *body.SandboxProfileID
+	}
 	if body.SortOrder != nil {
 		in.SortOrder = *body.SortOrder
 	}
@@ -835,6 +843,7 @@ func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
 		AllowDeleteConversations: body.AllowDeleteConversations,
 		AllowTerminal:            body.AllowTerminal,
 		ShowExpiry:               body.ShowExpiry,
+		SandboxProfileID:         body.SandboxProfileID,
 		SortOrder:                body.SortOrder,
 	})
 	if err != nil {

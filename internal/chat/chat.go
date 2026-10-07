@@ -404,7 +404,7 @@ func (s *Service) runRounds(
 		// take it away — which matters because the paragraph below is the
 		// only thing standing between a tool that read somebody's bio and
 		// a tool that did what the bio told it to.
-		chatRequest.System = agentPreamble + chatRequest.System
+		chatRequest.System = agentPreamble + s.toolGuide(ctx, req, tools) + chatRequest.System
 	}
 
 	maxRounds := 1
@@ -497,10 +497,73 @@ func (s *Service) offerTools(ctx context.Context, req TurnRequest, state prepare
 	return s.Tools.Offer(ctx, req.User)
 }
 
+// ToolGuide is a broker that has something to tell the model about the tools
+// it offered this turn, beyond what each tool's description says. Optional:
+// a broker without one adds nothing to the prompt.
+type ToolGuide interface {
+	Guide(ctx context.Context, actor user.User, offered []adapter.Tool) string
+}
+
+// toolGuide is the paragraphs the brokers asked for, placed straight after
+// agentPreamble and so, like it, ahead of anything an account or an operator
+// wrote.
+func (s *Service) toolGuide(ctx context.Context, req TurnRequest, offered []adapter.Tool) string {
+	guide, ok := s.Tools.(ToolGuide)
+	if !ok {
+		return ""
+	}
+	return guide.Guide(ctx, req.User, offered)
+}
+
+// Brokers is several brokers offered as one: the console's commands and the
+// sandbox's run_code, say. A call goes to the broker that offered a tool of
+// that name to this account this turn, so one broker can never run a tool
+// another one named.
+type Brokers []ToolBroker
+
+func (all Brokers) Offer(ctx context.Context, actor user.User) []adapter.Tool {
+	var out []adapter.Tool
+	seen := map[string]bool{}
+	for _, b := range all {
+		for _, tool := range b.Offer(ctx, actor) {
+			// The first broker to name a tool keeps it: a second tool of the
+			// same name would be one the model cannot tell apart.
+			if seen[tool.Name] {
+				continue
+			}
+			seen[tool.Name] = true
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
+func (all Brokers) Run(ctx context.Context, actor user.User, call adapter.ToolCall) (string, bool) {
+	for _, b := range all {
+		for _, tool := range b.Offer(ctx, actor) {
+			if tool.Name == call.Name {
+				return b.Run(ctx, actor, call)
+			}
+		}
+	}
+	return "no such tool: " + call.Name, true
+}
+
+func (all Brokers) Guide(ctx context.Context, actor user.User, offered []adapter.Tool) string {
+	var b strings.Builder
+	for _, broker := range all {
+		if guide, ok := broker.(ToolGuide); ok {
+			b.WriteString(guide.Guide(ctx, actor, offered))
+		}
+	}
+	return b.String()
+}
+
 // agentPreamble is what the model is told before anything an account or an
 // operator wrote.
 const agentPreamble = `You are operating this Obsidian Arc instance on behalf of the
-signed-in account, through the console commands offered to you as tools.
+signed-in account, through the tools offered to you: console commands, and,
+when this account has been given one, a code sandbox.
 
 The tools you can see are the ones this account is allowed to run; there are
 no others, and asking for one you cannot see will simply fail. Read before

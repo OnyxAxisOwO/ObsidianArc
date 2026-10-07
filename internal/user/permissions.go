@@ -6,6 +6,10 @@ var AdminPermissions = []string{
 	"dashboard", "groups", "users", "providers", "models", "availability",
 	"usage", "resources", "codes", "logs", "security", "settings",
 	"announcements", "feedback", "administrators", "invites", "leaderboard",
+	// The code sandbox: uploading interpreters and issuing runners puts code
+	// on the server and lets a machine take people's programs, so it is a
+	// grant of its own rather than part of groups or settings.
+	"sandbox",
 	// The plugins screen, split three ways so a super administrator can let
 	// somebody look without switching, and switch without removing.
 	"plugins", "plugins_manage", "plugins_remove",

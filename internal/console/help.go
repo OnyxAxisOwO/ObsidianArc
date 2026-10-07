@@ -30,6 +30,7 @@ var groupTitles = map[string]Text{
 	"profile":     {EN: "Profile", ZH: "个人资料"},
 	"backup":      {EN: "Backup & Restore", ZH: "备份与恢复"},
 	"images":      {EN: "Images", ZH: "生图"},
+	"sandbox":     {EN: "Code Sandbox", ZH: "代码沙箱"},
 }
 
 func groupHeading(group, lang string) string {
