@@ -282,9 +282,16 @@ export type UserFormControl =
    * sent (see lib/shrink-image.ts), so a phone's 8 MB photo does not meet the
    * server's 4 MiB limit on a plugin's request body.
    */
-  | { kind: 'images'; key: string; label: Text; hint?: Text; max: number };
+  | { kind: 'images'; key: string; label: Text; hint?: Text; max: number }
+  /**
+   * Any number of short texts, one a row, with a button that adds a row and
+   * one beside each that removes it — several accounts, several links. The
+   * value is the rows that were filled in, trimmed; blank ones are dropped
+   * before the plugin sees it.
+   */
+  | { kind: 'list'; key: string; label: Text; add: Text; hint?: Text; placeholder?: Text; maxLength?: number; max?: number; required?: boolean };
 
-/** A choice or text is a string, a switch a boolean, checks a list of values, images a list of data: URLs. */
+/** A choice or text is a string, a switch a boolean, checks a list of values, images a list of data: URLs, a list its rows. */
 export type UserFormValues = Record<string, string | boolean | string[]>;
 
 /** One of the reader's own submissions, as the panel lists it. */

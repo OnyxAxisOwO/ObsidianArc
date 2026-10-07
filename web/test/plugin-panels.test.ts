@@ -145,6 +145,47 @@ describe('a plugin\'s panel for everybody signed in', () => {
     expect(panelHost.textContent).toContain(t('pluginFieldRequired', { field: 'Link' }));
   });
 
+  it('lets a list grow and shrink row by row, and sends only the rows filled in', async () => {
+    const run = vi.fn(async () => 'Got it');
+    installPlugins([{ name: 'tipper', userPanels: [{
+      slug: 'tips',
+      title: () => 'Tips',
+      controls: [{ kind: 'list', key: 'who', label: () => 'Accounts', add: () => 'Add account', max: 3, required: true }],
+      submit: { label: () => 'Send tip', run },
+    }] }]);
+    await mount(PluginUserPanel, { slug: 'tips' });
+    const rows = () => [...panelHost.querySelectorAll<HTMLInputElement>('.oa-plugin-list-row input')];
+
+    // One row to start, and nothing to remove while it is the only one.
+    expect(rows()).toHaveLength(1);
+    expect(panelHost.querySelector('.oa-plugin-list-row .oa-icon-btn')).toBeNull();
+    button(panelHost, 'Send tip').click();
+    await settle();
+    expect(run).not.toHaveBeenCalled();
+
+    type(rows()[0]!, ' alice ');
+    await nextTick();
+    button(panelHost, 'Add account').click();
+    await nextTick();
+    button(panelHost, 'Add account').click();
+    await nextTick();
+    // Three is the most: the button goes.
+    expect(rows()).toHaveLength(3);
+    expect([...panelHost.querySelectorAll('button')].some((node) => node.textContent?.trim() === 'Add account')).toBe(false);
+    type(rows()[1]!, 'bob');
+    type(rows()[2]!, 'carol');
+    await nextTick();
+    panelHost.querySelectorAll<HTMLButtonElement>('.oa-plugin-list-row .oa-icon-btn')[1]!.click();
+    await nextTick();
+    expect(rows().map((row) => row.value)).toEqual([' alice ', 'carol']);
+
+    button(panelHost, 'Add account').click();
+    await nextTick();
+    button(panelHost, 'Send tip').click();
+    await settle();
+    expect(run).toHaveBeenCalledWith({ who: ['alice', 'carol'] });
+  });
+
   it('says so when no loaded plugin has the panel', async () => {
     await mount(PluginUserPanel, { slug: 'nowhere' });
     expect(panelHost.textContent).toContain(t('pluginPanelMissing'));

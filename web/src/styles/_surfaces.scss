@@ -5284,6 +5284,29 @@
   align-self: flex-start;
 }
 
+/* The reader's own list (a user form's `list`): one field a row, no card
+ * around it — it is one value typed several times, not a record. */
+.oa-plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oa-plugin-list-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oa-plugin-list-row > .oa-field-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.oa-plugin-list-row > .oa-icon-btn {
+  flex-shrink: 0;
+}
+
 .oa-feedback-full {
   margin: 0;
   font-size: 12px;

@@ -48,6 +48,10 @@ function toggle(control: Extract<UserFormControl, { kind: 'checks' }>, option: s
   emit('set', control.key, control.options.map((o) => o.value).filter((value) => next.includes(value)));
 }
 
+function setRow(key: string, index: number, value: string): void {
+  emit('set', key, list(key).map((item, at) => (at === index ? value : item)));
+}
+
 async function pick(control: Extract<UserFormControl, { kind: 'images' }>, event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
@@ -162,6 +166,43 @@ async function pick(control: Extract<UserFormControl, { kind: 'images' }>, event
       :hint="control.hint?.()"
       @update:model-value="emit('set', control.key, $event)"
     />
+
+    <div v-else-if="control.kind === 'list'" class="oa-field" role="group" :aria-label="control.label()">
+      <span class="oa-field-label">{{ control.label() }}<span v-if="control.required" class="oa-plugin-required">*</span></span>
+      <div class="oa-plugin-list">
+        <div v-for="(item, index) in list(control.key)" :key="index" class="oa-plugin-list-row">
+          <input
+            class="oa-field-input"
+            type="text"
+            :value="item"
+            :placeholder="control.placeholder?.()"
+            :maxlength="control.maxLength"
+            :aria-label="`${control.label()} ${index + 1}`"
+            @input="setRow(control.key, index, ($event.target as HTMLInputElement).value)"
+          >
+          <!-- The last row stays: removing it would leave nothing to type
+               into, which is the add button's job to undo. -->
+          <button
+            v-if="list(control.key).length > 1"
+            type="button"
+            class="oa-icon-btn"
+            :title="t('pluginRowRemove')"
+            @click="emit('set', control.key, list(control.key).filter((_, at) => at !== index))"
+          >
+            <IconClose :size="13" />
+          </button>
+        </div>
+        <button
+          v-if="!control.max || list(control.key).length < control.max"
+          type="button"
+          class="oa-btn oa-plugin-rows-add"
+          @click="emit('set', control.key, [...list(control.key), ''])"
+        >
+          {{ control.add() }}
+        </button>
+      </div>
+      <span v-if="control.hint" class="oa-field-hint">{{ control.hint() }}</span>
+    </div>
 
     <div v-else-if="control.kind === 'images'" class="oa-field">
       <span class="oa-field-label">{{ control.label() }}</span>

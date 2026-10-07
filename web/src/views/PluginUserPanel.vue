@@ -69,6 +69,9 @@ function reset(): void {
     const fallback = defaults[control.key];
     if (control.kind === 'switch') next[control.key] = fallback === true;
     else if (control.kind === 'images' || control.kind === 'checks') next[control.key] = [];
+    // One empty row to type into: a list with nothing drawn is a button
+    // somebody has to find before they can start.
+    else if (control.kind === 'list') next[control.key] = [''];
     else if (control.kind === 'choice') {
       next[control.key] = typeof fallback === 'string' ? fallback : control.required ? '' : control.options[0]?.value ?? '';
     } else next[control.key] = typeof fallback === 'string' ? fallback : '';
@@ -93,10 +96,22 @@ function say(failure: unknown): string {
 function missing(): string {
   for (const control of controls.value) {
     const value = values.value[control.key];
-    const empty = Array.isArray(value) ? value.length === 0 : typeof value === 'string' ? !value.trim() : false;
+    const empty = Array.isArray(value) ? !value.some((item) => item.trim()) : typeof value === 'string' ? !value.trim() : false;
     if ('required' in control && control.required && empty) return control.label();
   }
   return '';
+}
+
+/** What the plugin is handed: a list's rows trimmed, without the blank ones left to type into. */
+function sendable(): UserFormValues {
+  const out: UserFormValues = { ...values.value };
+  for (const control of controls.value) {
+    const value = out[control.key];
+    if (control.kind === 'list' && Array.isArray(value)) {
+      out[control.key] = value.map((item) => item.trim()).filter(Boolean);
+    }
+  }
+  return out;
 }
 
 async function refresh(): Promise<void> {
@@ -158,10 +173,10 @@ async function submit(): Promise<void> {
       if (!submitter) return;
       const proof = await prove();
       if (!proof) return;
-      sent.value = await submitter.run(values.value, proof);
+      sent.value = await submitter.run(sendable(), proof);
       await open();
     } else if (panel.submit) {
-      sent.value = await panel.submit.run(values.value);
+      sent.value = await panel.submit.run(sendable());
       reset();
       await refresh();
     }
