@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { logout, type Account } from '@/api/auth';
 import OaAvatar from '@/components/OaAvatar.vue';
@@ -15,6 +15,11 @@ import { forget, siteInfo, isAdmin, canAdmin } from '@/stores/session';
 const props = defineProps<{ account: Account }>();
 
 const router = useRouter();
+
+// Most panels go together after Feedback; one about what the account may
+// spend asks to sit under Usage instead (UserPanelSpec.menu).
+const usagePanels = computed(() => userPanels().filter((panel) => panel.menu === 'usage'));
+const otherPanels = computed(() => userPanels().filter((panel) => panel.menu !== 'usage'));
 
 // Once per page load, like the bell beside it. An answer that arrives while
 // somebody is sitting on the page is found the next time they move, which is
@@ -86,6 +91,14 @@ async function signOut(close: () => void): Promise<void> {
       <OaMenuItem :title="t('navUsage')" @click="go(close, '/usage')">
         <template #leading><IconChart :size="14" /></template>
       </OaMenuItem>
+      <OaMenuItem
+        v-for="panel in usagePanels"
+        :key="panel.slug"
+        :title="panel.title()"
+        @click="go(close, `/x/${panel.slug}`)"
+      >
+        <template #leading><component :is="panel.icon ?? IconMessage" :size="14" /></template>
+      </OaMenuItem>
       <OaMenuItem :title="t('archivedConversations')" @click="go(close, '/archive')">
         <template #leading><IconArchive :size="14" /></template>
       </OaMenuItem>
@@ -126,7 +139,7 @@ async function signOut(close: () => void): Promise<void> {
         </template>
       </OaMenuItem>
       <OaMenuItem
-        v-for="panel in userPanels()"
+        v-for="panel in otherPanels"
         :key="panel.slug"
         :title="panel.title()"
         @click="go(close, `/x/${panel.slug}`)"

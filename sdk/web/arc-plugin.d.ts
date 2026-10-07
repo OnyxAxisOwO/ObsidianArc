@@ -308,6 +308,13 @@ export interface UserPanelSpec {
   slug: string;
   title: Text;
   icon?: OaIcon;
+  /**
+   * Where the account menu offers it. Left out, it goes with the other
+   * plugins' panels after Feedback; 'usage' puts it straight under Usage,
+   * for a panel about what the account may spend — an upgrade, a top-up —
+   * which is where somebody who has just looked at their allowance is.
+   */
+  menu?: 'usage';
   /** The first thing in the panel: what this is for. */
   intro?: Text;
   /** The panel's own form, for a plugin whose form is the same for everyone. */
