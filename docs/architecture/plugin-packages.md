@@ -36,7 +36,7 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | `version` | 必须，`1.2.0` 这样的版本 |
 | `title`, `description` | 必须有 `title.en`；`{ "en": "...", "zh": "..." }` |
 | `author`, `homepage`, `license` | 显示用 |
-| `requires.api` | 必须，插件接口的版本，目前是 `1`；服务器提供的更低则拒绝安装 |
+| `requires.api` | 必须，插件接口的版本，目前是 `3`；服务器提供的更低则拒绝安装 |
 | `permissions` | 后端要用的权限，见下 |
 | `backend` | 后端文件，`plugin.wasm` |
 | `hooks` | `describe`（后端告诉浏览器和页面策略「现在该说什么」）、`decorate_invitees`（给邀请人自己的邀请列表加内容） |
@@ -64,9 +64,11 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | `network` | 向服务器能到达的任意地址发 HTTP(S) 请求（禁止链路本地地址）；**开着事务时不允许** | `http.fetch` |
 | `users` | 挂起、恢复、删除账户，数活跃管理员——按后台自己的规则做 | `users.set_status`、`users.delete`、`users.count_active_admins` |
 | `cards` | 收回账户名下未用的重置卡 | `cards.revoke_available` |
+| `rewards` | 给账户发赠金（发到指定的赠金条）和重置卡；可并入插件的事务。需要 API 3 | `rewards.bonus`、`rewards.cards` |
 | `sessions` | 结束账户的所有登录 | `sessions.revoke_user` |
 | `notify` | 往账户的收件箱放通知 | `notify.push` |
 | `security_log` | 写安全日志 | `security.record` |
+| `challenge` | 在自己的表单前使用站点的人机验证：问现在该要哪种（随注册页的验证码设置），并校验浏览器交来的证明。密钥不离开服务器。需要 API 3 | `challenge.describe`、`challenge.verify` |
 | `console` | 以当前操作员身份调用后台接口 | `console.call`、`console.resolve_user` |
 
 不需要权限的：写日志、生成 ULID、读**自己的**设置（和 `registration.captcha_mode`、`site.name` 两个核心设置）、读配置的公开地址。
@@ -114,7 +116,7 @@ go run ./cmd/arcpack build path/to/plugin -o demo.arcx     # 编译后端、打�
 go run ./cmd/arcpack inspect demo.arcx                      # 看它要什么
 ```
 
-**每次调用是一个全新的模块实例**（约 2.5 毫秒），互不相通，没有跨调用的内存。状态放在数据库、设置里。`time.Now()` 是服务器的真实时间，`crypto/rand` 是真随机数（wazero 默认给的是假时钟和确定的随机源，运行时已经替换掉了）；没有文件系统、没有环境变量。SDK 里一次调用的全部能力都是 `*arc.Ctx` 的方法：`Query`/`QueryRow`/`Exec`/`Tx`、`Fetch`、`Setting`、`NewID`、`Log`、`RevokeSessions`、`Notify`、`RecordSecurity`、`SetStatus`、`DeleteUser`、`CountActiveAdmins`、`RevokeCards`。`Tx` 之内的调用自动并入事务。
+**每次调用是一个全新的模块实例**（约 2.5 毫秒），互不相通，没有跨调用的内存。状态放在数据库、设置里。`time.Now()` 是服务器的真实时间，`crypto/rand` 是真随机数（wazero 默认给的是假时钟和确定的随机源，运行时已经替换掉了）；没有文件系统、没有环境变量。SDK 里一次调用的全部能力都是 `*arc.Ctx` 的方法：`Query`/`QueryRow`/`Exec`/`Tx`、`Fetch`、`Setting`、`NewID`、`Log`、`RevokeSessions`、`Notify`、`RecordSecurity`、`SetStatus`、`DeleteUser`、`CountActiveAdmins`、`RevokeCards`、`GrantBonus`、`GrantCards`、`Challenge`、`VerifyChallenge`。`Tx` 之内的调用自动并入事务。
 
 - **守卫**：注册或登录前被调用。返回 `*arc.Refusal` 拒绝（自己定状态码、错误码、话；检查所依赖的服务挂了时用 503，监控就能把它和一波机器人分开），返回 `GuardResult{Restrict: true}` 放行但让新账户的 API 保持关闭；后端崩了或超时则按拒绝处理——检查挂了，门不能开着。
 - **路由**：拿到已经过会话和权限检查的请求（含客户端访问的 `Host`）。返回 `*arc.Error` 是你想给客户端看的错误，任何 4xx、5xx 状态都原样给出；其他错误（没有措辞过的错误、panic）是 500，原因进日志、不给客户端。
@@ -136,7 +138,7 @@ export default function (host) {
 }
 ```
 
-声明的形状是 `web/src/plugins/types.ts` 里的 `ArcPlugin`：账户字段、守卫（怎么拿令牌）、设置卡片、列表、操作卡片、账户面板里的按钮、错误码和通知的文案、自己的后台子页面；列表的行可以点开（`detail`：字段、图片、带输入的操作按钮）；`userPanels` 在账户菜单里给所有登录用户加一项，打开一个表单（选项、文字、开关、图片——图片在浏览器里先缩小再发）和「我提交过的」列表。核心用自己的组件把它们画出来，插件不带自己的样式。
+声明的形状是 `web/src/plugins/types.ts` 里的 `ArcPlugin`：账户字段、守卫（怎么拿令牌）、设置卡片、列表、操作卡片、账户面板里的按钮、错误码和通知的文案、自己的后台子页面；列表的行可以点开（`detail`：字段、图片、带输入的操作按钮）；`userPanels` 在账户菜单里给所有登录用户加一项，打开一个表单（选项、多选、文字、开关、图片——图片在浏览器里先缩小再发）和「我提交过的」列表；或者是 `entries`：插件给出的一张列表（比如管理员发布的问卷和抽奖），每一项在 `/x/<slug>/<id>` 打开自己的表单，需要时核心先画出并完成站点的人机验证，把证明（`proof`）交给插件带去后端校验。后台的操作卡片可以要数字、开关、段落和一行一行编辑的小表（`rows`），下拉框可以从服务器取选项。核心用自己的组件把它们画出来，插件不带自己的样式。
 
 页面通过 `/api/site` 里这个插件的区块里的 `_ui` 知道去哪取模块（`/api/x/<name>/web/ui.js?v=<hash>`），**只有插件启用时才取**；地址带版本哈希，可以永久缓存；模块被当作同源脚本动态导入。**它在页面里以页面的权限运行**——能调用登录用户能调用的一切接口——所以清单里有 `ui` 的包，安装对话框会明确写出来。
 

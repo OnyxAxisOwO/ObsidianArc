@@ -84,7 +84,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'leaderboard', component: LeaderboardPanel, meta: { auth: true } },
       // A panel a plugin brings (UserPanelSpec). The slug is resolved when the
       // panel is drawn, not here: the plugins load after the router is made.
-      { path: 'x/:slug', component: PluginUserPanel, props: true, meta: { auth: true } },
+      { path: 'x/:slug/:entry?', component: PluginUserPanel, props: true, meta: { auth: true } },
       { path: 'terminal', component: () => import('@/views/TerminalPanel.vue'), meta: { auth: true } },
     ],
   },

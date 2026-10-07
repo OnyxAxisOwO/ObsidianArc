@@ -202,6 +202,8 @@ function grantLine(row: BonusGrantRow): string {
     relativeTime(row.created_at),
   ];
   if (row.source === 'checkin') parts.push(t('bonusSourceCheckin'));
+  // What a plugin package granted is marked with its name (rewards.bonus).
+  else if (row.source.startsWith('plugin:')) parts.push(t('bonusSourcePlugin', { name: row.source.slice(7) }));
   if (row.note) parts.push(row.note);
   return parts.join(' · ');
 }

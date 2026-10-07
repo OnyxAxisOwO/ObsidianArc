@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
@@ -704,6 +705,23 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	authService.PoW = powManager
 	chatHandlers.ImagePoW = powManager
 
+	// Exactly when a Turnstile widget can appear, which is when the page's
+	// policy lets one load. A key with every switch off draws nothing, and an
+	// instance that draws nothing keeps the policy it had before the feature
+	// existed.
+	turnstileDrawn := func() bool {
+		mode := settingsService.RegistrationCaptchaMode()
+		turnstileOnSignup := mode == settings.CaptchaModeTurnstile || mode == settings.CaptchaModeBoth
+		return settingsService.Get(settings.TurnstileSiteKey) != "" &&
+			(turnstileOnSignup ||
+				settingsService.Bool(settings.TurnstileOnLogin) ||
+				settingsService.Bool(settings.TurnstileOnAPIKey) ||
+				settingsService.Bool(settings.TurnstileOnRedeem) ||
+				settingsService.Bool(settings.TurnstileOnFeedback) ||
+				settingsService.Bool(settings.TurnstileOnImages) ||
+				settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
+	}
+
 	authService.OnChallengeFailure = func(ctx context.Context, event, ip, username, reason string) {
 		ev := securityevents.Event{
 			Event: event, Severity: securityevents.SeverityWarning,
@@ -1053,7 +1071,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	inviteHandlers.SetPluginGate(pluginGate)
 	host := &plugin.Host{
 		DB: db, Settings: settingsService, Users: users, Security: securityLog,
-		Notify: notifyStore, Cards: cards,
+		Notify: notifyStore, Cards: cards, Bonus: bonusStore,
 		Auth: authService, AuthHandlers: authHandlers,
 		OAuth: oauthService, OAuthHandlers: oauthHandlers,
 		Invites: invites, InviteHandlers: inviteHandlers,
@@ -1062,6 +1080,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		ClientIP:  func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
 		PublicURL: mailer.PublicURL,
 		Gate:      pluginGate,
+		Challenge: pluginChallenge(settingsService, powManager, challengeClient, turnstileDrawn),
 	}
 	if err := plugin.SetupAll(host); err != nil {
 		return nil, err
@@ -1340,21 +1359,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// on the wire rather than what the handler produced. Outside
 		// everything that writes a body, so there is one place that decides.
 		httpx.Compress(),
-		httpx.SecurityHeaders(cfg.Dev, web.InlineScriptHashes(), func() bool {
-			// Exactly when a widget can appear. A key with both switches off
-			// draws nothing, and an instance that draws nothing keeps the
-			// policy it had before this feature existed.
-			mode := settingsService.RegistrationCaptchaMode()
-			turnstileOnSignup := mode == settings.CaptchaModeTurnstile || mode == settings.CaptchaModeBoth
-			return settingsService.Get(settings.TurnstileSiteKey) != "" &&
-				(turnstileOnSignup ||
-					settingsService.Bool(settings.TurnstileOnLogin) ||
-					settingsService.Bool(settings.TurnstileOnAPIKey) ||
-					settingsService.Bool(settings.TurnstileOnRedeem) ||
-					settingsService.Bool(settings.TurnstileOnFeedback) ||
-					settingsService.Bool(settings.TurnstileOnImages) ||
-					settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
-		}, host.Origins),
+		httpx.SecurityHeaders(cfg.Dev, web.InlineScriptHashes(), turnstileDrawn, host.Origins),
 		httpx.SameOrigin(cfg.AllowedOrigins),
 	)
 
@@ -1635,4 +1640,62 @@ func devServerURL(cfg config.Config) string {
 		return ""
 	}
 	return "http://127.0.0.1:5173"
+}
+
+// pluginChallenge is the human check a plugin borrows: the one the sign-up
+// door asks for, so "follow the site's setting" means one setting. A sign-up
+// mode the core does not draw itself (off, or a plugin's own) still has to
+// mean something when a plugin asked for a check, so it falls back to
+// Turnstile where the page already loads it and to proof of work, which needs
+// nobody else's server, everywhere else.
+func pluginChallenge(s *settings.Service, powManager *pow.Manager, client *http.Client, turnstileDrawn func() bool) plugin.Challenge {
+	describe := func() plugin.ChallengeKinds {
+		key := s.Get(settings.TurnstileSiteKey)
+		ready := key != "" && s.Get(settings.TurnstileSecretKey) != ""
+		var kinds plugin.ChallengeKinds
+		switch s.RegistrationCaptchaMode() {
+		case settings.CaptchaModePoW:
+			kinds.PoW = true
+		case settings.CaptchaModeTurnstile:
+			if ready {
+				kinds.TurnstileSiteKey = key
+			} else {
+				kinds.PoW = true
+			}
+		case settings.CaptchaModeBoth:
+			kinds.PoW = true
+			if ready {
+				kinds.TurnstileSiteKey = key
+			}
+		default:
+			if ready && turnstileDrawn() {
+				kinds.TurnstileSiteKey = key
+			} else {
+				kinds.PoW = true
+			}
+		}
+		return kinds
+	}
+	return plugin.Challenge{
+		Describe: describe,
+		Verify: func(ctx context.Context, proof plugin.ChallengeProof, ip string) error {
+			kinds := describe()
+			if kinds.PoW {
+				var solution pow.Solution
+				if len(proof.PoW) == 0 || string(proof.PoW) == "null" {
+					return pow.ErrMissingSolution
+				}
+				if err := json.Unmarshal(proof.PoW, &solution); err != nil {
+					return pow.ErrInvalidNonce
+				}
+				if err := powManager.Verify(&solution); err != nil {
+					return err
+				}
+			}
+			if kinds.TurnstileSiteKey != "" {
+				return turnstile.Verify(ctx, client, s.Get(settings.TurnstileSecretKey), proof.Turnstile, ip)
+			}
+			return nil
+		},
+	}
 }

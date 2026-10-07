@@ -1,28 +1,33 @@
 <script setup lang="ts">
 // A panel a plugin brings for everybody signed in (UserPanelSpec), drawn by
 // the core in the shape of the feedback panel: what it is for, a form, and
-// the reader's own earlier submissions under it.
+// the reader's own earlier submissions under it. A plugin whose forms an
+// operator writes — a survey, a prize draw — lists them instead, and each
+// opens at /x/<slug>/<id> with its own form, so a notification can link to
+// the one it is about.
 //
 // The plugin declares the controls and does the requests; every pixel is
 // drawn here with the same components the core's own panels use, so a plugin
-// cannot bring markup or a style of its own into the chat.
+// cannot bring markup or a style of its own into the chat. The human check
+// is drawn and solved here too: the plugin only carries the proof.
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import { fetchPoWChallenge } from '@/api/auth';
 import { ApiError } from '@/api/client';
-import { prepareImage } from '@/chat/image';
 import OaBadge from '@/components/OaBadge.vue';
 import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaPanel from '@/components/OaPanel.vue';
-import OaSwitchField from '@/components/OaSwitchField.vue';
-import OaTextArea from '@/components/OaTextArea.vue';
-import OaTextField from '@/components/OaTextField.vue';
+import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t } from '@/composables/useI18n';
-import { IconClose } from '@/icons';
-import { userPanels } from '@/plugins/registry';
-import type { UserFormControl, UserFormValues, UserRecord } from '@/plugins/types';
+import { solvePoW } from '@/lib/pow';
+import { pluginRefusal, userPanels } from '@/plugins/registry';
+import type {
+  ChallengeProof, UserEntry, UserEntryView, UserFormControl, UserFormValues, UserRecord,
+} from '@/plugins/types';
+import PluginUserControls from './PluginUserControls.vue';
 
-const props = defineProps<{ slug: string }>();
+const props = defineProps<{ slug: string; entry?: string }>();
 
 const router = useRouter();
 
@@ -31,205 +36,258 @@ const router = useRouter();
 // the plugin that owns it has said anything.
 const spec = computed(() => userPanels().find((panel) => panel.slug === props.slug) ?? null);
 
-// Pictures are sent inside the JSON body, which the server caps at 4 MiB for
-// a plugin's route; base64 is a third bigger than the bytes it carries.
-const MAX_IMAGE_BYTES = 2_800_000;
-
 const values = ref<UserFormValues>({});
 const busy = ref(false);
+const stage = ref('');
 const error = ref('');
 const sent = ref('');
 const mine = ref<UserRecord[]>([]);
 const loaded = ref(false);
 const viewing = ref('');
 
+const entries = ref<UserEntry[]>([]);
+const view = ref<UserEntryView | null>(null);
+const turnstile = ref<InstanceType<typeof OaTurnstile> | null>(null);
+
+/** The entry open now: the route says which, the plugin says what it is. */
+const opened = computed(() => (spec.value?.entries && props.entry ? props.entry : ''));
+const controls = computed<readonly UserFormControl[]>(() =>
+  (opened.value ? view.value?.controls : spec.value?.controls) ?? []);
+
+const title = computed(() => {
+  if (!spec.value) return t('loading');
+  if (opened.value) return view.value?.title ?? t('loading');
+  return spec.value.title();
+});
+const confirmLabel = computed(() =>
+  (opened.value ? view.value?.submit?.label : spec.value?.submit?.label()) ?? '');
+
 function reset(): void {
   const next: UserFormValues = {};
-  for (const control of spec.value?.controls ?? []) {
-    const fallback = spec.value?.defaults?.[control.key];
+  const defaults = (opened.value ? view.value?.defaults : spec.value?.defaults) ?? {};
+  for (const control of controls.value) {
+    const fallback = defaults[control.key];
     if (control.kind === 'switch') next[control.key] = fallback === true;
-    else if (control.kind === 'images') next[control.key] = [];
-    else if (control.kind === 'choice') next[control.key] = typeof fallback === 'string' ? fallback : control.options[0]?.value ?? '';
-    else next[control.key] = typeof fallback === 'string' ? fallback : '';
+    else if (control.kind === 'images' || control.kind === 'checks') next[control.key] = [];
+    else if (control.kind === 'choice') {
+      next[control.key] = typeof fallback === 'string' ? fallback : control.required ? '' : control.options[0]?.value ?? '';
+    } else next[control.key] = typeof fallback === 'string' ? fallback : '';
   }
   values.value = next;
-}
-
-function text(key: string): string {
-  const value = values.value[key];
-  return typeof value === 'string' ? value : '';
-}
-
-function images(key: string): string[] {
-  const value = values.value[key];
-  return Array.isArray(value) ? value : [];
 }
 
 function set(key: string, value: string | boolean | string[]): void {
   values.value = { ...values.value, [key]: value };
   sent.value = '';
-}
-
-async function pick(control: Extract<UserFormControl, { kind: 'images' }>, event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement;
-  const files = Array.from(input.files ?? []);
-  input.value = '';
   error.value = '';
-  const have = images(control.key);
-  if (have.length + files.length > control.max) {
-    error.value = t('pluginImagesTooMany', { count: control.max });
-    return;
-  }
-  const added: string[] = [];
-  for (const file of files) {
-    try {
-      const image = await prepareImage(file);
-      URL.revokeObjectURL(image.previewURL);
-      added.push(`data:${image.mime};base64,${image.data}`);
-    } catch (failure) {
-      error.value = failure instanceof Error ? failure.message : t('failed');
-      return;
-    }
-  }
-  const next = [...have, ...added];
-  if (next.reduce((sum, url) => sum + url.length, 0) > MAX_IMAGE_BYTES) {
-    error.value = t('pluginImagesTooLarge');
-    return;
-  }
-  set(control.key, next);
 }
 
-function drop(key: string, index: number): void {
-  set(key, images(key).filter((_, at) => at !== index));
+function say(failure: unknown): string {
+  if (!(failure instanceof ApiError)) return t('failed');
+  if (failure.code === 'challenge_failed' || failure.code.startsWith('pow_')) return t('challengeFailed');
+  if (failure.code === 'challenge_unavailable') return t('challengeUnavailable');
+  return pluginRefusal(failure.code) ?? failure.message;
+}
+
+/** The first required control left empty, by its label; empty when none is. */
+function missing(): string {
+  for (const control of controls.value) {
+    const value = values.value[control.key];
+    const empty = Array.isArray(value) ? value.length === 0 : typeof value === 'string' ? !value.trim() : false;
+    if ('required' in control && control.required && empty) return control.label();
+  }
+  return '';
 }
 
 async function refresh(): Promise<void> {
-  const list = spec.value?.mine;
-  if (!list) return;
+  const panel = spec.value;
+  if (!panel) return;
   try {
-    mine.value = await list.load();
+    if (panel.entries && !opened.value) entries.value = await panel.entries.load();
+    if (panel.mine && !opened.value) mine.value = await panel.mine.load();
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    error.value = say(failure);
   } finally {
     loaded.value = true;
   }
 }
 
+async function open(): Promise<void> {
+  const panel = spec.value;
+  if (!panel?.entries || !opened.value) return;
+  try {
+    view.value = await panel.entries.open(opened.value);
+    reset();
+  } catch (failure) {
+    error.value = say(failure);
+  }
+}
+
+/** The proof of whatever check the entry asks for, solved here. */
+async function prove(): Promise<ChallengeProof | null> {
+  const challenge = view.value?.challenge;
+  const proof: ChallengeProof = {};
+  if (!challenge) return proof;
+  if (challenge.turnstile_site_key) {
+    proof.turnstile = turnstile.value?.token() ?? '';
+    if (!proof.turnstile) {
+      error.value = t('challengeRequired');
+      return null;
+    }
+  }
+  if (challenge.pow) {
+    stage.value = t('powSolving');
+    proof.pow = await solvePoW(await fetchPoWChallenge()).promise;
+  }
+  return proof;
+}
+
 async function submit(): Promise<void> {
   const panel = spec.value;
   if (!panel || busy.value) return;
-  for (const control of panel.controls) {
-    if ((control.kind === 'text' || control.kind === 'textarea') && control.required && !text(control.key).trim()) {
-      error.value = t('pluginFieldRequired', { field: control.label() });
-      return;
-    }
+  const field = missing();
+  if (field) {
+    error.value = t('pluginFieldRequired', { field });
+    return;
   }
   busy.value = true;
   error.value = '';
   try {
-    sent.value = await panel.submit.run(values.value);
-    reset();
-    await refresh();
+    if (opened.value) {
+      const submitter = view.value?.submit;
+      if (!submitter) return;
+      const proof = await prove();
+      if (!proof) return;
+      sent.value = await submitter.run(values.value, proof);
+      await open();
+    } else if (panel.submit) {
+      sent.value = await panel.submit.run(values.value);
+      reset();
+      await refresh();
+    }
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    error.value = say(failure);
   } finally {
+    stage.value = '';
     busy.value = false;
+    // Spent whether or not it passed.
+    turnstile.value?.reset();
   }
 }
 
-// The same component is reused when one plugin panel is opened from another.
-watch(spec, (panel, before) => {
-  if (!panel || panel === before) return;
+function close(): void {
+  void router.push(opened.value ? `/x/${props.slug}` : '/');
+}
+
+// The same component is reused when one plugin panel is opened from another,
+// and when an entry is opened from the list or the list from an entry.
+watch([spec, opened], ([panel], [before, wasOpen]) => {
+  if (!panel || (panel === before && opened.value === wasOpen)) return;
+  error.value = '';
+  sent.value = '';
+  view.value = null;
+  if (opened.value) {
+    void open();
+    return;
+  }
   reset();
+  entries.value = [];
   mine.value = [];
   loaded.value = false;
   void refresh();
-}, { immediate: false });
+});
 
 onMounted(() => {
   reset();
-  void refresh();
+  if (opened.value) void open();
+  else void refresh();
 });
 </script>
 
 <template>
   <OaPanel
-    :title="spec ? spec.title() : t('loading')"
-    :confirm-label="spec?.submit.label() ?? ''"
-    :confirmable="!!spec"
+    :title="title"
+    :confirm-label="confirmLabel"
+    :confirmable="!!confirmLabel"
+    :footer="!!confirmLabel"
+    :back="!!opened"
     :width="480"
     :busy="busy"
     :error="error"
-    @close="router.push('/')"
+    @close="close"
+    @back="close"
     @confirm="submit"
   >
     <p v-if="!spec" class="oa-menu-empty">{{ t('pluginPanelMissing') }}</p>
+
+    <template v-else-if="opened">
+      <p v-if="!view" class="oa-menu-empty">{{ t('loading') }}</p>
+      <template v-else>
+        <div v-if="view.badges?.length" class="oa-feedback-detail-badges">
+          <OaBadge v-for="(badge, index) in view.badges" :key="index" :tone="badge.tone">{{ badge.label }}</OaBadge>
+        </div>
+        <p v-if="view.body" class="oa-plugin-entry-body">{{ view.body }}</p>
+        <dl v-if="view.facts?.length" class="oa-plugin-record">
+          <template v-for="(fact, index) in view.facts" :key="index">
+            <dt>{{ fact.label }}</dt>
+            <dd class="multiline">{{ fact.value }}</dd>
+          </template>
+        </dl>
+        <p v-if="view.outcome" class="oa-plugin-outcome" :class="`tone-${view.outcome.tone}`" role="status">
+          {{ view.outcome.text }}
+        </p>
+        <template v-if="view.submit">
+          <PluginUserControls
+            :controls="controls"
+            :values="values"
+            @set="set"
+            @error="error = $event"
+            @view="viewing = $event"
+          />
+          <OaTurnstile
+            v-if="view.challenge?.turnstile_site_key"
+            ref="turnstile"
+            :site-key="view.challenge.turnstile_site_key"
+          />
+          <p v-if="stage" class="oa-field-hint" role="status">{{ stage }}</p>
+        </template>
+        <!-- Opened again after a submission, an entry usually says what came
+             of it itself; the plugin's sentence is for when it does not. -->
+        <p v-if="sent && !view.outcome" class="oa-feedback-sent" role="status">{{ sent }}</p>
+      </template>
+    </template>
+
     <template v-else>
       <p v-if="spec.intro" class="oa-field-hint">{{ spec.intro() }}</p>
 
-      <template v-for="control in spec.controls" :key="control.key">
-        <div v-if="control.kind === 'choice'" class="oa-field">
-          <span class="oa-field-label">{{ control.label() }}</span>
-          <div class="oa-segmented">
-            <button
-              v-for="option in control.options"
-              :key="option.value"
-              type="button"
-              class="oa-segmented-option"
-              :class="{ active: text(control.key) === option.value }"
-              @click="set(control.key, option.value)"
-            >{{ option.label() }}</button>
-          </div>
-          <span v-if="control.hint" class="oa-field-hint">{{ control.hint() }}</span>
-        </div>
-
-        <OaTextField
-          v-else-if="control.kind === 'text'"
-          :model-value="text(control.key)"
-          :label="control.label()"
-          :hint="control.hint?.()"
-          :placeholder="control.placeholder?.()"
-          :max-length="control.maxLength"
-          @update:model-value="set(control.key, $event)"
-        />
-
-        <OaTextArea
-          v-else-if="control.kind === 'textarea'"
-          :model-value="text(control.key)"
-          :label="control.label()"
-          :hint="control.hint?.()"
-          :placeholder="control.placeholder?.()"
-          :rows="control.rows ?? 6"
-          @update:model-value="set(control.key, $event)"
-        />
-
-        <OaSwitchField
-          v-else-if="control.kind === 'switch'"
-          :model-value="values[control.key] === true"
-          :label="control.label()"
-          :hint="control.hint?.()"
-          @update:model-value="set(control.key, $event)"
-        />
-
-        <div v-else-if="control.kind === 'images'" class="oa-field">
-          <span class="oa-field-label">{{ control.label() }}</span>
-          <div class="oa-plugin-images">
-            <span v-for="(url, index) in images(control.key)" :key="index" class="oa-plugin-image">
-              <img :src="url" alt="" @click="viewing = url">
-              <button type="button" class="oa-icon-btn" :title="t('pluginImagesRemove')" @click="drop(control.key, index)">
-                <IconClose :size="12" />
-              </button>
-            </span>
-            <label v-if="images(control.key).length < control.max" class="oa-btn">
-              {{ t('pluginImagesAdd') }}
-              <input type="file" accept="image/*" multiple hidden @change="pick(control, $event)">
-            </label>
-          </div>
-          <span v-if="control.hint" class="oa-field-hint">{{ control.hint() }}</span>
-        </div>
-      </template>
+      <PluginUserControls
+        :controls="controls"
+        :values="values"
+        @set="set"
+        @error="error = $event"
+        @view="viewing = $event"
+      />
 
       <p v-if="sent" class="oa-feedback-sent" role="status">{{ sent }}</p>
+
+      <template v-if="spec.entries">
+        <p v-if="!loaded" class="oa-menu-empty">{{ t('loading') }}</p>
+        <p v-else-if="!entries.length" class="oa-menu-empty">{{ spec.entries.empty() }}</p>
+        <ul v-else class="oa-feedback-list">
+          <li v-for="item in entries" :key="item.id">
+            <button type="button" class="oa-feedback-item" @click="router.push(`/x/${slug}/${item.id}`)">
+              <span class="oa-feedback-item-head">
+                <span class="oa-feedback-item-title">{{ item.title }}</span>
+                <OaBadge v-if="item.badge" :tone="item.badge.tone">{{ item.badge.label }}</OaBadge>
+              </span>
+              <span v-if="item.meta?.length" class="oa-feedback-item-meta">
+                <span v-for="(fact, index) in item.meta" :key="index">{{ fact }}</span>
+              </span>
+              <span v-if="item.note" class="oa-field-hint">{{ item.note }}</span>
+            </button>
+          </li>
+        </ul>
+      </template>
 
       <section v-if="spec.mine" class="oa-feedback-mine">
         <h3 class="oa-panel-section-title">{{ spec.mine.title() }}</h3>

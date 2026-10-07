@@ -1,10 +1,13 @@
 package plugin
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/admin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/invite"
@@ -32,6 +35,7 @@ type Host struct {
 	Security *securityevents.Store
 	Notify   *notify.Store
 	Cards    *card.Store
+	Bonus    *bonus.Store
 
 	Auth          *auth.Service
 	AuthHandlers  *auth.Handlers
@@ -51,6 +55,10 @@ type Host struct {
 	// The configured public URL, for a plugin that has to build an absolute
 	// address to itself. Empty when none is configured.
 	PublicURL func() string
+	// The instance's own human check, for a plugin that puts it in front of
+	// something of its own. Zero means none is wired, and asking for one is
+	// then refused rather than passed.
+	Challenge Challenge
 
 	// Which plugins are switched on. Every extension point above holds the
 	// same gate; Host asks it for the two it hands out itself.
@@ -66,6 +74,30 @@ type Host struct {
 	// response afterwards; setup finishes before the first request, so
 	// there is nothing to lock.
 	shared *hostShared
+}
+
+// Challenge is the human check a plugin may borrow: which kinds the
+// instance would ask for right now, and the check of what the browser
+// solved. Functions, because both follow settings an operator changes while
+// the process runs.
+type Challenge struct {
+	Describe func() ChallengeKinds
+	// Verify checks the proof against what Describe asks for; ip is the
+	// address the proof came from, which Turnstile weighs.
+	Verify func(ctx context.Context, proof ChallengeProof, ip string) error
+}
+
+// ChallengeKinds is what a browser must solve: proof of work, a Turnstile
+// widget drawn with this key, or both. Both empty means nothing is asked.
+type ChallengeKinds struct {
+	PoW              bool   `json:"pow"`
+	TurnstileSiteKey string `json:"turnstile_site_key"`
+}
+
+// ChallengeProof is what the browser solved, as it sent it.
+type ChallengeProof struct {
+	Turnstile string          `json:"turnstile"`
+	PoW       json.RawMessage `json:"pow"`
 }
 
 type hostShared struct {

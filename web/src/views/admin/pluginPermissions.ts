@@ -17,9 +17,11 @@ export const PERMISSIONS: PermissionSpec[] = [
   { id: 'users', label: 'pluginPermUsers', risky: true },
   { id: 'console', label: 'pluginPermConsole', risky: true },
   { id: 'cards', label: 'pluginPermCards', risky: false },
+  { id: 'rewards', label: 'pluginPermRewards', risky: false },
   { id: 'sessions', label: 'pluginPermSessions', risky: false },
   { id: 'notify', label: 'pluginPermNotify', risky: false },
   { id: 'security_log', label: 'pluginPermSecurityLog', risky: false },
+  { id: 'challenge', label: 'pluginPermChallenge', risky: false },
 ];
 
 /** The specs for the ids a package holds, in display order; an id this build does not know is left out. */

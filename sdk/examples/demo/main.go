@@ -20,6 +20,8 @@ func init() {
 	arc.Route("POST /api/admin/x/demo/things", addThing)
 	arc.Route("POST /api/admin/x/demo/disable/{id}", disableAccount)
 	arc.Route("POST /api/admin/x/demo/retire/{id}", retire)
+	arc.Route("POST /api/admin/x/demo/reward/{id}", reward)
+	arc.Route("POST /api/x/demo/challenged", challenged)
 	arc.Route("POST /api/x/demo/hook", hook)
 	arc.Route("GET /api/x/demo/upstream", upstream)
 	arc.Route("GET /api/x/demo/echo", echo)
@@ -189,6 +191,68 @@ func retire(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
 		return nil, err
 	}
 	return arc.JSON(200, map[string]any{"revoked": revoked})
+}
+
+// reward pays an account in the core's own currencies, inside a transaction
+// with a row of the plugin's, so the two stand or fall together.
+func reward(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
+	id := r.Params["id"]
+	var body struct {
+		BarID  string  `json:"bar_id"`
+		Amount float64 `json:"amount"`
+		Cards  int     `json:"cards"`
+		Days   int     `json:"days"`
+		Fail   bool    `json:"fail"`
+	}
+	if err := r.JSON(&body); err != nil {
+		return nil, err
+	}
+	var expires int64
+	err := c.Tx(func() error {
+		if body.BarID != "" {
+			at, err := c.GrantBonus(arc.BonusGrant{BarID: body.BarID, UserID: id, Amount: body.Amount, ValidDays: body.Days, Note: "demo"})
+			if err != nil {
+				if he, ok := err.(*arc.HostError); ok && he.Code == "bonus_bar_not_found" {
+					return arc.Err(404, "demo_no_bar", "No such bonus bar.")
+				}
+				return err
+			}
+			expires = at
+		}
+		if body.Cards > 0 {
+			if err := c.GrantCards(id, body.Cards, body.Days, "demo"); err != nil {
+				return err
+			}
+		}
+		if body.Fail {
+			return arc.Err(409, "demo_failed", "Taken back.")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return arc.JSON(200, map[string]any{"expires_at": expires})
+}
+
+// challenged is a form behind the instance's own human check: it says what
+// the check asks for, and passes only a proof of it.
+func challenged(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
+	kinds, err := c.Challenge()
+	if err != nil {
+		return nil, err
+	}
+	var proof arc.ChallengeProof
+	if err := r.JSON(&proof); err != nil {
+		return nil, err
+	}
+	if err := c.VerifyChallenge(proof); err != nil {
+		if he, ok := err.(*arc.HostError); ok && (he.Code == "challenge_failed" || he.Code == "challenge_unavailable") {
+			return nil, arc.Err(400, he.Code, he.Message)
+		}
+		return nil, err
+	}
+	return arc.JSON(200, kinds)
 }
 
 // hook is a public endpoint that authenticates itself, the way a bot's

@@ -15,10 +15,10 @@ import OaBadge from '@/components/OaBadge.vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaPanel from '@/components/OaPanel.vue';
-import OaSelectField from '@/components/OaSelectField.vue';
-import OaTextField from '@/components/OaTextField.vue';
 import { t } from '@/composables/useI18n';
 import type { RecordAction, RecordDetail } from '@/plugins/types';
+import PluginActionControl from './PluginActionControl.vue';
+import { missingRequired, visibleControls } from './pluginControls';
 
 const props = defineProps<{ detail: RecordDetail }>();
 
@@ -89,32 +89,19 @@ async function run(action: RecordAction): Promise<void> {
     </div>
 
     <section v-for="action in detail.actions ?? []" :key="action.id" class="oa-plugin-controls">
-      <template v-for="control in action.controls ?? []" :key="control.key">
-        <OaSelectField
-          v-if="control.kind === 'select'"
-          :model-value="drafts[action.id]?.[control.key] ?? ''"
-          :label="control.label()"
-          :hint="control.hint?.()"
-          :searchable="false"
-          :options="control.options.map((option) => ({ value: option.value, label: option.label() }))"
-          @update:model-value="set(action.id, control.key, $event)"
-        />
-        <OaTextField
-          v-else
-          :model-value="drafts[action.id]?.[control.key] ?? ''"
-          :label="control.label()"
-          :hint="control.hint?.()"
-          :type="control.kind === 'datetime' ? 'datetime-local' : 'text'"
-          :placeholder="control.kind === 'text' ? control.placeholder : undefined"
-          @update:model-value="set(action.id, control.key, $event)"
-        />
-      </template>
+      <PluginActionControl
+        v-for="control in visibleControls(action.controls ?? [], drafts[action.id] ?? {})"
+        :key="control.key"
+        :control="control"
+        :draft="drafts[action.id] ?? {}"
+        @set="(key, value) => set(action.id, key, value)"
+      />
       <div class="oa-card-actions">
         <OaConfirmButton
           v-if="action.confirm"
           class="oa-btn"
           :class="action.danger ? 'danger' : 'primary'"
-          :disabled="!!busy"
+          :disabled="!!busy || missingRequired(visibleControls(action.controls ?? [], drafts[action.id] ?? {}), drafts[action.id] ?? {})"
           :label="busy === action.id ? t('loading') : action.label"
           :armed-label="action.label"
           :armed-title="action.confirm(drafts[action.id] ?? {})"
@@ -125,7 +112,7 @@ async function run(action: RecordAction): Promise<void> {
           type="button"
           class="oa-btn"
           :class="action.danger ? 'danger' : 'primary'"
-          :disabled="!!busy"
+          :disabled="!!busy || missingRequired(visibleControls(action.controls ?? [], drafts[action.id] ?? {}), drafts[action.id] ?? {})"
           @click="run(action)"
         >{{ busy === action.id ? t('loading') : action.label }}</button>
       </div>

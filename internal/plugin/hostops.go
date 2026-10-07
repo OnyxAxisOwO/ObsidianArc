@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
@@ -26,6 +28,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -270,6 +273,18 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 				return nil, &wasm.HostError{Code: "cards", Message: err.Error()}
 			}
 			return revoked, nil
+
+		case "rewards.bonus", "rewards.cards":
+			if err := need(arcx.PermRewards); err != nil {
+				return nil, err
+			}
+			return m.rewardOp(c, st, l.name, op, raw)
+
+		case "challenge.describe", "challenge.verify":
+			if err := need(arcx.PermChallenge); err != nil {
+				return nil, err
+			}
+			return m.challengeOp(c, op, raw)
 
 		case "console.call", "console.resolve_user":
 			if err := need(arcx.PermConsole); err != nil {
@@ -564,6 +579,99 @@ func (m *Manager) userOp(c *wasm.Call, st *callState, op string, raw json.RawMes
 		}
 		return nil, nil
 	}
+}
+
+// rewardOp gives an account something the core knows how to spend, by the
+// same rules the check-in's rewards follow: a bonus without a lifetime of its
+// own keeps the bar's default one, and a card's days are clamped by the
+// card store. The grant is marked as the plugin's, so the bonus page can say
+// where it came from.
+func (m *Manager) rewardOp(c *wasm.Call, st *callState, plugin, op string, raw json.RawMessage) (any, error) {
+	var a struct {
+		UserID    string  `json:"user_id"`
+		BarID     string  `json:"bar_id"`
+		Amount    float64 `json:"amount"`
+		Count     int     `json:"count"`
+		ValidDays int     `json:"valid_days"`
+		Name      string  `json:"name"`
+		Note      string  `json:"note"`
+		TX        bool    `json:"tx"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" || a.ValidDays < 0 {
+		return nil, badArg("%s needs a user_id, and valid_days of zero or more", op)
+	}
+	q, err := m.queryer(st, a.TX)
+	if err != nil {
+		return nil, err
+	}
+	if op == "rewards.cards" {
+		if m.host == nil || m.host.Cards == nil {
+			return nil, &wasm.HostError{Code: "unavailable", Message: "this server has no reset cards"}
+		}
+		if a.Count < 1 || a.Count > card.MaxCards {
+			return nil, badArg("rewards.cards: count is between 1 and %d", card.MaxCards)
+		}
+		cards, err := m.host.Cards.GrantNamed(c.Ctx, q, a.UserID, a.Count, a.ValidDays, a.Name, nil)
+		if err != nil {
+			return nil, &wasm.HostError{Code: "cards", Message: err.Error()}
+		}
+		expires := int64(0)
+		if len(cards) > 0 {
+			expires = cards[0].ExpiresAt
+		}
+		return map[string]any{"count": len(cards), "expires_at": expires}, nil
+	}
+
+	if m.host == nil || m.host.Bonus == nil {
+		return nil, &wasm.HostError{Code: "unavailable", Message: "this server has no bonus bars"}
+	}
+	if a.BarID == "" {
+		return nil, badArg("rewards.bonus needs a bar_id")
+	}
+	now := time.Now()
+	expires := int64(0)
+	if a.ValidDays > 0 {
+		expires = now.Add(time.Duration(a.ValidDays) * 24 * time.Hour).UnixMilli()
+	} else if bar, err := m.host.Bonus.Bar(c.Ctx, q, a.BarID); err == nil && bar.DefaultExpiresAt > now.UnixMilli() {
+		expires = bar.DefaultExpiresAt
+	}
+	if _, err := m.host.Bonus.GrantTo(c.Ctx, q, a.BarID, a.UserID, a.Amount, expires, "plugin:"+plugin, a.Note); err != nil {
+		switch {
+		case errors.Is(err, bonus.ErrNotFound):
+			return nil, &wasm.HostError{Code: "bonus_bar_not_found", Message: "there is no active bonus bar with that id"}
+		case errors.Is(err, bonus.ErrInvalidAmount), errors.Is(err, bonus.ErrInvalidExpiry):
+			return nil, badArg("rewards.bonus: %v", err)
+		}
+		return nil, &wasm.HostError{Code: "bonus", Message: err.Error()}
+	}
+	return map[string]any{"expires_at": expires}, nil
+}
+
+// challengeOp lends a plugin the instance's own human check. Which kinds it
+// asks for is the core's decision, not the plugin's, so a plugin cannot ask
+// for something weaker than the instance would; and the keys never leave the
+// server.
+func (m *Manager) challengeOp(c *wasm.Call, op string, raw json.RawMessage) (any, error) {
+	if m.host == nil || m.host.Challenge.Describe == nil || m.host.Challenge.Verify == nil {
+		return nil, &wasm.HostError{Code: "challenge_unavailable", Message: "this server has no human check to lend"}
+	}
+	if op == "challenge.describe" {
+		return m.host.Challenge.Describe(), nil
+	}
+	var a struct {
+		ChallengeProof
+		IP string `json:"ip"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return nil, badArg("challenge.verify: %v", err)
+	}
+	if err := m.host.Challenge.Verify(c.Ctx, a.ChallengeProof, a.IP); err != nil {
+		if errors.Is(err, turnstile.ErrUnavailable) {
+			return nil, &wasm.HostError{Code: "challenge_unavailable", Message: "the challenge service could not be reached"}
+		}
+		return nil, &wasm.HostError{Code: "challenge_failed", Message: "the challenge was not passed"}
+	}
+	return nil, nil
 }
 
 func (m *Manager) consoleOp(st *callState, op string, raw json.RawMessage) (any, error) {

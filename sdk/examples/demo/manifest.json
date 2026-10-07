@@ -10,7 +10,7 @@
   "author": "Obsidian Arc",
   "license": "MIT",
   "requires": { "api": 1 },
-  "permissions": ["db", "network", "users", "cards", "sessions", "notify", "security_log", "console"],
+  "permissions": ["db", "network", "users", "cards", "rewards", "sessions", "notify", "security_log", "challenge", "console"],
   "backend": "plugin.wasm",
   "hooks": ["describe", "decorate_invitees"],
   "settings": [
@@ -37,6 +37,8 @@
     { "pattern": "POST /api/admin/x/demo/things", "access": "admin", "permission": "users" },
     { "pattern": "POST /api/admin/x/demo/disable/{id}", "access": "admin", "permission": "users" },
     { "pattern": "POST /api/admin/x/demo/retire/{id}", "access": "admin", "permission": "users" },
+    { "pattern": "POST /api/admin/x/demo/reward/{id}", "access": "admin", "permission": "users" },
+    { "pattern": "POST /api/x/demo/challenged", "access": "public" },
     { "pattern": "POST /api/x/demo/hook", "access": "public" },
     { "pattern": "GET /api/x/demo/upstream", "access": "public" },
     { "pattern": "GET /api/x/demo/echo", "access": "public" },

@@ -157,3 +157,88 @@ func (c *Ctx) RevokeCards(userID string, count int) (int, error) {
 	err = json.Unmarshal(raw, &n)
 	return n, err
 }
+
+// BonusGrant is credits in one of the instance's bonus bars, for one account.
+type BonusGrant struct {
+	BarID  string
+	UserID string
+	Amount float64
+	// How long it keeps. Zero is the bar's own default, or forever when the
+	// bar has none.
+	ValidDays int
+	// Shown beside the grant on the bonus page.
+	Note string
+}
+
+// GrantBonus puts credits in an account's bonus bar and says when they
+// expire (zero for never). It needs the "rewards" permission and joins the
+// open transaction when there is one, so a reward can stand or fall with the
+// record of why it was paid. A bar that does not exist or is switched off is
+// a *HostError with the code "bonus_bar_not_found".
+func (c *Ctx) GrantBonus(g BonusGrant) (int64, error) {
+	raw, err := hostCall("rewards.bonus", map[string]any{
+		"bar_id": g.BarID, "user_id": g.UserID, "amount": g.Amount,
+		"valid_days": g.ValidDays, "note": g.Note, "tx": c.inTx,
+	})
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		ExpiresAt int64 `json:"expires_at"`
+	}
+	err = json.Unmarshal(raw, &out)
+	return out.ExpiresAt, err
+}
+
+// GrantCards gives an account count reset cards that keep for days (the card
+// store's default when zero), named as the account's card list shows them.
+// It needs the "rewards" permission and joins the open transaction when there
+// is one.
+func (c *Ctx) GrantCards(userID string, count, days int, name string) error {
+	_, err := hostCall("rewards.cards", map[string]any{
+		"user_id": userID, "count": count, "valid_days": days, "name": name, "tx": c.inTx,
+	})
+	return err
+}
+
+// Challenge is what the instance's human check asks a browser to solve right
+// now: proof of work, a Turnstile widget drawn with TurnstileSiteKey, or both.
+// It is the sign-up door's choice, not the plugin's — hand it to the browser
+// as it is.
+type Challenge struct {
+	PoW              bool   `json:"pow"`
+	TurnstileSiteKey string `json:"turnstile_site_key"`
+}
+
+// Challenge asks which check the instance would put in front of a form. It
+// needs the "challenge" permission.
+func (c *Ctx) Challenge() (Challenge, error) {
+	raw, err := hostCall("challenge.describe", nil)
+	if err != nil {
+		return Challenge{}, err
+	}
+	var out Challenge
+	err = json.Unmarshal(raw, &out)
+	return out, err
+}
+
+// ChallengeProof is what the browser solved, passed on untouched: the
+// Turnstile token, and the proof-of-work solution as the JSON it sent.
+type ChallengeProof struct {
+	Turnstile string          `json:"turnstile,omitempty"`
+	PoW       json.RawMessage `json:"pow,omitempty"`
+}
+
+// VerifyChallenge checks a proof against what Challenge asks for, from the
+// caller's address. A proof that does not pass is a *HostError with the code
+// "challenge_failed"; a challenge service that cannot be reached is
+// "challenge_unavailable", which is not the reader's fault. It needs the
+// "challenge" permission, and it is not allowed inside a transaction: it may
+// ask a service elsewhere.
+func (c *Ctx) VerifyChallenge(p ChallengeProof) error {
+	if c.inTx {
+		return &HostError{Code: "tx_open", Message: "a challenge cannot be checked while a transaction is open"}
+	}
+	_, err := hostCall("challenge.verify", map[string]any{"turnstile": p.Turnstile, "pow": p.PoW, "ip": c.IP})
+	return err
+}

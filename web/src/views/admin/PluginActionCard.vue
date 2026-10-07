@@ -8,13 +8,12 @@
 import { computed, ref } from 'vue';
 import { ApiError } from '@/api/client';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
-import OaSelectField from '@/components/OaSelectField.vue';
-import OaTextField from '@/components/OaTextField.vue';
 import { t } from '@/composables/useI18n';
 import { IconSpark } from '@/icons';
 import type { ActionCardSpec } from '@/plugins/types';
 import AdminControlCard from './AdminControlCard.vue';
-import ExpiryPresets from './ExpiryPresets.vue';
+import PluginActionControl from './PluginActionControl.vue';
+import { missingRequired, visibleControls } from './pluginControls';
 
 const props = defineProps<{
   card: ActionCardSpec;
@@ -34,28 +33,20 @@ function defaultExpiry(): string {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 
-// Initialise any unset datetime controls to a sensible default (7 days).
+// Initialise any unset datetime controls to a sensible default (7 days). A
+// default of '' the plugin gave is kept: an empty time can mean "now".
 for (const control of props.card.controls) {
-  if (control.kind === 'datetime' && !draft.value[control.key]) {
+  if (control.kind === 'datetime' && draft.value[control.key] === undefined) {
     draft.value[control.key] = defaultExpiry();
   }
 }
 
 function set(key: string, value: string): void {
-  draft.value[key] = value;
+  draft.value = { ...draft.value, [key]: value };
 }
 
-const valid = computed(() => {
-  for (const control of props.card.controls) {
-    if (control.kind === 'text' && control.required && !draft.value[control.key]?.trim()) {
-      return false;
-    }
-    if (control.kind === 'datetime' && control.required && !draft.value[control.key]) {
-      return false;
-    }
-  }
-  return true;
-});
+const shown = computed(() => visibleControls(props.card.controls, draft.value));
+const valid = computed(() => !missingRequired(shown.value, draft.value));
 
 async function runAction(): Promise<void> {
   busy.value = true;
@@ -81,36 +72,8 @@ async function runAction(): Promise<void> {
     :icon="card.icon ?? IconSpark"
   >
     <div class="oa-plugin-controls">
-      <div v-for="control in card.controls" :key="control.key" class="oa-plugin-control-item">
-        <OaTextField
-          v-if="control.kind === 'text'"
-          :model-value="draft[control.key] ?? ''"
-          :label="control.label()"
-          :hint="control.hint?.()"
-          :placeholder="control.placeholder"
-          :required="Boolean(control.required)"
-          @update:model-value="set(control.key, $event)"
-        />
-        <OaSelectField
-          v-else-if="control.kind === 'select'"
-          :model-value="draft[control.key] ?? ''"
-          :label="control.label()"
-          :hint="control.hint?.()"
-          :searchable="false"
-          :options="(control.options ?? []).map((opt) => ({ value: opt.value, label: opt.label() }))"
-          @update:model-value="set(control.key, $event)"
-        />
-        <template v-else-if="control.kind === 'datetime'">
-          <OaTextField
-            :model-value="draft[control.key] ?? ''"
-            :label="control.label()"
-            :hint="control.hint?.()"
-            type="datetime-local"
-            :required="Boolean(control.required)"
-            @update:model-value="set(control.key, $event)"
-          />
-          <ExpiryPresets v-if="control.presets" @pick="set(control.key, $event)" />
-        </template>
+      <div v-for="control in shown" :key="control.key" class="oa-plugin-control-item">
+        <PluginActionControl :control="control" :draft="draft" @set="set" />
       </div>
 
       <div class="oa-card-actions">

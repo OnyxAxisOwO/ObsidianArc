@@ -5151,6 +5151,139 @@
   line-height: 1.6;
 }
 
+/* A plugin's options one a line, for answers longer than the word a
+ * segmented control has room for: a survey's "somewhat agree". A fill marks
+ * the picked ones, as it marks the active segment. */
+.oa-plugin-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.oa-plugin-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 11px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.oa-plugin-option:hover {
+  background: var(--ai-field-bg-hover);
+}
+
+.oa-plugin-option.active {
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+}
+
+.oa-plugin-required {
+  margin-left: 3px;
+  color: var(--ai-danger);
+}
+
+/* What an operator wrote about an event: their line breaks are theirs. */
+.oa-plugin-entry-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.oa-plugin-outcome {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--ai-surface-container-high);
+  font-size: 13px;
+  color: var(--ai-text);
+}
+
+.oa-plugin-outcome.tone-default {
+  background: color-mix(in srgb, var(--ai-primary) 14%, transparent);
+}
+
+.oa-plugin-outcome.tone-danger {
+  background: color-mix(in srgb, var(--ai-danger) 14%, transparent);
+}
+
+/* A list an operator builds row by row: each row a card of small fields,
+ * wrapping to the width the card has, with its number down the side so
+ * "question 3" in a hint can be found. */
+.oa-plugin-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oa-plugin-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+}
+
+.oa-plugin-row-index {
+  flex-shrink: 0;
+  width: 18px;
+  padding-top: 24px;
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+  text-align: center;
+}
+
+.oa-plugin-row-cells {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.oa-plugin-row-cell {
+  display: flex;
+  flex: 1 1 90px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.oa-plugin-row-cell.wide {
+  flex-basis: 100%;
+}
+
+.oa-plugin-row-label {
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-plugin-row-check {
+  flex: 0 0 auto;
+  padding-bottom: 8px;
+}
+
+.oa-plugin-row > .oa-icon-btn {
+  flex-shrink: 0;
+  margin-top: 18px;
+}
+
+.oa-plugin-rows-add {
+  align-self: flex-start;
+}
+
 .oa-feedback-full {
   margin: 0;
   font-size: 12px;

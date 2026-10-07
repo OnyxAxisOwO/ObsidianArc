@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -153,7 +155,7 @@ func TestInstallingAPackageAsksBeforeItDoesAnything(t *testing.T) {
 	if preview.Action != "install" || preview.Manifest.Name != "demo" || preview.Token == "" || len(preview.SHA256) != 64 {
 		t.Fatalf("preview = %+v", preview)
 	}
-	if len(preview.Manifest.Permissions) != 8 {
+	if len(preview.Manifest.Permissions) != 10 {
 		t.Fatalf("permissions = %v", preview.Manifest.Permissions)
 	}
 	if strings.Join(preview.Warnings, ",") != "ui" {
@@ -1230,5 +1232,117 @@ func TestACommandThatPassesOnARefusedCallIsDrawnWithTheEndpointsCode(t *testing.
 	}
 	if out, ok := consoleLine(t, a, "demo add gadget"); !ok || !strings.Contains(out, "added gadget") {
 		t.Fatalf("an accepted call: ok=%v %q", ok, out)
+	}
+}
+
+func TestABackendPaysRewardsInTheCoresCurrenciesAndOnlyWithThePermission(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	winner := a.in.Register("winner", founderPassword)
+	bar := servertest.Decode[struct {
+		Bar struct {
+			ID string `json:"id"`
+		} `json:"bar"`
+	}](t, a.mustDo(http.MethodPost, "/api/admin/bonus/bars", map[string]any{"name": "Prizes"}, http.StatusCreated)).Bar
+
+	res := a.mustDo(http.MethodPost, "/api/admin/x/demo/reward/"+winner.UserID,
+		map[string]any{"bar_id": bar.ID, "amount": 2.5, "cards": 2, "days": 3}, http.StatusOK)
+	expires := servertest.Decode[struct {
+		ExpiresAt int64 `json:"expires_at"`
+	}](t, res).ExpiresAt
+	if lifetime := time.Until(time.UnixMilli(expires)); lifetime < 71*time.Hour || lifetime > 73*time.Hour {
+		t.Fatalf("a three-day bonus expires in %v", lifetime)
+	}
+	var amount float64
+	var source string
+	if err := a.in.DB.QueryRow(t.Context(), `SELECT amount, source FROM bonus_grants WHERE user_id = ?`, winner.UserID).Scan(&amount, &source); err != nil {
+		t.Fatal(err)
+	}
+	// Marked as the plugin's, so the bonus page can say where it came from.
+	if amount != 2.5 || source != "plugin:demo" {
+		t.Fatalf("grant = %v from %q", amount, source)
+	}
+	count := func(query string) int {
+		var n int
+		if err := a.in.DB.QueryRow(t.Context(), query, winner.UserID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := count(`SELECT COUNT(*) FROM usage_cards WHERE user_id = ? AND name = 'demo'`); n != 2 {
+		t.Fatalf("%d cards granted, want 2", n)
+	}
+
+	// Inside the backend's transaction: a reward whose reason is taken back
+	// is taken back with it.
+	if res := a.do(http.MethodPost, "/api/admin/x/demo/reward/"+winner.UserID,
+		map[string]any{"bar_id": bar.ID, "amount": 1, "cards": 1, "fail": true}); res.Code != http.StatusConflict {
+		t.Fatalf("a failed reward: %d %s", res.Code, res.Body.String())
+	}
+	if count(`SELECT COUNT(*) FROM bonus_grants WHERE user_id = ?`) != 1 || count(`SELECT COUNT(*) FROM usage_cards WHERE user_id = ?`) != 2 {
+		t.Fatal("a rolled-back reward was paid anyway")
+	}
+	if res := a.do(http.MethodPost, "/api/admin/x/demo/reward/"+winner.UserID,
+		map[string]any{"bar_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "amount": 1}); res.Code != http.StatusNotFound || code(t, res) != "demo_no_bar" {
+		t.Fatalf("a bar that does not exist: %d %s", res.Code, res.Body.String())
+	}
+
+	weak := newAdmin(t)
+	weak.in.InstallPackage(weak.s, repack(t, pkgtest.Demo(t), func(m map[string]any) { m["permissions"] = []string{"db", "cards"} }), true, nil)
+	other := weak.in.Register("other", founderPassword)
+	if res := weak.do(http.MethodPost, "/api/admin/x/demo/reward/"+other.UserID, map[string]any{"cards": 1}); res.Code != http.StatusInternalServerError {
+		t.Fatalf("a reward without the rewards permission: %d %s", res.Code, res.Body.String())
+	}
+	var n int
+	_ = weak.in.DB.QueryRow(t.Context(), `SELECT COUNT(*) FROM usage_cards WHERE user_id = ?`, other.UserID).Scan(&n)
+	if n != 0 {
+		t.Fatal("cards were granted by a call that was refused")
+	}
+}
+
+func TestABackendBorrowsTheInstancesHumanCheckAsTheSignUpDoorAsksForIt(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	reader := a.in.Register("reader", founderPassword)
+	a.setSettings(map[string]string{"registration.captcha_mode": "pow", "security.pow_base_max_number": "200"})
+
+	if res := a.in.Do(http.MethodPost, "/api/x/demo/challenged", map[string]any{}, reader); res.Code != http.StatusBadRequest || code(t, res) != "challenge_failed" {
+		t.Fatalf("no proof: %d %s", res.Code, res.Body.String())
+	}
+	solve := func() map[string]any {
+		challenge := servertest.Decode[map[string]any](t, a.in.Do(http.MethodGet, "/api/auth/pow-challenge", nil, reader))
+		salt, _ := challenge["salt"].(string)
+		maxNumber := int64(challenge["maxNumber"].(float64))
+		for n := int64(0); n <= maxNumber; n++ {
+			sum := sha256.Sum256([]byte(salt + strconv.FormatInt(n, 10)))
+			if hex.EncodeToString(sum[:]) == challenge["challenge"] {
+				challenge["nonce"] = n
+				return challenge
+			}
+		}
+		t.Fatal("the challenge has no solution")
+		return nil
+	}
+	solved := solve()
+	res := a.in.Do(http.MethodPost, "/api/x/demo/challenged", map[string]any{"pow": solved}, reader)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"pow":true`) {
+		t.Fatalf("a solved proof: %d %s", res.Code, res.Body.String())
+	}
+	// Spent once, like the sign-up door's own.
+	if res := a.in.Do(http.MethodPost, "/api/x/demo/challenged", map[string]any{"pow": solved}, reader); res.Code != http.StatusBadRequest {
+		t.Fatalf("a replayed proof: %d %s", res.Code, res.Body.String())
+	}
+
+	// A sign-up mode the core does not draw still means a check: proof of
+	// work, when the page loads no Turnstile.
+	a.setSettings(map[string]string{"registration.captcha_mode": "off"})
+	if res := a.in.Do(http.MethodPost, "/api/x/demo/challenged", map[string]any{}, reader); res.Code != http.StatusBadRequest {
+		t.Fatalf("no proof with the sign-up check off: %d %s", res.Code, res.Body.String())
+	}
+
+	weak := newAdmin(t)
+	weak.in.InstallPackage(weak.s, repack(t, pkgtest.Demo(t), func(m map[string]any) { m["permissions"] = []string{"db"} }), true, nil)
+	if res := weak.in.Do(http.MethodPost, "/api/x/demo/challenged", map[string]any{}, weak.s); res.Code != http.StatusInternalServerError {
+		t.Fatalf("a check without the challenge permission: %d %s", res.Code, res.Body.String())
 	}
 }

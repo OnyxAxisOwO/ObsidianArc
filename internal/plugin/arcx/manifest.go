@@ -30,7 +30,7 @@ const Format = 1
 // hooks the host calls on it. A package says which it needs (Requires.API);
 // one that needs more than this build offers is refused at install, which is
 // the moment the operator can still do something about it.
-const APILevel = 2
+const APILevel = 3
 
 // Text is one string in both of the interface's languages. An empty ZH falls
 // back to EN when the interface is drawn.
@@ -107,10 +107,18 @@ const (
 	// console.call: running an administrative endpoint as the operator who
 	// ran a console command.
 	PermConsole = "console"
+	// rewards.bonus and rewards.cards: giving an account credits in a bonus
+	// bar or reset cards. Spending them is the core's affair, as it is for
+	// what an administrator grants by hand.
+	PermRewards = "rewards"
+	// challenge.describe and challenge.verify: putting the instance's own
+	// human check (proof of work, Turnstile) in front of something of the
+	// plugin's, with the instance's own keys.
+	PermChallenge = "challenge"
 )
 
 // Permissions lists them, in the order an install dialog shows them.
-var Permissions = []string{PermDB, PermNetwork, PermUsers, PermCards, PermSessions, PermNotify, PermSecurityLog, PermConsole}
+var Permissions = []string{PermDB, PermNetwork, PermUsers, PermCards, PermRewards, PermSessions, PermNotify, PermSecurityLog, PermChallenge, PermConsole}
 
 // Hooks a manifest may list.
 const (
