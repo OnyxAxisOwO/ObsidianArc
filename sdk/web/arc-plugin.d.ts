@@ -146,6 +146,45 @@ export interface AdminListSpec {
   columns: Array<{ key: string; header: Text; width?: string; secondary?: boolean }>;
   load(offset: number, limit: number): Promise<{ rows: Array<Record<string, unknown>>; total: number }>;
   cell(key: string, row: Record<string, unknown>): ListCell;
+  /**
+   * Makes a row open: the record in a panel beside the table, with what can
+   * be done to it. Resolved when the row is opened, so its sentences are
+   * already in the reader's language. The table is read again after an
+   * action, since the action may have moved the row.
+   */
+  detail?(row: Record<string, unknown>): Promise<RecordDetail>;
+}
+
+export type BadgeTone = 'default' | 'muted' | 'warning' | 'danger';
+
+/** One record of a plugin's list, opened (AdminListSpec.detail). */
+export interface RecordDetail {
+  title: string;
+  badges?: Array<{ label: string; tone: BadgeTone }>;
+  /**
+   * Label and value, in order. A link is drawn as one only when it is http(s);
+   * a masked value goes through safe mode like a masked list cell.
+   */
+  fields: Array<{ label: string; value: string; link?: boolean; mask?: boolean; multiline?: boolean }>;
+  /** Addresses of images to show, each opening in the lightbox. */
+  images?: string[];
+  actions?: RecordAction[];
+}
+
+/**
+ * Something done to an opened record: optional inputs, then one button. A
+ * confirmation is asked in place (OaConfirmButton), never by window.confirm.
+ */
+export interface RecordAction {
+  id: string;
+  label: string;
+  danger?: boolean;
+  /** The question, given what has been entered. */
+  confirm?: (draft: Record<string, string>) => string;
+  controls?: ActionControl[];
+  defaults?: Record<string, string>;
+  /** Resolves to what the panel says afterwards. */
+  run(draft: Record<string, string>): Promise<string>;
 }
 
 /** A group of buttons in the backoffice's account panel. */
@@ -163,6 +202,56 @@ export interface UserActionSpec {
     /** The account is gone afterwards; close the panel. */
     closesPanel?: boolean;
   }>;
+}
+
+/** One control in a form a plugin puts in front of the people using the instance. */
+export type UserFormControl =
+  /** Every option on screen at once, as a segmented control. */
+  | { kind: 'choice'; key: string; label: Text; hint?: Text; options: Array<{ value: string; label: Text }> }
+  | { kind: 'text'; key: string; label: Text; hint?: Text; placeholder?: Text; maxLength?: number; required?: boolean }
+  | { kind: 'textarea'; key: string; label: Text; hint?: Text; placeholder?: Text; rows?: number; required?: boolean }
+  | { kind: 'switch'; key: string; label: Text; hint?: Text }
+  /**
+   * Pictures, sent as data: URLs. The core shrinks each one before it is
+   * sent (see lib/shrink-image.ts), so a phone's 8 MB photo does not meet the
+   * server's 4 MiB limit on a plugin's request body.
+   */
+  | { kind: 'images'; key: string; label: Text; hint?: Text; max: number };
+
+/** A choice or text is a string, a switch a boolean, images a list of data: URLs. */
+export type UserFormValues = Record<string, string | boolean | string[]>;
+
+/** One of the reader's own submissions, as the panel lists it. */
+export interface UserRecord {
+  id: string;
+  title: string;
+  badge?: { label: string; tone: BadgeTone };
+  /** Short facts under the title — a kind, a time. */
+  meta?: string[];
+  /** A longer line under those, such as what the operator answered. */
+  note?: string;
+}
+
+/**
+ * A panel of the plugin's own for everybody signed in: an entry in the
+ * account menu, opening a column beside the chat at /x/<slug>, with a form and
+ * the reader's own earlier submissions under it — the shape of the feedback
+ * panel, drawn by the core.
+ */
+export interface UserPanelSpec {
+  slug: string;
+  title: Text;
+  icon?: OaIcon;
+  /** The first thing in the panel: what this is for. */
+  intro?: Text;
+  controls: UserFormControl[];
+  defaults?: Record<string, string | boolean>;
+  submit: {
+    label: Text;
+    /** Resolves to what the panel says afterwards; the form is then cleared. */
+    run(values: UserFormValues): Promise<string>;
+  };
+  mine?: { title: Text; empty: Text; load(): Promise<UserRecord[]> };
 }
 
 /**
@@ -282,6 +371,8 @@ export interface ArcPlugin {
   lists?: AdminListSpec[];
   userActions?: UserActionSpec[];
   adminPages?: AdminPluginPage[];
+  /** Panels for everybody signed in, entered from the account menu. */
+  userPanels?: UserPanelSpec[];
   /** A notice and a confirmation on the API keys screen. */
   keyIssuing?: KeyIssuingSpec;
 }

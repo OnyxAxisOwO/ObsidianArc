@@ -14,8 +14,9 @@ import OaCellStack from '@/components/OaCellStack.vue';
 import OaTable from '@/components/OaTable.vue';
 import type { Column, PageState } from '@/components/table-types';
 import { IconFile } from '@/icons';
-import type { AdminListSpec, ListCell } from '@/plugins/types';
+import type { AdminListSpec, ListCell, RecordDetail } from '@/plugins/types';
 import AdminControlCard from './AdminControlCard.vue';
+import PluginRecordPanel from './PluginRecordPanel.vue';
 
 type Row = Record<string, unknown>;
 
@@ -60,6 +61,34 @@ function cell(key: string, row: Row): ListCell {
   };
 }
 
+// The record open beside the table, when the plugin lets its rows open.
+const opened = ref<RecordDetail | null>(null);
+const openedRow = ref<Row | null>(null);
+
+async function open(row: Row): Promise<void> {
+  if (!props.spec.detail) return;
+  error.value = '';
+  try {
+    opened.value = await props.spec.detail(row);
+    openedRow.value = row;
+  } catch (failure) {
+    error.value = failure instanceof ApiError ? failure.message : String(failure);
+  }
+}
+
+// An action may have moved the row (a pending report is now decided), so the
+// table and the open record are both read again.
+async function acted(): Promise<void> {
+  await load();
+  if (openedRow.value && props.spec.detail) {
+    try {
+      opened.value = await props.spec.detail(openedRow.value);
+    } catch {
+      // The panel keeps what it showed; the action's own answer is on it.
+    }
+  }
+}
+
 onMounted(load);
 </script>
 
@@ -72,7 +101,9 @@ onMounted(load);
       :columns="columns"
       :rows="rows"
       :empty="spec.empty()"
+      :selectable="!!spec.detail"
       @page="changePage"
+      @select="open"
     >
       <template v-for="column in spec.columns" :key="column.key" #[`cell-${column.key}`]="{ row }">
         <OaBadge v-if="cell(column.key, row).badge" :tone="cell(column.key, row).badge!.tone">
@@ -82,4 +113,12 @@ onMounted(load);
       </template>
     </OaTable>
   </AdminControlCard>
+
+  <PluginRecordPanel
+    v-if="opened"
+    :key="String(openedRow?.id ?? '')"
+    :detail="opened"
+    @close="opened = null; openedRow = null"
+    @done="acted"
+  />
 </template>

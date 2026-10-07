@@ -17,6 +17,7 @@ import * as icons from '@/icons';
 import { absoluteTime } from '@/lib/format';
 import type {
   AccountFieldSpec, ArcPlugin, GuardSpec, KeyIssuingSpec, NotificationText, PluginConfig, PluginFactory, PluginHost, Text,
+  UserPanelSpec,
 } from './types';
 
 
@@ -131,6 +132,11 @@ export function fieldSpec(key: string): AccountFieldSpec | undefined {
     if (spec) return spec;
   }
   return undefined;
+}
+
+/** The panels the loaded plugins offer everybody signed in, in plugin name order. */
+export function userPanels(): UserPanelSpec[] {
+  return loaded.value.flatMap((plugin) => plugin.userPanels ?? []);
 }
 
 /** What the loaded plugins add to the API keys screen, in plugin name order. */

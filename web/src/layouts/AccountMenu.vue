@@ -8,6 +8,7 @@ import OaMenuItem from '@/components/OaMenuItem.vue';
 import { t } from '@/composables/useI18n';
 import { IconArchive, IconChart, IconGear, IconImage, IconInfo, IconKey, IconLogout, IconMessage, IconPulse, IconSliders, IconTerminal, IconTrophy } from '@/icons';
 import { displayName } from '@/lib/account';
+import { userPanels } from '@/plugins/registry';
 import { feedbackUnread, forgetFeedbackUnread, refreshFeedbackUnread } from '@/stores/feedback';
 import { forget, siteInfo, isAdmin, canAdmin } from '@/stores/session';
 
@@ -123,6 +124,14 @@ async function signOut(close: () => void): Promise<void> {
         <template v-if="feedbackUnread" #trailing>
           <span class="oa-menu-unread" :title="t('feedbackHasReply')" />
         </template>
+      </OaMenuItem>
+      <OaMenuItem
+        v-for="panel in userPanels()"
+        :key="panel.slug"
+        :title="panel.title()"
+        @click="go(close, `/x/${panel.slug}`)"
+      >
+        <template #leading><component :is="panel.icon ?? IconMessage" :size="14" /></template>
       </OaMenuItem>
       <OaMenuItem :title="t('about')" @click="go(close, '/about')">
         <template #leading><IconInfo :size="14" /></template>

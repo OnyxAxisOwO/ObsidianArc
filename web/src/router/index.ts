@@ -43,6 +43,7 @@ import TwoFactorEnrolView from '@/views/TwoFactorEnrolView.vue';
 import UptimePanel from '@/views/UptimePanel.vue';
 import LeaderboardPanel from '@/views/LeaderboardPanel.vue';
 import UsagePanel from '@/views/UsagePanel.vue';
+import PluginUserPanel from '@/views/PluginUserPanel.vue';
 import VerifyView from '@/views/VerifyView.vue';
 
 const routes: RouteRecordRaw[] = [
@@ -81,6 +82,9 @@ const routes: RouteRecordRaw[] = [
       { path: 'image-lab', component: ImageLabPanel, meta: { auth: true } },
       { path: 'uptime', component: UptimePanel, meta: { auth: true } },
       { path: 'leaderboard', component: LeaderboardPanel, meta: { auth: true } },
+      // A panel a plugin brings (UserPanelSpec). The slug is resolved when the
+      // panel is drawn, not here: the plugins load after the router is made.
+      { path: 'x/:slug', component: PluginUserPanel, props: true, meta: { auth: true } },
       { path: 'terminal', component: () => import('@/views/TerminalPanel.vue'), meta: { auth: true } },
     ],
   },
