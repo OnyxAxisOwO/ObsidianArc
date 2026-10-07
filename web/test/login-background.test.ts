@@ -13,13 +13,15 @@ vi.mock('vue-router', () => ({
 
 describe('useLoginBackground', () => {
   let isPortrait = false;
-  let listeners: Array<(e?: unknown) => void> = [];
+  // Keyed by query: a change of orientation must not also answer the
+  // tablet query, which this mock never matches.
+  let listeners: Array<{ query: string; fn: (e?: unknown) => void }> = [];
   const originalMatchMedia = window.matchMedia;
 
   function setPortrait(val: boolean): void {
     isPortrait = val;
     for (const listener of listeners) {
-      listener({ matches: val, media: '(orientation: portrait)' });
+      if (listener.query.includes('portrait')) listener.fn({ matches: val, media: listener.query });
     }
   }
 
@@ -32,9 +34,9 @@ describe('useLoginBackground', () => {
       },
       media: query,
       onchange: null,
-      addListener: vi.fn((fn: (e?: unknown) => void) => { listeners.push(fn); }),
+      addListener: vi.fn((fn: (e?: unknown) => void) => { listeners.push({ query, fn }); }),
       removeListener: vi.fn(),
-      addEventListener: vi.fn((_type: string, fn: (e?: unknown) => void) => { listeners.push(fn); }),
+      addEventListener: vi.fn((_type: string, fn: (e?: unknown) => void) => { listeners.push({ query, fn }); }),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(() => false),
     })) as unknown as typeof window.matchMedia;

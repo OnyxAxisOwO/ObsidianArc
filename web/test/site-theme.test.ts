@@ -4,6 +4,7 @@ import {
   backgroundAccent,
   modeLocked,
   ownWallpaper,
+  pickBackground,
   setAccentPreference,
   setBackgroundAccent,
   setSignedIn,
@@ -115,4 +116,17 @@ it('ignores a background URL that is not a path on this server', () => {
   setSiteAppearance(SITE, { app_landscape_dark: { url: 'https://elsewhere.example/x', html: true } });
   setSignedIn(true);
   expect(wallpaper()).toBeNull();
+});
+
+it('gives a tablet its own variant, and the nearest shape when it has none', () => {
+  const bg = (name: string) => ({ url: `/api/site/login-background/${name}?v=1`, html: false });
+  const set = { landscape_dark: bg('landscape_dark'), portrait_dark: bg('portrait_dark'), tablet_light: bg('tablet_light') };
+  expect(pickBackground(set, '', 'tablet', false)?.url).toContain('tablet_light');
+  // Dark has no tablet picture: the desktop one, before the phone's.
+  expect(pickBackground(set, '', 'tablet', true)?.url).toContain('landscape_dark');
+  // A desktop or a phone borrows the tablet's before the other's.
+  expect(pickBackground({ tablet_dark: bg('tablet_dark'), portrait_dark: bg('portrait_dark') }, '', 'desktop', true)?.url).toContain('tablet_dark');
+  expect(pickBackground({ tablet_dark: bg('tablet_dark'), landscape_dark: bg('landscape_dark') }, '', 'phone', true)?.url).toContain('tablet_dark');
+  // Brightness before shape: a light desktop takes the light tablet over the dark desktop.
+  expect(pickBackground(set, '', 'desktop', false)?.url).toContain('tablet_light');
 });

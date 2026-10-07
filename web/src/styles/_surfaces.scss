@@ -6071,31 +6071,60 @@
 .oa-bg-stage-switches .oa-segment button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
 }
 
+/* The segmented switch with a thumb that slides to the choice. Equal columns
+   and no gap, so the thumb's offset is its own width times the index the
+   template hands it; the pressed button stays clear and lets the thumb
+   under it be its fill. */
+.oa-bg-switch {
+  position: relative;
+  display: inline-grid;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  gap: 0;
+}
+
+.oa-bg-switch-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / var(--n, 2));
+  border-radius: 999px;
+  background: var(--ai-primary);
+  transform: translateX(calc(var(--i, 0) * 100%));
+  transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oa-segment.oa-bg-switch button {
+  position: relative;
+}
+
+.oa-segment.oa-bg-switch button[aria-pressed='true'] {
+  background: transparent;
+  color: var(--ai-primary-text);
+}
+
+/* Its width, height and corners are set inline from the card's width (see
+   BackgroundStage); here is how they move between screens. */
 .oa-bg-stage {
   position: relative;
   isolation: isolate;
   overflow: hidden;
   align-self: center;
-  /* Large enough to judge a picture by, not so large on a wide card that the
-     settings around it scroll away. */
-  width: min(100%, 560px);
-  aspect-ratio: 16 / 10;
-  border-radius: 14px;
+  max-width: 100%;
+  transition:
+    width 0.55s cubic-bezier(0.16, 1, 0.3, 1),
+    height 0.55s cubic-bezier(0.16, 1, 0.3, 1),
+    border-radius 0.55s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.15s ease;
   /* The empty stage is the plain page a reader would get, in the scheme
      being looked at — not a dashed drop zone. */
   background: var(--ai-surface-container-low);
   box-shadow: inset 0 0 0 1px var(--oa-group-line, var(--ai-border));
-}
-
-/* A phone, at the height the desktop stage has on a card this wide. */
-.oa-bg-stage.portrait {
-  width: auto;
-  height: min(340px, 62vw);
-  aspect-ratio: 9 / 19.5;
-  border-radius: 24px;
 }
 
 .oa-bg-stage.dragging {
@@ -6121,9 +6150,24 @@
 }
 
 /* Standing in for an unset variant: shown, but plainly not this one. */
+.oa-bg-stage-art {
+  transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1), filter 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 .oa-bg-stage.stand-in .oa-bg-stage-art {
   opacity: 0.45;
   filter: saturate(0.6);
+}
+
+/* One picture into the next, both in place: the stage is changing shape at
+   the same time, so a gap between them would read as a flicker. */
+.oa-bg-art-enter-from,
+.oa-bg-art-leave-to {
+  opacity: 0 !important;
+}
+
+.oa-bg-art-leave-active {
+  z-index: -3;
 }
 
 .oa-bg-stage-dim {
@@ -6151,6 +6195,7 @@
 .oa-bg-stage-ghost.app {
   gap: 3%;
   padding: 7%;
+  transition: gap 0.55s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .oa-bg-stage-ghost.app .rail,
@@ -6163,6 +6208,11 @@
 
 .oa-bg-stage-ghost.app .rail {
   flex: 0 0 24%;
+  transition: flex-basis 0.55s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+}
+
+.oa-bg-stage.screen-tablet .oa-bg-stage-ghost.app .rail {
+  flex-basis: 28%;
 }
 
 .oa-bg-stage-ghost.app .main {
@@ -6194,9 +6244,15 @@
   border-radius: 10px;
 }
 
-/* On a phone the rail is a drawer, closed. */
-.oa-bg-stage.portrait .oa-bg-stage-ghost.app .rail {
-  display: none;
+/* On a phone the rail is a drawer, closed: it folds away rather than
+   vanishing, and the conversation widens into its place. */
+.oa-bg-stage.screen-phone .oa-bg-stage-ghost.app {
+  gap: 0;
+}
+
+.oa-bg-stage.screen-phone .oa-bg-stage-ghost.app .rail {
+  flex-basis: 0;
+  opacity: 0;
 }
 
 .oa-bg-stage-ghost.login {
@@ -6213,7 +6269,7 @@
   justify-content: flex-end;
 }
 
-.oa-bg-stage.portrait .oa-bg-stage-ghost.login {
+.oa-bg-stage.screen-phone .oa-bg-stage-ghost.login {
   justify-content: center;
 }
 
@@ -6230,9 +6286,14 @@
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  transition: width 0.55s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.oa-bg-stage.portrait .oa-bg-stage-ghost.login .card {
+.oa-bg-stage.screen-tablet .oa-bg-stage-ghost.login .card {
+  width: 42%;
+}
+
+.oa-bg-stage.screen-phone .oa-bg-stage-ghost.login .card {
   width: 78%;
 }
 
@@ -6419,6 +6480,17 @@
 @media (max-width: 560px) {
   .oa-site-tints {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-bg-switch-thumb,
+  .oa-bg-stage,
+  .oa-bg-stage-art,
+  .oa-bg-stage-ghost.app,
+  .oa-bg-stage-ghost.app .rail,
+  .oa-bg-stage-ghost.login .card {
+    transition: none;
   }
 }
 

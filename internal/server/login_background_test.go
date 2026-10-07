@@ -230,6 +230,9 @@ func TestHTMLBackgroundAndSignedInSet(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("upload html: %d %s", res.Code, res.Body.String())
 	}
+	if res := in.do(http.MethodPut, "/api/admin/login-background/tablet_dark", map[string]string{"html": page}, admin); res.Code != http.StatusOK {
+		t.Fatalf("tablet variant: %d", res.Code)
+	}
 	if empty := in.do(http.MethodPut, "/api/admin/login-background/app_portrait_dark", map[string]string{"html": "  "}, admin); empty.Code != http.StatusBadRequest {
 		t.Fatalf("empty page: %d, want 400", empty.Code)
 	}

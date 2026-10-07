@@ -604,8 +604,8 @@ func init() {
 		Summary: Text{EN: "Set a login background image", ZH: "设置登录背景图"},
 		Usage:   "login-bg set <variant> <file-or-base64>",
 		Help: Text{
-			EN: "Upload or set a background image for landscape_light, landscape_dark, portrait_light, or portrait_dark. Prefix the variant with app_ for the signed-in background.",
-			ZH: "为 landscape_light、landscape_dark、portrait_light 或 portrait_dark 设置或上传背景图。变种前加 app_ 则是登录后的背景。",
+			EN: "Upload or set a background image for landscape_light, landscape_dark, portrait_light, portrait_dark, tablet_light, or tablet_dark. Prefix the variant with app_ for the signed-in background.",
+			ZH: "为 landscape_light、landscape_dark、portrait_light、portrait_dark、tablet_light 或 tablet_dark 设置或上传背景图。变种前加 app_ 则是登录后的背景。",
 		},
 		Args: []Arg{
 			{Name: "variant", Hint: Text{EN: "landscape_light, landscape_dark, portrait_light, or portrait_dark", ZH: "landscape_light、landscape_dark、portrait_light 或 portrait_dark"}, Required: true},

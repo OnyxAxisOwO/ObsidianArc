@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// One set of four backgrounds — desktop and phone, light and dark — shown one
-// at a time on a stage the shape of the screen it is for.
+// One set of backgrounds — desktop, tablet and phone, light and dark — shown
+// one at a time on a stage the shape of the screen it is for.
 //
 // It used to be four tiles side by side, each with its own buttons, and the
 // card read as a form to fill in rather than a picture to look at. Now two
@@ -9,12 +9,19 @@
 // actions sit under it. A variant that is not set says which one stands in
 // for it, which is the question an operator looking at an empty stage has.
 //
+// Switching screens morphs the stage rather than swapping it: the three
+// shapes share one height, so only the width and the corners travel, the
+// picture cross-fades, and the outline on top re-flows with them. Sized in
+// pixels from the card's width, because a box that changes aspect-ratio
+// between auto and fixed lengths jumps instead of moving.
+//
 // Used twice on the settings page, for the signed-out screens and for the
 // signed-in interface: the sets differ only in the prefix their variants
 // carry on the server and in what is drawn over them.
 
 import { computed, ref } from 'vue';
-import { Code, Monitor, Smartphone, Trash2, Upload } from 'lucide-vue-next';
+import { useElementSize } from '@vueuse/core';
+import { Code, Monitor, Smartphone, Tablet, Trash2, Upload } from 'lucide-vue-next';
 import { adminApi } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -22,7 +29,7 @@ import OaOverlay from '@/components/OaOverlay.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { useTheme } from '@/composables/useTheme';
 import { IconClose, IconImage, IconMoon, IconSun } from '@/icons';
-import { pickBackground, type SiteBackground } from '@/theme/theme';
+import { pickBackground, type ScreenKind, type SiteBackground } from '@/theme/theme';
 
 const props = withDefaults(defineProps<{
   prefix: '' | 'app_';
@@ -43,20 +50,36 @@ const LABELS: Record<string, StringKey> = {
   landscape_dark: 'loginBgLandscapeDark',
   portrait_light: 'loginBgPortraitLight',
   portrait_dark: 'loginBgPortraitDark',
+  tablet_light: 'loginBgTabletLight',
+  tablet_dark: 'loginBgTabletDark',
+};
+
+// The stored name of each screen's shape: the first two predate the tablet.
+const SHAPE: Record<ScreenKind, string> = { desktop: 'landscape', tablet: 'tablet', phone: 'portrait' };
+const SCREENS = [
+  { value: 'desktop', label: 'bgDesktop', icon: Monitor },
+  { value: 'tablet', label: 'bgTablet', icon: Tablet },
+  { value: 'phone', label: 'bgPhone', icon: Smartphone },
+] as const;
+// Width over height, and the corner the screen has: a phone is rounder.
+const FRAME: Record<ScreenKind, { ratio: number; radius: number }> = {
+  desktop: { ratio: 16 / 10, radius: 14 },
+  tablet: { ratio: 4 / 3, radius: 20 },
+  phone: { ratio: 9 / 19.5, radius: 26 },
 };
 
 const theme = useTheme();
-const portrait = ref(false);
+const screen = ref<ScreenKind>('desktop');
 // Starts on the scheme the operator is looking at the page in: that is the
 // one they can judge.
 const dark = ref(theme.dark());
 
-const variant = computed(() => `${portrait.value ? 'portrait' : 'landscape'}_${dark.value ? 'dark' : 'light'}`);
+const variant = computed(() => `${SHAPE[screen.value]}_${dark.value ? 'dark' : 'light'}`);
 const key = computed(() => props.prefix + variant.value);
 const current = computed<SiteBackground | undefined>(() => props.backgrounds[key.value]);
 // What a reader on this screen actually gets: this variant, or the one the
 // fallback lands on.
-const shown = computed(() => pickBackground(props.backgrounds, props.prefix, portrait.value, dark.value));
+const shown = computed(() => pickBackground(props.backgrounds, props.prefix, screen.value, dark.value));
 const standIn = computed(() => {
   if (current.value || !shown.value) return '';
   const found = Object.entries(props.backgrounds)
@@ -68,6 +91,19 @@ const status = computed(() => {
   if (current.value) return current.value.html ? t('bgKindHtml') : t('bgKindImage');
   if (standIn.value) return t('bgStandIn', { name: standIn.value });
   return props.prefix ? t('bgNoneSignedIn') : t('bgNoneSignedOut');
+});
+
+const block = ref<HTMLElement | null>(null);
+const { width: blockWidth } = useElementSize(block);
+// One height for all three, that of the desktop stage at this card's width.
+const frameStyle = computed(() => {
+  const height = Math.round(Math.min(blockWidth.value || 560, 560) / FRAME.desktop.ratio);
+  const frame = FRAME[screen.value];
+  return {
+    width: `${Math.round(height * frame.ratio)}px`,
+    height: `${height}px`,
+    borderRadius: `${frame.radius}px`,
+  };
 });
 
 const stageStyle = computed(() => {
@@ -195,17 +231,29 @@ async function clear(): Promise<void> {
 </script>
 
 <template>
-  <div class="oa-bg-stage-block" :style="stageStyle">
+  <div ref="block" class="oa-bg-stage-block" :style="stageStyle">
     <div class="oa-bg-stage-switches">
-      <div class="oa-segment" role="group" :aria-label="t('bgScreen')">
-        <button type="button" :aria-pressed="!portrait" @click="portrait = false">
-          <Monitor :size="13" />{{ t('bgDesktop') }}
-        </button>
-        <button type="button" :aria-pressed="portrait" @click="portrait = true">
-          <Smartphone :size="13" />{{ t('bgPhone') }}
+      <!-- A thumb that slides to the choice rather than a fill that jumps
+           to it: the stage below moves, and the switch moves with it. -->
+      <div
+        class="oa-segment oa-bg-switch"
+        role="group"
+        :aria-label="t('bgScreen')"
+        :style="{ '--n': SCREENS.length, '--i': SCREENS.findIndex((entry) => entry.value === screen) }"
+      >
+        <span class="oa-bg-switch-thumb" aria-hidden="true" />
+        <button
+          v-for="entry in SCREENS"
+          :key="entry.value"
+          type="button"
+          :aria-pressed="screen === entry.value"
+          @click="screen = entry.value"
+        >
+          <component :is="entry.icon" :size="13" />{{ t(entry.label) }}
         </button>
       </div>
-      <div class="oa-segment" role="group" :aria-label="t('bgScheme')">
+      <div class="oa-segment oa-bg-switch" role="group" :aria-label="t('bgScheme')" :style="{ '--n': 2, '--i': dark ? 1 : 0 }">
+        <span class="oa-bg-switch-thumb" aria-hidden="true" />
         <button type="button" :aria-pressed="!dark" @click="dark = false">
           <IconSun :size="13" />{{ t('themeLight') }}
         </button>
@@ -217,24 +265,29 @@ async function clear(): Promise<void> {
 
     <div
       class="oa-bg-stage"
-      :class="{ portrait, dark, dragging, empty: !shown, 'stand-in': !current && !!shown, signed: !!look }"
+      :class="[`screen-${screen}`, { dark, dragging, empty: !shown, 'stand-in': !current && !!shown, signed: !!look }]"
+      :style="frameStyle"
       @dragover.prevent="dragging = true"
       @dragleave="dragging = false"
       @drop.prevent="onDrop"
     >
-      <!-- A page previews as itself, in the same sandbox it runs in. -->
-      <iframe
-        v-if="shown?.html"
-        :key="shown.url"
-        class="oa-bg-stage-art"
-        :src="shown.url"
-        sandbox="allow-scripts"
-        referrerpolicy="no-referrer"
-        tabindex="-1"
-        aria-hidden="true"
-        title=""
-      />
-      <img v-else-if="shown" class="oa-bg-stage-art" :src="shown.url" alt="">
+      <!-- A page previews as itself, in the same sandbox it runs in. Keyed
+           by address, with no out-in mode, so one picture fades into
+           the next while the frame changes shape around both. -->
+      <Transition name="oa-bg-art">
+        <iframe
+          v-if="shown?.html"
+          :key="shown.url"
+          class="oa-bg-stage-art"
+          :src="shown.url"
+          sandbox="allow-scripts"
+          referrerpolicy="no-referrer"
+          tabindex="-1"
+          aria-hidden="true"
+          title=""
+        />
+        <img v-else-if="shown" :key="shown.url" class="oa-bg-stage-art" :src="shown.url" alt="">
+      </Transition>
       <span v-if="look && shown" class="oa-bg-stage-dim" />
 
       <!-- The interface that will sit on it, as an outline: enough to judge

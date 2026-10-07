@@ -192,32 +192,55 @@ export function setSignedIn(next: boolean): void {
   notify();
 }
 
+/** The three shapes of screen a background is set for. */
+export type ScreenKind = 'desktop' | 'tablet' | 'phone';
+
+// A tablet is a touch screen with room on both sides, held either way: a
+// phone on its side is under 600px tall and stays a phone-or-desktop
+// question for orientation to answer, as it always has.
+export const TABLET_QUERY = '(pointer: coarse) and (min-width: 600px) and (min-height: 600px)';
+export const PORTRAIT_QUERY = '(orientation: portrait)';
+
+export function screenKind(tablet: boolean, portrait: boolean): ScreenKind {
+  if (tablet) return 'tablet';
+  return portrait ? 'phone' : 'desktop';
+}
+
+// Which stored shape stands in for which, nearest first: a tablet borrows
+// the desktop picture before the phone's, and each of the other two borrows
+// the tablet's before the other's, since a tablet sits between them.
+const SHAPES: Record<ScreenKind, string[]> = {
+  desktop: ['landscape', 'tablet', 'portrait'],
+  tablet: ['tablet', 'landscape', 'portrait'],
+  phone: ['portrait', 'tablet', 'landscape'],
+};
+
 /**
- * Picks the variant for this screen from a set of four, falling back the way
- * a reader would least notice: the other shape in the same brightness before
- * the same shape in the other one, since a light picture behind dark panels
- * is the worse mismatch.
+ * Picks the variant for this screen from a set, falling back the way a
+ * reader would least notice: another shape in the same brightness before the
+ * same shape in the other one, since a light picture behind dark panels is
+ * the worse mismatch.
  */
 export function pickBackground(
   set: Record<string, SiteBackground> | undefined,
   prefix: '' | 'app_',
-  portrait: boolean,
+  screen: ScreenKind,
   dark: boolean,
 ): SiteBackground | null {
   if (!set) return null;
-  const shape = portrait ? 'portrait' : 'landscape';
-  const other = portrait ? 'landscape' : 'portrait';
-  const tone = dark ? 'dark' : 'light';
-  const opposite = dark ? 'light' : 'dark';
-  for (const key of [`${shape}_${tone}`, `${other}_${tone}`, `${shape}_${opposite}`, `${other}_${opposite}`]) {
-    const found = set[prefix + key];
-    if (found && typeof found.url === 'string' && found.url.startsWith('/') && !found.url.startsWith('//')) return found;
+  const tones = dark ? ['dark', 'light'] : ['light', 'dark'];
+  for (const tone of tones) {
+    for (const shape of SHAPES[screen]) {
+      const found = set[`${prefix}${shape}_${tone}`];
+      if (found && typeof found.url === 'string' && found.url.startsWith('/') && !found.url.startsWith('//')) return found;
+    }
   }
   return null;
 }
 
-function portraitScreen(): boolean {
-  return window.matchMedia?.('(orientation: portrait)').matches ?? false;
+function currentScreen(): ScreenKind {
+  const query = (q: string) => window.matchMedia?.(q).matches ?? false;
+  return screenKind(query(TABLET_QUERY), query(PORTRAIT_QUERY));
 }
 
 // --- theme -----------------------------------------------------------------
@@ -402,7 +425,7 @@ export function wallpaper(): PaintedWallpaper | null {
   const own = themeEnforced() ? null : ownWallpaper();
   if (own) return { ...own, html: false };
   if (!signedIn || !site) return null;
-  const picked = pickBackground(siteBackgrounds, 'app_', portraitScreen(), isDark());
+  const picked = pickBackground(siteBackgrounds, 'app_', currentScreen(), isDark());
   if (!picked) return null;
   return {
     url: picked.url,
@@ -504,7 +527,8 @@ export function startTheme(): void {
   window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (themeMode() === 'auto') applyTheme();
   });
-  // The instance's background comes in a shape per orientation, so turning
-  // a phone may want another picture.
-  window.matchMedia?.('(orientation: portrait)').addEventListener('change', repaintWallpaper);
+  // The instance's background comes in a shape per screen, so turning a
+  // phone, or docking a tablet to a keyboard, may want another picture.
+  window.matchMedia?.(PORTRAIT_QUERY).addEventListener('change', repaintWallpaper);
+  window.matchMedia?.(TABLET_QUERY).addEventListener('change', repaintWallpaper);
 }

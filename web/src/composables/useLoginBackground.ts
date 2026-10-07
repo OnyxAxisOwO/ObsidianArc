@@ -2,18 +2,19 @@ import { computed } from 'vue';
 import { useMediaQuery } from '@vueuse/core';
 import { useTheme } from '@/composables/useTheme';
 import { siteInfo } from '@/stores/session';
-import { pickBackground, type SiteBackground } from '@/theme/theme';
+import { PORTRAIT_QUERY, TABLET_QUERY, pickBackground, screenKind, type SiteBackground } from '@/theme/theme';
 
 export function useLoginBackground() {
   const theme = useTheme();
-  const isPortrait = useMediaQuery('(orientation: portrait)');
+  const isPortrait = useMediaQuery(PORTRAIT_QUERY);
+  const isTablet = useMediaQuery(TABLET_QUERY);
 
   const loginBg = computed<SiteBackground | null>(() => {
     const info = siteInfo.value;
     // An older server sends only the pictures, by URL.
     const set = info.backgrounds
       ?? Object.fromEntries(Object.entries(info.login_background ?? {}).map(([k, url]) => [k, { url, html: false }]));
-    return pickBackground(set, '', isPortrait.value, theme.dark());
+    return pickBackground(set, '', screenKind(isTablet.value, isPortrait.value), theme.dark());
   });
 
   // Split for the templates: a picture is the root's own background, a

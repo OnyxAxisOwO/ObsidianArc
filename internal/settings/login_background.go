@@ -11,9 +11,9 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 )
 
-// The signed-out screens' four keep the bare names they shipped with, so a
+// The signed-out screens' variants keep the bare names they shipped with, so a
 // database that stored them before the signed-in set existed still finds
-// them. The signed-in set is the same four behind an "app_" prefix: one
+// them. The signed-in set is the same six behind an "app_" prefix: one
 // table and one endpoint, because the only thing that differs is which
 // screens draw them.
 const (
@@ -21,6 +21,10 @@ const (
 	LoginBgLandscapeDark  = "landscape_dark"
 	LoginBgPortraitLight  = "portrait_light"
 	LoginBgPortraitDark   = "portrait_dark"
+	// A touch screen at least 600px on both sides, whichever way it is held:
+	// neither the desktop shape nor the phone's.
+	LoginBgTabletLight = "tablet_light"
+	LoginBgTabletDark  = "tablet_dark"
 
 	AppBgPrefix = "app_"
 )
@@ -30,10 +34,14 @@ var ValidLoginBackgroundVariants = map[string]bool{
 	LoginBgLandscapeDark:                true,
 	LoginBgPortraitLight:                true,
 	LoginBgPortraitDark:                 true,
+	LoginBgTabletLight:                  true,
+	LoginBgTabletDark:                   true,
 	AppBgPrefix + LoginBgLandscapeLight: true,
 	AppBgPrefix + LoginBgLandscapeDark:  true,
 	AppBgPrefix + LoginBgPortraitLight:  true,
 	AppBgPrefix + LoginBgPortraitDark:   true,
+	AppBgPrefix + LoginBgTabletLight:    true,
+	AppBgPrefix + LoginBgTabletDark:     true,
 }
 
 // HTMLBackgroundMime marks a background that is a page rather than a
