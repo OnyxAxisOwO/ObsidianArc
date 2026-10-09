@@ -64,9 +64,9 @@ func TestGuessesFromOneIPv6SubnetShareAnAllowance(t *testing.T) {
 	handlers.Routes(mux)
 
 	var throttled bool
-	for i := range 12 {
+	for i := range 40 {
 		// A different account each time, so only the address can add up.
-		reader := f.reader(t, "guesser-"+string(rune('a'+i)))
+		reader := f.reader(t, fmt.Sprintf("guesser-%d", i))
 		request := httptest.NewRequest(http.MethodPost, "/api/usage/redeem",
 			strings.NewReader(`{"code":"NOPE"}`))
 		request.Header.Set("Content-Type", "application/json")
@@ -79,7 +79,7 @@ func TestGuessesFromOneIPv6SubnetShareAnAllowance(t *testing.T) {
 		}
 	}
 	if !throttled {
-		t.Fatal("twelve wrong codes from one /64 were all answered; each address got its own allowance")
+		t.Fatal("forty wrong codes from one /64 were all answered; each address got its own allowance")
 	}
 }
 

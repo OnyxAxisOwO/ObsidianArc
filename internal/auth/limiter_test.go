@@ -28,9 +28,9 @@ func TestASuccessfulLoginDoesNotForgiveTheAddress(t *testing.T) {
 	l := NewLimiter()
 	const ip = "203.0.113.5"
 
-	for i := 0; i < freeAttempts+1; i++ {
+	for i := 0; i < addressFreeAttempts+1; i++ {
 		failAttempt(t, l, ip, fmt.Sprintf("victim-%d", i))
-		if i < freeAttempts {
+		if i < addressFreeAttempts {
 			attempt, err := l.Begin(ip, "attacker")
 			if err != nil {
 				t.Fatalf("round %d: the attacker's own login was refused: %v", i, err)
@@ -135,7 +135,7 @@ func TestHugeIdentifiersDoNotBecomeHugeKeys(t *testing.T) {
 func TestIPv6AddressesInOneSubnetShareABucket(t *testing.T) {
 	l := NewLimiter()
 
-	for i := 0; i < freeAttempts+1; i++ {
+	for i := 0; i < addressFreeAttempts+1; i++ {
 		failAttempt(t, l, fmt.Sprintf("2001:db8:0:1::%x", i+1), fmt.Sprintf("victim-%d", i))
 	}
 	if attempt, err := l.Begin("2001:db8:0:1:ffff::9", "victim-next"); err == nil {

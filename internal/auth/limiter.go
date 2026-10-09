@@ -44,6 +44,11 @@ const (
 	// Attempts allowed before a delay is imposed. Generous enough that a
 	// person mistyping a password never notices.
 	freeAttempts = 5
+	// The same for one address, which is many people at an office or a
+	// school behind one NAT. A success no longer clears it, so it needs the
+	// room for a building's worth of typos; it is still a wall to a host
+	// trying one guess at each of a thousand accounts.
+	addressFreeAttempts = 30
 	// How long a bucket survives with no activity.
 	bucketTTL = 30 * time.Minute
 	// Ceiling on the exponential backoff.
@@ -96,8 +101,8 @@ func (a *loginAttempt) finish(outcome attemptOutcome) {
 			case attemptFailed:
 				entry.failures++
 				entry.lastFailure = now
-				if entry.failures > freeAttempts {
-					entry.blockedUntil = now.Add(backoff(entry.failures - freeAttempts))
+				if free := allowance(key); entry.failures > free {
+					entry.blockedUntil = now.Add(backoff(entry.failures - free))
 				}
 			case attemptSucceeded:
 				// Only the account's own bucket is forgiven. The address bucket
@@ -163,7 +168,7 @@ func (l *Limiter) Begin(ip, identifier string) (*loginAttempt, error) {
 		// Sequential behaviour permits the sixth try and blocks after it
 		// fails. Parallel requests get the same allowance, not an unlimited
 		// wave that happened to arrive before the first hash completed.
-		if entry.failures+entry.inFlight > freeAttempts {
+		if entry.failures+entry.inFlight > allowance(key) {
 			return nil, &RateLimitError{RetryAfter: time.Second}
 		}
 	}
@@ -211,6 +216,14 @@ const (
 	// reduced to a digest and costs the same as any other key.
 	maxKeyIdentifier = 256
 )
+
+// allowance is how many failures a bucket absorbs before it slows anybody.
+func allowance(key string) int {
+	if strings.HasPrefix(key, accountKeyPrefix) {
+		return freeAttempts
+	}
+	return addressFreeAttempts
+}
 
 func keys(ip, identifier string) []string {
 	out := make([]string, 0, 2)
