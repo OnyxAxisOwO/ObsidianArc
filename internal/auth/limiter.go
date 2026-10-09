@@ -27,6 +27,12 @@ type Limiter struct {
 	mu        sync.Mutex
 	buckets   map[string]*bucket
 	lastSwept time.Time
+	// Most buckets the map may hold. A field rather than the constant so a test
+	// can make the table small; production never changes it.
+	ceiling int
+	// When the map was last walked because it was full. Zero until the first
+	// walk, so a map that fills for the first time is walked at once.
+	lastFullSweep time.Time
 }
 
 type bucket struct {
@@ -56,10 +62,18 @@ const (
 	// How often the map is swept for dead entries. Bounded work, done on the
 	// write path, so there is no timer goroutine for this.
 	sweepInterval = 5 * time.Minute
+	// Most buckets the map may hold. Only failures and attempts in progress keep
+	// a bucket, so sign-in alone never gets near this; what it bounds is a flood
+	// of distinct names, which would otherwise grow the map for as long as the
+	// flood lasted.
+	maxBuckets = 100_000
+	// How soon a full map may be walked again. While it stays full, every new
+	// name would otherwise pay for a walk of the whole map under the lock.
+	fullSweepInterval = time.Second
 )
 
 func NewLimiter() *Limiter {
-	return &Limiter{buckets: map[string]*bucket{}, lastSwept: time.Now()}
+	return &Limiter{buckets: map[string]*bucket{}, lastSwept: time.Now(), ceiling: maxBuckets}
 }
 
 type attemptOutcome int
@@ -173,6 +187,13 @@ func (l *Limiter) Begin(ip, identifier string) (*loginAttempt, error) {
 		}
 	}
 
+	// Refused rather than evicted: a bucket holding a failure or a block is
+	// what slows a guessed-at name, and freeing one to admit a stranger would
+	// let a flood of new names reset that name's budget.
+	if !l.roomFor(attemptKeys, now) {
+		return nil, &RateLimitError{RetryAfter: time.Second}
+	}
+
 	for _, key := range attemptKeys {
 		entry := l.buckets[key]
 		if entry == nil {
@@ -185,6 +206,37 @@ func (l *Limiter) Begin(ip, identifier string) (*loginAttempt, error) {
 		entry.lastFailure = now
 	}
 	return &loginAttempt{limiter: l, keys: attemptKeys}, nil
+}
+
+// roomFor reports whether the keys this attempt would create fit under the
+// ceiling, making room first when they do not. An attempt that creates no key
+// needs no room, so a full map still serves every name it already holds.
+func (l *Limiter) roomFor(attemptKeys []string, now time.Time) bool {
+	if fresh := l.freshKeys(attemptKeys); fresh == 0 || len(l.buckets)+fresh <= l.ceiling {
+		return true
+	}
+	// A walk costs the whole map under the lock, and a full map that stays full
+	// would pay that for every new name. Most of what a walk frees is freed by
+	// time rather than by the next request, so walking again a moment later
+	// rarely finds more.
+	if now.Sub(l.lastFullSweep) >= fullSweepInterval {
+		l.lastFullSweep = now
+		l.dropIdleLocked(now)
+	}
+	// The walk may have dropped a key this attempt already found. That key is
+	// one the attempt must now create, so the count is taken again after it.
+	return len(l.buckets)+l.freshKeys(attemptKeys) <= l.ceiling
+}
+
+// freshKeys counts the keys of an attempt that the map does not hold yet.
+func (l *Limiter) freshKeys(attemptKeys []string) int {
+	fresh := 0
+	for _, key := range attemptKeys {
+		if l.buckets[key] == nil {
+			fresh++
+		}
+	}
+	return fresh
 }
 
 // 1s, 2s, 4s, 8s … capped. Doubling is what makes an online guessing attack
@@ -202,11 +254,26 @@ func (l *Limiter) sweepLocked(now time.Time) {
 		return
 	}
 	l.lastSwept = now
+	l.dropIdleLocked(now)
+}
+
+// dropIdleLocked removes every bucket that forgettable reports as idle. The
+// periodic sweep and the full-map walk share it, so the two cannot disagree
+// about what is safe to drop.
+func (l *Limiter) dropIdleLocked(now time.Time) {
 	for key, entry := range l.buckets {
-		if entry.inFlight == 0 && now.Sub(entry.lastFailure) > bucketTTL && now.After(entry.blockedUntil) {
+		if forgettable(entry, now) {
 			delete(l.buckets, key)
 		}
 	}
+}
+
+// forgettable reports whether a bucket is only memory now: it has been idle
+// for bucketTTL, no block is still running, and no attempt is waiting to record
+// an outcome. The last matters because finish skips a bucket it cannot find, so
+// dropping one in flight would lose that outcome.
+func forgettable(entry *bucket, now time.Time) bool {
+	return entry.inFlight == 0 && now.Sub(entry.lastFailure) > bucketTTL && now.After(entry.blockedUntil)
 }
 
 const (
