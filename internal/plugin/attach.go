@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
@@ -82,7 +82,7 @@ func (m *Manager) attach(l *loaded) (err error) {
 	}
 
 	for _, b := range man.OAuthBindings {
-		re := regexp.MustCompile(`^(?:` + b.Pattern + `)$`)
+		re := arcx.MustWhole(b.Pattern)
 		// Its own binding first: an update replaces it. Somebody else's is
 		// the answer "no".
 		h.OAuth.UnbindSubject(b.Field)
@@ -350,12 +350,37 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 	for _, line := range out.Out {
 		switch line.Kind {
 		case "table":
-			if err := rt.Table(line.Headers, line.Rows); err != nil {
+			headers := make([]string, len(line.Headers))
+			for i, h := range line.Headers {
+				headers[i] = plainText(h)
+			}
+			rows := make([][]string, len(line.Rows))
+			for i, row := range line.Rows {
+				rows[i] = make([]string, len(row))
+				for j, cell := range row {
+					rows[i][j] = plainText(cell)
+				}
+			}
+			if err := rt.Table(headers, rows); err != nil {
 				return err
 			}
 		default:
-			rt.Printf("%s", line.Text)
+			rt.Printf("%s", plainText(line.Text))
 		}
 	}
 	return nil
+}
+
+// plainText drops the control characters a terminal would obey: the escape
+// sequences that move the cursor, retitle the window, or paint over what was
+// printed above. What a backend prints is often something a visitor typed (a
+// name, a note), and the operator's console must show it, not act on it.
+// Newline and tab are layout, and stay.
+func plainText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, s)
 }

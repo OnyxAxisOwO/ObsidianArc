@@ -566,19 +566,65 @@ func (m *Manager) userOp(c *wasm.Call, st *callState, op string, raw json.RawMes
 		if a.ID == "" || (status != user.StatusActive && status != user.StatusDisabled) {
 			return nil, badArg("users.set_status needs an id and a status of active or disabled")
 		}
-		if _, err := m.users.UpdateAdminFields(c.Ctx, q, a.ID, user.AdminUpdate{Status: &status}); err != nil {
-			return nil, &wasm.HostError{Code: "users", Message: err.Error()}
-		}
-		return nil, nil
+		return nil, m.changeAccount(c.Ctx, q, a.ID, false, func(q database.Queryer) error {
+			_, err := m.users.UpdateAdminFields(c.Ctx, q, a.ID, user.AdminUpdate{Status: &status})
+			return err
+		})
 	default:
 		if a.ID == "" {
 			return nil, badArg("users.delete needs an id")
 		}
-		if err := m.users.Delete(c.Ctx, q, a.ID); err != nil {
-			return nil, &wasm.HostError{Code: "users", Message: err.Error()}
-		}
-		return nil, nil
+		return nil, m.changeAccount(c.Ctx, q, a.ID, true, func(q database.Queryer) error {
+			return m.users.Delete(c.Ctx, q, a.ID)
+		})
 	}
+}
+
+// changeAccount runs a change to one account under the lock every change to
+// the set of administrators holds (see admin.lockAdminPopulation), so a package
+// ends accounts by the same rules the backoffice does: the last active
+// super administrator is never the one, and — beyond that — an administrator
+// is not a package's to touch at all. A package is not part of the
+// administrators' hierarchy; it has no standing the backoffice would give an
+// operator over another operator, and a bug or a hostile one in it must not be
+// able to take the instance's administration away.
+//
+// When the backend has a transaction open and says the call belongs to it, the
+// lock is taken in that one and held until the backend ends it; otherwise the
+// check and the change share a short transaction of their own.
+func (m *Manager) changeAccount(ctx context.Context, q database.Queryer, id string, deleting bool, change func(database.Queryer) error) error {
+	run := func(tx *database.Tx) error {
+		if err := settings.Lock(ctx, tx); err != nil {
+			return err
+		}
+		target, err := m.users.ByID(ctx, tx, id)
+		if err != nil {
+			if deleting && errors.Is(err, user.ErrNotFound) {
+				return nil
+			}
+			return &wasm.HostError{Code: "users", Message: err.Error()}
+		}
+		if target.IsSuperAdmin() {
+			others, err := m.users.CountActiveAdmins(ctx, tx, id)
+			if err != nil {
+				return &wasm.HostError{Code: "users", Message: err.Error()}
+			}
+			if others == 0 {
+				return &wasm.HostError{Code: "last_admin", Message: "that is the last active super administrator"}
+			}
+		}
+		if target.IsAdmin() {
+			return &wasm.HostError{Code: "admin_account", Message: "a plugin cannot suspend or delete an administrator's account"}
+		}
+		if err := change(tx); err != nil {
+			return &wasm.HostError{Code: "users", Message: err.Error()}
+		}
+		return nil
+	}
+	if tx, ok := q.(*database.Tx); ok {
+		return run(tx)
+	}
+	return m.db.Tx(ctx, run)
 }
 
 // rewardOp gives an account something the core knows how to spend, by the
@@ -632,7 +678,13 @@ func (m *Manager) rewardOp(c *wasm.Call, st *callState, plugin, op string, raw j
 	expires := int64(0)
 	if a.ValidDays > 0 {
 		expires = now.Add(time.Duration(a.ValidDays) * 24 * time.Hour).UnixMilli()
-	} else if bar, err := m.host.Bonus.Bar(c.Ctx, q, a.BarID); err == nil && bar.DefaultExpiresAt > now.UnixMilli() {
+	} else if bar, err := m.host.Bonus.Bar(c.Ctx, q, a.BarID); err == nil && bar.DefaultExpiresAt > 0 {
+		// A bar whose default lifetime has run out would, taken as zero, hand out
+		// credit that never expires — the opposite of what its owner set. The
+		// plugin can still say how long it wants with valid_days.
+		if bar.DefaultExpiresAt <= now.UnixMilli() {
+			return nil, &wasm.HostError{Code: "bonus_bar_expired", Message: "the bonus bar's default expiry has passed; give valid_days"}
+		}
 		expires = bar.DefaultExpiresAt
 	}
 	if _, err := m.host.Bonus.GrantTo(c.Ctx, q, a.BarID, a.UserID, a.Amount, expires, "plugin:"+plugin, a.Note); err != nil {

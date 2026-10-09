@@ -32,6 +32,15 @@ const (
 	maxResponseBody = 8 << 20
 )
 
+// routePolicy is the Content-Security-Policy of every answer a package route
+// gives. A backend chooses its own Content-Type, so one with no browser half
+// and no permissions could still answer text/html with a script tag pointing
+// at /api/x/<name>/web/…, and a visitor who opened that address would run
+// it as this site. The sandbox makes any document served here an opaque
+// origin with no scripts, which costs a JSON, image or download route nothing:
+// a policy only applies to what is rendered as a page.
+const routePolicy = "sandbox; default-src 'none'"
+
 // ServePlugins answers a request for a route a package brought, and reports
 // whether there was one.
 func (m *Manager) ServePlugins(w http.ResponseWriter, r *http.Request) bool {
@@ -80,6 +89,9 @@ func (m *Manager) buildRouter(pkgs map[string]*loaded) (table *routeTable, err e
 			gate, name := m.Gate(), l.name
 			inner := h
 			mux.Handle(route.Pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Replaces the page's own policy, which is set before the request
+				// gets here: a package's answer is never the page.
+				w.Header().Set("Content-Security-Policy", routePolicy)
 				// Before anything else: a switched-off plugin's route is not
 				// there, for anyone.
 				if !gate.Allows(name) {
@@ -193,6 +205,9 @@ func translateGuest(err error) error {
 	}
 	if errors.Is(err, ErrNoBackend) || errors.Is(err, errPluginFault) {
 		return httpx.NotFound("No such endpoint.")
+	}
+	if errors.Is(err, wasm.ErrBusy) {
+		return httpx.UnavailableCode("plugin_busy", "This feature is busy right now. Try again shortly.").WithCause(err)
 	}
 	return httpx.Internal(err)
 }

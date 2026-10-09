@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -264,6 +265,21 @@ var (
 	consoleRE    = regexp.MustCompile(`^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$`)
 )
 
+// Whole compiles pattern the way every place that uses one does: anchored at
+// both ends and grouped, so an alternation cannot escape the anchors. It is
+// also the only way a manifest's pattern is checked, because the bare pattern
+// is not the same test: `\Qabc` compiles on its own and `^(?:\Qabc)$` does
+// not, since the quote swallows the closing parenthesis. A pattern that passed
+// as itself and failed as used would panic in MustWhole on a request.
+func Whole(pattern string) (*regexp.Regexp, error) {
+	return regexp.Compile(`^(?:` + pattern + `)$`)
+}
+
+// MustWhole is Whole for a pattern ParseManifest has already accepted.
+func MustWhole(pattern string) *regexp.Regexp {
+	return regexp.MustCompile(`^(?:` + pattern + `)$`)
+}
+
 // ParseManifest reads manifest.json, refusing anything it does not know:
 // a misspelt key is a feature that silently does not exist, and this is the
 // only moment anyone is looking.
@@ -322,6 +338,9 @@ func (m *Manifest) Validate() error {
 	if m.UI != nil && !strings.HasPrefix(m.UI.Module, "web/") {
 		return fmt.Errorf("ui.module %q must be under web/", m.UI.Module)
 	}
+	if err := m.validateHomepage(); err != nil {
+		return err
+	}
 	if err := m.validateSettings(); err != nil {
 		return err
 	}
@@ -345,6 +364,20 @@ func (m *Manifest) Validate() error {
 	needsBackend := len(m.Guards) > 0 || len(m.Routes) > 0 || len(m.Console) > 0 || len(m.Hooks) > 0
 	if needsBackend && m.Backend == "" {
 		return errors.New("guards, routes, console commands and hooks need a backend")
+	}
+	return nil
+}
+
+// validateHomepage keeps a manifest from carrying a link that does something
+// when it is clicked: the backoffice draws it as an anchor, and a javascript:
+// address there would run in the operator's session.
+func (m *Manifest) validateHomepage() error {
+	if m.Homepage == "" {
+		return nil
+	}
+	u, err := url.Parse(m.Homepage)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || len(m.Homepage) > 300 {
+		return fmt.Errorf("homepage must be an http or https address of at most 300 characters")
 	}
 	return nil
 }
@@ -391,7 +424,7 @@ func (m *Manifest) validateSettings() error {
 			return fmt.Errorf("setting %s: permission %q is not a grant list", s.Key, s.Permission)
 		}
 		if s.Pattern != "" {
-			if _, err := regexp.Compile(s.Pattern); err != nil {
+			if _, err := Whole(s.Pattern); err != nil {
 				return fmt.Errorf("setting %s: pattern: %v", s.Key, err)
 			}
 		}
@@ -422,7 +455,7 @@ func (m *Manifest) validateFields() error {
 		}
 		fields[f.Key] = true
 		if f.Pattern != "" {
-			if _, err := regexp.Compile(f.Pattern); err != nil {
+			if _, err := Whole(f.Pattern); err != nil {
 				return fmt.Errorf("field %s: pattern: %v", f.Key, err)
 			}
 		}
@@ -446,7 +479,7 @@ func (m *Manifest) validateFields() error {
 		if b.Provider == "" || b.Pattern == "" {
 			return errors.New("an oauth binding needs a provider and a pattern")
 		}
-		if _, err := regexp.Compile(b.Pattern); err != nil {
+		if _, err := Whole(b.Pattern); err != nil {
 			return fmt.Errorf("oauth binding %s: pattern: %v", b.Field, err)
 		}
 	}

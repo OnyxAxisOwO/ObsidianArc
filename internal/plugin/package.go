@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -173,7 +174,7 @@ func definitionsOf(m *arcx.Manifest) []settings.Definition {
 func validatorFor(s arcx.Setting) func(string) error {
 	var re *regexp.Regexp
 	if s.Pattern != "" {
-		re = regexp.MustCompile(`^(?:` + s.Pattern + `)$`)
+		re = arcx.MustWhole(s.Pattern)
 	}
 	enum := s.Enum
 	if re == nil && len(enum) == 0 {
@@ -202,7 +203,7 @@ func fieldsOf(m *arcx.Manifest) []user.Field {
 	for _, f := range m.Fields {
 		field := user.Field{Key: f.Key, Unique: f.Unique, Searchable: f.Searchable, Plugin: m.Name}
 		if f.Pattern != "" {
-			re := regexp.MustCompile(`^(?:` + f.Pattern + `)$`)
+			re := arcx.MustWhole(f.Pattern)
 			field.Validate = func(v string) error {
 				if !re.MatchString(v) {
 					return errors.New("is not in the expected format")
@@ -327,7 +328,35 @@ func (m *Manager) refreshDescribe(l *loaded) {
 			delete(d.First, key)
 		}
 	}
+	d.Origins = cleanOrigins(l.name, d.Origins)
 	l.described.Store(&d)
+}
+
+// maxOrigins is how many origins one package may ask the page's policy to
+// trust. Real ones ask for one or two; the cap keeps a package from making
+// every response's header as large as it likes.
+const maxOrigins = 8
+
+// cleanOrigins keeps the origins a policy may be widened by (see
+// httpx.ValidOrigin). The permission-free describe hook is what feeds the
+// page's script, connection and image lists site-wide, so what it returns is
+// held to being an origin and nothing else: a wildcard or a bare scheme there
+// would hand every page of the site to any host, with no permission asked for.
+func cleanOrigins(plugin string, origins []string) []string {
+	var kept []string
+	for _, origin := range origins {
+		switch {
+		case !httpx.ValidOrigin(origin):
+			slog.Warn("plugin asked the page policy to trust something that is not an origin; dropped",
+				"plugin", plugin, "origin", truncate(origin, 80))
+		case len(kept) >= maxOrigins:
+			slog.Warn("plugin asked the page policy to trust too many origins; dropped",
+				"plugin", plugin, "origin", origin)
+		default:
+			kept = append(kept, origin)
+		}
+	}
+	return kept
 }
 
 // jsonObject re-decodes raw into a generic object, for the answers that are

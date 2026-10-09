@@ -41,6 +41,10 @@ func (m *Manager) loadPackages(ctx context.Context) error {
 	repaired := map[string]record{}
 	next := map[string]*loaded{}
 	var dirs []fs.FS
+	ledger, err := newMigrationLedger()
+	if err != nil {
+		return err
+	}
 	for rows.Next() {
 		var name, version, sum, source string
 		var archive []byte
@@ -56,6 +60,13 @@ func (m *Manager) loadPackages(ctx context.Context) error {
 		}
 		if _, builtin := Lookup(name); builtin {
 			slog.Error("plugin package has the name of a built-in plugin; it stays installed and inert", "plugin", name)
+			continue
+		}
+		// Two owners of one migration version fail the migration run below with
+		// "defined twice", and the server with it. Installing checks for this;
+		// what an older build let in is left out here instead.
+		if err := ledger.take(name, pkg); err != nil {
+			slog.Error("plugin package's migrations collide with another's; it stays installed and inert", "plugin", name, "error", err)
 			continue
 		}
 		l := &loaded{name: name, pkg: pkg, source: source, addedAt: addedAt, addedBy: addedBy}
@@ -324,6 +335,9 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 func (m *Manager) checkPackage(pkg *arcx.Package, old *loaded) error {
 	man := pkg.Manifest
 	name := man.Name
+	if err := m.checkMigrations(pkg); err != nil {
+		return err
+	}
 	if err := m.settings.CheckPluginDefinitions(name, definitionsOf(man), man.CaptchaModes); err != nil {
 		return preflight("%v", err)
 	}
@@ -359,6 +373,125 @@ func (m *Manager) checkPackage(pkg *arcx.Package, old *loaded) error {
 		}
 	}
 	return nil
+}
+
+// checkMigrations refuses a package whose migrations would be recorded under
+// a version somebody else already holds. The runner keeps one table for every
+// owner and skips what it finds recorded, so such a migration would be
+// silently not run at install, then fail the boot with "defined twice" — and
+// uninstalling the package with its data would forget the other owner's
+// record of it.
+func (m *Manager) checkMigrations(pkg *arcx.Package) error {
+	if !pkg.HasMigrations() {
+		return nil
+	}
+	name := pkg.Manifest.Name
+	ledger, err := newMigrationLedger()
+	if err != nil {
+		return err
+	}
+	for other, l := range *m.pkgs.Load() {
+		if other != name {
+			// What the installed ones hold among themselves is not this
+			// package's doing, and is dealt with at boot.
+			_ = ledger.take(other, l.pkg)
+		}
+	}
+	if err := ledger.take(name, pkg); err != nil {
+		return preflight("%v", err)
+	}
+	if err := ledger.passed(name, pkg); err != nil {
+		return preflight("%v", err)
+	}
+	return nil
+}
+
+// migrationLedger is who owns each migration version in use: the core, the
+// plugins compiled into this build, and the packages installed.
+type migrationLedger struct {
+	owners map[string]string
+	// The number of the newest numbered migration the core ships.
+	coreNewest int
+}
+
+func newMigrationLedger() (*migrationLedger, error) {
+	core, err := database.CoreVersions()
+	if err != nil {
+		return nil, err
+	}
+	g := &migrationLedger{owners: map[string]string{}, coreNewest: -1}
+	for _, version := range core {
+		g.owners[version] = "the server"
+		g.coreNewest = max(g.coreNewest, versionNumber(version))
+	}
+	for _, p := range All() {
+		dir := migrationsOf(p)
+		if dir == nil {
+			continue
+		}
+		versions, err := database.Versions(dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, version := range versions {
+			g.owners[version] = "the " + p.Name() + " plugin"
+		}
+	}
+	return g, nil
+}
+
+// take records pkg's migrations as name's, or — recording nothing — says which
+// version is already somebody else's.
+func (g *migrationLedger) take(name string, pkg *arcx.Package) error {
+	if !pkg.HasMigrations() {
+		return nil
+	}
+	versions, err := database.Versions(pkg.Migrations())
+	if err != nil {
+		return err
+	}
+	mine := "the " + name + " package"
+	for _, version := range versions {
+		if owner, taken := g.owners[version]; taken && owner != mine {
+			return fmt.Errorf("migration %s already belongs to %s", version, owner)
+		}
+	}
+	for _, version := range versions {
+		g.owners[version] = mine
+	}
+	return nil
+}
+
+// passed holds a package's unprefixed migration names to numbers the core has
+// already gone by. Such a name exists so that a migration moved out of the
+// core keeps its version; a number the core has not reached yet is one its
+// next release may take, and the two would then be one version twice.
+func (g *migrationLedger) passed(name string, pkg *arcx.Package) error {
+	versions, err := database.Versions(pkg.Migrations())
+	if err != nil {
+		return err
+	}
+	for _, version := range versions {
+		if strings.HasPrefix(version, name+"_") {
+			continue
+		}
+		if n := versionNumber(version); n < 0 || n >= g.coreNewest {
+			return fmt.Errorf("migration %s is named like a core one but its number is not behind the core's; a new migration is named %s_<name>", version, name)
+		}
+	}
+	return nil
+}
+
+// versionNumber is the leading four digits of a core-style version, or -1.
+func versionNumber(version string) int {
+	if len(version) < 4 {
+		return -1
+	}
+	n, err := strconv.Atoi(version[:4])
+	if err != nil || n < 0 {
+		return -1
+	}
+	return n
 }
 
 // coreClaims reports whether a route the server registered itself would
@@ -632,10 +765,7 @@ func (m *Manager) Preview(actor Actor, raw []byte) (*PreviewInfo, error) {
 	if err := lintMigrations(pkg); err != nil {
 		return nil, err
 	}
-	m.mu.Lock()
-	old := m.loadedPackage(man.Name)
-	checkErr := m.checkPackage(pkg, old)
-	m.mu.Unlock()
+	old, checkErr := m.checkAgainstInstalled(pkg)
 	if checkErr != nil {
 		return nil, checkErr
 	}
@@ -656,6 +786,17 @@ func (m *Manager) Preview(actor Actor, raw []byte) (*PreviewInfo, error) {
 	}
 	info.Token = m.pending.put(actor.ID, pkg)
 	return info, nil
+}
+
+// checkAgainstInstalled is checkPackage under the manager's lock, with the
+// package it would replace. The unlock is deferred: a panic in a check must
+// fail that one request, not leave every later install, switch and removal
+// waiting on a lock nobody will release.
+func (m *Manager) checkAgainstInstalled(pkg *arcx.Package) (*loaded, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	old := m.loadedPackage(pkg.Manifest.Name)
+	return old, m.checkPackage(pkg, old)
 }
 
 // ConfirmUpload installs the archive the actor previewed under token.
