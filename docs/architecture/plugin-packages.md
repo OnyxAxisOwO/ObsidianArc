@@ -66,7 +66,7 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | --- | --- | --- |
 | `db` | 对实例数据库执行任意 SQL（用 `?` 占位，两种数据库通用）、开事务 | `db.query`、`db.exec`、`db.begin`、`db.commit`、`db.rollback` |
 | `network` | 向服务器能到达的任意地址发 HTTP(S) 请求（禁止链路本地地址）；**开着事务时不允许** | `http.fetch` |
-| `users` | 挂起、恢复、删除**普通账户**，数活跃管理员。管理员（`admin`、`super_admin`）不归包管：对他们的挂起和删除一律拒绝（错误码 `admin_account`，最后一个活跃超级管理员是 `last_admin`），包不在管理员的层级里。检查和改动在后台改管理员名单时用的同一把行锁下做 | `users.set_status`、`users.delete`、`users.count_active_admins` |
+| `users` | 挂起、恢复、删除账户，数活跃管理员。管理员（`admin`、`super_admin`）只有在这次调用由一位在职超级管理员发起时才能动（服务器从会话里取出的那个人，在锁内重新读取；包自己说的不算）；定时任务、Webhook、委派管理员的请求一律拒绝（错误码 `admin_account`），最后一个活跃超级管理员谁也动不了（`last_admin`）。检查和改动在后台改管理员名单时用的同一把行锁下做 | `users.set_status`、`users.delete`、`users.count_active_admins` |
 | `cards` | 收回账户名下未用的重置卡 | `cards.revoke_available` |
 | `rewards` | 给账户发赠金（发到指定的赠金条）和重置卡；可并入插件的事务。需要 API 3。没给有效天数时用赠金条的默认到期时间；那个时间已经过了就拒绝（`bonus_bar_expired`），而不是发一笔永不过期的赠金 | `rewards.bonus`、`rewards.cards` |
 | `sessions` | 结束账户的所有登录 | `sessions.revoke_user` |

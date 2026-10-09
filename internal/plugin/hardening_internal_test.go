@@ -180,6 +180,57 @@ func (r *rig) userCall(op, id string, tx *database.Tx) error {
 	return err
 }
 
+// userCallAs is userCall on behalf of an account, the way a route call carries
+// the actor the server resolved from the session.
+func (r *rig) userCallAs(op, id string, actor user.User) error {
+	raw := fmt.Sprintf(`{"id":%q,"status":"disabled"}`, id)
+	call := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: actorOf(actor)}}
+	_, err := r.manager.userOp(call, &callState{}, op, json.RawMessage(raw))
+	return err
+}
+
+// On a super administrator's behalf a package may end an administrator — the
+// backoffice's own rule, a super administrator manages anybody — and on
+// nobody else's: not a delegated administrator's, however broad the grant.
+// The last active super administrator stays protected whoever asks.
+func TestAPackageActsOnAnAdministratorOnlyForASuperAdministrator(t *testing.T) {
+	r := newRig(t)
+	boss := accountOf(t, r, "boss", user.RoleSuperAdmin)
+	staff := accountOf(t, r, "staff", user.RoleAdmin)
+	delegate := accountOf(t, r, "delegate", user.RoleAdmin)
+
+	if code := hostCode(r.userCallAs("users.set_status", staff.ID, delegate)); code != "admin_account" {
+		t.Errorf("a delegated administrator's call: %q", code)
+	}
+	if status, _ := r.statusOf(t, staff.ID); status != "active" {
+		t.Fatalf("a delegated administrator's call changed staff: %q", status)
+	}
+
+	if err := r.userCallAs("users.set_status", staff.ID, boss); err != nil {
+		t.Fatalf("a super administrator's call: %v", err)
+	}
+	if status, _ := r.statusOf(t, staff.ID); status != "disabled" {
+		t.Errorf("status = %q", status)
+	}
+
+	// The actor is read again, not taken from the session: one demoted since
+	// is not a super administrator any more.
+	if _, err := r.db.Exec(context.Background(), `UPDATE users SET role = ? WHERE id = ?`, user.RoleAdmin, boss.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code := hostCode(r.userCallAs("users.delete", delegate.ID, boss)); code != "admin_account" {
+		t.Errorf("a demoted actor's call: %q", code)
+	}
+
+	// And nobody ends the last one.
+	if _, err := r.db.Exec(context.Background(), `UPDATE users SET role = ? WHERE id = ?`, user.RoleSuperAdmin, boss.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code := hostCode(r.userCallAs("users.set_status", boss.ID, boss)); code != "last_admin" {
+		t.Errorf("the last super administrator: %q", code)
+	}
+}
+
 func hostCode(err error) string {
 	var he *wasm.HostError
 	if errors.As(err, &he) {

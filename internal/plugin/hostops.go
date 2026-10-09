@@ -566,7 +566,7 @@ func (m *Manager) userOp(c *wasm.Call, st *callState, op string, raw json.RawMes
 		if a.ID == "" || (status != user.StatusActive && status != user.StatusDisabled) {
 			return nil, badArg("users.set_status needs an id and a status of active or disabled")
 		}
-		return nil, m.changeAccount(c.Ctx, q, a.ID, false, func(q database.Queryer) error {
+		return nil, m.changeAccount(c.Ctx, q, c.Info.Actor, a.ID, false, func(q database.Queryer) error {
 			_, err := m.users.UpdateAdminFields(c.Ctx, q, a.ID, user.AdminUpdate{Status: &status})
 			return err
 		})
@@ -574,7 +574,7 @@ func (m *Manager) userOp(c *wasm.Call, st *callState, op string, raw json.RawMes
 		if a.ID == "" {
 			return nil, badArg("users.delete needs an id")
 		}
-		return nil, m.changeAccount(c.Ctx, q, a.ID, true, func(q database.Queryer) error {
+		return nil, m.changeAccount(c.Ctx, q, c.Info.Actor, a.ID, true, func(q database.Queryer) error {
 			return m.users.Delete(c.Ctx, q, a.ID)
 		})
 	}
@@ -584,15 +584,19 @@ func (m *Manager) userOp(c *wasm.Call, st *callState, op string, raw json.RawMes
 // the set of administrators holds (see admin.lockAdminPopulation), so a package
 // ends accounts by the same rules the backoffice does: the last active
 // super administrator is never the one, and — beyond that — an administrator
-// is not a package's to touch at all. A package is not part of the
-// administrators' hierarchy; it has no standing the backoffice would give an
-// operator over another operator, and a bug or a hostile one in it must not be
-// able to take the instance's administration away.
+// is a package's to touch only on a super administrator's behalf. A package is
+// not part of the administrators' hierarchy and has no standing of its own
+// over an operator: a sweep, a webhook or a delegated administrator's request
+// cannot end one, and a bug or a hostile package cannot take the instance's
+// administration away. What the package is given is the actor the server
+// itself resolved from the session, read again here under the lock, so it is
+// the backoffice's own rule (a super administrator may manage anybody) rather
+// than a claim a backend could make.
 //
 // When the backend has a transaction open and says the call belongs to it, the
 // lock is taken in that one and held until the backend ends it; otherwise the
 // check and the change share a short transaction of their own.
-func (m *Manager) changeAccount(ctx context.Context, q database.Queryer, id string, deleting bool, change func(database.Queryer) error) error {
+func (m *Manager) changeAccount(ctx context.Context, q database.Queryer, actor *wasm.Actor, id string, deleting bool, change func(database.Queryer) error) error {
 	run := func(tx *database.Tx) error {
 		if err := settings.Lock(ctx, tx); err != nil {
 			return err
@@ -613,7 +617,7 @@ func (m *Manager) changeAccount(ctx context.Context, q database.Queryer, id stri
 				return &wasm.HostError{Code: "last_admin", Message: "that is the last active super administrator"}
 			}
 		}
-		if target.IsAdmin() {
+		if target.IsAdmin() && !m.superAdminActing(ctx, tx, actor) {
 			return &wasm.HostError{Code: "admin_account", Message: "a plugin cannot suspend or delete an administrator's account"}
 		}
 		if err := change(tx); err != nil {
@@ -625,6 +629,17 @@ func (m *Manager) changeAccount(ctx context.Context, q database.Queryer, id stri
 		return run(tx)
 	}
 	return m.db.Tx(ctx, run)
+}
+
+// superAdminActing is whether the call is being made by an active super
+// administrator, as the account reads now rather than as the session read
+// when the request began.
+func (m *Manager) superAdminActing(ctx context.Context, q database.Queryer, actor *wasm.Actor) bool {
+	if actor == nil || actor.ID == "" {
+		return false
+	}
+	account, err := m.users.ByID(ctx, q, actor.ID)
+	return err == nil && account.IsActive() && account.IsSuperAdmin()
 }
 
 // rewardOp gives an account something the core knows how to spend, by the

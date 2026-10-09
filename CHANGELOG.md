@@ -37,7 +37,7 @@
   - 插件包：路由响应一律带 `Content-Security-Policy: sandbox; default-src 'none'`；`describe` 返回的来源只接受
     `http(s)://主机[:端口]` 和 `blob:`；迁移和清理脚本须以包名开头（旧的 `NNNN_` 命名仍可用于低于核心最新编号的版本），
     与核心或其他包撞版本的安装会被拒绝，已存的冲突包在启动时跳过而不是让服务器起不来；插件字段不能用 users 表已有的列名；
-    `homepage` 必须是 http(s)；`users.set_status` / `users.delete` 不能动管理员、不能停用最后一个超管；
+    `homepage` 必须是 http(s)；`users.set_status` / `users.delete` 只有在超管本人发起的调用里才能动管理员、谁也不能停用最后一个超管；
     后端同时最多 32 个调用（`Limits.MaxConcurrent`），满了路由返回 503、守卫拒绝。
 
 - 插件契约：`arcx.APILevel` 升到 4，多了 `sweep` 钩子（SDK 的 `arc.OnSweep`）：服务器每 10 分钟的例行清理和启动时，
