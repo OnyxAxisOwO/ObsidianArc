@@ -236,13 +236,9 @@ const (
 	// The check-in feature: whether it is on, the time zone a "day" is counted
 	// in, and its rewards as one JSON document the administrator's page edits
 	// through its own endpoint (internal/checkin), not the generic settings one.
-	CheckinEnabled  = "checkin.enabled"
-	CheckinTimezone = "checkin.timezone"
-	CheckinConfig   = "checkin.config"
-	// How many times one work-surface turn may call the model. Each round
-	// is a real provider request that a tool result made necessary, so this
-	// is the ceiling on what a single question can cost.
-	ChatAgentMaxRounds   = "chat.agent_max_rounds"
+	CheckinEnabled       = "checkin.enabled"
+	CheckinTimezone      = "checkin.timezone"
+	CheckinConfig        = "checkin.config"
 	LandingMode          = "landing.mode"
 	LandingIntro         = "landing.intro"
 	TrialEnabled         = "landing.trial_enabled"
@@ -822,7 +818,6 @@ var Defaults = map[string]string{
 	CheckinEnabled:          "false",
 	CheckinTimezone:         "Asia/Shanghai",
 	CheckinConfig:           "",
-	ChatAgentMaxRounds:      "8",
 	LandingMode:             LandingLogin,
 	LandingIntro:            "",
 	TrialEnabled:            "false",

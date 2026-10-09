@@ -151,48 +151,4 @@ describe('switching conversations while a turn runs', () => {
     await openConversation('B');
     expect(justSentID.value).toBe('');
   });
-
-  // A tool call is announced mid-turn and answered later in the same turn,
-  // as its own row in messages.value rather than on `pending` — unlike the
-  // streamed answer, it has to survive a round trip through another
-  // conversation and back (see the reattachment test above) still attached
-  // to the right transcript, and messages.value already is that transcript.
-  it('shows a tool call live and drops it once the transcript reloads', async () => {
-    const running = runTurn({ content: 'hi' });
-    start();
-
-    const beforeCall = messages.value;
-    turn.handlers?.onToolCall?.({ id: 'call-1', name: 'users.search', arguments: '{"q":"a"}' });
-    // Reassigned, not patched in place: a mutation on a streamed block that
-    // replaces an array in place rather than reassigning it has truncated
-    // streams here before (c434c2a).
-    expect(messages.value).not.toBe(beforeCall);
-    const row = messages.value.find((message) => message.toolCall?.id === 'call-1');
-    expect(row?.toolCall).toEqual({ id: 'call-1', name: 'users.search', arguments: '{"q":"a"}', done: false });
-
-    turn.handlers?.onToolResult?.({ id: 'call-1', name: 'users.search', output: 'ok', failed: false });
-    const answered = messages.value.find((message) => message.toolCall?.id === 'call-1');
-    expect(answered?.toolCall).toEqual({
-      id: 'call-1', name: 'users.search', arguments: '{"q":"a"}', output: 'ok', failed: false, done: true,
-    });
-
-    turn.finish?.();
-    await running;
-    // The server does not persist tool calls on the message row, so the
-    // authoritative reload after the turn is what makes the row disappear —
-    // same as the optimistic user row it sits beside.
-    expect(messages.value.some((message) => message.toolCall)).toBe(false);
-  });
-
-  it('does not splice a call into the conversation the reader moved to', async () => {
-    const running = runTurn({ content: 'hi' });
-    start();
-    await openConversation('B');
-
-    turn.handlers?.onToolCall?.({ id: 'call-2', name: 'x', arguments: '{}' });
-    expect(messages.value.every((message) => !message.toolCall)).toBe(true);
-
-    turn.finish?.();
-    await running;
-  });
 });

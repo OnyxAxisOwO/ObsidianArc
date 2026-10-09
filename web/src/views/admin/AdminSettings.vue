@@ -72,7 +72,6 @@ const SEARCH_GROUPS = {
   ],
   secChat: [
     'secChat', 'instanceSystemPrompt', 'instanceSystemPromptHint', 'turnsResent', 'turnsResentHint',
-    'agentMaxRounds', 'agentMaxRoundsHint',
   ],
   secLimits: [
     'secLimits', 'adminsIgnoreLimits', 'adminsIgnoreLimitsHint', 'maxConcurrentPerUser', 'maxConcurrentPerUserHint',
@@ -188,7 +187,6 @@ const form = ref({
   trialModel: '',
   systemPrompt: '',
   maxTurns: 40 as number | null,
-  agentMaxRounds: 8 as number | null,
   adminBypass: false,
   maxConcurrent: 4 as number | null,
   usageDisplay: 'absolute',
@@ -256,7 +254,6 @@ function collect(): Record<string, string> {
     'quota.usage_display': form.value.usageDisplay,
     'chat.default_system_prompt': form.value.systemPrompt.trim(),
     'chat.max_turns': String(form.value.maxTurns ?? 40),
-    'chat.agent_max_rounds': String(form.value.agentMaxRounds ?? 8),
     'api.enabled': String(form.value.apiEnabled),
     'attachments.max_mb': String(form.value.attachmentMaxMB ?? 6),
     'attachments.retain': String(form.value.attachmentRetain),
@@ -556,7 +553,6 @@ async function load(): Promise<void> {
       trialModel: values['landing.trial_model'] ?? '',
       systemPrompt: values['chat.default_system_prompt'] ?? '',
       maxTurns: Number(values['chat.max_turns'] ?? 40),
-      agentMaxRounds: Number(values['chat.agent_max_rounds'] ?? 8),
       adminBypass: values['quota.admins_bypass'] === 'true',
       maxConcurrent: values['quota.max_concurrent'] !== undefined ? Number(values['quota.max_concurrent']) : 4,
       usageDisplay: values['quota.usage_display'] ?? 'absolute',
@@ -826,13 +822,6 @@ onMounted(load);
           :min="2"
           :max="200"
           :hint="t('turnsResentHint')"
-        />
-        <OaNumberField
-          v-model="form.agentMaxRounds"
-          :label="t('agentMaxRounds')"
-          :min="1"
-          :max="50"
-          :hint="t('agentMaxRoundsHint')"
         />
       </AdminControlCard>
       <AdminControlCard id="secAttachments" v-show="visible('secAttachments')" :title="t('secAttachments')" :icon="IconFile" :hint="t('attachmentsHint')">

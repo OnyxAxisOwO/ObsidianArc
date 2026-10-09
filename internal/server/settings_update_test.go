@@ -41,11 +41,11 @@ func TestSettingsFormEnablesAPIOnFreshDatabase(t *testing.T) {
 		}
 	}
 
-	for _, rounds := range []string{"8", "12"} {
-		body[settings.ChatAgentMaxRounds] = rounds
+	for _, size := range []string{"8", "12"} {
+		body[settings.ThemeWallpaperDim] = size
 		response := in.do(http.MethodPut, "/api/admin/settings", body, admin)
 		if response.Code != http.StatusOK {
-			t.Fatalf("save form with rounds %s: %d %s", rounds, response.Code, response.Body.String())
+			t.Fatalf("save form with size %s: %d %s", size, response.Code, response.Body.String())
 		}
 		response = in.do(http.MethodGet, "/api/admin/settings", nil, admin)
 		if response.Code != http.StatusOK {
@@ -69,11 +69,11 @@ func TestSettingsFormEnablesAPIOnFreshDatabase(t *testing.T) {
 	}
 }
 
-func TestImportSettingsKeepsAgentMaxRounds(t *testing.T) {
+func TestImportSettingsKeepsANumericSetting(t *testing.T) {
 	in := newInstance(t)
 	admin := in.register("founder", "a-good-password")
 	response := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
-		settings.ChatAgentMaxRounds: "12",
+		settings.ThemeWallpaperDim: "12",
 	}, admin)
 	if response.Code != http.StatusOK {
 		t.Fatalf("import: %d %s", response.Code, response.Body.String())
@@ -83,31 +83,30 @@ func TestImportSettingsKeepsAgentMaxRounds(t *testing.T) {
 		Skipped  []string          `json:"skipped"`
 		Settings map[string]string `json:"settings"`
 	}](t, response)
-	if result.Applied != 1 || len(result.Skipped) != 0 || result.Settings[settings.ChatAgentMaxRounds] != "12" {
-		t.Fatalf("imported rounds were not applied: %+v", result)
+	if result.Applied != 1 || len(result.Skipped) != 0 || result.Settings[settings.ThemeWallpaperDim] != "12" {
+		t.Fatalf("imported size were not applied: %+v", result)
 	}
 	reloaded := settings.New(in.db)
 	if err := reloaded.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := reloaded.Get(settings.ChatAgentMaxRounds); got != "12" {
-		t.Fatalf("persisted rounds = %q, want 12", got)
+	if got := reloaded.Get(settings.ThemeWallpaperDim); got != "12" {
+		t.Fatalf("persisted size = %q, want 12", got)
 	}
 }
 
-// Each round is a real provider request, so an unbounded ceiling is an
-// unbounded cost for one question. The form offers 1-50; that is a
-// convenience, and this is the check. The consumer floors the value at 1,
-// which covers zero and nonsense but leaves the top open.
-func TestAgentMaxRoundsIsBounded(t *testing.T) {
+// The form offers the same range; that is a convenience, and this is the
+// check. The wallpaper dim stands in for every bounded number here, because
+// it is one the plain settings grant may write.
+func TestNumericSettingsAreBounded(t *testing.T) {
 	in := newInstance(t)
 	admin := in.register("founder", "a-good-password")
 
-	for _, value := range []string{"0", "-5", "abc", "51", "99999", ""} {
+	for _, value := range []string{"-5", "abc", "101", "99999", ""} {
 		response := in.do(http.MethodPut, "/api/admin/settings",
-			map[string]string{settings.ChatAgentMaxRounds: value}, admin)
+			map[string]string{settings.ThemeWallpaperDim: value}, admin)
 		if response.Code != http.StatusBadRequest {
-			t.Errorf("rounds %q: %d %s, want 400", value, response.Code, response.Body.String())
+			t.Errorf("size %q: %d %s, want 400", value, response.Code, response.Body.String())
 		}
 		// Refused whole, as any other rejected key is: a bad value must not
 		// land while the request that carried it fails.
@@ -115,24 +114,24 @@ func TestAgentMaxRoundsIsBounded(t *testing.T) {
 		if err := reloaded.Load(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		if got := reloaded.Get(settings.ChatAgentMaxRounds); got != "8" {
-			t.Fatalf("rounds %q was stored as %q despite the refusal", value, got)
+		if got := reloaded.Get(settings.ThemeWallpaperDim); got != "0" {
+			t.Fatalf("size %q was stored as %q despite the refusal", value, got)
 		}
 	}
 
 	// The ends of the range belong to the operator, not to the check.
-	for _, value := range []string{"1", "50"} {
+	for _, value := range []string{"1", "100"} {
 		response := in.do(http.MethodPut, "/api/admin/settings",
-			map[string]string{settings.ChatAgentMaxRounds: value}, admin)
+			map[string]string{settings.ThemeWallpaperDim: value}, admin)
 		if response.Code != http.StatusOK {
-			t.Fatalf("rounds %q: %d %s", value, response.Code, response.Body.String())
+			t.Fatalf("size %q: %d %s", value, response.Code, response.Body.String())
 		}
 		reloaded := settings.New(in.db)
 		if err := reloaded.Load(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		if got := reloaded.Get(settings.ChatAgentMaxRounds); got != value {
-			t.Fatalf("persisted rounds = %q, want %q", got, value)
+		if got := reloaded.Get(settings.ThemeWallpaperDim); got != value {
+			t.Fatalf("persisted size = %q, want %q", got, value)
 		}
 	}
 }
@@ -140,13 +139,13 @@ func TestAgentMaxRoundsIsBounded(t *testing.T) {
 // An import is forgiving where a save refuses: a document from a newer
 // release should stay usable. An out-of-range value is dropped and named
 // rather than carried, so the instance keeps a number it can honour.
-func TestImportSettingsDropsRoundsOutOfRange(t *testing.T) {
+func TestImportSettingsDropsValuesOutOfRange(t *testing.T) {
 	in := newInstance(t)
 	admin := in.register("founder", "a-good-password")
 
 	response := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
-		settings.ChatAgentMaxRounds: "99999",
-		settings.SiteName:           "Carried Over",
+		settings.ThemeWallpaperDim: "99999",
+		settings.SiteName:          "Carried Over",
 	}, admin)
 	if response.Code != http.StatusOK {
 		t.Fatalf("import: %d %s", response.Code, response.Body.String())
@@ -155,15 +154,15 @@ func TestImportSettingsDropsRoundsOutOfRange(t *testing.T) {
 		Applied int      `json:"applied"`
 		Skipped []string `json:"skipped"`
 	}](t, response)
-	if len(result.Skipped) != 1 || result.Skipped[0] != settings.ChatAgentMaxRounds {
-		t.Errorf("skipped = %v, want just the rounds", result.Skipped)
+	if len(result.Skipped) != 1 || result.Skipped[0] != settings.ThemeWallpaperDim {
+		t.Errorf("skipped = %v, want just the dim", result.Skipped)
 	}
 	reloaded := settings.New(in.db)
 	if err := reloaded.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := reloaded.Get(settings.ChatAgentMaxRounds); got != "8" {
-		t.Errorf("rounds = %q, want the default kept", got)
+	if got := reloaded.Get(settings.ThemeWallpaperDim); got != "0" {
+		t.Errorf("size = %q, want the default kept", got)
 	}
 	// One refused value must not cost the operator the rest of the document.
 	if got := reloaded.Get(settings.SiteName); got != "Carried Over" {
@@ -182,12 +181,12 @@ func TestSettingsRejectUnknownKeysWithoutWriting(t *testing.T) {
 		Settings map[string]string `json:"settings"`
 	}](t, before).Settings
 
-	for _, key := range []string{"chat.agent_max_round", settings.AttachmentPurgeLast} {
+	for _, key := range []string{"theme.wallpaper_dims", settings.AttachmentPurgeLast} {
 		t.Run(key, func(t *testing.T) {
 			response := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
-				settings.APIEnabled:         "true",
-				settings.ChatAgentMaxRounds: "12",
-				key:                         "99",
+				settings.APIEnabled:        "true",
+				settings.ThemeWallpaperDim: "12",
+				key:                        "99",
 			}, admin)
 			if response.Code != http.StatusBadRequest {
 				t.Fatalf("unknown key: %d %s", response.Code, response.Body.String())
@@ -219,7 +218,7 @@ func TestSettingsRejectUnknownKeysWithoutWriting(t *testing.T) {
 	}
 }
 
-func TestAgentMaxRoundsRequiresSettingsPermission(t *testing.T) {
+func TestNumericSettingRequiresSettingsPermission(t *testing.T) {
 	in := newInstance(t)
 	founder := in.register("founder", "a-good-password")
 	operator := in.register("operator", "a-good-password")
@@ -237,7 +236,7 @@ func TestAgentMaxRoundsRequiresSettingsPermission(t *testing.T) {
 			{http.MethodPut, "/api/admin/settings"},
 			{http.MethodPost, "/api/admin/settings/import"},
 		} {
-			response = in.do(endpoint.method, endpoint.path, map[string]string{settings.ChatAgentMaxRounds: "12"}, operator)
+			response = in.do(endpoint.method, endpoint.path, map[string]string{settings.ThemeWallpaperDim: "12"}, operator)
 			if response.Code != want {
 				t.Fatalf("%s writes %s: %d %s", grant, endpoint.path, response.Code, response.Body.String())
 			}

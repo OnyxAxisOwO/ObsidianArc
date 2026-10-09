@@ -158,9 +158,12 @@ type chatRequest struct {
 	Stream                *bool  `json:"stream"`
 	Turnstile             string `json:"turnstile"`
 	// Read only when this turn opens a new conversation; an existing one
-	// keeps the mode and the project it was opened with.
-	Mode      string `json:"mode"`
+	// keeps the project it was opened with.
 	ProjectID string `json:"project_id"`
+	// Accepted and ignored. The work surface that read it is gone, and the
+	// decoder refuses unknown fields, so a tab still running the page from
+	// before would otherwise fail every send until it was reloaded.
+	Mode string `json:"mode"`
 }
 
 // chat answers one turn over Server-Sent Events.
@@ -207,10 +210,6 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		stream = *body.Stream
 	}
 
-	mode := conversation.Mode(body.Mode)
-	if body.Mode != "" && !mode.Valid() {
-		return httpx.BadRequest("Unknown conversation mode.")
-	}
 	if body.ProjectID != "" {
 		if !id.Valid(body.ProjectID) {
 			return httpx.BadRequest("Malformed project id.")
@@ -225,7 +224,6 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 	request := TurnRequest{
 		User:                  account,
 		ConversationID:        body.ConversationID,
-		Mode:                  mode,
 		ProjectID:             body.ProjectID,
 		ModelID:               body.ModelID,
 		Content:               body.Content,

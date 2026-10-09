@@ -59,10 +59,6 @@ type stubUpstream struct {
 	// decoded map.
 	calls []upstreamCall
 	hold  chan struct{}
-	// One script per request, consumed in order, for the work surface: a
-	// loop that calls the model twice needs the second answer to differ
-	// from the first or it never ends.
-	rounds [][]string
 }
 
 type upstreamCall struct {
@@ -87,10 +83,6 @@ func newStubUpstream(t *testing.T) *stubUpstream {
 			body:        raw,
 		})
 		frames := append([]string(nil), stub.frames...)
-		if len(stub.rounds) > 0 {
-			frames = stub.rounds[0]
-			stub.rounds = stub.rounds[1:]
-		}
 		status := stub.status
 		body := stub.body
 		hold := stub.hold

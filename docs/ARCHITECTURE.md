@@ -219,10 +219,17 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 26.11 MB (22.41 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 239.74 kB to open the chat (197.64 JS + 42.10 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 26.07 MB (22.37 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 238.59 kB to open the chat (196.56 JS + 42.03 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-09 (UTC), after the work surface was removed — the
+mode switch, the tool-call rows and the console broker behind them: 238.59 kB
+(196.56 kB JS + 42.03 kB CSS), down 1.15 kB from the figure below. The
+backoffice chunk is 122.46 kB, the Chinese dictionary 47.53 kB and the
+terminal 7.53 kB. The binary is 26.07 MB (22.37 MB without SQLite), down from
+26.11 MB.
 
 Remeasured on 2026-10-09 (UTC), after the security fixes of that day (asking
 for the current password before two-step sign-in is switched on or the address

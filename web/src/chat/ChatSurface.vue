@@ -11,12 +11,10 @@ import { useResizeObserver } from '@vueuse/core';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import { t, type StringKey } from '@/composables/useI18n';
-import { isWork, pendingMode } from '@/stores/workspace';
 import { IconMenu, IconPlus } from '@/icons';
 import ChatComposer from './ChatComposer.vue';
 import ChatChallenge from './ChatChallenge.vue';
 import ChatMessage from './ChatMessage.vue';
-import ChatModeSwitch from './ChatModeSwitch.vue';
 import ChatPending from './ChatPending.vue';
 import ChatSidebar from './ChatSidebar.vue';
 import {
@@ -252,34 +250,16 @@ defineExpose({ focus: () => composer.value?.focus() });
       </div>
 
       <div v-if="!messages.length && status.configured" class="ai-chat-empty">
-        <!-- Only on the empty state, because that is the only moment the
-             choice is still open: once a conversation exists it carries its
-             own mode, and a toggle over a running thread would offer to
-             change something it cannot. Its own component so the drag's window
-             listeners are torn down when this v-if drops it — see the file. -->
-        <ChatModeSwitch />
-
-        <div class="ai-chat-empty-intro-wrap">
-          <Transition name="ai-mode-text" mode="out-in">
-            <div :key="pendingMode" class="ai-chat-empty-intro">
-              <h3 class="ai-chat-empty-title">{{ isWork ? t('workGreeting') : greeting() }}</h3>
-              <p class="ai-chat-empty-body">{{ isWork ? t('workBlurb') : t('emptyBody') }}</p>
-            </div>
-          </Transition>
-        </div>
-
-        <div class="ai-chat-suggestions-accordion" :class="{ open: !isWork }">
-          <div class="ai-chat-suggestions-inner">
-            <div class="ai-chat-suggestions">
-              <button
-                v-for="key in suggestions"
-                :key="key"
-                type="button"
-                class="ai-chat-suggestion"
-                @click="ask(key)"
-              >{{ t(key) }}</button>
-            </div>
-          </div>
+        <h3 class="ai-chat-empty-title">{{ greeting() }}</h3>
+        <p class="ai-chat-empty-body">{{ t('emptyBody') }}</p>
+        <div class="ai-chat-suggestions">
+          <button
+            v-for="key in suggestions"
+            :key="key"
+            type="button"
+            class="ai-chat-suggestion"
+            @click="ask(key)"
+          >{{ t(key) }}</button>
         </div>
       </div>
     </OaScrollArea>

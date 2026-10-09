@@ -26,7 +26,6 @@
   "quota.usage_display": "absolute",
   "chat.default_system_prompt": "",
   "chat.max_turns": "40",
-  "chat.agent_max_rounds": "8",
   "feedback.show_staff_name": "true",
   "api.enabled": "true",
   "attachments.max_mb": "6",

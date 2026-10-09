@@ -623,12 +623,6 @@ describe('Telegram-style message send flight animation', () => {
     expect(spinnerBody).toMatch(/height:\s*14px/);
     expect(spinnerBody).toMatch(/transform-origin:\s*center center/);
 
-    // Tool call tag spinner is even 10px
-    const toolSpinnerMatch = content.match(/\.ai-tool-call-tag\s+\.ai-chat-spinner\s*\{([^}]+)\}/);
-    expect(toolSpinnerMatch).not.toBeNull();
-    const toolSpinnerBody = toolSpinnerMatch![1]!;
-    expect(toolSpinnerBody).toMatch(/width:\s*10px/);
-    expect(toolSpinnerBody).toMatch(/height:\s*10px/);
   });
 
   it('markFlying clears previous flown entry for the same ID so retries remain hidden in flight', () => {

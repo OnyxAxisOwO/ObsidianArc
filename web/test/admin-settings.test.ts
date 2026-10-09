@@ -40,10 +40,10 @@ async function selectCategory(label: string): Promise<void> {
   await nextTick();
   expect(found.getAttribute('aria-pressed')).toBe('true');
 }
-function roundsInput(): HTMLInputElement {
-  const field = [...host.querySelectorAll('#secChat label')].find((node) => node.querySelector('.oa-field-label')?.textContent === t('agentMaxRounds'));
+function turnsInput(): HTMLInputElement {
+  const field = [...host.querySelectorAll('#secChat label')].find((node) => node.querySelector('.oa-field-label')?.textContent === t('turnsResent'));
   const input = field?.querySelector<HTMLInputElement>('input[type="number"]');
-  if (!input) throw new Error('Missing agent rounds input');
+  if (!input) throw new Error('Missing resent turns input');
   return input;
 }
 function expectSaveState(dirty: boolean): void {
@@ -63,7 +63,7 @@ async function mountSettings(): Promise<void> {
 }
 
 describe('admin settings payload', () => {
-  it('submits the complete shared payload, including hidden default rounds, when enabling API keys', async () => {
+  it('submits the complete shared payload, including hidden defaults, when enabling API keys', async () => {
     vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture, 'api.enabled': 'false' } });
     const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture } });
     await mountSettings();
@@ -72,7 +72,7 @@ describe('admin settings payload', () => {
     await selectCategory(t('controlIntegrations'));
     expect(host.querySelector<HTMLElement>('#apiKeys')?.style.display).not.toBe('none');
     expect(host.querySelector<HTMLElement>('#secChat')?.style.display).toBe('none');
-    expect(roundsInput().value).toBe('8');
+    expect(turnsInput().value).toBe('40');
     const apiKeys = host.querySelector<HTMLInputElement>('#apiKeys input[type="checkbox"]')!;
     expect(apiKeys.checked).toBe(false);
     apiKeys.click();
@@ -90,23 +90,23 @@ describe('admin settings payload', () => {
   });
 
   it.each([
-    { label: 'edited custom rounds', input: '15', expected: '15' },
-    { label: 'default rounds after clearing the field', input: '', expected: '8' },
+    { label: 'an edited value', input: '15', expected: '15' },
+    { label: 'the default after clearing the field', input: '', expected: '40' },
   ])('preserves the complete payload with $label', async ({ input, expected }) => {
-    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture, 'chat.agent_max_rounds': '12' } });
-    const expectedSettings = { ...settingsFixture, 'chat.agent_max_rounds': expected };
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture, 'chat.max_turns': '12' } });
+    const expectedSettings = { ...settingsFixture, 'chat.max_turns': expected };
     const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: expectedSettings });
     await mountSettings();
     expectSaveState(false);
 
     await selectCategory(t('controlChat'));
     expect(host.querySelector<HTMLElement>('#secChat')?.style.display).not.toBe('none');
-    const rounds = roundsInput();
-    expect(rounds.value).toBe('12');
-    rounds.value = input;
-    rounds.dispatchEvent(new Event('input', { bubbles: true }));
+    const turns = turnsInput();
+    expect(turns.value).toBe('12');
+    turns.value = input;
+    turns.dispatchEvent(new Event('input', { bubbles: true }));
     await nextTick();
-    expect(rounds.value).toBe(input);
+    expect(turns.value).toBe(input);
     expectSaveState(true);
 
     button(actions, t('save')).click();

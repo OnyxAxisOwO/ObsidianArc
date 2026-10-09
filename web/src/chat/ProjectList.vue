@@ -142,9 +142,9 @@ async function submitCreate(): Promise<void> {
   if (!name) return;
   busy.value = true;
   try {
-    // Taken straight into work mode in the project just made: creating one
-    // and then having to find and click it again would be the same gesture
-    // twice for one intention.
+    // Taken straight into the project just made: creating one and then
+    // having to find and click it again would be the same gesture twice for
+    // one intention.
     const record = await createProject(name, createInstructions.value.trim());
     creating.value = false;
     setProject(record.id);
@@ -203,8 +203,6 @@ async function remove(project: Project): Promise<void> {
     await deleteProject(project.id);
     delete expandedProjects.value[project.id];
     delete projectConversations.value[project.id];
-    // The instructions that just left are what "work" in this project meant;
-    // work mode itself is not a fact about the project, so it stays.
     if (pendingProjectID.value === project.id) setProject('');
   } catch (error) {
     reportFailure(error);

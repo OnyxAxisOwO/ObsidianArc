@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -106,30 +107,7 @@ func TestDeletingTheConversationMidAnswerStillRecordsTheTurn(t *testing.T) {
 	}
 }
 
-// A work turn is several provider calls. Merging their reports made each
-// replace the one before, so only the last call was billed.
-func TestAWorkTurnIsBilledForEveryRound(t *testing.T) {
-	f := newFixture(t)
-	f.service.Tools = &stubBroker{tools: oneTool()}
-	records := recordTurns(f)
-
-	f.upstream.rounds = [][]string{
-		{callFrame("c1", "user_list", `{}`),
-			`{"choices":[{"delta":{}}],"usage":{"prompt_tokens":1000,"completion_tokens":300}}`},
-		{callFrame("c2", "user_list", `{}`),
-			`{"choices":[{"delta":{}}],"usage":{"prompt_tokens":1400,"completion_tokens":300}}`},
-		{textFrame("done"),
-			`{"choices":[{"delta":{}}],"usage":{"prompt_tokens":1800,"completion_tokens":10}}`},
-	}
-	if _, _, err := f.workTurn(t, TurnRequest{Content: "look twice"}); err != nil {
-		t.Fatal(err)
-	}
-
-	got := records()
-	if len(got) != 1 {
-		t.Fatalf("records = %+v", got)
-	}
-	if got[0].Usage.InputTokens != 4200 || got[0].Usage.OutputTokens != 610 {
-		t.Errorf("usage = %+v, want 4200 in / 610 out across three rounds", got[0].Usage)
-	}
+func textFrame(text string) string {
+	encoded, _ := json.Marshal(text)
+	return `{"choices":[{"delta":{"content":` + string(encoded) + `}}]}`
 }

@@ -244,7 +244,6 @@ var writableSettings = map[string]bool{
 	settings.TwoFactorBackofficeNetwork: true,
 	settings.TwoFactorBackofficeBrowser: true,
 	settings.NewDeviceEmail:             true,
-	settings.ChatAgentMaxRounds:         true,
 	settings.ChatChallengeRequests:      true,
 	settings.ChatChallengeWindowSecs:    true,
 	settings.ChatChallengeClearMins:     true,
@@ -289,10 +288,6 @@ var writableSettings = map[string]bool{
 // The numeric settings and what they may be, shared by the ordinary save and
 // the import below so the two cannot come to disagree about a bound. The
 // browser offers the same range, but that is a convenience: this is the check.
-//
-// The rounds ceiling is the one worth explaining. Each round is a real
-// provider request, so the number is what a single question may cost at
-// worst; the consumer floors it at 1, and nothing up there caps it.
 var numericBounds = map[string][2]int{
 	settings.SignupReviewRestrictHours:  {0, 24 * 365},
 	settings.InvitesUserLimit:           {0, 10000},
@@ -302,7 +297,6 @@ var numericBounds = map[string][2]int{
 	settings.ChatChallengeRequests:      {0, 1000},
 	settings.ChatChallengeWindowSecs:    {5, 3600},
 	settings.ChatChallengeClearMins:     {1, 24 * 60},
-	settings.ChatAgentMaxRounds:         {1, 50},
 	settings.TwoFactorRememberDays:      {0, settings.MaxTwoFactorRememberDays},
 	settings.TwoFactorBackofficeMinutes: {1, settings.MaxTwoFactorBackofficeMinutes},
 	settings.LeaderboardSize:            {1, settings.MaxLeaderboardSize},

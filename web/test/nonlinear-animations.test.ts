@@ -1,16 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { createApp, h, nextTick, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import UsageBoard from '../src/views/admin/usage/UsageBoard.vue';
-import ChatToolCall from '../src/chat/ChatToolCall.vue';
-import ChatSurface from '../src/chat/ChatSurface.vue';
 import AdminDashboard from '../src/views/admin/AdminDashboard.vue';
 import OaMenu from '../src/components/OaMenu.vue';
 import { adminApi } from '../src/admin/api';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { dashboardFixture } from './fixtures/dashboard';
-import { pendingMode, setMode } from '../src/stores/workspace';
-import { providePanelHost } from '../src/composables/usePanelHost';
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -75,88 +71,6 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     expect(host.querySelectorAll('.oa-board > li').length).toBe(4);
     expect(host.querySelector('.oa-board-count')).toBeNull();
     expect(host.querySelector('.oa-board-scroll')?.className).toBe('oa-board-scroll');
-  });
-
-  it('ChatToolCall toggles smoothly with aria-expanded and open state', async () => {
-    const call = {
-      id: 'tool-1',
-      name: 'read_file',
-      arguments: '{"path": "file.txt"}',
-      output: 'file contents',
-      done: true,
-      failed: false,
-    };
-
-    app = createApp({
-      render() {
-        return h(ChatToolCall, { call });
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const container = host.querySelector('.ai-tool-call');
-    const head = host.querySelector<HTMLButtonElement>('.ai-tool-call-head');
-    const content = host.querySelector('.ai-tool-call-content');
-
-    expect(container).not.toBeNull();
-    expect(head).not.toBeNull();
-    expect(content).not.toBeNull();
-    expect(container?.classList.contains('open')).toBe(false);
-    expect(head?.getAttribute('aria-expanded')).toBe('false');
-
-    // Click to expand
-    head?.click();
-    await nextTick();
-
-    expect(container?.classList.contains('open')).toBe(true);
-    expect(head?.getAttribute('aria-expanded')).toBe('true');
-
-    // Click to collapse
-    head?.click();
-    await nextTick();
-
-    expect(container?.classList.contains('open')).toBe(false);
-    expect(head?.getAttribute('aria-expanded')).toBe('false');
-  });
-
-  it('ChatSurface mode switch displays sliding pill corresponding to pendingMode', async () => {
-    const { models, selectedID } = await import('../src/chat/useModels');
-    models.value = [{ id: 'test-model', display_name: 'Test Model' } as any];
-    selectedID.value = 'test-model';
-
-    setMode('chat');
-    expect(pendingMode.value).toBe('chat');
-
-    app = createApp({
-      setup() {
-        providePanelHost(ref(host));
-        return () => h(ChatSurface);
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const pill = host.querySelector('.ai-mode-pill');
-    expect(pill).not.toBeNull();
-    expect(pill?.classList.contains('mode-work')).toBe(false);
-
-    const suggestionsAccordion = host.querySelector('.ai-chat-suggestions-accordion');
-    expect(suggestionsAccordion?.classList.contains('open')).toBe(true);
-
-    // Switch to work mode
-    setMode('work');
-    await nextTick();
-
-    expect(pill?.classList.contains('mode-work')).toBe(true);
-    expect(suggestionsAccordion?.classList.contains('open')).toBe(false);
-
-    // Switch back to chat mode
-    setMode('chat');
-    await nextTick();
-
-    expect(pill?.classList.contains('mode-work')).toBe(false);
-    expect(suggestionsAccordion?.classList.contains('open')).toBe(true);
   });
 
   it('AdminDashboard ranking details expands and collapses with non-linear animation and rotating chevron', async () => {

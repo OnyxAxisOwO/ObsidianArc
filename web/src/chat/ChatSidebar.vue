@@ -24,7 +24,7 @@ const row = usePanelHost();
 
 // Which list the rail shows. Local and unpersisted: it is a view of the
 // rail, not a fact about the account, so it does not need to survive a
-// reload the way the pending mode and project in workspace.ts do.
+// reload the way the pending project in workspace.ts does.
 const activeTab = ref<'history' | 'projects'>('history');
 const query = ref('');
 const filteredConversations = computed(() => conversations.value.filter((entry) =>

@@ -33,10 +33,8 @@ type Conversation struct {
 	ID      string `json:"id"`
 	Title   string `json:"title"`
 	ModelID string `json:"model_id"`
-	// Which surface this transcript is, ModeChat or ModeWork. Set when the
-	// conversation is created and never after: a project supplies the
-	// default, and a transcript does not change character later because the
-	// project it sits in was edited.
+	// Always ModeChat now. The column stays because rows from the work
+	// surface still carry "work" in it, and those read back as chat.
 	Mode Mode `json:"mode"`
 	// The project it was started in, empty for the great majority that were
 	// not started in one.
@@ -48,23 +46,17 @@ type Conversation struct {
 	UpdatedAt    int64  `json:"updated_at"`
 }
 
-// Mode is which of the two surfaces a conversation belongs to.
-//
-// Chat is an ordinary conversation. Work is the one the model is handed
-// tools on, and its transcript is a record of what was done to the instance
-// rather than something anybody reads for the prose — which is the whole
-// reason the two do not share a rail.
+// Mode is which surface a conversation belongs to. There is one now; the
+// work surface, where the model ran console commands, was removed, and the
+// threads opened on it are ordinary conversations.
 type Mode string
 
-const (
-	ModeChat Mode = "chat"
-	ModeWork Mode = "work"
-)
+const ModeChat Mode = "chat"
 
 // Valid reports whether m is a mode this build knows. An unknown one reads
-// as chat rather than failing: a row written by a newer version should not
-// make an older one refuse to open the conversation.
-func (m Mode) Valid() bool { return m == ModeChat || m == ModeWork }
+// as chat rather than failing, which is also what turns an old "work" row
+// into an ordinary thread.
+func (m Mode) Valid() bool { return m == ModeChat }
 
 // Stats is what the turn cost and how fast it was, shown under the answer.
 // Every field is optional because plenty of endpoints report no token counts
@@ -82,17 +74,6 @@ type Stats struct {
 	Estimated bool `json:"estimated,omitempty"`
 }
 
-// ToolCall is one command a work turn ran, kept with the answer it
-// produced. The output is what the reader saw, already truncated by the
-// broker — this is a record of the turn, not a second copy of the database.
-type ToolCall struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments,omitempty"`
-	Output    string `json:"output,omitempty"`
-	Failed    bool   `json:"failed,omitempty"`
-}
-
 type Message struct {
 	ID        string `json:"id"`
 	Seq       int    `json:"seq"`
@@ -103,11 +84,8 @@ type Message struct {
 	ModelID   string `json:"model_id,omitempty"`
 	// Names the model as it was when the message was written, so a renamed or
 	// deleted model does not leave old turns unattributed.
-	ModelName string `json:"model_name,omitempty"`
-	Stats     *Stats `json:"stats,omitempty"`
-	// What the work surface ran to produce this answer, in the order it ran
-	// it. Empty on every chat turn, which is almost all of them.
-	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
+	ModelName   string       `json:"model_name,omitempty"`
+	Stats       *Stats       `json:"stats,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
 	CreatedAt   int64        `json:"created_at"`
 }
@@ -355,7 +333,7 @@ func (s *Store) DeleteAll(ctx context.Context, userID string) (int64, error) {
 // --- messages --------------------------------------------------------------
 
 const messageColumns = `m.id, m.seq, m.role, m.content, m.reasoning, m.error, m.model_id,
-	m.model_name, m.stats_json, m.tool_calls_json, m.created_at`
+	m.model_name, m.stats_json, m.created_at`
 
 // Messages returns a conversation's transcript in order, with attachments
 // attached. Two queries rather than a join with fan-out, so a conversation
@@ -524,7 +502,6 @@ type AppendInput struct {
 	ModelName     string
 	ProviderID    string
 	Stats         *Stats
-	ToolCalls     []ToolCall
 	AttachmentIDs []string
 }
 
@@ -587,7 +564,6 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 		ModelID:   in.ModelID,
 		ModelName: in.ModelName,
 		Stats:     in.Stats,
-		ToolCalls: in.ToolCalls,
 		CreatedAt: time.Now().UnixMilli(),
 	}
 
@@ -600,22 +576,15 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 		stats = string(encoded)
 	}
 
-	tools := ""
-	if len(in.ToolCalls) > 0 {
-		encoded, err := json.Marshal(in.ToolCalls)
-		if err != nil {
-			return Message{}, fmt.Errorf("conversation: encode tool calls: %w", err)
-		}
-		tools = string(encoded)
-	}
-
+	// tool_calls_json is left to its default: only the removed work surface
+	// wrote it, and the rows it wrote keep what they had.
 	_, err = q.Exec(ctx,
 		`INSERT INTO messages (id, conversation_id, user_id, seq, role, content, reasoning,
-		 error, model_id, model_name, provider_id, stats_json, tool_calls_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 error, model_id, model_name, provider_id, stats_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, in.ConversationID, in.UserID, record.Seq, record.Role, record.Content,
 		record.Reasoning, record.Error, nullable(in.ModelID), record.ModelName,
-		nullable(in.ProviderID), stats, tools, record.CreatedAt)
+		nullable(in.ProviderID), stats, record.CreatedAt)
 	if err != nil {
 		return Message{}, fmt.Errorf("conversation: append: %w", err)
 	}
@@ -804,10 +773,9 @@ func scanMessage(row rowScanner) (Message, error) {
 		record  Message
 		modelID sql.NullString
 		stats   string
-		tools   string
 	)
 	err := row.Scan(&record.ID, &record.Seq, &record.Role, &record.Content, &record.Reasoning,
-		&record.Error, &modelID, &record.ModelName, &stats, &tools, &record.CreatedAt)
+		&record.Error, &modelID, &record.ModelName, &stats, &record.CreatedAt)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Message{}, ErrMessageNotFound
@@ -819,15 +787,6 @@ func scanMessage(row rowScanner) (Message, error) {
 		var decoded Stats
 		if json.Unmarshal([]byte(stats), &decoded) == nil {
 			record.Stats = &decoded
-		}
-	}
-	// A row this build cannot read is a row written by a newer one: the
-	// answer still opens, without its tool history, rather than the whole
-	// conversation failing to load over a record of what it did.
-	if tools != "" {
-		var decoded []ToolCall
-		if json.Unmarshal([]byte(tools), &decoded) == nil {
-			record.ToolCalls = decoded
 		}
 	}
 	return record, nil

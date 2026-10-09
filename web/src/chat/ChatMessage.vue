@@ -15,7 +15,6 @@ import { copyToClipboard } from '@/chat/markdown';
 import { IconDownload } from '@/icons';
 import ChatAttachments from './ChatAttachments.vue';
 import ChatThinking from './ChatThinking.vue';
-import ChatToolCall from './ChatToolCall.vue';
 import {
   MAX_MESSAGE_CHARS, activeID, busy, editingID, justSentID, messages,
   recentReasoningID, runTurn, setFlash, statsWanted,
@@ -138,10 +137,7 @@ function describe(value: MessageStats): string {
     class="ai-msg"
     :class="[
       props.message.role === 'user' ? 'ai-msg-user' : 'ai-msg-assistant',
-      {
-        'ai-msg-flying': isHiddenInFlight,
-        'ai-msg-tool': !!props.message.toolCall,
-      },
+      { 'ai-msg-flying': isHiddenInFlight },
     ]"
     :data-message-id="props.message.id"
   >
@@ -177,98 +173,83 @@ function describe(value: MessageStats): string {
     </template>
 
     <template v-else>
-      <!-- A work-mode tool call, not a written answer: its own compact row,
-           never the bubble/actions chrome an answer gets. -->
-      <ChatToolCall v-if="props.message.toolCall" :call="props.message.toolCall" />
+      <div v-if="props.message.error" class="ai-chat-error">
+        <span class="ai-chat-error-text">{{ props.message.error }}</span>
+        <button
+          type="button"
+          class="ai-chat-mini-btn"
+          @click="runTurn({ truncateFrom: props.message.id })"
+        >{{ t('retry') }}</button>
+      </div>
 
       <template v-else>
-        <!-- What this answer ran, read back from the row rather than from a
-             turn that is long over: a work transcript is a record of what
-             was done, and a record that only survives until a reload is
-             half of one. -->
-        <ChatToolCall
-          v-for="call in props.message.tool_calls ?? []"
-          :key="call.id"
-          :call="{ ...call, done: true }"
+        <ChatThinking
+          v-if="props.message.reasoning"
+          :text="props.message.reasoning"
+          :initial-open="props.message.id === recentReasoningID"
         />
-        <div v-if="props.message.error" class="ai-chat-error">
-          <span class="ai-chat-error-text">{{ props.message.error }}</span>
-          <button
-            type="button"
-            class="ai-chat-mini-btn"
-            @click="runTurn({ truncateFrom: props.message.id })"
-          >{{ t('retry') }}</button>
+
+        <div v-if="editing" class="ai-msg-editor">
+          <textarea
+            ref="editor"
+            v-model="draft"
+            class="ai-chat-input ai-msg-edit-input"
+            :maxlength="MAX_MESSAGE_CHARS"
+            :rows="rows"
+            @keydown="onEditorKey"
+          />
+          <div class="ai-msg-editor-actions">
+            <button type="button" class="ai-chat-mini-btn" @click="cancelEdit">{{ t('cancel') }}</button>
+            <button
+              type="button"
+              class="ai-chat-mini-btn primary"
+              :disabled="saving"
+              @click="saveAnswer"
+            >{{ t('save') }}</button>
+          </div>
         </div>
 
         <template v-else>
-          <ChatThinking
-            v-if="props.message.reasoning"
-            :text="props.message.reasoning"
-            :initial-open="props.message.id === recentReasoningID"
-          />
-
-          <div v-if="editing" class="ai-msg-editor">
-            <textarea
-              ref="editor"
-              v-model="draft"
-              class="ai-chat-input ai-msg-edit-input"
-              :maxlength="MAX_MESSAGE_CHARS"
-              :rows="rows"
-              @keydown="onEditorKey"
-            />
-            <div class="ai-msg-editor-actions">
-              <button type="button" class="ai-chat-mini-btn" @click="cancelEdit">{{ t('cancel') }}</button>
-              <button
-                type="button"
-                class="ai-chat-mini-btn primary"
-                :disabled="saving"
-                @click="saveAnswer"
-              >{{ t('save') }}</button>
-            </div>
-          </div>
-
-          <template v-else>
-            <div v-if="images.length" class="ai-chat-generated-images">
-              <div v-for="img in images" :key="img.id" class="ai-chat-generated-card">
-                <img
-                  :src="attachmentURL(img.id)"
-                  class="ai-chat-generated-img"
-                  :alt="props.message.content || t('generatedImage')"
-                  @click="zoomedImage = { url: attachmentURL(img.id), alt: props.message.content || t('generatedImage') }"
-                />
-                <div class="ai-chat-generated-bar">
-                  <a
-                    :href="attachmentURL(img.id)"
-                    :download="`image-${img.id}.png`"
-                    target="_blank"
-                    rel="noopener"
-                    class="ai-chat-mini-btn"
-                    style="text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"
-                  >
-                    <IconDownload :size="12" />
-                    <span>{{ t('downloadImage') }}</span>
-                  </a>
-                </div>
+          <div v-if="images.length" class="ai-chat-generated-images">
+            <div v-for="img in images" :key="img.id" class="ai-chat-generated-card">
+              <img
+                :src="attachmentURL(img.id)"
+                class="ai-chat-generated-img"
+                :alt="props.message.content || t('generatedImage')"
+                @click="zoomedImage = { url: attachmentURL(img.id), alt: props.message.content || t('generatedImage') }"
+              />
+              <div class="ai-chat-generated-bar">
+                <a
+                  :href="attachmentURL(img.id)"
+                  :download="`image-${img.id}.png`"
+                  target="_blank"
+                  rel="noopener"
+                  class="ai-chat-mini-btn"
+                  style="text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"
+                >
+                  <IconDownload :size="12" />
+                  <span>{{ t('downloadImage') }}</span>
+                </a>
               </div>
             </div>
-            <OaMarkdown v-if="props.message.content" class="ai-answer" :text="props.message.content" />
-            <div class="ai-msg-actions">
-              <button v-if="!busy" type="button" class="ai-chat-mini-btn" @click="beginEdit">
-                {{ t('edit') }}
-              </button>
-              <button
-                type="button"
-                class="ai-chat-mini-btn"
-                @click="runTurn({ truncateFrom: props.message.id })"
-              >{{ t('regenerate') }}</button>
-              <button type="button" class="ai-chat-mini-btn" @click="copy">{{ t('copy') }}</button>
-            </div>
-            <div
-              v-if="stats"
-              class="ai-msg-stats"
-              :title="props.message.stats?.estimated ? t('tokensEstimatedHint') : undefined"
-            >{{ stats }}</div>
-          </template>
+          </div>
+          <OaMarkdown v-if="props.message.content" class="ai-answer" :text="props.message.content" />
+          <div class="ai-msg-actions">
+            <button v-if="!busy" type="button" class="ai-chat-mini-btn" @click="beginEdit">
+              {{ t('edit') }}
+            </button>
+            <button
+              type="button"
+              class="ai-chat-mini-btn"
+              @click="runTurn({ truncateFrom: props.message.id })"
+            >{{ t('regenerate') }}</button>
+            <button type="button" class="ai-chat-mini-btn" @click="copy">{{ t('copy') }}</button>
+          </div>
+          <div
+            v-if="stats"
+            class="ai-msg-stats"
+            :title="props.message.stats?.estimated ? t('tokensEstimatedHint') : undefined"
+          >{{ stats }}</div>
         </template>
       </template>
     </template>

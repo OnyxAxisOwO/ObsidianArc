@@ -12,7 +12,6 @@ import { ApiError, api } from './client';
 export interface Conversation {
   id: string;
   project_id?: string;
-  mode?: 'chat' | 'work';
   title: string;
   model_id: string;
   pinned: boolean;
@@ -48,24 +47,6 @@ export interface AttachmentRef {
   discarded?: boolean;
 }
 
-// One tool call the model made during a work turn: announced before it
-// runs, filled in once the result arrives.
-//
-// The same shape serves two lives. During a turn useChat.ts pushes a row of
-// its own per call so the reader watches it happen; afterwards the server
-// saves the finished set on the assistant message, and a reload reads them
-// back from there. `done` is the only field the saved form does not carry —
-// a call that was written down is a call that finished.
-export interface ToolCallEntry {
-  id: string;
-  name: string;
-  arguments: string;
-  output?: string;
-  failed?: boolean;
-  /** False from tool_call until the matching tool_result lands. */
-  done: boolean;
-}
-
 export interface Message {
   id: string;
   seq: number;
@@ -77,10 +58,6 @@ export interface Message {
   model_name?: string;
   stats?: MessageStats;
   attachments?: AttachmentRef[];
-  /** Live, for the duration of the turn: one pushed row per call. */
-  toolCall?: ToolCallEntry;
-  /** Saved, read back with the answer the calls produced. */
-  tool_calls?: Omit<ToolCallEntry, 'done'>[];
   created_at: number;
 }
 
@@ -151,12 +128,9 @@ export interface TurnRequest {
   truncate_from_message_id?: string;
   turnstile?: string;
   /**
-   * Which surface a NEW conversation opens as, and which project it opens
-   * in. The server reads both only while creating one — an existing thread
-   * keeps what it was opened with — so sending them on every turn is
-   * harmless and sending them on the first one is the whole point.
+   * Which project a NEW conversation opens in. The server reads it only
+   * while creating one — an existing thread keeps what it was opened with.
    */
-  mode?: 'chat' | 'work';
   project_id?: string;
 }
 
@@ -170,8 +144,6 @@ export interface TurnHandlers {
   }): void;
   onDelta?(text: string): void;
   onReasoning?(text: string): void;
-  onToolCall?(payload: { id: string; name: string; arguments: string }): void;
-  onToolResult?(payload: { id: string; name: string; output: string; failed: boolean }): void;
   onUsage?(usage: { input_tokens: number; output_tokens: number; reasoning_tokens: number }): void;
   onDone?(payload: {
     message_id: string;
@@ -274,12 +246,6 @@ function dispatch(frame: string, handlers: TurnHandlers): void {
       break;
     case 'reasoning':
       handlers.onReasoning?.((payload as { text: string }).text);
-      break;
-    case 'tool_call':
-      handlers.onToolCall?.(payload as Parameters<NonNullable<TurnHandlers['onToolCall']>>[0]);
-      break;
-    case 'tool_result':
-      handlers.onToolResult?.(payload as Parameters<NonNullable<TurnHandlers['onToolResult']>>[0]);
       break;
     case 'usage':
       handlers.onUsage?.(payload as Parameters<NonNullable<TurnHandlers['onUsage']>>[0]);

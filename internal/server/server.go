@@ -22,7 +22,6 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/admin"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/agent"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
@@ -1187,19 +1186,6 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// The commands of plugins installed as packages are added to it now, and
 	// as they arrive and leave.
 	plugins.AttachConsole(consoleEngine)
-	// The work surface's tools are the console's own commands, filtered to
-	// what the account may run. Set here rather than at construction
-	// because the engine is built from the mux the handlers above are
-	// mounted on, and the chat service is older than both.
-	broker := agent.New(consoleEngine)
-	// The terminal's gate, because a model asking for a command is the
-	// terminal by another door: a group with its terminal switched off
-	// reached every command through a work-mode chat.
-	broker.Allowed = func(ctx context.Context, account user.User) error {
-		return terminalAllowed(ctx, groups, account)
-	}
-	chatService.Tools = broker
-
 	consoleHandlers := console.NewHandlers(consoleEngine)
 	consoleHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	consoleHandlers.Allowed = func(ctx context.Context, account user.User) error {
