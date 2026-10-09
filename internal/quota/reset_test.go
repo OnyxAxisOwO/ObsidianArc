@@ -299,3 +299,41 @@ func spentInWindow(t *testing.T, service *Service, userID string, window Window)
 	}
 	return credits
 }
+
+// A refund can land on a counter a reset has just deleted: a reset card used
+// while the account's turns are still streaming. It used to insert the
+// negative delta as the row, and the account then had that much allowance
+// beyond its limit.
+func TestARefundIntoADeletedCounterDoesNotGoNegative(t *testing.T) {
+	service, _ := newService(t)
+	ctx := context.Background()
+	spender := account("user-refund", "")
+	start := bucketStart(Window5H, time.Now(), 0)
+
+	got, err := bump(ctx, service.db, scopeKey(spender.ID), Window5H, start, 0, -4096, -3.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tokens != 0 || got.Credits != 0 {
+		t.Errorf("a refund into an empty bucket left %d tokens and %v credits", got.Tokens, got.Credits)
+	}
+
+	// And the update path still clamps and still adds.
+	if _, err := bump(ctx, service.db, scopeKey(spender.ID), Window5H, start, 1, 300, 0.3); err != nil {
+		t.Fatal(err)
+	}
+	got, err = bump(ctx, service.db, scopeKey(spender.ID), Window5H, start, 0, -100, -0.1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tokens != 200 || got.Requests != 1 {
+		t.Errorf("after +300 and -100 the counter reads %+v", got)
+	}
+	got, err = bump(ctx, service.db, scopeKey(spender.ID), Window5H, start, 0, -1000, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tokens != 0 || got.Credits != 0 {
+		t.Errorf("an over-refund left %+v", got)
+	}
+}

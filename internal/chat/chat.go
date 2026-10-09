@@ -311,9 +311,14 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 	}
 
 	var (
-		answer     strings.Builder
-		reasoning  strings.Builder
+		answer    strings.Builder
+		reasoning strings.Builder
+		// Every provider call this turn has finished, added up, and the one
+		// in flight as its own reports describe it. Kept apart because a
+		// work turn is several calls: reports about one call replace each
+		// other, and separate calls add.
 		usage      adapter.Usage
+		round      adapter.Usage
 		firstToken time.Time
 	)
 
@@ -332,18 +337,19 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 			reasoning.WriteString(event.Text)
 			return emit(EventReasoning, TextPayload{Text: event.Text})
 		case adapter.EventUsage:
-			usage = usage.Merge(event.Usage)
+			round = round.Merge(event.Usage)
+			total := usage.Add(round)
 			return emit(EventUsage, UsagePayload{
-				InputTokens:     usage.InputTokens,
-				OutputTokens:    usage.OutputTokens,
-				ReasoningTokens: usage.ReasoningTokens,
+				InputTokens:     total.InputTokens,
+				OutputTokens:    total.OutputTokens,
+				ReasoningTokens: total.ReasoningTokens,
 			})
 		}
 		return nil
 	}
 
 	var ran []conversation.ToolCall
-	result, chatErr := s.runRounds(ctx, req, resolved, prepared, &chatRequest, sink, emit, &usage, &ran)
+	result, chatErr := s.runRounds(ctx, req, resolved, prepared, &chatRequest, sink, emit, &usage, &round, &ran)
 
 	// The provider call is over. Saving must not be cancelled along with it:
 	// the partial answer is what the user read, and the tokens are spent
@@ -392,7 +398,7 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 // nobody's behalf.
 func (s *Service) runRounds(
 	ctx context.Context, req TurnRequest, resolved model.Resolved, state prepared,
-	chatRequest *adapter.ChatRequest, sink adapter.Sink, emit Emit, usage *adapter.Usage,
+	chatRequest *adapter.ChatRequest, sink adapter.Sink, emit Emit, usage, inFlight *adapter.Usage,
 	ran *[]conversation.ToolCall,
 ) (adapter.Result, error) {
 	tools := s.offerTools(ctx, req, state)
@@ -416,9 +422,10 @@ func (s *Service) runRounds(
 	for round := 1; ; round++ {
 		var chatErr error
 		result, chatErr = s.registry.Chat(ctx, resolved.Provider, *chatRequest, sink)
-		if result.Usage.Total() > 0 {
-			*usage = usage.Merge(result.Usage)
-		}
+		// Added, not merged: merging made each round replace the one before,
+		// so an eight-round turn was billed for its last call alone.
+		*usage = usage.Add(inFlight.Merge(result.Usage))
+		*inFlight = adapter.Usage{}
 		if chatErr != nil || len(result.ToolCalls) == 0 {
 			return result, chatErr
 		}
@@ -771,6 +778,12 @@ func (s *Service) finishOK(ctx context.Context, f finished, emit Emit) error {
 		AttachmentIDs:  f.attachmentIDs,
 	})
 	if err != nil {
+		// Recorded even though the answer has nowhere to go. The usual
+		// cause is the conversation being deleted while it streamed, and the
+		// provider answered and billed all the same; returning first left no
+		// ledger row and no settle, and the reservation's refund then made a
+		// whole generation free to anybody who deleted the chat in time.
+		s.record(ctx, f, "", StatusOK, "")
 		return err
 	}
 
@@ -824,6 +837,8 @@ func (s *Service) finishFailed(ctx, requestCtx context.Context, f finished, chat
 			ToolCalls:  f.toolCalls,
 		})
 		if err != nil {
+			// Recorded regardless, for the reason finishOK gives.
+			s.record(ctx, f, "", StatusAborted, "cancelled")
 			return err
 		}
 		s.record(ctx, f, message.ID, StatusAborted, "cancelled")
@@ -859,6 +874,8 @@ func (s *Service) finishFailed(ctx, requestCtx context.Context, f finished, chat
 		ProviderID: f.resolved.Provider.ID,
 	})
 	if err != nil {
+		// Recorded regardless, for the reason finishOK gives.
+		s.record(ctx, f, "", StatusError, code)
 		return err
 	}
 	s.record(ctx, f, message.ID, StatusError, code)

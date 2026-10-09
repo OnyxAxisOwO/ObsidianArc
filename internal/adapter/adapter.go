@@ -285,6 +285,17 @@ type Usage struct {
 
 func (u Usage) Total() int { return u.InputTokens + u.OutputTokens + u.ReasoningTokens }
 
+// Add sums two separate calls. Merge is for reports about the same call,
+// where a later figure replaces an earlier one; adding those would count the
+// same tokens twice, and merging separate calls would bill only the last.
+func (u Usage) Add(next Usage) Usage {
+	u.InputTokens += next.InputTokens
+	u.OutputTokens += next.OutputTokens
+	u.ReasoningTokens += next.ReasoningTokens
+	u.Estimated = u.Estimated || next.Estimated
+	return u
+}
+
 // Merge folds a later usage report into an earlier one. Anthropic reports
 // input tokens at the start of a stream and output tokens at the end, so a
 // naive overwrite would lose half the numbers.
@@ -431,9 +442,11 @@ func NewRegistry(cfg config.Upstream) *Registry {
 //
 // This is also the one place a missing token count is filled in, so every
 // caller — the transcript and all three API shapes — gets the same answer
-// without each re-deciding it. Only a call that succeeded is estimated: one
-// that failed or was stopped part-way has its own accounting, and guessing
-// at a half-finished answer would change what a cancelled turn costs.
+// without each re-deciding it. A call that failed or was stopped part-way is
+// estimated from what it streamed before it ended. It used to be left at
+// whatever the provider had reported by then, which is nothing at all for a
+// provider that sends its count last and one output token for one that sends
+// it first — so stopping just before the end made almost any answer free.
 func (r *Registry) Chat(ctx context.Context, p Provider, req ChatRequest, sink Sink) (Result, error) {
 	adapter, ok := r.adapters[p.Kind]
 	if !ok {
@@ -443,10 +456,22 @@ func (r *Registry) Chat(ctx context.Context, p Provider, req ChatRequest, sink S
 	// Watched rather than read off the result afterwards: an adapter can
 	// report through events alone, and an estimate written over counts it
 	// already streamed would replace a real number with a guess.
-	var reported Usage
+	var (
+		reported Usage
+		streamed written
+	)
 	watched := func(event Event) error {
-		if event.Type == EventUsage {
+		switch event.Type {
+		case EventUsage:
 			reported = reported.Merge(event.Usage)
+		// Counted for a call that ends early, which returns no result to
+		// estimate from: what reached the reader is what it is charged for.
+		case EventDelta:
+			streamed.text += len(event.Text)
+		case EventReasoning:
+			streamed.reasoning += len(event.Text)
+		case EventToolCall:
+			streamed.calls += perToolCallTax*bytesPerToken + len(event.ToolCall.Name) + len(event.ToolCall.Arguments)
 		}
 		return sink(event)
 	}
@@ -464,6 +489,8 @@ func (r *Registry) Chat(ctx context.Context, p Provider, req ChatRequest, sink S
 		if filled := fillUsage(req, result, reported.Merge(result.Usage)); filled.Estimated {
 			result.Usage = filled
 		}
+	} else if filled := fillStopped(req, streamed, reported.Merge(result.Usage)); filled.Estimated {
+		result.Usage = filled
 	}
 	return result, err
 }

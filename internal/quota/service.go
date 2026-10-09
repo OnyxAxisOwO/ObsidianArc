@@ -619,22 +619,30 @@ type counter struct {
 func bump(ctx context.Context, q database.Queryer, key string, window Window, start int64,
 	requests, tokens int64, credits float64) (counter, error) {
 	var out counter
+	// The row a refund lands on may not be there any more: a reset card
+	// deletes the account's counters while its turns are still in flight,
+	// and each of them then releases into a bucket that has gone. The insert
+	// therefore starts from the delta clamped at zero, and the deltas
+	// themselves are passed again for the update; with excluded.* standing
+	// in for both, a refund inserted a negative counter, and every card used
+	// mid-turn handed out several turns' worth of free allowance.
 	err := q.QueryRow(ctx,
 		`INSERT INTO usage_counters (scope_key, window_kind, window_start, requests, tokens, credits)
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (scope_key, window_kind, window_start) DO UPDATE SET
-		   requests = usage_counters.requests + excluded.requests,
+		   requests = usage_counters.requests + ?,
 		   -- Refunds arrive here as negative deltas. Clamped, because two
 		   -- settles racing on the same row must not leave a counter below
 		   -- zero and hand out free allowance. CASE rather than GREATEST or
 		   -- MAX: one of those is Postgres-only and the other is an aggregate
 		   -- there.
-		   tokens   = CASE WHEN usage_counters.tokens + excluded.tokens < 0
-		                   THEN 0 ELSE usage_counters.tokens + excluded.tokens END,
-		   credits  = CASE WHEN usage_counters.credits + excluded.credits < 0
-		                   THEN 0 ELSE usage_counters.credits + excluded.credits END
+		   tokens   = CASE WHEN usage_counters.tokens + ? < 0
+		                   THEN 0 ELSE usage_counters.tokens + ? END,
+		   credits  = CASE WHEN usage_counters.credits + ? < 0
+		                   THEN 0 ELSE usage_counters.credits + ? END
 		 RETURNING requests, tokens, credits`,
-		key, window, start, requests, tokens, credits).
+		key, window, start, max(requests, 0), max(tokens, 0), max(credits, 0),
+		requests, tokens, tokens, credits, credits).
 		Scan(&out.Requests, &out.Tokens, &out.Credits)
 	if err != nil {
 		return counter{}, fmt.Errorf("quota: bump %s: %w", window, err)

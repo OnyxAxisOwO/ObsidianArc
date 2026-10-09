@@ -89,3 +89,39 @@ func fillUsage(request ChatRequest, result Result, reported Usage) Usage {
 	}
 	return out
 }
+
+// written is how much of an answer streamed, in bytes, before its call ended.
+type written struct {
+	text, reasoning, calls int
+}
+
+// fillStopped is fillUsage for a call that did not finish: the reader
+// stopped, the connection dropped, or the provider broke off. Nothing is
+// charged for a call that wrote nothing, as before — a provider that refused
+// outright did not bill either.
+//
+// What was reported mid-stream is a floor rather than the figure. Anthropic
+// sends its output count at the start and again at the end, so a stop in
+// between leaves the first one, which is a single token; OpenAI sends it only
+// at the end, so a stop leaves nothing. Either way the text that reached the
+// reader is the better measure, and the larger of the two is kept. Output and
+// reasoning are compared as a sum for the reason fillUsage gives: several
+// providers count thinking inside the output figure.
+func fillStopped(request ChatRequest, streamed written, reported Usage) Usage {
+	if streamed.text == 0 && streamed.reasoning == 0 && streamed.calls == 0 {
+		return reported
+	}
+	out := reported
+	if out.InputTokens == 0 {
+		out.InputTokens = EstimatePrompt(request)
+		out.Estimated = true
+	}
+	output := (streamed.text + streamed.calls) / bytesPerToken
+	reasoning := streamed.reasoning / bytesPerToken
+	if out.OutputTokens+out.ReasoningTokens < output+reasoning {
+		out.OutputTokens = output
+		out.ReasoningTokens = reasoning
+		out.Estimated = true
+	}
+	return out
+}
