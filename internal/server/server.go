@@ -1186,10 +1186,50 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// The commands of plugins installed as packages are added to it now, and
 	// as they arrive and leave.
 	plugins.AttachConsole(consoleEngine)
+
+	// Who may hold a console at all. SSH asks it at the handshake and before
+	// each command, and the web terminal asks it before each run of a watch, so
+	// the two doors cannot disagree about who is let in. It is the terminal's
+	// own rule (any account whose group allows it, and every administrator)
+	// plus the two gates an ordinary web request meets before a handler sees it.
+	//
+	// Those two gates are held here too. Enrolling a second factor needs a
+	// screen to scan from, and connecting an OpenID Connect identity is a
+	// browser redirect, so neither can be done over SSH. Both doors ask again as
+	// a session goes on, so a policy switched on reaches one already open.
+	//
+	// A failed binding lookup lets the account through, as oauth.BindingGate
+	// does: a database hiccup is not a reason to lock everyone out.
+	consoleAllowed := func(ctx context.Context, account user.User) bool {
+		if terminalAllowed(ctx, groups, account) != nil || authService.MustEnrolTwoFactor(account) {
+			return false
+		}
+		mustBind, err := oauthService.MustBindOIDC(ctx, account)
+		if err != nil {
+			slog.ErrorContext(ctx, "could not check the OIDC binding requirement for a console", "error", err)
+			return true
+		}
+		return !mustBind
+	}
+
 	consoleHandlers := console.NewHandlers(consoleEngine)
 	consoleHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	consoleHandlers.Allowed = func(ctx context.Context, account user.User) error {
 		return terminalAllowed(ctx, groups, account)
+	}
+	// A watch runs for as long as its request does, so it is asked again before
+	// each run after the first. The sign-in is read the way auth.Attach reads it
+	// on every request, and the account must still pass the rule a console
+	// opens under.
+	consoleHandlers.Reauthorize = func(ctx context.Context, r *http.Request) (user.User, error) {
+		account, _, err := authService.Authenticate(ctx, authService.TokenFrom(r))
+		if err != nil {
+			return user.User{}, err
+		}
+		if !consoleAllowed(ctx, account) {
+			return user.User{}, errors.New("this account may no longer use the console")
+		}
+		return account, nil
 	}
 	consoleHandlers.Routes(mux)
 
@@ -1207,32 +1247,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			// here and guessing at the sign-in form cannot be spread across
 			// two limits.
 			Authenticate: authService.VerifyCredential,
-			// The web terminal's rule, so the two doors agree about who may
-			// have a console: any account whose group allows it, and every
-			// administrator.
-			//
-			// An account the two-step policy is holding at the door is held
-			// here too: enrolling needs a screen to scan from, and SSH is
-			// not one. Asked before every command, so a policy switched on
-			// reaches a session that is already open.
-			//
-			// The same goes for the OpenID Connect binding the instance may
-			// require: oauth.BindingGate holds such an account to the binding
-			// screens on the web, and connecting an identity is a browser
-			// redirect, so over SSH it is held at the door the same way. A
-			// failed lookup lets the account through, as the gate does — a
-			// database hiccup is not a reason to lock everyone out.
-			Permitted: func(ctx context.Context, account user.User) bool {
-				if terminalAllowed(ctx, groups, account) != nil || authService.MustEnrolTwoFactor(account) {
-					return false
-				}
-				mustBind, err := oauthService.MustBindOIDC(ctx, account)
-				if err != nil {
-					slog.ErrorContext(ctx, "could not check the OIDC binding requirement for an SSH console", "error", err)
-					return true
-				}
-				return !mustBind
-			},
+			Permitted:    consoleAllowed,
 			// The code for an account with two-step sign-in, checked against
 			// the same secret, the same replay guard and the same guessing
 			// budget as the web sign-in's second step.

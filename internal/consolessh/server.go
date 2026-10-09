@@ -864,26 +864,38 @@ func (sess *sshSession) applyEnv(name, value string) {
 // sits at a prompt takes effect on their next command instead of whenever
 // they get round to closing the connection.
 //
+// The session it returns carries the same re-read for a command that keeps
+// running past this line: a watch asks before each of its runs.
+//
 // A failure ends the session: the account is gone, disabled, or no longer an
 // administrator, and none of those should keep a console open.
 func (sess *sshSession) currentSession(ctx context.Context, transport string) (*console.Session, error) {
-	reauthorize := sess.server.cfg.Reauthorize
-	if reauthorize == nil {
+	if sess.server.cfg.Reauthorize == nil {
 		return sess.snapshot(transport), nil
 	}
-
-	account, err := reauthorize(ctx, sess.actorID())
-	if err != nil {
+	if _, err := sess.reauthorize(ctx); err != nil {
 		return nil, err
 	}
+	current := sess.snapshot(transport)
+	current.Reauthorize = sess.reauthorize
+	return current, nil
+}
+
+// reauthorize is the one check a fresh command and a running watch both pass
+// before they act, so the two cannot disagree about who may keep going.
+func (sess *sshSession) reauthorize(ctx context.Context) (user.User, error) {
+	account, err := sess.server.cfg.Reauthorize(ctx, sess.actorID())
+	if err != nil {
+		return user.User{}, err
+	}
 	if !account.IsActive() || !sess.server.permitted(ctx, account) {
-		return nil, errAccountNoLongerAdmin
+		return user.User{}, errAccountNoLongerAdmin
 	}
 
 	sess.mu.Lock()
 	sess.actor = account
 	sess.mu.Unlock()
-	return sess.snapshot(transport), nil
+	return account, nil
 }
 
 func (sess *sshSession) actorID() string {

@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // The console's permission story, exercised as HTTP.
@@ -85,6 +88,73 @@ func delegate(t *testing.T, in *instance, founder *session, target *session, gra
 	}, founder)
 	if response.Code != http.StatusOK {
 		t.Fatalf("delegate %v: %d %s", grants, response.Code, response.Body.String())
+	}
+}
+
+// startedWriter reports when the first streamed frame has gone out, which is
+// how the test knows a watch has finished its first run and is waiting.
+type startedWriter struct {
+	*httptest.ResponseRecorder
+	once    sync.Once
+	started chan struct{}
+}
+
+func (w *startedWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(p)
+	if bytes.Contains(p, []byte("event: out")) {
+		w.once.Do(func() { close(w.started) })
+	}
+	return n, err
+}
+
+// A watch is one request that does not end on its own, so the sign-in it
+// started under is read again before each run after the first. Signing out
+// deletes that session, and the watch must stop on its next run rather than
+// keep going on the account it began with.
+func TestAWatchStopsWhenItsSignInIsSignedOut(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	body, err := json.Marshal(map[string]any{"line": "watch --interval 1s --count 5 -- user list", "cols": 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/console/exec", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
+	request.AddCookie(founder.cookie)
+
+	writer := &startedWriter{ResponseRecorder: httptest.NewRecorder(), started: make(chan struct{})}
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		in.handler.ServeHTTP(writer, request)
+	}()
+
+	select {
+	case <-writer.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch never printed its first run")
+	}
+	if response := in.do(http.MethodPost, "/api/auth/logout", nil, founder); response.Code != http.StatusNoContent {
+		t.Fatalf("sign out: %d %s", response.Code, response.Body.String())
+	}
+
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch kept running after its sign-in ended")
+	}
+
+	output, verdict := readConsoleStream(t, writer.ResponseRecorder)
+	if verdict.OK {
+		t.Errorf("the watch reported success after its sign-in ended:\n%s", output)
+	}
+	if runs := strings.Count(output, "\x1b[H\x1b[2J"); runs != 1 {
+		t.Errorf("the watch ran %d times, want 1", runs)
+	}
+	if !strings.Contains(output, "watch stopped") {
+		t.Errorf("the stop was not explained:\n%s", output)
 	}
 }
 

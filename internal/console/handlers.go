@@ -28,6 +28,14 @@ type Handlers struct {
 	// the wiring the same way apiKeyHandlers.ClientIP is in server.New. A
 	// nil ClientIP simply means Session.IP is left empty.
 	ClientIP func(*http.Request) string
+	// Reauthorize answers who the sign-in a request came in on belongs to now,
+	// or an error once that sign-in or the account's right to use the terminal
+	// has ended. The wiring owns what that right is, so it is the same rule the
+	// SSH door applies. A watch outlives the request that started it, and asks
+	// again through here before each run after the first. Nil keeps the account
+	// the request began with, which is what a test that is not about revocation
+	// wants.
+	Reauthorize func(ctx context.Context, r *http.Request) (user.User, error)
 }
 
 func NewHandlers(c *Console) *Handlers { return &Handlers{console: c} }
@@ -146,6 +154,13 @@ func (h *Handlers) exec(w http.ResponseWriter, r *http.Request) error {
 		Colour:    true,
 		Lang:      normalizeLang(body.Lang),
 		JSON:      body.JSON,
+	}
+	if h.Reauthorize != nil {
+		// The sign-in is on the request, so the hook keeps the request. It is
+		// only called from inside this handler, while the stream is still open.
+		s.Reauthorize = func(ctx context.Context) (user.User, error) {
+			return h.Reauthorize(ctx, r)
+		}
 	}
 
 	// Every status-bearing failure happens above this line, while the
