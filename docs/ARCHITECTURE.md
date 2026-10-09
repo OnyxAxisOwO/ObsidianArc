@@ -219,10 +219,20 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 25.86 MB (22.16 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 238.72 kB to open the chat (196.65 JS + 42.07 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 26.11 MB (22.41 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 239.74 kB to open the chat (197.64 JS + 42.10 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-09 (UTC), after the security fixes of that day (asking
+for the current password before two-step sign-in is switched on or the address
+moves, the terminal's history keeping no secrets, a plugin's settings drawing
+only the keys the server showed): 239.74 kB (197.64 kB JS + 42.10 kB CSS), up
+0.69 kB from 239.05 kB at the commit before, measured the same way. That
+commit was already 0.33 kB above the figure recorded here, from changes that
+did not remeasure. The backoffice chunk is 122.15 kB, the Chinese dictionary
+47.86 kB and the terminal 7.55 kB. The binary is 26.11 MB (22.41 MB without
+SQLite), up from 26.05 MB at the commit before, built with Go 1.27.1.
 
 Remeasured on 2026-10-07 (UTC), after a plugin's panel could list entries an
 operator wrote, each opening its own form behind the instance's own human
