@@ -6,6 +6,9 @@
 # no queue, no metrics sidecar. Put your own TLS terminator in front if you
 # need one.
 #
+# POSTGRES_PASSWORD has no default on purpose: a default written into a public
+# file is a password everyone already knows. Put it in a .env beside this file.
+#
 #   OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
 
 services:
@@ -32,7 +35,7 @@ services:
       # - "${OBSIDIAN_SSH_BIND:-127.0.0.1}:${OBSIDIAN_SSH_PORT:-2222}:2222"
     environment:
       OBSIDIAN_DB_DRIVER: postgres
-      OBSIDIAN_DB_DSN: postgres://obsidian:${POSTGRES_PASSWORD:-obsidian}@db:5432/obsidian?sslmode=disable
+      OBSIDIAN_DB_DSN: postgres://obsidian:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/obsidian?sslmode=disable
       # Required in this setup: with more than one instance, or a container
       # that can be replaced, a key generated into the data volume would make
       # every stored provider credential unreadable after a rebuild.
@@ -93,7 +96,7 @@ services:
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       POSTGRES_USER: obsidian
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-obsidian}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: obsidian
     volumes:
       - /etc/localtime:/etc/localtime:ro

@@ -6,6 +6,10 @@
 # What is under test is the refusal to drop a plugin: the running server's
 # last deploy left its plugin list beside its binary, and a build without one
 # of them would switch that feature off under the people using it.
+#
+# The version is spliced into a command the server's shell runs, and a git tag
+# name can carry quotes and $(...), so a version that is not plain has to stop
+# both the Makefile and the deploy before anything runs it.
 
 set -eu
 
@@ -53,6 +57,35 @@ deploy " " "alpha" || fail "a server whose list is empty was refused"
 if deploy "alpha beta" "alpha" "" PLUGINS; then fail "the old list file was not read"; fi
 grep -q "carries beta" "$tmp/out" || fail "the refusal from the old list file does not name the plugin"
 deploy "alpha beta" "alpha beta" "" PLUGINS || fail "a build carrying everything the old list names was refused"
+
+# A tag name reaches the server's shell through dist/VERSION. A quote in it runs
+# its payload there, so the deploy has to stop before ssh is reached, and no
+# docker command may run for that version either.
+deploy_proof=$tmp/deploy-proof
+printf '%s\n' "v1'; touch '$deploy_proof'; echo '" >"$work/dist/VERSION"
+if deploy "" "alpha"; then fail "a version with a quote in it was deployed"; fi
+grep -q "not a plain version" "$tmp/out" || fail "the refusal does not say why"
+[ -e "$deploy_proof" ] && fail "a tag name ran as a command on the server"
+grep -q docker "$tmp/out" && fail "docker ran for a version that was refused"
+for v in v0.9.2 v0.9.2-64-g356a68e v0.9.2-64-g356a68e-dirty v1.3.0-rc.1-14-g1a2b3c4 356a68e dev; do
+  printf '%s\n' "$v" >"$work/dist/VERSION"
+  deploy "" "alpha" || fail "the plain version $v was refused"
+done
+echo "deploy.sh version guard: ok"
+
+# The Makefile is the first place a tag name reaches a shell, so it refuses the
+# same things before any recipe runs.
+root=$(cd "$(dirname "$0")/.." && pwd)
+make_proof=$tmp/make-proof
+if make -s -C "$root" version VERSION="v1; touch '$make_proof'" >"$tmp/make.out" 2>&1; then
+  fail "make accepted a version that is shell syntax"
+fi
+[ -e "$make_proof" ] && fail "make ran a version as a command"
+grep -q "is refused" "$tmp/make.out" || fail "make does not say why it refused the version"
+for v in v0.9.2 v0.9.2-64-g356a68e-dirty v1.3.0-rc.1-14-g1a2b3c4 356a68e dev; do
+  make -s -C "$root" version VERSION="$v" >/dev/null 2>&1 || fail "make refused the plain version $v"
+done
+echo "Makefile version guard: ok"
 
 # The list and the directory of bundled packages must be able to sit side by
 # side on a case-insensitive file system.

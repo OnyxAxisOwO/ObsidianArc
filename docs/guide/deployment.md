@@ -43,6 +43,8 @@ location / {
 
 仓库根目录的 `docker-compose.yml` 使用 PostgreSQL，服务名为 `server` 和 `db`。在启动前设置固定的 `OBSIDIAN_SECRET_KEY`，并修改数据库密码。妥善保存这些值，后续重建必须继续使用。
 
+`POSTGRES_PASSWORD` 没有默认值，必须写入仓库根目录的 `.env` 文件，未设置时 `docker compose` 会拒绝启动；它会嵌入数据库连接串，建议用 `openssl rand -hex 32` 生成。
+
 ```bash
 export OBSIDIAN_SECRET_KEY='替换为固定保存的随机密钥，至少16个字符'
 export POSTGRES_PASSWORD='替换为数据库密码'

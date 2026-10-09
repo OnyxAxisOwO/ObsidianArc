@@ -22,8 +22,25 @@ if [ ! -f dist/obsidian-arc ] || [ ! -f dist/Dockerfile ]; then
   echo "dist/ is empty; run make release first" >&2
   exit 1
 fi
+# A plain version is what git describe prints for a release, a commit past one
+# or a dirty tree: letters, digits, dot, plus and minus, starting with a letter
+# or digit. Anything else is refused, because the version is spliced into a
+# command the server's shell runs. LC_ALL is pinned inside the check, since a
+# range such as A-Z means different things in different locales.
+version_is_plain() (
+  export LC_ALL=C
+  case "$1" in
+    ''|[!A-Za-z0-9]*|*[!A-Za-z0-9.+-]*) exit 1 ;;
+  esac
+)
 arch=$(cat dist/ARCH)
 version=$(cat dist/VERSION)
+# dist/VERSION is whatever make wrote from a git tag name, and a tag name may
+# carry quotes and $(...). Checked before anything else reads it.
+if ! version_is_plain "$version"; then
+  echo "dist/VERSION is refused: \"$version\" is not a plain version; rebuild with make release" >&2
+  exit 1
+fi
 # What this build carries, and whether the caller has accepted losing some of
 # what the running server has.
 plugins=$(cat dist/PLUGIN_LIST 2>/dev/null || true)
