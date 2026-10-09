@@ -219,18 +219,17 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 26.09 MB (22.39 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 239.11 kB to open the chat (196.94 JS + 42.17 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 26.10 MB (22.40 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 239.13 kB to open the chat (196.95 JS + 42.18 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
 Remeasured on 2026-10-09 (UTC), after the backoffice learned of newer releases
-(`GET /api/admin/update`, its dialog and the dashboard notices): 239.11 kB
-(196.94 kB JS + 42.17 kB CSS), up 0.52 kB, and the binary 26.09 MB (22.39 MB
-without SQLite), up 17 kB. Both deltas are the difference between two builds of
-the same tree before and after the change, gzip -9 of the entry script and
-stylesheet, so they are exact for this change even where the absolute figures
-below were taken on another toolchain.
+(`GET /api/admin/update`, its dialog and the dashboard notices): 239.13 kB
+(196.95 kB JS + 42.18 kB CSS), up 0.54 kB, read from the build's own gzip
+column as the figures below were. The backoffice chunk is 123.60 kB and the
+Chinese dictionary 47.93 kB. The binary is 26.10 MB (22.40 MB without
+SQLite), up 0.03 MB.
 
 Remeasured on 2026-10-09 (UTC), after the work surface was removed — the
 mode switch, the tool-call rows and the console broker behind them: 238.59 kB
