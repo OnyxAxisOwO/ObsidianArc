@@ -328,7 +328,7 @@ func (openAIAdapter) readOnce(response *http.Response) (Result, error) {
 		Usage openAIUsage `json:"usage"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return Result{}, &Error{Kind: ErrorUpstream, Message: "The provider returned a response we could not read.", cause: err}
+		return Result{}, unreadable(err, "The provider returned a response we could not read.")
 	}
 	if len(payload.Choices) == 0 {
 		return Result{}, &Error{Kind: ErrorUpstream, Message: "The provider returned no answer."}
@@ -417,10 +417,20 @@ type openAIToolCallDelta struct {
 // the index for exactly that reason.
 type toolCallAssembly struct {
 	calls []ToolCall
-	at    map[int]int
+	// Arguments are collected here, one builder per call and in the same
+	// order, and written onto the call at finish. Appending to the string on
+	// the call copied everything received so far on every fragment: quadratic
+	// in the length of the arguments, from a server that picks the length.
+	// Pointers because a Builder that has been written to must not be copied,
+	// and the slice grows.
+	arguments []*strings.Builder
+	at        map[int]int
 }
 
-func (a *toolCallAssembly) absorb(fragments []openAIToolCallDelta) {
+// absorb takes one frame's fragments. It fails when a call's arguments pass
+// MaxToolArgumentBytes, which ends the stream rather than let a model that
+// never closes its JSON fill memory.
+func (a *toolCallAssembly) absorb(fragments []openAIToolCallDelta) error {
 	for _, fragment := range fragments {
 		index := 0
 		if fragment.Index != nil {
@@ -434,6 +444,7 @@ func (a *toolCallAssembly) absorb(fragments []openAIToolCallDelta) {
 			position = len(a.calls)
 			a.at[index] = position
 			a.calls = append(a.calls, ToolCall{})
+			a.arguments = append(a.arguments, &strings.Builder{})
 		}
 		if fragment.ID != "" {
 			a.calls[position].ID = fragment.ID
@@ -444,21 +455,25 @@ func (a *toolCallAssembly) absorb(fragments []openAIToolCallDelta) {
 		if fragment.Function.Name != "" {
 			a.calls[position].Name = fragment.Function.Name
 		}
-		a.calls[position].Arguments += fragment.Function.Arguments
+		if a.arguments[position].Len()+len(fragment.Function.Arguments) > MaxToolArgumentBytes {
+			return toolArgumentsTooLarge()
+		}
+		a.arguments[position].WriteString(fragment.Function.Arguments)
 	}
+	return nil
 }
 
 // finish emits each assembled call, once, now that no more fragments are
 // coming.
 func (a *toolCallAssembly) finish(result *Result, sink Sink) error {
-	for _, call := range a.calls {
+	for position, call := range a.calls {
 		if call.Name == "" {
 			// Fragments for a call whose name never arrived. Nothing can be
 			// invoked from that, and forwarding it would have the client
 			// call a tool it does not have.
 			continue
 		}
-		call.Arguments = toolArguments(call.Arguments)
+		call.Arguments = toolArguments(a.arguments[position].String())
 		result.ToolCalls = append(result.ToolCalls, call)
 		if err := sink(Event{Type: EventToolCall, ToolCall: call}); err != nil {
 			return err
@@ -559,7 +574,9 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		// Before the early return below: a tool-call frame usually carries no
 		// content at all, so reading it after that test would read none of
 		// them.
-		tools.absorb(choice.Delta.ToolCalls)
+		if err := tools.absorb(choice.Delta.ToolCalls); err != nil {
+			return err
+		}
 
 		if choice.Delta.Content == "" {
 			return nil
@@ -663,7 +680,7 @@ func (openAIAdapter) GenerateImage(ctx context.Context, client *http.Client, p P
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return ImageResult{}, &Error{Kind: ErrorUpstream, Message: "The provider returned an image response we could not read.", cause: err}
+		return ImageResult{}, unreadable(err, "The provider returned an image response we could not read.")
 	}
 	if len(payload.Data) == 0 {
 		return ImageResult{}, &Error{Kind: ErrorUpstream, Message: "The provider returned no images."}
@@ -779,6 +796,7 @@ func listModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteM
 		return nil, networkError(ctx, err)
 	}
 	defer response.Body.Close()
+	response = limitResponse(response)
 
 	if response.StatusCode >= 400 {
 		return nil, classifyHTTP(p, endpoint, response.StatusCode,
@@ -798,7 +816,7 @@ func listModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteM
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return nil, &Error{Kind: ErrorUpstream, Message: "The endpoint answered with something other than a model list.", cause: err}
+		return nil, unreadable(err, "The endpoint answered with something other than a model list.")
 	}
 
 	entries := payload.Data

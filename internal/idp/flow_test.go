@@ -738,6 +738,44 @@ func TestRevokingATokenTakesBothHalves(t *testing.T) {
 	}
 }
 
+// These three read a form without anybody having signed in, and the standard
+// library will buffer ten megabytes of one before it gives up.
+func TestProtocolEndpointsRefuseAnOversizedBody(t *testing.T) {
+	h := newHarness(t)
+	app, secret := h.app(t, CreateAppInput{})
+	huge := strings.Repeat("a", 4*maxFormBytes)
+
+	for _, path := range []string{"/oauth/token", "/oauth/revoke"} {
+		response := h.postForm(path, url.Values{
+			"client_id": {app.ClientID}, "client_secret": {secret},
+			"grant_type": {"authorization_code"}, "token": {"x"}, "padding": {huge},
+		})
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_request") {
+			t.Errorf("%s with a %d-byte body = %d %s, want 400 invalid_request",
+				path, 4*maxFormBytes, response.Code, response.Body.String())
+		}
+	}
+
+	// The bearer token may ride in the body of a POST, so the same ceiling
+	// applies there; the oversized form reads as no token at all.
+	request := httptest.NewRequest(http.MethodPost, "/oauth/userinfo",
+		strings.NewReader(url.Values{"access_token": {"t"}, "padding": {huge}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	h.mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("userinfo with an oversized body = %d, want 401", recorder.Code)
+	}
+
+	// A normal request still gets through.
+	ok := h.postForm("/oauth/revoke", url.Values{
+		"token": {"x"}, "client_id": {app.ClientID}, "client_secret": {secret},
+	})
+	if ok.Code != http.StatusOK {
+		t.Errorf("an ordinary revoke = %d", ok.Code)
+	}
+}
+
 func TestTheAccountsOwnListShowsAndWithdrawsWhatItLetIn(t *testing.T) {
 	h := newHarness(t)
 	app, secret := h.app(t, CreateAppInput{})

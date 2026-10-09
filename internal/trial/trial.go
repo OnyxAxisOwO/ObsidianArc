@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
 const (
@@ -58,7 +60,12 @@ const (
 	MaxTrialOutputTokens = 600
 	// How often dead entries are swept. Bounded work on the write path, so
 	// there is no timer goroutine for it.
-	sweepInterval = 10 * time.Minute
+	sweepInterval = time.Minute
+	// Addresses remembered at once. Each entry is paid for by an admitted
+	// turn, so burstPerInstance already bounds the map; this is the ceiling
+	// that still holds if that number is ever raised or the order of the
+	// checks below changes.
+	maxWindows = 4096
 )
 
 // budget is a fixed-window counter per address.
@@ -101,32 +108,38 @@ func (b *budget) take(address string) (bool, time.Duration) {
 		key = "unknown"
 	}
 
+	// One /64 is one visitor, however many addresses inside it they hold.
+	key = httpx.RateKey(key)
+
 	now := time.Now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if now.Sub(b.lastSwept) > sweepInterval {
-		for candidate, entry := range b.windows {
-			if now.Sub(entry.startAt) > budgetWindow {
-				delete(b.windows, candidate)
-			}
-		}
-		b.lastSwept = now
-	}
-
-	entry, ok := b.windows[key]
-	if !ok || now.Sub(entry.startAt) > budgetWindow {
-		entry = &window{startAt: now}
-		b.windows[key] = entry
+		b.sweepLocked(now)
 	}
 
 	if now.Sub(b.instance.startAt) > budgetWindow {
 		b.instance = &window{startAt: now}
 	}
-	// Checked before the per-address one: when the instance ceiling is
-	// reached, whose turn it was does not matter.
+	// Checked before anything is allocated for the caller: when the instance
+	// ceiling is reached, whose turn it was does not matter, and a refused
+	// request must not leave an entry behind or the refusals themselves fill
+	// the map.
 	if b.instance.spent >= burstPerInstance {
 		return false, budgetWindow - now.Sub(b.instance.startAt)
+	}
+
+	entry, ok := b.windows[key]
+	if !ok || now.Sub(entry.startAt) > budgetWindow {
+		if !ok && len(b.windows) >= maxWindows {
+			b.sweepLocked(now)
+			if len(b.windows) >= maxWindows {
+				return false, sweepInterval
+			}
+		}
+		entry = &window{startAt: now}
+		b.windows[key] = entry
 	}
 	if entry.spent >= burstPerAddress {
 		return false, budgetWindow - now.Sub(entry.startAt)
@@ -135,6 +148,15 @@ func (b *budget) take(address string) (bool, time.Duration) {
 	entry.spent++
 	b.instance.spent++
 	return true, 0
+}
+
+func (b *budget) sweepLocked(now time.Time) {
+	for candidate, entry := range b.windows {
+		if now.Sub(entry.startAt) > budgetWindow {
+			delete(b.windows, candidate)
+		}
+	}
+	b.lastSwept = now
 }
 
 // enter claims one of the concurrent slots. The release is idempotent.

@@ -329,7 +329,7 @@ func (anthropicAdapter) readOnce(response *http.Response) (Result, error) {
 		} `json:"usage"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return Result{}, &Error{Kind: ErrorUpstream, Message: "The provider returned a response we could not read.", cause: err}
+		return Result{}, unreadable(err, "The provider returned a response we could not read.")
 	}
 	if payload.StopReason == "refusal" {
 		return Result{}, &Error{Kind: ErrorRefusal, Message: "The model declined to answer."}
@@ -408,7 +408,16 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 	// stop — the first moment the arguments are whole, and earlier than the
 	// end of the message, so an agent can begin work while the model is
 	// still writing the next one.
-	pending := map[int]*ToolCall{}
+	//
+	// Arguments are collected in a builder beside the call and written onto it
+	// at the stop: appending to the string on the call copied everything
+	// received so far on every fragment, quadratic in a length the server
+	// picks.
+	type pendingCall struct {
+		call      ToolCall
+		arguments strings.Builder
+	}
+	pending := map[int]*pendingCall{}
 
 	err := readEventStream(response.Body, func(data []byte) error {
 		var event anthropicStreamEvent
@@ -446,19 +455,20 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 		switch event.Type {
 		case "content_block_start":
 			if event.ContentBlock.Type == "tool_use" && event.ContentBlock.Name != "" {
-				pending[event.Index] = &ToolCall{
+				pending[event.Index] = &pendingCall{call: ToolCall{
 					ID: event.ContentBlock.ID, Name: event.ContentBlock.Name,
-				}
+				}}
 			}
 		case "content_block_stop":
-			call, open := pending[event.Index]
-			if !open {
+			open, found := pending[event.Index]
+			if !found {
 				return nil
 			}
 			delete(pending, event.Index)
-			call.Arguments = toolArguments(call.Arguments)
-			result.ToolCalls = append(result.ToolCalls, *call)
-			if err := sink(Event{Type: EventToolCall, ToolCall: *call}); err != nil {
+			call := open.call
+			call.Arguments = toolArguments(open.arguments.String())
+			result.ToolCalls = append(result.ToolCalls, call)
+			if err := sink(Event{Type: EventToolCall, ToolCall: call}); err != nil {
 				sinkErr = err
 				return err
 			}
@@ -490,8 +500,11 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 			// A fragment for a call that never started, or one already
 			// emitted, has nowhere to go. Both mean a frame arrived out of
 			// order, which is not worth ending a good generation over.
-			if call, open := pending[event.Index]; open {
-				call.Arguments += event.Delta.PartialJSON
+			if open, found := pending[event.Index]; found {
+				if open.arguments.Len()+len(event.Delta.PartialJSON) > MaxToolArgumentBytes {
+					return toolArgumentsTooLarge()
+				}
+				open.arguments.WriteString(event.Delta.PartialJSON)
 			}
 		}
 		return nil

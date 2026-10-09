@@ -275,7 +275,7 @@ func (h *Handlers) restore(r *http.Request, value string) (Request, error) {
 // --- the token endpoint --------------------------------------------------------
 
 func (h *Handlers) token(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
+	if err := parseForm(w, r); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "the request body could not be read")
 		return
 	}
@@ -347,7 +347,7 @@ func (h *Handlers) authenticateClient(r *http.Request) (App, error) {
 }
 
 func (h *Handlers) userinfo(w http.ResponseWriter, r *http.Request) {
-	token := bearer(r)
+	token := bearer(w, r)
 	if token == "" {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="oauth"`)
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_token", "no bearer token")
@@ -372,7 +372,7 @@ func (h *Handlers) userinfo(w http.ResponseWriter, r *http.Request) {
 // issued: the specification says so, and the reason is that a different
 // answer would make this a way to ask whether a string is somebody's token.
 func (h *Handlers) revoke(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
+	if err := parseForm(w, r); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "the request body could not be read")
 		return
 	}
@@ -467,7 +467,18 @@ func (s *stamp) tag(body string) string {
 
 // --- small helpers -------------------------------------------------------------
 
-func bearer(r *http.Request) string {
+// maxFormBytes is the most any protocol endpoint reads from a body. A token
+// request is a handful of short fields; the standard library's own ceiling
+// for a form is ten megabytes, which anyone may make this server buffer per
+// request on endpoints that need no sign-in.
+const maxFormBytes = 16 << 10
+
+func parseForm(w http.ResponseWriter, r *http.Request) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
+	return r.ParseForm()
+}
+
+func bearer(w http.ResponseWriter, r *http.Request) string {
 	header := strings.TrimSpace(r.Header.Get("Authorization"))
 	if len(header) > 7 && strings.EqualFold(header[:7], "Bearer ") {
 		return strings.TrimSpace(header[7:])
@@ -475,7 +486,7 @@ func bearer(r *http.Request) string {
 	// Also accepted in the body on a POST, which is what a few client
 	// libraries do and what the specification allows.
 	if r.Method == http.MethodPost {
-		_ = r.ParseForm()
+		_ = parseForm(w, r)
 		return strings.TrimSpace(r.PostForm.Get("access_token"))
 	}
 	return ""
