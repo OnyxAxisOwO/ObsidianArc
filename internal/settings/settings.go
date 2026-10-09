@@ -10,6 +10,7 @@ package settings
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -670,6 +671,31 @@ func ValidPWAIconURL(value string) bool {
 		return true
 	}
 	return pwaIconRE.MatchString(value)
+}
+
+// ValidOIDCURL reports whether value is an address an OpenID Connect sign-in
+// may send a code, a client secret or an access token to: https, or plain http
+// to localhost, 127.0.0.1 or [::1]. That is the rule adapter.NormalizeBaseURL
+// applies to a provider's key. OIDC accepts an ID token without checking its
+// signature because it arrived over TLS, so a plaintext endpoint is not only a
+// leak of the secret: it is a sign-in an attacker on the path can write.
+// Empty is not valid here; a caller that treats "not set" as acceptable checks
+// for it first, as the callers of ValidHexColor do.
+func ValidOIDCURL(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	switch parsed.Scheme {
+	case "https":
+		return true
+	case "http":
+		switch strings.ToLower(parsed.Hostname()) {
+		case "localhost", "127.0.0.1", "::1":
+			return true
+		}
+	}
+	return false
 }
 
 // Defaults are what a fresh instance behaves like, and what a deleted row
