@@ -147,6 +147,8 @@ func (h *Handlers) thread(w http.ResponseWriter, r *http.Request) error {
 			if thread.Replies[i].FromStaff {
 				thread.Replies[i].Username = ""
 				thread.Replies[i].Nickname = ""
+				// The id names the operator as surely as the name does.
+				thread.Replies[i].UserID = ""
 			}
 		}
 	}
