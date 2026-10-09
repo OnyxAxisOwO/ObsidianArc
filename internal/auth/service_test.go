@@ -607,12 +607,16 @@ func TestChangePasswordRevokesOtherSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", keepSession.ID); err != nil {
+	newToken, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", keepSession.ID)
+	if err != nil {
 		t.Fatalf("change password: %v", err)
 	}
 
-	if _, _, err := f.auth.Authenticate(ctx, keepToken); err != nil {
-		t.Errorf("the session that made the change was revoked: %v", err)
+	if _, _, err := f.auth.Authenticate(ctx, keepToken); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("the cookie that made the change still signs in: %v", err)
+	}
+	if _, _, err := f.auth.Authenticate(ctx, newToken); err != nil {
+		t.Errorf("the session that made the change was not reissued: %v", err)
 	}
 	if _, _, err := f.auth.Authenticate(ctx, otherToken); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("another session survived the password change: %v", err)
@@ -633,9 +637,254 @@ func TestChangePasswordRequiresTheCurrentOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = f.auth.ChangePassword(ctx, account.ID, "wrong-current", "a-better-password", "")
+	_, err = f.auth.ChangePassword(ctx, account.ID, "wrong-current", "a-better-password", "")
 	if !errors.Is(err, ErrCurrentPasswordWrong) {
 		t.Fatalf("want ErrCurrentPasswordWrong, got %v", err)
+	}
+}
+
+// The session that made the change keeps everything its sign-in recorded. Only
+// the token moves, so the signed-in devices list and the timers read as they
+// did before.
+func TestChangePasswordReissuesTheCallersSessionAsItWas(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{
+		Username: "arc", Password: "a-good-password", IP: "203.0.113.5", UA: "Browser/1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.auth.Sessions().SetDeviceID(ctx, nil, HashToken(token), "device-one"); err != nil {
+		t.Fatal(err)
+	}
+	_, before, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newToken, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", before.ID)
+	if err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	if newToken == "" || newToken == token {
+		t.Fatalf("the session was not given a new token (got %q)", newToken)
+	}
+
+	_, after, err := f.auth.Authenticate(ctx, newToken)
+	if err != nil {
+		t.Fatalf("the reissued session does not authenticate: %v", err)
+	}
+	if after.ID != HashToken(newToken) {
+		t.Errorf("the reissued row is keyed by %q, not by the new token", after.ID)
+	}
+	if after.CreatedAt != before.CreatedAt || after.ExpiresAt != before.ExpiresAt || after.LastSeenAt != before.LastSeenAt {
+		t.Errorf("the timers moved: before %+v, after %+v", before, after)
+	}
+	if after.IP != "203.0.113.5" || after.UserAgent != "Browser/1" || after.DeviceID != "device-one" {
+		t.Errorf("the reissued session lost what its sign-in recorded: %+v", after)
+	}
+	if after.TwoFactorPending {
+		t.Error("the reissued session is waiting for a second step")
+	}
+}
+
+// A session that passed its second step and holds a backoffice visit keeps both
+// through a password change, and the account still asks for a code on its next
+// sign-in.
+func TestChangePasswordKeepsTheSecondStepAndTheBackofficeVisit(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.settings.Set(ctx, settings.TwoFactorBackofficeMode, settings.BackofficeVerifyVisit); err != nil {
+		t.Fatal(err)
+	}
+	account, secret, recovery, used := enrolled(t, f, "founder")
+
+	signedIn, token, err := f.auth.CompleteSignIn(ctx, pending(t, f, "founder"), codeAt(t, secret, used+1), "", "")
+	if err != nil {
+		t.Fatalf("complete sign-in: %v", err)
+	}
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A recovery code, so the test does not depend on which 30-second step it
+	// happens to run in.
+	if err := f.auth.EnterBackoffice(context.WithValue(ctx, sessionContextKey, session), signedIn, recovery[0], "203.0.113.1", "Browser/1"); err != nil {
+		t.Fatalf("enter the backoffice: %v", err)
+	}
+	_, session, err = f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.BackofficeAt == 0 {
+		t.Fatal("the visit did not open")
+	}
+
+	newToken, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", session.ID)
+	if err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	signedIn, after, err := f.auth.Authenticate(ctx, newToken)
+	if err != nil {
+		t.Fatalf("the reissued session does not authenticate: %v", err)
+	}
+	if after.TwoFactorPending {
+		t.Fatal("the reissued session is waiting for a second step")
+	}
+	if after.BackofficeAt != session.BackofficeAt || after.BackofficeIP != "203.0.113.1" || after.BackofficeUA != "Browser/1" {
+		t.Errorf("the visit changed: before %+v, after %+v", session, after)
+	}
+	if f.auth.BackofficeLocked(context.WithValue(ctx, sessionContextKey, after), signedIn) {
+		t.Error("the backoffice asks for a code again after the password changed")
+	}
+
+	// The second step belongs to the account, not to the session, so the next
+	// sign-in with the new password still stops at a code.
+	_, _, err = f.auth.Login(ctx, LoginInput{Identifier: "founder", Password: "a-better-password"})
+	var second *SecondFactorRequired
+	if !errors.As(err, &second) {
+		t.Errorf("a sign-in with the new password skipped the second step: %v", err)
+	}
+}
+
+// A sign-in that has proved its password but not its code is a session as well,
+// and a password change ends it: it was issued against the old password.
+func TestChangePasswordEndsPendingSignIns(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, secret, _, used := enrolled(t, f, "arc")
+
+	half := pending(t, f, "arc")
+	_, full, err := f.auth.Sessions().Create(ctx, account.ID, time.Hour, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", full.ID); err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	if _, _, err := f.auth.Authenticate(ctx, half); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("a sign-in that proved the old password survived the change: %v", err)
+	}
+	if _, _, err := f.auth.CompleteSignIn(ctx, half, codeAt(t, secret, used+1), "", ""); !errors.Is(err, ErrNoPendingSignIn) {
+		t.Errorf("the pending sign-in could still be completed: %v", err)
+	}
+}
+
+// A change with no session to carry over ends every session and issues none.
+// The SSH console makes its changes this way.
+func TestChangePasswordWithoutASessionEndsEverySession(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherToken, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issued, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", "")
+	if err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	if issued != "" {
+		t.Errorf("a change with no session issued a token: %q", issued)
+	}
+	for _, stale := range []string{token, otherToken} {
+		if _, _, err := f.auth.Authenticate(ctx, stale); !errors.Is(err, ErrSessionNotFound) {
+			t.Errorf("a session survived a change that kept none: %v", err)
+		}
+	}
+}
+
+// A session that ends while its own change is in flight is not revived. The
+// change is refused, and the password stays as it was.
+func TestChangePasswordRefusesASessionThatHasEnded(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.auth.Logout(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", session.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a change from an ended session = %v, want ErrSessionNotFound", err)
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); err != nil {
+		t.Errorf("the refused change still changed the password: %v", err)
+	}
+}
+
+// Two changes from one session can both pass the password check. Only one may
+// land, and only one may leave a session behind.
+func TestParallelPasswordChangesFromOneSessionIssueOneSession(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const racers = 3
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		issued []string
+		losses []error
+		start  = make(chan struct{})
+	)
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func(next string) {
+			defer wg.Done()
+			<-start
+			newToken, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", next, session.ID)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				losses = append(losses, err)
+				return
+			}
+			issued = append(issued, newToken)
+		}(fmt.Sprintf("racing-password-%d", i))
+	}
+	close(start)
+	wg.Wait()
+
+	if len(issued) != 1 {
+		t.Fatalf("%d changes issued a session, want exactly one (losses: %v)", len(issued), losses)
+	}
+	for _, err := range losses {
+		if !errors.Is(err, ErrSessionNotFound) && !errors.Is(err, ErrCurrentPasswordWrong) && !errors.As(err, new(*RateLimitError)) {
+			t.Errorf("a losing change failed with %v", err)
+		}
+	}
+	var sessions int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE user_id = ?`, account.ID).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 {
+		t.Errorf("the account has %d sessions after the race, want 1", sessions)
+	}
+	if _, _, err := f.auth.Authenticate(ctx, issued[0]); err != nil {
+		t.Errorf("the surviving session does not authenticate: %v", err)
 	}
 }
 

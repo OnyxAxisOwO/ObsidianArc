@@ -134,15 +134,68 @@ func (s *SessionStore) create(ctx context.Context, userID string, ttl time.Durat
 		TwoFactorPending: pending,
 	}
 
-	_, err := s.db.Exec(ctx,
-		`INSERT INTO sessions (id, user_id, created_at, expires_at, last_seen_at, ip, user_agent, two_factor_pending)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.UserID, record.CreatedAt, record.ExpiresAt,
-		record.LastSeenAt, record.IP, record.UserAgent, record.TwoFactorPending)
-	if err != nil {
+	if err := s.insert(ctx, nil, record); err != nil {
 		return "", Session{}, fmt.Errorf("auth: create session: %w", err)
 	}
 	return token, record, nil
+}
+
+// insert writes every column of a session row. The backoffice visit and the
+// device are written too, not left to their defaults: a row written again
+// under a new id has to keep both, and a default would drop them without any
+// error to say so. Takes a Queryer for the reason DeleteByUser does — Reissue
+// writes inside the transaction that changes the password.
+func (s *SessionStore) insert(ctx context.Context, q database.Queryer, record Session) error {
+	if q == nil {
+		q = s.db
+	}
+	_, err := q.Exec(ctx,
+		`INSERT INTO sessions (id, user_id, created_at, expires_at, last_seen_at, ip, user_agent,
+		   two_factor_pending, backoffice_at, backoffice_ip, backoffice_ua, device_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.ID, record.UserID, record.CreatedAt, record.ExpiresAt,
+		record.LastSeenAt, record.IP, record.UserAgent, record.TwoFactorPending,
+		record.BackofficeAt, record.BackofficeIP, record.BackofficeUA, record.DeviceID)
+	return err
+}
+
+// Reissue gives an existing session a new token in place of its old one. The
+// new row carries over everything the old one recorded about the sign-in: when
+// it began, how long it runs, whether its second step was passed, the
+// backoffice visit it holds and the device it belongs to. Only the cookie value
+// that finds it changes.
+//
+// The old row is left for the caller to delete, because the caller decides what
+// else ends with it. The new row goes in on q, so it commits or rolls back with
+// the caller's own writes. ErrSessionNotFound means there is no such session on
+// this account, or it has already run out — which is also what a session that a
+// concurrent request ended looks like by the time this runs.
+func (s *SessionStore) Reissue(ctx context.Context, q database.Queryer, userID, sessionID string) (string, error) {
+	if q == nil {
+		q = s.db
+	}
+	var record Session
+	err := q.QueryRow(ctx,
+		`SELECT id, user_id, created_at, expires_at, last_seen_at, ip, user_agent,
+		   two_factor_pending, backoffice_at, backoffice_ip, backoffice_ua, device_id
+		 FROM sessions WHERE id = ? AND user_id = ? AND expires_at > ?`,
+		sessionID, userID, time.Now().UnixMilli()).Scan(
+		&record.ID, &record.UserID, &record.CreatedAt, &record.ExpiresAt, &record.LastSeenAt,
+		&record.IP, &record.UserAgent, &record.TwoFactorPending,
+		&record.BackofficeAt, &record.BackofficeIP, &record.BackofficeUA, &record.DeviceID)
+	if database.IsNotFound(err) {
+		return "", ErrSessionNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("auth: read session: %w", err)
+	}
+
+	token := id.Secret(TokenBytes)
+	record.ID = HashToken(token)
+	if err := s.insert(ctx, q, record); err != nil {
+		return "", fmt.Errorf("auth: reissue session: %w", err)
+	}
+	return token, nil
 }
 
 // GetWithUser resolves a cookie to its session and the account that owns it.
