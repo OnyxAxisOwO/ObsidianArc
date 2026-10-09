@@ -1678,6 +1678,7 @@ const en = {
   backupRun: 'Run backup now',
   backupActionsHint: 'Save changes before testing storage or starting a backup.',
   backupSaved: 'Backup settings saved.',
+  backupCredentialsNeeded: 'A new storage endpoint, bucket, region or WebDAV URL needs its credentials entered again — the saved ones are only sent to the address they were saved for.',
   backupTestSucceeded: 'Storage connection succeeded.',
   backupRunStarted: 'Backup started.',
   backupLog: 'Run log',

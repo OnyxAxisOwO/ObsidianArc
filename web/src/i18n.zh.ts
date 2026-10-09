@@ -1644,6 +1644,7 @@ export const zh: Record<StringKey, string> = {
   backupRun: '立即备份',
   backupActionsHint: '测试存储或开始备份前，请先保存更改。',
   backupSaved: '备份设置已保存。',
+  backupCredentialsNeeded: '修改了存储端点、存储桶、区域或 WebDAV 地址，需要重新填写凭据——已保存的凭据只会发往原来的地址。',
   backupTestSucceeded: '存储连接成功。',
   backupRunStarted: '备份已开始。',
   backupLog: '运行日志',

@@ -37,6 +37,11 @@ const (
 var (
 	ErrAlreadyRunning = errors.New("system backup is already running")
 	ErrNotConfigured  = errors.New("system backup storage is not configured")
+	// A saved credential is only ever sent to the destination it was saved for.
+	// Pointing it at another endpoint, bucket, region or WebDAV URL is refused
+	// until the credential is typed again, so the archive never goes to a host
+	// that the credential was not entered for.
+	ErrCredentialsNeededForMove = errors.New("system backup storage has a new destination; enter its credentials again")
 )
 
 // ValidationError marks a setting problem that can be corrected in the form.
@@ -222,6 +227,8 @@ func (s *Store) Load(ctx context.Context) (Config, error) {
 
 // Save replaces editable settings while blank credential inputs keep their
 // sealed values. The API never has to decrypt a credential just to preserve it.
+// That keeping only holds while the destination the credential was saved for
+// is unchanged; moving the destination without the credentials is refused.
 func (s *Store) Save(ctx context.Context, cfg Config) error {
 	if cfg.RetentionHours == 0 && cfg.RetentionDays > 0 {
 		cfg.RetentionHours = cfg.RetentionDays * 24
@@ -257,11 +264,25 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 			return err
 		}
 		var access, secretValue, webdavPass []byte
+		var savedEndpoint, savedBucket, savedRegion, savedWebDAVURL string
 		if err := tx.QueryRow(ctx,
-			`SELECT access_key_id_enc, secret_access_key_enc, webdav_password_enc
+			`SELECT access_key_id_enc, secret_access_key_enc, webdav_password_enc,
+			 endpoint, bucket, region, webdav_url
 			 FROM system_backups WHERE id = ?`, singletonID,
-		).Scan(&access, &secretValue, &webdavPass); err != nil {
+		).Scan(&access, &secretValue, &webdavPass, &savedEndpoint, &savedBucket, &savedRegion, &savedWebDAVURL); err != nil {
 			return fmt.Errorf("system backup: read sealed credentials: %w", err)
+		}
+		// Every save rewrites the destination columns whatever storage type it
+		// selects, so a credential stays bound to the destination saved beside
+		// it. Moving that destination without the credential would carry it to
+		// a host it was never saved for, including from a form for the other
+		// storage type that still shows the old S3 endpoint or WebDAV URL.
+		s3Moved := cfg.Endpoint != savedEndpoint || cfg.Bucket != savedBucket || cfg.Region != savedRegion
+		webdavMoved := cfg.WebDAVURL != savedWebDAVURL
+		keysNotTyped := (len(access) > 0 && cfg.AccessKeyID == "") || (len(secretValue) > 0 && cfg.SecretKey == "")
+		passwordNotTyped := len(webdavPass) > 0 && cfg.WebDAVPassword == ""
+		if (s3Moved && keysNotTyped) || (webdavMoved && passwordNotTyped) {
+			return ErrCredentialsNeededForMove
 		}
 		merged := cfg
 		if merged.AccessKeyID == "" && len(access) > 0 {
