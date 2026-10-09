@@ -6,6 +6,7 @@
 // The caller owns the values and writes them where it saves from; this
 // component writes into `draft` in place and keeps nothing of its own.
 
+import { computed } from 'vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
@@ -19,6 +20,10 @@ const props = defineProps<{
   hints: Record<string, string>;
 }>();
 
+// Only the controls the caller has a value for. A page leaves out the keys
+// the server did not show this account, which are ones it may not write.
+const shown = computed(() => props.section.controls.filter((control) => control.key in props.draft));
+
 function set(key: string, value: string): void {
   // The caller's reactive object, written in place: the caller is what
   // saves it, and a copy here would be edits it never sees.
@@ -28,7 +33,7 @@ function set(key: string, value: string): void {
 
 <template>
   <div class="oa-plugin-controls">
-    <div v-for="control in section.controls" :key="control.key" class="oa-plugin-control-item">
+    <div v-for="control in shown" :key="control.key" class="oa-plugin-control-item">
       <OaTextField
         v-if="control.kind === 'text'"
         :model-value="draft[control.key] ?? ''"

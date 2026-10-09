@@ -12,10 +12,22 @@ export function usePluginSettings(page: SettingsSection['page']) {
   const draft = reactive<Record<string, string>>({});
   const hints = reactive<Record<string, string>>({});
 
-  /** Fills the draft from what the server sent. Secrets start empty. */
+  /**
+   * Fills the draft from what the server sent. Secrets start empty.
+   *
+   * Only the keys the server sent: it leaves out the ones this account may
+   * not write — a plugin can keep where its service lives to a super
+   * administrator — and a key in the draft is a key the save sends, so one
+   * the account could not see would have the whole page's save refused.
+   */
   function load(values: Record<string, string>): void {
     for (const section of sections.value) {
       for (const control of section.controls) {
+        if (!(control.key in values)) {
+          delete draft[control.key];
+          delete hints[control.key];
+          continue;
+        }
         if (control.kind === 'secret') {
           draft[control.key] = '';
           hints[control.key] = values[control.key] ?? '';
@@ -35,6 +47,7 @@ export function usePluginSettings(page: SettingsSection['page']) {
     const out: Record<string, string> = {};
     for (const section of sections.value) {
       for (const control of section.controls) {
+        if (!(control.key in draft)) continue;
         const value = draft[control.key] ?? '';
         out[control.key] = control.kind === 'text' || control.kind === 'secret' ? value.trim() : value;
       }

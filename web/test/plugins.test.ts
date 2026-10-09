@@ -305,6 +305,31 @@ describe('a plugin\'s settings on a backoffice page', () => {
     }));
   });
 
+  it('draws and sends only the keys the server showed this account', async () => {
+    // A plugin can keep where its service lives to a super administrator, and
+    // the server leaves those keys out for anybody else. Drawing them empty
+    // and sending them back had the whole page's save refused.
+    installPlugins([example]);
+    await mountSecurity({ 'example.on_login': 'true', 'turnstile.on_login': 'false' });
+    openCategory(t('controlVerification'));
+    await nextTick();
+
+    const card = host.querySelector<HTMLElement>('#secExample');
+    if (!card) throw new Error('the plugin card was not drawn');
+    expect(card.textContent).not.toContain('Service address');
+    expect(card.textContent).not.toContain('Site secret');
+
+    const saved = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    button(actions, t('save')).click();
+    await settle();
+    const payload = saved.mock.calls[0]![0] as Record<string, string>;
+    expect(payload['example.on_login']).toBe('true');
+    expect(payload['turnstile.on_login']).toBe('false');
+    for (const hidden of ['example.base_url', 'example.site', 'example.secret_key', 'oauth.oidc_issuer']) {
+      expect(payload).not.toHaveProperty(hidden);
+    }
+  });
+
   it('offers a plugin\'s sign-up challenge in the page\'s own select', async () => {
     installPlugins([example]);
     await mountSecurity({ 'registration.captcha_mode': 'example' });
