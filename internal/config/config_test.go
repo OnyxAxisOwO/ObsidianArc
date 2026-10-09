@@ -173,6 +173,190 @@ func TestSecretKeyIsGeneratedOnceAndThenReused(t *testing.T) {
 	}
 }
 
+// A key file that exists without a usable key stops the start, and the file is
+// left exactly as it was. Overwriting it would make every value sealed under
+// the original key unreadable, with nothing at boot to say why.
+func TestAnUnusableSecretFileRefusesToStartAndIsLeftAlone(t *testing.T) {
+	for name, contents := range map[string]string{
+		"empty":               "",
+		"whitespace only":     " \n\t\n",
+		"short":               "too-short\n",
+		"one under the floor": strings.Repeat("k", minSecretLen-1) + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, SecretKeyFile)
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(envPrefix+"DATA_DIR", dir)
+			t.Setenv(envPrefix+"SECRET_KEY", "")
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("a key file with no usable key let the instance start")
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Errorf("the error does not name the file: %v", err)
+			}
+			if !strings.Contains(err.Error(), "Restore") || !strings.Contains(err.Error(), "Delete") {
+				t.Errorf("the error does not say what to do: %v", err)
+			}
+
+			left, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(left) != contents {
+				t.Errorf("the key file was rewritten from %q to %q", contents, left)
+			}
+		})
+	}
+}
+
+// The first start on an empty data directory creates the key file, and the key
+// the instance then uses is the one stored in it.
+func TestAMissingSecretFileIsCreatedWithTheKeyInUse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(envPrefix+"DATA_DIR", dir)
+	t.Setenv(envPrefix+"SECRET_KEY", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(filepath.Join(dir, SecretKeyFile))
+	if err != nil {
+		t.Fatalf("no key file was written: %v", err)
+	}
+	if strings.TrimSpace(string(stored)) != string(cfg.SecretKey) {
+		t.Error("the key file does not hold the key the instance uses")
+	}
+}
+
+// A key file that holds a usable key is loaded as it is, and nothing is written
+// back to it. The surrounding whitespace belongs to the editor, not the key.
+func TestAValidSecretFileIsLoadedAndNotRewritten(t *testing.T) {
+	const key = "7f3c9a1e5b2d48608c7e1a4f9b3d2c5e8a6f01"
+	dir := t.TempDir()
+	path := filepath.Join(dir, SecretKeyFile)
+	contents := "  " + key + "\r\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envPrefix+"DATA_DIR", dir)
+	t.Setenv(envPrefix+"SECRET_KEY", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cfg.SecretKey) != key {
+		t.Error("the instance did not use the key stored in the file")
+	}
+	// A key read back from the data directory is still reported as coming from
+	// it: main advises OBSIDIAN_SECRET_KEY on every start for that reason.
+	if !cfg.GeneratedSecret() {
+		t.Error("a key read from the data directory was not reported as coming from it")
+	}
+	left, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(left) != contents {
+		t.Errorf("the key file was rewritten from %q to %q", contents, left)
+	}
+}
+
+// The environment key takes precedence and never reads the file, so a stale or
+// truncated file in the data directory cannot stop a deployment that supplies
+// its key through the environment.
+func TestTheEnvironmentKeyIgnoresAnUnusableSecretFile(t *testing.T) {
+	const key = "7f3c9a1e5b2d48608c7e1a4f9b3d2c5e8a6f01"
+	dir := t.TempDir()
+	path := filepath.Join(dir, SecretKeyFile)
+	if err := os.WriteFile(path, []byte("short\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envPrefix+"DATA_DIR", dir)
+	t.Setenv(envPrefix+"SECRET_KEY", key)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("a stale key file blocked a start that supplies its key: %v", err)
+	}
+	if string(cfg.SecretKey) != key {
+		t.Error("the environment key was not used")
+	}
+	left, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(left) != "short\n" {
+		t.Errorf("the key file was rewritten to %q", left)
+	}
+}
+
+// Starts that find no key file race to create one. Before the create was
+// exclusive, each could write its own key over the other's, so one instance
+// served a key that was already gone from disk. Every start that succeeds must
+// return the key the file ends up holding, and that is what each trial checks.
+// Real goroutines, released together, because the bug is the window between
+// the read and the write.
+func TestConcurrentFirstStartsAgreeOnOneKey(t *testing.T) {
+	t.Setenv(envPrefix+"SECRET_KEY", "")
+	const trials = 200
+	const starters = 8
+
+	type outcome struct {
+		key []byte
+		err error
+	}
+	for trial := 0; trial < trials; trial++ {
+		dir := t.TempDir()
+		gate := make(chan struct{})
+		results := make(chan outcome, starters)
+		for i := 0; i < starters; i++ {
+			go func() {
+				<-gate
+				key, _, err := loadOrCreateSecret(dir)
+				results <- outcome{key: key, err: err}
+			}()
+		}
+		close(gate)
+
+		// Every result is collected before anything can fail the trial, so no
+		// start is still touching the directory when the test stops.
+		outcomes := make([]outcome, 0, starters)
+		for i := 0; i < starters; i++ {
+			outcomes = append(outcomes, <-results)
+		}
+		var agreed []byte
+		succeeded := 0
+		for _, r := range outcomes {
+			if r.err != nil {
+				continue
+			}
+			succeeded++
+			if agreed == nil {
+				agreed = r.key
+			} else if string(r.key) != string(agreed) {
+				t.Fatalf("trial %d: two first starts used different keys", trial)
+			}
+		}
+		if succeeded == 0 {
+			t.Fatalf("trial %d: no first start got a key", trial)
+		}
+		stored, err := os.ReadFile(filepath.Join(dir, SecretKeyFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(stored)) != string(agreed) {
+			t.Fatalf("trial %d: the key file does not hold the key the starts used", trial)
+		}
+	}
+}
+
 func TestASuppliedSecretIsUsedAndBoundedBelow(t *testing.T) {
 	cfg := load(t, map[string]string{"SECRET_KEY": strings.Repeat("k", 32)})
 	if cfg.GeneratedSecret() {
