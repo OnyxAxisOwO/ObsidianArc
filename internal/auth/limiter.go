@@ -1,10 +1,14 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
 // Limiter throttles credential guessing.
@@ -96,11 +100,19 @@ func (a *loginAttempt) finish(outcome attemptOutcome) {
 					entry.blockedUntil = now.Add(backoff(entry.failures - freeAttempts))
 				}
 			case attemptSucceeded:
-				// A successful credential clears old failures, but attempts that
-				// are still running keep the bucket alive and will record their
-				// own result afterwards.
-				entry.failures = 0
-				entry.blockedUntil = time.Time{}
+				// Only the account's own bucket is forgiven. The address bucket
+				// is what stops one host trying many accounts, and a success
+				// proves nothing about the other names it was guessing at:
+				// clearing it let an attacker interleave one login to an account
+				// of their own between every few wrong guesses and never be
+				// slowed. Its failures age out with time like any other.
+				//
+				// Attempts that are still running keep the bucket alive and will
+				// record their own result afterwards.
+				if strings.HasPrefix(key, accountKeyPrefix) {
+					entry.failures = 0
+					entry.blockedUntil = time.Time{}
+				}
 			}
 
 			if entry.inFlight == 0 && entry.failures == 0 {
@@ -192,13 +204,26 @@ func (l *Limiter) sweepLocked(now time.Time) {
 	}
 }
 
+const (
+	accountKeyPrefix = "id:"
+	// Longest identifier kept verbatim in a key. A username or e-mail address
+	// is far shorter; anything longer is somebody filling the map, so it is
+	// reduced to a digest and costs the same as any other key.
+	maxKeyIdentifier = 256
+)
+
 func keys(ip, identifier string) []string {
 	out := make([]string, 0, 2)
 	if ip != "" {
-		out = append(out, "ip:"+ip)
+		// A whole IPv6 /64 is one subscriber, so it is one bucket.
+		out = append(out, "ip:"+httpx.RateKey(ip))
 	}
 	if trimmed := strings.ToLower(strings.TrimSpace(identifier)); trimmed != "" {
-		out = append(out, "id:"+trimmed)
+		if len(trimmed) > maxKeyIdentifier {
+			sum := sha256.Sum256([]byte(trimmed))
+			trimmed = "#" + hex.EncodeToString(sum[:])
+		}
+		out = append(out, accountKeyPrefix+trimmed)
 	}
 	return out
 }

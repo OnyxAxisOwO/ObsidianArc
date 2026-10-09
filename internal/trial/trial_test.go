@@ -74,6 +74,75 @@ func TestBudgetForgetsAnExpiredWindow(t *testing.T) {
 	}
 }
 
+// The entry used to be made before the instance ceiling was looked at, so a
+// caller turned away at the door still left something behind — and the
+// refusals are exactly what a flood sends.
+func TestRefusedRequestsAllocateNothing(t *testing.T) {
+	b := newBudget()
+
+	for i := 0; i < burstPerInstance; i++ {
+		if ok, _ := b.take(fmt.Sprintf("203.0.113.%d", i/burstPerAddress)); !ok {
+			t.Fatalf("turn %d was refused before the ceiling", i+1)
+		}
+	}
+	held := len(b.windows)
+
+	for i := 0; i < 2000; i++ {
+		if ok, _ := b.take(fmt.Sprintf("198.51.%d.%d", i/250, i%250)); ok {
+			t.Fatal("a turn past the instance ceiling was allowed")
+		}
+	}
+	if got := len(b.windows); got != held {
+		t.Errorf("%d windows after the refusals, want the %d from before", got, held)
+	}
+}
+
+func TestBudgetWindowsHaveACeiling(t *testing.T) {
+	b := newBudget()
+	now := time.Now()
+	for i := 0; i < maxWindows; i++ {
+		b.windows[fmt.Sprintf("full-%d", i)] = &window{startAt: now}
+	}
+
+	if ok, _ := b.take("198.51.100.7"); ok {
+		t.Fatal("a new address was admitted into a full map")
+	}
+	if len(b.windows) != maxWindows {
+		t.Errorf("map grew to %d", len(b.windows))
+	}
+	// A known address is still served.
+	if ok, _ := b.take("full-3"); !ok {
+		t.Error("a tracked address was refused")
+	}
+
+	// Dead entries are what makes room.
+	for _, w := range b.windows {
+		w.startAt = now.Add(-budgetWindow - time.Minute)
+	}
+	if ok, _ := b.take("198.51.100.7"); !ok {
+		t.Error("the map never made room for a new address")
+	}
+	if len(b.windows) != 1 {
+		t.Errorf("%d windows left after the sweep, want only the new one", len(b.windows))
+	}
+}
+
+func TestBudgetTreatsAnIPv6SubnetAsOneVisitor(t *testing.T) {
+	b := newBudget()
+
+	for i := 0; i < burstPerAddress; i++ {
+		if ok, _ := b.take(fmt.Sprintf("2001:db8:0:1::%x", i+1)); !ok {
+			t.Fatalf("turn %d refused", i+1)
+		}
+	}
+	if ok, _ := b.take("2001:db8:0:1:dead:beef::1"); ok {
+		t.Error("a new address in the same /64 got a fresh budget")
+	}
+	if ok, _ := b.take("2001:db8:0:2::1"); !ok {
+		t.Error("another /64 was refused")
+	}
+}
+
 // --- the turn limit -----------------------------------------------------------
 
 // Counting the turns in the request body was counting a number the client

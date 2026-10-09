@@ -2,6 +2,7 @@ package card
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,6 +45,41 @@ func TestGuessingAtRedemptionCodesIsThrottled(t *testing.T) {
 	}
 	if !throttled {
 		t.Fatal("twenty wrong codes in a row were all answered; nothing slows a dictionary down")
+	}
+}
+
+// The address half of the limit is what stops one host working through many
+// accounts. An IPv6 subscriber holds a whole /64, so keying on the full
+// address gave each guess a fresh bucket.
+func TestGuessesFromOneIPv6SubnetShareAnAllowance(t *testing.T) {
+	f := newFixture(t)
+	handlers := NewHandlers(f.store)
+
+	calls := 0
+	handlers.ClientIP = func(*http.Request) string {
+		calls++
+		return fmt.Sprintf("2001:db8:7:7::%x", calls)
+	}
+	mux := http.NewServeMux()
+	handlers.Routes(mux)
+
+	var throttled bool
+	for i := range 12 {
+		// A different account each time, so only the address can add up.
+		reader := f.reader(t, "guesser-"+string(rune('a'+i)))
+		request := httptest.NewRequest(http.MethodPost, "/api/usage/redeem",
+			strings.NewReader(`{"code":"NOPE"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request = request.WithContext(auth.WithUser(context.Background(), reader))
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, request)
+		if recorder.Code == http.StatusTooManyRequests {
+			throttled = true
+			break
+		}
+	}
+	if !throttled {
+		t.Fatal("twelve wrong codes from one /64 were all answered; each address got its own allowance")
 	}
 }
 
