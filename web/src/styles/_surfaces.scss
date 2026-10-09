@@ -7339,3 +7339,11 @@
 .oa-group-row > .oa-group-row-control:only-child {
   margin-left: auto;
 }
+
+/* The release notice's panel. Prose and a row of buttons, not a form, so it
+   takes none of the field helpers: the meta line sits quietly under the title,
+   and the notes read at body size, scrolling inside the panel like any other. */
+.oa-update-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 14px; font-size: 11.5px; color: var(--ai-text-secondary); }
+.oa-update-notes { font-size: 13px; line-height: 1.6; }
+.oa-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 18px; }
+.oa-update-actions > a { text-decoration: none; }

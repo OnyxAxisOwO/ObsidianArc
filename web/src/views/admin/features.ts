@@ -70,6 +70,13 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     searchKeys: ['aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint', 'aboutShowSoftwareInfo', 'aboutShowSoftwareInfoHint'],
     keywords: ['版本号', '已运行时间', '贡献者', '隐藏版本', '隐藏运行时间', '支持 Obsidian Arc', '致谢', 'version', 'uptime', 'contributors', 'credits'],
   },
+  {
+    id: 'secUpdates',
+    pageSlug: 'settings',
+    titleKey: 'controlUpdates',
+    searchKeys: ['updateCheck', 'updateCheckHint'],
+    keywords: ['版本更新', '新版本', '发布', '检查更新', 'update', 'release', 'new version', 'upgrade'],
+  },
   { id: 'secHomeNotice', pageSlug: 'settings', titleKey: 'homeNotice', searchKeys: ['homeNoticeHint', 'homeNoticeLine', 'homeNoticeBody', 'homeNoticeBodyHint', 'homeNoticeTone', 'homeNoticeDismissible', 'homeNoticeDismissibleHint'] },
   {
     id: 'secFeedback',

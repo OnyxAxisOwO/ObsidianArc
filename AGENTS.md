@@ -400,8 +400,8 @@ installs, updates and removes).
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 26.07 MB binary (this repository ships no plugin; 2.8 MB of it is
-the plugin runtime); 238.59 kB on the wire to open the chat, against a target
+Current: 26.09 MB binary (this repository ships no plugin; 2.8 MB of it is
+the plugin runtime); 239.11 kB on the wire to open the chat, against a target
 of 135. The target used to be 80 and the figure used to be 59.5;
 adopting Vue moved both, and `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.
@@ -483,7 +483,11 @@ Cutting a release is a decision, never a side effect of deploying:
 3. Tag that commit — `git tag -a v1.2.3 -m v1.2.3` — and `git push origin
    v1.2.3`. A pushed tag is never moved or reused; a mistake is fixed by the
    next patch.
-4. Deploy from the tag with a clean tree. What the server reports must be
+4. Create a GitHub Release from that tag, its body the version's section of
+   `CHANGELOG.md`: `gh release create v1.2.3 --title v1.2.3 --notes-file <file>`.
+   The backoffice's update notice reads `releases/latest` and shows this body,
+   so a tag without a release is a version no administrator is told about.
+5. Deploy from the tag with a clean tree. What the server reports must be
    exactly `v1.2.3`.
 
 A release candidate is `v1.3.0-rc.1`; `git describe` follows it like any other

@@ -171,6 +171,7 @@ var writableSettings = map[string]bool{
 	settings.AboutTitle:                 true,
 	settings.AboutBody:                  true,
 	settings.AboutShowSoftwareInfo:      true,
+	settings.UpdateCheck:                true,
 	settings.HomeNotice:                 true,
 	settings.HomeNoticeDismissible:      true,
 	settings.HomeNoticeBody:             true,

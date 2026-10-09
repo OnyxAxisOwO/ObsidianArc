@@ -45,6 +45,7 @@ import (
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/systembackup"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/update"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
@@ -99,6 +100,12 @@ type Handlers struct {
 	// SystemBackup covers the complete instance and is restricted to the
 	// single super administrator rather than delegated settings operators.
 	SystemBackup *systembackup.Service
+	// The release check behind GET /api/admin/update. Nil answers "unknown"
+	// and nothing is asked of GitHub.
+	Updates *update.Checker
+	// Whether a trusted proxy has sent Cloudflare headers this instance was
+	// not told to expect. Set by the wiring, which owns the proxy settings.
+	CloudflareUnclaimed func() bool
 
 	UsageLimiter *httpx.TokenBucketLimiter
 
@@ -375,6 +382,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("PUT /api/admin/backup", protected("super_admin", h.saveSystemBackup))
 	mux.Handle("POST /api/admin/backup/test", protected("super_admin", h.testSystemBackup))
 	mux.Handle("POST /api/admin/backup/run", protected("super_admin", h.runSystemBackup))
+	mux.Handle("GET /api/admin/update", protected("super_admin", h.updateStatus))
 
 	for _, route := range h.extra {
 		inner := protected(route.Permission, route.Handler)

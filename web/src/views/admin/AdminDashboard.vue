@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { ArrowUpRight, ArrowDownLeft, ArrowUpLeft, ChartNoAxesCombined, CircleAlert, Coins, RefreshCw, CalendarDays, Activity } from 'lucide-vue-next';
+import { ArrowUpCircle, ArrowUpRight, ArrowDownLeft, ArrowUpLeft, ChartNoAxesCombined, CircleAlert, Coins, RefreshCw, CalendarDays, Activity } from 'lucide-vue-next';
 import { adminApi, type Dashboard, type UsageBreakdown } from '@/admin/api';
+import { hasCloudflareNotice, loadUpdateStatus, releaseLink, updateStatus } from '@/admin/update';
 import OaChart from '@/components/OaChart.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -9,7 +10,7 @@ import { currentLanguage, t, tn } from '@/composables/useI18n';
 import { IconSpark, IconUsers, IconServer, IconChevron } from '@/icons';
 import { compactNumber, relativeTime, tokenFigure } from '@/lib/format';
 import { fold, type ChartShape } from '@/lib/chart';
-import { canAdmin } from '@/stores/session';
+import { canAdmin, isSuperAdmin } from '@/stores/session';
 import { maskUser, maskProvider, maskBilling } from '@/admin/safeMode';
 import AdminDashboardTrend from './AdminDashboardTrend.vue';
 import AdminFailure from './AdminFailure.vue';
@@ -138,7 +139,16 @@ async function load(): Promise<void> {
     busy.value = false;
   }
 }
-onMounted(load);
+// Both notices are for the super administrator alone; the store only ever
+// holds an answer for one, and the check repeats that rule where it is read.
+const availableUpdate = computed(() => (isSuperAdmin.value && updateStatus.value?.update_available ? updateStatus.value : null));
+const updateLink = computed(() => (availableUpdate.value ? releaseLink(availableUpdate.value) : null));
+const cloudflareNotice = computed(() => isSuperAdmin.value && hasCloudflareNotice(updateStatus.value));
+
+onMounted(() => {
+  void load();
+  if (isSuperAdmin.value) void loadUpdateStatus();
+});
 
 function onHeatMetric(next: 'requests' | 'total_tokens'): void { heatMetric.value = next; dashboardHeatMetric = next; }
 </script>
@@ -170,6 +180,22 @@ let dashboardHeatMetric: 'requests' | 'total_tokens' = 'requests';
         </div>
       </div>
     </header>
+
+    <section v-if="availableUpdate" id="secUpdateNotice" class="oa-dashboard-card oa-dashboard-notice" role="status">
+      <ArrowUpCircle :size="18" aria-hidden="true" />
+      <div>
+        <strong>{{ t('updateNoticeLine', { version: availableUpdate.latest }) }}</strong>
+        <p>{{ t('updateCurrentVersion', { version: availableUpdate.current }) }}</p>
+      </div>
+      <a v-if="updateLink" class="oa-dashboard-link" :href="updateLink" target="_blank" rel="noopener noreferrer">{{ t('updateOpenRelease') }}<ArrowUpRight :size="14" aria-hidden="true" /></a>
+    </section>
+    <section v-if="cloudflareNotice" id="secCloudflareNotice" class="oa-dashboard-card oa-dashboard-notice is-warning" role="status">
+      <CircleAlert :size="18" aria-hidden="true" />
+      <div>
+        <strong>{{ t('cloudflareNoticeTitle') }}</strong>
+        <p>{{ t('cloudflareNoticeBody') }}</p>
+      </div>
+    </section>
 
     <section class="oa-dashboard-metrics" :aria-label="t('secLast24h')">
       <article class="oa-dashboard-metric oa-dashboard-metric-featured">

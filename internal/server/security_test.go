@@ -42,6 +42,26 @@ type instance struct {
 // mail configured, say — without every other test paying for it.
 func newInstance(t *testing.T, tweak ...func(*config.Config)) *instance {
 	t.Helper()
+	return newInstanceAt(t, "test", stubReleaseFeed(t, http.StatusServiceUnavailable, ""), tweak...)
+}
+
+// stubReleaseFeed stands in for GitHub's release endpoint. Every test server
+// is given one, so an endpoint that consults the feed never reaches the real
+// internet, whichever test happens to call it.
+func stubReleaseFeed(t *testing.T, status int, body string) string {
+	t.Helper()
+	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(feed.Close)
+	return feed.URL
+}
+
+// newInstanceAt is newInstance with the build's version and release feed
+// chosen by the test, for the checks that depend on either.
+func newInstanceAt(t *testing.T, version, feed string, tweak ...func(*config.Config)) *instance {
+	t.Helper()
 	dir := t.TempDir()
 
 	cfg := config.Config{
@@ -74,7 +94,7 @@ func newInstance(t *testing.T, tweak ...func(*config.Config)) *instance {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	app, err := New(ctx, Deps{Config: cfg, DB: db, Version: "test", Started: time.Now()})
+	app, err := New(ctx, Deps{Config: cfg, DB: db, Version: version, Started: time.Now(), UpdateFeed: feed})
 	if err != nil {
 		t.Fatalf("build server: %v", err)
 	}
@@ -234,6 +254,7 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodPut, "/api/admin/backup", map[string]any{"enabled": false, "endpoint": "", "bucket": "", "region": "", "prefix": "", "interval_hours": 24, "retention_days": 7}},
 		{http.MethodPost, "/api/admin/backup/test", map[string]any{}},
 		{http.MethodPost, "/api/admin/backup/run", map[string]any{}},
+		{http.MethodGet, "/api/admin/update", nil},
 		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/conversations/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
 		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/keys", nil},
 		{http.MethodDelete, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/keys/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},

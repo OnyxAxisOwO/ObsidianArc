@@ -212,3 +212,72 @@ func TestCFConnectingIPIsIgnoredFromUntrustedPeer(t *testing.T) {
 		t.Errorf("with the claim: ClientIP = %q, want untrusted peer 203.0.113.9", got)
 	}
 }
+
+// The backoffice learns of an unclaimed header from this flag, so it must be
+// set by the request that logs it, and visible through every copy of the
+// trust value: ProxyTrust is passed by value everywhere.
+func TestUnclaimedCloudflareHeaderIsRecorded(t *testing.T) {
+	trust, err := NewProxyTrust(true, []string{"10.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trust.CloudflareUnclaimed() {
+		t.Fatal("a fresh trust set reports an unclaimed header")
+	}
+
+	copied := trust
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:5000"
+	req.Header.Set("CF-Connecting-IP", "1.1.1.1")
+	ClientIP(req, copied)
+
+	if !trust.CloudflareUnclaimed() {
+		t.Error("the flag set through a copy is not visible on the original")
+	}
+}
+
+func TestClaimedCloudflareHeaderIsNotRecorded(t *testing.T) {
+	trust, err := NewProxyTrust(true, []string{"10.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := trust.WithCloudflare()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:5000"
+	req.Header.Set("CF-Connecting-IP", "1.1.1.1")
+	ClientIP(req, claimed)
+
+	if trust.CloudflareUnclaimed() || claimed.CloudflareUnclaimed() {
+		t.Error("a claimed deployment was told its Cloudflare header is unclaimed")
+	}
+}
+
+func TestUntrustedPeerDoesNotRecordUnclaimedCloudflare(t *testing.T) {
+	trust, err := NewProxyTrust(true, []string{"10.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:44321"
+	req.Header.Set("CF-Connecting-IP", "1.1.1.1")
+	ClientIP(req, trust)
+
+	if trust.CloudflareUnclaimed() {
+		t.Error("a header from an untrusted peer was recorded as a proxy's")
+	}
+}
+
+// The zero value is what a disabled deployment holds. It must answer false,
+// and reading a header through it must not dereference a nil flag.
+func TestZeroProxyTrustHasNoUnclaimedFlag(t *testing.T) {
+	var trust ProxyTrust
+	if trust.CloudflareUnclaimed() {
+		t.Error("the zero ProxyTrust reports an unclaimed header")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:5000"
+	req.Header.Set("CF-Connecting-IP", "1.1.1.1")
+	ClientIP(req, trust)
+}

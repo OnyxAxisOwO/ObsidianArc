@@ -56,6 +56,8 @@ import AdminFeedback from './AdminFeedback.vue';
 import AdminSafeMode from './AdminSafeMode.vue';
 import AdminBackup from './AdminBackup.vue';
 import AdminPlugins from './AdminPlugins.vue';
+import AdminUpdateDialog from './AdminUpdateDialog.vue';
+import { loadUpdateStatus } from '@/admin/update';
 
 // Labels are looked up at render rather than stored, because this table is
 // evaluated at import time — before the language is known.
@@ -326,6 +328,14 @@ watch(current, (next, previous) => {
 
 const bodyKey = computed(() => `${current.value.slug}:${reloadCount.value}`);
 
+// The release notice waits for the same things the page does: a super
+// administrator, past the two-step gates. Asking before the visit is open
+// would be refused, and a refusal is not an answer worth remembering.
+const updateReady = computed(() => isSuperAdmin.value && visit.value === 'open' && !gated.value);
+watch(updateReady, (ready) => {
+  if (ready) void loadUpdateStatus();
+}, { immediate: true });
+
 onMounted(() => {
   void checkVisit();
   title.value = pageLabel(current.value);
@@ -496,5 +506,6 @@ onMounted(() => {
         </div>
       </OaScrollArea>
     </div>
+    <AdminUpdateDialog v-if="updateReady" />
   </AppShell>
 </template>

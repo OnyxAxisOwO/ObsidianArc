@@ -51,6 +51,9 @@ const (
 	// list to non-admin users. Enabled by default as a way to support and credit
 	// the Obsidian Arc project.
 	AboutShowSoftwareInfo = "about.show_software_info"
+	// Whether the backoffice tells a super administrator that a newer release
+	// exists. Off means the server never asks the release feed at all.
+	UpdateCheck = "update.check"
 	// A standing notice above the chat. Unlike an announcement, which is a
 	// dated thing someone reads once, this is a property of the instance: it
 	// stays until an operator takes it down. Empty means there is none.
@@ -693,7 +696,11 @@ var Defaults = map[string]string{
 	AboutTitle:            "",
 	AboutBody:             "",
 	AboutShowSoftwareInfo: "true",
-	HomeNotice:            "",
+	// On by default: a fork that never looks at this screen should still learn
+	// that it is behind. The request is at most twice a day, and only while a
+	// super administrator has the backoffice open.
+	UpdateCheck: "true",
+	HomeNotice:  "",
 	// Dismissible unless an operator says otherwise: a strip that cannot be
 	// put away is the exception, and defaults should not be the exception.
 	HomeNoticeDismissible: "true",

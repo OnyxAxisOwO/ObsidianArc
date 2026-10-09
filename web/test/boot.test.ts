@@ -496,8 +496,8 @@ describe('what moves, and what does not', () => {
     await search('.oa-admin-body .oa-search input', '');
     // The site category's cards: identity, signed-out background, the site
     // theme, signed-in background, the PWA card, landing, about, the home
-    // notice and the feedback signature.
-    expect(shown('.oa-admin-body section')).toHaveLength(9);
+    // notice, the feedback signature and the release notices.
+    expect(shown('.oa-admin-body section')).toHaveLength(10);
   });
 
   it('saves drafts across categories and keeps edits made during an in-flight save', async () => {
