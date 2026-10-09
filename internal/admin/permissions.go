@@ -19,6 +19,12 @@ func hasPermission(account user.User, permissions string) bool {
 	if permissions == "" {
 		return account.IsAdmin()
 	}
+	// The spelling Protect already understands. Without this a setting or a
+	// plugin's key marked super_admin would be refused to everybody, because
+	// it is not a grant CanAdmin knows and delegation can never hand it out.
+	if permissions == "super_admin" {
+		return account.IsSuperAdmin()
+	}
 	for _, permission := range strings.Split(permissions, ",") {
 		if account.CanAdmin(permission) {
 			return true
