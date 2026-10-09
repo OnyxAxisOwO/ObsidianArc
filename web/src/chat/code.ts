@@ -72,27 +72,27 @@ for (const [id, entry] of Object.entries(KNOWN)) {
  */
 const RULES: ReadonlyArray<readonly [string, RegExp]> = [
   ['diff', /^(diff --git |@@ -\d|[+-]{3} [ab/])/m],
-  ['html', /^\s*<(!doctype html|html|head|body|div|span|p|section|template|script|style)\b/i],
-  ['go', /^\s*package\s+\w+\s*$|^\s*func\s+(\w+\s*)?\(|:=/m],
-  ['rust', /^\s*(fn\s+\w+|impl\s+\w+|use\s+\w+::)|let\s+mut\s/m],
-  ['python', /^\s*(def|class)\s+\w+.*:\s*$|^\s*(from\s+[\w.]+\s+)?import\s+\w+\s*$/m],
-  ['sql', /^\s*(select\s+[\s\S]+\bfrom\b|insert\s+into|create\s+table|update\s+\w+\s+set)/i],
+  ['html', /^[ \t]*<(!doctype html|html|head|body|div|span|p|section|template|script|style)\b/i],
+  ['go', /^[ \t]*package\s+\w+\s*$|^[ \t]*func\s+(\w+\s*)?\(|:=/m],
+  ['rust', /^[ \t]*(fn\s+\w+|impl\s+\w+|use\s+\w+::)|let\s+mut\s/m],
+  ['python', /^[ \t]*(def|class)\s+\w+.*:\s*$|^[ \t]*(from\s+[\w.]+\s+)?import\s+\w+\s*$/m],
+  ['sql', /^[ \t]*(select\s+[\s\S]+\bfrom\b|insert\s+into|create\s+table|update\s+\w+\s+set)/i],
   // Case-sensitive on purpose: `FROM` is the Dockerfile convention, and the
   // insensitive spelling of this rule read a SQL query's `from` as a build
   // stage.
   ['dockerfile', /^FROM\s+\S+(\s+AS\s+\S+)?\s*$/m],
   ['php', /<\?php\b/],
-  ['ruby', /^\s*(require\s+'|def\s+\w+[\s\S]*?\bend\b|puts\s+)/m],
-  ['java', /^\s*(public|private)\s+(static\s+)?(final\s+)?(class|void|int|String)\b/m],
-  ['csharp', /^\s*using\s+System\b|\bnamespace\s+\w+/m],
-  ['swift', /^\s*(import\s+(Foundation|SwiftUI|UIKit)|func\s+\w+\([^)]*\)\s*->)/m],
-  ['kotlin', /^\s*fun\s+\w+\s*\(|\bval\s+\w+\s*(:|=)/m],
-  ['powershell', /^\s*(\$\w+\s*=|Get-|Set-|New-|Write-Host)\w*/m],
-  ['bash', /^\s*(#!.*\b(ba)?sh\b|\$ |sudo |apt |npm |npx |yarn |git |cd |echo |curl |docker |make )/m],
-  ['typescript', /^\s*(interface\s+\w+|type\s+\w+\s*=|enum\s+\w+)\s*[{=]|:\s*(string|number|boolean)\b/m],
-  ['javascript', /^\s*(import\s+[\s\S]*?from\s+['"]|export\s+(default|const|function)|const\s+\w+\s*=|function\s+\w+\s*\()/m],
-  ['scss', /^\s*[$@][\w-]+\s*[:(]|&:[\w-]+\s*\{/m],
-  ['css', /^\s*[.#]?[\w-]+[^{}]*\{[^{}]*[\w-]+\s*:[^{};]+;/m],
+  ['ruby', /^[ \t]*(require\s+'|def\s+\w+[\s\S]*?\bend\b|puts\s+)/m],
+  ['java', /^[ \t]*(public|private)\s+(static\s+)?(final\s+)?(class|void|int|String)\b/m],
+  ['csharp', /^[ \t]*using\s+System\b|\bnamespace\s+\w+/m],
+  ['swift', /^[ \t]*(import\s+(Foundation|SwiftUI|UIKit)|func\s+\w+\([^)]*\)\s*->)/m],
+  ['kotlin', /^[ \t]*fun\s+\w+\s*\(|\bval\s+\w+\s*(:|=)/m],
+  ['powershell', /^[ \t]*(\$\w+\s*=|Get-|Set-|New-|Write-Host)\w*/m],
+  ['bash', /^[ \t]*(#!.*\b(ba)?sh\b|\$ |sudo |apt |npm |npx |yarn |git |cd |echo |curl |docker |make )/m],
+  ['typescript', /^[ \t]*(interface\s+\w+|type\s+\w+\s*=|enum\s+\w+)\s*[{=]|:\s*(string|number|boolean)\b/m],
+  ['javascript', /^[ \t]*(import\s+[\s\S]*?from\s+['"]|export\s+(default|const|function)|const\s+\w+\s*=|function\s+\w+\s*\()/m],
+  ['scss', /^[ \t]*[$@][\w-]+\s*[:(]|&:[\w-]+\s*\{/m],
+  ['css', /^[ \t]*[.#]?[\w-]+[^{}]*\{[^{}]*[\w-]+\s*:[^{};]+;/m],
   ['yaml', /^[\w-]+:\s*($|[^:\s].*$)/m],
   ['markdown', /^(#{1,6}\s+\S|[-*]\s+\S[\s\S]*^[-*]\s+\S)/m],
 ];
@@ -115,11 +115,24 @@ function isJSON(text: string): boolean {
   }
 }
 
+/**
+ * How much of a block the rules read. A language shows itself in its first
+ * lines, and the rules are line-anchored scans whose cost grows with the text
+ * — on a block that is mostly blank lines it grew with the square of it. A
+ * fence of sixty thousand of them froze a tab for most of half a minute, and
+ * feedback bodies are drawn in the administrator's own page, so what a reporter
+ * pastes is run in front of somebody else.
+ */
+const SNIFF_CHARS = 2000;
+
 function guess(text: string): string {
   if (!text.trim()) return '';
   if (isJSON(text)) return 'json';
+  // Leading blank lines are dropped first, since the rules that are not
+  // multi-line anchor to the start of the text and used to step over them.
+  const sample = text.trimStart().slice(0, SNIFF_CHARS);
   for (const [id, pattern] of RULES) {
-    if (pattern.test(text)) return id;
+    if (pattern.test(sample)) return id;
   }
   return '';
 }
