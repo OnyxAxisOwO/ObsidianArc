@@ -94,3 +94,22 @@ func TestImportingSettingsKeepsAModelIdThatIsHere(t *testing.T) {
 		t.Errorf("stored model = %v, want %v", values["security.signup_review_model"], modelID)
 	}
 }
+
+// An export shows a secret as the mask, so importing the same file back
+// carries the mask. It used to be written over the real secret.
+func TestImportingTheMaskKeepsTheSecret(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("founder", "a-good-password")
+
+	if response := in.do(http.MethodPut, "/api/admin/settings",
+		map[string]string{"turnstile.secret_key": "the-real-secret"}, admin); response.Code != http.StatusOK {
+		t.Fatalf("set: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodPost, "/api/admin/settings/import",
+		map[string]string{"turnstile.secret_key": "••••••••", "site.name": "Moved"}, admin); response.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", response.Code, response.Body.String())
+	}
+	if got := in.server.settings.Get("turnstile.secret_key"); got != "the-real-secret" {
+		t.Errorf("secret after importing the mask = %q", got)
+	}
+}

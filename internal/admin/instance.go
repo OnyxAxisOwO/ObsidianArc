@@ -523,6 +523,16 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		applied[key] = value
 	}
 
+	// The same rule the form's save keeps: an export shows a secret as the
+	// mask, and importing that file back used to write the row of dots over
+	// the real value — every challenge or provider sign-in behind it then
+	// failing for everybody, with nothing on screen to say why.
+	for _, key := range h.secretKeys() {
+		if value, present := applied[key]; present && (value == "" || value == secretMask) {
+			delete(applied, key)
+		}
+	}
+
 	if mode, present := applied[settings.LandingMode]; present && !settings.ValidLandingMode(mode) {
 		delete(applied, settings.LandingMode)
 		skipped = append(skipped, settings.LandingMode)

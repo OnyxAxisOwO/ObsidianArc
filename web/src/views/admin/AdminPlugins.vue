@@ -30,7 +30,7 @@ import { IconArrowUpRight, IconDownload, IconInfo, IconPuzzle, IconRefresh } fro
 import { absoluteTime } from '@/lib/format';
 import { loadPluginModule, plugins } from '@/plugins/registry';
 import type { ArcPlugin } from '@/plugins/types';
-import { canAdmin, currentUser, refreshSite } from '@/stores/session';
+import { canAdmin, currentUser, isSuperAdmin, refreshSite } from '@/stores/session';
 import AdminFailure from './AdminFailure.vue';
 import PluginAdminPage from './PluginAdminPage.vue';
 import PluginInstallPackage from './PluginInstallPackage.vue';
@@ -109,6 +109,9 @@ watch(enabledPages, (pages) => {
 });
 
 const canManage = computed(() => canAdmin('plugins_manage'));
+// Bringing a new package in is a super administrator's alone: its migrations
+// run as the database's owner, so the server refuses anybody else.
+const canUpload = computed(() => isSuperAdmin.value);
 const canRemove = computed(() => canAdmin('plugins_remove'));
 const hasTwoFactor = computed(() => !!currentUser.value?.two_factor_at);
 
@@ -364,7 +367,7 @@ function choosePackage(): void {
 }
 
 function onDragEnter(event: DragEvent): void {
-  if (!canManage.value || activeTab.value !== 'manage' || !hasFiles(event)) return;
+  if (!canUpload.value || activeTab.value !== 'manage' || !hasFiles(event)) return;
   event.preventDefault();
   depth += 1;
   dragging.value = true;
@@ -549,7 +552,7 @@ onMounted(load);
       </p>
 
       <button
-        v-if="canManage"
+        v-if="canUpload"
         type="button"
         class="oa-plugin-dropcard"
         :disabled="reading"

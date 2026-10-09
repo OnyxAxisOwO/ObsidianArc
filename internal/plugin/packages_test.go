@@ -189,6 +189,25 @@ func TestAConfirmationNeedsTheUploadItConfirmsAndTheHandThatMadeIt(t *testing.T)
 	}
 }
 
+// A package's migrations run as the database's owner at install, whatever it
+// declares, so the plugins_manage grant used to be a super administrator in
+// waiting: upload a package whose migration promotes you. Uploading is now a
+// super administrator's alone; switching what is installed stays delegable.
+func TestADelegatedPluginManagerCannotUploadAPackage(t *testing.T) {
+	a := newAdmin(t)
+	delegate := a.in.Register("delegate", founderPassword)
+	a.mustDo(http.MethodPatch, "/api/admin/users/"+delegate.UserID,
+		map[string]any{"role": "admin", "admin_permissions": []string{plugin.PermissionView, plugin.PermissionManage}}, http.StatusOK)
+
+	res := a.in.DoMultipart(http.MethodPost, "/api/admin/plugins/preview", "file", "demo.arcx", pkgtest.Demo(t), delegate)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("a delegated manager's upload = %d %s, want it refused", res.Code, res.Body.String())
+	}
+	if res := a.in.Do(http.MethodGet, "/api/admin/plugins", nil, delegate); res.Code != http.StatusOK {
+		t.Errorf("the delegate lost the plugins list: %d", res.Code)
+	}
+}
+
 func TestAnUploadThatIsNotAPackageIsRefusedWithWhy(t *testing.T) {
 	a := newAdmin(t)
 	for label, raw := range map[string][]byte{

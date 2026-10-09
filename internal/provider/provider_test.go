@@ -125,8 +125,8 @@ func TestACopyCarriesTheKeyWithoutEverUnsealingIt(t *testing.T) {
 	// form carried, no key, and the row to take one from.
 	copied, err := store.Create(ctx, CreateInput{
 		Name: "Primary 2", Kind: source.Kind,
-		BaseURL: "https://backup.example.com/v1", CopyKeyFrom: source.ID,
-		Headers: source.Headers, Enabled: true,
+		BaseURL: "https://api.example.com/v1", CopyKeyFrom: source.ID,
+		Headers: map[string]string{"X-Title": "Arc backup"}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("duplicate: %v", err)
@@ -134,8 +134,8 @@ func TestACopyCarriesTheKeyWithoutEverUnsealingIt(t *testing.T) {
 	if copied.ID == source.ID {
 		t.Fatal("the copy reused the source's id")
 	}
-	if copied.BaseURL != "https://backup.example.com/v1" {
-		t.Errorf("the copy took the source's base URL: %q", copied.BaseURL)
+	if copied.Headers["X-Title"] != "Arc backup" {
+		t.Errorf("the copy took the source's headers: %v", copied.Headers)
 	}
 	// The hint travels with the key, so the form can say which key this is
 	// rather than showing an empty field beside a working provider.
@@ -191,5 +191,46 @@ func TestAProviderStillNeedsAKeyFromSomewhere(t *testing.T) {
 	})
 	if !errors.Is(err, ErrKeyRequired) {
 		t.Errorf("gave %v, want ErrKeyRequired", err)
+	}
+}
+
+// The key goes wherever the base URL points, and nobody can read it back, so
+// it is only ever sent to a new address by somebody who typed it again.
+// Otherwise one edit and a "detect models" handed it to a server of the
+// editor's choosing.
+func TestTheKeyOnlyGoesSomewhereNewWhenTypedAgain(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	source, err := store.Create(ctx, CreateInput{
+		Name: "Primary", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	moved := "https://collector.example.net/v1"
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved}); !errors.Is(err, ErrKeyNeededForMove) {
+		t.Errorf("repointing without the key = %v, want ErrKeyNeededForMove", err)
+	}
+	if _, err := store.Create(ctx, CreateInput{
+		Name: "Copy", Kind: adapter.KindOpenAI, BaseURL: moved, CopyKeyFrom: source.ID, Enabled: true,
+	}); !errors.Is(err, ErrKeyNeededForMove) {
+		t.Errorf("copying the key to a new address = %v, want ErrKeyNeededForMove", err)
+	}
+	if resolved, _ := store.Resolve(ctx, source.ID); resolved.BaseURL != source.BaseURL {
+		t.Errorf("the refused edit moved the provider to %q", resolved.BaseURL)
+	}
+
+	// With the key typed again it moves, and so does an edit that leaves the
+	// address where it was.
+	key := "sk-a-new-key-value"
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved, APIKey: &key}); err != nil {
+		t.Errorf("repointing with the key: %v", err)
+	}
+	name := "Renamed"
+	if _, err := store.Update(ctx, source.ID, Update{Name: &name}); err != nil {
+		t.Errorf("an edit that does not move the provider: %v", err)
 	}
 }

@@ -85,21 +85,28 @@ func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPa
 		// A manager can be behind another instance's credential rotation. Read
 		// under the shared settings lock so a blank form field preserves the
 		// database value that this save actually follows.
-		var currentSealed []byte
-		readErr := tx.QueryRow(ctx, `SELECT password FROM mail_config WHERE id = 1`).Scan(&currentSealed)
+		var (
+			currentSealed []byte
+			current       Config
+		)
+		readErr := tx.QueryRow(ctx, `SELECT host, port, username, password FROM mail_config WHERE id = 1`).
+			Scan(&current.Host, &current.Port, &current.Username, &currentSealed)
 		currentPassword := ""
 		switch {
-		case readErr == nil && len(currentSealed) > 0:
-			opened, err := m.box.Open(currentSealed)
-			if err != nil {
-				return fmt.Errorf("mail: open stored password: %w", err)
+		case readErr == nil:
+			if len(currentSealed) > 0 {
+				opened, err := m.box.Open(currentSealed)
+				if err != nil {
+					return fmt.Errorf("mail: open stored password: %w", err)
+				}
+				currentPassword = opened
 			}
-			currentPassword = opened
 		case database.IsNotFound(readErr):
 			// Keep the legacy environment credential when creating the first
 			// database override without entering a replacement password.
+			current = m.cfg
 			currentPassword = m.cfg.Password
-		case readErr != nil:
+		default:
 			return fmt.Errorf("mail: read stored password: %w", readErr)
 		}
 
@@ -108,6 +115,11 @@ func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPa
 		} else if password != "" {
 			cfg.Password = password
 		} else {
+			moved := !strings.EqualFold(cfg.Host, strings.TrimSpace(current.Host)) ||
+				cfg.Port != current.Port || cfg.Username != strings.TrimSpace(current.Username)
+			if moved && currentPassword != "" {
+				return ErrPasswordNeededForMove
+			}
 			cfg.Password = currentPassword
 		}
 		var sealed any

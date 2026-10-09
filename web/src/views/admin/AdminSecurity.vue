@@ -33,7 +33,7 @@ import { initials } from '@/lib/account';
 import { rememberedPageSize } from '@/lib/page-size';
 import { absoluteTime } from '@/lib/format';
 import { refusalText } from '@/lib/refusal';
-import { currentUser, site } from '@/stores/session';
+import { currentUser, isSuperAdmin, site } from '@/stores/session';
 import { maskUser, maskLog, maskCredential } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { minutesLabel } from './shared';
@@ -49,6 +49,11 @@ view.setTitle(t('navSecurity'), t('securitySubtitle'));
 
 const error = ref('');
 const loaded = ref(false);
+// The keys the server showed this account. Where an issuer sends people and
+// what it is trusted to vouch for are a super administrator's alone, and the
+// server leaves them out for anybody else; sending their empty fields back
+// would have the whole save refused.
+const shownKeys = ref<Set<string>>(new Set());
 const defaultReviewPrompt = ref('');
 const mailConfigured = ref(false);
 const mailLoaded = ref(false);
@@ -507,7 +512,9 @@ async function save(): Promise<void> {
 
 async function performSave(codeParam?: string): Promise<void> {
   const values = collect();
-  const payload: Record<string, string> = { ...values };
+  const payload: Record<string, string> = Object.fromEntries(
+    Object.entries(values).filter(([key]) => shownKeys.value.has(key)),
+  );
   if (codeParam) {
     payload['two_factor_code'] = codeParam;
   }
@@ -673,6 +680,7 @@ function mailErrorText(failure: unknown, action: 'load' | 'save' | 'test'): Stri
   if (!(failure instanceof ApiError)) return 'failed';
   if (failure.code === 'mail_test_cooldown') return 'mailTestCooldown';
   if (failure.code === 'mail_unavailable') return 'mailDeliveryUnavailable';
+  if (failure.code === 'mail_password_needed') return 'mailPasswordNeeded';
   if (failure.status === 400) return action === 'test' ? 'mailTestInvalid' : 'mailSettingsInvalid';
   return 'failed';
 }
@@ -876,6 +884,7 @@ async function load(): Promise<void> {
       adminApi.settings(), adminApi.modelOptions(), loadEvents(), loadApplications(), loadAdoption(), loadMail(), loadUserCheck(),
     ]);
     const values = data.settings;
+    shownKeys.value = new Set(Object.keys(values));
     defaultReviewPrompt.value = data.signup_review_prompt_default ?? '';
     mailConfigured.value = data.mail_configured ?? false;
     groups.value = data.groups ?? [];
@@ -1522,6 +1531,7 @@ onMounted(load);
               placeholder="OpenID Connect"
             />
             <OaTextField
+              v-if="isSuperAdmin"
               v-model="form.oidcIssuer"
               :label="t('oauthOIDCIssuer')"
               :hint="t('oauthOIDCIssuerHint')"
@@ -1529,12 +1539,14 @@ onMounted(load);
               monospace
             />
             <OaTextField
+              v-if="isSuperAdmin"
               v-model="form.oidcClientID"
               :label="t('oauthClientID')"
               placeholder="obsidian-arc"
               monospace
             />
             <OaTextField
+              v-if="isSuperAdmin"
               v-model="form.oidcSecret"
               type="password"
               :label="t('oauthClientSecret')"
@@ -1550,6 +1562,7 @@ onMounted(load);
               monospace
             />
             <OaSwitchField
+              v-if="isSuperAdmin"
               v-model="form.oidcTrustEmail"
               :label="t('oauthOIDCTrustEmail')"
               :hint="t('oauthOIDCTrustEmailHint')"
@@ -1565,18 +1578,21 @@ onMounted(load);
               :hint="t('oauthOIDCRequireCompletionHint')"
             />
             <OaTextField
+              v-if="isSuperAdmin"
               v-model="form.oidcAuthURL"
               :label="t('oauthOIDCAuthURL')"
               placeholder="https://auth.example.com/oauth/authorize"
               monospace
             />
             <OaTextField
+              v-if="isSuperAdmin"
               v-model="form.oidcTokenURL"
               :label="t('oauthOIDCTokenURL')"
               placeholder="https://auth.example.com/oauth/token"
               monospace
             />
             <OaTextField
+              v-if="isSuperAdmin"
               v-model="form.oidcUserInfoURL"
               :label="t('oauthOIDCUserInfoURL')"
               placeholder="https://auth.example.com/oauth/userinfo"
@@ -1611,6 +1627,7 @@ onMounted(load);
           :hint="t('oauthAllowSignupHint')"
         />
         <OaSwitchField
+          v-if="isSuperAdmin"
           v-model="form.oauthLinkByEmail"
           :label="t('oauthLinkByEmail')"
           :hint="t('oauthLinkByEmailHint')"

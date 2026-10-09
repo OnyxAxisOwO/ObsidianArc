@@ -27,7 +27,13 @@ import (
 
 var (
 	ErrNotConfigured = errors.New("mail: no SMTP host is configured")
-	ErrTLSRequired   = errors.New("mail: SMTP server does not offer STARTTLS")
+	// The stored password is posted to whichever server the host names, and
+	// nobody can read it back; it goes to a new server, port or account only
+	// when whoever changed them typed it again. Keeping it across the change
+	// let anybody trusted with the mail page collect it with a server of
+	// their own and one test message.
+	ErrPasswordNeededForMove = errors.New("mail: a new SMTP server or username needs the password entered again")
+	ErrTLSRequired           = errors.New("mail: SMTP server does not offer STARTTLS")
 )
 
 // Config is the effective SMTP setup, loaded from the database override or

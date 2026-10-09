@@ -3,6 +3,7 @@ package mail
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -114,6 +115,44 @@ func TestEmptyPasswordKeepsSecretUntilExplicitlyCleared(t *testing.T) {
 	}
 }
 
+// The password is posted to whichever server the host names. Keeping it
+// across a change of server let whoever could edit the form collect it with
+// a server of their own, so a new server, port or account needs it typed
+// again; anything else keeps it.
+func TestANewServerNeedsThePasswordAgain(t *testing.T) {
+	ctx := context.Background()
+	db := mailDatabase(t)
+	manager, err := NewManager(ctx, db, New(Config{}), Config{}, []byte("test-instance-master-key"))
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	cfg := Config{Host: "smtp.example.com", Port: 587, Username: "mailer", From: "sender@example.com", PublicURL: "https://example.com"}
+	if err := manager.Save(ctx, cfg, "the-password", false); err != nil {
+		t.Fatalf("initial save: %v", err)
+	}
+
+	for label, edit := range map[string]func(*Config){
+		"host":     func(c *Config) { c.Host = "collector.example.net" },
+		"port":     func(c *Config) { c.Port = 2525 },
+		"username": func(c *Config) { c.Username = "someone-else" },
+	} {
+		moved := cfg
+		edit(&moved)
+		if err := manager.Save(ctx, moved, "", false); !errors.Is(err, ErrPasswordNeededForMove) {
+			t.Errorf("%s: save without the password = %v, want ErrPasswordNeededForMove", label, err)
+		}
+	}
+	if got, _ := manager.Config(); got.Host != "smtp.example.com" || got.Password != "the-password" {
+		t.Errorf("a refused save changed the configuration: %+v", got)
+	}
+
+	moved := cfg
+	moved.Host = "smtp2.example.com"
+	if err := manager.Save(ctx, moved, "the-password", false); err != nil {
+		t.Errorf("a move with the password typed again: %v", err)
+	}
+}
+
 func TestStaleManagerPreservesLatestPasswordAcrossSaves(t *testing.T) {
 	ctx := context.Background()
 	db := mailDatabase(t)
@@ -137,11 +176,11 @@ func TestStaleManagerPreservesLatestPasswordAcrossSaves(t *testing.T) {
 
 	// This manager has never seen the rotation. Its unrelated save must use
 	// the row's current secret, and must not restore a stale value after clear.
-	cfg.Host = "smtp-edited.example.com"
+	cfg.From = "edited@example.com"
 	if err := stale.Save(ctx, cfg, "", false); err != nil {
 		t.Fatalf("stale manager save: %v", err)
 	}
-	if got, set := stale.Config(); got.Password != "rotated-password" || !set || got.Host != cfg.Host {
+	if got, set := stale.Config(); got.Password != "rotated-password" || !set || got.From != cfg.From {
 		t.Fatalf("stale manager config = %+v, password_set %v", got, set)
 	}
 

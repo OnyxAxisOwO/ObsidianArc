@@ -161,7 +161,9 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failure instanceof ApiError
+      ? (failure.code === 'provider_key_needed' ? t('providerKeyNeeded') : failure.message)
+      : String(failure);
   }
 }
 

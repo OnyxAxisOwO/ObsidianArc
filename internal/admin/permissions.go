@@ -53,7 +53,26 @@ func (h *Handlers) settingPermission(key string) string {
 	return corePermission(key)
 }
 
+// superAdminSettings are the provider settings that decide whose word an
+// account is opened on. A delegated security grant used to cover them, and
+// with them an issuer of its holder's own choosing could vouch for anybody's
+// address — so they were one sign-in from anybody's account — and the
+// stored client secret would be posted to wherever the token URL pointed.
+var superAdminSettings = map[string]bool{
+	settings.OAuthOIDCIssuer:       true,
+	settings.OAuthOIDCClientID:     true,
+	settings.OAuthOIDCClientSecret: true,
+	settings.OAuthOIDCAuthURL:      true,
+	settings.OAuthOIDCTokenURL:     true,
+	settings.OAuthOIDCUserInfoURL:  true,
+	settings.OAuthOIDCTrustEmail:   true,
+	settings.OAuthLinkByEmail:      true,
+}
+
 func corePermission(key string) string {
+	if superAdminSettings[key] {
+		return "super_admin"
+	}
 	switch {
 	case strings.HasPrefix(key, "health."):
 		return "availability"

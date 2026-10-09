@@ -446,6 +446,8 @@ func translateProviderError(err error) error {
 		return httpx.BadRequest("Unknown reasoning style.")
 	case errors.Is(err, provider.ErrKeyRequired):
 		return httpx.BadRequest("An API key is required.")
+	case errors.Is(err, provider.ErrKeyNeededForMove):
+		return httpx.BadRequestCode("provider_key_needed", "A new base URL needs the API key entered again.")
 	case errors.Is(err, provider.ErrTooManyHeaders):
 		return httpx.BadRequest("At most 20 extra headers.")
 	default:

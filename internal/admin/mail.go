@@ -56,6 +56,9 @@ func (h *Handlers) putMail(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("%s", err.Error())
 	}
 	if err := h.Mail.Save(r.Context(), cfg, body.Password, body.ClearPassword); err != nil {
+		if errors.Is(err, mail.ErrPasswordNeededForMove) {
+			return httpx.BadRequestCode("mail_password_needed", "A new SMTP server or username needs the password entered again.")
+		}
 		return httpx.Internal(err)
 	}
 	cfg, passwordSet := h.Mail.Config()

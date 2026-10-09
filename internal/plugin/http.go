@@ -49,8 +49,15 @@ func (h *Handlers) Mount(backoffice *admin.Handlers) {
 	for _, route := range []admin.Route{
 		{Pattern: "GET /api/admin/plugins", Permission: view, Handler: h.list},
 		{Pattern: "GET /api/admin/plugins/{name}", Permission: view, Handler: h.show},
-		{Pattern: "POST /api/admin/plugins/preview", Permission: PermissionManage, Handler: h.preview},
-		{Pattern: "POST /api/admin/plugins/install-package", Permission: PermissionManage, Handler: h.installPackage},
+		// A super administrator's alone, whatever grants anybody else holds.
+		// A package's migrations run as the database's owner at install,
+		// before it is even switched on and whatever permissions it
+		// declares, so uploading one is the power to rewrite any row — a
+		// delegated grant made its holder a super administrator by an
+		// UPDATE of their own. Switching installed plugins on and off stays
+		// delegable: that runs nothing nobody has already accepted.
+		{Pattern: "POST /api/admin/plugins/preview", Permission: "super_admin", Handler: h.preview},
+		{Pattern: "POST /api/admin/plugins/install-package", Permission: "super_admin", Handler: h.installPackage},
 		{Pattern: "POST /api/admin/plugins/{name}/install", Permission: PermissionManage, Handler: h.install},
 		{Pattern: "POST /api/admin/plugins/{name}/enable", Permission: PermissionManage, Handler: h.enable},
 		{Pattern: "POST /api/admin/plugins/{name}/disable", Permission: PermissionManage, Handler: h.disable},

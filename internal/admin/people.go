@@ -564,6 +564,13 @@ func (h *Handlers) resetPassword(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, 4*1024); err != nil {
 		return err
 	}
+	// One's own password is changed from the profile, which asks for the
+	// current one. Here it needed only the session, so a stolen super
+	// administrator session became the account for good — the reason
+	// resetTwoFactor already refuses the same.
+	if userID == actor.ID {
+		return httpx.BadRequestCode("own_password", "Change your own password from your profile.")
+	}
 	if _, err := h.users.ByID(r.Context(), nil, userID); err != nil {
 		return translateUserError(err)
 	}
@@ -657,8 +664,10 @@ func (h *Handlers) userConversations(w http.ResponseWriter, r *http.Request) err
 	if err != nil {
 		return err
 	}
-	if _, err := h.users.ByID(r.Context(), nil, userID); err != nil {
-		return translateUserError(err)
+	// An administrator's conversations answer to the rule their sessions do:
+	// a delegated users grant does not read a super administrator's.
+	if err := h.authoriseSessionAction(r, userID); err != nil {
+		return err
 	}
 
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -683,6 +692,9 @@ func (h *Handlers) userTranscript(w http.ResponseWriter, r *http.Request) error 
 	}
 	conversationID, err := pathID(r, "conversation")
 	if err != nil {
+		return err
+	}
+	if err := h.authoriseSessionAction(r, userID); err != nil {
 		return err
 	}
 

@@ -52,13 +52,18 @@ type Provider struct {
 }
 
 var (
-	ErrNotFound       = errors.New("provider: not found")
-	ErrNameTaken      = errors.New("provider: a provider with that name already exists")
-	ErrInvalidName    = errors.New("provider: name must be 1-60 characters")
-	ErrInvalidKind    = errors.New("provider: kind must be openai or anthropic")
-	ErrInvalidStyle   = errors.New("provider: unknown reasoning style")
-	ErrKeyRequired    = errors.New("provider: an API key is required")
-	ErrTooManyHeaders = errors.New("provider: at most 20 extra headers")
+	ErrNotFound     = errors.New("provider: not found")
+	ErrNameTaken    = errors.New("provider: a provider with that name already exists")
+	ErrInvalidName  = errors.New("provider: name must be 1-60 characters")
+	ErrInvalidKind  = errors.New("provider: kind must be openai or anthropic")
+	ErrInvalidStyle = errors.New("provider: unknown reasoning style")
+	ErrKeyRequired  = errors.New("provider: an API key is required")
+	// The key is sent wherever the base URL points, so it only goes to a
+	// new address when whoever pointed it there typed it again. Otherwise the
+	// write-only key was one edit and one "detect models" away from anybody
+	// trusted with the providers page, at a server of their own.
+	ErrKeyNeededForMove = errors.New("provider: a new base URL needs the API key entered again")
+	ErrTooManyHeaders   = errors.New("provider: at most 20 extra headers")
 )
 
 const (
@@ -135,6 +140,17 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
 	if strings.TrimSpace(in.APIKey) == "" && !copying {
 		return Provider{}, ErrKeyRequired
 	}
+	if copying {
+		// A copied key goes to the same address it already went to, or the
+		// copy is a way to send it somewhere new without knowing it.
+		source, err := s.ByID(ctx, in.CopyKeyFrom)
+		if err != nil {
+			return Provider{}, err
+		}
+		if source.BaseURL != record.BaseURL {
+			return Provider{}, ErrKeyNeededForMove
+		}
+	}
 
 	now := time.Now().UnixMilli()
 	record.CreatedAt, record.UpdatedAt = now, now
@@ -160,10 +176,12 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
 		// The two key columns come from the source row rather than from Go,
 		// so the ciphertext is moved by the database and the plaintext is
 		// never anywhere. Everything else is what the caller asked for.
+		// The base URL is matched again here, so a source repointed between
+		// the check above and this insert copies nothing.
 		query = columns + `
 		SELECT ?, ?, ?, ?, ?, api_key_enc, api_key_hint, ?, ?, ?, ?, ?, ?, ?, ?
-		FROM providers WHERE id = ?`
-		args = append(append(identity, rest...), in.CopyKeyFrom)
+		FROM providers WHERE id = ? AND base_url = ?`
+		args = append(append(identity, rest...), in.CopyKeyFrom, record.BaseURL)
 	} else {
 		sealed, sealErr := s.box.Seal(strings.TrimSpace(in.APIKey))
 		if sealErr != nil {
@@ -262,6 +280,9 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update) (Provi
 		next, err = validate(next)
 		if err != nil {
 			return err
+		}
+		if next.BaseURL != current.BaseURL && in.APIKey == nil {
+			return ErrKeyNeededForMove
 		}
 		next.UpdatedAt = time.Now().UnixMilli()
 
