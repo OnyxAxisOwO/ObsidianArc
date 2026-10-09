@@ -208,3 +208,104 @@ func TestResponsesCountsFlattenedToolsAgainstTheCeiling(t *testing.T) {
 		t.Fatalf("refusal counted the namespace rather than what is inside it: %s", w.Body.String())
 	}
 }
+
+// A tool_result holds text and images. A result inside one, or a call, is
+// refused before any level below it is read. Both paths read content through
+// the same function, and count_tokens is the one that never reserves, so
+// nothing in front of it bounds how much a request can make the server hold.
+func TestNestedToolResultsAreRefusedOnBothPaths(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"result inside a result", resultChain(2)},
+		{"call inside a result", `[{"type":"tool_result","tool_use_id":"outer",` +
+			`"content":[{"type":"tool_use","id":"inner","name":"read_file","input":{}}]}]`},
+		{"chain 200 levels deep", resultChain(200)},
+	}
+	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
+		for _, c := range cases {
+			t.Run(path+"/"+c.name, func(t *testing.T) {
+				f := newFixture(t)
+				f.upstream.reply(answer)
+
+				w := f.do(t, http.MethodPost, path, f.token, userMessageBody(f.model.ID, c.content))
+				if w.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+				}
+				envelope, _ := decodeJSON(t, w)["error"].(map[string]any)
+				if envelope["type"] != "invalid_request_error" {
+					t.Errorf("error type = %v, want invalid_request_error", envelope["type"])
+				}
+				// Matched on the wording as well: a body that fails to parse is a
+				// 400 too, and would pass this test for the wrong reason.
+				if message, _ := envelope["message"].(string); !strings.Contains(message, "tool_result") {
+					t.Errorf("refusal does not say what was wrong: %q", message)
+				}
+				if f.upstream.received() != nil {
+					t.Error("a refused request reached the provider")
+				}
+				if turns := f.turns(); len(turns) != 0 {
+					t.Errorf("a refused request recorded %d turns", len(turns))
+				}
+			})
+		}
+	}
+}
+
+// The refusal is about what nests, not about results: a tool that answers with
+// text and a picture is still answered on both paths.
+func TestToolResultWithTextAndImageIsStillAccepted(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(answer)
+
+	body := `{"model":"` + f.model.ID + `","max_tokens":16,"messages":[` +
+		`{"role":"user","content":"what is on screen?"},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_x","name":"screenshot","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":[` +
+		`{"type":"text","text":"screen captured"},` +
+		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + testPNG + `"}}]}]}]}`
+
+	w := f.do(t, http.MethodPost, "/v1/messages", f.token, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	sent, _ := f.upstream.received()["messages"].([]any)
+	if len(sent) != 3 {
+		t.Fatalf("provider received %v, want three messages", f.upstream.received()["messages"])
+	}
+	result, _ := sent[2].(map[string]any)
+	if result["role"] != "tool" || result["content"] != "screen captured" {
+		t.Errorf("result reached the provider as %v", result)
+	}
+
+	count := f.do(t, http.MethodPost, "/v1/messages/count_tokens", f.token, body)
+	if count.Code != http.StatusOK {
+		t.Fatalf("count_tokens status = %d: %s", count.Code, count.Body.String())
+	}
+	if tokens, _ := decodeJSON(t, count)["input_tokens"].(float64); tokens <= 0 {
+		t.Errorf("count_tokens input_tokens = %v", decodeJSON(t, count)["input_tokens"])
+	}
+}
+
+// resultChain is a tool_result nested depth levels deep, with the payload at the
+// bottom. That is the shape that multiplies memory in a decoder which copies
+// its children at every level.
+func resultChain(depth int) string {
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 0; i < depth; i++ {
+		fmt.Fprintf(&b, `{"type":"tool_result","tool_use_id":"call_%d","content":[`, i)
+	}
+	b.WriteString(`{"type":"text","text":"payload"}`)
+	for i := 0; i < depth; i++ {
+		b.WriteString(`]}`)
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
+func userMessageBody(modelID, content string) string {
+	return `{"model":"` + modelID + `","max_tokens":16,"messages":[{"role":"user","content":` +
+		content + `}]}`
+}

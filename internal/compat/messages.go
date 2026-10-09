@@ -119,7 +119,7 @@ func (h *Handlers) buildMessagesRequest(body messagesRequest, resolved model.Res
 	}
 	messages := make([]adapter.Message, 0, len(body.Messages))
 	for _, incoming := range body.Messages {
-		blocks, err := readAnthropicContent(incoming.Content)
+		blocks, err := readAnthropicContent(incoming.Content, false)
 		if err != nil {
 			return adapter.ChatRequest{}, err
 		}
@@ -251,7 +251,13 @@ func readAnthropicSystem(raw json.RawMessage) (string, error) {
 	return out.String(), nil
 }
 
-func readAnthropicContent(raw json.RawMessage) ([]adapter.Part, error) {
+// readAnthropicContent reads a message's content, or a tool_result's when
+// inToolResult is set. A result holds text and images and nothing that nests.
+// Each level copies its children while the parent is still live, so a result
+// inside a result would hold its payload once per level, and a request a few
+// thousand levels deep would hold it thousands of times. Refusing the nesting
+// keeps every byte decoded a fixed number of times, however deep the body goes.
+func readAnthropicContent(raw json.RawMessage, inToolResult bool) ([]adapter.Part, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
 		return nil, nil
@@ -272,6 +278,9 @@ func readAnthropicContent(raw json.RawMessage) ([]adapter.Part, error) {
 
 	out := make([]adapter.Part, 0, len(blocks))
 	for _, block := range blocks {
+		if inToolResult && (block.Type == "tool_result" || block.Type == "tool_use") {
+			return nil, anthropicBadRequest("A tool_result may contain only text and image blocks.")
+		}
 		switch block.Type {
 		case "text", "":
 			if strings.TrimSpace(block.Text) != "" {
@@ -297,7 +306,7 @@ func readAnthropicContent(raw json.RawMessage) ([]adapter.Part, error) {
 			if block.ToolUseID == "" {
 				return nil, anthropicBadRequest("A tool_result block must name the call it answers in tool_use_id.")
 			}
-			nested, err := readAnthropicContent(block.Content)
+			nested, err := readAnthropicContent(block.Content, true)
 			if err != nil {
 				return nil, err
 			}
