@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -79,6 +80,38 @@ type Handlers struct {
 // enough that a burst cannot exhaust memory, large enough that nobody sharing
 // an instance waits behind one.
 const maxConcurrentDecodes = 4
+
+// How long a body may take to arrive while it holds one of those slots. The
+// slot is claimed before the first byte is read, so a client that sends its
+// headers and then trickles would otherwise sit on it for the server's whole
+// five-minute read timeout; four of them stop everybody's uploads.
+const decodeReadWindow = 2 * time.Minute
+
+// acquireDecode claims one of the decoding slots, waiting for one for as long
+// as the request is still wanted. The release is idempotent so a path can
+// hand the slot back early and still defer it.
+func (h *Handlers) acquireDecode(ctx context.Context) (func(), error) {
+	select {
+	case h.decoding <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	var once sync.Once
+	return func() { once.Do(func() { <-h.decoding }) }, nil
+}
+
+// boundBodyRead gives the body a deadline while a decoding slot is held, and
+// returns what lifts it once the body is in. Lifted rather than left to
+// expire: the server reads in the background to notice a client that has gone,
+// and a deadline that passes while the handler is still working is reported
+// there as a disconnect, cancelling the request in the middle of whatever it
+// was doing. Best effort — a ResponseWriter that cannot set a deadline keeps
+// the server-wide timeout and the returned function does nothing.
+func boundBodyRead(w http.ResponseWriter) (bodyRead func()) {
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Now().Add(decodeReadWindow))
+	return func() { _ = controller.SetReadDeadline(time.Time{}) }
+}
 
 func NewHandlers(service *Service, conversations *conversation.Store) *Handlers {
 	return &Handlers{
@@ -580,10 +613,26 @@ func (h *Handlers) uploadAttachment(w http.ResponseWriter, r *http.Request) erro
 		}
 	}
 
+	// The slot comes before the body, not after it. What the slot protects is
+	// this process's heap, and the heap is spent on reading the encoded body
+	// and decoding the picture out of it — so a slot claimed once the body was
+	// already buffered bounded nothing: any number of requests could be
+	// holding their full body at the moment they queued for it. Deliberately
+	// not a row lock: nothing here is read and then written, and what is
+	// being protected is memory, not an invariant in the database.
+	release, err := h.acquireDecode(r.Context())
+	if err != nil {
+		return err
+	}
+	defer release()
+	bodyRead := boundBodyRead(w)
+
 	var body uploadRequest
 	// Base64 is a third larger than the bytes it carries, plus room for the
 	// envelope.
-	if err := httpx.DecodeJSON(w, r, &body, ceiling*4/3+16*1024); err != nil {
+	err = httpx.DecodeJSON(w, r, &body, ceiling*4/3+16*1024)
+	bodyRead()
+	if err != nil {
 		// The body guard trips before the image is decoded, and its message
 		// talks about encoded request bytes — a number that has nothing to do
 		// with the picture the person chose. Say the limit they were given.
@@ -598,20 +647,6 @@ func (h *Handlers) uploadAttachment(w http.ResponseWriter, r *http.Request) erro
 	if !conversation.MediaAllowed(body.Mime) {
 		return httpx.BadRequest("Images must be PNG, JPEG, WebP or GIF.")
 	}
-	// Bounds how many uploads are decoding at once, not how many bytes end up
-	// stored — the per-account caps are checked inside Upload's transaction,
-	// which is reached only after the whole encoded body has been buffered and
-	// this decode has allocated the picture again. Deliberately not a row
-	// lock: nothing here is read and then written, and the thing being
-	// protected is this process's heap rather than an invariant in the
-	// database.
-	select {
-	case h.decoding <- struct{}{}:
-		defer func() { <-h.decoding }()
-	case <-r.Context().Done():
-		return r.Context().Err()
-	}
-
 	data, err := base64.StdEncoding.DecodeString(body.Data)
 	if err != nil {
 		return httpx.BadRequest("Image data is not valid base64.")
@@ -717,6 +752,10 @@ const MaxImagesPerRequest = 4
 // MaxReferenceImages bounds how many pictures an edit request may carry.
 const MaxReferenceImages = 5
 
+// A generation request no longer than this carries no picture worth a
+// decoding slot: it is a prompt and some settings.
+const imagePromptOnlyBytes = 64 << 10
+
 type imageGenRequest struct {
 	ModelID string `json:"model_id"`
 	Prompt  string `json:"prompt"`
@@ -791,9 +830,37 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
+	// A prompt on its own is a few hundred bytes and needs no protection. A
+	// request that carries pictures can be tens of megabytes of base64, which
+	// is then decoded and sniffed below — the same cost as an upload, from an
+	// endpoint that used to have no bound on how many ran at once. Those share
+	// the upload endpoint's slots, claimed before the body is read for the
+	// reason given there. An unknown length (chunked) is treated as large.
+	releaseDecode := func() {}
+	bodyRead := func() {}
+	if r.ContentLength < 0 || r.ContentLength > imagePromptOnlyBytes {
+		release, err := h.acquireDecode(r.Context())
+		if err != nil {
+			return err
+		}
+		// Handed back as soon as the reference pictures are decoded, not at
+		// the end: the provider call below can take minutes, and a slot held
+		// across it would stop everyone's uploads for as long. Deferred as
+		// well for every path that leaves earlier.
+		defer release()
+		releaseDecode = release
+		bodyRead = boundBodyRead(w)
+	}
+
 	var body imageGenRequest
-	maxBodyBytes := (ceiling*4/3+16*1024)*int64(MaxReferenceImages) + 64*1024
-	if err := httpx.DecodeJSON(w, r, &body, maxBodyBytes); err != nil {
+	// Room for the prompt and the settings, plus each picture as base64 (a
+	// third larger than the bytes it carries) with its quotes and comma. The
+	// ceiling is per picture, so this is what a request at the limit needs and
+	// nothing more.
+	maxBodyBytes := (int64(base64.StdEncoding.EncodedLen(int(ceiling)))+16)*int64(MaxReferenceImages) + 64*1024
+	err := httpx.DecodeJSON(w, r, &body, maxBodyBytes)
+	bodyRead()
+	if err != nil {
 		var decided *httpx.Error
 		if errors.As(err, &decided) && decided.Status == http.StatusRequestEntityTooLarge {
 			return httpx.BadRequest("That request is larger than this server accepts.")
@@ -907,6 +974,11 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 			imgReq.ImageMime = parts[0].Mime
 		}
 	}
+
+	// The pictures now live decoded in imgReq. The base64 they came from can be
+	// collected, and the slot goes back before a call that may take minutes.
+	body.Image, body.Images, rawImages = "", nil, nil
+	releaseDecode()
 
 	result, genErr := h.service.GenerateImage(r.Context(), resolved, imgReq)
 

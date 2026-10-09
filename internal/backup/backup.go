@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -54,7 +55,16 @@ const (
 	// fifty thousand of them: a ceiling on the count of threads bounds
 	// almost nothing. Generous for a person — a heavy year of daily use is
 	// some thousands — and reached only by somebody trying.
-	MaxStoredMessages     = 200000
+	MaxStoredMessages = 200000
+	// What one account may be storing in characters of message text.
+	//
+	// The count above bounds rows, and a row may carry sixty-four thousand
+	// characters: two hundred thousand of them is some twelve gigabytes behind
+	// a ceiling that reads as modest. This is the figure the disk actually
+	// feels. Characters rather than bytes because LENGTH counts them the same
+	// way on both databases; generous for a person (a heavy year is a few
+	// megabytes) and reached only by somebody trying.
+	MaxStoredChars        = 512 << 20
 	MaxTitleChars         = 200
 	MaxImportContentChars = conversation.MaxContentChars
 )
@@ -110,6 +120,8 @@ type Service struct {
 	// every deployment uses; it is a field so a test can reach the boundary
 	// without writing two hundred thousand rows to get there.
 	MaxStoredMessages int
+	// The same for MaxStoredChars.
+	MaxStoredChars int64
 }
 
 func NewService(db *database.DB, conversations *conversation.Store, preferences *user.PreferenceStore) *Service {
@@ -223,6 +235,25 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 		return Result{}, ErrStorageFull
 	}
 
+	// The same question asked of the text itself. Read once, here, and carried
+	// through the threads as a running figure: summing an account's messages
+	// is a scan of all of them, and doing it inside every thread's transaction
+	// would make a two-thousand-conversation import quadratic.
+	//
+	// That makes this ceiling softer than the count's: a writer that is not
+	// this import (a chat turn, another instance's import) can land between
+	// the read and the last thread. Each of those is itself bounded — a
+	// message holds at most 64 thousand characters, an import 32 MiB — so the
+	// overshoot is a request's worth, not unbounded.
+	storedChars, err := s.storedChars(ctx, account.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	tally := &charTally{ceiling: s.charCeiling(), stored: storedChars}
+	if tally.stored+documentChars(document) > tally.ceiling {
+		return Result{}, ErrStorageFull
+	}
+
 	var result Result
 
 	// Merged rather than replaced: a document from an older release is
@@ -239,7 +270,7 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	}
 
 	for _, thread := range document.Conversations {
-		written, err := s.importThread(ctx, account, thread)
+		written, err := s.importThread(ctx, account, thread, tally)
 		if err != nil {
 			return result, err
 		}
@@ -262,9 +293,49 @@ func (s *Service) ceiling() int {
 	return MaxStoredMessages
 }
 
+func (s *Service) charCeiling() int64 {
+	if s.MaxStoredChars > 0 {
+		return s.MaxStoredChars
+	}
+	return MaxStoredChars
+}
+
+// storedChars is the message text an account holds now, in characters.
+func (s *Service) storedChars(ctx context.Context, userID string) (int64, error) {
+	var chars int64
+	// CAST because Postgres widens SUM of a bigint to numeric, which a plain
+	// integer scan refuses on some drivers.
+	err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(CAST(SUM(LENGTH(content) + LENGTH(reasoning)) AS BIGINT), 0)
+		   FROM messages WHERE user_id = ?`, userID).Scan(&chars)
+	if err != nil {
+		return 0, fmt.Errorf("backup: measure stored text: %w", err)
+	}
+	return chars, nil
+}
+
+// documentChars is an upper bound on what a document would write: the text as
+// sent, before the per-message truncation.
+func documentChars(document Document) int64 {
+	var chars int64
+	for _, thread := range document.Conversations {
+		for _, turn := range thread.Messages {
+			chars += int64(len(turn.Content) + len(turn.Reasoning))
+		}
+	}
+	return chars
+}
+
+// charTally is one import's running view of the character ceiling: what the
+// account held when the import started, plus what its own threads have added.
+type charTally struct {
+	ceiling int64
+	stored  int64
+}
+
 // importThread writes one conversation in a transaction, so a file that goes
 // wrong halfway leaves whole conversations behind rather than half of one.
-func (s *Service) importThread(ctx context.Context, account user.User, thread Thread) (int, error) {
+func (s *Service) importThread(ctx context.Context, account user.User, thread Thread, tally *charTally) (int, error) {
 	usable := make([]Turn, 0, len(thread.Messages))
 	for _, turn := range thread.Messages {
 		role := conversation.Role(strings.ToLower(strings.TrimSpace(turn.Role)))
@@ -278,6 +349,15 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 	}
 	if len(usable) == 0 {
 		return 0, nil
+	}
+
+	// What will be stored, so the character ceiling is held against the
+	// truncated text and not against a megabyte-long field that is about to be
+	// cut to size.
+	var threadChars int64
+	for _, turn := range usable {
+		threadChars += int64(min(utf8.RuneCountInString(turn.Content), MaxImportContentChars) +
+			min(utf8.RuneCountInString(turn.Reasoning), MaxImportContentChars))
 	}
 
 	title := text.TrimAndTruncate(thread.Title, MaxTitleChars)
@@ -304,6 +384,9 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 			return err
 		}
 		if stored+len(usable) > ceiling {
+			return ErrStorageFull
+		}
+		if tally.stored+threadChars > tally.ceiling {
 			return ErrStorageFull
 		}
 
@@ -338,6 +421,7 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 	if err != nil {
 		return 0, fmt.Errorf("backup: import conversation: %w", err)
 	}
+	tally.stored += threadChars
 
 	// Outside the transaction because pinning is its own update, and a
 	// conversation that arrived unpinned is a cosmetic loss rather than a

@@ -4,15 +4,72 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
-type Handlers struct{ service *Service }
+const (
+	// An export holds an account's whole history as Go values and then as
+	// JSON, and an import holds a document of up to 32 MiB decoded into
+	// several times that. A handful at once is a normal afternoon; a hundred
+	// accounts doing it together is an out-of-memory kill for everybody else.
+	maxConcurrentExports = 2
+	maxConcurrentImports = 4
+)
 
-func NewHandlers(service *Service) *Handlers { return &Handlers{service: service} }
+type Handlers struct {
+	service *Service
+
+	// What is running right now. In this process's memory and behind a mutex,
+	// unlike the stored-message ceiling, because the thing being limited is
+	// this process's memory: a second instance has its own heap and its own
+	// allowance, and there is nothing in the database for a lock to protect.
+	mu      sync.Mutex
+	busy    map[string]struct{} // accounts with an import or export in flight
+	exports int
+	imports int
+}
+
+func NewHandlers(service *Service) *Handlers {
+	return &Handlers{service: service, busy: map[string]struct{}{}}
+}
+
+// enter claims the account's one slot and a place under the global ceiling
+// for that kind of work, and returns what gives both back.
+//
+// One at a time per account, import and export together: a second request
+// from the same account is not another person, and the first is already the
+// whole of what it asked for.
+func (h *Handlers) enter(w http.ResponseWriter, accountID string, running *int, limit int) (func(), error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if _, taken := h.busy[accountID]; taken {
+		w.Header().Set("Retry-After", "30")
+		return nil, httpx.TooManyRequests("backup_in_progress",
+			"An import or export is already running for this account. Wait for it to finish.")
+	}
+	if *running >= limit {
+		w.Header().Set("Retry-After", "30")
+		return nil, httpx.TooManyRequests("backup_busy",
+			"The server is busy with other exports and imports. Try again in a minute.")
+	}
+	h.busy[accountID] = struct{}{}
+	*running++
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			delete(h.busy, accountID)
+			*running--
+		})
+	}, nil
+}
 
 func (h *Handlers) Routes(mux *http.ServeMux) {
 	protected := func(handler httpx.Handler) http.Handler {
@@ -25,6 +82,13 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 
 func (h *Handlers) export(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
+
+	release, err := h.enter(w, account.ID, &h.exports, maxConcurrentExports)
+	if err != nil {
+		return err
+	}
+	// Held until the body is written: the document stays in memory until then.
+	defer release()
 
 	document, err := h.service.Export(r.Context(), account)
 	if err != nil {
@@ -41,6 +105,13 @@ func (h *Handlers) export(w http.ResponseWriter, r *http.Request) error {
 
 func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
+
+	// Before the body is read, not after: the decode is the expensive part.
+	release, err := h.enter(w, account.ID, &h.imports, maxConcurrentImports)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	// Lenient: an export from a later release carries fields this build has
 	// not heard of, and losing them is the right outcome — refusing the whole

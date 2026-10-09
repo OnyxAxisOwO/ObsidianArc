@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,99 @@ import (
 // returning a megabyte of HTML on an error should not cost us a megabyte of
 // memory per failed request.
 const MaxErrorBodyBytes = 32 * 1024
+
+const (
+	// MaxResponseBytes is the most one upstream response is read for, stream
+	// or document. A normal answer is kilobytes and a very long one a few
+	// megabytes; this sits well above anything a real generation produces and
+	// exists so that a provider (or a hostile base URL an administrator was
+	// talked into) cannot make a request cost unbounded memory by never
+	// ending, or by answering with one enormous document. A client-level
+	// timeout cannot do it: this package deliberately has none, and a fast
+	// link moves gigabytes inside any deadline a long stream is allowed.
+	MaxResponseBytes = 64 << 20
+	// MaxToolArgumentBytes is the most one tool call's arguments may grow to.
+	MaxToolArgumentBytes = 8 << 20
+)
+
+// responseLimit is MaxResponseBytes, a variable only so a test can reach it
+// without streaming sixty-four megabytes.
+var responseLimit int64 = MaxResponseBytes
+
+// errResponseTooLarge is what responseTooLarge wraps, so a caller can tell
+// the ceiling from any other read failure.
+var errResponseTooLarge = errors.New("adapter: response exceeds the size ceiling")
+
+// A new value each time: an *Error is mutable, and these cross goroutines.
+func responseTooLarge() *Error {
+	return &Error{
+		Kind:    ErrorUpstream,
+		Message: "The provider's response was larger than this server will read.",
+		cause:   errResponseTooLarge,
+	}
+}
+
+func toolArgumentsTooLarge() *Error {
+	return &Error{
+		Kind:    ErrorUpstream,
+		Message: "The model produced tool-call arguments larger than this server will accept.",
+	}
+}
+
+// limitedReader fails, rather than ending quietly, once more than max bytes
+// have been read: a plain io.LimitReader reports EOF, which a stream reader
+// takes for a complete answer and a decoder for a truncated document.
+type limitedReader struct {
+	r    io.Reader
+	left int64
+}
+
+func newLimitedReader(r io.Reader, max int64) *limitedReader {
+	return &limitedReader{r: r, left: max}
+}
+
+func (l *limitedReader) Read(p []byte) (int, error) {
+	// One byte of look-ahead, so a response of exactly max bytes is not
+	// mistaken for one that goes on.
+	if int64(len(p)) > l.left+1 {
+		p = p[:l.left+1]
+	}
+	n, err := l.r.Read(p)
+	if int64(n) > l.left {
+		n = int(l.left)
+		l.left = 0
+		return n, responseTooLarge()
+	}
+	l.left -= int64(n)
+	return n, err
+}
+
+type limitedBody struct {
+	*limitedReader
+	io.Closer
+}
+
+// limitResponse bounds how much of a response body can be read, keeping the
+// body's own Close (and so the request's cancel) intact.
+func limitResponse(response *http.Response) *http.Response {
+	if response != nil && response.Body != nil {
+		response.Body = limitedBody{
+			limitedReader: newLimitedReader(response.Body, responseLimit),
+			Closer:        response.Body,
+		}
+	}
+	return response
+}
+
+// unreadable is the error for a response that arrived and could not be
+// decoded. One cut off by the size ceiling keeps saying so, because "we could
+// not read it" would send an administrator looking for a malformed document.
+func unreadable(err error, message string) *Error {
+	if errors.Is(err, errResponseTooLarge) {
+		return responseTooLarge()
+	}
+	return &Error{Kind: ErrorUpstream, Message: message, cause: err}
+}
 
 // NormalizeBaseURL validates the address a provider's key will be sent to.
 //
@@ -189,7 +283,7 @@ func post(
 	// The headers are here, so the provider is answering. Everything from now
 	// on is the caller's to bound, and the deadline is handed to the body so
 	// closing the response releases it.
-	return done(response, nil), nil
+	return limitResponse(done(response, nil)), nil
 }
 
 // providerDeadline bounds how long a provider may take to *start* answering.
@@ -324,6 +418,8 @@ func readErrorBody(response *http.Response) []byte {
 // Returning an error from fn stops the read, which is how a disconnected
 // client ends an upstream generation.
 func readEventStream(body io.Reader, fn func(data []byte) error) error {
+	// The scanner's buffer bounds one event; what bounds how many a provider
+	// may send is the limit on the response body, put there by post.
 	scanner := bufio.NewScanner(body)
 	// A single event can carry a large reasoning delta; the default 64 KiB
 	// ceiling is not enough for every provider.
