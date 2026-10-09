@@ -55,7 +55,7 @@ func TestManagedPasswordIsSealedAndSurvivesRestart(t *testing.T) {
 		PublicURL: "https://app.example.net",
 	}
 	const password = "secret-smtp-password-7319"
-	if err := manager.Save(ctx, cfg, password, false); err != nil {
+	if err := manager.Save(ctx, cfg, password, false, true); err != nil {
 		t.Fatalf("save database override: %v", err)
 	}
 	var sealed []byte
@@ -98,16 +98,16 @@ func TestEmptyPasswordKeepsSecretUntilExplicitlyCleared(t *testing.T) {
 		t.Fatalf("new manager: %v", err)
 	}
 	cfg := Config{Host: "smtp.example.com", Port: 587, From: "sender@example.com", PublicURL: "https://example.com"}
-	if err := manager.Save(ctx, cfg, "first-password", false); err != nil {
+	if err := manager.Save(ctx, cfg, "first-password", false, true); err != nil {
 		t.Fatalf("initial save: %v", err)
 	}
-	if err := manager.Save(ctx, cfg, "", false); err != nil {
+	if err := manager.Save(ctx, cfg, "", false, true); err != nil {
 		t.Fatalf("save without replacement password: %v", err)
 	}
 	if got, set := manager.Config(); got.Password != "first-password" || !set {
 		t.Fatalf("empty password replaced the stored secret: got %q, set %v", got.Password, set)
 	}
-	if err := manager.Save(ctx, cfg, "ignored-password", true); err != nil {
+	if err := manager.Save(ctx, cfg, "ignored-password", true, true); err != nil {
 		t.Fatalf("clear password: %v", err)
 	}
 	if got, set := manager.Config(); got.Password != "" || set {
@@ -127,7 +127,7 @@ func TestANewServerNeedsThePasswordAgain(t *testing.T) {
 		t.Fatalf("new manager: %v", err)
 	}
 	cfg := Config{Host: "smtp.example.com", Port: 587, Username: "mailer", From: "sender@example.com", PublicURL: "https://example.com"}
-	if err := manager.Save(ctx, cfg, "the-password", false); err != nil {
+	if err := manager.Save(ctx, cfg, "the-password", false, true); err != nil {
 		t.Fatalf("initial save: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestANewServerNeedsThePasswordAgain(t *testing.T) {
 	} {
 		moved := cfg
 		edit(&moved)
-		if err := manager.Save(ctx, moved, "", false); !errors.Is(err, ErrPasswordNeededForMove) {
+		if err := manager.Save(ctx, moved, "", false, true); !errors.Is(err, ErrPasswordNeededForMove) {
 			t.Errorf("%s: save without the password = %v, want ErrPasswordNeededForMove", label, err)
 		}
 	}
@@ -148,7 +148,7 @@ func TestANewServerNeedsThePasswordAgain(t *testing.T) {
 
 	moved := cfg
 	moved.Host = "smtp2.example.com"
-	if err := manager.Save(ctx, moved, "the-password", false); err != nil {
+	if err := manager.Save(ctx, moved, "the-password", false, true); err != nil {
 		t.Errorf("a move with the password typed again: %v", err)
 	}
 }
@@ -167,27 +167,27 @@ func TestStaleManagerPreservesLatestPasswordAcrossSaves(t *testing.T) {
 		t.Fatalf("new stale manager: %v", err)
 	}
 	cfg := Config{Host: "smtp.example.com", Port: 587, From: "sender@example.com", PublicURL: "https://example.com"}
-	if err := first.Save(ctx, cfg, "initial-password", false); err != nil {
+	if err := first.Save(ctx, cfg, "initial-password", false, true); err != nil {
 		t.Fatalf("initial save: %v", err)
 	}
-	if err := first.Save(ctx, cfg, "rotated-password", false); err != nil {
+	if err := first.Save(ctx, cfg, "rotated-password", false, true); err != nil {
 		t.Fatalf("rotate password: %v", err)
 	}
 
 	// This manager has never seen the rotation. Its unrelated save must use
 	// the row's current secret, and must not restore a stale value after clear.
 	cfg.From = "edited@example.com"
-	if err := stale.Save(ctx, cfg, "", false); err != nil {
+	if err := stale.Save(ctx, cfg, "", false, true); err != nil {
 		t.Fatalf("stale manager save: %v", err)
 	}
 	if got, set := stale.Config(); got.Password != "rotated-password" || !set || got.From != cfg.From {
 		t.Fatalf("stale manager config = %+v, password_set %v", got, set)
 	}
 
-	if err := first.Save(ctx, cfg, "", true); err != nil {
+	if err := first.Save(ctx, cfg, "", true, true); err != nil {
 		t.Fatalf("clear password: %v", err)
 	}
-	if err := stale.Save(ctx, cfg, "", false); err != nil {
+	if err := stale.Save(ctx, cfg, "", false, true); err != nil {
 		t.Fatalf("save after clear: %v", err)
 	}
 	if got, set := stale.Config(); got.Password != "" || set {
@@ -204,7 +204,7 @@ func TestConcurrentManagerSavesKeepRotatedPassword(t *testing.T) {
 		t.Fatalf("new first manager: %v", err)
 	}
 	cfg := Config{Host: "smtp.example.com", Port: 587, From: "sender@example.com", PublicURL: "https://example.com"}
-	if err := first.Save(ctx, cfg, "initial-password", false); err != nil {
+	if err := first.Save(ctx, cfg, "initial-password", false, true); err != nil {
 		t.Fatalf("initial save: %v", err)
 	}
 	stale, err := NewManager(ctx, db, New(Config{}), Config{}, master)
@@ -219,12 +219,12 @@ func TestConcurrentManagerSavesKeepRotatedPassword(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		errs <- first.Save(ctx, cfg, "rotated-password", false)
+		errs <- first.Save(ctx, cfg, "rotated-password", false, true)
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
-		errs <- stale.Save(ctx, cfg, "", false)
+		errs <- stale.Save(ctx, cfg, "", false, true)
 	}()
 	close(start)
 	wg.Wait()
@@ -363,5 +363,145 @@ func TestMailConfigurationRejectsEnvelopeAndURLAmbiguity(t *testing.T) {
 	}
 	if err := ValidateConfig(Config{}); err != nil {
 		t.Fatalf("empty config should remain a valid disabled state: %v", err)
+	}
+}
+
+// The public address is where mailed links point, so moving it is a super
+// administrator's. Whoever may save the rest of the form may save the address
+// as it already stands.
+func TestOnlyASuperAdministratorMovesThePublicURL(t *testing.T) {
+	ctx := context.Background()
+	manager, err := NewManager(ctx, mailDatabase(t), New(Config{}), Config{}, []byte("test-instance-master-key"))
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	cfg := Config{Host: "smtp.example.com", Port: 587, From: "sender@example.com", PublicURL: "https://arc.example.com"}
+	if err := manager.Save(ctx, cfg, "the-password", false, true); err != nil {
+		t.Fatalf("initial save: %v", err)
+	}
+
+	moved := cfg
+	moved.PublicURL = "https://phish.example.net"
+	if err := manager.Save(ctx, moved, "", false, false); !errors.Is(err, ErrOriginNeedsSuperAdmin) {
+		t.Fatalf("moving the public URL without authority = %v, want ErrOriginNeedsSuperAdmin", err)
+	}
+	if got, _ := manager.Config(); got.PublicURL != cfg.PublicURL {
+		t.Fatalf("a refused move changed the public URL to %q", got.PublicURL)
+	}
+
+	// Everything else in the form, and the address as it stands, stay
+	// available to a save that may not move it.
+	edited := cfg
+	edited.From = "notifications@example.com"
+	if err := manager.Save(ctx, edited, "", false, false); err != nil {
+		t.Fatalf("saving the form with the public URL unchanged: %v", err)
+	}
+
+	if err := manager.Save(ctx, moved, "", false, true); err != nil {
+		t.Fatalf("super administrator moving the public URL: %v", err)
+	}
+	if got, _ := manager.Config(); got.PublicURL != moved.PublicURL {
+		t.Fatalf("public URL = %q after the super administrator's move", got.PublicURL)
+	}
+}
+
+// A manager that loaded before a move still compares against what is stored,
+// so it cannot put the old address back by saving the form it remembers.
+func TestAStaleManagerCannotRevertThePublicURL(t *testing.T) {
+	ctx := context.Background()
+	db := mailDatabase(t)
+	master := []byte("test-instance-master-key")
+	writer, err := NewManager(ctx, db, New(Config{}), Config{}, master)
+	if err != nil {
+		t.Fatalf("new writer: %v", err)
+	}
+	cfg := Config{Host: "smtp.example.com", Port: 587, From: "sender@example.com", PublicURL: "https://old.example.com"}
+	if err := writer.Save(ctx, cfg, "the-password", false, true); err != nil {
+		t.Fatalf("initial save: %v", err)
+	}
+	stale, err := NewManager(ctx, db, New(Config{}), Config{}, master)
+	if err != nil {
+		t.Fatalf("new stale manager: %v", err)
+	}
+
+	moved := cfg
+	moved.PublicURL = "https://new.example.com"
+	if err := writer.Save(ctx, moved, "", false, true); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+
+	back := cfg
+	back.From = "edited@example.com"
+	if err := stale.Save(ctx, back, "", false, false); !errors.Is(err, ErrOriginNeedsSuperAdmin) {
+		t.Fatalf("stale manager put the old public URL back: %v", err)
+	}
+	reloaded, err := NewManager(ctx, db, New(Config{}), Config{}, master)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got, _ := reloaded.Config(); got.PublicURL != moved.PublicURL || got.From != cfg.From {
+		t.Fatalf("stored configuration = %+v after a refused stale save", got)
+	}
+}
+
+// The check and the write share one lock, so a save that may not move the
+// public URL cannot land after a super administrator's move and undo it,
+// whichever of the two reaches the database first.
+func TestConcurrentPublicURLMoveIsNeverUndone(t *testing.T) {
+	ctx := context.Background()
+	db := mailDatabase(t)
+	master := []byte("test-instance-master-key")
+	admin, err := NewManager(ctx, db, New(Config{}), Config{}, master)
+	if err != nil {
+		t.Fatalf("new administrator manager: %v", err)
+	}
+	oldCfg := Config{Host: "smtp.example.com", Port: 587, From: "sender@example.com", PublicURL: "https://old.example.com"}
+	if err := admin.Save(ctx, oldCfg, "the-password", false, true); err != nil {
+		t.Fatalf("initial save: %v", err)
+	}
+	stale, err := NewManager(ctx, db, New(Config{}), Config{}, master)
+	if err != nil {
+		t.Fatalf("new stale manager: %v", err)
+	}
+	newCfg := oldCfg
+	newCfg.PublicURL = "https://new.example.com"
+
+	for round := 0; round < 25; round++ {
+		if err := admin.Save(ctx, oldCfg, "", false, true); err != nil {
+			t.Fatalf("round %d: put the old address back: %v", round, err)
+		}
+
+		start := make(chan struct{})
+		var (
+			wg                sync.WaitGroup
+			moveErr, staleErr error
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			moveErr = admin.Save(ctx, newCfg, "", false, true)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			staleErr = stale.Save(ctx, oldCfg, "", false, false)
+		}()
+		close(start)
+		wg.Wait()
+
+		if moveErr != nil {
+			t.Fatalf("round %d: super administrator's move: %v", round, moveErr)
+		}
+		if staleErr != nil && !errors.Is(staleErr, ErrOriginNeedsSuperAdmin) {
+			t.Fatalf("round %d: stale save: %v", round, staleErr)
+		}
+		reloaded, err := NewManager(ctx, db, New(Config{}), Config{}, master)
+		if err != nil {
+			t.Fatalf("round %d: reload: %v", round, err)
+		}
+		if got, _ := reloaded.Config(); got.PublicURL != newCfg.PublicURL {
+			t.Fatalf("round %d: the move was undone; public URL = %q", round, got.PublicURL)
+		}
 	}
 }

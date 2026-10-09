@@ -346,6 +346,15 @@ function removeApplication(app: SignInApplication): void {
     .finally(() => { appBusy.value = false; });
 }
 
+/**
+ * A trusted application is the super administrator's to change. The server
+ * refuses anybody else; the controls are disabled so the refusal is not what
+ * a security administrator learns first.
+ */
+function lockedApplication(app: SignInApplication): boolean {
+  return app.trusted && !isSuperAdmin.value;
+}
+
 // Trying the reviewer on an account that is not being created.
 const trial = ref({
   username: '', email: '', fields: {} as Record<string, string>, fromThisAddress: 0, answer: '', running: false,
@@ -1314,11 +1323,14 @@ onMounted(load);
           <OaTextField v-model="mailForm.from" :label="t('mailFrom')" autocomplete="email" />
           <OaSwitchField v-model="mailForm.implicit_tls" :label="t('mailImplicitTLS')" :hint="t('mailImplicitTLSHint')" />
           <OaTextField
+            v-if="isSuperAdmin"
             v-model="mailForm.public_url"
             :label="t('mailPublicURL')"
             :hint="t('mailPublicURLHint')"
             autocomplete="url"
           />
+          <!-- Shown rather than hidden: a security administrator can still see where mailed links point, and the save sends the value back unchanged, which the server accepts. -->
+          <p v-else class="oa-field-hint">{{ t('mailPublicURLLocked', { url: mailForm.public_url || '—' }) }}</p>
           <OaTextField
             v-model="mailForm.password"
             type="password"
@@ -1635,6 +1647,7 @@ onMounted(load);
       </AdminControlCard>
       <AdminControlCard id="secApplications" v-show="visible('secApplications')" :title="t('secApplications')" :icon="IconKey" :hint="t('applicationsHint')" class="oa-control-card-wide">
         <p class="oa-field-hint">{{ t('applicationsIssuer', { issuer }) }}</p>
+        <p v-if="!isSuperAdmin && applications.some((app) => app.trusted)" class="oa-field-hint">{{ t('applicationTrustedLocked') }}</p>
 
         <p v-if="!applications.length" class="oa-table-empty">{{ t('applicationsEmpty') }}</p>
         <div v-else class="oa-apps">
@@ -1662,10 +1675,10 @@ onMounted(load);
               </div>
             </div>
             <div class="oa-app-actions">
-              <button type="button" class="oa-btn" :disabled="appBusy" @click="toggleApplication(app, !app.disabled)">
+              <button type="button" class="oa-btn" :disabled="appBusy || lockedApplication(app)" @click="toggleApplication(app, !app.disabled)">
                 {{ app.disabled ? t('enable') : t('disable') }}
               </button>
-              <button v-if="app.confidential" type="button" class="oa-btn" :disabled="appBusy" @click="rotateApplication(app)">
+              <button v-if="app.confidential" type="button" class="oa-btn" :disabled="appBusy || lockedApplication(app)" @click="rotateApplication(app)">
                 {{ t('applicationRotate') }}
               </button>
               <OaConfirmButton
@@ -1674,7 +1687,7 @@ onMounted(load);
                 :armed-label="t('confirmWord')"
                 :armed-title="t('applicationDeleteConfirm', { application: app.name })"
                 :resting-title="t('deleteLabel')"
-                :disabled="appBusy"
+                :disabled="appBusy || lockedApplication(app)"
                 @confirm="removeApplication(app)"
               />
             </div>
@@ -1704,7 +1717,8 @@ onMounted(load);
           :hint="t('applicationRedirectsHint')"
         />
         <OaSwitchField v-model="draft.public" :label="t('applicationPublicField')" :hint="t('applicationPublicHint')" />
-        <OaSwitchField v-model="draft.trusted" :label="t('applicationTrustedField')" :hint="t('applicationTrustedHint')" />
+        <OaSwitchField v-if="isSuperAdmin" v-model="draft.trusted" :label="t('applicationTrustedField')" :hint="t('applicationTrustedHint')" />
+        <p v-else class="oa-field-hint">{{ t('applicationTrustedSuperAdminOnly') }}</p>
         <div class="oa-button-row">
           <button type="button" class="oa-btn primary" :disabled="appBusy" @click="registerApplication">
             {{ t('applicationRegister') }}

@@ -503,3 +503,51 @@ func TestClaimRefusesAnAccountThatAlreadyRegisteredThroughTheCode(t *testing.T) 
 		t.Fatalf("code uses = %d after claim attempt, want 1 (no second spend)", got.Uses)
 	}
 }
+
+// The creator of a code already holds it, and claiming it onto their own
+// account would hand them a group the groups grant exists to decide. The
+// refusal is about the code, so it repeats on every try without spending the
+// guess budget, and anybody else can still claim the same code.
+func TestClaimRefusesTheCodesCreator(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	target, err := f.groups.Create(ctx, nil, group.CreateInput{Name: "Creator Trial"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	creator := f.account(t, "code-creator")
+	created, err := f.store.Create(ctx, CreateInput{
+		Kind: CodeKindPartner, Count: 1, Code: "OWNCODE1", Name: "Creator Partner",
+		GroupID: target.ID, GroupDays: 5, CreatedBy: creator.ID,
+	})
+	if err != nil {
+		t.Fatalf("create partner code: %v", err)
+	}
+
+	for attempt := 0; attempt < maxClaimFailures+2; attempt++ {
+		if _, err := f.store.Claim(ctx, creator.ID, created[0].Code); !errors.Is(err, ErrOwnCode) {
+			t.Fatalf("attempt %d: the creator claimed their own code: %v, want ErrOwnCode", attempt, err)
+		}
+	}
+
+	unchanged, err := f.users.ByID(ctx, nil, creator.ID)
+	if err != nil {
+		t.Fatalf("read creator: %v", err)
+	}
+	if unchanged.GroupID == target.ID {
+		t.Fatalf("the creator's group = %s after refused claims, want unchanged", unchanged.GroupID)
+	}
+	got, err := f.store.ByID(ctx, created[0].ID)
+	if err != nil {
+		t.Fatalf("read code: %v", err)
+	}
+	if got.Uses != 0 {
+		t.Fatalf("refused claims spent %d uses of the code", got.Uses)
+	}
+
+	other := f.account(t, "other-claimer")
+	result, err := f.store.Claim(ctx, other.ID, created[0].Code)
+	if err != nil || result.GroupID != target.ID {
+		t.Fatalf("another account claiming the same code = %+v, %v", result, err)
+	}
+}

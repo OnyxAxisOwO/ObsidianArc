@@ -137,52 +137,94 @@ type AppUpdate struct {
 	Disabled     *bool
 }
 
-func (s *Store) UpdateApp(ctx context.Context, appID string, in AppUpdate) (App, error) {
-	record, err := s.AppByID(ctx, nil, appID)
+// ErrTrustedApplication is what anybody short of a super administrator is
+// told when they would register, change or remove a trusted application, or
+// make one trusted. Trust lets an application skip the consent screen for
+// everybody who signs in, so the decision belongs to the operator and not to
+// whoever was delegated the security page.
+var ErrTrustedApplication = errors.New("idp: only a super administrator may change a trusted application")
+
+// lockApp holds the application's row until the transaction ends. The
+// statement changes nothing; it is there for the lock. A trust check is a read
+// followed by a write, and without the lock a concurrent change to trust can
+// land between the two.
+func lockApp(ctx context.Context, tx *database.Tx, appID string) error {
+	result, err := tx.Exec(ctx, `UPDATE oauth_apps SET updated_at = updated_at WHERE id = ?`, appID)
+	if err != nil {
+		return fmt.Errorf("idp: lock application: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("idp: lock application: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateApp applies in to one application. superAdmin is the caller's
+// IsSuperAdmin answer: nobody else changes a trusted application, and nobody
+// else makes one trusted.
+func (s *Store) UpdateApp(ctx context.Context, appID string, in AppUpdate, superAdmin bool) (App, error) {
+	var record App
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockApp(ctx, tx, appID); err != nil {
+			return err
+		}
+		current, err := s.AppByID(ctx, tx, appID)
+		if err != nil {
+			return err
+		}
+		if !superAdmin && (current.Trusted || (in.Trusted != nil && *in.Trusted)) {
+			return ErrTrustedApplication
+		}
+		record = current
+		if in.Name != nil {
+			name, err := checkName(*in.Name)
+			if err != nil {
+				return err
+			}
+			record.Name = name
+		}
+		if in.Description != nil {
+			description := strings.TrimSpace(*in.Description)
+			if len([]rune(description)) > MaxDescriptionChars {
+				description = string([]rune(description)[:MaxDescriptionChars])
+			}
+			record.Description = description
+		}
+		if in.RedirectURIs != nil {
+			redirects, err := ParseRedirectURIs(*in.RedirectURIs)
+			if err != nil {
+				return err
+			}
+			record.RedirectURIs = redirects
+		}
+		if in.Scopes != nil {
+			record.Scopes = normaliseScopes(*in.Scopes)
+		}
+		if in.Trusted != nil {
+			record.Trusted = *in.Trusted
+		}
+		if in.Disabled != nil {
+			record.Disabled = *in.Disabled
+		}
+		record.UpdatedAt = time.Now().UnixMilli()
+
+		if _, err := tx.Exec(ctx, `UPDATE oauth_apps
+			SET name = ?, description = ?, redirect_uris = ?, scopes = ?,
+			    trusted = ?, disabled = ?, updated_at = ?
+			WHERE id = ?`,
+			record.Name, record.Description, strings.Join(record.RedirectURIs, "\n"),
+			strings.Join(record.Scopes, " "), record.Trusted, record.Disabled,
+			record.UpdatedAt, record.ID); err != nil {
+			return fmt.Errorf("idp: update application: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return App{}, err
-	}
-	if in.Name != nil {
-		name, err := checkName(*in.Name)
-		if err != nil {
-			return App{}, err
-		}
-		record.Name = name
-	}
-	if in.Description != nil {
-		description := strings.TrimSpace(*in.Description)
-		if len([]rune(description)) > MaxDescriptionChars {
-			description = string([]rune(description)[:MaxDescriptionChars])
-		}
-		record.Description = description
-	}
-	if in.RedirectURIs != nil {
-		redirects, err := ParseRedirectURIs(*in.RedirectURIs)
-		if err != nil {
-			return App{}, err
-		}
-		record.RedirectURIs = redirects
-	}
-	if in.Scopes != nil {
-		record.Scopes = normaliseScopes(*in.Scopes)
-	}
-	if in.Trusted != nil {
-		record.Trusted = *in.Trusted
-	}
-	if in.Disabled != nil {
-		record.Disabled = *in.Disabled
-	}
-	record.UpdatedAt = time.Now().UnixMilli()
-
-	_, err = s.db.Exec(ctx, `UPDATE oauth_apps
-		SET name = ?, description = ?, redirect_uris = ?, scopes = ?,
-		    trusted = ?, disabled = ?, updated_at = ?
-		WHERE id = ?`,
-		record.Name, record.Description, strings.Join(record.RedirectURIs, "\n"),
-		strings.Join(record.Scopes, " "), record.Trusted, record.Disabled,
-		record.UpdatedAt, record.ID)
-	if err != nil {
-		return App{}, fmt.Errorf("idp: update application: %w", err)
 	}
 	return record, nil
 }
@@ -190,33 +232,59 @@ func (s *Store) UpdateApp(ctx context.Context, appID string, in AppUpdate) (App,
 // RotateSecret issues a new secret and invalidates the old one. Everything
 // already issued keeps working: the secret authenticates the application at
 // the token endpoint, and a token that has already been handed over was
-// authenticated when it was issued.
-func (s *Store) RotateSecret(ctx context.Context, appID string) (string, error) {
-	record, err := s.AppByID(ctx, nil, appID)
+// authenticated when it was issued. A trusted application's secret is the
+// super administrator's to rotate, because whoever holds it can exchange the
+// codes its users are sent.
+func (s *Store) RotateSecret(ctx context.Context, appID string, superAdmin bool) (string, error) {
+	var secret string
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockApp(ctx, tx, appID); err != nil {
+			return err
+		}
+		record, err := s.AppByID(ctx, tx, appID)
+		if err != nil {
+			return err
+		}
+		if !superAdmin && record.Trusted {
+			return ErrTrustedApplication
+		}
+		if !record.Confidential {
+			return ErrInvalidRequest
+		}
+		secret = id.Secret(secretBytes)
+		if _, err := tx.Exec(ctx,
+			`UPDATE oauth_apps SET secret_hash = ?, updated_at = ? WHERE id = ?`,
+			Digest(secret), time.Now().UnixMilli(), appID); err != nil {
+			return fmt.Errorf("idp: rotate secret: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return "", err
-	}
-	if !record.Confidential {
-		return "", ErrInvalidRequest
-	}
-	secret := id.Secret(secretBytes)
-	if _, err := s.db.Exec(ctx,
-		`UPDATE oauth_apps SET secret_hash = ?, updated_at = ? WHERE id = ?`,
-		Digest(secret), time.Now().UnixMilli(), appID); err != nil {
-		return "", fmt.Errorf("idp: rotate secret: %w", err)
 	}
 	return secret, nil
 }
 
-func (s *Store) DeleteApp(ctx context.Context, appID string) error {
-	result, err := s.db.Exec(ctx, `DELETE FROM oauth_apps WHERE id = ?`, appID)
-	if err != nil {
-		return fmt.Errorf("idp: delete application: %w", err)
-	}
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
-		return ErrNotFound
-	}
-	return nil
+// DeleteApp removes an application and everything issued through it. A trusted
+// one is the super administrator's to remove, for the same reason it is theirs
+// to change.
+func (s *Store) DeleteApp(ctx context.Context, appID string, superAdmin bool) error {
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockApp(ctx, tx, appID); err != nil {
+			return err
+		}
+		record, err := s.AppByID(ctx, tx, appID)
+		if err != nil {
+			return err
+		}
+		if !superAdmin && record.Trusted {
+			return ErrTrustedApplication
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM oauth_apps WHERE id = ?`, appID); err != nil {
+			return fmt.Errorf("idp: delete application: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) ListApps(ctx context.Context) ([]App, error) {

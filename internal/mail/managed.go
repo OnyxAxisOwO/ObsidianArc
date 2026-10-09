@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -68,9 +69,17 @@ func (m *Manager) read(ctx context.Context) error {
 	return nil
 }
 
+// ErrOriginNeedsSuperAdmin is returned when someone other than a super
+// administrator would move the public site URL. Mailed links are built from
+// that address, so whoever sets it decides where a person who clicks a
+// verification link ends up.
+var ErrOriginNeedsSuperAdmin = errors.New("mail: only a super administrator can change the public site URL")
+
 // Save persists and activates a whole configuration. An empty password keeps
-// the current secret unless clearPassword explicitly removes it.
-func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPassword bool) error {
+// the current secret unless clearPassword explicitly removes it. changeOrigin
+// says whether the caller may move PublicURL; a caller that may not is refused
+// every value but the one already stored.
+func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPassword, changeOrigin bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cfg = normalizeConfig(cfg)
@@ -89,8 +98,8 @@ func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPa
 			currentSealed []byte
 			current       Config
 		)
-		readErr := tx.QueryRow(ctx, `SELECT host, port, username, password FROM mail_config WHERE id = 1`).
-			Scan(&current.Host, &current.Port, &current.Username, &currentSealed)
+		readErr := tx.QueryRow(ctx, `SELECT host, port, username, public_url, password FROM mail_config WHERE id = 1`).
+			Scan(&current.Host, &current.Port, &current.Username, &current.PublicURL, &currentSealed)
 		currentPassword := ""
 		switch {
 		case readErr == nil:
@@ -108,6 +117,14 @@ func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPa
 			currentPassword = m.cfg.Password
 		default:
 			return fmt.Errorf("mail: read stored password: %w", readErr)
+		}
+
+		// Compared with what is stored, read under the lock this write holds.
+		// This manager's own copy can be behind another instance's save, and a
+		// save that trusted it could put back an address a super administrator
+		// had moved away from.
+		if cfg.PublicURL != strings.TrimSpace(current.PublicURL) && !changeOrigin {
+			return ErrOriginNeedsSuperAdmin
 		}
 
 		if clearPassword {

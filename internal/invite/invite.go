@@ -154,6 +154,10 @@ var (
 	// on purpose.
 	ErrClaimed       = errors.New("invite: this code has already been claimed")
 	ErrGroupConflict = errors.New("invite: claiming this code would replace an existing group membership")
+	// The creator of a code cannot claim it onto their own account. That is
+	// a fact about the code, not a guess at it, so the refusal does not
+	// charge the throttle, the same as a repeat claim.
+	ErrOwnCode = errors.New("invite: you created this code, so it cannot be claimed on your own account")
 )
 
 const (
@@ -526,6 +530,7 @@ const (
 	claimOutcomeInvalid       claimOutcome = "invalid"
 	claimOutcomeClaimed       claimOutcome = "claimed"
 	claimOutcomeGroupConflict claimOutcome = "group_conflict"
+	claimOutcomeOwnCode       claimOutcome = "own_code"
 	claimOutcomeThrottled     claimOutcome = "throttled"
 )
 
@@ -605,6 +610,7 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 		var record struct {
 			id                      string
 			kind                    string
+			createdBy               string
 			allowExisting           bool
 			groupID                 string
 			groupDays, groupDaysMax int
@@ -612,9 +618,9 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 			expiresAt, revokedAt    int64
 		}
 		err = tx.QueryRow(ctx,
-			`SELECT id, kind, allow_existing, group_id, group_days, group_days_max, max_uses, uses, expires_at, revoked_at
+			`SELECT id, kind, created_by, allow_existing, group_id, group_days, group_days_max, max_uses, uses, expires_at, revoked_at
 			 FROM invite_codes WHERE code = ?`, code).
-			Scan(&record.id, &record.kind, &record.allowExisting, &record.groupID,
+			Scan(&record.id, &record.kind, &record.createdBy, &record.allowExisting, &record.groupID,
 				&record.groupDays, &record.groupDaysMax, &record.maxUses, &record.uses,
 				&record.expiresAt, &record.revokedAt)
 		if database.IsNotFound(err) {
@@ -637,6 +643,12 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 			return fail(claimOutcomeInvalid)
 		case record.maxUses != 0 && record.uses >= record.maxUses:
 			return fail(claimOutcomeInvalid)
+		}
+
+		// After the code's own validity, so a code that could never be
+		// claimed still gets the one answer every other claimant gets.
+		if record.createdBy != "" && record.createdBy == userID {
+			return refuse(claimOutcomeOwnCode)
 		}
 
 		var alreadyClaimed int
@@ -799,6 +811,8 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 		return nil, ErrClaimed
 	case claimOutcomeGroupConflict:
 		return nil, ErrGroupConflict
+	case claimOutcomeOwnCode:
+		return nil, ErrOwnCode
 	default:
 		return &result, nil
 	}

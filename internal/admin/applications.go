@@ -47,14 +47,21 @@ func (h *Handlers) createApp(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, 16*1024); err != nil {
 		return err
 	}
+	actor := auth.MustUser(r.Context())
+	trusted := body.Trusted != nil && *body.Trusted
+	// Checked here rather than in the store: a new application has no stored
+	// trust to race with, so only the caller's own answer matters.
+	if trusted && !actor.IsSuperAdmin() {
+		return trustedApplicationRefused()
+	}
 	record, secret, err := h.apps.CreateApp(r.Context(), idp.CreateAppInput{
 		Name:         value(body.Name),
 		Description:  value(body.Description),
 		RedirectURIs: value(body.RedirectURI),
 		Scopes:       body.Scopes,
-		Trusted:      body.Trusted != nil && *body.Trusted,
+		Trusted:      trusted,
 		Public:       body.Public,
-		CreatedBy:    auth.MustUser(r.Context()).ID,
+		CreatedBy:    actor.ID,
 	})
 	if err != nil {
 		return applicationError(err)
@@ -82,7 +89,7 @@ func (h *Handlers) updateApp(w http.ResponseWriter, r *http.Request) error {
 	if body.Scopes != nil {
 		update.Scopes = &body.Scopes
 	}
-	record, err := h.apps.UpdateApp(r.Context(), r.PathValue("id"), update)
+	record, err := h.apps.UpdateApp(r.Context(), r.PathValue("id"), update, auth.MustUser(r.Context()).IsSuperAdmin())
 	if err != nil {
 		return applicationError(err)
 	}
@@ -94,7 +101,7 @@ func (h *Handlers) updateApp(w http.ResponseWriter, r *http.Request) error {
 // when it was handed over, and taking those back is what disabling the
 // application is for.
 func (h *Handlers) rotateAppSecret(w http.ResponseWriter, r *http.Request) error {
-	secret, err := h.apps.RotateSecret(r.Context(), r.PathValue("id"))
+	secret, err := h.apps.RotateSecret(r.Context(), r.PathValue("id"), auth.MustUser(r.Context()).IsSuperAdmin())
 	if err != nil {
 		return applicationError(err)
 	}
@@ -102,15 +109,28 @@ func (h *Handlers) rotateAppSecret(w http.ResponseWriter, r *http.Request) error
 }
 
 func (h *Handlers) deleteApp(w http.ResponseWriter, r *http.Request) error {
-	if err := h.apps.DeleteApp(r.Context(), r.PathValue("id")); err != nil {
+	if err := h.apps.DeleteApp(r.Context(), r.PathValue("id"), auth.MustUser(r.Context()).IsSuperAdmin()); err != nil {
 		return applicationError(err)
 	}
 	return httpx.NoContent(w)
 }
 
+// trustedApplicationRefused answers anybody without the super administrator's
+// authority who tries to register, change or remove a trusted application. The
+// message names the requirement, because a security administrator who meets it
+// has no other way to tell that trust is the super administrator's decision
+// rather than a grant they are missing.
+func trustedApplicationRefused() error {
+	return httpx.ForbiddenCode("super_admin_required",
+		"Only a super administrator can register, change or remove a trusted application.")
+}
+
 func applicationError(err error) error {
 	if errors.Is(err, idp.ErrNotFound) {
 		return httpx.NotFound("No such application.")
+	}
+	if errors.Is(err, idp.ErrTrustedApplication) {
+		return trustedApplicationRefused()
 	}
 	if message, known := idp.TranslateError(err); known {
 		return httpx.BadRequest("%s", message)

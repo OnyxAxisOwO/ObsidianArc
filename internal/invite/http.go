@@ -211,6 +211,9 @@ func (h *Handlers) claim(w http.ResponseWriter, r *http.Request) error {
 		case errors.Is(err, ErrGroupConflict):
 			return httpx.Conflict("invite_group_conflict",
 				"Claiming this code would change a group membership you already have.")
+		case errors.Is(err, ErrOwnCode):
+			return httpx.ForbiddenCode("invite_own_code",
+				"You created this code, so it cannot be claimed on your own account.")
 		case errors.Is(err, ErrInvalid):
 			return httpx.BadRequestCode("invite_invalid", "That invite code is not valid.")
 		default:

@@ -438,7 +438,8 @@ export interface Dashboard {
     models: number;
     enabled_models: number;
   };
-  newest_users: Account[];
+  /** Only these fields: the dashboard grant does not cover an account's address or signup details. */
+  newest_users: Pick<Account, 'id' | 'username' | 'nickname' | 'created_at'>[];
   last_24h: UsageTotals;
   /** The 24 hours before those, so each figure can say which way it moved. */
   prev_24h: UsageTotals;
