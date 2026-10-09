@@ -213,7 +213,7 @@ func init() {
 				"已过期、已用完、个人码，以及不允许领取的码，一律给出同一个回复——这是故意的，猜测邀请码会" +
 				"像登录一样被限速。",
 		},
-		Args:       []Arg{{Name: "code", Hint: Text{EN: "the invite code to claim", ZH: "要领取的邀请码"}, Required: true}},
+		Args:       []Arg{{Name: "code", Hint: Text{EN: "the invite code to claim", ZH: "要领取的邀请码"}, Required: true, Sensitive: true}},
 		Examples:   []string{"me invite claim PARTNERX", "me invite claim ab12-cd34"},
 		SeeAlso:    []string{"me invite", "invite create"},
 		Permission: Anyone,

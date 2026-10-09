@@ -123,6 +123,13 @@ type Arg struct {
 	Name     string
 	Hint     Text
 	Required bool
+	// Sensitive arguments are recorded as *** in the audit trail, like a
+	// Sensitive flag. The audit line is rebuilt from parsed tokens that have
+	// no names to tell a code from a username, so only the command's own
+	// declaration can say which positional is a secret. On the last declared
+	// argument it also covers every extra token after it, which is how a
+	// value with spaces in it reaches a command that joins them.
+	Sensitive bool
 }
 
 // Flag is one named flag. Value is the placeholder shown in help and the
@@ -171,6 +178,11 @@ type Command struct {
 	// once every noun's commands exist) checks against admin.Routes.
 	Endpoints []string
 	Run       func(ctx context.Context, rt *Runtime) error
+	// SecretArgs names the positional arguments, by index, that hold a
+	// secret on this line though Arg.Sensitive cannot say so for the command
+	// as a whole: the value of `setting set` is a credential only when its
+	// key is one. Consulted in addition to Arg.Sensitive.
+	SecretArgs func(c *Console, args []string) map[int]bool
 	// The plugin that registered it. A switched-off plugin's commands are
 	// not found, not listed and not completed — the same as a build without
 	// it.
@@ -657,8 +669,13 @@ func (rt *Runtime) Fields(pairs [][2]string) error {
 // Printf writes plain text to the session, with no ANSI of its own — a
 // command that wants colour uses Table/Fields/Errorf, which already know
 // the session's rules.
+//
+// Whatever the arguments hold is data, so the formatted result goes through
+// sanitizeText on its way out: a command that prints a title, a body or an
+// error from a row cannot hand the terminal an escape sequence, and none of
+// them has to remember to ask. Line feeds and tabs are the layout and stay.
 func (rt *Runtime) Printf(format string, args ...any) {
-	fmt.Fprintf(rt.Out, format, args...)
+	io.WriteString(rt.Out, sanitizeText(fmt.Sprintf(format, args...)))
 }
 
 // Errorf builds an error the way fmt.Errorf does. It does not write

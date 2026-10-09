@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -106,6 +105,18 @@ func init() {
 		SeeAlso:    []string{"setting list", "setting import"},
 		Permission: "settings,security,availability,invites,leaderboard",
 		Endpoints:  []string{"PUT /api/admin/settings"},
+		// The value is masked only for a credential's key: for every other
+		// setting the audit trail is worth more with what it was changed to.
+		SecretArgs: func(c *Console, args []string) map[int]bool {
+			if len(args) < 2 || !c.secretSetting(args[0]) {
+				return nil
+			}
+			masked := map[int]bool{}
+			for i := 1; i < len(args); i++ {
+				masked[i] = true
+			}
+			return masked
+		},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 2 {
 				if rt.Session.Lang == "zh" {
@@ -140,7 +151,9 @@ func init() {
 				"列出，不会导致整个导入失败。与 setting set 不同，若文档中 turnstile.secret_key 的值恰好是" +
 				"打码占位符 '••••••••'，这里不会阻止它被原样写入覆盖已保存的密钥。",
 		},
-		Args:        []Arg{{Name: "json", Hint: Text{EN: "the import document", ZH: "导入文档"}, Required: true}},
+		// The whole document is masked: it is a settings export, and one
+		// that was pasted back carries the credentials in it.
+		Args:        []Arg{{Name: "json", Hint: Text{EN: "the import document", ZH: "导入文档"}, Required: true, Sensitive: true}},
 		Examples:    []string{`setting import '{"site.name":"Obsidian Arc"}' --yes`, "setting import '{...}' -y"},
 		Permission:  "settings",
 		Destructive: true,
@@ -602,16 +615,19 @@ func init() {
 		Name:    "login-bg set",
 		Group:   "instance",
 		Summary: Text{EN: "Set a login background image", ZH: "设置登录背景图"},
-		Usage:   "login-bg set <variant> <file-or-base64>",
+		Usage:   "login-bg set <variant> <base64-or-data-url>",
 		Help: Text{
-			EN: "Upload or set a background image for landscape_light, landscape_dark, portrait_light, portrait_dark, tablet_light, or tablet_dark. Prefix the variant with app_ for the signed-in background.",
-			ZH: "为 landscape_light、landscape_dark、portrait_light、portrait_dark、tablet_light 或 tablet_dark 设置或上传背景图。变种前加 app_ 则是登录后的背景。",
+			EN: "Set a background image for landscape_light, landscape_dark, portrait_light, portrait_dark, tablet_light, or tablet_dark. Prefix the variant with app_ for the signed-in background. The image is given as base64 or a data: URL; the server never reads a file named on the command line.",
+			ZH: "为 landscape_light、landscape_dark、portrait_light、portrait_dark、tablet_light 或 tablet_dark 设置背景图。变种前加 app_ 则是登录后的背景。图片以 base64 或 data: URL 给出；服务器不会读取命令行里指定的文件。",
 		},
+		// The image is masked in the audit line. Not because it is secret:
+		// megabytes of base64 do not belong in a table of decisions that
+		// people read.
 		Args: []Arg{
 			{Name: "variant", Hint: Text{EN: "landscape_light, landscape_dark, portrait_light, or portrait_dark", ZH: "landscape_light、landscape_dark、portrait_light 或 portrait_dark"}, Required: true},
-			{Name: "image", Hint: Text{EN: "image file path or base64 data", ZH: "图片文件路径或 base64 数据"}, Required: true},
+			{Name: "image", Hint: Text{EN: "base64 image data or a data: URL", ZH: "base64 图片数据或 data: URL"}, Required: true, Sensitive: true},
 		},
-		Examples:   []string{"login-bg set landscape_light /path/to/image.png", "login-bg set portrait_dark /path/to/image.jpg"},
+		Examples:   []string{"login-bg set landscape_light data:image/png;base64,iVBORw0KGgo…", "login-bg set portrait_dark /9j/4AAQSkZJRg…"},
 		Permission: "settings",
 		Endpoints:  []string{"PUT /api/admin/login-background/{variant}"},
 		Run: func(_ context.Context, rt *Runtime) error {
@@ -622,15 +638,9 @@ func init() {
 				return rt.Errorf("variant and image are required")
 			}
 			variant := rt.Arg(0)
-			rawImage := rt.Arg(1)
-
-			var mime, data string
-			if fileBytes, err := os.ReadFile(rawImage); err == nil {
-				mime = http.DetectContentType(fileBytes)
-				data = base64.StdEncoding.EncodeToString(fileBytes)
-			} else {
-				mime = "image/jpeg"
-				data = rawImage
+			mime, data, err := imageArg(rt, rt.Arg(1))
+			if err != nil {
+				return err
 			}
 
 			respData, _, err := rt.Call(http.MethodPut, "/api/admin/login-background/"+variant, map[string]string{
@@ -688,15 +698,15 @@ func init() {
 		Name:    "logo set",
 		Group:   "instance",
 		Summary: Text{EN: "Set the site logo", ZH: "设置站点 Logo"},
-		Usage:   "logo set <file-or-base64>",
+		Usage:   "logo set <base64-or-data-url>",
 		Help: Text{
-			EN: "Upload or set a custom site logo (used for header brand, browser favicon, and PWA icon).",
-			ZH: "设置或上传自定义站点 Logo（用作顶部导航栏图标、浏览器 Favicon 及 PWA 应用图标）。",
+			EN: "Set a custom site logo (used for header brand, browser favicon, and PWA icon). The image is given as base64 or a data: URL; the server never reads a file named on the command line.",
+			ZH: "设置自定义站点 Logo（用作顶部导航栏图标、浏览器 Favicon 及 PWA 应用图标）。图片以 base64 或 data: URL 给出；服务器不会读取命令行里指定的文件。",
 		},
 		Args: []Arg{
-			{Name: "image", Hint: Text{EN: "image file path or base64 data", ZH: "图片文件路径或 base64 数据"}, Required: true},
+			{Name: "image", Hint: Text{EN: "base64 image data or a data: URL", ZH: "base64 图片数据或 data: URL"}, Required: true, Sensitive: true},
 		},
-		Examples:   []string{"logo set /path/to/logo.png", "logo set /path/to/logo.svg"},
+		Examples:   []string{"logo set data:image/png;base64,iVBORw0KGgo…", "logo set iVBORw0KGgo…"},
 		Permission: "settings",
 		Endpoints:  []string{"PUT /api/admin/logo"},
 		Run: func(_ context.Context, rt *Runtime) error {
@@ -706,15 +716,9 @@ func init() {
 				}
 				return rt.Errorf("image is required")
 			}
-			rawImage := rt.Arg(0)
-
-			var mime, data string
-			if fileBytes, err := os.ReadFile(rawImage); err == nil {
-				mime = http.DetectContentType(fileBytes)
-				data = base64.StdEncoding.EncodeToString(fileBytes)
-			} else {
-				mime = "image/png"
-				data = rawImage
+			mime, data, err := imageArg(rt, rt.Arg(0))
+			if err != nil {
+				return err
 			}
 
 			respData, _, err := rt.Call(http.MethodPut, "/api/admin/logo", map[string]string{
@@ -760,4 +764,36 @@ func init() {
 			return nil
 		},
 	})
+}
+
+// imageArg turns a command-line image into the mime and base64 the admin
+// endpoints take. It accepts base64 or a data: URL and nothing else, and in
+// particular it never opens a path: the process is the server's, so a path
+// given here would be read with the server's rights (on Windows a UNC path
+// even makes the host authenticate to wherever it points) and the file would
+// be the server's, not the administrator's.
+func imageArg(rt *Runtime, raw string) (mime, data string, err error) {
+	data = strings.TrimSpace(raw)
+	if rest, ok := strings.CutPrefix(data, "data:"); ok {
+		header, payload, found := strings.Cut(rest, ",")
+		if !found || !strings.HasSuffix(header, ";base64") {
+			return "", "", imageArgError(rt)
+		}
+		mime, data = strings.TrimSuffix(header, ";base64"), payload
+	}
+	decoded, decodeErr := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(data), ""))
+	if decodeErr != nil || len(decoded) == 0 {
+		return "", "", imageArgError(rt)
+	}
+	if mime == "" {
+		mime = http.DetectContentType(decoded)
+	}
+	return mime, data, nil
+}
+
+func imageArgError(rt *Runtime) error {
+	if rt.Session.Lang == "zh" {
+		return rt.Errorf("图片需要以 base64 或 data: URL 给出；服务器不会读取文件路径。")
+	}
+	return rt.Errorf("the image must be base64 or a data: URL; the server does not read file paths")
 }

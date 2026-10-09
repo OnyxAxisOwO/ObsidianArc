@@ -267,7 +267,7 @@ func init() {
 		},
 		Flags: []Flag{
 			{Name: "--count", Hint: Text{EN: "how many to generate, 1-500, default 1", ZH: "生成数量，1-500，默认 1"}, Value: "N", Default: "1"},
-			{Name: "--code", Hint: Text{EN: "one custom code instead of generating; only with count 1", ZH: "指定一个自定义码，而非自动生成；仅限数量为 1 时"}, Value: "CUSTOM"},
+			{Name: "--code", Hint: Text{EN: "one custom code instead of generating; only with count 1", ZH: "指定一个自定义码，而非自动生成；仅限数量为 1 时"}, Value: "CUSTOM", Sensitive: true},
 			{Name: "--uses", Hint: Text{EN: "max registrations, 0-100000, 0 = unlimited, default 1", ZH: "最多可注册次数，0-100000，0 表示不限，默认 1"}, Value: "N", Default: "1"},
 			{Name: "--days", Hint: Text{EN: "code expires this many days from now", ZH: "邀请码在这么多天后失效"}, Value: "N"},
 			{Name: "--expires", Hint: Text{EN: "code expires on this calendar date, YYYY-MM-DD", ZH: "邀请码在此日期失效，格式 YYYY-MM-DD"}, Value: "YYYY-MM-DD"},

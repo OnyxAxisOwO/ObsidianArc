@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -192,19 +193,22 @@ func init() {
 		Group:      "session",
 		Permission: Anyone,
 		Summary:    Text{EN: "Repeat a command until stopped", ZH: "反复执行某个命令，直到停止"},
-		Usage:      "watch [--interval DURATION] [--count N] <command...>",
+		Usage:      "watch [--interval DURATION] [--count N] [--for DURATION] <command...>",
 		Help: Text{
 			EN: "Re-runs the given command, clearing between runs, until the connection is cancelled " +
-				"(Ctrl-C / closing the tab) or --count is reached. A flag meant for the wrapped " +
+				"(Ctrl-C / closing the tab), --count is reached or --for runs out (default 1h, at most 24h). " +
+				"A flag meant for the wrapped " +
 				"command rather than for watch itself goes after a literal --, e.g. " +
 				"watch --interval 5s -- user list --q alice.",
-			ZH: "反复执行给定的命令，每次之间清屏，直到连接被取消（Ctrl-C / 关闭标签页）或达到 --count 次数。" +
+			ZH: "反复执行给定的命令，每次之间清屏，直到连接被取消（Ctrl-C / 关闭标签页）、达到 --count 次数或 --for 用完" +
+				"（默认 1 小时，最长 24 小时）。" +
 				"若某个选项是给被包裹的命令而非 watch 本身的，请放在字面量 -- 之后，例如" +
 				" watch --interval 5s -- user list --q alice。",
 		},
 		Flags: []Flag{
 			{Name: "--interval", Hint: Text{EN: "how often to re-run, minimum 1s", ZH: "重复间隔，最短 1 秒"}, Value: "DURATION", Default: "2s"},
-			{Name: "--count", Hint: Text{EN: "stop after this many runs, 0 = forever", ZH: "达到该次数后停止，0 表示不限"}, Value: "N", Default: "0"},
+			{Name: "--count", Hint: Text{EN: "stop after this many runs, 0 = until --for", ZH: "达到该次数后停止，0 表示直到 --for 用完"}, Value: "N", Default: "0"},
+			{Name: "--for", Hint: Text{EN: "stop after this long, default 1h, at most 24h", ZH: "运行这么久后停止，默认 1 小时，最长 24 小时"}, Value: "DURATION", Default: "1h"},
 		},
 		Args: []Arg{
 			{Name: "command...", Hint: Text{EN: "the command to repeat", ZH: "要重复执行的命令"}, Required: true},
@@ -228,6 +232,16 @@ func init() {
 			}
 			count := rt.IntOr("count", 0)
 
+			// A watch nobody stops would hold its session for as long as the
+			// connection lived. The transport cancels ctx when the client goes
+			// away; this bounds the client that stays and forgets.
+			limit := rt.DurationOr("for", defaultWatchFor)
+			if limit <= 0 || limit > maxWatchFor {
+				limit = maxWatchFor
+			}
+			ctx, stop := context.WithTimeout(ctx, limit)
+			defer stop()
+
 			for i := 0; count == 0 || i < count; i++ {
 				if rt.Session.Colour {
 					fmt.Fprint(rt.Out, "\x1b[H\x1b[2J")
@@ -240,6 +254,7 @@ func init() {
 					return errExit
 				}
 				if ctx.Err() != nil {
+					watchStopped(rt, ctx, limit)
 					return nil
 				}
 				if count != 0 && i == count-1 {
@@ -248,6 +263,7 @@ func init() {
 
 				select {
 				case <-ctx.Done():
+					watchStopped(rt, ctx, limit)
 					return nil
 				case <-time.After(interval):
 				}
@@ -324,4 +340,24 @@ func init() {
 			return nil
 		},
 	})
+}
+
+// What `watch` runs for when --for is not given, and the longest it may be
+// told to.
+const (
+	defaultWatchFor = time.Hour
+	maxWatchFor     = 24 * time.Hour
+)
+
+// watchStopped says why a watch ended, but only when it was the clock: a
+// cancelled connection has nobody left to tell.
+func watchStopped(rt *Runtime, ctx context.Context, limit time.Duration) {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return
+	}
+	if rt.Session.Lang == "zh" {
+		rt.Printf("\nwatch 已运行 %s，到时间停止。\n", limit)
+		return
+	}
+	rt.Printf("\nwatch stopped after %s.\n", limit)
 }

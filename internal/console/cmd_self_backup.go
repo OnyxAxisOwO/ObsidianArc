@@ -57,7 +57,7 @@ func init() {
 				"输入）。对话总是作为新副本被添加——同一份文件导入两次，其中的内容就会有两份，而不是合并——" +
 				"但文档中出现的偏好设置键会覆盖你当前对应键的值。",
 		},
-		Args: []Arg{{Name: "json", Hint: Text{EN: "the export document", ZH: "导出文档"}, Required: true}},
+		Args: []Arg{{Name: "json", Hint: Text{EN: "the export document", ZH: "导出文档"}, Required: true, Sensitive: true}},
 		Examples: []string{
 			`backup import '{"obsidian_arc_export":1,"conversations":[]}' --yes`,
 			`backup import --body '{"obsidian_arc_export":1}' -y`,

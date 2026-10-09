@@ -786,7 +786,7 @@ func init() {
 		Flags: []Flag{
 			{Name: "--name", Hint: Text{EN: "name or label for the minted card", ZH: "卡片名称"}, Value: "NAME"},
 			{Name: "--windows", Hint: Text{EN: "quota windows, e.g. 5h, 1w, 1m, 5h,1w, or full", ZH: "重置周期，如 5h、1w、1m、5h,1w 或 full"}, Value: "WINS"},
-			{Name: "--code", Hint: Text{EN: "the literal code; empty = generated", ZH: "字面兑换码；留空则自动生成"}, Value: "TEXT"},
+			{Name: "--code", Hint: Text{EN: "the literal code; empty = generated", ZH: "字面兑换码；留空则自动生成"}, Value: "TEXT", Sensitive: true},
 			{Name: "--cards", Hint: Text{EN: "cards per code, 1-10000, default 1", ZH: "每个兑换码的卡数，1-10000，默认 1"}, Value: "N", Default: "1"},
 			{Name: "--card-days", Hint: Text{EN: "how long each minted card lives, 0-3650", ZH: "每张卡的有效天数，0-3650"}, Value: "D"},
 			{Name: "--expires-at", Hint: Text{EN: "when the code itself stops being redeemable, epoch ms", ZH: "兑换码本身的失效时间（毫秒时间戳）"}, Value: "MS"},
