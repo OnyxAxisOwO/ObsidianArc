@@ -76,16 +76,19 @@ func init() {
 		Name:    "2fa enable",
 		Group:   "profile",
 		Summary: Text{EN: "Confirm and switch on two-step sign-in", ZH: "确认并启用两步验证"},
-		Usage:   "2fa enable <code> --yes",
+		Usage:   "2fa enable <code> [--current-password PASSWORD] --yes",
 		Help: Text{
 			EN: "Confirms the secret from `2fa setup` with a code from your app. Prints ten recovery " +
 				"codes, once: keep them somewhere other than the phone. Every other session on your " +
-				"account is ended.",
+				"account is ended. An account with a password must give it with --current-password.",
 			ZH: "用应用中的验证码确认 `2fa setup` 给出的密钥。会打印十个恢复码，仅显示这一次：请保存在手机" +
-				"以外的地方。你账户在其他地方的登录会话都会被结束。",
+				"以外的地方。你账户在其他地方的登录会话都会被结束。设有密码的账户须用 --current-password 给出密码。",
 		},
-		Args:        []Arg{{Name: "code", Hint: Text{EN: "the six digits your app shows", ZH: "应用显示的六位数字"}, Required: true, Sensitive: true}},
-		Examples:    []string{"2fa enable 123456 --yes", "2fa enable '123 456' -y"},
+		Args: []Arg{{Name: "code", Hint: Text{EN: "the six digits your app shows", ZH: "应用显示的六位数字"}, Required: true, Sensitive: true}},
+		Flags: []Flag{
+			{Name: "--current-password", Hint: Text{EN: "your current password, if the account has one", ZH: "当前密码（账户设有密码时需要）"}, Value: "PASSWORD", Sensitive: true},
+		},
+		Examples:    []string{"2fa enable 123456 --current-password 'my-password' --yes", "2fa enable '123 456' -y"},
 		Permission:  Anyone,
 		Destructive: true,
 		Endpoints:   []string{"POST /api/profile/two-factor/enable"},
@@ -94,7 +97,8 @@ func init() {
 			if err != nil {
 				return err
 			}
-			data, _, err := rt.Call(http.MethodPost, "/api/profile/two-factor/enable", map[string]any{"code": code})
+			data, _, err := rt.Call(http.MethodPost, "/api/profile/two-factor/enable",
+				map[string]any{"code": code, "current_password": rt.String("current-password")})
 			if err != nil {
 				return err
 			}

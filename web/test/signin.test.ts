@@ -609,6 +609,45 @@ describe('the connections an account holds', () => {
     expect(host.textContent).not.toContain(t('setPasswordHint'));
   });
 
+  // The address is where a reset link goes, so moving it takes the password —
+  // but a nickname edit sends the unchanged address too and must not.
+  it('asks for the password only while the email is being changed', async () => {
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
+      connections: [], providers: [], has_password: true,
+    });
+    const save = vi.spyOn(authApi, 'updateProfile')
+      .mockResolvedValue({ user: { ...account, email: 'new@example.com' } });
+    await mount(AccountSection);
+    expect(host.textContent).not.toContain(t('emailChangePasswordHint'));
+
+    type(fieldInput(t('email')), 'new@example.com');
+    await settle();
+    expect(host.textContent).toContain(t('emailChangePasswordHint'));
+
+    button(host, t('save')).click();
+    await settle();
+    expect(save).not.toHaveBeenCalled();
+
+    type(fieldInput(t('currentPassword')), 'a-good-password');
+    await settle();
+    button(host, t('save')).click();
+    await settle();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+      email: 'new@example.com', current_password: 'a-good-password',
+    }));
+  });
+
+  it('does not ask an account with no password for one to change its email', async () => {
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
+      connections: [], providers: [], has_password: false,
+    });
+    await mount(AccountSection);
+
+    type(fieldInput(t('email')), 'new@example.com');
+    await settle();
+    expect(host.textContent).not.toContain(t('emailChangePasswordHint'));
+  });
+
   it('lists the sites this account has signed into, and removes one', async () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [], providers: [], has_password: true,

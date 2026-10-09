@@ -75,10 +75,11 @@ func init() {
 			{Name: "--email", Hint: Text{EN: "email address", ZH: "邮箱地址"}, Value: "EMAIL"},
 			{Name: "--bio", Hint: Text{EN: "bio, ≤500 chars", ZH: "简介，≤500 字符"}, Value: "TEXT"},
 			{Name: "--avatar", Hint: Text{EN: "avatar URL or data, ≤8192 chars", ZH: "头像 URL 或数据，≤8192 字符"}, Value: "TEXT"},
+			{Name: "--current-password", Hint: Text{EN: "your current password; needed to change --email", ZH: "当前密码；修改 --email 时需要"}, Value: "PASSWORD", Sensitive: true},
 		},
 		Examples: []string{
 			`me edit --nickname "night owl"`,
-			"me edit --email new@example.com --bio 'hello there'",
+			"me edit --email new@example.com --current-password 'my-password' --bio 'hello there'",
 		},
 		Permission: Anyone,
 		Endpoints:  []string{"PATCH /api/profile"},
@@ -88,8 +89,12 @@ func init() {
 			body.str(rt, "email", "email")
 			body.str(rt, "bio", "bio")
 			body.str(rt, "avatar", "avatar")
+			// A password alone changes nothing, so it is not what makes the
+			// request non-empty.
+			empty := len(body) == 0
+			body.str(rt, "current-password", "current_password")
 
-			if len(body) == 0 {
+			if empty {
 				if rt.Session.Lang == "zh" {
 					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
 				}

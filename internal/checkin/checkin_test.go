@@ -236,6 +236,69 @@ func TestACheckInStandsWhenItsRewardCannotBePaid(t *testing.T) {
 	}
 }
 
+// A bar's own end date is what a reward with no days of its own inherits. One
+// that has already passed used to fall through to "never expires", so the
+// bar's last day turned into a grant that outlived it for good.
+func TestABarThatHasEndedPaysNothingInsteadOfPayingForever(t *testing.T) {
+	f := newFixture(t)
+	ended, err := f.bonus.CreateBar(context.Background(), bonus.Bar{
+		Name: "ended", ToggleMode: bonus.ModeUser, ShowTotal: true, DefaultOn: true,
+		DefaultExpiresAt: f.base.Add(-time.Hour).UnixMilli(),
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.configure(t, Settings{Enabled: true, Config: Config{
+		Daily: Reward{Kind: KindBonus, BarID: ended.ID, Amount: 1},
+		Rules: []Rule{{ID: "week", Title: "week", Basis: BasisStreak, Days: 1,
+			Reward: Reward{Kind: KindBonus, BarID: ended.ID, Amount: 5}}},
+	}})
+	a := f.person(t, "alice")
+
+	res, err := f.checkInOn(t, a.ID, 1)
+	if err != nil || !res.RewardFailed || res.Streak != 1 {
+		t.Fatalf("the check-in itself should stand without its reward: %+v %v", res, err)
+	}
+	if _, err := f.svc.Claim(context.Background(), a.ID, "week"); !errors.Is(err, bonus.ErrInvalidExpiry) {
+		t.Fatalf("claiming from an ended bar = %v, want bonus.ErrInvalidExpiry", err)
+	}
+	if n, _ := f.grants(t, a.ID); n != 0 {
+		t.Fatalf("%d grants were written from a bar that has ended", n)
+	}
+	// The refused claim rolled back with the grant, so it can be made once
+	// the bar is fixed.
+	var claims int
+	if err := f.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM checkin_claims WHERE user_id = ?`, a.ID).Scan(&claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims != 0 {
+		t.Fatalf("%d claims were recorded for a reward that was never paid", claims)
+	}
+}
+
+func TestARewardWithNoDaysInheritsTheBarsEndDateWhileItIsAhead(t *testing.T) {
+	f := newFixture(t)
+	end := f.at(20).UnixMilli()
+	live, err := f.bonus.CreateBar(context.Background(), bonus.Bar{
+		Name: "live", ToggleMode: bonus.ModeUser, ShowTotal: true, DefaultOn: true, DefaultExpiresAt: end,
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.configure(t, Settings{Enabled: true, Config: Config{Daily: Reward{Kind: KindBonus, BarID: live.ID, Amount: 1}}})
+	a := f.person(t, "alice")
+	if res, err := f.checkInOn(t, a.ID, 1); err != nil || res.RewardFailed {
+		t.Fatalf("%+v %v", res, err)
+	}
+	var expires int64
+	if err := f.db.QueryRow(context.Background(), `SELECT expires_at FROM bonus_grants WHERE user_id = ?`, a.ID).Scan(&expires); err != nil {
+		t.Fatal(err)
+	}
+	if expires != end {
+		t.Fatalf("grant expires at %v, want the bar's end %v", time.UnixMilli(expires).UTC(), time.UnixMilli(end).UTC())
+	}
+}
+
 func TestAStreakMilestoneIsClaimedOnceForTheRunItWasReachedIn(t *testing.T) {
 	f := newFixture(t)
 	bar := f.bar(t)

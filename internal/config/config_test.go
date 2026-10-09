@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -185,6 +186,57 @@ func TestASuppliedSecretIsUsedAndBoundedBelow(t *testing.T) {
 	t.Setenv(envPrefix+"SECRET_KEY", "too-short")
 	if _, err := Load(); err == nil {
 		t.Fatal("a nine-character secret key was accepted")
+	}
+}
+
+// A short or guessable key still boots — refusing would take down deployments
+// that already run on one — but the operator is told, once, at startup.
+func TestAWeakSuppliedSecretStillStartsButIsWarnedAbout(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	weak := map[string]string{
+		"sixteen chars!!!":                       "only 16 characters",
+		strings.Repeat("a", 40):                  "one kind of character",
+		"0123456789012345678901234567890123456":  "one kind of character",
+		strings.Repeat("ab12", 10):               "distinct characters",
+		"passwordpasswordpasswordpasswordpass":   "one kind of character",
+		strings.Repeat("Ab", 20) + "0123456789":  "",
+		"7f3c9a1e5b2d48608c7e1a4f9b3d2c5e8a6f01": "",
+	}
+	for key, want := range weak {
+		logged.Reset()
+		cfg := load(t, map[string]string{"SECRET_KEY": key})
+		if string(cfg.SecretKey) != key {
+			t.Fatalf("%q: the supplied key was not used", key)
+		}
+		if want == "" {
+			if strings.Contains(logged.String(), "weak") {
+				t.Errorf("%q: a fine key was warned about: %s", key, logged.String())
+			}
+			continue
+		}
+		if !strings.Contains(logged.String(), "weak") || !strings.Contains(logged.String(), "OBSIDIAN_SECRET_KEY") ||
+			!strings.Contains(logged.String(), want) {
+			t.Errorf("%q: no warning naming the setting and %q:\n%s", key, want, logged.String())
+		}
+		if strings.Contains(logged.String(), key) {
+			t.Errorf("%q: the warning printed the key itself", key)
+		}
+	}
+}
+
+func TestAGeneratedSecretIsNotWarnedAbout(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	load(t, nil)
+	if strings.Contains(logged.String(), "weak") {
+		t.Errorf("a key this process generated was called weak:\n%s", logged.String())
 	}
 }
 

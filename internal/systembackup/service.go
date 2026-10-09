@@ -206,7 +206,11 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 		if len(hashPrefix) > 16 {
 			hashPrefix = hashPrefix[:16]
 		}
-		log(fmt.Sprintf("Snapshot archived and encrypted (size: %s, digest: %s).", formatByteSize(size), hashPrefix))
+		// Not "encrypted": the archive is a plain zip. Only the values the
+		// instance key sealed in the database stay sealed inside it, and an
+		// operator reading this log must not conclude the bucket holds nothing
+		// readable.
+		log(fmt.Sprintf("Snapshot archived (size: %s, digest: %s).", formatByteSize(size), hashPrefix))
 	}
 	if err == nil {
 		var status Status

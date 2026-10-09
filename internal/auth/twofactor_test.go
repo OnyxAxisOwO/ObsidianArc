@@ -37,7 +37,7 @@ func enrolled(t *testing.T, f *fixture, username string) (user.User, string, []s
 	}
 	step := totp.Step(time.Now())
 	code, _ := totp.Code(setup.Secret, step)
-	codes, updated, err := f.auth.EnableTwoFactor(ctx, account.ID, code, session.ID, "", "")
+	codes, updated, err := f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", code, session.ID, "", "")
 	if err != nil {
 		t.Fatalf("enable two-step for %s: %v", username, err)
 	}
@@ -244,14 +244,14 @@ func TestEnablingNeedsACodeFromTheSecretHandedOut(t *testing.T) {
 	}
 	_, session, _ := f.auth.Authenticate(ctx, token)
 
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "123456", session.ID, "", ""); !errors.Is(err, ErrTwoFactorNoSetup) {
+	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", "123456", session.ID, "", ""); !errors.Is(err, ErrTwoFactorNoSetup) {
 		t.Fatalf("enabling with no setup: %v", err)
 	}
 	setup, err := f.auth.BeginTwoFactor(ctx, account)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, codeAt(t, setup.Secret, totp.Step(time.Now())+20), session.ID, "", ""); !errors.Is(err, ErrTwoFactorCode) {
+	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", codeAt(t, setup.Secret, totp.Step(time.Now())+20), session.ID, "", ""); !errors.Is(err, ErrTwoFactorCode) {
 		t.Fatalf("a code from the wrong time was accepted: %v", err)
 	}
 
@@ -260,7 +260,7 @@ func TestEnablingNeedsACodeFromTheSecretHandedOut(t *testing.T) {
 		time.Now().Add(-2*setupTTL).UnixMilli(), account.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, codeAt(t, setup.Secret, totp.Step(time.Now())), session.ID, "", ""); !errors.Is(err, ErrTwoFactorNoSetup) {
+	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", codeAt(t, setup.Secret, totp.Step(time.Now())), session.ID, "", ""); !errors.Is(err, ErrTwoFactorNoSetup) {
 		t.Fatalf("a stale setup was accepted: %v", err)
 	}
 
@@ -285,7 +285,7 @@ func TestEnablingEndsOtherSessions(t *testing.T) {
 	}
 	_, session, _ := f.auth.Authenticate(ctx, token)
 	setup, _ := f.auth.BeginTwoFactor(ctx, account)
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, codeAt(t, setup.Secret, totp.Step(time.Now())), session.ID, "", ""); err != nil {
+	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", codeAt(t, setup.Secret, totp.Step(time.Now())), session.ID, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := f.auth.Authenticate(ctx, token); err != nil {
@@ -487,7 +487,7 @@ func TestARememberedBrowserSkipsTheCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, codeAt(t, setup.Secret, totp.Step(time.Now())), "", "", ""); err != nil {
+	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", codeAt(t, setup.Secret, totp.Step(time.Now())), "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := loginWith(value); !errors.As(err, &second) {
@@ -719,7 +719,7 @@ func TestEnrollingOpensTheBackofficeAndResettingClosesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, codeAt(t, setup.Secret, totp.Step(time.Now())), session.ID, "", ""); err != nil {
+	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", codeAt(t, setup.Secret, totp.Step(time.Now())), session.ID, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	current := func() (user.User, context.Context) {

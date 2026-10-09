@@ -212,7 +212,19 @@ func (s *Service) give(ctx context.Context, tx database.Queryer, userID string, 
 		expires := int64(0)
 		if r.ValidDays > 0 {
 			expires = now.Add(time.Duration(r.ValidDays) * 24 * time.Hour).UnixMilli()
-		} else if bar, err := s.bonus.Bar(ctx, tx, r.BarID); err == nil && bar.DefaultExpiresAt > now.UnixMilli() {
+		} else {
+			bar, err := s.bonus.Bar(ctx, tx, r.BarID)
+			if err != nil {
+				return fmt.Errorf("checkin: read bonus bar: %w", err)
+			}
+			// A date that has passed must not fall through to "never
+			// expires": the bar ended, and a grant that outlives it forever
+			// is the opposite of what the operator set. The admin grant path
+			// refuses the same case, through the same error.
+			if bar.DefaultExpiresAt != 0 && bar.DefaultExpiresAt <= now.UnixMilli() {
+				return fmt.Errorf("checkin: bonus bar %q ended and can no longer be granted: %w",
+					bar.Name, bonus.ErrInvalidExpiry)
+			}
 			expires = bar.DefaultExpiresAt
 		}
 		_, err := s.bonus.GrantTo(ctx, tx, r.BarID, userID, r.Amount, expires, source, "")

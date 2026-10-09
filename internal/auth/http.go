@@ -368,7 +368,12 @@ func (h *Handlers) getSiteLogo(w http.ResponseWriter, r *http.Request) error {
 	header.Set("Cache-Control", "public, max-age=31536000, immutable")
 	header.Set("Content-Disposition", "inline; filename=\"logo\"")
 	header.Set("ETag", fmt.Sprintf(`"%x-%x"`, at, len(data)))
-	header.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	// An SVG opened directly is a document, and a <foreignObject> in it can
+	// carry a login form that submits to another site, under this origin's
+	// name. The sandbox gives the document an opaque origin and no forms;
+	// form-action is the same refusal for a browser that reads only that.
+	header.Set("Content-Security-Policy",
+		"default-src 'none'; style-src 'unsafe-inline'; sandbox; form-action 'none'")
 	header.Set("X-Content-Type-Options", "nosniff")
 
 	http.ServeContent(w, r, "", time.UnixMilli(at), bytes.NewReader(data))
@@ -764,6 +769,8 @@ type profileRequest struct {
 	Email    *string `json:"email"`
 	// Plugin account fields to change, by key.
 	Fields map[string]string `json:"fields"`
+	// Only read when the address is changing: see Service.UpdateProfile.
+	CurrentPassword string `json:"current_password"`
 }
 
 func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
@@ -785,8 +792,12 @@ func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
 		Bio:      body.Bio,
 		Email:    body.Email,
 		Fields:   body.Fields,
-	})
+	}, body.CurrentPassword)
 	if err != nil {
+		if errors.Is(err, ErrPasswordRequired) || errors.Is(err, ErrCurrentPasswordWrong) ||
+			errors.As(err, new(*RateLimitError)) {
+			return TranslateTwoFactorError(w, err)
+		}
 		return profileError(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": h.account(r, updated)})
@@ -816,6 +827,8 @@ func (h *Handlers) changePassword(w http.ResponseWriter, r *http.Request) error 
 		return httpx.BadRequest("The new password is the same as the current one.")
 	case errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooLong):
 		return httpx.BadRequest("%s", err.Error())
+	case errors.As(err, new(*RateLimitError)):
+		return TranslateTwoFactorError(w, err)
 	default:
 		return httpx.Internal(err)
 	}

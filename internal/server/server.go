@@ -690,7 +690,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// other is not a browser at all.
 	authService.Challenge = turnstile.Gate{
 		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnSignup) },
+		Enabled: settingsService.SignupTurnstileOn,
 		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
 	}
 	authService.LoginChallenge = turnstile.Gate{

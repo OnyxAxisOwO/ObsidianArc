@@ -84,6 +84,8 @@ func newInstance(t *testing.T, tweak ...func(*config.Config)) *instance {
 type session struct {
 	cookie *http.Cookie
 	userID string
+	// What the account registered with, for the steps that ask for it again.
+	password string
 }
 
 // do issues a request. A session sends its cookie; every unsafe method
@@ -131,7 +133,7 @@ func (in *instance) register(username, password string) *session {
 
 	for _, cookie := range response.Result().Cookies() {
 		if cookie.Name == "obsidian_session" && cookie.Value != "" {
-			return &session{cookie: cookie, userID: payload.User.ID}
+			return &session{cookie: cookie, userID: payload.User.ID, password: password}
 		}
 	}
 	in.t.Fatalf("register %s returned no session cookie", username)
@@ -1015,16 +1017,34 @@ func TestPoWChallengeAndRegistrationFlow(t *testing.T) {
 		t.Fatalf("expected pow_replayed, got: %d %s", regReplay.Code, regReplay.Body.String())
 	}
 
-	// 9. Admin switches mode to "disabled" -> register without PoW succeeds.
+	// 9. Admin switches mode to "off" -> register without PoW succeeds.
 	in.do(http.MethodPut, "/api/admin/settings", map[string]string{
-		"registration.captcha_mode": "disabled",
+		"registration.captcha_mode": "off",
 	}, admin)
 	regDisabled := in.do(http.MethodPost, "/api/auth/register", map[string]any{
 		"username": "user3",
 		"password": "valid-password",
 	}, nil)
 	if regDisabled.Code != http.StatusCreated {
-		t.Fatalf("register with disabled captcha mode: %d %s", regDisabled.Code, regDisabled.Body.String())
+		t.Fatalf("register with captcha mode off: %d %s", regDisabled.Code, regDisabled.Body.String())
+	}
+
+	// 10. A mode this server does not answer for — a typo, a plugin's that is
+	// off, a value from a newer build — is not "off". The server falls back to
+	// Turnstile to keep a challenge, and that fallback has to be checked: it
+	// used to draw the widget and verify nothing, because the Turnstile switch
+	// had never been turned on by somebody who chose another mode. With no
+	// Turnstile keys here the challenge cannot be passed, which is the point.
+	in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"registration.captcha_mode": "disabled",
+	}, admin)
+	regUnknown := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user4",
+		"password": "valid-password",
+	}, nil)
+	if regUnknown.Code != http.StatusServiceUnavailable || !strings.Contains(regUnknown.Body.String(), "challenge_unavailable") {
+		t.Fatalf("register under an unknown captcha mode: %d %s, want the fallback challenge enforced",
+			regUnknown.Code, regUnknown.Body.String())
 	}
 }
 

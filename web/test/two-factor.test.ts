@@ -310,6 +310,59 @@ describe('the setup wizard', () => {
     expect(host.textContent).toContain(t('twoFactorAppTitle'));
     expect(host.textContent).toContain(t('twoFactorNoSetup'));
   });
+
+  describe('for an account with a password', () => {
+    async function toTheCodeStep(): Promise<void> {
+      await mount(TwoFactorWizard);
+      button(t('twoFactorAppHaveOne')).click();
+      await settle();
+      button(t('twoFactorContinue')).click();
+      await settle();
+    }
+
+    it('sends the password with the code, and does not submit on the code alone', async () => {
+      vi.spyOn(twoFactorApi, 'beginTwoFactor').mockResolvedValue({ ...SETUP, password_required: true });
+      const enable = vi.spyOn(twoFactorApi, 'enableTwoFactor')
+        .mockResolvedValue({ recovery_codes: CODES, user: { ...ACCOUNT, two_factor_at: 1 } });
+      await toTheCodeStep();
+
+      type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+      await settle();
+      expect(enable).not.toHaveBeenCalled();
+      expect(button(t('twoFactorVerifyAndEnable')).disabled).toBe(true);
+
+      type(host.querySelector<HTMLInputElement>('input[type="password"]')!, 'a-good-password');
+      await settle();
+      button(t('twoFactorVerifyAndEnable')).click();
+      await settle();
+      expect(enable).toHaveBeenCalledWith('123456', 'a-good-password');
+      expect(host.querySelectorAll('.oa-2fa-codes li')).toHaveLength(CODES.length);
+    });
+
+    it('asks for the password again when it was wrong, keeping the code', async () => {
+      vi.spyOn(twoFactorApi, 'beginTwoFactor').mockResolvedValue({ ...SETUP, password_required: true });
+      vi.spyOn(twoFactorApi, 'enableTwoFactor')
+        .mockRejectedValue(new ApiError(400, 'current_password_wrong', 'wrong'));
+      await toTheCodeStep();
+
+      type(host.querySelector<HTMLInputElement>('input[type="password"]')!, 'nope');
+      type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+      await settle();
+      expect(host.textContent).toContain(t('currentPasswordWrong'));
+      expect(host.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe('');
+      expect(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!.value).toBe('123456');
+    });
+  });
+
+  it('asks an account with no password for none', async () => {
+    vi.spyOn(twoFactorApi, 'beginTwoFactor').mockResolvedValue({ ...SETUP, password_required: false });
+    await mount(TwoFactorWizard);
+    button(t('twoFactorAppHaveOne')).click();
+    await settle();
+    button(t('twoFactorContinue')).click();
+    await settle();
+    expect(host.querySelector('input[type="password"]')).toBeNull();
+  });
 });
 
 describe('the security settings', () => {

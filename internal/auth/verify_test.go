@@ -288,7 +288,7 @@ func TestVerificationCodeBudgetSurvivesResendAndAddressChange(t *testing.T) {
 	}
 
 	newAddress := "member2@example.com"
-	updated, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &newAddress})
+	updated, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &newAddress}, "a-good-password")
 	if err != nil {
 		t.Fatalf("change address: %v", err)
 	}
