@@ -62,7 +62,13 @@ type User struct {
 	// Whether the address above has been confirmed. True for every
 	// account that predates verification, and for one with no address:
 	// there is nothing to confirm and nothing to hold back.
-	EmailVerified bool  `json:"email_verified"`
+	EmailVerified bool `json:"email_verified"`
+	// When the address was shown to belong to this account, by a mailed
+	// link or code or by a provider that checks addresses; 0 if it never
+	// was. Not EmailVerified, which is also true wherever confirmation is
+	// switched off: this is what may be relied on to say that somebody
+	// signing in elsewhere with the same address is the same person.
+	EmailProvenAt int64 `json:"-"`
 	CreatedAt     int64 `json:"created_at"`
 	UpdatedAt     int64 `json:"updated_at"`
 	LastLoginAt   int64 `json:"last_login_at"`
@@ -178,7 +184,7 @@ func NewStore(db *database.DB) *Store { return &Store{db: db} }
 const baseColumns = `id, username, email, nickname, avatar, bio, role, group_id, status,
 	email_verified, created_at, updated_at, last_login_at, signup_ip, signup_user_agent,
 	api_restricted, api_restricted_until, api_restriction_source, group_expires_at, admin_permissions, last_active_at,
-	two_factor_at, ban_reason`
+	two_factor_at, ban_reason, email_proven_at`
 
 type CreateInput struct {
 	Username string
@@ -191,9 +197,11 @@ type CreateInput struct {
 	// Set false only when this account must confirm its address before
 	// it can spend anything.
 	Unverified bool
-	GroupID    string
-	Status     Status
-	BanReason  string
+	// The address arrived already proved, by a provider that checks them.
+	EmailProven bool
+	GroupID     string
+	Status      Status
+	BanReason   string
 	// The address this account was created from, for the per-address
 	// registration limit. Empty where it could not be resolved.
 	SignupIP        string
@@ -250,6 +258,9 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		APIRestrictedUntil:   in.APIRestrictedUntil,
 		APIRestrictionSource: in.APIRestrictionSource,
 	}
+	if in.EmailProven && email != "" {
+		record.EmailProvenAt = now
+	}
 
 	// Every defined field is written, empty where no value was given: the
 	// record handed back carries all of them, and a column left to its
@@ -271,13 +282,14 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		record.Email, strings.ToLower(record.Email), in.PasswordHash, record.Nickname,
 		record.Role, nullable(record.GroupID), record.Status, record.EmailVerified,
 		record.CreatedAt, record.UpdatedAt, in.SignupIP, record.SignupUserAgent, record.APIRestricted,
-		record.APIRestrictedUntil, record.APIRestrictionSource, record.BanReason,
+		record.APIRestrictedUntil, record.APIRestrictionSource, record.BanReason, record.EmailProvenAt,
 	}
 	_, err = q.Exec(ctx, `INSERT INTO users
 		(id, username, username_lower, email, email_lower, password_hash, nickname, avatar, bio,
 		 role, group_id, status, email_verified, created_at, updated_at, last_login_at, signup_ip,
-		 signup_user_agent, api_restricted, api_restricted_until, api_restriction_source, ban_reason`+fieldColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?`+fieldMarks+`)`,
+		 signup_user_agent, api_restricted, api_restricted_until, api_restriction_source, ban_reason,
+		 email_proven_at`+fieldColumns+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?`+fieldMarks+`)`,
 		append(args, fieldArgs...)...)
 	if err != nil {
 		// Both engines report a violated unique index without naming a
@@ -287,6 +299,26 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		return User{}, s.translateUniqueViolation(err, email != "")
 	}
 	return record, nil
+}
+
+// MarkEmailProven records that a provider which checks addresses has vouched
+// for the account's current one. Matched on the address, so a proof for an
+// address the account has since left lands nowhere.
+func (s *Store) MarkEmailProven(ctx context.Context, q database.Queryer, userID, email string) error {
+	if q == nil {
+		q = s.db
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return nil
+	}
+	_, err := q.Exec(ctx,
+		`UPDATE users SET email_proven_at = ? WHERE id = ? AND email_lower = ? AND email_proven_at = 0`,
+		time.Now().UnixMilli(), userID, email)
+	if err != nil {
+		return fmt.Errorf("user: mark email proven: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) ByID(ctx context.Context, q database.Queryer, userID string) (User, error) {
@@ -503,8 +535,12 @@ func (s *Store) UpdateProfile(ctx context.Context, q database.Queryer, userID st
 		if err := ValidateEmail(value); err != nil {
 			return User{}, err
 		}
-		sets = append(sets, "email = ?", "email_lower = ?")
-		args = append(args, value, strings.ToLower(value))
+		// Proof belongs to an address, so moving to another one gives it up.
+		// Both engines read the old row on the right of SET, so email_lower
+		// here is the address being left.
+		sets = append(sets, "email_proven_at = CASE WHEN email_lower = ? THEN email_proven_at ELSE 0 END",
+			"email = ?", "email_lower = ?")
+		args = append(args, strings.ToLower(value), value, strings.ToLower(value))
 	}
 	if len(in.Fields) > 0 {
 		values, err := s.CheckFields(in.Fields)
@@ -874,7 +910,7 @@ func (s *Store) scan(row rowScanner, extra ...any) (User, error) {
 		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP,
 		&record.SignupUserAgent, &record.APIRestricted, &record.APIRestrictedUntil,
 		&record.APIRestrictionSource, &record.GroupExpiresAt, &permissions, &record.LastActiveAt,
-		&record.TwoFactorAt, &record.BanReason}
+		&record.TwoFactorAt, &record.BanReason, &record.EmailProvenAt}
 	for i := range values {
 		dest = append(dest, &values[i])
 	}

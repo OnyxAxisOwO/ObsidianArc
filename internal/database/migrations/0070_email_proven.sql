@@ -1,0 +1,14 @@
+-- When the account's address was last shown to belong to it: a mailed link or
+-- code was used, or a provider that checks addresses vouched for it.
+--
+-- email_verified cannot answer that. It is true for every account on an
+-- instance that does not ask for confirmation, so it means "nothing is held
+-- back", not "somebody proved this". Linking a sign-in from GitHub or Google
+-- onto an existing account by matching addresses read it as the second, and
+-- anybody could register a stranger's address first and wait for them to
+-- arrive through a provider — into an account whose password the registrant
+-- kept.
+--
+-- 0 is never, and every account starts there: nothing before this column
+-- recorded proof, so none can be assumed.
+ALTER TABLE users ADD COLUMN email_proven_at BIGINT NOT NULL DEFAULT 0;

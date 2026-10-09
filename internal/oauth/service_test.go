@@ -173,11 +173,15 @@ func TestFirstSignInOpensAnAccountAndTheSecondReturnsToIt(t *testing.T) {
 func TestOAuthScreensOnlyAddressesThatCanOpenANewAccount(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	openInstance(t, f)
 	existing, _, err := f.auth.Register(ctx, auth.RegisterInput{
 		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
 	})
 	if err != nil {
 		t.Fatalf("register: %v", err)
+	}
+	if err := f.users.MarkEmailProven(ctx, nil, existing.ID, "founder@example.com"); err != nil {
+		t.Fatal(err)
 	}
 	var calls atomic.Int32
 	var screenedEmail atomic.Value
@@ -344,18 +348,36 @@ func TestAnEmptyPreflightRerunsScreeningIfAnotherRequestCreatesTheFirstAccount(t
 	}
 }
 
+// openInstance registers the instance's first account, which becomes its
+// administrator, so the accounts a test registers after it are ordinary ones.
+func openInstance(t *testing.T, f *fixture) user.User {
+	t.Helper()
+	operator, _, err := f.auth.Register(context.Background(), auth.RegisterInput{
+		Username: "operator", Email: "operator@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatalf("register the operator: %v", err)
+	}
+	return operator
+}
+
 // The address is how somebody who registered with a password months ago is
-// recognised. It is believed only because the provider proved it — Identity
-// carries an address at all only in that case.
+// recognised. It is believed only because both sides proved it: the provider
+// (Identity carries an address at all only in that case) and this account,
+// whose owner once followed a link mailed to it.
 func TestAProvenAddressAdoptsTheAccountThatHoldsIt(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	openInstance(t, f)
 
 	existing, _, err := f.auth.Register(ctx, auth.RegisterInput{
 		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
 	})
 	if err != nil {
 		t.Fatalf("register: %v", err)
+	}
+	if err := f.users.MarkEmailProven(ctx, nil, existing.ID, "founder@example.com"); err != nil {
+		t.Fatal(err)
 	}
 
 	account, err := f.service.SignIn(ctx,
@@ -856,4 +878,82 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 			t.Fatalf("account username = %q, want bob_custom", account.Username)
 		}
 	})
+}
+
+// Registering a stranger's address and waiting used to be enough: when the
+// stranger first signed in through a provider that proved the address, they
+// were linked into the account the registrant still held the password to.
+func TestAnAddressNobodyProvedHereIsNotAdopted(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	openInstance(t, f)
+
+	squatted, _, err := f.auth.Register(ctx, auth.RegisterInput{
+		Username: "squatter", Email: "victim@example.com", Password: "the-squatters-password",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	_, err = f.service.SignIn(ctx, identity("777", "victim-at-github", "victim@example.com"), "", "")
+	if !errors.Is(err, ErrAddressTaken) {
+		t.Fatalf("sign in = %v, want the address refused as taken", err)
+	}
+	if linked, _ := f.store.Account(ctx, nil, "github", "777"); linked == squatted.ID {
+		t.Error("the victim's provider identity was linked into the squatter's account")
+	}
+}
+
+// Whoever can point a provider at an issuer of their own can make it vouch
+// for any address, so an administrator's account is never adopted by one,
+// however well its address is proved.
+func TestAProvenAddressNeverAdoptsAnAdministrator(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	operator := openInstance(t, f)
+	if err := f.users.MarkEmailProven(ctx, nil, operator.ID, operator.Email); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := f.service.SignIn(ctx, identity("666", "someone", "operator@example.com"), "", "")
+	if !errors.Is(err, ErrAddressTaken) {
+		t.Fatalf("sign in = %v, want an administrator's address refused", err)
+	}
+}
+
+// An account that predates the record of proof gains one the next time a
+// provider it is linked to vouches for its address.
+func TestALinkedProviderVouchingForTheAddressProvesIt(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	openInstance(t, f)
+	if err := f.settings.Set(ctx, settings.OAuthAllowSignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := f.service.SignIn(ctx, identity("4300", "newcomer", ""), "", "")
+	if err != nil {
+		t.Fatalf("first sign-in: %v", err)
+	}
+	if _, err := f.users.UpdateProfile(ctx, nil, created.ID, user.ProfileUpdate{Email: ptr("newcomer@example.com")}); err != nil {
+		t.Fatalf("set address: %v", err)
+	}
+	if again, _ := f.users.ByID(ctx, nil, created.ID); again.EmailProvenAt != 0 {
+		t.Fatal("a typed address counted as proved")
+	}
+
+	if _, err := f.service.SignIn(ctx, identity("4300", "newcomer", "NEWCOMER@example.com"), "", ""); err != nil {
+		t.Fatalf("second sign-in: %v", err)
+	}
+	if again, _ := f.users.ByID(ctx, nil, created.ID); again.EmailProvenAt == 0 {
+		t.Error("the provider's verified address did not prove the account's")
+	}
+
+	// Moving to another address gives the proof up.
+	if _, err := f.users.UpdateProfile(ctx, nil, created.ID, user.ProfileUpdate{Email: ptr("elsewhere@example.com")}); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := f.users.ByID(ctx, nil, created.ID); again.EmailProvenAt != 0 {
+		t.Error("the proof survived a change of address")
+	}
 }

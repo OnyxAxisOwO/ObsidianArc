@@ -672,6 +672,43 @@ func TestADisabledAccountStopsBeingAnIdentity(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("userinfo for a disabled account = %d, want it refused immediately", recorder.Code)
 	}
+
+	// Nor does its refresh token keep minting identity tokens. It renews
+	// itself a month at a time, so this was the way a banned account stayed
+	// signed in everywhere else.
+	refreshed := h.postForm("/oauth/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {tokens.RefreshToken},
+		"client_id":     {app.ClientID},
+		"client_secret": {secret},
+	})
+	if refreshed.Code != http.StatusBadRequest {
+		t.Errorf("refresh for a disabled account = %d %s, want it refused", refreshed.Code, refreshed.Body.String())
+	}
+}
+
+// email_verified says the address was proved here, not that nothing is held
+// back: on an instance that never asks for confirmation every address is
+// "verified", and an application linking accounts by address would take a
+// stranger's word for whose address it is.
+func TestEmailVerifiedMeansTheAddressWasProved(t *testing.T) {
+	h := newHarness(t)
+	app, secret := h.app(t, CreateAppInput{})
+
+	code, _ := codeFrom(t, h.consent(t, authorizeURL(app.ClientID, nil), true))
+	claims := h.verify(t, decodeTokens(t, h.exchange(code, app.ClientID, secret, nil)).IDToken)
+	if claims["email_verified"] != false {
+		t.Errorf("email_verified = %v for an address nobody proved", claims["email_verified"])
+	}
+
+	if err := h.users.MarkEmailProven(context.Background(), nil, h.account.ID, h.account.Email); err != nil {
+		t.Fatal(err)
+	}
+	code, _ = codeFrom(t, h.consent(t, authorizeURL(app.ClientID, nil), true))
+	claims = h.verify(t, decodeTokens(t, h.exchange(code, app.ClientID, secret, nil)).IDToken)
+	if claims["email_verified"] != true {
+		t.Errorf("email_verified = %v for a proved address", claims["email_verified"])
+	}
 }
 
 func TestRevokingATokenTakesBothHalves(t *testing.T) {

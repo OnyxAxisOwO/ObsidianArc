@@ -20,6 +20,9 @@ import (
 func TestConcurrentArrivalsOfOneIdentityOpenOneAccount(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
+	if err := f.settings.Set(context.Background(), settings.OAuthAllowSignup, "true"); err != nil {
+		t.Fatalf("allow signups: %v", err)
+	}
 
 	const arrivals = 16
 	var (
@@ -32,7 +35,7 @@ func TestConcurrentArrivalsOfOneIdentityOpenOneAccount(t *testing.T) {
 		go func(slot int) {
 			defer wg.Done()
 			account, signErr := f.service.SignIn(context.Background(),
-				Identity{Provider: "oidc", Subject: "12345678", Login: "qq_12345678"},
+				Identity{Provider: "oidc", Subject: "87654321", Login: "qq_87654321"},
 				"203.0.113.5", "a browser")
 			ids[slot], err[slot] = account.ID, signErr
 		}(i)
@@ -50,8 +53,8 @@ func TestConcurrentArrivalsOfOneIdentityOpenOneAccount(t *testing.T) {
 			t.Fatalf("arrival %d reached %q, want the one account %q", slot, ids[slot], ids[0])
 		}
 	}
-	if total, _ := f.users.Count(context.Background(), nil); total != 1 {
-		t.Errorf("accounts = %d, want only the founder", total)
+	if total, _ := f.users.Count(context.Background(), nil); total != 2 {
+		t.Errorf("accounts = %d, want the founder and one new account", total)
 	}
 }
 

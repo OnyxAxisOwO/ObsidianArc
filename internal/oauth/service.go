@@ -386,6 +386,16 @@ func (s *Service) resolve(
 				if !account.IsActive() {
 					return &auth.AccountDisabledError{Reason: account.BanReason}
 				}
+				// A provider that checks addresses vouching for the one this
+				// account holds is proof of it, as good as a mailed link — and
+				// the only way an account that predates the record of proof
+				// can come to have one without being asked to confirm again.
+				if identity.Email != "" && account.EmailProvenAt == 0 &&
+					strings.EqualFold(identity.Email, account.Email) {
+					if err := s.users.MarkEmailProven(ctx, tx, account.ID, identity.Email); err != nil {
+						return err
+					}
+				}
 				return s.store.Touch(ctx, tx, identity)
 			}
 			if !errors.Is(err, ErrNoIdentity) {
@@ -416,12 +426,23 @@ func (s *Service) resolve(
 			}
 
 			// An address the provider has proved, on an account that already
-			// exists here: the same person, arriving a different way.
+			// exists here: the same person, arriving a different way — but only
+			// when this account proved it too. Matching on an address nobody
+			// here confirmed let anybody register a stranger's address first,
+			// keep the password, and wait for the stranger to sign in through
+			// a provider into an account somebody else could still open.
+			//
+			// Never onto an administrator, proved or not. Whoever can point
+			// a provider at an issuer of their own can have it vouch for any
+			// address, and an operator's account must not be one sign-in away
+			// from that; an administrator connects a provider from Settings,
+			// signed in, like anybody whose address was never proved.
 			if identity.Email != "" {
 				existing, err := s.users.ByEmail(ctx, tx, identity.Email)
 				switch {
 				case err == nil:
-					if !s.settings.Bool(settings.OAuthLinkByEmail) {
+					if !s.settings.Bool(settings.OAuthLinkByEmail) ||
+						existing.EmailProvenAt == 0 || existing.IsAdmin() {
 						return ErrAddressTaken
 					}
 					if !existing.IsActive() {
@@ -443,28 +464,18 @@ func (s *Service) resolve(
 				}
 			}
 
-			// A subject bound to an account field has proved that value the
-			// way a confirmed address is proved. An account here that already
-			// carries the same value is the same person, arriving a different
-			// way, and is linked under the same switch as the address case.
+			// A subject bound to an account field proves that value — but an
+			// account here that already carries it is not thereby the same
+			// person, because nothing proved the account's copy: it is whatever
+			// the registrant typed. Linking on it let anybody who knew a
+			// member's number register with it first and receive the member's
+			// first community sign-in into an account they still held the
+			// password to. The holder connects the provider from Settings,
+			// signed in, the way an unproved address does.
 			if field, value := s.boundValue(identity); field != "" {
-				holder, err := s.users.ByField(ctx, tx, field, value)
-				switch {
+				switch _, err := s.users.ByField(ctx, tx, field, value); {
 				case err == nil:
-					if !s.settings.Bool(settings.OAuthLinkByEmail) {
-						return ErrAddressTaken
-					}
-					if !holder.IsActive() {
-						return &auth.AccountDisabledError{Reason: holder.BanReason}
-					}
-					if err := s.store.Link(ctx, tx, holder.ID, identity); err != nil {
-						if errors.Is(err, ErrAlreadyLinked) {
-							return ErrAddressTaken
-						}
-						return err
-					}
-					account = holder
-					return nil
+					return ErrAddressTaken
 				case !errors.Is(err, user.ErrNotFound):
 					return err
 				}

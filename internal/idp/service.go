@@ -282,7 +282,19 @@ func (s *Service) Exchange(ctx context.Context, issuer string, app App, form url
 		return Tokens{}, ErrPKCERequired
 	}
 
+	if !s.stillActive(ctx, record.UserID) {
+		return Tokens{}, ErrBadCode
+	}
 	return s.issue(ctx, issuer, app, record.UserID, record.Scopes, record.Nonce)
+}
+
+// stillActive is asked before anything is issued in an account's name. A
+// code lives two minutes, but a refresh token renews itself for a month at a
+// time, and without this an account disabled or banned here kept being
+// vouched for to every application it had signed in to.
+func (s *Service) stillActive(ctx context.Context, userID string) bool {
+	account, err := s.users.ByID(ctx, nil, userID)
+	return err == nil && account.IsActive()
 }
 
 // Refresh rotates a refresh token into a new pair.
@@ -302,6 +314,12 @@ func (s *Service) Refresh(ctx context.Context, issuer string, app App, form url.
 		// Issued to somebody else. The row has already been spent by the
 		// rotation above, which is the right outcome for a token presented by
 		// an application that does not hold it.
+		return Tokens{}, ErrBadToken
+	}
+	// After the rotation, so the token presented is spent either way: it
+	// stands for an account that is no longer let in, and nothing should be
+	// able to present it again.
+	if !s.stillActive(ctx, rotated.UserID) {
 		return Tokens{}, ErrBadToken
 	}
 
@@ -376,7 +394,12 @@ func (s *Service) fill(ctx context.Context, claims *Claims, account user.User, s
 		}
 	}
 	if Covers(scopes, []string{ScopeEmail}) && account.Email != "" {
-		verified := account.EmailVerified
+		// Proved, not merely verified: EmailVerified is also true on any
+		// instance that does not ask for confirmation, and an application
+		// that links accounts by address would then take a stranger's word
+		// for whose address it is — the hole this instance's own provider
+		// sign-in had.
+		verified := account.EmailProvenAt != 0
 		claims.Email = account.Email
 		claims.EmailVerified = &verified
 	}

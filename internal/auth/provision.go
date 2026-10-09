@@ -247,6 +247,7 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		// into the completion form is held back exactly as the sign-up form
 		// holds one back, because it is exactly as unproven.
 		Unverified:      !first && !in.EmailVerified && s.VerificationRequired(),
+		EmailProven:     in.EmailVerified,
 		SignupIP:        in.IP,
 		SignupUserAgent: in.UA,
 	})

@@ -550,26 +550,23 @@ func TestAnOIDCSubjectThatIsABadgeArrivesPrefilled(t *testing.T) {
 	}
 }
 
-// An IdP whose subject is the badge reaches the account that already
-// carries it, the way a proved address reaches its account — no form, no
-// second account with the same person behind it.
-func TestASignInWithABadgeSubjectReachesTheAccountThatCarriesIt(t *testing.T) {
+// An IdP whose subject is the badge does not adopt the account that already
+// carries it. The account's badge is whatever its registrant typed, so
+// adopting on it handed a member's first community sign-in to anybody who
+// knew their number and registered with it first.
+func TestABadgeSubjectDoesNotAdoptTheAccountThatCarriesIt(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
-	// The founder carries badge 12345678; the IdP has just proved the same number.
-	joined, err := f.service.SignIn(context.Background(),
+	_, err := f.service.SignIn(context.Background(),
 		Identity{Provider: "oidc", Subject: "12345678", Login: "qq_123456789"}, "203.0.113.5", "a browser")
-	if err != nil {
-		t.Fatalf("sign-in by badge subject: %v", err)
-	}
-	if joined.Username != "founder" {
-		t.Errorf("sign-in opened %q, want it to reach the founder's account", joined.Username)
+	if !errors.Is(err, ErrAddressTaken) {
+		t.Fatalf("sign-in by badge subject = %v, want it refused as taken", err)
 	}
 	if total, _ := f.users.Count(context.Background(), nil); total != 1 {
 		t.Errorf("accounts = %d, want no second one opened", total)
 	}
-	if linked, _ := f.store.Account(context.Background(), nil, "oidc", "12345678"); linked != joined.ID {
-		t.Errorf("identity = %q, want it connected to the founder", linked)
+	if linked, _ := f.store.Account(context.Background(), nil, "oidc", "12345678"); linked != "" {
+		t.Errorf("identity was connected to %q", linked)
 	}
 }
 

@@ -202,10 +202,13 @@ func (s *Service) Verify(ctx context.Context, token string) (string, error) {
 		// uniqueness index work in, so it is the account's identity, and the
 		// display spelling is the owner's to change without unconfirming
 		// themselves.
+		// email_proven_at as well: following a link mailed to the address
+		// is the proof an OAuth sign-in may later link on.
+		now := time.Now().UnixMilli()
 		marked, err := tx.Exec(ctx,
-			`UPDATE users SET email_verified = ?, updated_at = ?
+			`UPDATE users SET email_verified = ?, email_proven_at = ?, updated_at = ?
 			 WHERE id = ? AND email_lower = ?`,
-			true, time.Now().UnixMilli(), userID, strings.ToLower(email))
+			true, now, now, userID, strings.ToLower(email))
 		if err != nil {
 			return fmt.Errorf("auth: mark verified: %w", err)
 		}
@@ -331,7 +334,8 @@ func (s *Service) VerifyCode(ctx context.Context, userID, code string) error {
 			matched = hmac.Equal(provided, expected) || matched
 		}
 		if matched {
-			marked, err := tx.Exec(ctx, `UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ? AND email_lower = ?`, true, time.Now().UnixMilli(), userID, strings.ToLower(account.Email))
+			now := time.Now().UnixMilli()
+			marked, err := tx.Exec(ctx, `UPDATE users SET email_verified = ?, email_proven_at = ?, updated_at = ? WHERE id = ? AND email_lower = ?`, true, now, now, userID, strings.ToLower(account.Email))
 			if err != nil {
 				return fmt.Errorf("auth: mark verified by code: %w", err)
 			}

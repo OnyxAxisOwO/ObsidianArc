@@ -109,8 +109,15 @@ func TestVerifyConsumesTheTokenExactlyOnce(t *testing.T) {
 		t.Fatalf("issue: %v", err)
 	}
 
+	if again, _ := f.users.ByID(ctx, nil, account.ID); again.EmailProvenAt != 0 {
+		t.Fatal("an address counted as proved before its link was followed")
+	}
 	if _, err := f.auth.Verify(ctx, token); err != nil {
 		t.Fatalf("verify: %v", err)
+	}
+	// Following the link is the proof a provider sign-in may later link on.
+	if again, _ := f.users.ByID(ctx, nil, account.ID); again.EmailProvenAt == 0 {
+		t.Error("following the link did not record the address as proved")
 	}
 	// A verification link is a credential. Replaying it must fail, or a
 	// forwarded mail keeps working forever.
@@ -140,6 +147,9 @@ func TestVerificationCodeConfirmsAndConsumesTheLink(t *testing.T) {
 
 	if err := f.auth.VerifyCode(ctx, account.ID, code); err != nil {
 		t.Fatalf("verify code: %v", err)
+	}
+	if again, _ := f.users.ByID(ctx, nil, account.ID); again.EmailProvenAt == 0 {
+		t.Error("the mailed code did not record the address as proved")
 	}
 	if _, err := f.auth.Verify(ctx, token); !errors.Is(err, ErrVerificationInvalid) {
 		t.Fatalf("link remained usable after code verification: %v", err)
