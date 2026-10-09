@@ -64,15 +64,27 @@ func TestOnlyOriginsFromAPackageReachThePagePolicy(t *testing.T) {
 			t.Errorf("%s: a wildcard reached the policy: %s", upstream, got)
 		}
 		// The literal blob: that comes with it is allowed, and stays.
-		if !strings.Contains(got, "script-src 'self' blob:") {
+		if !strings.Contains(scriptSources(got), " blob:") {
 			t.Errorf("%s: blob: was dropped with the origin: %s", upstream, got)
 		}
 	}
 
 	a.setSettings(map[string]string{"demo.upstream": "https://good.example.com:8443"})
-	if got := csp(); !strings.Contains(got, "script-src 'self' https://good.example.com:8443 blob:") {
+	if got := scriptSources(csp()); !strings.Contains(got, " https://good.example.com:8443 blob:") {
 		t.Errorf("a plain origin was not carried: %s", got)
 	}
+}
+
+// scriptSources is the script-src directive alone. Read as a directive
+// rather than matched as a phrase, because a build with the shell carries
+// the shell's script hash between 'self' and whatever a package added.
+func scriptSources(policy string) string {
+	for _, directive := range strings.Split(policy, ";") {
+		if directive = strings.TrimSpace(directive); strings.HasPrefix(directive, "script-src ") {
+			return directive
+		}
+	}
+	return ""
 }
 
 // A backend prints what visitors typed — a name, a note — and the operator's
