@@ -95,8 +95,7 @@ func init() {
 				return nil
 			}
 			if instructions := asStr(p["instructions"]); instructions != "" {
-				fmt.Fprintln(rt.Out, "\ninstructions:")
-				fmt.Fprintln(rt.Out, instructions)
+				rt.Printf("\ninstructions:\n%s\n", instructions)
 			}
 			return nil
 		},

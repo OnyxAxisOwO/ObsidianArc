@@ -230,7 +230,7 @@ func init() {
 		},
 		Flags: []Flag{
 			{Name: "--code", Hint: Text{EN: "the redemption code", ZH: "兑换码"}, Value: "CODE", Sensitive: true},
-			{Name: "--turnstile", Hint: Text{EN: "challenge token, only if the instance requires one", ZH: "验证码 token，仅在实例要求时需要"}, Value: "TOKEN"},
+			{Name: "--turnstile", Hint: Text{EN: "challenge token, only if the instance requires one", ZH: "验证码 token，仅在实例要求时需要"}, Value: "TOKEN", Sensitive: true},
 		},
 		Examples:   []string{"credit redeem --code SPRING2026", "credit redeem --code SPRING2026 --json"},
 		SeeAlso:    []string{"credit cards"},

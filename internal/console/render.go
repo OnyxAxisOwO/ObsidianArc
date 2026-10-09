@@ -45,6 +45,7 @@ const (
 // seeing junk in a nickname is the correct outcome, and a silent deletion
 // would hide that somebody tried.
 func sanitize(value string) string {
+	value = strings.ToValidUTF8(value, "�")
 	if strings.IndexFunc(value, isControl) < 0 {
 		return value
 	}
@@ -55,6 +56,31 @@ func sanitize(value string) string {
 		return r
 	}, value)
 }
+
+// sanitizeText is sanitize for a value that is prose rather than a cell: a
+// feedback body or a reply, where the newlines are the layout. Line feed and
+// tab survive; carriage return does not, because "\r" moves the cursor back
+// over what was already printed and lets the text after it overwrite a line
+// the reader has already seen.
+//
+// Anyone may file feedback, and an administrator reads it on a terminal, so
+// this is the one place a stranger's free text reaches that screen.
+func sanitizeText(value string) string {
+	// A lone 0x80-0x9f byte is a C1 control to a terminal still in Latin-1,
+	// and Go would pass it through a string untouched.
+	value = strings.ToValidUTF8(value, "�")
+	if strings.IndexFunc(value, isTextControl) < 0 {
+		return value
+	}
+	return strings.Map(func(r rune) rune {
+		if isTextControl(r) {
+			return -1
+		}
+		return r
+	}, value)
+}
+
+func isTextControl(r rune) bool { return r != '\n' && r != '\t' && isControl(r) }
 
 // C0, DEL, and C1 — the last because a lone 0x9B is a CSI introducer in its
 // own right on terminals that still decode them.
@@ -209,12 +235,43 @@ func RenderJSON(w io.Writer, raw []byte) error {
 	}
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, raw, "", "  "); err != nil {
-		_, werr := w.Write(raw)
+		_, werr := io.WriteString(w, sanitizeText(string(raw)))
 		return werr
 	}
 	buf.WriteByte('\n')
-	_, err := w.Write(buf.Bytes())
+	_, err := w.Write(escapeJSONControls(buf.Bytes()))
 	return err
+}
+
+// escapeJSONControls rewrites the characters encoding/json leaves raw — DEL
+// and the C1 range, which a terminal may act on — as \u escapes, so the text
+// still decodes to the same value and no longer drives a screen. The C0
+// controls need no help: JSON cannot carry them unescaped.
+func escapeJSONControls(doc []byte) []byte {
+	plain := true
+	for _, b := range doc {
+		if b == 0x7f || b >= 0x80 {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return doc
+	}
+	out := make([]byte, 0, len(doc)+16)
+	for i := 0; i < len(doc); {
+		r, size := utf8.DecodeRune(doc[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			out = append(out, `�`...)
+		case r == 0x7f || (r >= 0x80 && r <= 0x9f):
+			out = append(out, fmt.Sprintf(`\u%04x`, r)...)
+		default:
+			out = append(out, doc[i:i+size]...)
+		}
+		i += size
+	}
+	return out
 }
 
 // renderRowsAsJSON and renderPairsAsJSON are RenderJSON's fallback for a
@@ -236,7 +293,7 @@ func renderRowsAsJSON(w io.Writer, headers []string, rows [][]string) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(w, string(enc))
+	_, err = fmt.Fprintln(w, string(escapeJSONControls(enc)))
 	return err
 }
 
@@ -249,7 +306,7 @@ func renderPairsAsJSON(w io.Writer, pairs [][2]string) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(w, string(enc))
+	_, err = fmt.Fprintln(w, string(escapeJSONControls(enc)))
 	return err
 }
 
@@ -281,7 +338,9 @@ func RenderError(w io.Writer, colour, jsonMode bool, err error) string {
 	if errors.As(err, &callErr) {
 		code = callErr.Code
 	}
-	message := err.Error()
+	// A refusal can quote what the caller typed or what a row holds, and it
+	// reaches the screen like any other data.
+	message := sanitizeText(err.Error())
 
 	if jsonMode {
 		body := map[string]any{"message": message}

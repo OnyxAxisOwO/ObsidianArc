@@ -108,6 +108,27 @@ export function forget(): void {
   account.value = null;
   preferences.value = {};
   setSignedIn(false);
+  forgetTerminalHistory();
+}
+
+// What the terminal's prompt remembered belongs to the person who typed it,
+// and the browser stays behind when they leave. Every account's list goes, not
+// only the one signed out: this is the shared computer's last line of defence.
+//
+// The prefix is spelled out rather than imported from terminal/session.ts, as
+// a static import of anything under terminal/ would pull that chunk into the
+// main graph; test/terminal-plumbing.test.ts holds the two spellings together.
+function forgetTerminalHistory(): void {
+  try {
+    const stored: string[] = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key !== null && key.startsWith('obsidian-arc-terminal-history')) stored.push(key);
+    }
+    for (const key of stored) localStorage.removeItem(key);
+  } catch {
+    // Storage may be blocked; then nothing was kept there either.
+  }
 }
 
 // Resolves the session and the instance's public settings in one round trip

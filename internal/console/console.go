@@ -22,8 +22,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -34,9 +36,9 @@ type Response struct {
 }
 
 // AuditRecord is one executed command, handed to Options.Audit. Line has
-// already had every Flag.Sensitive value replaced with *** — the engine
-// builds it, not the transport, so a masking bug cannot leak a secret to
-// two different callers in two different ways.
+// already had every Flag.Sensitive and Arg.Sensitive value replaced with
+// *** — the engine builds it, not the transport, so a masking bug cannot
+// leak a secret to two different callers in two different ways.
 type AuditRecord struct {
 	Actor     user.User
 	Line      string
@@ -66,6 +68,11 @@ type Options struct {
 	SSH   SSHInfo
 	// Which plugins are on; nil lets every command through.
 	Plugins plugingate.Gate
+	// SecretSetting reports whether a settings key holds a credential that
+	// the console does not know of itself: those of plugins installed while
+	// the server runs, which only the server's settings service has. Nil
+	// means the compiled-in answer alone.
+	SecretSetting func(key string) bool
 }
 
 // Console is the command engine. It holds no per-session state — Session
@@ -245,7 +252,7 @@ func (c *Console) recordAudit(ctx context.Context, s *Session, cmd *Command, par
 	defer cancel()
 	c.opts.Audit(recCtx, AuditRecord{
 		Actor:     s.Actor,
-		Line:      auditLine(cmd, parsed),
+		Line:      c.auditLine(cmd, parsed),
 		Transport: s.Transport,
 		IP:        s.IP,
 		OK:        ok,
@@ -256,11 +263,24 @@ func (c *Console) recordAudit(ctx context.Context, s *Session, cmd *Command, par
 // auditLine rebuilds a readable command line from the parsed result rather
 // than reusing the raw input, which is what lets it mask a Sensitive flag's
 // value — the raw tokens have already forgotten which one that was.
-func auditLine(cmd *Command, parsed ParsedArgs) string {
+//
+// Positional arguments are masked the same way (Arg.Sensitive, and
+// Command.SecretArgs for the ones that are secret only on some lines): the
+// line is read by every administrator who holds the security grant, who are
+// not the people a code or a credential was typed for.
+func (c *Console) auditLine(cmd *Command, parsed ParsedArgs) string {
 	var b strings.Builder
 	b.WriteString(cmd.Name)
-	for _, a := range parsed.Args {
+	var secret map[int]bool
+	if cmd.SecretArgs != nil {
+		secret = cmd.SecretArgs(c, parsed.Args)
+	}
+	for i, a := range parsed.Args {
 		b.WriteByte(' ')
+		if secret[i] || argSensitive(cmd, i) {
+			b.WriteString("***")
+			continue
+		}
 		b.WriteString(quoteIfNeeded(a))
 	}
 	for _, f := range cmd.Flags {
@@ -289,8 +309,55 @@ func auditLine(cmd *Command, parsed ParsedArgs) string {
 	return b.String()
 }
 
+// secretSetting reports whether key is a settings key whose value must not be
+// written to the audit trail. Three sources, because no one of them is the
+// whole answer: the credentials the core defines, those a compiled-in plugin
+// declared (settings.Lookup), and those of plugins installed at run time,
+// which only the server's own settings service knows (Options.SecretSetting).
+// The last line is a name check for the day a list is behind the keys: a
+// credential that is logged once is logged for good, a harmless value masked
+// by mistake costs a reader one `setting get`.
+func (c *Console) secretSetting(key string) bool {
+	switch key {
+	case settings.TurnstileSecretKey, settings.OAuthGitHubSecret, settings.OAuthGoogleSecret, settings.OAuthOIDCClientSecret:
+		return true
+	}
+	if d, ok := settings.Lookup(key); ok && d.Secret {
+		return true
+	}
+	if c.opts.SecretSetting != nil && c.opts.SecretSetting(key) {
+		return true
+	}
+	lower := strings.ToLower(key)
+	for _, word := range []string{"secret", "password", "passwd", "token", "api_key", "apikey", "private_key", "credential"} {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// argSensitive reports whether the i-th positional is declared Sensitive,
+// the last declaration standing for every token past it.
+func argSensitive(cmd *Command, i int) bool {
+	if len(cmd.Args) == 0 {
+		return false
+	}
+	if i >= len(cmd.Args) {
+		i = len(cmd.Args) - 1
+	}
+	return cmd.Args[i].Sensitive
+}
+
+// quoteIfNeeded quotes anything that could be mistaken for more than one
+// token or for something other than text. The audit line is one row that a
+// reader parses by eye: a value carrying a newline, an escape or a look-alike
+// space could otherwise end that row early and start a forged one, or move
+// the cursor of whoever reads it on a terminal.
 func quoteIfNeeded(s string) string {
-	if s == "" || strings.ContainsAny(s, " \t\"'") {
+	if s == "" || strings.IndexFunc(s, func(r rune) bool {
+		return r == '"' || r == '\'' || unicode.IsSpace(r) || !unicode.IsPrint(r)
+	}) >= 0 {
 		return strconv.Quote(s)
 	}
 	return s
@@ -300,22 +367,25 @@ func quoteIfNeeded(s string) string {
 func (c *Console) Banner(s *Session) string {
 	site := "Obsidian Arc"
 	if c.opts.SiteName != nil {
-		if name := c.opts.SiteName(); name != "" {
+		if name := sanitize(c.opts.SiteName()); name != "" {
 			site = name
 		}
 	}
+	// The nickname is free text the account chose; the banner is drawn on a
+	// terminal like everything else.
+	who := sanitize(s.Actor.DisplayName())
 
 	var b strings.Builder
 	if s.Lang == "zh" {
 		fmt.Fprintf(&b, "%s — 终端\n", site)
-		fmt.Fprintf(&b, "已登录：%s（%s）\n", s.Actor.DisplayName(), roleLabel(s.Actor.Role, s.Lang))
+		fmt.Fprintf(&b, "已登录：%s（%s）\n", who, roleLabel(s.Actor.Role, s.Lang))
 		if c.opts.SSH.Enabled {
 			fmt.Fprintf(&b, "SSH：%s，主机指纹 %s\n", c.opts.SSH.Addr, c.opts.SSH.Fingerprint)
 		}
 		b.WriteString("输入 'help' 开始，或 'help -k <关键字>' 搜索命令。")
 	} else {
 		fmt.Fprintf(&b, "%s — Terminal\n", site)
-		fmt.Fprintf(&b, "Signed in as %s (%s)\n", s.Actor.DisplayName(), roleLabel(s.Actor.Role, s.Lang))
+		fmt.Fprintf(&b, "Signed in as %s (%s)\n", who, roleLabel(s.Actor.Role, s.Lang))
 		if c.opts.SSH.Enabled {
 			fmt.Fprintf(&b, "SSH: %s, host fingerprint %s\n", c.opts.SSH.Addr, c.opts.SSH.Fingerprint)
 		}

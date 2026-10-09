@@ -1154,6 +1154,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Version:  deps.Version,
 		SiteName: func() string { return settingsService.Get(settings.SiteName) },
 		SSH:      sshInfo,
+		// Credentials of plugins installed while the server runs are known
+		// to the settings service alone; the audit trail masks them.
+		SecretSetting: func(key string) bool {
+			for _, d := range settingsService.AllDefinitions() {
+				if d.Key == key {
+					return d.Secret
+				}
+			}
+			return false
+		},
 		// The console can do everything the backoffice can from a surface
 		// that leaves nothing on screen afterwards, so what was run is
 		// recorded where the other administrative decisions are. The engine
@@ -1219,9 +1229,23 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			// here too: enrolling needs a screen to scan from, and SSH is
 			// not one. Asked before every command, so a policy switched on
 			// reaches a session that is already open.
+			//
+			// The same goes for the OpenID Connect binding the instance may
+			// require: oauth.BindingGate holds such an account to the binding
+			// screens on the web, and connecting an identity is a browser
+			// redirect, so over SSH it is held at the door the same way. A
+			// failed lookup lets the account through, as the gate does — a
+			// database hiccup is not a reason to lock everyone out.
 			Permitted: func(ctx context.Context, account user.User) bool {
-				return terminalAllowed(ctx, groups, account) == nil &&
-					!authService.MustEnrolTwoFactor(account)
+				if terminalAllowed(ctx, groups, account) != nil || authService.MustEnrolTwoFactor(account) {
+					return false
+				}
+				mustBind, err := oauthService.MustBindOIDC(ctx, account)
+				if err != nil {
+					slog.ErrorContext(ctx, "could not check the OIDC binding requirement for an SSH console", "error", err)
+					return true
+				}
+				return !mustBind
 			},
 			// The code for an account with two-step sign-in, checked against
 			// the same secret, the same replay guard and the same guessing

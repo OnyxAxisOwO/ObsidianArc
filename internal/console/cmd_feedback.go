@@ -121,8 +121,9 @@ func init() {
 				return nil
 			}
 
-			fmt.Fprintln(rt.Out)
-			fmt.Fprintln(rt.Out, asStr(found["body"]))
+			// Printf, not Fprintln to rt.Out: the body is a stranger's text
+			// and Printf is what strips an escape sequence out of it.
+			rt.Printf("\n%s\n", asStr(found["body"]))
 
 			// Markdown as it was typed, not rendered: the terminal is not a
 			// browser, and the source is what somebody would paste back into
@@ -133,7 +134,7 @@ func init() {
 				if asBoolVal(reply["from_staff"]) {
 					who += " (staff)"
 				}
-				fmt.Fprintf(rt.Out, "\n--- %s · %s · %s\n%s\n",
+				rt.Printf("\n--- %s · %s · %s\n%s\n",
 					who, formatMS(reply["created_at"]), asStr(reply["id"]), asStr(reply["body"]))
 			}
 			return nil
