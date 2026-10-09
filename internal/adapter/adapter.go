@@ -397,6 +397,10 @@ func NewRegistry(cfg config.Upstream) *Registry {
 		DialContext: (&net.Dialer{
 			Timeout:   cfg.DialTimeout,
 			KeepAlive: 30 * time.Second,
+			// Judged on the address actually connected to, in dial.go: the base
+			// URL is checked once at save time, and a name can resolve somewhere
+			// else afterwards.
+			Control: refuseDestination,
 		}).DialContext,
 		MaxIdleConns: cfg.MaxIdleConns,
 		// Per-host equals the whole pool because an instance usually talks to

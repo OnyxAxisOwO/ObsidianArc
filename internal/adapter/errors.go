@@ -77,7 +77,7 @@ func (e *Error) Retryable() bool {
 //   - A text-only model behind an OpenAI-compatible base URL rejects an image
 //     by naming the wire format. The cause is that the model cannot see.
 func classifyHTTP(p Provider, endpoint string, status int, retryAfter string, payload []byte, carriedImages bool) *Error {
-	message := extractErrorMessage(payload)
+	message := extractErrorMessage(payload, p.APIKey)
 
 	switch {
 	case status == 401 || status == 403:
@@ -85,9 +85,10 @@ func classifyHTTP(p Provider, endpoint string, status int, retryAfter string, pa
 			message = fmt.Sprintf("The provider rejected our credentials (HTTP %d).", status)
 		}
 		return &Error{
-			Kind:    ErrorAuth,
-			Status:  status,
-			Message: fmt.Sprintf("%s (sent as %s to %s)", message, p.Kind, redactURL(endpoint)),
+			Kind:   ErrorAuth,
+			Status: status,
+			Message: fmt.Sprintf("%s (sent as %s to %s)", message, p.Kind,
+				redactSecret(redactURL(endpoint), p.APIKey)),
 		}
 
 	case status == 429:
@@ -131,6 +132,15 @@ func networkError(ctx context.Context, err error) *Error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return &Error{Kind: ErrorNetwork, Message: "The provider did not respond in time.", cause: err}
 	}
+	// Said as a refusal, not as an unreachable provider: the base URL names an
+	// address this server will not connect to, and trying again changes nothing.
+	if errors.Is(err, errDestinationRefused) {
+		return &Error{
+			Kind:    ErrorNetwork,
+			Message: "The provider's address is refused. This server does not connect to link-local, multicast, unspecified or cloud metadata addresses.",
+			cause:   err,
+		}
+	}
 	return &Error{
 		Kind:    ErrorNetwork,
 		Message: "Could not reach the provider.",
@@ -151,6 +161,20 @@ func redactURL(raw string) string {
 		parsed.RawQuery = "…"
 	}
 	return parsed.String()
+}
+
+// redactSecret replaces every occurrence of the provider's key with ***.
+//
+// A provider that echoes the credential it was sent, in an error body or an
+// error event, would otherwise hand the key to everything the message reaches:
+// the chat bubble, the saved transcript, the API caller and the log. An empty
+// key is left alone, because replacing "" would put *** between every
+// character of the message.
+func redactSecret(message, secret string) string {
+	if secret == "" {
+		return message
+	}
+	return strings.ReplaceAll(message, secret, "***")
 }
 
 func parseRetryAfter(value string) time.Duration {

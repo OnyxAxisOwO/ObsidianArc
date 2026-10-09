@@ -292,7 +292,7 @@ func (a anthropicAdapter) Chat(ctx context.Context, client *http.Client, p Provi
 	}
 
 	if streaming && strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
-		return a.readStream(ctx, response, sink)
+		return a.readStream(ctx, response, sink, p.APIKey)
 	}
 	if streaming {
 		// Asked for a stream and got a document. Rather than failing, the
@@ -391,7 +391,7 @@ type anthropicStreamEvent struct {
 	} `json:"error"`
 }
 
-func (anthropicAdapter) readStream(ctx context.Context, response *http.Response, sink Sink) (Result, error) {
+func (anthropicAdapter) readStream(ctx context.Context, response *http.Response, sink Sink, secret string) (Result, error) {
 	result := Result{Streamed: true}
 	var sinkErr error
 
@@ -428,7 +428,7 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 		}
 
 		if event.Type == "error" {
-			return &Error{Kind: ErrorUpstream, Message: firstNonEmpty(event.Error.Message, "The provider reported an error mid-stream.")}
+			return &Error{Kind: ErrorUpstream, Message: redactSecret(firstNonEmpty(event.Error.Message, "The provider reported an error mid-stream."), secret)}
 		}
 
 		// Anthropic reports input tokens when the message starts and output
