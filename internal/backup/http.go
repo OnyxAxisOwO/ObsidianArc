@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	// An export holds an account's whole history as Go values and then as
-	// JSON, and an import holds a document of up to 32 MiB decoded into
-	// several times that. A handful at once is a normal afternoon; a hundred
-	// accounts doing it together is an out-of-memory kill for everybody else.
+	// An export is streamed a conversation at a time, so its memory is bounded
+	// by one conversation rather than the account. It still holds its slot for
+	// as long as the download takes, and a slow reader keeps the slot. An import
+	// holds a document of up to 32 MiB decoded into several times that. A
+	// handful at once is a normal afternoon; a hundred accounts doing it
+	// together is an out-of-memory kill for everybody else.
 	maxConcurrentExports = 2
 	maxConcurrentImports = 4
 )
@@ -87,10 +89,15 @@ func (h *Handlers) export(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	// Held until the body is written: the document stays in memory until then.
+	// Held until the last byte is written: the conversations are read while
+	// the body streams, so the slot covers the whole download.
 	defer release()
 
-	document, err := h.service.Export(r.Context(), account)
+	// Read before the response starts, so a failure here is still an error
+	// response rather than a body that begins and stops. The file is named only
+	// once the body is about to begin: an error response carrying an attachment
+	// name would be saved to disk as the export.
+	stream, err := h.service.openExport(r.Context(), account)
 	if err != nil {
 		return httpx.Internal(err)
 	}
@@ -99,8 +106,11 @@ func (h *Handlers) export(w http.ResponseWriter, r *http.Request) error {
 	// later, rather than "export.json" among nine others.
 	filename := "obsidian-arc-" + safeName(account.Username) + "-" +
 		time.Now().Format("2006-01-02") + ".json"
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-	return httpx.WriteJSON(w, http.StatusOK, document)
+	w.WriteHeader(http.StatusOK)
+	return stream.writeTo(r.Context(), w)
 }
 
 func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error {
@@ -130,6 +140,8 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 			return httpx.BadRequest(
 				"That export is larger than this server will import: at most %d conversations and %d messages.",
 				MaxConversations, MaxMessagesPerImport)
+		case errors.Is(err, ErrNULCharacter):
+			return httpx.BadRequest("That export contains a NUL character (U+0000), which this server does not store.")
 		case errors.Is(err, ErrStorageFull):
 			// 409 rather than 400: the document is fine and sending it again
 			// will not help. Something has to be deleted first.
