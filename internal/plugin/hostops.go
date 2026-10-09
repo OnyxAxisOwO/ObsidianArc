@@ -12,7 +12,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -445,22 +447,13 @@ func rowsToJSON(rows *sql.Rows) (any, error) {
 
 // fetchClient is what backends make their outgoing requests with. It refuses
 // the addresses no plugin has a use for and every server has reason to
-// guard: the link-local range where cloud hosts keep their credentials.
+// guard: the link-local range where cloud hosts keep their credentials, and
+// the two metadata services that sit outside it (see refuseFetchAddress).
 var fetchClient = &http.Client{
 	Transport: &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout: 10 * time.Second,
-			Control: func(_, address string, _ syscall.RawConn) error {
-				host, _, err := net.SplitHostPort(address)
-				if err != nil {
-					return err
-				}
-				ip := net.ParseIP(host)
-				if ip != nil && (ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()) {
-					return errors.New("that address is not reachable from a plugin")
-				}
-				return nil
-			},
+			Control: refuseFetchAddress,
 		}).DialContext,
 		MaxIdleConns:          16,
 		IdleConnTimeout:       60 * time.Second,
@@ -472,6 +465,38 @@ var fetchClient = &http.Client{
 		}
 		return nil
 	},
+}
+
+// refuseFetchAddress is fetchClient's dial-time check. It runs on the address
+// each connection is about to be made to, after the name has been resolved, so
+// a name that resolves into a refused range is caught as well as a literal.
+//
+// Loopback and private addresses stay reachable: a plugin's own services run
+// there, and a backend calls services on the operator's network by design.
+//
+// The address is parsed with netip, not net.ParseIP. ParseIP rejects a zone,
+// so fe80::1%en0 used to pass the link-local check; netip keeps the zone and
+// the check sees the address.
+func refuseFetchAddress(_, address string, _ syscall.RawConn) error {
+	addrPort, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return err
+	}
+	ip := addrPort.Addr().Unmap()
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() ||
+		slices.Contains(cloudMetadataAddrs, ip) {
+		return errors.New("that address is not reachable from a plugin")
+	}
+	return nil
+}
+
+// cloudMetadataAddrs are the metadata services the link-local range does not
+// reach: Alibaba Cloud's, on a CGNAT address, and AWS's IPv6 one, in a
+// unique-local range. internal/adapter refuses the same two for provider
+// calls, and the two lists have to change together.
+var cloudMetadataAddrs = []netip.Addr{
+	netip.MustParseAddr("100.100.100.200"),
+	netip.MustParseAddr("fd00:ec2::254"),
 }
 
 func (m *Manager) fetch(ctx context.Context, raw json.RawMessage) (any, error) {
