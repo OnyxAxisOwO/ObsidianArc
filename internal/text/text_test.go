@@ -126,3 +126,50 @@ func TestTruncateWithANonPositiveLimitKeepsNothing(t *testing.T) {
 		t.Errorf("TrimAndTruncate(%q, %d) = %q, want empty", "  hello  ", -5, got)
 	}
 }
+
+// Clean is what lets a client-supplied string reach PostgreSQL. Each case
+// states the bytes a client could send and what has to be stored instead.
+func TestCleanMakesAStringStorableByPostgres(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"plain ASCII is left alone", "/api/chat", "/api/chat"},
+		{"valid multi-byte text is left alone", "中文 café 🙂", "中文 café 🙂"},
+		{"empty stays empty", "", ""},
+		{"tabs and newlines are kept", "a\tb\nc", "a\tb\nc"},
+		{"a NUL byte is removed", "/a\x00b", "/ab"},
+		{"a lone invalid byte becomes U+FFFD", "a\xffb", "a\uFFFDb"},
+		{"a run of invalid bytes becomes one U+FFFD", "a\xff\xfeb", "a\uFFFDb"},
+		{"a truncated multi-byte sequence becomes U+FFFD", "a\xe4\xb8b", "a\uFFFDb"},
+		{"a surrogate code point encoded as UTF-8 is invalid", "a\xed\xa0\x80b", "a\uFFFDb"},
+		{"NUL and invalid bytes together", "\x00\xff\x00", "\uFFFD"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Clean(c.value)
+			if got != c.want {
+				t.Fatalf("Clean(%q) = %q, want %q", c.value, got, c.want)
+			}
+			if !utf8.ValidString(got) || strings.ContainsRune(got, 0) {
+				t.Fatalf("Clean(%q) = %q, still holds invalid UTF-8 or a NUL byte", c.value, got)
+			}
+		})
+	}
+}
+
+// Whatever two bytes sit between two ASCII letters, the result must be
+// storable. The space is 65,536 values, so it is simply all of them.
+func TestCleanLeavesNoBadBytesForAnyBytePair(t *testing.T) {
+	for first := 0; first < 256; first++ {
+		for second := 0; second < 256; second++ {
+			value := "a" + string([]byte{byte(first), byte(second)}) + "b"
+			got := Clean(value)
+			if !utf8.ValidString(got) || strings.ContainsRune(got, 0) {
+				t.Fatalf("Clean(% x) = %q, still holds invalid UTF-8 or a NUL byte", value, got)
+			}
+		}
+	}
+}

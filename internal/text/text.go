@@ -20,6 +20,10 @@ import "strings"
 // Use this for a value that must be kept verbatim — a request header, a log
 // line — where surrounding whitespace is part of what was actually sent and
 // is not this function's business to remove.
+//
+// A value already inside the limit comes back exactly as given, NUL bytes and
+// invalid UTF-8 included. A value headed for PostgreSQL goes through Clean
+// first.
 func Truncate(value string, limit int) string {
 	// A limit that is not positive keeps nothing. Without this the slice
 	// below would be runes[:limit], which panics for a negative limit — in a
@@ -35,6 +39,18 @@ func Truncate(value string, limit int) string {
 		return value
 	}
 	return string(runes[:limit])
+}
+
+// Clean makes a value storable in PostgreSQL, which refuses a text value that
+// holds a NUL byte or bytes that are not UTF-8. It refuses the whole statement
+// carrying such a value, so one client-supplied string costs every other row
+// written beside it. SQLite stores the bytes and never shows the problem.
+//
+// Each run of invalid bytes becomes one U+FFFD and NUL bytes are removed.
+// Everything else, tabs and newlines included, is kept as sent.
+func Clean(value string) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	return strings.ReplaceAll(value, "\x00", "")
 }
 
 // TrimAndTruncate trims surrounding whitespace before truncating.
