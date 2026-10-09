@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -87,6 +88,19 @@ type Config struct {
 
 	IdleTimeout time.Duration // default 30m
 	MaxSessions int           // default 16, 0 = unlimited
+	// MaxSessionsPerAccount bounds how many of those slots one account may
+	// hold at once, over any number of connections. MaxSessions is shared by
+	// everybody, so without this a single account could fill it and lock the
+	// rest out. 0 means 4; negative means no per-account limit.
+	MaxSessionsPerAccount int
+	// ExecTimeout is the longest a one-shot `ssh host 'cmd'` may run. A
+	// command that never ends (`watch`, a stuck upstream) would otherwise hold
+	// its slot until somebody noticed. 0 means 15m.
+	ExecTimeout time.Duration
+	// MaxUnauthenticated bounds the connections that have not finished the
+	// handshake yet, across all addresses; at most maxPreauthPerIP of them
+	// may come from one. 0 means 64; negative means no limit.
+	MaxUnauthenticated int
 
 	Logf func(ctx context.Context, msg string, args ...any)
 }
@@ -119,7 +133,23 @@ type Server struct {
 
 	sem chan struct{} // nil when MaxSessions == 0 (unlimited)
 	wg  sync.WaitGroup
+
+	// Sessions held per account, so one account cannot take every slot.
+	perAccount map[string]int
+	// Connections still in the handshake: the total, and per address.
+	preauth   int
+	preauthIP map[string]int
 }
+
+// maxPreauthPerIP is how many unauthenticated connections one address may
+// hold. The total cap alone would let a single host fill it and keep every
+// administrator out for as long as it kept reconnecting.
+const maxPreauthPerIP = 8
+
+// maxUsernameLen is the longest user name that is worth handing to the
+// password check. Accounts are 3-32 characters; anything past this is not a
+// name, and the check does work (a rate-limit key, a hash) per attempt.
+const maxUsernameLen = 64
 
 // New loads or creates the host key and prepares the server, but does not
 // listen yet — that is ListenAndServe's job, so a bad HostKeyPath fails at
@@ -137,6 +167,15 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.IdleTimeout <= 0 {
 		cfg.IdleTimeout = 30 * time.Minute
+	}
+	if cfg.MaxSessionsPerAccount == 0 {
+		cfg.MaxSessionsPerAccount = 4
+	}
+	if cfg.ExecTimeout <= 0 {
+		cfg.ExecTimeout = 15 * time.Minute
+	}
+	if cfg.MaxUnauthenticated == 0 {
+		cfg.MaxUnauthenticated = 64
 	}
 	if cfg.Logf == nil {
 		cfg.Logf = func(context.Context, string, ...any) {}
@@ -273,6 +312,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // JSON-encoded, because that is the only channel the ssh package offers
 // between the callback and the rest of the handshake.
 func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+	// Before anything is looked up: the name is the client's to make as long
+	// as the packet allows, and Authenticate keys its attempt budget on it.
+	if len(conn.User()) > maxUsernameLen {
+		return nil, errAuthFailed
+	}
 	ip := hostOnly(conn.RemoteAddr())
 	account, err := s.cfg.Authenticate(context.Background(), conn.User(), string(password), ip)
 	if err != nil {
@@ -344,7 +388,17 @@ func (s *Server) handleConn(conn net.Conn) {
 	// stretches and the idle timeout is what governs it from then on.
 	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
 
+	// Counted from accept to the end of the handshake, whichever way it ends.
+	ip := hostOnly(conn.RemoteAddr())
+	if !s.acquirePreauth(ip) {
+		// NewServerConn closes the socket when a handshake fails; this one
+		// never starts, so nothing else will.
+		_ = conn.Close()
+		s.cfg.Logf(context.Background(), "consolessh: too many unauthenticated connections", "remote", conn.RemoteAddr().String())
+		return
+	}
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, s.sshConfig)
+	s.releasePreauth(ip)
 	if err != nil {
 		// A failed handshake is routine on the public internet (scanners,
 		// mistyped passwords) and not worth more than a debug-level trace;
@@ -360,7 +414,6 @@ func (s *Server) handleConn(conn net.Conn) {
 	if !ok {
 		return
 	}
-	ip := hostOnly(sconn.RemoteAddr())
 	base := context.Background()
 	if s.cfg.ConnectionContext != nil {
 		base = s.cfg.ConnectionContext(base)
@@ -375,7 +428,12 @@ func (s *Server) handleConn(conn net.Conn) {
 			_ = newChannel.Reject(ssh.UnknownChannelType, "only a console session is available")
 			continue
 		}
+		if !s.acquireAccountSlot(actor.ID) {
+			_ = newChannel.Reject(ssh.ResourceShortage, "too many concurrent console sessions for this account")
+			continue
+		}
 		if !s.acquireSlot() {
+			s.releaseAccountSlot(actor.ID)
 			_ = newChannel.Reject(ssh.ResourceShortage, "too many concurrent console sessions")
 			continue
 		}
@@ -383,6 +441,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		channel, requests, err := newChannel.Accept()
 		if err != nil {
 			s.releaseSlot()
+			s.releaseAccountSlot(actor.ID)
 			continue
 		}
 
@@ -393,6 +452,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		go func() {
 			defer s.wg.Done()
 			defer s.releaseSlot()
+			defer s.releaseAccountSlot(actor.ID)
 			defer s.removeSession(sess)
 			sess.serve(requests)
 		}()
@@ -435,6 +495,66 @@ func (s *Server) releaseSlot() {
 		return
 	}
 	<-s.sem
+}
+
+func (s *Server) acquireAccountSlot(accountID string) bool {
+	if s.cfg.MaxSessionsPerAccount < 0 {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perAccount[accountID] >= s.cfg.MaxSessionsPerAccount {
+		return false
+	}
+	if s.perAccount == nil {
+		s.perAccount = make(map[string]int)
+	}
+	s.perAccount[accountID]++
+	return true
+}
+
+func (s *Server) releaseAccountSlot(accountID string) {
+	if s.cfg.MaxSessionsPerAccount < 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perAccount[accountID] <= 1 {
+		delete(s.perAccount, accountID)
+		return
+	}
+	s.perAccount[accountID]--
+}
+
+func (s *Server) acquirePreauth(ip string) bool {
+	if s.cfg.MaxUnauthenticated < 0 {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.preauth >= s.cfg.MaxUnauthenticated || s.preauthIP[ip] >= maxPreauthPerIP {
+		return false
+	}
+	if s.preauthIP == nil {
+		s.preauthIP = make(map[string]int)
+	}
+	s.preauth++
+	s.preauthIP[ip]++
+	return true
+}
+
+func (s *Server) releasePreauth(ip string) {
+	if s.cfg.MaxUnauthenticated < 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.preauth--
+	if s.preauthIP[ip] <= 1 {
+		delete(s.preauthIP, ip)
+		return
+	}
+	s.preauthIP[ip]--
 }
 
 func (s *Server) addSession(sess *sshSession) {
@@ -649,7 +769,7 @@ func (sess *sshSession) serveExec(requests <-chan *ssh.Request, line string) {
 	// A signal may arrive as soon as the exec request is acknowledged. Make
 	// cancellation visible before the command goroutine starts, or that early
 	// signal finds no cancel function and a long-running command continues.
-	ctx, cancel := context.WithCancel(sess.base)
+	ctx, cancel := context.WithTimeout(sess.base, sess.server.cfg.ExecTimeout)
 	sess.mu.Lock()
 	sess.cancel = cancel
 	sess.mu.Unlock()
@@ -665,6 +785,11 @@ func (sess *sshSession) serveExec(requests <-chan *ssh.Request, line string) {
 			return
 		case req, open := <-requests:
 			if !open {
+				// The channel is gone: the client closed it, or the connection
+				// died under it. Nobody is left to read what the command
+				// prints, and one that waits on a ticker (`watch`) would
+				// otherwise run on, holding this session's slot for good.
+				cancel()
 				<-done
 				return
 			}
@@ -804,6 +929,10 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 	if !result.OK {
 		status = 1
 	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		status = 1
+		_, _ = fmt.Fprintf(sess.channel.Stderr(), "command stopped after %s\n", sess.server.cfg.ExecTimeout)
+	}
 	_, _ = sess.channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
 }
 
@@ -838,10 +967,20 @@ func (sess *sshSession) runInteractive() {
 		err error
 	}
 	reads := make(chan readEvent)
+	// Closed when this function returns. The session's end closes the
+	// connection, which makes the next read fail, and with nobody left
+	// receiving that failure the goroutine below would block on its send for
+	// the life of the process.
+	quit := make(chan struct{})
+	defer close(quit)
 	go func() {
 		for {
 			r, err := editor.NextRune()
-			reads <- readEvent{r, err}
+			select {
+			case reads <- readEvent{r, err}:
+			case <-quit:
+				return
+			}
 			if err != nil {
 				return
 			}
@@ -958,6 +1097,12 @@ func (sess *sshSession) watchCancel(ctx context.Context, cancel context.CancelFu
 			return
 		}
 		if err != nil {
+			// The end of the client's input is not an interrupt (above), but
+			// a channel that failed is the client gone, and the command has
+			// nobody to run for.
+			if !errors.Is(err, io.EOF) {
+				cancel()
+			}
 			return
 		}
 		if n > 0 && buf[0] == 0x03 {
