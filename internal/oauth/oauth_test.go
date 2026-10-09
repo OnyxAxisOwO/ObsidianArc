@@ -145,6 +145,11 @@ func TestNextStaysOnThisSite(t *testing.T) {
 	for _, unsafe := range []string{
 		"//evil.example", "https://evil.example", "/\\evil.example",
 		"evil.example", "", "/fine\nLocation: https://evil.example",
+		// A browser deletes TAB, CR and LF from a URL before parsing it, so
+		// these name a host once they are followed.
+		"/\t/evil.example", "/\r/evil.example", "/\n/evil.example",
+		"/\x00/evil.example", "/\x7f/evil.example", "/ok/\x1f",
+		"/ok\\evil.example", "/ok/..\\..\\evil.example",
 	} {
 		if got := safeNext(unsafe); got != "" {
 			t.Errorf("safeNext(%q) = %q, want it dropped", unsafe, got)

@@ -14,7 +14,12 @@
 export function safeNext(raw: unknown): string {
   if (typeof raw !== 'string') return '';
   const value = raw.trim();
-  if (!value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\')) return '';
+  if (!value.startsWith('/') || value.startsWith('//')) return '';
+  // Anywhere in the value, not only the front: a URL parser deletes TAB, CR
+  // and LF before it looks at the string, so "/<TAB>/evil.example" is
+  // "//evil.example" by the time it is followed, and a backslash is read as a
+  // slash wherever it falls.
+  if (/[\u0000-\u001f\u007f\\]/.test(value)) return '';
   return value;
 }
 

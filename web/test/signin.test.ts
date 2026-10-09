@@ -273,7 +273,21 @@ describe('signing in with an account from elsewhere', () => {
     for (const safe of ['/', '/settings', '/oauth/consent?request=abc']) {
       expect(safeNext(safe)).toBe(safe);
     }
-    for (const unsafe of ['//evil.example', 'https://evil.example', '/\\evil.example', '', 7, null]) {
+    for (const unsafe of [
+      '//evil.example',
+      'https://evil.example',
+      '/\\evil.example',
+      '',
+      7,
+      null,
+      // A URL parser deletes TAB, CR and LF before reading, so these become
+      // "//evil.example" once they are followed.
+      '/\t/evil.example',
+      '/\r/evil.example',
+      '/\n/evil.example',
+      '/\u0000/evil.example',
+      '/ok\\evil.example',
+    ]) {
       expect(safeNext(unsafe)).toBe('');
     }
   });

@@ -246,13 +246,21 @@ func challengeFor(verifier string) string {
 // The value ends up in a Location header, so anything that could name a host
 // — an absolute URL, a protocol-relative "//elsewhere", a backslash some
 // browsers read as a slash — is dropped rather than corrected.
+//
+// Control characters and backslashes are refused wherever they sit, not only
+// at the front: a browser's URL parser deletes TAB, CR and LF from anywhere in
+// a URL and reads a backslash as a slash, so "/<TAB>/evil.example" is
+// "//evil.example" by the time it is followed. Checking the prefix of the raw
+// string is checking something other than what the browser will read.
 func safeNext(raw string) string {
 	value := strings.TrimSpace(raw)
-	if !strings.HasPrefix(value, "/") ||
-		strings.HasPrefix(value, "//") ||
-		strings.HasPrefix(value, "/\\") ||
-		strings.Contains(value, "\n") || strings.Contains(value, "\r") {
+	if !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") {
 		return ""
+	}
+	for i := 0; i < len(value); i++ {
+		if c := value[i]; c < 0x20 || c == 0x7f || c == '\\' {
+			return ""
+		}
 	}
 	return value
 }
