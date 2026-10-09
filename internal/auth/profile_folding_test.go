@@ -45,7 +45,7 @@ func TestTheMoveIsDecidedInTheAlphabetTheIdentityIsWrittenIn(t *testing.T) {
 		// The obvious way in is refused, as it always was.
 		if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{
 			Email: ptr("me@evil.test"),
-		}); err == nil {
+		}, "a-good-password"); err == nil {
 			t.Fatal("an address outside the allowlist was accepted")
 		}
 
@@ -53,7 +53,7 @@ func TestTheMoveIsDecidedInTheAlphabetTheIdentityIsWrittenIn(t *testing.T) {
 		disguised := "me@" + longS + "ina.com"
 		if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{
 			Email: &disguised,
-		}); err == nil {
+		}, "a-good-password"); err == nil {
 			t.Fatalf("%q was accepted against an allowlist of sina.com", disguised)
 		}
 	})
@@ -79,7 +79,7 @@ func TestTheMoveIsDecidedInTheAlphabetTheIdentityIsWrittenIn(t *testing.T) {
 		}
 
 		disguised := "bo" + longS + "s@example.com"
-		if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &disguised}); err != nil {
+		if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &disguised}, "a-good-password"); err != nil {
 			t.Fatalf("the change was refused outright: %v", err)
 		}
 
@@ -129,13 +129,13 @@ func TestClearingAnAddressDoesNotStrandTheAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: ptr("")}); !errors.Is(err, ErrEmailRequired) {
+	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: ptr("")}, "a-good-password"); !errors.Is(err, ErrEmailRequired) {
 		t.Fatalf("verification was bypassed by clearing the address: %v", err)
 	}
 	if err := f.settings.Set(ctx, settings.VerifyEmail, "false"); err != nil {
 		t.Fatal(err)
 	}
-	cleared, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: ptr("")})
+	cleared, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: ptr("")}, "a-good-password")
 	if err != nil {
 		t.Fatalf("clearing the address was refused: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestMovingAddressCannotPostMailFasterThanResendWould(t *testing.T) {
 	for i, address := range []string{
 		"stranger1@somewhere.test", "stranger2@somewhere.test", "stranger3@somewhere.test",
 	} {
-		if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &address}); err != nil {
+		if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &address}, "a-good-password"); err != nil {
 			t.Fatalf("move %d refused: %v", i, err)
 		}
 

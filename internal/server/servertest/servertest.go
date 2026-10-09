@@ -53,6 +53,9 @@ type Instance struct {
 type Session struct {
 	Cookie *http.Cookie
 	UserID string
+	// The password the account signed up or in with, when this harness did
+	// it. Enrolling the second step asks for it, as it would a person.
+	Password string
 }
 
 // New builds a server with every registered plugin installed and enabled.
@@ -310,7 +313,9 @@ func (in *Instance) RegisterWith(body map[string]any) *Session {
 	if response.Code != http.StatusCreated {
 		in.T.Fatalf("register %v: %d %s", body["username"], response.Code, response.Body.String())
 	}
-	return in.sessionFrom(response)
+	session := in.sessionFrom(response)
+	session.Password, _ = body["password"].(string)
+	return session
 }
 
 // Login signs in with a password and fails the test unless a session came
@@ -322,7 +327,9 @@ func (in *Instance) Login(identifier, password string) *Session {
 	if response.Code != http.StatusOK {
 		in.T.Fatalf("login %s: %d %s", identifier, response.Code, response.Body.String())
 	}
-	return in.sessionFrom(response)
+	session := in.sessionFrom(response)
+	session.Password = password
+	return session
 }
 
 // SetSettings writes settings as an administrator would, failing the test on
@@ -383,7 +390,8 @@ func (in *Instance) EnrolTwoFactor(as *Session) *TwoFactor {
 	}](in.T, setup).Secret
 	step := totp.Step(time.Now())
 	code, _ := totp.Code(secret, step)
-	enable := in.Do(http.MethodPost, "/api/profile/two-factor/enable", map[string]string{"code": code}, as)
+	enable := in.Do(http.MethodPost, "/api/profile/two-factor/enable",
+		map[string]string{"code": code, "current_password": as.Password}, as)
 	if enable.Code != http.StatusOK {
 		in.T.Fatalf("two-factor enable: %d %s", enable.Code, enable.Body.String())
 	}

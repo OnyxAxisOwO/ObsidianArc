@@ -53,6 +53,10 @@ var (
 	ErrEmailRequired        = errors.New("auth: an email address is required to register here")
 	ErrPasswordUnchanged    = errors.New("auth: the new password is the same as the current one")
 	ErrCurrentPasswordWrong = errors.New("auth: current password is incorrect")
+	// Nothing was typed where an account with a password has to confirm it.
+	// Apart from a wrong one so the screen can ask instead of accuse, and so
+	// an empty field never spends a guess from the budget.
+	ErrPasswordRequired = errors.New("auth: your current password is required for this")
 	// One code for both, deliberately: see consumeInvite.
 	ErrInviteRequired = errors.New("auth: an invite code is required to register here")
 	ErrInviteInvalid  = errors.New("auth: that invite code is not valid")
@@ -60,6 +64,10 @@ var (
 	// registration row lock. Leave the transaction and screen that second
 	// account's address before retrying, so it cannot slip past the check.
 	errNeedsEmailScreening = errors.New("auth: email screening must run before the transaction")
+	// The password check is an Argon2 verification, which does not belong
+	// inside a transaction; UpdateProfile learns inside the lock that the
+	// address is moving, leaves, checks, and comes back.
+	errNeedsPasswordCheck = errors.New("auth: the password must be confirmed before the transaction")
 )
 
 // InviteGrant is what consuming an invite code hands back to Register and
@@ -650,13 +658,19 @@ func (s *Service) recordSignupReview(
 // controls: the domain allowlist an operator had configured, and — worse —
 // the confirmation itself, because `email_verified` stayed true for an
 // address its owner had never proved they could read.
-func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.ProfileUpdate) (user.User, error) {
+//
+// Moving the address also takes the account's current password, where it has
+// one. The address is where a reset link goes, so a session alone — which is
+// all a stolen cookie is — must not be able to repoint it. An account opened
+// through a provider has no password to ask for and is asked for nothing.
+func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.ProfileUpdate, currentPassword string) (user.User, error) {
 	var (
 		updated      user.User
 		verification string
 		address      string
 	)
 	screened := false
+	passwordChecked := false
 	var err error
 	for {
 		err = s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -693,6 +707,9 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 			// of their own profile form; they have asked that nobody take an
 			// address outside it from now on.
 			if moved {
+				if !passwordChecked {
+					return errNeedsPasswordCheck
+				}
 				if err := checkEmail(s.settings, address); err != nil {
 					return err
 				}
@@ -804,6 +821,13 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 			updated, err = s.users.UpdateProfile(ctx, tx, userID, in)
 			return err
 		})
+		if errors.Is(err, errNeedsPasswordCheck) {
+			if err := s.ConfirmPassword(ctx, userID, currentPassword); err != nil {
+				return user.User{}, err
+			}
+			passwordChecked = true
+			continue
+		}
 		if !errors.Is(err, errNeedsEmailScreening) {
 			break
 		}
@@ -1069,6 +1093,50 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	return s.sessions.DeleteByToken(ctx, token)
 }
 
+// ConfirmPassword is the guard in front of the changes a stolen session must
+// not be able to make on its own: switching two-step sign-in on, moving the
+// email address. It asks for the account's current password, and asks for
+// nothing where the account has none — one opened through a provider has no
+// password to prove, and demanding one would lock it out of its own settings.
+func (s *Service) ConfirmPassword(ctx context.Context, userID, candidate string) error {
+	hash, err := s.users.PasswordHash(ctx, nil, userID)
+	if err != nil {
+		return err
+	}
+	if hash == "" {
+		return nil
+	}
+	if candidate == "" {
+		return ErrPasswordRequired
+	}
+	return s.checkPassword(ctx, userID, hash, candidate)
+}
+
+// checkPassword verifies the current password behind a guessing budget.
+// Without one, every endpoint that asks for the password would be a password
+// oracle for whoever holds a session. The budget is the one the second step's
+// codes use, keyed by the account alone (a session has no sign-in form to
+// spray accounts from) and under its own prefix, so guessing a password can
+// neither spend nor clear the allowance for guessing a code.
+func (s *Service) checkPassword(ctx context.Context, userID, hash, candidate string) error {
+	attempt, err := s.codes.Begin("", "password:"+userID)
+	if err != nil {
+		return err
+	}
+	defer attempt.finish(attemptCancelled)
+
+	ok, _, err := s.hasher.Verify(ctx, hash, candidate)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		attempt.finish(attemptFailed)
+		return ErrCurrentPasswordWrong
+	}
+	attempt.finish(attemptSucceeded)
+	return nil
+}
+
 // ChangePassword rotates a credential and invalidates every other session for
 // the account, keeping only the one making the change.
 func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, newPassword, keepSessionID string) error {
@@ -1092,12 +1160,8 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	// only way into such an account is the provider, and an operator
 	// switching that provider off would lock its owner out.
 	if hash != "" {
-		ok, _, err := s.hasher.Verify(ctx, hash, currentPassword)
-		if err != nil {
+		if err := s.checkPassword(ctx, userID, hash, currentPassword); err != nil {
 			return err
-		}
-		if !ok {
-			return ErrCurrentPasswordWrong
 		}
 		if same, _, _ := s.hasher.Verify(ctx, hash, newPassword); same {
 			return ErrPasswordUnchanged

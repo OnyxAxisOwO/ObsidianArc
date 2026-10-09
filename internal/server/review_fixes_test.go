@@ -108,7 +108,7 @@ func TestEnrollingBindsTheVisitItOpens(t *testing.T) {
 	}](t, setup).Secret
 	code, _ := totp.Code(secret, totp.Step(time.Now()))
 	if response := in.doFrom(ip, browser, http.MethodPost, "/api/profile/two-factor/enable",
-		map[string]string{"code": code}, member); response.Code != http.StatusOK {
+		map[string]string{"code": code, "current_password": member.password}, member); response.Code != http.StatusOK {
 		t.Fatalf("enable: %d %s", response.Code, response.Body.String())
 	}
 	if code := in.doFrom(ip, browser, http.MethodGet, "/api/admin/dashboard", nil, member).Code; code != http.StatusOK {

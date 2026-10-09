@@ -84,6 +84,8 @@ func newInstance(t *testing.T, tweak ...func(*config.Config)) *instance {
 type session struct {
 	cookie *http.Cookie
 	userID string
+	// What the account registered with, for the steps that ask for it again.
+	password string
 }
 
 // do issues a request. A session sends its cookie; every unsafe method
@@ -131,7 +133,7 @@ func (in *instance) register(username, password string) *session {
 
 	for _, cookie := range response.Result().Cookies() {
 		if cookie.Name == "obsidian_session" && cookie.Value != "" {
-			return &session{cookie: cookie, userID: payload.User.ID}
+			return &session{cookie: cookie, userID: payload.User.ID, password: password}
 		}
 	}
 	in.t.Fatalf("register %s returned no session cookie", username)

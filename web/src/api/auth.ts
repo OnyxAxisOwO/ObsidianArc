@@ -293,6 +293,9 @@ export interface ProfilePatch {
   bio?: string;
   email?: string;
   fields?: Record<string, string>;
+  /** Required by the server when `email` actually changes and the account has
+   *  a password; ignored otherwise. */
+  current_password?: string;
 }
 
 export function updateProfile(patch: ProfilePatch): Promise<{ user: Account }> {

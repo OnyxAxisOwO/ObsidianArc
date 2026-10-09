@@ -51,7 +51,8 @@ func TestRegistrationAndProfileChangesScreenNewAddresses(t *testing.T) {
 	if unchanged.Code != http.StatusOK || calls.Load() != before {
 		t.Fatalf("nickname edit: %d, screening calls %d want %d", unchanged.Code, calls.Load(), before)
 	}
-	changed := in.do(http.MethodPatch, "/api/profile", map[string]string{"email": "throwaway@temporary.example"}, member)
+	changed := in.do(http.MethodPatch, "/api/profile",
+		map[string]string{"email": "throwaway@temporary.example", "current_password": member.password}, member)
 	if changed.Code != http.StatusBadRequest || errCode(t, changed) != "disposable_email" {
 		t.Fatalf("profile changed to disposable address: %d %s", changed.Code, changed.Body.String())
 	}

@@ -50,6 +50,9 @@ const avatar = ref(account.avatar);
 const profileFlash = ref('');
 const profileBusy = ref(false);
 const profileLabel = ref('');
+// Asked for only while the address is actually changing: the form sends the
+// unchanged address with every save, and a nickname edit must not need it.
+const profilePassword = ref('');
 
 const currentPassword = ref('');
 const newPassword = ref('');
@@ -78,6 +81,11 @@ const connectionsBusy = ref(false);
  * depend on the operator leaving that provider switched on.
  */
 const hasPassword = ref(true);
+
+/** The server compares addresses case-insensitively, so this does too. */
+const emailMoving = computed(() =>
+  email.value.trim().toLowerCase() !== (currentUser.value?.email ?? '').trim().toLowerCase());
+const askForPassword = computed(() => emailMoving.value && hasPassword.value);
 
 const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
 function mark(id: string): OaIcon {
@@ -196,6 +204,11 @@ async function saveProfile(): Promise<void> {
     return;
   }
 
+  if (askForPassword.value && !profilePassword.value) {
+    profileFlash.value = t('emailChangePasswordHint');
+    return;
+  }
+
   profileBusy.value = true;
   profileFlash.value = '';
   try {
@@ -205,12 +218,19 @@ async function saveProfile(): Promise<void> {
       ...(fieldPlan.value.keys.length ? { fields: fieldValues(fields.value, fieldPlan.value) } : {}),
       bio: bio.value.trim(),
       avatar: avatar.value.trim(),
+      ...(askForPassword.value ? { current_password: profilePassword.value } : {}),
     });
     adopt(user, currentPreferences.value);
+    profilePassword.value = '';
     profileLabel.value = t('saved');
     window.setTimeout(() => { profileLabel.value = ''; }, 1500);
   } catch (error) {
-    if (error instanceof ApiError) {
+    if (error instanceof ApiError && error.code === 'current_password_wrong') {
+      profileFlash.value = t('currentPasswordWrong');
+      profilePassword.value = '';
+    } else if (error instanceof ApiError && error.code === 'password_required') {
+      profileFlash.value = t('emailChangePasswordHint');
+    } else if (error instanceof ApiError) {
       profileFlash.value = pluginRefusal(error.code ?? '') ?? error.message;
     } else {
       profileFlash.value = String(error);
@@ -307,6 +327,15 @@ function importData(): void {
       />
     </OaRow>
     <OaRow stacked><OaTextField v-model="email" :label="t('email')" type="email" /></OaRow>
+    <OaRow v-if="askForPassword" stacked>
+      <OaTextField
+        v-model="profilePassword"
+        :label="t('currentPassword')"
+        :hint="t('emailChangePasswordHint')"
+        type="password"
+        autocomplete="current-password"
+      />
+    </OaRow>
     <OaRow v-if="fieldPlan.keys.length" stacked><OaAccountFields v-model="fields" :plan="fieldPlan" /></OaRow>
     <OaRow stacked><OaTextArea v-model="bio" :label="t('bio')" :rows="3" /></OaRow>
     <OaRow stacked>

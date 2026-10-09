@@ -421,6 +421,10 @@ type TwoFactorSetup struct {
 		Size int    `json:"size"`
 		Path string `json:"path"`
 	} `json:"qr"`
+	// Whether confirming will ask for the account's password, so the wizard
+	// draws the field before the person has typed a code that would then be
+	// refused for want of it.
+	PasswordRequired bool `json:"password_required"`
 }
 
 // BeginTwoFactor hands out a fresh secret for scanning. Nothing changes for
@@ -433,6 +437,10 @@ func (s *Service) BeginTwoFactor(ctx context.Context, account user.User) (TwoFac
 	}
 	if account.TwoFactorEnabled() {
 		return TwoFactorSetup{}, ErrTwoFactorEnabled
+	}
+	hash, err := s.users.PasswordHash(ctx, nil, account.ID)
+	if err != nil {
+		return TwoFactorSetup{}, err
 	}
 
 	secretText := totp.NewSecret()
@@ -453,9 +461,10 @@ func (s *Service) BeginTwoFactor(ctx context.Context, account user.User) (TwoFac
 	}
 
 	setup := TwoFactorSetup{
-		Secret:  secretText,
-		Issuer:  s.TwoFactorIssuer(),
-		Account: account.Username,
+		Secret:           secretText,
+		Issuer:           s.TwoFactorIssuer(),
+		Account:          account.Username,
+		PasswordRequired: hash != "",
 	}
 	setup.URI = totp.URI(setup.Issuer, setup.Account, secretText)
 	code, err := qr.Encode([]byte(setup.URI))
@@ -474,9 +483,18 @@ func (s *Service) BeginTwoFactor(ctx context.Context, account user.User) (TwoFac
 // Every other session on the account is signed out: none of them proved the
 // second factor, and a stolen one should not outlive the lock that was just
 // fitted because somebody suspected it.
-func (s *Service) EnableTwoFactor(ctx context.Context, userID, code, keepSessionID, ip, userAgent string) ([]string, user.User, error) {
+//
+// That sign-out is also why it takes the account's password, where it has
+// one. A session is all a stolen cookie is; if it were enough, the thief
+// would enrol their own authenticator, end the owner's sessions everywhere,
+// and leave the owner unable to get back in.
+func (s *Service) EnableTwoFactor(ctx context.Context, userID, password, code, keepSessionID, ip, userAgent string) ([]string, user.User, error) {
 	if !s.TwoFactorAvailable() {
 		return nil, user.User{}, ErrTwoFactorUnavailable
+	}
+	// Before the transaction, because it is an Argon2 verification.
+	if err := s.ConfirmPassword(ctx, userID, password); err != nil {
+		return nil, user.User{}, err
 	}
 	codes := totp.RecoveryCodes()
 	digests, err := s.recoveryDigests(codes)

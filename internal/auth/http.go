@@ -764,6 +764,8 @@ type profileRequest struct {
 	Email    *string `json:"email"`
 	// Plugin account fields to change, by key.
 	Fields map[string]string `json:"fields"`
+	// Only read when the address is changing: see Service.UpdateProfile.
+	CurrentPassword string `json:"current_password"`
 }
 
 func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
@@ -785,8 +787,12 @@ func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
 		Bio:      body.Bio,
 		Email:    body.Email,
 		Fields:   body.Fields,
-	})
+	}, body.CurrentPassword)
 	if err != nil {
+		if errors.Is(err, ErrPasswordRequired) || errors.Is(err, ErrCurrentPasswordWrong) ||
+			errors.As(err, new(*RateLimitError)) {
+			return TranslateTwoFactorError(w, err)
+		}
 		return profileError(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": h.account(r, updated)})
@@ -816,6 +822,8 @@ func (h *Handlers) changePassword(w http.ResponseWriter, r *http.Request) error 
 		return httpx.BadRequest("The new password is the same as the current one.")
 	case errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooLong):
 		return httpx.BadRequest("%s", err.Error())
+	case errors.As(err, new(*RateLimitError)):
+		return TranslateTwoFactorError(w, err)
 	default:
 		return httpx.Internal(err)
 	}

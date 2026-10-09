@@ -26,7 +26,7 @@ func (in *instance) login(identifier, password string) *session {
 	}
 	for _, cookie := range response.Result().Cookies() {
 		if cookie.Name == "obsidian_session" && cookie.Value != "" {
-			return &session{cookie: cookie}
+			return &session{cookie: cookie, password: password}
 		}
 	}
 	in.t.Fatalf("login %s returned no session cookie", identifier)

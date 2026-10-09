@@ -20,6 +20,7 @@ import { saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
 import { beginTwoFactor, enableTwoFactor, type TwoFactorSetup } from '@/api/twofactor';
 import { copyToClipboard } from '@/chat/markdown';
+import OaTextField from '@/components/OaTextField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { IconCheck, IconCopy, IconDownload } from '@/icons';
 
@@ -47,6 +48,9 @@ const index = computed(() => STEPS.findIndex((entry) => entry.id === step.value)
 const setup = ref<TwoFactorSetup | null>(null);
 const showKey = ref(false);
 const code = ref('');
+// Turning this on signs every other device out, so the server asks the
+// account for its password too — unless it has none to ask for.
+const password = ref('');
 const busy = ref(false);
 const error = ref('');
 const recovery = ref<string[]>([]);
@@ -55,6 +59,11 @@ const copied = ref('');
 let enabledAccount: Account | null = null;
 
 const codeField = ref<HTMLInputElement | null>(null);
+const passwordField = ref<InstanceType<typeof OaTextField> | null>(null);
+const needsPassword = computed(() => setup.value?.password_required === true);
+/** Everything the confirm button needs before it can be pressed. */
+const ready = computed(() =>
+  code.value.replace(/\D/g, '').length === 6 && (!needsPassword.value || password.value !== ''));
 
 /** The suggestions as tags. One string per language rather than a list of
  *  keys, because which apps are worth naming differs by where people are. */
@@ -69,6 +78,8 @@ function refusal(failure: unknown): string {
     case 'two_factor_code': return t('twoFactorCodeWrong');
     case 'two_factor_no_setup': return t('twoFactorNoSetup');
     case 'two_factor_unavailable': return t('twoFactorUnavailable');
+    case 'password_required': return t('twoFactorPasswordRequired');
+    case 'current_password_wrong': return t('currentPasswordWrong');
     default: return failure.message;
   }
 }
@@ -93,36 +104,56 @@ async function toVerify(): Promise<void> {
   error.value = '';
   step.value = 'verify';
   await nextTick();
-  codeField.value?.focus();
+  if (needsPassword.value) passwordField.value?.focus();
+  else codeField.value?.focus();
 }
 
 async function verify(): Promise<void> {
   const digits = code.value.replace(/\D/g, '');
   if (busy.value || digits.length !== 6) return;
+  if (needsPassword.value && password.value === '') {
+    error.value = t('twoFactorPasswordRequired');
+    return;
+  }
   busy.value = true;
   error.value = '';
   try {
-    const result = await enableTwoFactor(digits);
+    const result = needsPassword.value
+      ? await enableTwoFactor(digits, password.value)
+      : await enableTwoFactor(digits);
     enabledAccount = result.user;
     recovery.value = result.recovery_codes;
+    password.value = '';
     step.value = 'save';
   } catch (failure) {
     error.value = refusal(failure);
     // An expired setup cannot be confirmed by any code; the way on is a new
     // secret, which is the first step's button.
     if (failure instanceof ApiError && failure.code === 'two_factor_no_setup') step.value = 'app';
-    code.value = '';
-    await nextTick();
-    codeField.value?.focus();
+    if (failure instanceof ApiError
+      && (failure.code === 'current_password_wrong' || failure.code === 'password_required')) {
+      // The code is still good for its thirty seconds; only the password is
+      // asked for again.
+      password.value = '';
+      await nextTick();
+      passwordField.value?.focus();
+    } else {
+      code.value = '';
+      await nextTick();
+      codeField.value?.focus();
+    }
   } finally {
     busy.value = false;
   }
 }
 
-/** Six digits is the whole answer, so there is nothing to wait for. */
+/** Six digits is the whole answer, so there is nothing to wait for — unless
+ *  the password has not been typed yet, which the button then waits on. */
 function onCodeInput(event: Event): void {
   code.value = (event.target as HTMLInputElement).value;
-  if (code.value.replace(/\D/g, '').length === 6) void verify();
+  if (code.value.replace(/\D/g, '').length === 6 && (!needsPassword.value || password.value !== '')) {
+    void verify();
+  }
 }
 
 function copy(value: string): void {
@@ -243,6 +274,15 @@ function finish(): void {
         <h3 class="oa-2fa-title">{{ t('twoFactorVerifyTitle') }}</h3>
         <p class="oa-2fa-desc">{{ t('twoFactorVerifyBody', { issuer: setup.issuer }) }}</p>
       </header>
+      <OaTextField
+        v-if="needsPassword"
+        ref="passwordField"
+        v-model="password"
+        :label="t('currentPassword')"
+        :hint="t('twoFactorPasswordHint')"
+        type="password"
+        autocomplete="current-password"
+      />
       <div class="oa-field">
         <input
           ref="codeField"
@@ -264,7 +304,7 @@ function finish(): void {
         <button
           type="submit"
           class="oa-btn primary"
-          :disabled="busy || code.replace(/\D/g, '').length !== 6"
+          :disabled="busy || !ready"
         >
           {{ busy ? t('twoFactorVerifying') : t('twoFactorVerifyAndEnable') }}
         </button>
