@@ -239,27 +239,20 @@ func (h *Handlers) remaining(used int) int {
 	return left
 }
 
-// resolveModel picks the model the operator nominated, or the first enabled
-// one if they nominated none.
+// resolveModel picks the model the operator nominated for the front door, and
+// refuses when they nominated none.
 //
 // Authorize is called as an administrator on purpose: there is no account and
 // therefore no group, and the permission that matters was granted when an
-// operator chose this model for the front door. It still enforces that the
-// model and its provider are enabled, and it still resolves routing.
+// operator chose this model for the front door. That is also why there is no
+// "first enabled model" fallback: as an administrator it walks past every
+// group restriction, so a visitor with no account could have been served
+// whichever enabled model happened to be listed first, whatever it costs and
+// whoever it was meant for, merely because nobody had chosen. It still
+// enforces that the model and its provider are enabled, and it still resolves
+// routing.
 func (h *Handlers) resolveModel(r *http.Request) (model.Resolved, error) {
 	modelID := strings.TrimSpace(h.settings.Get(settings.TrialModel))
-	if modelID == "" {
-		records, err := h.models.ListAll(r.Context(), "")
-		if err != nil {
-			return model.Resolved{}, httpx.Internal(err)
-		}
-		for _, record := range records {
-			if record.Enabled {
-				modelID = record.ID
-				break
-			}
-		}
-	}
 	if modelID == "" {
 		return model.Resolved{}, httpx.Unavailable("No model is available right now.")
 	}

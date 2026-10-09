@@ -1332,7 +1332,7 @@ export const zh: Record<StringKey, string> = {
   trialTurns: '每位访客可以问几次',
   trialTurnsHint: '由服务端根据实际发送的内容计数，不信任浏览器。最多 {max} 次。',
   trialModel: '用哪个模型回答',
-  trialFirstAvailable: '第一个可用的模型',
+  trialFirstAvailable: '未选择（试用不可用）',
   trialTurnsLeft: '本次试用还可以问 {count} 次',
   trialLastTurn: '本次试用还剩最后 1 次',
   trialFinished: '试用到此结束。',

@@ -1358,7 +1358,7 @@ const en = {
   trialTurns: 'Questions a visitor may ask',
   trialTurnsHint: 'Counted by the server from what is sent, not trusted from the browser. At most {max}.',
   trialModel: 'Model to answer them with',
-  trialFirstAvailable: 'The first available model',
+  trialFirstAvailable: 'None chosen — the trial stays unavailable',
   trialTurnsLeft: '{count} questions left in this trial',
   trialLastTurn: 'One question left in this trial',
   trialFinished: 'That is the end of the trial.',
