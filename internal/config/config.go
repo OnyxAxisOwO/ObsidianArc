@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -300,6 +301,7 @@ func loadOrCreateSecret(dataDir string) ([]byte, bool, error) {
 		if len(raw) < 16 {
 			return nil, false, fmt.Errorf("%sSECRET_KEY must be at least 16 characters", envPrefix)
 		}
+		warnIfWeakSecret(envPrefix+"SECRET_KEY", raw)
 		return []byte(raw), false, nil
 	}
 
@@ -307,6 +309,7 @@ func loadOrCreateSecret(dataDir string) ([]byte, bool, error) {
 	if existing, err := os.ReadFile(path); err == nil {
 		trimmed := strings.TrimSpace(string(existing))
 		if len(trimmed) >= 16 {
+			warnIfWeakSecret(path, trimmed)
 			return []byte(trimmed), true, nil
 		}
 	} else if !os.IsNotExist(err) {
@@ -322,6 +325,65 @@ func loadOrCreateSecret(dataDir string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("write %s: %w", path, err)
 	}
 	return []byte(encoded), true, nil
+}
+
+// minStrongSecretLen is what the warning asks for. The hard floor stays at 16
+// so a deployment that already runs on a shorter key keeps starting; the key
+// seals provider credentials and two-step secrets, so refusing to boot over it
+// would take the whole instance down for a weakness that is the operator's to
+// fix on their own schedule.
+const minStrongSecretLen = 32
+
+// weakSecretReason says why a key that is long enough to accept is still a
+// poor one, or "" when nothing about it stands out. It looks for the things
+// that make a key guessable by hand — short, one kind of character, a few
+// characters repeated — not for entropy it cannot measure.
+func weakSecretReason(key string) string {
+	if len(key) < minStrongSecretLen {
+		return fmt.Sprintf("it is only %d characters long", len(key))
+	}
+	var lower, upper, digit, other bool
+	distinct := map[rune]struct{}{}
+	for _, r := range key {
+		distinct[r] = struct{}{}
+		switch {
+		case r >= 'a' && r <= 'z':
+			lower = true
+		case r >= 'A' && r <= 'Z':
+			upper = true
+		case r >= '0' && r <= '9':
+			digit = true
+		default:
+			other = true
+		}
+	}
+	classes := 0
+	for _, used := range []bool{lower, upper, digit, other} {
+		if used {
+			classes++
+		}
+	}
+	switch {
+	case classes < 2:
+		return "it uses only one kind of character"
+	case len(distinct) < 10:
+		return fmt.Sprintf("it repeats only %d distinct characters", len(distinct))
+	}
+	return ""
+}
+
+// warnIfWeakSecret logs once at startup. A warning and not an error, for the
+// reason minStrongSecretLen gives.
+func warnIfWeakSecret(source, key string) {
+	reason := weakSecretReason(key)
+	if reason == "" {
+		return
+	}
+	slog.Warn("the instance secret key is weak: "+reason+
+		"; use at least 32 random characters (for example `openssl rand -hex 32`). "+
+		"It seals stored provider keys and two-step secrets, so changing it later "+
+		"makes everything sealed with the old one unreadable — choose it before storing credentials",
+		"source", source)
 }
 
 func env(key, fallback string) string {
