@@ -635,19 +635,21 @@ func init() {
 					break
 				}
 			}
-			if rt.Present("clear-rpm") {
+			// Bool, not Present, for the --clear-* flags: "--clear-rpm false" is
+			// given, and must leave the limit where it was.
+			if rt.Bool("clear-rpm") {
 				rpm = nil
 			} else if rt.Present("rpm") {
 				rpm = rt.Int("rpm")
 			}
-			if rt.Present("clear-tpm") {
+			if rt.Bool("clear-tpm") {
 				tpm = nil
 			} else if rt.Present("tpm") {
 				tpm = rt.Int("tpm")
 			}
 
 			if kind := rt.String("window"); kind != "" {
-				if rt.Present("clear-window") {
+				if rt.Bool("clear-window") {
 					delete(windows, kind)
 				} else {
 					win := asMap(windows[kind])
@@ -664,6 +666,8 @@ func init() {
 						win["tokens"] = rt.Int("tokens")
 					}
 					if rt.Present("credits") {
+						// --credits is declared F, so ParseFlags has already refused anything that
+						// does not parse, and the discarded error cannot turn into a zero limit.
 						f, _ := strconv.ParseFloat(rt.String("credits"), 64)
 						win["credits"] = f
 					}

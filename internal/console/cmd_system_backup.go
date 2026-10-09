@@ -93,7 +93,7 @@ func init() {
 				"retention_hours":   int(asNum(current["retention_hours"])),
 			}
 			if rt.Present("enabled") {
-				value, err := strconv.ParseBool(rt.String("enabled"))
+				value, err := parseBoolValue(rt.String("enabled"))
 				if err != nil {
 					return rt.Errorf("--enabled must be true or false")
 				}

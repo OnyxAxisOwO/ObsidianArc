@@ -337,7 +337,8 @@ func init() {
 				body["kind"] = "partner"
 				body["name"] = rt.String("partner")
 			}
-			if rt.Present("no-existing") {
+			// Bool, not Present: "--no-existing false" is given, and must not refuse existing accounts.
+			if rt.Bool("no-existing") {
 				body["allow_existing"] = false
 			}
 

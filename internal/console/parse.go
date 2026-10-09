@@ -2,7 +2,10 @@ package console
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -90,6 +93,20 @@ type ParsedArgs struct {
 	Help  bool
 	JSON  bool
 	Yes   bool
+
+	// loose are the tokens that followed a bare boolean and were not taken
+	// as its value, so they stand in Args. Whether one of them is a stray
+	// value or a real argument depends on the command's declared Args, which
+	// only refuseLooseValues is given.
+	loose []looseValue
+}
+
+// looseValue is one token of that kind: the flag it followed, the token, and
+// the index it holds in Args.
+type looseValue struct {
+	flag  string
+	value string
+	at    int
 }
 
 // ParseFlags walks tokens against a command's declared flags: "--flag
@@ -98,6 +115,11 @@ type ParsedArgs struct {
 // (everything after it is positional, however it looks), and an error for
 // anything starting with "-" that matches no declared flag and is not one
 // of the three universal ones above.
+//
+// A value is checked against what its flag's placeholder says it is (see
+// valueKind) before any command runs, so a Run never sees "9O" read as 0.
+// A bare boolean takes the token after it when that token is a boolean word
+// in any case, and refuses a yes/no spelling that ParseBool does not take.
 func ParseFlags(tokens []string, flags []Flag) (ParsedArgs, error) {
 	parsed := ParsedArgs{Flags: map[string]string{}}
 
@@ -133,46 +155,27 @@ func ParseFlags(tokens []string, flags []Flag) (ParsedArgs, error) {
 			parsed.Yes = true
 
 		case strings.HasPrefix(tok, "--") && tok != "--":
-			body := tok[2:]
-			name, value, hasEq := strings.Cut(body, "=")
+			name, value, hasEq := strings.Cut(tok[2:], "=")
 			f, ok := byLong[name]
 			if !ok {
 				return ParsedArgs{}, fmt.Errorf("console: unknown flag --%s", name)
 			}
-			if f.Value == "" { // boolean
-				if hasEq {
-					parsed.Flags[name] = value
-				} else {
-					parsed.Flags[name] = "true"
-				}
-				continue
+			next, err := parsed.set(f, value, hasEq, tokens, i)
+			if err != nil {
+				return ParsedArgs{}, err
 			}
-			if hasEq {
-				parsed.Flags[name] = value
-				continue
-			}
-			if i+1 >= len(tokens) {
-				return ParsedArgs{}, fmt.Errorf("console: flag --%s requires a value", name)
-			}
-			i++
-			parsed.Flags[name] = tokens[i]
+			i = next
 
 		case strings.HasPrefix(tok, "-") && tok != "-":
-			short := tok[1:]
-			f, ok := byShort[short]
+			f, ok := byShort[tok[1:]]
 			if !ok {
 				return ParsedArgs{}, fmt.Errorf("console: unknown flag %s", tok)
 			}
-			long := normalizeFlagName(f.Name)
-			if f.Value == "" {
-				parsed.Flags[long] = "true"
-				continue
+			next, err := parsed.set(f, "", false, tokens, i)
+			if err != nil {
+				return ParsedArgs{}, err
 			}
-			if i+1 >= len(tokens) {
-				return ParsedArgs{}, fmt.Errorf("console: flag %s requires a value", tok)
-			}
-			i++
-			parsed.Flags[long] = tokens[i]
+			i = next
 
 		default:
 			parsed.Args = append(parsed.Args, tok)
@@ -180,4 +183,156 @@ func ParseFlags(tokens []string, flags []Flag) (ParsedArgs, error) {
 	}
 
 	return parsed, nil
+}
+
+// set records f, which the parser met at tokens[i], and returns the index of
+// the last token it used. explicit is the text after "=" when hasEq is set.
+func (p *ParsedArgs) set(f Flag, explicit string, hasEq bool, tokens []string, i int) (int, error) {
+	key := normalizeFlagName(f.Name)
+
+	if f.Value != "" {
+		value := explicit
+		if !hasEq {
+			if i+1 >= len(tokens) {
+				return i, fmt.Errorf("console: flag %s requires a value", f.Name)
+			}
+			i++
+			value = tokens[i]
+		}
+		if err := checkValue(f, value); err != nil {
+			return i, err
+		}
+		p.Flags[key] = value
+		return i, nil
+	}
+
+	// "=" always names the value, so it is checked like any other. A bare
+	// boolean takes the next token only when that token is a boolean word:
+	// most of the time the next token is an argument that merely follows the
+	// flag, and taking it would lose the argument.
+	if hasEq {
+		if err := checkValue(f, explicit); err != nil {
+			return i, err
+		}
+		p.Flags[key] = explicit
+		return i, nil
+	}
+	if i+1 < len(tokens) {
+		next := tokens[i+1]
+		if checkValue(f, next) == nil {
+			p.Flags[key] = next
+			return i + 1, nil
+		}
+		// The spellings people reach for that ParseBool does not take. Left
+		// as a loose argument, "--trusted no" would switch trust on and say
+		// nothing about the word it ignored.
+		if isYesOrNoWord(next) {
+			return i, valueError(f.Name, next, "true or false")
+		}
+		if isPositional(next) {
+			p.loose = append(p.loose, looseValue{flag: f.Name, value: next, at: len(p.Args)})
+		}
+	}
+	p.Flags[key] = "true"
+	return i, nil
+}
+
+// refuseLooseValues is the command-level half of the bare-boolean rule. A
+// token that followed a bare boolean, and is not one of the command's
+// declared arguments, was almost certainly the flag's value: the flag reads
+// as on and the command would ignore the word. The token is refused as the
+// value it was meant to be, rather than run with the word thrown away.
+func refuseLooseValues(cmd *Command, parsed ParsedArgs) error {
+	for _, v := range parsed.loose {
+		if v.at >= len(cmd.Args) {
+			return valueError(v.flag, v.value, "true or false")
+		}
+	}
+	return nil
+}
+
+// valueKind is what a Flag.Value placeholder says a flag's value must be. The
+// placeholder is already the word help and the spec print for the flag, so it
+// is the declaration; a second table here would be one more thing to forget.
+type valueKind int
+
+const (
+	kindText valueKind = iota
+	kindBool
+	kindInt
+	kindFloat
+	kindDuration
+)
+
+// placeholderKind maps a placeholder to its kind. An empty placeholder is a
+// bare boolean, which has no value of its own and so is only checked when the
+// user writes one with "=". Any placeholder not listed is text, and the
+// command that declares it checks it.
+func placeholderKind(placeholder string) valueKind {
+	switch placeholder {
+	case "", "BOOL":
+		return kindBool
+	case "N", "D", "PORT", "MS":
+		return kindInt
+	case "F":
+		return kindFloat
+	case "DURATION":
+		return kindDuration
+	}
+	return kindText
+}
+
+// checkValue refuses a value that f's placeholder says it cannot be.
+func checkValue(f Flag, value string) error {
+	switch placeholderKind(f.Value) {
+	case kindBool:
+		if _, err := parseBoolValue(value); err != nil {
+			return valueError(f.Name, value, "true or false")
+		}
+	case kindInt:
+		if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+			return valueError(f.Name, value, "an integer")
+		}
+	case kindFloat:
+		n, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
+			return valueError(f.Name, value, "a number")
+		}
+	case kindDuration:
+		if _, err := time.ParseDuration(value); err != nil {
+			return valueError(f.Name, value, "a duration such as 30s or 5m")
+		}
+	}
+	return nil
+}
+
+// parseBoolValue is strconv.ParseBool in any case, because that is how people
+// type it: --enabled TRUE is as much a true as --enabled true. Commands read
+// their booleans through here too, so a spelling accepted at the parser is
+// read the same way by the command.
+func parseBoolValue(raw string) (bool, error) {
+	return strconv.ParseBool(strings.ToLower(raw))
+}
+
+// isYesOrNoWord reports the spellings of yes and no that ParseBool does not
+// take, in any case.
+func isYesOrNoWord(raw string) bool {
+	switch strings.ToLower(raw) {
+	case "yes", "no", "on", "off", "y", "n":
+		return true
+	}
+	return false
+}
+
+// isPositional reports whether a token is read as an argument rather than as
+// a flag. A lone "-" is an argument by convention, as stdin is.
+func isPositional(tok string) bool {
+	return !strings.HasPrefix(tok, "-") || tok == "-"
+}
+
+// valueError is the message for a value that does not fit its flag. It names
+// the flag as declared and quotes the value, so a typo such as the letter O
+// for a zero is visible in the message rather than inferred from its effect.
+func valueError(flag, value, want string) error {
+	return fmt.Errorf("%s: expected %s, got %q", flag, want, value)
 }

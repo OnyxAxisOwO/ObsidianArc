@@ -175,6 +175,9 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	}
 
 	parsed, err := ParseFlags(rest, cmd.Flags)
+	if err == nil {
+		err = refuseLooseValues(cmd, parsed)
+	}
 	if err != nil {
 		RenderError(out, s.Colour, s.JSON, err)
 		return Result{Code: "parse_error", Elapsed: time.Since(start)}
@@ -298,6 +301,12 @@ func (c *Console) auditLine(cmd *Command, parsed ParsedArgs) string {
 				b.WriteByte('=')
 				b.WriteString(quoteIfNeeded(value))
 			}
+		} else if value != "true" {
+			// A bare boolean given an explicit value is recorded with it.
+			// "--trusted" alone reads as on, and the line is what an
+			// administrator reads to learn what was switched off.
+			b.WriteByte('=')
+			b.WriteString(quoteIfNeeded(value))
 		}
 	}
 	if parsed.Yes {
