@@ -65,6 +65,31 @@ var (
 	fieldsFrozen atomic.Bool
 )
 
+// storedColumns are the core's columns that no query here selects into a User
+// but that exist on the table: the folded login names, the password hash and
+// the invite counter. A field is written by any account's own profile edit, so
+// one named like these would let a user rewrite who they log in as, or reset a
+// counter the invite rewards are limited by. A test holds this list and
+// baseColumns together to the migrated schema, so a column added to users
+// without being listed fails there, not in production.
+var storedColumns = []string{"username_lower", "email_lower", "password_hash", "invite_reward_count"}
+
+// isCoreColumn reports whether key is a column of the users table the core
+// owns.
+func isCoreColumn(key string) bool {
+	for _, core := range strings.Split(baseColumns, ",") {
+		if strings.TrimSpace(core) == key {
+			return true
+		}
+	}
+	for _, core := range storedColumns {
+		if core == key {
+			return true
+		}
+	}
+	return false
+}
+
 // DefineField adds a plugin's column. Called from the plugin's init.
 func DefineField(f Field) {
 	if fieldsFrozen.Load() {
@@ -73,10 +98,8 @@ func DefineField(f Field) {
 	if !fieldKeyRE.MatchString(f.Key) {
 		panic("user: invalid field key " + f.Key)
 	}
-	for _, core := range strings.Split(baseColumns, ",") {
-		if strings.TrimSpace(core) == f.Key {
-			panic("user: field " + f.Key + " is a core column")
-		}
+	if isCoreColumn(f.Key) {
+		panic("user: field " + f.Key + " is a core column")
 	}
 	for _, other := range fields {
 		if other.Key == f.Key {
@@ -170,10 +193,8 @@ func (s *Store) checkNewField(f Field, plugin string) error {
 	if !fieldKeyRE.MatchString(f.Key) {
 		return fmt.Errorf("user: invalid field key %s", f.Key)
 	}
-	for _, core := range strings.Split(baseColumns, ",") {
-		if strings.TrimSpace(core) == f.Key {
-			return fmt.Errorf("user: field %s is a core column", f.Key)
-		}
+	if isCoreColumn(f.Key) {
+		return fmt.Errorf("user: field %s is a core column", f.Key)
 	}
 	for _, other := range fields {
 		if other.Key == f.Key {

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -20,14 +21,29 @@ type cspCache struct {
 	policy string
 }
 
-// joinOrigins is the extra origins as one space-separated list, blanks and
-// anything carrying a space or a semicolon dropped: an origin is one token
-// of the header, and a value that could end a directive is not an origin.
+// originRE is a scheme, a host that names one machine and an optional port:
+// the host-source of a policy with no wildcard and no path in it. A wildcard
+// here would be a site-wide grant (script-src https://*), and a path would be a
+// narrower grant than the page ever means to give.
+var originRE = regexp.MustCompile(`^https?://(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$`)
+
+// ValidOrigin reports whether s may widen the page's policy: an http(s) origin
+// without wildcard or path, or the literal blob:. Everything else a source list
+// can say — a bare scheme, a keyword such as 'unsafe-eval', a wildcard — lets
+// code or data from anywhere in, which nothing that asks for an origin has
+// any business doing.
+func ValidOrigin(s string) bool {
+	return len(s) <= 255 && (s == "blob:" || originRE.MatchString(s))
+}
+
+// joinOrigins is the extra origins as one space-separated list. An origin is
+// one token of the header, so a value that could end a directive is not an
+// origin, and neither is anything ValidOrigin refuses.
 func joinOrigins(origins []string) string {
 	kept := make([]string, 0, len(origins))
 	for _, origin := range origins {
 		origin = strings.TrimSpace(origin)
-		if origin == "" || strings.ContainsAny(origin, " ;,\t\r\n") {
+		if !ValidOrigin(origin) {
 			continue
 		}
 		kept = append(kept, origin)

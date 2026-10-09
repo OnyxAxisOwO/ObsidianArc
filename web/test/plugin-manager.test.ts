@@ -309,6 +309,31 @@ describe('a plugin package', () => {
     expect(panels.textContent).toContain(t('pluginDisableTitle', { name: 'DEMO' }));
   });
 
+  it('links its homepage only when that is a web address', async () => {
+    const withHomepage = (name: string, homepage: string): AdminPlugin => {
+      const base = pack(name, 'enabled');
+      return { ...base, manifest: { ...base.manifest, homepage } };
+    };
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({
+      plugins: [
+        withHomepage('safe', 'https://example.org/safe'),
+        withHomepage('script', 'javascript:alert(document.domain)'),
+      ],
+    });
+    await mount(AdminPlugins);
+
+    button(card('safe'), t('pluginDetails')).click();
+    await settle();
+    const link = document.body.querySelector<HTMLAnchorElement>('a.oa-plugin-meta-link');
+    expect(link?.getAttribute('href')).toBe('https://example.org/safe');
+
+    button(card('script'), t('pluginDetails')).click();
+    await settle();
+    // An address that does something when clicked is shown as text, not made a link.
+    expect(document.body.querySelector('a[href^="javascript:"]')).toBeNull();
+    expect(document.body.textContent).toContain('javascript:alert(document.domain)');
+  });
+
   it('can be removed, and disappears from the list with or without its data', async () => {
     adopt({ ...ADMIN, two_factor_at: 1 });
     vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [pack('demo', 'enabled')] });

@@ -128,6 +128,14 @@ function title(plugin: AdminPlugin): string {
   return text(plugin.manifest.title) || plugin.name;
 }
 
+// A manifest's homepage is text its author wrote. The server refuses anything
+// but http(s) at install, but a package stored before that rule is still
+// listed, and a javascript: address in an anchor runs in the backoffice when
+// clicked, so the view holds the line as well.
+function webAddress(value: string | undefined): string {
+  return value && /^https?:\/\//i.test(value) ? value : '';
+}
+
 function stateLabel(plugin: AdminPlugin): string {
   if (plugin.missing) return t('pluginMissing');
   switch (plugin.state) {
@@ -696,10 +704,11 @@ onMounted(load);
           </div>
           <div v-if="detail.manifest.homepage" class="oa-plugin-meta-item wide">
             <span class="oa-plugin-meta-label">{{ t('pluginHomepage') }}</span>
-            <a :href="detail.manifest.homepage" target="_blank" rel="noopener noreferrer" class="oa-plugin-meta-link">
+            <a v-if="webAddress(detail.manifest.homepage)" :href="webAddress(detail.manifest.homepage)" target="_blank" rel="noopener noreferrer" class="oa-plugin-meta-link">
               <span>{{ detail.manifest.homepage }}</span>
               <IconArrowUpRight :size="12" />
             </a>
+            <span v-else class="oa-plugin-meta-value">{{ detail.manifest.homepage }}</span>
           </div>
         </div>
       </div>

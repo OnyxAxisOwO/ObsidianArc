@@ -69,16 +69,32 @@ type Limits struct {
 	// seconds a 5 MB module takes an ordinary server core. Empty keeps none.
 	// Nothing in it is anything but a cache: it can be deleted at any time.
 	CacheDir string
+	// How many calls may be inside backends at once, across the whole engine.
+	// Each is a fresh instance with a memory ceiling of its own, and a public
+	// route or a sign-up guard is reachable by anyone, so without a bound the
+	// number of instances is whatever a flood of requests makes it. A call that
+	// finds the engine full fails at once with ErrBusy rather than queueing:
+	// a queue is the same flood, held in memory. Negative means no bound.
+	MaxConcurrent int
 }
 
-// DefaultLimits are 64 MiB, 15 seconds, 8 MiB, and three minutes of idleness.
+// DefaultLimits are 64 MiB, 15 seconds, 8 MiB, three minutes of idleness and
+// 32 calls at a time.
 func DefaultLimits() Limits {
-	return Limits{MemoryPages: 1024, CallTimeout: 15 * time.Second, MaxMessage: 8 << 20, IdleEvict: 3 * time.Minute}
+	return Limits{MemoryPages: 1024, CallTimeout: 15 * time.Second, MaxMessage: 8 << 20, IdleEvict: 3 * time.Minute, MaxConcurrent: 32}
 }
+
+// ErrBusy is a call that was not started because the engine is already running
+// as many as it allows. Nothing was run; the caller decides what that means —
+// a route answers 503, and a guard, which must not let anyone through for want
+// of an answer, refuses.
+var ErrBusy = errors.New("wasm: too many calls are running; try again shortly")
 
 // Engine compiles backends.
 type Engine struct {
 	limits Limits
+	// One token per call in flight; nil when the engine is unbounded.
+	slots chan struct{}
 }
 
 // shared is the compiled code kept across backends, keyed by the module's
@@ -112,7 +128,14 @@ func NewEngine(limits Limits) *Engine {
 	if limits.IdleEvict == 0 {
 		limits.IdleEvict = d.IdleEvict
 	}
-	return &Engine{limits: limits}
+	if limits.MaxConcurrent == 0 {
+		limits.MaxConcurrent = d.MaxConcurrent
+	}
+	e := &Engine{limits: limits}
+	if limits.MaxConcurrent > 0 {
+		e.slots = make(chan struct{}, limits.MaxConcurrent)
+	}
+	return e
 }
 
 // Actor is the account a call is made on behalf of, when there is one.
@@ -436,6 +459,16 @@ type reply struct {
 // guest, and unmarshals what comes back into out (nil to ignore it). state is
 // what host functions find in Call.State.
 func (b *Backend) Invoke(ctx context.Context, info CallInfo, kind string, arg, out, state any) error {
+	// Before the compile as well as the instance: callers waiting on a compile
+	// are in flight too, and each is holding its request.
+	if slots := b.engine.slots; slots != nil {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		default:
+			return ErrBusy
+		}
+	}
 	w, err := b.acquire(ctx)
 	if err != nil {
 		return err

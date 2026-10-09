@@ -127,6 +127,47 @@ func TestBothChallengeOriginsCompose(t *testing.T) {
 	}
 }
 
+// What a plugin may widen the policy by is an origin, or blob:. A wildcard, a
+// bare scheme or a keyword is a grant to the whole web (or to eval) and an
+// origin with a path is not one, so none of them is written — whoever asked.
+func TestOnlyOriginsWidenThePolicy(t *testing.T) {
+	good := []string{
+		"https://a.example.com", "http://localhost:8080", "https://cdn-1.example.org:8443",
+		"http://127.0.0.1:3000", "https://[::1]:8443", "blob:",
+	}
+	bad := []string{
+		"*", "https:", "http:", "data:", "'unsafe-eval'", "'unsafe-inline'", "'self'", "'none'",
+		"https://*", "https://*.example.com", "*.example.com", "https://example.com/path", "https://example.com/",
+		"https://example.com?x=1", "https://user@example.com", "ftp://example.com", "wss://example.com",
+		"https://", "https://.example.com", "https://example..com", "javascript:alert(1)", "blob:https://example.com/x",
+	}
+	for _, origin := range good {
+		if !ValidOrigin(origin) {
+			t.Errorf("%q was refused", origin)
+		}
+	}
+	for _, origin := range bad {
+		if ValidOrigin(origin) {
+			t.Errorf("%q was accepted", origin)
+		}
+	}
+
+	handler := SecurityHeaders(false, nil, nil, func() []string { return append(append([]string{}, bad...), good...) })(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	policy := recorder.Header().Get("Content-Security-Policy")
+	for _, directive := range []string{
+		"script-src 'self' " + strings.Join(good, " ") + ";",
+		"connect-src 'self' " + strings.Join(good, " ") + ";",
+		"img-src 'self' data: blob: " + strings.Join(good, " ") + ";",
+	} {
+		if !strings.Contains(policy, directive) {
+			t.Errorf("the policy does not carry exactly the good origins; want %q in\n%s", directive, policy)
+		}
+	}
+}
+
 // An origin is one token of the header. A value carrying a separator would
 // end the directive and start one of its own, so it is dropped rather than
 // written — and two plugins' origins compose in the order given.

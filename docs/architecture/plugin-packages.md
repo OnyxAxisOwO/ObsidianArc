@@ -23,6 +23,8 @@ purge/*.sql            「同时删除数据」时执行的清理，按文件名
 README.md, LICENSE     随便放，不读
 ```
 
+迁移和清理文件的名字就是迁移的版本号，而所有来源（核心、编进二进制的插件、各个包）的版本号共用一张 `schema_migrations` 表，所以它们的名字必须归自己：`<包名>_NNNN_说明.sql`（只用小写字母、数字、下划线）。唯一的例外是从核心迁出来的迁移，它要保留原来的版本号，好让已经跑过它的数据库不再跑第二遍：`NNNN_说明.sql`，而且 NNNN 必须小于核心当前最新迁移的编号（核心下一个版本要用的编号不能被占）。安装时还会检查：版本号不能和核心、编进二进制的插件、已装的别的包撞车——撞了就拒绝安装；启动时遇到以前放进来的撞车包，会把它留在原地、不加载（日志里写明原因），而不是让整个服务器起不来。
+
 zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠、符号链接、隐藏文件都会被拒绝。压缩包不超过 32 MiB，解压后合计不超过 96 MiB，条目不超过 400 个。**包永远不会被解压到磁盘上**：安装就是把字节存进数据库的 `plugin_packages` 表，所以备份带得走它，第二个实例也读得到它。
 
 ## manifest.json
@@ -35,14 +37,14 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | `name` | 必须，2–32 位小写字母和数字，字母开头。它是设置的所有者、路由的命名空间、迁移文件名的前缀 |
 | `version` | 必须，`1.2.0` 这样的版本 |
 | `title`, `description` | 必须有 `title.en`；`{ "en": "...", "zh": "..." }` |
-| `author`, `homepage`, `license` | 显示用 |
+| `author`, `homepage`, `license` | 显示用；`homepage` 必须是 `http://` 或 `https://` 地址（后台会把它画成链接，`javascript:` 之类的会被拒绝） |
 | `requires.api` | 必须，插件接口的版本，目前是 `3`；服务器提供的更低则拒绝安装 |
 | `permissions` | 后端要用的权限，见下 |
 | `backend` | 后端文件，`plugin.wasm` |
 | `hooks` | `describe`（后端告诉浏览器和页面策略「现在该说什么」）、`decorate_invitees`（给邀请人自己的邀请列表加内容）、`sweep`（服务器每 10 分钟的例行清理时、以及启动时，给启用的插件一次机会做定期的事，比如复查外部状态；节奏由插件自己记，多实例时各自都会调用，需用行锁认领；需要 API 4） |
-| `settings` | 插件的设置：`key`（`risk.base_url` 这样带点的小写名）、`default`、`secret`（只写，不回显）、`permission`（哪个后台权限可读写，如 `security`）、`enum` 或 `pattern`（校验），以及安装对话框用的 `label`、`hint`、`initial`（安装时询问） |
+| `settings` | 插件的设置：`key`（`risk.base_url` 这样带点的小写名）、`default`、`secret`（只写，不回显）、`permission`（哪个后台权限可读写，如 `security`）、`enum` 或 `pattern`（校验；整串必须匹配，安装时按 `^(?:…)$` 的实际用法检查，所以 `\Qabc` 这种单独能编译、套上锚点就不能的写法会被拒绝），以及安装对话框用的 `label`、`hint`、`initial`（安装时询问） |
 | `captcha_modes` | 往「注册验证码模式」的下拉里加的选项 |
-| `fields` | 账户上的字段：`key`、`unique`、`searchable`、`pattern`。**列本身由插件自己的迁移创建** |
+| `fields` | 账户上的字段：`key`、`unique`、`searchable`、`pattern`。**列本身由插件自己的迁移创建**。`key` 不能是 `users` 表里核心已有的任何一列（包括 `password_hash`、`username_lower`、`email_lower`、`invite_reward_count`）：账户自己改资料时会写这些字段 |
 | `field_rules` | 哪个设置决定注册时这个字段是 `off`、`optional` 还是 `required` |
 | `oauth_bindings` | OIDC 登录的主体号形如 `pattern` 时，就是这个字段的值（自动绑定，且该连接不可解绑） |
 | `guards` | 注册、登录或生图实验室前的检查：`action`（`register`/`login`/`images`；`images` 需要 `requires.api` ≥ 2，管理员也会被问到）、`name`、`event`（拒绝时写进安全日志的事件名） |
@@ -54,6 +56,8 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 
 路由的约定：管理接口放在 `/api/admin/x/<插件名>/…`，公开接口放在 `/api/x/<插件名>/…`。需要沿用外部已经配置的地址（比如已经填进机器人里的 webhook）时，公开路由可以是 `/api/` 下任何核心没有占用的路径。
 
+路由的每一个响应（成功、错误、插件被禁用时的 404）都带 `Content-Security-Policy: sandbox; default-src 'none'`，盖掉页面自己的策略。后端能自己定 `Content-Type`，没有它，一个没有浏览器端、没有任何权限的包也能回一段 `text/html`，在访客的浏览器里以本站的身份跑脚本；有了它，这样的文档只会在一个没有脚本的不透明来源里打开。JSON、图片、下载都不受影响。
+
 ## 权限
 
 后端能向服务器要的东西分成几族；清单里没声明的，调用一律返回 `permission_denied`。
@@ -62,9 +66,9 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | --- | --- | --- |
 | `db` | 对实例数据库执行任意 SQL（用 `?` 占位，两种数据库通用）、开事务 | `db.query`、`db.exec`、`db.begin`、`db.commit`、`db.rollback` |
 | `network` | 向服务器能到达的任意地址发 HTTP(S) 请求（禁止链路本地地址）；**开着事务时不允许** | `http.fetch` |
-| `users` | 挂起、恢复、删除账户，数活跃管理员——按后台自己的规则做 | `users.set_status`、`users.delete`、`users.count_active_admins` |
+| `users` | 挂起、恢复、删除**普通账户**，数活跃管理员。管理员（`admin`、`super_admin`）不归包管：对他们的挂起和删除一律拒绝（错误码 `admin_account`，最后一个活跃超级管理员是 `last_admin`），包不在管理员的层级里。检查和改动在后台改管理员名单时用的同一把行锁下做 | `users.set_status`、`users.delete`、`users.count_active_admins` |
 | `cards` | 收回账户名下未用的重置卡 | `cards.revoke_available` |
-| `rewards` | 给账户发赠金（发到指定的赠金条）和重置卡；可并入插件的事务。需要 API 3 | `rewards.bonus`、`rewards.cards` |
+| `rewards` | 给账户发赠金（发到指定的赠金条）和重置卡；可并入插件的事务。需要 API 3。没给有效天数时用赠金条的默认到期时间；那个时间已经过了就拒绝（`bonus_bar_expired`），而不是发一笔永不过期的赠金 | `rewards.bonus`、`rewards.cards` |
 | `sessions` | 结束账户的所有登录 | `sessions.revoke_user` |
 | `notify` | 往账户的收件箱放通知 | `notify.push` |
 | `security_log` | 写安全日志 | `security.record` |
@@ -76,6 +80,8 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 `db` 权限等于给了插件和核心自己的代码一样的手：账户、卡、邀请，全在里面，并且表结构不是稳定接口。安装对话框会把它标成高风险。
 
 一次调用的限额：15 秒、64 MiB 内存、请求和响应各 8 MiB；一次调用里最多一个事务，调用结束时没提交的事务会被回滚。
+
+同时在跑的调用，整个引擎最多 32 个（`wasm.Limits.MaxConcurrent`）。每个调用是一个带内存上限的新实例，而公开路由和注册、登录守卫谁都能碰，不设上限的话实例数就由洪水决定。第 33 个调用不排队，直接失败：路由回 503（`plugin_busy`），守卫当作答不上来而拒绝——检查没跑，门不能开着。
 
 ## 占多少内存
 
@@ -120,9 +126,9 @@ go run ./cmd/arcpack inspect demo.arcx                      # 看它要什么
 
 - **守卫**：注册或登录前被调用。返回 `*arc.Refusal` 拒绝（自己定状态码、错误码、话；检查所依赖的服务挂了时用 503，监控就能把它和一波机器人分开），返回 `GuardResult{Restrict: true}` 放行但让新账户的 API 保持关闭；后端崩了或超时则按拒绝处理——检查挂了，门不能开着。
 - **路由**：拿到已经过会话和权限检查的请求（含客户端访问的 `Host`）。返回 `*arc.Error` 是你想给客户端看的错误，任何 4xx、5xx 状态都原样给出；其他错误（没有措辞过的错误、panic）是 500，原因进日志、不给客户端。
-- **`OnDescribe`**：告诉服务器「浏览器该看到的 `/api/site` 区块」和「页面的 Content-Security-Policy 现在该信任哪些来源」。**只在插件启用时和它自己的设置变化时被问，不是每个请求**——所以只能从设置算，不能读会变的东西。
+- **`OnDescribe`**：告诉服务器「浏览器该看到的 `/api/site` 区块」和「页面的 Content-Security-Policy 现在该信任哪些来源」。**只在插件启用时和它自己的设置变化时被问，不是每个请求**——所以只能从设置算，不能读会变的东西。它不要任何权限，却会把来源写进全站的 `script-src`、`connect-src` 和 `img-src`，所以只接受 `http(s)://主机[:端口]`（不带通配符、不带路径）和字面的 `blob:`，最多 8 个；别的（`*`、`https:`、`'unsafe-eval'`……）丢掉并在日志里写一行。
 - **`OnDecorateInvitees`**：拿到邀请人自己的邀请列表，返回整张列表；可以改、可以加（比如加上已删除账户的记录）。
-- **控制台命令**：`arc.Command("demo things", …)`，用 `Console.Call` 去调后台接口，`Table`、`Printf` 出结果。接口拒绝了命令要做的事时，把 `Call` 的错误原样返回即可，控制台显示的是接口自己的那句话，而不是「插件崩溃」。
+- **控制台命令**：`arc.Command("demo things", …)`，用 `Console.Call` 去调后台接口，`Table`、`Printf` 出结果。输出里除换行和制表符以外的控制字符（转义序列、响铃、回车）会被去掉：后端打印的常常是访客填的内容，操作员的终端要显示它，而不是听它的。接口拒绝了命令要做的事时，把 `Call` 的错误原样返回即可，控制台显示的是接口自己的那句话，而不是「插件崩溃」。
 
 ## 浏览器端
 

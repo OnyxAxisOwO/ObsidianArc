@@ -440,3 +440,86 @@ func TestCompiledCodeIsKeptInTheCacheDirectoryAndReadBack(t *testing.T) {
 		t.Fatalf("a call after eviction: %v", err)
 	}
 }
+
+// Anyone can reach a public route or a sign-up guard, and every call is an
+// instance with a memory ceiling of its own, so the number running at once is
+// bounded. A call past the bound is turned away at once rather than queued —
+// a queue of requests is the flood again — and the slot is the call's only for
+// as long as it runs.
+func TestCallsPastTheLimitFailAtOnceAndFreeTheirSlots(t *testing.T) {
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	b := load(t, Limits{MaxConcurrent: 2}, func(*Call, string, json.RawMessage) (any, error) {
+		entered <- struct{}{}
+		<-release
+		return "ok", nil
+	})
+
+	var running sync.WaitGroup
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			results <- b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, nil, nil)
+		}()
+	}
+	<-entered
+	<-entered
+
+	started := time.Now()
+	err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, nil, nil)
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("a third call while two were running: %v", err)
+	}
+	if took := time.Since(started); took > time.Second {
+		t.Fatalf("the refused call waited %v; it should be turned away at once", took)
+	}
+
+	close(release)
+	running.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("a call that had its slot: %v", err)
+		}
+	}
+	if err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, nil, nil); err != nil {
+		t.Fatalf("a call after the slots were given back: %v", err)
+	}
+}
+
+func TestTheLimitIsSharedAcrossTheBackendsOfOneEngine(t *testing.T) {
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	host := func(*Call, string, json.RawMessage) (any, error) {
+		entered <- struct{}{}
+		<-release
+		return nil, nil
+	}
+	engine := NewEngine(Limits{MaxConcurrent: 1})
+	first := engine.Load("one", guest(t), host)
+	second := engine.Load("two", guest(t), host)
+	t.Cleanup(first.Close)
+	t.Cleanup(second.Close)
+
+	done := make(chan error, 1)
+	go func() { done <- first.Invoke(t.Context(), CallInfo{Plugin: "one"}, "echo", nil, nil, nil) }()
+	<-entered
+	if err := second.Invoke(t.Context(), CallInfo{Plugin: "two"}, "echo", nil, nil, nil); !errors.Is(err, ErrBusy) {
+		t.Fatalf("another plugin's call while the engine was full: %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTheDefaultLimitIsBoundedAndANegativeOneIsNot(t *testing.T) {
+	if got := NewEngine(Limits{}).limits.MaxConcurrent; got != 32 {
+		t.Fatalf("default MaxConcurrent = %d", got)
+	}
+	if NewEngine(Limits{MaxConcurrent: -1}).slots != nil {
+		t.Fatal("a negative limit still bounds the engine")
+	}
+}

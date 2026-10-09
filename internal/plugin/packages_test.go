@@ -755,7 +755,7 @@ func TestAPackageThatWouldCollideWithTheServerOrAnotherPackageIsRefusedBeforeAny
 
 	// Two packages that want the same setting: the second is refused.
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
-	second := repack(t, pkgtest.Demo(t), func(m map[string]any) { m["name"] = "demotwo" })
+	second := renamed(t, pkgtest.Demo(t), "demotwo")
 	res := a.in.DoMultipart(http.MethodPost, "/api/admin/plugins/preview", "file", "demotwo.arcx", second, a.s)
 	if res.Code != http.StatusBadRequest || code(t, res) != "plugin_cannot_install" {
 		t.Fatalf("a colliding second package: %d %s", res.Code, res.Body.String())

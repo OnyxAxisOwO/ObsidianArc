@@ -196,6 +196,17 @@ func Versions(sources ...fs.FS) ([]string, error) {
 	return out, nil
 }
 
+// CoreVersions lists the migrations the core itself ships, sorted: the
+// versions no plugin's migration may share a name with, since all of them are
+// recorded in one table.
+func CoreVersions() ([]string, error) {
+	core, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("database: read migrations: %w", err)
+	}
+	return Versions(core)
+}
+
 // Applied reports which of versions schema_migrations records.
 func Applied(ctx context.Context, q Queryer, versions []string) (map[string]bool, error) {
 	out := map[string]bool{}
