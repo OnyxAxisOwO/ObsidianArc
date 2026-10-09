@@ -58,6 +58,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/systembackup"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/trial"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/update"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
@@ -69,6 +70,10 @@ type Deps struct {
 	DB      *database.DB
 	Version string
 	Started time.Time
+	// Where the update check asks for the newest release. Empty is the
+	// project's own feed; tests point it at a server they control, so that
+	// nothing they run reaches the internet.
+	UpdateFeed string
 }
 
 // Server is the assembled application. It owns the modules so that background
@@ -1061,6 +1066,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	adminHandlers.Bonus = bonusStore
 	adminHandlers.Checkin = checkinService
 	adminHandlers.SystemBackup = instanceBackup
+	adminHandlers.Updates = update.New(deps.Version, deps.UpdateFeed)
+	adminHandlers.CloudflareUnclaimed = func() bool { return proxyTrust.CloudflareUnclaimed() }
 
 	// The compiled-in plugins, attached now: every module they reach is
 	// built, and nothing has mounted the backoffice's table yet, so a route

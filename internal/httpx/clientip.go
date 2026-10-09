@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Resolving who is calling.
@@ -33,6 +34,11 @@ var warnUnclaimedCloudflare sync.Once
 type ProxyTrust struct {
 	prefixes   []netip.Prefix
 	cloudflare bool
+	// A pointer, because ProxyTrust is copied by value into every caller: the
+	// flag has to be one thing across all of them, or the backoffice would be
+	// told about a header the limiter never saw. Nil where no proxy is
+	// trusted, and nothing is recorded there.
+	cfUnclaimed *atomic.Bool
 }
 
 // The networks a reverse proxy sits on in almost every deployment: the same
@@ -83,7 +89,7 @@ func NewProxyTrust(enabled bool, cidrs []string) (ProxyTrust, error) {
 		}
 		prefixes = append(prefixes, netip.PrefixFrom(address, address.BitLen()))
 	}
-	return ProxyTrust{prefixes: prefixes}, nil
+	return ProxyTrust{prefixes: prefixes, cfUnclaimed: new(atomic.Bool)}, nil
 }
 
 // Enabled reports whether any forwarded header will ever be believed.
@@ -97,6 +103,14 @@ func (p ProxyTrust) Enabled() bool { return len(p.prefixes) > 0 }
 func (p ProxyTrust) WithCloudflare() ProxyTrust {
 	p.cloudflare = true
 	return p
+}
+
+// CloudflareUnclaimed reports whether a trusted proxy has forwarded a
+// parseable CF-Connecting-IP since this process started, without the operator
+// having claimed Cloudflare. The backoffice shows it as a warning: requests
+// through that proxy are keyed on the forwarding chain, not on the visitor.
+func (p ProxyTrust) CloudflareUnclaimed() bool {
+	return p.cfUnclaimed != nil && p.cfUnclaimed.Load()
 }
 
 func (p ProxyTrust) trusts(address netip.Addr) bool {
@@ -138,6 +152,12 @@ func ClientIP(r *http.Request, trust ProxyTrust) string {
 			// operator has not said so — in which case every address-keyed
 			// limit is about to key on the forwarding chain instead — or a
 			// client is sending the header for noise. Both are worth a line.
+			// The flag outlives the line: the Once prints one warning per
+			// process, and the backoffice has to keep saying so until the
+			// operator acts on it.
+			if trust.cfUnclaimed != nil {
+				trust.cfUnclaimed.Store(true)
+			}
 			warnUnclaimedCloudflare.Do(func() {
 				slog.Warn("a trusted proxy forwarded CF-Connecting-IP while OBSIDIAN_TRUST_CLOUDFLARE is off; " +
 					"claim Cloudflare if this deployment sits behind it, or the address walk will key on the chain")

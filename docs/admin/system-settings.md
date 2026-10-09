@@ -15,6 +15,7 @@
 | `home.notice_body` | 空 | 点开横条后的 Markdown 正文（最多 4000 字符） |
 | `home.notice_tone` | `info` | 横条样式：`info` 或 `warning` |
 | `home.notice_dismissible` | `true` | 是否允许关闭通知 |
+| `update.check` | `true` | 超级管理员打开后台时，是否向 GitHub 查询新版本并在后台提醒；每 12 小时最多查询一次，关闭后服务器不会向 GitHub 发出任何请求 |
 | `registration.enabled` | `true` | 是否开放注册 |
 | `registration.default_group` | 空 | 注册分组覆盖值；未设置时使用默认组 |
 | `registration.require_email` | `false` | 注册是否要求邮箱 |

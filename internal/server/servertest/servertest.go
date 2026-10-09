@@ -169,11 +169,22 @@ func buildWith(t *testing.T, mode install, seed map[string]string, tweak []func(
 	if prepare != nil {
 		prepare(db)
 	}
-	app, err := server.New(ctx, server.Deps{Config: cfg, DB: db, Version: "test", Started: time.Now()})
+	app, err := server.New(ctx, server.Deps{Config: cfg, DB: db, Version: "test", Started: time.Now(), UpdateFeed: noReleaseFeed(t)})
 	if err != nil {
 		t.Fatalf("build server: %v", err)
 	}
 	return &Instance{T: t, Handler: app.Handler(), DB: db, Server: app, config: cfg}
+}
+
+// noReleaseFeed is a release endpoint that always fails, so a test server that
+// consults the update check gets "unknown" and never reaches the internet.
+func noReleaseFeed(t testing.TB) string {
+	t.Helper()
+	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no release feed in tests", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(feed.Close)
+	return feed.URL
 }
 
 // Do issues a request. A session sends its cookie; every unsafe method
@@ -291,7 +302,7 @@ func (in *Instance) Reboot(tweak ...func(*config.Config)) *Instance {
 	for _, apply := range tweak {
 		apply(&cfg)
 	}
-	app, err := server.New(context.Background(), server.Deps{Config: cfg, DB: in.DB, Version: "test", Started: time.Now()})
+	app, err := server.New(context.Background(), server.Deps{Config: cfg, DB: in.DB, Version: "test", Started: time.Now(), UpdateFeed: noReleaseFeed(in.T)})
 	if err != nil {
 		in.T.Fatalf("reboot: %v", err)
 	}

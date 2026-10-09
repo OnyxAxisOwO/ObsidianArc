@@ -219,10 +219,18 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 26.07 MB (22.37 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 238.59 kB to open the chat (196.56 JS + 42.03 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 26.09 MB (22.39 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 239.11 kB to open the chat (196.94 JS + 42.17 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-09 (UTC), after the backoffice learned of newer releases
+(`GET /api/admin/update`, its dialog and the dashboard notices): 239.11 kB
+(196.94 kB JS + 42.17 kB CSS), up 0.52 kB, and the binary 26.09 MB (22.39 MB
+without SQLite), up 17 kB. Both deltas are the difference between two builds of
+the same tree before and after the change, gzip -9 of the entry script and
+stylesheet, so they are exact for this change even where the absolute figures
+below were taken on another toolchain.
 
 Remeasured on 2026-10-09 (UTC), after the work surface was removed — the
 mode switch, the tool-call rows and the console broker behind them: 238.59 kB

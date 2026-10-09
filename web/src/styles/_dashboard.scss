@@ -211,6 +211,18 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 .oa-dashboard-numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .oa-dashboard-when { text-align: right; color: var(--ai-text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .oa-dashboard-foot { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ai-text-secondary); font-size: 10.5px; padding: 2px 0; }
+/* The notices above the figures. A single line each, not a banner: they are
+   for an operator to act on when convenient, and a banner would read as an
+   outage. The warning tint is the danger token mixed into the card, as the
+   home notice's warning tone does, so no colour is introduced here. */
+.oa-dashboard-notice { display: flex; align-items: center; gap: 14px; padding: 16px 20px; }
+.oa-dashboard-notice > svg { flex-shrink: 0; color: var(--ai-text-secondary); }
+.oa-dashboard-notice > div { flex: 1; min-width: 0; }
+.oa-dashboard-notice strong { display: block; font-size: 13px; font-weight: 600; }
+.oa-dashboard-notice p { margin: 4px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--ai-text-secondary); }
+.oa-dashboard-notice.is-warning { background: color-mix(in srgb, var(--ai-danger) 12%, var(--ai-surface-card)); }
+.oa-dashboard-notice.is-warning > svg { color: var(--ai-danger); }
+.oa-dashboard-notice > .oa-dashboard-link { flex-shrink: 0; }
 .oa-dashboard-loading { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; max-width: 1480px; margin: 0 auto; }
 .oa-dashboard-loading > span { grid-column: 1 / -1; color: var(--ai-text-secondary); font-size: 12px; }
 .oa-dashboard-loading > div { height: 150px; border-radius: 18px; background: var(--ai-surface-card); }

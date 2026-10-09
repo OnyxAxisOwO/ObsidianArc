@@ -456,6 +456,26 @@ export interface Meta {
   reasoning_styles: ReasoningStyle[];
 }
 
+/** A problem with this instance worth a super administrator's attention. */
+export interface UpdateNotice {
+  kind: 'cloudflare_unclaimed';
+}
+
+/** What the backoffice knows about the running build; see internal/admin/update.go. */
+export interface UpdateStatus {
+  current: string;
+  /** Empty when the release feed could not be asked, or the check is off. */
+  latest: string;
+  update_available: boolean;
+  name: string;
+  /** The release's Markdown body, shown as written. */
+  notes: string;
+  url: string;
+  published_at: string;
+  check_disabled: boolean;
+  notices: UpdateNotice[];
+}
+
 // The reader's client already describes this shape, and one row of JSON
 // should not have two declarations that can drift apart.
 import type { Announcement, DisplayMode } from '../api/announcements';
@@ -887,6 +907,9 @@ export const adminApi = {
   dashboard: (metric: UsageMetric = 'credits') =>
     api.get<Dashboard>(`/api/admin/dashboard?metric=${metric}&${zoneQuery()}`),
   meta: () => api.get<Meta>('/api/admin/meta'),
+  // Super administrators only: the server answers 403 to everyone else, so the
+  // caller checks the role first rather than relying on that refusal.
+  update: () => api.get<UpdateStatus>('/api/admin/update'),
   tryReview: (body: Record<string, unknown>) =>
     api.post<{ ran: boolean; decision: 'allow' | 'restrict' | 'refuse'; reason: string }>(
       '/api/admin/security/review', body),

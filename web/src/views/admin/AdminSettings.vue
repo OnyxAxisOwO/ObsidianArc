@@ -60,6 +60,7 @@ const SEARCH_GROUPS = {
     'pwaIconUrl', 'pwaIconUrlHint',
   ],
   secAbout: ['controlAbout', 'aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint', 'aboutShowSoftwareInfo', 'aboutShowSoftwareInfoHint'],
+  secUpdates: ['controlUpdates', 'controlUpdatesHint', 'updateCheck', 'updateCheckHint'],
   secHomeNotice: [
     'homeNotice', 'homeNoticeHint', 'homeNoticeLine', 'homeNoticeBody', 'homeNoticeBodyHint', 'homeNoticeTone', 'homeNoticeToneHint',
     'homeNoticeToneInfo', 'homeNoticeToneWarning', 'homeNoticeDismissible', 'homeNoticeDismissibleHint',
@@ -175,6 +176,7 @@ const form = ref({
   aboutHeading: '',
   aboutText: '',
   aboutShowSoftwareInfo: true,
+  updateCheck: true,
   homeNotice: '',
   homeNoticeBody: '',
   homeNoticeTone: 'info',
@@ -239,6 +241,7 @@ function collect(): Record<string, string> {
     'about.title': form.value.aboutHeading.trim(),
     'about.body': form.value.aboutText.trim(),
     'about.show_software_info': String(form.value.aboutShowSoftwareInfo),
+    'update.check': String(form.value.updateCheck),
     'home.notice': form.value.homeNotice.trim(),
     'home.notice_body': form.value.homeNoticeBody.trim(),
     'home.notice_tone': form.value.homeNoticeTone,
@@ -541,6 +544,7 @@ async function load(): Promise<void> {
       aboutHeading: values['about.title'] ?? '',
       aboutText: values['about.body'] ?? '',
       aboutShowSoftwareInfo: values['about.show_software_info'] !== 'false',
+      updateCheck: values['update.check'] !== 'false',
       homeNotice: values['home.notice'] ?? '',
       homeNoticeBody: values['home.notice_body'] ?? '',
       homeNoticeTone: values['home.notice_tone'] ?? 'info',
@@ -582,13 +586,13 @@ async function load(): Promise<void> {
 }
 
 const categories: WorkbenchGroup[] = [
-  { id: 'site', label: 'controlSite', hint: 'controlSiteHint', icon: IconHome, sections: ['secIdentity', 'secLoginBg', 'secSiteTheme', 'secAppBg', 'secPWA', 'secLanding', 'secAbout', 'secHomeNotice', 'secFeedback'] },
+  { id: 'site', label: 'controlSite', hint: 'controlSiteHint', icon: IconHome, sections: ['secIdentity', 'secLoginBg', 'secSiteTheme', 'secAppBg', 'secPWA', 'secLanding', 'secAbout', 'secUpdates', 'secHomeNotice', 'secFeedback'] },
   { id: 'chat', label: 'controlChat', hint: 'controlChatHint', icon: IconSpark, sections: ['secChat', 'secLimits'] },
   { id: 'files', label: 'controlFiles', hint: 'controlFilesHint', icon: IconFile, sections: ['secAttachments', 'secCleanup'] },
   { id: 'integrations', label: 'controlIntegrations', hint: 'controlIntegrationsHint', icon: IconKey, sections: ['apiKeys', 'backupSettings'] },
 ];
 
-const columns: [string[], string[]] = [['secIdentity', 'secLoginBg', 'secSiteTheme', 'secAppBg', 'secPWA', 'secAbout', 'secChat', 'secAttachments', 'apiKeys'], ['secLanding', 'secHomeNotice', 'secFeedback', 'secLimits', 'secCleanup', 'backupSettings']];
+const columns: [string[], string[]] = [['secIdentity', 'secLoginBg', 'secSiteTheme', 'secAppBg', 'secPWA', 'secAbout', 'secUpdates', 'secChat', 'secAttachments', 'apiKeys'], ['secLanding', 'secHomeNotice', 'secFeedback', 'secLimits', 'secCleanup', 'backupSettings']];
 
 onMounted(load);
 </script>
@@ -808,6 +812,9 @@ onMounted(load);
           :hint="t('aboutShowSoftwareInfoHint')"
           @update:model-value="onToggleSoftwareInfo"
         />
+      </AdminControlCard>
+      <AdminControlCard id="secUpdates" v-show="visible('secUpdates')" :title="t('controlUpdates')" :icon="IconInfo" :hint="t('controlUpdatesHint')">
+        <OaSwitchField v-model="form.updateCheck" :label="t('updateCheck')" :hint="t('updateCheckHint')" />
       </AdminControlCard>
       <AdminControlCard id="secChat" v-show="visible('secChat')" :title="t('secChat')" :icon="IconSpark">
         <OaTextArea
