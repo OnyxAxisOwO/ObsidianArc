@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,13 @@ var (
 	ErrNotConnected        = errors.New("oauth: that provider is not connected to this account")
 	errNeedsEmailScreening = errors.New("oauth: email screening must run before opening this account")
 	ErrPasswordNotAllowed  = errors.New("oauth: password setting is not allowed for third-party signup")
+	// The operator's sign-up challenge stands in front of the account this
+	// sign-in would open, and the sign-in did not pass it at the sign-up door.
+	ErrSignupChallengeRequired = errors.New("oauth: a sign-up challenge must be passed before this server opens an account")
+	// A plugin's sign-up guard turned this sign-up away, or could not answer
+	// for it. A guard that cannot answer refuses, and so does this.
+	ErrSignupRefused     = errors.New("oauth: a sign-up guard refused this sign-up")
+	errNeedsSignupGuards = errors.New("oauth: sign-up guards must run before opening this account")
 )
 
 // MoreDetailsNeeded says the sign-in stopped one step short.
@@ -56,6 +64,19 @@ type MoreDetailsNeeded struct {
 
 func (e *MoreDetailsNeeded) Error() string {
 	return "oauth: this sign-in needs details the provider could not supply"
+}
+
+// Admission is what the sign-up door says about a sign-in that may end in a new
+// account. Only the handler knows which door the browser came through and
+// whether the challenge there was passed, so the handler decides and resolve
+// enforces it.
+//
+// The zero value is not cleared. A caller that does not decide is refused a new
+// account on an instance with people on it, rather than being handed one.
+type Admission struct {
+	// The sign-up challenge does not stand in the way of this sign-in: it is
+	// switched off, or this sign-in passed it at the sign-up door.
+	SignUpCleared bool
 }
 
 // Details are those answers.
@@ -101,6 +122,12 @@ type Service struct {
 	users    *user.Store
 	auth     *auth.Service
 	settings *settings.Service
+
+	// What a sign-up through a provider asks before it opens an account: the
+	// plugin guards that stand in front of sign-up, which the auth service owns.
+	// Nil is off, as every optional hook here is, so a service built without
+	// them runs without them; server.go always sets it.
+	SignupGuards func(ctx context.Context, ip, username string) (auth.Verdict, error)
 
 	discoveryMu   sync.Mutex
 	cachedIssuer  string
@@ -292,9 +319,10 @@ func (s *Service) DisplayName(providerID string) string {
 // instance allows it.
 //
 // It returns MoreDetailsNeeded rather than opening an account that would break
-// one of this instance's registration rules. See resolve.
-func (s *Service) SignIn(ctx context.Context, identity Identity, ip, ua string) (user.User, error) {
-	return s.resolve(ctx, identity, Details{}, true, ip, ua)
+// one of this instance's registration rules. See resolve. adm is what the
+// sign-up door decided for this sign-in; see Admission.
+func (s *Service) SignIn(ctx context.Context, identity Identity, adm Admission, ip, ua string) (user.User, error) {
+	return s.resolve(ctx, identity, Details{}, true, adm, ip, ua)
 }
 
 // Complete opens the account SignIn stopped short of, with the answers the
@@ -306,16 +334,16 @@ func (s *Service) SignIn(ctx context.Context, identity Identity, ip, ua string) 
 // have closed registration, or somebody else may have taken the address. What
 // was true when the question was asked is not what decides.
 func (s *Service) Complete(
-	ctx context.Context, identity Identity, details Details, ip, ua string,
+	ctx context.Context, identity Identity, details Details, adm Admission, ip, ua string,
 ) (user.User, error) {
-	return s.resolve(ctx, identity, details, false, ip, ua)
+	return s.resolve(ctx, identity, details, false, adm, ip, ua)
 }
 
 // resolve is both of the above. `ask` is what separates them: the first pass
 // may stop and ask, the second has the answers and must either open the
 // account or be refused.
 func (s *Service) resolve(
-	ctx context.Context, identity Identity, details Details, ask bool, ip, ua string,
+	ctx context.Context, identity Identity, details Details, ask bool, adm Admission, ip, ua string,
 ) (user.User, error) {
 	// The one address Provision could store. A provider's proven address wins;
 	// otherwise the completion form supplied it. The provider call below must
@@ -371,6 +399,16 @@ func (s *Service) resolve(
 			return user.User{}, ErrNoIdentity
 		}
 	}
+
+	// The name the guards judge is the one the account would be opened under.
+	// Read out here rather than inside the transaction, because the guards run
+	// outside it and need the name before they can answer.
+	guardName := strings.TrimSpace(details.Username)
+	if guardName == "" {
+		guardName = identity.Login
+	}
+	guarded := false
+	var verdict auth.Verdict
 
 	var account user.User
 	for {
@@ -482,17 +520,23 @@ func (s *Service) resolve(
 			}
 
 			// Nobody here is this person yet.
-			if !s.settings.Bool(settings.OAuthAllowSignup) {
+			populated, err := s.users.Any(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if !s.settings.Bool(settings.OAuthAllowSignup) && populated {
 				// Unless there is nobody here at all. An empty instance is being
 				// set up, and refusing the first account would leave a deployment
 				// with no way in but the setting nobody can reach to change.
-				populated, err := s.users.Any(ctx, tx)
-				if err != nil {
-					return err
-				}
-				if populated {
-					return ErrSignupClosed
-				}
+				return ErrSignupClosed
+			}
+			// The sign-up challenge stands in front of every account but the
+			// first, for the reason Register exempts it: the first account is the
+			// one that turns an empty instance into an administered one. It is
+			// answered before the details form is offered, so that nobody who
+			// could not pass it is asked for their details first.
+			if populated && !adm.SignUpCleared {
+				return ErrSignupChallengeRequired
 			}
 
 			// What this instance requires that the provider could not supply. On
@@ -532,10 +576,6 @@ func (s *Service) resolve(
 			if field, value := s.boundValue(identity); field != "" && strings.TrimSpace(fields[field]) == "" {
 				fields[field] = value
 			}
-			populated, err := s.users.Any(ctx, tx)
-			if err != nil {
-				return err
-			}
 			if populated && email != "" {
 				if !screened {
 					// The preflight saw an empty instance or a detail form. Another
@@ -572,6 +612,13 @@ func (s *Service) resolve(
 				}
 				desiredUsername = identity.Login
 			}
+			// The plugin guards answer before the account is written. They answer
+			// outside this transaction, because one may be a call to a service of
+			// its own and a transaction is never held open across one. So the
+			// transaction hands back here, and runs again once they have answered.
+			if populated && !guarded {
+				return errNeedsSignupGuards
+			}
 			created, err := s.auth.Provision(ctx, tx, auth.ProvisionInput{
 				Username:         desiredUsername,
 				ExplicitUsername: explicitUsername,
@@ -587,12 +634,29 @@ func (s *Service) resolve(
 			if err != nil {
 				return err
 			}
+			// A guard that let the sign-up through without being sure of it keeps the
+			// account's API access closed, the outcome a sign-up review restriction
+			// has when Register opens the account.
+			if verdict.Restrict {
+				created, err = s.users.UpdateAPIRestriction(ctx, tx, created.ID, true, 0, "signup_review")
+				if err != nil {
+					return err
+				}
+			}
 			if err := s.store.Link(ctx, tx, created.ID, identity); err != nil {
 				return err
 			}
 			account = created
 			return nil
 		})
+		if errors.Is(err, errNeedsSignupGuards) {
+			verdict, err = s.askSignupGuards(ctx, ip, guardName)
+			if err != nil {
+				return user.User{}, err
+			}
+			guarded = true
+			continue
+		}
 		if errors.Is(err, errNeedsEmailScreening) {
 			screeningErr = s.auth.CheckRegistrationEmail(ctx, email)
 			screened = true
@@ -623,6 +687,20 @@ func (s *Service) resolve(
 		_ = s.auth.Resend(ctx, s.settings.Get(settings.SiteName), account.ID)
 	}
 	return account, nil
+}
+
+// askSignupGuards asks the plugin guards whether this sign-up may open an
+// account. Every failure is a refusal: a guard that cannot answer refuses, the
+// same as one that says no, so an outage at a plugin never opens an account.
+func (s *Service) askSignupGuards(ctx context.Context, ip, username string) (auth.Verdict, error) {
+	if s.SignupGuards == nil {
+		return auth.Verdict{}, nil
+	}
+	verdict, err := s.SignupGuards(ctx, ip, username)
+	if err != nil {
+		return auth.Verdict{}, fmt.Errorf("%w: %w", ErrSignupRefused, err)
+	}
+	return verdict, nil
 }
 
 // The two things the completion form says about an address, for the same

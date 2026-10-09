@@ -167,6 +167,18 @@ func (s *Service) CheckGuards(ctx context.Context, action string, tokens map[str
 	return err
 }
 
+// CheckSignupGuards asks the plugin guards in front of sign-up whether a
+// sign-up may go ahead, for one that arrives without guard tokens. A provider's
+// redirect carries none, so each guard judges what it can see of the request,
+// and a guard that needs a token refuses.
+//
+// The verdict comes back because a guard can let a sign-up through and still
+// keep the account's API access closed. Register honours that, and so must
+// every other path that opens an account.
+func (s *Service) CheckSignupGuards(ctx context.Context, ip, username string) (Verdict, error) {
+	return s.runGuards(ctx, GuardRegister, nil, ip, username)
+}
+
 // runGuards asks each guard in turn and stops at the first refusal. The
 // strongest restriction any of them asked for is what comes back.
 func (s *Service) runGuards(ctx context.Context, action string, tokens map[string]string, ip, username string) (Verdict, error) {

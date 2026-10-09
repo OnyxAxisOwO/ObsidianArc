@@ -988,6 +988,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// This instance is the client of those providers and never one itself:
 	// nothing here issues an identity for anybody else to check.
 	oauthService := oauth.NewService(db, oauth.NewStore(db), users, authService, settingsService)
+	// A provider sign-up is judged by the same plugin guards a form sign-up is,
+	// from the auth service that owns them. A provider's redirect carries no
+	// guard tokens, so each guard judges what it can see of the request.
+	oauthService.SignupGuards = authService.CheckSignupGuards
 	oauthHandlers := oauth.NewHandlers(oauthService, cfg.SecretKey)
 	// Its own client rather than the challenge one above: these calls go to
 	// two other hosts, and a pool per destination is what keeps a slow

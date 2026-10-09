@@ -286,6 +286,10 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
   provider: 'oauthProviderFailed',
   address_taken: 'oauthAddressTaken',
   signup_closed: 'oauthSignupClosed',
+  signup_challenge_required: 'oauthSignupChallengeRequired',
+  // A redirect carries no operator notice to show, so this is the plain sentence
+  // the sign-up form falls back to, which does not say which check refused.
+  signup_refused: 'signupRefused',
   registration_closed: 'registrationClosed',
   oidc_only: 'oauthOIDCOnly',
   third_party_only: 'oauthThirdPartyOnly',

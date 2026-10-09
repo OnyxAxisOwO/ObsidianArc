@@ -333,7 +333,7 @@ func TestConnectionsAndDisconnectAnswerTheAccountsOwnScreen(t *testing.T) {
 	f.configure(t, "github")
 	_, mux := handlers(t, f)
 
-	account, err := f.service.SignIn(context.Background(), identity("4218", "octocat", ""), "", "")
+	account, err := f.service.SignIn(context.Background(), identity("4218", "octocat", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestABadgeSubjectDoesNotAdoptTheAccountThatCarriesIt(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
 	_, err := f.service.SignIn(context.Background(),
-		Identity{Provider: "oidc", Subject: "12345678", Login: "qq_123456789"}, "203.0.113.5", "a browser")
+		Identity{Provider: "oidc", Subject: "12345678", Login: "qq_123456789"}, cleared, "203.0.113.5", "a browser")
 	if !errors.Is(err, ErrAddressTaken) {
 		t.Fatalf("sign-in by badge subject = %v, want it refused as taken", err)
 	}
@@ -579,7 +579,7 @@ func TestBindingOIDCFromTheSettingsScreenAlsoBindsTheBadge(t *testing.T) {
 
 	// An account created by a provider sign-in has no badge yet.
 	second, err := f.service.SignIn(context.Background(),
-		Identity{Provider: "github", Subject: "4218", Login: "octocat", Email: "cat@example.com"}, "203.0.113.5", "a browser")
+		Identity{Provider: "github", Subject: "4218", Login: "octocat", Email: "cat@example.com"}, cleared, "203.0.113.5", "a browser")
 	if err != nil {
 		t.Fatalf("sign-in: %v", err)
 	}

@@ -51,8 +51,13 @@ type state struct {
 	// the whole value is put in a Location header, and one that could carry a
 	// host would make this endpoint an open redirect with a provider's name
 	// on it.
-	Next   string `json:"r,omitempty"`
-	Expiry int64  `json:"e"`
+	Next string `json:"r,omitempty"`
+	// Whether the sign-up challenge was checked and passed when this sign-in
+	// started. A sign-in that opens an account is held to it while the operator
+	// has the challenge on, so a state minted before this field existed decodes
+	// as not passed and is held to it like any other sign-in that skipped it.
+	SignUp bool  `json:"g,omitempty"`
+	Expiry int64 `json:"e"`
 }
 
 // pending is a sign-in that stopped to ask something.
@@ -74,9 +79,12 @@ type pending struct {
 	// form it leads to is never kept here: it would then be signed by this
 	// server, which is the one thing that must not happen to an unproven
 	// address.
-	Email  string `json:"e"`
-	Next   string `json:"r,omitempty"`
-	Expiry int64  `json:"x"`
+	Email string `json:"e"`
+	Next  string `json:"r,omitempty"`
+	// Carried from the state that started the sign-in. The form is where the
+	// account is opened, and it has no state cookie of its own to ask.
+	SignUp bool  `json:"g,omitempty"`
+	Expiry int64 `json:"x"`
 }
 
 // How long somebody has to fill the form in. Long enough to go and look up a

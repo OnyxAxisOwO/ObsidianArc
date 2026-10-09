@@ -256,6 +256,23 @@ describe('signing in with an account from elsewhere', () => {
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthFailed'));
   });
 
+  it('asks for the sign-up check when a provider sign-up skipped it', async () => {
+    offer([{ id: 'github', name: 'GitHub' }]);
+    route.query = { oauth_error: 'signup_challenge_required' };
+    await mount(AuthView, { mode: 'login' });
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthSignupChallengeRequired'));
+    expect(replace).toHaveBeenCalledWith({ path: '/login', query: {} });
+  });
+
+  it('says a provider sign-up was refused without naming the check that refused it', async () => {
+    offer([{ id: 'github', name: 'GitHub' }]);
+    route.query = { oauth_error: 'signup_refused' };
+    await mount(AuthView, { mode: 'login' });
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('signupRefused'));
+  });
+
   // Somebody sent to sign in from the consent screen has to come back to it,
   // because what is waiting is not a page but another site's request.
   it('carries where it was going through the provider buttons', async () => {
@@ -866,6 +883,20 @@ describe('finishing a sign-up the provider could not', () => {
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(refField.taken());
     // Still on the form, with what was typed still in it.
     expect(fieldInput(refField.label()).value).toBe('87654321');
+  });
+
+  it('says the server wants the sign-up check before it opens the account', async () => {
+    const { ApiError } = await import('../src/api/client');
+    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue(pending);
+    vi.spyOn(oauthApi, 'completeSignup')
+      .mockRejectedValue(new ApiError(403, 'signup_challenge_required', 'This server asks for a human check.', {}));
+    await mount(CompleteSignupView);
+
+    type(fieldInput(refField.label()), '87654321');
+    button(host, t('signupCompleteSubmit')).click();
+    await settle();
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthSignupChallengeRequired'));
   });
 
   it('allows customizing username and validates username format', async () => {

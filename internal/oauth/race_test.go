@@ -36,7 +36,7 @@ func TestConcurrentArrivalsOfOneIdentityOpenOneAccount(t *testing.T) {
 			defer wg.Done()
 			account, signErr := f.service.SignIn(context.Background(),
 				Identity{Provider: "oidc", Subject: "87654321", Login: "qq_87654321"},
-				"203.0.113.5", "a browser")
+				cleared, "203.0.113.5", "a browser")
 			ids[slot], err[slot] = account.ID, signErr
 		}(i)
 	}
@@ -82,7 +82,7 @@ func TestConcurrentSignupsClaimDistinctBadges(t *testing.T) {
 			defer wg.Done()
 			account, signErr := f.service.SignIn(context.Background(),
 				Identity{Provider: "oidc", Subject: sub, Login: "qq_" + sub},
-				"203.0.113.5", "a browser")
+				cleared, "203.0.113.5", "a browser")
 			badges[slot], err[slot] = account.Fields[badge], signErr
 		}(i, subject)
 	}
@@ -112,13 +112,13 @@ func TestConcurrentConnectsToTheSameNumberLeaveOneWinner(t *testing.T) {
 
 	first, err := f.service.SignIn(context.Background(),
 		Identity{Provider: "github", Subject: "4218", Login: "octocat", Email: "cat@example.com"},
-		"203.0.113.5", "a browser")
+		cleared, "203.0.113.5", "a browser")
 	if err != nil {
 		t.Fatalf("first sign-in: %v", err)
 	}
 	second, err := f.service.SignIn(context.Background(),
 		Identity{Provider: "github", Subject: "4219", Login: "octocat2", Email: "cat2@example.com"},
-		"203.0.113.5", "a browser")
+		cleared, "203.0.113.5", "a browser")
 	if err != nil {
 		t.Fatalf("second sign-in: %v", err)
 	}
