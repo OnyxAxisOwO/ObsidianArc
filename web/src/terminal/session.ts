@@ -7,8 +7,9 @@
 // through `localStorage`, and every side effect a caller can observe is a
 // change to one of the returned refs.
 
-import { ref, type Ref } from 'vue';
+import { ref, watch, type Ref } from 'vue';
 import { completeConsoleLine, execConsoleLine, type ConsoleCompletion } from '@/api/console';
+import { currentUser } from '@/stores/session';
 import { createAnsiTokenizer, initialAnsiState, tokenizeAnsiChunk, type AnsiToken } from './ansi';
 
 export type ScrollbackBlockKind = 'banner' | 'echo' | 'output' | 'error';
@@ -36,31 +37,84 @@ export type RecallDirection = 'up' | 'down';
 // it is created once, when this module first loads, and every session
 // shares the one ref.
 
-const HISTORY_STORAGE_KEY = 'obsidian-arc-terminal-history';
+/**
+ * Stored per account, under this prefix plus the account's id. The bare
+ * prefix was the key when one list served whoever used the browser, so it is
+ * also what is swept away on the way in. `stores/session.ts` clears everything
+ * that starts with it when somebody signs out and spells the prefix out
+ * itself, because importing it from here would drag this chunk into the main
+ * one; a test holds the two spellings together.
+ */
+export const TERMINAL_HISTORY_KEY_PREFIX = 'obsidian-arc-terminal-history';
 const HISTORY_CAP = 500;
 
-function loadHistory(): string[] {
+/**
+ * Whether a line carries something that must not be kept: a credential given
+ * as a flag, or as an argument to a command that takes one that way. Judged
+ * from the text alone, and on the safe side — a line wrongly kept out of
+ * history costs a retype, one wrongly kept is a password in localStorage.
+ *
+ * The flag names are the ones the console marks Sensitive plus anything that
+ * reads like them, so a flag added later is covered without anyone having to
+ * remember this file exists.
+ */
+const SENSITIVE_FLAG = /(?:^|\s)-{1,2}[\w-]*(?:pass(?:word|wd)?|secret|token|api-?key|header|code|turnstile|credential)[\w-]*(?=$|[\s=])/i;
+const SENSITIVE_COMMAND =
+  /(?:^|\s)(?:setting\s+import|2fa\s+(?:enable|disable|recovery|backoffice)|me\s+invite\s+claim|backup\s+import|login-bg\s+set|logo\s+set)(?=\s|$)/i;
+const SECRET_SETTING = /(?:^|\s)setting\s+set\s+\S*(?:secret|pass(?:word|wd)|token|key|credential)/i;
+
+export function isSensitiveTerminalLine(line: string): boolean {
+  return SENSITIVE_FLAG.test(line) || SENSITIVE_COMMAND.test(line) || SECRET_SETTING.test(line);
+}
+
+function historyKey(userId: string | null): string | null {
+  return userId ? `${TERMINAL_HISTORY_KEY_PREFIX}:${userId}` : null;
+}
+
+function loadHistory(userId: string | null): string[] {
+  const key = historyKey(userId);
+  if (key === null) return [];
   try {
-    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+    const raw = localStorage.getItem(key);
     if (raw === null) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    const lines = parsed.filter((entry): entry is string => typeof entry === 'string');
+    const lines = parsed.filter((entry): entry is string => typeof entry === 'string' && !isSensitiveTerminalLine(entry));
     return lines.length > HISTORY_CAP ? lines.slice(lines.length - HISTORY_CAP) : lines;
   } catch {
     return [];
   }
 }
 
-function persistHistory(lines: readonly string[]): void {
+function persistHistory(userId: string | null, lines: readonly string[]): void {
+  const key = historyKey(userId);
+  if (key === null) return;
   try {
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(lines));
+    localStorage.setItem(key, JSON.stringify(lines));
   } catch {
     // Best effort; history still works for the rest of this page's life.
   }
 }
 
-const sharedHistory: Ref<string[]> = ref(loadHistory());
+try {
+  // The one list every account on this browser used to share.
+  localStorage.removeItem(TERMINAL_HISTORY_KEY_PREFIX);
+} catch {
+  // Storage may be unavailable; there is then nothing to sweep either.
+}
+
+const sharedHistory: Ref<string[]> = ref([]);
+
+// Follows the signed-in account: one account's lines never show up under
+// another's prompt, and signing out leaves nothing in memory to recall. Sync,
+// so the list is already the new account's by the time sign-in resolves.
+watch(
+  () => currentUser.value?.id ?? null,
+  (userId) => {
+    sharedHistory.value = loadHistory(userId);
+  },
+  { immediate: true, flush: 'sync' },
+);
 
 /** Read-only view for anything that wants to list history without a tab (the `history` command's local echo, if a screen ever wants one). */
 export function terminalHistorySnapshot(): readonly string[] {
@@ -71,11 +125,14 @@ export function terminalHistorySnapshot(): readonly string[] {
 function pushHistory(line: string): void {
   const trimmed = line.trim();
   if (!trimmed) return;
+  // Not kept at all, not even for this page's life: a line recalled with the
+  // arrow keys is one a shoulder or a screen share can read.
+  if (isSensitiveTerminalLine(trimmed)) return;
   const list = sharedHistory.value;
   if (list.length > 0 && list[list.length - 1] === trimmed) return;
   const next = list.length >= HISTORY_CAP ? [...list.slice(list.length - HISTORY_CAP + 1), trimmed] : [...list, trimmed];
   sharedHistory.value = next;
-  persistHistory(next);
+  persistHistory(currentUser.value?.id ?? null, next);
 }
 
 // --- per-tab session ---------------------------------------------------------
