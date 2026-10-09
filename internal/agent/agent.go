@@ -8,12 +8,17 @@
 // agent cannot reach anything its reader could not reach by typing the same
 // command, because it is typing the same command.
 //
-// Two things it deliberately does not do. It never sends --yes, so a
-// destructive command refuses and the model has to tell the reader to run
-// it themselves; the commands stay in the list so it can say which one. And
-// it never hides a refusal: the console's own error text goes back to the
-// model as the tool's output, because a loop that cannot see why it was
-// stopped will simply try again.
+// Three things it deliberately does not do. It never runs a command that
+// changes the instance through the backoffice — a destructive one, or any
+// that writes to an /api/admin route — so the model has to tell the reader
+// to run it themselves; the commands stay in the list so it can say which
+// one. The model reads things other people wrote (feedback, names, logs),
+// and an administrator's agent obeying a line planted there must not be able
+// to promote its author. It never lets an argument become a flag: every
+// value is passed after "--" or inside its own flag, so no "--yes" or
+// "--role" can ride in on a name. And it never hides a refusal: the
+// console's own error text goes back to the model as the tool's output,
+// because a loop that cannot see why it was stopped will simply try again.
 package agent
 
 import (
@@ -23,6 +28,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
@@ -39,13 +45,22 @@ import (
 const MaxOutputChars = 8000
 
 // Broker implements chat.ToolBroker over the console.
-type Broker struct{ console *console.Console }
+type Broker struct {
+	console *console.Console
+	// Allowed is the terminal's own gate — a group whose terminal is off —
+	// asked again here, because the console is the same console whether it
+	// is typed into or asked for by a model. Nil lets everyone through.
+	Allowed func(ctx context.Context, actor user.User) error
+}
 
 func New(c *console.Console) *Broker { return &Broker{console: c} }
 
 // Offer is the tool list for one account: every command it may run, named
 // the way a tool has to be named.
-func (b *Broker) Offer(_ context.Context, actor user.User) []adapter.Tool {
+func (b *Broker) Offer(ctx context.Context, actor user.User) []adapter.Tool {
+	if b.Allowed != nil && b.Allowed(ctx, actor) != nil {
+		return nil
+	}
 	spec := b.console.Spec(b.session(actor))
 	out := make([]adapter.Tool, 0, len(spec.Commands))
 	for _, command := range spec.Commands {
@@ -65,6 +80,11 @@ func (b *Broker) Offer(_ context.Context, actor user.User) []adapter.Tool {
 
 // Run executes one call and returns what to show the model.
 func (b *Broker) Run(ctx context.Context, actor user.User, call adapter.ToolCall) (string, bool) {
+	if b.Allowed != nil {
+		if err := b.Allowed(ctx, actor); err != nil {
+			return err.Error(), true
+		}
+	}
 	spec := b.console.Spec(b.session(actor))
 	var command *console.SpecCommand
 	for i := range spec.Commands {
@@ -78,6 +98,10 @@ func (b *Broker) Run(ctx context.Context, actor user.User, call adapter.ToolCall
 		// command that does not exist: the model is told what it may use
 		// rather than which of the two it got wrong.
 		return "no such tool: " + call.Name, true
+	}
+	if changesInstance(*command) {
+		return "this command changes the instance and cannot be run from here: " +
+			"tell the reader the exact line to type in the console", true
 	}
 
 	line, err := commandLine(*command, call.Arguments)
@@ -129,13 +153,31 @@ func describe(command console.SpecCommand) string {
 	if command.Usage != "" {
 		b.WriteString("\nUsage: " + command.Usage)
 	}
-	if command.Destructive {
+	if changesInstance(command) {
 		// Said in the description rather than discovered by calling it: a
 		// round spent on a refusal is a round the reader paid for.
-		b.WriteString("\nDestructive: this cannot be run from here. " +
+		b.WriteString("\nChanges the instance: this cannot be run from here. " +
 			"Tell the reader to run it themselves in the console.")
 	}
 	return b.String()
+}
+
+// changesInstance is whether a command destroys or writes anything through
+// the backoffice. The account's own self-service commands stay runnable:
+// they act on the reader alone, which the reader asked for. The console
+// refuses the same writes for this transport on its side too, so a command
+// that calls more than it declares is still held.
+func changesInstance(command console.SpecCommand) bool {
+	if command.Destructive {
+		return true
+	}
+	for _, endpoint := range command.Endpoints {
+		method, path, _ := strings.Cut(endpoint, " ")
+		if method != "GET" && strings.HasPrefix(path, "/api/admin/") {
+			return true
+		}
+	}
+	return false
 }
 
 // schemaFor turns a command's positional arguments and flags into the one
@@ -199,8 +241,15 @@ func paramName(name string) string {
 	return strings.Trim(b.String(), "_")
 }
 
-// commandLine assembles the line the console will run, in the order the
-// command declares: positional arguments first, then flags.
+// commandLine assembles the line the console will run: flags first, each as
+// one --name=value word, then "--", then the positional arguments.
+//
+// In that order so no value can be read as anything but a value. Positional
+// arguments used to come first and travel bare, and the tokenizer splits on
+// every kind of whitespace — a name carrying a no-break space and "--yes"
+// became two words, and the second confirmed a destructive command the
+// model was never offered the flag for. After "--" the console reads every
+// word as positional, whatever it looks like.
 func commandLine(command console.SpecCommand, arguments string) (string, error) {
 	values := map[string]any{}
 	if trimmed := strings.TrimSpace(arguments); trimmed != "" && trimmed != "null" {
@@ -210,16 +259,6 @@ func commandLine(command console.SpecCommand, arguments string) (string, error) 
 	}
 
 	parts := []string{command.Name}
-	for _, arg := range command.Args {
-		value, ok := values[paramName(arg.Name)]
-		if !ok {
-			if arg.Required {
-				return "", fmt.Errorf("%s needs %s", command.Name, arg.Name)
-			}
-			continue
-		}
-		parts = append(parts, quote(literal(value)))
-	}
 	for _, flag := range command.Flags {
 		value, ok := values[paramName(flag.Name)]
 		if !ok {
@@ -233,7 +272,24 @@ func commandLine(command console.SpecCommand, arguments string) (string, error) 
 			}
 			continue
 		}
-		parts = append(parts, flag.Name, quote(literal(value)))
+		if strings.HasPrefix(flag.Name, "--") {
+			parts = append(parts, flag.Name+"="+quote(literal(value)))
+		} else {
+			// A short-only flag has no = form; the parser takes the next word
+			// as its value whatever it looks like, so it cannot be misread.
+			parts = append(parts, flag.Name, quote(literal(value)))
+		}
+	}
+	parts = append(parts, "--")
+	for _, arg := range command.Args {
+		value, ok := values[paramName(arg.Name)]
+		if !ok {
+			if arg.Required {
+				return "", fmt.Errorf("%s needs %s", command.Name, arg.Name)
+			}
+			continue
+		}
+		parts = append(parts, quote(literal(value)))
 	}
 	return strings.Join(parts, " "), nil
 }
@@ -283,7 +339,12 @@ func quote(value string) string {
 	if value == "" {
 		return `""`
 	}
-	if !strings.ContainsAny(value, " \t\n\"'\\") {
+	// Every rune the tokenizer splits on, not a list of the usual ones: it
+	// splits on unicode.IsSpace, and a value left bare because it held a
+	// no-break space instead of a space came apart into two words.
+	if !strings.ContainsFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || r == '"' || r == '\'' || r == '\\'
+	}) {
 		return value
 	}
 	var b strings.Builder

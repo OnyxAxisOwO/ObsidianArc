@@ -83,6 +83,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -538,6 +539,9 @@ func normalizeFlagName(name string) string { return strings.TrimLeft(name, "-") 
 // API's own code and message — return it from Run as-is and the engine
 // renders it exactly the way a failed dispatch is supposed to look.
 func (rt *Runtime) Call(method, path string, body any) (any, int, error) {
+	if err := rt.agentMay(method, path); err != nil {
+		return nil, err.Status, err
+	}
 	resp, err := rt.console.opts.Dispatch(rt.Ctx, rt.Session.Actor, method, path, body)
 	if err != nil {
 		return nil, 0, err
@@ -587,6 +591,9 @@ func twoFactorHint(code, lang string) string {
 // well-formed response and mask a real transport error behind a decode
 // error. Every other command uses Call.
 func (rt *Runtime) CallRaw(method, path string, body any) ([]byte, int, error) {
+	if err := rt.agentMay(method, path); err != nil {
+		return nil, err.Status, err
+	}
 	resp, err := rt.console.opts.Dispatch(rt.Ctx, rt.Session.Actor, method, path, body)
 	if err != nil {
 		return nil, 0, err
@@ -600,6 +607,24 @@ func (rt *Runtime) CallRaw(method, path string, body any) ([]byte, int, error) {
 		return resp.Body, resp.Status, newCallError(resp.Status, decoded)
 	}
 	return resp.Body, resp.Status, nil
+}
+
+// agentMay refuses, for a session a model drives, every backoffice request
+// that is not a read. The broker already declines the commands that declare
+// such a write; this is the same rule held where the request is made, so a
+// command that calls more than it declares — a package's, say — is held
+// too. A model reads what other people wrote, and an administrator's agent
+// obeying a line planted in a nickname must not be able to change anything
+// the administrator could.
+func (rt *Runtime) agentMay(method, path string) *CallError {
+	if rt.Session == nil || rt.Session.Transport != "agent" {
+		return nil
+	}
+	if method == http.MethodGet || method == http.MethodHead || !strings.HasPrefix(path, "/api/admin/") {
+		return nil
+	}
+	return &CallError{Status: http.StatusForbidden, Code: "agent_read_only",
+		Message: "this changes the instance and cannot be run from a chat; tell the reader the exact line to type in the console"}
 }
 
 func newCallError(status int, decoded any) *CallError {

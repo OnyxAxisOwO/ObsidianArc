@@ -261,3 +261,94 @@ func TestOversizedOutputIsCutWithTheCutDeclared(t *testing.T) {
 		t.Errorf("output is %d runes, cap is %d", len([]rune(output)), MaxOutputChars)
 	}
 }
+
+// A value is a value whatever is in it. The tokenizer splits on every kind of
+// whitespace, so a name carrying a no-break space and "--yes" used to come
+// apart into two words, and the second confirmed a destructive command.
+func TestAValueCannotBecomeAFlag(t *testing.T) {
+	command := console.SpecCommand{
+		Name:  "user delete",
+		Args:  []console.SpecArg{{Name: "id|username", Required: true}},
+		Flags: []console.SpecFlag{{Name: "--role", Value: "role"}},
+	}
+	for _, smuggled := range []string{"alice --yes", "alice\r--yes", "alice　-y", "--yes", "-y"} {
+		arguments, _ := json.Marshal(map[string]string{"id_username": smuggled, "role": "user --yes"})
+		line, err := commandLine(command, string(arguments))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens, err := console.Tokenize(line)
+		if err != nil {
+			t.Fatalf("%q: tokenize %q: %v", smuggled, line, err)
+		}
+		parsed, err := console.ParseFlags(tokens[2:], []console.Flag{{Name: "--role", Value: "role"}})
+		if err != nil {
+			t.Fatalf("%q: parse %q: %v", smuggled, line, err)
+		}
+		if parsed.Yes {
+			t.Errorf("%q confirmed the command: %q", smuggled, line)
+		}
+		if len(parsed.Args) != 1 || parsed.Args[0] != smuggled {
+			t.Errorf("%q arrived as %q", smuggled, parsed.Args)
+		}
+		if parsed.Flags["role"] != "user --yes" {
+			t.Errorf("the flag's value arrived as %q", parsed.Flags["role"])
+		}
+	}
+}
+
+// A model reads what other people wrote, so an administrator's agent must
+// not change the instance at all: obeying a line planted in a nickname could
+// otherwise promote its author. Reads still run.
+func TestABackofficeWriteIsRefusedRatherThanRun(t *testing.T) {
+	var log []seen
+	b := broker(t, &log)
+
+	output, failed := b.Run(context.Background(), admin(), adapter.ToolCall{
+		Name:      "user_edit",
+		Arguments: `{"id_username":"mallory","role":"super_admin"}`,
+	})
+	if !failed || !strings.Contains(output, "changes the instance") {
+		t.Fatalf("a backoffice write was not refused as one: %v %s", failed, output)
+	}
+	if len(log) != 0 {
+		t.Fatalf("it reached the API: %+v", log)
+	}
+
+	// And the console holds the same line for this transport, for a command
+	// that calls more than it declares.
+	var out strings.Builder
+	result := b.console.Execute(context.Background(), b.session(admin()), &out, "user edit mallory --role super_admin")
+	if result.OK {
+		t.Errorf("the console ran a write for an agent session: %s", out.String())
+	}
+	for _, request := range log {
+		if request.method != "GET" {
+			t.Errorf("an agent session dispatched %s %s", request.method, request.path)
+		}
+	}
+}
+
+// The terminal's own gate holds here too: a group whose terminal is off is
+// offered nothing and can run nothing.
+func TestTheTerminalGateHoldsForTheAgent(t *testing.T) {
+	var log []seen
+	b := broker(t, &log)
+	b.Allowed = func(context.Context, user.User) error { return errTerminalOff }
+
+	if tools := b.Offer(context.Background(), reader()); len(tools) != 0 {
+		t.Errorf("a reader without the terminal was offered %d tools", len(tools))
+	}
+	if _, failed := b.Run(context.Background(), reader(), adapter.ToolCall{Name: "me_show", Arguments: `{}`}); !failed {
+		t.Error("a reader without the terminal ran a command")
+	}
+	if len(log) != 0 {
+		t.Errorf("it dispatched anyway: %+v", log)
+	}
+}
+
+var errTerminalOff = errorString("your group cannot use the terminal")
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }

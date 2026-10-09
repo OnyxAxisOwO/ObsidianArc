@@ -1181,7 +1181,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// what the account may run. Set here rather than at construction
 	// because the engine is built from the mux the handlers above are
 	// mounted on, and the chat service is older than both.
-	chatService.Tools = agent.New(consoleEngine)
+	broker := agent.New(consoleEngine)
+	// The terminal's gate, because a model asking for a command is the
+	// terminal by another door: a group with its terminal switched off
+	// reached every command through a work-mode chat.
+	broker.Allowed = func(ctx context.Context, account user.User) error {
+		return terminalAllowed(ctx, groups, account)
+	}
+	chatService.Tools = broker
 
 	consoleHandlers := console.NewHandlers(consoleEngine)
 	consoleHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
