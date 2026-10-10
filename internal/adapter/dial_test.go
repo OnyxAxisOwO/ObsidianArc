@@ -29,6 +29,10 @@ func TestRefuseDestination(t *testing.T) {
 		// Cloud metadata outside the link-local range.
 		"100.100.100.200:80",
 		"[fd00:ec2::254]:80",
+		// A zone names the interface an address is reached through, not a
+		// different host, so a zoned spelling of a refused address is refused too.
+		"[::%en0]:80",
+		"[fd00:ec2::254%en0]:80",
 		// An address that cannot be read is refused rather than guessed at.
 		"not-an-address:80",
 	}

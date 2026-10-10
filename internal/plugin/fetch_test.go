@@ -25,6 +25,10 @@ func TestRefuseFetchAddress(t *testing.T) {
 		"[::]:80",
 		"100.100.100.200:80",
 		"[fd00:ec2::254]:80",
+		// A zone names the interface an address is reached through, not a
+		// different host, so a zoned spelling of a refused address is refused too.
+		"[::%en0]:80",
+		"[fd00:ec2::254%en0]:80",
 	}
 	allowed := []string{
 		// A plugin's own services and the operator's network are reached by design.

@@ -476,13 +476,15 @@ var fetchClient = &http.Client{
 //
 // The address is parsed with netip, not net.ParseIP. ParseIP rejects a zone,
 // so fe80::1%en0 used to pass the link-local check; netip keeps the zone and
-// the check sees the address.
+// the check sees the address. The zone is dropped before the comparison:
+// netip's == counts it as part of the address, so a zoned fd00:ec2::254 or
+// ::%en0 would slip past the metadata list and the unspecified check.
 func refuseFetchAddress(_, address string, _ syscall.RawConn) error {
 	addrPort, err := netip.ParseAddrPort(address)
 	if err != nil {
 		return err
 	}
-	ip := addrPort.Addr().Unmap()
+	ip := addrPort.Addr().Unmap().WithZone("")
 	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() ||
 		slices.Contains(cloudMetadataAddrs, ip) {
 		return errors.New("that address is not reachable from a plugin")

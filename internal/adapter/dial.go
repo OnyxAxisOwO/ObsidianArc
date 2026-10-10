@@ -55,7 +55,12 @@ func refuseDestination(_, address string, _ syscall.RawConn) error {
 func refusalReason(address netip.Addr) string {
 	// An IPv4 address written as ::ffff:169.254.169.254 is that address, and
 	// only the unmapped form answers the predicates correctly.
-	address = address.Unmap()
+	//
+	// The zone goes as well: netip's == counts it as part of the address, so
+	// fd00:ec2::254%eth0 would miss the metadata list and ::%eth0 would not
+	// satisfy IsUnspecified. The bit-level predicates read the address itself
+	// and were never affected.
+	address = address.Unmap().WithZone("")
 	switch {
 	case address.IsUnspecified():
 		return "an unspecified address"
