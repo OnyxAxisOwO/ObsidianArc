@@ -20,6 +20,21 @@ VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --dirty --always 2>/dev
 # build that runs in between can rewrite the lockfile and turn a clean tree
 # -dirty.
 VERSION := $(VERSION)
+# git accepts $(...), quotes and semicolons in a tag name, and this value reaches
+# the shell in several recipes and, through deploy.sh, on the server. So it is
+# refused here, before anything uses it, unless every character is one a plain
+# version can hold. Make does the removing itself: a check run by a shell would
+# need the value spliced into its command, which is the same injection one step
+# earlier.
+VERSION_CHARS := a b c d e f g h i j k l m n o p q r s t u v w x y z \
+  A B C D E F G H I J K L M N O P Q R S T U V W X Y Z 0 1 2 3 4 5 6 7 8 9 . + -
+VERSION_LEFT := $(VERSION)
+$(foreach c,$(VERSION_CHARS),$(eval VERSION_LEFT := $$(subst $(c),,$$(VERSION_LEFT))))
+# A leading dot or sign is refused as well: a leading dash reads as an option.
+VERSION_BAD := $(VERSION_LEFT)$(filter .% +% -%,$(VERSION))$(if $(VERSION),,empty)
+ifneq ($(VERSION_BAD),)
+$(error VERSION "$(VERSION)" is refused: it must start with a letter or digit and hold only letters, digits, dot, plus and minus, because it reaches the shell. Fix the git tag, or pass a plain VERSION=...)
+endif
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
@@ -78,7 +93,7 @@ server:
 
 ## version: print the version this build would carry, and its plugins
 version:
-	@echo $(VERSION)
+	@echo "$(VERSION)"
 	@echo plugins: $(if $(strip $(PLUGINS) $(PACKAGE_NAMES)),$(PLUGINS) $(PACKAGE_NAMES),none)
 
 ## run: production-shaped local run against the embedded bundle
@@ -127,7 +142,7 @@ clean:
 	find internal/web/dist -mindepth 1 ! -name .gitkeep -delete
 
 docker:
-	docker build --build-arg VERSION=$(VERSION) --build-arg PLUGINS="$(PLUGINS)" -t obsidian-arc:$(VERSION) -t obsidian-arc:latest .
+	docker build --build-arg "VERSION=$(VERSION)" --build-arg PLUGINS="$(PLUGINS)" -t "obsidian-arc:$(VERSION)" -t obsidian-arc:latest .
 
 ## release: compile here what the server would otherwise compile for minutes —
 ## the frontend and a static Linux binary — into dist/, with the image recipe
@@ -144,7 +159,7 @@ package:
 	mkdir -p dist/plugins
 	touch dist/plugins/.keep
 	for f in $(PACKAGES); do cp "$$f" dist/plugins/; done
-	echo $(VERSION) > dist/VERSION
+	echo "$(VERSION)" > dist/VERSION
 	echo $(ARCH) > dist/ARCH
 	echo $(PLUGINS) $(PACKAGE_NAMES) > dist/PLUGIN_LIST
 

@@ -113,7 +113,7 @@ docker run -d -p 8080:8080 -v arc-data:/data \
   obsidian-arc
 ```
 
-使用 PostgreSQL 运行（`docker-compose.yml`）：
+使用 PostgreSQL 运行（`docker-compose.yml`）前，需在与它同目录的 `.env` 中设置 `POSTGRES_PASSWORD`，它没有默认值，未设置时 `docker compose` 会拒绝启动，建议用 `openssl rand -hex 32` 生成，因为它会嵌入数据库连接串：
 
 ```bash
 OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d

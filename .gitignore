@@ -6,6 +6,10 @@
 # Runtime state: the database, the generated secret key, uploads.
 /data/
 
+# Compose reads its secrets from here (POSTGRES_PASSWORD among them), and the
+# repository is public, so this file must never be committed.
+/.env
+
 # Frontend & root JS dependencies
 node_modules/
 .vite/
