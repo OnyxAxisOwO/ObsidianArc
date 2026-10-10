@@ -1369,11 +1369,16 @@ func (s *Service) Authenticate(ctx context.Context, token string) (user.User, Se
 }
 
 // Resolve answers what Authenticate answers, which account this cookie is and
-// whether it may still act. A background stream asks it before each of its
-// runs: the person behind a stream is not necessarily there, so the stream must
-// not renew the sign-in or stamp the account as active. The one write it can
-// make is the removal of a session that has already expired, which
-// GetWithUser performs; that is cleanup and changes nothing a sign-in depends on.
+// whether it may still act. A background stream asks it before each run after
+// the first. The person behind a stream is not necessarily there, so Resolve
+// neither renews the sign-in nor stamps the account as active.
+//
+// Resolve is not write-free. The lookup it shares with Authenticate,
+// GetWithUser, removes a session row that has already expired (a failed delete
+// is ignored), and it reverts a group membership whose grant has lapsed to the
+// default group, writing group_id, group_expires_at and updated_at on the user
+// row. Each only records an end that time has already reached; neither extends
+// a sign-in or a grant.
 func (s *Service) Resolve(ctx context.Context, token string) (user.User, error) {
 	session, account, err := s.sessions.GetWithUser(ctx, token)
 	if err != nil {

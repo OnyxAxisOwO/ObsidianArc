@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -27,10 +28,10 @@ func readActivity(t *testing.T, f *fixture, token string) activityOf {
 	return got
 }
 
-// A watch asks Resolve before each of its runs. The person behind the stream is
-// not necessarily there, so asking must not extend the sign-in or stamp the
-// account as active; Authenticate, which serves a person's own request, still
-// does both.
+// A watch asks Resolve before each run after its first. The person behind the
+// stream is not necessarily there, so asking must not extend the sign-in or
+// stamp the account as active; Authenticate, which serves a person's own
+// request, still does both.
 func TestResolveRenewsNothingThatAuthenticateRenews(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -111,6 +112,13 @@ func TestResolveRefusesWhatAuthenticateRefuses(t *testing.T) {
 		if _, err := f.auth.Resolve(ctx, token); !errors.Is(err, ErrSessionNotFound) {
 			t.Fatalf("an expired session = %v, want ErrSessionNotFound", err)
 		}
+		var left int
+		if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE id = ?`, HashToken(token)).Scan(&left); err != nil {
+			t.Fatal(err)
+		}
+		if left != 0 {
+			t.Fatal("an expired session row survived Resolve")
+		}
 	})
 
 	t.Run("deleted account", func(t *testing.T) {
@@ -126,4 +134,49 @@ func TestResolveRefusesWhatAuthenticateRefuses(t *testing.T) {
 			t.Fatalf("a deleted account's session = %v, want ErrSessionNotFound", err)
 		}
 	})
+}
+
+// Pins the membership write Resolve's doc comment names, so the comment cannot
+// drift from what the lookup does. The returned account is the row as it stands
+// after the write, so the answer and the stored row must agree.
+func TestResolveRevertsALapsedMembership(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	fallback, err := f.groups.Default(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	premium, err := f.groups.Create(ctx, nil, group.CreateInput{Name: "Premium", AllowAllModels: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(ctx, `UPDATE users SET group_id = ?, group_expires_at = ? WHERE id = ?`,
+		premium.ID, time.Now().Add(-time.Hour).UnixMilli(), account.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := f.auth.Resolve(ctx, token)
+	if err != nil {
+		t.Fatalf("Resolve on a lapsed membership: %v", err)
+	}
+	if got.GroupID != fallback.ID || got.GroupExpiresAt != 0 {
+		t.Fatalf("Resolve returned group %s until %d, want default group %s with no expiry",
+			got.GroupID, got.GroupExpiresAt, fallback.ID)
+	}
+
+	var groupID string
+	var expires int64
+	if err := f.db.QueryRow(ctx, `SELECT group_id, group_expires_at FROM users WHERE id = ?`, account.ID).
+		Scan(&groupID, &expires); err != nil {
+		t.Fatal(err)
+	}
+	if groupID != fallback.ID || expires != 0 {
+		t.Fatalf("stored membership = %s until %d, want default group %s with no expiry",
+			groupID, expires, fallback.ID)
+	}
 }
