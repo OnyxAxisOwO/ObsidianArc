@@ -221,6 +221,12 @@ func (s *Store) GrantsInBar(ctx context.Context, barID string, limit, offset int
 func (s *Store) Revoke(ctx context.Context, grantID string) (float64, error) {
 	var revoked float64
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		// Lock before reading, as Settle does. On PostgreSQL's READ COMMITTED a
+		// read taken before the lock can miss a spend that commits in between,
+		// and the figure returned would then differ from what was removed.
+		if _, err := tx.Exec(ctx, `UPDATE bonus_grants SET used = used WHERE id = ?`, grantID); err != nil {
+			return err
+		}
 		var g Grant
 		if err := tx.QueryRow(ctx, `SELECT amount, used FROM bonus_grants WHERE id = ?`, grantID).Scan(&g.Amount, &g.Used); err != nil {
 			if database.IsNotFound(err) {
