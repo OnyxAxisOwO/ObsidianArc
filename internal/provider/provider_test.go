@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
@@ -333,5 +336,237 @@ func TestADelegateCanOnlyDuplicateAProviderAtItsOwnAddress(t *testing.T) {
 	}
 	if len(listed) != 2 {
 		t.Errorf("the refused creates left %d providers, want the source and its copy", len(listed))
+	}
+}
+
+func newKeyed(t *testing.T, store *Store, keys string, rotation KeyRotation) Provider {
+	t.Helper()
+	record, err := store.Create(context.Background(), CreateInput{
+		Name: "Pool", Kind: adapter.KindOpenAI, BaseURL: "https://api.example.com/v1",
+		APIKey: keys, KeyRotation: rotation, Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+func resolvedKeys(t *testing.T, store *Store, providerID string, calls int) map[string]int {
+	t.Helper()
+	seen := map[string]int{}
+	for range calls {
+		resolved, err := store.Resolve(context.Background(), providerID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[resolved.APIKey]++
+	}
+	return seen
+}
+
+// Keys pasted one per line become that many keys, trimmed and without the
+// repeat, and sequential rotation takes them in turn.
+func TestSeveralKeysAreTakenInTurn(t *testing.T) {
+	store := newStore(t)
+	record := newKeyed(t, store, "sk-first-1111\n  sk-second-2222 \r\n\nsk-third-3333\nsk-first-1111", RotateSequential)
+
+	if want := []string{"••••1111", "••••2222", "••••3333"}; !slices.Equal(record.APIKeyHints, want) {
+		t.Fatalf("hints = %v, want %v", record.APIKeyHints, want)
+	}
+	reloaded, err := store.ByID(context.Background(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(reloaded.APIKeyHints, record.APIKeyHints) || reloaded.APIKeyHint != "••••1111" {
+		t.Fatalf("read back hints = %v (%q)", reloaded.APIKeyHints, reloaded.APIKeyHint)
+	}
+
+	var order []string
+	for range 6 {
+		resolved, err := store.Resolve(context.Background(), record.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		order = append(order, resolved.APIKey)
+	}
+	want := []string{"sk-first-1111", "sk-second-2222", "sk-third-3333", "sk-first-1111", "sk-second-2222", "sk-third-3333"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("keys taken = %v, want %v", order, want)
+	}
+}
+
+// The turn counter is shared by every request at once: each key is taken
+// exactly as often as the others, however the calls interleave.
+func TestSequentialRotationIsEvenUnderConcurrentCalls(t *testing.T) {
+	store := newStore(t)
+	record := newKeyed(t, store, "sk-a-1111\nsk-b-2222\nsk-c-3333", RotateSequential)
+	sealed := sealedOf(t, store, record.ID)
+
+	var (
+		mu   sync.Mutex
+		seen = map[string]int{}
+		wg   sync.WaitGroup
+	)
+	for range 30 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 10 {
+				resolved, err := store.ResolveFrom(record, sealed)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				mu.Lock()
+				seen[resolved.APIKey]++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	for _, key := range []string{"sk-a-1111", "sk-b-2222", "sk-c-3333"} {
+		if seen[key] != 100 {
+			t.Fatalf("calls per key = %v, want 100 each", seen)
+		}
+	}
+}
+
+func sealedOf(t *testing.T, store *Store, providerID string) []byte {
+	t.Helper()
+	var sealed []byte
+	if err := store.db.QueryRow(context.Background(),
+		`SELECT api_key_enc FROM providers WHERE id = ?`, providerID).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
+func TestRandomRotationOnlyDrawsStoredKeys(t *testing.T) {
+	store := newStore(t)
+	record := newKeyed(t, store, "sk-a-1111\nsk-b-2222", RotateRandom)
+	seen := resolvedKeys(t, store, record.ID, 200)
+	if len(seen) != 2 || seen["sk-a-1111"] == 0 || seen["sk-b-2222"] == 0 {
+		t.Fatalf("random draws = %v", seen)
+	}
+}
+
+// A form keeps keys by position and adds its own; the positions are honoured
+// only against the hints it was drawn from.
+func TestAnEditKeepsSomeKeysAndAddsOthers(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	record := newKeyed(t, store, "sk-a-1111\nsk-b-2222\nsk-c-3333", RotateSequential)
+
+	positions := []int{0, 2}
+	updated, err := store.Update(ctx, record.ID, Update{
+		KeepKeys: &positions, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-d-4444"},
+	}, false)
+	if err != nil {
+		t.Fatalf("keep two, add one: %v", err)
+	}
+	if want := []string{"••••1111", "••••3333", "••••4444"}; !slices.Equal(updated.APIKeyHints, want) {
+		t.Fatalf("hints = %v, want %v", updated.APIKeyHints, want)
+	}
+	seen := resolvedKeys(t, store, record.ID, 3)
+	if len(seen) != 3 || seen["sk-b-2222"] != 0 {
+		t.Fatalf("keys in use = %v", seen)
+	}
+
+	// The same form again: its hints are the old list, so position 2 would
+	// now be a key it never showed.
+	if _, err := store.Update(ctx, record.ID, Update{
+		KeepKeys: &positions, SeenKeyHints: record.APIKeyHints,
+	}, false); !errors.Is(err, ErrKeysChanged) {
+		t.Fatalf("stale positions: err = %v, want ErrKeysChanged", err)
+	}
+
+	none := []int{}
+	if _, err := store.Update(ctx, record.ID, Update{
+		KeepKeys: &none, SeenKeyHints: updated.APIKeyHints,
+	}, false); !errors.Is(err, ErrKeyRequired) {
+		t.Fatalf("removing every key: err = %v, want ErrKeyRequired", err)
+	}
+
+	// Adding with no keep list keeps every key there is.
+	added, err := store.Update(ctx, record.ID, Update{AddKeys: []string{"sk-e-5555"}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(added.APIKeyHints) != 4 {
+		t.Fatalf("hints after an add = %v", added.APIKeyHints)
+	}
+
+	random := RotateRandom
+	rotated, err := store.Update(ctx, record.ID, Update{KeyRotation: &random}, false)
+	if err != nil || rotated.KeyRotation != RotateRandom || len(rotated.APIKeyHints) != 4 {
+		t.Fatalf("rotation change = %+v, %v", rotated, err)
+	}
+	bad := KeyRotation("weighted")
+	if _, err := store.Update(ctx, record.ID, Update{KeyRotation: &bad}, false); !errors.Is(err, ErrInvalidRotation) {
+		t.Fatalf("unknown rotation: err = %v", err)
+	}
+}
+
+// A key kept from before never follows a new base URL: only a list typed in
+// the same request does.
+func TestKeptKeysDoNotFollowANewBaseURL(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	record := newKeyed(t, store, "sk-a-1111\nsk-b-2222", RotateSequential)
+
+	moved := "https://elsewhere.example.com/v1"
+	first := []int{0}
+	if _, err := store.Update(ctx, record.ID, Update{
+		BaseURL: &moved, KeepKeys: &first, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-new-9999"},
+	}, true); !errors.Is(err, ErrKeyNeededForMove) {
+		t.Fatalf("move keeping a key: err = %v, want ErrKeyNeededForMove", err)
+	}
+	if _, err := store.Update(ctx, record.ID, Update{BaseURL: &moved, AddKeys: []string{"sk-new-9999"}}, true); !errors.Is(err, ErrKeyNeededForMove) {
+		t.Fatalf("move keeping every key: err = %v, want ErrKeyNeededForMove", err)
+	}
+
+	none := []int{}
+	updated, err := store.Update(ctx, record.ID, Update{
+		BaseURL: &moved, KeepKeys: &none, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-new-9999"},
+	}, true)
+	if err != nil {
+		t.Fatalf("move with only typed keys: %v", err)
+	}
+	if !slices.Equal(updated.APIKeyHints, []string{"••••9999"}) {
+		t.Fatalf("hints after the move = %v", updated.APIKeyHints)
+	}
+}
+
+// A duplicate that keeps only some of the source's keys takes those, and one
+// that keeps them all still moves the ciphertext untouched.
+func TestADuplicateTakesTheKeysItKept(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	source := newKeyed(t, store, "sk-a-1111\nsk-b-2222\nsk-c-3333", RotateRandom)
+
+	second := []int{1}
+	copied, err := store.Create(ctx, CreateInput{
+		Name: "Pool 2", Kind: source.Kind, BaseURL: source.BaseURL, Enabled: true,
+		CopyKeyFrom: source.ID, KeepKeys: &second, SeenKeyHints: source.APIKeyHints,
+	}, false)
+	if err != nil {
+		t.Fatalf("duplicate keeping one key: %v", err)
+	}
+	if seen := resolvedKeys(t, store, copied.ID, 3); seen["sk-b-2222"] != 3 {
+		t.Fatalf("the duplicate resolved %v", seen)
+	}
+
+	whole, err := store.Create(ctx, CreateInput{
+		Name: "Pool 3", Kind: source.Kind, BaseURL: source.BaseURL, Enabled: true,
+		CopyKeyFrom: source.ID, KeyRotation: RotateRandom,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(sealedOf(t, store, whole.ID), sealedOf(t, store, source.ID)) {
+		t.Fatal("a whole copy re-sealed the keys instead of moving the ciphertext")
+	}
+	if !slices.Equal(whole.APIKeyHints, source.APIKeyHints) || whole.KeyRotation != RotateRandom {
+		t.Fatalf("whole copy = %v %q", whole.APIKeyHints, whole.KeyRotation)
 	}
 }

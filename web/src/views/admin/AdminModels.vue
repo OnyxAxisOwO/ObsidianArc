@@ -301,6 +301,11 @@ watch(
 );
 
 const creating = computed(() => existing.value === null);
+
+/** Rows ticked in the detected list. Several make one model each, sharing everything else on the form. */
+const detected = ref<DetectedModel[]>([]);
+const many = computed(() => creating.value && detected.value.length > 1);
+
 const status = computed(() => (existing.value ? health.value.get(existing.value.id) : undefined));
 
 const groupItems = computed<ListItem[]>(() => groups.value.map((group) => ({
@@ -348,6 +353,7 @@ function open(row: AdminModel | null, from: AdminModel | null = null): void {
   template.value = from;
   idCopied.value = false;
   panelError.value = '';
+  detected.value = [];
 
   // Where the fields start. `existing` still decides everything else: the
   // title, the delete button, and whether saving is a POST or a PATCH.
@@ -479,6 +485,11 @@ async function save(): Promise<void> {
   // that had been set through the API.
   if (template.value) payload['avatar'] = template.value.avatar;
 
+  if (many.value) {
+    await createMany(payload);
+    return;
+  }
+
   try {
     if (creating.value) await adminApi.createModel(payload);
     else await adminApi.updateModel(existing.value!.id, payload);
@@ -487,6 +498,35 @@ async function save(): Promise<void> {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
   }
+}
+
+/**
+ * One model per ticked row, each with the form's settings and its own ids.
+ * The API name is left out: it is unique on the instance, so one typed here
+ * could belong to only one of them. A row that fails stays ticked and the
+ * ones that were made are unticked, so saving again finishes the job rather
+ * than making the rest twice.
+ */
+async function createMany(shared: Record<string, unknown>): Promise<void> {
+  const entries = detected.value;
+  const results = await Promise.allSettled(entries.map((entry) => adminApi.createModel({
+    ...shared,
+    model_id: entry.model_id,
+    display_name: entry.display_name || entry.model_id,
+    api_name: '',
+  })));
+  const failed = entries.filter((_, index) => results[index]!.status === 'rejected');
+  if (!failed.length) {
+    finish();
+    return;
+  }
+  detected.value = failed;
+  busy.value = false;
+  panelError.value = failed.map((entry) => {
+    const failure = (results[entries.indexOf(entry)] as PromiseRejectedResult).reason;
+    return `${entry.model_id}: ${failure instanceof ApiError ? failure.message : String(failure)}`;
+  }).join('; ');
+  void load();
 }
 
 async function remove(): Promise<void> {
@@ -504,10 +544,15 @@ async function remove(): Promise<void> {
 
 // --- detection ---------------------------------------------------------------------
 
-function useDetected(entry: DetectedModel): void {
-  form.value.modelID = entry.model_id;
-  form.value.displayName = entry.display_name || entry.model_id;
-}
+// A single tick fills the two fields nobody can guess, as picking one always
+// did. Only when it is a different model from the one already there, so
+// unticking a second row does not undo a display name typed meanwhile.
+watch(detected, (entries) => {
+  const only = entries.length === 1 ? entries[0]! : null;
+  if (!only || only.model_id === form.value.modelID) return;
+  form.value.modelID = only.model_id;
+  form.value.displayName = only.display_name || only.model_id;
+});
 
 // --- taking the catalogue in and out -------------------------------------------------
 
@@ -783,7 +828,7 @@ let sortState: SortState | null = null;
     ref="panel"
     :key="panelKey"
     :title="creating ? t('addModel') : existing!.display_name"
-    :confirm-label="creating ? t('add') : t('save')"
+    :confirm-label="many ? t('addPickedN', { count: detected.length }) : creating ? t('add') : t('save')"
     :destructive-label="existing ? t('deleteLabel') : undefined"
     :destructive-confirm="existing ? t('confirmDeleteModel', { name: existing.display_name }) : undefined"
     :busy="busy"
@@ -808,7 +853,7 @@ let sortState: SortState | null = null;
         <!-- Detect belongs here as well as on the provider screen: this is the
              form where an upstream id has to be typed exactly, so it is where
              being handed the list saves the typing. -->
-        <AdminDetectModels :provider-id="form.providerID" mode="pick" @pick="useDetected" />
+        <AdminDetectModels v-model:picked="detected" :provider-id="form.providerID" mode="pick" />
       </template>
       <!-- A field that shows a value the form cannot change. -->
       <template v-else>
@@ -830,28 +875,37 @@ let sortState: SortState | null = null;
     </AdminControlCard>
 
     <AdminControlCard :title="t('secModelBasics')">
-      <OaTextField
-        ref="modelIDField"
-        v-model="form.modelID"
-        :label="t('modelIDLabel')"
-        placeholder="anthropic/claude-opus-5"
-        :hint="t('modelIDHint')"
-        monospace
+      <!-- With several picked, each brings its own id and name, and an API
+           name could only be one model's: those fields give way to the list. -->
+      <OaRow
+        v-if="many"
+        :title="t('addingModelsN', { count: detected.length })"
+        :meta="detected.map((entry) => entry.model_id).join(', ')"
       />
-      <OaTextField
-        v-model="form.apiName"
-        :label="t('apiNameLabel')"
-        :placeholder="form.modelID || 'gpt-5.6-sol'"
-        :hint="t('apiNameHint')"
-        monospace
-      />
-      <OaTextField
-        v-model="form.displayName"
-        :label="t('displayName')"
-        placeholder="Claude Opus 5"
-        :hint="t('displayNameHint')"
-        :max-length="80"
-      />
+      <template v-else>
+        <OaTextField
+          ref="modelIDField"
+          v-model="form.modelID"
+          :label="t('modelIDLabel')"
+          placeholder="anthropic/claude-opus-5"
+          :hint="t('modelIDHint')"
+          monospace
+        />
+        <OaTextField
+          v-model="form.apiName"
+          :label="t('apiNameLabel')"
+          :placeholder="form.modelID || 'gpt-5.6-sol'"
+          :hint="t('apiNameHint')"
+          monospace
+        />
+        <OaTextField
+          v-model="form.displayName"
+          :label="t('displayName')"
+          placeholder="Claude Opus 5"
+          :hint="t('displayNameHint')"
+          :max-length="80"
+        />
+      </template>
       <OaTextArea
         v-model="form.description"
         :label="t('description')"

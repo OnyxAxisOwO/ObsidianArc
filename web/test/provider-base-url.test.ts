@@ -9,7 +9,7 @@ import AdminProviders from '../src/views/admin/AdminProviders.vue';
 
 const provider: Provider = {
   id: 'prov-1', name: 'OpenRouter', kind: 'openai', base_url: 'https://openrouter.ai/api/v1',
-  allow_insecure: false, api_key_hint: '****abcd', headers: {}, anthropic_version: '',
+  allow_insecure: false, api_key_hint: '****abcd', api_key_hints: ['****abcd'], key_rotation: 'sequential', headers: {}, anthropic_version: '',
   reasoning_style: 'auto', timeout_seconds: 120, enabled: true, sort_order: 0, model_count: 0,
   created_at: Date.now(), updated_at: Date.now(),
 };

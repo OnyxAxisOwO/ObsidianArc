@@ -31,6 +31,8 @@ import type { Conversation, Message } from '../api/chat';
 export type ProviderKind = 'openai' | 'anthropic';
 export type ReasoningStyle = 'auto' | 'none' | 'anthropic' | 'openai_effort' | 'openrouter' | 'qwen';
 
+export type KeyRotation = 'sequential' | 'random';
+
 export interface Provider {
   id: string;
   name: string;
@@ -38,6 +40,9 @@ export interface Provider {
   base_url: string;
   allow_insecure: boolean;
   api_key_hint: string;
+  /** One per stored key, in the order they are taken. */
+  api_key_hints: string[];
+  key_rotation: KeyRotation;
   headers: Record<string, string>;
   anthropic_version: string;
   reasoning_style: ReasoningStyle;

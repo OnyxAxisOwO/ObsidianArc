@@ -272,3 +272,37 @@ func TestTheConsoleBansWithAReasonAndRefusesAStrayOne(t *testing.T) {
 		t.Errorf("console-created banned account: %+v, want one account with reason bot", page.Users)
 	}
 }
+
+// A key minted before the ban still works as a key, so the API says what
+// sign-in says: banned, and why — not that the key is wrong.
+func TestABannedAccountsKeyIsToldTheReason(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	victim := in.register("visitor", "another-password")
+	in.enableAPI(founder)
+	token := in.mintKey(victim)
+
+	if ban := in.do(http.MethodPatch, "/api/admin/users/"+victim.userID,
+		map[string]any{"status": "disabled", "ban_reason": "滥用资源"}, founder); ban.Code != http.StatusOK {
+		t.Fatalf("ban: %d %s", ban.Code, ban.Body.String())
+	}
+
+	refused := in.doWithKey(http.MethodGet, "/v1/models", token)
+	if refused.Code != http.StatusForbidden {
+		t.Fatalf("a banned account's key: %d %s", refused.Code, refused.Body.String())
+	}
+	body := decode[struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}](t, refused)
+	if body.Error.Code != "account_banned" || !strings.Contains(body.Error.Message, "滥用资源") {
+		t.Fatalf("API refusal = %+v, want account_banned carrying the reason", body.Error)
+	}
+
+	// A key nobody issued still answers as a bad key, whatever is banned.
+	if code := in.doWithKey(http.MethodGet, "/v1/models", "sk-not-a-real-key").Code; code != http.StatusUnauthorized {
+		t.Fatalf("an unknown key: %d, want 401", code)
+	}
+}

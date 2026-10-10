@@ -227,7 +227,11 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  min-width: 0;
+  /* A record panel and a user panel open together are wider than what is
+     left of a laptop screen, and with nothing holding the page open it was
+     squeezed to a strip one character wide. It keeps this much, and the
+     panels give up the rest (see .oa-panel). */
+  min-width: 300px;
   min-height: 0;
   border-radius: 18px;
   background: var(--ai-surface-container);
@@ -863,7 +867,11 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
+  /* Narrower than its width when two panels and the page they sit beside do
+     not fit in the row: the page holds a minimum, so the panels share what
+     is short rather than the page alone losing all of it. */
+  flex-shrink: 1;
+  min-width: min(var(--oa-panel-width), 320px);
   box-sizing: border-box;
   width: var(--oa-panel-width);
   border-radius: 18px;
@@ -1094,6 +1102,7 @@
     right: 0;
     bottom: 0;
     width: min(var(--oa-panel-width), 100vw);
+    min-width: 0;
     margin-right: 0;
     border-radius: 0;
     box-shadow: var(--ai-shadow-md);
@@ -1360,6 +1369,12 @@
 
   .oa-admin-body {
     padding: 14px 16px 20px;
+  }
+
+  /* Panels are overlays here, so nothing in the row needs room kept for it,
+     and a phone is narrower than the minimum plus its gutters. */
+  .oa-admin-main {
+    min-width: 0;
   }
 }
 
@@ -7384,3 +7399,16 @@
 .oa-update-notes { font-size: 13px; line-height: 1.6; }
 .oa-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 18px; }
 .oa-update-actions > a { text-decoration: none; }
+
+/* A provider's stored and new keys, one row each above the field that adds
+   them. A key on its way out stays listed, struck through, until the save
+   that removes it — so a slip is one click to take back, not a key to find
+   and type again. */
+.oa-provider-key .oa-group-row-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.oa-provider-key.dropped .oa-group-row-title {
+  color: var(--ai-text-secondary);
+  text-decoration: line-through;
+}

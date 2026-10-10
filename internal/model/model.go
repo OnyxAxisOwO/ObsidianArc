@@ -850,7 +850,7 @@ func (s *Store) readCallable(
 ) (Model, provider.Provider, []byte, error) {
 	query := `SELECT ` + withProvider + `,
 		p.base_url, p.api_key_enc, p.headers_json, p.anthropic_version, p.reasoning_style,
-		p.timeout_seconds, p.api_key_hint, p.sort_order, p.enabled, p.created_at, p.updated_at
+		p.timeout_seconds, p.sort_order, p.enabled, p.created_at, p.updated_at, p.key_rotation
 		FROM models m
 		JOIN providers p ON p.id = m.provider_id
 		WHERE ` + where
@@ -876,8 +876,8 @@ func (s *Store) readCallable(
 		&record.EmulateTools,
 		&record.ProviderName, &record.ProviderKind,
 		&upstream.BaseURL, &sealed, &headerJSON, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
-		&upstream.TimeoutSeconds, &upstream.APIKeyHint, &upstream.SortOrder, &upstream.Enabled,
-		&upstream.CreatedAt, &upstream.UpdatedAt,
+		&upstream.TimeoutSeconds, &upstream.SortOrder, &upstream.Enabled,
+		&upstream.CreatedAt, &upstream.UpdatedAt, &upstream.KeyRotation,
 	)
 	if err != nil {
 		if database.IsNotFound(err) {

@@ -460,6 +460,14 @@ func translateProviderError(err error) error {
 		return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can set or change a provider's base URL.")
 	case errors.Is(err, provider.ErrTooManyHeaders):
 		return httpx.BadRequest("At most 20 extra headers.")
+	case errors.Is(err, provider.ErrTooManyKeys):
+		return httpx.BadRequest("At most %d API keys.", provider.MaxAPIKeys)
+	case errors.Is(err, provider.ErrKeyTooLong):
+		return httpx.BadRequest("An API key is at most %d characters.", provider.MaxAPIKeyChars)
+	case errors.Is(err, provider.ErrInvalidRotation):
+		return httpx.BadRequest("Key rotation must be sequential or random.")
+	case errors.Is(err, provider.ErrKeysChanged):
+		return httpx.Conflict("provider_keys_changed", "The API keys were changed meanwhile. Open the provider again.")
 	default:
 		// A base-URL rejection is a validation message written for a person,
 		// so it is passed through rather than swallowed into a 500.

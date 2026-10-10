@@ -202,9 +202,12 @@ func (h *Handlers) serveAs(render func(http.ResponseWriter, error), next handler
 // condition that must hold before it may spend anything.
 //
 // The failures are deliberately indistinguishable from one another: a bad
-// key, a revoked key, a key belonging to a banned account and a key belonging
-// to a group without API access all answer the same way, so the endpoint
-// cannot be used to learn which of those is true.
+// key, a revoked key and a key belonging to a group without API access all
+// answer the same way, so the endpoint cannot be used to learn which of those
+// is true. A banned account is the exception, as it is at sign-in: only a
+// working key reaches that answer, so it tells nobody anything they could not
+// learn by holding the key, and the person holding it is owed the reason —
+// a client that only says "invalid key" sends them to look for a typo.
 func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 	if !h.settings.Bool(settings.APIEnabled) {
 		return caller{}, apiError{
@@ -234,7 +237,13 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 	}
 
 	account, err := h.users.ByID(r.Context(), nil, key.UserID)
-	if err != nil || !account.IsActive() {
+	if err != nil {
+		return caller{}, invalidKey()
+	}
+	if account.Status == user.StatusDisabled {
+		return caller{}, banned(account.BanReason)
+	}
+	if !account.IsActive() {
 		return caller{}, invalidKey()
 	}
 	if !account.IsAdmin() && account.APIRestrictedAt(time.Now()) {
@@ -566,6 +575,21 @@ func unauthorized(message string) apiError {
 
 func invalidKey() apiError {
 	return unauthorized("Incorrect API key provided, or it is no longer valid.")
+}
+
+// The reason is the administrator's own words, in whatever language they
+// wrote it; the sentence around it is English like every other answer here.
+func banned(reason string) apiError {
+	message := "This account has been banned."
+	if reason = strings.TrimSpace(reason); reason != "" {
+		message = "This account has been banned. Reason: " + reason
+	}
+	return apiError{
+		status:  http.StatusForbidden,
+		kind:    "permission_error",
+		code:    "account_banned",
+		message: message,
+	}
 }
 
 // One wording for all three protocols, and it carries both numbers.

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 // What a provider says it serves, as rows of the card it sits in.
 //
-// Two uses. On the provider, rows are ticked and added together (`add`). In
-// the model editor, which is already creating exactly one model, a row is
-// picked and fills the two fields nobody can guess (`pick`).
+// Two uses. On the provider, rows are ticked and added together with the
+// defaults (`add`). In the model editor rows are ticked too, and the editor
+// reads the ticks (`pick`, through v-model:picked): one fills the two fields
+// nobody can guess, several become that many models with the settings the
+// form holds.
 //
 // The trigger is a row like every other setting — what it does on the left,
 // a small button on the right — rather than a button on a line of its own:
@@ -32,19 +34,25 @@ const props = defineProps<{
   /** Whether this reader may create models; without it `add` is a list to read. */
   canAdd?: boolean;
 }>();
-const emit = defineEmits<{ (event: 'pick', entry: DetectedModel): void }>();
+/**
+ * The ticked rows. Bound by the model editor; on the provider nobody binds it
+ * and it is this component's own state.
+ */
+const picked = defineModel<DetectedModel[]>('picked', { default: () => [] });
 
 const detecting = ref(false);
 const found = ref<DetectedModel[] | null>(null);
 const failure = ref('');
 const query = ref('');
-const picked = ref<string[]>([]);
 const adding = ref(false);
+
+const pickedIDs = computed(() => picked.value.map((entry) => entry.model_id));
 
 const shown = computed(() => filterDetected(found.value ?? [], query.value));
 
 const meta = computed(() => {
   if (failure.value) return failure.value;
+  if (found.value && props.mode === 'pick' && picked.value.length) return t('detectPicked', { count: picked.value.length });
   if (found.value) return t('nModelsFound', { count: found.value.length });
   return props.mode === 'add' ? t('detectModelsAddHint') : t('detectPickHint');
 });
@@ -74,20 +82,17 @@ async function detect(): Promise<void> {
   }
 }
 
+// An upstream model already configured can still be picked in the editor: a
+// second entry for it, with other settings, is a thing people make on purpose.
 function choose(entry: DetectedModel): void {
-  if (props.mode === 'pick') {
-    emit('pick', entry);
-    reset();
-    return;
-  }
-  if (entry.configured || !props.canAdd) return;
-  picked.value = picked.value.includes(entry.model_id)
-    ? picked.value.filter((id) => id !== entry.model_id)
-    : [...picked.value, entry.model_id];
+  if (props.mode === 'add' && (entry.configured || !props.canAdd)) return;
+  picked.value = pickedIDs.value.includes(entry.model_id)
+    ? picked.value.filter((chosen) => chosen.model_id !== entry.model_id)
+    : [...picked.value, entry];
 }
 
 async function addPicked(): Promise<void> {
-  const entries = (found.value ?? []).filter((entry) => picked.value.includes(entry.model_id));
+  const entries = picked.value;
   if (!entries.length || adding.value) return;
   adding.value = true;
   failure.value = '';
@@ -123,15 +128,15 @@ async function addPicked(): Promise<void> {
 
   <template v-if="found && found.length">
     <OaSearchField v-model="query" :label="t('searchDetected', { count: found.length })" />
-    <div class="oa-detect-options" role="listbox" :aria-multiselectable="mode === 'add'">
+    <div class="oa-detect-options" role="listbox" aria-multiselectable="true">
       <button
         v-for="entry in shown"
         :key="entry.model_id"
         type="button"
         role="option"
         class="oa-detect-option"
-        :class="{ picked: picked.includes(entry.model_id) }"
-        :aria-selected="picked.includes(entry.model_id)"
+        :class="{ picked: pickedIDs.includes(entry.model_id) }"
+        :aria-selected="pickedIDs.includes(entry.model_id)"
         :disabled="mode === 'add' && (entry.configured || !canAdd)"
         @click="choose(entry)"
       >
@@ -142,7 +147,7 @@ async function addPicked(): Promise<void> {
           </span>
         </span>
         <span v-if="entry.configured" class="oa-detect-known">{{ t('alreadyAdded') }}</span>
-        <span v-else-if="mode === 'add'" class="oa-detect-tick" aria-hidden="true"><IconCheck :size="11" /></span>
+        <span v-if="!entry.configured || mode === 'pick'" class="oa-detect-tick" aria-hidden="true"><IconCheck :size="11" /></span>
       </button>
       <p v-if="!shown.length" class="oa-detect-none">{{ t('noMatches') }}</p>
     </div>

@@ -114,8 +114,10 @@ describe('AdminModels, several at once and in place', () => {
   });
 
   let catalogue: AdminModel[];
+  let actions: HTMLElement;
 
   async function mount(models: AdminModel[]) {
+    actions = document.createElement('div');
     catalogue = models;
     vi.spyOn(adminApi, 'models').mockImplementation(async () => ({ models: catalogue }));
     vi.spyOn(adminApi, 'providerOptions').mockResolvedValue({ providers: [{ id: 'p1', name: 'Prov', kind: 'openai', enabled: true }] });
@@ -127,7 +129,7 @@ describe('AdminModels, several at once and in place', () => {
     app = createApp({
       setup() {
         providePanelHost(shallowRef(panels));
-        provideAdminView({ actionsHost: document.createElement('div'), setTitle() {}, reload, params: [] });
+        provideAdminView({ actionsHost: actions, setTitle() {}, reload, params: [] });
         return () => h(AdminModels);
       },
     });
@@ -246,6 +248,47 @@ describe('AdminModels, several at once and in place', () => {
     expect(panels.querySelector('.oa-panel')).not.toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(panels.querySelector('.oa-panel')).toBeNull();
+  });
+
+  it('adds every ticked model with the form\'s settings, and keeps the ones that failed ticked', async () => {
+    vi.spyOn(adminApi, 'detect').mockResolvedValue({ models: [
+      { model_id: 'gpt-6-sol', display_name: '', configured: false },
+      { model_id: 'gpt-6-astra', display_name: 'Astra', configured: false },
+      { model_id: 'gpt-5.5', display_name: '', configured: false },
+    ] });
+    const create = vi.spyOn(adminApi, 'createModel').mockImplementation(async (body) => {
+      if (body['model_id'] === 'gpt-5.5') throw new ApiError(400, 'bad', 'no');
+      return { model: model('n') };
+    });
+    await mount([model('a')]);
+
+    [...actions.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.trim() === t('addModel'))!.click();
+    await settle();
+    panels.querySelector<HTMLButtonElement>('.oa-detect-run')!.click();
+    await settle();
+    const rows = () => [...panels.querySelectorAll<HTMLButtonElement>('.oa-detect-option')];
+    rows()[0]!.click();
+    await nextTick();
+    // One tick fills the fields, as picking one always did.
+    expect(panels.querySelector<HTMLInputElement>('.oa-field input')!.value).toBe('gpt-6-sol');
+    rows()[1]!.click();
+    await nextTick();
+    rows()[2]!.click();
+    await nextTick();
+
+    const confirm = panels.querySelector<HTMLButtonElement>('.oa-panel-foot .oa-btn.primary')!;
+    expect(confirm.textContent?.trim()).toBe(t('addPickedN', { count: 3 }));
+    confirm.click();
+    await settle();
+
+    expect(create.mock.calls.map(([body]) => [body['model_id'], body['display_name'], body['api_name'], body['provider_id']])).toEqual([
+      ['gpt-6-sol', 'gpt-6-sol', '', 'p1'],
+      ['gpt-6-astra', 'Astra', '', 'p1'],
+      ['gpt-5.5', 'gpt-5.5', '', 'p1'],
+    ]);
+    expect(create.mock.calls[0]![0]['supports_streaming']).toBe(true);
+    expect(panels.querySelector('.oa-drawer-flash')?.textContent).toContain('gpt-5.5');
+    expect(rows().filter((row) => row.classList.contains('picked')).map((row) => row.textContent?.trim())).toEqual(['gpt-5.5']);
   });
 });
 

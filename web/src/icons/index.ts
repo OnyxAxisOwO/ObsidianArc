@@ -87,6 +87,8 @@ export const IconGift = draw('Gift', [
 ]);
 export const IconPlus = draw('Plus', ['M12 5v14', 'M5 12h14']);
 export const IconClose = draw('X', ['M18 6L6 18', 'M6 6l12 12']);
+// Taking back a removal that has not been saved yet: lucide's undo arrow.
+export const IconUndo = draw('Undo2', ['M9 14 4 9l5-5', 'M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11']);
 export const IconBell = draw('Bell', [
   'M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9',
   'M13.7 21a2 2 0 0 1-3.4 0',

@@ -15,6 +15,9 @@ import (
 
 const maxProviderBody = 32 * 1024
 
+// A provider's own body carries its keys as well, as many as it may hold.
+const maxProviderKeysBody = maxProviderBody + provider.MaxAPIKeys*provider.MaxAPIKeyChars
+
 type providerRequest struct {
 	Name             string                  `json:"name"`
 	Kind             adapter.Kind            `json:"kind"`
@@ -27,6 +30,13 @@ type providerRequest struct {
 	TimeoutSeconds   *int                    `json:"timeout_seconds"`
 	Enabled          *bool                   `json:"enabled"`
 	SortOrder        *int                    `json:"sort_order"`
+	// Keys typed beside the ones kept, for a provider that takes several.
+	APIKeys []string `json:"api_keys"`
+	// The positions of the stored keys to keep (on a duplicate, of the
+	// source's), and the hints those positions were read from.
+	KeepKeys    *[]int                `json:"keep_keys"`
+	KeyHints    []string              `json:"key_hints"`
+	KeyRotation *provider.KeyRotation `json:"key_rotation"`
 	// A provider to take the API key from, set when this request is a
 	// duplicate of an existing one. The key itself is never sent here — the
 	// browser has never had it.
@@ -44,14 +54,8 @@ func (h *Handlers) listProviders(w http.ResponseWriter, r *http.Request) error {
 
 func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error {
 	var body providerRequest
-	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderKeysBody); err != nil {
 		return err
-	}
-	// One or the other: a key typed into the form, or the id of the provider
-	// this one is a copy of. A duplicate arrives with neither a key nor a way
-	// to get one, which is the whole reason the second spelling exists.
-	if (body.APIKey == nil || *body.APIKey == "") && body.CopyKeyFrom == nil {
-		return httpx.BadRequest("An API key is required.")
 	}
 	if body.CopyKeyFrom != nil && !isValidID(*body.CopyKeyFrom) {
 		return httpx.BadRequest("Malformed provider id.")
@@ -68,6 +72,10 @@ func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error 
 	}
 	if body.CopyKeyFrom != nil {
 		in.CopyKeyFrom = *body.CopyKeyFrom
+	}
+	in.APIKeys, in.KeepKeys, in.SeenKeyHints = body.APIKeys, body.KeepKeys, body.KeyHints
+	if body.KeyRotation != nil {
+		in.KeyRotation = *body.KeyRotation
 	}
 	if body.AllowInsecure != nil {
 		in.AllowInsecure = *body.AllowInsecure
@@ -108,13 +116,17 @@ func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	var body providerRequest
-	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderKeysBody); err != nil {
 		return err
 	}
 
 	update := provider.Update{
 		AllowInsecure:    body.AllowInsecure,
 		APIKey:           body.APIKey,
+		AddKeys:          body.APIKeys,
+		KeepKeys:         body.KeepKeys,
+		SeenKeyHints:     body.KeyHints,
+		KeyRotation:      body.KeyRotation,
 		Headers:          body.Headers,
 		AnthropicVersion: body.AnthropicVersion,
 		ReasoningStyle:   body.ReasoningStyle,

@@ -220,9 +220,16 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 26.30 MB (22.61 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 242.20 kB to open the chat (199.95 JS + 42.25 CSS) |
+| Frontend, on the wire | < 135 kB | 242.98 kB to open the chat (200.67 JS + 42.31 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-10 (UTC), after providers took several API keys and the
+model editor several detected models at once: the dictionary carries the new
+strings and the icon set an undo arrow. 242.98 kB (200.67 kB JS + 42.31 kB
+CSS), up 0.78 kB from the figure below. The backoffice chunk is 126.00 kB and
+the Chinese dictionary 48.76 kB. The binary moved by a few kilobytes and its
+figure stands.
 
 Remeasured on 2026-10-10 (UTC), after the last of that day's review fixes:
 /v1 bodies are read at most four at a time per account and get their read window

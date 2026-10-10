@@ -90,14 +90,20 @@ describe('detected models', () => {
     expect(host.querySelector('.oa-btn.primary')).toBeNull();
   });
 
-  it('hands one row back in the model editor and folds the list away', async () => {
-    const picked: DetectedModel[] = [];
-    mount({ mode: 'pick', onPick: (entry: DetectedModel) => picked.push(entry) });
+  it('ticks several rows in the model editor, the configured ones too, and hands them all back', async () => {
+    let picked: DetectedModel[] = [];
+    mount({ mode: 'pick', 'onUpdate:picked': (entries: DetectedModel[]) => { picked = entries; } });
     await detect();
 
     options()[2]!.click();
     await nextTick();
-    expect(picked.map((entry) => entry.model_id)).toEqual(['qwen3.6-27b']);
-    expect(options()).toHaveLength(0);
+    options()[1]!.click();
+    await nextTick();
+    expect(picked.map((entry) => entry.model_id)).toEqual(['qwen3.6-27b', 'claude-opus-5-5']);
+    expect(options()).toHaveLength(4);
+
+    options()[2]!.click();
+    await nextTick();
+    expect(picked.map((entry) => entry.model_id)).toEqual(['claude-opus-5-5']);
   });
 });
