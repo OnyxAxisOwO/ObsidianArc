@@ -63,6 +63,9 @@ func (h *Handlers) putMail(w http.ResponseWriter, r *http.Request) error {
 		if errors.Is(err, mail.ErrOriginNeedsSuperAdmin) {
 			return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can change the public site URL.")
 		}
+		if errors.Is(err, mail.ErrTransportNeedsSuperAdmin) {
+			return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can change the SMTP server, port or username.")
+		}
 		if errors.Is(err, mail.ErrPasswordNeededForMove) {
 			return httpx.BadRequestCode("mail_password_needed", "A new SMTP server or username needs the password entered again.")
 		}

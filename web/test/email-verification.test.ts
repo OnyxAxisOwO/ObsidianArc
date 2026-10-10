@@ -289,6 +289,8 @@ describe('administrator mail settings', () => {
   }
 
   it('keeps an empty password on save, sends a test email, and confirms explicit password clearing', async () => {
+    // Only a super administrator edits the SMTP server, so these cases act as one.
+    adopt({ ...ACCOUNT, role: 'super_admin' });
     const saved = vi.spyOn(adminApi, 'saveMail')
       .mockResolvedValueOnce(MAIL)
       .mockResolvedValueOnce({ ...MAIL, password_set: false });
@@ -323,6 +325,7 @@ describe('administrator mail settings', () => {
   });
 
   it('requires saved SMTP settings before the test action uses the live sender', async () => {
+    adopt({ ...ACCOUNT, role: 'super_admin' });
     let finishSave!: (settings: AdminMailSettings) => void;
     vi.spyOn(adminApi, 'saveMail').mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
     const test = vi.spyOn(adminApi, 'testMail').mockResolvedValue();
@@ -345,6 +348,28 @@ describe('administrator mail settings', () => {
     button(card, t('mailTestSend')).click();
     await settle();
     expect(test).toHaveBeenCalledWith('ops@example.com');
+  });
+
+  // The relay is where every verification link and code is sent, so a security
+  // administrator sees it as text and cannot choose it. The sender address
+  // stays theirs, and a save sends the stored server back unchanged.
+  it('shows a security administrator the SMTP server as text, and saves the rest of the form', async () => {
+    adopt({ ...ACCOUNT, role: 'admin', admin_permissions: ['security'] });
+    const saved = vi.spyOn(adminApi, 'saveMail').mockResolvedValue(MAIL);
+    const card = await mountSecurity();
+
+    const labels = [...card.querySelectorAll<HTMLElement>('.oa-field-label')].map((node) => node.textContent);
+    for (const hidden of [t('mailHost'), t('mailPort'), t('mailUsername')]) {
+      expect(labels).not.toContain(hidden);
+    }
+    expect(card.textContent).toContain(t('mailTransportLocked', { server: 'smtp.example.com:465' }));
+
+    type(fieldInput(card, t('mailFrom')), 'ops@example.com');
+    button(card, t('save')).click();
+    await settle();
+    expect(saved).toHaveBeenCalledWith(expect.objectContaining({
+      host: MAIL.host, port: MAIL.port, username: MAIL.username, from: 'ops@example.com',
+    }));
   });
 
   it('localizes SMTP and UserCheck endpoint failures instead of showing server English', async () => {

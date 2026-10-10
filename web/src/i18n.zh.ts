@@ -1465,6 +1465,7 @@ export const zh: Record<StringKey, string> = {
   mailPublicURL: '网站公开地址',
   mailPublicURLHint: '验证链接中使用的地址，例如 https://arc.example.com。',
   mailPublicURLLocked: '只有超级管理员可以更改网站公开地址。当前地址为 {url}。',
+  mailTransportLocked: '只有超级管理员可以更改 SMTP 服务器、端口或用户名。邮件当前通过 {server} 发送。',
   mailPassword: 'SMTP 密码',
   mailPasswordKeepPlaceholder: '已有密码；留空即可保留',
   mailPasswordPlaceholder: 'SMTP 密码',

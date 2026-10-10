@@ -227,6 +227,62 @@ func TestOnlyASuperAdministratorMovesThePublicURL(t *testing.T) {
 	}
 }
 
+// The relay that receives every verification link and code is chosen by the
+// super administrator too, under the same rule as the public URL. The security
+// grant keeps the sender address and the rest of the mail form, and may save
+// the server as it already stands.
+func TestOnlyASuperAdministratorChoosesTheSMTPServer(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	delegate(t, in, founder, operator, "security")
+
+	saved := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
+		"host": "127.0.0.1", "port": 1, "username": "mailer", "from": "arc@example.com",
+		"public_url": "https://arc.example.com", "password": "mail-secret",
+	}, founder)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("super administrator saving mail: %d %s", saved.Code, saved.Body.String())
+	}
+
+	for label, body := range map[string]map[string]any{
+		"host": {"host": "collector.example.net", "port": 1, "username": "mailer",
+			"from": "arc@example.com", "public_url": "https://arc.example.com"},
+		"port": {"host": "127.0.0.1", "port": 2525, "username": "mailer",
+			"from": "arc@example.com", "public_url": "https://arc.example.com"},
+		"username": {"host": "127.0.0.1", "port": 1, "username": "someone-else",
+			"from": "arc@example.com", "public_url": "https://arc.example.com"},
+		"host with a typed password": {"host": "collector.example.net", "port": 1, "username": "mailer",
+			"from": "arc@example.com", "public_url": "https://arc.example.com", "password": "typed-again"},
+	} {
+		response := in.do(http.MethodPut, "/api/admin/mail", body, operator)
+		if response.Code != http.StatusForbidden || errCode(t, response) != "super_admin_required" {
+			t.Errorf("%s: a security administrator changed the SMTP server: %d %s", label, response.Code, response.Body.String())
+		}
+	}
+	shown := decode[struct {
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Username string `json:"username"`
+	}](t, in.do(http.MethodGet, "/api/admin/mail", nil, founder))
+	if shown.Host != "127.0.0.1" || shown.Port != 1 || shown.Username != "mailer" {
+		t.Fatalf("refused saves changed the SMTP server: %+v", shown)
+	}
+
+	if response := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
+		"host": "127.0.0.1", "port": 1, "username": "mailer", "from": "ops@example.com",
+		"public_url": "https://arc.example.com",
+	}, operator); response.Code != http.StatusOK {
+		t.Fatalf("a security administrator saving the sender with the server unchanged: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
+		"host": "collector.example.net", "port": 1, "username": "mailer", "from": "ops@example.com",
+		"public_url": "https://arc.example.com", "password": "mail-secret",
+	}, founder); response.Code != http.StatusOK {
+		t.Fatalf("super administrator choosing the SMTP server: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func providerIDOf(t *testing.T, response *httptest.ResponseRecorder) string {
 	t.Helper()
 	return decode[struct {

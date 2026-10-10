@@ -1498,6 +1498,7 @@ const en = {
   mailPublicURL: 'Public site URL',
   mailPublicURLHint: 'The address included in verification links, for example https://arc.example.com.',
   mailPublicURLLocked: 'Only a super administrator can change the public site URL. Its current value is {url}.',
+  mailTransportLocked: 'Only a super administrator can change the SMTP server, port or username. Mail is sent through {server}.',
   mailPassword: 'SMTP password',
   mailPasswordKeepPlaceholder: 'Saved password; leave blank to keep it',
   mailPasswordPlaceholder: 'SMTP password',
