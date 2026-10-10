@@ -2371,6 +2371,7 @@ const en = {
   twoFactorPasswordHint: 'Turning this on signs your other devices out, so your password confirms it is you.',
   currentPasswordWrong: 'That password is not correct.',
   emailChangePasswordHint: 'Changing your email needs your current password.',
+  reauthForPassword: 'Sign in again with your provider first. A first password can only be set right after signing in.',
   twoFactorRequiredTitle: 'Set up two-step verification',
   twoFactorRequiredBody: '{site} requires two-step verification before you continue. It takes about a minute.',
   twoFactorGateTitle: 'Two-step verification required',

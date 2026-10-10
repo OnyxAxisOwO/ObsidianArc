@@ -727,3 +727,57 @@ func postJSON(mux *http.ServeMux, path string, body any, cookies []*http.Cookie)
 	mux.ServeHTTP(recorder, request)
 	return recorder
 }
+
+// The completion form lets somebody type into a bound field, but the provider
+// proved its subject and only that is written. A typed number is not a proof:
+// it must not end up on the account the provider's subject is linked to.
+func TestATypedBadgeCannotReplaceTheSubjectTheProviderProved(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	require(t, f, badgeRule, auth.FieldRequired)
+	f.configure(t, "oidc")
+
+	server := stub(t, "oidc", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"a-token"}`))
+	}, Identity{Provider: "oidc", Subject: "123456789", Login: "qq_123456789", Name: "Someone"})
+	if err := f.settings.SetMany(context.Background(), map[string]string{
+		settings.OAuthOIDCAuthURL:     server.URL + "/authorize",
+		settings.OAuthOIDCTokenURL:    server.URL + "/token",
+		settings.OAuthOIDCUserInfoURL: server.URL + "/userinfo",
+	}); err != nil {
+		t.Fatalf("set endpoints: %v", err)
+	}
+	_, mux := handlers(t, f)
+
+	start := get(mux, "/api/auth/oauth/start/oidc", nil, nil)
+	state := start.Result().Cookies()[0]
+	target, _ := url.Parse(start.Header().Get("Location"))
+	back := get(mux, "/api/auth/oauth/callback/oidc?code=c&state="+target.Query().Get("state"),
+		[]*http.Cookie{state}, nil)
+	ticket := cookieNamed(back, pendingCookie)
+	if ticket == nil {
+		t.Fatalf("no pending ticket was issued: %q", back.Header().Get("Location"))
+	}
+
+	done := postJSON(mux, "/api/auth/oauth/signup",
+		map[string]any{"fields": badgeOf("87654321"), "email": ""}, []*http.Cookie{ticket})
+	if done.Code != http.StatusOK {
+		t.Fatalf("complete = %d %s", done.Code, done.Body.String())
+	}
+
+	ctx := context.Background()
+	linked, err := f.store.Account(ctx, nil, "oidc", "123456789")
+	if err != nil {
+		t.Fatalf("the provider's subject is not connected: %v", err)
+	}
+	opened, err := f.users.ByID(ctx, nil, linked)
+	if err != nil {
+		t.Fatalf("read the account: %v", err)
+	}
+	if opened.Fields[badge] != "123456789" {
+		t.Errorf("badge = %q, want the subject the provider proved", opened.Fields[badge])
+	}
+	if _, err := f.users.ByField(ctx, nil, badge, "87654321"); !errors.Is(err, user.ErrNotFound) {
+		t.Errorf("the typed number was written to an account: %v", err)
+	}
+}

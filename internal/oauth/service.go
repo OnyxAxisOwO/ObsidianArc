@@ -565,15 +565,19 @@ func (s *Service) resolve(
 			if address == "" {
 				address = strings.TrimSpace(details.Email)
 			}
-			// A bound subject rides into the account the same way Connect
-			// writes it on a settings-screen bind — the value is what the
-			// provider proved. An answer typed into the completion form wins
-			// over it, because that is the answer the person confirmed.
+			// A bound subject rides into the account the way Connect writes it
+			// on a settings-screen bind, and the provider's value always wins
+			// over what the completion form carried for the same field. A
+			// typed value is not a proof: storing it would put a number on the
+			// account that the provider never vouched for, while the subject
+			// is linked to that account. The form pre-fills the proved value,
+			// so a different one is a mistake or a tampered request, and it is
+			// overwritten rather than trusted.
 			fields := map[string]string{}
 			for key, value := range details.Fields {
 				fields[key] = value
 			}
-			if field, value := s.boundValue(identity); field != "" && strings.TrimSpace(fields[field]) == "" {
+			if field, value := s.boundValue(identity); field != "" {
 				fields[field] = value
 			}
 			if populated && email != "" {

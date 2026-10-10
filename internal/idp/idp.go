@@ -160,6 +160,22 @@ func Covers(granted, wanted []string) bool {
 	return true
 }
 
+// within keeps the granted scopes that the application may still ask for. An
+// operator who takes a scope away has asked for it to stop arriving, and a token
+// issued before that keeps its own list, so the list that goes out is computed
+// at the moment it is used. The stored list is not rewritten: it is what the
+// person consented to, so restoring the scope gives it back to the tokens that
+// held it.
+func within(granted, allowed []string) []string {
+	out := []string{}
+	for _, scope := range granted {
+		if Covers(allowed, []string{scope}) {
+			out = append(out, scope)
+		}
+	}
+	return out
+}
+
 // App is a registered application. The secret is absent by design: the row
 // holds a digest, and there is no field here for a value that exists once.
 type App struct {

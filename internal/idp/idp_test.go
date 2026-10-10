@@ -2,7 +2,10 @@ package idp
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -290,6 +293,105 @@ func TestScopesAreNarrowedToWhatTheApplicationMayAskFor(t *testing.T) {
 	}
 }
 
+// Narrowing an application reaches the tokens it already holds. A refresh and
+// the identity endpoint answer with what the application may ask for now, so
+// removing email stops the address arriving on the next refresh and the next
+// userinfo call, not only on a new sign-in.
+func TestNarrowingAnApplicationReachesTheTokensItAlreadyHolds(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	granted := []string{ScopeOpenID, ScopeProfile, ScopeEmail}
+	record, _ := f.app(t, CreateAppInput{Scopes: granted})
+
+	if err := f.store.RecordGrant(ctx, nil, record.ID, f.account.ID, granted); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if _, err := f.store.SaveToken(ctx, nil, "access-token", "refresh-token",
+		record.ID, f.account.ID, granted); err != nil {
+		t.Fatalf("save token: %v", err)
+	}
+
+	withoutEmail := []string{ScopeOpenID, ScopeProfile}
+	narrowed, err := f.store.UpdateApp(ctx, record.ID, AppUpdate{Scopes: &withoutEmail}, false)
+	if err != nil {
+		t.Fatalf("narrow: %v", err)
+	}
+
+	refreshed, err := f.service.Refresh(ctx, "https://arc.example", narrowed,
+		url.Values{"refresh_token": {"refresh-token"}})
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if strings.Contains(refreshed.Scope, ScopeEmail) {
+		t.Errorf("scope = %q, want email gone from what a refresh grants", refreshed.Scope)
+	}
+	if _, has := idTokenClaims(t, refreshed.IDToken)["email"]; has {
+		t.Error("the identity token from a refresh still carries the address")
+	}
+
+	info, err := f.service.UserInfo(ctx, "https://arc.example", refreshed.AccessToken)
+	if err != nil {
+		t.Fatalf("userinfo: %v", err)
+	}
+	if _, has := info["email"]; has {
+		t.Errorf("userinfo = %v, want no address after the narrowing", info)
+	}
+}
+
+// A code issued while the application could still ask for an address, and
+// redeemed after the operator took that away, buys a token that carries only
+// what the application may ask for now.
+func TestACodeRedeemedAfterANarrowingCarriesOnlyWhatIsStillAllowed(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	const callback = "https://wiki.example.com/callback"
+	granted := []string{ScopeOpenID, ScopeProfile, ScopeEmail}
+	record, _ := f.app(t, CreateAppInput{Scopes: granted})
+
+	if err := f.store.SaveCode(ctx, "a-code", Code{
+		AppID: record.ID, UserID: f.account.ID, RedirectURI: callback, Scopes: granted,
+	}); err != nil {
+		t.Fatalf("save code: %v", err)
+	}
+	withoutEmail := []string{ScopeOpenID, ScopeProfile}
+	narrowed, err := f.store.UpdateApp(ctx, record.ID, AppUpdate{Scopes: &withoutEmail}, false)
+	if err != nil {
+		t.Fatalf("narrow: %v", err)
+	}
+
+	tokens, err := f.service.Exchange(ctx, "https://arc.example", narrowed,
+		url.Values{"code": {"a-code"}, "redirect_uri": {callback}})
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if strings.Contains(tokens.Scope, ScopeEmail) {
+		t.Errorf("scope = %q, want email withheld from a code redeemed after the narrowing", tokens.Scope)
+	}
+	if _, has := idTokenClaims(t, tokens.IDToken)["email"]; has {
+		t.Error("the identity token from the exchange carries an address the application may no longer ask for")
+	}
+}
+
+// idTokenClaims reads what an identity token says. The signature is not checked
+// here: the claims are what these tests are about, and the flow tests verify the
+// signature against the published keys.
+func idTokenClaims(t *testing.T, token string) map[string]any {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("identity token has %d parts, want three", len(parts))
+	}
+	body, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode identity token: %v", err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(body, &claims); err != nil {
+		t.Fatalf("read identity token: %v", err)
+	}
+	return claims
+}
+
 func TestTheOpenIDScopeIsRequired(t *testing.T) {
 	f := newFixture(t)
 	record, _ := f.app(t, CreateAppInput{})
@@ -403,6 +505,42 @@ func TestRevokingAnAuthorisationTakesTheTokensWithIt(t *testing.T) {
 	}
 	if again, _ := f.store.RevokeGrant(ctx, f.account.ID, record.ID); again {
 		t.Error("revoking twice reported a second removal")
+	}
+}
+
+// A password change ends what an account holds with applications: its tokens,
+// and a code issued just before the change, which would otherwise still
+// redeem for a pair. The consent is kept, because the person still agreed.
+func TestRevokingAnAccountEndsWhatItHoldsAndKeepsItsConsent(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	record, _ := f.app(t, CreateAppInput{})
+
+	if err := f.store.RecordGrant(ctx, nil, record.ID, f.account.ID, DefaultScopes); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if _, err := f.store.SaveToken(ctx, nil, "access-token", "refresh-token",
+		record.ID, f.account.ID, DefaultScopes); err != nil {
+		t.Fatalf("save token: %v", err)
+	}
+	if err := f.store.SaveCode(ctx, "unspent-code", Code{
+		AppID: record.ID, UserID: f.account.ID, RedirectURI: "https://wiki.example.com/callback",
+		Scopes: DefaultScopes,
+	}); err != nil {
+		t.Fatalf("save code: %v", err)
+	}
+
+	if err := f.store.RevokeAccount(ctx, nil, f.account.ID); err != nil {
+		t.Fatalf("revoke account: %v", err)
+	}
+	if _, err := f.store.ResolveAccess(ctx, "access-token"); err != ErrBadToken {
+		t.Errorf("the access token survived the account's revocation: %v", err)
+	}
+	if _, err := f.store.RedeemCode(ctx, "unspent-code"); err != ErrBadCode {
+		t.Errorf("a code issued before the revocation still redeems: %v", err)
+	}
+	if granted, err := f.store.GrantedScopes(ctx, nil, record.ID, f.account.ID); err != nil || len(granted) == 0 {
+		t.Errorf("consent = %v (%v), want the consent kept", granted, err)
 	}
 }
 

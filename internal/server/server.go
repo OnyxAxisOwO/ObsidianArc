@@ -89,6 +89,7 @@ type Server struct {
 	quota          *quota.Service
 	requests       *reqlog.Store
 	idp            *idp.Store
+	oauth          *oauth.Store
 	notify         *notify.Store
 	bonus          *bonus.Store
 	invites        *invite.Store
@@ -992,7 +993,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// Signing in with an account somebody already holds at GitHub or Google.
 	// This instance is the client of those providers and never one itself:
 	// nothing here issues an identity for anybody else to check.
-	oauthService := oauth.NewService(db, oauth.NewStore(db), users, authService, settingsService)
+	oauthStore := oauth.NewStore(db)
+	oauthService := oauth.NewService(db, oauthStore, users, authService, settingsService)
 	// A provider sign-up is judged by the same plugin guards a form sign-up is,
 	// from the auth service that owns them. A provider's redirect carries no
 	// guard tokens, so each guard judges what it can see of the request.
@@ -1046,6 +1048,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, err
 	}
 	idpStore := idp.NewStore(db)
+	// A password that is replaced or reset ends what applications hold for
+	// the account. Set here because internal/idp imports auth, not the other
+	// way round.
+	authService.RevokeIssued = idpStore.RevokeAccount
 	idpService := idp.NewService(idpStore, idp.NewKeys(db, signingBox), users, groups)
 	idpHandlers := idp.NewHandlers(idpService, cfg.SecretKey)
 	// The issuer named in every identity token, and in the discovery document
@@ -1418,6 +1424,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		quota:          quotaService,
 		requests:       requestLog,
 		idp:            idpStore,
+		oauth:          oauthStore,
 		notify:         notifyStore,
 		bonus:          bonusStore,
 		invites:        invites,
@@ -1577,6 +1584,14 @@ func (s *Server) sweep(ctx context.Context) {
 	if s.idp != nil {
 		if _, err := s.idp.Purge(sweepCtx); err != nil {
 			slog.ErrorContext(sweepCtx, "could not purge sign-in grants", "error", err)
+		}
+	}
+	// A spent sign-in state is only a record of a callback that already came
+	// back. Once its expiry has passed the state check refuses it, so the row
+	// is safe to drop.
+	if s.oauth != nil {
+		if _, err := s.oauth.PruneStates(sweepCtx, time.Now().UnixMilli()); err != nil {
+			slog.ErrorContext(sweepCtx, "could not prune sign-in states", "error", err)
 		}
 	}
 	// Counter buckets whose window has long since rolled over. The ledger is

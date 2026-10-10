@@ -1226,3 +1226,52 @@ func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 		t.Fatalf("third username = %q, want 'third'", third.Username)
 	}
 }
+
+// What a password replaces is revoked in the same transaction as the write. A
+// revocation that fails leaves the old password and every session in place,
+// and one that works is asked about the account that changed, for both the
+// change and the administrator's reset.
+func TestAPasswordWriteRevokesWhatWasIssuedInTheSameTransaction(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var asked []string
+	f.auth.RevokeIssued = func(_ context.Context, _ database.Queryer, userID string) error {
+		asked = append(asked, userID)
+		return errors.New("the identity provider is unreachable")
+	}
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", ""); err == nil {
+		t.Fatal("a failed revocation let the password change land")
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); err != nil {
+		t.Errorf("the old password stopped working although its change was rolled back: %v", err)
+	}
+	if _, _, err := f.auth.Authenticate(ctx, token); err != nil {
+		t.Errorf("sessions were ended by a change that was rolled back: %v", err)
+	}
+
+	f.auth.RevokeIssued = func(_ context.Context, _ database.Queryer, userID string) error {
+		asked = append(asked, userID)
+		return nil
+	}
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", ""); err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	if err := f.auth.SetPassword(ctx, account.ID, "a-third-password"); err != nil {
+		t.Fatalf("administrator reset: %v", err)
+	}
+
+	if len(asked) != 3 {
+		t.Fatalf("revocation asked %d times, want once for each of the three writes", len(asked))
+	}
+	for i, userID := range asked {
+		if userID != account.ID {
+			t.Errorf("revocation %d named %q, want the account that changed", i, userID)
+		}
+	}
+}

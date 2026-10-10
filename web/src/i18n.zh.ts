@@ -2328,6 +2328,7 @@ export const zh: Record<StringKey, string> = {
   twoFactorPasswordHint: '开启后会退出你在其他设备上的登录，所以需要用密码确认是你本人。',
   currentPasswordWrong: '密码不正确。',
   emailChangePasswordHint: '更换邮箱需要输入当前密码。',
+  reauthForPassword: '请先用你的第三方账户重新登录，再设置密码。首个密码只能在刚刚登录后设置。',
   twoFactorRequiredTitle: '设置两步验证',
   twoFactorRequiredBody: '{site} 要求在继续之前开启两步验证，大约只需一分钟。',
   twoFactorGateTitle: '需要两步验证',

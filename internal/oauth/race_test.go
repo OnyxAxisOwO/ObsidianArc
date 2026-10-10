@@ -3,8 +3,12 @@ package oauth
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -168,5 +172,88 @@ func TestConcurrentConnectsToTheSameNumberLeaveOneWinner(t *testing.T) {
 	}
 	if carriers != 1 {
 		t.Errorf("accounts carrying %q = %d, want exactly one", "55512345", carriers)
+	}
+}
+
+// A copied state arriving at many callbacks at once, one per browser holding
+// the cookie, opens one account. Each identity lookup answers with a subject
+// nobody has used, so a callback that got past the state check would open an
+// account of its own rather than meet an existing one.
+func TestConcurrentReplaysOfOneStateOpenOneAccount(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	f.configure(t, "github")
+	if err := f.settings.Set(context.Background(), settings.OAuthAllowSignup, "true"); err != nil {
+		t.Fatalf("allow signups: %v", err)
+	}
+	stubGitHubEachTime(t)
+	_, mux := handlers(t, f)
+
+	begun := get(mux, "/api/auth/oauth/start/github", nil, nil)
+	if begun.Code != http.StatusFound {
+		t.Fatalf("start = %d %s", begun.Code, begun.Body.String())
+	}
+	cookies := begun.Result().Cookies()
+	target, err := url.Parse(begun.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect: %v", err)
+	}
+	callback := "/api/auth/oauth/callback/github?code=the-code&state=" + target.Query().Get("state")
+
+	const arrivals = 16
+	var (
+		wg        sync.WaitGroup
+		release   = make(chan struct{})
+		locations = make([]string, arrivals)
+	)
+	for slot := 0; slot < arrivals; slot++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			<-release
+			back := get(mux, callback, cookies, nil)
+			locations[slot] = back.Header().Get("Location")
+		}(slot)
+	}
+	close(release)
+	wg.Wait()
+
+	opened := 0
+	for slot, location := range locations {
+		switch location {
+		case "/":
+			opened++
+		case "/login?oauth_error=state":
+		default:
+			t.Errorf("arrival %d = %q, want the state refused or the one sign-in finished", slot, location)
+		}
+	}
+	if opened != 1 {
+		t.Errorf("callbacks that signed somebody in = %d, want exactly one", opened)
+	}
+	if total, _ := f.users.Count(context.Background(), nil); total != 2 {
+		t.Errorf("accounts = %d, want the founder and one new account", total)
+	}
+}
+
+// stubGitHubEachTime answers every identity lookup with a subject this test
+// has not handed out before, so distinct callbacks are distinct people.
+func stubGitHubEachTime(t *testing.T) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"a-token"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	provider := ByID("github")
+	authURL, tokenURL, identify := provider.AuthURL, provider.TokenURL, provider.identify
+	t.Cleanup(func() { provider.AuthURL, provider.TokenURL, provider.identify = authURL, tokenURL, identify })
+	provider.AuthURL = server.URL + "/authorize"
+	provider.TokenURL = server.URL + "/token"
+
+	var issued atomic.Int64
+	provider.identify = func(context.Context, *http.Client, string) (Identity, error) {
+		n := strconv.FormatInt(issued.Add(1), 10)
+		return Identity{Subject: "7" + n, Login: "member" + n, Name: "Member " + n}, nil
 	}
 }

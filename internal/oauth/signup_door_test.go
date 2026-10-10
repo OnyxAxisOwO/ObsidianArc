@@ -428,3 +428,79 @@ func TestTheSignUpRefusalsAreCodedForTheCallbackAndTheForm(t *testing.T) {
 		})
 	}
 }
+
+// A state is a ten-minute ticket, and a copy of its cookie is as good as the
+// original until it expires. Once a callback has spent the state, the copy
+// presented again opens nothing, even with a provider answer for somebody else.
+func TestAReplayedStateCannotOpenASecondAccount(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	f.configure(t, "github")
+	stubGitHubAs(t, "4218", "octocat")
+	h, mux := handlers(t, f)
+	h.SignupChallenge = (&signupSwitch{on: true}).gate()
+
+	begun := get(mux, "/api/auth/oauth/start/github?register=1&turnstile=good", nil, nil)
+	if begun.Code != http.StatusFound {
+		t.Fatalf("start = %d %s", begun.Code, begun.Body.String())
+	}
+	cookies := begun.Result().Cookies()
+	target, err := url.Parse(begun.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect: %v", err)
+	}
+	nonce := target.Query().Get("state")
+
+	first := get(mux, "/api/auth/oauth/callback/github?code=the-code&state="+nonce, cookies, nil)
+	if location := first.Header().Get("Location"); location != "/" {
+		t.Fatalf("first callback = %q, want the sign-in to finish", location)
+	}
+	if total := accountCount(t, f); total != 2 {
+		t.Fatalf("accounts = %d, want the first sign-up opened", total)
+	}
+
+	stubGitHubAs(t, "5150", "second")
+	replay := get(mux, "/api/auth/oauth/callback/github?code=another-code&state="+nonce, cookies, nil)
+	if location := replay.Header().Get("Location"); location != "/login?oauth_error=state" {
+		t.Fatalf("replay = %q, want the state refused as already used", location)
+	}
+	if total := accountCount(t, f); total != 2 {
+		t.Errorf("accounts = %d, want no second account opened from a replayed state", total)
+	}
+	if _, err := f.store.Account(context.Background(), nil, "github", "5150"); !errors.Is(err, ErrNoIdentity) {
+		t.Errorf("identity = %v, want the replayed sign-in left unconnected", err)
+	}
+}
+
+// Spent states are kept only until they expire, because after that the state
+// check refuses them on its own. Pruning drops the expired ones and nothing
+// still able to answer a callback.
+func TestSpentStatesAreDroppedOnceTheyExpire(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+
+	for nonce, expires := range map[string]int64{
+		"expired": now - 1000,
+		"live":    now + int64(time.Minute/time.Millisecond),
+	} {
+		spent, err := f.store.SpendState(ctx, nil, nonce, expires)
+		if err != nil || !spent {
+			t.Fatalf("spend %s = %v, %v; want it spent", nonce, spent, err)
+		}
+	}
+
+	pruned, err := f.store.PruneStates(ctx, now)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if pruned != 1 {
+		t.Errorf("pruned = %d, want only the expired state", pruned)
+	}
+	if spent, _ := f.store.SpendState(ctx, nil, "live", now+1000); spent {
+		t.Error("a state still within its expiry was spendable again after pruning")
+	}
+	if spent, _ := f.store.SpendState(ctx, nil, "expired", now-1000); !spent {
+		t.Error("an expired state was kept rather than dropped")
+	}
+}
