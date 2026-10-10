@@ -13,6 +13,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -58,6 +59,20 @@ func build(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The compiler reads every package the backend imports from the module the
+	// plugin belongs to, and that is not always the plugin's own directory: the
+	// demo imports sdk/arc, which lies outside the demo's directory but inside
+	// the same module. So the whole module is checked before anything compiles.
+	root, err := moduleRoot(dir)
+	if err != nil {
+		return err
+	}
+	if err := checkTree(root); err != nil {
+		return err
+	}
+	if err := checkReplacements(root); err != nil {
+		return err
+	}
 	work, err := os.MkdirTemp("", "arcpack")
 	if err != nil {
 		return err
@@ -80,12 +95,99 @@ func build(args []string) error {
 	// few seconds of compiling per package before the server will listen.
 	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
+	cmd.Env = goEnv("GOOS=wasip1", "GOARCH=wasm")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("compiling the backend: %w", err)
 	}
 	return writePackage(stage, dir, out)
+}
+
+// moduleRoot is the directory of the module that dir belongs to, found the way
+// the go command finds it: by looking upward from dir. A plugin with no go.mod
+// of its own is therefore compiled as part of the module around it, and that
+// module is the tree that gets checked.
+func moduleRoot(dir string) (string, error) {
+	cmd := exec.Command("go", "env", "GOMOD")
+	cmd.Dir = dir
+	cmd.Env = goEnv()
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("finding the module for %s: %w", dir, err)
+	}
+	gomod := strings.TrimSpace(string(out))
+	if gomod == "" || gomod == os.DevNull {
+		return "", fmt.Errorf("%s is not inside a Go module", dir)
+	}
+	// checkTree never follows a link, so it must start from the real directory:
+	// handed a link to the module, it would refuse the root itself.
+	return filepath.EvalSymlinks(filepath.Dir(gomod))
+}
+
+// goEnv is the environment for every go command arcpack runs. GOWORK is off so
+// that a go.work above the plugin cannot add modules from outside the tree that
+// was checked, since the compiler would read those files too.
+func goEnv(extra ...string) []string {
+	return append(append(os.Environ(), "GOWORK=off"), extra...)
+}
+
+// checkTree refuses a module that holds a link, or anything that is neither a
+// file nor a directory. The compiler follows links, so a link anywhere in the
+// module can put a file from outside it into plugin.wasm, and a named pipe
+// would stall the compile. Names beginning with a dot are skipped, as copyTree
+// and Pack skip them: the go tool ignores those too. The root is never skipped,
+// whatever its own name is.
+func checkTree(root string) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path != root && strings.HasPrefix(d.Name(), ".") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symbolic link, and arcpack does not follow links", path)
+		}
+		if !d.IsDir() && !d.Type().IsRegular() {
+			return fmt.Errorf("%s is neither a regular file nor a directory", path)
+		}
+		return nil
+	})
+}
+
+// checkReplacements refuses a go.mod that points a module at a directory. The
+// directory need not lie inside the tree checkTree walked, and nothing vets its
+// links there. A module from the proxy is checked against go.sum instead, and a
+// plugin that names one loses nothing.
+func checkReplacements(root string) error {
+	cmd := exec.Command("go", "mod", "edit", "-json")
+	cmd.Dir = root
+	cmd.Env = goEnv()
+	cmd.Stderr = os.Stderr
+	raw, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("reading the module's go.mod: %w", err)
+	}
+	var mod struct {
+		Replace []struct {
+			Old struct{ Path string }
+			New struct{ Path, Version string }
+		}
+	}
+	if err := json.Unmarshal(raw, &mod); err != nil {
+		return fmt.Errorf("reading the module's go.mod: %w", err)
+	}
+	for _, r := range mod.Replace {
+		// A replacement's target is a directory exactly when it has no version.
+		if r.New.Version == "" {
+			return fmt.Errorf("go.mod replaces %s with the directory %s, and arcpack builds only modules from the module proxy", r.Old.Path, r.New.Path)
+		}
+	}
+	return nil
 }
 
 // copyTree copies a source entry into the stage. It looks at the entry itself
