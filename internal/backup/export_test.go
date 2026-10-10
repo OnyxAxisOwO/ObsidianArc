@@ -305,21 +305,36 @@ func TestSizeLimitRefusesOnlyPastTheImportBodyLimit(t *testing.T) {
 	}
 }
 
-// Text can already hold a NUL: the chat path and renaming keep what they were
-// given, and SQLite keeps the byte. Import refuses one, so an export that wrote
-// it would be a file its own account could not restore. The export writes the
-// replacement character where the NUL was.
+// A row written before the store began removing NUL bytes can still hold one.
+// Import refuses a NUL, so an export that wrote it would be a file its own
+// account could not restore. The export writes the replacement character where
+// the NUL was.
 func TestExportOfStoredNULImportsBack(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 
-	id := f.write(t, f.account, "Lamp\x00s", "what is a lamp\x00?")
+	id := f.write(t, f.account, "Lamps", "what is a lamp?")
 	if _, err := f.conversations.Append(ctx, nil, conversation.AppendInput{
 		ConversationID: id, UserID: f.account.ID, Role: conversation.RoleAssistant,
-		Content: "a source of light", Reasoning: "lamps\x00 make light",
-		Error: "the provider\x00 timed out", ModelName: "Test\x00Model",
+		Content: "a source of light", Reasoning: "lamps make light",
+		Error: "the provider timed out", ModelName: "TestModel",
 	}); err != nil {
 		t.Fatal(err)
+	}
+	// The store no longer keeps a NUL, so the bytes are written into the rows
+	// directly, which is where a row from before that change keeps them.
+	for _, legacy := range []struct {
+		query string
+		args  []any
+	}{
+		{`UPDATE conversations SET title = ? WHERE id = ?`, []any{"Lamp\x00s", id}},
+		{`UPDATE messages SET content = ? WHERE conversation_id = ? AND seq = 1`, []any{"what is a lamp\x00?", id}},
+		{`UPDATE messages SET reasoning = ?, error = ?, model_name = ? WHERE conversation_id = ? AND seq = 2`,
+			[]any{"lamps\x00 make light", "the provider\x00 timed out", "Test\x00Model", id}},
+	} {
+		if _, err := f.service.db.Exec(ctx, legacy.query, legacy.args...); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	encoded, document := f.export(t, f.account)
