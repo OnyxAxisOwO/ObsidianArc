@@ -103,12 +103,24 @@ export function adopt(next: Account, prefs: Preferences = {}): void {
   applyServerPreferences(prefs);
 }
 
+// Every store that holds one account's state registers how to clear it, and
+// forget() runs them all. The stores are not imported here: chat/useChat.ts
+// already imports this module, so the reverse import would be a cycle. A store
+// that keeps per-account state and does not register here is the bug to look for.
+const signOutResets: Array<() => void> = [];
+
+/** Registers a reset that runs on every sign-out, in registration order. */
+export function onSignOut(reset: () => void): void {
+  signOutResets.push(reset);
+}
+
 export function forget(): void {
   pendingSecondFactor.value = false;
   account.value = null;
   preferences.value = {};
   setSignedIn(false);
   forgetTerminalHistory();
+  for (const reset of signOutResets) reset();
 }
 
 // What the terminal's prompt remembered belongs to the person who typed it,

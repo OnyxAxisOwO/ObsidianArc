@@ -28,7 +28,7 @@ import {
 import { ApiError } from '@/api/client';
 import { t, type StringKey } from '@/composables/useI18n';
 import { pendingProjectID } from '@/stores/workspace';
-import { currentPreferences, currentUser } from '@/stores/session';
+import { currentPreferences, currentUser, onSignOut } from '@/stores/session';
 import { ImageError, prepareImage, type PreparedImage } from './image';
 import { currentModel, reasoning } from './useModels';
 import { markFlying, resetFlightState } from './useSendAnimation';
@@ -100,6 +100,10 @@ export const dragging = ref(false);
 export const suggestions = ref<Array<(typeof SUGGESTION_KEYS)[number]>>(pickSuggestions(SUGGESTIONS_SHOWN));
 
 let controller: AbortController | null = null;
+// Bumped by resetChat. Whatever an await brings back after a sign-out was
+// asked for by the account that signed out, so it is dropped rather than
+// written into the next account's composer or rail.
+let generation = 0;
 
 /**
  * Deltas arrive faster than the screen redraws, so they are applied per frame.
@@ -243,6 +247,7 @@ export async function addImages(list: FileList | File[] | null): Promise<void> {
   if (files.length > room) setFlash(t('tooManyImages', { count: MAX_IMAGES }));
   if (room <= 0) return;
 
+  const account = generation;
   for (const file of files.slice(0, room)) {
     let prepared: PreparedImage;
     try {
@@ -251,6 +256,12 @@ export async function addImages(list: FileList | File[] | null): Promise<void> {
       setFlash(error instanceof ImageError && error.kind === 'too-large' ? t('imageTooLarge') : t('imageFailed'));
       continue;
     }
+    // Signed out while the picture was decoded: it is not uploaded under the
+    // next account's session, which would be the wrong person's file.
+    if (account !== generation) {
+      URL.revokeObjectURL(prepared.previewURL);
+      return;
+    }
     try {
       const { attachment } = await uploadAttachment({
         mime: prepared.mime,
@@ -258,6 +269,10 @@ export async function addImages(list: FileList | File[] | null): Promise<void> {
         width: prepared.width,
         height: prepared.height,
       });
+      if (account !== generation) {
+        URL.revokeObjectURL(prepared.previewURL);
+        return;
+      }
       attachments.value = [...attachments.value, { ref: attachment, preview: prepared.previewURL }];
     } catch (error) {
       URL.revokeObjectURL(prepared.previewURL);
@@ -286,6 +301,7 @@ function clearAttachments(): void {
 export async function addTextFiles(list: FileList | File[] | null): Promise<void> {
   if (busy.value || !status.value.configured) return;
 
+  const account = generation;
   for (const file of Array.from(list ?? [])) {
     if (file.size > MAX_FILE_BYTES) {
       setFlash(t('fileTooLarge'));
@@ -299,6 +315,9 @@ export async function addTextFiles(list: FileList | File[] | null): Promise<void
       setFlash(t('imageFailed'));
       continue;
     }
+    // The file was read by the account that has since signed out; its text
+    // stays out of the next account's draft.
+    if (account !== generation) return;
 
     // A binary file read as text comes back full of replacement characters;
     // sending that wastes tokens and tells the model nothing.
@@ -333,6 +352,7 @@ export const chatChallengeError = ref('');
 export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done' | 'challenge'> {
   if (busy.value || !status.value.configured) return 'done';
   recentReasoningID.value = '';
+  const account = generation;
   const conversationID = turn.conversationID ?? activeID.value;
 
   // Optimistic local rewind, so the transcript reacts before the server
@@ -371,7 +391,10 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
   // stops being on screen when the screen moves to another conversation or
   // resets, and those are where it is cleared.
 
-  controller = new AbortController();
+  // The turn's own controller: resetChat clears the module-level one on
+  // sign-out, and this function still has to read its signal afterwards.
+  const turnController = new AbortController();
+  controller = turnController;
   let failed = false;
 
   try {
@@ -420,10 +443,10 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
           if (watching()) setFlash(payload.message);
         },
       },
-      controller.signal,
+      turnController.signal,
     );
   } catch (error) {
-    if (!controller.signal.aborted) {
+    if (!turnController.signal.aborted) {
       if (error instanceof ApiError &&
           (error.code === 'chat_challenge_required' || error.code === 'challenge_failed' ||
            error.code === 'challenge_unavailable')) {
@@ -443,8 +466,13 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
     }
   } finally {
     settleDeltas();
-    controller = null;
+    if (controller === turnController) controller = null;
   }
+
+  // A sign-out ended this turn: resetChat already cleared the transcript, the
+  // busy flag and the pending block, and the next account may have started a
+  // turn of its own since. Nothing here may touch that.
+  if (account !== generation) return 'done';
 
   try {
     // Keep the streamed block on screen until the saved row is ready. Clearing
@@ -529,9 +557,10 @@ function upsertConversationStub(id: string, title: string): void {
 }
 
 export async function refreshList(): Promise<void> {
+  const account = generation;
   try {
     const { conversations: list } = await listConversations();
-    conversations.value = list;
+    if (account === generation) conversations.value = list;
   } catch {
     // The rail is a convenience; a failed refresh leaves the last copy.
   }
@@ -676,19 +705,33 @@ export async function clearEverything(): Promise<void> {
 }
 
 /**
- * Leaving the chat mid-generation aborts the turn; the server still saves
- * whatever streamed before that.
+ * Clears everything one account left on screen: the open conversation, the
+ * draft, what is staged, the project it was pointed into, and a turn that is
+ * still streaming. Leaving the chat mid-generation aborts the turn; the server
+ * still saves whatever streamed before that.
  */
 export function resetChat(): void {
+  generation += 1;
   controller?.abort();
   controller = null;
+  // Deltas buffered for the turn being cut off must not land in the pending
+  // block of whichever turn runs next.
+  if (frame) cancelAnimationFrame(frame);
+  frame = 0;
+  bufferedAnswer = '';
+  bufferedReasoning = '';
+  // Whatever the cut-off turn still reports is for a screen that is gone.
+  pendingView.value = -1;
+  resetFlightState();
   clearAttachments();
   conversations.value = [];
   messages.value = [];
   activeID.value = '';
+  pendingProjectID.value = '';
   editingID.value = '';
   justSentID.value = '';
   recentReasoningID.value = '';
+  historyOpen.value = false;
   draft.value = '';
   flash.value = '';
   chatChallenge.value = null;
@@ -698,6 +741,10 @@ export function resetChat(): void {
   busy.value = false;
   suggestions.value = pickSuggestions(SUGGESTIONS_SHOWN);
 }
+
+// session.ts cannot import this module, which imports it, so the store
+// registers its own reset and every sign-out runs it.
+onSignOut(resetChat);
 
 export { setFlash };
 
