@@ -9,9 +9,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/rand/v2"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ordered records what reached the sink and in what order, which is the
@@ -324,6 +327,129 @@ func TestAnAnswerThatEndsInsideABlock(t *testing.T) {
 			t.Errorf("the sentence was eaten: %q", result.Text)
 		}
 	})
+}
+
+// The same answer can arrive in any pieces, and the filter has to read it the
+// same way whichever pieces they are. Each stream puts a tag, a quoted tag or
+// an escape where a piece could end. Each is fed whole, cut in two at every
+// byte, and cut at random; the whole-stream feed is the reference.
+func TestChunkingDoesNotChangeWhatTheFilterReads(t *testing.T) {
+	streams := []string{
+		"Before. " + toolCallOpen + `{"name":"lookup","arguments":{"q":"go"}}` + toolCallClose + " After.",
+		toolCallOpen + `{"name":"write_file","arguments":{"content":"Write </tool_call> to close \"a\" block \\"}}` + toolCallClose + "done",
+		"see " + toolCallOpen + " </tool_call> is not a call " + toolCallClose + " and " +
+			toolCallOpen + `{"name":"a","arguments":{"s":"\\"}}` + toolCallClose,
+		toolCallOpen + `{"name":"b","arguments":{"s":"</tool_call>\"x"}}` + toolCallClose +
+			toolCallOpen + `{"name":"c","arguments":{}}` + toolCallClose + "tail",
+		"a < b and <tool_cal that never opens " + toolCallOpen + `{"name":"d","arguments":{"u":"unfinished`,
+		`no tags, only quotes " and backslashes \ and <tool_ca partial`,
+	}
+
+	rng := rand.New(rand.NewPCG(7, 11))
+	for index, stream := range streams {
+		want := readAnswer(t, []string{stream})
+		if index == 0 && (len(want.calls) != 1 || !strings.Contains(want.text, "Before.")) {
+			t.Fatalf("the whole-stream reading is wrong, so the comparison means nothing: %+v", want)
+		}
+		for cut := 0; cut <= len(stream); cut++ {
+			if got := readAnswer(t, []string{stream[:cut], stream[cut:]}); !reflect.DeepEqual(got, want) {
+				t.Fatalf("stream %d cut at byte %d read %+v, want %+v", index, cut, got, want)
+			}
+		}
+		for range 200 {
+			pieces := randomPieces(rng, stream)
+			if got := readAnswer(t, pieces); !reflect.DeepEqual(got, want) {
+				t.Fatalf("stream %d cut into %q read %+v, want %+v", index, pieces, got, want)
+			}
+		}
+	}
+}
+
+// answer is what a reader of one reply sees: the prose as it streamed, the
+// calls as they were announced, and what the finished turn reports.
+type answer struct {
+	streamed  string
+	announced []ToolCall
+	text      string
+	calls     []ToolCall
+}
+
+func readAnswer(t *testing.T, pieces []string) answer {
+	t.Helper()
+	var out answer
+	filter := &toolCallFilter{parse: true, sink: func(event Event) error {
+		switch event.Type {
+		case EventDelta:
+			out.streamed += event.Text
+		case EventToolCall:
+			out.announced = append(out.announced, event.ToolCall)
+		}
+		return nil
+	}}
+	for _, piece := range pieces {
+		if err := filter.delta(piece); err != nil {
+			t.Fatalf("delta: %v", err)
+		}
+	}
+	var result Result
+	if err := filter.finish(&result); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	out.text, out.calls = result.Text, result.ToolCalls
+	return out
+}
+
+// randomPieces cuts a stream into pieces of one to eight bytes.
+func randomPieces(rng *rand.Rand, stream string) []string {
+	var pieces []string
+	for rest := stream; rest != ""; {
+		n := min(len(rest), 1+rng.IntN(8))
+		pieces = append(pieces, rest[:n])
+		rest = rest[n:]
+	}
+	return pieces
+}
+
+// An answer that opens a block and never closes it is the worst case the filter
+// meets: every delta lands inside the block and none of them ends it. Rereading
+// the block from its first byte on each delta made that quadratic. A 0.5 MB
+// block arriving four bytes at a time is about 3x10^10 byte steps, so the
+// budget sits far above what a linear scan needs and far below what the
+// quadratic one costs. The block closes at the end, so the call built from it
+// is checked as well.
+func TestAnUnclosedBlockCostsLinearTime(t *testing.T) {
+	const (
+		step   = 4
+		budget = 5 * time.Second
+	)
+	// Escaped quotes and a near miss of the closing tag, so the search has
+	// string state to follow and the real close is not the first thing it meets.
+	const filler = `a \"q\" </tool_cal \\ b `
+	var content strings.Builder
+	for content.Len() < 512<<10 {
+		content.WriteString(filler)
+	}
+	arguments := `{"content": "` + content.String() + `"}`
+	block := toolCallOpen + `{"name": "write_file", "arguments": ` + arguments + `}` + toolCallClose
+
+	filter := &toolCallFilter{parse: true}
+	start := time.Now()
+	for offset := 0; offset < len(block); offset += step {
+		end := min(offset+step, len(block))
+		if err := filter.delta(block[offset:end]); err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(start); elapsed > budget {
+			t.Fatalf("the first %d bytes of one block took %v; a linear scan needs milliseconds", end, elapsed)
+		}
+	}
+
+	if len(filter.calls) != 1 || filter.calls[0].Name != "write_file" {
+		t.Fatalf("calls = %+v, want the one write_file call", filter.calls)
+	}
+	if filter.calls[0].Arguments != arguments {
+		t.Error("the arguments came back altered by the scan")
+	}
 }
 
 func oneTool() []Tool {
