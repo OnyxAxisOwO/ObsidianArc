@@ -130,11 +130,18 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['个人资料', '修改密码', '重置密码', '昵称', '邮箱', '头像', 'password', 'avatar'],
   },
   {
+    id: 'secBanStatus',
+    pageSlug: 'users',
+    titleKey: 'secBanStatus',
+    searchKeys: ['statusActive', 'statusDisabled', 'banAccount', 'unbanAccount', 'banReason', 'bulkBan'],
+    keywords: ['封禁账号', '封禁', '解除封禁', '解封', '封禁理由', '禁用账号', 'ban account', 'ban', 'unban', 'banned'],
+  },
+  {
     id: 'secAccess',
     pageSlug: 'users',
     titleKey: 'secAccess',
-    searchKeys: ['role', 'roleAdmin', 'roleUser', 'manageAdministrators', 'adminPermissions', 'statusActive', 'statusDisabled', 'apiRestricted'],
-    keywords: ['角色与权限', '管理员角色', '封禁账号', '用户组分配', 'API限制', 'role', 'admin', 'permissions'],
+    searchKeys: ['role', 'roleAdmin', 'roleUser', 'manageAdministrators', 'adminPermissions', 'apiRestricted'],
+    keywords: ['角色与权限', '管理员角色', '用户组分配', 'API限制', 'role', 'admin', 'permissions'],
   },
   {
     id: 'secAllowanceOverride',

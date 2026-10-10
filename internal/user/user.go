@@ -234,6 +234,13 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 	}
 
 	now := time.Now().UnixMilli()
+	status := orDefault(in.Status, StatusActive)
+	// The rule UpdateAdminFields keeps, applied at birth as well: an account
+	// created active has no reason to show anybody.
+	banReason := strings.TrimSpace(in.BanReason)
+	if status != StatusDisabled {
+		banReason = ""
+	}
 	record := User{
 		ID:        id.New(),
 		Username:  username,
@@ -241,8 +248,8 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		Nickname:  nickname,
 		Role:      orDefault(in.Role, RoleUser),
 		GroupID:   in.GroupID,
-		Status:    orDefault(in.Status, StatusActive),
-		BanReason: strings.TrimSpace(in.BanReason),
+		Status:    status,
+		BanReason: banReason,
 		// An account with no address has nothing to confirm, so it is
 		// never held back for not having confirmed it.
 		EmailVerified: !in.Unverified || email == "",
@@ -611,13 +618,32 @@ func (s *Store) UpdateAdminFields(ctx context.Context, q database.Queryer, userI
 		sets = append(sets, "group_expires_at = ?")
 		args = append(args, *in.GroupExpiresAt)
 	}
+	// A reason explains a ban and nothing else. The rule lives here rather
+	// than in the handler because the plugin host reaches this function too,
+	// and a rule only the backoffice keeps would not hold for it: an account
+	// that is active once this write lands carries no reason, whatever was
+	// sent with it.
+	reason := in.BanReason
 	if in.Status != nil {
+		status := orDefault(*in.Status, StatusActive)
 		sets = append(sets, "status = ?")
-		args = append(args, orDefault(*in.Status, StatusActive))
+		args = append(args, status)
+		if status == StatusActive {
+			empty := ""
+			reason = &empty
+		}
 	}
-	if in.BanReason != nil {
-		sets = append(sets, "ban_reason = ?")
-		args = append(args, strings.TrimSpace(*in.BanReason))
+	if reason != nil {
+		if in.Status != nil {
+			sets = append(sets, "ban_reason = ?")
+			args = append(args, strings.TrimSpace(*reason))
+		} else {
+			// Only the reason is changing, so whether it stands depends on the
+			// status the row already has. The CASE reads that status in the same
+			// statement, so the two cannot disagree the way a read here could.
+			sets = append(sets, "ban_reason = CASE WHEN status = ? THEN ? ELSE '' END")
+			args = append(args, StatusDisabled, strings.TrimSpace(*reason))
+		}
 	}
 	if len(in.Fields) > 0 {
 		values, err := s.CheckFields(in.Fields)

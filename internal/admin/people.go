@@ -181,6 +181,7 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 		AdminPermissions []string          `json:"admin_permissions"`
 		GroupID          string            `json:"group_id"`
 		Status           user.Status       `json:"status"`
+		BanReason        string            `json:"ban_reason"`
 	}
 	if err := httpx.DecodeJSON(w, r, &body, 16*1024); err != nil {
 		return err
@@ -200,6 +201,9 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 	}
 	if body.Status != user.StatusActive && body.Status != user.StatusDisabled {
 		return httpx.BadRequest("Status must be active or disabled.")
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(body.BanReason)) > user.MaxBanReasonChars {
+		return httpx.BadRequest("Ban reason must be %d characters or fewer.", user.MaxBanReasonChars)
 	}
 	for _, permission := range body.AdminPermissions {
 		if !user.ValidPermission(permission) {
@@ -280,6 +284,7 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 			Role:         body.Role,
 			GroupID:      body.GroupID,
 			Status:       body.Status,
+			BanReason:    body.BanReason,
 			// Nothing to confirm: an operator typed this address, and no mail
 			// was sent asking anyone to prove it.
 			Unverified: false,
@@ -433,6 +438,14 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 
+		// Refused as deleting one's own account is: the same request signs the
+		// administrator out, and only another administrator could undo it. Checked
+		// after the last-administrator rule, so the lone super administrator still
+		// gets the answer that explains their whole situation.
+		if body.Status != nil && *body.Status == user.StatusDisabled && userID == actor.ID {
+			return httpx.BadRequest("You cannot ban your own account.")
+		}
+
 		// An address an administrator typed is not one its owner proved. The
 		// owner's own form withdraws the confirmation and drops whatever links
 		// are outstanding when the address moves; this one reaches the store
@@ -476,18 +489,15 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		if body.Role != nil || body.GroupID != nil || body.Status != nil || body.AdminPermissions != nil || body.BanReason != nil {
-			banReason := body.BanReason
-			if body.Status != nil && *body.Status == user.StatusActive && banReason == nil {
-				empty := ""
-				banReason = &empty
-			}
+			// The store keeps the reason in step with the status, so the request's
+			// reason goes in as sent: an account left active drops it there.
 			updated, err = h.users.UpdateAdminFields(r.Context(), tx, userID, user.AdminUpdate{
 				Role:             body.Role,
 				AdminPermissions: body.AdminPermissions,
 				GroupID:          body.GroupID,
 				GroupExpiresAt:   body.GroupExpiresAt,
 				Status:           body.Status,
-				BanReason:        banReason,
+				BanReason:        body.BanReason,
 			})
 			if err != nil {
 				return err
