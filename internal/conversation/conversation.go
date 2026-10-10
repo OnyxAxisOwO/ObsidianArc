@@ -580,8 +580,8 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 	}
 
 	// A NUL byte fails the whole INSERT on PostgreSQL, so it is removed before
-	// the limits count the text. A model answer cannot be refused, so this is
-	// the only place it can be handled.
+	// the limits count the text. Every writer goes through here, and a model's
+	// answer is the text no caller can refuse first.
 	record := Message{
 		ID:        id.New(),
 		Seq:       next,
