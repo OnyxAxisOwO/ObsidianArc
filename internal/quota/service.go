@@ -370,7 +370,22 @@ func uncovered(estimate Estimate, covered float64) (Estimate, bool) {
 // a release of an earlier reservation can hold. The minute is not an allowance
 // window: a card never clears it, and the charge this request put on it stays as
 // reserveRate left it.
+//
+// Every allowance window's current bucket is locked before the first delete, in
+// AllowanceWindows order. The refused walk had locked only the windows up to the
+// one that refused it. A card that names the month but not the week would delete
+// the month's row before the retry took the week's, while a settlement in the next
+// five-hour bucket takes the week and then the month, so each would hold the row
+// the other wanted. Touching every window first means each delete finds its row
+// already held, in the order every other path takes them.
 func clearAllowance(ctx context.Context, tx database.Queryer, key string, anchor int64, now time.Time, windows []string) error {
+	for _, window := range AllowanceWindows {
+		// A zero delta. It takes the row lock whether or not the bucket has a row
+		// yet, and the retry that follows charges every window anyway.
+		if _, err := bump(ctx, tx, key, window, bucketStart(window, now, anchor), 0, 0, 0); err != nil {
+			return err
+		}
+	}
 	for _, window := range AllowanceWindows {
 		if !resetsWindow(windows, window) {
 			continue
