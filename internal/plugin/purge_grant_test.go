@@ -23,7 +23,7 @@ func TestOnlyASuperAdministratorMayPurgeAPlugin(t *testing.T) {
 	if err := r.manager.Install(ctx, someone, "gadget", InstallOptions{Enable: true}); err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandlers(r.manager, nil, nil, nil)
+	h := NewHandlers(r.manager, nil, r.settings, nil)
 	remover := grantedAccount(t, r, "remover", PermissionRemove)
 	boss := accountOf(t, r, "boss", user.RoleSuperAdmin)
 

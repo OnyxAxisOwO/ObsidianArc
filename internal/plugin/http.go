@@ -99,7 +99,7 @@ func (h *Handlers) install(w http.ResponseWriter, r *http.Request) error {
 	// declares, and a key the security grant owns is not one it may set.
 	actor := auth.MustUser(r.Context())
 	for key := range body.Settings {
-		if !admin.CanWriteSetting(actor, key) {
+		if !admin.CanWriteSetting(h.settings, actor, key) {
 			return httpx.ForbiddenCode("admin_permission_denied", "You do not have permission to access this page or perform this action.")
 		}
 	}
@@ -233,7 +233,7 @@ func (h *Handlers) viewerPlugins(r *http.Request) []Info {
 	viewer := auth.MustUser(r.Context())
 	infos := h.manager.List()
 	for i := range infos {
-		infos[i].WritableSettings = writableBy(viewer, infos[i].Name)
+		infos[i].WritableSettings = h.writableBy(viewer, infos[i].Name)
 	}
 	return infos
 }
@@ -244,7 +244,7 @@ func (h *Handlers) viewerPlugin(r *http.Request, name string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	info.WritableSettings = writableBy(auth.MustUser(r.Context()), info.Name)
+	info.WritableSettings = h.writableBy(auth.MustUser(r.Context()), info.Name)
 	return info, nil
 }
 
@@ -252,10 +252,14 @@ func (h *Handlers) viewerPlugin(r *http.Request, name string) (Info, error) {
 // grant each key carries. It is the check install makes on every key it is
 // sent, so a dialog that sends only these is never refused for a key the
 // viewer left alone. It is never nil, so the JSON reads [] and not null.
-func writableBy(viewer user.User, name string) []string {
+//
+// The keys come from the service, which also holds an installed package's, and
+// are judged by the same service the install and the settings route judge them
+// by.
+func (h *Handlers) writableBy(viewer user.User, name string) []string {
 	keys := []string{}
-	for _, d := range settings.DefinitionsOf(name) {
-		if admin.CanWriteSetting(viewer, d.Key) {
+	for _, d := range h.settings.DefinitionsOf(name) {
+		if admin.CanWriteSetting(h.settings, viewer, d.Key) {
 			keys = append(keys, d.Key)
 		}
 	}

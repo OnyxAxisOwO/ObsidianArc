@@ -37,28 +37,29 @@ func hasPermission(account user.User, permissions string) bool {
 // them, that may read and write one setting. The shared settings route lets
 // in any of them; which keys each one then sees and saves is decided here,
 // key by key, so a grant reaches its own page's settings and nobody else's.
-func settingPermission(key string) string {
-	if d, ok := settings.Lookup(key); ok && d.Permission != "" {
+//
+// It asks the service rather than the process-wide registry, because the service
+// also knows the keys of plugins installed while the server runs. The registry
+// alone judged such a key by the default grant instead of the one its package
+// declared.
+func settingPermission(s *settings.Service, key string) string {
+	if d, ok := s.LookupDefinition(key); ok && d.Permission != "" {
 		return d.Permission
 	}
 	return corePermission(key)
 }
 
 // CanWriteSetting is whether account may read and write one setting, by the
-// grant the shared settings route asks for. It reads the process-wide registry,
-// not this server's, so a built-in plugin's key is judged by its own grant
-// whether or not that plugin is switched on.
-func CanWriteSetting(account user.User, key string) bool {
-	return hasPermission(account, settingPermission(key))
+// grant the shared settings route asks for. It takes the same service the route
+// uses, so a key is judged here as the route judges it, compiled in or installed.
+func CanWriteSetting(s *settings.Service, account user.User, key string) bool {
+	return hasPermission(account, settingPermission(s, key))
 }
 
-// settingPermission is the same answer for this server, whose plugins may
-// have been installed after it started.
+// settingPermission is the answer for this server's own service, whose plugins
+// may have been installed after it started.
 func (h *Handlers) settingPermission(key string) string {
-	if d, ok := h.settings.LookupDefinition(key); ok && d.Permission != "" {
-		return d.Permission
-	}
-	return corePermission(key)
+	return settingPermission(h.settings, key)
 }
 
 // superAdminSettings are the provider settings that decide whose word an

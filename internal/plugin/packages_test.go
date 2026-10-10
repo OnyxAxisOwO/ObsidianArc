@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -275,6 +276,51 @@ func TestAnInstalledButSwitchedOffPackageIsNotThere(t *testing.T) {
 	}](t, res).Settings
 	if settings["demo.mode"] != "closed" {
 		t.Fatalf("the install's first settings were not kept: %v", settings["demo.mode"])
+	}
+}
+
+// Which keys a viewer may write is decided by the grant each key declares, and
+// a package declares its keys while the server runs. The plugins list has to
+// judge them the way the settings route does. Read from the compiled-in
+// registry alone, it offered an installed package none of its keys, and judging
+// them by the page's default grant would offer the security key to anyone with
+// the settings grant.
+func TestThePluginListOffersAnInstalledPackagesKeysByTheirOwnGrants(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	delegate := a.in.Register("delegate", founderPassword)
+	a.mustDo(http.MethodPatch, "/api/admin/users/"+delegate.UserID,
+		map[string]any{"role": "admin", "admin_permissions": []string{plugin.PermissionView, plugin.PermissionManage, "settings"}}, http.StatusOK)
+
+	offered := func(s *servertest.Session) []string {
+		t.Helper()
+		res := a.in.Do(http.MethodGet, "/api/admin/plugins", nil, s)
+		if res.Code != http.StatusOK {
+			t.Fatalf("the plugins list: %d %s", res.Code, res.Body.String())
+		}
+		body := servertest.Decode[struct {
+			Plugins []struct {
+				Name             string   `json:"name"`
+				WritableSettings []string `json:"writable_settings"`
+			} `json:"plugins"`
+		}](t, res)
+		for _, p := range body.Plugins {
+			if p.Name == "demo" {
+				return p.WritableSettings
+			}
+		}
+		t.Fatal("the installed package is not in the list")
+		return nil
+	}
+
+	everything := []string{"demo.handle_rule", "demo.mode", "demo.secret", "demo.upstream"}
+	if got := offered(a.s); !slices.Equal(got, everything) {
+		t.Fatalf("the founder is offered %v, want every key the package declares", got)
+	}
+	// demo.secret declares the security grant. A delegate holding only settings
+	// is offered the other three and not the secret.
+	if got := offered(delegate); !slices.Equal(got, []string{"demo.handle_rule", "demo.mode", "demo.upstream"}) {
+		t.Fatalf("a delegate with the settings grant is offered %v", got)
 	}
 }
 

@@ -45,7 +45,7 @@ func grantedAccount(t *testing.T, r *rig, name string, grants ...string) user.Us
 func TestInstallingAPluginSetsOnlyTheKeysTheActorMayWrite(t *testing.T) {
 	defineVaultSetting()
 	r := newRig(t, fake{name: "vault", setup: noSetup}, fake{name: "plain", setup: noSetup})
-	h := NewHandlers(r.manager, nil, nil, nil)
+	h := NewHandlers(r.manager, nil, r.settings, nil)
 	manager := grantedAccount(t, r, "manager", PermissionManage)
 	security := grantedAccount(t, r, "security", PermissionManage, "security")
 
@@ -104,7 +104,7 @@ func installAs(t *testing.T, h *Handlers, actor user.User, name string, values m
 func TestADelegateInstallsWithTheRestrictedKeyLeftOut(t *testing.T) {
 	defineVaultSetting()
 	r := newRig(t, fake{name: "vault", setup: noSetup})
-	h := NewHandlers(r.manager, nil, nil, nil)
+	h := NewHandlers(r.manager, nil, r.settings, nil)
 	manager := grantedAccount(t, r, "manager", PermissionManage)
 	ctx := context.Background()
 	storedKeys := func() int {
@@ -142,7 +142,7 @@ func TestADelegateInstallsWithTheRestrictedKeyLeftOut(t *testing.T) {
 func TestThePluginListAndDetailNameTheKeysTheViewerMayWrite(t *testing.T) {
 	defineVaultSetting()
 	r := newRig(t, fake{name: "vault", setup: noSetup}, fake{name: "plain", setup: noSetup})
-	h := NewHandlers(r.manager, nil, nil, nil)
+	h := NewHandlers(r.manager, nil, r.settings, nil)
 	manager := grantedAccount(t, r, "manager", PermissionManage)
 	security := grantedAccount(t, r, "security", PermissionManage, "security")
 
