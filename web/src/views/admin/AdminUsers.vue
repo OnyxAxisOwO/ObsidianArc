@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Users: search, edit, disable, reset, and read their conversations.
+// Users: search, edit, ban, reset, and read their conversations.
 //
 // That last one is an intrusion even when it is justified, so it sits behind
 // its own click, says whose transcript it is, and leaves a line in the server
@@ -9,7 +9,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
 import {
   adminApi, emptyPolicy,
-  type Account, type AccountStatus, type AdminSession, type ApiKey, type CardHolding, type Conversation,
+  type Account, type AdminSession, type ApiKey, type CardHolding, type Conversation,
   type Group, type Message, type QuotaWindowKind, type Role, type UsageBreakdown,
 } from '@/admin/api';
 import { ApiError } from '@/api/client';
@@ -139,6 +139,10 @@ let opening = 0;
 const mode = ref<PanelMode>('account');
 const busy = ref(false);
 const panelError = ref('');
+// The reason typed for a ban, which belongs to the account on screen: it is
+// cleared when another account is opened, so it cannot land on the wrong one.
+const banDraft = ref('');
+const banBusy = ref(false);
 
 const account = ref<Account | null>(null);
 const usage = ref<UsageSummary | null>(null);
@@ -238,8 +242,6 @@ const form = ref({
   nickname: '', email: '', fields: {} as Record<string, string>, bio: '', avatar: '',
   role: 'user' as Role,
   permissions: [] as string[],
-  status: 'active' as AccountStatus,
-  banReason: '',
   group: '',
   groupExpiresAt: '',
   apiRestricted: false,
@@ -330,9 +332,6 @@ const identity = computed<Array<[string, string, boolean]>>(() => {
   // an empty row reads as a missing value rather than an absent one.
   if (row.signup_ip) rows.push([t('colSignupIP'), maskLog(row.signup_ip), true]);
   if (row.signup_user_agent) rows.push([t('registrationUserAgent'), maskLog(row.signup_user_agent), true]);
-  if (row.status === 'disabled' && row.ban_reason) {
-    rows.push([t('banReason'), row.ban_reason, false]);
-  }
   return rows;
 });
 
@@ -345,6 +344,7 @@ const conversationColumns = computed<Array<Column<Conversation>>>(() => [
 async function open(id: string): Promise<void> {
   panelError.value = '';
   twoFactorFlash.value = '';
+  banDraft.value = '';
   mode.value = 'account';
   conversationPage.value.page = 1;
   keys.value = null;
@@ -427,8 +427,6 @@ async function open(id: string): Promise<void> {
     avatar: row.avatar,
     role: row.role,
     permissions: [...(row.admin_permissions ?? [])],
-    status: row.status,
-    banReason: row.ban_reason || '',
     group: row.group_id,
     groupExpiresAt: row.group_expires_at ? dateTimeLocal(row.group_expires_at) : '',
     apiRestricted: restrictionActive,
@@ -466,12 +464,26 @@ function finish(): void {
 // --- several at once ----------------------------------------------------------------
 
 const bulk = useBulk(() => users.value, (row) => row.id);
+// Typed once for the whole selection. It survives a batch that partly failed,
+// so the retry is one click rather than a second round of typing.
+const bulkBanReason = ref('');
 
 // The server refuses what must not be done — one's own account, the last
 // administrator — and the bar shows its reason; nothing is pre-filtered here.
-function bulkStatus(on: boolean): Promise<void> {
-  const status = on ? 'active' : 'disabled';
-  return bulk.run((row) => (row.status === status ? Promise.resolve() : adminApi.updateUser(row.id, { status })), list);
+// A row already banned for this same reason is left as it is; every other row
+// takes the reason, whatever it had before.
+function bulkBan(): Promise<void> {
+  const reason = bulkBanReason.value.trim();
+  return bulk.run(
+    (row) => (row.status === 'disabled' && (row.ban_reason ?? '') === reason
+      ? Promise.resolve()
+      : adminApi.updateUser(row.id, { status: 'disabled', ban_reason: reason })),
+    list,
+  ).then(() => { if (!bulk.error.value) bulkBanReason.value = ''; });
+}
+
+function bulkUnban(): Promise<void> {
+  return bulk.run((row) => (row.status === 'active' ? Promise.resolve() : adminApi.updateUser(row.id, { status: 'active' })), list);
 }
 
 function bulkRemove(): Promise<void> {
@@ -490,9 +502,6 @@ async function save(): Promise<void> {
       ...(fieldPlan.value.keys.length ? { fields: fieldValues(form.value.fields, fieldPlan.value) } : {}),
       bio: form.value.bio.trim(),
       avatar: form.value.avatar.trim(),
-
-      status: form.value.status,
-      ban_reason: form.value.status === 'disabled' ? form.value.banReason.trim() : '',
     };
     if (canAdmin('administrators') && form.value.role !== row.role) patch.role = form.value.role;
     if (canAdmin('administrators') && (form.value.role === 'admin') &&
@@ -562,6 +571,58 @@ async function resetTwoFactor(): Promise<void> {
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
   }
 }
+
+/**
+ * Banning and unbanning commit on their own buttons, as two-step reset does.
+ * Neither is a field the form saves, so Save can neither ban an account nor
+ * quietly undo a ban made since the panel was opened.
+ */
+async function ban(): Promise<void> {
+  const row = account.value;
+  if (!row) return;
+  banBusy.value = true;
+  panelError.value = '';
+  try {
+    const { user } = await adminApi.updateUser(row.id, { status: 'disabled', ban_reason: banDraft.value.trim() });
+    applyAccount(row.id, user);
+    banDraft.value = '';
+    // The ban signed every device out in the same transaction, so the devices
+    // the panel shows are none.
+    if (account.value?.id === row.id) sessions.value = [];
+  } catch (failure) {
+    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+  } finally {
+    banBusy.value = false;
+  }
+}
+
+async function unban(): Promise<void> {
+  const row = account.value;
+  if (!row) return;
+  banBusy.value = true;
+  panelError.value = '';
+  try {
+    const { user } = await adminApi.updateUser(row.id, { status: 'active' });
+    applyAccount(row.id, user);
+  } catch (failure) {
+    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+  } finally {
+    banBusy.value = false;
+  }
+}
+
+/** The list row and the open panel both show the account, so both take the change. */
+function applyAccount(id: string, fresh: Account): void {
+  users.value = users.value.map((entry) => (entry.id === id ? { ...entry, ...fresh } : entry));
+  if (account.value?.id === id) account.value = { ...account.value, ...fresh };
+}
+
+/** What the status row says about the reason, or nothing while the account is active. */
+const banSummary = computed<string | undefined>(() => {
+  const row = account.value;
+  if (!row || row.status !== 'disabled') return undefined;
+  return row.ban_reason ? t('banReasonLine', { reason: row.ban_reason }) : t('banNoReason');
+});
 
 async function remove(): Promise<void> {
   const row = account.value;
@@ -872,7 +933,7 @@ const state = { q: '', role: '', status: '', group: '' };
         <OaBadgeRow>
           <OaBadge v-if="row.role === 'super_admin'">{{ t('superAdmin') }}</OaBadge>
           <OaBadge v-if="row.role === 'admin'">{{ t('admin') }}</OaBadge>
-          <OaBadge v-if="row.status === 'disabled'" tone="danger" :title="row.ban_reason || undefined">{{ t('disabled') }}</OaBadge>
+          <OaBadge v-if="row.status === 'disabled'" tone="danger" :title="row.ban_reason || undefined">{{ t('statusDisabled') }}</OaBadge>
           <OaBadge v-if="apiRestrictionActive(row)" tone="warning">{{ t('apiRestrictedBadge') }}</OaBadge>
           <OaBadge v-if="row.two_factor_at" tone="muted">{{ t('twoFactorBadge') }}</OaBadge>
         </OaBadgeRow>
@@ -888,8 +949,25 @@ const state = { q: '', role: '', status: '', group: '' };
       @clear="bulk.clear"
       @delete="bulkRemove"
     >
-      <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkStatus(true)">{{ t('bulkEnable') }}</button>
-      <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkStatus(false)">{{ t('bulkDisable') }}</button>
+      <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkUnban">{{ t('unbanAccount') }}</button>
+      <input
+        v-model="bulkBanReason"
+        class="oa-bulk-reason"
+        type="text"
+        maxlength="500"
+        :placeholder="t('banReasonPlaceholder')"
+        :aria-label="t('banReason')"
+        :disabled="bulk.busy.value"
+      >
+      <!-- A ban signs every ticked account out, so it asks twice: the first
+           click arms it, and the armed title names how many it will reach. -->
+      <OaConfirmButton
+        class="oa-btn small oa-btn-danger"
+        :label="t('bulkBan')"
+        :armed-title="t('bulkBanConfirm', { count: bulk.selected.value.length })"
+        :disabled="bulk.busy.value"
+        @confirm="bulkBan"
+      />
     </OaBulkBar>
   </template>
 
@@ -925,6 +1003,47 @@ const state = { q: '', role: '', status: '', group: '' };
         <OaRow v-for="[label, value, mono] in identity" :key="label" class="oa-fact-row" :title="label">
           <span class="oa-row-value" :class="{ mono }" :title="String(value)">{{ value }}</span>
         </OaRow>
+      </AdminControlCard>
+
+      <!-- Banning is an action with a reason, not a field of the form. It sits
+           near the top so it is found without scrolling past the grants, and it
+           commits on its own button. The reason is what the account sees when
+           it tries to sign in. -->
+      <AdminControlCard id="secBanStatus" :title="t('secBanStatus')" :hint="self ? t('cannotBanSelf') : t('banHint')">
+        <OaRow
+          :title="account.status === 'disabled' ? t('statusDisabled') : t('statusActive')"
+          :meta="banSummary"
+        >
+          <button
+            v-if="account.status === 'disabled' && !self"
+            type="button"
+            class="oa-btn small"
+            :disabled="banBusy"
+            @click="unban"
+          >{{ t('unbanAccount') }}</button>
+        </OaRow>
+        <template v-if="account.status !== 'disabled' && !self">
+          <OaTextField
+            v-model="banDraft"
+            :label="t('banReason')"
+            :placeholder="t('banReasonPlaceholder')"
+            :hint="t('banReasonHint')"
+            :max-length="500"
+          />
+          <OaRow>
+            <!-- Never window.confirm: the first click arms it and the second acts,
+                 the same two steps every other destructive button here takes. -->
+            <OaConfirmButton
+              class="oa-btn small oa-btn-danger oa-ban-confirm"
+              :label="t('banAccount')"
+              :armed-label="t('confirmWord')"
+              :armed-title="t('banAccountConfirm', { name: maskUser(account.username) })"
+              :resting-title="t('banAccount')"
+              :disabled="banBusy"
+              @confirm="ban"
+            />
+          </OaRow>
+        </template>
       </AdminControlCard>
 
       <!-- What the lifetime figures above were spent on. The question after
@@ -1094,23 +1213,6 @@ const state = { q: '', role: '', status: '', group: '' };
           :hint="t('adminPermissionsHint')"
           :items="ADMIN_PERMISSIONS.filter((entry) => canAdmin(entry.value)).map((entry) => ({ value: entry.value, label: t(entry.label) }))"
           :empty-text="t('permissionDeniedTitle')"
-        />
-        <OaSelectField
-          v-model="form.status"
-          :label="t('status')"
-          :hint="t('disableHint')"
-          :options="[
-            { value: 'active', label: t('statusActive') },
-            { value: 'disabled', label: t('statusDisabled') },
-          ]"
-        />
-        <OaTextField
-          v-if="form.status === 'disabled'"
-          v-model="form.banReason"
-          :label="t('banReason')"
-          :placeholder="t('banReasonPlaceholder')"
-          :hint="t('banReasonHint')"
-          :max-length="500"
         />
         <OaSelectField
           v-model="form.group"

@@ -4696,6 +4696,43 @@
   font-weight: 600;
 }
 
+/* The second click of a ban in the account panel: the same solid look as the
+   armed delete above, which only reaches inside the bulk bar. */
+.oa-ban-confirm.armed {
+  background: var(--ai-danger);
+  color: var(--ai-surface-card);
+  font-weight: 600;
+}
+
+/* The reason typed for a bulk ban: the pill the filter fields use, so the bar
+   reads as one row of controls. Its own rules because the filter selectors only
+   reach inside .oa-filters. */
+.oa-bulk-reason {
+  box-sizing: border-box;
+  width: 180px;
+  max-width: 100%;
+  height: 34px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 999px;
+  background-color: var(--ai-field-bg);
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  transition: background-color 0.15s ease;
+}
+
+.oa-bulk-reason:hover {
+  background-color: var(--ai-field-bg-hover);
+}
+
+.oa-bulk-reason:focus {
+  outline: none;
+  background-color: var(--ai-field-bg-hover);
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
 .oa-bulk-error {
   margin: 8px 0 2px;
   font-size: 12px;

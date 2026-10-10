@@ -579,9 +579,10 @@ func init() {
 		Usage:   "user edit <id|username> [flags]",
 		Help: Text{
 			EN: "Only the flags you give are changed — an absent flag leaves that field alone. " +
-				"--group '' clears group membership. --permissions replaces the whole grant list.",
+				"--group '' clears group membership. --permissions replaces the whole grant list. " +
+				"--reason is what a banned account sees at sign-in, so it goes with --status disabled.",
 			ZH: "只会修改你给出的选项，未给出的字段保持不变。--group '' 会清除分组成员身份。" +
-				"--permissions 会整体替换权限列表。",
+				"--permissions 会整体替换权限列表。--reason 是被封禁的账户登录时看到的理由，需与 --status disabled 一起使用。",
 		},
 		Args: []Arg{
 			{Name: "id|username", Hint: Text{EN: "account id or username", ZH: "账户 id 或用户名"}, Required: true},
@@ -597,11 +598,13 @@ func init() {
 			{Name: "--group", Hint: Text{EN: "group name or id, or '' to clear", ZH: "分组名称或 id，'' 表示清除"}, Value: "REF"},
 			{Name: "--group-expires-at", Hint: Text{EN: "membership expiry, epoch ms, 0 = permanent", ZH: "成员到期时间（毫秒时间戳），0 表示永久"}, Value: "MS"},
 			{Name: "--status", Hint: Text{EN: "active or disabled", ZH: "active 或 disabled"}, Value: "STATUS"},
+			{Name: "--reason", Hint: Text{EN: "why the account is banned, shown at sign-in, ≤500 chars; needs --status disabled", ZH: "封禁理由，登录时显示，≤500 字符；需要同时给出 --status disabled"}, Value: "TEXT"},
 			{Name: "--api-restricted", Hint: Text{EN: "turn the per-account API brake on/off", ZH: "开启或关闭该账户的 API 限制"}, Value: "BOOL"},
 			{Name: "--api-restriction-hours", Hint: Text{EN: "0-8760, 0 = no automatic expiry", ZH: "0-8760，0 表示不自动到期"}, Value: "N"},
 		},
 		Examples: []string{
 			"user edit alice --status disabled",
+			"user edit alice --status disabled --reason 'spamming the group chat'",
 			"user edit alice --role admin --permissions users,groups",
 		},
 		Permission: "users",
@@ -639,6 +642,18 @@ func init() {
 			}
 			body.int64v(rt, "group-expires-at", "group_expires_at")
 			body.str(rt, "status", "status")
+			// Refused rather than sent alone: on an account left active the server
+			// drops a reason without a word, and an operator would never learn it
+			// had been thrown away.
+			if rt.Present("reason") {
+				if rt.String("status") != "disabled" {
+					if rt.Session.Lang == "zh" {
+						return rt.Errorf("--reason 需要与 --status disabled 一起使用：理由只用于封禁")
+					}
+					return rt.Errorf("--reason needs --status disabled: a reason explains a ban")
+				}
+				body.str(rt, "reason", "ban_reason")
+			}
 			body.boolv(rt, "api-restricted", "api_restricted")
 			body.intv(rt, "api-restriction-hours", "api_restriction_hours")
 
@@ -986,6 +1001,7 @@ func init() {
 			{Name: "--permissions", Hint: Text{EN: "comma-separated grant list, admins only", ZH: "逗号分隔的权限列表，仅对管理员有效"}, Value: "LIST"},
 			{Name: "--group", Hint: Text{EN: "group name or id", ZH: "分组名称或 id"}, Value: "REF"},
 			{Name: "--status", Hint: Text{EN: "active or disabled; default active", ZH: "active 或 disabled，默认 active"}, Value: "STATUS", Default: "active"},
+			{Name: "--reason", Hint: Text{EN: "why the account is banned, shown at sign-in, ≤500 chars; needs --status disabled", ZH: "封禁理由，登录时显示，≤500 字符；需要同时给出 --status disabled"}, Value: "TEXT"},
 		},
 		Examples: []string{
 			"user create station-bot --password '…' --role admin --permissions users",
@@ -1007,6 +1023,15 @@ func init() {
 			body.str(rt, "nickname", "nickname")
 			body.str(rt, "role", "role")
 			body.str(rt, "status", "status")
+			if rt.Present("reason") {
+				if rt.String("status") != "disabled" {
+					if rt.Session.Lang == "zh" {
+						return rt.Errorf("--reason 需要与 --status disabled 一起使用：理由只用于封禁")
+					}
+					return rt.Errorf("--reason needs --status disabled: a reason explains a ban")
+				}
+				body.str(rt, "reason", "ban_reason")
+			}
 			if rt.Present("permissions") {
 				body["admin_permissions"] = splitCSV(rt.String("permissions"))
 			}
