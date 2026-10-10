@@ -183,6 +183,13 @@ func (a *loginAttempt) finish(outcome attemptOutcome) {
 // its own failure count by eventually getting one right.
 type Attempt = loginAttempt
 
+// Failed records a wrong answer against the identifier given to Begin, and that
+// identifier must name a confirmed account. A failure against an account's name
+// protects its bucket for good (see bucket.matched), so a name that may match
+// nothing must not be recorded here, or a flood of invented names would keep
+// every bucket it made. A caller that cannot confirm an account finishes with the
+// unknown outcome, attemptFailedUnknown, instead; Login and VerifyCredential do
+// this for a name they did not find.
 func (a *loginAttempt) Failed()    { a.finish(attemptFailed) }
 func (a *loginAttempt) Cancelled() { a.finish(attemptCancelled) }
 
