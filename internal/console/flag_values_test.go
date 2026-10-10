@@ -501,6 +501,121 @@ func TestGroupAssignNameThatTheFirstPageCannotSettleIsNotGuessed(t *testing.T) {
 	}
 }
 
+// --yes is the confirmation every destructive command waits for, so it is read
+// the way a declared bare boolean is: a boolean word after it is its value, and
+// "--yes false" withholds the confirmation rather than giving it.
+func TestUniversalYesReadsAFollowingBooleanWordAsItsValue(t *testing.T) {
+	cases := []struct {
+		name   string
+		tokens []string
+		yes    bool
+		args   []string
+	}{
+		{"a bare confirmation", []string{"--yes"}, true, nil},
+		{"the short form", []string{"-y"}, true, nil},
+		{"false after it", []string{"--yes", "false"}, false, nil},
+		{"FALSE after the short form", []string{"-y", "FALSE"}, false, nil},
+		{"0 after it, then an argument", []string{"--yes", "0", "alice"}, false, []string{"alice"}},
+		{"TRUE after it", []string{"--yes", "TRUE"}, true, nil},
+		{"an argument after it", []string{"--yes", "alice"}, true, []string{"alice"}},
+		{"an argument before it", []string{"alice", "--yes"}, true, []string{"alice"}},
+		{"false with an equals sign", []string{"--yes=false"}, false, nil},
+		{"True with an equals sign", []string{"--yes=True"}, true, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			parsed, err := ParseFlags(c.tokens, valueFlags())
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if parsed.Yes != c.yes {
+				t.Fatalf("Yes = %v, want %v", parsed.Yes, c.yes)
+			}
+			if !reflect.DeepEqual(parsed.Args, c.args) {
+				t.Fatalf("args = %#v, want %#v", parsed.Args, c.args)
+			}
+		})
+	}
+}
+
+// A yes or no spelling is refused, not read as on, in every form the flag takes.
+func TestUniversalYesRefusesAYesOrNoWord(t *testing.T) {
+	cases := []struct {
+		tokens []string
+		want   string
+	}{
+		{[]string{"--yes", "no"}, `--yes: expected true or false, got "no"`},
+		{[]string{"-y", "off"}, `--yes: expected true or false, got "off"`},
+		{[]string{"--yes", "YES"}, `--yes: expected true or false, got "YES"`},
+		{[]string{"--yes=no"}, `--yes: expected true or false, got "no"`},
+	}
+	for _, c := range cases {
+		_, err := ParseFlags(c.tokens, valueFlags())
+		if err == nil || err.Error() != c.want {
+			t.Fatalf("ParseFlags(%q): error = %v, want %q", c.tokens, err, c.want)
+		}
+	}
+}
+
+// A destructive command must not run on a line whose --yes is followed by a word
+// that is not a confirmation. The requests are what is checked, because the
+// confirmation is the only gate these commands have before they act.
+func TestAStrayWordAfterYesNeverRunsADestructiveCommand(t *testing.T) {
+	aliceID := id.New()
+	rig := newFlagRig(
+		flagRoute{"GET", "/api/admin/users?", 200, `{"users":[{"id":"` + aliceID + `","username":"alice"}],"total":1}`},
+		flagRoute{"DELETE", "/api/admin/users/" + aliceID, 200, `{}`},
+		flagRoute{"POST", "/api/admin/logs/prune", 200, `{"removed":3}`},
+	)
+	cases := []struct {
+		name, line, code, want string
+	}{
+		{"a no after the confirmation", "user delete alice --yes no", "parse_error", `--yes: expected true or false, got "no"`},
+		{"an off after the short form", "user delete alice -y off", "parse_error", `--yes: expected true or false, got "off"`},
+		{"false after the confirmation", "user delete alice --yes false", "confirmation_required", ""},
+		{"false with an equals sign", "user delete alice --yes=false", "confirmation_required", ""},
+		{"false on a command that takes no argument", "log prune --days 90 --yes false", "confirmation_required", ""},
+		{"a word that is not a boolean on a command that takes no argument", "log prune --days 90 --yes maybe", "parse_error", `--yes: expected true or false, got "maybe"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			result, out := rig.run(c.line)
+			if result.OK || result.Code != c.code {
+				t.Fatalf("result = %+v, want a refusal with code %s (output: %q)", result, c.code, out)
+			}
+			if c.want != "" && !strings.Contains(out, c.want) {
+				t.Fatalf("output = %q, want it to say %q", out, c.want)
+			}
+			if len(rig.calls) != 0 {
+				t.Fatalf("the refused line reached the server: %v", rig.calls)
+			}
+		})
+	}
+}
+
+// A word the command declares as its argument stays the argument when it follows
+// --yes, and a boolean word that confirms still confirms.
+func TestAnArgumentOrAConfirmingWordAfterYesStillRuns(t *testing.T) {
+	aliceID := id.New()
+	rig := newFlagRig(
+		flagRoute{"GET", "/api/admin/users?", 200, `{"users":[{"id":"` + aliceID + `","username":"alice"}],"total":1}`},
+		flagRoute{"DELETE", "/api/admin/users/" + aliceID, 200, `{}`},
+		flagRoute{"POST", "/api/admin/logs/prune", 200, `{"removed":3}`},
+	)
+	if result, out := rig.run("user delete --yes alice"); !result.OK {
+		t.Fatalf("user delete --yes alice failed: %s", out)
+	}
+	if !containsCall(rig.calls, "DELETE /api/admin/users/"+aliceID) {
+		t.Fatalf("the argument after --yes did not name the account deleted: %v", rig.calls)
+	}
+	if result, out := rig.run("log prune --days 90 --yes TRUE"); !result.OK {
+		t.Fatalf("log prune --days 90 --yes TRUE failed: %s", out)
+	}
+	if got := rig.body(t, "POST /api/admin/logs/prune")["days"]; got != 90 {
+		t.Fatalf("days = %v, want 90", got)
+	}
+}
+
 func containsCall(calls []string, want string) bool {
 	for _, call := range calls {
 		if call == want {

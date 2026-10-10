@@ -120,6 +120,8 @@ type looseValue struct {
 // valueKind) before any command runs, so a Run never sees "9O" read as 0.
 // A bare boolean takes the token after it when that token is a boolean word
 // in any case, and refuses a yes/no spelling that ParseBool does not take.
+// --yes and -y are read the same way, because the confirmation is the one
+// flag a destructive command depends on (see setYes).
 func ParseFlags(tokens []string, flags []Flag) (ParsedArgs, error) {
 	parsed := ParsedArgs{Flags: map[string]string{}}
 
@@ -152,7 +154,18 @@ func ParseFlags(tokens []string, flags []Flag) (ParsedArgs, error) {
 			parsed.JSON = true
 
 		case tok == "-y" || tok == "--yes":
-			parsed.Yes = true
+			next, err := parsed.setYes("", false, tokens, i)
+			if err != nil {
+				return ParsedArgs{}, err
+			}
+			i = next
+
+		case strings.HasPrefix(tok, "--yes="):
+			next, err := parsed.setYes(strings.TrimPrefix(tok, "--yes="), true, tokens, i)
+			if err != nil {
+				return ParsedArgs{}, err
+			}
+			i = next
 
 		case strings.HasPrefix(tok, "--") && tok != "--":
 			name, value, hasEq := strings.Cut(tok[2:], "=")
@@ -188,22 +201,53 @@ func ParseFlags(tokens []string, flags []Flag) (ParsedArgs, error) {
 // set records f, which the parser met at tokens[i], and returns the index of
 // the last token it used. explicit is the text after "=" when hasEq is set.
 func (p *ParsedArgs) set(f Flag, explicit string, hasEq bool, tokens []string, i int) (int, error) {
-	key := normalizeFlagName(f.Name)
+	value, last, err := p.valueOf(f, explicit, hasEq, tokens, i)
+	if err != nil {
+		return i, err
+	}
+	p.Flags[normalizeFlagName(f.Name)] = value
+	return last, nil
+}
 
+// yesFlag is the confirmation every destructive command waits for. It is
+// declared here rather than on each command, so that no command can forget it,
+// and it is read the way a declared bare boolean is (see setYes).
+var yesFlag = Flag{Name: "--yes"}
+
+// setYes records the confirmation met at tokens[i], as --yes, -y or
+// --yes=VALUE, and returns the index of the last token it used.
+//
+// It is read as a declared bare boolean is. A parser that took --yes as a plain
+// switch would leave a following "false" behind as an argument and run the
+// command as confirmed, so "--yes false" must withhold the confirmation, and
+// "--yes no" must be refused rather than read as on.
+func (p *ParsedArgs) setYes(explicit string, hasEq bool, tokens []string, i int) (int, error) {
+	value, last, err := p.valueOf(yesFlag, explicit, hasEq, tokens, i)
+	if err != nil {
+		return i, err
+	}
+	// valueOf has already checked value against the boolean rule.
+	p.Yes, _ = parseBoolValue(value)
+	return last, nil
+}
+
+// valueOf works out the value f takes from the line, where the parser met it at
+// tokens[i], and the index of the last token that value used. explicit is the
+// text after "=" when hasEq is set.
+func (p *ParsedArgs) valueOf(f Flag, explicit string, hasEq bool, tokens []string, i int) (string, int, error) {
 	if f.Value != "" {
 		value := explicit
 		if !hasEq {
 			if i+1 >= len(tokens) {
-				return i, fmt.Errorf("console: flag %s requires a value", f.Name)
+				return "", i, fmt.Errorf("console: flag %s requires a value", f.Name)
 			}
 			i++
 			value = tokens[i]
 		}
 		if err := checkValue(f, value); err != nil {
-			return i, err
+			return "", i, err
 		}
-		p.Flags[key] = value
-		return i, nil
+		return value, i, nil
 	}
 
 	// "=" always names the value, so it is checked like any other. A bare
@@ -212,29 +256,26 @@ func (p *ParsedArgs) set(f Flag, explicit string, hasEq bool, tokens []string, i
 	// flag, and taking it would lose the argument.
 	if hasEq {
 		if err := checkValue(f, explicit); err != nil {
-			return i, err
+			return "", i, err
 		}
-		p.Flags[key] = explicit
-		return i, nil
+		return explicit, i, nil
 	}
 	if i+1 < len(tokens) {
 		next := tokens[i+1]
 		if checkValue(f, next) == nil {
-			p.Flags[key] = next
-			return i + 1, nil
+			return next, i + 1, nil
 		}
 		// The spellings people reach for that ParseBool does not take. Left
 		// as a loose argument, "--trusted no" would switch trust on and say
 		// nothing about the word it ignored.
 		if isYesOrNoWord(next) {
-			return i, valueError(f.Name, next, "true or false")
+			return "", i, valueError(f.Name, next, "true or false")
 		}
 		if isPositional(next) {
 			p.loose = append(p.loose, looseValue{flag: f.Name, value: next, at: len(p.Args)})
 		}
 	}
-	p.Flags[key] = "true"
-	return i, nil
+	return "true", i, nil
 }
 
 // refuseLooseValues is the command-level half of the bare-boolean rule. A
