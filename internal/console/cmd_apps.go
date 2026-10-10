@@ -155,10 +155,11 @@ func init() {
 				"string equality. https is required except on localhost. --public is for software " +
 				"with nowhere to keep a secret, such as a single-page app: it gets no client secret " +
 				"and must use PKCE. --trusted skips the consent screen, which is for the operator's " +
-				"own services and nothing else. The client secret is printed once, here.",
+				"own services and nothing else, and only a super administrator may set it. The " +
+				"client secret is printed once, here.",
 			ZH: "--redirect 接受一个或多个回调地址，用逗号分隔，之后按字符串完全匹配。除 localhost 外必须是 " +
 				"https。--public 用于没有地方存放密钥的软件（例如纯前端应用）：它不会获得 client secret，" +
-				"必须使用 PKCE。--trusted 会跳过授权确认页，只适用于运营方自己的服务。" +
+				"必须使用 PKCE。--trusted 会跳过授权确认页，只适用于运营方自己的服务，且只有超级管理员能设置。" +
 				"client secret 只在这里打印一次。",
 		},
 		Flags: []Flag{
@@ -237,10 +238,14 @@ func init() {
 			EN: "Only the flags you give are changed. --disabled true stops the application signing " +
 				"anybody in and makes the tokens it already holds stop answering, which is the switch " +
 				"to reach for when its secret has leaked; --scopes narrows what it may ask for, and a " +
-				"narrower list takes effect on the next sign-in rather than on tokens already issued.",
+				"narrower list takes effect on the next sign-in rather than on tokens already issued. " +
+				"Changing the callbacks, or anything at all on a trusted application, needs a super " +
+				"administrator: consent is kept per application, so a new callback would receive the " +
+				"codes of people who agreed to the old one.",
 			ZH: "只会修改你给出的选项。--disabled true 会让该应用无法再登录，且它已持有的令牌立即失效——" +
 				"密钥泄露时应当先用这个开关；--scopes 用于收窄它能申请的信息，收窄后在下次登录时生效，" +
-				"不影响已签发的令牌。",
+				"不影响已签发的令牌。修改回调地址，或修改受信任应用的任何内容，需要超级管理员：" +
+				"授权是按应用记录的，新增的回调会收到此前同意过的人的授权码。",
 		},
 		Args: []Arg{{Name: "id", Hint: Text{EN: "application id", ZH: "应用 id"}, Required: true}},
 		Flags: []Flag{

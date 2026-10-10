@@ -116,6 +116,6 @@
 
 ### 终端
 
-`app list`、`app show`、`app create`、`app edit`、`app secret`、`app delete`，需要 `security` 权限。`app create` 和 `app secret` 会打印 client secret，同样只打印一次。
+`app list`、`app show`、`app create`、`app edit`、`app secret`、`app delete`，需要 `security` 权限；但设为受信任（跳过授权页）、修改回调地址，以及改动已受信任应用的任何内容，只有超级管理员能做——授权按应用记录，新增的回调会收到此前同意过的人的授权码。`app create` 和 `app secret` 会打印 client secret，同样只打印一次。
 
 用户自己那一侧在 `oauth list` 和 `oauth unlink`——绑定需要浏览器，所以终端里只能看和解绑。

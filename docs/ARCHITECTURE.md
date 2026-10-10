@@ -219,10 +219,19 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 26.10 MB (22.40 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 239.13 kB to open the chat (196.95 JS + 42.18 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 26.19 MB (22.49 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 240.49 kB to open the chat (198.31 JS + 42.18 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-10 (UTC), after the security fixes of that day: sign-out
+now clears the chat, draft and project stores, the markdown parser scans
+headings and code spans linearly, provider sign-up carries its proof of work,
+and the OIDC, backup and plugin-install forms explain their new refusals:
+240.49 kB (198.31 kB JS + 42.18 kB CSS), up 1.36 kB, from the build's gzip
+column. The backoffice chunk is 123.81 kB and the Chinese dictionary 48.20 kB.
+The binary is 26.19 MB (22.49 MB without SQLite), up 0.09 MB, measured as the
+difference between this tree and the previous one built the same way.
 
 Remeasured on 2026-10-09 (UTC), after the backoffice learned of newer releases
 (`GET /api/admin/update`, its dialog and the dashboard notices): 239.13 kB
