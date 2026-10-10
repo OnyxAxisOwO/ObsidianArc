@@ -42,7 +42,9 @@ const {
   activeID, addImages, addTextFiles, attachments, busy, conversations, draft, messages, pending, pendingID,
   refreshList, resetChat, runTurn, status,
 } = await import('../src/chat/useChat');
-const { models, selectedID } = await import('../src/chat/useModels');
+const {
+  loadModels, models, reasoning, restorePreferences, selectedID,
+} = await import('../src/chat/useModels');
 const { pendingProjectID } = await import('../src/stores/workspace');
 const { createProject, loadProjects, projectList, projectMax } = await import('../src/stores/projects');
 
@@ -92,6 +94,7 @@ afterEach(() => {
   forget();
   resetChat();
   urlStatics.revokeObjectURL = originalRevoke;
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
@@ -236,5 +239,40 @@ describe('signing out leaves nothing of the account behind', () => {
     await creating;
 
     expect(projectList.value).toEqual([]);
+  });
+
+  it('forgets the picked model and the reasoning setting with the account', () => {
+    adopt(alice);
+    reasoning.value = { enabled: true, effort: 'high' };
+    expect(selectedID.value).toBe('m');
+
+    forget();
+
+    expect(selectedID.value).toBe('');
+    expect(models.value).toEqual([]);
+    expect(reasoning.value).toEqual({ enabled: false, effort: 'medium' });
+  });
+
+  it('drops a model list requested before sign-out instead of pointing the next picker at it', async () => {
+    adopt(alice);
+    let answer!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { answer = resolve; })));
+
+    const loading = loadModels();
+    forget();
+    answer(new Response(JSON.stringify({ models: [{ id: 'alice-model', display_name: 'Alice model' }] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    await loading;
+
+    expect(models.value).toEqual([]);
+    expect(selectedID.value).toBe('');
+  });
+
+  it('does not keep a model picked for the last account when the next one has no stored default', () => {
+    adopt(bob);
+    restorePreferences();
+    expect(selectedID.value).toBe('');
   });
 });

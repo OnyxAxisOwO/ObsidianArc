@@ -9,7 +9,7 @@ import { computed, ref } from 'vue';
 import { api } from '@/api/client';
 import type { StringKey } from '@/i18n';
 import { t } from '@/composables/useI18n';
-import { currentPreferences, syncPreferences } from '@/stores/session';
+import { currentPreferences, onSignOut, syncPreferences } from '@/stores/session';
 
 export interface ModelCapabilities {
   supports_reasoning: boolean;
@@ -117,6 +117,19 @@ export const models = ref<AvailableModel[]>([]);
 export const selectedID = ref('');
 export const reasoning = ref<ReasoningState>({ enabled: false, effort: 'medium' });
 
+// Bumped on sign-out. A list fetched for the account that left is dropped, so
+// it cannot land on the picker of whoever signs in next.
+let generation = 0;
+
+// The picker is one account's decision, so the next account starts from the
+// picker's defaults rather than the last account's pick.
+onSignOut(() => {
+  generation += 1;
+  models.value = [];
+  selectedID.value = '';
+  reasoning.value = { enabled: false, effort: 'medium' };
+});
+
 // The picker offers every model the account may use, image models included.
 // Being able to generate in the image lab says nothing about whether a model
 // can hold a conversation — most that draw can — and filtering them out here
@@ -131,7 +144,9 @@ export const currentModel = computed<AvailableModel | null>(
 export function restorePreferences(): void {
   const preferences = currentPreferences.value;
   const stored = preferences['default_model_id'];
-  if (typeof stored === 'string') selectedID.value = stored;
+  // Without a stored default, an id left over from another account is not this
+  // account's choice, so it is cleared rather than kept.
+  selectedID.value = typeof stored === 'string' ? stored : '';
 
   const effort = preferences['reasoning_effort'];
   reasoning.value = {
@@ -156,7 +171,10 @@ export function setReasoning(next: ReasoningState): void {
 }
 
 export async function loadModels(): Promise<void> {
+  const account = generation;
   const result = await api.get<{ models: AvailableModel[] }>('/api/models');
+  // Signed out while the list was on its way: it is the account that left's.
+  if (account !== generation) return;
   models.value = result.models;
 
   const usable = result.models.filter((model) => model.usable !== false);
