@@ -135,19 +135,14 @@ func goEnv(extra ...string) []string {
 // checkTree refuses a module that holds a link, or anything that is neither a
 // file nor a directory. The compiler follows links, so a link anywhere in the
 // module can put a file from outside it into plugin.wasm, and a named pipe
-// would stall the compile. Names beginning with a dot are skipped, as copyTree
-// and Pack skip them: the go tool ignores those too. The root is never skipped,
-// whatever its own name is.
+// would stall the compile. Names beginning with a dot are not skipped, though
+// copyTree and Pack skip them: the go tool compiles a package from a directory
+// whose name begins with a dot once something imports it, so a link under one
+// is compiled like any other.
 func checkTree(root string) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
-		}
-		if path != root && strings.HasPrefix(d.Name(), ".") {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("%s is a symbolic link, and arcpack does not follow links", path)

@@ -13,11 +13,11 @@ import (
 // build refuses it. plugin.wasm is what ships, and the compiler puts into it
 // whatever it reads, so the refusal has to come before the compile.
 
-// plugin copies the SDK into a directory called name under a new root, and
+// plugin copies the SDK into a directory called sdk under a new root, and
 // returns that module and the demo plugin inside it.
-func plugin(t *testing.T, name string) (module, demo string) {
+func plugin(t *testing.T) (module, demo string) {
 	t.Helper()
-	module = filepath.Join(t.TempDir(), name)
+	module = filepath.Join(t.TempDir(), "sdk")
 	if err := copyTree(filepath.Join("..", "..", "sdk"), module); err != nil {
 		t.Fatal(err)
 	}
@@ -25,23 +25,47 @@ func plugin(t *testing.T, name string) (module, demo string) {
 }
 
 // A link in the plugin's own directory is compiled as if it were a file there.
-// The module is also built under a directory whose name begins with a dot,
-// because a check that skipped dot-named entries could skip the root it starts
-// from.
 func TestBuildRefusesALinkedFileInThePluginDirectory(t *testing.T) {
 	skipWithoutSymlinks(t)
-	for _, name := range []string{"sdk", ".sdk"} {
-		t.Run(name, func(t *testing.T) {
-			_, demo := plugin(t, name)
-			secret := filepath.Join(t.TempDir(), "secret.go")
-			write(t, secret, "package main\n\nvar leaked = \"super-secret\"\n\nfunc init() { println(leaked) }\n")
-			link(t, secret, filepath.Join(demo, "linked.go"))
-			err := build([]string{demo, "-o", filepath.Join(t.TempDir(), "demo.arcx")})
-			if err == nil || !strings.Contains(err.Error(), filepath.Join("examples", "demo", "linked.go")+" is a symbolic link") {
-				t.Fatalf("a linked file in the plugin's directory was compiled: %v", err)
-			}
-		})
+	_, demo := plugin(t)
+	secret := filepath.Join(t.TempDir(), "secret.go")
+	write(t, secret, "package main\n\nvar leaked = \"super-secret\"\n\nfunc init() { println(leaked) }\n")
+	link(t, secret, filepath.Join(demo, "linked.go"))
+	err := build([]string{demo, "-o", filepath.Join(t.TempDir(), "demo.arcx")})
+	if err == nil || !strings.Contains(err.Error(), filepath.Join("examples", "demo", "linked.go")+" is a symbolic link") {
+		t.Fatalf("a linked file in the plugin's directory was compiled: %v", err)
 	}
+}
+
+// The go tool compiles a package from a directory whose name begins with a dot
+// once something imports it, so the walk must reach inside one like any other.
+// A link in such a package, and a dot-named link to a package directory, are
+// both refused.
+func TestBuildRefusesALinkInADotNamedPackage(t *testing.T) {
+	skipWithoutSymlinks(t)
+	t.Run("a link to a file", func(t *testing.T) {
+		module, demo := plugin(t)
+		write(t, filepath.Join(module, ".hid", "hid.go"), "package hid\n\nvar Name = \"hid\"\n")
+		secret := filepath.Join(t.TempDir(), "leak.go")
+		write(t, secret, "package hid\n\nvar Leaked = \"super-secret\"\n")
+		link(t, secret, filepath.Join(module, ".hid", "leak.go"))
+		write(t, filepath.Join(demo, "extra.go"), "package main\n\nimport _ \"github.com/OnyxAxisOwO/ObsidianArc/sdk/.hid\"\n")
+		err := build([]string{demo, "-o", filepath.Join(t.TempDir(), "demo.arcx")})
+		if err == nil || !strings.Contains(err.Error(), filepath.Join("sdk", ".hid", "leak.go")+" is a symbolic link") {
+			t.Fatalf("a link in a dot-named package the backend imports was compiled: %v", err)
+		}
+	})
+	t.Run("a dot-named link to a directory", func(t *testing.T) {
+		module, demo := plugin(t)
+		elsewhere := t.TempDir()
+		write(t, filepath.Join(elsewhere, "lib.go"), "package lib\n\nvar Leaked = \"super-secret\"\n")
+		link(t, elsewhere, filepath.Join(module, ".lib"))
+		write(t, filepath.Join(demo, "extra.go"), "package main\n\nimport _ \"github.com/OnyxAxisOwO/ObsidianArc/sdk/.lib\"\n")
+		err := build([]string{demo, "-o", filepath.Join(t.TempDir(), "demo.arcx")})
+		if err == nil || !strings.Contains(err.Error(), filepath.Join("sdk", ".lib")+" is a symbolic link") {
+			t.Fatalf("a dot-named link to a package directory was compiled: %v", err)
+		}
+	})
 }
 
 // The backend imports sdk/lib, which is a link to a directory outside the
@@ -49,7 +73,7 @@ func TestBuildRefusesALinkedFileInThePluginDirectory(t *testing.T) {
 // module can see this one.
 func TestBuildRefusesALinkedPackageTheBackendImports(t *testing.T) {
 	skipWithoutSymlinks(t)
-	module, demo := plugin(t, "sdk")
+	module, demo := plugin(t)
 	elsewhere := t.TempDir()
 	write(t, filepath.Join(elsewhere, "lib.go"), "package lib\n\nvar Leaked = \"super-secret\"\n")
 	link(t, elsewhere, filepath.Join(module, "lib"))
@@ -63,7 +87,7 @@ func TestBuildRefusesALinkedPackageTheBackendImports(t *testing.T) {
 // A replacement that points at a directory compiles whatever that directory
 // holds, and the directory is not part of the tree a link check looks at.
 func TestBuildRefusesAModuleReplacedByADirectory(t *testing.T) {
-	module, demo := plugin(t, "sdk")
+	module, demo := plugin(t)
 	outside := t.TempDir()
 	write(t, filepath.Join(outside, "go.mod"), "module example.com/out\n\ngo 1.27\n")
 	write(t, filepath.Join(outside, "out.go"), "package out\n\nvar Leaked = \"super-secret\"\n")
@@ -85,7 +109,7 @@ func TestBuildRefusesAModuleReplacedByADirectory(t *testing.T) {
 // import to, so it fails and says which package it could not find, rather than
 // compiling the module the go.work supplies.
 func TestBuildIgnoresAGoWorkAboveTheModule(t *testing.T) {
-	module, demo := plugin(t, "sdk")
+	module, demo := plugin(t)
 	outside := t.TempDir()
 	write(t, filepath.Join(outside, "go.mod"), "module example.com/out\n\ngo 1.27\n")
 	write(t, filepath.Join(outside, "out.go"), "package out\n\nvar Leaked = \"super-secret\"\n")
