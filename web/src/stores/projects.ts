@@ -14,6 +14,7 @@ import {
   updateProject as apiUpdateProject,
   type Project,
 } from '@/api/projects';
+import { onSignOut } from '@/stores/session';
 
 const projects = ref<Project[]>([]);
 const max = ref(0);
@@ -21,6 +22,9 @@ const loaded = ref(false);
 // Shared by every caller so a rail and a composer mounting in the same tick
 // await one request instead of two racing to set `loaded`.
 let inFlight: Promise<void> | null = null;
+// Bumped on sign-out. An answer to a request made before it belongs to the
+// account that signed out, and is dropped rather than shown to the next one.
+let generation = 0;
 
 export const projectList: Ref<Project[]> = projects;
 /** The account-wide cap on how many projects it may hold. Zero until loaded. */
@@ -34,26 +38,42 @@ export const projectMax: Ref<number> = max;
 export function loadProjects(): Promise<void> {
   if (loaded.value) return Promise.resolve();
   if (!inFlight) {
+    const account = generation;
     inFlight = listProjects()
       .then((result) => {
+        if (account !== generation) return;
         projects.value = result.projects;
         max.value = result.max;
         loaded.value = true;
       })
       .finally(() => {
-        inFlight = null;
+        // Only the request that started this generation may clear it: a
+        // newer one may already be in flight for the next account.
+        if (account === generation) inFlight = null;
       });
   }
   return inFlight;
 }
 
 export async function createProject(name: string, instructions = ''): Promise<Project> {
+  const account = generation;
   const record = await apiCreateProject(name, instructions);
   // Newest first, matching the order the server itself returns on List
   // (most recently changed first).
-  projects.value = [record, ...projects.value];
+  if (account === generation) projects.value = [record, ...projects.value];
   return record;
 }
+
+/** Signed out: the next account's projects are fetched afresh, not shown from this one's. */
+export function resetProjects(): void {
+  generation += 1;
+  inFlight = null;
+  projects.value = [];
+  max.value = 0;
+  loaded.value = false;
+}
+
+onSignOut(resetProjects);
 
 export async function renameProject(id: string, name: string): Promise<Project> {
   const record = await apiUpdateProject(id, { name });
