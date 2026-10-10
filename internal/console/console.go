@@ -282,7 +282,10 @@ func (c *Console) recordAudit(ctx context.Context, s *Session, cmd *Command, par
 // Positional arguments are masked the same way (Arg.Sensitive, and
 // Command.SecretArgs for the ones that are secret only on some lines): the
 // line is read by every administrator who holds the security grant, who are
-// not the people a code or a credential was typed for.
+// not the people a code or a credential was typed for. A command that declares
+// no positional arguments has nothing that says which of them is a secret, so
+// none of them is written; a value typed where a flag was meant is the usual
+// one.
 func (c *Console) auditLine(cmd *Command, parsed ParsedArgs) string {
 	var b strings.Builder
 	b.WriteString(cmd.Name)
@@ -292,7 +295,7 @@ func (c *Console) auditLine(cmd *Command, parsed ParsedArgs) string {
 	}
 	for i, a := range parsed.Args {
 		b.WriteByte(' ')
-		if secret[i] || argSensitive(cmd, i) {
+		if secret[i] || argSensitive(cmd, i) || len(cmd.Args) == 0 {
 			b.WriteString("***")
 			continue
 		}
@@ -356,6 +359,19 @@ func (c *Console) secretSetting(key string) bool {
 		}
 	}
 	return false
+}
+
+// secretFrom is a SecretArgs that masks every positional from first on, for a
+// command whose head names what the record is about and whose tail is the
+// secret, typed where a flag was meant.
+func secretFrom(first int) func(*Console, []string) map[int]bool {
+	return func(_ *Console, args []string) map[int]bool {
+		masked := map[int]bool{}
+		for i := first; i < len(args); i++ {
+			masked[i] = true
+		}
+		return masked
+	}
 }
 
 // argSensitive reports whether the i-th positional is declared Sensitive,
