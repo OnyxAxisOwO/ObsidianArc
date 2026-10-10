@@ -64,15 +64,19 @@ const (
 	MaxStoredMessages = 200000
 	// What one account may be storing in characters of message text.
 	//
-	// The count above bounds rows, and a row may carry sixty-four thousand
-	// characters: two hundred thousand of them is some twelve gigabytes behind
-	// a ceiling that reads as modest. This is the figure the disk actually
-	// feels. Characters rather than bytes, counted the same way on both sides
+	// The count above bounds rows, and a row may carry some ninety-two thousand
+	// characters across its content, reasoning and error: two hundred thousand
+	// of them is some eighteen gigabytes behind a ceiling that reads as modest.
+	// This is the figure the disk actually feels. Characters rather than bytes, counted the same way on both sides
 	// of the comparison; generous for a person (a heavy year is a few
 	// megabytes) and reached only by somebody trying.
 	MaxStoredChars        = 512 << 20
 	MaxTitleChars         = 200
 	MaxImportContentChars = conversation.MaxContentChars
+	// Reasoning is stored under its own ceiling, above the content one. An
+	// import that cut it at the content figure would drop what an export of
+	// the same account carries.
+	MaxImportReasoningChars = conversation.MaxReasoningChars
 )
 
 // exportPageSize is how many conversation rows one read of an export takes.
@@ -552,7 +556,7 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 	var threadChars int64
 	for _, turn := range usable {
 		threadChars += int64(min(utf8.RuneCountInString(turn.Content), MaxImportContentChars) +
-			min(utf8.RuneCountInString(turn.Reasoning), MaxImportContentChars))
+			min(utf8.RuneCountInString(turn.Reasoning), MaxImportReasoningChars))
 	}
 
 	title := text.TrimAndTruncate(thread.Title, MaxTitleChars)
@@ -601,7 +605,7 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 				UserID:         account.ID,
 				Role:           role,
 				Content:        text.TrimAndTruncate(turn.Content, MaxImportContentChars),
-				Reasoning:      text.TrimAndTruncate(turn.Reasoning, MaxImportContentChars),
+				Reasoning:      text.TrimAndTruncate(turn.Reasoning, MaxImportReasoningChars),
 				Error:          text.TrimAndTruncate(turn.Error, 500),
 				ModelName:      text.TrimAndTruncate(turn.ModelName, 80),
 			}); err != nil {
