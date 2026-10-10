@@ -99,6 +99,15 @@ func TestAOneCellLargerThanAReplyIsRefused(t *testing.T) {
 	if _, err := query(`SELECT hex(zeroblob(4718592)) AS t`); hostCode(err) != "too_large" {
 		t.Fatalf("a 9 MiB text cell: %v", err)
 	}
+	// 1e999 overflows to +Inf, which JSON cannot encode. Beside an oversized
+	// cell it shows the size is decided before the row is encoded: a host that
+	// encodes first fails here with a sql error, and never says too_large.
+	if _, err := query(`SELECT zeroblob(9437184) AS b, 1e999 AS inf`); hostCode(err) != "too_large" {
+		t.Fatalf("a 9 MiB blob cell beside +Inf: %v", err)
+	}
+	if _, err := query(`SELECT hex(zeroblob(4718592)) AS t, 1e999 AS inf`); hostCode(err) != "too_large" {
+		t.Fatalf("a 9 MiB text cell beside +Inf: %v", err)
+	}
 }
 
 // A bonus's lifetime is days turned into a duration, and that duration wraps
