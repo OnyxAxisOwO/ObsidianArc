@@ -274,3 +274,27 @@ func TestSavingS3CannotMoveTheSavedWebDAVPassword(t *testing.T) {
 			loaded.WebDAVURL, loaded.WebDAVPassword)
 	}
 }
+
+func TestSavingS3WithTheWebDAVDestinationUnchangedIsAnOrdinarySave(t *testing.T) {
+	store := savedWebDAVStore(t)
+	ctx := context.Background()
+	// Switching the storage type back to S3 leaves the WebDAV password saved
+	// beside its address. The admin Backup page and the console send that address
+	// back on every save, so an S3 save that keeps it unchanged must go through.
+	if err := store.Save(ctx, Config{
+		Type: StorageTypeS3, Enabled: true, Endpoint: "https://s3.example.test", Bucket: "arc-backups",
+		Region: "us-east-1", Prefix: "arc", AccessKeyID: "s3-access", SecretKey: "s3-secret",
+		WebDAVURL: "https://dav.example.test/backups", WebDAVUsername: "arc",
+		IntervalHours: 24, RetentionDays: 7,
+	}); err != nil {
+		t.Fatalf("switch to S3 with the WebDAV destination unchanged: %v", err)
+	}
+	loaded, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Type != StorageTypeS3 || loaded.WebDAVURL != "https://dav.example.test/backups" || loaded.WebDAVPassword != "saved-password" {
+		t.Fatalf("after the S3 save: type %q, WebDAV url %q, WebDAV password %q",
+			loaded.Type, loaded.WebDAVURL, loaded.WebDAVPassword)
+	}
+}
