@@ -283,7 +283,8 @@ func concurrentAccountRun(t *testing.T, tokenRate, withBar bool) {
 // kind, while a reset takes one kind at a time, so each could hold a row the other
 // was waiting for. Both take the global reset row first now, which puts them one
 // after the other. Four of each run at once here, over rows old enough for the
-// prune to take, so the two orders meet on every round.
+// prune to take, which is what lets the two orders meet. The interleaving is not
+// fixed, so a meeting is likely rather than certain.
 func TestPruneAndResetsTakeCounterRowsInOneOrder(t *testing.T) {
 	service, db := newServiceOn(t, dbtest.Postgres(t,
 		"the prune and the administrator's resets must not deadlock on the counter rows"))
