@@ -103,8 +103,31 @@ func (e Estimate) empty() bool { return e.Tokens <= 0 && e.Credits <= 0 }
 
 // AutoReset spends whatever restores this account's allowance for the needed
 // window. It receives the reservation transaction and the exceeded window,
-// and reports which windows were reset (an empty slice means all windows).
+// and reports which windows were reset (an empty slice means all allowance
+// windows; the per-minute counters are never reset this way).
 type AutoReset func(ctx context.Context, q database.Queryer, needed Window) (windows []string, spent bool, err error)
+
+// Lock order. Every transaction takes the rows it needs in this order, and never
+// a row that comes before one it already holds. Two transactions that take the
+// same rows in opposite orders can each hold one and wait for the other, and
+// PostgreSQL then aborts one of them with a deadlock (SQLSTATE 40P01); the
+// request or turn that loses fails.
+//
+//  1. The global reset row in settings. A reservation that charges the allowance
+//     windows takes it first, which puts it in line with the others and with
+//     every reset. Settlements and releases never take it, so a reset does not
+//     hold up a turn that is ending.
+//  2. The account's users row, by a reservation that may spend a reset card.
+//  3. The bonus_grants rows that a request is paid from, refunded to, or settled
+//     against.
+//  4. The account's usage_counters rows, one window kind at a time, in the order
+//     of counterKinds. A transaction takes at most one row of each kind.
+//
+// The administrator resets are the exception to the last rule: they delete many
+// rows of one kind. They hold the global reset row, so no two of them meet, and
+// they delete one kind at a time in counterKinds order, so a delete never holds a
+// row of one kind while it waits for a row of an earlier one.
+var counterKinds = []Window{WindowRPM, WindowTPM, Window5H, WindowWeek, WindowMonth}
 
 // Reserve claims one request and the turn's worst case against every window
 // that applies, and fails if any of them is already spent.
@@ -121,7 +144,7 @@ type AutoReset func(ctx context.Context, q database.Queryer, needed Window) (win
 // ended. Reserving the ceiling means the tenth is refused while the first
 // nine are still streaming, and Settle hands back the difference.
 func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estimate) (Reservation, error) {
-	return s.reserve(ctx, account, "", estimate, nil)
+	return s.reserve(ctx, account, "", estimate, nil, time.Now())
 }
 
 // ReserveWithAutoReset retries one rejected reservation after atomically
@@ -131,7 +154,7 @@ func (s *Service) Reserve(ctx context.Context, account user.User, estimate Estim
 func (s *Service) ReserveWithAutoReset(
 	ctx context.Context, account user.User, estimate Estimate, reset AutoReset,
 ) (Reservation, error) {
-	return s.reserve(ctx, account, "", estimate, reset)
+	return s.reserve(ctx, account, "", estimate, reset, time.Now())
 }
 
 // ReserveFor is Reserve for a request to a particular model, which is what
@@ -145,11 +168,13 @@ func (s *Service) ReserveWithAutoReset(
 func (s *Service) ReserveFor(
 	ctx context.Context, account user.User, modelID string, estimate Estimate, reset AutoReset,
 ) (Reservation, error) {
-	return s.reserve(ctx, account, modelID, estimate, reset)
+	return s.reserve(ctx, account, modelID, estimate, reset, time.Now())
 }
 
+// reserve takes now from its caller rather than reading the clock at each step,
+// so that every step of one reservation lands in the same buckets.
 func (s *Service) reserve(
-	ctx context.Context, account user.User, modelID string, estimate Estimate, reset AutoReset,
+	ctx context.Context, account user.User, modelID string, estimate Estimate, reset AutoReset, now time.Time,
 ) (Reservation, error) {
 	policy, err := s.PolicyFor(ctx, nil, account)
 	if err != nil {
@@ -170,7 +195,7 @@ func (s *Service) reserve(
 		estimate.Credits = 0
 	}
 
-	res, err := s.reserveOnce(ctx, account, modelID, estimate, nil, policy)
+	res, err := s.reserveOnce(ctx, account, modelID, estimate, nil, policy, now)
 	if err == nil {
 		return res, nil
 	}
@@ -181,14 +206,14 @@ func (s *Service) reserve(
 		return Reservation{}, err
 	}
 	if s.bonus != nil && estimate.Credits > 0 {
-		if fallback, ferr := s.reserveFallback(ctx, account, modelID, estimate, policy); ferr == nil {
+		if fallback, ferr := s.reserveFallback(ctx, account, modelID, estimate, policy, now); ferr == nil {
 			return fallback, nil
 		} else if !errors.Is(ferr, bonus.ErrInsufficient) {
 			return Reservation{}, ferr
 		}
 	}
 	if reset != nil {
-		return s.reserveOnce(ctx, account, modelID, estimate, reset, policy)
+		return s.reserveOnce(ctx, account, modelID, estimate, reset, policy, now)
 	}
 	return Reservation{}, err
 }
@@ -198,17 +223,28 @@ func (s *Service) reserve(
 // left, and counting the request against them would only push them further
 // over. The burst limits are: a bar is more allowance, not a way round them.
 func (s *Service) reserveFallback(
-	ctx context.Context, account user.User, modelID string, estimate Estimate, policy Policy,
+	ctx context.Context, account user.User, modelID string, estimate Estimate, policy Policy, now time.Time,
 ) (Reservation, error) {
 	var holds []bonus.Hold
-	now := time.Now()
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		// The bars come before the minute, as in the lock order above. A refund
+		// of one of these holds takes the bar and then the minute, so taking the
+		// minute first here could leave each side holding the row the other wants.
+		claimed, takeErr := s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Fallback)
+		if takeErr != nil && !errors.Is(takeErr, bonus.ErrInsufficient) {
+			return takeErr
+		}
+		// A bar that cannot pay whole is decided after the minute, so a request
+		// the minute refuses is still reported as that refusal, the same as when
+		// the minute was checked first.
 		if err := reserveRate(ctx, tx, policy, scopeKey(account.ID), estimate.Tokens, now); err != nil {
 			return err
 		}
-		var err error
-		holds, err = s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Fallback)
-		return err
+		if takeErr != nil {
+			return takeErr
+		}
+		holds = claimed
+		return nil
 	})
 	if err != nil {
 		return Reservation{}, err
@@ -221,20 +257,19 @@ func (s *Service) reserveFallback(
 }
 
 func (s *Service) reserveOnce(
-	ctx context.Context, account user.User, modelID string, estimate Estimate, reset AutoReset, policy Policy,
+	ctx context.Context, account user.User, modelID string, estimate Estimate, reset AutoReset, policy Policy, now time.Time,
 ) (Reservation, error) {
-	now := time.Now()
 	key := scopeKey(account.ID)
-	anchor := account.CreatedAt
 
 	var (
+		anchor  int64
 		holds   []bonus.Hold
 		charged = estimate
 		whole   bool
-		err     error
 	)
-	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
 		holds, charged, whole = nil, estimate, false
+		var err error
 		anchor, err = lockedAllowanceAnchor(ctx, tx, account.CreatedAt)
 		if err != nil {
 			return err
@@ -257,39 +292,38 @@ func (s *Service) reserveOnce(
 			charged, whole = uncovered(estimate, bonus.Total(holds))
 		}
 
-		reserve := func() error {
-			if err := reserveRate(ctx, tx, policy, key, estimate.Tokens, now); err != nil {
-				return err
-			}
-			if whole {
-				return nil
-			}
-			return reserveAllowance(ctx, tx, policy, key, anchor, charged, now)
+		// The minute is charged once, here. The walk below may run again after a
+		// reset card has cleared the window, and that retry does not charge the
+		// minute a second time.
+		if err := reserveRate(ctx, tx, policy, key, estimate.Tokens, now); err != nil {
+			return err
+		}
+		if whole {
+			return nil
+		}
+		walkErr := reserveAllowance(ctx, tx, policy, key, anchor, charged, now)
+		if walkErr == nil || reset == nil {
+			return walkErr
+		}
+		exceeded, ok := AsExceeded(walkErr)
+		if !ok {
+			return walkErr
 		}
 
-		reserveErr := reserve()
-		if reset == nil || reserveErr == nil {
-			return reserveErr
-		}
-		exceeded, ok := AsExceeded(reserveErr)
-		if !ok || exceeded.Window == WindowRPM || exceeded.Window == WindowTPM {
-			// A reset card restores allowance; spending one on a burst-rate
-			// refusal would trade a permanent item for a limit that clears in a
-			// minute.
-			return reserveErr
-		}
-
+		// A reset card restores allowance; spending one on a burst-rate refusal
+		// would trade a permanent item for a limit that clears in a minute. The
+		// minute was checked above, so only an allowance window reaches here.
 		resetWindows, spent, err := reset(ctx, tx, exceeded.Window)
 		if err != nil {
 			return err
 		}
 		if !spent {
-			return reserveErr
+			return walkErr
 		}
-		if err := deleteScopeCounters(ctx, tx, key, resetWindows); err != nil {
+		if err := clearAllowance(ctx, tx, key, anchor, now, resetWindows); err != nil {
 			return fmt.Errorf("quota: automatic reset: %w", err)
 		}
-		return reserve()
+		return reserveAllowance(ctx, tx, policy, key, anchor, charged, now)
 	})
 	if err != nil {
 		// The transaction rolled back, so nothing is outstanding and a failed
@@ -321,32 +355,71 @@ func uncovered(estimate Estimate, covered float64) (Estimate, bool) {
 	return Estimate{Tokens: int64(math.Round(float64(estimate.Tokens) * share)), Credits: estimate.Credits - covered}, false
 }
 
-func deleteScopeCounters(ctx context.Context, tx database.Queryer, key string, windows []string) error {
-	cleanWindows := make([]string, 0, len(windows))
-	for _, w := range windows {
-		w = strings.TrimSpace(w)
-		if w == "full" {
-			cleanWindows = nil
-			break
+// clearAllowance is what a reset card does inside the reservation that spent it:
+// it deletes the current bucket of each allowance window the card names.
+//
+// Only the current bucket goes. A limit check reads only that bucket, and so does
+// the usage screen, so older buckets are not part of what a reset restores.
+// Deleting them as well would take more than one row of a window kind in this
+// transaction, which the lock order forbids, and an older bucket is exactly what
+// a release of an earlier reservation can hold. The minute is not an allowance
+// window: a card never clears it, and the charge this request put on it stays as
+// reserveRate left it.
+func clearAllowance(ctx context.Context, tx database.Queryer, key string, anchor int64, now time.Time, windows []string) error {
+	for _, window := range AllowanceWindows {
+		if !resetsWindow(windows, window) {
+			continue
 		}
-		if w != "" {
-			cleanWindows = append(cleanWindows, w)
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM usage_counters WHERE scope_key = ? AND window_kind = ? AND window_start = ?`,
+			key, window, bucketStart(window, now, anchor)); err != nil {
+			return err
 		}
 	}
-	if len(cleanWindows) == 0 {
-		_, err := tx.Exec(ctx, `DELETE FROM usage_counters WHERE scope_key = ?`, key)
-		return err
+	return nil
+}
+
+// deleteCounters deletes the counter rows that a reset names, under the global
+// reset row. A single DELETE takes its rows in whatever order the database scans
+// them, which can put a later kind's row ahead of an earlier one's and so
+// reverse the lock order. One statement per kind, in counterKinds order, does
+// not. Two resets cannot meet, because both hold the global reset row first.
+// scope, when not empty, narrows the rows, with args for its placeholders.
+func deleteCounters(ctx context.Context, tx database.Queryer, names []string, scope string, args ...any) error {
+	for _, window := range counterKinds {
+		if !resetsWindow(names, window) {
+			continue
+		}
+		query := `DELETE FROM usage_counters WHERE window_kind = ?`
+		kindArgs := []any{window}
+		if scope != "" {
+			query += ` AND ` + scope
+			kindArgs = append(kindArgs, args...)
+		}
+		if _, err := tx.Exec(ctx, query, kindArgs...); err != nil {
+			return err
+		}
 	}
-	placeholders := make([]string, len(cleanWindows))
-	args := make([]any, 0, len(cleanWindows)+1)
-	args = append(args, key)
-	for i, win := range cleanWindows {
-		placeholders[i] = "?"
-		args = append(args, win)
+	return nil
+}
+
+// resetsWindow is whether a reset that names these windows clears window. An
+// empty list, or one that names "full", clears every window.
+func resetsWindow(names []string, window Window) bool {
+	named := false
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		switch {
+		case name == "full":
+			return true
+		case name == "":
+		case Window(name) == window:
+			return true
+		default:
+			named = true
+		}
 	}
-	query := `DELETE FROM usage_counters WHERE scope_key = ? AND window_kind IN (` + strings.Join(placeholders, ", ") + `)`
-	_, err := tx.Exec(ctx, query, args...)
-	return err
+	return !named
 }
 
 // tokenRateOn is whether the per-minute token limit is in force, and so
@@ -392,19 +465,15 @@ func reserveRate(ctx context.Context, tx database.Queryer, policy Policy, key st
 // reserveAllowance charges the three allowance windows what the request costs
 // them: the whole estimate, or the part of it the bonus bars did not pay.
 //
-// Lock order: every window is charged here in one pass, in AllowanceWindows
-// order. Settle and Release lock the same rows in that order with TPM first,
-// and reserveRate locks TPM before this walk when a per-minute limit is set, so
-// every path takes the rows in one global order. Two transactions that take the
-// same rows in opposite orders can each hold one and wait for the other, and
-// PostgreSQL then aborts one of them with a deadlock. That is why a window that
-// is not enforced is charged in its place in the order, not in a second pass
-// after the enforced ones. Only the limit check depends on whether a window is on.
+// Every window is charged, enforced or not, in one pass in AllowanceWindows
+// order: the usage screen reads all of them, and a limit switched on later has
+// to start from what the account has really used. That order is the one the lock
+// order above gives the allowance rows. Only the limit check depends on whether
+// a window is on.
 //
 // A refused walk takes back what it charged, the refused window included. A
-// reset card retries the same reservation inside this transaction, and without
-// that the retry would count the request twice in every window the walk had
-// already passed and the card did not clear.
+// reset card retries the walk inside this transaction, and without that the
+// retry would count the request twice in every window it had already passed.
 func reserveAllowance(
 	ctx context.Context,
 	tx database.Queryer,
@@ -533,15 +602,15 @@ func (s *Service) settleWindowsMinute(ctx context.Context, account user.User, to
 	}
 
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
-		// The order reserveAllowance takes these rows in. A settlement in any
-		// other order can deadlock against a reservation on PostgreSQL.
-		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
-			if _, err := bump(ctx, tx, key, window, bucketStart(window, now, anchor), 0, tokens, credits); err != nil {
+		// The bars' share of the minute goes in first, so this transaction takes
+		// the minute row before any window, as the lock order above requires.
+		if minuteOnly != 0 {
+			if _, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, now, 0), 0, minuteOnly, 0); err != nil {
 				return err
 			}
 		}
-		if minuteOnly != 0 {
-			if _, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, now, 0), 0, minuteOnly, 0); err != nil {
+		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
+			if _, err := bump(ctx, tx, key, window, bucketStart(window, now, anchor), 0, tokens, credits); err != nil {
 				return err
 			}
 		}
@@ -612,7 +681,7 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 		if !windows {
 			return nil
 		}
-		// The order reserveAllowance takes these rows in; see there.
+		// The minute, then the windows: the order the lock order above gives them.
 		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
 			if _, err := bump(ctx, tx, key, window, bucketStart(window, reserved.at, reserved.anchor),
 				0, -reserved.estimate.Tokens, -reserved.estimate.Credits); err != nil {
@@ -906,15 +975,26 @@ func anchorFor(createdAt, resetAt int64) int64 {
 	return resetAt
 }
 
-func lockedAllowanceAnchor(ctx context.Context, tx database.Queryer, createdAt int64) (int64, error) {
-	// A reset and a reservation must agree which side of the boundary the
-	// allowance check belongs to. This no-op upsert takes the same database row
-	// lock ResetAll writes, including when two server processes share the database.
+// lockAllowanceBoundary takes the global reset row, the first lock in the lock
+// order above. A reservation that charges the allowance windows and every
+// administrator reset take it. This no-op upsert takes the same database row lock
+// ResetAll writes, including when two server processes share the database.
+func lockAllowanceBoundary(ctx context.Context, tx database.Queryer) error {
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
 		 ON CONFLICT (key) DO UPDATE SET updated_at = settings.updated_at`,
 		globalResetKey, "0", time.Now().UnixMilli()); err != nil {
-		return 0, fmt.Errorf("quota: lock global reset: %w", err)
+		return fmt.Errorf("quota: lock global reset: %w", err)
+	}
+	return nil
+}
+
+func lockedAllowanceAnchor(ctx context.Context, tx database.Queryer, createdAt int64) (int64, error) {
+	// A reset and a reservation must agree which side of the boundary the
+	// allowance check belongs to, so the reservation reads the anchor under the
+	// same lock the reset writes it under.
+	if err := lockAllowanceBoundary(ctx, tx); err != nil {
+		return 0, err
 	}
 	return allowanceAnchor(ctx, tx, createdAt)
 }
@@ -943,8 +1023,7 @@ func (s *Service) ResetAll(ctx context.Context) error {
 			globalResetKey, strconv.FormatInt(now, 10), now); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM usage_counters`)
-		return err
+		return deleteCounters(ctx, tx, nil, "")
 	})
 	if err != nil {
 		return fmt.Errorf("quota: reset all: %w", err)
@@ -965,10 +1044,14 @@ func (s *Service) ResetAll(ctx context.Context) error {
 // concatenated with || because that is the one string operator both engines
 // spell the same way.
 func (s *Service) ResetGroup(ctx context.Context, groupID string) error {
-	if _, err := s.db.Exec(ctx,
-		`DELETE FROM usage_counters WHERE scope_key IN (
-		   SELECT ? || id FROM users WHERE group_id = ?)`,
-		userScopePrefix, groupID); err != nil {
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockAllowanceBoundary(ctx, tx); err != nil {
+			return err
+		}
+		return deleteCounters(ctx, tx, nil,
+			`scope_key IN (SELECT ? || id FROM users WHERE group_id = ?)`, userScopePrefix, groupID)
+	})
+	if err != nil {
 		return fmt.Errorf("quota: reset group: %w", err)
 	}
 	return nil
@@ -977,18 +1060,6 @@ func (s *Service) ResetGroup(ctx context.Context, groupID string) error {
 // ResetWindows clears usage counters for specific windows on named accounts.
 // An empty window list or one containing "full" clears every window.
 func (s *Service) ResetWindows(ctx context.Context, userIDs []string, windows []string) error {
-	cleanWindows := make([]string, 0, len(windows))
-	for _, w := range windows {
-		w = strings.TrimSpace(w)
-		if w == "full" {
-			cleanWindows = nil
-			break
-		}
-		if w != "" {
-			cleanWindows = append(cleanWindows, w)
-		}
-	}
-
 	const batch = 200
 	for start := 0; start < len(userIDs); start += batch {
 		end := min(start+batch, len(userIDs))
@@ -1000,19 +1071,15 @@ func (s *Service) ResetWindows(ctx context.Context, userIDs []string, windows []
 			placeholders[i] = "?"
 			args[i] = scopeKey(userID)
 		}
-		query := `DELETE FROM usage_counters WHERE scope_key IN (` +
-			strings.Join(placeholders, ", ") + `)`
+		scope := `scope_key IN (` + strings.Join(placeholders, ", ") + `)`
 
-		if len(cleanWindows) > 0 {
-			winPlaceholders := make([]string, len(cleanWindows))
-			for i, win := range cleanWindows {
-				winPlaceholders[i] = "?"
-				args = append(args, win)
+		err := s.db.Tx(ctx, func(tx *database.Tx) error {
+			if err := lockAllowanceBoundary(ctx, tx); err != nil {
+				return err
 			}
-			query += ` AND window_kind IN (` + strings.Join(winPlaceholders, ", ") + `)`
-		}
-
-		if _, err := s.db.Exec(ctx, query, args...); err != nil {
+			return deleteCounters(ctx, tx, windows, scope, args...)
+		})
+		if err != nil {
 			return fmt.Errorf("quota: reset windows: %w", err)
 		}
 	}

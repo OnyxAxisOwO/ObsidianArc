@@ -465,6 +465,68 @@ func TestResetRetryCountsEachWindowOnce(t *testing.T) {
 	}
 }
 
+// The minute counters hold one request for each admitted request, however many
+// times the allowance is walked for it. A reset retry walks the allowance again
+// but does not charge the minute again. A card names allowance windows only, so
+// it does not clear the minute or the tokens charged to it either.
+func TestResetRetryChargesTheMinuteOnce(t *testing.T) {
+	service, db := newService(t)
+	ctx := context.Background()
+	if _, err := service.Policies().Save(ctx, Policy{
+		Scope:   ScopeGlobal,
+		RPM:     ptrInt(100),
+		TPM:     ptrInt(100000),
+		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(2), nil, nil)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	person := account("minute-user", "")
+	for range 2 {
+		if _, err := service.Reserve(ctx, person, Estimate{Tokens: 100}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The third request is refused by the five-hour window, a card that clears
+	// only that window pays for it, and the request runs on the retry.
+	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{Tokens: 100},
+		func(context.Context, database.Queryer, Window) ([]string, bool, error) {
+			return []string{"5h"}, true, nil
+		}); err != nil {
+		t.Fatalf("reserve after a five-hour card: %v", err)
+	}
+	if _, err := service.Reserve(ctx, person, Estimate{Tokens: 100}); err != nil {
+		t.Fatal(err)
+	}
+	// The window is full again, and a full card is what clears it this time.
+	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{Tokens: 100},
+		func(context.Context, database.Queryer, Window) ([]string, bool, error) {
+			return nil, true, nil
+		}); err != nil {
+		t.Fatalf("reserve after a full card: %v", err)
+	}
+
+	var requests, tokens int64
+	if err := db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(requests), 0), COALESCE(SUM(tokens), 0) FROM usage_counters
+		 WHERE scope_key = ? AND window_kind = ?`,
+		scopeKey(person.ID), string(WindowRPM)).Scan(&requests, &tokens); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 5 {
+		t.Errorf("the minute counted %d requests for five admitted, want 5", requests)
+	}
+	if err := db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(tokens), 0) FROM usage_counters
+		 WHERE scope_key = ? AND window_kind = ?`,
+		scopeKey(person.ID), string(WindowTPM)).Scan(&tokens); err != nil {
+		t.Fatal(err)
+	}
+	if tokens != 500 {
+		t.Errorf("the minute counted %d tokens for five admitted requests of a hundred, want 500", tokens)
+	}
+}
+
 // One account's usage must not count against another's.
 func TestLimitsAreScopedToTheAccount(t *testing.T) {
 	service, _ := newService(t)
