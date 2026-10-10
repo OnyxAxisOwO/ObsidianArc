@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Account } from '../src/api/auth';
 import type { AttachmentRef, Conversation } from '../src/api/chat';
 import { listConversations, sendTurn, uploadAttachment } from '../src/api/chat';
+import { fetchFeedbackUnread } from '../src/api/feedback';
 import type { Project, ProjectList } from '../src/api/projects';
 import { createProject as apiCreateProject, listProjects } from '../src/api/projects';
 import type { PreparedImage } from '../src/chat/image';
@@ -31,6 +32,10 @@ vi.mock('@/api/projects', () => ({
   updateProject: vi.fn(),
 }));
 
+vi.mock('@/api/feedback', () => ({
+  fetchFeedbackUnread: vi.fn(async () => ({ unread: 0 })),
+}));
+
 // Decoding needs a canvas, which jsdom does not have. The test is about what
 // happens around the decode, so the decode itself is handed in.
 vi.mock('../src/chat/image', async (original) => ({
@@ -47,6 +52,7 @@ const {
 } = await import('../src/chat/useModels');
 const { pendingProjectID } = await import('../src/stores/workspace');
 const { createProject, loadProjects, projectList, projectMax } = await import('../src/stores/projects');
+const { feedbackUnread, refreshFeedbackUnread, setFeedbackUnread } = await import('../src/stores/feedback');
 
 function account(id: string): Account {
   return {
@@ -274,5 +280,32 @@ describe('signing out leaves nothing of the account behind', () => {
     adopt(bob);
     restorePreferences();
     expect(selectedID.value).toBe('');
+  });
+
+  it('clears the answer-waiting dot on sign-out, whichever screen the sign-out came from', () => {
+    adopt(alice);
+    setFeedbackUnread(2);
+
+    forget();
+
+    expect(feedbackUnread.value).toBe(0);
+  });
+
+  it('drops a feedback count requested before sign-out instead of showing it to the next account', async () => {
+    adopt(alice);
+    let answer!: (value: { unread: number }) => void;
+    vi.mocked(fetchFeedbackUnread).mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+
+    const refreshing = refreshFeedbackUnread();
+    forget();
+    answer({ unread: 1 });
+    await refreshing;
+    expect(feedbackUnread.value).toBe(0);
+
+    // The guard only drops the answer that was asked for the account that left.
+    adopt(bob);
+    vi.mocked(fetchFeedbackUnread).mockResolvedValueOnce({ unread: 1 });
+    await refreshFeedbackUnread();
+    expect(feedbackUnread.value).toBe(1);
   });
 });
