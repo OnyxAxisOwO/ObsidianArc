@@ -402,50 +402,68 @@ type Update struct {
 }
 
 func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, error) {
-	current, err := s.ByID(ctx, modelID)
+	// The provider row is taken before the model row, as Create does and as
+	// provider.Update's cascade does, so the two cannot wait on each other. A
+	// model's provider never changes, so naming it before the transaction is
+	// safe.
+	owner, err := s.ByID(ctx, modelID)
 	if err != nil {
 		return Model{}, err
 	}
 
-	next := current
-	assign(&next.ModelID, in.ModelID)
-	assign(&next.APIName, in.APIName)
-	assign(&next.SystemPrompt, in.SystemPrompt)
-	assign(&next.AutoDisabled, in.AutoDisabled)
-	assign(&next.DisplayName, in.DisplayName)
-	assign(&next.Description, in.Description)
-	assign(&next.Avatar, in.Avatar)
-	assign(&next.Enabled, in.Enabled)
-	assign(&next.Hidden, in.Hidden)
-	assign(&next.SortOrder, in.SortOrder)
-	assign(&next.RouteToID, in.RouteToID)
-	assign(&next.ReasoningStyle, in.ReasoningStyle)
-	assign(&next.ReasoningTiers, in.ReasoningTiers)
-	assign(&next.RequestOverride, in.RequestOverride)
-	assign(&next.SupportsReasoning, in.SupportsReasoning)
-	assign(&next.SupportsImages, in.SupportsImages)
-	assign(&next.SupportsVision, in.SupportsVision)
-	assign(&next.SupportsStreaming, in.SupportsStreaming)
-	assign(&next.SupportsSystemPrompt, in.SupportsSystemPrompt)
-	assign(&next.SupportsTools, in.SupportsTools)
-	assign(&next.SupportsImageGen, in.SupportsImageGen)
-	assign(&next.SupportsChatImageGen, in.SupportsChatImageGen)
-	assign(&next.EmulateTools, in.EmulateTools)
-	assign(&next.ContextWindow, in.ContextWindow)
-	assign(&next.MaxOutputTokens, in.MaxOutputTokens)
-	assign(&next.Request, in.RequestWeight)
-	assign(&next.InputToken, in.InputTokenWeight)
-	assign(&next.OutputToken, in.OutputTokenWeight)
-	assign(&next.ReasoningToken, in.ReasoningTokenWeight)
-
-	next, err = validate(next)
-	if err != nil {
-		return Model{}, err
-	}
+	var next Model
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
 		if _, err := tx.Exec(ctx,
-			`UPDATE providers SET updated_at = updated_at WHERE id = ?`, next.ProviderID); err != nil {
+			`UPDATE providers SET updated_at = updated_at WHERE id = ?`, owner.ProviderID); err != nil {
 			return fmt.Errorf("model: lock provider: %w", err)
+		}
+		// Everything below is decided from the row as it stands under the model's
+		// own lock. The checker's DisableIfEnabled takes that lock when it switches
+		// a model off, so a copy read before the lock could still say enabled, and
+		// a write built from it would switch the model back on.
+		if _, err := tx.Exec(ctx,
+			`UPDATE models SET updated_at = updated_at WHERE id = ?`, modelID); err != nil {
+			return fmt.Errorf("model: lock model: %w", err)
+		}
+		current, err := byID(ctx, tx, modelID)
+		if err != nil {
+			return err
+		}
+
+		next = current
+		assign(&next.ModelID, in.ModelID)
+		assign(&next.APIName, in.APIName)
+		assign(&next.SystemPrompt, in.SystemPrompt)
+		assign(&next.AutoDisabled, in.AutoDisabled)
+		assign(&next.DisplayName, in.DisplayName)
+		assign(&next.Description, in.Description)
+		assign(&next.Avatar, in.Avatar)
+		assign(&next.Enabled, in.Enabled)
+		assign(&next.Hidden, in.Hidden)
+		assign(&next.SortOrder, in.SortOrder)
+		assign(&next.RouteToID, in.RouteToID)
+		assign(&next.ReasoningStyle, in.ReasoningStyle)
+		assign(&next.ReasoningTiers, in.ReasoningTiers)
+		assign(&next.RequestOverride, in.RequestOverride)
+		assign(&next.SupportsReasoning, in.SupportsReasoning)
+		assign(&next.SupportsImages, in.SupportsImages)
+		assign(&next.SupportsVision, in.SupportsVision)
+		assign(&next.SupportsStreaming, in.SupportsStreaming)
+		assign(&next.SupportsSystemPrompt, in.SupportsSystemPrompt)
+		assign(&next.SupportsTools, in.SupportsTools)
+		assign(&next.SupportsImageGen, in.SupportsImageGen)
+		assign(&next.SupportsChatImageGen, in.SupportsChatImageGen)
+		assign(&next.EmulateTools, in.EmulateTools)
+		assign(&next.ContextWindow, in.ContextWindow)
+		assign(&next.MaxOutputTokens, in.MaxOutputTokens)
+		assign(&next.Request, in.RequestWeight)
+		assign(&next.InputToken, in.InputTokenWeight)
+		assign(&next.OutputToken, in.OutputTokenWeight)
+		assign(&next.ReasoningToken, in.ReasoningTokenWeight)
+
+		next, err = validate(next)
+		if err != nil {
+			return err
 		}
 		var providerEnabled bool
 		if err := tx.QueryRow(ctx,
@@ -466,7 +484,7 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 		}
 		next.UpdatedAt = time.Now().UnixMilli()
 
-		_, err := tx.Exec(ctx, `UPDATE models SET
+		_, err = tx.Exec(ctx, `UPDATE models SET
 			model_id = ?, display_name = ?, description = ?, avatar = ?, enabled = ?, hidden = ?, sort_order = ?,
 			supports_reasoning = ?, supports_images = ?, supports_vision = ?, supports_streaming = ?,
 			supports_system_prompt = ?, supports_tools = ?, supports_image_gen = ?, supports_chat_image_gen = ?,
@@ -537,7 +555,13 @@ func (s *Store) whichDuplicate(ctx context.Context, apiName, exceptID string) er
 }
 
 func (s *Store) ByID(ctx context.Context, modelID string) (Model, error) {
-	return scan(s.db.QueryRow(ctx,
+	return byID(ctx, s.db, modelID)
+}
+
+// byID reads a model through the given queryer, so a decision can be taken
+// from the row as it stands inside a transaction that already holds its lock.
+func byID(ctx context.Context, q database.Queryer, modelID string) (Model, error) {
+	return scan(q.QueryRow(ctx,
 		`SELECT `+withProvider+` FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?`,
 		modelID), true, false)
 }
