@@ -137,4 +137,42 @@ make -s -C "$root" version PLUGINS="alpha_1.2+x-y" PACKAGES="../pkgs/alpha-1.0.a
   || fail "make refused a plain plugin name and package path"
 echo "Makefile plugin name guard: ok"
 
+# The check must see each value as typed. Expanded first, a $(shell ...) in a value
+# runs while the makefile is parsed, and the check judges only what it printed; and
+# a newline, which the check must refuse, reaches the echo recipes as a second
+# shell command. Every payload must be refused before a recipe runs, so none
+# creates its file. They run from a directory of their own, not the tree, in case
+# one gets through; the newline payloads hold no slash, which the check refuses
+# for another reason.
+probe=$tmp/make-probe
+mkdir -p "$probe"
+nl='
+'
+# make_refuses <the file a payload would create> <make arguments...>
+make_refuses() {
+  proof=$1
+  shift
+  rm -f "$probe/$proof"
+  if (cd "$probe" && make -f "$root/Makefile" "$@") >"$tmp/out" 2>&1; then
+    fail "make accepted $*"
+  fi
+  [ -e "$probe/$proof" ] && fail "make ran a value as a command: $*"
+  grep -q "is refused" "$tmp/out" || fail "make does not say why it refused $*"
+}
+make_refuses shell-proof version 'PLUGINS=$(shell touch shell-proof)'
+make_refuses shell-proof version 'PACKAGES=pkgs/$(shell touch shell-proof)-1.0.arcx'
+make_refuses shell-proof version 'VERSION=v1$(shell touch shell-proof)'
+make_refuses newline-proof version "PLUGINS=alpha${nl}touch newline-proof"
+make_refuses newline-proof version "PACKAGES=alpha-1.0.arcx${nl}touch newline-proof"
+make_refuses newline-proof package "PLUGINS=alpha${nl}touch newline-proof"
+rm -f "$probe/env-proof"
+if (cd "$probe" && VERSION='v1$(shell touch env-proof)' make -f "$root/Makefile" version) >"$tmp/out" 2>&1; then
+  fail "make accepted a VERSION from the environment that runs a command"
+fi
+[ -e "$probe/env-proof" ] && fail "make ran a VERSION from the environment as a command"
+(cd "$probe" && make -s -f "$root/Makefile" version PLUGINS=alpha PACKAGES=pkgs/alpha-1.0.arcx) >"$tmp/out" 2>&1 \
+  || fail "make refused a plain plugin name and package path"
+grep -q "plugins: alpha alpha" "$tmp/out" || fail "the plain plugin list is not printed"
+echo "Makefile value guard: ok"
+
 echo "deploy.sh plugin guard: ok"
