@@ -286,6 +286,14 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if err := need(arcx.PermChallenge); err != nil {
 				return nil, err
 			}
+			// A check may ask a service elsewhere, and a transaction held open
+			// across that call keeps a pooled connection for as long as the
+			// service takes, which is what the refusal of http.fetch above guards
+			// against. The SDK refuses this before the call is made; the host
+			// refuses it too, for a backend that talks to the ABI directly.
+			if op == "challenge.verify" && st.tx != nil {
+				return nil, &wasm.HostError{Code: "tx_open", Message: "a challenge cannot be checked while a transaction is open"}
+			}
 			return m.challengeOp(c, op, raw)
 
 		case "console.call", "console.resolve_user":
