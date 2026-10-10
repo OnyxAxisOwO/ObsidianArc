@@ -58,15 +58,6 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 
 	ceiling := int64(conversation.MaxAttachmentBytes)
 
-	// The place covers the body and every picture in it. It is claimed before
-	// the first byte is read and given back below, before the request is
-	// authorised or sent upstream; the defer is for the paths that leave early.
-	done, err := h.claimBody(w, r, who)
-	if err != nil {
-		return err
-	}
-	defer done()
-
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		// The body is capped before anything parses it. ParseMultipartForm's
 		// argument is only where it stops holding parts in memory; past it,
@@ -183,8 +174,6 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 			})
 		}
 	}
-
-	done()
 
 	body.Prompt = strings.TrimSpace(body.Prompt)
 	if body.Prompt == "" {

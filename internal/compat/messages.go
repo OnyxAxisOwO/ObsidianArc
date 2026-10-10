@@ -84,7 +84,7 @@ type anthropicInBlock struct {
 
 func (h *Handlers) messages(w http.ResponseWriter, r *http.Request, who caller) error {
 	var body messagesRequest
-	if err := h.decode(w, r, who, &body); err != nil {
+	if err := decode(w, r, &body); err != nil {
 		return err
 	}
 
@@ -718,7 +718,7 @@ func messageID(requestID string) string { return "msg_" + requestID }
 // a fifth moves when it compacts; having none moves whether it can.
 func (h *Handlers) countTokens(w http.ResponseWriter, r *http.Request, who caller) error {
 	var body messagesRequest
-	if err := h.decode(w, r, who, &body); err != nil {
+	if err := decode(w, r, &body); err != nil {
 		return err
 	}
 

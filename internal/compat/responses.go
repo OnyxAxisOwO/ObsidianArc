@@ -104,7 +104,7 @@ type responsesPart struct {
 
 func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller) error {
 	var body responsesRequest
-	if err := h.decode(w, r, who, &body); err != nil {
+	if err := decode(w, r, &body); err != nil {
 		return err
 	}
 

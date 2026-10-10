@@ -970,9 +970,6 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	projectHandlers.Routes(mux)
 
 	compatHandlers := compat.NewHandlers(settingsService, users, groups, models, keys, registry)
-	// Shared with the attachment endpoints: both read request bodies into this
-	// process's memory, so they count against one bound.
-	compatHandlers.Decoding = chatHandlers.Decoding
 	compatHandlers.Guard = guard
 	compatHandlers.OnTurn = recordTurn
 	compatHandlers.Routes(mux)
