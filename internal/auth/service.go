@@ -1136,7 +1136,10 @@ func (s *Service) checkPassword(ctx context.Context, userID, hash, candidate str
 		attempt.finish(attemptFailed)
 		return ErrCurrentPasswordWrong
 	}
-	attempt.finish(attemptSucceeded)
+	// Releases the reservation without forgiving the wrong guesses before it. The
+	// owner's own right password is no reason to start a guesser's count over, the
+	// rule the second step follows in spendCode.
+	attempt.finish(attemptCancelled)
 	return nil
 }
 

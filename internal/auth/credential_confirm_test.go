@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -243,5 +244,31 @@ func TestPasswordGuessesDoNotSpendTheCodeAllowance(t *testing.T) {
 	}
 	if err := f.auth.VerifyTwoFactorCode(ctx, account, codeAt(t, secret, used+1), "198.51.100.4"); err != nil {
 		t.Fatalf("a right code was refused after password guesses: %v", err)
+	}
+}
+
+// A right current password does not forgive the wrong ones before it. Forgiving
+// them would give a guesser a fresh allowance every time the password it is
+// guessing at was right, the same rule a right second step is held to.
+func TestARightPasswordDoesNotForgiveTheWrongOnesBeforeIt(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := f.auth.ConfirmPassword(ctx, account.ID, "guess"); !errors.Is(err, ErrCurrentPasswordWrong) {
+			t.Fatalf("a wrong password = %v, want ErrCurrentPasswordWrong", err)
+		}
+	}
+	if err := f.auth.ConfirmPassword(ctx, account.ID, "a-good-password"); err != nil {
+		t.Fatalf("the right password was refused: %v", err)
+	}
+
+	entry := f.auth.codes.buckets["id:password:"+strings.ToLower(account.ID)]
+	if entry == nil || entry.failures != 2 {
+		t.Fatalf("the password budget after a right password = %+v, want its two wrong guesses kept", entry)
 	}
 }
