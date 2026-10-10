@@ -18,10 +18,12 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -38,6 +40,10 @@ const Format = 1
 
 // Bounds on what an import may carry. An account can already create this much
 // by hand; the point is that one request cannot.
+//
+// An export refuses an account past the same figures, so every file this server
+// writes is one its own import reads back. Both sides compare against these
+// constants rather than keeping a copy each.
 const (
 	MaxDocumentBytes     = 32 << 20
 	MaxConversations     = 2000
@@ -61,21 +67,33 @@ const (
 	// The count above bounds rows, and a row may carry sixty-four thousand
 	// characters: two hundred thousand of them is some twelve gigabytes behind
 	// a ceiling that reads as modest. This is the figure the disk actually
-	// feels. Characters rather than bytes because LENGTH counts them the same
-	// way on both databases; generous for a person (a heavy year is a few
+	// feels. Characters rather than bytes, counted the same way on both sides
+	// of the comparison; generous for a person (a heavy year is a few
 	// megabytes) and reached only by somebody trying.
 	MaxStoredChars        = 512 << 20
 	MaxTitleChars         = 200
 	MaxImportContentChars = conversation.MaxContentChars
 )
 
+// exportPageSize is how many conversation rows one read of an export takes.
+// An export holds one such page of rows, and the messages of the one
+// conversation being written, at a time. A variable so a test can span several
+// pages without writing a hundred conversations.
+var exportPageSize = 100
+
 var (
 	ErrWrongFormat = errors.New("backup: not an Obsidian Arc export")
-	ErrTooLarge    = errors.New("backup: this export is larger than the server will import")
+	// Returned by Import for a document past the limits, and by an export of an
+	// account past them: the file it would write is one Import refuses.
+	ErrTooLarge = errors.New("backup: this export is larger than the server will import")
 	// Distinct from ErrTooLarge: the document is fine, the account is full.
 	// Told apart because "make a smaller export" and "delete some
 	// conversations first" are different instructions.
 	ErrStorageFull = errors.New("backup: this account is storing as many messages as it may")
+	// Refused rather than stripped: what landed would not be what was sent.
+	// Stored text with a NUL is also the one kind SQL cannot measure (see
+	// storedChars), so it is kept out at the door.
+	ErrNULCharacter = errors.New("backup: the document contains a NUL character")
 )
 
 // Document is the file itself.
@@ -128,62 +146,172 @@ func NewService(db *database.DB, conversations *conversation.Store, preferences 
 	return &Service{db: db, conversations: conversations, preferences: preferences}
 }
 
-// Export gathers one account's conversations and preferences.
-//
-// Every message of every conversation is read, which is a lot of small
-// queries for a heavy account — acceptable because this runs when a person
-// presses a button, not on any hot path.
-//
-// The conversation list is read through ListForExport rather than List. List
-// is the interface's page and clamps, so asking it for MaxConversations
-// returned DefaultListLimit threads and said nothing, and an account with
-// more than sixty conversations was handed those sixty as its complete
-// history. MaxConversations remains the ceiling here because it is also the
-// ceiling an import accepts.
-func (s *Service) Export(ctx context.Context, account user.User) (Document, error) {
-	document := Document{
-		Format:        Format,
-		ExportedAt:    time.Now().UnixMilli(),
-		Username:      account.Username,
-		Conversations: []Thread{},
-	}
+// exportStream is an export that has been measured and not yet written. Every
+// refusal an export can make is decided in openExport, before the response has
+// started: after the first byte the status is 200 and cannot be taken back.
+type exportStream struct {
+	service  *Service
+	account  user.User
+	pageSize int
+	envelope []byte
+}
 
+// openExport measures the whole export before any of it is sent. The envelope
+// is built here because it carries the preferences and the time the file is
+// stamped with. The conversations are then written into a counter by writeTo
+// itself, so the counter sees exactly the bytes a download would carry, and the
+// walk stops at the first limit the import would refuse.
+//
+// That costs the account one more read than the download does, and the limits
+// bound it: the walk stops as soon as one is crossed, so an account far past
+// them is refused after about one import's worth of reads.
+func (s *Service) openExport(ctx context.Context, account user.User) (*exportStream, error) {
 	// Already a JSON document in the store, carried across as it is.
-	if preferences, err := s.preferences.Get(ctx, account.ID); err == nil && len(preferences) > 0 {
-		document.Preferences = preferences
+	var preferences json.RawMessage
+	if stored, err := s.preferences.Get(ctx, account.ID); err == nil && len(stored) > 0 {
+		preferences = stored
 	}
 
-	threads, err := s.conversations.ListForExport(ctx, account.ID, MaxConversations)
+	envelope, err := encodeEnvelope(Document{
+		Format:      Format,
+		ExportedAt:  time.Now().UnixMilli(),
+		Username:    account.Username,
+		Preferences: preferences,
+	})
 	if err != nil {
-		return Document{}, fmt.Errorf("backup: list conversations: %w", err)
+		return nil, err
 	}
 
-	for _, thread := range threads {
-		messages, err := s.conversations.Messages(ctx, nil, account.ID, thread.ID)
+	// At zero no page is ever short, so the walk would not end, and the cursor
+	// would be taken from an empty page. Held at one at the least.
+	stream := &exportStream{
+		service:  s,
+		account:  account,
+		pageSize: max(exportPageSize, 1),
+		envelope: envelope,
+	}
+	if err := stream.writeTo(ctx, &sizeLimit{}); err != nil {
+		return nil, err
+	}
+	return stream, nil
+}
+
+// encodeEnvelope is the document up to where its conversations begin. It is
+// marshalled through the Document's own tags, so the field names and the
+// omitempty rules are the ones Import reads and cannot drift from them. The
+// empty conversations field that marshalling adds at the end is cut, so the
+// array can be written after it.
+func encodeEnvelope(document Document) ([]byte, error) {
+	const tail = `,"conversations":null}`
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("backup: encode envelope: %w", err)
+	}
+	if !bytes.HasSuffix(encoded, []byte(tail)) {
+		// A field has been added after conversations. Writing the array where
+		// that field is expected would produce a file Import misreads, so fail
+		// here rather than guess at the layout.
+		return nil, errors.New("backup: conversations must stay the last field of Document")
+	}
+	return encoded[:len(encoded)-len(tail)], nil
+}
+
+// writeTo streams the document to w one conversation at a time.
+//
+// The bytes are what json.Marshal of the same Document produces, so a file
+// from this server reads back into Import exactly as one from the previous
+// release did. The count limits are applied here too, so openExport's dry run
+// and the download refuse the same accounts.
+//
+// Once w has been written to, a failure cannot be reported. An account that
+// changes between the dry run and this pass, or a read that fails, leaves the
+// body truncated where it stopped. That is not valid JSON, so a client that
+// parses it fails, and Import refuses it: nothing is half-restored, but the
+// file is not usable. The status cannot be changed to say so, and the log
+// carries the cause.
+func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
+	if _, err := w.Write(e.envelope); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, `,"conversations":[`); err != nil {
+		return err
+	}
+
+	conversations, messages := 0, 0
+	cursor := ""
+	for {
+		page, err := e.service.conversations.ListForExport(ctx, e.account.ID, cursor, e.pageSize)
 		if err != nil {
-			return Document{}, fmt.Errorf("backup: read %s: %w", thread.ID, err)
+			return fmt.Errorf("backup: list conversations: %w", err)
+		}
+		for _, record := range page {
+			thread, err := e.service.threadOf(ctx, e.account, record)
+			if err != nil {
+				return err
+			}
+			conversations++
+			messages += len(thread.Messages)
+			if overImportLimits(conversations, messages) {
+				return ErrTooLarge
+			}
+			encoded, err := json.Marshal(thread)
+			if err != nil {
+				return fmt.Errorf("backup: encode %s: %w", record.ID, err)
+			}
+			if conversations > 1 {
+				if _, err := io.WriteString(w, ","); err != nil {
+					return err
+				}
+			}
+			if _, err := w.Write(encoded); err != nil {
+				return err
+			}
 		}
 
-		out := Thread{
-			Title:     thread.Title,
-			Pinned:    thread.Pinned,
-			CreatedAt: thread.CreatedAt,
-			Messages:  make([]Turn, 0, len(messages)),
+		// A short page is the last one. A full page is followed by another
+		// read, which is what finds the end of an account whose conversation
+		// count is an exact multiple of the page size.
+		if len(page) < e.pageSize {
+			break
 		}
-		for _, message := range messages {
-			out.Messages = append(out.Messages, Turn{
-				Role:      string(message.Role),
-				Content:   message.Content,
-				Reasoning: message.Reasoning,
-				Error:     message.Error,
-				ModelName: message.ModelName,
-				CreatedAt: message.CreatedAt,
-				Images:    len(message.Attachments),
-			})
-		}
-		document.Conversations = append(document.Conversations, out)
+		cursor = page[len(page)-1].ID
 	}
-	return document, nil
+
+	_, err := io.WriteString(w, "]}")
+	return err
+}
+
+// threadOf is one conversation as the document carries it. Its messages are
+// read whole, so the memory held for it is one conversation at a time.
+//
+// Every text field is scrubbed of NUL here rather than left for Import to
+// refuse. A conversation can already hold one, because the chat path and
+// renaming keep what they were given, and an export that carried it would be a
+// file its own account could not restore.
+func (s *Service) threadOf(ctx context.Context, account user.User, record conversation.Conversation) (Thread, error) {
+	messages, err := s.conversations.Messages(ctx, nil, account.ID, record.ID)
+	if err != nil {
+		return Thread{}, fmt.Errorf("backup: read %s: %w", record.ID, err)
+	}
+
+	out := Thread{
+		Title:     scrubNUL(record.Title),
+		Pinned:    record.Pinned,
+		CreatedAt: record.CreatedAt,
+		Messages:  make([]Turn, 0, len(messages)),
+	}
+	for _, message := range messages {
+		out.Messages = append(out.Messages, Turn{
+			Role:      scrubNUL(string(message.Role)),
+			Content:   scrubNUL(message.Content),
+			Reasoning: scrubNUL(message.Reasoning),
+			Error:     scrubNUL(message.Error),
+			ModelName: scrubNUL(message.ModelName),
+			CreatedAt: message.CreatedAt,
+			Images:    len(message.Attachments),
+		})
+	}
+	return out, nil
 }
 
 // Result reports what an import did, so the interface can say something
@@ -206,16 +334,15 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	if document.Format != Format {
 		return Result{}, ErrWrongFormat
 	}
-	if len(document.Conversations) > MaxConversations {
-		return Result{}, ErrTooLarge
-	}
-
 	total := 0
 	for _, thread := range document.Conversations {
 		total += len(thread.Messages)
 	}
-	if total > MaxMessagesPerImport {
+	if overImportLimits(len(document.Conversations), total) {
 		return Result{}, ErrTooLarge
+	}
+	if hasNUL(document) {
+		return Result{}, ErrNULCharacter
 	}
 
 	// And what the account already holds, checked before anything is
@@ -284,6 +411,57 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	return result, nil
 }
 
+// hasNUL reports whether any text the import would store carries U+0000. The
+// preferences are not walked: they are stored as JSON, which writes a NUL as
+// the escape \u0000, so no NUL byte reaches the store through them.
+func hasNUL(document Document) bool {
+	for _, thread := range document.Conversations {
+		if strings.IndexByte(thread.Title, 0) >= 0 {
+			return true
+		}
+		for _, turn := range thread.Messages {
+			for _, field := range [...]string{turn.Role, turn.Content, turn.Reasoning, turn.Error, turn.ModelName} {
+				if strings.IndexByte(field, 0) >= 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// overImportLimits is the one place the count limits are compared. Import refuses
+// a document for which it holds, and an export refuses an account for which it
+// comes to hold; sharing the comparison is what keeps the two from drifting.
+func overImportLimits(conversations, messages int) bool {
+	return conversations > MaxConversations || messages > MaxMessagesPerImport
+}
+
+// sizeLimit counts an export's dry run and refuses as soon as the total is more
+// than the importer reads. The import body is cut by a MaxBytesReader at
+// MaxDocumentBytes (http.go), so a file of exactly that size is read and one
+// byte more is not.
+type sizeLimit struct {
+	written int64
+}
+
+func (s *sizeLimit) Write(p []byte) (int, error) {
+	s.written += int64(len(p))
+	if s.written > MaxDocumentBytes {
+		return 0, ErrTooLarge
+	}
+	return len(p), nil
+}
+
+// scrubNUL replaces U+0000 with U+FFFD. U+FFFD marks where something was rather
+// than deleting it, so the restored text shows the character was there.
+func scrubNUL(value string) string {
+	if strings.IndexByte(value, 0) < 0 {
+		return value
+	}
+	return strings.ReplaceAll(value, "\x00", "\uFFFD")
+}
+
 // ceiling is how many messages one account may store. Zero configures the
 // package default.
 func (s *Service) ceiling() int {
@@ -301,26 +479,43 @@ func (s *Service) charCeiling() int64 {
 }
 
 // storedChars is the message text an account holds now, in characters.
+//
+// It is counted in Go rather than with SUM(LENGTH(...)). SQLite's LENGTH stops
+// at the first NUL, so text carrying one counts for almost nothing and an
+// account could fill itself past the ceiling. Reading every row is the cost of
+// an exact count; it is paid once per import, and the rows are read one at a
+// time, so only one message is held in memory however large the account.
 func (s *Service) storedChars(ctx context.Context, userID string) (int64, error) {
-	var chars int64
-	// CAST because Postgres widens SUM of a bigint to numeric, which a plain
-	// integer scan refuses on some drivers.
-	err := s.db.QueryRow(ctx,
-		`SELECT COALESCE(CAST(SUM(LENGTH(content) + LENGTH(reasoning)) AS BIGINT), 0)
-		   FROM messages WHERE user_id = ?`, userID).Scan(&chars)
+	rows, err := s.db.Query(ctx,
+		`SELECT content, reasoning FROM messages WHERE user_id = ?`, userID)
 	if err != nil {
+		return 0, fmt.Errorf("backup: measure stored text: %w", err)
+	}
+	defer rows.Close()
+
+	var chars int64
+	for rows.Next() {
+		var content, reasoning string
+		if err := rows.Scan(&content, &reasoning); err != nil {
+			return 0, fmt.Errorf("backup: measure stored text: %w", err)
+		}
+		chars += int64(utf8.RuneCountInString(content) + utf8.RuneCountInString(reasoning))
+	}
+	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("backup: measure stored text: %w", err)
 	}
 	return chars, nil
 }
 
 // documentChars is an upper bound on what a document would write: the text as
-// sent, before the per-message truncation.
+// sent, before the per-message truncation. It is counted in characters like
+// the rest of the ceiling. Counting bytes would refuse a CJK document for its
+// three bytes a character well before the document reached the ceiling.
 func documentChars(document Document) int64 {
 	var chars int64
 	for _, thread := range document.Conversations {
 		for _, turn := range thread.Messages {
-			chars += int64(len(turn.Content) + len(turn.Reasoning))
+			chars += int64(utf8.RuneCountInString(turn.Content) + utf8.RuneCountInString(turn.Reasoning))
 		}
 	}
 	return chars

@@ -105,10 +105,7 @@ func TestExportCarriesConversationsAndPreferences(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	document, err := f.service.Export(ctx, f.account)
-	if err != nil {
-		t.Fatalf("export: %v", err)
-	}
+	_, document := f.export(t, f.account)
 
 	if document.Format != Format {
 		t.Errorf("format = %d, want %d", document.Format, Format)
@@ -131,17 +128,12 @@ func TestExportCarriesConversationsAndPreferences(t *testing.T) {
 // The one property that makes this safe to expose: an export is the caller's
 // own data and nobody else's.
 func TestExportIsScopedToOneAccount(t *testing.T) {
-	ctx := context.Background()
 	f := newFixture(t)
 
 	f.write(t, f.account, "Mine", "a secret of mine")
 	f.write(t, f.stranger, "Theirs", "a secret of theirs")
 
-	document, err := f.service.Export(ctx, f.account)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, _ := json.Marshal(document)
+	encoded, _ := f.export(t, f.account)
 	if strings.Contains(string(encoded), "Theirs") || strings.Contains(string(encoded), "theirs") {
 		t.Errorf("the export carried another account's conversation: %s", encoded)
 	}
@@ -152,10 +144,7 @@ func TestRoundTripRestoresTheConversation(t *testing.T) {
 	f := newFixture(t)
 
 	f.write(t, f.account, "About lamps", "what is a lamp", "a source of light")
-	document, err := f.service.Export(ctx, f.account)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, document := f.export(t, f.account)
 
 	result, err := f.service.Import(ctx, f.stranger, document)
 	if err != nil {
@@ -425,10 +414,7 @@ func TestExportCarriesEveryConversationNotJustOnePage(t *testing.T) {
 		f.write(t, f.account, fmt.Sprintf("Thread %02d", i), "hello")
 	}
 
-	document, err := f.service.Export(ctx, f.account)
-	if err != nil {
-		t.Fatalf("export: %v", err)
-	}
+	_, document := f.export(t, f.account)
 	if len(document.Conversations) != total {
 		t.Fatalf("exported %d conversations, want all %d",
 			len(document.Conversations), total)
@@ -448,7 +434,7 @@ func TestExportCarriesEveryConversationNotJustOnePage(t *testing.T) {
 	}
 
 	// The export's own reader returns every one of them at that same request.
-	every, err := f.conversations.ListForExport(ctx, f.account.ID, 500)
+	every, err := f.conversations.ListForExport(ctx, f.account.ID, "", 500)
 	if err != nil {
 		t.Fatal(err)
 	}

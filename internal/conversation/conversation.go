@@ -233,13 +233,38 @@ func (s *Store) List(ctx context.Context, userID string, limit int) ([]Conversat
 	return s.ListWithFilter(ctx, userID, ListFilter{Limit: limit, Archived: &f})
 }
 
-// ListForExport is every conversation a user owns, up to the caller's own
-// ceiling, with no page clamp. Includes both active and archived conversations.
-func (s *Store) ListForExport(ctx context.Context, userID string, limit int) ([]Conversation, error) {
+// ListForExport is one page of every conversation a user owns, archived ones
+// included, after afterID ("" for the first page), in ID order.
+//
+// An export reads the account a page at a time while the account is still in
+// use, so the page is keyed on the ID and not an offset. An ID never changes.
+// A turn bumps updated_at and a pin reorders the rail, and either would move a
+// conversation across an offset boundary, so the export would skip one or
+// repeat another. ULIDs sort in creation order, so the file comes out oldest
+// first.
+func (s *Store) ListForExport(ctx context.Context, userID, afterID string, limit int) ([]Conversation, error) {
 	if limit <= 0 {
 		limit = MaxListLimit
 	}
-	return s.ListWithFilter(ctx, userID, ListFilter{Limit: limit})
+	rows, err := s.db.Query(ctx,
+		`SELECT `+conversationColumns+` FROM conversations
+		 WHERE user_id = ? AND id > ?
+		 ORDER BY id LIMIT ?`,
+		userID, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("conversation: list for export: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Conversation{}
+	for rows.Next() {
+		record, err := scanConversation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	return out, rows.Err()
 }
 
 // list is the helper behind paginated callers, defaulting to active conversations.
