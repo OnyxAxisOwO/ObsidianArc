@@ -98,7 +98,7 @@ type contentPart struct {
 
 func (h *Handlers) completions(w http.ResponseWriter, r *http.Request, who caller) error {
 	var body completionRequest
-	if err := decode(w, r, &body); err != nil {
+	if err := h.decode(w, r, who, &body); err != nil {
 		return err
 	}
 
@@ -913,6 +913,12 @@ func (h *Handlers) record(
 
 // --- error translation --------------------------------------------------------
 
+// promptBytes is the largest body read without a decoding place. A request
+// this small is a prompt and some settings: it cannot hold the process's memory
+// hostage however many arrive together, and a short question should not wait
+// behind somebody's picture upload.
+const promptBytes = 64 << 10
+
 // decode reads a /v1 body.
 //
 // Lenient, unlike the rest of this server: an unknown field on an internal
@@ -923,8 +929,18 @@ func (h *Handlers) record(
 // whatever was added last month included, and refusing one of those ends the
 // agent's loop on its second step. Which fields are honoured is decided by
 // completionRequest, so nothing reaches a provider by being named here.
-func decode(w http.ResponseWriter, r *http.Request, dst any) error {
-	if err := httpx.DecodeJSONLenient(w, r, dst, maxBodyBytes); err != nil {
+//
+// A body that may be large is read while a decoding place is held for it, and
+// the place is given back once the body is in, before the handler does anything
+// with it: a generation never holds one.
+func (h *Handlers) decode(w http.ResponseWriter, r *http.Request, who caller, dst any) error {
+	done, err := h.claimBody(w, r, who)
+	if err != nil {
+		return err
+	}
+	err = httpx.DecodeJSONLenient(w, r, dst, maxBodyBytes)
+	done()
+	if err != nil {
 		var decided *httpx.Error
 		if errors.As(err, &decided) {
 			return apiError{
@@ -937,6 +953,33 @@ func decode(w http.ResponseWriter, r *http.Request, dst any) error {
 		return internalError(err)
 	}
 	return nil
+}
+
+// claimBody holds a decoding place while a body is read, and bounds how long
+// the body may take to arrive, as the attachment endpoints do (see
+// chat.DecodeGate). The request body of an unknown or large length is what
+// this is for; a body of known small length holds nothing. done gives the place
+// back and lifts the deadline, and calling it twice does no harm.
+func (h *Handlers) claimBody(w http.ResponseWriter, r *http.Request, who caller) (done func(), err error) {
+	if r.ContentLength >= 0 && r.ContentLength <= promptBytes {
+		return func() {}, nil
+	}
+	release, err := h.Decoding.Acquire(r.Context(), who.account.ID)
+	if err != nil {
+		// Only the request's own context ends the wait, so the client has gone
+		// and nothing will read what is written here.
+		return nil, apiError{
+			status:  499,
+			kind:    "invalid_request_error",
+			code:    "cancelled",
+			message: "The request was cancelled.",
+		}
+	}
+	lift := chat.BoundBodyRead(w)
+	return func() {
+		lift()
+		release()
+	}, nil
 }
 
 // translateModelError keeps "no such model" and "not allowed to use it"

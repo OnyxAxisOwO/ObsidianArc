@@ -50,7 +50,7 @@ func (l *imageLab) serve(path string, body io.Reader) (*httptest.ResponseRecorde
 // holding their place or queued behind it. After every request has ended it
 // must be zero, or the map is growing with the accounts that ever uploaded.
 func (l *imageLab) placesInUse() int {
-	s := &l.handlers.accountDecoding
+	s := &l.handlers.Decoding.accountDecoding
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.holders)
@@ -59,7 +59,7 @@ func (l *imageLab) placesInUse() int {
 // placeState reports how many requests hold or queue for the account's place,
 // and whether the place is taken.
 func (l *imageLab) placeState(account string) (refs int, held bool) {
-	s := &l.handlers.accountDecoding
+	s := &l.handlers.Decoding.accountDecoding
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry := s.holders[account]
@@ -90,8 +90,8 @@ func feed(w *io.PipeWriter, body string) {
 }
 
 func (l *imageLab) fillSlots() {
-	for i := 0; i < cap(l.handlers.decoding); i++ {
-		l.handlers.decoding <- struct{}{}
+	for i := 0; i < cap(l.handlers.Decoding.decoding); i++ {
+		l.handlers.Decoding.decoding <- struct{}{}
 	}
 }
 
@@ -123,13 +123,13 @@ func TestUploadClaimsItsSlotBeforeReadingTheBody(t *testing.T) {
 		t.Fatal("the body was read while every decoding slot was taken")
 	}
 
-	<-lab.handlers.decoding
+	<-lab.handlers.Decoding.decoding
 	finishes(t, done, "the upload")
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body)
 	}
-	if got := len(lab.handlers.decoding); got != cap(lab.handlers.decoding)-1 {
-		t.Errorf("%d slots held after the upload, want the %d filled by the test", got, cap(lab.handlers.decoding)-1)
+	if got := len(lab.handlers.Decoding.decoding); got != cap(lab.handlers.Decoding.decoding)-1 {
+		t.Errorf("%d slots held after the upload, want the %d filled by the test", got, cap(lab.handlers.Decoding.decoding)-1)
 	}
 }
 
@@ -140,7 +140,7 @@ func TestUploadHoldsItsSlotWhileTheBodyArrives(t *testing.T) {
 	recorder, done := lab.serve("/api/attachments", pipeReader)
 
 	deadline := time.Now().Add(5 * time.Second)
-	for len(lab.handlers.decoding) != 1 {
+	for len(lab.handlers.Decoding.decoding) != 1 {
 		if time.Now().After(deadline) {
 			t.Fatal("the upload never claimed a slot")
 		}
@@ -153,7 +153,7 @@ func TestUploadHoldsItsSlotWhileTheBodyArrives(t *testing.T) {
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body)
 	}
-	if got := len(lab.handlers.decoding); got != 0 {
+	if got := len(lab.handlers.Decoding.decoding); got != 0 {
 		t.Errorf("%d slots still held after the upload", got)
 	}
 }
@@ -173,7 +173,7 @@ func TestImageRequestWithPicturesSharesTheDecodingSlots(t *testing.T) {
 		t.Fatal("a request of unknown size was read while every decoding slot was taken")
 	}
 
-	<-lab.handlers.decoding
+	<-lab.handlers.Decoding.decoding
 	finishes(t, done, "the generation")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body)
@@ -214,7 +214,7 @@ func TestImageRequestGivesItsSlotBackBeforeCallingTheProvider(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if got := len(lab.handlers.decoding); got != 0 {
+	if got := len(lab.handlers.Decoding.decoding); got != 0 {
 		t.Errorf("%d slots held during the provider call, want 0", got)
 	}
 
@@ -233,7 +233,7 @@ func TestSecondUploadFromOneAccountWaitsForItsPlace(t *testing.T) {
 
 	firstBody, firstWriter := io.Pipe()
 	firstRecorder, firstDone := lab.serve("/api/attachments", firstBody)
-	waitUntil(t, "the first upload to claim a slot", func() bool { return len(lab.handlers.decoding) == 1 })
+	waitUntil(t, "the first upload to claim a slot", func() bool { return len(lab.handlers.Decoding.decoding) == 1 })
 
 	// The second body is held back until the first upload has finished. Until
 	// then a second upload that had taken a global slot would still be holding
@@ -241,7 +241,7 @@ func TestSecondUploadFromOneAccountWaitsForItsPlace(t *testing.T) {
 	secondBody, secondWriter := io.Pipe()
 	secondRecorder, secondDone := lab.serve("/api/attachments", secondBody)
 	time.Sleep(150 * time.Millisecond)
-	if got := len(lab.handlers.decoding); got != 1 {
+	if got := len(lab.handlers.Decoding.decoding); got != 1 {
 		t.Fatalf("%d global slots held, want 1: the second upload from the same account took one", got)
 	}
 
@@ -258,7 +258,7 @@ func TestSecondUploadFromOneAccountWaitsForItsPlace(t *testing.T) {
 	if firstRecorder.Code != http.StatusCreated || secondRecorder.Code != http.StatusCreated {
 		t.Fatalf("statuses %d and %d, want both %d", firstRecorder.Code, secondRecorder.Code, http.StatusCreated)
 	}
-	if got := len(lab.handlers.decoding); got != 0 {
+	if got := len(lab.handlers.Decoding.decoding); got != 0 {
 		t.Errorf("%d global slots still held after every upload finished", got)
 	}
 	if got := lab.placesInUse(); got != 0 {
@@ -271,7 +271,7 @@ func TestSecondUploadFromOneAccountWaitsForItsPlace(t *testing.T) {
 func TestOneAccountCannotHoldEveryDecodingSlot(t *testing.T) {
 	lab := newImageLab(t, 1)
 
-	writers := make([]*io.PipeWriter, cap(lab.handlers.decoding))
+	writers := make([]*io.PipeWriter, cap(lab.handlers.Decoding.decoding))
 	recorders := make([]*httptest.ResponseRecorder, len(writers))
 	dones := make([]chan struct{}, len(writers))
 	for i := range writers {
@@ -279,9 +279,9 @@ func TestOneAccountCannotHoldEveryDecodingSlot(t *testing.T) {
 		body, writers[i] = io.Pipe()
 		recorders[i], dones[i] = lab.serve("/api/attachments", body)
 	}
-	waitUntil(t, "one upload to claim a slot", func() bool { return len(lab.handlers.decoding) > 0 })
+	waitUntil(t, "one upload to claim a slot", func() bool { return len(lab.handlers.Decoding.decoding) > 0 })
 	time.Sleep(150 * time.Millisecond)
-	if got := len(lab.handlers.decoding); got != 1 {
+	if got := len(lab.handlers.Decoding.decoding); got != 1 {
 		t.Fatalf("%d global slots held by one account, want 1", got)
 	}
 
@@ -366,7 +366,7 @@ func TestPlaceIsGivenBackWhenTheGlobalWaitEnds(t *testing.T) {
 		t.Fatalf("%d account places still held after the upload ended", got)
 	}
 
-	<-lab.handlers.decoding
+	<-lab.handlers.Decoding.decoding
 	recorder, nextDone := lab.serve("/api/attachments", strings.NewReader(uploadBody()))
 	finishes(t, nextDone, "the next upload from the same account")
 	if recorder.Code != http.StatusCreated {
@@ -382,12 +382,12 @@ func TestGenerationOfUnknownSizeWaitsForItsAccountsPlace(t *testing.T) {
 
 	firstBody, firstWriter := io.Pipe()
 	_, firstDone := lab.serve("/api/attachments", firstBody)
-	waitUntil(t, "the upload to claim a slot", func() bool { return len(lab.handlers.decoding) == 1 })
+	waitUntil(t, "the upload to claim a slot", func() bool { return len(lab.handlers.Decoding.decoding) == 1 })
 
 	generationBody, generationWriter := io.Pipe()
 	recorder, done := lab.serve("/api/images/generate", generationBody)
 	time.Sleep(150 * time.Millisecond)
-	if got := len(lab.handlers.decoding); got != 1 {
+	if got := len(lab.handlers.Decoding.decoding); got != 1 {
 		t.Fatalf("%d global slots held, want 1: the generation from the same account took one", got)
 	}
 

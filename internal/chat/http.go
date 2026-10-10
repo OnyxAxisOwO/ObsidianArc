@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -68,136 +67,17 @@ type Handlers struct {
 	// Nil keeps every picture, as before the switch existed.
 	ImageHistoryEnabled func() bool
 	ImageGuards         func(ctx context.Context, tokens map[string]string, ip, username string) error
-	// Slots for in-flight attachment decodes. See uploadAttachment.
-	decoding chan struct{}
-	// One place per account, claimed before one of the global slots. See
-	// accountSlots.
-	accountDecoding accountSlots
-}
-
-// How many uploads may be decoding at once, across every account.
-//
-// An upload holds the encoded body and the decoded picture at the same time,
-// so each one costs several times the file's size while it runs. The stored
-// caps say nothing about that: they are checked after the allocation. Small
-// enough that a burst cannot exhaust memory, large enough that nobody sharing
-// an instance waits behind one.
-const maxConcurrentDecodes = 4
-
-// How long a body may take to arrive while it holds one of those slots. The
-// slot is claimed before the first byte is read, so a client that sends its
-// headers and then trickles would otherwise sit on it for the server's whole
-// five-minute read timeout; four of them stop everybody's uploads.
-const decodeReadWindow = 2 * time.Minute
-
-// accountSlots is the per-account half of the decoding bound. An account gets
-// one place at a time, so its own queue waits here rather than on the global
-// slots, where it would take the places every other account is waiting for.
-//
-// This is a mutex and not a row lock, for the reason uploadAttachment gives for
-// the global slots: what is being bounded is this process's memory, not an
-// invariant in the database. A second instance against the same database has
-// its own map and its own global slots, the same scope the global bound has.
-type accountSlots struct {
-	mu      sync.Mutex
-	holders map[string]*accountSlot
-}
-
-// accountSlot is one account's place. refs counts the request holding the place
-// and every request queued behind it; the entry leaves the map when that reaches
-// zero, so the map holds only accounts that are decoding or waiting.
-type accountSlot struct {
-	slot chan struct{}
-	refs int
-}
-
-// acquire waits for the account's place for as long as the request is still
-// wanted, exactly as the global wait does. The release is idempotent.
-func (s *accountSlots) acquire(ctx context.Context, account string) (func(), error) {
-	s.mu.Lock()
-	// The zero value is ready to use, so NewHandlers does not need to know this
-	// map exists.
-	if s.holders == nil {
-		s.holders = make(map[string]*accountSlot)
-	}
-	entry := s.holders[account]
-	if entry == nil {
-		entry = &accountSlot{slot: make(chan struct{}, 1)}
-		s.holders[account] = entry
-	}
-	// Taken under the same lock as the lookup and before the wait, so a holder
-	// releasing in between cannot drop an entry this request is about to queue on.
-	entry.refs++
-	s.mu.Unlock()
-
-	leave := func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		entry.refs--
-		if entry.refs == 0 {
-			delete(s.holders, account)
-		}
-	}
-
-	select {
-	case entry.slot <- struct{}{}:
-	case <-ctx.Done():
-		leave()
-		return nil, ctx.Err()
-	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			<-entry.slot
-			leave()
-		})
-	}, nil
-}
-
-// acquireDecode claims the account's place and then one of the decoding slots,
-// waiting for each for as long as the request is still wanted. The release
-// gives both back and is idempotent, so a path can hand them back early and
-// still defer it.
-func (h *Handlers) acquireDecode(ctx context.Context, account string) (func(), error) {
-	// The account's place comes first, so a request queued behind its own
-	// account holds no global slot while it waits.
-	releaseAccount, err := h.accountDecoding.acquire(ctx, account)
-	if err != nil {
-		return nil, err
-	}
-	select {
-	case h.decoding <- struct{}{}:
-	case <-ctx.Done():
-		releaseAccount()
-		return nil, ctx.Err()
-	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			<-h.decoding
-			releaseAccount()
-		})
-	}, nil
-}
-
-// boundBodyRead gives the body a deadline while a decoding slot is held, and
-// returns what lifts it once the body is in. Lifted rather than left to
-// expire: the server reads in the background to notice a client that has gone,
-// and a deadline that passes while the handler is still working is reported
-// there as a disconnect, cancelling the request in the middle of whatever it
-// was doing. Best effort — a ResponseWriter that cannot set a deadline keeps
-// the server-wide timeout and the returned function does nothing.
-func boundBodyRead(w http.ResponseWriter) (bodyRead func()) {
-	controller := http.NewResponseController(w)
-	_ = controller.SetReadDeadline(time.Now().Add(decodeReadWindow))
-	return func() { _ = controller.SetReadDeadline(time.Time{}) }
+	// The bound on request bodies read into memory. The attachment and image
+	// endpoints use it here; the server shares it with the /v1 endpoints so that
+	// every body in the process is counted once. See DecodeGate.
+	Decoding *DecodeGate
 }
 
 func NewHandlers(service *Service, conversations *conversation.Store) *Handlers {
 	return &Handlers{
 		service:       service,
 		conversations: conversations,
-		decoding:      make(chan struct{}, maxConcurrentDecodes),
+		Decoding:      NewDecodeGate(MaxConcurrentDecodes),
 	}
 }
 
@@ -698,12 +578,12 @@ func (h *Handlers) uploadAttachment(w http.ResponseWriter, r *http.Request) erro
 	// holding their full body at the moment they queued for it. Deliberately
 	// not a row lock: nothing here is read and then written, and what is
 	// being protected is memory, not an invariant in the database.
-	release, err := h.acquireDecode(r.Context(), account.ID)
+	release, err := h.Decoding.Acquire(r.Context(), account.ID)
 	if err != nil {
 		return err
 	}
 	defer release()
-	bodyRead := boundBodyRead(w)
+	bodyRead := BoundBodyRead(w)
 
 	var body uploadRequest
 	// Base64 is a third larger than the bytes it carries, plus room for the
@@ -917,7 +797,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	releaseDecode := func() {}
 	bodyRead := func() {}
 	if r.ContentLength < 0 || r.ContentLength > imagePromptOnlyBytes {
-		release, err := h.acquireDecode(r.Context(), account.ID)
+		release, err := h.Decoding.Acquire(r.Context(), account.ID)
 		if err != nil {
 			return err
 		}
@@ -927,7 +807,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		// well for every path that leaves earlier.
 		defer release()
 		releaseDecode = release
-		bodyRead = boundBodyRead(w)
+		bodyRead = BoundBodyRead(w)
 	}
 
 	var body imageGenRequest

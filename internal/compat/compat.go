@@ -85,6 +85,12 @@ type Handlers struct {
 	// the next call. Nil means no hold; the server wires both.
 	MustEnrolTwoFactor func(user.User) bool
 	MustBindOIDC       func(context.Context, user.User) (bool, error)
+
+	// The bound on request bodies read into memory. The server hands the
+	// attachment endpoints' gate here, so one limit covers every body in the
+	// process; NewHandlers gives a gate of its own, which is what a server with
+	// no attachment endpoints would want.
+	Decoding *chat.DecodeGate
 }
 
 func NewHandlers(
@@ -102,6 +108,7 @@ func NewHandlers(
 		models:   models,
 		keys:     keys,
 		registry: registry,
+		Decoding: chat.NewDecodeGate(chat.MaxConcurrentDecodes),
 	}
 }
 
