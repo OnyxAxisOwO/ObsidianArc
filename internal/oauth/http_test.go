@@ -280,7 +280,7 @@ func TestLinkingBindsToTheAccountThatStartedIt(t *testing.T) {
 	}, Identity{Subject: "4218", Login: "octocat"})
 	_, mux := handlers(t, f)
 
-	owner, _, err := f.auth.Register(context.Background(), auth.RegisterInput{
+	owner, ownerToken, err := f.auth.Register(context.Background(), auth.RegisterInput{
 		Username: "founder", Password: "a-good-password",
 	})
 	if err != nil {
@@ -293,10 +293,12 @@ func TestLinkingBindsToTheAccountThatStartedIt(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	start := get(mux, "/api/auth/oauth/start/github?link=1", nil, &owner)
-	state := start.Result().Cookies()[0]
-	target, _ := url.Parse(start.Header().Get("Location"))
-	nonce := target.Query().Get("state")
+	connect := connectAs(t, f, mux, "github", ownerToken, map[string]string{"password": "a-good-password"})
+	if connect.Code != http.StatusOK {
+		t.Fatalf("connect = %d %s", connect.Code, connect.Body.String())
+	}
+	state := cookieNamed(connect, stateCookie)
+	nonce := redirectState(t, connect)
 
 	// The same signed state, presented by somebody else's session.
 	hijack := get(mux, "/api/auth/oauth/callback/github?code=c&state="+nonce,
@@ -339,7 +341,7 @@ func TestALinkReturnsToThePageItWasStartedFrom(t *testing.T) {
 	}, Identity{Subject: "4218", Login: "octocat"})
 	_, mux := handlers(t, f)
 
-	owner, _, err := f.auth.Register(context.Background(), auth.RegisterInput{
+	owner, ownerToken, err := f.auth.Register(context.Background(), auth.RegisterInput{
 		Username: "founder", Password: "a-good-password",
 	})
 	if err != nil {
@@ -353,10 +355,13 @@ func TestALinkReturnsToThePageItWasStartedFrom(t *testing.T) {
 	}
 
 	page := "/admin/providers?keep=1&panel=settings#models"
-	start := get(mux, "/api/auth/oauth/start/github?link=1&next="+url.QueryEscape(page), nil, &owner)
-	state := start.Result().Cookies()[0]
-	target, _ := url.Parse(start.Header().Get("Location"))
-	nonce := target.Query().Get("state")
+	connect := connectAs(t, f, mux, "github", ownerToken,
+		map[string]string{"password": "a-good-password", "next": page})
+	if connect.Code != http.StatusOK {
+		t.Fatalf("connect = %d %s", connect.Code, connect.Body.String())
+	}
+	state := cookieNamed(connect, stateCookie)
+	nonce := redirectState(t, connect)
 
 	hijack := get(mux, "/api/auth/oauth/callback/github?code=c&state="+nonce,
 		[]*http.Cookie{state}, &stranger)
@@ -373,30 +378,37 @@ func TestALinkReturnsToThePageItWasStartedFrom(t *testing.T) {
 
 // What a link falls back to: the settings screen, as it always has, when the page
 // it names is not one of this site's, and the failure comes back to the page
-// given when it is. The failure here is the provider not being on, which is
-// answered before the provider is asked anything.
+// given when it is. The failure here is the provider refusing at its consent
+// screen, which the callback reports to the page the link was started from.
 func TestALinkWithNoSafePageFallsBackToSettings(t *testing.T) {
 	cases := []struct{ next, want string }{
-		{"", "/settings?oauth_error=unavailable"},
-		{"//evil.example/x", "/settings?oauth_error=unavailable"},
-		{"https://evil.example/", "/settings?oauth_error=unavailable"},
-		{"/\tevil.example", "/settings?oauth_error=unavailable"},
-		{"/admin/providers?panel=settings#models", "/admin/providers?panel=settings&oauth_error=unavailable#models"},
-		{"/bind-oidc?next=%2Fchat", "/bind-oidc?next=%2Fchat&oauth_error=unavailable"},
+		{"", "/settings?oauth_error=denied"},
+		{"//evil.example/x", "/settings?oauth_error=denied"},
+		{"https://evil.example/", "/settings?oauth_error=denied"},
+		{"/\tevil.example", "/settings?oauth_error=denied"},
+		{"/admin/providers?panel=settings#models", "/admin/providers?panel=settings&oauth_error=denied#models"},
+		{"/bind-oidc?next=%2Fchat", "/bind-oidc?next=%2Fchat&oauth_error=denied"},
 	}
 
 	f := newFixture(t)
+	f.configure(t, "github")
 	_, mux := handlers(t, f)
-	owner, _, err := f.auth.Register(context.Background(), auth.RegisterInput{
+	owner, ownerToken, err := f.auth.Register(context.Background(), auth.RegisterInput{
 		Username: "founder", Password: "a-good-password",
 	})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	for _, c := range cases {
-		start := get(mux, "/api/auth/oauth/start/github?link=1&next="+url.QueryEscape(c.next), nil, &owner)
-		if location := start.Header().Get("Location"); location != c.want {
-			t.Errorf("next %q: start = %q, want %q", c.next, location, c.want)
+		connect := connectAs(t, f, mux, "github", ownerToken,
+			map[string]string{"password": "a-good-password", "next": c.next})
+		if connect.Code != http.StatusOK {
+			t.Fatalf("next %q: connect = %d %s", c.next, connect.Code, connect.Body.String())
+		}
+		back := get(mux, "/api/auth/oauth/callback/github?error=access_denied&state="+redirectState(t, connect),
+			[]*http.Cookie{cookieNamed(connect, stateCookie)}, &owner)
+		if location := back.Header().Get("Location"); location != c.want {
+			t.Errorf("next %q: callback = %q, want %q", c.next, location, c.want)
 		}
 	}
 }

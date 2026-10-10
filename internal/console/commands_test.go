@@ -96,6 +96,7 @@ var consoleExempt = map[string]string{
 	"POST /api/auth/verify":                         "followed from the link in the verification email",
 	"GET /api/auth/oauth/start/{provider}":          "a browser redirect to the identity provider",
 	"GET /api/auth/oauth/callback/{provider}":       "a browser redirect back from the identity provider",
+	"POST /api/auth/oauth/connections/{provider}":   "starting a connection, which ends in a browser trip to the identity provider and back",
 	"GET /api/auth/oauth/signup":                    "part of signing up through an identity provider",
 	"POST /api/auth/oauth/signup":                   "part of signing up through an identity provider",
 	"GET /api/site":                                 "public instance details for the sign-in page, not a setting",

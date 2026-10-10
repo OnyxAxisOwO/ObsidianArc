@@ -132,19 +132,28 @@ func TestBindingGateHoldsAnAccountToTheConnectFlow(t *testing.T) {
 		t.Fatalf("an unconnected account reached a guarded route: %d %s", held.Code, held.Body.String())
 	}
 
-	for _, allowed := range []string{
-		"/api/auth/me", "/api/site", "/api/auth/oauth/connections",
-		"/api/auth/oauth/start/oidc?link=1", "/api/auth/oauth/callback/oidc?code=c&state=x",
+	for _, allowed := range []struct{ method, path string }{
+		{http.MethodGet, "/api/auth/me"},
+		{http.MethodGet, "/api/site"},
+		{http.MethodGet, "/api/auth/oauth/connections"},
+		{http.MethodPost, "/api/auth/oauth/connections/oidc"},
+		{http.MethodGet, "/api/auth/oauth/callback/oidc?code=c&state=x"},
 	} {
-		if w := request(http.MethodGet, allowed); !reached {
-			t.Fatalf("%s was held by the gate: %d %s", allowed, w.Code, w.Body.String())
+		if w := request(allowed.method, allowed.path); !reached {
+			t.Fatalf("%s %s was held by the gate: %d %s", allowed.method, allowed.path, w.Code, w.Body.String())
 		}
 	}
 
-	// A GitHub connection would not satisfy this policy, and must not be
-	// let through the gate the way the OIDC ones above are.
-	if w := request(http.MethodGet, "/api/auth/oauth/start/github?link=1"); reached {
-		t.Fatalf("a non-OIDC connect route reached past the gate: %d %s", w.Code, w.Body.String())
+	// A GitHub connection would not satisfy this policy, and must not be let
+	// through the gate the way the OIDC one above is. The navigation that used
+	// to start a link is no longer a way to connect anything, so it is held too.
+	for _, held := range []struct{ method, path string }{
+		{http.MethodPost, "/api/auth/oauth/connections/github"},
+		{http.MethodGet, "/api/auth/oauth/start/oidc"},
+	} {
+		if w := request(held.method, held.path); reached {
+			t.Fatalf("%s %s reached past the gate: %d %s", held.method, held.path, w.Code, w.Body.String())
+		}
 	}
 
 	if err := f.service.Connect(ctx, member.ID, Identity{

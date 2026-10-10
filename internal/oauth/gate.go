@@ -27,14 +27,18 @@ func oidcBindingAllowed(r *http.Request) bool {
 	switch r.Method + " " + r.URL.Path {
 	case "GET /api/site", "GET /api/site/logo", "GET /api/health", "GET /api/auth/me", "POST /api/auth/logout",
 		"GET /api/auth/oauth/connections",
+		// The connect call itself, which asks for the account's proof and answers
+		// with the provider's address. Only for OIDC, see below.
+		"POST /api/auth/oauth/connections/oidc",
 		"GET /api/preferences", "PATCH /api/preferences", "GET /api/preferences/wallpaper":
 		return true
 	}
-	// Only the OIDC provider's own start and callback, never GitHub's or
-	// Google's — connecting either of those would leave the account still
-	// without the one identity this policy is about.
-	return strings.HasPrefix(r.URL.Path, "/api/auth/oauth/start/oidc") ||
-		strings.HasPrefix(r.URL.Path, "/api/auth/oauth/callback/oidc")
+	// Only the OIDC provider's callback, never GitHub's or Google's — connecting
+	// either of those would leave the account still without the one identity
+	// this policy is about. A connect call for either is not in the list above,
+	// so it is refused like anything else; the callback completes only a
+	// connection that connect started.
+	return strings.HasPrefix(r.URL.Path, "/api/auth/oauth/callback/oidc")
 }
 
 // BindingGate holds an account this instance requires to link an OpenID

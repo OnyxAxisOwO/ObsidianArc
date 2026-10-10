@@ -14,7 +14,7 @@ import {
   fetchAuthorizations, withdrawAuthorization, type Authorization,
 } from '@/api/consent';
 import {
-  disconnectProvider, fetchConnections, signInURL,
+  connectProvider, disconnectProvider, fetchConnections,
   type OAuthConnection, type OAuthProvider,
 } from '@/api/oauth';
 import OaAccountFields from '@/components/OaAccountFields.vue';
@@ -27,6 +27,7 @@ import { t, type StringKey } from '@/composables/useI18n';
 import { IconGithub, IconGoogle, IconKey, type OaIcon } from '@/icons';
 import { allFields, fieldProblem, fieldValues } from '@/lib/account-fields';
 import { absoluteTime } from '@/lib/format';
+import { connectRefusalText } from '@/lib/refusal';
 import { pinnedProvider, pluginRefusal } from '@/plugins/registry';
 import { adopt, currentPreferences, currentUser, requireUser, siteInfo } from '@/stores/session';
 import { matchesSettings } from './search';
@@ -70,6 +71,12 @@ const connections = ref<OAuthConnection[]>([]);
 const providers = ref<OAuthProvider[]>([]);
 const connectionFlash = ref('');
 const connectionsBusy = ref(false);
+// A connection is started by a request, not a link, because the account proves
+// itself first (see connectProvider). `connecting` is the provider whose connection
+// is waiting for the password the server asked for, if there is one.
+const connecting = ref('');
+const connectPassword = ref('');
+const connectBusy = ref(false);
 /**
  * Whether this account also has a password.
  *
@@ -94,11 +101,11 @@ function mark(id: string): OaIcon {
 
 const linked = computed(() => new Map(connections.value.map((item) => [item.provider, item])));
 
-// Where the connect link brings the browser back to. In the chat that is the
-// settings screen, as it always was. Over the backoffice it is the address this
-// panel is drawn at, panel parameter and all, so the page underneath stays where
-// it was and the panel reopens with the outcome in it. The server returns a link
-// to the page it was given, when it fails as well as when it works.
+// Where a connection brings the browser back to. In the chat that is the settings
+// screen, as it always was. Over the backoffice it is the address this panel is
+// drawn at, panel parameter and all, so the page underneath stays where it was and
+// the panel reopens with the outcome in it. The server returns to the page it was
+// given, when it fails as well as when it works.
 const connectBack = computed(() => (route.meta['admin'] ? route.fullPath : '/settings'));
 
 /** The line under a provider's name: who it is here, and since when — or that it is not connected. */
@@ -155,6 +162,56 @@ function disconnect(provider: string): void {
           : error instanceof ApiError ? error.message : String(error);
     })
     .finally(() => { connectionsBusy.value = false; });
+}
+
+/** The name the password prompt gives the provider it is connecting. */
+const connectingName = computed(() =>
+  providers.value.find((item) => item.id === connecting.value)?.name ?? connecting.value);
+
+function startConnect(provider: string): void {
+  connecting.value = '';
+  connectPassword.value = '';
+  sendToProvider(provider, '');
+}
+
+function submitConnect(): void {
+  sendToProvider(connecting.value, connectPassword.value);
+}
+
+function cancelConnect(): void {
+  connecting.value = '';
+  connectPassword.value = '';
+}
+
+/**
+ * Asks the server to start the connection, and leaves for the provider with the
+ * address it answers with. A password the server wants opens the field to type it
+ * into, and a wrong one keeps the field open. Nothing is started until the proof is
+ * right, so nothing has to be undone when it is not.
+ */
+function sendToProvider(provider: string, password: string): void {
+  connectBusy.value = true;
+  connectionFlash.value = '';
+  void connectProvider(provider, { password, next: connectBack.value })
+    .then((answer) => {
+      // Off this page for good: the provider's consent screen, then back here.
+      window.location.assign(answer.redirect);
+    })
+    .catch((error: unknown) => {
+      if (error instanceof ApiError && error.code === 'password_required') {
+        // The field's own hint says what it is for, so there is no flash.
+        connecting.value = provider;
+        return;
+      }
+      if (error instanceof ApiError && error.code === 'current_password_wrong') {
+        connecting.value = provider;
+        connectPassword.value = '';
+        connectionFlash.value = t('currentPasswordWrong');
+        return;
+      }
+      connectionFlash.value = connectRefusalText(error);
+    })
+    .finally(() => { connectBusy.value = false; });
 }
 
 // --- the sites this account has let in ----------------------------------------
@@ -388,13 +445,15 @@ function importData(): void {
       :title="provider.name"
       :meta="connectionMeta(provider.id)"
     >
-      <!-- A link, not a button: connecting is a trip to the provider and
-           back, which the browser has to navigate itself. -->
-      <a
+      <!-- A request, not a link: the account proves itself first, and the browser
+           leaves for the provider only with the address the server answers. -->
+      <button
         v-if="!linked.has(provider.id)"
+        type="button"
         class="oa-btn"
-        :href="signInURL(provider.id, { link: true, next: connectBack })"
-      >{{ t('connect') }}</a>
+        :disabled="connectBusy"
+        @click="startConnect(provider.id)"
+      >{{ t('connect') }}</button>
       <!-- A connection a plugin made permanent proves a detail of the
            account, so it has no remove control at all — deleting the
            account is the only way it comes off. -->
@@ -412,6 +471,24 @@ function importData(): void {
         @confirm="disconnect(provider.id)"
       />
     </OaRow>
+    <template v-if="connecting">
+      <OaRow stacked>
+        <OaTextField
+          v-model="connectPassword"
+          :label="t('currentPassword')"
+          type="password"
+          :hint="t('connectPasswordHint', { provider: connectingName })"
+        />
+      </OaRow>
+      <OaRow>
+        <button type="button" class="oa-btn primary" :disabled="connectBusy" @click="submitConnect">
+          {{ t('connect') }}
+        </button>
+        <button type="button" class="oa-btn" :disabled="connectBusy" @click="cancelConnect">
+          {{ t('cancel') }}
+        </button>
+      </OaRow>
+    </template>
     <p v-if="connectionFlash" class="oa-group-flash" role="alert">{{ connectionFlash }}</p>
   </OaGroup>
 

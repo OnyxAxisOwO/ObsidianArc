@@ -2127,6 +2127,8 @@ const en = {
   oauthSignupChallengeRequired: 'This server asks for a human check before it opens a new account. Start the sign-up from the register page.',
   oauthThrottled: 'Too many accounts have been created just now. Try again shortly.',
   oauthLoginRefused: 'This sign-in was refused on this server. If you believe this was an error, please contact the administrator.',
+  connectReauth: 'Sign in again first. Connecting a provider needs a sign-in made just now.',
+  connectPasswordHint: 'Enter your password to connect {provider}.',
   oauthDomain: 'That address is not one this server accepts.',
   oauthEmailRequired: 'This server needs an email address, and the provider did not give a verified one.',
   secOAuth: 'Third-party sign-in',

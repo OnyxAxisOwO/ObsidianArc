@@ -1199,6 +1199,27 @@ func (s *Service) ConfirmPassword(ctx context.Context, userID, candidate string)
 	return s.checkPassword(ctx, userID, hash, candidate)
 }
 
+// ConfirmNewSignIn is the proof in front of a new way into an account, which is
+// what connecting a provider is. It asks what ChangePassword asks of the same
+// account: the current password where there is one, and a sign-in made just now
+// where there is none, the rule that lets an account opened through a provider
+// set its first password. A bare session is neither, so a copied session cookie
+// adds nothing without the password, and for an account with none, nothing once
+// the sign-in it came from is older than recentSignIn.
+func (s *Service) ConfirmNewSignIn(ctx context.Context, userID, candidate, sessionID string) error {
+	hash, err := s.users.PasswordHash(ctx, nil, userID)
+	if err != nil {
+		return err
+	}
+	if hash != "" {
+		if candidate == "" {
+			return ErrPasswordRequired
+		}
+		return s.checkPassword(ctx, userID, hash, candidate)
+	}
+	return s.requireRecentSignIn(ctx, s.db, userID, sessionID)
+}
+
 // recentSignIn is how long after signing in a session may still set the first
 // password on an account that has none. Long enough to go from the provider's
 // consent screen to the settings page, short enough that a cookie copied from

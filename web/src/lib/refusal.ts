@@ -112,6 +112,25 @@ export function loginRefusalText(failure: unknown): string {
 }
 
 /**
+ * Why a connection to a provider was not started, once the account's proof has
+ * been asked for. The password step has its own answers on screen: the field asks
+ * for the password, and a wrong one is said there. What is left is the proof's
+ * refusal for an account with no password, and the rest, worded as refusalText
+ * words them.
+ */
+export function connectRefusalText(failure: unknown): string {
+  if (failure instanceof ApiError) {
+    switch (failure.code) {
+      case 'reauth_required':
+        return t('connectReauth');
+      case 'unavailable':
+        return t('oauthUnavailable');
+    }
+  }
+  return refusalText(failure);
+}
+
+/**
  * Why a settings save was refused. The server names the setting whose address
  * it will not keep in plain http, so the line can say which field to change;
  * anything else is worded as refusalText words it. Kept beside refusalText so

@@ -78,8 +78,15 @@ const BODIES: Array<[RegExp, unknown]> = [
 ];
 
 function stubServer(): void {
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    // A connection starts with the account's password, which an account that has
+    // one is asked for before anything else: the answer asks for it.
+    if (init?.method === 'POST' && CONNECT.test(url)) {
+      return new Response(JSON.stringify({
+        error: { code: 'password_required', message: 'Enter your current password to do this.' },
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
     const match = BODIES.find(([pattern]) => pattern.test(url));
     return new Response(JSON.stringify(match?.[1] ?? {}), {
       status: 200,
@@ -90,6 +97,9 @@ function stubServer(): void {
 
 let app: VueApp | null = null;
 let host: HTMLElement;
+
+/** The request that starts a connection to a provider. */
+const CONNECT = /\/api\/auth\/oauth\/connections\//;
 
 function pause(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -170,10 +180,12 @@ async function openFirstEntry(): Promise<void> {
   await settle();
 }
 
-/** Where the first connect link returns the browser to, as the server will read it. */
+/** The address the connect request asks the browser to come back to, as the server will read it. */
 function connectNext(): string | null {
-  const href = host.querySelector<HTMLAnchorElement>('.oa-connection a')?.getAttribute('href') ?? '';
-  return new URL(href, 'http://localhost').searchParams.get('next');
+  const calls = (fetch as unknown as { mock: { calls: Array<[string, RequestInit | undefined]> } }).mock.calls;
+  const connect = calls.find(([url, init]) => init?.method === 'POST' && CONNECT.test(url));
+  if (!connect?.[1]?.body) return null;
+  return (JSON.parse(String(connect[1].body)) as { next?: string }).next ?? null;
 }
 
 /** The messages the settings screen shows under its connections. */
@@ -363,7 +375,9 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     adopt(ADMIN);
     await mountAt('/admin/providers?keep=1#models');
     await chooseFromAccountMenu(t('settings'));
-    await until(() => !!host.querySelector('.oa-connection a'));
+    await until(() => !!host.querySelector('.oa-connection button'));
+    host.querySelector<HTMLButtonElement>('.oa-connection button')!.click();
+    await until(() => connectNext() !== null);
 
     expect(connectNext()).toBe('/admin/providers?keep=1&panel=settings#models');
   });
@@ -520,7 +534,9 @@ describe('the same menu from the chat', () => {
   it('brings a connection back to the settings screen, as it always has', async () => {
     adopt(ACCOUNT);
     await mountAt('/settings');
-    await until(() => !!host.querySelector('.oa-connection a'));
+    await until(() => !!host.querySelector('.oa-connection button'));
+    host.querySelector<HTMLButtonElement>('.oa-connection button')!.click();
+    await until(() => connectNext() !== null);
 
     expect(connectNext()).toBe('/settings');
   });
