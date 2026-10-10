@@ -32,7 +32,7 @@ import { copyToClipboard } from '@/chat/markdown';
 import { initials } from '@/lib/account';
 import { rememberedPageSize } from '@/lib/page-size';
 import { absoluteTime } from '@/lib/format';
-import { refusalText } from '@/lib/refusal';
+import { settingsRefusalText } from '@/lib/refusal';
 import { currentUser, isSuperAdmin, site } from '@/stores/session';
 import { maskUser, maskLog, maskCredential } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
@@ -487,7 +487,7 @@ async function submitTwoFactor(): Promise<void> {
     showTwoFactorModal.value = false;
     twoFactorCode.value = '';
   } catch (failure) {
-    twoFactorError.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
+    twoFactorError.value = failure instanceof ApiError ? settingsRefusalText(failure) : String(failure);
     twoFactorCode.value = '';
     await nextTick();
     twoFactorField.value?.focus();
@@ -557,7 +557,7 @@ async function performSave(codeParam?: string): Promise<void> {
     } else if (failure instanceof ApiError && failure.code === 'two_factor_required') {
       flash.value = t('signupReviewPromptNeeds2FA');
     } else {
-      flash.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
+      flash.value = failure instanceof ApiError ? settingsRefusalText(failure) : String(failure);
     }
     saveLabel.value = '';
     throw failure;

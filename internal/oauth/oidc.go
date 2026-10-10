@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
 // flexAudience reads the aud claim in either shape the spec allows: one
@@ -125,6 +127,12 @@ func identifyOIDC(ctx context.Context, client *http.Client, creds Credentials, t
 	userinfoFound := false
 
 	if creds.UserInfoURL != "" && tokens.AccessToken != "" {
+		// The access token is a bearer credential. It is refused a plaintext
+		// address here as well as in ResolveCredentials, because this is the
+		// last point before it leaves the process.
+		if err := checkEndpoint("userinfo endpoint", creds.UserInfoURL); err != nil {
+			return Identity{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
 		if err := getJSON(ctx, client, creds.UserInfoURL, tokens.AccessToken, &userinfo); err == nil {
 			userinfoFound = true
 		}
@@ -213,14 +221,45 @@ type oidcDiscovery struct {
 	JwksURI               string `json:"jwks_uri"`
 }
 
+// checkEndpoint refuses an OpenID Connect address that would carry a code, a
+// client secret or an access token in the clear. Empty is not refused here: it
+// means the address was not set, and the caller decides whether it was needed.
+// The address itself stays out of the error, since it may carry userinfo that
+// belongs in no log.
+func checkEndpoint(name, endpoint string) error {
+	if endpoint == "" || settings.ValidOIDCURL(endpoint) {
+		return nil
+	}
+	return fmt.Errorf("oidc %s must be an https URL, or plain http to a loopback address", name)
+}
+
+// checkOIDCEndpoints holds every address the operator configured to the TLS
+// rule before anything is sent to one. The issuer is checked even when
+// discovery is skipped: an issuer on plain http is the same mistake, and it is
+// refused at the settings screen too.
+func checkOIDCEndpoints(creds Credentials) error {
+	if err := checkEndpoint("issuer", creds.Issuer); err != nil {
+		return err
+	}
+	if err := checkEndpoint("authorization endpoint", creds.AuthURL); err != nil {
+		return err
+	}
+	if err := checkEndpoint("token endpoint", creds.TokenURL); err != nil {
+		return err
+	}
+	return checkEndpoint("userinfo endpoint", creds.UserInfoURL)
+}
+
 // discover retrieves and caches the OpenID Connect discovery document for an issuer URL.
 func (s *Service) discover(ctx context.Context, client *http.Client, issuer string) (oidcDiscovery, error) {
 	issuer = strings.TrimSpace(issuer)
 	if issuer == "" {
 		return oidcDiscovery{}, errors.New("empty oidc issuer")
 	}
-	if !strings.HasPrefix(issuer, "http://") && !strings.HasPrefix(issuer, "https://") {
-		return oidcDiscovery{}, errors.New("oidc issuer must be an http or https URL")
+	// Before the first request: the endpoints this document names are trusted
+	// for the rest of the sign-in, so the document itself has to come over TLS.
+	if err := checkEndpoint("issuer", issuer); err != nil {
+		return oidcDiscovery{}, err
 	}
 
 	s.discoveryMu.Lock()
@@ -253,6 +292,19 @@ func (s *Service) discover(ctx context.Context, client *http.Client, issuer stri
 	if strings.TrimSpace(doc.AuthorizationEndpoint) == "" || strings.TrimSpace(doc.TokenEndpoint) == "" {
 		return oidcDiscovery{}, errors.New("oidc discovery document missing authorization or token endpoint")
 	}
+	// A document that names one endpoint over plain http is refused whole, not
+	// trimmed to the rest: once one of its answers was tampered with, none of
+	// them can be trusted with the client secret. It is not cached either, so
+	// the next sign-in asks again.
+	if err := checkEndpoint("authorization endpoint", doc.AuthorizationEndpoint); err != nil {
+		return oidcDiscovery{}, err
+	}
+	if err := checkEndpoint("token endpoint", doc.TokenEndpoint); err != nil {
+		return oidcDiscovery{}, err
+	}
+	if err := checkEndpoint("userinfo endpoint", doc.UserinfoEndpoint); err != nil {
+		return oidcDiscovery{}, err
+	}
 
 	s.discoveryMu.Lock()
 	s.cachedIssuer = issuer
@@ -269,6 +321,13 @@ func (s *Service) ResolveCredentials(ctx context.Context, client *http.Client, p
 	creds := s.Credentials(providerID)
 	if providerID != "oidc" {
 		return creds, nil
+	}
+	// Both the start and the callback come through here, and the callback's
+	// code exchange posts the client secret to the token URL, so a configured
+	// plaintext address is refused before anything is sent to it. Discovered
+	// addresses are checked inside discover.
+	if err := checkOIDCEndpoints(creds); err != nil {
+		return creds, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	if creds.AuthURL != "" && creds.TokenURL != "" && creds.UserInfoURL != "" {
 		return creds, nil

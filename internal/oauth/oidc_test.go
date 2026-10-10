@@ -5,9 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -460,5 +463,396 @@ func TestOIDCConfigureAndRoundTrip(t *testing.T) {
 
 	if name := f.service.DisplayName("oidc"); name != "Keycloak SSO" {
 		t.Errorf("DisplayName = %q, want Keycloak SSO", name)
+	}
+}
+
+// cannedTransport answers every request itself and records the URL it was
+// asked for. A test can name a host that must never be dialled and still see
+// whether the sign-in tried to reach it, without touching the network.
+type cannedTransport struct {
+	body     string
+	requests []string
+}
+
+func (c *cannedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	c.requests = append(c.requests, request.URL.String())
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(c.body)),
+		Request:    request,
+	}, nil
+}
+
+// discoveryJSON is a discovery document for issuer whose endpoints all sit
+// under it, with any of them replaced by override.
+func discoveryJSON(t *testing.T, issuer string, override map[string]string) string {
+	t.Helper()
+	doc := map[string]string{
+		"issuer":                 issuer,
+		"authorization_endpoint": issuer + "/authorize",
+		"token_endpoint":         issuer + "/token",
+		"userinfo_endpoint":      issuer + "/userinfo",
+	}
+	for key, value := range override {
+		doc[key] = value
+	}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("encode discovery document: %v", err)
+	}
+	return string(encoded)
+}
+
+// The ID token is trusted without a signature check on the strength of TLS
+// alone, so an issuer that is not https is refused before a single request
+// goes to it.
+func TestOIDCDiscoveryRefusesAPlaintextIssuer(t *testing.T) {
+	transport := &cannedTransport{body: discoveryJSON(t, "http://idp.example.com", nil)}
+	svc := &Service{}
+	if _, err := svc.discover(context.Background(), &http.Client{Transport: transport}, "http://idp.example.com"); err == nil {
+		t.Fatal("a plaintext issuer was used for discovery")
+	}
+	if len(transport.requests) != 0 {
+		t.Errorf("requests = %v, want none sent to a plaintext issuer", transport.requests)
+	}
+}
+
+// Loopback is the one plaintext exception, the same one a provider's key has:
+// an identity provider on this host has no certificate to check, and nothing
+// else leaves the machine.
+func TestOIDCDiscoveryAcceptsHTTPSAndLoopbackIssuers(t *testing.T) {
+	for _, issuer := range []string{
+		"https://idp.example.com",
+		"http://localhost:8080",
+		"http://127.0.0.1:8080/realms/arc",
+		"http://[::1]:8080",
+	} {
+		t.Run(issuer, func(t *testing.T) {
+			transport := &cannedTransport{body: discoveryJSON(t, issuer, nil)}
+			doc, err := (&Service{}).discover(context.Background(), &http.Client{Transport: transport}, issuer)
+			if err != nil {
+				t.Fatalf("discover(%q): %v", issuer, err)
+			}
+			if doc.TokenEndpoint != issuer+"/token" {
+				t.Errorf("TokenEndpoint = %q, want %s/token", doc.TokenEndpoint, issuer)
+			}
+		})
+	}
+}
+
+// Every endpoint a discovery document names is held to the rule the operator's
+// own are. One plaintext answer refuses the whole document, and nothing is
+// cached, so the next sign-in asks again rather than reusing it.
+func TestOIDCDiscoveryRefusesADocumentWithAPlaintextEndpoint(t *testing.T) {
+	for name, override := range map[string]map[string]string{
+		"token endpoint":         {"token_endpoint": "http://idp.example.com/token"},
+		"authorization endpoint": {"authorization_endpoint": "http://idp.example.com/authorize"},
+		"userinfo endpoint":      {"userinfo_endpoint": "http://idp.example.com/userinfo"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			transport := &cannedTransport{body: discoveryJSON(t, "https://idp.example.com", override)}
+			svc := &Service{}
+			if _, err := svc.discover(context.Background(), &http.Client{Transport: transport}, "https://idp.example.com"); err == nil {
+				t.Fatalf("a discovery document with a plaintext %s was accepted", name)
+			}
+			if svc.cachedIssuer != "" {
+				t.Errorf("a refused discovery document was cached for %q", svc.cachedIssuer)
+			}
+		})
+	}
+}
+
+// A plaintext address the operator typed in is refused by ResolveCredentials,
+// which both the start and the callback pass through, before anything is sent.
+// Each case plants one plaintext address and leaves the rest https or unset,
+// so the refusal can only be that address.
+func TestOIDCRefusesAConfiguredPlaintextAddressBeforeSendingAnything(t *testing.T) {
+	cases := map[string]map[string]string{
+		"issuer": {
+			settings.OAuthOIDCIssuer: "http://idp.example.com",
+		},
+		"authorization endpoint": {
+			settings.OAuthOIDCAuthURL:     "http://idp.example.com/authorize",
+			settings.OAuthOIDCTokenURL:    "https://idp.example.com/token",
+			settings.OAuthOIDCUserInfoURL: "https://idp.example.com/userinfo",
+		},
+		"token endpoint": {
+			settings.OAuthOIDCAuthURL:     "https://idp.example.com/authorize",
+			settings.OAuthOIDCTokenURL:    "http://idp.example.com/token",
+			settings.OAuthOIDCUserInfoURL: "https://idp.example.com/userinfo",
+		},
+		"userinfo endpoint": {
+			settings.OAuthOIDCAuthURL:     "https://idp.example.com/authorize",
+			settings.OAuthOIDCTokenURL:    "https://idp.example.com/token",
+			settings.OAuthOIDCUserInfoURL: "http://idp.example.com/userinfo",
+		},
+	}
+	for name, values := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.configure(t, "oidc")
+			if err := f.settings.SetMany(context.Background(), values); err != nil {
+				t.Fatalf("set endpoints: %v", err)
+			}
+			transport := &cannedTransport{body: discoveryJSON(t, "https://idp.example.com", nil)}
+			_, err := f.service.ResolveCredentials(context.Background(), &http.Client{Transport: transport}, "oidc")
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("ResolveCredentials error = %v, want ErrUnavailable", err)
+			}
+			if len(transport.requests) != 0 {
+				t.Errorf("requests = %v, want none sent", transport.requests)
+			}
+		})
+	}
+}
+
+// The same rule accepts what it should: discovery supplies the endpoints of an
+// https issuer, and a configured loopback address is used as typed. A fully
+// configured set does not run discovery at all.
+func TestOIDCResolveAcceptsHTTPSAndLoopbackAddresses(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("discovered from an https issuer", func(t *testing.T) {
+		f := newFixture(t)
+		f.configure(t, "oidc")
+		require(t, f, settings.OAuthOIDCIssuer, "https://idp.example.com")
+		transport := &cannedTransport{body: discoveryJSON(t, "https://idp.example.com", nil)}
+		creds, err := f.service.ResolveCredentials(ctx, &http.Client{Transport: transport}, "oidc")
+		if err != nil {
+			t.Fatalf("ResolveCredentials: %v", err)
+		}
+		if creds.TokenURL != "https://idp.example.com/token" {
+			t.Errorf("TokenURL = %q, want the discovered token endpoint", creds.TokenURL)
+		}
+	})
+
+	t.Run("configured loopback addresses", func(t *testing.T) {
+		f := newFixture(t)
+		f.configure(t, "oidc")
+		if err := f.settings.SetMany(ctx, map[string]string{
+			settings.OAuthOIDCIssuer:      "https://idp.example.com",
+			settings.OAuthOIDCAuthURL:     "https://idp.example.com/authorize",
+			settings.OAuthOIDCTokenURL:    "http://127.0.0.1:8080/token",
+			settings.OAuthOIDCUserInfoURL: "http://localhost:8080/userinfo",
+		}); err != nil {
+			t.Fatalf("set endpoints: %v", err)
+		}
+		transport := &cannedTransport{body: discoveryJSON(t, "https://idp.example.com", nil)}
+		creds, err := f.service.ResolveCredentials(ctx, &http.Client{Transport: transport}, "oidc")
+		if err != nil {
+			t.Fatalf("ResolveCredentials: %v", err)
+		}
+		if creds.TokenURL != "http://127.0.0.1:8080/token" {
+			t.Errorf("TokenURL = %q, want the configured loopback address", creds.TokenURL)
+		}
+		if len(transport.requests) != 0 {
+			t.Errorf("discovery ran although every endpoint was configured: %v", transport.requests)
+		}
+	})
+}
+
+// The access token is a bearer credential, so it is not sent to a plaintext
+// userinfo address. The sign-in fails rather than falling back to the ID token
+// as though the lookup had simply been missing.
+func TestOIDCSendsNoAccessTokenToAPlaintextUserInfo(t *testing.T) {
+	transport := &cannedTransport{body: `{"sub":"someone-else"}`}
+	idToken := makeTestJWT(map[string]any{"sub": "sub-fallback", "exp": testFutureExp()})
+	_, err := identifyOIDC(context.Background(), &http.Client{Transport: transport},
+		Credentials{UserInfoURL: "http://idp.example.com/userinfo"},
+		tokenResponse{AccessToken: "a-token", IDToken: idToken})
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("error = %v, want ErrUnavailable", err)
+	}
+	if len(transport.requests) != 0 {
+		t.Errorf("requests = %v, want none sent", transport.requests)
+	}
+}
+
+// Through the handlers, a plaintext address reaches the same answer as any
+// other unusable provider: the sign-in page saying it is unavailable, with no
+// state written and no request made.
+func TestAPlaintextOIDCIssuerLeadsToTheUnavailablePage(t *testing.T) {
+	f := newFixture(t)
+	f.configure(t, "oidc")
+	require(t, f, settings.OAuthOIDCIssuer, "http://idp.example.com")
+	transport := &cannedTransport{body: discoveryJSON(t, "http://idp.example.com", nil)}
+	h, mux := handlers(t, f)
+	h.Client = &http.Client{Transport: transport}
+
+	start := get(mux, "/api/auth/oauth/start/oidc", nil, nil)
+	if location := start.Header().Get("Location"); location != "/login?oauth_error=unavailable" {
+		t.Errorf("start = %d %s, want the sign-in page saying unavailable", start.Code, location)
+	}
+	if len(start.Result().Cookies()) != 0 {
+		t.Error("a state was written for a sign-in that cannot start")
+	}
+	if len(transport.requests) != 0 {
+		t.Errorf("requests = %v, want none sent", transport.requests)
+	}
+}
+
+// redirectingTransport answers the address it redirects from with a redirect to
+// location, and every other address with body. A redirect that is followed
+// reaches location and gets a usable answer back, so whether location was ever
+// asked for is the difference between a followed redirect and a refused one.
+type redirectingTransport struct {
+	from     string
+	status   int
+	location string
+	body     string
+	requests []string
+}
+
+func (r *redirectingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	r.requests = append(r.requests, request.URL.String())
+	if request.URL.String() == r.from {
+		return &http.Response{
+			StatusCode: r.status,
+			Header:     http.Header{"Location": {r.location}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    request,
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(r.body)),
+		Request:    request,
+	}, nil
+}
+
+// assertRedirectRefused is the whole claim of the redirect rule: the sign-in
+// ends as unavailable, and the address the reply named was never asked for.
+func assertRedirectRefused(t *testing.T, err error, transport *redirectingTransport) {
+	t.Helper()
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("error = %v, want ErrUnavailable", err)
+	}
+	for _, sent := range transport.requests {
+		if sent == transport.location {
+			t.Errorf("the redirect was followed, and %s was asked for", sent)
+		}
+	}
+}
+
+// A reply that redirects is not followed. The standard library would send the
+// next request itself, carrying the client secret, the code or the access
+// token to the address the reply names: plain http here, or another https host.
+// Each case puts the redirect on one of the three addresses a sign-in calls.
+func TestOIDCRedirectsAreNeverFollowed(t *testing.T) {
+	ctx := context.Background()
+	const issuer = "https://idp.example.com"
+	const redirectURI = "https://arc.example.com/api/auth/oauth/callback/oidc"
+	creds := Credentials{
+		ClientID:     "a-client-id",
+		ClientSecret: "a-client-secret",
+		AuthURL:      issuer + "/authorize",
+		TokenURL:     issuer + "/token",
+		UserInfoURL:  issuer + "/userinfo",
+	}
+	provider := ByID("oidc")
+	if provider == nil {
+		t.Fatal("oidc provider not found")
+	}
+
+	for _, redirect := range []struct {
+		name string
+		code int
+	}{
+		{"307", http.StatusTemporaryRedirect},
+		{"301", http.StatusMovedPermanently},
+	} {
+		t.Run("token endpoint, "+redirect.name, func(t *testing.T) {
+			transport := &redirectingTransport{
+				from:     issuer + "/token",
+				status:   redirect.code,
+				location: "http://idp.example.com/token",
+				body:     `{"access_token":"an-access-token"}`,
+			}
+			_, err := provider.Authenticate(ctx, &http.Client{Transport: transport}, creds, "a-code", redirectURI, "")
+			assertRedirectRefused(t, err, transport)
+		})
+
+		t.Run("discovery, "+redirect.name, func(t *testing.T) {
+			transport := &redirectingTransport{
+				from:     issuer + "/.well-known/openid-configuration",
+				status:   redirect.code,
+				location: "http://idp.example.com/.well-known/openid-configuration",
+				body:     discoveryJSON(t, issuer, nil),
+			}
+			f := newFixture(t)
+			f.configure(t, "oidc")
+			require(t, f, settings.OAuthOIDCIssuer, issuer)
+			_, err := f.service.ResolveCredentials(ctx, &http.Client{Transport: transport}, "oidc")
+			assertRedirectRefused(t, err, transport)
+		})
+
+		t.Run("userinfo endpoint, "+redirect.name, func(t *testing.T) {
+			transport := &redirectingTransport{
+				from:     issuer + "/userinfo",
+				status:   redirect.code,
+				location: "http://idp.example.com/userinfo",
+				body:     `{"sub":"someone-else","email":"someone@example.com","email_verified":true}`,
+			}
+			// No ID token: were the lookup to fall back to one, a refused
+			// userinfo would still sign the person in, and that is not the claim.
+			_, err := identifyOIDC(ctx, &http.Client{Transport: transport},
+				Credentials{UserInfoURL: issuer + "/userinfo"},
+				tokenResponse{AccessToken: "an-access-token"})
+			assertRedirectRefused(t, err, transport)
+		})
+	}
+
+	t.Run("token endpoint redirected to another https host", func(t *testing.T) {
+		transport := &redirectingTransport{
+			from:     issuer + "/token",
+			status:   http.StatusTemporaryRedirect,
+			location: "https://elsewhere.example.com/token",
+			body:     `{"access_token":"an-access-token"}`,
+		}
+		_, err := provider.Authenticate(ctx, &http.Client{Transport: transport}, creds, "a-code", redirectURI, "")
+		assertRedirectRefused(t, err, transport)
+	})
+}
+
+// The default client follows redirects, and some callers pass no client at
+// all. Both get the same refusal, and a client the caller did pass is not
+// changed by the call. A loopback server stands in for the provider, so the
+// standard library's own transport is what is exercised.
+func TestOIDCFetchRefusesRedirectsOnEveryClient(t *testing.T) {
+	var reached atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	for name, client := range map[string]*http.Client{
+		"no client":        nil,
+		"the caller's own": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reached.Store(false)
+			request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, source.URL, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			var into map[string]any
+			err = fetchJSON(context.Background(), client, request, &into)
+			if !errors.Is(err, ErrUnavailable) {
+				t.Errorf("error = %v, want ErrUnavailable", err)
+			}
+			if reached.Load() {
+				t.Error("the redirect was followed")
+			}
+			if client != nil && client.CheckRedirect != nil {
+				t.Error("fetchJSON changed the caller's client")
+			}
+		})
 	}
 }

@@ -45,6 +45,35 @@ func TestValidPWAIconURL(t *testing.T) {
 	}
 }
 
+// An OpenID Connect sign-in sends its code, client secret and access token to
+// these addresses, and it trusts an ID token without a signature check because
+// of TLS. Plain http is allowed only where the provider keys allow it: loopback.
+func TestValidOIDCURL(t *testing.T) {
+	cases := map[string]bool{
+		"https://idp.example.com":             true,
+		"https://idp.example.com/oauth/token": true,
+		"HTTPS://idp.example.com/token":       true,
+		"http://localhost:8080/realms/arc":    true,
+		"http://LOCALHOST:8080/token":         true,
+		"http://127.0.0.1:9000/token":         true,
+		"http://[::1]:9000/token":             true,
+		"http://idp.example.com/token":        false,
+		"http://localhost.example.com/token":  false,
+		"http://127.0.0.2/token":              false,
+		"http://10.0.0.5/token":               false,
+		"ftp://idp.example.com/token":         false,
+		"idp.example.com/token":               false,
+		"https:///token":                      false,
+		"https://idp.example.com/a\r\nX: y":   false,
+		"":                                    false,
+	}
+	for value, want := range cases {
+		if got := ValidOIDCURL(value); got != want {
+			t.Errorf("ValidOIDCURL(%q) = %v, want %v", value, got, want)
+		}
+	}
+}
+
 // BrowserTitle is what both the shell's own index.html and /api/site resolve
 // against; a Service built without a database exercises exactly the fallback
 // logic without needing one, since Get and Defaults never touch it.

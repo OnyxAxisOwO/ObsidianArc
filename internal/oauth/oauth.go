@@ -375,10 +375,23 @@ func getJSON(ctx context.Context, client *http.Client, endpoint, token string, i
 }
 
 func fetchJSON(ctx context.Context, client *http.Client, request *http.Request, into any) error {
-	if client == nil {
-		client = http.DefaultClient
+	// Every request here carries the client secret or a bearer token. Following
+	// a redirect would send the same form body or token on to the Location,
+	// which may be plain http even though this request was https, or another
+	// host altogether. So a redirect is the provider's answer rather than a hop
+	// to take: it fails the status check below, and the sign-in is unavailable.
+	// Every hop is refused, not only the plaintext ones, because an https host
+	// the reply names is no more entitled to the secret than an http one. A
+	// copy of the client, so the caller's own is not changed, and the default
+	// client is covered by the same rule.
+	var copied http.Client
+	if client != nil {
+		copied = *client
 	}
-	reply, err := client.Do(request)
+	copied.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	reply, err := copied.Do(request)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
