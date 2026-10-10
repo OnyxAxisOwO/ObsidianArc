@@ -219,10 +219,19 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 26.28 MB (22.58 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 242.11 kB to open the chat (199.86 JS + 42.25 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 26.30 MB (22.61 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 242.20 kB to open the chat (199.95 JS + 42.25 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-10 (UTC), after the last of that day's review fixes:
+/v1 bodies are read at most four at a time per account and get their read window
+when their turn comes, a short upload no longer holds its connection, a bonus
+revoked mid-request stays revoked, and only a super administrator chooses a new
+provider's address. 242.20 kB (199.95 kB JS + 42.25 kB CSS), up 0.09 kB from the
+figure below. The backoffice chunk is 124.75 kB and the Chinese dictionary
+48.53 kB. The binary is 26.30 MB (22.61 MB without SQLite), up 0.02 MB, built
+the same way.
 
 Remeasured on 2026-10-10 (UTC), after this day's review fixes on the sign-in
 and binding paths: console password entry and provider sign-in ask the login
