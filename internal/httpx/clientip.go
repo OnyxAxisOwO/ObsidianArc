@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -227,6 +228,77 @@ func ClientScheme(r *http.Request, trust ProxyTrust) string {
 		return "https"
 	}
 	return "http"
+}
+
+// PlainHTTPRedirect answers a page load that Cloudflare reports as plain http
+// with a redirect to the operator's public address, which is https.
+//
+// Only Cloudflare's own account of the visitor's scheme is believed, and only
+// under the operator's claim. X-Forwarded-Proto is not read here. Behind
+// Cloudflare's Flexible mode the leg from Cloudflare to this server is http for
+// every visitor, so that header says http for a visitor who is on https too,
+// and a redirect keyed on it would send that visitor round forever. The
+// deployment notes describe the same for any proxy whose own upstream leg is in
+// the clear.
+//
+// The target is the configured public address rather than the request's host,
+// because a tunnel can rewrite Host and send the visitor to a name that is not
+// this site. With no https address configured there is nowhere correct to send
+// anyone, so the request goes on unchanged, as it did before this existed.
+//
+// Only page loads are redirected. A client that does not follow redirects
+// would read a 308 under /api/ or /v1/ as a failure, and the health probe is
+// one of those paths.
+//
+// The visitor's first request has already travelled in the clear by the time
+// this answers. What the redirect buys is every request after it.
+func PlainHTTPRedirect(trust ProxyTrust, publicURL func() string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !pageLoad(r) || !cloudflareReportsPlainHTTP(r, trust) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			base := strings.TrimRight(strings.TrimSpace(publicURL()), "/")
+			if !strings.HasPrefix(strings.ToLower(base), "https://") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// A permanent redirect is one browsers may remember indefinitely. Were
+			// this server later to answer plain http again, a remembered 308 would
+			// keep sending those visitors to https.
+			w.Header().Set("Cache-Control", "no-store")
+			http.Redirect(w, r, base+r.URL.RequestURI(), http.StatusPermanentRedirect)
+		})
+	}
+}
+
+// pageLoad is what PlainHTTPRedirect applies to: a read of something that is
+// not an API. A write is never redirected. Its body has already gone in the
+// clear, and the client would only have to send it again.
+func pageLoad(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	return !strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/v1/")
+}
+
+// cloudflareReportsPlainHTTP reports whether a request from a trusted peer
+// carries Cloudflare's account of the visitor's scheme and that account is
+// http. The claim is required for the same reason it is for CF-Connecting-IP:
+// nothing a request can prove by arriving from a proxy shows that Cloudflare is
+// the hop in front of it.
+func cloudflareReportsPlainHTTP(r *http.Request, trust ProxyTrust) bool {
+	if !trust.cloudflare || !trust.trusts(peerAddr(r)) {
+		return false
+	}
+	var visitor struct {
+		Scheme string `json:"scheme"`
+	}
+	if err := json.Unmarshal([]byte(r.Header.Get("CF-Visitor")), &visitor); err != nil {
+		return false
+	}
+	return strings.EqualFold(visitor.Scheme, "http")
 }
 
 // PublicOrigin is the address a browser reaches this instance at, as a

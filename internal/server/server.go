@@ -1038,6 +1038,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// connection is oauth.Service's question to answer, and the account
 	// payload is auth's to build.
 	authHandlers.MustBindOIDC = oauthService.MustBindOIDC
+	// The API's door to the same two holds. Set here rather than where the
+	// handlers are built because the OIDC service is only made below, and the
+	// fields are read per request.
+	compatHandlers.MustEnrolTwoFactor = authService.MustEnrolTwoFactor
+	compatHandlers.MustBindOIDC = oauthService.MustBindOIDC
 
 	// And the other direction: this instance as the place somebody else's site
 	// sends people to sign in. internal/idp is the provider; internal/oauth
@@ -1405,6 +1410,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
 			skipFromLog,
 		),
+		// Inside the log, so the redirect is recorded. Ahead of compression and
+		// the security headers: the redirect's own short body needs neither, and
+		// the page it leads to gets both.
+		httpx.PlainHTTPRedirect(proxyTrust, mailer.PublicURL),
 		// Inside the log, so the byte count it records is what actually went
 		// on the wire rather than what the handler produced. Outside
 		// everything that writes a body, so there is one place that decides.
