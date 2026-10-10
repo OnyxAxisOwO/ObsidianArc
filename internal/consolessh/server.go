@@ -26,6 +26,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -440,9 +441,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	// stretches and the idle timeout is what governs it from then on.
 	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
 
-	// Counted from accept to the end of the handshake, whichever way it ends.
 	ip := hostOnly(conn.RemoteAddr())
-	if !s.acquirePreauth(ip) {
+	// Counted from accept to the end of the handshake, whichever way it ends.
+	slot := preauthKey(conn.RemoteAddr())
+	if !s.acquirePreauth(slot) {
 		// NewServerConn closes the socket when a handshake fails; this one
 		// never starts, so nothing else will.
 		_ = conn.Close()
@@ -450,7 +452,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, s.sshConfig)
-	s.releasePreauth(ip)
+	s.releasePreauth(slot)
 	if err != nil {
 		// A failed handshake is routine on the public internet (scanners,
 		// mistyped passwords) and not worth more than a debug-level trace;
@@ -633,6 +635,13 @@ func hostOnly(addr net.Addr) string {
 		return addr.String()
 	}
 	return host
+}
+
+// preauthKey is what a handshake slot is counted against. An IPv6 client holds
+// a whole /64, so counting each address on its own would let one client take
+// every handshake slot from eight addresses. The HTTP limiters key the same way.
+func preauthKey(addr net.Addr) string {
+	return httpx.RateKey(hostOnly(addr))
 }
 
 // --- one session: pty/window/env negotiation, then shell or exec ---
