@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -684,6 +685,40 @@ func TestADisabledAccountStopsBeingAnIdentity(t *testing.T) {
 	})
 	if refreshed.Code != http.StatusBadRequest {
 		t.Errorf("refresh for a disabled account = %d %s, want it refused", refreshed.Code, refreshed.Body.String())
+	}
+}
+
+// The provider meets an operator's requirement on the token endpoint and the
+// identity endpoint as well as on the web. A requirement it cannot read is not
+// a reason to keep issuing: the web lets an account through on the same error
+// because it only decides one request, but a token outlives the request.
+func TestAHoldThatCannotBeReadStopsTheProvidersTokens(t *testing.T) {
+	h := newHarness(t)
+	app, secret := h.app(t, CreateAppInput{})
+
+	code, _ := codeFrom(t, h.consent(t, authorizeURL(app.ClientID, nil), true))
+	tokens := decodeTokens(t, h.exchange(code, app.ClientID, secret, nil))
+
+	h.service.holds = Holds{MustBindOIDC: func(context.Context, user.User) (bool, error) {
+		return false, errors.New("the database is unavailable")
+	}}
+
+	request := httptest.NewRequest(http.MethodGet, "/oauth/userinfo", nil)
+	request.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	recorder := httptest.NewRecorder()
+	h.mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Errorf("userinfo while the hold cannot be read = %d %s, want it refused", recorder.Code, recorder.Body.String())
+	}
+
+	refreshed := h.postForm("/oauth/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {tokens.RefreshToken},
+		"client_id":     {app.ClientID},
+		"client_secret": {secret},
+	})
+	if refreshed.Code != http.StatusBadRequest || !strings.Contains(refreshed.Body.String(), "invalid_grant") {
+		t.Errorf("refresh while the hold cannot be read = %d %s, want invalid_grant", refreshed.Code, refreshed.Body.String())
 	}
 }
 

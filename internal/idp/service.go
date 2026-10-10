@@ -30,10 +30,21 @@ type Service struct {
 	keys   *Keys
 	users  *user.Store
 	groups *group.Store
+	holds  Holds
 }
 
-func NewService(store *Store, keys *Keys, users *user.Store, groups *group.Store) *Service {
-	return &Service{store: store, keys: keys, users: users, groups: groups}
+// Holds are the two requirements an operator can put on an account. The web
+// and the API meet them at their own doors, which stop only the request in
+// front of them. A token outlives that request, so the provider meets them as
+// well. A nil function is skipped, which is how a service built by a test that
+// does not care about holds is made.
+type Holds struct {
+	MustEnrolTwoFactor func(user.User) bool
+	MustBindOIDC       func(context.Context, user.User) (bool, error)
+}
+
+func NewService(store *Store, keys *Keys, users *user.Store, groups *group.Store, holds Holds) *Service {
+	return &Service{store: store, keys: keys, users: users, groups: groups, holds: holds}
 }
 
 func (s *Service) Store() *Store { return s.store }
@@ -282,19 +293,44 @@ func (s *Service) Exchange(ctx context.Context, issuer string, app App, form url
 		return Tokens{}, ErrPKCERequired
 	}
 
-	if !s.stillActive(ctx, record.UserID) {
+	if !s.mayBeVouched(ctx, record.UserID) {
 		return Tokens{}, ErrBadCode
 	}
 	return s.issue(ctx, issuer, app, record.UserID, within(record.Scopes, app.Scopes), record.Nonce)
 }
 
-// stillActive is asked before anything is issued in an account's name. A
+// mayBeVouched is asked before anything is issued in an account's name. A
 // code lives two minutes, but a refresh token renews itself for a month at a
 // time, and without this an account disabled or banned here kept being
-// vouched for to every application it had signed in to.
-func (s *Service) stillActive(ctx context.Context, userID string) bool {
+// vouched for to every application it had signed in to. The same holds for an
+// account the operator has since put under a requirement: the web and the API
+// stop it at their own doors, and a code or a refresh token minted before the
+// requirement would walk straight past them.
+//
+// A failed read answers no. The binding gate on the web answers the other way,
+// letting an account through on a database error, because it only decides what
+// one request may reach. A token is kept for an hour or a month, so a read that
+// cannot be made is no reason to issue one.
+func (s *Service) mayBeVouched(ctx context.Context, userID string) bool {
 	account, err := s.users.ByID(ctx, nil, userID)
-	return err == nil && account.IsActive()
+	if err != nil || !account.IsActive() {
+		return false
+	}
+	held, err := s.held(ctx, account)
+	return err == nil && !held
+}
+
+// held reports whether the operator is holding this account at either
+// requirement. The predicates are the ones the web's gates ask, so the two
+// doors cannot disagree about who is held.
+func (s *Service) held(ctx context.Context, account user.User) (bool, error) {
+	if s.holds.MustEnrolTwoFactor != nil && s.holds.MustEnrolTwoFactor(account) {
+		return true, nil
+	}
+	if s.holds.MustBindOIDC == nil {
+		return false, nil
+	}
+	return s.holds.MustBindOIDC(ctx, account)
 }
 
 // Refresh rotates a refresh token into a new pair.
@@ -319,7 +355,7 @@ func (s *Service) Refresh(ctx context.Context, issuer string, app App, form url.
 	// After the rotation, so the token presented is spent either way: it
 	// stands for an account that is no longer let in, and nothing should be
 	// able to present it again.
-	if !s.stillActive(ctx, rotated.UserID) {
+	if !s.mayBeVouched(ctx, rotated.UserID) {
 		return Tokens{}, ErrBadToken
 	}
 
@@ -425,6 +461,17 @@ func (s *Service) UserInfo(ctx context.Context, issuer, token string) (map[strin
 	if !account.IsActive() {
 		// A disabled account stops being an identity immediately, rather than
 		// when its token happens to expire.
+		return nil, ErrBadToken
+	}
+	// An account held at a requirement since the token was issued stops being
+	// an identity too. A failed read is reported as an error, not a refusal: a
+	// refusal tells the application its token is no good, and nothing shows
+	// that it is not.
+	held, err := s.held(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	if held {
 		return nil, ErrBadToken
 	}
 	app, err := s.store.AppByID(ctx, nil, record.AppID)

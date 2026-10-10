@@ -1057,7 +1057,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// the account. Set here because internal/idp imports auth, not the other
 	// way round.
 	authService.RevokeIssued = idpStore.RevokeAccount
-	idpService := idp.NewService(idpStore, idp.NewKeys(db, signingBox), users, groups)
+	// The two requirements the web and the API hold at their doors, asked here
+	// too: a refresh token or a code issued before a requirement was switched
+	// on would otherwise carry its account past the door it is now held at.
+	idpService := idp.NewService(idpStore, idp.NewKeys(db, signingBox), users, groups, idp.Holds{
+		MustEnrolTwoFactor: authService.MustEnrolTwoFactor,
+		MustBindOIDC:       oauthService.MustBindOIDC,
+	})
 	idpHandlers := idp.NewHandlers(idpService, cfg.SecretKey)
 	// The issuer named in every identity token, and in the discovery document
 	// a client library reads to configure itself. The same resolution the
