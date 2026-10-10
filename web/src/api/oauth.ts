@@ -1,3 +1,4 @@
+import type { PoWSolution } from './auth';
 import { api } from './client';
 
 // Signing in with an account somebody already holds at GitHub or Google.
@@ -44,15 +45,27 @@ export interface OAuthConnections {
  * this is an account adding a connection rather than a visitor signing in;
  * `next` is where to land afterwards, and the server keeps it to a path of
  * this site whatever is passed.
+ *
+ * `pow` is the proof of work a sign-up from the register page has solved. It
+ * rides on this request because the request is the browser's own navigation to
+ * the server, the one place a sign-up's answer can be carried; the provider's
+ * redirect back carries nothing the browser solved.
  */
 export function signInURL(
   provider: string,
-  options: { link?: boolean; next?: string; turnstile?: string; register?: boolean } = {},
+  options: {
+    link?: boolean;
+    next?: string;
+    turnstile?: string;
+    pow?: PoWSolution;
+    register?: boolean;
+  } = {},
 ): string {
   const query = new URLSearchParams();
   if (options.link) query.set('link', '1');
   if (options.next) query.set('next', options.next);
   if (options.turnstile) query.set('turnstile', options.turnstile);
+  if (options.pow) query.set('pow', JSON.stringify(options.pow));
   if (options.register) query.set('register', '1');
   const suffix = query.toString();
   return `/api/auth/oauth/start/${encodeURIComponent(provider)}${suffix ? `?${suffix}` : ''}`;

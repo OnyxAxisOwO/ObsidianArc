@@ -328,32 +328,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 
 		// 1. Proof-of-work challenge verification (PoW -> Turnstile -> AI Review)
 		if captchaMode == settings.CaptchaModePoW || captchaMode == settings.CaptchaModeBoth {
-			if s.PoW == nil {
-				return user.User{}, "", errors.New("auth: pow required but manager not configured")
-			}
-			if in.PoW == nil {
-				if s.OnChallengeFailure != nil {
-					s.OnChallengeFailure(ctx, "pow_challenge", in.IP, in.Username, "缺少 PoW 解答")
-				}
-				return user.User{}, "", pow.ErrMissingSolution
-			}
-			if err := s.PoW.Verify(in.PoW); err != nil {
-				reason := "PoW 校验失败"
-				switch {
-				case errors.Is(err, pow.ErrExpired):
-					reason = "PoW 挑战已过期"
-				case errors.Is(err, pow.ErrInvalidSignature):
-					reason = "PoW 签名无效"
-				case errors.Is(err, pow.ErrMaxExceeded):
-					reason = "PoW 步数超出上限"
-				case errors.Is(err, pow.ErrInvalidNonce):
-					reason = "PoW 计算结果不匹配"
-				case errors.Is(err, pow.ErrReplayed):
-					reason = "PoW 挑战已被使用"
-				}
-				if s.OnChallengeFailure != nil {
-					s.OnChallengeFailure(ctx, "pow_challenge", in.IP, in.Username, reason)
-				}
+			if err := s.verifyProof(ctx, in.IP, in.Username, in.PoW); err != nil {
 				return user.User{}, "", err
 			}
 		}

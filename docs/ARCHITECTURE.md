@@ -220,9 +220,17 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 26.07 MB (22.37 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 238.59 kB to open the chat (196.56 JS + 42.03 CSS) |
+| Frontend, on the wire | < 135 kB | 238.89 kB to open the chat (196.86 JS + 42.03 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-10 (UTC), after a provider sign-up from the register page
+began carrying its proof of work to the sign-up door (the start request, and the
+link's click handler in `AuthView.vue`): 238.89 kB (196.86 kB JS + 42.03 kB
+CSS), up 0.30 kB from 238.59 kB, measured the same way. Of that, 0.07 kB is the
+earlier fix that carried the sign-up door to the callback and did not remeasure,
+and 0.23 kB is this change. The binary was not remeasured: the Go change adds a
+few small functions, and the figure is a Linux amd64 build.
 
 Remeasured on 2026-10-09 (UTC), after the work surface was removed — the
 mode switch, the tool-call rows and the console broker behind them: 238.59 kB
