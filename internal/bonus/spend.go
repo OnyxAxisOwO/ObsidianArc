@@ -59,7 +59,8 @@ func (s *Store) candidates(ctx context.Context, q database.Queryer, userID, mode
 		FROM bonus_grants g
 		JOIN bonus_bars b ON b.id = g.bar_id
 		LEFT JOIN bonus_choices c ON c.user_id = g.user_id AND c.bar_id = g.bar_id
-		WHERE g.user_id = ? AND b.active = ? AND g.amount - g.used > 0 AND (g.expires_at = 0 OR g.expires_at > ?)`,
+		WHERE g.user_id = ? AND b.active = ? AND g.revoked_at = 0 AND g.amount - g.used > 0
+		AND (g.expires_at = 0 OR g.expires_at > ?)`,
 		userID, true, now)
 	if err != nil {
 		return nil, fmt.Errorf("bonus: find grants: %w", err)
@@ -179,14 +180,16 @@ func (s *Store) Take(ctx context.Context, q database.Queryer, userID, modelID st
 const epsilon = 1e-9
 
 // Refund gives holds back. Never below zero used: two refunds racing must not
-// hand out credit that was never granted.
+// hand out credit that was never granted. A revoked grant takes nothing back:
+// its amount was cut to what it had been used for, so room given back here
+// would be the revoked credit spendable again.
 func (s *Store) Refund(ctx context.Context, q database.Queryer, holds []Hold) error {
 	for _, h := range holds {
 		if h.Amount <= 0 {
 			continue
 		}
 		if _, err := q.Exec(ctx, `UPDATE bonus_grants SET used =
-			CASE WHEN used - ? < 0 THEN 0 ELSE used - ? END WHERE id = ?`, h.Amount, h.Amount, h.GrantID); err != nil {
+			CASE WHEN used - ? < 0 THEN 0 ELSE used - ? END WHERE id = ? AND revoked_at = 0`, h.Amount, h.Amount, h.GrantID); err != nil {
 			return fmt.Errorf("bonus: refund: %w", err)
 		}
 	}

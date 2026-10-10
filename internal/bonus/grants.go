@@ -235,7 +235,10 @@ func (s *Store) Revoke(ctx context.Context, grantID string) (float64, error) {
 			return err
 		}
 		revoked = g.Remaining()
-		_, err := tx.Exec(ctx, `UPDATE bonus_grants SET amount = used WHERE id = ?`, grantID)
+		// The marker is set once. A grant that is already revoked has nothing
+		// left to take, and the first time is the one the history should show.
+		_, err := tx.Exec(ctx, `UPDATE bonus_grants SET amount = used, revoked_at = ?
+			WHERE id = ? AND revoked_at = 0`, time.Now().UnixMilli(), grantID)
 		return err
 	})
 	return revoked, err
