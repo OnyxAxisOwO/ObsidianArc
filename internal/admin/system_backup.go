@@ -93,6 +93,12 @@ func backupAPIError(err error) error {
 	if errors.Is(err, systembackup.ErrNotConfigured) {
 		return httpx.BadRequest("Enter storage credentials and configuration first.")
 	}
+	// A code rather than only a sentence: the Backup page words this refusal in
+	// the reader's language, which a message written here cannot do.
+	if errors.Is(err, systembackup.ErrCredentialsNeededForMove) {
+		return httpx.BadRequestCode("backup_credentials_needed",
+			"A new storage endpoint, bucket, region or WebDAV URL needs its credentials entered again.")
+	}
 	var validation *systembackup.ValidationError
 	if errors.As(err, &validation) {
 		return httpx.BadRequest("%s", validation.Error())

@@ -148,6 +148,13 @@ function message(failure: unknown): string {
   return failure instanceof ApiError ? failure.message : String(failure);
 }
 
+// Matched by code so the refusal reads in the operator's language; the server's
+// English sentence is only the fallback for a code this page does not know.
+function saveMessage(failure: unknown): string {
+  if (failure instanceof ApiError && failure.code === 'backup_credentials_needed') return t('backupCredentialsNeeded');
+  return message(failure);
+}
+
 function backupTime(at: number): string {
   return at ? absoluteTime(at) : t('backupNever');
 }
@@ -231,7 +238,7 @@ async function save(): Promise<void> {
     notice.value = t('backupSaved');
     await refreshStatus(true);
   } catch (failure) {
-    actionError.value = message(failure);
+    actionError.value = saveMessage(failure);
   } finally {
     busy.value = false;
   }

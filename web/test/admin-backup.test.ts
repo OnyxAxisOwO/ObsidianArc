@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, type App } from 'vue';
+import { ApiError } from '../src/api/client';
 import { adminApi, type AdminBackup } from '../src/admin/api';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { IconArchive } from '../src/icons';
@@ -128,6 +129,25 @@ describe('admin instance backup', () => {
     });
     expect(fieldInput(t('backupAccessKey')).value).toBe('');
     expect(fieldInput(t('backupSecretKey')).value).toBe('');
+  });
+
+  it('asks for the credentials again when the storage destination moves', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
+    vi.spyOn(adminApi, 'saveBackup').mockRejectedValue(new ApiError(
+      400,
+      'backup_credentials_needed',
+      'A new storage endpoint, bucket, region or WebDAV URL needs its credentials entered again.',
+    ));
+    await mountBackup();
+
+    const endpoint = fieldInput(t('backupEndpoint'));
+    endpoint.value = 'https://attacker.example.com';
+    endpoint.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+    button(actions, t('save')).click();
+    await settle();
+
+    expect(host.textContent).toContain(t('backupCredentialsNeeded'));
   });
 
   it('shows Never for timestamps that have no recorded run', async () => {

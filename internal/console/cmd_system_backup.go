@@ -81,7 +81,13 @@ func init() {
 				return err
 			}
 			current := asMap(currentData)
+			// The destination goes back as the status reported it, storage type and
+			// WebDAV address included. The server reads a field it did not receive as
+			// a blank one: a missing type silently turns a WebDAV instance into S3, and
+			// a missing WebDAV address counts as a move and refuses the save while
+			// the saved password is held.
 			body := map[string]any{
+				"type":              asStr(current["type"]),
 				"enabled":           asBoolVal(current["enabled"]),
 				"endpoint":          asStr(current["endpoint"]),
 				"bucket":            asStr(current["bucket"]),
@@ -89,6 +95,8 @@ func init() {
 				"prefix":            asStr(current["prefix"]),
 				"access_key_id":     "",
 				"secret_access_key": "",
+				"webdav_url":        asStr(current["webdav_url"]),
+				"webdav_username":   asStr(current["webdav_username"]),
 				"interval_hours":    int(asNum(current["interval_hours"])),
 				"retention_hours":   int(asNum(current["retention_hours"])),
 			}
