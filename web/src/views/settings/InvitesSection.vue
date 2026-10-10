@@ -133,6 +133,7 @@ function claimErrorText(failure: unknown): string {
   switch (failure.code) {
     case 'invite_claimed': return t('inviteClaimAlready');
     case 'invite_group_conflict': return t('inviteClaimConflict');
+    case 'invite_own_code': return t('inviteClaimOwn');
     case 'too_many_attempts':
       return t('tooManyAttempts', { count: Number(failure.details['retry_after_seconds'] ?? 60) });
     case 'invite_invalid':

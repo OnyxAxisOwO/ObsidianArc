@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 )
@@ -55,7 +56,13 @@ func (h *Handlers) putMail(w http.ResponseWriter, r *http.Request) error {
 	if err := mail.ValidateConfig(cfg); err != nil {
 		return httpx.BadRequest("%s", err.Error())
 	}
-	if err := h.Mail.Save(r.Context(), cfg, body.Password, body.ClearPassword); err != nil {
+	// The address every mailed link is built from is the super administrator's
+	// to move; the store makes that call under its lock, so it is asked the
+	// question here rather than answered from a copy of the row.
+	if err := h.Mail.Save(r.Context(), cfg, body.Password, body.ClearPassword, auth.MustUser(r.Context()).IsSuperAdmin()); err != nil {
+		if errors.Is(err, mail.ErrOriginNeedsSuperAdmin) {
+			return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can change the public site URL.")
+		}
 		if errors.Is(err, mail.ErrPasswordNeededForMove) {
 			return httpx.BadRequestCode("mail_password_needed", "A new SMTP server or username needs the password entered again.")
 		}

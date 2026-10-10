@@ -2,8 +2,10 @@ package idp
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -183,7 +185,7 @@ func TestRegisteringAnApplicationShowsItsSecretOnceAndNeverAgain(t *testing.T) {
 	}
 
 	// Rotation invalidates the old one and nothing else.
-	rotated, err := f.store.RotateSecret(ctx, record.ID)
+	rotated, err := f.store.RotateSecret(ctx, record.ID, true)
 	if err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
@@ -212,7 +214,7 @@ func TestAPublicApplicationHasNoSecretAndNeedsPKCE(t *testing.T) {
 	if _, err := f.store.Authenticate(ctx, record.ClientID, ""); err != nil {
 		t.Errorf("a public application cannot identify itself: %v", err)
 	}
-	if _, err := f.store.RotateSecret(ctx, record.ID); err == nil {
+	if _, err := f.store.RotateSecret(ctx, record.ID, true); err == nil {
 		t.Error("a public application rotated a secret it does not have")
 	}
 
@@ -257,7 +259,7 @@ func TestAnUnknownApplicationOrCallbackIsNeverRedirectedTo(t *testing.T) {
 
 	// A disabled application is not a different answer: it is simply not one
 	// that exists as far as the front door is concerned.
-	if _, err := f.store.UpdateApp(ctx, record.ID, AppUpdate{Disabled: boolPtr(true)}); err != nil {
+	if _, err := f.store.UpdateApp(ctx, record.ID, AppUpdate{Disabled: boolPtr(true)}, true); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	if _, err := f.service.Read(ctx, values(map[string]string{
@@ -437,6 +439,182 @@ func TestPurgeDropsWhatNothingWillReadAgain(t *testing.T) {
 	}
 }
 
+// A trusted application skips the consent screen for everybody who signs in,
+// so the operator's decision about it is not one a delegated security
+// administrator can take. The same grant manages ordinary applications, except
+// for where they send people, which has a test of its own.
+func TestOnlyASuperAdministratorChangesATrustedApplication(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	ordinary, _ := f.app(t, CreateAppInput{Name: "Wiki"})
+	if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{Name: strPtr("Wiki Renamed")}, false); err != nil {
+		t.Errorf("renaming an ordinary application: %v", err)
+	}
+	if _, err := f.store.RotateSecret(ctx, ordinary.ID, false); err != nil {
+		t.Errorf("rotating an ordinary application's secret: %v", err)
+	}
+	if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{Trusted: boolPtr(true)}, false); !errors.Is(err, ErrTrustedApplication) {
+		t.Errorf("making an application trusted = %v, want ErrTrustedApplication", err)
+	}
+
+	trusted, _ := f.app(t, CreateAppInput{Name: "Own Service", Trusted: true})
+	refusals := map[string]func() error{
+		"rename": func() error {
+			_, err := f.store.UpdateApp(ctx, trusted.ID, AppUpdate{Name: strPtr("Renamed")}, false)
+			return err
+		},
+		"callbacks": func() error {
+			_, err := f.store.UpdateApp(ctx, trusted.ID, AppUpdate{RedirectURIs: strPtr("https://evil.example.com/cb")}, false)
+			return err
+		},
+		"untrust": func() error {
+			_, err := f.store.UpdateApp(ctx, trusted.ID, AppUpdate{Trusted: boolPtr(false)}, false)
+			return err
+		},
+		"rotate": func() error {
+			_, err := f.store.RotateSecret(ctx, trusted.ID, false)
+			return err
+		},
+		"delete": func() error { return f.store.DeleteApp(ctx, trusted.ID, false) },
+	}
+	for label, change := range refusals {
+		if err := change(); !errors.Is(err, ErrTrustedApplication) {
+			t.Errorf("%s of a trusted application = %v, want ErrTrustedApplication", label, err)
+		}
+	}
+	stored, err := f.store.AppByID(ctx, nil, trusted.ID)
+	if err != nil {
+		t.Fatalf("read trusted application: %v", err)
+	}
+	if stored.Name != "Own Service" || !stored.Trusted || len(stored.RedirectURIs) != 1 || stored.RedirectURIs[0] != "https://wiki.example.com/callback" {
+		t.Fatalf("a refused change altered the application: %+v", stored)
+	}
+
+	if _, err := f.store.UpdateApp(ctx, trusted.ID, AppUpdate{Name: strPtr("Renamed")}, true); err != nil {
+		t.Errorf("a super administrator renaming a trusted application: %v", err)
+	}
+	if _, err := f.store.RotateSecret(ctx, trusted.ID, true); err != nil {
+		t.Errorf("a super administrator rotating a trusted application's secret: %v", err)
+	}
+	if err := f.store.DeleteApp(ctx, trusted.ID, true); err != nil {
+		t.Errorf("a super administrator deleting a trusted application: %v", err)
+	}
+	if _, err := f.store.AppByID(ctx, nil, trusted.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("deleted application still reads back: %v", err)
+	}
+}
+
+// Consent is recorded per application and not per callback, so a callback added
+// to an application people have already agreed to would get their codes without
+// asking them again. Re-saving the stored set is allowed, because the form sends
+// it back and order is not part of a callback. Any other change, adding one or
+// removing one, is the super administrator's, and a refused change leaves the
+// stored set as it was.
+func TestOnlyASuperAdministratorChangesACallback(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	ordinary, _ := f.app(t, CreateAppInput{Name: "Wiki"})
+	const callback = "https://wiki.example.com/callback"
+
+	for _, same := range []string{callback, callback + ", " + callback} {
+		if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{RedirectURIs: strPtr(same)}, false); err != nil {
+			t.Errorf("re-saving the stored callbacks as %q: %v", same, err)
+		}
+	}
+	for _, refused := range []string{
+		callback + "\nhttps://evil.example.com/cb",
+		"https://evil.example.com/cb",
+	} {
+		if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{RedirectURIs: strPtr(refused)}, false); !errors.Is(err, ErrCallbacksNeedSuperAdmin) {
+			t.Errorf("a security administrator set the callbacks to %q: %v, want ErrCallbacksNeedSuperAdmin", refused, err)
+		}
+	}
+	stored, err := f.store.AppByID(ctx, nil, ordinary.ID)
+	if err != nil {
+		t.Fatalf("read application: %v", err)
+	}
+	if len(stored.RedirectURIs) != 1 || stored.RedirectURIs[0] != callback {
+		t.Fatalf("a refused change altered the callbacks: %v", stored.RedirectURIs)
+	}
+
+	both := callback + "\nhttps://wiki.example.org/callback"
+	if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{RedirectURIs: strPtr(both)}, true); err != nil {
+		t.Fatalf("a super administrator adding a callback: %v", err)
+	}
+	if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{RedirectURIs: strPtr("https://wiki.example.org/callback\n" + callback)}, false); err != nil {
+		t.Errorf("re-saving two stored callbacks in another order: %v", err)
+	}
+	if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{RedirectURIs: strPtr(callback)}, false); !errors.Is(err, ErrCallbacksNeedSuperAdmin) {
+		t.Errorf("a security administrator removed a callback: %v, want ErrCallbacksNeedSuperAdmin", err)
+	}
+	stored, err = f.store.AppByID(ctx, nil, ordinary.ID)
+	if err != nil {
+		t.Fatalf("read application: %v", err)
+	}
+	if len(stored.RedirectURIs) != 2 {
+		t.Fatalf("callbacks after the super administrator's change = %v, want both", stored.RedirectURIs)
+	}
+}
+
+// Trust is checked and written under the application's row lock. Without it a
+// trust change by a super administrator can be overwritten by a security
+// administrator's update that read the row before the change. Whatever the
+// interleaving, the trust must survive, and the rename must have landed exactly
+// when the security administrator was told it did. The delegate's write is a
+// rename rather than a callback change: a callback change by anybody but a
+// super administrator is refused whatever the trust, so it could not race the
+// trust check at all.
+func TestConcurrentTrustChangeIsNeitherLostNorBypassed(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// Each round removes its application again: the instance caps how many
+	// exist, and a race that needs many tries to show itself needs many rounds.
+	const rounds = 200
+	for round := 0; round < rounds; round++ {
+		record, _ := f.app(t, CreateAppInput{Name: "Race"})
+		var (
+			wg                    sync.WaitGroup
+			trustErr, delegateErr error
+			start                 = make(chan struct{})
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, trustErr = f.store.UpdateApp(ctx, record.ID, AppUpdate{Trusted: boolPtr(true)}, true)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, delegateErr = f.store.UpdateApp(ctx, record.ID, AppUpdate{Name: strPtr("Renamed by the delegate")}, false)
+		}()
+		close(start)
+		wg.Wait()
+
+		if trustErr != nil {
+			t.Fatalf("round %d: a super administrator trusting an application: %v", round, trustErr)
+		}
+		if delegateErr != nil && !errors.Is(delegateErr, ErrTrustedApplication) {
+			t.Fatalf("round %d: a security administrator's update: %v", round, delegateErr)
+		}
+		stored, err := f.store.AppByID(ctx, nil, record.ID)
+		if err != nil {
+			t.Fatalf("round %d: read application: %v", round, err)
+		}
+		if !stored.Trusted {
+			t.Fatalf("round %d: the trust change was lost", round)
+		}
+		renamed := stored.Name == "Renamed by the delegate"
+		if renamed != (delegateErr == nil) {
+			t.Fatalf("round %d: name changed = %v, but the security administrator's update returned %v", round, renamed, delegateErr)
+		}
+		if err := f.store.DeleteApp(ctx, record.ID, true); err != nil {
+			t.Fatalf("round %d: remove application: %v", round, err)
+		}
+	}
+}
+
 // --- helpers ------------------------------------------------------------------
 
 func values(pairs map[string]string) map[string][]string {
@@ -456,3 +634,5 @@ func asRedirectable(err error, into **RedirectableError) bool {
 }
 
 func boolPtr(value bool) *bool { return &value }
+
+func strPtr(value string) *string { return &value }

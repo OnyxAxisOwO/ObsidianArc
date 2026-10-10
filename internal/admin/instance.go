@@ -22,6 +22,18 @@ import (
 
 // The dashboard and the instance settings.
 
+// dashboardAccount is the only account shape the dashboard sends. The records
+// it lists come from the same table the users grant reads, and that grant is
+// the one that may see an address, the signup address or a ban reason; the
+// dashboard grant is narrower, so the fields are named here rather than taken
+// from user.User, whose JSON carries all of them.
+type dashboardAccount struct {
+	ID        string `json:"id"`
+	Username  string `json:"username"`
+	Nickname  string `json:"nickname"`
+	CreatedAt int64  `json:"created_at"`
+}
+
 // dashboard is deliberately short. An operator opening it wants to know
 // whether the thing is working and what it is costing — not to read a wall of
 // charts that exist because a dashboard is expected to have charts.
@@ -95,6 +107,12 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 
+	newest := make([]dashboardAccount, 0, len(users))
+	for _, account := range users {
+		newest = append(newest, dashboardAccount{
+			ID: account.ID, Username: account.Username, Nickname: account.Nickname, CreatedAt: account.CreatedAt,
+		})
+	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"counts": map[string]any{
 			"users":             totalUsers,
@@ -104,7 +122,7 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 			"models":            len(models),
 			"enabled_models":    enabledModels,
 		},
-		"newest_users": users,
+		"newest_users": newest,
 		"last_24h":     today,
 		"prev_24h":     yesterday,
 		"last_7d":      thisWeek,
