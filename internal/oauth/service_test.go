@@ -537,6 +537,17 @@ func TestConnectBindsAProviderToTheAccountThatAskedForIt(t *testing.T) {
 // An account with no password whose last connection is removed is not
 // disabled or deleted — it is simply unreachable, with everything still in
 // it. That is the one state this feature must not be able to produce.
+// signedInNow opens a session for the account the way a provider sign-in does,
+// and returns its id: the session a first password is set from.
+func signedInNow(t *testing.T, f *fixture, userID string) string {
+	t.Helper()
+	_, session, err := f.auth.Sessions().Create(context.Background(), userID, time.Hour, "", "")
+	if err != nil {
+		t.Fatalf("open a session: %v", err)
+	}
+	return session.ID
+}
+
 func TestTheLastWayInCannotBeRemoved(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -563,7 +574,7 @@ func TestTheLastWayInCannotBeRemoved(t *testing.T) {
 	}
 
 	// A password is a way in too, and setting one frees the connection.
-	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", ""); err != nil {
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", signedInNow(t, f, account.ID)); err != nil {
 		t.Fatalf("set a password: %v", err)
 	}
 	if err := f.service.Disconnect(ctx, account.ID, "google"); err != nil {
@@ -670,7 +681,7 @@ func TestConnectionsReportsWhetherThereIsAlsoAPassword(t *testing.T) {
 	if len(items) != 1 || hasPassword {
 		t.Fatalf("connections = %+v, password = %v, want one connection and no password", items, hasPassword)
 	}
-	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", ""); err != nil {
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", signedInNow(t, f, account.ID)); err != nil {
 		t.Fatalf("set a password: %v", err)
 	}
 	if _, hasPassword, err = f.service.Connections(ctx, account.ID); err != nil || !hasPassword {

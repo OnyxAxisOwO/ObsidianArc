@@ -57,6 +57,11 @@ var (
 	// Apart from a wrong one so the screen can ask instead of accuse, and so
 	// an empty field never spends a guess from the budget.
 	ErrPasswordRequired = errors.New("auth: your current password is required for this")
+	// An account opened through a provider has no password to prove. Its
+	// first one is set from a session that has only just signed in, because
+	// a stolen cookie for such an account would otherwise set a password the
+	// owner cannot undo without an administrator.
+	ErrReauthRequired = errors.New("auth: a first password needs a sign-in made just now")
 	// One code for both, deliberately: see consumeInvite.
 	ErrInviteRequired = errors.New("auth: an invite code is required to register here")
 	ErrInviteInvalid  = errors.New("auth: that invite code is not valid")
@@ -1093,6 +1098,38 @@ func (s *Service) ConfirmPassword(ctx context.Context, userID, candidate string)
 	return s.checkPassword(ctx, userID, hash, candidate)
 }
 
+// recentSignIn is how long after signing in a session may still set the first
+// password on an account that has none. Long enough to go from the provider's
+// consent screen to the settings page, short enough that a cookie copied from
+// somewhere else is unlikely to still be young when it is used.
+const recentSignIn = 15 * time.Minute
+
+// requireRecentSignIn is the check that stands in for the current password on
+// an account that has none. The session that asks has to have been created
+// within recentSignIn. A session is judged by when it signed in, not when it
+// was last used, and the sign-in time survives a password change because
+// Reissue carries it over. A change with no session presented has no sign-in
+// to judge, so it is refused rather than allowed.
+func (s *Service) requireRecentSignIn(ctx context.Context, q database.Queryer, userID, sessionID string) error {
+	if sessionID == "" {
+		return ErrReauthRequired
+	}
+	var createdAt int64
+	err := q.QueryRow(ctx,
+		`SELECT created_at FROM sessions WHERE id = ? AND user_id = ? AND expires_at > ?`,
+		sessionID, userID, time.Now().UnixMilli()).Scan(&createdAt)
+	if err != nil {
+		if database.IsNotFound(err) {
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("auth: read session sign-in time: %w", err)
+	}
+	if time.Since(time.UnixMilli(createdAt)) > recentSignIn {
+		return ErrReauthRequired
+	}
+	return nil
+}
+
 // checkPassword verifies the current password behind a guessing budget.
 // Without one, every endpoint that asks for the password would be a password
 // oracle for whoever holds a session. The budget is the one the second step's
@@ -1140,11 +1177,11 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	}
 
 	// An account opened through a provider has no password to confirm, and
-	// this is where it gets its first one. Nothing is being replaced, so
-	// there is nothing to prove but the session — which the caller already
-	// holds, and which this endpoint has already required. Without this the
-	// only way into such an account is the provider, and an operator
-	// switching that provider off would lock its owner out.
+	// this is where it gets its first one. Nothing is being replaced, so the
+	// proof is the session instead, and it must be a sign-in made just now: see
+	// requireRecentSignIn. Without this the only way into such an account is the
+	// provider, and an operator switching that provider off would lock its owner
+	// out.
 	if hash != "" {
 		if err := s.checkPassword(ctx, userID, hash, currentPassword); err != nil {
 			return "", err
@@ -1162,11 +1199,31 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	var token string
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
 		// Two changes from one session can both pass the password check above;
-		// this transaction is what lets only one of them land. The password write
-		// comes first because on Postgres it takes the account's row, so the
-		// second change waits there until the first commits, and then finds its
-		// session already reissued and gone. SQLite runs write transactions one
-		// at a time, which has the same effect.
+		// this transaction is what lets only one of them land. The account's own
+		// row is taken first, so on Postgres the second change waits there until
+		// the first commits, and then finds its session already reissued and
+		// gone. SQLite runs write transactions one at a time, which has the same
+		// effect.
+		if _, err := tx.Exec(ctx, `UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
+			return err
+		}
+		if hash == "" {
+			// The first password is set on the strength of the session alone, so
+			// the check and the write below must not be split by another change.
+			// Read under the lock: a password set by a change that committed after
+			// the read above means this one was never allowed to skip the current
+			// password, and the screen asks for it.
+			current, err := s.users.PasswordHash(ctx, tx, userID)
+			if err != nil {
+				return err
+			}
+			if current != "" {
+				return ErrCurrentPasswordWrong
+			}
+			if err := s.requireRecentSignIn(ctx, tx, userID, sessionID); err != nil {
+				return err
+			}
+		}
 		if err := s.users.SetPasswordHash(ctx, tx, userID, updated); err != nil {
 			return err
 		}

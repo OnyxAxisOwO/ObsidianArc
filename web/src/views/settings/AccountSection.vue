@@ -258,7 +258,11 @@ async function savePassword(): Promise<void> {
     passwordLabel.value = t('changed');
     window.setTimeout(() => { passwordLabel.value = ''; }, 1500);
   } catch (error) {
-    passwordFlash.value = error instanceof ApiError ? error.message : String(error);
+    if (error instanceof ApiError && error.code === 'reauth_required') {
+      passwordFlash.value = t('reauthForPassword');
+    } else {
+      passwordFlash.value = error instanceof ApiError ? error.message : String(error);
+    }
   } finally {
     passwordBusy.value = false;
   }

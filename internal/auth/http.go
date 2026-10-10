@@ -838,6 +838,11 @@ func (h *Handlers) changePassword(w http.ResponseWriter, r *http.Request) error 
 		// The session that asked was ended while the change was being made. The
 		// password is left as it was, and the caller has to sign in again.
 		return httpx.Unauthorized("Sign in to continue.")
+	case errors.Is(err, ErrReauthRequired):
+		// Not a 401: the session is fine, it is only too old to vouch for a first
+		// password. A 401 would make the screen sign the person out, when all
+		// that is asked is a fresh sign-in with their provider.
+		return httpx.ForbiddenCode("reauth_required", "Sign in again with your provider to set a password.")
 	case errors.Is(err, ErrCurrentPasswordWrong):
 		return httpx.Unauthorized("Current password is incorrect.")
 	case errors.Is(err, ErrPasswordUnchanged):
