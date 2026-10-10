@@ -296,36 +296,92 @@ func (c Config) GeneratedSecret() bool { return c.generatedSecret }
 
 // Returns the key, and whether it came from the data directory rather than
 // the environment.
+//
+// A key file that exists is used or refused, never replaced. Replacing it
+// re-keys the instance without anyone choosing to: everything sealed under the
+// old key stops opening, and the symptoms show up later and far from the cause.
 func loadOrCreateSecret(dataDir string) ([]byte, bool, error) {
 	if raw := env("SECRET_KEY", ""); raw != "" {
-		if len(raw) < 16 {
-			return nil, false, fmt.Errorf("%sSECRET_KEY must be at least 16 characters", envPrefix)
+		if len(raw) < minSecretLen {
+			return nil, false, fmt.Errorf("%sSECRET_KEY must be at least %d characters", envPrefix, minSecretLen)
 		}
 		warnIfWeakSecret(envPrefix+"SECRET_KEY", raw)
 		return []byte(raw), false, nil
 	}
 
 	path := filepath.Join(dataDir, SecretKeyFile)
-	if existing, err := os.ReadFile(path); err == nil {
+	existing, err := os.ReadFile(path)
+	if err == nil {
 		trimmed := strings.TrimSpace(string(existing))
-		if len(trimmed) >= 16 {
-			warnIfWeakSecret(path, trimmed)
-			return []byte(trimmed), true, nil
+		if len(trimmed) < minSecretLen {
+			return nil, false, unusableSecretFile(path)
 		}
-	} else if !os.IsNotExist(err) {
+		warnIfWeakSecret(path, trimmed)
+		return []byte(trimmed), true, nil
+	}
+	if !os.IsNotExist(err) {
 		return nil, false, fmt.Errorf("read %s: %w", path, err)
 	}
+	return createSecretFile(path)
+}
 
+// createSecretFile persists a new random key at path, which must not exist.
+// O_EXCL makes the absence check and the create a single step: two processes
+// starting on one empty data directory cannot both win, and the loser is
+// refused instead of overwriting the key the winner wrote.
+func createSecretFile(path string) ([]byte, bool, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return nil, false, fmt.Errorf("generate secret key: %w", err)
 	}
 	encoded := hex.EncodeToString(buf)
-	if err := os.WriteFile(path, []byte(encoded+"\n"), 0o600); err != nil {
+
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if os.IsExist(err) {
+		// Reading the file back here could find the winner's file still empty
+		// and refuse with advice to delete it. Starting again reads the key once
+		// it is complete.
+		return nil, false, fmt.Errorf("%s was created by another process while this one was starting; start again to use the key it holds", path)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("create %s: %w", path, err)
+	}
+
+	_, err = file.WriteString(encoded + "\n")
+	if err == nil {
+		// The key must be on disk before anything is sealed with it. Otherwise a
+		// crash soon after first start can keep the database rows and lose the
+		// key that opens them.
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		// Nothing was sealed with a key this process never returned, so the
+		// half-written file is ours to remove. Leaving it would make the next
+		// start refuse, when a clean start could simply generate one.
+		_ = os.Remove(path)
 		return nil, false, fmt.Errorf("write %s: %w", path, err)
 	}
 	return []byte(encoded), true, nil
 }
+
+// unusableSecretFile refuses a key file that exists without a usable key. It
+// names the file and says what to do, because the obvious fixes point in
+// opposite directions: restoring the original key keeps sealed values readable,
+// and deleting the file only starts over.
+func unusableSecretFile(path string) error {
+	return fmt.Errorf("%s does not hold a usable secret key (it needs at least %d characters), and it is not replaced: "+
+		"a new key cannot open what was sealed under the original. "+
+		"Restore this file from a backup, or set %sSECRET_KEY to the original key. "+
+		"Delete the file only if nothing was ever sealed with it",
+		path, minSecretLen, envPrefix)
+}
+
+// minSecretLen is the floor for a key from the environment or from the file,
+// the same for both. A shorter key is refused, never used.
+const minSecretLen = 16
 
 // minStrongSecretLen is what the warning asks for. The hard floor stays at 16
 // so a deployment that already runs on a shorter key keeps starting; the key
