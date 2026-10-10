@@ -220,9 +220,17 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 26.19 MB (22.49 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 240.49 kB to open the chat (198.31 JS + 42.18 CSS) |
+| Frontend, on the wire | < 135 kB | 241.58 kB to open the chat (199.33 JS + 42.25 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-10 (UTC), after the backoffice's account menu learned to
+open its panels beside it and the connect link learned to return there:
+241.58 kB (199.33 kB JS + 42.25 kB CSS), up 1.09 kB from the figure below. Of
+that, 1.02 kB came with the panels, which landed without a remeasure, and 0.07
+kB with this change. The backoffice chunk is 124.65 kB and the Chinese
+dictionary 48.46 kB. The binary is left at its figure above: this change adds a
+few kilobytes to it, below the precision the table keeps.
 
 Remeasured on 2026-10-10 (UTC), after the security fixes of that day: sign-out
 now clears the chat, draft and project stores, the markdown parser scans

@@ -14,12 +14,12 @@
 // with.
 
 import { computed, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { IconCollapse, IconExpand } from '@/icons';
 import AccountSection from './settings/AccountSection.vue';
 import AppearanceSection from './settings/AppearanceSection.vue';
@@ -38,23 +38,27 @@ const CATEGORIES: Array<{ id: Category; label: StringKey }> = [
   { id: 'invites', label: 'secInvites' },
 ];
 
-const router = useRouter();
-const route = useRoute();
+const panels = usePanelExit();
+
+// The tab a link names, given by whichever address opened this panel: the
+// router reads `/settings?tab=`, the backoffice reads its own `panel` parameter.
+// The panel never reads a query itself, because over the backoffice the page's
+// own `tab` is a different thing.
+const props = defineProps<{ tab?: string }>();
 
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
 const scroll = ref<InstanceType<typeof OaScrollArea> | null>(null);
 
 // A link can name the tab — the backoffice sends an administrator straight to
 // the security one to turn on the second step a policy is asking for.
-const requested = route?.query['tab'];
 const category = ref<Category>(
-  CATEGORIES.some((entry) => entry.id === requested) ? requested as Category : 'appearance',
+  CATEGORIES.some((entry) => entry.id === props.tab) ? props.tab as Category : 'appearance',
 );
 const query = ref('');
-watch(() => route?.query['tab'], (tab) => {
+watch(() => props.tab, (tab) => {
   // A second link to a different tab, clicked while the panel is already
-  // open, does not remount it — the query changes under a component that is
-  // already running, so `requested` above only ever saw the first one.
+  // open, does not remount it — the prop changes under a component that is
+  // already running, so the initial value above only ever saw the first one.
   const known = CATEGORIES.find((entry) => entry.id === tab);
   if (known) select(known.id);
 });
@@ -105,7 +109,7 @@ function toggleFullscreen(): void {
     :footer="false"
     :width="460"
     body-class="oa-settings-body"
-    @close="router.replace('/')"
+    @close="panels.close('replace')"
   >
     <template #actions>
       <OaIconButton

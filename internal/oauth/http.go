@@ -159,13 +159,17 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Where a failure lands, decided before anything can fail: a person
-	// adding a connection belongs back in their settings, and a person
-	// signing in belongs at the sign-in card.
+	// adding a connection goes back to the page they started it from, and a
+	// person signing in belongs at the sign-in card.
 	account, signedIn := auth.UserFrom(r.Context())
 	linking := signedIn && r.URL.Query().Get("link") == "1"
+	back := ""
+	if linking {
+		back = linkBack(r.URL.Query().Get("next"))
+	}
 
 	if !h.service.Enabled(provider.ID) {
-		h.fail(w, r, linking, "unavailable")
+		h.fail(w, r, back, "unavailable")
 		return
 	}
 
@@ -181,7 +185,7 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		gate := h.gateFor(signingUp)
 		if gate.Enabled != nil && gate.Enabled() {
 			if err := gate.Check(r.Context(), r.URL.Query().Get("turnstile"), h.address(r)); err != nil {
-				h.fail(w, r, linking, "challenge_failed")
+				h.fail(w, r, back, "challenge_failed")
 				return
 			}
 			checked = true
@@ -189,7 +193,7 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		if signingUp && h.proofRequired() {
 			proof := proofFrom(r.URL.Query().Get("pow"))
 			if err := h.service.auth.CheckSignupProof(r.Context(), h.address(r), proof); err != nil {
-				h.fail(w, r, linking, "challenge_failed")
+				h.fail(w, r, back, "challenge_failed")
 				return
 			}
 			checked = true
@@ -199,7 +203,7 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 
 	creds, err := h.service.ResolveCredentials(r.Context(), h.Client, provider.ID)
 	if err != nil {
-		h.fail(w, r, linking, "unavailable")
+		h.fail(w, r, back, "unavailable")
 		return
 	}
 
@@ -221,7 +225,7 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 
 	cookie, err := h.stamp.issue(value)
 	if err != nil {
-		h.fail(w, r, linking, "failed")
+		h.fail(w, r, back, "failed")
 		return
 	}
 	h.setState(w, cookie)
@@ -229,7 +233,7 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	target := provider.authorise(creds,
 		h.redirectURI(r, provider.ID), value.Nonce, challenge)
 	if target == "" {
-		h.fail(w, r, linking, "unavailable")
+		h.fail(w, r, back, "unavailable")
 		return
 	}
 	http.Redirect(w, r, target, http.StatusFound)
@@ -250,37 +254,41 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(stateCookie)
 	h.clearState(w)
 	if err != nil {
-		h.fail(w, r, false, "state")
+		h.fail(w, r, "", "state")
 		return
 	}
 	value, err := h.stamp.read(cookie.Value)
 	if err != nil {
-		h.fail(w, r, false, "state")
+		h.fail(w, r, "", "state")
 		return
 	}
 	linking := value.UserID != ""
+	back := ""
+	if linking {
+		back = linkBack(value.Next)
+	}
 
 	query := r.URL.Query()
 	// The provider refusing, or the person pressing cancel on the consent
 	// screen. Its own words are not shown: they are English, sometimes
 	// untranslatable, and "you did not authorise this" is the whole of it.
 	if query.Get("error") != "" {
-		h.fail(w, r, linking, "denied")
+		h.fail(w, r, back, "denied")
 		return
 	}
 	if value.Provider != provider.ID ||
 		!hmac.Equal([]byte(query.Get("state")), []byte(value.Nonce)) {
-		h.fail(w, r, linking, "state")
+		h.fail(w, r, back, "state")
 		return
 	}
 	code := query.Get("code")
 	if code == "" {
-		h.fail(w, r, linking, "denied")
+		h.fail(w, r, back, "denied")
 		return
 	}
 	if !h.service.Enabled(provider.ID) {
 		// Switched off while somebody was at the consent screen.
-		h.fail(w, r, linking, "unavailable")
+		h.fail(w, r, back, "unavailable")
 		return
 	}
 
@@ -289,7 +297,7 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 	// holds a copy of the cookie cannot use up the state the owner still needs.
 	if linking {
 		if account, signedIn := auth.UserFrom(r.Context()); !signedIn || account.ID != value.UserID {
-			h.fail(w, r, true, "state")
+			h.fail(w, r, back, "state")
 			return
 		}
 	}
@@ -300,24 +308,24 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 	// race on this insert, and only the one that lands goes on to the code.
 	spent, err := h.service.store.SpendState(r.Context(), nil, value.Nonce, value.Expiry)
 	if err != nil {
-		h.fail(w, r, linking, "failed")
+		h.fail(w, r, back, "failed")
 		return
 	}
 	if !spent {
-		h.fail(w, r, linking, "state")
+		h.fail(w, r, back, "state")
 		return
 	}
 
 	creds, err := h.service.ResolveCredentials(r.Context(), h.Client, provider.ID)
 	if err != nil {
-		h.fail(w, r, linking, "unavailable")
+		h.fail(w, r, back, "unavailable")
 		return
 	}
 
 	identity, err := provider.Authenticate(r.Context(), h.Client,
 		creds, code, h.redirectURI(r, provider.ID), value.Verifier)
 	if err != nil {
-		h.fail(w, r, linking, providerFailure(err))
+		h.fail(w, r, back, providerFailure(err))
 		return
 	}
 
@@ -338,10 +346,10 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 		}
 		var disabledErr *auth.AccountDisabledError
 		if errors.As(err, &disabledErr) && disabledErr.Reason != "" {
-			h.failWithReason(w, r, false, "disabled", disabledErr.Reason)
+			h.failWithReason(w, r, "", "disabled", disabledErr.Reason)
 			return
 		}
-		h.fail(w, r, false, signInFailure(err))
+		h.fail(w, r, "", signInFailure(err))
 		return
 	}
 	next := value.Next
@@ -360,7 +368,7 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		h.fail(w, r, false, "failed")
+		h.fail(w, r, "", "failed")
 		return
 	}
 	h.service.auth.SetCookie(w, token)
@@ -386,7 +394,7 @@ func (h *Handlers) askForDetails(
 		Expiry:   time.Now().Add(pendingTTL).UnixMilli(),
 	})
 	if err != nil {
-		h.fail(w, r, false, "failed")
+		h.fail(w, r, "", "failed")
 		return
 	}
 	h.setPending(w, ticket)
@@ -521,33 +529,26 @@ func (h *Handlers) heldSignup(r *http.Request) (pending, error) {
 // else between the two halves must not hand that somebody else the
 // connection.
 func (h *Handlers) finishLink(w http.ResponseWriter, r *http.Request, value state, identity Identity) {
+	back := linkBack(value.Next)
 	account, signedIn := auth.UserFrom(r.Context())
 	if !signedIn || account.ID != value.UserID {
-		h.fail(w, r, true, "state")
+		h.fail(w, r, back, "state")
 		return
 	}
 	if err := h.service.Connect(r.Context(), account.ID, identity); err != nil {
 		if errors.Is(err, ErrAlreadyLinked) {
-			h.fail(w, r, true, "already_linked")
+			h.fail(w, r, back, "already_linked")
 			return
 		}
-		h.fail(w, r, true, "failed")
+		h.fail(w, r, back, "failed")
 		return
 	}
-	// Settings by default, the way this flow has always landed — but the
-	// binding gate sends its own start request with next=/bind-oidc's own
-	// destination, and a connection made to satisfy that gate belongs there,
-	// not back at a settings screen the gate would immediately bounce it out
+	// Back where it was started, settings when it named no page: the way this
+	// flow has always landed. The binding gate starts its own link with its
+	// destination as next, so a connection made to satisfy that gate belongs
+	// there, not at a settings screen the gate would immediately bounce it out
 	// of again.
-	page := value.Next
-	if page == "" {
-		page = "/settings"
-	}
-	sep := "?"
-	if strings.Contains(page, "?") {
-		sep = "&"
-	}
-	http.Redirect(w, r, page+sep+"oauth=connected", http.StatusFound)
+	http.Redirect(w, r, withQuery(back, "oauth", "connected"), http.StatusFound)
 }
 
 // fail sends the browser to a page that can say what happened.
@@ -555,22 +556,51 @@ func (h *Handlers) finishLink(w http.ResponseWriter, r *http.Request, value stat
 // A code rather than a sentence, for the reason every other refusal on this
 // path carries one: the server has no idea what language the reader has the
 // interface in.
-func (h *Handlers) fail(w http.ResponseWriter, r *http.Request, linking bool, code string) {
-	h.failWithReason(w, r, linking, code, "")
+//
+// back is the page a link returns to, and empty for a sign-in, which goes to
+// its own card or to the sign-up form.
+func (h *Handlers) fail(w http.ResponseWriter, r *http.Request, back, code string) {
+	h.failWithReason(w, r, back, code, "")
 }
 
-func (h *Handlers) failWithReason(w http.ResponseWriter, r *http.Request, linking bool, code, reason string) {
+func (h *Handlers) failWithReason(w http.ResponseWriter, r *http.Request, back, code, reason string) {
 	page := "/login"
-	if linking {
-		page = "/settings"
+	if back != "" {
+		page = back
 	} else if r.URL.Query().Get("register") == "1" {
 		page = "/register"
 	}
-	u := page + "?oauth_error=" + url.QueryEscape(code)
+	u := withQuery(page, "oauth_error", code)
 	if reason != "" {
-		u += "&ban_reason=" + url.QueryEscape(reason)
+		u = withQuery(u, "ban_reason", reason)
 	}
 	http.Redirect(w, r, u, http.StatusFound)
+}
+
+// linkBack is the page a link returns to, whether it worked or not: the page it
+// was started from when that is one of this site's, and the settings screen it
+// has always returned to otherwise.
+func linkBack(next string) string {
+	if page := safeNext(next); page != "" {
+		return page
+	}
+	return "/settings"
+}
+
+// withQuery adds one parameter to a page of this site. It goes before the
+// fragment, because a browser reads everything after '#' as the fragment, and a
+// page that already has a query keeps it.
+func withQuery(page, key, value string) string {
+	path, fragment, hasFragment := strings.Cut(page, "#")
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	out := path + sep + key + "=" + url.QueryEscape(value)
+	if hasFragment {
+		out += "#" + fragment
+	}
+	return out
 }
 
 func providerFailure(err error) string {

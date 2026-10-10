@@ -11,7 +11,6 @@
 // secret.
 
 import { computed, onMounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import { ApiError, api } from '@/api/client';
 import { createKey, deleteKey, listKeys, updateKey, type ApiKey } from '@/api/keys';
 import { copyToClipboard } from '@/chat/markdown';
@@ -26,6 +25,7 @@ import OaTypedConfirm from '@/components/OaTypedConfirm.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
 import type { ListItem } from '@/components/list-items';
 import { t, type StringKey } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { IconCheck, IconCopy, IconGear, IconPause, IconPlay, IconTrash } from '@/icons';
 import { openCCSwitch, type CCSwitchApp } from '@/lib/cc-switch';
 import { absoluteTime, relativeTime } from '@/lib/format';
@@ -48,7 +48,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // safe one.
 const ARM_MS = 6000;
 
-const router = useRouter();
+const panels = usePanelExit();
 
 const keys = ref<ApiKey[]>([]);
 const models = ref<AvailableModel[]>([]);
@@ -374,7 +374,7 @@ onMounted(() => void refresh());
     :footer="false"
     :width="520"
     :error="error"
-    @close="router.push('/')"
+    @close="panels.close('push')"
   >
     <!-- Issuing and editing both end in the same import section: one offers
          the token as it was just created, the other asks for the copy the

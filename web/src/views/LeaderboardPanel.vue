@@ -12,7 +12,6 @@
 // shows the top twenty answers the question for twenty people.
 
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import { ApiError } from '@/api/client';
 import {
   fetchLeaderboard,
@@ -25,11 +24,12 @@ import OaFormSection from '@/components/OaFormSection.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { IconCollapse, IconExpand, IconTrophy } from '@/icons';
 import { initials, safeAvatar } from '@/lib/account';
 import { compactNumber } from '@/lib/format';
 
-const router = useRouter();
+const panels = usePanelExit();
 
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
 const fullscreen = ref(false);
@@ -231,7 +231,7 @@ onBeforeUnmount(() => {
     :busy="loading"
     :error="error"
     body-class="oa-board-body"
-    @close="router.replace('/')"
+    @close="panels.close('replace')"
   >
     <template #actions>
       <OaIconButton

@@ -8,7 +8,7 @@
 
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useMediaQuery } from '@vueuse/core';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 import { health } from '@/api/client';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaResizer from '@/components/OaResizer.vue';
@@ -35,6 +35,8 @@ import ChatLayout from '@/layouts/ChatLayout.vue';
 import { provideAdminView } from './adminView';
 import { pageLabel, searchAdminFeatures, type AdminPageSpec, visibleAdminPages } from './features';
 import { plugins } from '@/plugins/registry';
+import { BACKOFFICE_PANEL_PARAM, provideBackofficePanels } from '@/composables/usePanelExit';
+import { resolveSidePanel } from '@/views/panels';
 
 import AdminDashboard from './AdminDashboard.vue';
 import AdminUsers from './AdminUsers.vue';
@@ -156,7 +158,7 @@ function scrollToSection(id: string): void {
 
 function onPageClick(slug: string): void {
   if ((segments.value[0] ?? '') === slug && route.hash) {
-    void router.push({ path: slug ? `/admin/${slug}` : '/admin' });
+    void router.push({ path: slug ? `/admin/${slug}` : '/admin', query: route.query });
     bodyScroll.value?.scroller?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
@@ -200,6 +202,16 @@ function keepRail(node: unknown): void {
 
 const segments = computed(() => route.path.replace(/^\/admin\/?/, '').split('/').filter(Boolean));
 const current = computed(() => pages.value.find((entry) => entry.slug === (segments.value[0] ?? '')) ?? PAGES[0]!);
+
+// Where a link to a page, or to a section of one, goes. The page on screen
+// keeps the address's query, because a side panel is named there
+// (usePanelExit): choosing the page again must not close it. Another page is a
+// new page, and a panel open over this one does not follow it.
+function pageLink(page: AdminPageSpec, hash = ''): RouteLocationRaw {
+  const path = page.slug ? `/admin/${page.slug}` : '/admin';
+  if (page !== current.value) return hash ? { path, hash } : path;
+  return { path, query: route.query, hash };
+}
 
 // A section's grant is its slug unless it says otherwise, and any one of a
 // comma-separated list opens it — the plugins screen is three grants. The
@@ -315,6 +327,22 @@ provideAdminView({
   },
 });
 
+// A panel from the account menu or a link, drawn beside this page. The address
+// keeps the page's own path, query and hash, and only the panel's parameter
+// comes and goes, so the page underneath is never taken away (usePanelExit).
+const sidePanel = computed(() => resolveSidePanel(route.query[BACKOFFICE_PANEL_PARAM]));
+
+provideBackofficePanels({
+  show(name) {
+    void router.push({ path: route.path, query: { ...route.query, [BACKOFFICE_PANEL_PARAM]: name }, hash: route.hash });
+  },
+  hide() {
+    const query = { ...route.query };
+    delete query[BACKOFFICE_PANEL_PARAM];
+    void router.replace({ path: route.path, query, hash: route.hash });
+  },
+});
+
 // Changing views should never leave a stale heading or a set of buttons
 // belonging to the previous section. Remounting the page on the key below
 // takes care of the body; these two are the shell's own.
@@ -414,7 +442,7 @@ onMounted(() => {
             :key="entry.slug"
             class="oa-admin-nav"
             :class="{ active: entry === current && !route.hash }"
-            :to="entry.slug ? `/admin/${entry.slug}` : '/admin'"
+            :to="pageLink(entry)"
           >
             <component :is="entry.icon" :size="15" />
             <span>{{ pageLabel(entry) }}</span>
@@ -428,7 +456,7 @@ onMounted(() => {
             class="oa-admin-search-group"
           >
             <RouterLink
-              :to="group.page.slug ? `/admin/${group.page.slug}` : '/admin'"
+              :to="pageLink(group.page)"
               class="oa-admin-nav oa-admin-group-head"
               :class="{ active: group.page === current && !route.hash }"
               @click="onPageClick(group.page.slug)"
@@ -441,7 +469,7 @@ onMounted(() => {
               <RouterLink
                 v-for="item in group.items"
                 :key="item.id"
-                :to="{ path: group.page.slug ? `/admin/${group.page.slug}` : '/admin', hash: `#${item.id}` }"
+                :to="pageLink(group.page, `#${item.id}`)"
                 class="oa-admin-subnav-item"
                 :class="{ active: group.page === current && route.hash === `#${item.id}` }"
                 @click="onItemClick(group.page.slug, item.id)"
@@ -507,5 +535,14 @@ onMounted(() => {
       </OaScrollArea>
     </div>
     <AdminUpdateDialog v-if="updateReady" />
+
+    <!-- Teleported into this shell's row, as the chat's panels are into theirs,
+         so it is a column beside the page and not a page of its own. -->
+    <component
+      v-if="sidePanel"
+      :is="sidePanel.component"
+      :key="sidePanel.name"
+      v-bind="sidePanel.props"
+    />
   </AppShell>
 </template>

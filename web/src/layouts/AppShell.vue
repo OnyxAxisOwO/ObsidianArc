@@ -10,17 +10,17 @@
 // five components deep open one without being handed an element to put it in.
 
 import { ref, type HTMLAttributes } from 'vue';
-import { useRouter } from 'vue-router';
 import AnnounceBell from '@/announce/AnnounceBell.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import OaToastStack from '@/components/OaToastStack.vue';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { providePanelHost } from '@/composables/usePanelHost';
 import { t } from '@/composables/useI18n';
 import { IconImage } from '@/icons';
 import { currentUser, siteInfo } from '@/stores/session';
 import AccountMenu from './AccountMenu.vue';
 
-const router = useRouter();
+const panels = usePanelExit();
 
 const props = defineProps<{
   /** What the row is: `ai-chat ai-chat-wide` for the chat, `oa-admin` for the backoffice. */
@@ -83,7 +83,7 @@ defineExpose({ body });
         class="oa-icon-btn"
         :title="t('imageLab')"
         :aria-label="t('imageLab')"
-        @click="router.push('/image-lab')"
+        @click="panels.open('/image-lab')"
       >
         <IconImage :size="16" />
       </button>

@@ -6,6 +6,7 @@ import OaAvatar from '@/components/OaAvatar.vue';
 import OaMenu from '@/components/OaMenu.vue';
 import OaMenuItem from '@/components/OaMenuItem.vue';
 import { t } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { IconArchive, IconChart, IconGear, IconImage, IconInfo, IconKey, IconLogout, IconMessage, IconPulse, IconSliders, IconTerminal, IconTrophy } from '@/icons';
 import { displayName } from '@/lib/account';
 import { userPanels } from '@/plugins/registry';
@@ -15,6 +16,7 @@ import { forget, siteInfo, isAdmin, canAdmin } from '@/stores/session';
 const props = defineProps<{ account: Account }>();
 
 const router = useRouter();
+const panels = usePanelExit();
 
 // Most panels go together after Feedback; one about what the account may
 // spend asks to sit under Usage instead (UserPanelSpec.menu).
@@ -29,6 +31,14 @@ onMounted(() => void refreshFeedbackUnread());
 function go(close: () => void, path: string): void {
   close();
   void router.push(path);
+}
+
+// Panels open beside the backoffice when it is what is on screen, rather than
+// replacing it with the chat (see usePanelExit). The menu closes first either
+// way, as it always has.
+function openPanel(close: () => void, path: string): void {
+  close();
+  panels.open(path);
 }
 
 async function signOut(close: () => void): Promise<void> {
@@ -84,41 +94,41 @@ async function signOut(close: () => void): Promise<void> {
         </span>
       </div>
 
-      <OaMenuItem :title="t('settings')" @click="go(close, '/settings')">
+      <OaMenuItem :title="t('settings')" @click="openPanel(close, '/settings')">
         <template #leading><IconGear :size="14" /></template>
       </OaMenuItem>
-      <OaMenuItem :title="t('navUsage')" @click="go(close, '/usage')">
+      <OaMenuItem :title="t('navUsage')" @click="openPanel(close, '/usage')">
         <template #leading><IconChart :size="14" /></template>
       </OaMenuItem>
       <OaMenuItem
         v-for="panel in usagePanels"
         :key="panel.slug"
         :title="panel.title()"
-        @click="go(close, `/x/${panel.slug}`)"
+        @click="openPanel(close, `/x/${panel.slug}`)"
       >
         <template #leading><component :is="panel.icon ?? IconMessage" :size="14" /></template>
       </OaMenuItem>
-      <OaMenuItem :title="t('archivedConversations')" @click="go(close, '/archive')">
+      <OaMenuItem :title="t('archivedConversations')" @click="openPanel(close, '/archive')">
         <template #leading><IconArchive :size="14" /></template>
       </OaMenuItem>
-      <OaMenuItem :title="t('imageLab')" @click="go(close, '/image-lab')">
+      <OaMenuItem :title="t('imageLab')" @click="openPanel(close, '/image-lab')">
         <template #leading><IconImage :size="14" /></template>
       </OaMenuItem>
       <OaMenuItem
         v-if="canAdmin('availability') || siteInfo.health_show_users"
         :title="t('uptimeTitle')"
-        @click="go(close, '/uptime')"
+        @click="openPanel(close, '/uptime')"
       >
         <template #leading><IconPulse :size="14" /></template>
       </OaMenuItem>
       <OaMenuItem
         v-if="canAdmin('leaderboard') || siteInfo.leaderboard_show_users"
         :title="t('leaderboardTitle')"
-        @click="go(close, '/leaderboard')"
+        @click="openPanel(close, '/leaderboard')"
       >
         <template #leading><IconTrophy :size="14" /></template>
       </OaMenuItem>
-      <OaMenuItem :title="t('apiKeys')" @click="go(close, '/keys')">
+      <OaMenuItem :title="t('apiKeys')" @click="openPanel(close, '/keys')">
         <template #leading><IconKey :size="14" /></template>
       </OaMenuItem>
       <!-- Beside the keys, the other thing here for somebody who works from a
@@ -131,7 +141,7 @@ async function signOut(close: () => void): Promise<void> {
       >
         <template #leading><IconTerminal :size="14" /></template>
       </OaMenuItem>
-      <OaMenuItem :title="t('feedback')" @click="go(close, '/feedback')">
+      <OaMenuItem :title="t('feedback')" @click="openPanel(close, '/feedback')">
         <template #leading><IconMessage :size="14" /></template>
         <template v-if="feedbackUnread" #trailing>
           <span class="oa-menu-unread" :title="t('feedbackHasReply')" />
@@ -141,11 +151,11 @@ async function signOut(close: () => void): Promise<void> {
         v-for="panel in otherPanels"
         :key="panel.slug"
         :title="panel.title()"
-        @click="go(close, `/x/${panel.slug}`)"
+        @click="openPanel(close, `/x/${panel.slug}`)"
       >
         <template #leading><component :is="panel.icon ?? IconMessage" :size="14" /></template>
       </OaMenuItem>
-      <OaMenuItem :title="t('about')" @click="go(close, '/about')">
+      <OaMenuItem :title="t('about')" @click="openPanel(close, '/about')">
         <template #leading><IconInfo :size="14" /></template>
       </OaMenuItem>
       <OaMenuItem

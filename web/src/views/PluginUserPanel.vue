@@ -12,7 +12,6 @@
 // is drawn and solved here too: the plugin only carries the proof.
 
 import { computed, onMounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import { fetchPoWChallenge } from '@/api/auth';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
@@ -20,6 +19,7 @@ import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { solvePoW } from '@/lib/pow';
 import { pluginRefusal, userPanels } from '@/plugins/registry';
 import type {
@@ -29,7 +29,7 @@ import PluginUserControls from './PluginUserControls.vue';
 
 const props = defineProps<{ slug: string; entry?: string }>();
 
-const router = useRouter();
+const panels = usePanelExit();
 
 // Looked up rather than fixed at setup: the plugins load after the first
 // paint, and a reader who opened /x/<slug> from a bookmark gets here before
@@ -190,8 +190,16 @@ async function submit(): Promise<void> {
   }
 }
 
+// Back from an entry to the list, and from the list out again. Both are a move
+// on the same panel's address, so over the backoffice they are the same address
+// with the panel's parameter shortened or removed (see usePanelExit).
+//
+// An entry's X and Escape close its OaPanel before this runs, and a closed
+// OaPanel stays closed. The template keys the column by address so that the
+// list which follows is a panel of its own, not that hidden one.
 function close(): void {
-  void router.push(opened.value ? `/x/${props.slug}` : '/');
+  if (opened.value) panels.open(`/x/${props.slug}`);
+  else panels.close('push');
 }
 
 // The same component is reused when one plugin panel is opened from another,
@@ -221,6 +229,7 @@ onMounted(() => {
 
 <template>
   <OaPanel
+    :key="opened ? `entry:${opened}` : 'list'"
     :title="title"
     :confirm-label="confirmLabel"
     :confirmable="!!confirmLabel"
@@ -290,7 +299,7 @@ onMounted(() => {
         <p v-else-if="!entries.length" class="oa-menu-empty">{{ spec.entries.empty() }}</p>
         <ul v-else class="oa-feedback-list">
           <li v-for="item in entries" :key="item.id">
-            <button type="button" class="oa-feedback-item" @click="router.push(`/x/${slug}/${item.id}`)">
+            <button type="button" class="oa-feedback-item" @click="panels.open(`/x/${slug}/${item.id}`)">
               <span class="oa-feedback-item-head">
                 <span class="oa-feedback-item-title">{{ item.title }}</span>
                 <OaBadge v-if="item.badge" :tone="item.badge.tone">{{ item.badge.label }}</OaBadge>

@@ -8,7 +8,6 @@
 // not want a screen.
 
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import { useDocumentVisibility, useIntervalFn } from '@vueuse/core';
 import { ApiError, api } from '@/api/client';
 import { fetchUsage, type UsageSummary } from '@/api/usage';
@@ -28,6 +27,7 @@ import type { Column } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
 import { celebrate } from '@/composables/useConfetti';
 import { t } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { IconClose, IconLock, IconPlus, IconRefresh } from '@/icons';
 import { absoluteTime, compactNumber, relativeTime, tokenFigure } from '@/lib/format';
 import { currentPreferences, currentUser, siteInfo, syncPreferences } from '@/stores/session';
@@ -68,7 +68,7 @@ interface Turn {
   finished_at: number;
 }
 
-const router = useRouter();
+const panels = usePanelExit();
 
 // The panel re-reads itself while it is open, so a turn finished in another
 // tab or an API call arrives on its own rather than at the next visit. The
@@ -427,7 +427,7 @@ watch(visibility, (now, was) => {
     :title="t('navUsage')"
     :footer="false"
     :width="460"
-    @close="router.push('/')"
+    @close="panels.close('push')"
   >
     <section v-if="groupName" class="oa-usage-group">
       <h1 class="oa-usage-group-name">{{ groupName }}</h1>

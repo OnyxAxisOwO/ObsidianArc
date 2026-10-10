@@ -27,7 +27,9 @@ const refField = example.fields!['ref']!;
 // sign people in with an account here. Two features pointing opposite ways,
 // tested together because the screens they touch are the same three.
 
-const route = { path: '/login', query: {} as Record<string, string> };
+// A route as the router resolves one: `meta` is always there, as the settings
+// screen's connect link reads it.
+const route = { path: '/login', query: {} as Record<string, string>, meta: {} as Record<string, unknown> };
 const replace = vi.fn();
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn(), replace }),

@@ -26,7 +26,8 @@
 
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 import { safeNext, serverOwned } from '@/lib/next';
-import { currentUser, isAdmin, canAdmin, pendingSecondFactor, siteInfo } from '@/stores/session';
+import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
+import { currentUser, isAdmin, pendingSecondFactor, siteInfo } from '@/stores/session';
 import AboutPanel from '@/views/AboutPanel.vue';
 import ArchivePanel from '@/views/ArchivePanel.vue';
 import AuthView from '@/views/AuthView.vue';
@@ -45,6 +46,7 @@ import LeaderboardPanel from '@/views/LeaderboardPanel.vue';
 import UsagePanel from '@/views/UsagePanel.vue';
 import PluginUserPanel from '@/views/PluginUserPanel.vue';
 import VerifyView from '@/views/VerifyView.vue';
+import { panelAllowed, resolveSidePanel } from '@/views/panels';
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', component: AuthView, props: { mode: 'login' } },
@@ -73,7 +75,18 @@ const routes: RouteRecordRaw[] = [
     component: RootView,
     children: [
       { path: '', name: 'chat', component: { render: () => null } },
-      { path: 'settings', component: SettingsPanel, meta: { auth: true } },
+      {
+        path: 'settings',
+        component: SettingsPanel,
+        // The tab is read here rather than by the panel, because the panel is
+        // also drawn over the backoffice, whose own `tab` parameter belongs to
+        // its plugin pages and must not select a settings tab.
+        props: (to) => {
+          const tab = to.query['tab'];
+          return { tab: typeof tab === 'string' ? tab : undefined };
+        },
+        meta: { auth: true },
+      },
       { path: 'archive', component: ArchivePanel, meta: { auth: true } },
       { path: 'keys', component: KeysPanel, meta: { auth: true } },
       { path: 'usage', component: UsagePanel, meta: { auth: true } },
@@ -200,13 +213,25 @@ router.beforeEach((to) => {
   }
 
   // Uptime is available to admins, and to readers only if published.
-  if (to.path === '/uptime' && !canAdmin('availability') && !siteInfo.value.health_show_users) {
+  if (to.path === '/uptime' && !panelAllowed('uptime')) {
     return { path: '/', replace: true };
   }
 
   // The leaderboard likewise: its curators may look before it is published.
-  if (to.path === '/leaderboard' && !canAdmin('leaderboard') && !siteInfo.value.leaderboard_show_users) {
+  if (to.path === '/leaderboard' && !panelAllowed('leaderboard')) {
     return { path: '/', replace: true };
+  }
+
+  // A panel drawn over the backoffice is held to the same rule as its chat
+  // address. Only the panel is taken out of the address: the page underneath
+  // is what the reader asked for.
+  if (to.meta['admin']) {
+    const panel = resolveSidePanel(to.query[BACKOFFICE_PANEL_PARAM]);
+    if (panel && !panelAllowed(panel.name)) {
+      const query = { ...to.query };
+      delete query[BACKOFFICE_PANEL_PARAM];
+      return { path: to.path, query, hash: to.hash, replace: true };
+    }
   }
 
   return true;
