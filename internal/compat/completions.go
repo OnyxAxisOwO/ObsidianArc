@@ -928,7 +928,7 @@ func (h *Handlers) record(
 // given back when decode returns. By then the body is in and parsed, and
 // nothing after this, the provider call included, holds one.
 func (h *Handlers) decode(w http.ResponseWriter, r *http.Request, who caller, dst any) error {
-	release, err := h.claimBody(r, who)
+	release, err := h.claimBody(w, r, who)
 	if err != nil {
 		return err
 	}

@@ -59,7 +59,7 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 	// The place covers the body and every picture in it, so it is claimed
 	// before the first byte is read. It is given back once they are parsed,
 	// below; the defer is for the paths that leave earlier.
-	releasePlace, err := h.claimBody(r, who)
+	releasePlace, err := h.claimBody(w, r, who)
 	if err != nil {
 		return err
 	}

@@ -90,6 +90,11 @@ type Handlers struct {
 	// belongs to this Handlers, so to this server, and every /v1 body is read
 	// through it. See bodyPlaces.
 	bodies bodyPlaces
+
+	// How long a body may take to arrive once its place is granted. Zero means
+	// bodyReadWindow. Tests shorten it, so a real server can show the window
+	// running out without waiting minutes.
+	bodyWindow time.Duration
 }
 
 func NewHandlers(

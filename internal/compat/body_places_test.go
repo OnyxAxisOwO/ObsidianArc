@@ -462,9 +462,10 @@ func TestARefusedBodyGivesItsPlaceBack(t *testing.T) {
 	}
 }
 
-// A request queued for a place whose client goes away leaves the queue and holds
-// nothing: its body is never read, and when everything has ended the bookkeeping
-// is empty again.
+// A request queued for a place whose context is cancelled leaves the queue and
+// holds nothing: its body is never read, and when everything has ended the
+// bookkeeping is empty again. Over HTTP/1.1 a disconnect does not cancel an unread
+// body's context, so the test cancels it directly.
 func TestAWaitingRequestThatIsCancelledLeavesTheQueue(t *testing.T) {
 	f := newFixture(t)
 	f.upstream.reply(answer)
