@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -492,5 +493,38 @@ func TestAHostileRequestIsRecordedCleaned(t *testing.T) {
 	got := entries[0]
 	if got.Path != "/" || got.UserAgent != "probe\uFFFD" || got.RequestID != "trace\uFFFD" || got.Status != http.StatusNotFound {
 		t.Errorf("entry = %+v", got)
+	}
+}
+
+// The method is the one client-chosen string the log stored without a bound.
+// The transport caps the request line, but that cap is a deployment setting
+// this package does not own, so the bound is checked with a method far longer
+// than any the server would hand over.
+func TestAnOversizedMethodIsStoredBounded(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	store.Record(Entry{At: 1, Method: strings.Repeat("M", 1<<20), Path: "/long", Status: 405})
+	store.Record(Entry{At: 2, Method: "BASELINE-CONTROL", Path: "/named", Status: 405})
+	store.drain(t)
+
+	entries, total, err := store.List(ctx, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(entries) != 2 {
+		t.Fatalf("stored %d rows, want both", total)
+	}
+	for _, entry := range entries {
+		switch entry.Path {
+		case "/long":
+			if n := len([]rune(entry.Method)); n > MaxMethodChars {
+				t.Errorf("a method of %d characters was stored as %d, want at most %d", 1<<20, n, MaxMethodChars)
+			}
+		case "/named":
+			if entry.Method != "BASELINE-CONTROL" {
+				t.Errorf("a real method was altered to %q", entry.Method)
+			}
+		}
 	}
 }
