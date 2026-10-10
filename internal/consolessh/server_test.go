@@ -624,24 +624,37 @@ func TestHostOnlyStripsThePort(t *testing.T) {
 // An IPv6 client holds a whole /64, so the handshake cap has to count the
 // subnet. Counted per exact address, one client could hold every one of the 64
 // handshake slots from eight addresses, and the console would refuse everyone.
+// The key is derived inside acquirePreauth from the address, so a caller cannot
+// count by the raw host instead, and the test goes through the same entry point
+// the connection handler does.
 func TestPreauthSlotsAreCountedPerIPv6Subnet(t *testing.T) {
 	srv := &Server{cfg: Config{MaxUnauthenticated: 64}}
-	slot := func(ip string) string {
-		return preauthKey(&net.TCPAddr{IP: net.ParseIP(ip), Port: 22})
+	addr := func(ip string) net.Addr {
+		return &net.TCPAddr{IP: net.ParseIP(ip), Port: 22}
 	}
+	var held []string
 	for _, ip := range []string{
 		"2001:db8:0:1::1", "2001:db8:0:1::2", "2001:db8:0:1::3", "2001:db8:0:1::4",
 		"2001:db8:0:1::5", "2001:db8:0:1::6", "2001:db8:0:1::7", "2001:db8:0:1::8",
 	} {
-		if !srv.acquirePreauth(slot(ip)) {
+		key, ok := srv.acquirePreauth(addr(ip))
+		if !ok {
 			t.Fatalf("the handshake slot for %s was refused within the subnet's share", ip)
 		}
+		held = append(held, key)
 	}
-	if srv.acquirePreauth(slot("2001:db8:0:1::9")) {
+	if _, ok := srv.acquirePreauth(addr("2001:db8:0:1::9")); ok {
 		t.Fatal("a ninth handshake from one /64 was admitted")
 	}
-	if !srv.acquirePreauth(slot("2001:db8:0:2::1")) {
+	if _, ok := srv.acquirePreauth(addr("2001:db8:0:2::1")); !ok {
 		t.Fatal("a handshake from another /64 was refused")
+	}
+
+	// Giving a slot back has to find the key it was counted under, or the
+	// subnet's share never comes back.
+	srv.releasePreauth(held[0])
+	if _, ok := srv.acquirePreauth(addr("2001:db8:0:1::9")); !ok {
+		t.Fatal("a handshake from the subnet was refused after one of its slots was released")
 	}
 }
 

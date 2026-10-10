@@ -474,8 +474,8 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	ip := hostOnly(conn.RemoteAddr())
 	// Counted from accept to the end of the handshake, whichever way it ends.
-	slot := preauthKey(conn.RemoteAddr())
-	if !s.acquirePreauth(slot) {
+	slot, admitted := s.acquirePreauth(conn.RemoteAddr())
+	if !admitted {
 		// NewServerConn closes the socket when a handshake fails; this one
 		// never starts, so nothing else will.
 		_ = conn.Close()
@@ -612,35 +612,41 @@ func (s *Server) releaseAccountSlot(accountID string) {
 	s.perAccount[accountID]--
 }
 
-func (s *Server) acquirePreauth(ip string) bool {
+// acquirePreauth reserves a handshake slot and returns the key it is counted
+// against, which releasePreauth takes back. The key is derived here from the
+// address rather than passed in: a caller that counted by the raw host would
+// give each IPv6 address of a /64 its own share, although one client owns the
+// whole /64.
+func (s *Server) acquirePreauth(addr net.Addr) (string, bool) {
+	key := preauthKey(addr)
 	if s.cfg.MaxUnauthenticated < 0 {
-		return true
+		return key, true
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.preauth >= s.cfg.MaxUnauthenticated || s.preauthIP[ip] >= maxPreauthPerIP {
-		return false
+	if s.preauth >= s.cfg.MaxUnauthenticated || s.preauthIP[key] >= maxPreauthPerIP {
+		return "", false
 	}
 	if s.preauthIP == nil {
 		s.preauthIP = make(map[string]int)
 	}
 	s.preauth++
-	s.preauthIP[ip]++
-	return true
+	s.preauthIP[key]++
+	return key, true
 }
 
-func (s *Server) releasePreauth(ip string) {
+func (s *Server) releasePreauth(key string) {
 	if s.cfg.MaxUnauthenticated < 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.preauth--
-	if s.preauthIP[ip] <= 1 {
-		delete(s.preauthIP, ip)
+	if s.preauthIP[key] <= 1 {
+		delete(s.preauthIP, key)
 		return
 	}
-	s.preauthIP[ip]--
+	s.preauthIP[key]--
 }
 
 func (s *Server) addSession(sess *sshSession) {
