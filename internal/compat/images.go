@@ -56,6 +56,15 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 		parts []adapter.ImagePart
 	)
 
+	// The place covers the body and every picture in it, so it is claimed
+	// before the first byte is read. It is given back once they are parsed,
+	// below; the defer is for the paths that leave earlier.
+	releasePlace, err := h.claimBody(r, who)
+	if err != nil {
+		return err
+	}
+	defer releasePlace()
+
 	ceiling := int64(conversation.MaxAttachmentBytes)
 
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
@@ -174,6 +183,10 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 			})
 		}
 	}
+
+	// Nothing after this reads the body, so the place goes back here rather
+	// than when the function returns, which is after the provider call.
+	releasePlace()
 
 	body.Prompt = strings.TrimSpace(body.Prompt)
 	if body.Prompt == "" {

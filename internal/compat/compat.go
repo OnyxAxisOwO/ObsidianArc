@@ -85,6 +85,11 @@ type Handlers struct {
 	// the next call. Nil means no hold; the server wires both.
 	MustEnrolTwoFactor func(user.User) bool
 	MustBindOIDC       func(context.Context, user.User) (bool, error)
+
+	// Bounds how many request bodies each account may be reading at once. It
+	// belongs to this Handlers, so to this server, and every /v1 body is read
+	// through it. See bodyPlaces.
+	bodies bodyPlaces
 }
 
 func NewHandlers(
