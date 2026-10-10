@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Account } from '../src/api/auth';
+import { adminApi } from '../src/admin/api';
 import type { AttachmentRef, Conversation } from '../src/api/chat';
 import { listConversations, sendTurn, uploadAttachment } from '../src/api/chat';
 import { fetchFeedbackUnread } from '../src/api/feedback';
@@ -53,6 +54,7 @@ const {
 const { pendingProjectID } = await import('../src/stores/workspace');
 const { createProject, loadProjects, projectList, projectMax } = await import('../src/stores/projects');
 const { feedbackUnread, refreshFeedbackUnread, setFeedbackUnread } = await import('../src/stores/feedback');
+const { pricedModels } = await import('../src/views/admin/shared');
 
 function account(id: string): Account {
   return {
@@ -307,5 +309,18 @@ describe('signing out leaves nothing of the account behind', () => {
     vi.mocked(fetchFeedbackUnread).mockResolvedValueOnce({ unread: 1 });
     await refreshFeedbackUnread();
     expect(feedbackUnread.value).toBe(1);
+  });
+
+  it('asks again for the priced models after a different administrator signs in', async () => {
+    adopt(alice);
+    const priced = vi.spyOn(adminApi, 'models').mockResolvedValue({ models: [] });
+    await pricedModels();
+
+    forget();
+    adopt(bob);
+    await pricedModels();
+
+    expect(priced).toHaveBeenCalledTimes(2);
+    priced.mockRestore();
   });
 });

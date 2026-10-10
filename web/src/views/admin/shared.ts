@@ -2,6 +2,7 @@
 
 import { adminApi, type AdminModel } from '@/admin/api';
 import { t } from '@/composables/useI18n';
+import { onSignOut } from '@/stores/session';
 
 /**
  * The models an allowance is actually spent on. Fetched once per visit and
@@ -9,6 +10,9 @@ import { t } from '@/composables/useI18n';
  * and none of them is worth a request of its own.
  */
 let pricing: Promise<AdminModel[]> | null = null;
+// The list belongs to the session that fetched it, so the next administrator
+// asks again rather than reading the last one's copy.
+onSignOut(() => { pricing = null; });
 
 export function pricedModels(): Promise<AdminModel[]> {
   if (!pricing) {
