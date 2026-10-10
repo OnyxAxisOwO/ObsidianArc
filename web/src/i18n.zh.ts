@@ -2070,6 +2070,7 @@ export const zh: Record<StringKey, string> = {
   oauthProviderFailed: '连不上对方服务器，请稍后重试。',
   oauthAddressTaken: '这里已经有账户在用那个邮箱。请用原来的方式登录，然后在设置里连接。',
   oauthSignupClosed: '这台服务器不允许通过第三方登录注册新账户。',
+  oauthSignupChallengeRequired: '本站开通新账户前需要先完成人机验证。请从注册页面开始。',
   oauthThrottled: '刚刚创建的账户太多了，请稍后重试。',
   oauthDomain: '这台服务器不接受那个邮箱域名。',
   oauthEmailRequired: '这台服务器要求填写邮箱，而对方没有提供已验证的邮箱。',

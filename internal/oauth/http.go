@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"crypto/hmac"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -85,6 +87,70 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 
 // --- the browser's round trip -------------------------------------------------
 
+// gateFor is the Turnstile gate in front of one of the two doors a sign-in can
+// come through: the sign-up door when the browser asked for the register page's
+// flow, the login door otherwise. A door with no gate of its own falls back to
+// the general one. start and admission both ask it, so they agree on the
+// Turnstile gate in front of sign-up.
+//
+// Proof of work is not a case in this function, and not because it cannot apply
+// to a provider sign-up: the sign-up door checks it in start (see proofRequired).
+// What decides where a check can run is where the browser's answer can travel.
+// The provider's redirect back carries nothing the browser solved, so the
+// callback has no answer to check. start is the browser's own navigation to this
+// server, so it carries the proof of work in its query, as it carries the
+// Turnstile token, and the pass it records travels in the signed state.
+//
+// So a provider sign-up is covered by the Turnstile gate and the proof of work
+// at the sign-up door, and by the plugin guards the callback asks before it
+// opens an account. The AI sign-up reviewer does not run for it (see
+// docs/admin/sign-in.md).
+func (h *Handlers) gateFor(signingUp bool) turnstile.Gate {
+	gate := h.LoginChallenge
+	if signingUp {
+		gate = h.SignupChallenge
+	}
+	if gate.Enabled == nil && h.Challenge.Enabled != nil {
+		gate = h.Challenge
+	}
+	return gate
+}
+
+// signUpChallenged is whether a sign-up through this server stands behind a
+// challenge at all: the Turnstile gate for sign-up, or the proof of work the
+// registration captcha mode asks for. While it does, a sign-in that opens an
+// account has to have passed the sign-up door it started at (see admission).
+func (h *Handlers) signUpChallenged() bool {
+	gate := h.gateFor(true)
+	return (gate.Enabled != nil && gate.Enabled()) || h.proofRequired()
+}
+
+// proofRequired is whether the sign-up door asks for a proof of work. It reads
+// the captcha mode the way Register does, so both doors ask for the same thing.
+func (h *Handlers) proofRequired() bool {
+	mode := h.service.settings.RegistrationCaptchaMode()
+	return mode == settings.CaptchaModePoW || mode == settings.CaptchaModeBoth
+}
+
+// admission is what the sign-up door says about a sign-in that may open an
+// account. While the sign-up challenge is on, a sign-in gets past it only by
+// having passed it at the door it started at, because the provider's redirect
+// back carries no answer to it.
+func (h *Handlers) admission(passedSignUp bool) Admission {
+	return Admission{SignUpCleared: !h.signUpChallenged() || passedSignUp}
+}
+
+// proofFrom reads the proof-of-work solution a sign-up carried on its start
+// request. A value that is not one is no solution, and the check refuses it the
+// way it refuses a missing one.
+func proofFrom(raw string) *pow.Solution {
+	var solution pow.Solution
+	if err := json.Unmarshal([]byte(raw), &solution); err != nil {
+		return nil
+	}
+	return &solution
+}
+
 func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	provider := ByID(r.PathValue("provider"))
 	if provider == nil {
@@ -103,20 +169,32 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Whether this sign-in passed the sign-up challenge at this door. Only a
+	// pass counts: a sign-up started while the challenge was off is held to it
+	// if the operator turns it on before the provider comes back.
+	passedSignUp := false
 	if !linking {
-		gate := h.LoginChallenge
-		if r.URL.Query().Get("register") == "1" {
-			gate = h.SignupChallenge
-		}
-		if gate.Enabled == nil && h.Challenge.Enabled != nil {
-			gate = h.Challenge
-		}
+		signingUp := r.URL.Query().Get("register") == "1"
+		// Set only once a check has actually run here: a challenge that is off
+		// at this moment passes nothing.
+		checked := false
+		gate := h.gateFor(signingUp)
 		if gate.Enabled != nil && gate.Enabled() {
 			if err := gate.Check(r.Context(), r.URL.Query().Get("turnstile"), h.address(r)); err != nil {
 				h.fail(w, r, linking, "challenge_failed")
 				return
 			}
+			checked = true
 		}
+		if signingUp && h.proofRequired() {
+			proof := proofFrom(r.URL.Query().Get("pow"))
+			if err := h.service.auth.CheckSignupProof(r.Context(), h.address(r), proof); err != nil {
+				h.fail(w, r, linking, "challenge_failed")
+				return
+			}
+			checked = true
+		}
+		passedSignUp = signingUp && checked
 	}
 
 	creds, err := h.service.ResolveCredentials(r.Context(), h.Client, provider.ID)
@@ -129,6 +207,7 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		Provider: provider.ID,
 		Nonce:    token(),
 		Next:     safeNext(r.URL.Query().Get("next")),
+		SignUp:   passedSignUp,
 		Expiry:   time.Now().Add(stateTTL).UnixMilli(),
 	}
 	if linking {
@@ -221,14 +300,14 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	account, err := h.service.SignIn(r.Context(), identity, h.address(r), r.UserAgent())
+	account, err := h.service.SignIn(r.Context(), identity, h.admission(value.SignUp), h.address(r), r.UserAgent())
 	if err != nil {
 		// This instance wants something the provider had no way to supply.
 		// Nothing has been written; the person is sent to a form and the
 		// account is opened when it comes back.
 		var more *MoreDetailsNeeded
 		if errors.As(err, &more) {
-			h.askForDetails(w, r, more.Identity, value.Next)
+			h.askForDetails(w, r, more.Identity, value.Next, value.SignUp)
 			return
 		}
 		var disabledErr *auth.AccountDisabledError
@@ -267,7 +346,9 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 }
 
 // askForDetails parks the sign-in and sends the browser to the form.
-func (h *Handlers) askForDetails(w http.ResponseWriter, r *http.Request, identity Identity, next string) {
+func (h *Handlers) askForDetails(
+	w http.ResponseWriter, r *http.Request, identity Identity, next string, passedSignUp bool,
+) {
 	ticket, err := h.pending.issuePending(pending{
 		Provider: identity.Provider,
 		Subject:  identity.Subject,
@@ -275,6 +356,7 @@ func (h *Handlers) askForDetails(w http.ResponseWriter, r *http.Request, identit
 		Name:     identity.Name,
 		Email:    identity.Email,
 		Next:     safeNext(next),
+		SignUp:   passedSignUp,
 		Expiry:   time.Now().Add(pendingTTL).UnixMilli(),
 	})
 	if err != nil {
@@ -358,7 +440,7 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 		Fields:   body.Fields,
 		Email:    body.Email,
 		Invite:   body.Invite,
-	}, h.address(r), r.UserAgent())
+	}, h.admission(held.SignUp), h.address(r), r.UserAgent())
 	if err != nil {
 		return completionError(err)
 	}
@@ -527,6 +609,11 @@ func completionError(err error) error {
 		return httpx.Conflict("address_taken", "An account here already uses that address.")
 	case errors.Is(err, auth.ErrSignupIPBlocked):
 		return httpx.ForbiddenCode("signup_ip_blocked", "You have been blocked from registering.")
+	case errors.Is(err, ErrSignupChallengeRequired):
+		return httpx.ForbiddenCode("signup_challenge_required",
+			"This server asks for a human check before it opens an account. Start from the register page.")
+	case errors.Is(err, ErrSignupRefused):
+		return httpx.ForbiddenCode("signup_refused", "This sign-up was refused on this server.")
 	case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLong):
 		return httpx.BadRequestCode("invalid_password", "%s", err.Error())
 	case errors.Is(err, ErrPasswordNotAllowed):
@@ -579,6 +666,10 @@ func signInFailure(err error) string {
 		return "disabled"
 	case errors.Is(err, auth.ErrSignupIPBlocked):
 		return "ip_blocked"
+	case errors.Is(err, ErrSignupChallengeRequired):
+		return "signup_challenge_required"
+	case errors.Is(err, ErrSignupRefused):
+		return "signup_refused"
 	case errors.Is(err, auth.ErrEmailRequired):
 		return "email_required"
 	case errors.Is(err, user.ErrFieldRequired):

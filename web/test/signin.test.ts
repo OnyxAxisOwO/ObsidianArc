@@ -256,6 +256,23 @@ describe('signing in with an account from elsewhere', () => {
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthFailed'));
   });
 
+  it('asks for the sign-up check when a provider sign-up skipped it', async () => {
+    offer([{ id: 'github', name: 'GitHub' }]);
+    route.query = { oauth_error: 'signup_challenge_required' };
+    await mount(AuthView, { mode: 'login' });
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthSignupChallengeRequired'));
+    expect(replace).toHaveBeenCalledWith({ path: '/login', query: {} });
+  });
+
+  it('says a provider sign-up was refused without naming the check that refused it', async () => {
+    offer([{ id: 'github', name: 'GitHub' }]);
+    route.query = { oauth_error: 'signup_refused' };
+    await mount(AuthView, { mode: 'login' });
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('signupRefused'));
+  });
+
   // Somebody sent to sign in from the consent screen has to come back to it,
   // because what is waiting is not a page but another site's request.
   it('carries where it was going through the provider buttons', async () => {
@@ -296,6 +313,15 @@ describe('signing in with an account from elsewhere', () => {
     expect(signInURL('github')).toBe('/api/auth/oauth/start/github');
     expect(signInURL('github', { next: '' })).toBe('/api/auth/oauth/start/github');
     expect(signInURL('github', { link: true })).toBe('/api/auth/oauth/start/github?link=1');
+  });
+
+  it('carries a proof of work on the start URL only when there is one', () => {
+    const proof = { challenge: 'c', salt: 's', maxNumber: 10, expires: 1, signature: 'sig', nonce: 3 };
+    const withProof = new URL(signInURL('github', { register: true, pow: proof }), 'http://localhost');
+    expect(withProof.searchParams.get('register')).toBe('1');
+    expect(JSON.parse(withProof.searchParams.get('pow')!)).toEqual(proof);
+
+    expect(new URL(signInURL('github'), 'http://localhost').searchParams.has('pow')).toBe(false);
   });
 });
 
@@ -868,6 +894,20 @@ describe('finishing a sign-up the provider could not', () => {
     expect(fieldInput(refField.label()).value).toBe('87654321');
   });
 
+  it('says the server wants the sign-up check before it opens the account', async () => {
+    const { ApiError } = await import('../src/api/client');
+    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue(pending);
+    vi.spyOn(oauthApi, 'completeSignup')
+      .mockRejectedValue(new ApiError(403, 'signup_challenge_required', 'This server asks for a human check.', {}));
+    await mount(CompleteSignupView);
+
+    type(fieldInput(refField.label()), '87654321');
+    button(host, t('signupCompleteSubmit')).click();
+    await settle();
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthSignupChallengeRequired'));
+  });
+
   it('allows customizing username and validates username format', async () => {
     vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue(pending);
     const complete = vi.spyOn(oauthApi, 'completeSignup')
@@ -1100,5 +1140,92 @@ describe('registering with proof-of-work (PoW)', () => {
         pow: expect.anything(),
       }),
     );
+  });
+
+  // A challenge whose answer is known, so a test can check what was sent.
+  async function challengeWithAnswer(expires: number, signature: string) {
+    const salt = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    const challenge = (await import('node:crypto')).createHash('sha256').update(salt + 3).digest('hex');
+    return { challenge, salt, maxNumber: 10, expires, signature };
+  }
+
+  // The page's navigation is replaced for one test, so the test can see where
+  // the sign-in was sent and put the page back afterwards.
+  function stubLocation(): { assign: ReturnType<typeof vi.fn>; restore: () => void } {
+    const original = window.location;
+    const assign = vi.fn();
+    const stub = { configurable: true, writable: true };
+    Object.defineProperty(window, 'location', { ...stub, value: { assign, href: '' } });
+    return {
+      assign,
+      restore: () => Object.defineProperty(window, 'location', { ...stub, value: original }),
+    };
+  }
+
+  function providerLink(): HTMLAnchorElement {
+    return host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
+  }
+
+  it('sends the proof it has solved with a provider sign-up from the register page', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true, oauth: [{ id: 'github', name: 'GitHub' }] };
+    vi.spyOn(authApi, 'fetchPoWChallenge')
+      .mockResolvedValue(await challengeWithAnswer(Math.floor(Date.now() / 1000) + 300, 'test-sig'));
+    route.path = '/register';
+    await mount(AuthView, { mode: 'register' });
+
+    const { assign, restore } = stubLocation();
+    try {
+      providerLink().click();
+      await settle();
+
+      expect(assign).toHaveBeenCalledTimes(1);
+      const target = new URL(String(assign.mock.calls[0]![0]), 'http://localhost');
+      expect(target.pathname).toBe('/api/auth/oauth/start/github');
+      expect(target.searchParams.get('register')).toBe('1');
+      expect(JSON.parse(target.searchParams.get('pow')!)).toMatchObject({ nonce: 3, signature: 'test-sig' });
+    } finally {
+      restore();
+    }
+  });
+
+  it('solves a proof again rather than sending one that has run out', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true, oauth: [{ id: 'github', name: 'GitHub' }] };
+    const now = Math.floor(Date.now() / 1000);
+    const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge')
+      .mockResolvedValueOnce(await challengeWithAnswer(now - 10, 'stale-sig'))
+      .mockResolvedValueOnce(await challengeWithAnswer(now + 300, 'fresh-sig'));
+    route.path = '/register';
+    await mount(AuthView, { mode: 'register' });
+
+    const { assign, restore } = stubLocation();
+    try {
+      providerLink().click();
+      await settle();
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      const target = new URL(String(assign.mock.calls[0]![0]), 'http://localhost');
+      expect(JSON.parse(target.searchParams.get('pow')!)).toMatchObject({ signature: 'fresh-sig' });
+    } finally {
+      restore();
+    }
+  });
+
+  it('takes one click at a time, so one proof is never sent twice', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true, oauth: [{ id: 'github', name: 'GitHub' }] };
+    vi.spyOn(authApi, 'fetchPoWChallenge')
+      .mockResolvedValue(await challengeWithAnswer(Math.floor(Date.now() / 1000) + 300, 'test-sig'));
+    route.path = '/register';
+    await mount(AuthView, { mode: 'register' });
+
+    const { assign, restore } = stubLocation();
+    try {
+      providerLink().click();
+      providerLink().click();
+      await settle();
+
+      expect(assign).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
   });
 });

@@ -42,6 +42,8 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       return t('usernameInvalid');
     case 'signup_closed':
       return t('oauthSignupClosed');
+    case 'signup_challenge_required':
+      return t('oauthSignupChallengeRequired');
     case 'address_taken':
       return t('oauthAddressTaken');
     case 'signup_refused': {

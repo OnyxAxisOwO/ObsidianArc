@@ -247,22 +247,66 @@ function onTurnstileSolved(): void {
   }
 }
 
-function onProviderClick(event: MouseEvent, providerId: string): void {
-  if (guarded.value) {
-    const token = guard.value?.token() ?? '';
-    if (!token) {
-      event.preventDefault();
+// A solution this close to running out is solved again rather than sent: the
+// start request is one redirect away, and the server refuses an expired one.
+const PROOF_SLACK_MS = 30_000;
+
+/**
+ * The proof of work for a provider sign-up. The one already being solved on this
+ * page is used if it is still good; a stale one is solved again. Whatever is
+ * taken is spent, because the start request uses up its salt.
+ */
+async function proofForProvider(): Promise<PoWSolution> {
+  if (powSolution && powSolution.expires * 1000 - Date.now() > PROOF_SLACK_MS) {
+    const solution = powSolution;
+    resetPoW();
+    return solution;
+  }
+  if (powSolution) resetPoW();
+  startPoWIfNeeded();
+  if (!powPromise) throw new Error('no proof of work is being solved');
+  const solution = await powPromise;
+  resetPoW();
+  return solution;
+}
+
+// The link is a navigation with nothing on it the sign-up door checks, so the
+// click is taken over: the Turnstile token and the proof of work go on the
+// request the browser makes to the start. One click at a time, because a second
+// would spend the proof the first is still carrying.
+let providerPending = false;
+
+async function onProviderClick(event: MouseEvent, providerId: string): Promise<void> {
+  const proofNeeded = registering.value && !setup.value && !!site.value.pow_on_signup;
+  if (!guarded.value && !proofNeeded) return;
+  event.preventDefault();
+  if (providerPending) return;
+  providerPending = true;
+  try {
+    const token = guarded.value ? (guard.value?.token() ?? '') : '';
+    if (guarded.value && !token) {
       error.value = t('challengeRequired');
       return;
     }
-    event.preventDefault();
+    let pow: PoWSolution | undefined;
+    if (proofNeeded) {
+      try {
+        pow = await proofForProvider();
+      } catch (failure) {
+        error.value = refusalText(failure, domains.value);
+        return;
+      }
+    }
     window.location.assign(
       signInURL(providerId, {
         next: safeNext(route.query['next']),
-        turnstile: token,
+        ...(token ? { turnstile: token } : {}),
         register: registering.value,
+        ...(pow ? { pow } : {}),
       }),
     );
+  } finally {
+    providerPending = false;
   }
 }
 
@@ -286,6 +330,10 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
   provider: 'oauthProviderFailed',
   address_taken: 'oauthAddressTaken',
   signup_closed: 'oauthSignupClosed',
+  signup_challenge_required: 'oauthSignupChallengeRequired',
+  // A redirect carries no operator notice to show, so this is the plain sentence
+  // the sign-up form falls back to, which does not say which check refused.
+  signup_refused: 'signupRefused',
   registration_closed: 'registrationClosed',
   oidc_only: 'oauthOIDCOnly',
   third_party_only: 'oauthThirdPartyOnly',

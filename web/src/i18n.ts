@@ -2113,6 +2113,7 @@ const en = {
   oauthProviderFailed: 'The provider could not be reached. Try again shortly.',
   oauthAddressTaken: 'An account here already uses that address. Sign in the usual way and connect it from Settings.',
   oauthSignupClosed: 'This server does not open new accounts from a provider sign-in.',
+  oauthSignupChallengeRequired: 'This server asks for a human check before it opens a new account. Start the sign-up from the register page.',
   oauthThrottled: 'Too many accounts have been created just now. Try again shortly.',
   oauthDomain: 'That address is not one this server accepts.',
   oauthEmailRequired: 'This server needs an email address, and the provider did not give a verified one.',

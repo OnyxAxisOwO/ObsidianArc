@@ -100,6 +100,11 @@ func identity(subject, login, email string) Identity {
 	return Identity{Provider: "github", Subject: subject, Login: login, Name: "The " + login, Email: email}
 }
 
+// cleared is the admission of a sign-in the sign-up challenge does not stand in
+// front of. Tests that are not about the challenge pass it, the way every
+// sign-in did before the challenge was checked at the sign-up door.
+var cleared = Admission{SignUpCleared: true}
+
 func TestEnabledNeedsBothTheSwitchAndTheCredentials(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -126,7 +131,7 @@ func TestFirstSignInOpensAnAccountAndTheSecondReturnsToIt(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	first, err := f.service.SignIn(ctx, identity("4218", "octocat", "cat@example.com"), "203.0.113.5", "a browser")
+	first, err := f.service.SignIn(ctx, identity("4218", "octocat", "cat@example.com"), cleared, "203.0.113.5", "a browser")
 	if err != nil {
 		t.Fatalf("first sign-in: %v", err)
 	}
@@ -137,7 +142,7 @@ func TestFirstSignInOpensAnAccountAndTheSecondReturnsToIt(t *testing.T) {
 	// The same person, later. The subject is what is recognised — the name
 	// and the address have both changed at the provider since.
 	again, err := f.service.SignIn(ctx,
-		identity("4218", "octocat-renamed", "moved@example.com"), "203.0.113.5", "a browser")
+		identity("4218", "octocat-renamed", "moved@example.com"), cleared, "203.0.113.5", "a browser")
 	if err != nil {
 		t.Fatalf("second sign-in: %v", err)
 	}
@@ -161,7 +166,7 @@ func TestFirstSignInOpensAnAccountAndTheSecondReturnsToIt(t *testing.T) {
 	}
 
 	// A different subject is a different person, whatever they are called.
-	other, err := f.service.SignIn(ctx, identity("9001", "octocat", ""), "203.0.113.5", "a browser")
+	other, err := f.service.SignIn(ctx, identity("9001", "octocat", ""), cleared, "203.0.113.5", "a browser")
 	if err != nil {
 		t.Fatalf("third sign-in: %v", err)
 	}
@@ -191,19 +196,19 @@ func TestOAuthScreensOnlyAddressesThatCanOpenANewAccount(t *testing.T) {
 		return nil
 	}
 
-	linked, err := f.service.SignIn(ctx, identity("existing-subject", "founder-gh", "founder@example.com"), "", "")
+	linked, err := f.service.SignIn(ctx, identity("existing-subject", "founder-gh", "founder@example.com"), cleared, "", "")
 	if err != nil || linked.ID != existing.ID {
 		t.Fatalf("link existing account = %+v, %v", linked, err)
 	}
 	// An already linked subject signs in without looking at its current email.
-	if _, err := f.service.SignIn(ctx, identity("existing-subject", "founder-gh", "changed@example.com"), "", ""); err != nil {
+	if _, err := f.service.SignIn(ctx, identity("existing-subject", "founder-gh", "changed@example.com"), cleared, "", ""); err != nil {
 		t.Fatalf("existing identity: %v", err)
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("existing accounts triggered %d paid email checks", calls.Load())
 	}
 
-	if _, err := f.service.SignIn(ctx, identity("new-subject", "new-user", "new@example.com"), "", ""); err != nil {
+	if _, err := f.service.SignIn(ctx, identity("new-subject", "new-user", "new@example.com"), cleared, "", ""); err != nil {
 		t.Fatalf("new account: %v", err)
 	}
 	if calls.Load() != 1 || screenedEmail.Load() != "new@example.com" {
@@ -219,7 +224,7 @@ func TestTheFirstOAuthAccountKeepsTheBootstrapExemption(t *testing.T) {
 		return usercheck.ErrDisposable
 	}
 
-	account, err := f.service.SignIn(context.Background(), identity("first-subject", "founder", "disposable@example.com"), "", "")
+	account, err := f.service.SignIn(context.Background(), identity("first-subject", "founder", "disposable@example.com"), cleared, "", "")
 	if err != nil {
 		t.Fatalf("first account was rejected by screening: %v", err)
 	}
@@ -244,7 +249,7 @@ func TestDisposableOAuthEmailIsRefusedBeforeAccountCreation(t *testing.T) {
 		return usercheck.ErrDisposable
 	}
 
-	if _, err := f.service.SignIn(context.Background(), identity("new-subject", "new-user", "disposable@example.com"), "", ""); !errors.Is(err, usercheck.ErrDisposable) {
+	if _, err := f.service.SignIn(context.Background(), identity("new-subject", "new-user", "disposable@example.com"), cleared, "", ""); !errors.Is(err, usercheck.ErrDisposable) {
 		t.Fatalf("sign in = %v, want disposable address refused", err)
 	}
 	if calls.Load() != 1 {
@@ -272,7 +277,7 @@ func TestOAuthCompletionScreensTheAddressTypedIntoTheForm(t *testing.T) {
 	}
 
 	_, err := f.service.Complete(context.Background(), identity("new-subject", "new-user", ""),
-		Details{Email: "typed@example.com"}, "", "")
+		Details{Email: "typed@example.com"}, cleared, "", "")
 	if !errors.Is(err, usercheck.ErrDisposable) {
 		t.Fatalf("completion = %v, want typed disposable email refused", err)
 	}
@@ -309,7 +314,7 @@ func TestAnEmptyPreflightRerunsScreeningIfAnotherRequestCreatesTheFirstAccount(t
 
 	result := make(chan error, 1)
 	go func() {
-		_, err := f.service.SignIn(ctx, identity("new-subject", "new-user", "disposable@example.com"), "", "")
+		_, err := f.service.SignIn(ctx, identity("new-subject", "new-user", "disposable@example.com"), cleared, "", "")
 		result <- err
 	}()
 
@@ -381,7 +386,7 @@ func TestAProvenAddressAdoptsTheAccountThatHoldsIt(t *testing.T) {
 	}
 
 	account, err := f.service.SignIn(ctx,
-		identity("4218", "founder-at-github", "FOUNDER@example.com"), "", "")
+		identity("4218", "founder-at-github", "FOUNDER@example.com"), cleared, "", "")
 	if err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -410,7 +415,7 @@ func TestAnUnprovenAddressDoesNotAdoptAnything(t *testing.T) {
 
 	// What the provider layer hands over when it could not prove the
 	// address: no address at all.
-	account, err := f.service.SignIn(ctx, identity("4218", "impostor", ""), "", "")
+	account, err := f.service.SignIn(ctx, identity("4218", "impostor", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -439,7 +444,7 @@ func TestLinkingByAddressCanBeSwitchedOff(t *testing.T) {
 	// account with the same address is the one thing the users table will not
 	// hold anyway.
 	if _, err := f.service.SignIn(ctx,
-		identity("4218", "founder", "founder@example.com"), "", ""); !errors.Is(err, ErrAddressTaken) {
+		identity("4218", "founder", "founder@example.com"), cleared, "", ""); !errors.Is(err, ErrAddressTaken) {
 		t.Errorf("sign in = %v, want it refused as taken", err)
 	}
 }
@@ -448,7 +453,7 @@ func TestSignUpThroughAProviderCanBeClosedWithoutClosingSignIn(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	known, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), "", "")
+	known, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("first sign-in: %v", err)
 	}
@@ -456,10 +461,10 @@ func TestSignUpThroughAProviderCanBeClosedWithoutClosingSignIn(t *testing.T) {
 		t.Fatalf("switch off: %v", err)
 	}
 
-	if _, err := f.service.SignIn(ctx, identity("9001", "stranger", ""), "", ""); !errors.Is(err, ErrSignupClosed) {
+	if _, err := f.service.SignIn(ctx, identity("9001", "stranger", ""), cleared, "", ""); !errors.Is(err, ErrSignupClosed) {
 		t.Errorf("a new identity = %v, want it refused", err)
 	}
-	again, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), "", "")
+	again, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("a connected identity was refused: %v", err)
 	}
@@ -472,7 +477,7 @@ func TestADisabledAccountCannotBeSignedIntoThisWayEither(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), "", "")
+	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -481,7 +486,7 @@ func TestADisabledAccountCannotBeSignedIntoThisWayEither(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	if _, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), "", ""); !errors.Is(err, auth.ErrAccountDisabled) {
+	if _, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", ""); !errors.Is(err, auth.ErrAccountDisabled) {
 		t.Errorf("sign in = %v, want the account refused", err)
 	}
 }
@@ -520,7 +525,7 @@ func TestConnectBindsAProviderToTheAccountThatAskedForIt(t *testing.T) {
 	}
 	// And from then on, the provider signs into the account it was
 	// connected to.
-	signedIn, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), "", "")
+	signedIn, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -536,7 +541,7 @@ func TestTheLastWayInCannotBeRemoved(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), "", "")
+	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -577,7 +582,7 @@ func TestTwoDisconnectsAtOnceCannotEmptyAnAccount(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), "", "")
+	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -624,7 +629,7 @@ func TestParallelCallbacksForOnePersonOpenOneAccount(t *testing.T) {
 			defer workers.Done()
 			<-start
 			account, err := f.service.SignIn(context.Background(),
-				identity("4218", "octocat", "cat@example.com"), "203.0.113.5", "a browser")
+				identity("4218", "octocat", "cat@example.com"), cleared, "203.0.113.5", "a browser")
 			if err == nil {
 				results <- account.ID
 			}
@@ -654,7 +659,7 @@ func TestConnectionsReportsWhetherThereIsAlsoAPassword(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), "", "")
+	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -679,7 +684,7 @@ func TestDeletingAnAccountTakesItsConnections(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), "", "")
+	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -694,7 +699,7 @@ func TestDeletingAnAccountTakesItsConnections(t *testing.T) {
 func TestSignInRecordsWhereTheAccountCameFrom(t *testing.T) {
 	f := newFixture(t)
 	account, err := f.service.SignIn(context.Background(),
-		identity("4218", "octocat", ""), "203.0.113.5", "a browser")
+		identity("4218", "octocat", ""), cleared, "203.0.113.5", "a browser")
 	if err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -711,7 +716,7 @@ func TestThirdPartyOnlySignupAllowsAllProviders(t *testing.T) {
 	ctx := context.Background()
 
 	// Initial user registers via GitHub on empty instance.
-	firstUser, err := f.service.SignIn(ctx, identity("gh-1", "admin", ""), "", "")
+	firstUser, err := f.service.SignIn(ctx, identity("gh-1", "admin", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("first user sign-in: %v", err)
 	}
@@ -725,7 +730,7 @@ func TestThirdPartyOnlySignupAllowsAllProviders(t *testing.T) {
 	}
 
 	// Existing GitHub user can still sign in.
-	again, err := f.service.SignIn(ctx, identity("gh-1", "admin", ""), "", "")
+	again, err := f.service.SignIn(ctx, identity("gh-1", "admin", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("existing github user sign-in failed: %v", err)
 	}
@@ -734,7 +739,7 @@ func TestThirdPartyOnlySignupAllowsAllProviders(t *testing.T) {
 	}
 
 	// New user signing in via GitHub succeeds (third-party signup is allowed for GitHub).
-	ghUser, err := f.service.SignIn(ctx, identity("gh-2", "ghuser", ""), "", "")
+	ghUser, err := f.service.SignIn(ctx, identity("gh-2", "ghuser", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("new github user sign-in failed: %v", err)
 	}
@@ -750,7 +755,7 @@ func TestThirdPartyOnlySignupAllowsAllProviders(t *testing.T) {
 		Name:     "OIDC User",
 		Email:    "oidc@example.com",
 	}
-	oidcUser, err := f.service.SignIn(ctx, oidcIdent, "", "")
+	oidcUser, err := f.service.SignIn(ctx, oidcIdent, cleared, "", "")
 	if err != nil {
 		t.Fatalf("new oidc user sign-in failed: %v", err)
 	}
@@ -764,7 +769,7 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 	ctx := context.Background()
 
 	// Initial user registers via GitHub on empty instance.
-	_, err := f.service.SignIn(ctx, identity("gh-admin", "admin", ""), "", "")
+	_, err := f.service.SignIn(ctx, identity("gh-admin", "admin", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("first user sign-in: %v", err)
 	}
@@ -777,7 +782,7 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 
 		ident := identity("gh-pwd-1", "pwduser", "pwduser@example.com")
 		// First pass must stop for more details because password is required.
-		_, err := f.service.SignIn(ctx, ident, "", "")
+		_, err := f.service.SignIn(ctx, ident, cleared, "", "")
 		var more *MoreDetailsNeeded
 		if !errors.As(err, &more) {
 			t.Fatalf("SignIn err = %v, want *MoreDetailsNeeded", err)
@@ -787,7 +792,7 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 		_, err = f.service.Complete(ctx, ident, Details{
 			Username: "pwduser",
 			Password: "",
-		}, "", "")
+		}, cleared, "", "")
 		if !errors.Is(err, auth.ErrPasswordTooShort) {
 			t.Fatalf("Complete err = %v, want ErrPasswordTooShort", err)
 		}
@@ -796,7 +801,7 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 		account, err := f.service.Complete(ctx, ident, Details{
 			Username: "pwduser",
 			Password: "secure-password-123",
-		}, "", "")
+		}, cleared, "", "")
 		if err != nil {
 			t.Fatalf("Complete with password err: %v", err)
 		}
@@ -822,7 +827,7 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 
 		ident := identity("gh-user-req-1", "alice", "alice@example.com")
 		// First pass must stop for more details because explicit username is required.
-		_, err := f.service.SignIn(ctx, ident, "", "")
+		_, err := f.service.SignIn(ctx, ident, cleared, "", "")
 		var more *MoreDetailsNeeded
 		if !errors.As(err, &more) {
 			t.Fatalf("SignIn err = %v, want *MoreDetailsNeeded", err)
@@ -831,7 +836,7 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 		// Completing with empty username fails.
 		_, err = f.service.Complete(ctx, ident, Details{
 			Username: "",
-		}, "", "")
+		}, cleared, "", "")
 		if !errors.Is(err, user.ErrInvalidUsername) {
 			t.Fatalf("Complete with empty username err = %v, want ErrInvalidUsername", err)
 		}
@@ -839,7 +844,7 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 		// Completing with valid custom username succeeds.
 		account, err := f.service.Complete(ctx, ident, Details{
 			Username: "custom_alice",
-		}, "", "")
+		}, cleared, "", "")
 		if err != nil {
 			t.Fatalf("Complete with username err: %v", err)
 		}
@@ -862,7 +867,7 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 			Email:    "bob@example.com",
 		}
 		// First pass stops for completion even though email and username exist.
-		_, err := f.service.SignIn(ctx, oidcIdent, "", "")
+		_, err := f.service.SignIn(ctx, oidcIdent, cleared, "", "")
 		var more *MoreDetailsNeeded
 		if !errors.As(err, &more) {
 			t.Fatalf("SignIn err = %v, want *MoreDetailsNeeded", err)
@@ -870,7 +875,7 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 
 		account, err := f.service.Complete(ctx, oidcIdent, Details{
 			Username: "bob_custom",
-		}, "", "")
+		}, cleared, "", "")
 		if err != nil {
 			t.Fatalf("Complete err: %v", err)
 		}
@@ -895,7 +900,7 @@ func TestAnAddressNobodyProvedHereIsNotAdopted(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	_, err = f.service.SignIn(ctx, identity("777", "victim-at-github", "victim@example.com"), "", "")
+	_, err = f.service.SignIn(ctx, identity("777", "victim-at-github", "victim@example.com"), cleared, "", "")
 	if !errors.Is(err, ErrAddressTaken) {
 		t.Fatalf("sign in = %v, want the address refused as taken", err)
 	}
@@ -915,7 +920,7 @@ func TestAProvenAddressNeverAdoptsAnAdministrator(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := f.service.SignIn(ctx, identity("666", "someone", "operator@example.com"), "", "")
+	_, err := f.service.SignIn(ctx, identity("666", "someone", "operator@example.com"), cleared, "", "")
 	if !errors.Is(err, ErrAddressTaken) {
 		t.Fatalf("sign in = %v, want an administrator's address refused", err)
 	}
@@ -931,7 +936,7 @@ func TestALinkedProviderVouchingForTheAddressProvesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	created, err := f.service.SignIn(ctx, identity("4300", "newcomer", ""), "", "")
+	created, err := f.service.SignIn(ctx, identity("4300", "newcomer", ""), cleared, "", "")
 	if err != nil {
 		t.Fatalf("first sign-in: %v", err)
 	}
@@ -942,7 +947,7 @@ func TestALinkedProviderVouchingForTheAddressProvesIt(t *testing.T) {
 		t.Fatal("a typed address counted as proved")
 	}
 
-	if _, err := f.service.SignIn(ctx, identity("4300", "newcomer", "NEWCOMER@example.com"), "", ""); err != nil {
+	if _, err := f.service.SignIn(ctx, identity("4300", "newcomer", "NEWCOMER@example.com"), cleared, "", ""); err != nil {
 		t.Fatalf("second sign-in: %v", err)
 	}
 	if again, _ := f.users.ByID(ctx, nil, created.ID); again.EmailProvenAt == 0 {
