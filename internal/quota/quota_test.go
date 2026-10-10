@@ -414,6 +414,57 @@ func TestAutoResetTargetingWindowVariantClearsOnlyTargetedWindow(t *testing.T) {
 	}
 }
 
+// A reservation an enforced window refuses is retried inside the same
+// transaction once a reset card is spent. The walk had already charged the
+// windows before the refusing one, and the card clears only the week, so unless
+// those charges are taken back the retry counts the request twice in the
+// five-hour window: it is not enforced, but it is still measured.
+func TestResetRetryCountsEachWindowOnce(t *testing.T) {
+	service, db := newService(t)
+	ctx := context.Background()
+	if _, err := service.Policies().Save(ctx, Policy{
+		Scope:   ScopeGlobal,
+		Windows: map[Window]Limits{WindowWeek: limits(true, nil, ptrInt(200), nil)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	person := account("reset-retry-user", "")
+	for range 2 {
+		if _, err := service.Reserve(ctx, person, Estimate{Tokens: 100}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{Tokens: 100},
+		func(ctx context.Context, q database.Queryer, needed Window) ([]string, bool, error) {
+			if needed != WindowWeek {
+				t.Fatalf("needed window = %s, want 1w", needed)
+			}
+			return []string{"1w"}, true, nil
+		}); err != nil {
+		t.Fatalf("reserve after reset: %v", err)
+	}
+
+	// Two turns before the reset and the one that followed it, in every window.
+	want := map[Window]counter{
+		Window5H:    {Requests: 3, Tokens: 300},
+		WindowWeek:  {Requests: 1, Tokens: 100},
+		WindowMonth: {Requests: 3, Tokens: 300},
+	}
+	for window, expect := range want {
+		var got counter
+		if err := db.QueryRow(ctx,
+			`SELECT requests, tokens FROM usage_counters WHERE scope_key = ? AND window_kind = ?`,
+			scopeKey(person.ID), window).Scan(&got.Requests, &got.Tokens); err != nil {
+			t.Fatal(err)
+		}
+		if got.Requests != expect.Requests || got.Tokens != expect.Tokens {
+			t.Errorf("%s has %d requests and %d tokens, want %d and %d",
+				window, got.Requests, got.Tokens, expect.Requests, expect.Tokens)
+		}
+	}
+}
+
 // One account's usage must not count against another's.
 func TestLimitsAreScopedToTheAccount(t *testing.T) {
 	service, _ := newService(t)

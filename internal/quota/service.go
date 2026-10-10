@@ -392,12 +392,19 @@ func reserveRate(ctx context.Context, tx database.Queryer, policy Policy, key st
 // reserveAllowance charges the three allowance windows what the request costs
 // them: the whole estimate, or the part of it the bonus bars did not pay.
 //
-// A window that is switched on is checked as it is charged. A window that is
-// not is charged too, because the usage screen reads it and a limit switched on
-// later has to start from what the account has really used. Those are charged
-// last, once every enforced window has passed: a refused attempt that a reset
-// card retries inside the same transaction would otherwise count the request
-// twice in whichever unenforced windows it had already walked past.
+// Lock order: every window is charged here in one pass, in AllowanceWindows
+// order. Settle and Release lock the same rows in that order with TPM first,
+// and reserveRate locks TPM before this walk when a per-minute limit is set, so
+// every path takes the rows in one global order. Two transactions that take the
+// same rows in opposite orders can each hold one and wait for the other, and
+// PostgreSQL then aborts one of them with a deadlock. That is why a window that
+// is not enforced is charged in its place in the order, not in a second pass
+// after the enforced ones. Only the limit check depends on whether a window is on.
+//
+// A refused walk takes back what it charged, the refused window included. A
+// reset card retries the same reservation inside this transaction, and without
+// that the retry would count the request twice in every window the walk had
+// already passed and the card did not clear.
 func reserveAllowance(
 	ctx context.Context,
 	tx database.Queryer,
@@ -407,52 +414,54 @@ func reserveAllowance(
 	estimate Estimate,
 	now time.Time,
 ) error {
-	for _, window := range AllowanceWindows {
+	// Settle and Release move the same deltas through every window. A window
+	// left out of the charge would have the release take the turn back out of
+	// it, and the zero floor would keep none of it.
+	for i, window := range AllowanceWindows {
+		counter, err := bump(ctx, tx, key, window, bucketStart(window, now, anchor), 1, estimate.Tokens, estimate.Credits)
+		if err != nil {
+			return err
+		}
 		limits := policy.Windows[window]
 		if !limits.isOn() {
 			continue
 		}
-
-		start := bucketStart(window, now, anchor)
-		counter, err := bump(ctx, tx, key, window, start, 1, estimate.Tokens, estimate.Credits)
-		if err != nil {
-			return err
-		}
-		resets := bucketEnd(window, now, anchor)
-
-		if limits.Requests != nil && *limits.Requests > 0 && counter.Requests > *limits.Requests {
-			return &ExceededError{
-				Window: window, Dimension: "requests",
-				Used: float64(counter.Requests), Limit: float64(*limits.Requests), ResetsAt: resets,
-			}
-		}
-		// The counter now includes this turn's worst case, so the
-		// comparison is "would finishing this put you over" rather than
-		// "were you already over" — which is the question that has an
-		// answer while ten turns are in flight at once.
-		if limits.Tokens != nil && *limits.Tokens > 0 && counter.Tokens > *limits.Tokens {
-			return &ExceededError{
-				Window: window, Dimension: "tokens",
-				Used: float64(counter.Tokens), Limit: float64(*limits.Tokens), ResetsAt: resets,
-			}
-		}
-		if limits.Credits != nil && *limits.Credits > 0 && counter.Credits > *limits.Credits {
-			return &ExceededError{
-				Window: window, Dimension: "credits",
-				Used: counter.Credits, Limit: *limits.Credits, ResetsAt: resets,
-			}
-		}
-	}
-
-	// Settle and Release move the same deltas through every window. A window
-	// left out of the charge would have the release take the turn back out of
-	// it, and the zero floor would keep none of it.
-	for _, window := range AllowanceWindows {
-		if policy.Windows[window].isOn() {
+		refused := windowRefusal(window, limits, counter, bucketEnd(window, now, anchor))
+		if refused == nil {
 			continue
 		}
-		if _, err := bump(ctx, tx, key, window, bucketStart(window, now, anchor), 1, estimate.Tokens, estimate.Credits); err != nil {
-			return err
+		for _, charged := range AllowanceWindows[:i+1] {
+			if _, err := bump(ctx, tx, key, charged, bucketStart(charged, now, anchor),
+				-1, -estimate.Tokens, -estimate.Credits); err != nil {
+				return err
+			}
+		}
+		return refused
+	}
+	return nil
+}
+
+// windowRefusal is the rejection a window's counter earns, or nil. The counter
+// already includes this turn's worst case, so the comparison is "would finishing
+// this put you over" rather than "were you already over", which is the question
+// that has an answer while ten turns are in flight at once.
+func windowRefusal(window Window, limits Limits, used counter, resets time.Time) *ExceededError {
+	if limits.Requests != nil && *limits.Requests > 0 && used.Requests > *limits.Requests {
+		return &ExceededError{
+			Window: window, Dimension: "requests",
+			Used: float64(used.Requests), Limit: float64(*limits.Requests), ResetsAt: resets,
+		}
+	}
+	if limits.Tokens != nil && *limits.Tokens > 0 && used.Tokens > *limits.Tokens {
+		return &ExceededError{
+			Window: window, Dimension: "tokens",
+			Used: float64(used.Tokens), Limit: float64(*limits.Tokens), ResetsAt: resets,
+		}
+	}
+	if limits.Credits != nil && *limits.Credits > 0 && used.Credits > *limits.Credits {
+		return &ExceededError{
+			Window: window, Dimension: "credits",
+			Used: used.Credits, Limit: *limits.Credits, ResetsAt: resets,
 		}
 	}
 	return nil
@@ -524,6 +533,8 @@ func (s *Service) settleWindowsMinute(ctx context.Context, account user.User, to
 	}
 
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		// The order reserveAllowance takes these rows in. A settlement in any
+		// other order can deadlock against a reservation on PostgreSQL.
 		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
 			if _, err := bump(ctx, tx, key, window, bucketStart(window, now, anchor), 0, tokens, credits); err != nil {
 				return err
@@ -601,6 +612,7 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 		if !windows {
 			return nil
 		}
+		// The order reserveAllowance takes these rows in; see there.
 		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
 			if _, err := bump(ctx, tx, key, window, bucketStart(window, reserved.at, reserved.anchor),
 				0, -reserved.estimate.Tokens, -reserved.estimate.Credits); err != nil {
