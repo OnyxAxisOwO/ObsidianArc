@@ -3,6 +3,7 @@ package bonus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"path/filepath"
 	"sync"
@@ -362,6 +363,69 @@ func TestACostBeyondTheGrantIsLeftToTheWindows(t *testing.T) {
 	_ = f.store.Refund(context.Background(), f.db, holds)
 	if err != nil || !near(covered, 1) || !near(f.used(t, bar.ID, a.ID), 1) {
 		t.Fatalf("covered %v used %v err %v", covered, f.used(t, bar.ID, a.ID), err)
+	}
+}
+
+// Settlements that arrive together race the way requests do: each reads what
+// the grant has left before any of them writes, so without a lock they all
+// charge the same room. Each settles and gives its hold back in its own
+// transaction, as a finished turn does, and between them they must cover no
+// more than the grant had. The rounds exist because a cold Postgres pool opens
+// its connections one after another, so the first round runs almost in turn;
+// the warm rounds after it are where the reads overlap.
+func TestAGrantCannotBeOverSpentBySettlementsArrivingTogether(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	a := f.account(t, "alice")
+	const granted = 10
+	for round := 0; round < 20; round++ {
+		bar := f.bar(t, Bar{Name: fmt.Sprintf("gift %d", round), ToggleMode: ModeOn})
+		f.give(t, bar.ID, a.ID, granted, 0)
+
+		// Every request reserves one credit before any of them settles, so what a
+		// settlement may take is what is left of the grant plus its own hold.
+		var holds []Hold
+		for i := 0; i < 8; i++ {
+			got, err := f.take(t, a.ID, "m", 1, Priority)
+			if err != nil || !near(Total(got), 1) {
+				t.Fatalf("round %d, reserving %d: %v %v", round, i, got, err)
+			}
+			holds = append(holds, got...)
+		}
+
+		var (
+			start   = make(chan struct{})
+			wg      sync.WaitGroup
+			mu      sync.Mutex
+			covered float64
+		)
+		for _, h := range holds {
+			wg.Add(1)
+			go func(h Hold) {
+				defer wg.Done()
+				<-start
+				err := f.db.Tx(ctx, func(tx *database.Tx) error {
+					got, err := f.store.Settle(ctx, tx, []Hold{h}, 5, false)
+					if err != nil {
+						return err
+					}
+					mu.Lock()
+					covered += got
+					mu.Unlock()
+					return f.store.Refund(ctx, tx, []Hold{h})
+				})
+				if err != nil {
+					t.Errorf("settle: %v", err)
+				}
+			}(h)
+		}
+		close(start)
+		wg.Wait()
+
+		if used := f.used(t, bar.ID, a.ID); !near(used, granted) || !near(covered, granted) {
+			t.Fatalf("round %d: %d settlements covered %v of a grant of %d and left it at %v",
+				round, len(holds), covered, granted, used)
+		}
 	}
 }
 

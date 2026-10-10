@@ -202,11 +202,24 @@ func (s *Store) Refund(ctx context.Context, q database.Queryer, holds []Hold) er
 // is left plus the hold; charging on top of a hold that is about to be refunded
 // leaves the grant carrying exactly the cost and no more, whichever of the two
 // happens first.
+//
+// It must run inside the caller's transaction. The row lock taken on each grant
+// is what keeps a settlement or a reservation of the same grant from reading the
+// room this one is about to spend, and it lasts only until that transaction
+// ends.
 func (s *Store) Settle(ctx context.Context, q database.Queryer, holds []Hold, cost float64, released bool) (float64, error) {
 	left := cost
 	for _, h := range holds {
 		if left <= epsilon {
 			break
+		}
+		// Lock the grant before reading it: a read taken first can see the room
+		// another settlement is about to spend, and on PostgreSQL's READ COMMITTED
+		// both would charge it. Setting the column to itself takes the row lock
+		// without changing the row, and the read after it sees what the lock holder
+		// committed.
+		if _, err := q.Exec(ctx, `UPDATE bonus_grants SET used = used WHERE id = ?`, h.GrantID); err != nil {
+			return 0, fmt.Errorf("bonus: lock grant: %w", err)
 		}
 		var amount, used float64
 		if err := q.QueryRow(ctx, `SELECT amount, used FROM bonus_grants WHERE id = ?`, h.GrantID).Scan(&amount, &used); err != nil {
