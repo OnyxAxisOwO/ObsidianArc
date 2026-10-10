@@ -150,7 +150,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, userID string, i
 	now := time.Now().UnixMilli()
 	record := Conversation{
 		ID:        id.New(),
-		Title:     text.TrimAndTruncate(in.Title, MaxTitleChars),
+		Title:     text.TrimAndTruncate(text.Clean(in.Title), MaxTitleChars),
 		ModelID:   in.ModelID,
 		Mode:      mode,
 		ProjectID: in.ProjectID,
@@ -301,7 +301,7 @@ func (s *Store) Update(ctx context.Context, userID, conversationID string, in Up
 	args := []any{}
 
 	if in.Title != nil {
-		title := strings.TrimSpace(*in.Title)
+		title := strings.TrimSpace(text.Clean(*in.Title))
 		if utf8.RuneCountInString(title) > MaxTitleChars {
 			return Conversation{}, ErrTitleTooLong
 		}
@@ -579,13 +579,16 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 		return Message{}, fmt.Errorf("conversation: next seq: %w", err)
 	}
 
+	// A NUL byte fails the whole INSERT on PostgreSQL, so it is removed before
+	// the limits count the text. A model answer cannot be refused, so this is
+	// the only place it can be handled.
 	record := Message{
 		ID:        id.New(),
 		Seq:       next,
 		Role:      in.Role,
-		Content:   text.TrimAndTruncate(in.Content, MaxContentChars),
-		Reasoning: text.TrimAndTruncate(in.Reasoning, MaxReasoningChars),
-		Error:     text.TrimAndTruncate(in.Error, MaxErrorChars),
+		Content:   text.TrimAndTruncate(text.Clean(in.Content), MaxContentChars),
+		Reasoning: text.TrimAndTruncate(text.Clean(in.Reasoning), MaxReasoningChars),
+		Error:     text.TrimAndTruncate(text.Clean(in.Error), MaxErrorChars),
 		ModelID:   in.ModelID,
 		ModelName: in.ModelName,
 		Stats:     in.Stats,
@@ -700,7 +703,7 @@ func (s *Store) UpdateMessage(ctx context.Context, q database.Queryer, userID, c
 	if q == nil {
 		q = s.db
 	}
-	trimmed := text.TrimAndTruncate(content, MaxContentChars)
+	trimmed := text.TrimAndTruncate(text.Clean(content), MaxContentChars)
 	result, err := q.Exec(ctx,
 		`UPDATE messages SET content = ? WHERE id = ? AND conversation_id = ? AND user_id = ?`,
 		trimmed, messageID, conversationID, userID)
@@ -750,7 +753,7 @@ func (s *Store) SetTitle(ctx context.Context, q database.Queryer, userID, conver
 		q = s.db
 	}
 	_, err := q.Exec(ctx, `UPDATE conversations SET title = ? WHERE id = ? AND user_id = ? AND title = ''`,
-		text.TrimAndTruncate(title, MaxTitleChars), conversationID, userID)
+		text.TrimAndTruncate(text.Clean(title), MaxTitleChars), conversationID, userID)
 	if err != nil {
 		return fmt.Errorf("conversation: set title: %w", err)
 	}
