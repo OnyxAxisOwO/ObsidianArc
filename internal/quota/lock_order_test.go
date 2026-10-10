@@ -2,6 +2,8 @@ package quota
 
 import (
 	"context"
+	"fmt"
+	"math/rand/v2"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -272,5 +274,110 @@ func concurrentAccountRun(t *testing.T, tokenRate, withBar bool) {
 			t.Errorf("%s holds %d requests, %d tokens and %v credits, want %d, %d and %v",
 				window, got.Requests, got.Tokens, got.Credits, expect.Requests, expect.Tokens, expect.Credits)
 		}
+	}
+}
+
+// The prune and the administrator's resets both delete counter rows of every
+// account. PostgreSQL aborts one of two transactions that take the same rows in
+// opposite orders. The prune once took its rows in window_start order across every
+// kind, while a reset takes one kind at a time, so each could hold a row the other
+// was waiting for. Both take the global reset row first now, which puts them one
+// after the other. Four of each run at once here, over rows old enough for the
+// prune to take, so the two orders meet on every round.
+func TestPruneAndResetsTakeCounterRowsInOneOrder(t *testing.T) {
+	service, db := newServiceOn(t, dbtest.Postgres(t,
+		"the prune and the administrator's resets must not deadlock on the counter rows"))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	const (
+		rounds    = 3
+		accounts  = 40
+		buckets   = 30
+		pruners   = 4
+		resetters = 4
+	)
+	for round := range rounds {
+		seedStaleCounters(t, db, uint64(round)+1, accounts, buckets)
+
+		start := make(chan struct{})
+		errs := make(chan error, pruners+resetters)
+		var wait sync.WaitGroup
+		for range pruners {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				<-start
+				if _, err := service.PruneCounters(ctx); err != nil {
+					errs <- err
+				}
+			}()
+		}
+		for range resetters {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				<-start
+				if err := service.ResetAll(ctx); err != nil {
+					errs <- err
+				}
+			}()
+		}
+		close(start)
+		wait.Wait()
+		close(errs)
+		for err := range errs {
+			t.Errorf("round %d: %v", round, err)
+		}
+
+		// A reset deletes every row it finds, so whichever of the two removed a
+		// given row, none is left once both have finished.
+		var left int
+		if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM usage_counters`).Scan(&left); err != nil {
+			t.Fatal(err)
+		}
+		if left != 0 {
+			t.Errorf("round %d left %d counter rows", round, left)
+		}
+	}
+}
+
+// seedStaleCounters writes a counter row for every account, window kind and
+// bucket, every one older than the two months PruneCounters keeps. The rows go in
+// shuffled, so the order the table holds them in is not the order the prune
+// reads them in by window_start, and the two can meet in opposite orders.
+func seedStaleCounters(t *testing.T, db *database.DB, seed uint64, accounts, buckets int) {
+	t.Helper()
+	ctx := context.Background()
+	stale := time.Now().AddDate(0, -3, 0).UnixMilli()
+
+	type row struct {
+		key   string
+		kind  Window
+		start int64
+	}
+	rows := make([]row, 0, accounts*len(counterKinds)*buckets)
+	for account := range accounts {
+		key := scopeKey(fmt.Sprintf("stale-%d", account))
+		for _, kind := range counterKinds {
+			for bucket := range buckets {
+				rows = append(rows, row{key, kind, stale + int64(bucket)})
+			}
+		}
+	}
+	rand.New(rand.NewPCG(seed, 1)).Shuffle(len(rows), func(i, j int) { rows[i], rows[j] = rows[j], rows[i] })
+
+	if err := db.Tx(ctx, func(tx *database.Tx) error {
+		for _, r := range rows {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO usage_counters (scope_key, window_kind, window_start, requests, tokens, credits)
+				 VALUES (?, ?, ?, 1, 1, 0)`,
+				r.key, r.kind, r.start); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

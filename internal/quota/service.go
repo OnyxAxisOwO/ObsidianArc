@@ -127,6 +127,11 @@ type AutoReset func(ctx context.Context, q database.Queryer, needed Window) (win
 // rows of one kind. They hold the global reset row, so no two of them meet, and
 // they delete one kind at a time in counterKinds order, so a delete never holds a
 // row of one kind while it waits for a row of an earlier one.
+//
+// The prune of rolled-over counters is the other exception: it deletes old rows of
+// every account and kind at once. It takes the global reset row before each chunk
+// of at most pruneChunkRows, so it never meets a reset, and it lets go between
+// chunks, so a reservation waiting on that row is not held behind the whole table.
 var counterKinds = []Window{WindowRPM, WindowTPM, Window5H, WindowWeek, WindowMonth}
 
 // Reserve claims one request and the turn's worst case against every window
@@ -383,7 +388,8 @@ func clearAllowance(ctx context.Context, tx database.Queryer, key string, anchor
 // reset row. A single DELETE takes its rows in whatever order the database scans
 // them, which can put a later kind's row ahead of an earlier one's and so
 // reverse the lock order. One statement per kind, in counterKinds order, does
-// not. Two resets cannot meet, because both hold the global reset row first.
+// not. No two resets can meet, nor a reset and a prune, because all of them hold
+// the global reset row first.
 // scope, when not empty, narrows the rows, with args for its placeholders.
 func deleteCounters(ctx context.Context, tx database.Queryer, names []string, scope string, args ...any) error {
 	for _, window := range counterKinds {
@@ -921,14 +927,49 @@ func (s *Service) SummariesFor(ctx context.Context, accounts []user.User) (map[s
 
 // PruneCounters drops buckets that have rolled over. Monthly buckets are the
 // longest-lived, so anything older than two months is certainly dead.
+//
+// Each chunk takes the global reset row before its first delete, as the lock order
+// requires. Without that the prune could meet an administrator's reset, which
+// deletes these rows one kind at a time, and PostgreSQL would abort one of them.
+// The chunks keep the row held briefly, because every reservation waits on it.
 func (s *Service) PruneCounters(ctx context.Context) (int64, error) {
 	cutoff := time.Now().AddDate(0, -2, 0).UnixMilli()
-	result, err := s.db.Exec(ctx, `DELETE FROM usage_counters WHERE window_start < ?`, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("quota: prune counters: %w", err)
+	var removed int64
+	for {
+		n, err := s.pruneChunk(ctx, cutoff)
+		removed += n
+		if err != nil {
+			return removed, fmt.Errorf("quota: prune counters: %w", err)
+		}
+		if n < pruneChunkRows {
+			return removed, nil
+		}
 	}
-	removed, _ := result.RowsAffected()
-	return removed, nil
+}
+
+// pruneChunkRows bounds one prune transaction. The rows are taken oldest first,
+// so a chunk that comes back short has reached the end of the stale rows.
+const pruneChunkRows = 1000
+
+func (s *Service) pruneChunk(ctx context.Context, cutoff int64) (int64, error) {
+	var removed int64
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockAllowanceBoundary(ctx, tx); err != nil {
+			return err
+		}
+		// The subquery names the rows, because DELETE ... LIMIT is not portable.
+		result, err := tx.Exec(ctx,
+			`DELETE FROM usage_counters WHERE (scope_key, window_kind, window_start) IN (
+			   SELECT scope_key, window_kind, window_start FROM usage_counters
+			   WHERE window_start < ? ORDER BY window_start LIMIT ?)`,
+			cutoff, pruneChunkRows)
+		if err != nil {
+			return err
+		}
+		removed, err = result.RowsAffected()
+		return err
+	})
+	return removed, err
 }
 
 // The one place the per-account scope key is spelled, so ResetGroup can build
@@ -976,9 +1017,10 @@ func anchorFor(createdAt, resetAt int64) int64 {
 }
 
 // lockAllowanceBoundary takes the global reset row, the first lock in the lock
-// order above. A reservation that charges the allowance windows and every
-// administrator reset take it. This no-op upsert takes the same database row lock
-// ResetAll writes, including when two server processes share the database.
+// order above. A reservation that charges the allowance windows, every
+// administrator reset and every prune take it. This no-op upsert takes the same
+// database row lock ResetAll writes, including when two server processes share the
+// database.
 func lockAllowanceBoundary(ctx context.Context, tx database.Queryer) error {
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
