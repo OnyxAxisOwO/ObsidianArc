@@ -104,7 +104,9 @@ export function hslToHex(h: number, s: number, l: number): string {
 // scheme adjustment. What the picker's own dot shows.
 export function baseAccent(pref: AccentPreference): string {
   if (pref.accent === 'custom') return normalizeHex(pref.customAccent, ACCENTS[DEFAULT_ACCENT]);
-  return ACCENTS[pref.accent] ?? ACCENTS[DEFAULT_ACCENT];
+  // A stored name arrives here unchecked, and `??` only catches undefined: an
+  // inherited key such as `constructor` is a function, not a fallback.
+  return Object.hasOwn(ACCENTS, pref.accent) ? ACCENTS[pref.accent] : ACCENTS[DEFAULT_ACCENT];
 }
 
 // The hue, adjusted to a lightness that stays readable against this scheme's

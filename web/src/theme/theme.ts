@@ -330,7 +330,10 @@ export function accentPreference(): AccentPreference {
   try {
     const parsed = JSON.parse(raw) as Partial<AccentPreference>;
     const accent = parsed.accent;
-    const valid = accent === 'custom' || (typeof accent === 'string' && accent in ACCENTS);
+    // `in` also accepts what every object inherits (constructor, __proto__).
+    // Such a name would pass here and then crash the palette on every boot,
+    // since the value is stored on the account and read back each session.
+    const valid = accent === 'custom' || (typeof accent === 'string' && Object.hasOwn(ACCENTS, accent));
     return {
       accent: valid ? (accent as AccentName | 'custom') : fallback.accent,
       customAccent: normalizeHex(parsed.customAccent, '') ?? '',
