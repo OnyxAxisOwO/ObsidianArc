@@ -132,6 +132,38 @@ async function closeWithButton(): Promise<void> {
   await pause(400);
 }
 
+/** A plugin with one panel of entries, each opening a page of its own. */
+function tipsPlugin(): ArcPlugin {
+  return {
+    name: 'tipper',
+    userPanels: [{
+      slug: 'tips',
+      title: () => 'Tips',
+      entries: {
+        empty: () => 'Nothing yet',
+        load: async () => [{ id: '42', title: 'Entry 42' }],
+        open: async () => ({ title: 'Entry 42 in detail', controls: [] }),
+      },
+    }],
+  } satisfies ArcPlugin;
+}
+
+/**
+ * Whether the drawn panel is open. A panel that mounts slides in on the frame
+ * after it mounts, so this waits for that frame before it looks.
+ */
+async function panelIsOpen(): Promise<boolean> {
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  await nextTick();
+  return host.querySelector('.oa-panel')?.classList.contains('open') === true;
+}
+
+/** Opens the first entry the drawn plugin panel lists. */
+async function openFirstEntry(): Promise<void> {
+  host.querySelector<HTMLButtonElement>('.oa-feedback-item')!.click();
+  await settle();
+}
+
 beforeEach(async () => {
   await changeLanguage('en');
   stubServer();
@@ -203,18 +235,7 @@ describe('a panel from the account menu, opened over the backoffice', () => {
   });
 
   it('draws a plugin panel, opens its entry and steps back through the list', async () => {
-    installPlugins([{
-      name: 'tipper',
-      userPanels: [{
-        slug: 'tips',
-        title: () => 'Tips',
-        entries: {
-          empty: () => 'Nothing yet',
-          load: async () => [{ id: '42', title: 'Entry 42' }],
-          open: async () => ({ title: 'Entry 42 in detail', controls: [] }),
-        },
-      }],
-    } satisfies ArcPlugin]);
+    installPlugins([tipsPlugin()]);
     adopt(ADMIN);
     await mountAt('/admin/providers?tab=manage');
     const rail = host.querySelector('.oa-admin-rail');
@@ -236,6 +257,35 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     await closeWithButton();
     expect(router.currentRoute.value.fullPath).toBe('/admin/providers?tab=manage');
     expect(host.querySelector('.oa-admin-rail')).toBe(rail);
+  });
+
+  it('returns from an entry to the list with its X and with Escape, and the list is drawn', async () => {
+    installPlugins([tipsPlugin()]);
+    adopt(ADMIN);
+    await mountAt('/admin/providers?tab=manage');
+    await chooseFromAccountMenu('Tips');
+
+    // An entry's X slides its own panel out, and the address then moves to the
+    // list. The list must come back drawn, not as the hidden column it was.
+    await openFirstEntry();
+    await closeWithButton();
+    expect(router.currentRoute.value.query).toEqual({ tab: 'manage', panel: 'x/tips' });
+    expect(panelTitle()).toBe('Tips');
+    expect(await panelIsOpen()).toBe(true);
+
+    await openFirstEntry();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await pause(400);
+    expect(router.currentRoute.value.query).toEqual({ tab: 'manage', panel: 'x/tips' });
+    expect(panelTitle()).toBe('Tips');
+    expect(await panelIsOpen()).toBe(true);
+
+    // The list's own X still closes it, and the menu opens it again afterwards.
+    await closeWithButton();
+    expect(router.currentRoute.value.fullPath).toBe('/admin/providers?tab=manage');
+    expect(host.querySelector('.oa-panel')).toBeNull();
+    await chooseFromAccountMenu('Tips');
+    expect(await panelIsOpen()).toBe(true);
   });
 
   it('is drawn from the address on a reload, and the Back button takes it away', async () => {
@@ -314,6 +364,21 @@ describe('the same menu from the chat', () => {
 
     await closeWithButton();
     expect(router.currentRoute.value.fullPath).toBe('/');
+  });
+
+  it('returns from an entry to the list with its X', async () => {
+    installPlugins([tipsPlugin()]);
+    adopt(ACCOUNT);
+    await mountAt('/');
+
+    await chooseFromAccountMenu('Tips');
+    await openFirstEntry();
+    expect(router.currentRoute.value.fullPath).toBe('/x/tips/42');
+
+    await closeWithButton();
+    expect(router.currentRoute.value.fullPath).toBe('/x/tips');
+    expect(panelTitle()).toBe('Tips');
+    expect(await panelIsOpen()).toBe(true);
   });
 
   it('still reads the tab from the chat address', async () => {

@@ -193,6 +193,10 @@ async function submit(): Promise<void> {
 // Back from an entry to the list, and from the list out again. Both are a move
 // on the same panel's address, so over the backoffice they are the same address
 // with the panel's parameter shortened or removed (see usePanelExit).
+//
+// An entry's X and Escape close its OaPanel before this runs, and a closed
+// OaPanel stays closed. The template keys the column by address so that the
+// list which follows is a panel of its own, not that hidden one.
 function close(): void {
   if (opened.value) panels.open(`/x/${props.slug}`);
   else panels.close('push');
@@ -225,6 +229,7 @@ onMounted(() => {
 
 <template>
   <OaPanel
+    :key="opened ? `entry:${opened}` : 'list'"
     :title="title"
     :confirm-label="confirmLabel"
     :confirmable="!!confirmLabel"
