@@ -462,9 +462,10 @@ func TestARefusedBodyGivesItsPlaceBack(t *testing.T) {
 	}
 }
 
-// A request queued for a place whose client goes away leaves the queue and holds
-// nothing: its body is never read, and when everything has ended the bookkeeping
-// is empty again.
+// A request queued for a place whose context is cancelled leaves the queue and
+// holds nothing: its body is never read, and when everything has ended the
+// bookkeeping is empty again. Over HTTP/1.1 a disconnect does not cancel an unread
+// body's context, so the test cancels it directly.
 func TestAWaitingRequestThatIsCancelledLeavesTheQueue(t *testing.T) {
 	f := newFixture(t)
 	f.upstream.reply(answer)
@@ -508,5 +509,49 @@ func TestAWaitingRequestThatIsCancelledLeavesTheQueue(t *testing.T) {
 	}
 	if n := accountsTracked(f); n != 0 {
 		t.Fatalf("%d accounts still tracked after every request ended, want none", n)
+	}
+}
+
+// The places belong to the account, not to the key that sent a request, so an
+// account with two keys has four places between them. Keying by key would let an
+// account multiply its bound by the number of keys it issues.
+func TestASecondKeyOfTheSameAccountSharesItsPlaces(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(answer)
+	_, second, err := f.keys.Issue(context.Background(), f.account.ID, "second", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := completionBody(f.model.ID)
+
+	slow := make([]*slowRequest, maxBodyPlaces)
+	for i := range slow {
+		slow[i] = f.startSlow(t, "/v1/chat/completions", f.token, jsonContent, payload)
+	}
+	waitUntil(t, "four bodies to be read", func() bool { return allRead(slow) })
+
+	other := &watchedBody{r: strings.NewReader(payload)}
+	otherRec, otherDone := f.send(context.Background(), "/v1/chat/completions", second, jsonContent, other)
+	time.Sleep(150 * time.Millisecond)
+	if other.read.Load() {
+		t.Fatal("a body on the account's second key was read while its four places were held")
+	}
+	select {
+	case <-otherDone:
+		t.Fatalf("a request on the second key was answered (%d) while the account held all four places", otherRec.Code)
+	default:
+	}
+
+	if w := slow[0].finish(t); w.Code != http.StatusOK {
+		t.Fatalf("first body: status = %d: %s", w.Code, w.Body.String())
+	}
+	waitDone(t, "the second key's request once a place is free", otherDone)
+	if otherRec.Code != http.StatusOK {
+		t.Fatalf("second key: status = %d: %s", otherRec.Code, otherRec.Body.String())
+	}
+	for _, s := range slow[1:] {
+		if w := s.finish(t); w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
 	}
 }

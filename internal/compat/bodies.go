@@ -2,8 +2,10 @@ package compat
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // maxBodyPlaces is how many request bodies one account may be reading into
@@ -40,9 +42,13 @@ type accountPlaces struct {
 	refs   int
 }
 
-// acquire waits for one of the account's places for as long as the request is
-// still wanted. The release gives the place back and is idempotent, so a path
-// can give it back early and still defer it.
+// acquire waits for one of the account's places until the request's context
+// ends. For HTTP/1.1, net/http cancels that context on a disconnect only once the
+// body has reached EOF, so a client that vanished before sending its body is not
+// released from the queue: it waits for a place like any other request, and its
+// first read fails at once. The wait is bounded by the holders' windows, not a
+// leak. The release gives the place back and is idempotent, so a path can give
+// it back early and still defer it.
 func (p *bodyPlaces) acquire(ctx context.Context, account string) (func(), error) {
 	p.mu.Lock()
 	if p.holders == nil {
@@ -83,14 +89,41 @@ func (p *bodyPlaces) acquire(ctx context.Context, account string) (func(), error
 	}, nil
 }
 
+// bodyReadWindow is how long a request body may take to arrive once its place
+// is granted. It is cmd/server's ReadTimeout, the window a body gets when
+// nothing queues ahead of it. It starts at the grant rather than at the headers
+// because the server arms its deadline when the headers are read, so a body that
+// queued behind four others would spend its window waiting and be cut off for
+// time that was not its own.
+const bodyReadWindow = 5 * time.Minute
+
+// trackedBody is the request body as the handler reads it. It records whether a
+// read reached the end, which decides whether the window is lifted when the
+// place is given back.
+type trackedBody struct {
+	io.ReadCloser
+	sawEOF bool
+}
+
+func (b *trackedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		b.sawEOF = true
+	}
+	return n, err
+}
+
 // claimBody takes one of the account's places before a request body is read.
 // The caller gives it back once the body is in and parsed, which is before the
 // request is authorised or sent upstream, so no generation holds a place.
-func (h *Handlers) claimBody(r *http.Request, who caller) (func(), error) {
+//
+// The body's read window is armed at the grant. See the release for when it is
+// lifted.
+func (h *Handlers) claimBody(w http.ResponseWriter, r *http.Request, who caller) (func(), error) {
 	release, err := h.bodies.acquire(r.Context(), who.account.ID)
 	if err != nil {
-		// Only the request's own context ends the wait, so the client has gone
-		// and nothing will read what is written here.
+		// The request's context ended while it waited, so nobody is left to read
+		// the answer.
 		return nil, apiError{
 			status:  499,
 			kind:    "invalid_request_error",
@@ -98,5 +131,26 @@ func (h *Handlers) claimBody(r *http.Request, who caller) (func(), error) {
 			message: "The request was cancelled.",
 		}
 	}
-	return release, nil
+	window := h.bodyWindow
+	if window == 0 {
+		window = bodyReadWindow
+	}
+	// Best effort, as boundBodyRead is: a ResponseWriter that cannot set a
+	// deadline keeps the server's own.
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Now().Add(window))
+	body := &trackedBody{ReadCloser: r.Body}
+	r.Body = body
+	return func() {
+		// Lifted only once the body has reached EOF, which is when net/http starts
+		// its background read. A deadline still running then would be taken for
+		// the client going away and cancel the generation. A body left short keeps
+		// its deadline: net/http reads what is left of it before it writes the
+		// response headers, and with no deadline that read waits on a client that
+		// may never send the rest.
+		if body.sawEOF {
+			_ = controller.SetReadDeadline(time.Time{})
+		}
+		release()
+	}, nil
 }
