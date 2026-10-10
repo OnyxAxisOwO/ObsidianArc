@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -120,5 +121,62 @@ func TestVerifyCredentialOfARehashedPasswordReturnsTheOldFingerprint(t *testing.
 	}
 	if now == checked {
 		t.Fatal("the rehash left the stored hash where it was, so this test does not exercise the rehash")
+	}
+}
+
+// The rehash is computed after the password is checked, so a change made in
+// between is stored by the time it writes. Writing its hash unconditionally put
+// the old password back over that change. The change is made from inside the
+// window the rehash computes in, which is the only point the race can happen.
+func TestARehashNeverPutsBackAPasswordChangedAfterTheCheck(t *testing.T) {
+	signIns := map[string]func(f *fixture) error{
+		"sign-in": func(f *fixture) error {
+			_, _, err := f.auth.Login(context.Background(), LoginInput{Identifier: "arc", Password: "a-good-password", IP: "198.51.100.7"})
+			return err
+		},
+		"console": func(f *fixture) error {
+			_, _, err := f.auth.VerifyCredential(context.Background(), "arc", "a-good-password", "198.51.100.7")
+			return err
+		},
+	}
+	for name, signIn := range signIns {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := context.Background()
+			account, _, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale := testParams()
+			stale.Memory /= 2
+			old, err := NewHasher(stale).Hash(ctx, "a-good-password")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.users.SetPasswordHash(ctx, nil, account.ID, old); err != nil {
+				t.Fatal(err)
+			}
+
+			reached := false
+			f.auth.beforeRehashWrite = func() {
+				reached = true
+				if err := f.auth.SetPassword(ctx, account.ID, "a-better-password"); err != nil {
+					t.Errorf("changing the password inside the rehash window: %v", err)
+				}
+			}
+			if err := signIn(f); err != nil {
+				t.Fatalf("the sign-in with the right password: %v", err)
+			}
+			if !reached {
+				t.Fatal("the sign-in never reached the rehash, so this test does not exercise it")
+			}
+
+			if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-better-password", IP: "198.51.100.8"}); err != nil {
+				t.Fatalf("the new password was refused after the rehash: %v", err)
+			}
+			if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password", IP: "198.51.100.8"}); !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("the old password opened the account after it was changed: %v", err)
+			}
+		})
 	}
 }

@@ -171,6 +171,11 @@ type Service struct {
 	ConsumeInvite   func(ctx context.Context, tx *database.Tx, code string) (*InviteGrant, error)
 	RecordInviteUse func(ctx context.Context, tx *database.Tx, grant InviteGrant, userID string) error
 	RewardInvite    func(ctx context.Context, userID string, verificationRequired bool)
+
+	// Called between a sign-in computing its upgraded hash and writing it: the
+	// window a password change has to be able to land in. Nil outside tests,
+	// which set it to make that change at exactly that point.
+	beforeRehashWrite func()
 }
 
 func NewService(
@@ -989,9 +994,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 	attempt.finish(attemptSucceeded)
 
 	if needsRehash {
-		if upgraded, hashErr := s.hasher.Hash(ctx, in.Password); hashErr == nil {
-			_ = s.users.SetPasswordHash(ctx, nil, account.ID, upgraded)
-		}
+		s.rehash(ctx, account.ID, hash, in.Password)
 	}
 
 	token, err := s.secondStep(ctx, account, in.Remembered, in.IP, in.UA)
@@ -1065,11 +1068,25 @@ func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip
 	// parameter change. Re-reading the hash after the upgrade would be the second
 	// read this function exists to avoid, so the cost is accepted.
 	if needsRehash {
-		if upgraded, hashErr := s.hasher.Hash(ctx, password); hashErr == nil {
-			_ = s.users.SetPasswordHash(ctx, nil, account.ID, upgraded)
-		}
+		s.rehash(ctx, account.ID, hash, password)
 	}
 	return account, fingerprintOf(hash), nil
+}
+
+// rehash stores a hash made with the current parameters in place of the one a
+// sign-in just verified, when that one was weaker. Only that hash is replaced:
+// the new one is computed after the check, so a password changed in the meantime
+// is already stored, and it has to stay. A failed upgrade is not a failed
+// sign-in, and the next sign-in tries again.
+func (s *Service) rehash(ctx context.Context, userID, verified, password string) {
+	upgraded, err := s.hasher.Hash(ctx, password)
+	if err != nil {
+		return
+	}
+	if s.beforeRehashWrite != nil {
+		s.beforeRehashWrite()
+	}
+	_, _ = s.users.ReplacePasswordHash(ctx, nil, userID, verified, upgraded)
 }
 
 func (s *Service) Logout(ctx context.Context, token string) error {
