@@ -1047,6 +1047,14 @@ func (h *Handlers) registrationError(err error) error {
 			"Too many accounts have been created just now. Try again shortly.").
 			WithDetails(map[string]any{"retry_after_seconds": seconds})
 	}
+	// Only the invite guessing budget answers with this error on a registration:
+	// the sign-in budget is not spent here.
+	var limited *RateLimitError
+	if errors.As(err, &limited) {
+		seconds := int(limited.RetryAfter.Seconds()) + 1
+		return httpx.TooManyRequests("too_many_attempts", limited.Error()).
+			WithDetails(map[string]any{"retry_after_seconds": seconds})
+	}
 
 	switch {
 	case errors.Is(err, ErrRegistrationClosed):

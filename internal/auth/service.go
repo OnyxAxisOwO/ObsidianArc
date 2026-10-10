@@ -147,6 +147,11 @@ type Service struct {
 	verificationKey []byte
 	// Its own budget, apart from the password limiter's: see spendCode.
 	codes *Limiter
+	// The budget for guesses at an invite code, per address. Its own limiter
+	// for the reason codes has one: a wrong code is not a wrong password, and
+	// spending a sign-in's allowance on it would lock the same person out of
+	// both. See spendInvite.
+	invites *Limiter
 	// Told when the second step is switched on or off, or a recovery code
 	// is spent. Nil records nothing.
 	OnTwoFactor func(context.Context, TwoFactorEvent)
@@ -207,6 +212,7 @@ func NewService(
 		cfg:      cfg.Session,
 		limiter:  NewLimiter(),
 		codes:    NewLimiter(),
+		invites:  NewLimiter(),
 		signups:  newSignupGate(),
 		mailer:   mailer,
 	}
@@ -324,6 +330,15 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		// finding that out.
 		if strings.TrimSpace(in.InviteCode) == "" && s.settings.Bool(settings.InvitesRequired) {
 			return user.User{}, "", ErrInviteRequired
+		}
+		// A code is a guess until it checks out, and the paid review, the screening
+		// and the hash below are all spent on a guess before anything learns whether
+		// it was right. An address that has used up its guesses is turned away here,
+		// before any of that, rather than after the transaction has refused it.
+		if strings.TrimSpace(in.InviteCode) != "" {
+			if err := s.InviteGuessAllowed(in.IP); err != nil {
+				return user.User{}, "", err
+			}
 		}
 		if allowed, retryAfter := s.signups.allow(
 			s.settings.Int(settings.SignupsPerMinute, 0),
@@ -508,7 +523,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			// account along with every other registration control, above.
 			var grant *InviteGrant
 			if !first {
-				grant, err = s.consumeInvite(ctx, tx, in.InviteCode)
+				grant, err = s.spendInvite(ctx, tx, in.InviteCode, in.IP)
 				if err != nil {
 					return err
 				}
@@ -899,6 +914,55 @@ func (s *Service) consumeInvite(ctx context.Context, tx *database.Tx, code strin
 		return nil, ErrInviteInvalid
 	}
 	return grant, nil
+}
+
+// spendInvite is consumeInvite for a code that arrives on a request somebody
+// may be guessing with. Every wrong code is a guess, and guesses from one
+// address are counted and slowed the way a wrong password is, so a short code
+// cannot be walked through at the speed of the registration form. A code that
+// works is not counted, and does not clear the count either: only time does.
+//
+// It runs inside the caller's transaction, but the limiter is in memory and is
+// not rolled back with it. That is the point: a transaction that refuses a guess
+// has to leave the count standing.
+func (s *Service) spendInvite(ctx context.Context, tx *database.Tx, code, ip string) (*InviteGrant, error) {
+	if strings.TrimSpace(code) == "" {
+		return s.consumeInvite(ctx, tx, code)
+	}
+	guess, err := s.invites.Begin(inviteBudgetKey(ip), "")
+	if err != nil {
+		return nil, err
+	}
+	defer guess.Cancelled()
+	grant, err := s.consumeInvite(ctx, tx, code)
+	if errors.Is(err, ErrInviteInvalid) {
+		guess.Failed()
+	}
+	return grant, err
+}
+
+// InviteGuessAllowed says whether an address may still guess at an invite code.
+// A caller about to spend paid or expensive work on a registration that carries
+// a code asks first, so an address that has used up its guesses is refused
+// before the work rather than after it. Nothing is recorded here: spendInvite
+// counts the guess when it fails.
+func (s *Service) InviteGuessAllowed(ip string) error {
+	attempt, err := s.invites.Begin(inviteBudgetKey(ip), "")
+	if err != nil {
+		return err
+	}
+	attempt.Cancelled()
+	return nil
+}
+
+// inviteBudgetKey is the address a guess is counted against. An address the
+// server could not read is one shared budget rather than none: a limit that an
+// empty address switched off would be a way round the limit.
+func inviteBudgetKey(ip string) string {
+	if ip == "" {
+		return "unknown"
+	}
+	return ip
 }
 
 // applyInvite finishes what consumeInvite started, once the account it was

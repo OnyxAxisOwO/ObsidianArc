@@ -636,6 +636,15 @@ func completionError(err error) error {
 				"retry_after_seconds": int(throttled.RetryAfter.Seconds()) + 1,
 			})
 	}
+	// Only a completion that carries an invite code can reach this: the guessing
+	// budget for codes, which the form words the same way as any other limit.
+	var limited *auth.RateLimitError
+	if errors.As(err, &limited) {
+		return httpx.TooManyRequests("too_many_attempts", limited.Error()).
+			WithDetails(map[string]any{
+				"retry_after_seconds": int(limited.RetryAfter.Seconds()) + 1,
+			})
+	}
 	var domain *auth.EmailDomainError
 	if errors.As(err, &domain) {
 		return httpx.BadRequestCode("email_domain", "%s", domain.Error()).

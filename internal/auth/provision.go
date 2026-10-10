@@ -159,7 +159,7 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 	// hands the use back by rolling back with everything else.
 	var grant *InviteGrant
 	if !first {
-		grant, err = s.consumeInvite(ctx, tx, in.InviteCode)
+		grant, err = s.spendInvite(ctx, tx, in.InviteCode, in.IP)
 		if err != nil {
 			return user.User{}, err
 		}
