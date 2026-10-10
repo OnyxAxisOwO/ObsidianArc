@@ -43,8 +43,15 @@ function plugin(name: string, state: AdminPlugin['state'], purges = false): Admi
       settings: [], fields: [], guards: [], captcha_modes: [], admin_routes: [], public_routes: [],
       commands: [], migrations: [], purges,
     },
+    writable_settings: [],
   };
 }
+
+// Every setting the example plugin declares, as a super administrator may write them.
+const EXAMPLE_KEYS = [
+  'example.base_url', 'example.site', 'example.secret_key', 'example.on_login',
+  'example.requirement', 'example.webhook_token', 'example.mode',
+];
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -128,7 +135,9 @@ describe('the plugins screen', () => {
   });
 
   it('installs with the first settings the plugin declares, and reloads the session\'s plugins', async () => {
-    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [plugin('example', 'available')], two_factor_required: false });
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({
+      plugins: [{ ...plugin('example', 'available'), writable_settings: EXAMPLE_KEYS }], two_factor_required: false,
+    });
     const installed = vi.spyOn(adminApi, 'installPlugin').mockResolvedValue(change(plugin('example', 'enabled')));
     const refreshed = vi.spyOn(authApi, 'fetchSite').mockResolvedValue({
       ...siteInfo.value, plugins: { example: {} },
@@ -154,9 +163,49 @@ describe('the plugins screen', () => {
     expect(card('example').textContent).toContain(t('pluginStateEnabled'));
   });
 
+  it('draws and sends only the settings this administrator may write', async () => {
+    // The default mode is another grant's. The form does not offer it, and the
+    // install does not send it, so the install is not refused for a key nobody set.
+    const mayWrite = EXAMPLE_KEYS.filter((key) => key !== 'example.mode');
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({
+      plugins: [{ ...plugin('example', 'available'), writable_settings: mayWrite }], two_factor_required: false,
+    });
+    const installed = vi.spyOn(adminApi, 'installPlugin').mockResolvedValue(change(plugin('example', 'enabled')));
+    await mount(AdminPlugins);
+
+    button(card('example'), t('pluginInstall')).click();
+    await settle();
+    expect(panels.textContent).toContain('Example group');
+    expect(panels.textContent).not.toContain('Default mode');
+    button(panels, t('pluginInstall')).click();
+    await settle();
+
+    expect(installed).toHaveBeenCalledWith('example', true, {
+      'example.base_url': '', 'example.site': '', 'example.on_login': 'false',
+      'example.requirement': 'off',
+    }, '');
+  });
+
+  it('draws no section that holds nothing this administrator may write', async () => {
+    // Only the first section's keys, so the second section has nothing to draw.
+    const firstSection = ['example.base_url', 'example.site', 'example.secret_key', 'example.on_login'];
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({
+      plugins: [{ ...plugin('example', 'available'), writable_settings: firstSection }], two_factor_required: false,
+    });
+    await mount(AdminPlugins);
+
+    button(card('example'), t('pluginInstall')).click();
+    await settle();
+    expect(panels.textContent).toContain('Example check');
+    expect(panels.textContent).not.toContain('Example group');
+    expect(panels.textContent).not.toContain('Example webhook token');
+  });
+
   it('asks for the two-step code to install a plugin when the instance requires it, and sends it', async () => {
     adopt({ ...ADMIN, two_factor_at: 1 });
-    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [plugin('example', 'available')], two_factor_required: true });
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({
+      plugins: [{ ...plugin('example', 'available'), writable_settings: EXAMPLE_KEYS }], two_factor_required: true,
+    });
     const installed = vi.spyOn(adminApi, 'installPlugin').mockResolvedValue(change(plugin('example', 'enabled')));
     vi.spyOn(authApi, 'fetchSite').mockResolvedValue({ ...siteInfo.value, plugins: { example: {} } } as SiteInfo);
     await mount(AdminPlugins);

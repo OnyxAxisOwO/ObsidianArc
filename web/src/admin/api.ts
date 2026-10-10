@@ -826,6 +826,8 @@ export interface AdminPlugin {
     migrations: string[];
     purges: boolean;
   };
+  /** The setting keys this administrator may read and write, each by its own grant. */
+  writable_settings: string[];
 }
 
 export interface PluginChange {
