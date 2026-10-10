@@ -375,7 +375,7 @@ func (m *Manager) dbOp(c *wasm.Call, st *callState, op string, raw json.RawMessa
 		return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
 	}
 	defer rows.Close()
-	return rowsToJSON(rows, m.engine().MaxMessage())
+	return rowsToJSON(rows)
 }
 
 // bindArgs turns JSON values into what the driver binds. Numbers arrive as
@@ -411,27 +411,16 @@ func bindArgs(in []any) ([]any, error) {
 	return out, nil
 }
 
-// replyWrapping is what the answer adds around a result: the envelope the
-// server writes and the result's own keys and brackets. It is counted, so the
-// reply as a whole is what stays within a message, not only its rows.
-const replyWrapping = len(`{"ok":true,"result":{"columns":,"rows":[]}}`)
-
-// rowsToJSON reads a query's rows into the answer a backend is given. The guest
-// reads a reply only up to limit bytes, so the encoded size is counted as each
-// row is read, and the read stops as soon as the answer could no longer be read
-// whole. A wide result then costs the host what fits, not everything the query
-// selected.
-func rowsToJSON(rows *sql.Rows, limit int) (any, error) {
+// rowsToJSON reads a query's rows into the answer a backend is given. The row
+// count is the only bound here. A byte bound would refuse results that are
+// answered today, and a plugin's own admin page may read every row of a table,
+// so the size of the reply is not checked.
+func rowsToJSON(rows *sql.Rows) (any, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, err
 	}
-	names, err := json.Marshal(cols)
-	if err != nil {
-		return nil, err
-	}
-	size := replyWrapping + len(names)
-	data := []json.RawMessage{}
+	data := [][]any{}
 	for rows.Next() {
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
@@ -449,21 +438,9 @@ func rowsToJSON(rows *sql.Rows, limit int) (any, error) {
 				vals[i] = x.UTC().Format(time.RFC3339Nano)
 			}
 		}
-		row, err := json.Marshal(vals)
-		if err != nil {
-			return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
-		}
-		// The reply has a comma between rows and none before the first.
-		if len(data) > 0 {
-			size++
-		}
-		size += len(row)
-		data = append(data, row)
+		data = append(data, vals)
 		if len(data) > maxRows {
 			return nil, &wasm.HostError{Code: "too_many_rows", Message: fmt.Sprintf("a query may return at most %d rows", maxRows)}
-		}
-		if size > limit {
-			return nil, &wasm.HostError{Code: "too_large", Message: fmt.Sprintf("a query's rows may be at most %d bytes", limit)}
 		}
 	}
 	if err := rows.Err(); err != nil {
