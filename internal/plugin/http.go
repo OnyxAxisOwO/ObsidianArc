@@ -93,6 +93,15 @@ func (h *Handlers) install(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
 		return err
 	}
+	// Each setting is written under its own grant, as the shared settings route
+	// writes it. plugins_manage alone is not a grant to set every key a plugin
+	// declares, and a key the security grant owns is not one it may set.
+	actor := auth.MustUser(r.Context())
+	for key := range body.Settings {
+		if !admin.CanWriteSetting(actor, key) {
+			return httpx.ForbiddenCode("admin_permission_denied", "You do not have permission to access this page or perform this action.")
+		}
+	}
 	// The operator's setting covers installing as well as switching off: an
 	// install applies the plugin's migrations and can switch it on in the same
 	// request, so it takes the code the other changes take.

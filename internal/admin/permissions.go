@@ -44,6 +44,14 @@ func settingPermission(key string) string {
 	return corePermission(key)
 }
 
+// CanWriteSetting is whether account may read and write one setting, by the
+// grant the shared settings route asks for. It reads the process-wide registry,
+// not this server's, so a built-in plugin's key is judged by its own grant
+// whether or not that plugin is switched on.
+func CanWriteSetting(account user.User, key string) bool {
+	return hasPermission(account, settingPermission(key))
+}
+
 // settingPermission is the same answer for this server, whose plugins may
 // have been installed after it started.
 func (h *Handlers) settingPermission(key string) string {
