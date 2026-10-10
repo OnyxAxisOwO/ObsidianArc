@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Account } from '../src/api/auth';
 import { adminApi } from '../src/admin/api';
 import type { AttachmentRef, Conversation } from '../src/api/chat';
-import { listConversations, sendTurn, uploadAttachment } from '../src/api/chat';
+import { deleteAllConversations, listConversations, sendTurn, uploadAttachment } from '../src/api/chat';
 import { fetchFeedbackUnread } from '../src/api/feedback';
 import type { Project, ProjectList } from '../src/api/projects';
 import { createProject as apiCreateProject, listProjects } from '../src/api/projects';
@@ -45,8 +45,8 @@ vi.mock('../src/chat/image', async (original) => ({
 }));
 
 const {
-  activeID, addImages, addTextFiles, attachments, busy, conversations, draft, messages, pending, pendingID,
-  refreshList, resetChat, runTurn, status,
+  activeID, addImages, addTextFiles, attachments, busy, clearEverything, conversations, draft, flash, messages,
+  pending, pendingID, refreshList, resetChat, runTurn, status,
 } = await import('../src/chat/useChat');
 const {
   loadModels, models, reasoning, restorePreferences, selectedID,
@@ -309,6 +309,60 @@ describe('signing out leaves nothing of the account behind', () => {
     vi.mocked(fetchFeedbackUnread).mockResolvedValueOnce({ unread: 1 });
     await refreshFeedbackUnread();
     expect(feedbackUnread.value).toBe(1);
+  });
+
+  it('keeps the next account\'s rail when a clear-all from the last account returns late', async () => {
+    adopt(alice);
+    conversations.value = [conversation('conv-a', 'Alice only')];
+    let finish!: (value: { deleted: number }) => void;
+    vi.mocked(deleteAllConversations).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    const clearing = clearEverything();
+    forget();
+    adopt(bob);
+    vi.mocked(listConversations).mockResolvedValue({ conversations: [conversation('conv-b', 'Bob only')] });
+    await refreshList();
+    finish({ deleted: 1 });
+    await clearing;
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+
+    expect(conversations.value.map((entry) => entry.id)).toEqual(['conv-b']);
+  });
+
+  it('reads the rail again when a clear-all overlaps a sign-out and back in to the same account', async () => {
+    adopt(alice);
+    conversations.value = [conversation('conv-a', 'Alice only')];
+    let finish!: (value: { deleted: number }) => void;
+    vi.mocked(deleteAllConversations).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    const clearing = clearEverything();
+    forget();
+    adopt(alice);
+    // Answered before the delete lands, so it still lists what is being deleted.
+    vi.mocked(listConversations).mockResolvedValueOnce({ conversations: [conversation('conv-a', 'Alice only')] });
+    await refreshList();
+    // Created while the delete was in flight, so the delete did not take it.
+    vi.mocked(listConversations).mockResolvedValueOnce({ conversations: [conversation('conv-c', 'Alice new')] });
+    finish({ deleted: 1 });
+    await clearing;
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+
+    expect(conversations.value.map((entry) => entry.id)).toEqual(['conv-c']);
+  });
+
+  it('does not flash a clear-all that failed after sign-out into the next account\'s session', async () => {
+    adopt(alice);
+    conversations.value = [conversation('conv-a', 'Alice only')];
+    let fail!: (reason: Error) => void;
+    vi.mocked(deleteAllConversations).mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject; }));
+
+    const clearing = clearEverything();
+    forget();
+    adopt(bob);
+    fail(new Error('the delete timed out'));
+    await clearing;
+
+    expect(flash.value).toBe('');
   });
 
   it('asks again for the priced models after a different administrator signs in', async () => {
