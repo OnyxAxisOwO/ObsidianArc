@@ -6,6 +6,15 @@
  * synchronous patch, and is read by the panel that arrives inside it.
  */
 let vacating: HTMLElement | null = null;
+
+/**
+ * The panels open now, oldest first. Escape goes to the last of them only: a
+ * drawer and the account panel beside it both listen on document, and one key
+ * used to close both, losing whatever the drawer had unsaved. A panel leaves the
+ * list when it unmounts rather than when it starts to close, so a second Escape
+ * during the slide-out does not reach the panel beneath.
+ */
+const openPanels: object[] = [];
 </script>
 
 <script setup lang="ts">
@@ -151,9 +160,12 @@ function close(): void {
 }
 
 // Escape closes, unless something inside wants the key first — a select that
-// is open, for instance.
+// is open, for instance — or a panel opened after this one, which answers it.
+const token = {};
+openPanels.push(token);
 useEventListener(document, 'keydown', (event: KeyboardEvent) => {
-  if (event.key === 'Escape' && !event.defaultPrevented) close();
+  if (event.key !== 'Escape' || event.defaultPrevented) return;
+  if (openPanels[openPanels.length - 1] === token) close();
 });
 
 // --- full screen --------------------------------------------------------------
@@ -296,6 +308,9 @@ onBeforeUnmount(() => {
   // caller navigates in that callback, so letting it fire now would drag the
   // reader back to wherever this panel thought they should go next.
   window.clearTimeout(closeTimer);
+
+  const at = openPanels.indexOf(token);
+  if (at !== -1) openPanels.splice(at, 1);
 
   // Vue unmounts the outgoing component before it mounts the incoming one,
   // both inside one synchronous flush — so a panel being replaced can only be
