@@ -357,7 +357,12 @@ func (b *cancelOnClose) Close() error {
 // Both protocols nest it, and several compatible servers invent their own
 // shape, so a few likely shapes are tried before falling back to the raw
 // text.
-func extractErrorMessage(payload []byte) string {
+//
+// The key is removed before anything is cut. A key that straddles the
+// 400-character cut would otherwise leave its first characters behind, and a
+// prefix of a key is still the key. The JSON shapes are decoded first, so a
+// key the body spelled with escapes is found as well.
+func extractErrorMessage(payload []byte, secret string) string {
 	if len(payload) == 0 {
 		return ""
 	}
@@ -373,7 +378,7 @@ func extractErrorMessage(payload []byte) string {
 	if err := json.Unmarshal(payload, &envelope); err == nil {
 		for _, candidate := range []string{envelope.Error.Message, envelope.Message, envelope.Detail, envelope.Error.Type} {
 			if trimmed := strings.TrimSpace(candidate); trimmed != "" {
-				return trimmed
+				return redactSecret(trimmed, secret)
 			}
 		}
 	}
@@ -383,7 +388,7 @@ func extractErrorMessage(payload []byte) string {
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(payload, &stringly); err == nil && strings.TrimSpace(stringly.Error) != "" {
-		return strings.TrimSpace(stringly.Error)
+		return redactSecret(strings.TrimSpace(stringly.Error), secret)
 	}
 
 	body := strings.TrimSpace(string(payload))
@@ -391,6 +396,7 @@ func extractErrorMessage(payload []byte) string {
 	if strings.HasPrefix(body, "<") {
 		return ""
 	}
+	body = redactSecret(body, secret)
 	// Cut on a rune boundary. This is whatever the gateway wrote and is not
 	// necessarily UTF-8; a byte offset can land inside a multi-byte character,
 	// and the invalid bytes that produces are logged, stored, and — on

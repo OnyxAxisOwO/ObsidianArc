@@ -295,7 +295,7 @@ func (a openAIAdapter) Chat(ctx context.Context, client *http.Client, p Provider
 	}
 
 	if streaming && strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
-		return a.readStream(ctx, response, sink)
+		return a.readStream(ctx, response, sink, p.APIKey)
 	}
 	if streaming {
 		result, err := a.readOnce(response)
@@ -482,7 +482,7 @@ func (a *toolCallAssembly) finish(result *Result, sink Sink) error {
 	return nil
 }
 
-func (openAIAdapter) readStream(ctx context.Context, response *http.Response, sink Sink) (Result, error) {
+func (openAIAdapter) readStream(ctx context.Context, response *http.Response, sink Sink, secret string) (Result, error) {
 	result := Result{Streamed: true}
 	var sinkErr error
 
@@ -540,7 +540,7 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 			return nil
 		}
 		if chunk.Error.Message != "" {
-			return &Error{Kind: ErrorUpstream, Message: chunk.Error.Message}
+			return &Error{Kind: ErrorUpstream, Message: redactSecret(chunk.Error.Message, secret)}
 		}
 
 		for _, usage := range []*openAIUsage{chunk.Usage, chunk.XGroq.Usage} {

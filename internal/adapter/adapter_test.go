@@ -836,7 +836,7 @@ func TestErrorMessageIsCutOnACharacterBoundary(t *testing.T) {
 	// inside that character rather than between two of them.
 	message := strings.Repeat("a", 399) + "中" + strings.Repeat("b", 50)
 
-	got := extractErrorMessage([]byte(message))
+	got := extractErrorMessage([]byte(message), "")
 	if !utf8.ValidString(got) {
 		t.Fatalf("extractErrorMessage produced invalid UTF-8: %q", got)
 	}
@@ -848,10 +848,10 @@ func TestErrorMessageIsCutOnACharacterBoundary(t *testing.T) {
 	}
 
 	// A plain text body is still trimmed, and an HTML page is still dropped.
-	if got := extractErrorMessage([]byte("  boom  ")); got != "boom" {
+	if got := extractErrorMessage([]byte("  boom  "), ""); got != "boom" {
 		t.Errorf("a short body = %q, want it trimmed to %q", got, "boom")
 	}
-	if got := extractErrorMessage([]byte("<html>502 Bad Gateway</html>")); got != "" {
+	if got := extractErrorMessage([]byte("<html>502 Bad Gateway</html>"), ""); got != "" {
 		t.Errorf("an HTML error page = %q, want empty", got)
 	}
 }
