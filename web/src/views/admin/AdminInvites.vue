@@ -19,6 +19,7 @@ import { ApiError } from '@/api/client';
 import { copyToClipboard } from '@/chat/markdown';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginList from './PluginList.vue';
+import { provideOpenRecord } from './openRecord';
 import { plugins } from '@/plugins/registry';
 import OaBadge from '@/components/OaBadge.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
@@ -43,6 +44,7 @@ import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 
 const view = useAdminView();
+provideOpenRecord();
 view.setTitle(t('navInvites'), t('invitesSubtitle'));
 
 /** A generated code reads as XXXX-XXXX. A partner's code is a name

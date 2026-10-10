@@ -3,7 +3,8 @@
 // controls the plugin declared and hands back exactly what was entered; a
 // required field stops the send; the reader's own records are listed; a row
 // opens only when the plugin says rows open, shows its fields — a link only
-// when it is http(s) — and an action reads the table again.
+// when it is http(s) — and an action reads the table again; and a page with
+// two lists has one record open, not one per list.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, ref, type App, type Component } from 'vue';
@@ -14,6 +15,7 @@ import { installPlugins, userPanels } from '../src/plugins/registry';
 import type { AdminListSpec, ArcPlugin, RecordDetail, UserFormValues, UserPanelSpec } from '../src/plugins/types';
 import PluginUserPanel from '../src/views/PluginUserPanel.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { provideOpenRecord } from '../src/views/admin/openRecord';
 import PluginList from '../src/views/admin/PluginList.vue';
 
 let app: App | undefined;
@@ -245,5 +247,35 @@ describe('a record of a plugin\'s list, opened', () => {
     expect(run).toHaveBeenCalledWith({ cards: '3' });
     expect(panelHost.textContent).toContain('Rewarded 3');
     expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  // Two 520px panels side by side left the tables and the page heading one
+  // character wide, which is how an upgrade plugin's pending and decided
+  // applications were read.
+  it('keeps one record open on a page with two lists', async () => {
+    const pending = list(async () => ({ title: 'Pending one', fields: [] })).spec;
+    const decided = { ...list(async () => ({ title: 'Decided one', fields: [] })).spec, id: 'decided' };
+    await mount({ setup() {
+      provideOpenRecord();
+      return () => [h(PluginList, { spec: pending }), h(PluginList, { spec: decided })];
+    } });
+    const rows = () => [...host.querySelectorAll<HTMLElement>('tbody tr')];
+    const titles = () => [...panelHost.querySelectorAll('.oa-plugin-record')].length;
+
+    rows()[0]!.click();
+    await settle();
+    expect(titles()).toBe(1);
+    expect(panelHost.textContent).toContain('Pending one');
+
+    rows()[1]!.click();
+    await settle();
+    expect(titles()).toBe(1);
+    expect(panelHost.textContent).toContain('Decided one');
+    expect(panelHost.textContent).not.toContain('Pending one');
+
+    rows()[0]!.click();
+    await settle();
+    expect(titles()).toBe(1);
+    expect(panelHost.textContent).toContain('Pending one');
   });
 });

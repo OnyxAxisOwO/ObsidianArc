@@ -5,7 +5,7 @@
 // masked while safe mode is on is the backoffice's, so the plugin marks
 // such cells and this component masks them.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { rememberedPageSize } from '@/lib/page-size';
 import { ApiError } from '@/api/client';
 import { maskUser } from '@/admin/safeMode';
@@ -17,6 +17,7 @@ import { IconFile } from '@/icons';
 import type { AdminListSpec, ListCell, RecordDetail } from '@/plugins/types';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginRecordPanel from './PluginRecordPanel.vue';
+import { useOpenRecord } from './openRecord';
 
 type Row = Record<string, unknown>;
 
@@ -65,11 +66,26 @@ function cell(key: string, row: Row): ListCell {
 const opened = ref<RecordDetail | null>(null);
 const openedRow = ref<Row | null>(null);
 
+// One record open per page: another list taking the panel closes this one's.
+const self = Symbol(props.spec.id);
+const openOwner = useOpenRecord();
+watch(openOwner, (owner) => {
+  if (owner !== self) close();
+});
+
+function close(): void {
+  opened.value = null;
+  openedRow.value = null;
+  if (openOwner.value === self) openOwner.value = null;
+}
+
 async function open(row: Row): Promise<void> {
   if (!props.spec.detail) return;
   error.value = '';
   try {
-    opened.value = await props.spec.detail(row);
+    const detail = await props.spec.detail(row);
+    openOwner.value = self;
+    opened.value = detail;
     openedRow.value = row;
   } catch (failure) {
     error.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -118,7 +134,7 @@ onMounted(load);
     v-if="opened"
     :key="String(openedRow?.id ?? '')"
     :detail="opened"
-    @close="opened = null; openedRow = null"
+    @close="close"
     @done="acted"
   />
 </template>

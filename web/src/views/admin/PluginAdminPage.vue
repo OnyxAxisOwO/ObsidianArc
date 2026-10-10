@@ -19,10 +19,12 @@ import PluginSettingsCard from './PluginSettingsCard.vue';
 import { usePluginSettings } from './pluginSettings';
 import { plugins } from '@/plugins/registry';
 import { useAdminView } from './adminView';
+import { provideOpenRecord } from './openRecord';
 
 const props = defineProps<{ page: AdminPluginPage }>();
 
 const view = useAdminView();
+provideOpenRecord();
 view.setTitle(props.page.title(), props.page.hint?.());
 
 const placement = `plugin:${props.page.slug}` as const;
