@@ -391,6 +391,13 @@ func reserveRate(ctx context.Context, tx database.Queryer, policy Policy, key st
 
 // reserveAllowance charges the three allowance windows what the request costs
 // them: the whole estimate, or the part of it the bonus bars did not pay.
+//
+// A window that is switched on is checked as it is charged. A window that is
+// not is charged too, because the usage screen reads it and a limit switched on
+// later has to start from what the account has really used. Those are charged
+// last, once every enforced window has passed: a refused attempt that a reset
+// card retries inside the same transaction would otherwise count the request
+// twice in whichever unenforced windows it had already walked past.
 func reserveAllowance(
 	ctx context.Context,
 	tx database.Queryer,
@@ -434,6 +441,18 @@ func reserveAllowance(
 				Window: window, Dimension: "credits",
 				Used: counter.Credits, Limit: *limits.Credits, ResetsAt: resets,
 			}
+		}
+	}
+
+	// Settle and Release move the same deltas through every window. A window
+	// left out of the charge would have the release take the turn back out of
+	// it, and the zero floor would keep none of it.
+	for _, window := range AllowanceWindows {
+		if policy.Windows[window].isOn() {
+			continue
+		}
+		if _, err := bump(ctx, tx, key, window, bucketStart(window, now, anchor), 1, estimate.Tokens, estimate.Credits); err != nil {
+			return err
 		}
 	}
 	return nil
