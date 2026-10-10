@@ -22,6 +22,7 @@ const emit = defineEmits<{ (event: 'close'): void }>();
 
 const shown = ref(false);
 let closing = false;
+let closeTimer = 0;
 
 onMounted(() => requestAnimationFrame(() => { shown.value = true; }));
 
@@ -29,14 +30,20 @@ function close(): void {
   if (closing || !props.dismissible) return;
   closing = true;
   shown.value = false;
-  window.setTimeout(() => emit('close'), 200);
+  closeTimer = window.setTimeout(() => emit('close'), 200);
 }
 
 useEventListener(document, 'keydown', (event: KeyboardEvent) => {
   if (event.key === 'Escape') close();
 });
 
-onBeforeUnmount(() => { closing = true; });
+// The fade is still running if the sheet is taken away inside its 200 ms. The
+// caller's close handler usually navigates, and a navigation that lands after
+// the sheet has gone would drag the reader somewhere they did not ask to go.
+onBeforeUnmount(() => {
+  closing = true;
+  window.clearTimeout(closeTimer);
+});
 
 defineExpose({ close });
 </script>
