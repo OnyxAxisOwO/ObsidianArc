@@ -707,6 +707,7 @@ export const zh: Record<StringKey, string> = {
   apiKeyHint: '加密存储，永远不会返回给浏览器。',
   apiKeyKeepHint: '当前为 {hint}——留空则保持不变',
   providerKeyNeeded: '修改了 Base URL，需要重新填写 API Key——已保存的密钥只会发往原来的地址。',
+  providerBaseURLSuperAdmin: '只有超级管理员可以修改服务商的 Base URL。',
   secModelBasics: '基本信息',
   secModelShown: '启用与显示',
   secProviderConnection: '连接',

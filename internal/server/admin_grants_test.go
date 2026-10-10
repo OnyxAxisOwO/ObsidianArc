@@ -227,6 +227,90 @@ func TestOnlyASuperAdministratorMovesThePublicURL(t *testing.T) {
 	}
 }
 
+func providerIDOf(t *testing.T, response *httptest.ResponseRecorder) string {
+	t.Helper()
+	return decode[struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}](t, response).Provider.ID
+}
+
+// providerRow is what the providers listing shows for one provider. The key
+// itself is never listed, only its hint, which is what shows whether a write
+// replaced it.
+type providerRow struct {
+	ID         string `json:"id"`
+	BaseURL    string `json:"base_url"`
+	APIKeyHint string `json:"api_key_hint"`
+}
+
+func providerRowOf(t *testing.T, in *instance, as *session, providerID string) providerRow {
+	t.Helper()
+	listing := decode[struct {
+		Providers []providerRow `json:"providers"`
+	}](t, in.do(http.MethodGet, "/api/admin/providers", nil, as))
+	for _, row := range listing.Providers {
+		if row.ID == providerID {
+			return row
+		}
+	}
+	t.Fatalf("provider %s is not listed", providerID)
+	return providerRow{}
+}
+
+// A provider's base URL is where every chat on it is sent, prompts and
+// attachments included, so the address is the super administrator's to move,
+// as the public URL is. The providers grant still creates providers and edits
+// their other fields, and a key the delegate types for a move is refused with
+// the address: nothing of the move is stored.
+func TestOnlyASuperAdministratorMovesAProvidersBaseURL(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	delegate(t, in, founder, operator, "providers")
+
+	created := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "Primary", "kind": "openai", "base_url": "https://api.example.com/v1", "api_key": "sk-the-real-secret-value",
+	}, founder)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("super administrator creating a provider: %d %s", created.Code, created.Body.String())
+	}
+	providerID := providerIDOf(t, created)
+	providerPath := "/api/admin/providers/" + providerID
+	before := providerRowOf(t, in, founder, providerID)
+
+	refused := in.do(http.MethodPatch, providerPath, map[string]any{
+		"name": "Primary", "kind": "openai", "base_url": "https://collector.example.net/v1", "api_key": "sk-operator-own-0002",
+	}, operator)
+	if refused.Code != http.StatusForbidden || errCode(t, refused) != "super_admin_required" {
+		t.Fatalf("a providers-grant holder moved the base URL: %d %s", refused.Code, refused.Body.String())
+	}
+	if after := providerRowOf(t, in, founder, providerID); after != before {
+		t.Fatalf("the refused move changed the provider: %+v, was %+v", after, before)
+	}
+
+	if response := in.do(http.MethodPatch, providerPath, map[string]any{
+		"name": "Renamed", "kind": "openai", "base_url": "https://api.example.com/v1",
+	}, operator); response.Code != http.StatusOK {
+		t.Errorf("a providers-grant holder editing other fields, address unchanged: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "Second", "kind": "openai", "base_url": "https://second.example.com/v1", "api_key": "sk-second-key-value",
+	}, operator); response.Code != http.StatusCreated {
+		t.Errorf("a providers-grant holder creating a provider: %d %s", response.Code, response.Body.String())
+	}
+
+	if response := in.do(http.MethodPatch, providerPath, map[string]any{
+		"name": "Renamed", "kind": "openai", "base_url": "https://collector.example.net/v1", "api_key": "sk-the-new-secret-value",
+	}, founder); response.Code != http.StatusOK {
+		t.Fatalf("super administrator moving the base URL: %d %s", response.Code, response.Body.String())
+	}
+	if moved := providerRowOf(t, in, founder, providerID); moved.BaseURL != "https://collector.example.net/v1" {
+		t.Errorf("base_url = %q after the super administrator's move", moved.BaseURL)
+	}
+}
+
 // The dashboard lists the newest accounts with the fields it can show. The
 // address, the signup details and the rest of the record belong to the users
 // grant, which the dashboard grant does not hold.

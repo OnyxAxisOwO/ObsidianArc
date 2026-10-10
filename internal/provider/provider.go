@@ -63,7 +63,12 @@ var (
 	// write-only key was one edit and one "detect models" away from anybody
 	// trusted with the providers page, at a server of their own.
 	ErrKeyNeededForMove = errors.New("provider: a new base URL needs the API key entered again")
-	ErrTooManyHeaders   = errors.New("provider: at most 20 extra headers")
+	// Every chat on the provider is sent to this address, prompts and
+	// attachments included, so moving it is the same decision as moving the
+	// public URL or an OIDC endpoint. Typing the key again does not make it
+	// safe: whoever moves the address chooses the key as well.
+	ErrBaseURLNeedsSuperAdmin = errors.New("provider: only a super administrator can change a provider's base URL")
+	ErrTooManyHeaders         = errors.New("provider: at most 20 extra headers")
 )
 
 const (
@@ -228,8 +233,9 @@ type Update struct {
 
 // Update applies a partial change. An absent APIKey leaves the stored one
 // alone, which is what lets the admin form round-trip a provider without ever
-// receiving the key it is editing.
-func (s *Store) Update(ctx context.Context, providerID string, in Update) (Provider, error) {
+// receiving the key it is editing. superAdmin says whether the caller may move
+// the base URL; anybody else is refused that before the key rule is consulted.
+func (s *Store) Update(ctx context.Context, providerID string, in Update, superAdmin bool) (Provider, error) {
 	var next Provider
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
 		// Models lock this same owner row before they are written. Keeping the
@@ -280,6 +286,11 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update) (Provi
 		next, err = validate(next)
 		if err != nil {
 			return err
+		}
+		// Compared after validate has normalised both sides, so a save that
+		// only respells the same address is not taken for a move.
+		if next.BaseURL != current.BaseURL && !superAdmin {
+			return ErrBaseURLNeedsSuperAdmin
 		}
 		if next.BaseURL != current.BaseURL && in.APIKey == nil {
 			return ErrKeyNeededForMove

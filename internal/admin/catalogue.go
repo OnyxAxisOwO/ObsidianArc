@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
@@ -131,7 +132,9 @@ func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request) error 
 		update.BaseURL = &body.BaseURL
 	}
 
-	record, err := h.providers.Update(r.Context(), providerID, update)
+	// Whether the address may move is decided in the store, against the row it
+	// holds under its lock: a check made here on a copy could already be stale.
+	record, err := h.providers.Update(r.Context(), providerID, update, auth.MustUser(r.Context()).IsSuperAdmin())
 	if err != nil {
 		return translateProviderError(err)
 	}
