@@ -161,3 +161,39 @@ func (s *Store) Unlink(ctx context.Context, q database.Queryer, userID, provider
 	}
 	return affected > 0, nil
 }
+
+// SpendState records that a sign-in state has come back, and reports whether
+// this call was the first to say so.
+//
+// The insert is the check: the nonce is the primary key, so a second arrival
+// conflicts and changes nothing, on both engines. A read followed by a write
+// would let two callbacks racing with one state both see it unspent.
+func (s *Store) SpendState(ctx context.Context, q database.Queryer, nonce string, expires int64) (bool, error) {
+	result, err := s.queryer(q).Exec(ctx,
+		`INSERT INTO oauth_states (nonce, expires_at) VALUES (?, ?)
+		 ON CONFLICT (nonce) DO NOTHING`,
+		nonce, expires)
+	if err != nil {
+		return false, fmt.Errorf("oauth: spend state: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("oauth: spend state: %w", err)
+	}
+	return affected == 1, nil
+}
+
+// PruneStates drops the spent states whose expiry has passed. Nothing reads
+// them again, since the callback refuses a state past its expiry before it
+// asks whether the state was spent.
+func (s *Store) PruneStates(ctx context.Context, now int64) (int64, error) {
+	result, err := s.db.Exec(ctx, `DELETE FROM oauth_states WHERE expires_at < ?`, now)
+	if err != nil {
+		return 0, fmt.Errorf("oauth: prune states: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("oauth: prune states: %w", err)
+	}
+	return affected, nil
+}

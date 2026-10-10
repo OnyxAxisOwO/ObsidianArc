@@ -244,7 +244,9 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 
 	// Spent either way. A state that has come back is finished whether the
 	// sign-in worked or not, and leaving it behind would leave a replayable
-	// one in the browser.
+	// one in the browser. This clears the browser's copy only; the server
+	// keeps its own record of the nonce, written once the state has checked
+	// out, because a copy kept anywhere else is refused by that record alone.
 	cookie, err := r.Cookie(stateCookie)
 	h.clearState(w)
 	if err != nil {
@@ -279,6 +281,30 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 	if !h.service.Enabled(provider.ID) {
 		// Switched off while somebody was at the consent screen.
 		h.fail(w, r, linking, "unavailable")
+		return
+	}
+
+	// A link belongs to the account that started it. A callback from any other
+	// session is refused here, before the state is spent, so a stranger who
+	// holds a copy of the cookie cannot use up the state the owner still needs.
+	if linking {
+		if account, signedIn := auth.UserFrom(r.Context()); !signedIn || account.ID != value.UserID {
+			h.fail(w, r, true, "state")
+			return
+		}
+	}
+
+	// Spent before anything is asked of the provider, and not after: the
+	// cookie is a ten-minute ticket, and clearing the browser's copy does not
+	// reach a copy somebody else kept. Two callbacks carrying the same state
+	// race on this insert, and only the one that lands goes on to the code.
+	spent, err := h.service.store.SpendState(r.Context(), nil, value.Nonce, value.Expiry)
+	if err != nil {
+		h.fail(w, r, linking, "failed")
+		return
+	}
+	if !spent {
+		h.fail(w, r, linking, "state")
 		return
 	}
 
