@@ -6,11 +6,11 @@
 // the software a rebranded server is actually running and where it came from.
 
 import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { health } from '@/api/client';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { formatUptime } from '@/lib/format';
 import { siteInfo, isAdmin } from '@/stores/session';
 
@@ -40,7 +40,7 @@ const CONTRIBUTORS = [
   'TXBk0032-1',
 ];
 
-const router = useRouter();
+const panels = usePanelExit();
 
 const version = ref('—');
 const uptime = ref('—');
@@ -73,7 +73,7 @@ onMounted(() => {
     :title="t('about')"
     :footer="false"
     :width="460"
-    @close="router.replace('/')"
+    @close="panels.close('replace')"
   >
     <div class="oa-about">
       <!-- Both fall back rather than render empty: an operator who has never

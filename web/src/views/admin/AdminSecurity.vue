@@ -8,6 +8,7 @@
 // junk accounts opens one page, not seven sections of another.
 
 import { computed, nextTick, onMounted, ref } from 'vue';
+import { useRoute } from 'vue-router';
 import { adminApi, type AdminMailSettings, type AdminModel, type AdminUserCheckSettings, type Group, type SecurityEvent, type SignInApplication, type TwoFactorAdoption } from '@/admin/api';
 import { fetchSite, type SiteInfo } from '@/api/auth';
 import { ApiError } from '@/api/client';
@@ -28,6 +29,7 @@ import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
+import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { copyToClipboard } from '@/chat/markdown';
 import { initials } from '@/lib/account';
 import { rememberedPageSize } from '@/lib/page-size';
@@ -46,6 +48,15 @@ import { useAdminView } from './adminView';
 
 const view = useAdminView();
 view.setTitle(t('navSecurity'), t('securitySubtitle'));
+
+// The settings screen's security tab, drawn beside this page rather than in the
+// chat: the page's own address, with the panel named in it (usePanelExit).
+const route = useRoute();
+const securityPanel = computed(() => ({
+  path: route.path,
+  query: { ...route.query, [BACKOFFICE_PANEL_PARAM]: 'settings/security' },
+  hash: route.hash,
+}));
 
 const error = ref('');
 const loaded = ref(false);
@@ -1165,7 +1176,7 @@ onMounted(load);
              policy that would shut its author out of this screen. -->
         <p v-if="selfWithout" class="oa-field-hint oa-2fa-self">
           {{ t('twoFactorPolicySelfNote') }}
-          <RouterLink to="/settings?tab=security">{{ t('twoFactorSetUpMine') }}</RouterLink>
+          <RouterLink :to="securityPanel">{{ t('twoFactorSetUpMine') }}</RouterLink>
         </p>
         <OaTextField
           v-model="form.twoFactorIssuer"
@@ -1222,7 +1233,7 @@ onMounted(load);
         </template>
         <p v-if="selfWithout && form.backofficeMode !== 'off'" class="oa-field-hint oa-2fa-self">
           {{ t('twoFactorPolicySelfNote') }}
-          <RouterLink to="/settings?tab=security">{{ t('twoFactorSetUpMine') }}</RouterLink>
+          <RouterLink :to="securityPanel">{{ t('twoFactorSetUpMine') }}</RouterLink>
         </p>
       </AdminControlCard>
     </template>

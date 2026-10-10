@@ -19,7 +19,6 @@
 // model's answer is.
 
 import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { ApiError } from '@/api/client';
 import {
   fetchThread, listFeedback, replyToFeedback, sendFeedback,
@@ -34,6 +33,7 @@ import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t, type StringKey } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { IconClose, IconLock } from '@/icons';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { refreshFeedbackUnread } from '@/stores/feedback';
@@ -50,7 +50,7 @@ const PRIORITIES: Array<{ value: FeedbackPriority; label: StringKey }> = [
   { value: 'high', label: 'feedbackPriorityHigh' },
 ];
 
-const router = useRouter();
+const panels = usePanelExit();
 
 const kind = ref<FeedbackKind>('bug');
 const priority = ref<FeedbackPriority>('medium');
@@ -303,7 +303,7 @@ onMounted(() => void refresh());
     :width="480"
     :busy="busy"
     :error="error"
-    @close="router.push('/')"
+    @close="panels.close('push')"
     @back="back"
     @confirm="send"
   >

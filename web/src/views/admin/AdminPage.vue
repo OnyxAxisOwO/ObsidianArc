@@ -35,6 +35,8 @@ import ChatLayout from '@/layouts/ChatLayout.vue';
 import { provideAdminView } from './adminView';
 import { pageLabel, searchAdminFeatures, type AdminPageSpec, visibleAdminPages } from './features';
 import { plugins } from '@/plugins/registry';
+import { BACKOFFICE_PANEL_PARAM, provideBackofficePanels } from '@/composables/usePanelExit';
+import { resolveSidePanel } from '@/views/panels';
 
 import AdminDashboard from './AdminDashboard.vue';
 import AdminUsers from './AdminUsers.vue';
@@ -315,6 +317,22 @@ provideAdminView({
   },
 });
 
+// A panel from the account menu or a link, drawn beside this page. The address
+// keeps the page's own path, query and hash, and only the panel's parameter
+// comes and goes, so the page underneath is never taken away (usePanelExit).
+const sidePanel = computed(() => resolveSidePanel(route.query[BACKOFFICE_PANEL_PARAM]));
+
+provideBackofficePanels({
+  show(name) {
+    void router.push({ path: route.path, query: { ...route.query, [BACKOFFICE_PANEL_PARAM]: name }, hash: route.hash });
+  },
+  hide() {
+    const query = { ...route.query };
+    delete query[BACKOFFICE_PANEL_PARAM];
+    void router.replace({ path: route.path, query, hash: route.hash });
+  },
+});
+
 // Changing views should never leave a stale heading or a set of buttons
 // belonging to the previous section. Remounting the page on the key below
 // takes care of the body; these two are the shell's own.
@@ -507,5 +525,14 @@ onMounted(() => {
       </OaScrollArea>
     </div>
     <AdminUpdateDialog v-if="updateReady" />
+
+    <!-- Teleported into this shell's row, as the chat's panels are into theirs,
+         so it is a column beside the page and not a page of its own. -->
+    <component
+      v-if="sidePanel"
+      :is="sidePanel.component"
+      :key="sidePanel.name"
+      v-bind="sidePanel.props"
+    />
   </AppShell>
 </template>

@@ -13,6 +13,7 @@
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { adminApi, type LogEntry, type LogFacets, type LogOption } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaPagination from '@/components/OaPagination.vue';
@@ -67,8 +68,11 @@ function parseRouteQuery() {
 
 const query = ref(parseRouteQuery());
 
+// Only the filters are read from the address. A panel opened beside this page
+// is named in the address too, and it must neither reset the filters set here
+// nor make the log be fetched again.
 watch(
-  () => route.query,
+  () => JSON.stringify(parseRouteQuery()),
   () => {
     query.value = parseRouteQuery();
     void reload();
@@ -167,7 +171,10 @@ function clearFilters(): void {
     channel: '', errorCode: '', path: '', offset: 0,
   };
   if (Object.keys(route.query).length > 0) {
-    void router.replace({ path: '/admin/logs', query: {} });
+    // Clearing the filters must not close a panel open beside the page.
+    const panel = route.query[BACKOFFICE_PANEL_PARAM];
+    const keep = typeof panel === 'string' ? { [BACKOFFICE_PANEL_PARAM]: panel } : {};
+    void router.replace({ path: '/admin/logs', query: keep });
   }
   void paint();
 }

@@ -194,7 +194,14 @@ onMounted(() => {
   } else if (done === 'connected') {
     connectionFlash.value = t('oauthConnected');
   }
-  if (failure || done) void router.replace({ path: route.path, query: {} });
+  if (failure || done) {
+    // Only the two keys this section reads. It can be open over the backoffice,
+    // and the rest of that address belongs to the page underneath.
+    const query = { ...route.query };
+    delete query['oauth'];
+    delete query['oauth_error'];
+    void router.replace({ path: route.path, query });
+  }
   void loadConnections();
   void loadAuthorizations();
 });

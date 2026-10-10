@@ -6,7 +6,6 @@
 // and download the results directly.
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import {
   deleteImageGeneration,
   generateImages,
@@ -24,6 +23,7 @@ import OaPanel from '@/components/OaPanel.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { ImageError, prepareImage } from '@/chat/image';
 import { loadModels, models } from '@/chat/useModels';
 import {
@@ -42,7 +42,7 @@ import { solvePoW } from '@/lib/pow';
 import { guards } from '@/plugins/registry';
 import { siteInfo } from '@/stores/session';
 
-const router = useRouter();
+const panels = usePanelExit();
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
 const fullscreen = ref(false);
 
@@ -443,7 +443,7 @@ function imageSource(img: ImageGenerationItem): string {
     :error="error"
     :width="460"
     body-class="oa-image-lab-body"
-    @close="router.replace('/')"
+    @close="panels.close('replace')"
     @confirm="generate"
   >
     <template #actions>

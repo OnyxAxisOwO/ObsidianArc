@@ -14,12 +14,14 @@ import OaPanel from '@/components/OaPanel.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { IconArchive, IconCollapse, IconExpand, IconTrash } from '@/icons';
 import { relativeTime } from '@/lib/format';
 import { matchesSearch } from '@/lib/search';
 import { activeID, canDelete, openConversation, setFlash, unarchiveConversation } from '@/chat/useChat';
 
 const router = useRouter();
+const panels = usePanelExit();
 
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
 const fullscreen = ref(false);
@@ -63,6 +65,8 @@ async function remove(conversation: Conversation): Promise<void> {
   }
 }
 
+// Leaving for a conversation is a destination rather than a close, so it goes
+// to the chat even from the backoffice: the conversation is only there.
 async function openInChat(conversation: Conversation): Promise<void> {
   await openConversation(conversation.id);
   void router.push('/');
@@ -84,7 +88,7 @@ onMounted(() => {
     :footer="false"
     :width="460"
     body-class="oa-settings-body"
-    @close="router.replace('/')"
+    @close="panels.close('replace')"
   >
     <template #actions>
       <OaIconButton
