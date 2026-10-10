@@ -72,7 +72,6 @@ const MATH_BLOCK_FENCE = /^ {0,3}(?:\$\$|\\\[)[ \t]*$/;
 const MATH_BLOCK_CLOSE = /^ {0,3}(?:\$\$|\\\])[ \t]*$/;
 const MATH_SINGLE_RE = /^ {0,3}(?:\$\$([^\n]+?)\$\$|\\\[([^\n]+?)\\\])[ \t]*$/;
 const HR_RE = /^ {0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$/;
-const HEADING_RE = /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/;
 const QUOTE_RE = /^ {0,3}> ?(.*)$/;
 const ITEM_RE = /^(\s*)([-*+]|\d{1,9}[.)])[ \t]+(.*)$/;
 const TABLE_DIVIDER_RE = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
@@ -126,11 +125,77 @@ function isWordChar(char: string | undefined): boolean {
   return !!char && /[\w一-鿿]/.test(char);
 }
 
+interface CodeSpan {
+  value: string;
+  end: number;
+}
+
+// Where a code span closes, without rescanning the paragraph for each opener.
+//
+// An opener of k backticks closes at the first later run of exactly k, and
+// the longest opener that finds one wins. That is what the span regex this
+// replaces, /^(`+)([\s\S]*?[^`])\1(?!`)/, chose. It was retried from every
+// backtick, each attempt scanning to the end of the paragraph, so an unclosed
+// run of r backticks cost about r² times the paragraph length. Here every run
+// is looked at once, from the right.
+function codeSpanFinder(source: string): (index: number) => CodeSpan | null {
+  const starts: number[] = [];
+  const lengths: number[] = [];
+  for (let at = source.indexOf('`'); at !== -1; ) {
+    let end = at + 1;
+    while (source[end] === '`') end += 1;
+    starts.push(at);
+    lengths.push(end - at);
+    at = source.indexOf('`', end);
+  }
+
+  // closers[run][r - 1]: for an opener with r backticks from its position to
+  // the end of its run, the run it closes at, or -1. Working right to left,
+  // leftmost[k] is the closest run of length k so far, which is the first one
+  // an opener to the left meets.
+  let longest = 0;
+  for (const length of lengths) longest = Math.max(longest, length);
+  const leftmost: number[] = new Array<number>(longest + 1).fill(-1);
+  const closers: number[][] = new Array<number[]>(starts.length);
+  for (let run = starts.length - 1; run >= 0; run -= 1) {
+    const length = lengths[run]!;
+    const row: number[] = new Array<number>(length);
+    let best = -1;
+    for (let r = 1; r <= length; r += 1) {
+      // The longest closer no longer than r: r itself when some run has it,
+      // otherwise whatever the next shorter count found.
+      if (leftmost[r] !== -1) best = leftmost[r]!;
+      row[r - 1] = best;
+    }
+    closers[run] = row;
+    leftmost[length] = run;
+  }
+
+  // Openers only ever move right, so the run they sit in only moves right too.
+  let cursor = 0;
+  return (index) => {
+    while (cursor < starts.length && starts[cursor]! + lengths[cursor]! <= index) cursor += 1;
+    const row = closers[cursor];
+    if (!row) return null;
+    const left = starts[cursor]! + lengths[cursor]! - index;
+    const closer = row[left - 1];
+    if (closer === undefined || closer < 0) return null;
+    const closeAt = starts[closer]!;
+    const k = lengths[closer]!;
+    return {
+      value: source.slice(index + k, closeAt).replace(/^ ([\s\S]*) $/, '$1'),
+      end: closeAt + k,
+    };
+  };
+}
+
 export function parseInline(text: string): Inline[] {
   const source = String(text ?? '');
   const nodes: Inline[] = [];
   let buffer = '';
   let index = 0;
+  // Built on the first backtick, so a paragraph without code pays nothing.
+  let findCode: ((at: number) => CodeSpan | null) | null = null;
 
   const flush = () => {
     if (buffer) {
@@ -170,10 +235,11 @@ export function parseInline(text: string): Inline[] {
 
     if (char === '`') {
       // The longest run of backticks opens the span, so `` ` `` works.
-      const code = /^(`+)([\s\S]*?[^`])\1(?!`)/.exec(rest);
-      if (code) {
-        push({ type: 'codespan', value: (code[2] ?? '').replace(/^ ([\s\S]*) $/, '$1') });
-        index += code[0].length;
+      findCode ??= codeSpanFinder(source);
+      const span = findCode(index);
+      if (span) {
+        push({ type: 'codespan', value: span.value });
+        index = span.end;
         continue;
       }
     }
@@ -252,6 +318,51 @@ export function parseInline(text: string): Inline[] {
 
 // --- blocks -------------------------------------------------------------------
 
+// An ATX heading: up to three spaces, one to six hashes, a space or tab, then
+// the text. Closing hashes, and the spaces around them, are not part of it.
+//
+// Scanned by hand rather than matched with
+//   /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/
+// because that pattern backtracks about cubically on a long run of spaces
+// inside the line: the lazy text group, the spaces after it and the closing
+// hashes can each take the same run in many ways before the line is refused.
+// Feedback and model output both reach this parser unbounded.
+function atxHeading(line: string): { level: number; text: string } | null {
+  // The pattern's `.` never matched a line or paragraph separator, so a line
+  // carrying one was never a heading.
+  if (/[\n\r\u2028\u2029]/.test(line)) return null;
+
+  let start = 0;
+  while (start < 3 && line[start] === ' ') start += 1;
+  let end = start;
+  while (line[end] === '#') end += 1;
+  const level = end - start;
+  if (level < 1 || level > 6 || (line[end] !== ' ' && line[end] !== '\t')) return null;
+
+  let textStart = end;
+  while (line[textStart] === ' ' || line[textStart] === '\t') textStart += 1;
+
+  // The closing sequence is spaces, then one run of hashes, then spaces, and
+  // it runs to the end of the line. Scanning back from the end finds where it
+  // starts. Once the hashes have been passed, another hash beyond a gap of
+  // spaces cannot belong to the sequence, so the text stops there.
+  let cut = line.length;
+  let phase = 0; // 0: trailing spaces, 1: in the hashes, 2: spaces before them
+  for (let i = line.length - 1; i >= textStart; i -= 1) {
+    const char = line[i];
+    if (char === ' ' || char === '\t') {
+      if (phase === 1) phase = 2;
+    } else if (char === '#') {
+      if (phase === 2) break;
+      phase = 1;
+    } else {
+      break;
+    }
+    cut = i;
+  }
+  return { level, text: line.slice(textStart, cut) };
+}
+
 function splitRow(line: string): string[] {
   return line
     .trim()
@@ -324,9 +435,9 @@ export function parse(text: string): Block[] {
       continue;
     }
 
-    const heading = HEADING_RE.exec(line);
+    const heading = atxHeading(line);
     if (heading) {
-      blocks.push({ type: 'heading', level: heading[1]!.length, children: parseInline(heading[2] ?? '') });
+      blocks.push({ type: 'heading', level: heading.level, children: parseInline(heading.text) });
       index += 1;
       continue;
     }
@@ -399,7 +510,7 @@ export function parse(text: string): Block[] {
       !MATH_SINGLE_RE.test(lines[index]!) &&
       !MATH_BLOCK_FENCE.test(lines[index]!) &&
       !HR_RE.test(lines[index]!) &&
-      !HEADING_RE.test(lines[index]!) &&
+      !atxHeading(lines[index]!) &&
       !QUOTE_RE.test(lines[index]!) &&
       !ITEM_RE.test(lines[index]!)
     ) {

@@ -148,6 +148,27 @@ describe('markdown renderer', () => {
       expect(mathBlocks[0]?.type).toBe('math');
       expect(Date.now() - start).toBeLessThan(500);
     });
+
+    it('does not hang on a heading whose text has a long run of spaces inside it', () => {
+      const start = Date.now();
+      const blocks = parse('# x' + ' '.repeat(50000) + 'y');
+      expect(blocks[0]?.type).toBe('heading');
+      expect(Date.now() - start).toBeLessThan(500);
+    });
+
+    it('does not hang on a heading with a long run of spaces after its hash', () => {
+      const start = Date.now();
+      const blocks = parse('# ' + ' '.repeat(50000) + 'x');
+      expect(blocks).toEqual([{ type: 'heading', level: 1, children: [{ type: 'text', value: 'x' }] }]);
+      expect(Date.now() - start).toBeLessThan(500);
+    });
+
+    it('does not hang on a long run of backticks that never closes', () => {
+      const start = Date.now();
+      const blocks = parse('x ' + '`'.repeat(20000) + 'text');
+      expect(blocks.length).toBe(1);
+      expect(Date.now() - start).toBeLessThan(500);
+    });
   });
 
   describe('code blocks', () => {
@@ -226,6 +247,31 @@ describe('markdown renderer', () => {
       renderInto(host, '```\nsecond\n```');
       expect(host.querySelectorAll('button.ai-code-btn').length).toBe(2);
       expect(host.querySelector('pre > code')?.textContent).toBe('second');
+    });
+  });
+
+  describe('ATX headings and inline code edges', () => {
+    const text = (value: string) => ({ type: 'text', value });
+
+    it('drops closing hashes and the spaces around them, and keeps hashes inside the text', () => {
+      expect(parse('## Title ##')).toEqual([{ type: 'heading', level: 2, children: [text('Title')] }]);
+      expect(parse('# a # b #')).toEqual([{ type: 'heading', level: 1, children: [text('a # b')] }]);
+      expect(parse('# C#')).toEqual([{ type: 'heading', level: 1, children: [text('C')] }]);
+    });
+
+    it('takes one to six hashes, and needs a space or a tab after them', () => {
+      expect(parse('######## eight')[0]?.type).toBe('paragraph');
+      expect(parse('######')[0]?.type).toBe('paragraph');
+      expect(parse('#\tcolumn')).toEqual([{ type: 'heading', level: 1, children: [text('column')] }]);
+      expect(parse('   ### three spaces')[0]?.type).toBe('heading');
+      expect(parse('    # four spaces')[0]?.type).toBe('paragraph');
+    });
+
+    it('closes a code span at the first run of the same length, backing off to a shorter opener when needed', () => {
+      expect(parseInline('`` ` ``')).toEqual([{ type: 'codespan', value: '`' }]);
+      expect(parseInline('``a`b``')).toEqual([{ type: 'codespan', value: 'a`b' }]);
+      expect(parseInline('``a`b')).toEqual([{ type: 'codespan', value: '`a' }, text('b')]);
+      expect(parseInline('a `b')).toEqual([text('a `b')]);
     });
   });
 });
