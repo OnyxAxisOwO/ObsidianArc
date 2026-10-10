@@ -410,8 +410,9 @@ func (h *Handlers) pendingSignup(w http.ResponseWriter, r *http.Request) error {
 		name = provider.Name
 	}
 	// A subject bound to an account field has already answered the question
-	// this form exists to ask, so the field arrives filled and only needs
-	// confirming.
+	// this form exists to ask. The field arrives filled with what the provider
+	// proved, and the account opens with that value whatever is typed into the
+	// field, so the form shows it rather than asking for it.
 	suggested := h.service.SuggestedFields(held.Provider, held.Subject)
 	needsPassword := h.service.settings.Bool(settings.OAuthAllowPassword)
 	passwordRequired := h.service.settings.Bool(settings.OAuthRequirePassword)
