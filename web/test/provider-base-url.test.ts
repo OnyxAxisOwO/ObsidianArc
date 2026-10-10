@@ -16,7 +16,7 @@ const provider: Provider = {
 
 // The server's own sentence for this refusal. It is English on every instance,
 // so the form must not show it to someone who chose another language.
-const SERVER_MESSAGE = "Only a super administrator can change a provider's base URL.";
+const SERVER_MESSAGE = "Only a super administrator can set or change a provider's base URL.";
 
 let app: App | undefined;
 let host: HTMLElement;

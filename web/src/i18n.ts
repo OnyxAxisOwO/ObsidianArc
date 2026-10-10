@@ -730,7 +730,7 @@ const en = {
   apiKeyHint: 'Stored encrypted. It is never sent back to a browser.',
   apiKeyKeepHint: 'Currently {hint} — leave empty to keep it',
   providerKeyNeeded: 'A new base URL needs the API key entered again — the stored one is only sent where it was sent before.',
-  providerBaseURLSuperAdmin: 'Only a super administrator can change the base URL of a provider.',
+  providerBaseURLSuperAdmin: 'Only a super administrator can set or change the base URL of a provider.',
   secModelBasics: 'Basics',
   secModelShown: 'Visibility',
   secProviderConnection: 'Connection',

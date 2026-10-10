@@ -260,7 +260,7 @@ func newFixture(t *testing.T) *fixture {
 		BaseURL: upstream.server.URL + "/v1",
 		APIKey:  "sk-test",
 		Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("create provider (base %s): %v", upstream.server.URL, err)
 	}

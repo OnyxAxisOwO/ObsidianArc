@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -316,11 +318,27 @@ func providerRowOf(t *testing.T, in *instance, as *session, providerID string) p
 	return providerRow{}
 }
 
+// providerBaseURLs lists the address of every provider the administrator can
+// see, which is how a test shows that a refused create stored nothing.
+func providerBaseURLs(t *testing.T, in *instance, as *session) []string {
+	t.Helper()
+	listing := decode[struct {
+		Providers []providerRow `json:"providers"`
+	}](t, in.do(http.MethodGet, "/api/admin/providers", nil, as))
+	addresses := make([]string, 0, len(listing.Providers))
+	for _, row := range listing.Providers {
+		addresses = append(addresses, row.BaseURL)
+	}
+	return addresses
+}
+
 // A provider's base URL is where every chat on it is sent, prompts and
-// attachments included, so the address is the super administrator's to move,
-// as the public URL is. The providers grant still creates providers and edits
-// their other fields, and a key the delegate types for a move is refused with
-// the address: nothing of the move is stored.
+// attachments included, so the address is the super administrator's to choose,
+// as the public URL is. Moving a provider and creating one at a new address are
+// the same decision. The providers grant still edits a provider's other fields,
+// and duplicates one at the address it already has, which copies the key
+// without showing it. A key the delegate types for a move is refused with the
+// address, and nothing of the move or the create is stored.
 func TestOnlyASuperAdministratorMovesAProvidersBaseURL(t *testing.T) {
 	in := newInstance(t)
 	founder := in.register("founder", "a-good-password")
@@ -354,8 +372,21 @@ func TestOnlyASuperAdministratorMovesAProvidersBaseURL(t *testing.T) {
 	}
 	if response := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
 		"name": "Second", "kind": "openai", "base_url": "https://second.example.com/v1", "api_key": "sk-second-key-value",
+	}, operator); response.Code != http.StatusForbidden || errCode(t, response) != "super_admin_required" {
+		t.Errorf("a providers-grant holder creating a provider at a new address: %d %s", response.Code, response.Body.String())
+	}
+	if addresses := providerBaseURLs(t, in, founder); slices.Contains(addresses, "https://second.example.com/v1") {
+		t.Errorf("the refused create stored a provider: %v", addresses)
+	}
+	if response := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "Copy", "kind": "openai", "base_url": "https://collector.example.net/v1", "copy_key_from": providerID,
+	}, operator); response.Code != http.StatusForbidden || errCode(t, response) != "super_admin_required" {
+		t.Errorf("a providers-grant holder duplicating a provider to a new address: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "Copy", "kind": "openai", "base_url": "https://api.example.com/v1", "copy_key_from": providerID,
 	}, operator); response.Code != http.StatusCreated {
-		t.Errorf("a providers-grant holder creating a provider: %d %s", response.Code, response.Body.String())
+		t.Errorf("a providers-grant holder duplicating a provider at its own address: %d %s", response.Code, response.Body.String())
 	}
 
 	if response := in.do(http.MethodPatch, providerPath, map[string]any{
@@ -365,6 +396,50 @@ func TestOnlyASuperAdministratorMovesAProvidersBaseURL(t *testing.T) {
 	}
 	if moved := providerRowOf(t, in, founder, providerID); moved.BaseURL != "https://collector.example.net/v1" {
 		t.Errorf("base_url = %q after the super administrator's move", moved.BaseURL)
+	}
+}
+
+// A provider's address decides where the key and the prompts go. A delegate
+// who could choose one could point it at a server on this machine, and the
+// detect call or any chat routed through the provider would carry the key
+// there. Both grants that reach the detect route are held to the refusal, and
+// the stand-in must never be contacted.
+func TestAProvidersGrantCannotPointANewProviderAtAStandIn(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	var contacted atomic.Int32
+	standIn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		contacted.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"stand-in-model"}]}`))
+	}))
+	t.Cleanup(standIn.Close)
+	address := standIn.URL + "/v1"
+
+	for _, delegated := range []struct {
+		username string
+		grants   []string
+	}{
+		{"providers-only", []string{"providers"}},
+		{"providers-models", []string{"providers", "models"}},
+	} {
+		operator := in.register(delegated.username, "a-good-password")
+		delegate(t, in, founder, operator, delegated.grants...)
+
+		response := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+			"name": "Stand-in " + delegated.username, "kind": "openai", "base_url": address, "api_key": "sk-operator-own-key",
+		}, operator)
+		if response.Code != http.StatusForbidden || errCode(t, response) != "super_admin_required" {
+			t.Errorf("%v created a provider at a stand-in: %d %s", delegated.grants, response.Code, response.Body.String())
+		}
+	}
+
+	if slices.Contains(providerBaseURLs(t, in, founder), address) {
+		t.Error("a refused create stored a provider pointing at the stand-in")
+	}
+	if n := contacted.Load(); n != 0 {
+		t.Errorf("the stand-in was contacted %d time(s)", n)
 	}
 }
 

@@ -53,12 +53,12 @@ func TestPlainHTTPNeedsThatProvidersOptIn(t *testing.T) {
 		APIKey:  "sk-test-key-1234",
 		Enabled: true,
 	}
-	if _, err := store.Create(ctx, in); err == nil {
+	if _, err := store.Create(ctx, in, true); err == nil {
 		t.Fatal("Create accepted plain http to a public host with no opt-in")
 	}
 
 	in.AllowInsecure = true
-	record, err := store.Create(ctx, in)
+	record, err := store.Create(ctx, in, true)
 	if err != nil {
 		t.Fatalf("create with the opt-in: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestPlainHTTPNeedsThatProvidersOptIn(t *testing.T) {
 		BaseURL: insecureURL,
 		APIKey:  "sk-test-key-5678",
 		Enabled: true,
-	})
+	}, true)
 	if err == nil {
 		t.Error("a second provider inherited the first one's opt-in")
 	}
@@ -116,7 +116,7 @@ func TestACopyCarriesTheKeyWithoutEverUnsealingIt(t *testing.T) {
 		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value",
 		Headers: map[string]string{"X-Title": "Arc"},
 		Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestACopyCarriesTheKeyWithoutEverUnsealingIt(t *testing.T) {
 		Name: "Primary 2", Kind: source.Kind,
 		BaseURL: "https://api.example.com/v1", CopyKeyFrom: source.ID,
 		Headers: map[string]string{"X-Title": "Arc backup"}, Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("duplicate: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestCopyingFromAProviderThatIsGoneIsRefused(t *testing.T) {
 		Name: "Orphan", Kind: adapter.KindOpenAI,
 		BaseURL: "https://api.example.com/v1", CopyKeyFrom: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
 		Enabled: true,
-	})
+	}, true)
 	if err == nil {
 		t.Fatal("a copy of nothing was created")
 	}
@@ -188,7 +188,7 @@ func TestAProviderStillNeedsAKeyFromSomewhere(t *testing.T) {
 	_, err := store.Create(context.Background(), CreateInput{
 		Name: "Keyless", Kind: adapter.KindOpenAI,
 		BaseURL: "https://api.example.com/v1", Enabled: true,
-	})
+	}, true)
 	if !errors.Is(err, ErrKeyRequired) {
 		t.Errorf("gave %v, want ErrKeyRequired", err)
 	}
@@ -205,7 +205,7 @@ func TestTheKeyOnlyGoesSomewhereNewWhenTypedAgain(t *testing.T) {
 	source, err := store.Create(ctx, CreateInput{
 		Name: "Primary", Kind: adapter.KindOpenAI,
 		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value", Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestTheKeyOnlyGoesSomewhereNewWhenTypedAgain(t *testing.T) {
 	}
 	if _, err := store.Create(ctx, CreateInput{
 		Name: "Copy", Kind: adapter.KindOpenAI, BaseURL: moved, CopyKeyFrom: source.ID, Enabled: true,
-	}); !errors.Is(err, ErrKeyNeededForMove) {
+	}, true); !errors.Is(err, ErrKeyNeededForMove) {
 		t.Errorf("copying the key to a new address = %v, want ErrKeyNeededForMove", err)
 	}
 	if resolved, _ := store.Resolve(ctx, source.ID); resolved.BaseURL != source.BaseURL {
@@ -248,7 +248,7 @@ func TestOnlyASuperAdministratorMovesTheBaseURL(t *testing.T) {
 	source, err := store.Create(ctx, CreateInput{
 		Name: "Primary", Kind: adapter.KindOpenAI,
 		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value", Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,5 +281,57 @@ func TestOnlyASuperAdministratorMovesTheBaseURL(t *testing.T) {
 	}
 	if current, err := store.ByID(ctx, source.ID); err != nil || current.BaseURL != moved {
 		t.Errorf("after the super administrator's move the address is %q, %v", current.BaseURL, err)
+	}
+}
+
+// Creating a provider chooses its address, so a delegate's create is refused
+// the way a delegate's move is. The one exception is a duplicate at the address
+// the source already has: its key is copied inside the database and goes
+// nowhere new. A typed key is refused at every address, including one a
+// provider already has, because typing a key is choosing where it is sent.
+func TestADelegateCanOnlyDuplicateAProviderAtItsOwnAddress(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	source, err := store.Create(ctx, CreateInput{
+		Name: "Primary", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value", Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, base := range []string{"https://collector.example.net/v1", "https://api.example.com/v1"} {
+		if _, err := store.Create(ctx, CreateInput{
+			Name: "Typed", Kind: adapter.KindOpenAI,
+			BaseURL: base, APIKey: "sk-typed-by-a-delegate", Enabled: true,
+		}, false); !errors.Is(err, ErrBaseURLNeedsSuperAdmin) {
+			t.Errorf("a delegate typing a key for %s = %v, want ErrBaseURLNeedsSuperAdmin", base, err)
+		}
+	}
+	if _, err := store.Create(ctx, CreateInput{
+		Name: "Copy", Kind: adapter.KindOpenAI, BaseURL: "https://collector.example.net/v1",
+		CopyKeyFrom: source.ID, Enabled: true,
+	}, false); !errors.Is(err, ErrBaseURLNeedsSuperAdmin) {
+		t.Errorf("a delegate copying the key to a new address = %v, want ErrBaseURLNeedsSuperAdmin", err)
+	}
+
+	copied, err := store.Create(ctx, CreateInput{
+		Name: "Primary 2", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", CopyKeyFrom: source.ID, Enabled: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("a delegate duplicating at the same address: %v", err)
+	}
+	if resolved, err := store.Resolve(ctx, copied.ID); err != nil || resolved.APIKey != "sk-the-real-secret-value" {
+		t.Errorf("the duplicate's key opened as %q, %v", resolved.APIKey, err)
+	}
+
+	listed, err := store.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Errorf("the refused creates left %d providers, want the source and its copy", len(listed))
 	}
 }

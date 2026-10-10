@@ -43,7 +43,7 @@ func checkerFixture(t *testing.T) (*Checker, *model.Store, model.Model) {
 	upstream, err := providers.Create(ctx, provider.CreateInput{
 		Name: "Upstream", Kind: adapter.KindOpenAI,
 		BaseURL: "https://api.example.com/v1", APIKey: "sk-test-0123", Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
