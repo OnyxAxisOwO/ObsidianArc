@@ -9,6 +9,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
@@ -100,6 +101,82 @@ func TestOnlyTheSystemsOwnDecisionIsUndone(t *testing.T) {
 	}
 	if back.AutoDisabled {
 		t.Error("the flag survived the model being enabled, so the next manual disable would be undone too")
+	}
+}
+
+// probeAt records one probe at a moment the test chooses. Store.Record stamps
+// the time it runs, and two results written in the same millisecond have no
+// order between them, which is what decides which one is the newest.
+func probeAt(t *testing.T, checker *Checker, modelID string, at int64, ok bool) {
+	t.Helper()
+	code := "timeout"
+	if ok {
+		code = ""
+	}
+	if _, err := checker.Store.db.Exec(context.Background(),
+		`INSERT INTO model_probes (id, model_id, at, ok, code, message, latency_ms)
+		 VALUES (?, ?, ?, ?, ?, '', 0)`,
+		id.New(), modelID, at, ok, code); err != nil {
+		t.Fatalf("record probe: %v", err)
+	}
+}
+
+// The checker switches a model off on its own and switches it back on when it
+// answers. An operator who takes the model in hand in between has made a
+// decision, and the next sweep has to leave it the way the operator left it.
+func TestAnOperatorsDecisionSurvivesTheNextSweep(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	ctx := context.Background()
+	policy := Policy{DisableAfter: 2, Window: time.Hour}
+	now := time.Now().UnixMilli()
+
+	probeAt(t, checker, record.ID, now-120_000, false)
+	probeAt(t, checker, record.ID, now-60_000, false)
+	checker.Run(ctx, policy)
+	if off := reload(t, models, record.ID); off.Enabled || !off.AutoDisabled {
+		t.Fatalf("two failures in a row did not switch the model off: %+v", off)
+	}
+
+	// Switched on, then off again: two decisions, neither of them the checker's.
+	on, down := true, false
+	if _, err := models.Update(ctx, record.ID, model.Update{Enabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.Update(ctx, record.ID, model.Update{Enabled: &down}); err != nil {
+		t.Fatal(err)
+	}
+
+	// It answers again, and the sweep looks at it.
+	probeAt(t, checker, record.ID, time.Now().UnixMilli(), true)
+	checker.Run(ctx, policy)
+	if after := reload(t, models, record.ID); after.Enabled {
+		t.Error("the sweep switched on a model an operator had switched off")
+	}
+}
+
+// The editor sends every field on every save, the enabled one among them. A
+// save that leaves the state alone is not a decision about it, so the checker's
+// claim has to survive it: a model the system switched off still comes back
+// when it answers.
+func TestAnEditThatKeepsTheStateLeavesAutoRecovery(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	ctx := context.Background()
+	policy := Policy{DisableAfter: 2, Window: time.Hour}
+	now := time.Now().UnixMilli()
+
+	probeAt(t, checker, record.ID, now-120_000, false)
+	probeAt(t, checker, record.ID, now-60_000, false)
+	checker.Run(ctx, policy)
+
+	name, down := "One, corrected", false
+	if _, err := models.Update(ctx, record.ID, model.Update{DisplayName: &name, Enabled: &down}); err != nil {
+		t.Fatal(err)
+	}
+
+	probeAt(t, checker, record.ID, time.Now().UnixMilli(), true)
+	checker.Run(ctx, policy)
+	if back := reload(t, models, record.ID); !back.Enabled {
+		t.Error("a save that left the state alone cost the model its automatic return")
 	}
 }
 

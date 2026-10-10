@@ -455,6 +455,15 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 		if !providerEnabled {
 			next.Enabled = false
 		}
+		// An operator changing the state is a decision about the model, and it
+		// ends the checker's claim on it: left standing, the next sweep would
+		// switch the model back on and undo the decision. A save that leaves the
+		// state as it was keeps the claim, because the editor sends every field
+		// on every save. This is compared after the provider check, so an enable
+		// the provider refused changed nothing and keeps the claim.
+		if in.Enabled != nil && next.Enabled != current.Enabled && in.AutoDisabled == nil {
+			next.AutoDisabled = false
+		}
 		next.UpdatedAt = time.Now().UnixMilli()
 
 		_, err := tx.Exec(ctx, `UPDATE models SET
