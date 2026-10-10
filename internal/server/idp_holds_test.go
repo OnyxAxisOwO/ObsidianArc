@@ -232,17 +232,9 @@ func TestTheOIDCBindingHoldLiftsOnceTheAccountConnects(t *testing.T) {
 		t.Fatalf("the member is not held: %d %s", held.Code, held.Body.String())
 	}
 
-	start := in.do(http.MethodGet, "/api/auth/oauth/start/oidc?link=1", nil, member)
-	if start.Code != http.StatusFound {
-		t.Fatalf("start oidc link: %d %s", start.Code, start.Body.String())
-	}
-	stateCookie := start.Result().Cookies()[0]
-	target, err := url.Parse(start.Header().Get("Location"))
-	if err != nil {
-		t.Fatalf("parse authorise url: %v", err)
-	}
+	stateCookie, state := in.startConnect("oidc", member, "another-password", "")
 	callback := in.doWithExtraCookies(http.MethodGet,
-		"/api/auth/oauth/callback/oidc?code=c&state="+target.Query().Get("state"), member, stateCookie)
+		"/api/auth/oauth/callback/oidc?code=c&state="+state, member, stateCookie)
 	if callback.Code != http.StatusFound || !strings.HasPrefix(callback.Header().Get("Location"), "/settings?oauth=connected") {
 		t.Fatalf("finish the link: %d %s", callback.Code, callback.Header().Get("Location"))
 	}
