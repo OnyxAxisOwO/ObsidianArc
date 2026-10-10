@@ -1275,6 +1275,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			Reauthorize: func(ctx context.Context, userID string) (user.User, error) {
 				return users.ByID(ctx, nil, userID)
 			},
+			// A password change ends the sessions a web sign-in holds, and a console
+			// connection has none of those, so it keeps the fingerprint it signed in
+			// with and ends at its next command once the password has moved on.
+			Credential:  authService.CredentialFingerprint,
 			IdleTimeout: cfg.Console.SSHIdle,
 			MaxSessions: cfg.Console.SSHMaxSessions,
 		})

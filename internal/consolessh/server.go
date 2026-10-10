@@ -69,6 +69,13 @@ type Config struct {
 	// Called before every command. An error ends the session.
 	Reauthorize func(ctx context.Context, userID string) (user.User, error)
 
+	// Credential fingerprints the account's password, and must change whenever
+	// the password does. A connection keeps the value it was opened with, and
+	// its next command ends once the account's value differs. A password change
+	// ends the sessions a web sign-in holds, but a console connection has no
+	// cookie and no session row for that to reach. Nil checks nothing.
+	Credential func(ctx context.Context, userID string) (string, error)
+
 	// SecondFactor checks the code from an authenticator app, for an account
 	// that has two-step sign-in switched on. The password alone opens the
 	// web sign-in only halfway for such an account, and this door must not
@@ -381,6 +388,14 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 	if !s.permitted(context.Background(), account) {
 		return nil, errAuthFailed
 	}
+	// Read once the password has been checked, so the connection keeps the
+	// credential that let it in. A change landing between the two calls is not
+	// seen, and that window is as long as one call; a failed read refuses, as a
+	// failed permission check does.
+	credential, err := s.credentialOf(context.Background(), account.ID)
+	if err != nil {
+		return nil, errAuthFailed
+	}
 
 	if account.TwoFactorEnabled() {
 		if s.cfg.SecondFactor == nil {
@@ -399,19 +414,38 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 				if err := s.cfg.SecondFactor(context.Background(), account, answers[0], ip); err != nil {
 					return nil, errAuthFailed
 				}
-				return actorPermissions(account)
+				return actorPermissions(account, credential)
 			},
 		}}
 	}
-	return actorPermissions(account)
+	return actorPermissions(account, credential)
 }
 
-func actorPermissions(account user.User) (*ssh.Permissions, error) {
+// credentialOf is the value a connection is opened with and checked against.
+// Empty when the instance checks nothing.
+func (s *Server) credentialOf(ctx context.Context, userID string) (string, error) {
+	if s.cfg.Credential == nil {
+		return "", nil
+	}
+	return s.cfg.Credential(ctx, userID)
+}
+
+func actorPermissions(account user.User, credential string) (*ssh.Permissions, error) {
 	encoded, err := json.Marshal(account)
 	if err != nil {
 		return nil, errAuthFailed
 	}
-	return &ssh.Permissions{Extensions: map[string]string{"actor": string(encoded)}}, nil
+	return &ssh.Permissions{Extensions: map[string]string{
+		"actor":      string(encoded),
+		"credential": credential,
+	}}, nil
+}
+
+func credentialFromPermissions(perm *ssh.Permissions) string {
+	if perm == nil {
+		return ""
+	}
+	return perm.Extensions["credential"]
 }
 
 func actorFromPermissions(perm *ssh.Permissions) (user.User, bool) {
@@ -468,6 +502,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	if !ok {
 		return
 	}
+	credential := credentialFromPermissions(sconn.Permissions)
 	base := context.Background()
 	if s.cfg.ConnectionContext != nil {
 		base = s.cfg.ConnectionContext(base)
@@ -499,7 +534,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		sess := newSSHSession(s, sconn, channel, actor, ip)
+		sess := newSSHSession(s, sconn, channel, actor, ip, credential)
 		sess.base = base
 		s.addSession(sess)
 		s.wg.Add(1)
@@ -652,6 +687,10 @@ type sshSession struct {
 	channel ssh.Channel
 	actor   user.User
 	ip      string
+	// The credential the connection was opened with. Set once at the handshake
+	// and never refreshed: reauthorize compares the account's current value
+	// against it, so refreshing it would forgive a change.
+	credential string
 	// What every command on this connection runs under: shared by all the
 	// connection's channels, gone when it hangs up.
 	base context.Context
@@ -665,16 +704,17 @@ type sshSession struct {
 	closeOnce sync.Once
 }
 
-func newSSHSession(server *Server, conn ssh.Conn, channel ssh.Channel, actor user.User, ip string) *sshSession {
+func newSSHSession(server *Server, conn ssh.Conn, channel ssh.Channel, actor user.User, ip, credential string) *sshSession {
 	return &sshSession{
-		server:  server,
-		conn:    conn,
-		channel: channel,
-		actor:   actor,
-		ip:      ip,
-		base:    context.Background(),
-		width:   100, // console.Session.Width: 0 means unknown, assume 100 — pick it up front rather than repeat the fallback at every render.
-		lang:    "en",
+		server:     server,
+		conn:       conn,
+		channel:    channel,
+		actor:      actor,
+		ip:         ip,
+		credential: credential,
+		base:       context.Background(),
+		width:      100, // console.Session.Width: 0 means unknown, assume 100 — pick it up front rather than repeat the fallback at every render.
+		lang:       "en",
 	}
 }
 
@@ -709,6 +749,11 @@ func (sess *sshSession) closeChannel() {
 // because the console has nothing useful to say about which.
 var errAccountNoLongerAdmin = errors.New("consolessh: the account no longer has console access")
 
+// errCredentialChanged ends a connection that was opened with a password the
+// account no longer has. Its own error, so the person typing sees the reason:
+// signing in again is what they can do about it.
+var errCredentialChanged = errors.New("consolessh: the account's password changed")
+
 func (s *Server) permitted(ctx context.Context, account user.User) bool {
 	if s.cfg.Permitted == nil {
 		return account.IsAdmin()
@@ -717,6 +762,18 @@ func (s *Server) permitted(ctx context.Context, account user.User) bool {
 }
 
 const revokedMessage = "\r\nThis account no longer has console access. Closing.\r\n"
+
+// credentialChangedMessage names the one reason a person can act on: the
+// password they signed in with is no longer the account's.
+const credentialChangedMessage = "\r\nThe password for this account changed. Sign in again.\r\n"
+
+// endNotice is what a connection says when its next command is refused.
+func endNotice(err error) string {
+	if errors.Is(err, errCredentialChanged) {
+		return credentialChangedMessage
+	}
+	return revokedMessage
+}
 
 func (sess *sshSession) close() {
 	sess.closeOnce.Do(func() {
@@ -952,6 +1009,15 @@ func (sess *sshSession) reauthorize(ctx context.Context) (user.User, error) {
 	if !account.IsActive() || !sess.server.permitted(ctx, account) {
 		return user.User{}, errAccountNoLongerAdmin
 	}
+	if sess.server.cfg.Credential != nil {
+		current, err := sess.server.cfg.Credential(ctx, account.ID)
+		if err != nil {
+			return user.User{}, err
+		}
+		if current != sess.credential {
+			return user.User{}, errCredentialChanged
+		}
+	}
 
 	sess.mu.Lock()
 	sess.actor = account
@@ -988,7 +1054,7 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 
 	consoleSession, err := sess.currentSession(ctx, "ssh")
 	if err != nil {
-		_, _ = sess.channel.Write([]byte(revokedMessage))
+		_, _ = sess.channel.Write([]byte(endNotice(err)))
 		_, _ = sess.channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{1}))
 		return
 	}
@@ -1116,7 +1182,7 @@ func (sess *sshSession) runInteractive() {
 			go func(line string) {
 				current, authErr := sess.currentSession(runCtx, "ssh")
 				if authErr != nil {
-					_, _ = sess.channel.Write([]byte(revokedMessage))
+					_, _ = sess.channel.Write([]byte(endNotice(authErr)))
 					results <- execEvent{result: console.Result{Exit: true}}
 					return
 				}

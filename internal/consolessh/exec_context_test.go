@@ -273,3 +273,69 @@ func TestSSHKeepsWorkingWhileTheAccountIsStillAnAdministrator(t *testing.T) {
 		t.Error("the command never reached the admin API")
 	}
 }
+
+// A console connection outlives the password it was opened with. A password
+// change ends the sessions a web sign-in holds, but a console connection has no
+// cookie and no session row for that to reach, so the connection has to notice
+// the change itself, the way it notices a revoked grant.
+func TestSSHEndsItsNextCommandWhenThePasswordChanges(t *testing.T) {
+	var dispatches atomic.Int32
+	engine := console.New(console.Options{
+		Dispatch: func(context.Context, user.User, string, string, any) (console.Response, error) {
+			dispatches.Add(1)
+			return console.Response{Status: 200, Body: []byte(`{"users":[],"total":0}`)}, nil
+		},
+		Version:  "test",
+		SiteName: func() string { return "Test Arc" },
+	})
+	var mu sync.Mutex
+	credential := "fingerprint-before"
+	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
+	srv := startTestServer(t, Config{
+		Console:      engine,
+		Authenticate: fakeAuthenticate(accounts),
+		Reauthorize: func(context.Context, string) (user.User, error) {
+			return adminUser("admin"), nil
+		},
+		Credential: func(context.Context, string) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return credential, nil
+		},
+	})
+	client := dialInsecure(t, srv, "admin", "s3cret-pass")
+
+	run := func() (string, error) {
+		session, err := client.NewSession()
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer session.Close()
+		output, err := session.CombinedOutput("user list")
+		return string(output), err
+	}
+
+	if output, err := run(); err != nil {
+		if _, ok := err.(*ssh.ExitError); !ok {
+			t.Fatalf("the command before the change: %v; output:\n%s", err, output)
+		}
+	}
+	if got := dispatches.Load(); got != 1 {
+		t.Fatalf("the command before the change reached the admin API %d times, want 1", got)
+	}
+
+	mu.Lock()
+	credential = "fingerprint-after"
+	mu.Unlock()
+
+	output, err := run()
+	if _, ok := err.(*ssh.ExitError); !ok {
+		t.Fatalf("a command after the password changed ran: err = %v; output:\n%s", err, output)
+	}
+	if got := dispatches.Load(); got != 1 {
+		t.Errorf("the command after the change reached the admin API (%d dispatches in all)", got)
+	}
+	if !strings.Contains(output, "password for this account changed") {
+		t.Errorf("the session was not told why it ended:\n%q", output)
+	}
+}
