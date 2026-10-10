@@ -956,7 +956,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 	if err != nil {
 		if errors.Is(err, user.ErrNotFound) {
 			s.hasher.DummyVerify(ctx, in.Password)
-			attempt.finish(attemptFailed)
+			attempt.finish(attemptFailedUnknown)
 			return user.User{}, "", ErrInvalidCredentials
 		}
 		return user.User{}, "", err
@@ -1026,7 +1026,7 @@ func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip
 	if err != nil {
 		if errors.Is(err, user.ErrNotFound) {
 			s.hasher.DummyVerify(ctx, password)
-			attempt.finish(attemptFailed)
+			attempt.finish(attemptFailedUnknown)
 			return user.User{}, ErrInvalidCredentials
 		}
 		return user.User{}, err
