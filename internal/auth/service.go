@@ -1369,9 +1369,11 @@ func (s *Service) Authenticate(ctx context.Context, token string) (user.User, Se
 }
 
 // Resolve answers what Authenticate answers, which account this cookie is and
-// whether it may still act, and writes nothing. A background stream asks it
-// before each of its runs: the person behind a stream is not necessarily there,
-// so the stream must not renew the sign-in or stamp the account as active.
+// whether it may still act. A background stream asks it before each of its
+// runs: the person behind a stream is not necessarily there, so the stream must
+// not renew the sign-in or stamp the account as active. The one write it can
+// make is the removal of a session that has already expired, which
+// GetWithUser performs; that is cleanup and changes nothing a sign-in depends on.
 func (s *Service) Resolve(ctx context.Context, token string) (user.User, error) {
 	session, account, err := s.sessions.GetWithUser(ctx, token)
 	if err != nil {

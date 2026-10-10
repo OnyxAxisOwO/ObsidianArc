@@ -25,15 +25,25 @@ import (
 // cannot spray many accounts, and the account being targeted, so a botnet
 // cannot spread its guesses across addresses.
 //
-// The map is bounded, and the bound is never paid for by a real account. A
-// bucket for an identifier that named an account (bucket.matched) protects that
-// account: it is never reclaimed, and it is not counted against the ceiling, so
-// how many of them there are is bounded by the accounts the instance holds.
-// Everything else — names that matched nothing, and addresses — is reclaimable
-// unless it is in flight or still serving a block, and once those pass the
-// ceiling the least recently used go. An attempt is not refused for want of
-// room. Refusing it would turn a flood of invented names into a lockout for
-// every real account whose first attempt came after the flood.
+// The ceiling bounds the reclaimable buckets: every bucket that does not protect
+// an account, which is names that matched nothing and addresses. A bucket for an
+// identifier that named an account (bucket.matched) is protected. It is never
+// reclaimed under pressure and is not counted against the ceiling, so the
+// protected ones are bounded by the accounts the instance holds, and a flood of
+// invented names cannot add to them. A protected bucket still goes once it has
+// been idle for bucketTTL with no attempt or block outstanding, as every bucket
+// does.
+//
+// Past the ceiling, the least recently used reclaimable buckets go, names before
+// addresses. Four kinds are kept even past the ceiling: a protected bucket, one
+// with an attempt in flight, one still serving a block (reclaiming it would hand
+// its address a fresh allowance mid-wait), and the keys of the attempt being
+// admitted. So the map can exceed the ceiling by the in-flight and blocked
+// buckets, which last only while an attempt runs or a block lasts, and by the
+// names that arrive within fullSweepInterval of a walk that freed too little.
+// An attempt is not refused for want of room. Refusing it would turn a flood of
+// invented names into a lockout for every real account whose first attempt came
+// after the flood.
 type Limiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
