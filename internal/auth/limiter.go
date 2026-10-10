@@ -29,10 +29,11 @@ import (
 // bucket for an identifier that named an account (bucket.matched) protects that
 // account: it is never reclaimed, and it is not counted against the ceiling, so
 // how many of them there are is bounded by the accounts the instance holds.
-// Everything else — names that matched nothing, and addresses — is reclaimable,
-// and once those pass the ceiling the least recently used go. An attempt is not
-// refused for want of room. Refusing it would turn a flood of invented names
-// into a lockout for every real account whose first attempt came after the flood.
+// Everything else — names that matched nothing, and addresses — is reclaimable
+// unless it is in flight or still serving a block, and once those pass the
+// ceiling the least recently used go. An attempt is not refused for want of
+// room. Refusing it would turn a flood of invented names into a lockout for
+// every real account whose first attempt came after the flood.
 type Limiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
@@ -236,8 +237,9 @@ func (l *Limiter) Begin(ip, identifier string) (*loginAttempt, error) {
 
 // makeRoomFor reclaims buckets when the reclaimable ones would pass the ceiling
 // with this attempt's new keys added. It never refuses: whatever cannot be
-// reclaimed (buckets in flight, the attempt's own keys, buckets that protect an
-// account) is simply left in place, and the attempt goes ahead.
+// reclaimed (buckets in flight or still serving a block, the attempt's own keys,
+// buckets that protect an account) is simply left in place, and the attempt goes
+// ahead.
 func (l *Limiter) makeRoomFor(attemptKeys []string, now time.Time) {
 	if l.overCeiling(attemptKeys) <= 0 {
 		return
@@ -259,7 +261,7 @@ func (l *Limiter) makeRoomFor(attemptKeys []string, now time.Time) {
 	}
 	// Reclaiming a tenth more than the excess means the next walk is a tenth of
 	// the ceiling's worth of names away, so the walk is paid for in batches.
-	freed := l.evictLocked(attemptKeys, max(excess, l.ceiling/10))
+	freed := l.evictLocked(attemptKeys, now, max(excess, l.ceiling/10))
 	l.fullSweepMadeRoom = freed >= excess
 }
 
@@ -284,8 +286,10 @@ func (l *Limiter) freshKeys(attemptKeys []string) int {
 // many it reclaimed. The least recently used go first, and within that, names
 // that matched nothing go before addresses. A flood of invented names then
 // reclaims names rather than the blocks on the addresses sending it. Buckets
-// in flight and the attempt's own keys are never reclaimed.
-func (l *Limiter) evictLocked(attemptKeys []string, want int) int {
+// in flight, buckets whose block is still running, and the attempt's own keys
+// are never reclaimed. A running block is the slowing itself: reclaiming it
+// would hand that address a fresh allowance in the middle of its wait.
+func (l *Limiter) evictLocked(attemptKeys []string, now time.Time, want int) int {
 	type candidate struct {
 		key         string
 		lastFailure time.Time
@@ -293,7 +297,7 @@ func (l *Limiter) evictLocked(attemptKeys []string, want int) int {
 	}
 	candidates := make([]candidate, 0)
 	for key, entry := range l.buckets {
-		if entry.matched || entry.inFlight > 0 || slices.Contains(attemptKeys, key) {
+		if entry.matched || entry.inFlight > 0 || entry.blockedUntil.After(now) || slices.Contains(attemptKeys, key) {
 			continue
 		}
 		candidates = append(candidates, candidate{

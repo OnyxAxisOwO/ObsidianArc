@@ -369,6 +369,63 @@ func TestAWalkThatDropsAnAttemptsOwnKeyStillCountsIt(t *testing.T) {
 	}
 }
 
+// A block is the slowing itself, and it lives on the bucket. Under pressure the
+// walk must leave a bucket alone while its block is still running: reclaiming it
+// would give that address or name a fresh allowance in the middle of its wait.
+// Each case is the only candidate the walk has, the map is full, and a newcomer
+// needs room, so a walk that ignored the block would take it.
+func TestAWalkNeverReclaimsABucketThatIsStillBlocked(t *testing.T) {
+	cases := map[string]struct {
+		fail       func(t *testing.T, l *Limiter)
+		key        string
+		ip         string
+		identifier string
+	}{
+		"an address": {
+			fail: func(t *testing.T, l *Limiter) {
+				for i := 0; i < addressFreeAttempts+1; i++ {
+					failUnknown(t, l, "203.0.113.9", "")
+				}
+			},
+			key: "ip:203.0.113.9", ip: "203.0.113.9",
+		},
+		"a name that matched nothing": {
+			fail: func(t *testing.T, l *Limiter) {
+				for i := 0; i < freeAttempts+1; i++ {
+					failUnknown(t, l, "", "invented")
+				}
+			},
+			key: "id:invented", identifier: "invented",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			l := NewLimiter()
+			l.ceiling = 1
+			c.fail(t, l)
+			// The last failure set a block of about a second. It is pinned an hour
+			// out, so the test does not depend on how long it takes to run.
+			l.buckets[c.key].blockedUntil = time.Now().Add(time.Hour)
+
+			attempt, err := l.Begin("203.0.113.10", "newcomer")
+			if err != nil {
+				t.Fatalf("a new name was refused: %v", err)
+			}
+			attempt.finish(attemptCancelled)
+			if l.lastFullSweep.IsZero() {
+				t.Fatal("the map was never walked, so this test does not exercise the walk")
+			}
+
+			if _, ok := l.buckets[c.key]; !ok {
+				t.Fatalf("%s was reclaimed while its block was still running", c.key)
+			}
+			if _, err := l.Begin(c.ip, c.identifier); !isLimited(err) {
+				t.Fatalf("the blocked bucket admitted an attempt after the walk: err = %v", err)
+			}
+		})
+	}
+}
+
 // Below the ceiling nothing is reclaimed early: an idle bucket stays until the
 // periodic sweep takes it, as it did before the ceiling existed.
 func TestBelowTheCeilingNothingIsReclaimedEarly(t *testing.T) {
