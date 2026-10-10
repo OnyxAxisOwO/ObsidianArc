@@ -1137,20 +1137,25 @@ func (s *Service) checkPassword(ctx context.Context, userID, hash, candidate str
 	return nil
 }
 
-// ChangePassword rotates a credential and invalidates every other session for
-// the account, keeping only the one making the change.
-func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, newPassword, keepSessionID string) error {
+// ChangePassword rotates a credential and ends every session on the account
+// except the one making the change, which is reissued under a new token in the
+// same transaction. The token it held is the one a thief would have copied, so
+// leaving that row alive would leave the thief signed in.
+//
+// The returned token is the session's new cookie value. It is empty when
+// sessionID is empty, which ends every session and issues nothing.
+func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, newPassword, sessionID string) (string, error) {
 	if err := ValidatePassword(newPassword); err != nil {
-		return err
+		return "", err
 	}
 
 	account, err := s.users.ByID(ctx, nil, userID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	_, hash, err := s.users.CredentialsByLogin(ctx, account.Username)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// An account opened through a provider has no password to confirm, and
@@ -1161,28 +1166,49 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	// switching that provider off would lock its owner out.
 	if hash != "" {
 		if err := s.checkPassword(ctx, userID, hash, currentPassword); err != nil {
-			return err
+			return "", err
 		}
 		if same, _, _ := s.hasher.Verify(ctx, hash, newPassword); same {
-			return ErrPasswordUnchanged
+			return "", ErrPasswordUnchanged
 		}
 	}
 
 	updated, err := s.hasher.Hash(ctx, newPassword)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	return s.db.Tx(ctx, func(tx *database.Tx) error {
+	var token string
+	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		// Two changes from one session can both pass the password check above;
+		// this transaction is what lets only one of them land. The password write
+		// comes first because on Postgres it takes the account's row, so the
+		// second change waits there until the first commits, and then finds its
+		// session already reissued and gone. SQLite runs write transactions one
+		// at a time, which has the same effect.
 		if err := s.users.SetPasswordHash(ctx, tx, userID, updated); err != nil {
 			return err
 		}
+		if sessionID == "" {
+			return s.sessions.DeleteByUser(ctx, tx, userID)
+		}
+		issued, err := s.sessions.Reissue(ctx, tx, userID, sessionID)
+		if err != nil {
+			return err
+		}
+		// The new row is excluded and the old one is not: it is what the new
+		// one was copied from, and its token is the one that must stop working.
 		if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id = ? AND id <> ?`,
-			userID, keepSessionID); err != nil {
+			userID, HashToken(issued)); err != nil {
 			return fmt.Errorf("auth: revoke other sessions: %w", err)
 		}
+		token = issued
 		return nil
 	})
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 // SetPassword is the administrator's reset: no current password, and every

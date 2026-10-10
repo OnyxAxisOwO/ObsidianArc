@@ -146,7 +146,8 @@ func TestConfirmingThePasswordIsThrottled(t *testing.T) {
 			return err
 		},
 		"changing the password": func(t *testing.T, f *fixture, account user.User, password string) error {
-			return f.auth.ChangePassword(context.Background(), account.ID, password, "another-good-password", "")
+			_, err := f.auth.ChangePassword(context.Background(), account.ID, password, "another-good-password", "")
+			return err
 		},
 	}
 	for name, attempt := range cases {
@@ -238,7 +239,7 @@ func TestPasswordGuessesDoNotSpendTheCodeAllowance(t *testing.T) {
 	account, secret, _, used := enrolled(t, f, "arc")
 
 	for i := 0; i < freeAttempts+2; i++ {
-		_ = f.auth.ChangePassword(ctx, account.ID, "guess", "another-good-password", "")
+		_, _ = f.auth.ChangePassword(ctx, account.ID, "guess", "another-good-password", "")
 	}
 	if err := f.auth.VerifyTwoFactorCode(ctx, account, codeAt(t, secret, used+1), "198.51.100.4"); err != nil {
 		t.Fatalf("a right code was refused after password guesses: %v", err)

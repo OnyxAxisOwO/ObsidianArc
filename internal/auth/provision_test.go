@@ -121,7 +121,7 @@ func TestAPasswordlessAccountCanSetItsFirstPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("provision: %v", err)
 	}
-	if err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", ""); err != nil {
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", ""); err != nil {
 		t.Fatalf("set first password: %v", err)
 	}
 	if _, _, err := f.auth.Login(ctx, LoginInput{
@@ -131,7 +131,7 @@ func TestAPasswordlessAccountCanSetItsFirstPassword(t *testing.T) {
 	}
 	// And from then on it is an ordinary password: the current one is
 	// required again.
-	if err := f.auth.ChangePassword(ctx, account.ID, "", "another-password", ""); !errors.Is(err, ErrCurrentPasswordWrong) {
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "another-password", ""); !errors.Is(err, ErrCurrentPasswordWrong) {
 		t.Errorf("second change without the current password = %v, want a refusal", err)
 	}
 }

@@ -817,10 +817,27 @@ func (h *Handlers) changePassword(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 
-	err := h.service.ChangePassword(r.Context(), account.ID, body.CurrentPassword, body.NewPassword, session.ID)
+	// The new token travels back in this browser's cookie, so only a request that
+	// presented this session can be given it. A call the server makes to itself
+	// (the web terminal runs commands in process under the browser's session)
+	// has no cookie to answer with; it ends every session, its own included,
+	// rather than rotating one that nobody holds.
+	sessionID := ""
+	if presented := h.service.TokenFrom(r); presented != "" && HashToken(presented) == session.ID {
+		sessionID = session.ID
+	}
+
+	token, err := h.service.ChangePassword(r.Context(), account.ID, body.CurrentPassword, body.NewPassword, sessionID)
 	switch {
 	case err == nil:
+		if token != "" {
+			h.service.SetCookie(w, token)
+		}
 		return httpx.NoContent(w)
+	case errors.Is(err, ErrSessionNotFound):
+		// The session that asked was ended while the change was being made. The
+		// password is left as it was, and the caller has to sign in again.
+		return httpx.Unauthorized("Sign in to continue.")
 	case errors.Is(err, ErrCurrentPasswordWrong):
 		return httpx.Unauthorized("Current password is incorrect.")
 	case errors.Is(err, ErrPasswordUnchanged):

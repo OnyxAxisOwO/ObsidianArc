@@ -558,7 +558,7 @@ func TestTheLastWayInCannotBeRemoved(t *testing.T) {
 	}
 
 	// A password is a way in too, and setting one frees the connection.
-	if err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", ""); err != nil {
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", ""); err != nil {
 		t.Fatalf("set a password: %v", err)
 	}
 	if err := f.service.Disconnect(ctx, account.ID, "google"); err != nil {
@@ -665,7 +665,7 @@ func TestConnectionsReportsWhetherThereIsAlsoAPassword(t *testing.T) {
 	if len(items) != 1 || hasPassword {
 		t.Fatalf("connections = %+v, password = %v, want one connection and no password", items, hasPassword)
 	}
-	if err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", ""); err != nil {
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", ""); err != nil {
 		t.Fatalf("set a password: %v", err)
 	}
 	if _, hasPassword, err = f.service.Connections(ctx, account.ID); err != nil || !hasPassword {
