@@ -285,7 +285,7 @@ func (s *Service) Exchange(ctx context.Context, issuer string, app App, form url
 	if !s.stillActive(ctx, record.UserID) {
 		return Tokens{}, ErrBadCode
 	}
-	return s.issue(ctx, issuer, app, record.UserID, record.Scopes, record.Nonce)
+	return s.issue(ctx, issuer, app, record.UserID, within(record.Scopes, app.Scopes), record.Nonce)
 }
 
 // stillActive is asked before anything is issued in an account's name. A
@@ -323,7 +323,9 @@ func (s *Service) Refresh(ctx context.Context, issuer string, app App, form url.
 		return Tokens{}, ErrBadToken
 	}
 
-	idToken, err := s.identityToken(ctx, issuer, app, rotated.UserID, rotated.Scopes, "")
+	// What the application may hold now, not what the token was issued with.
+	scopes := within(rotated.Scopes, app.Scopes)
+	idToken, err := s.identityToken(ctx, issuer, app, rotated.UserID, scopes, "")
 	if err != nil {
 		return Tokens{}, err
 	}
@@ -333,7 +335,7 @@ func (s *Service) Refresh(ctx context.Context, issuer string, app App, form url.
 		ExpiresIn:    int64(TokenTTL.Seconds()),
 		RefreshToken: refresh,
 		IDToken:      idToken,
-		Scope:        strings.Join(rotated.Scopes, " "),
+		Scope:        strings.Join(scopes, " "),
 	}, nil
 }
 
@@ -433,8 +435,10 @@ func (s *Service) UserInfo(ctx context.Context, issuer, token string) (map[strin
 		return nil, ErrBadToken
 	}
 
+	// The application's current scopes bound what the token may carry, for the
+	// same reason Refresh gives: see within.
 	claims := Claims{Issuer: issuer, Subject: account.ID}
-	s.fill(ctx, &claims, account, record.Scopes)
+	s.fill(ctx, &claims, account, within(record.Scopes, app.Scopes))
 
 	out := map[string]any{"sub": claims.Subject}
 	if claims.Username != "" {
