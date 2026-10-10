@@ -71,6 +71,15 @@ for v in v0.9.2 v0.9.2-64-g356a68e v0.9.2-64-g356a68e-dirty v1.3.0-rc.1-14-g1a2b
   printf '%s\n' "$v" >"$work/dist/VERSION"
   deploy "" "alpha" || fail "the plain version $v was refused"
 done
+# dist/ARCH is spliced into the same remote command, so it is held the same way.
+arch_proof=$tmp/arch-proof
+good_arch=$(cat "$work/dist/ARCH")
+printf '%s\n' "amd64'; touch '$arch_proof'; echo '" >"$work/dist/ARCH"
+if deploy "" "alpha"; then fail "an ARCH with a quote in it was deployed"; fi
+grep -q "not a platform name" "$tmp/out" || fail "the ARCH refusal does not say why"
+[ -e "$arch_proof" ] && fail "dist/ARCH ran as a command on the server"
+printf '%s\n' "$good_arch" >"$work/dist/ARCH"
+deploy "" "alpha" || fail "the plain ARCH $good_arch was refused"
 echo "deploy.sh version guard: ok"
 
 # The Makefile is the first place a tag name reaches a shell, so it refuses the

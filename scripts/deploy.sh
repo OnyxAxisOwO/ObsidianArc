@@ -41,6 +41,13 @@ if ! version_is_plain "$version"; then
   echo "dist/VERSION is refused: \"$version\" is not a plain version; rebuild with make release" >&2
   exit 1
 fi
+# dist/ARCH reaches the same remote command line as the version, so it is held
+# to a platform name: lower-case letters and digits, as amd64 and arm64 are.
+case "$arch" in
+  ''|*[!a-z0-9]*)
+    echo "dist/ARCH is refused: \"$arch\" is not a platform name; rebuild with make release" >&2
+    exit 1 ;;
+esac
 # What this build carries, and whether the caller has accepted losing some of
 # what the running server has.
 plugins=$(cat dist/PLUGIN_LIST 2>/dev/null || true)
