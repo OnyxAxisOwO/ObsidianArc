@@ -74,7 +74,16 @@ func init() {
 		Destructive: true,
 		Endpoints:   []string{"DELETE /api/profile/sessions/{id}", "POST /api/profile/sessions/revoke-others"},
 		Run: func(_ context.Context, rt *Runtime) error {
-			if rt.Present("others") {
+			// Bool, not Present: "--others false" is given, and must not sign out every other device.
+			if rt.Bool("others") {
+				// The branch below never reads an id, so one given beside --others would be
+				// dropped without a word. The line is refused instead.
+				if rt.NArg() > 0 {
+					if rt.Session.Lang == "zh" {
+						return rt.Errorf("会话 id 与 --others 只能给一个")
+					}
+					return rt.Errorf("give a session id or --others, not both")
+				}
 				if _, _, err := rt.Call(http.MethodPost, "/api/profile/sessions/revoke-others", nil); err != nil {
 					return err
 				}

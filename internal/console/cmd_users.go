@@ -143,6 +143,10 @@ func fieldRows(u map[string]any) [][2]string {
 	return rows
 }
 
+// The numeric helpers below drop strconv's error on purpose. ParseFlags refuses
+// a value that does not parse for every flag whose placeholder names its kind,
+// so only a parsing value reaches them, and a malformed number can never become
+// the 0 that means "never expires", "permanent" or "unlimited".
 func (b bodyBuilder) intv(rt *Runtime, flag, key string) {
 	if rt.Present(flag) {
 		b[key] = rt.Int(flag)
@@ -232,12 +236,12 @@ func resolveUserRef(rt *Runtime, ref string) (string, error) {
 	if id.Valid(ref) {
 		return ref, nil
 	}
-	q := url.Values{"q": {ref}, "limit": {"25"}}
+	q := url.Values{"q": {ref}, "limit": {strconv.Itoa(accountPageSize)}}
 	data, _, err := rt.Call(http.MethodGet, "/api/admin/users?"+q.Encode(), nil)
 	if err != nil {
 		return "", err
 	}
-	return resolveByFields(rt.Session.Lang, "user", "用户", ref, asSlice(asMap(data)["users"]), "username", "username")
+	return resolveAccountPage(rt, ref, data)
 }
 
 // resolveMemberRef is resolveUserRef's counterpart for group-domain
@@ -250,12 +254,57 @@ func resolveMemberRef(rt *Runtime, ref string) (string, error) {
 	if id.Valid(ref) {
 		return ref, nil
 	}
-	q := url.Values{"q": {ref}, "limit": {"25"}}
+	q := url.Values{"q": {ref}, "limit": {strconv.Itoa(accountPageSize)}}
 	data, _, err := rt.Call(http.MethodGet, "/api/admin/member-options?"+q.Encode(), nil)
 	if err != nil {
 		return "", err
 	}
-	return resolveByFields(rt.Session.Lang, "user", "用户", ref, asSlice(asMap(data)["users"]), "username", "username")
+	return resolveAccountPage(rt, ref, data)
+}
+
+// accountPageSize is how many matches a bare account name asks for. It is also
+// the most resolveAccountPage can settle a name from, so the two are named together.
+const accountPageSize = 25
+
+// resolveAccountPage picks the account a bare name means out of one page of an
+// account search. The search matches username, email and nickname, newest
+// first, and reports how many matched in all. When more matched than the page
+// holds, the account meant may be one the page left out, and a partial
+// username on the page does not rule that out. Only an exact username settles
+// the name then. Usernames are unique without regard to case
+// (ux_users_username_lower), so an exact match on the page is the account.
+func resolveAccountPage(rt *Runtime, ref string, data any) (string, error) {
+	page := asSlice(asMap(data)["users"])
+	if pageTruncated(data, len(page)) && !hasExactUsername(page, ref) {
+		if rt.Session.Lang == "zh" {
+			return "", fmt.Errorf("用户 %q 的匹配超过前 %d 个账户，请给出准确的用户名或 id", ref, accountPageSize)
+		}
+		return "", fmt.Errorf("user %q matches more than the first %d accounts: give the exact username or the id", ref, accountPageSize)
+	}
+	return resolveByFields(rt.Session.Lang, "user", "用户", ref, page, "username", "username")
+}
+
+// pageTruncated reports whether the search matched more accounts than the page
+// shows. A server that does not say how many matched is taken to have matched
+// as many as a full page, because that is the only case that could hide one.
+func pageTruncated(data any, shown int) bool {
+	total, ok := asMap(data)["total"].(float64)
+	if !ok {
+		return shown >= accountPageSize
+	}
+	return total > float64(shown)
+}
+
+// hasExactUsername reports whether the page holds an account whose username is
+// ref, ignoring case, the same comparison resolveByFields makes.
+func hasExactUsername(page []any, ref string) bool {
+	lower := strings.ToLower(strings.TrimSpace(ref))
+	for _, raw := range page {
+		if strings.ToLower(asStr(asMap(raw)["username"])) == lower {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveGroupRef resolves ref to a group id. It reads the selector list
@@ -686,7 +735,8 @@ func init() {
 				return err
 			}
 
-			generated := rt.Present("generate")
+			// Bool, not Present: "--generate false" is given, and must not replace the password.
+			generated := rt.Bool("generate")
 			password := rt.String("password")
 			switch {
 			case generated:

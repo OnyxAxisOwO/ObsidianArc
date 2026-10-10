@@ -199,7 +199,7 @@ func init() {
 		},
 		Args: []Arg{{Name: "id|name", Hint: Text{EN: "the bar", ZH: "赠金条"}, Required: true}},
 		Flags: []Flag{
-			{Name: "--amount", Hint: Text{EN: "credits per account", ZH: "每个账户的积分数"}, Value: "N"},
+			{Name: "--amount", Hint: Text{EN: "credits per account", ZH: "每个账户的积分数"}, Value: "F"},
 			{Name: "--all", Hint: Text{EN: "every account", ZH: "所有账户"}},
 			{Name: "--group", Hint: Text{EN: "one group's id", ZH: "某个用户组的 id"}, Value: "ID"},
 			{Name: "--users", Hint: Text{EN: "usernames, comma-separated", ZH: "用户名，逗号分隔"}, Value: "NAMES"},
@@ -222,7 +222,8 @@ func init() {
 			body.str(rt, "group", "group_id")
 			body.intv(rt, "days", "days")
 			body.int64v(rt, "expires-at", "expires_at")
-			if rt.Present("all") {
+			// Bool, not Present: "--all false" is given, and must not grant to every account.
+			if rt.Bool("all") {
 				body["all"] = true
 			}
 			if rt.Present("users") {

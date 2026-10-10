@@ -133,8 +133,15 @@ type Arg struct {
 }
 
 // Flag is one named flag. Value is the placeholder shown in help and the
-// spec ("TEXT", "N", "DURATION"); an empty Value means the flag is boolean —
-// its presence alone is the signal, as with --hidden or --enabled.
+// spec ("TEXT", "N", "DURATION"), and it is also what the value must be:
+// BOOL is true or false, N, D and PORT an integer, MS an integer of epoch
+// milliseconds, F a decimal number and DURATION a Go duration. ParseFlags
+// refuses a value that does not fit before the command's Run is called, so a
+// Run never reads a malformed number as 0, which for some flags means never
+// expire, permanent, or unlimited. Any other placeholder is free text, and the
+// command checks it. An empty Value means the flag is boolean: its presence
+// alone is the signal, as with --hidden or --enabled, and a following true or
+// false is taken as its value.
 //
 // A command must not declare "-h", "--help", "--json", "-y" or "--yes": the
 // engine recognises all five on every command already (see parse.go and
@@ -478,8 +485,10 @@ func (rt *Runtime) StringOr(name, def string) string {
 	return def
 }
 
-// Int parses the flag's value as a base-10 integer; 0 if absent or not a
-// number. Use IntOr for any other default.
+// Int parses the flag's value as a base-10 integer; 0 if absent. A value that
+// is not an integer never gets here: ParseFlags refuses it for any flag
+// declared with a numeric placeholder, so 0 means the flag was not given.
+// Use IntOr for any other default.
 func (rt *Runtime) Int(name string) int {
 	n, err := strconv.Atoi(rt.flags[normalizeFlagName(name)])
 	if err != nil {
@@ -497,27 +506,27 @@ func (rt *Runtime) IntOr(name string, def int) int {
 }
 
 // Bool reports whether a boolean flag is set. A bare "--hidden" is true; an
-// explicit "--hidden=false" is false; an absent flag is false.
+// explicit "--hidden=false" or "--hidden false" is false; an absent flag is
+// false.
 func (rt *Runtime) Bool(name string) bool {
 	raw, ok := rt.flags[normalizeFlagName(name)]
 	if !ok {
 		return false
 	}
-	if raw == "" {
-		return true
-	}
-	b, err := strconv.ParseBool(raw)
+	b, err := parseBoolValue(raw)
 	if err != nil {
-		// A malformed explicit value ("--hidden=maybe") still means the
-		// flag was given, and a command asking a plain yes/no question
-		// should not silently read that as "no".
-		return true
+		// ParseFlags has already refused a value that is not a boolean, so
+		// this is unreachable for a declared flag. Were it reached, false is
+		// the answer that changes nothing; true would switch on whatever the
+		// flag guards.
+		return false
 	}
 	return b
 }
 
-// Duration parses the flag's value with time.ParseDuration; 0 if absent or
-// unparseable. Use DurationOr for any other default.
+// Duration parses the flag's value with time.ParseDuration; 0 if absent. A
+// value that is not a duration is refused by ParseFlags before Run, as Int's
+// is. Use DurationOr for any other default.
 func (rt *Runtime) Duration(name string) time.Duration {
 	d, err := time.ParseDuration(rt.flags[normalizeFlagName(name)])
 	if err != nil {
