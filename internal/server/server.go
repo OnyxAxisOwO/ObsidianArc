@@ -1608,8 +1608,12 @@ func (s *Server) sweep(ctx context.Context) {
 		}
 	}
 	// Counter buckets whose window has long since rolled over. The ledger is
-	// never pruned: it is the audit trail.
-	_, _ = s.quota.PruneCounters(sweepCtx)
+	// never pruned: it is the audit trail. A failure is logged here because the
+	// request log cannot record it: the database that failed is the one it
+	// writes to.
+	if _, err := s.quota.PruneCounters(sweepCtx); err != nil {
+		slog.ErrorContext(sweepCtx, "could not prune usage counters", "error", err)
+	}
 	// The bell keeps about a month, unlike the security log: a notice is a
 	// nudge to look at something, not a record kept for its own sake.
 	if s.notify != nil {
