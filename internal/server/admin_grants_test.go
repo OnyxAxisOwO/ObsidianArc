@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The delegated grants that reach past their own pages. The security grant
@@ -402,6 +403,72 @@ func TestDashboardGrantSeesNoAccountAddresses(t *testing.T) {
 				t.Errorf("newest_users carries %q, which the dashboard does not show", key)
 			}
 		}
+	}
+}
+
+// A super administrator's cards can be moved or withdrawn only by a super
+// administrator. A users-grant delegate still moves and withdraws a member's
+// cards, which is what the grant is for, and still grants a super administrator
+// more, which only adds to what they hold.
+func TestOnlyASuperAdministratorMovesOrWithdrawsTheirOwnCards(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "another-password")
+	delegate(t, in, founder, operator, "users")
+
+	expires := time.Now().Add(30 * 24 * time.Hour).Truncate(time.Second).UnixMilli()
+	for _, account := range []*session{founder, member} {
+		if response := in.do(http.MethodPost, "/api/admin/users/"+account.userID+"/cards",
+			map[string]any{"cards": 2, "expires_at": expires}, founder); response.Code != http.StatusCreated {
+			t.Fatalf("grant cards: %d %s", response.Code, response.Body.String())
+		}
+	}
+	if response := in.do(http.MethodPost, "/api/admin/users/"+founder.userID+"/cards",
+		map[string]any{"cards": 1, "expires_at": expires}, operator); response.Code != http.StatusCreated {
+		t.Fatalf("a users-grant delegate granting a super administrator cards: %d %s", response.Code, response.Body.String())
+	}
+
+	later := time.Now().Add(60 * 24 * time.Hour).Truncate(time.Second).UnixMilli()
+	before := readerCards(t, in, founder)
+	if len(before) != 3 {
+		t.Fatalf("the super administrator holds %d cards, want 3", len(before))
+	}
+	moved := in.do(http.MethodPatch, "/api/admin/users/"+founder.userID+"/cards", map[string]any{"expires_at": later}, operator)
+	if moved.Code != http.StatusForbidden || errCode(t, moved) != "admin_permission_denied" {
+		t.Fatalf("a users-grant delegate moved a super administrator's cards: %d %s", moved.Code, moved.Body.String())
+	}
+	dropped := in.do(http.MethodDelete, "/api/admin/users/"+founder.userID+"/cards/"+before[0].ID, nil, operator)
+	if dropped.Code != http.StatusForbidden || errCode(t, dropped) != "admin_permission_denied" {
+		t.Fatalf("a users-grant delegate withdrew a super administrator's card: %d %s", dropped.Code, dropped.Body.String())
+	}
+	after := readerCards(t, in, founder)
+	if len(after) != len(before) {
+		t.Fatalf("the refused changes altered the super administrator's holding: %+v, was %+v", after, before)
+	}
+	for _, card := range after {
+		if card.ExpiresAt != expires {
+			t.Fatalf("a refused move changed a super administrator's card to expire at %d", card.ExpiresAt)
+		}
+	}
+
+	memberCards := readerCards(t, in, member)
+	if response := in.do(http.MethodPatch, "/api/admin/users/"+member.userID+"/cards",
+		map[string]any{"expires_at": later}, operator); response.Code != http.StatusOK {
+		t.Fatalf("a users-grant delegate moving a member's cards: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodDelete, "/api/admin/users/"+member.userID+"/cards/"+memberCards[0].ID,
+		nil, operator); response.Code != http.StatusNoContent {
+		t.Fatalf("a users-grant delegate withdrawing a member's card: %d %s", response.Code, response.Body.String())
+	}
+
+	if response := in.do(http.MethodPatch, "/api/admin/users/"+founder.userID+"/cards",
+		map[string]any{"expires_at": later}, founder); response.Code != http.StatusOK {
+		t.Fatalf("a super administrator moving their own cards: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodDelete, "/api/admin/users/"+founder.userID+"/cards/"+before[0].ID,
+		nil, founder); response.Code != http.StatusNoContent {
+		t.Fatalf("a super administrator withdrawing their own card: %d %s", response.Code, response.Body.String())
 	}
 }
 
