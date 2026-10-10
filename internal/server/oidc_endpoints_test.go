@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
 // An OpenID Connect address is refused when it is saved, so the operator is
@@ -60,5 +63,84 @@ func TestOIDCAddressesMustBeHTTPSWhenSaved(t *testing.T) {
 	}
 	if read := in.do(http.MethodGet, "/api/admin/settings", nil, founder); strings.Contains(read.Body.String(), "http://idp.example.com/token") {
 		t.Error("an import stored a plaintext token URL")
+	}
+}
+
+// The screen can only say which field to change if the refusal says which one.
+// A bare bad_request left the operator with a failed save and no field to look
+// at, so the setting travels with the code.
+func TestOIDCRefusalNamesTheSetting(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	response := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"oauth.oidc_userinfo_url": "http://idp.example.com/userinfo",
+	}, founder)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want a refusal: %s", response.Code, response.Body.String())
+	}
+	var refusal struct {
+		Error struct {
+			Code    string `json:"code"`
+			Setting string `json:"setting"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("decode refusal: %v", err)
+	}
+	if refusal.Error.Code != "oidc_url_not_https" || refusal.Error.Setting != "oauth.oidc_userinfo_url" {
+		t.Errorf("refusal = %+v, want oidc_url_not_https naming oauth.oidc_userinfo_url", refusal.Error)
+	}
+}
+
+// An address already stored in plain http must not hold every other change on
+// the security screen hostage: the save changes nothing about it, and the
+// sign-in refuses it at use anyway. Typing a different plaintext address is
+// still a new refusal, and so is importing one.
+func TestAStoredPlaintextOIDCAddressOnlyBlocksANewOne(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	if err := in.server.settings.SetMany(context.Background(), map[string]string{
+		settings.OAuthOIDCTokenURL: "http://idp.example.com/token",
+	}); err != nil {
+		t.Fatalf("store a plaintext token URL: %v", err)
+	}
+
+	unrelated := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		settings.OAuthOIDCTokenURL: "http://idp.example.com/token",
+		settings.SiteName:          "Renamed",
+	}, founder)
+	if unrelated.Code != http.StatusOK {
+		t.Fatalf("a save that keeps the stored address: %d %s", unrelated.Code, unrelated.Body.String())
+	}
+	if got := in.server.settings.Get(settings.SiteName); got != "Renamed" {
+		t.Errorf("site name = %q, want the unrelated change saved", got)
+	}
+
+	changed := in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		settings.OAuthOIDCTokenURL: "http://idp.example.com/other-token",
+	}, founder)
+	if changed.Code != http.StatusBadRequest {
+		t.Errorf("a new plaintext token URL: %d, want a refusal", changed.Code)
+	}
+
+	imported := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
+		settings.OAuthOIDCTokenURL:    "http://idp.example.com/token",
+		settings.OAuthOIDCUserInfoURL: "http://idp.example.com/userinfo",
+	}, founder)
+	if imported.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", imported.Code, imported.Body.String())
+	}
+	var result struct {
+		Skipped []string `json:"skipped"`
+	}
+	if err := json.Unmarshal(imported.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode import result: %v", err)
+	}
+	if slices.Contains(result.Skipped, settings.OAuthOIDCTokenURL) {
+		t.Errorf("import skipped the address already stored, which changes nothing: %v", result.Skipped)
+	}
+	if !slices.Contains(result.Skipped, settings.OAuthOIDCUserInfoURL) {
+		t.Errorf("skipped = %v, want the new plaintext userinfo URL named", result.Skipped)
 	}
 }

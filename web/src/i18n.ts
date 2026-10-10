@@ -2122,6 +2122,7 @@ const en = {
   oauthOIDCAuthURL: 'Authorization endpoint',
   oauthOIDCTokenURL: 'Token endpoint',
   oauthOIDCUserInfoURL: 'Userinfo endpoint',
+  oidcURLNotHTTPS: '{field} must be an https address. Plain http is accepted only for localhost, 127.0.0.1 or [::1].',
   oauthClientID: 'Client ID',
   oauthClientSecret: 'Client secret',
   oauthCallback: 'Authorisation callback URL: {url}',

@@ -1,5 +1,5 @@
 import { ApiError } from '@/api/client';
-import { t } from '@/composables/useI18n';
+import { t, type StringKey } from '@/composables/useI18n';
 import { pluginRefusal } from '@/plugins/registry';
 
 /**
@@ -107,6 +107,35 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
 export function loginRefusalText(failure: unknown): string {
   if (failure instanceof ApiError && failure.status === 401) return t('invalidCredentials');
   return refusalText(failure);
+}
+
+/**
+ * Why a settings save was refused. The server names the setting whose address
+ * it will not keep in plain http, so the line can say which field to change;
+ * anything else is worded as refusalText words it. Kept beside refusalText so
+ * the screen has one place to look for what a refusal means.
+ */
+export function settingsRefusalText(failure: ApiError): string {
+  if (failure.code === 'oidc_url_not_https') {
+    const field = oidcURLField(String(failure.details['setting'] ?? ''));
+    if (field) return t('oidcURLNotHTTPS', { field: t(field) });
+  }
+  return refusalText(failure);
+}
+
+function oidcURLField(setting: string): StringKey | undefined {
+  switch (setting) {
+    case 'oauth.oidc_issuer':
+      return 'oauthOIDCIssuer';
+    case 'oauth.oidc_auth_url':
+      return 'oauthOIDCAuthURL';
+    case 'oauth.oidc_token_url':
+      return 'oauthOIDCTokenURL';
+    case 'oauth.oidc_userinfo_url':
+      return 'oauthOIDCUserInfoURL';
+    default:
+      return undefined;
+  }
 }
 
 function allowed(failure: ApiError, fallback: string[]): string[] {

@@ -2079,6 +2079,7 @@ export const zh: Record<StringKey, string> = {
   oauthOIDCAuthURL: '授权端点 (Authorization Endpoint)',
   oauthOIDCTokenURL: '令牌端点 (Token Endpoint)',
   oauthOIDCUserInfoURL: '用户信息端点 (Userinfo Endpoint)',
+  oidcURLNotHTTPS: '{field}必须是 https 地址；明文 http 只接受 localhost、127.0.0.1 或 [::1]。',
   oauthClientID: 'Client ID',
   oauthClientSecret: 'Client secret',
   oauthCallback: '回调地址：{url}',

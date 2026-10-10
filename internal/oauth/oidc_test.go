@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -688,5 +689,170 @@ func TestAPlaintextOIDCIssuerLeadsToTheUnavailablePage(t *testing.T) {
 	}
 	if len(transport.requests) != 0 {
 		t.Errorf("requests = %v, want none sent", transport.requests)
+	}
+}
+
+// redirectingTransport answers the address it redirects from with a redirect to
+// location, and every other address with body. A redirect that is followed
+// reaches location and gets a usable answer back, so whether location was ever
+// asked for is the difference between a followed redirect and a refused one.
+type redirectingTransport struct {
+	from     string
+	status   int
+	location string
+	body     string
+	requests []string
+}
+
+func (r *redirectingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	r.requests = append(r.requests, request.URL.String())
+	if request.URL.String() == r.from {
+		return &http.Response{
+			StatusCode: r.status,
+			Header:     http.Header{"Location": {r.location}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    request,
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(r.body)),
+		Request:    request,
+	}, nil
+}
+
+// assertRedirectRefused is the whole claim of the redirect rule: the sign-in
+// ends as unavailable, and the address the reply named was never asked for.
+func assertRedirectRefused(t *testing.T, err error, transport *redirectingTransport) {
+	t.Helper()
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("error = %v, want ErrUnavailable", err)
+	}
+	for _, sent := range transport.requests {
+		if sent == transport.location {
+			t.Errorf("the redirect was followed, and %s was asked for", sent)
+		}
+	}
+}
+
+// A reply that redirects is not followed. The standard library would send the
+// next request itself, carrying the client secret, the code or the access
+// token to the address the reply names: plain http here, or another https host.
+// Each case puts the redirect on one of the three addresses a sign-in calls.
+func TestOIDCRedirectsAreNeverFollowed(t *testing.T) {
+	ctx := context.Background()
+	const issuer = "https://idp.example.com"
+	const redirectURI = "https://arc.example.com/api/auth/oauth/callback/oidc"
+	creds := Credentials{
+		ClientID:     "a-client-id",
+		ClientSecret: "a-client-secret",
+		AuthURL:      issuer + "/authorize",
+		TokenURL:     issuer + "/token",
+		UserInfoURL:  issuer + "/userinfo",
+	}
+	provider := ByID("oidc")
+	if provider == nil {
+		t.Fatal("oidc provider not found")
+	}
+
+	for _, redirect := range []struct {
+		name string
+		code int
+	}{
+		{"307", http.StatusTemporaryRedirect},
+		{"301", http.StatusMovedPermanently},
+	} {
+		t.Run("token endpoint, "+redirect.name, func(t *testing.T) {
+			transport := &redirectingTransport{
+				from:     issuer + "/token",
+				status:   redirect.code,
+				location: "http://idp.example.com/token",
+				body:     `{"access_token":"an-access-token"}`,
+			}
+			_, err := provider.Authenticate(ctx, &http.Client{Transport: transport}, creds, "a-code", redirectURI, "")
+			assertRedirectRefused(t, err, transport)
+		})
+
+		t.Run("discovery, "+redirect.name, func(t *testing.T) {
+			transport := &redirectingTransport{
+				from:     issuer + "/.well-known/openid-configuration",
+				status:   redirect.code,
+				location: "http://idp.example.com/.well-known/openid-configuration",
+				body:     discoveryJSON(t, issuer, nil),
+			}
+			f := newFixture(t)
+			f.configure(t, "oidc")
+			require(t, f, settings.OAuthOIDCIssuer, issuer)
+			_, err := f.service.ResolveCredentials(ctx, &http.Client{Transport: transport}, "oidc")
+			assertRedirectRefused(t, err, transport)
+		})
+
+		t.Run("userinfo endpoint, "+redirect.name, func(t *testing.T) {
+			transport := &redirectingTransport{
+				from:     issuer + "/userinfo",
+				status:   redirect.code,
+				location: "http://idp.example.com/userinfo",
+				body:     `{"sub":"someone-else","email":"someone@example.com","email_verified":true}`,
+			}
+			// No ID token: were the lookup to fall back to one, a refused
+			// userinfo would still sign the person in, and that is not the claim.
+			_, err := identifyOIDC(ctx, &http.Client{Transport: transport},
+				Credentials{UserInfoURL: issuer + "/userinfo"},
+				tokenResponse{AccessToken: "an-access-token"})
+			assertRedirectRefused(t, err, transport)
+		})
+	}
+
+	t.Run("token endpoint redirected to another https host", func(t *testing.T) {
+		transport := &redirectingTransport{
+			from:     issuer + "/token",
+			status:   http.StatusTemporaryRedirect,
+			location: "https://elsewhere.example.com/token",
+			body:     `{"access_token":"an-access-token"}`,
+		}
+		_, err := provider.Authenticate(ctx, &http.Client{Transport: transport}, creds, "a-code", redirectURI, "")
+		assertRedirectRefused(t, err, transport)
+	})
+}
+
+// The default client follows redirects, and some callers pass no client at
+// all. Both get the same refusal, and a client the caller did pass is not
+// changed by the call. A loopback server stands in for the provider, so the
+// standard library's own transport is what is exercised.
+func TestOIDCFetchRefusesRedirectsOnEveryClient(t *testing.T) {
+	var reached atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	for name, client := range map[string]*http.Client{
+		"no client":        nil,
+		"the caller's own": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reached.Store(false)
+			request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, source.URL, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			var into map[string]any
+			err = fetchJSON(context.Background(), client, request, &into)
+			if !errors.Is(err, ErrUnavailable) {
+				t.Errorf("error = %v, want ErrUnavailable", err)
+			}
+			if reached.Load() {
+				t.Error("the redirect was followed")
+			}
+			if client != nil && client.CheckRedirect != nil {
+				t.Error("fetchJSON changed the caller's client")
+			}
+		})
 	}
 }

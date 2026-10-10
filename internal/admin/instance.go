@@ -353,7 +353,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	if err := checkThemeSettings(body); err != nil {
 		return err
 	}
-	if err := checkOIDCSettings(body); err != nil {
+	if err := h.checkOIDCSettings(body); err != nil {
 		return err
 	}
 	if err := checkTwoFactorSettings(auth.MustUser(r.Context()), body); err != nil {
@@ -569,7 +569,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 	// Dropped and named, like the rest of this document, rather than failing the
 	// whole import: a file exported before this check existed can carry one.
 	for _, key := range oidcURLKeys {
-		if oidcURLRefused(applied[key]) {
+		if h.oidcURLRefused(key, applied[key]) {
 			delete(applied, key)
 			skipped = append(skipped, key)
 		}
@@ -724,21 +724,30 @@ var oidcURLKeys = []string{
 	settings.OAuthOIDCUserInfoURL,
 }
 
-// oidcURLRefused reports whether value is set and is not an address a sign-in
-// may use. Trimmed the way the sign-in reads the setting, so what is checked is
-// what would be used.
-func oidcURLRefused(value string) bool {
+// oidcURLRefused reports whether saving value under key would store an address
+// a sign-in may not use. Trimmed the way the sign-in reads the setting, so what
+// is checked is what would be used. A value already stored is not refused here:
+// keeping it changes nothing, the sign-in refuses it at use, and refusing it on
+// every save would block each other change on the page for an address nobody
+// typed this time.
+func (h *Handlers) oidcURLRefused(key, value string) bool {
 	value = strings.TrimSpace(value)
-	return value != "" && !settings.ValidOIDCURL(value)
+	if value == "" || settings.ValidOIDCURL(value) {
+		return false
+	}
+	return value != strings.TrimSpace(h.settings.Get(key))
 }
 
-// checkOIDCSettings refuses a plaintext OpenID Connect address when it is saved,
-// so the operator is told which key at the form. An empty value is allowed: it
-// clears the override.
-func checkOIDCSettings(body map[string]string) error {
+// checkOIDCSettings refuses a new plaintext OpenID Connect address when it is
+// saved. The code lets the screen say which field to change, and the setting
+// travels in details because the message beside it is English only. An empty
+// value is allowed: it clears the override.
+func (h *Handlers) checkOIDCSettings(body map[string]string) error {
 	for _, key := range oidcURLKeys {
-		if oidcURLRefused(body[key]) {
-			return httpx.BadRequest("Setting %q must be an https address; plain http is allowed only for a loopback address.", key)
+		if h.oidcURLRefused(key, body[key]) {
+			return httpx.BadRequestCode("oidc_url_not_https",
+				"Setting %q must be an https address; plain http is allowed only for a loopback address.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
 	}
 	return nil
