@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 )
 
 // The console's permission story, exercised as HTTP.
@@ -155,6 +158,77 @@ func TestAWatchStopsWhenItsSignInIsSignedOut(t *testing.T) {
 	}
 	if !strings.Contains(output, "watch stopped") {
 		t.Errorf("the stop was not explained:\n%s", output)
+	}
+}
+
+// A watch asks again before each run after the first, and that ask must only
+// read the sign-in. Renewing it would let a stream that nobody is watching hold
+// a session open past its idle expiry, and would count the stream as the person
+// being there.
+func TestAWatchDoesNotRenewItsSignIn(t *testing.T) {
+	in := newInstance(t, func(c *config.Config) {
+		// Any renewal falls due at once, so a watch that renews moves the row.
+		c.Session.TouchInterval = time.Millisecond
+	})
+	founder := in.register("founder", "a-good-password")
+
+	signIn := func() (lastSeen, expires int64) {
+		t.Helper()
+		var rows int
+		if err := in.db.QueryRow(context.Background(),
+			`SELECT COUNT(*), MAX(last_seen_at), MAX(expires_at) FROM sessions WHERE user_id = ?`,
+			founder.userID).Scan(&rows, &lastSeen, &expires); err != nil {
+			t.Fatalf("read the sign-in: %v", err)
+		}
+		if rows != 1 {
+			t.Fatalf("the founder holds %d sign-ins, want 1", rows)
+		}
+		return lastSeen, expires
+	}
+
+	body, err := json.Marshal(map[string]any{"line": "watch --interval 1s --count 2 -- user list", "cols": 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/console/exec", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
+	request.AddCookie(founder.cookie)
+
+	writer := &startedWriter{ResponseRecorder: httptest.NewRecorder(), started: make(chan struct{})}
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		in.handler.ServeHTTP(writer, request)
+	}()
+
+	select {
+	case <-writer.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch never printed its first run")
+	}
+	// The sign-in as the first run left it. The second run is a second away, so
+	// everything that happens to the row from here on is the watch's doing.
+	lastSeenBefore, expiresBefore := signIn()
+
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch never finished its second run")
+	}
+	lastSeenAfter, expiresAfter := signIn()
+
+	if lastSeenAfter != lastSeenBefore || expiresAfter != expiresBefore {
+		t.Errorf("the watch's re-check moved the sign-in: last seen %d -> %d, expires %d -> %d",
+			lastSeenBefore, lastSeenAfter, expiresBefore, expiresAfter)
+	}
+
+	output, verdict := readConsoleStream(t, writer.ResponseRecorder)
+	if !verdict.OK {
+		t.Fatalf("the watch did not finish its two runs:\n%s", output)
+	}
+	if runs := strings.Count(output, "\x1b[H\x1b[2J"); runs != 2 {
+		t.Fatalf("the watch ran %d times, want 2, so the re-check was never exercised", runs)
 	}
 }
 
