@@ -286,6 +286,14 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if err := need(arcx.PermChallenge); err != nil {
 				return nil, err
 			}
+			// A check may ask a service elsewhere, and a transaction held open
+			// across that call keeps a pooled connection for as long as the
+			// service takes, which is what the refusal of http.fetch above guards
+			// against. The SDK refuses this before the call is made; the host
+			// refuses it too, for a backend that talks to the ABI directly.
+			if op == "challenge.verify" && st.tx != nil {
+				return nil, &wasm.HostError{Code: "tx_open", Message: "a challenge cannot be checked while a transaction is open"}
+			}
 			return m.challengeOp(c, op, raw)
 
 		case "console.call", "console.resolve_user":
@@ -416,11 +424,16 @@ func bindArgs(in []any) ([]any, error) {
 // reply as a whole is what stays within a message, not only its rows.
 const replyWrapping = len(`{"ok":true,"result":{"columns":,"rows":[]}}`)
 
-// rowsToJSON reads a query's rows into the answer a backend is given. The guest
-// reads a reply only up to limit bytes, so the encoded size is counted as each
-// row is read, and the read stops as soon as the answer could no longer be read
-// whole. A wide result then costs the host what fits, not everything the query
-// selected.
+// rowsToJSON reads a query's rows into the answer a backend is given. What limit
+// bounds is host memory for one reply. The SDK grows its buffer to whatever
+// length the host reports, so the guest cannot refuse a long reply itself: the
+// host counts the encoded size as each row is read and stops once the reply
+// would pass limit, the per-message cap the plugin packages document states.
+//
+// It does not bound the driver's copy of a cell inside Scan. That copy is made
+// before any size is known, so one oversized cell is copied whole whatever limit
+// is. The floor check below stops such a cell from being encoded as well, and
+// only a length() guard in the package's own SQL bounds the copy.
 func rowsToJSON(rows *sql.Rows, limit int) (any, error) {
 	cols, err := rows.Columns()
 	if err != nil {
@@ -440,6 +453,22 @@ func rowsToJSON(rows *sql.Rows, limit int) (any, error) {
 		}
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
+		}
+		// Each cell's encoding is at least this long whatever JSON adds, so a row
+		// that cannot fit is refused before any cell is base64'd or marshalled. A
+		// string cell is a JSON string, and its quotes count. The sum is a lower
+		// bound on what the row adds, so a reply that fits is never refused here.
+		floor := 0
+		for _, v := range vals {
+			switch x := v.(type) {
+			case []byte:
+				floor += base64.StdEncoding.EncodedLen(len(x))
+			case string:
+				floor += len(x) + 2
+			}
+		}
+		if size+floor > limit {
+			return nil, &wasm.HostError{Code: "too_large", Message: fmt.Sprintf("a query's rows may be at most %d bytes", limit)}
 		}
 		for i, v := range vals {
 			switch x := v.(type) {

@@ -122,6 +122,10 @@ go run ./cmd/arcpack build path/to/plugin -o demo.arcx     # 编译后端、打�
 go run ./cmd/arcpack inspect demo.arcx                      # 看它要什么
 ```
 
+`build` 用本机的 Go 工具链照常编译源码：符号链接、`go.mod` 里指向本地目录的 `replace`、汇编文件的 `#include` 都按 Go 自己的规则处理，
+编译器能读到的文件就可能进 `plugin.wasm`。所以 `build` 只用来编译你信任的源码，相当于在本机运行它的构建；别人给的源码先读过再编。
+打包这一步（`manifest.json`、`migrations`、`purge`、`web`）不跟随符号链接，遇到链接或特殊文件直接报错。
+
 **每次调用是一个全新的模块实例**（约 2.5 毫秒），互不相通，没有跨调用的内存。状态放在数据库、设置里。`time.Now()` 是服务器的真实时间，`crypto/rand` 是真随机数（wazero 默认给的是假时钟和确定的随机源，运行时已经替换掉了）；没有文件系统、没有环境变量。SDK 里一次调用的全部能力都是 `*arc.Ctx` 的方法：`Query`/`QueryRow`/`Exec`/`Tx`、`Fetch`、`Setting`、`NewID`、`Log`、`RevokeSessions`、`Notify`、`RecordSecurity`、`SetStatus`、`DeleteUser`、`CountActiveAdmins`、`RevokeCards`、`GrantBonus`、`GrantCards`、`Challenge`、`VerifyChallenge`。`Tx` 之内的调用自动并入事务。
 
 - **守卫**：注册或登录前被调用。返回 `*arc.Refusal` 拒绝（自己定状态码、错误码、话；检查所依赖的服务挂了时用 503，监控就能把它和一波机器人分开），返回 `GuardResult{Restrict: true}` 放行但让新账户的 API 保持关闭；后端崩了或超时则按拒绝处理——检查挂了，门不能开着。

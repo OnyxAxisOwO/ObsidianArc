@@ -16,6 +16,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,15 +88,26 @@ func build(args []string) error {
 	return writePackage(stage, dir, out)
 }
 
+// copyTree copies a source entry into the stage. It looks at the entry itself
+// rather than what a link names: the source tree may be one someone else
+// controls, and a link in it could name any file the build is able to read,
+// which would then go into the package. A link is refused, and so is anything
+// that is neither a file nor a directory, which a read would wait on forever.
 func copyTree(from, to string) error {
-	info, err := os.Stat(from)
+	info, err := os.Lstat(from)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symbolic link, and arcpack does not follow links", from)
+	}
 	if !info.IsDir() {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is neither a regular file nor a directory", from)
+		}
 		data, err := os.ReadFile(from)
 		if err != nil {
 			return err

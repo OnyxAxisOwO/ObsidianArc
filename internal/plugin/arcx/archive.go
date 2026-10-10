@@ -343,6 +343,12 @@ func Pack(dir string) ([]byte, error) {
 				return nil
 			}
 		}
+		// A link is refused rather than followed. Reading it would store whatever
+		// it names under the link's own name, and a link to a device would never
+		// finish being read. Parse cannot catch this: it sees the bytes, not the link.
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("arcx: %s is a link or special file; a package holds regular files only", filepath.ToSlash(p))
+		}
 		names = append(names, name)
 		return nil
 	})

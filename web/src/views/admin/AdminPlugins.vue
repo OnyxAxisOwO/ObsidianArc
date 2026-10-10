@@ -112,6 +112,9 @@ const canManage = computed(() => canAdmin('plugins_manage'));
 // Bringing a new package in is a super administrator's alone: its migrations
 // run as the database's owner, so the server refuses anybody else.
 const canUpload = computed(() => isSuperAdmin.value);
+// Erasing a plugin's data runs its SQL as the database's owner, so the server
+// refuses anybody else, and the switch is not offered to them.
+const canPurge = computed(() => isSuperAdmin.value);
 const canRemove = computed(() => canAdmin('plugins_remove'));
 const hasTwoFactor = computed(() => !!currentUser.value?.two_factor_at);
 
@@ -168,6 +171,12 @@ async function load(): Promise<void> {
 /** Every settings section the plugin declares, wherever it would be drawn. */
 function sectionsOf(name: string) {
   return modules[name]?.settings ?? [];
+}
+
+/** The install's sections that hold a key this administrator may write. */
+function installSectionsOf(plugin: AdminPlugin) {
+  const writable = new Set(plugin.writable_settings);
+  return sectionsOf(plugin.name).filter((section) => section.controls.some((control) => writable.has(control.key)));
 }
 
 async function applied(change: PluginChange): Promise<void> {
@@ -437,8 +446,12 @@ function openInstall(plugin: AdminPlugin): void {
   closePanels();
   code.value = '';
   for (const key of Object.keys(draft)) delete draft[key];
+  // Only the keys this administrator may write get a field. The form draws the
+  // controls it holds a value for, so a restricted key is neither shown nor sent.
+  const writable = new Set(plugin.writable_settings);
   for (const section of sectionsOf(plugin.name)) {
     for (const control of section.controls) {
+      if (!writable.has(control.key)) continue;
       draft[control.key] = control.kind === 'secret' ? '' : section.defaults[control.key] ?? '';
     }
   }
@@ -452,11 +465,15 @@ async function install(): Promise<void> {
   if (!plugin) return;
   busy.value = true;
   panelError.value = '';
-  // An untouched secret is not sent: empty is "none", and the install
-  // writes nothing it was not given.
+  // A key this administrator may not write is not sent: the server refuses the
+  // whole install for one, and the install does not need it. An untouched
+  // secret is not sent either: empty is "none", and the install writes nothing
+  // it was not given.
+  const writable = new Set(plugin.writable_settings);
   const settings: Record<string, string> = {};
   for (const section of sectionsOf(plugin.name)) {
     for (const control of section.controls) {
+      if (!writable.has(control.key)) continue;
       const value = (draft[control.key] ?? '').trim();
       if (control.kind === 'secret' && !value) continue;
       settings[control.key] = value;
@@ -781,8 +798,8 @@ onMounted(load);
   >
     <OaSwitchField v-model="enableNow" :label="t('pluginEnableNow')" :hint="t('pluginEnableNowHint')" />
     <h4 class="oa-field-label">{{ t('pluginInitialSettings') }}</h4>
-    <p class="oa-field-hint">{{ sectionsOf(installing.name).length ? t('pluginInitialSettingsHint') : t('pluginNoSettings') }}</p>
-    <template v-for="section in sectionsOf(installing.name)" :key="section.id">
+    <p class="oa-field-hint">{{ installSectionsOf(installing).length ? t('pluginInitialSettingsHint') : t('pluginNoSettings') }}</p>
+    <template v-for="section in installSectionsOf(installing)" :key="section.id">
       <h4 class="oa-field-label">{{ section.title() }}</h4>
       <PluginSettingControls :section="section" :draft="draft" :hints="noHints" />
     </template>
@@ -821,7 +838,7 @@ onMounted(load);
   >
     <p class="oa-field-hint">{{ confirming.action === 'disable' ? t('pluginDisableHint') : (confirming.plugin.kind === 'package' ? t('pluginRemoveHint') : t('pluginUninstallHint')) }}</p>
     <OaSwitchField
-      v-if="confirming.action === 'uninstall'"
+      v-if="confirming.action === 'uninstall' && canPurge"
       v-model="purge"
       :label="t('pluginPurge')"
       :hint="confirming.plugin.contributions.purges ? t('pluginPurgeHint') : t('pluginPurgeSettingsOnly')"

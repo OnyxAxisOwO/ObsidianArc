@@ -11,6 +11,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 // The backoffice grants for this screen, one per kind of change, so a super
@@ -67,15 +68,15 @@ func (h *Handlers) Mount(backoffice *admin.Handlers) {
 	}
 }
 
-func (h *Handlers) list(w http.ResponseWriter, _ *http.Request) error {
+func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"plugins":             h.manager.List(),
+		"plugins":             h.viewerPlugins(r),
 		"two_factor_required": h.twoFactorRequired(),
 	})
 }
 
 func (h *Handlers) show(w http.ResponseWriter, r *http.Request) error {
-	info, err := h.manager.Info(r.PathValue("name"))
+	info, err := h.viewerPlugin(r, r.PathValue("name"))
 	if err != nil {
 		return translate(err)
 	}
@@ -93,6 +94,15 @@ func (h *Handlers) install(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
 		return err
 	}
+	// Each setting is written under its own grant, as the shared settings route
+	// writes it. plugins_manage alone is not a grant to set every key a plugin
+	// declares, and a key the security grant owns is not one it may set.
+	actor := auth.MustUser(r.Context())
+	for key := range body.Settings {
+		if !admin.CanWriteSetting(actor, key) {
+			return httpx.ForbiddenCode("admin_permission_denied", "You do not have permission to access this page or perform this action.")
+		}
+	}
 	// The operator's setting covers installing as well as switching off: an
 	// install applies the plugin's migrations and can switch it on in the same
 	// request, so it takes the code the other changes take.
@@ -107,7 +117,7 @@ func (h *Handlers) install(w http.ResponseWriter, r *http.Request) error {
 	}); err != nil {
 		return translate(err)
 	}
-	return h.answer(w, name)
+	return h.answer(w, r, name)
 }
 
 func (h *Handlers) enable(w http.ResponseWriter, r *http.Request) error {
@@ -115,7 +125,7 @@ func (h *Handlers) enable(w http.ResponseWriter, r *http.Request) error {
 	if err := h.manager.Enable(r.Context(), h.actor(r), name); err != nil {
 		return translate(err)
 	}
-	return h.answer(w, name)
+	return h.answer(w, r, name)
 }
 
 type confirmBody struct {
@@ -142,13 +152,20 @@ func (h *Handlers) disable(w http.ResponseWriter, r *http.Request) error {
 	if err := h.manager.Disable(r.Context(), h.actor(r), name); err != nil {
 		return translate(err)
 	}
-	return h.answer(w, name)
+	return h.answer(w, r, name)
 }
 
 func (h *Handlers) uninstall(w http.ResponseWriter, r *http.Request) error {
 	var body confirmBody
 	if err := httpx.DecodeJSON(w, r, &body, 1024); err != nil {
 		return err
+	}
+	// A purge runs the plugin's own SQL as the database's owner, and nobody
+	// shows that SQL to whoever removes the plugin, so erasing the data is a
+	// super administrator's, as uploading a package is. Removing a plugin and
+	// keeping its data stays a delegable grant.
+	if body.Purge && !auth.MustUser(r.Context()).IsSuperAdmin() {
+		return httpx.ForbiddenCode("admin_permission_denied", "You do not have permission to access this page or perform this action.")
 	}
 	name := r.PathValue("name")
 	if _, err := h.manager.Info(name); err != nil {
@@ -165,16 +182,16 @@ func (h *Handlers) uninstall(w http.ResponseWriter, r *http.Request) error {
 	// A package that was removed is not there to be described: the answer is
 	// the list without it. A compiled-in plugin stays in the list, as
 	// available, and is described as that.
-	if info, err := h.manager.Info(name); err == nil {
+	if info, err := h.viewerPlugin(r, name); err == nil {
 		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"plugin":              info,
-			"plugins":             h.manager.List(),
+			"plugins":             h.viewerPlugins(r),
 			"two_factor_required": h.twoFactorRequired(),
 		})
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"plugin":              nil,
-		"plugins":             h.manager.List(),
+		"plugins":             h.viewerPlugins(r),
 		"two_factor_required": h.twoFactorRequired(),
 	})
 }
@@ -198,16 +215,51 @@ func (h *Handlers) verify(w http.ResponseWriter, r *http.Request, code string) e
 
 // answer is the plugin as it now stands and the whole list, so the screen
 // redraws from one response.
-func (h *Handlers) answer(w http.ResponseWriter, name string) error {
-	info, err := h.manager.Info(name)
+func (h *Handlers) answer(w http.ResponseWriter, r *http.Request, name string) error {
+	info, err := h.viewerPlugin(r, name)
 	if err != nil {
 		return translate(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"plugin":              info,
-		"plugins":             h.manager.List(),
+		"plugins":             h.viewerPlugins(r),
 		"two_factor_required": h.twoFactorRequired(),
 	})
+}
+
+// viewerPlugins is every plugin the screen lists, each with the setting keys
+// the viewer may write, so every answer that carries plugins says the same.
+func (h *Handlers) viewerPlugins(r *http.Request) []Info {
+	viewer := auth.MustUser(r.Context())
+	infos := h.manager.List()
+	for i := range infos {
+		infos[i].WritableSettings = writableBy(viewer, infos[i].Name)
+	}
+	return infos
+}
+
+// viewerPlugin is one plugin, with the setting keys the viewer may write.
+func (h *Handlers) viewerPlugin(r *http.Request, name string) (Info, error) {
+	info, err := h.manager.Info(name)
+	if err != nil {
+		return Info{}, err
+	}
+	info.WritableSettings = writableBy(auth.MustUser(r.Context()), info.Name)
+	return info, nil
+}
+
+// writableBy is the keys of one plugin that viewer may read and write, by the
+// grant each key carries. It is the check install makes on every key it is
+// sent, so a dialog that sends only these is never refused for a key the
+// viewer left alone. It is never nil, so the JSON reads [] and not null.
+func writableBy(viewer user.User, name string) []string {
+	keys := []string{}
+	for _, d := range settings.DefinitionsOf(name) {
+		if admin.CanWriteSetting(viewer, d.Key) {
+			keys = append(keys, d.Key)
+		}
+	}
+	return keys
 }
 
 func (h *Handlers) actor(r *http.Request) Actor {
@@ -272,13 +324,13 @@ func (h *Handlers) installPackage(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return translate(err)
 	}
-	info, err := h.manager.Info(name)
+	info, err := h.viewerPlugin(r, name)
 	if err != nil {
 		return translate(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"plugin":              info,
-		"plugins":             h.manager.List(),
+		"plugins":             h.viewerPlugins(r),
 		"two_factor_required": h.twoFactorRequired(),
 		"did":                 op,
 	})

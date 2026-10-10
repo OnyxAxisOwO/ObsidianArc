@@ -78,6 +78,38 @@ func TestAQueryResultFillsAReplyExactlyAndNoMore(t *testing.T) {
 	}
 }
 
+// A single cell larger than a whole reply is refused whether it is a blob or
+// text. The driver copies a cell while it scans it, so no check runs before
+// that copy; what the host refuses is the encoding of the cell, which would
+// cost several times its size.
+func TestAOneCellLargerThanAReplyIsRefused(t *testing.T) {
+	r := newRig(t)
+	query := func(stmt string) (any, error) {
+		raw, err := json.Marshal(map[string]any{"sql": stmt})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.manager.dbOp(&wasm.Call{Ctx: context.Background()}, &callState{}, "db.query", raw)
+	}
+	// Nine mebibytes is more than a message's eight, in one cell.
+	if _, err := query(`SELECT zeroblob(9437184) AS b`); hostCode(err) != "too_large" {
+		t.Fatalf("a 9 MiB blob cell: %v", err)
+	}
+	// hex() writes two characters for each byte, so this is 9 MiB of text.
+	if _, err := query(`SELECT hex(zeroblob(4718592)) AS t`); hostCode(err) != "too_large" {
+		t.Fatalf("a 9 MiB text cell: %v", err)
+	}
+	// 1e999 overflows to +Inf, which JSON cannot encode. Beside an oversized
+	// cell it shows the size is decided before the row is encoded: a host that
+	// encodes first fails here with a sql error, and never says too_large.
+	if _, err := query(`SELECT zeroblob(9437184) AS b, 1e999 AS inf`); hostCode(err) != "too_large" {
+		t.Fatalf("a 9 MiB blob cell beside +Inf: %v", err)
+	}
+	if _, err := query(`SELECT hex(zeroblob(4718592)) AS t, 1e999 AS inf`); hostCode(err) != "too_large" {
+		t.Fatalf("a 9 MiB text cell beside +Inf: %v", err)
+	}
+}
+
 // A bonus's lifetime is days turned into a duration, and that duration wraps
 // past 106751 days, so some lifetimes meant to run for centuries come out as
 // minutes. Such lifetimes are refused, and nothing is written for them.
