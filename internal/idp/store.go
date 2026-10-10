@@ -747,6 +747,27 @@ func (s *Store) Touch(ctx context.Context, tokenID, appID, userID string) {
 		now, appID, userID)
 }
 
+// RevokeAccount ends every token and every unspent code this account holds
+// with any application. The password writes in internal/auth call it inside
+// their own transaction, so a credential that was replaced takes what was
+// issued under it, and the write and the revocation land together or not at
+// all. Consent is kept: the person still agreed to the application, and only
+// what the old credential bought is withdrawn.
+func (s *Store) RevokeAccount(ctx context.Context, q database.Queryer, userID string) error {
+	if _, err := s.queryer(q).Exec(ctx,
+		`UPDATE oauth_tokens SET revoked = ? WHERE user_id = ?`, true, userID); err != nil {
+		return fmt.Errorf("idp: revoke account tokens: %w", err)
+	}
+	// Without this a code issued just before the change would still be
+	// redeemable for a token pair, because redeeming checks only that the code
+	// is unused and unexpired.
+	if _, err := s.queryer(q).Exec(ctx,
+		`DELETE FROM oauth_codes WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("idp: drop account codes: %w", err)
+	}
+	return nil
+}
+
 // Purge drops what is spent or expired. Called by the janitor: codes live two
 // minutes and tokens an hour, so without it the two tables grow forever with
 // rows nothing will ever read again.

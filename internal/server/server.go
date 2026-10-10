@@ -1048,6 +1048,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, err
 	}
 	idpStore := idp.NewStore(db)
+	// A password that is replaced or reset ends what applications hold for
+	// the account. Set here because internal/idp imports auth, not the other
+	// way round.
+	authService.RevokeIssued = idpStore.RevokeAccount
 	idpService := idp.NewService(idpStore, idp.NewKeys(db, signingBox), users, groups)
 	idpHandlers := idp.NewHandlers(idpService, cfg.SecretKey)
 	// The issuer named in every identity token, and in the discovery document

@@ -406,6 +406,42 @@ func TestRevokingAnAuthorisationTakesTheTokensWithIt(t *testing.T) {
 	}
 }
 
+// A password change ends what an account holds with applications: its tokens,
+// and a code issued just before the change, which would otherwise still
+// redeem for a pair. The consent is kept, because the person still agreed.
+func TestRevokingAnAccountEndsWhatItHoldsAndKeepsItsConsent(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	record, _ := f.app(t, CreateAppInput{})
+
+	if err := f.store.RecordGrant(ctx, nil, record.ID, f.account.ID, DefaultScopes); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if _, err := f.store.SaveToken(ctx, nil, "access-token", "refresh-token",
+		record.ID, f.account.ID, DefaultScopes); err != nil {
+		t.Fatalf("save token: %v", err)
+	}
+	if err := f.store.SaveCode(ctx, "unspent-code", Code{
+		AppID: record.ID, UserID: f.account.ID, RedirectURI: "https://wiki.example.com/callback",
+		Scopes: DefaultScopes,
+	}); err != nil {
+		t.Fatalf("save code: %v", err)
+	}
+
+	if err := f.store.RevokeAccount(ctx, nil, f.account.ID); err != nil {
+		t.Fatalf("revoke account: %v", err)
+	}
+	if _, err := f.store.ResolveAccess(ctx, "access-token"); err != ErrBadToken {
+		t.Errorf("the access token survived the account's revocation: %v", err)
+	}
+	if _, err := f.store.RedeemCode(ctx, "unspent-code"); err != ErrBadCode {
+		t.Errorf("a code issued before the revocation still redeems: %v", err)
+	}
+	if granted, err := f.store.GrantedScopes(ctx, nil, record.ID, f.account.ID); err != nil || len(granted) == 0 {
+		t.Errorf("consent = %v (%v), want the consent kept", granted, err)
+	}
+}
+
 func TestPurgeDropsWhatNothingWillReadAgain(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

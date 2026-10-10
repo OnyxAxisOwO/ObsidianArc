@@ -154,6 +154,12 @@ type Service struct {
 	// the security log, a notification — cannot turn a sign-in that already
 	// succeeded into one that fails. Nil records nothing.
 	OnNewDevice func(context.Context, NewDeviceEvent)
+	// Ends what the account holds with applications that signed in through
+	// this instance. The identity provider lives in internal/idp, which imports
+	// this package, so the wiring supplies the call. It runs inside the
+	// transaction that replaces the password, so a failure there undoes the
+	// change as well. Nil is off.
+	RevokeIssued func(ctx context.Context, q database.Queryer, userID string) error
 
 	// Invite codes. Three hooks rather than one dependency on
 	// internal/invite — see InviteGrant's comment for why this package
@@ -1164,6 +1170,11 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 		if err := s.users.SetPasswordHash(ctx, tx, userID, updated); err != nil {
 			return err
 		}
+		if s.RevokeIssued != nil {
+			if err := s.RevokeIssued(ctx, tx, userID); err != nil {
+				return err
+			}
+		}
 		if sessionID == "" {
 			return s.sessions.DeleteByUser(ctx, tx, userID)
 		}
@@ -1213,6 +1224,11 @@ func (s *Service) SetPassword(ctx context.Context, userID, newPassword string, a
 		}
 		if err := s.users.SetPasswordHash(ctx, tx, userID, hash); err != nil {
 			return err
+		}
+		if s.RevokeIssued != nil {
+			if err := s.RevokeIssued(ctx, tx, userID); err != nil {
+				return err
+			}
 		}
 		return s.sessions.DeleteByUser(ctx, tx, userID)
 	})
