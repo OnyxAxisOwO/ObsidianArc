@@ -8,7 +8,7 @@
 
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useMediaQuery } from '@vueuse/core';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 import { health } from '@/api/client';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaResizer from '@/components/OaResizer.vue';
@@ -158,7 +158,7 @@ function scrollToSection(id: string): void {
 
 function onPageClick(slug: string): void {
   if ((segments.value[0] ?? '') === slug && route.hash) {
-    void router.push({ path: slug ? `/admin/${slug}` : '/admin' });
+    void router.push({ path: slug ? `/admin/${slug}` : '/admin', query: route.query });
     bodyScroll.value?.scroller?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
@@ -202,6 +202,16 @@ function keepRail(node: unknown): void {
 
 const segments = computed(() => route.path.replace(/^\/admin\/?/, '').split('/').filter(Boolean));
 const current = computed(() => pages.value.find((entry) => entry.slug === (segments.value[0] ?? '')) ?? PAGES[0]!);
+
+// Where a link to a page, or to a section of one, goes. The page on screen
+// keeps the address's query, because a side panel is named there
+// (usePanelExit): choosing the page again must not close it. Another page is a
+// new page, and a panel open over this one does not follow it.
+function pageLink(page: AdminPageSpec, hash = ''): RouteLocationRaw {
+  const path = page.slug ? `/admin/${page.slug}` : '/admin';
+  if (page !== current.value) return hash ? { path, hash } : path;
+  return { path, query: route.query, hash };
+}
 
 // A section's grant is its slug unless it says otherwise, and any one of a
 // comma-separated list opens it — the plugins screen is three grants. The
@@ -432,7 +442,7 @@ onMounted(() => {
             :key="entry.slug"
             class="oa-admin-nav"
             :class="{ active: entry === current && !route.hash }"
-            :to="entry.slug ? `/admin/${entry.slug}` : '/admin'"
+            :to="pageLink(entry)"
           >
             <component :is="entry.icon" :size="15" />
             <span>{{ pageLabel(entry) }}</span>
@@ -446,7 +456,7 @@ onMounted(() => {
             class="oa-admin-search-group"
           >
             <RouterLink
-              :to="group.page.slug ? `/admin/${group.page.slug}` : '/admin'"
+              :to="pageLink(group.page)"
               class="oa-admin-nav oa-admin-group-head"
               :class="{ active: group.page === current && !route.hash }"
               @click="onPageClick(group.page.slug)"
@@ -459,7 +469,7 @@ onMounted(() => {
               <RouterLink
                 v-for="item in group.items"
                 :key="item.id"
-                :to="{ path: group.page.slug ? `/admin/${group.page.slug}` : '/admin', hash: `#${item.id}` }"
+                :to="pageLink(group.page, `#${item.id}`)"
                 class="oa-admin-subnav-item"
                 :class="{ active: group.page === current && route.hash === `#${item.id}` }"
                 @click="onItemClick(group.page.slug, item.id)"

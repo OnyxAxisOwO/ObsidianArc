@@ -49,6 +49,9 @@ const ADMIN: Account = { ...ACCOUNT, role: 'super_admin' };
 const BODIES: Array<[RegExp, unknown]> = [
   [/\/api\/admin\/providers/, { providers: [] }],
   [/\/api\/admin\/models/, { models: [] }],
+  // The settings page cannot draw its workbench without these two answers.
+  [/\/api\/admin\/settings/, { settings: {} }],
+  [/\/api\/admin\/references/, { models: [] }],
   [/\/api\/admin\/groups/, { groups: [], policies: [] }],
   [/\/api\/admin\/meta/, { provider_kinds: ['openai', 'anthropic'], reasoning_styles: ['auto'] }],
   [/\/api\/admin\/logs\/facets/, {
@@ -183,9 +186,29 @@ async function until(condition: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 50 && !condition(); attempt += 1) await pause(10);
 }
 
+/** A rail entry, workbench tab or subnav item, found by the label the reader sees. */
+function controlNamed(selector: string, label: string): HTMLElement {
+  const found = [...host.querySelectorAll<HTMLElement>(selector)]
+    .find((node) => node.textContent?.trim() === label);
+  if (!found) throw new Error(`No control named ${label}`);
+  return found;
+}
+
+/** Types into a search field the way the reader does: the value, then its input event. */
+async function search(selector: string, value: string): Promise<void> {
+  const input = host.querySelector<HTMLInputElement>(selector)!;
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await nextTick();
+}
+
 beforeEach(async () => {
   await changeLanguage('en');
   stubServer();
+  // jsdom does not lay out, so it has no scrolling: a section is scrolled to,
+  // and the page is scrolled back to its top, through these two.
+  HTMLElement.prototype.scrollIntoView ??= () => {};
+  Element.prototype.scrollTo ??= () => {};
   host = document.createElement('div');
   document.body.appendChild(host);
 });
@@ -396,6 +419,72 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     await mountAt('/admin/providers?panel=uptime');
     expect(router.currentRoute.value.fullPath).toBe('/admin/providers?panel=uptime');
     expect(panelTitle()).toBe(t('uptimeTitle'));
+  });
+
+  // Choosing the page on screen again is not a way out of the panel: the
+  // address is the same page, so the panel's parameter comes with it.
+  it('keeps the panel when the page on screen is chosen again in the rail', async () => {
+    adopt(ADMIN);
+    await mountAt('/admin/providers?panel=settings#models');
+    const rail = host.querySelector('.oa-admin-rail');
+
+    controlNamed('.oa-admin-rail .oa-admin-nav', t('navProviders')).click();
+    await settle();
+
+    expect(router.currentRoute.value.fullPath).toBe('/admin/providers?panel=settings');
+    expect(host.querySelector('.oa-admin-rail')).toBe(rail);
+    expect(await panelIsOpen()).toBe(true);
+  });
+
+  it('keeps the panel when the page on screen is chosen from a search result', async () => {
+    adopt(ADMIN);
+    await mountAt('/admin/providers?panel=settings#models');
+    await search('.oa-admin-search input', 'providers');
+
+    host.querySelector<HTMLAnchorElement>('.oa-admin-group-head')!.click();
+    await settle();
+
+    expect(router.currentRoute.value.fullPath).toBe('/admin/providers?panel=settings');
+    expect(await panelIsOpen()).toBe(true);
+  });
+
+  it('keeps the panel when a section of the page on screen is chosen from a search result', async () => {
+    adopt(ADMIN);
+    await mountAt('/admin/settings?keep=1&panel=about');
+    await search('.oa-admin-search input', t('controlAbout'));
+
+    controlNamed('.oa-admin-subnav-item', t('controlAbout')).click();
+    await settle();
+
+    expect(router.currentRoute.value.fullPath).toBe('/admin/settings?keep=1&panel=about#secAbout');
+    expect(await panelIsOpen()).toBe(true);
+  });
+
+  it('keeps the panel when a workbench tab is chosen while the page has a hash', async () => {
+    adopt(ADMIN);
+    await mountAt('/admin/settings?panel=about#somewhere');
+    expect(host.querySelector('.oa-workbench')).not.toBeNull();
+
+    controlNamed('.oa-workbench-tab', t('controlChat')).click();
+    await settle();
+
+    // The workbench drops its hash, as it always has; the address it leaves
+    // is still the page's own, with the panel named in it.
+    expect(router.currentRoute.value.fullPath).toBe('/admin/settings?panel=about');
+    expect(await panelIsOpen()).toBe(true);
+  });
+
+  // A panel belongs to the page it was opened over. Choosing another page is
+  // a new page, and the panel does not follow the reader there.
+  it('closes the panel when another page of the backoffice is chosen', async () => {
+    adopt(ADMIN);
+    await mountAt('/admin/providers?panel=settings#models');
+
+    controlNamed('.oa-admin-rail .oa-admin-nav', t('navGroups')).click();
+    await settle();
+
+    expect(router.currentRoute.value.fullPath).toBe('/admin/groups');
+    expect(host.querySelector('.oa-panel')).toBeNull();
   });
 });
 
