@@ -548,6 +548,16 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 
+	// The callback has asked the login guards already, but this request runs the
+	// sign-in from the top again: an identity connected in another tab while the
+	// form was open lands on an existing account here, and the guards must answer
+	// for that sign-in too. Asked on every completion, because only Complete knows
+	// which account it will land on. Asked before Complete, as the callback asks
+	// before SignIn.
+	if err := h.service.auth.CheckGuards(r.Context(), auth.GuardLogin, nil, h.address(r), held.Login); err != nil {
+		return httpx.ForbiddenCode("login_refused", "This sign-in was refused on this server.")
+	}
+
 	account, err := h.service.Complete(r.Context(), Identity{
 		Provider: held.Provider,
 		Subject:  held.Subject,

@@ -29,6 +29,10 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       }
       return t('accountBanned');
     }
+    // The sign-in page words the callback's refusal with the same string, so the
+    // completion form says the same thing for the same guard.
+    case 'login_refused':
+      return t('oauthLoginRefused');
     case 'signup_ip_blocked':
       return t('signupBlocked');
     case 'registration_closed':
