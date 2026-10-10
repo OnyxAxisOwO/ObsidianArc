@@ -102,4 +102,39 @@ mkdir -p "$work/dist/plugins"
 echo alpha >"$work/dist/PLUGIN_LIST"
 [ -f "$work/dist/PLUGIN_LIST" ] && [ -d "$work/dist/plugins" ] || fail "the list and the packages directory collide"
 
+# The names in dist/PLUGIN_LIST are spliced into the command the server's shell
+# reads, inside quotes. A name with a quote in it ends them there and runs what
+# follows, which is how a package file's name would reach the server. The list
+# is held to plain characters before ssh is reached, so no docker command runs
+# for it either.
+plugin_proof=$tmp/plugin-proof
+if deploy "alpha" "alpha x'\`touch '$plugin_proof'\`'"; then fail "a plugin name with a quote in it was deployed"; fi
+grep -q "holds a name that is not plain" "$tmp/out" || fail "the plugin name refusal does not say why"
+[ -e "$plugin_proof" ] && fail "a plugin name ran as a command on the server"
+grep -q docker "$tmp/out" && fail "docker ran for a plugin list that was refused"
+if deploy "alpha" "*"; then fail "a glob in the plugin list was deployed"; fi
+deploy "alpha_1.2+x-y" "alpha_1.2+x-y" || fail "a plain plugin name was refused"
+echo "deploy.sh plugin name guard: ok"
+
+# The Makefile holds the same things before any recipe runs. The package recipe
+# copies the paths with an unquoted loop, and the names are echoed into
+# dist/PLUGIN_LIST, so a backquote in either one runs a command on the build
+# machine. PROOF comes from the environment because a package path is cut at its
+# last slash to get the name, so a path written into the payload would be lost.
+make_plugin_proof=$tmp/make-plugin-proof
+if PROOF=$make_plugin_proof make -s -C "$root" version PLUGINS='alpha`:>$$PROOF`' >"$tmp/make.out" 2>&1; then
+  fail "make accepted a plugin name that runs a command"
+fi
+[ -e "$make_plugin_proof" ] && fail "make ran a plugin name as a command"
+grep -q "is refused" "$tmp/make.out" || fail "make does not say why it refused the plugin name"
+make_package_proof=$tmp/make-package-proof
+if PROOF=$make_package_proof make -s -C "$root" version PACKAGES='pkgs/x`:>$$PROOF`-1.0.arcx' >"$tmp/make.out" 2>&1; then
+  fail "make accepted a package path that runs a command"
+fi
+[ -e "$make_package_proof" ] && fail "make ran a package path as a command"
+grep -q "is refused" "$tmp/make.out" || fail "make does not say why it refused the package path"
+make -s -C "$root" version PLUGINS="alpha_1.2+x-y" PACKAGES="../pkgs/alpha-1.0.arcx" >/dev/null 2>&1 \
+  || fail "make refused a plain plugin name and package path"
+echo "Makefile plugin name guard: ok"
+
 echo "deploy.sh plugin guard: ok"

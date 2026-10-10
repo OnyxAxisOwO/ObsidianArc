@@ -51,6 +51,23 @@ esac
 # What this build carries, and whether the caller has accepted losing some of
 # what the running server has.
 plugins=$(cat dist/PLUGIN_LIST 2>/dev/null || true)
+# The names are spliced into the remote command below, inside quotes the
+# server's shell reads, so each is held to the characters a plain name holds.
+# A quote in one would end those quotes and run what followed. Globbing is off
+# for the loop so that a '*' is judged as written, not as the files it names.
+plugin_list_is_plain() (
+  export LC_ALL=C
+  set -f
+  for p in $1; do
+    case "$p" in
+      *[!A-Za-z0-9._+-]*) exit 1 ;;
+    esac
+  done
+)
+if ! plugin_list_is_plain "$plugins"; then
+  echo "dist/PLUGIN_LIST is refused: \"$plugins\" holds a name that is not plain; rebuild with make release" >&2
+  exit 1
+fi
 drop=${DROP_PLUGINS:-}
 
 # macOS tar would otherwise add AppleDouble files and extended attributes,

@@ -49,6 +49,25 @@ PLUGINS ?=
 # `arcpack build` names them (<name>-<version>.arcx). They travel in the image
 # and are installed, updated or taken over at boot — see OBSIDIAN_PLUGIN_DIR.
 PACKAGES ?=
+# Names and paths reach a shell. The package recipe copies the paths with an
+# unquoted loop, and the names go into dist/PLUGIN_LIST, which deploy.sh splices
+# into a command the server's shell runs. So a value holding anything a plain
+# file name would not is refused here, before any recipe runs, by the same
+# removal of allowed characters that VERSION gets below. A name holds letters,
+# digits, dot, underscore, plus and minus; a path may also hold slashes. Neither
+# may start with a dash, which echo and cp read as an option.
+NAME_CHARS := a b c d e f g h i j k l m n o p q r s t u v w x y z \
+  A B C D E F G H I J K L M N O P Q R S T U V W X Y Z 0 1 2 3 4 5 6 7 8 9 . _ + -
+PATH_CHARS := $(NAME_CHARS) /
+NAMES_LEFT := $(PLUGINS)
+$(foreach c,$(NAME_CHARS),$(eval NAMES_LEFT := $$(subst $(c),,$$(NAMES_LEFT))))
+PATHS_LEFT := $(PACKAGES)
+$(foreach c,$(PATH_CHARS),$(eval PATHS_LEFT := $$(subst $(c),,$$(PATHS_LEFT))))
+PLAIN_LEFT := $(strip $(NAMES_LEFT) $(PATHS_LEFT))$(filter -%,$(PLUGINS) $(PACKAGES))
+PLAIN_SEEN := $(PLUGINS) $(PACKAGES)
+ifneq ($(PLAIN_LEFT),)
+$(error "$(PLAIN_SEEN)" is refused: a plugin name may hold only letters, digits, dot, underscore, plus and minus, and a package path may also hold slashes, because both reach a shell. Neither may start with a dash. Rename the package file, or pass plain names)
+endif
 PACKAGE_NAMES := $(foreach f,$(PACKAGES),$(firstword $(subst -, ,$(basename $(notdir $(f))))))
 PLUGIN_TAGS := $(strip $(foreach p,$(PLUGINS),plugin_$(p)))
 TAGS := -tags "$(PLUGIN_TAGS)"
