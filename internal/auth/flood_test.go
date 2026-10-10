@@ -44,3 +44,36 @@ func TestAFloodOfInventedNamesDoesNotLockOutOrForgiveARealAccount(t *testing.T) 
 		t.Fatalf("the owner was refused after the flood: %v", err)
 	}
 }
+
+// A name that matched no account must be recorded as an unknown failure on
+// both sign-in paths. Recorded as a failure against an account, each invented
+// name would be protected for good: none of them could be reclaimed, the map
+// would pass its ceiling, and the protected count would climb with the flood.
+func TestInventedNamesAreNeverProtectedOnEitherSignInPath(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"}); err != nil {
+		t.Fatal(err)
+	}
+	const ceiling = 4
+	f.auth.limiter.ceiling = ceiling
+
+	// No address, so nothing but the names is counted, and several times the
+	// ceiling so the map has to reclaim on every pass.
+	for i := 0; i < 3*ceiling; i++ {
+		name := fmt.Sprintf("nobody-%d", i)
+		if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: name, Password: "whatever"}); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("Login(%q) = %v, want ErrInvalidCredentials", name, err)
+		}
+		if _, _, err := f.auth.VerifyCredential(ctx, name, "whatever", ""); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("VerifyCredential(%q) = %v, want ErrInvalidCredentials", name, err)
+		}
+		if protected := f.auth.limiter.protected; protected != 0 {
+			t.Fatalf("after %d invented names the limiter protects %d buckets, want none", i+1, protected)
+		}
+		if n := len(f.auth.limiter.buckets); n > ceiling {
+			t.Fatalf("after %d invented names the map holds %d buckets, above its ceiling of %d", i+1, n, ceiling)
+		}
+	}
+}
