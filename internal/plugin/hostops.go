@@ -19,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
@@ -454,20 +455,11 @@ func rowsToJSON(rows *sql.Rows, limit int) (any, error) {
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
 		}
-		// Each cell's encoding is at least this long whatever JSON adds, so a row
-		// that cannot fit is refused before any cell is base64'd or marshalled. A
-		// string cell is a JSON string, and its quotes count. The sum is a lower
-		// bound on what the row adds, so a reply that fits is never refused here.
-		floor := 0
-		for _, v := range vals {
-			switch x := v.(type) {
-			case []byte:
-				floor += base64.StdEncoding.EncodedLen(len(x))
-			case string:
-				floor += len(x) + 2
-			}
-		}
-		if size+floor > limit {
+		// A row that cannot fit is refused before any cell is base64'd or
+		// marshalled, which is what keeps an oversized cell from being copied
+		// again by the encoder. The floor has to be what the encoder will write,
+		// not less: see cellFloor.
+		if size+cellFloor(vals) > limit {
 			return nil, &wasm.HostError{Code: "too_large", Message: fmt.Sprintf("a query's rows may be at most %d bytes", limit)}
 		}
 		for i, v := range vals {
@@ -499,6 +491,65 @@ func rowsToJSON(rows *sql.Rows, limit int) (any, error) {
 		return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
 	}
 	return map[string]any{"columns": cols, "rows": data}, nil
+}
+
+// cellFloor is the fewest bytes a row's cells are written as, counted without
+// encoding anything, so a row that cannot fit is refused before the encoder
+// builds it. A bytes cell counts as the object it is written as, and a string
+// cell as json.Marshal writes it, escapes included. Numbers, booleans and times
+// are left out, which only lowers the floor.
+//
+// The count has to be exact for strings and bytes, not a lower guess. A raw
+// length let a cell of characters the encoder writes six bytes apiece reach the
+// encoder, which then built the whole escaped copy before any check refused it.
+func cellFloor(vals []any) int {
+	floor := 0
+	for _, v := range vals {
+		switch x := v.(type) {
+		case []byte:
+			floor += base64.StdEncoding.EncodedLen(len(x)) + len(`{"$b64":""}`)
+		case string:
+			floor += jsonStringLen(x)
+		}
+	}
+	return floor
+}
+
+// jsonStringLen is how many bytes json.Marshal writes for s, quotes included,
+// counted without writing them. It follows encoding/json's escaping with HTML
+// escaping on, which is what json.Marshal does: a quote, a backslash, a tab, a
+// newline, a carriage return, a backspace or a form feed takes two bytes; other
+// control characters take six, as do <, > and &, and the line and paragraph
+// separators. Each byte of an invalid UTF-8 sequence is written as the
+// replacement character, three bytes. Everything else is written as it is. The
+// count has to agree with the encoder exactly, which the tests hold it to.
+func jsonStringLen(s string) int {
+	n := 2
+	for i := 0; i < len(s); {
+		if b := s[i]; b < utf8.RuneSelf {
+			switch {
+			case b == '"', b == '\\', b == '\b', b == '\f', b == '\n', b == '\r', b == '\t':
+				n += 2
+			case b < 0x20, b == '<', b == '>', b == '&':
+				n += 6
+			default:
+				n++
+			}
+			i++
+			continue
+		}
+		c, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case c == utf8.RuneError && size == 1:
+			n += utf8.RuneLen(utf8.RuneError)
+		case c == ' ' || c == ' ':
+			n += 6
+		default:
+			n += size
+		}
+		i += size
+	}
+	return n
 }
 
 // fetchClient is what backends make their outgoing requests with. It refuses

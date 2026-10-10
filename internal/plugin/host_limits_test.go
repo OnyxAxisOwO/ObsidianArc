@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -107,6 +108,69 @@ func TestAOneCellLargerThanAReplyIsRefused(t *testing.T) {
 	}
 	if _, err := query(`SELECT hex(zeroblob(4718592)) AS t, 1e999 AS inf`); hostCode(err) != "too_large" {
 		t.Fatalf("a 9 MiB text cell beside +Inf: %v", err)
+	}
+}
+
+// The encoder writes a text cell with its escapes, so a cell of characters it
+// writes six bytes apiece is six times its length on the wire. Here the cell is
+// 1.5 MiB of '<', which is 9 MiB escaped and past the 8 MiB message, and +Inf
+// beside it cannot be encoded at all. The row must be refused for its size
+// before the encoder reaches the +Inf; a count of the raw length lets the
+// encoder reach it, and the query then fails for the wrong reason.
+func TestAnEscapedTextCellIsCountedAsItIsWritten(t *testing.T) {
+	r := newRig(t)
+	query := func(stmt string) (any, error) {
+		raw, err := json.Marshal(map[string]any{"sql": stmt})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.manager.dbOp(&wasm.Call{Ctx: context.Background()}, &callState{}, "db.query", raw)
+	}
+	if _, err := query(`SELECT replace(hex(zeroblob(786432)), '0', '<') AS t, 1e999 AS inf`); hostCode(err) != "too_large" {
+		t.Fatalf("an escaped text cell beside +Inf: %v", err)
+	}
+}
+
+// The floor is held to what the encoder writes. Below it, an oversized row
+// reaches the encoder; above it, a reply that fits is refused.
+func TestTheFloorOfARowIsWhatTheEncoderWritesForItsCells(t *testing.T) {
+	bytesCell := []byte{0, 1, 2, 250, 255}
+	cells := []any{"<&>\x01\b\f\n\"\\", bytesCell, "plain   text \xff"}
+	written := []any{
+		"<&>\x01\b\f\n\"\\",
+		map[string]string{"$b64": base64.StdEncoding.EncodeToString(bytesCell)},
+		"plain   text \xff",
+	}
+	want := 0
+	for _, v := range written {
+		enc, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want += len(enc)
+	}
+	if got := cellFloor(cells); got != want {
+		t.Fatalf("the floor of the row is %d, but the encoder writes its cells in %d bytes", got, want)
+	}
+}
+
+// Every string the encoder meets is counted as the encoder writes it: each byte
+// on its own, which covers every control character, quote, backslash and
+// HTML-escaped character, and the characters and invalid sequences that need a
+// longer look.
+func TestAStringIsCountedAsTheEncoderWritesIt(t *testing.T) {
+	samples := []string{"", " ", " ", "�", "é", "中文", "\"\\", "<script>&amp;</script>", "\xff\xfe", "\xe2\x80"}
+	for b := range 256 {
+		samples = append(samples, string([]byte{byte(b)}))
+	}
+	for _, s := range samples {
+		enc, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := jsonStringLen(s); got != len(enc) {
+			t.Errorf("%q: the encoder writes %d bytes, and the count is %d", s, len(enc), got)
+		}
 	}
 }
 
