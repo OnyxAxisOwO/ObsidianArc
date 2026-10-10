@@ -26,6 +26,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -40,11 +41,15 @@ type Config struct {
 	Console *console.Console
 
 	// Authenticate verifies a password against the same store the web login
-	// uses and returns the account. Whether that account may have a console
-	// is Permitted's question, asked by consolessh itself and folded into the
-	// same error a wrong password gets, so the prompt cannot be used to find
-	// out which accounts hold it.
-	Authenticate func(ctx context.Context, username, password, ip string) (user.User, error)
+	// uses and returns the account, with the credential fingerprint (see
+	// Credential) of the hash the password was checked against. The fingerprint
+	// must come from that check's own read: a change made while the password is
+	// being verified then leaves the connection with the old value, and its next
+	// command ends it. Whether that account may have a console is Permitted's
+	// question, asked by consolessh itself and folded into the same error a
+	// wrong password gets, so the prompt cannot be used to find out which
+	// accounts hold it.
+	Authenticate func(ctx context.Context, username, password, ip string) (user.User, string, error)
 
 	// Permitted answers whether an account may use the console at all: the
 	// same rule the web terminal applies, so the two doors cannot disagree
@@ -67,6 +72,15 @@ type Config struct {
 	//
 	// Called before every command. An error ends the session.
 	Reauthorize func(ctx context.Context, userID string) (user.User, error)
+
+	// Credential fingerprints the account's password, and must change whenever
+	// the password does. It must also agree with what Authenticate returns for
+	// the same password, or every connection would end at its first command. A
+	// connection keeps the value it was opened with, and its next command ends
+	// once the account's value differs. A password change ends the sessions a
+	// web sign-in holds, but a console connection has no cookie and no session
+	// row for that to reach. Nil checks nothing.
+	Credential func(ctx context.Context, userID string) (string, error)
 
 	// SecondFactor checks the code from an authenticator app, for an account
 	// that has two-step sign-in switched on. The password alone opens the
@@ -370,7 +384,15 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 		return nil, errAuthFailed
 	}
 	ip := hostOnly(conn.RemoteAddr())
-	account, err := s.cfg.Authenticate(context.Background(), conn.User(), string(password), ip)
+	// The credential is the one Config.Authenticate read while it checked the
+	// password, and it is not read again here. A second read would sit behind the
+	// whole verification, Argon2 included, so a password changed anywhere in that
+	// span would be recorded as the one this connection signed in with, and the
+	// old password would keep a console the change should have ended. A sign-in
+	// that rehashes the stored hash gets the fingerprint of the hash it checked,
+	// so its own connection ends at its first command; that happens once per
+	// account per parameter change and is accepted.
+	account, credential, err := s.cfg.Authenticate(context.Background(), conn.User(), string(password), ip)
 	if err != nil {
 		return nil, errAuthFailed
 	}
@@ -398,19 +420,29 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 				if err := s.cfg.SecondFactor(context.Background(), account, answers[0], ip); err != nil {
 					return nil, errAuthFailed
 				}
-				return actorPermissions(account)
+				return actorPermissions(account, credential)
 			},
 		}}
 	}
-	return actorPermissions(account)
+	return actorPermissions(account, credential)
 }
 
-func actorPermissions(account user.User) (*ssh.Permissions, error) {
+func actorPermissions(account user.User, credential string) (*ssh.Permissions, error) {
 	encoded, err := json.Marshal(account)
 	if err != nil {
 		return nil, errAuthFailed
 	}
-	return &ssh.Permissions{Extensions: map[string]string{"actor": string(encoded)}}, nil
+	return &ssh.Permissions{Extensions: map[string]string{
+		"actor":      string(encoded),
+		"credential": credential,
+	}}, nil
+}
+
+func credentialFromPermissions(perm *ssh.Permissions) string {
+	if perm == nil {
+		return ""
+	}
+	return perm.Extensions["credential"]
 }
 
 func actorFromPermissions(perm *ssh.Permissions) (user.User, bool) {
@@ -440,9 +472,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	// stretches and the idle timeout is what governs it from then on.
 	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
 
-	// Counted from accept to the end of the handshake, whichever way it ends.
 	ip := hostOnly(conn.RemoteAddr())
-	if !s.acquirePreauth(ip) {
+	// Counted from accept to the end of the handshake, whichever way it ends.
+	slot, admitted := s.acquirePreauth(conn.RemoteAddr())
+	if !admitted {
 		// NewServerConn closes the socket when a handshake fails; this one
 		// never starts, so nothing else will.
 		_ = conn.Close()
@@ -450,7 +483,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, s.sshConfig)
-	s.releasePreauth(ip)
+	s.releasePreauth(slot)
 	if err != nil {
 		// A failed handshake is routine on the public internet (scanners,
 		// mistyped passwords) and not worth more than a debug-level trace;
@@ -466,6 +499,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	if !ok {
 		return
 	}
+	credential := credentialFromPermissions(sconn.Permissions)
 	base := context.Background()
 	if s.cfg.ConnectionContext != nil {
 		base = s.cfg.ConnectionContext(base)
@@ -497,7 +531,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		sess := newSSHSession(s, sconn, channel, actor, ip)
+		sess := newSSHSession(s, sconn, channel, actor, ip, credential)
 		sess.base = base
 		s.addSession(sess)
 		s.wg.Add(1)
@@ -578,35 +612,41 @@ func (s *Server) releaseAccountSlot(accountID string) {
 	s.perAccount[accountID]--
 }
 
-func (s *Server) acquirePreauth(ip string) bool {
+// acquirePreauth reserves a handshake slot and returns the key it is counted
+// against, which releasePreauth takes back. The key is derived here from the
+// address rather than passed in: a caller that counted by the raw host would
+// give each IPv6 address of a /64 its own share, although one client owns the
+// whole /64.
+func (s *Server) acquirePreauth(addr net.Addr) (string, bool) {
+	key := preauthKey(addr)
 	if s.cfg.MaxUnauthenticated < 0 {
-		return true
+		return key, true
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.preauth >= s.cfg.MaxUnauthenticated || s.preauthIP[ip] >= maxPreauthPerIP {
-		return false
+	if s.preauth >= s.cfg.MaxUnauthenticated || s.preauthIP[key] >= maxPreauthPerIP {
+		return "", false
 	}
 	if s.preauthIP == nil {
 		s.preauthIP = make(map[string]int)
 	}
 	s.preauth++
-	s.preauthIP[ip]++
-	return true
+	s.preauthIP[key]++
+	return key, true
 }
 
-func (s *Server) releasePreauth(ip string) {
+func (s *Server) releasePreauth(key string) {
 	if s.cfg.MaxUnauthenticated < 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.preauth--
-	if s.preauthIP[ip] <= 1 {
-		delete(s.preauthIP, ip)
+	if s.preauthIP[key] <= 1 {
+		delete(s.preauthIP, key)
 		return
 	}
-	s.preauthIP[ip]--
+	s.preauthIP[key]--
 }
 
 func (s *Server) addSession(sess *sshSession) {
@@ -635,6 +675,13 @@ func hostOnly(addr net.Addr) string {
 	return host
 }
 
+// preauthKey is what a handshake slot is counted against. An IPv6 client holds
+// a whole /64, so counting each address on its own would let one client take
+// every handshake slot from eight addresses. The HTTP limiters key the same way.
+func preauthKey(addr net.Addr) string {
+	return httpx.RateKey(hostOnly(addr))
+}
+
 // --- one session: pty/window/env negotiation, then shell or exec ---
 
 type sshSession struct {
@@ -643,6 +690,10 @@ type sshSession struct {
 	channel ssh.Channel
 	actor   user.User
 	ip      string
+	// The credential the connection was opened with. Set once at the handshake
+	// and never refreshed: reauthorize compares the account's current value
+	// against it, so refreshing it would forgive a change.
+	credential string
 	// What every command on this connection runs under: shared by all the
 	// connection's channels, gone when it hangs up.
 	base context.Context
@@ -656,16 +707,17 @@ type sshSession struct {
 	closeOnce sync.Once
 }
 
-func newSSHSession(server *Server, conn ssh.Conn, channel ssh.Channel, actor user.User, ip string) *sshSession {
+func newSSHSession(server *Server, conn ssh.Conn, channel ssh.Channel, actor user.User, ip, credential string) *sshSession {
 	return &sshSession{
-		server:  server,
-		conn:    conn,
-		channel: channel,
-		actor:   actor,
-		ip:      ip,
-		base:    context.Background(),
-		width:   100, // console.Session.Width: 0 means unknown, assume 100 — pick it up front rather than repeat the fallback at every render.
-		lang:    "en",
+		server:     server,
+		conn:       conn,
+		channel:    channel,
+		actor:      actor,
+		ip:         ip,
+		credential: credential,
+		base:       context.Background(),
+		width:      100, // console.Session.Width: 0 means unknown, assume 100 — pick it up front rather than repeat the fallback at every render.
+		lang:       "en",
 	}
 }
 
@@ -700,6 +752,11 @@ func (sess *sshSession) closeChannel() {
 // because the console has nothing useful to say about which.
 var errAccountNoLongerAdmin = errors.New("consolessh: the account no longer has console access")
 
+// errCredentialChanged ends a connection that was opened with a password the
+// account no longer has. Its own error, so the person typing sees the reason:
+// signing in again is what they can do about it.
+var errCredentialChanged = errors.New("consolessh: the account's password changed")
+
 func (s *Server) permitted(ctx context.Context, account user.User) bool {
 	if s.cfg.Permitted == nil {
 		return account.IsAdmin()
@@ -708,6 +765,18 @@ func (s *Server) permitted(ctx context.Context, account user.User) bool {
 }
 
 const revokedMessage = "\r\nThis account no longer has console access. Closing.\r\n"
+
+// credentialChangedMessage names the one reason a person can act on: the
+// password they signed in with is no longer the account's.
+const credentialChangedMessage = "\r\nThe password for this account changed. Sign in again.\r\n"
+
+// endNotice is what a connection says when its next command is refused.
+func endNotice(err error) string {
+	if errors.Is(err, errCredentialChanged) {
+		return credentialChangedMessage
+	}
+	return revokedMessage
+}
 
 func (sess *sshSession) close() {
 	sess.closeOnce.Do(func() {
@@ -943,6 +1012,15 @@ func (sess *sshSession) reauthorize(ctx context.Context) (user.User, error) {
 	if !account.IsActive() || !sess.server.permitted(ctx, account) {
 		return user.User{}, errAccountNoLongerAdmin
 	}
+	if sess.server.cfg.Credential != nil {
+		current, err := sess.server.cfg.Credential(ctx, account.ID)
+		if err != nil {
+			return user.User{}, err
+		}
+		if current != sess.credential {
+			return user.User{}, errCredentialChanged
+		}
+	}
 
 	sess.mu.Lock()
 	sess.actor = account
@@ -979,7 +1057,7 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 
 	consoleSession, err := sess.currentSession(ctx, "ssh")
 	if err != nil {
-		_, _ = sess.channel.Write([]byte(revokedMessage))
+		_, _ = sess.channel.Write([]byte(endNotice(err)))
 		_, _ = sess.channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{1}))
 		return
 	}
@@ -1107,7 +1185,7 @@ func (sess *sshSession) runInteractive() {
 			go func(line string) {
 				current, authErr := sess.currentSession(runCtx, "ssh")
 				if authErr != nil {
-					_, _ = sess.channel.Write([]byte(revokedMessage))
+					_, _ = sess.channel.Write([]byte(endNotice(authErr)))
 					results <- execEvent{result: console.Result{Exit: true}}
 					return
 				}

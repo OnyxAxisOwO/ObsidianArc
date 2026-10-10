@@ -706,6 +706,28 @@ func (s *Store) SetPasswordHash(ctx context.Context, q database.Queryer, userID,
 	return nil
 }
 
+// ReplacePasswordHash stores hash in place of verified, and only while verified
+// is still the stored hash; it reports whether it did. A sign-in that rehashes
+// computes the new hash after its check, so a password changed in that span is
+// already stored by the time this runs. An unconditional write would put the
+// old password's hash back over the change.
+func (s *Store) ReplacePasswordHash(ctx context.Context, q database.Queryer, userID, verified, hash string) (bool, error) {
+	if q == nil {
+		q = s.db
+	}
+	result, err := q.Exec(ctx,
+		`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND password_hash = ?`,
+		hash, time.Now().UnixMilli(), userID, verified)
+	if err != nil {
+		return false, fmt.Errorf("user: replace password hash: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("user: replace password hash: %w", err)
+	}
+	return affected == 1, nil
+}
+
 func (s *Store) MarkLogin(ctx context.Context, userID string, at int64) error {
 	_, err := s.db.Exec(ctx, `UPDATE users SET last_login_at = ? WHERE id = ?`, at, userID)
 	if err != nil {

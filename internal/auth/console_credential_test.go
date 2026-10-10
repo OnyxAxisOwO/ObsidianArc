@@ -21,7 +21,7 @@ func TestVerifyCredentialAuthenticatesWithoutIssuingASession(t *testing.T) {
 	}
 	before := sessionCount(t, f)
 
-	account, err := f.auth.VerifyCredential(ctx, "ARC", "a-good-password", "198.51.100.7")
+	account, _, err := f.auth.VerifyCredential(ctx, "ARC", "a-good-password", "198.51.100.7")
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -41,8 +41,8 @@ func TestVerifyCredentialRejectsWrongPasswordAndUnknownAccountIdentically(t *tes
 		t.Fatal(err)
 	}
 
-	_, wrongPassword := f.auth.VerifyCredential(ctx, "arc", "not-it-at-all", "198.51.100.7")
-	_, unknownAccount := f.auth.VerifyCredential(ctx, "nobody", "not-it-at-all", "198.51.100.8")
+	_, _, wrongPassword := f.auth.VerifyCredential(ctx, "arc", "not-it-at-all", "198.51.100.7")
+	_, _, unknownAccount := f.auth.VerifyCredential(ctx, "nobody", "not-it-at-all", "198.51.100.8")
 
 	if !errors.Is(wrongPassword, ErrInvalidCredentials) || !errors.Is(unknownAccount, ErrInvalidCredentials) {
 		t.Fatalf("errors differ: wrong password %v, unknown account %v", wrongPassword, unknownAccount)
@@ -67,7 +67,7 @@ func TestVerifyCredentialRefusesADisabledAccount(t *testing.T) {
 		t.Fatalf("disable: %v", err)
 	}
 
-	if _, err := f.auth.VerifyCredential(ctx, "arc", "a-good-password", "198.51.100.7"); !errors.Is(err, ErrAccountDisabled) {
+	if _, _, err := f.auth.VerifyCredential(ctx, "arc", "a-good-password", "198.51.100.7"); !errors.Is(err, ErrAccountDisabled) {
 		t.Fatalf("verify a disabled account = %v, want ErrAccountDisabled", err)
 	}
 }
@@ -85,7 +85,7 @@ func TestVerifyCredentialSharesTheLoginAttemptBudget(t *testing.T) {
 
 	const address = "198.51.100.9"
 	for attempt := 0; attempt <= freeAttempts; attempt++ {
-		if _, err := f.auth.VerifyCredential(ctx, "arc", "wrong-password-here", address); err != nil {
+		if _, _, err := f.auth.VerifyCredential(ctx, "arc", "wrong-password-here", address); err != nil {
 			var limited *RateLimitError
 			if errors.As(err, &limited) {
 				break
@@ -120,7 +120,7 @@ func TestVerifyCredentialIsNotHeldToTheBrowserChallenge(t *testing.T) {
 	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); !errors.Is(err, turnstile.ErrFailed) {
 		t.Fatalf("the browser login should still be gated, got %v", err)
 	}
-	if _, err := f.auth.VerifyCredential(ctx, "arc", "a-good-password", "198.51.100.7"); err != nil {
+	if _, _, err := f.auth.VerifyCredential(ctx, "arc", "a-good-password", "198.51.100.7"); err != nil {
 		t.Fatalf("console verification should not be gated, got %v", err)
 	}
 }

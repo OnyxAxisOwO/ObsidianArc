@@ -682,7 +682,9 @@ func (s *Service) spendCode(ctx context.Context, account user.User, candidate, i
 	if err != nil {
 		return err
 	}
-	attempt.finish(attemptSucceeded)
+	// Releases the reservation without forgiving the failures before it: a
+	// guesser who is eventually right must not get a clean count back.
+	attempt.finish(attemptCancelled)
 	if method == "recovery" {
 		s.twoFactorEvent(ctx, "recovery_used", account, ip)
 	}

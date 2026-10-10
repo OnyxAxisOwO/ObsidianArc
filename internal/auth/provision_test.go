@@ -106,7 +106,7 @@ func TestAnAccountWithNoPasswordRefusesTheSignInFormLikeAnyOther(t *testing.T) {
 			t.Fatalf("login with %q = %v, want the same refusal a wrong password gets", attempt, err)
 		}
 	}
-	if _, err := f.auth.VerifyCredential(ctx, account.Username, "a-good-password", ""); !errors.Is(err, ErrInvalidCredentials) {
+	if _, _, err := f.auth.VerifyCredential(ctx, account.Username, "a-good-password", ""); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("console credential check = %v, want the same refusal", err)
 	}
 }

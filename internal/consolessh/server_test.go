@@ -51,17 +51,19 @@ type testAccount struct {
 
 // fakeAuthenticate stands in for auth.Service.VerifyCredential: same shape,
 // same "every failure looks identical" contract, but with no database
-// behind it so these tests do not need internal/auth or a store.
-func fakeAuthenticate(accounts map[string]testAccount) func(context.Context, string, string, string) (user.User, error) {
-	return func(_ context.Context, username, password, _ string) (user.User, error) {
+// behind it so these tests do not need internal/auth or a store. It reports
+// no credential fingerprint, which is right for every test that does not
+// configure Credential; a test that does supplies its own Authenticate.
+func fakeAuthenticate(accounts map[string]testAccount) func(context.Context, string, string, string) (user.User, string, error) {
+	return func(_ context.Context, username, password, _ string) (user.User, string, error) {
 		entry, ok := accounts[username]
 		if !ok || entry.password != password {
-			return user.User{}, errors.New("fake: incorrect username or password")
+			return user.User{}, "", errors.New("fake: incorrect username or password")
 		}
 		if !entry.account.IsActive() {
-			return user.User{}, errors.New("fake: account disabled")
+			return user.User{}, "", errors.New("fake: account disabled")
 		}
-		return entry.account, nil
+		return entry.account, "", nil
 	}
 }
 
@@ -616,6 +618,43 @@ func TestHostOnlyStripsThePort(t *testing.T) {
 	}
 	if got := hostOnly(nil); got != "" {
 		t.Errorf("hostOnly(nil) = %q, want empty", got)
+	}
+}
+
+// An IPv6 client holds a whole /64, so the handshake cap has to count the
+// subnet. Counted per exact address, one client could hold every one of the 64
+// handshake slots from eight addresses, and the console would refuse everyone.
+// The key is derived inside acquirePreauth from the address, so a caller cannot
+// count by the raw host instead, and the test goes through the same entry point
+// the connection handler does.
+func TestPreauthSlotsAreCountedPerIPv6Subnet(t *testing.T) {
+	srv := &Server{cfg: Config{MaxUnauthenticated: 64}}
+	addr := func(ip string) net.Addr {
+		return &net.TCPAddr{IP: net.ParseIP(ip), Port: 22}
+	}
+	var held []string
+	for _, ip := range []string{
+		"2001:db8:0:1::1", "2001:db8:0:1::2", "2001:db8:0:1::3", "2001:db8:0:1::4",
+		"2001:db8:0:1::5", "2001:db8:0:1::6", "2001:db8:0:1::7", "2001:db8:0:1::8",
+	} {
+		key, ok := srv.acquirePreauth(addr(ip))
+		if !ok {
+			t.Fatalf("the handshake slot for %s was refused within the subnet's share", ip)
+		}
+		held = append(held, key)
+	}
+	if _, ok := srv.acquirePreauth(addr("2001:db8:0:1::9")); ok {
+		t.Fatal("a ninth handshake from one /64 was admitted")
+	}
+	if _, ok := srv.acquirePreauth(addr("2001:db8:0:2::1")); !ok {
+		t.Fatal("a handshake from another /64 was refused")
+	}
+
+	// Giving a slot back has to find the key it was counted under, or the
+	// subnet's share never comes back.
+	srv.releasePreauth(held[0])
+	if _, ok := srv.acquirePreauth(addr("2001:db8:0:1::9")); !ok {
+		t.Fatal("a handshake from the subnet was refused after one of its slots was released")
 	}
 }
 

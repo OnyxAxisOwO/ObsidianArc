@@ -182,6 +182,11 @@ type Service struct {
 	ConsumeInvite   func(ctx context.Context, tx *database.Tx, code string) (*InviteGrant, error)
 	RecordInviteUse func(ctx context.Context, tx *database.Tx, grant InviteGrant, userID string) error
 	RewardInvite    func(ctx context.Context, userID string, verificationRequired bool)
+
+	// Called between a sign-in computing its upgraded hash and writing it: the
+	// window a password change has to be able to land in. Nil outside tests,
+	// which set it to make that change at exactly that point.
+	beforeRehashWrite func()
 }
 
 func NewService(
@@ -967,7 +972,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 	if err != nil {
 		if errors.Is(err, user.ErrNotFound) {
 			s.hasher.DummyVerify(ctx, in.Password)
-			attempt.finish(attemptFailed)
+			attempt.finish(attemptFailedUnknown)
 			return user.User{}, "", ErrInvalidCredentials
 		}
 		return user.User{}, "", err
@@ -1000,9 +1005,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 	attempt.finish(attemptSucceeded)
 
 	if needsRehash {
-		if upgraded, hashErr := s.hasher.Hash(ctx, in.Password); hashErr == nil {
-			_ = s.users.SetPasswordHash(ctx, nil, account.ID, upgraded)
-		}
+		s.rehash(ctx, account.ID, hash, in.Password)
 	}
 
 	token, err := s.secondStep(ctx, account, in.Remembered, in.IP, in.UA)
@@ -1024,12 +1027,18 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 // count against one budget rather than two, and the same dummy verification,
 // so an unknown account costs the same wall-clock as a known one.
 //
+// It also returns the account's credential fingerprint (see
+// CredentialFingerprint), taken from the same read of the stored hash that the
+// password was checked against. A second read after the check would sit behind
+// the whole verification, and a change made in that span would pair the new
+// fingerprint with the old password.
+//
 // Every failure returns ErrInvalidCredentials. A caller that is about to tell
 // a stranger whether an account exists is the reason.
-func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip string) (user.User, error) {
+func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip string) (user.User, string, error) {
 	attempt, err := s.limiter.Begin(ip, identifier)
 	if err != nil {
-		return user.User{}, err
+		return user.User{}, "", err
 	}
 	defer attempt.finish(attemptCancelled)
 
@@ -1037,10 +1046,10 @@ func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip
 	if err != nil {
 		if errors.Is(err, user.ErrNotFound) {
 			s.hasher.DummyVerify(ctx, password)
-			attempt.finish(attemptFailed)
-			return user.User{}, ErrInvalidCredentials
+			attempt.finish(attemptFailedUnknown)
+			return user.User{}, "", ErrInvalidCredentials
 		}
-		return user.User{}, err
+		return user.User{}, "", err
 	}
 
 	ok, needsRehash, err := s.hasher.Verify(ctx, hash, password)
@@ -1049,27 +1058,46 @@ func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip
 		// same way for the same reason.
 		s.hasher.DummyVerify(ctx, password)
 		attempt.finish(attemptFailed)
-		return user.User{}, ErrInvalidCredentials
+		return user.User{}, "", ErrInvalidCredentials
 	}
 	if err != nil {
-		return user.User{}, err
+		return user.User{}, "", err
 	}
 	if !ok {
 		attempt.finish(attemptFailed)
-		return user.User{}, ErrInvalidCredentials
+		return user.User{}, "", ErrInvalidCredentials
 	}
 	if !account.IsActive() {
-		return user.User{}, &AccountDisabledError{Reason: account.BanReason}
+		return user.User{}, "", &AccountDisabledError{Reason: account.BanReason}
 	}
 
 	attempt.finish(attemptSucceeded)
 
+	// The rehash moves the stored hash, so the fingerprint returned below stops
+	// matching CredentialFingerprint, and the console connection this sign-in
+	// opens ends at its first command. That happens once per account per
+	// parameter change. Re-reading the hash after the upgrade would be the second
+	// read this function exists to avoid, so the cost is accepted.
 	if needsRehash {
-		if upgraded, hashErr := s.hasher.Hash(ctx, password); hashErr == nil {
-			_ = s.users.SetPasswordHash(ctx, nil, account.ID, upgraded)
-		}
+		s.rehash(ctx, account.ID, hash, password)
 	}
-	return account, nil
+	return account, fingerprintOf(hash), nil
+}
+
+// rehash stores a hash made with the current parameters in place of the one a
+// sign-in just verified, when that one was weaker. Only that hash is replaced:
+// the new one is computed after the check, so a password changed in the meantime
+// is already stored, and it has to stay. A failed upgrade is not a failed
+// sign-in, and the next sign-in tries again.
+func (s *Service) rehash(ctx context.Context, userID, verified, password string) {
+	upgraded, err := s.hasher.Hash(ctx, password)
+	if err != nil {
+		return
+	}
+	if s.beforeRehashWrite != nil {
+		s.beforeRehashWrite()
+	}
+	_, _ = s.users.ReplacePasswordHash(ctx, nil, userID, verified, upgraded)
 }
 
 func (s *Service) Logout(ctx context.Context, token string) error {
@@ -1151,7 +1179,10 @@ func (s *Service) checkPassword(ctx context.Context, userID, hash, candidate str
 		attempt.finish(attemptFailed)
 		return ErrCurrentPasswordWrong
 	}
-	attempt.finish(attemptSucceeded)
+	// Releases the reservation without forgiving the wrong guesses before it. The
+	// owner's own right password is no reason to start a guesser's count over, the
+	// rule the second step follows in spendCode.
+	attempt.finish(attemptCancelled)
 	return nil
 }
 
@@ -1327,6 +1358,24 @@ func (s *Service) Authenticate(ctx context.Context, token string) (user.User, Se
 		_ = s.sessions.Touch(ctx, session.ID, s.cfg.TTL)
 	}
 	return account, session, nil
+}
+
+// Resolve answers what Authenticate answers, which account this cookie is and
+// whether it may still act, and writes nothing. A background stream asks it
+// before each of its runs: the person behind a stream is not necessarily there,
+// so the stream must not renew the sign-in or stamp the account as active.
+func (s *Service) Resolve(ctx context.Context, token string) (user.User, error) {
+	session, account, err := s.sessions.GetWithUser(ctx, token)
+	if err != nil {
+		return user.User{}, err
+	}
+	if !account.IsActive() {
+		return user.User{}, &AccountDisabledError{Reason: account.BanReason}
+	}
+	if session.TwoFactorPending {
+		return user.User{}, ErrSignInIncomplete
+	}
+	return account, nil
 }
 
 // --- cookie ------------------------------------------------------------------

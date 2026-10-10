@@ -827,6 +827,35 @@ func TestChangePasswordRefusesASessionThatHasEnded(t *testing.T) {
 	}
 }
 
+// A session whose time has run out is refused while its row is still there.
+// Logout is no stand-in: it deletes the row, so the expiry check in Reissue
+// never decides the outcome.
+func TestChangePasswordRefusesASessionPastItsExpiry(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Authenticate refuses an expired row, so the session is read before the row is aged.
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(ctx, `UPDATE sessions SET expires_at = ? WHERE id = ?`,
+		time.Now().Add(-time.Minute).UnixMilli(), session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", session.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a change from a session past its expiry = %v, want ErrSessionNotFound", err)
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); err != nil {
+		t.Errorf("the refused change still changed the password: %v", err)
+	}
+}
+
 // Two changes from one session can both pass the password check. Only one may
 // land, and only one may leave a session behind.
 func TestParallelPasswordChangesFromOneSessionIssueOneSession(t *testing.T) {

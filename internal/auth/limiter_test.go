@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// failAttempt is a failure against a name that matched an account.
 func failAttempt(t *testing.T, l *Limiter, ip, identifier string) {
 	t.Helper()
 	attempt, err := l.Begin(ip, identifier)
@@ -16,6 +17,21 @@ func failAttempt(t *testing.T, l *Limiter, ip, identifier string) {
 		t.Fatalf("Begin(%q, %q): %v", ip, identifier, err)
 	}
 	attempt.finish(attemptFailed)
+}
+
+// failUnknown is a failure against a name that matched no account.
+func failUnknown(t *testing.T, l *Limiter, ip, identifier string) {
+	t.Helper()
+	attempt, err := l.Begin(ip, identifier)
+	if err != nil {
+		t.Fatalf("Begin(%q, %q): %v", ip, identifier, err)
+	}
+	attempt.finish(attemptFailedUnknown)
+}
+
+// reclaimable is what the ceiling bounds: every bucket that protects no account.
+func reclaimable(l *Limiter) int {
+	return len(l.buckets) - l.protected
 }
 
 func isLimited(err error) bool {
@@ -152,21 +168,21 @@ func TestIPv6AddressesInOneSubnetShareABucket(t *testing.T) {
 	attempt.finish(attemptCancelled)
 }
 
-// Every failed name keeps its bucket for half an hour, so a flood of failed
-// names is what the ceiling has to stop.
-func TestNewNamesStopAtTheCeiling(t *testing.T) {
+// A name that matched nothing keeps its bucket for half an hour, so a flood of
+// them is what the ceiling has to bound. The flood is never refused: the map
+// holds no more reclaimable buckets than the ceiling allows.
+func TestUnknownNamesAreReclaimedAtTheCeiling(t *testing.T) {
 	l := NewLimiter()
 	l.ceiling = 8
 
 	for i := 0; i < 200; i++ {
 		attempt, err := l.Begin("", fmt.Sprintf("name-%d", i))
-		if err == nil {
-			attempt.finish(attemptFailed)
-		} else if !isLimited(err) {
-			t.Fatalf("Begin: unexpected error %v", err)
+		if err != nil {
+			t.Fatalf("name %d was refused: %v", i+1, err)
 		}
-		if n := len(l.buckets); n > 8 {
-			t.Fatalf("after %d names the map holds %d buckets, want at most 8", i+1, n)
+		attempt.finish(attemptFailedUnknown)
+		if n := reclaimable(l); n > 8 {
+			t.Fatalf("after %d names the map holds %d reclaimable buckets, want at most 8", i+1, n)
 		}
 	}
 	if n := len(l.buckets); n != 8 {
@@ -174,120 +190,239 @@ func TestNewNamesStopAtTheCeiling(t *testing.T) {
 	}
 }
 
-// An attempt needs a bucket for each key it creates. When the map has room
-// for only one of an address and an account, the whole attempt is refused:
-// storing the address alone would leave a bucket whose in-flight count never
-// comes back down, so the sweep could never remove it.
-func TestARefusedAttemptLeavesNoKeysBehind(t *testing.T) {
+// Under pressure, names that matched nothing are reclaimed before addresses, so
+// a flood of invented names does not spend the blocks on the addresses sending
+// it. Here the addresses are the older buckets, which is what a plain
+// least-recently-used rule would take first.
+func TestUnknownNamesAreReclaimedBeforeAddresses(t *testing.T) {
 	l := NewLimiter()
 	l.ceiling = 4
-	failAttempt(t, l, "203.0.113.1", "one")
-	failAttempt(t, l, "203.0.113.2", "two")
+	failUnknown(t, l, "203.0.113.1", "")
+	failUnknown(t, l, "203.0.113.2", "")
+	failUnknown(t, l, "", "one")
+	failUnknown(t, l, "", "two")
 
-	if _, err := l.Begin("203.0.113.3", "three"); !isLimited(err) {
-		t.Fatalf("a new address and a new account with the map full: err = %v, want rate limited", err)
-	}
-	if _, ok := l.buckets["ip:203.0.113.3"]; ok {
-		t.Error("the address of a refused attempt was stored")
-	}
-	if n := len(l.buckets); n != 4 {
-		t.Fatalf("the map holds %d buckets, want the 4 it had", n)
-	}
-}
+	older := time.Now().Add(-10 * time.Minute)
+	l.buckets["ip:203.0.113.1"].lastFailure = older
+	l.buckets["ip:203.0.113.2"].lastFailure = older
 
-// Once a bucket has been idle past its window it is only memory. A full map
-// reclaims those before it turns anyone away, so a quiet map does not refuse
-// a new name.
-func TestAFullMapReclaimsIdleBucketsBeforeRefusing(t *testing.T) {
-	l := NewLimiter()
-	l.ceiling = 4
-	for i := 0; i < 4; i++ {
-		failAttempt(t, l, "", fmt.Sprintf("old-%d", i))
-	}
-	idle := time.Now().Add(-2 * bucketTTL)
-	for _, entry := range l.buckets {
-		entry.lastFailure = idle
-	}
-
-	attempt, err := l.Begin("", "fresh")
+	attempt, err := l.Begin("", "three")
 	if err != nil {
-		t.Fatalf("a full map of idle buckets refused a new name: %v", err)
+		t.Fatalf("a new name was refused: %v", err)
 	}
-	attempt.finish(attemptFailed)
+	attempt.finish(attemptCancelled)
 
-	if n := len(l.buckets); n != 1 {
-		t.Fatalf("the map holds %d buckets, want only the new name's", n)
+	for _, key := range []string{"ip:203.0.113.1", "ip:203.0.113.2"} {
+		if _, ok := l.buckets[key]; !ok {
+			t.Errorf("%s was reclaimed while a name that matched nothing was available", key)
+		}
+	}
+	if _, ok := l.buckets["id:one"]; ok {
+		t.Error("the least recently used name was kept while it was the one to reclaim")
 	}
 }
 
-// What a full map may not reclaim is anything that still counts: a failure
-// inside its window, a block still running, or an attempt not yet finished.
-// Each is set up with an idle window, so only the one under test protects it.
-// The new name is refused, and every name already being guessed at keeps its
-// budget.
-func TestAFullMapNeverReclaimsABucketThatStillCounts(t *testing.T) {
+// A refusal is never the answer to a full map. When nothing can be reclaimed,
+// the attempt goes ahead, and the in-flight counts come back down once it
+// finishes, so the buckets it left behind can be reclaimed later.
+func TestAnAttemptIsNeverRefusedForWantOfRoom(t *testing.T) {
 	l := NewLimiter()
-	l.ceiling = 3
-	idle := time.Now().Add(-2 * bucketTTL)
+	l.ceiling = 2
 
-	failAttempt(t, l, "", "in-window")
+	a, err := l.Begin("203.0.113.1", "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := l.Begin("203.0.113.2", "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := l.Begin("203.0.113.3", "three")
+	if err != nil {
+		t.Fatalf("a full map of attempts in flight refused a new one: %v", err)
+	}
+	for _, attempt := range []*loginAttempt{a, b, c} {
+		attempt.finish(attemptFailedUnknown)
+	}
+	for key, entry := range l.buckets {
+		if entry.inFlight != 0 {
+			t.Errorf("%s still has %d attempts in flight after they finished", key, entry.inFlight)
+		}
+	}
+}
 
-	failAttempt(t, l, "", "blocked")
-	blocked := l.buckets["id:blocked"]
-	blocked.failures = freeAttempts + 1
-	blocked.blockedUntil = time.Now().Add(time.Hour)
-	blocked.lastFailure = idle
+// A walk must never take a bucket that protects an account or one with an
+// attempt still in flight, even when it is the only thing in the map to take.
+// The new name is admitted and both of those survive.
+func TestAProtectedOrInFlightBucketIsNeverReclaimed(t *testing.T) {
+	l := NewLimiter()
+	l.ceiling = 1
+	failAttempt(t, l, "", "known")
 
 	busy, err := l.Begin("", "busy")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer busy.finish(attemptCancelled)
-	l.buckets["id:busy"].lastFailure = idle
 
-	if _, err := l.Begin("", "newcomer"); !isLimited(err) {
-		t.Fatalf("a full map of live buckets took a new name: err = %v", err)
+	attempt, err := l.Begin("", "newcomer")
+	if err != nil {
+		t.Fatalf("a full map refused a new name: %v", err)
 	}
-	for _, key := range []string{"id:in-window", "id:blocked", "id:busy"} {
+	attempt.finish(attemptCancelled)
+
+	for _, key := range []string{"id:known", "id:busy"} {
 		if _, ok := l.buckets[key]; !ok {
-			t.Errorf("%s was reclaimed from a full map", key)
+			t.Errorf("%s was reclaimed for room", key)
 		}
 	}
 }
 
-// A full map is walked at most once per interval. Without that, a flood of new
-// names would walk the whole map once for each of them.
-func TestAFullMapIsWalkedAtMostOncePerInterval(t *testing.T) {
+// A walk that could not free anything is not repeated for every name that
+// arrives inside the interval: those names are admitted without a walk, so the
+// bucket that became reclaimable meanwhile is still there. Once the interval has
+// passed, the walk runs again and reclaims it.
+func TestAWalkThatFreedNothingIsNotRepeatedWithinTheInterval(t *testing.T) {
 	l := NewLimiter()
 	l.ceiling = 2
-	failAttempt(t, l, "", "a")
-	failAttempt(t, l, "", "b")
 
-	// This walk runs, finds both names inside their window, and stamps itself.
-	if _, err := l.Begin("", "c"); !isLimited(err) {
-		t.Fatalf("a full map admitted a new name: err = %v", err)
+	a, err := l.Begin("", "a")
+	if err != nil {
+		t.Fatal(err)
 	}
-	l.buckets["id:a"].lastFailure = time.Now().Add(-2 * bucketTTL)
+	b, err := l.Begin("", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both are in flight, so this walk has nothing it may take.
+	c, err := l.Begin("", "c")
+	if err != nil {
+		t.Fatalf("a walk that freed nothing refused a name: %v", err)
+	}
+	a.finish(attemptFailedUnknown)
 
-	// A walk stamped an hour ahead keeps the interval shut for any run this test
-	// can have, so the idle "a" must survive the refusal.
-	l.lastFullSweep = time.Now().Add(time.Hour)
-	if _, err := l.Begin("", "d"); !isLimited(err) {
-		t.Fatalf("a second walk ran inside the interval: err = %v", err)
+	d, err := l.Begin("", "d")
+	if err != nil {
+		t.Fatalf("a name inside the interval was refused: %v", err)
 	}
 	if _, ok := l.buckets["id:a"]; !ok {
 		t.Fatal("the map was walked again inside the interval")
 	}
 
-	// Once the interval has passed the walk runs, reclaims "a", and admits "d".
 	l.lastFullSweep = time.Now().Add(-2 * fullSweepInterval)
-	attempt, err := l.Begin("", "d")
+	e, err := l.Begin("", "e")
 	if err != nil {
-		t.Fatalf("a walk after the interval did not make room: %v", err)
+		t.Fatalf("a name after the interval was refused: %v", err)
 	}
-	attempt.finish(attemptFailed)
 	if _, ok := l.buckets["id:a"]; ok {
-		t.Error("the walk after the interval left an idle bucket behind")
+		t.Error("the walk after the interval left a reclaimable bucket behind")
+	}
+	for _, attempt := range []*loginAttempt{b, c, d, e} {
+		attempt.finish(attemptCancelled)
+	}
+}
+
+// The attempt's own address is never reclaimed to make room for its own name,
+// even when it is the least recently used bucket in the map. Reclaiming it would
+// hand the attempt a fresh address budget in the middle of the attempt.
+func TestAWalkNeverReclaimsTheAttemptsOwnKeys(t *testing.T) {
+	l := NewLimiter()
+	failUnknown(t, l, "203.0.113.9", "")
+	failUnknown(t, l, "", "other")
+	l.buckets["ip:203.0.113.9"].lastFailure = time.Now().Add(-time.Minute)
+	// With a ceiling of one, admitting the new name means freeing two buckets.
+	// Only "other" may be taken: the address is the attempt's own key.
+	l.ceiling = 1
+
+	attempt, err := l.Begin("203.0.113.9", "new")
+	if err != nil {
+		t.Fatalf("an attempt was refused for want of room: %v", err)
+	}
+	attempt.finish(attemptCancelled)
+
+	if _, ok := l.buckets["ip:203.0.113.9"]; !ok {
+		t.Error("the attempt's own address was reclaimed for its own name")
+	}
+	if _, ok := l.buckets["id:other"]; ok {
+		t.Error("the other name was kept while the room was needed")
+	}
+}
+
+// A walk can drop a bucket this attempt has already found, and then that key has
+// to be created after all. Counting the new keys before the walk would admit the
+// attempt one bucket past the ceiling.
+func TestAWalkThatDropsAnAttemptsOwnKeyStillCountsIt(t *testing.T) {
+	l := NewLimiter()
+	l.ceiling = 2
+	failUnknown(t, l, "203.0.113.9", "")
+	failUnknown(t, l, "", "other")
+	l.buckets["ip:203.0.113.9"].lastFailure = time.Now().Add(-(bucketTTL + time.Minute))
+
+	attempt, err := l.Begin("203.0.113.9", "new")
+	if err != nil {
+		t.Fatalf("an attempt was refused for want of room: %v", err)
+	}
+	attempt.finish(attemptFailedUnknown)
+
+	if n := reclaimable(l); n > 2 {
+		t.Fatalf("the map holds %d reclaimable buckets, above its ceiling of 2", n)
+	}
+}
+
+// A block is the slowing itself, and it lives on the bucket. Under pressure the
+// walk must leave a bucket alone while its block is still running: reclaiming it
+// would give that address or name a fresh allowance in the middle of its wait.
+// Each case is the only candidate the walk has, the map is full, and a newcomer
+// needs room, so a walk that ignored the block would take it.
+func TestAWalkNeverReclaimsABucketThatIsStillBlocked(t *testing.T) {
+	cases := map[string]struct {
+		fail       func(t *testing.T, l *Limiter)
+		key        string
+		ip         string
+		identifier string
+	}{
+		"an address": {
+			fail: func(t *testing.T, l *Limiter) {
+				for i := 0; i < addressFreeAttempts+1; i++ {
+					failUnknown(t, l, "203.0.113.9", "")
+				}
+			},
+			key: "ip:203.0.113.9", ip: "203.0.113.9",
+		},
+		"a name that matched nothing": {
+			fail: func(t *testing.T, l *Limiter) {
+				for i := 0; i < freeAttempts+1; i++ {
+					failUnknown(t, l, "", "invented")
+				}
+			},
+			key: "id:invented", identifier: "invented",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			l := NewLimiter()
+			l.ceiling = 1
+			c.fail(t, l)
+			// The last failure set a block of about a second. It is pinned an hour
+			// out, so the test does not depend on how long it takes to run.
+			l.buckets[c.key].blockedUntil = time.Now().Add(time.Hour)
+
+			attempt, err := l.Begin("203.0.113.10", "newcomer")
+			if err != nil {
+				t.Fatalf("a new name was refused: %v", err)
+			}
+			attempt.finish(attemptCancelled)
+			if l.lastFullSweep.IsZero() {
+				t.Fatal("the map was never walked, so this test does not exercise the walk")
+			}
+
+			if _, ok := l.buckets[c.key]; !ok {
+				t.Fatalf("%s was reclaimed while its block was still running", c.key)
+			}
+			if _, err := l.Begin(c.ip, c.identifier); !isLimited(err) {
+				t.Fatalf("the blocked bucket admitted an attempt after the walk: err = %v", err)
+			}
+		})
 	}
 }
 
@@ -297,7 +432,7 @@ func TestBelowTheCeilingNothingIsReclaimedEarly(t *testing.T) {
 	l := NewLimiter()
 	l.ceiling = 10
 	for i := 0; i < 5; i++ {
-		failAttempt(t, l, "", fmt.Sprintf("idle-%d", i))
+		failUnknown(t, l, "", fmt.Sprintf("idle-%d", i))
 	}
 	idle := time.Now().Add(-2 * bucketTTL)
 	for _, entry := range l.buckets {
@@ -308,13 +443,38 @@ func TestBelowTheCeilingNothingIsReclaimedEarly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a map with room refused a new name: %v", err)
 	}
-	attempt.finish(attemptFailed)
+	attempt.finish(attemptFailedUnknown)
 
 	if n := len(l.buckets); n != 6 {
 		t.Fatalf("the map holds %d buckets, want 6: nothing below the ceiling should be reclaimed", n)
 	}
 	if !l.lastFullSweep.IsZero() {
 		t.Error("the map was walked below its ceiling")
+	}
+}
+
+// Once a name's bucket has been idle past its window it is only memory. A full
+// map of such names is swept for the new one, so the map holds only the new
+// name afterwards.
+func TestAFullMapOfIdleNamesIsSweptForANewName(t *testing.T) {
+	l := NewLimiter()
+	l.ceiling = 4
+	for i := 0; i < 4; i++ {
+		failUnknown(t, l, "", fmt.Sprintf("old-%d", i))
+	}
+	idle := time.Now().Add(-2 * bucketTTL)
+	for _, entry := range l.buckets {
+		entry.lastFailure = idle
+	}
+
+	attempt, err := l.Begin("", "fresh")
+	if err != nil {
+		t.Fatalf("a full map of idle names refused a new name: %v", err)
+	}
+	attempt.finish(attemptFailedUnknown)
+
+	if n := len(l.buckets); n != 1 {
+		t.Fatalf("the map holds %d buckets, want only the new name's", n)
 	}
 }
 
@@ -330,14 +490,13 @@ func TestAFloodOfNewNamesDoesNotResetAGuessedAccount(t *testing.T) {
 
 	for i := 0; i < 2000; i++ {
 		attempt, err := l.Begin("", fmt.Sprintf("spray-%d", i))
-		if err == nil {
-			attempt.finish(attemptFailed)
-		} else if !isLimited(err) {
-			t.Fatalf("Begin: unexpected error %v", err)
+		if err != nil {
+			t.Fatalf("spray %d was refused: %v", i+1, err)
 		}
+		attempt.finish(attemptFailedUnknown)
 	}
-	if n := len(l.buckets); n > 16 {
-		t.Fatalf("the flood left %d buckets, above the ceiling of 16", n)
+	if n := reclaimable(l); n > 16 {
+		t.Fatalf("the flood left %d reclaimable buckets, above the ceiling of 16", n)
 	}
 
 	entry := l.buckets["id:victim"]
@@ -349,6 +508,66 @@ func TestAFloodOfNewNamesDoesNotResetAGuessedAccount(t *testing.T) {
 	failAttempt(t, l, "", "victim")
 	if _, err := l.Begin("", "victim"); !isLimited(err) {
 		t.Fatalf("the guessed-at account was open again after the flood: err = %v", err)
+	}
+}
+
+// A real account that has never failed signs in during a flood of invented
+// names, and the failures already recorded against another real account are
+// still there when the flood is over.
+func TestAFloodOfUnknownNamesNeverRefusesARealAccount(t *testing.T) {
+	l := NewLimiter()
+	l.ceiling = 16
+	for i := 0; i < freeAttempts; i++ {
+		failAttempt(t, l, "", "victim")
+	}
+
+	for i := 0; i < 2000; i++ {
+		attempt, err := l.Begin("", fmt.Sprintf("invented-%d", i))
+		if err != nil {
+			t.Fatalf("an invented name was refused: %v", err)
+		}
+		attempt.finish(attemptFailedUnknown)
+	}
+
+	attempt, err := l.Begin("198.51.100.9", "bob")
+	if err != nil {
+		t.Fatalf("a real account that has never failed was refused during the flood: %v", err)
+	}
+	attempt.finish(attemptSucceeded)
+
+	if entry := l.buckets["id:victim"]; entry == nil || entry.failures != freeAttempts {
+		t.Fatalf("the victim's failures after the flood = %+v, want %d", entry, freeAttempts)
+	}
+}
+
+// Only a name that matched an account is protected, so that is the only thing
+// a failure can protect.
+func TestOnlyANameThatMatchedAnAccountIsProtected(t *testing.T) {
+	l := NewLimiter()
+	failUnknown(t, l, "", "nobody")
+	if l.protected != 0 {
+		t.Fatalf("an invented name protected %d buckets", l.protected)
+	}
+	failAttempt(t, l, "", "arc")
+	if l.protected != 1 {
+		t.Fatalf("a name that matched an account protects %d buckets, want 1", l.protected)
+	}
+}
+
+// A spelling of a real name that matches nothing shares its bucket, because the
+// key is the lowercased identifier. It must not clear the protection, or a
+// guesser could make the account reclaimable by sending one such spelling.
+func TestAMatchedNameStaysProtectedWhenAVariantFailsUnknown(t *testing.T) {
+	l := NewLimiter()
+	failAttempt(t, l, "", "Arc")
+	failUnknown(t, l, "", "  ARC ")
+
+	entry := l.buckets["id:arc"]
+	if entry == nil || !entry.matched {
+		t.Fatalf("the account's bucket after a variant = %+v, want it still protected", entry)
+	}
+	if entry.failures != 2 || l.protected != 1 {
+		t.Fatalf("failures %d, protected %d; want 2 and 1", entry.failures, l.protected)
 	}
 }
 
@@ -367,45 +586,41 @@ func TestConcurrentAttemptsNeverExceedTheCeiling(t *testing.T) {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			ip := fmt.Sprintf("198.51.100.%d", g+1)
+			// No address, and names that match nothing: each failed attempt leaves
+			// one reclaimable bucket behind, which is what the ceiling counts. An
+			// address would be blocked after its thirty failures and stop filling
+			// the map, and a name that matched an account would be protected and
+			// never counted.
 			for i := 0; i < 300; i++ {
-				attempt, err := l.Begin(ip, fmt.Sprintf("g%d-%d", g, i))
+				attempt, err := l.Begin("", fmt.Sprintf("g%d-%d", g, i))
 				switch {
 				case err != nil && !isLimited(err):
 					t.Errorf("Begin: unexpected error %v", err)
 				case err == nil && i%2 == 0:
-					attempt.finish(attemptFailed)
+					attempt.finish(attemptFailedUnknown)
 				case err == nil:
 					attempt.finish(attemptCancelled)
 				}
 				l.mu.Lock()
-				n := len(l.buckets)
+				n := reclaimable(l)
 				l.mu.Unlock()
 				if n > ceiling {
 					reported.Do(func() {
-						t.Errorf("the map holds %d buckets, above its ceiling of %d", n, ceiling)
+						t.Errorf("the map holds %d reclaimable buckets, above its ceiling of %d", n, ceiling)
 					})
 				}
 			}
 		}(g)
 	}
 	wg.Wait()
-}
 
-// A walk can drop a bucket that this attempt has already found, and then that
-// key has to be created after all. Counting the new keys before the walk would
-// admit the attempt one bucket past the ceiling.
-func TestAWalkThatDropsAnAttemptsOwnKeyStillCountsIt(t *testing.T) {
-	l := NewLimiter()
-	l.ceiling = 2
-	failAttempt(t, l, "203.0.113.9", "")
-	failAttempt(t, l, "", "other")
-	l.buckets["ip:203.0.113.9"].lastFailure = time.Now().Add(-2 * bucketTTL)
-
-	if _, err := l.Begin("203.0.113.9", "new"); !isLimited(err) {
-		t.Fatalf("an attempt that needed two buckets with one free was admitted: err = %v", err)
+	matched := 0
+	for _, entry := range l.buckets {
+		if entry.matched {
+			matched++
+		}
 	}
-	if n := len(l.buckets); n > 2 {
-		t.Fatalf("the map holds %d buckets, above its ceiling of 2", n)
+	if matched != l.protected {
+		t.Errorf("the protected count is %d, but %d buckets are protected", l.protected, matched)
 	}
 }

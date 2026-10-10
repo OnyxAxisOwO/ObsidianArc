@@ -235,6 +235,30 @@ func TestWrongCodesAreThrottled(t *testing.T) {
 	}
 }
 
+// A right second step does not forgive the wrong ones before it. Forgiving
+// them would give a guesser a fresh allowance every time it was right, the
+// owner's own sign-ins included, which is the same rule the limiter applies to
+// the password.
+func TestARightCodeDoesNotForgiveTheWrongOnesBeforeIt(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, secret, _, used := enrolled(t, f, "arc")
+
+	for _, step := range []int64{used + 50, used + 51} {
+		if err := f.auth.VerifyTwoFactorCode(ctx, account, codeAt(t, secret, step), "203.0.113.9"); !errors.Is(err, ErrTwoFactorCode) {
+			t.Fatalf("a wrong code = %v, want ErrTwoFactorCode", err)
+		}
+	}
+	if err := f.auth.VerifyTwoFactorCode(ctx, account, codeAt(t, secret, used+1), "203.0.113.9"); err != nil {
+		t.Fatalf("a right code was refused: %v", err)
+	}
+
+	entry := f.auth.codes.buckets["id:"+strings.ToLower(account.ID)]
+	if entry == nil || entry.failures != 2 {
+		t.Fatalf("the account's code budget after a right code = %+v, want its two wrong codes kept", entry)
+	}
+}
+
 func TestEnablingNeedsACodeFromTheSecretHandedOut(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,16 +24,32 @@ import (
 // Two keys are tracked for each attempt: the caller's address, so one host
 // cannot spray many accounts, and the account being targeted, so a botnet
 // cannot spread its guesses across addresses.
+//
+// The map is bounded, and the bound is never paid for by a real account. A
+// bucket for an identifier that named an account (bucket.matched) protects that
+// account: it is never reclaimed, and it is not counted against the ceiling, so
+// how many of them there are is bounded by the accounts the instance holds.
+// Everything else — names that matched nothing, and addresses — is reclaimable
+// unless it is in flight or still serving a block, and once those pass the
+// ceiling the least recently used go. An attempt is not refused for want of
+// room. Refusing it would turn a flood of invented names into a lockout for
+// every real account whose first attempt came after the flood.
 type Limiter struct {
-	mu        sync.Mutex
-	buckets   map[string]*bucket
+	mu      sync.Mutex
+	buckets map[string]*bucket
+	// How many buckets protect an account. Kept as a count so the ceiling can be
+	// checked without walking the map.
+	protected int
 	lastSwept time.Time
-	// Most buckets the map may hold. A field rather than the constant so a test
-	// can make the table small; production never changes it.
+	// Most reclaimable buckets the map may hold. A field rather than the constant so a
+	// test can make the table small; production never changes it.
 	ceiling int
-	// When the map was last walked because it was full. Zero until the first
-	// walk, so a map that fills for the first time is walked at once.
+	// When the map was last walked because it was past the ceiling. Zero until
+	// the first walk, so a map that fills for the first time is walked at once.
 	lastFullSweep time.Time
+	// Whether the last walk made all the room it was asked for. A walk that did
+	// not is not repeated for every new name; see makeRoomFor.
+	fullSweepMadeRoom bool
 }
 
 type bucket struct {
@@ -44,6 +61,12 @@ type bucket struct {
 	// When the next attempt is permitted. Zero means "now".
 	blockedUntil time.Time
 	lastFailure  time.Time
+	// Set once an attempt against this identifier failed because it named an
+	// account, and never cleared while the bucket lives. The key is the lowercased
+	// identifier, so a spelling that matches nothing shares this bucket. If such a
+	// spelling could clear the flag, one of them would make the account's bucket
+	// reclaimable, and a flood would then reset its count.
+	matched bool
 }
 
 const (
@@ -62,13 +85,14 @@ const (
 	// How often the map is swept for dead entries. Bounded work, done on the
 	// write path, so there is no timer goroutine for this.
 	sweepInterval = 5 * time.Minute
-	// Most buckets the map may hold. Only failures and attempts in progress keep
-	// a bucket, so sign-in alone never gets near this; what it bounds is a flood
-	// of distinct names, which would otherwise grow the map for as long as the
-	// flood lasted.
+	// Most reclaimable buckets the map may hold. What this bounds is a flood of
+	// distinct names, which would otherwise grow the map for as long as the flood
+	// lasted. Buckets that protect an account are not counted, so the map can be
+	// larger than this by the number of accounts that have failed recently.
 	maxBuckets = 100_000
-	// How soon a full map may be walked again. While it stays full, every new
-	// name would otherwise pay for a walk of the whole map under the lock.
+	// How soon a full map may be walked again when the last walk could not make
+	// room. Without it every new name would pay for a walk of the whole map under
+	// the lock while nothing can be freed.
 	fullSweepInterval = time.Second
 )
 
@@ -81,6 +105,9 @@ type attemptOutcome int
 const (
 	attemptCancelled attemptOutcome = iota
 	attemptFailed
+	// attemptFailedUnknown is a failure where the identifier named no account.
+	// Its bucket protects nothing, so it can be reclaimed under pressure.
+	attemptFailedUnknown
 	attemptSucceeded
 )
 
@@ -99,11 +126,12 @@ func (a *loginAttempt) finish(outcome attemptOutcome) {
 	}
 	a.once.Do(func() {
 		now := time.Now()
-		a.limiter.mu.Lock()
-		defer a.limiter.mu.Unlock()
+		l := a.limiter
+		l.mu.Lock()
+		defer l.mu.Unlock()
 
 		for _, key := range a.keys {
-			entry := a.limiter.buckets[key]
+			entry := l.buckets[key]
 			if entry == nil {
 				continue
 			}
@@ -112,11 +140,14 @@ func (a *loginAttempt) finish(outcome attemptOutcome) {
 			}
 
 			switch outcome {
-			case attemptFailed:
+			case attemptFailed, attemptFailedUnknown:
 				entry.failures++
 				entry.lastFailure = now
 				if free := allowance(key); entry.failures > free {
 					entry.blockedUntil = now.Add(backoff(entry.failures - free))
+				}
+				if outcome == attemptFailed {
+					l.markMatched(key, entry)
 				}
 			case attemptSucceeded:
 				// Only the account's own bucket is forgiven. The address bucket
@@ -129,13 +160,14 @@ func (a *loginAttempt) finish(outcome attemptOutcome) {
 				// Attempts that are still running keep the bucket alive and will
 				// record their own result afterwards.
 				if strings.HasPrefix(key, accountKeyPrefix) {
+					l.markMatched(key, entry)
 					entry.failures = 0
 					entry.blockedUntil = time.Time{}
 				}
 			}
 
 			if entry.inFlight == 0 && entry.failures == 0 {
-				delete(a.limiter.buckets, key)
+				l.removeLocked(key)
 			}
 		}
 	})
@@ -151,6 +183,13 @@ func (a *loginAttempt) finish(outcome attemptOutcome) {
 // its own failure count by eventually getting one right.
 type Attempt = loginAttempt
 
+// Failed records a wrong answer against the identifier given to Begin, and that
+// identifier must name a confirmed account. A failure against an account's name
+// protects its bucket for good (see bucket.matched), so a name that may match
+// nothing must not be recorded here, or a flood of invented names would keep
+// every bucket it made. A caller that cannot confirm an account finishes with the
+// unknown outcome, attemptFailedUnknown, instead; Login and VerifyCredential do
+// this for a name they did not find.
 func (a *loginAttempt) Failed()    { a.finish(attemptFailed) }
 func (a *loginAttempt) Cancelled() { a.finish(attemptCancelled) }
 
@@ -187,12 +226,7 @@ func (l *Limiter) Begin(ip, identifier string) (*loginAttempt, error) {
 		}
 	}
 
-	// Refused rather than evicted: a bucket holding a failure or a block is
-	// what slows a guessed-at name, and freeing one to admit a stranger would
-	// let a flood of new names reset that name's budget.
-	if !l.roomFor(attemptKeys, now) {
-		return nil, &RateLimitError{RetryAfter: time.Second}
-	}
+	l.makeRoomFor(attemptKeys, now)
 
 	for _, key := range attemptKeys {
 		entry := l.buckets[key]
@@ -208,24 +242,40 @@ func (l *Limiter) Begin(ip, identifier string) (*loginAttempt, error) {
 	return &loginAttempt{limiter: l, keys: attemptKeys}, nil
 }
 
-// roomFor reports whether the keys this attempt would create fit under the
-// ceiling, making room first when they do not. An attempt that creates no key
-// needs no room, so a full map still serves every name it already holds.
-func (l *Limiter) roomFor(attemptKeys []string, now time.Time) bool {
-	if fresh := l.freshKeys(attemptKeys); fresh == 0 || len(l.buckets)+fresh <= l.ceiling {
-		return true
+// makeRoomFor reclaims buckets when the reclaimable ones would pass the ceiling
+// with this attempt's new keys added. It never refuses: whatever cannot be
+// reclaimed (buckets in flight or still serving a block, the attempt's own keys,
+// buckets that protect an account) is simply left in place, and the attempt goes
+// ahead.
+func (l *Limiter) makeRoomFor(attemptKeys []string, now time.Time) {
+	if l.overCeiling(attemptKeys) <= 0 {
+		return
 	}
-	// A walk costs the whole map under the lock, and a full map that stays full
-	// would pay that for every new name. Most of what a walk frees is freed by
-	// time rather than by the next request, so walking again a moment later
-	// rarely finds more.
-	if now.Sub(l.lastFullSweep) >= fullSweepInterval {
-		l.lastFullSweep = now
-		l.dropIdleLocked(now)
+	// A walk costs the whole map under the lock. One that freed too little is not
+	// repeated for every name that arrives, so it waits out fullSweepInterval.
+	if !l.fullSweepMadeRoom && now.Sub(l.lastFullSweep) < fullSweepInterval {
+		return
 	}
-	// The walk may have dropped a key this attempt already found. That key is
+	l.lastFullSweep = now
+	l.dropIdleLocked(now)
+
+	// The walk may have dropped a key this attempt already found, and that key is
 	// one the attempt must now create, so the count is taken again after it.
-	return len(l.buckets)+l.freshKeys(attemptKeys) <= l.ceiling
+	excess := l.overCeiling(attemptKeys)
+	if excess <= 0 {
+		l.fullSweepMadeRoom = true
+		return
+	}
+	// Reclaiming a tenth more than the excess means the next walk is a tenth of
+	// the ceiling's worth of names away, so the walk is paid for in batches.
+	freed := l.evictLocked(attemptKeys, now, max(excess, l.ceiling/10))
+	l.fullSweepMadeRoom = freed >= excess
+}
+
+// overCeiling is how far the reclaimable buckets run past the ceiling once the
+// keys this attempt would create are counted. Negative or zero means room.
+func (l *Limiter) overCeiling(attemptKeys []string) int {
+	return len(l.buckets) - l.protected + l.freshKeys(attemptKeys) - l.ceiling
 }
 
 // freshKeys counts the keys of an attempt that the map does not hold yet.
@@ -237,6 +287,65 @@ func (l *Limiter) freshKeys(attemptKeys []string) int {
 		}
 	}
 	return fresh
+}
+
+// evictLocked reclaims up to want buckets that protect nothing, and returns how
+// many it reclaimed. The least recently used go first, and within that, names
+// that matched nothing go before addresses. A flood of invented names then
+// reclaims names rather than the blocks on the addresses sending it. Buckets
+// in flight, buckets whose block is still running, and the attempt's own keys
+// are never reclaimed. A running block is the slowing itself: reclaiming it
+// would hand that address a fresh allowance in the middle of its wait.
+func (l *Limiter) evictLocked(attemptKeys []string, now time.Time, want int) int {
+	type candidate struct {
+		key         string
+		lastFailure time.Time
+		address     bool
+	}
+	candidates := make([]candidate, 0)
+	for key, entry := range l.buckets {
+		if entry.matched || entry.inFlight > 0 || entry.blockedUntil.After(now) || slices.Contains(attemptKeys, key) {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			key:         key,
+			lastFailure: entry.lastFailure,
+			address:     !strings.HasPrefix(key, accountKeyPrefix),
+		})
+	}
+	slices.SortFunc(candidates, func(a, b candidate) int {
+		if a.address != b.address {
+			if a.address {
+				return 1
+			}
+			return -1
+		}
+		return a.lastFailure.Compare(b.lastFailure)
+	})
+
+	n := min(want, len(candidates))
+	for _, c := range candidates[:n] {
+		l.removeLocked(c.key)
+	}
+	return n
+}
+
+// markMatched records that an account key named an account. It is one-way: see
+// bucket.matched.
+func (l *Limiter) markMatched(key string, entry *bucket) {
+	if !strings.HasPrefix(key, accountKeyPrefix) || entry.matched {
+		return
+	}
+	entry.matched = true
+	l.protected++
+}
+
+// removeLocked drops a bucket and keeps the protected count in step with it.
+func (l *Limiter) removeLocked(key string) {
+	if entry := l.buckets[key]; entry != nil && entry.matched {
+		l.protected--
+	}
+	delete(l.buckets, key)
 }
 
 // 1s, 2s, 4s, 8s … capped. Doubling is what makes an online guessing attack
@@ -263,7 +372,7 @@ func (l *Limiter) sweepLocked(now time.Time) {
 func (l *Limiter) dropIdleLocked(now time.Time) {
 	for key, entry := range l.buckets {
 		if forgettable(entry, now) {
-			delete(l.buckets, key)
+			l.removeLocked(key)
 		}
 	}
 }
