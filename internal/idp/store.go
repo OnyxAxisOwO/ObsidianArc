@@ -144,6 +144,14 @@ type AppUpdate struct {
 // whoever was delegated the security page.
 var ErrTrustedApplication = errors.New("idp: only a super administrator may change a trusted application")
 
+// ErrCallbacksNeedSuperAdmin is what anybody short of a super administrator is
+// told when they would add or remove a callback of an application. A callback
+// is where a code is sent, and consent is recorded per application rather than
+// per callback: a callback added later would receive the codes of everybody
+// who had already agreed to the application, and none of them would be asked
+// again.
+var ErrCallbacksNeedSuperAdmin = errors.New("idp: only a super administrator may change an application's callbacks")
+
 // lockApp holds the application's row until the transaction ends. The
 // statement changes nothing; it is there for the lock. A trust check is a read
 // followed by a write, and without the lock a concurrent change to trust can
@@ -164,8 +172,8 @@ func lockApp(ctx context.Context, tx *database.Tx, appID string) error {
 }
 
 // UpdateApp applies in to one application. superAdmin is the caller's
-// IsSuperAdmin answer: nobody else changes a trusted application, and nobody
-// else makes one trusted.
+// IsSuperAdmin answer: nobody else changes a trusted application, nobody else
+// makes one trusted, and nobody else changes the callbacks of any application.
 func (s *Store) UpdateApp(ctx context.Context, appID string, in AppUpdate, superAdmin bool) (App, error) {
 	var record App
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -198,6 +206,11 @@ func (s *Store) UpdateApp(ctx context.Context, appID string, in AppUpdate, super
 			redirects, err := ParseRedirectURIs(*in.RedirectURIs)
 			if err != nil {
 				return err
+			}
+			// Re-saving the stored set is not a change, so a form that sends
+			// every field back still works for everybody.
+			if !superAdmin && !sameCallbacks(current.RedirectURIs, redirects) {
+				return ErrCallbacksNeedSuperAdmin
 			}
 			record.RedirectURIs = redirects
 		}
@@ -774,6 +787,12 @@ func normaliseScopes(scopes []string) []string {
 		parsed = ParseScopes(strings.Join(append(parsed, ScopeOpenID), " "))
 	}
 	return parsed
+}
+
+// sameCallbacks reports whether two lists name the same callbacks. Order is not
+// part of a callback, so each list has to cover the other.
+func sameCallbacks(a, b []string) bool {
+	return Covers(a, b) && Covers(b, a)
 }
 
 func splitLines(raw string) []string {

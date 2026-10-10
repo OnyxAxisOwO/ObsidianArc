@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -23,8 +24,9 @@ func applicationIDOf(t *testing.T, response *httptest.ResponseRecorder) string {
 }
 
 // Trust lets an application skip the consent screen for everybody who signs
-// in. The security grant keeps every ordinary application and gives up the
-// trusted ones: registering, changing, rotating or removing one needs the super
+// in, and a callback is where its codes are sent. The security grant keeps the
+// ordinary applications it can register, rename, rotate or disable, but not the
+// trusted ones and not the callbacks of any application: those need the super
 // administrator, and so does making an ordinary one trusted.
 func TestASecurityAdministratorCannotChangeTrustedApplications(t *testing.T) {
 	in := newInstance(t)
@@ -74,8 +76,14 @@ func TestASecurityAdministratorCannotChangeTrustedApplications(t *testing.T) {
 		}
 	}
 
-	if response := in.do(http.MethodPatch, ordinaryPath, map[string]any{"redirect_uris": "https://wiki.example.org/cb"}, operator); response.Code != http.StatusOK {
-		t.Errorf("changing an ordinary application's callbacks: %d %s", response.Code, response.Body.String())
+	if response := in.do(http.MethodPatch, ordinaryPath, map[string]any{"redirect_uris": "https://wiki.example.org/cb"}, operator); response.Code != http.StatusForbidden || errCode(t, response) != "super_admin_required" {
+		t.Errorf("a security administrator changed an ordinary application's callbacks: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodPatch, ordinaryPath, map[string]any{"redirect_uris": "https://wiki.example.com/cb"}, operator); response.Code != http.StatusOK {
+		t.Errorf("re-saving an ordinary application's stored callbacks: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodPatch, ordinaryPath, map[string]any{"redirect_uris": "https://wiki.example.org/cb"}, founder); response.Code != http.StatusOK {
+		t.Errorf("the super administrator changing an ordinary application's callbacks: %d %s", response.Code, response.Body.String())
 	}
 	if response := in.do(http.MethodPost, ordinaryPath+"/secret", nil, operator); response.Code != http.StatusOK {
 		t.Errorf("rotating an ordinary application's secret: %d %s", response.Code, response.Body.String())
@@ -89,6 +97,86 @@ func TestASecurityAdministratorCannotChangeTrustedApplications(t *testing.T) {
 	}
 	if response := in.do(http.MethodDelete, trustedPath, nil, founder); response.Code != http.StatusNoContent {
 		t.Errorf("the super administrator removing a trusted application: %d %s", response.Code, response.Body.String())
+	}
+}
+
+// Consent is kept per application and not per callback, so a callback added to
+// an application people have already agreed to would send their codes there
+// without asking again. The delegate may not add one. The account that agreed
+// is still sent straight back to the callback it agreed to, and the callback
+// the delegate tried to add receives nothing.
+func TestASecurityAdministratorCannotSendAgreedSignInsToANewCallback(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "another-password")
+	delegate(t, in, founder, operator, "security")
+
+	const (
+		callback  = "https://wiki.example.com/cb"
+		attacker  = "https://attacker.example.net/cb"
+		challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+	)
+	// Public, so the attacker needs nothing from the application but its
+	// callback: no secret to rotate and nothing to authenticate with.
+	created := in.do(http.MethodPost, "/api/admin/applications", map[string]any{
+		"name": "Wiki", "redirect_uris": callback, "public": true,
+	}, operator)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("register a public application: %d %s", created.Code, created.Body.String())
+	}
+	application := decode[struct {
+		Application struct {
+			ID       string `json:"id"`
+			ClientID string `json:"client_id"`
+		} `json:"application"`
+	}](t, created).Application
+	applicationPath := "/api/admin/applications/" + application.ID
+
+	authorize := func(redirect string) string {
+		return "/oauth/authorize?" + url.Values{
+			"client_id":             {application.ClientID},
+			"redirect_uri":          {redirect},
+			"response_type":         {"code"},
+			"scope":                 {"openid profile email"},
+			"state":                 {"the-state"},
+			"code_challenge":        {challenge},
+			"code_challenge_method": {"S256"},
+		}.Encode()
+	}
+
+	asked := in.do(http.MethodGet, authorize(callback), nil, member)
+	screen, err := url.Parse(asked.Header().Get("Location"))
+	if err != nil || screen.Path != "/oauth/consent" || screen.Query().Get("request") == "" {
+		t.Fatalf("the first sign-in did not reach the consent screen: %d %q", asked.Code, asked.Header().Get("Location"))
+	}
+	agreed := in.do(http.MethodPost, "/api/oauth/consent", map[string]any{
+		"request": screen.Query().Get("request"), "approve": true,
+	}, member)
+	if agreed.Code != http.StatusOK {
+		t.Fatalf("approving the application: %d %s", agreed.Code, agreed.Body.String())
+	}
+
+	widened := in.do(http.MethodPatch, applicationPath, map[string]any{
+		"redirect_uris": callback + "\n" + attacker,
+	}, operator)
+	if widened.Code != http.StatusForbidden || errCode(t, widened) != "super_admin_required" {
+		t.Fatalf("a security administrator added a callback: %d %s", widened.Code, widened.Body.String())
+	}
+
+	// Never registered, so the person is shown the problem rather than sent
+	// anywhere, and no code is issued.
+	stolen := in.do(http.MethodGet, authorize(attacker), nil, member)
+	if location := stolen.Header().Get("Location"); location != "/oauth/consent?error=bad_redirect" {
+		t.Fatalf("an authorisation to the callback the delegate tried to add was sent to %q", location)
+	}
+
+	// Nothing about the agreement has changed, so the account still goes
+	// straight back to the callback it agreed to. The refusal above is what
+	// keeps the new callback from inheriting that.
+	again := in.do(http.MethodGet, authorize(callback), nil, member)
+	if location := again.Header().Get("Location"); !strings.HasPrefix(location, callback+"?") || !strings.Contains(location, "code=") {
+		t.Fatalf("the account that agreed was not sent back to its callback: %q", location)
 	}
 }
 

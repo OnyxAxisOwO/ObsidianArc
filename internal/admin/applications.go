@@ -125,12 +125,24 @@ func trustedApplicationRefused() error {
 		"Only a super administrator can register, change or remove a trusted application.")
 }
 
+// callbacksRefused answers a security administrator who would change where an
+// application sends people. It says so in its own words: an ordinary
+// application refuses this too, and a message about trust would send them
+// looking for a trusted flag they never set.
+func callbacksRefused() error {
+	return httpx.ForbiddenCode("super_admin_required",
+		"Only a super administrator can add or remove an application's callback URLs.")
+}
+
 func applicationError(err error) error {
 	if errors.Is(err, idp.ErrNotFound) {
 		return httpx.NotFound("No such application.")
 	}
 	if errors.Is(err, idp.ErrTrustedApplication) {
 		return trustedApplicationRefused()
+	}
+	if errors.Is(err, idp.ErrCallbacksNeedSuperAdmin) {
+		return callbacksRefused()
 	}
 	if message, known := idp.TranslateError(err); known {
 		return httpx.BadRequest("%s", message)
