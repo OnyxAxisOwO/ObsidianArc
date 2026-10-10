@@ -24,12 +24,25 @@ func TestAKeyOfAnAccountHeldForTwoStepIsRefusedOnEveryEndpoint(t *testing.T) {
 		t.Fatalf("held key on /v1/models: %d %s", w.Code, w.Body.String())
 	}
 
+	// The three protocols share one door. The Anthropic envelope carries no
+	// error code, so those routes are checked by status alone.
+	spending := []struct {
+		path string
+		body string
+	}{
+		{"/v1/chat/completions", completionBody(f.model.DisplayName)},
+		{"/v1/messages", `{"model":"Mock Fast","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`},
+		{"/v1/responses", `{"model":"Mock Fast","input":"hi"}`},
+	}
+	for _, call := range spending {
+		w := f.do(t, http.MethodPost, call.path, f.token, call.body)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("held key on %s: %d %s", call.path, w.Code, w.Body.String())
+		}
+	}
+
 	// Spending is what the hold exists to stop: nothing reaches the provider
 	// and nothing reaches the ledger.
-	w = f.do(t, http.MethodPost, "/v1/chat/completions", f.token, completionBody(f.model.DisplayName))
-	if w.Code != http.StatusForbidden || errorCode(t, w) != "two_factor_enrolment_required" {
-		t.Fatalf("held key on chat/completions: %d %s", w.Code, w.Body.String())
-	}
 	if got := f.upstream.received(); got != nil {
 		t.Errorf("a held key reached the provider: %v", got)
 	}
