@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
@@ -131,15 +132,7 @@ func (m *Manager) routeHandler(name string, route arcx.Route) httpx.Handler {
 		for _, match := range wildcards {
 			params[match[1]] = r.PathValue(match[1])
 		}
-		header := map[string]string{}
-		for name := range r.Header {
-			// Sessions are the server's; a backend is given who the request is
-			// for in the call's context, not the means to be them.
-			if strings.EqualFold(name, "Cookie") {
-				continue
-			}
-			header[name] = r.Header.Get(name)
-		}
+		header := backendHeaders(r.Header)
 		info := wasm.CallInfo{
 			Lang: languageOf(r), RequestID: httpx.RequestIDFrom(r.Context()),
 		}
@@ -193,6 +186,41 @@ var responseHeaders = map[string]bool{
 }
 
 func allowedResponseHeader(name string) bool { return responseHeaders[strings.ToLower(name)] }
+
+// backendHeaders is the request's headers as a backend is given them. A backend
+// is told who the request is for in the call's context, not handed the means to
+// be them: a session cookie is the server's, and so is an API key that acts for
+// an account, whether it came as a bearer token or in X-Api-Key. A credential
+// the package owns, such as a token for its own upstream, is not Arc's to
+// withhold, so it still arrives.
+func backendHeaders(h http.Header) map[string]string {
+	out := map[string]string{}
+	for name := range h {
+		if strings.EqualFold(name, "Cookie") {
+			continue
+		}
+		value := h.Get(name)
+		if isCredentialHeader(name) && carriesAPIKey(value) {
+			continue
+		}
+		out[name] = value
+	}
+	return out
+}
+
+// isCredentialHeader is whether a client sends its API key under name: the
+// bearer token, and the header clients use instead when they are configured for
+// a service that wants the key in its own header.
+func isCredentialHeader(name string) bool {
+	return strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "X-Api-Key")
+}
+
+// carriesAPIKey is whether a credential holds one of our keys. The prefix is
+// looked for anywhere in the value rather than at its start, so a key is
+// recognised whatever scheme a client put in front of it.
+func carriesAPIKey(value string) bool {
+	return strings.Contains(value, apikey.TokenPrefix)
+}
 
 // translateGuest turns what a backend's failure looks like into what a client
 // is told: an error it chose to return as it said it, and anything else — a

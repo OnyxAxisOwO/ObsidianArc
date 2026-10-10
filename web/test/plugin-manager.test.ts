@@ -128,7 +128,7 @@ describe('the plugins screen', () => {
   });
 
   it('installs with the first settings the plugin declares, and reloads the session\'s plugins', async () => {
-    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [plugin('example', 'available')] });
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [plugin('example', 'available')], two_factor_required: false });
     const installed = vi.spyOn(adminApi, 'installPlugin').mockResolvedValue(change(plugin('example', 'enabled')));
     const refreshed = vi.spyOn(authApi, 'fetchSite').mockResolvedValue({
       ...siteInfo.value, plugins: { example: {} },
@@ -140,6 +140,8 @@ describe('the plugins screen', () => {
     // The plugin's own settings section, drawn in the panel from its module.
     expect(panels.textContent).toContain(t('pluginEnableNow'));
     expect(panels.textContent).toContain('Example webhook token');
+    // The policy is off, so no code is asked for and none is sent.
+    expect(panels.textContent).not.toContain(t('pluginTwoFactorCode'));
     button(panels, t('pluginInstall')).click();
     await settle();
 
@@ -147,9 +149,39 @@ describe('the plugins screen', () => {
     expect(installed).toHaveBeenCalledWith('example', true, {
       'example.base_url': '', 'example.site': '', 'example.on_login': 'false',
       'example.requirement': 'off', 'example.mode': 'disable',
-    });
+    }, '');
     expect(refreshed).toHaveBeenCalled();
     expect(card('example').textContent).toContain(t('pluginStateEnabled'));
+  });
+
+  it('asks for the two-step code to install a plugin when the instance requires it, and sends it', async () => {
+    adopt({ ...ADMIN, two_factor_at: 1 });
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [plugin('example', 'available')], two_factor_required: true });
+    const installed = vi.spyOn(adminApi, 'installPlugin').mockResolvedValue(change(plugin('example', 'enabled')));
+    vi.spyOn(authApi, 'fetchSite').mockResolvedValue({ ...siteInfo.value, plugins: { example: {} } } as SiteInfo);
+    await mount(AdminPlugins);
+
+    button(card('example'), t('pluginInstall')).click();
+    await settle();
+    // The plugin's own settings are inputs too, so the code is found by its autocomplete hint.
+    type(panels.querySelector<HTMLInputElement>('input[autocomplete="one-time-code"]')!, ' 123456 ');
+    button(panels, t('pluginInstall')).click();
+    await settle();
+    expect(installed).toHaveBeenCalledWith('example', true, expect.any(Object), '123456');
+    expect(card('example').textContent).toContain(t('pluginStateEnabled'));
+  });
+
+  it('will not install a plugin for an account without two-step verification when the instance requires it', async () => {
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [plugin('example', 'available')], two_factor_required: true });
+    const installed = vi.spyOn(adminApi, 'installPlugin');
+    await mount(AdminPlugins);
+
+    button(card('example'), t('pluginInstall')).click();
+    await settle();
+    expect(panels.textContent).toContain(t('pluginInstallTwoFactorMissing'));
+    expect(panels.querySelector('input[autocomplete="one-time-code"]')).toBeNull();
+    expect(() => button(panels, t('pluginInstall'))).toThrow();
+    expect(installed).not.toHaveBeenCalled();
   });
 
   it('will not switch a plugin off for an account without two-step verification', async () => {
