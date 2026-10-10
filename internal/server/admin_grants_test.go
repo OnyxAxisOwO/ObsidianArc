@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The delegated grants that reach past their own pages. The security grant
@@ -227,6 +228,146 @@ func TestOnlyASuperAdministratorMovesThePublicURL(t *testing.T) {
 	}
 }
 
+// The relay that receives every verification link and code is chosen by the
+// super administrator too, under the same rule as the public URL. The security
+// grant keeps the sender address and the rest of the mail form, and may save
+// the server as it already stands.
+func TestOnlyASuperAdministratorChoosesTheSMTPServer(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	delegate(t, in, founder, operator, "security")
+
+	saved := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
+		"host": "127.0.0.1", "port": 1, "username": "mailer", "from": "arc@example.com",
+		"public_url": "https://arc.example.com", "password": "mail-secret",
+	}, founder)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("super administrator saving mail: %d %s", saved.Code, saved.Body.String())
+	}
+
+	for label, body := range map[string]map[string]any{
+		"host": {"host": "collector.example.net", "port": 1, "username": "mailer",
+			"from": "arc@example.com", "public_url": "https://arc.example.com"},
+		"port": {"host": "127.0.0.1", "port": 2525, "username": "mailer",
+			"from": "arc@example.com", "public_url": "https://arc.example.com"},
+		"username": {"host": "127.0.0.1", "port": 1, "username": "someone-else",
+			"from": "arc@example.com", "public_url": "https://arc.example.com"},
+		"host with a typed password": {"host": "collector.example.net", "port": 1, "username": "mailer",
+			"from": "arc@example.com", "public_url": "https://arc.example.com", "password": "typed-again"},
+	} {
+		response := in.do(http.MethodPut, "/api/admin/mail", body, operator)
+		if response.Code != http.StatusForbidden || errCode(t, response) != "super_admin_required" {
+			t.Errorf("%s: a security administrator changed the SMTP server: %d %s", label, response.Code, response.Body.String())
+		}
+	}
+	shown := decode[struct {
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Username string `json:"username"`
+	}](t, in.do(http.MethodGet, "/api/admin/mail", nil, founder))
+	if shown.Host != "127.0.0.1" || shown.Port != 1 || shown.Username != "mailer" {
+		t.Fatalf("refused saves changed the SMTP server: %+v", shown)
+	}
+
+	if response := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
+		"host": "127.0.0.1", "port": 1, "username": "mailer", "from": "ops@example.com",
+		"public_url": "https://arc.example.com",
+	}, operator); response.Code != http.StatusOK {
+		t.Fatalf("a security administrator saving the sender with the server unchanged: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
+		"host": "collector.example.net", "port": 1, "username": "mailer", "from": "ops@example.com",
+		"public_url": "https://arc.example.com", "password": "mail-secret",
+	}, founder); response.Code != http.StatusOK {
+		t.Fatalf("super administrator choosing the SMTP server: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func providerIDOf(t *testing.T, response *httptest.ResponseRecorder) string {
+	t.Helper()
+	return decode[struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}](t, response).Provider.ID
+}
+
+// providerRow is what the providers listing shows for one provider. The key
+// itself is never listed, only its hint, which is what shows whether a write
+// replaced it.
+type providerRow struct {
+	ID         string `json:"id"`
+	BaseURL    string `json:"base_url"`
+	APIKeyHint string `json:"api_key_hint"`
+}
+
+func providerRowOf(t *testing.T, in *instance, as *session, providerID string) providerRow {
+	t.Helper()
+	listing := decode[struct {
+		Providers []providerRow `json:"providers"`
+	}](t, in.do(http.MethodGet, "/api/admin/providers", nil, as))
+	for _, row := range listing.Providers {
+		if row.ID == providerID {
+			return row
+		}
+	}
+	t.Fatalf("provider %s is not listed", providerID)
+	return providerRow{}
+}
+
+// A provider's base URL is where every chat on it is sent, prompts and
+// attachments included, so the address is the super administrator's to move,
+// as the public URL is. The providers grant still creates providers and edits
+// their other fields, and a key the delegate types for a move is refused with
+// the address: nothing of the move is stored.
+func TestOnlyASuperAdministratorMovesAProvidersBaseURL(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	delegate(t, in, founder, operator, "providers")
+
+	created := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "Primary", "kind": "openai", "base_url": "https://api.example.com/v1", "api_key": "sk-the-real-secret-value",
+	}, founder)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("super administrator creating a provider: %d %s", created.Code, created.Body.String())
+	}
+	providerID := providerIDOf(t, created)
+	providerPath := "/api/admin/providers/" + providerID
+	before := providerRowOf(t, in, founder, providerID)
+
+	refused := in.do(http.MethodPatch, providerPath, map[string]any{
+		"name": "Primary", "kind": "openai", "base_url": "https://collector.example.net/v1", "api_key": "sk-operator-own-0002",
+	}, operator)
+	if refused.Code != http.StatusForbidden || errCode(t, refused) != "super_admin_required" {
+		t.Fatalf("a providers-grant holder moved the base URL: %d %s", refused.Code, refused.Body.String())
+	}
+	if after := providerRowOf(t, in, founder, providerID); after != before {
+		t.Fatalf("the refused move changed the provider: %+v, was %+v", after, before)
+	}
+
+	if response := in.do(http.MethodPatch, providerPath, map[string]any{
+		"name": "Renamed", "kind": "openai", "base_url": "https://api.example.com/v1",
+	}, operator); response.Code != http.StatusOK {
+		t.Errorf("a providers-grant holder editing other fields, address unchanged: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "Second", "kind": "openai", "base_url": "https://second.example.com/v1", "api_key": "sk-second-key-value",
+	}, operator); response.Code != http.StatusCreated {
+		t.Errorf("a providers-grant holder creating a provider: %d %s", response.Code, response.Body.String())
+	}
+
+	if response := in.do(http.MethodPatch, providerPath, map[string]any{
+		"name": "Renamed", "kind": "openai", "base_url": "https://collector.example.net/v1", "api_key": "sk-the-new-secret-value",
+	}, founder); response.Code != http.StatusOK {
+		t.Fatalf("super administrator moving the base URL: %d %s", response.Code, response.Body.String())
+	}
+	if moved := providerRowOf(t, in, founder, providerID); moved.BaseURL != "https://collector.example.net/v1" {
+		t.Errorf("base_url = %q after the super administrator's move", moved.BaseURL)
+	}
+}
+
 // The dashboard lists the newest accounts with the fields it can show. The
 // address, the signup details and the rest of the record belong to the users
 // grant, which the dashboard grant does not hold.
@@ -262,6 +403,72 @@ func TestDashboardGrantSeesNoAccountAddresses(t *testing.T) {
 				t.Errorf("newest_users carries %q, which the dashboard does not show", key)
 			}
 		}
+	}
+}
+
+// A super administrator's cards can be moved or withdrawn only by a super
+// administrator. A users-grant delegate still moves and withdraws a member's
+// cards, which is what the grant is for, and still grants a super administrator
+// more, which only adds to what they hold.
+func TestOnlyASuperAdministratorMovesOrWithdrawsTheirOwnCards(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "another-password")
+	delegate(t, in, founder, operator, "users")
+
+	expires := time.Now().Add(30 * 24 * time.Hour).Truncate(time.Second).UnixMilli()
+	for _, account := range []*session{founder, member} {
+		if response := in.do(http.MethodPost, "/api/admin/users/"+account.userID+"/cards",
+			map[string]any{"cards": 2, "expires_at": expires}, founder); response.Code != http.StatusCreated {
+			t.Fatalf("grant cards: %d %s", response.Code, response.Body.String())
+		}
+	}
+	if response := in.do(http.MethodPost, "/api/admin/users/"+founder.userID+"/cards",
+		map[string]any{"cards": 1, "expires_at": expires}, operator); response.Code != http.StatusCreated {
+		t.Fatalf("a users-grant delegate granting a super administrator cards: %d %s", response.Code, response.Body.String())
+	}
+
+	later := time.Now().Add(60 * 24 * time.Hour).Truncate(time.Second).UnixMilli()
+	before := readerCards(t, in, founder)
+	if len(before) != 3 {
+		t.Fatalf("the super administrator holds %d cards, want 3", len(before))
+	}
+	moved := in.do(http.MethodPatch, "/api/admin/users/"+founder.userID+"/cards", map[string]any{"expires_at": later}, operator)
+	if moved.Code != http.StatusForbidden || errCode(t, moved) != "admin_permission_denied" {
+		t.Fatalf("a users-grant delegate moved a super administrator's cards: %d %s", moved.Code, moved.Body.String())
+	}
+	dropped := in.do(http.MethodDelete, "/api/admin/users/"+founder.userID+"/cards/"+before[0].ID, nil, operator)
+	if dropped.Code != http.StatusForbidden || errCode(t, dropped) != "admin_permission_denied" {
+		t.Fatalf("a users-grant delegate withdrew a super administrator's card: %d %s", dropped.Code, dropped.Body.String())
+	}
+	after := readerCards(t, in, founder)
+	if len(after) != len(before) {
+		t.Fatalf("the refused changes altered the super administrator's holding: %+v, was %+v", after, before)
+	}
+	for _, card := range after {
+		if card.ExpiresAt != expires {
+			t.Fatalf("a refused move changed a super administrator's card to expire at %d", card.ExpiresAt)
+		}
+	}
+
+	memberCards := readerCards(t, in, member)
+	if response := in.do(http.MethodPatch, "/api/admin/users/"+member.userID+"/cards",
+		map[string]any{"expires_at": later}, operator); response.Code != http.StatusOK {
+		t.Fatalf("a users-grant delegate moving a member's cards: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodDelete, "/api/admin/users/"+member.userID+"/cards/"+memberCards[0].ID,
+		nil, operator); response.Code != http.StatusNoContent {
+		t.Fatalf("a users-grant delegate withdrawing a member's card: %d %s", response.Code, response.Body.String())
+	}
+
+	if response := in.do(http.MethodPatch, "/api/admin/users/"+founder.userID+"/cards",
+		map[string]any{"expires_at": later}, founder); response.Code != http.StatusOK {
+		t.Fatalf("a super administrator moving their own cards: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodDelete, "/api/admin/users/"+founder.userID+"/cards/"+before[0].ID,
+		nil, founder); response.Code != http.StatusNoContent {
+		t.Fatalf("a super administrator withdrawing their own card: %d %s", response.Code, response.Body.String())
 	}
 }
 

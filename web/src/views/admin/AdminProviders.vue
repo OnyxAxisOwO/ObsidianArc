@@ -161,10 +161,18 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError
-      ? (failure.code === 'provider_key_needed' ? t('providerKeyNeeded') : failure.message)
-      : String(failure);
+    panelError.value = failure instanceof ApiError ? saveFailureText(failure) : String(failure);
   }
+}
+
+/**
+ * The server words its refusals in English. The two a person can act on from
+ * this form are translated here, so they read in the language they chose.
+ */
+function saveFailureText(failure: ApiError): string {
+  if (failure.code === 'provider_key_needed') return t('providerKeyNeeded');
+  if (failure.code === 'super_admin_required') return t('providerBaseURLSuperAdmin');
+  return failure.message;
 }
 
 async function remove(): Promise<void> {

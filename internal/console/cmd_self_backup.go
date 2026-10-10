@@ -60,7 +60,7 @@ func init() {
 		Args: []Arg{{Name: "json", Hint: Text{EN: "the export document", ZH: "导出文档"}, Required: true, Sensitive: true}},
 		Examples: []string{
 			`backup import '{"obsidian_arc_export":1,"conversations":[]}' --yes`,
-			`backup import --body '{"obsidian_arc_export":1}' -y`,
+			`backup import '{"obsidian_arc_export":1}' -y`,
 		},
 		Permission:  Anyone,
 		Destructive: true,

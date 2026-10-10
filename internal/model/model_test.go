@@ -122,7 +122,7 @@ func TestUpdateWithoutKeyKeepsIt(t *testing.T) {
 	created := f.provider(t, "Example")
 
 	name := "Renamed"
-	if _, err := f.providers.Update(ctx, created.ID, provider.Update{Name: &name}); err != nil {
+	if _, err := f.providers.Update(ctx, created.ID, provider.Update{Name: &name}, false); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
@@ -241,7 +241,7 @@ func TestAuthorizeRefusesDisabledModelOrProvider(t *testing.T) {
 	if _, err := f.models.Update(ctx, record.ID, Update{Enabled: &enabled}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}); err != nil {
+	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.models.Authorize(ctx, open.ID, record.ID, false); !errors.Is(err, ErrDisabled) {
@@ -256,7 +256,7 @@ func TestDisabledProviderKeepsItsModelsDisabled(t *testing.T) {
 	upstream := f.provider(t, "Example")
 	existing := f.model(t, upstream.ID, "existing-model")
 	disabled := false
-	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}); err != nil {
+	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -309,7 +309,7 @@ func TestDisablingProviderWhileAddingModelLeavesModelDisabled(t *testing.T) {
 		defer wg.Done()
 		<-start
 		disabled := false
-		_, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled})
+		_, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}, false)
 		errors <- err
 	}()
 	close(start)

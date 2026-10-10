@@ -82,6 +82,9 @@ func TestAuditMasksSecretsGivenAsPositionalArguments(t *testing.T) {
 		{"a custom invite code", "invite create --code " + secret, "invite create --code=***"},
 		{"a custom redemption code", "code create --code " + secret, "code create --code=***"},
 		{"a challenge token", "credit redeem --code " + secret + " --turnstile " + secret, "credit redeem --code=*** --turnstile=***"},
+		{"storage keys given as arguments", "backup configure --region auto " + secret + " " + secret, "backup configure *** *** --region=auto"},
+		{"a password given to me passwd", "me passwd " + secret + " " + secret + " --yes", "me passwd *** *** --yes"},
+		{"an account's password given to user passwd", "user passwd alice " + secret + " --yes", "user passwd alice *** --yes"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -178,6 +181,28 @@ func TestAuditMasksTheSecretOfACommandThatFailed(t *testing.T) {
 	}
 	if got := rig.line(t); got != "2fa backoffice ***" || rig.audit[0].OK {
 		t.Errorf("audit = %+v, want the failed command with its code masked", rig.audit[0])
+	}
+}
+
+// A watch writes its own line, and each run it repeats writes another. The
+// watch line used to carry the repeated arguments as they were typed, so a
+// password given to `user passwd` through a watch was recorded in the clear.
+func TestAuditDoesNotRepeatAPasswordGivenThroughWatch(t *testing.T) {
+	const secret = "s3cr3t-value-123456"
+	rig := newAuditRig(t, nil)
+	rig.run("watch --count 1 -- user passwd alice " + secret + " --yes")
+	if len(rig.audit) == 0 {
+		t.Fatal("the watch wrote no audit record at all")
+	}
+	repeated := false
+	for _, record := range rig.audit {
+		if strings.Contains(record.Line, secret) {
+			t.Errorf("the audit line repeats the password: %q", record.Line)
+		}
+		repeated = repeated || record.Line == "user passwd alice *** --yes"
+	}
+	if !repeated {
+		t.Errorf("the repeated command was not recorded with its password masked: %+v", rig.audit)
 	}
 }
 

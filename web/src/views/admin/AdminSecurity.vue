@@ -1317,9 +1317,13 @@ onMounted(load);
         <AdminFailure v-if="mailLoadError" :message="t(mailLoadError)" @retry="loadMail" />
         <p v-else-if="!mailLoaded" class="oa-table-empty" role="status">{{ t('loading') }}</p>
         <template v-else>
-          <OaTextField v-model="mailForm.host" :label="t('mailHost')" autocomplete="off" />
-          <OaNumberField v-model="mailForm.port" :label="t('mailPort')" :min="1" :max="65535" />
-          <OaTextField v-model="mailForm.username" :label="t('mailUsername')" autocomplete="username" />
+          <template v-if="isSuperAdmin">
+            <OaTextField v-model="mailForm.host" :label="t('mailHost')" autocomplete="off" />
+            <OaNumberField v-model="mailForm.port" :label="t('mailPort')" :min="1" :max="65535" />
+            <OaTextField v-model="mailForm.username" :label="t('mailUsername')" autocomplete="username" />
+          </template>
+          <!-- Shown as text rather than hidden, as the public URL below is: the relay mail goes through is the same kind of decision, and a security administrator still sees where it points. -->
+          <p v-else class="oa-field-hint">{{ t('mailTransportLocked', { server: mailForm.host ? mailForm.host + ':' + mailForm.port : '—' }) }}</p>
           <OaTextField v-model="mailForm.from" :label="t('mailFrom')" autocomplete="email" />
           <OaSwitchField v-model="mailForm.implicit_tls" :label="t('mailImplicitTLS')" :hint="t('mailImplicitTLSHint')" />
           <OaTextField

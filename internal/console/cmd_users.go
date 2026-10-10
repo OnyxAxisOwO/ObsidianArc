@@ -725,6 +725,11 @@ func init() {
 		Permission:  "users",
 		Destructive: true,
 		Endpoints:   []string{"POST /api/admin/users/{id}/password"},
+		// The account reference is what the record is for. A password typed
+		// where --password was meant lands after it, and the refused attempt is
+		// recorded too, so the tail is masked here rather than declared as a
+		// second Arg, which would stop refuseLooseValues from refusing it.
+		SecretArgs: secretFrom(1),
 		Run: func(_ context.Context, rt *Runtime) error {
 			ref, err := requireRef(rt, "account id or username")
 			if err != nil {

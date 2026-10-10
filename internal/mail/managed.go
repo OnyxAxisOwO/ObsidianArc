@@ -75,6 +75,12 @@ func (m *Manager) read(ctx context.Context) error {
 // verification link ends up.
 var ErrOriginNeedsSuperAdmin = errors.New("mail: only a super administrator can change the public site URL")
 
+// ErrTransportNeedsSuperAdmin is returned when someone other than a super
+// administrator would change the SMTP server, port or account. The relay a save
+// names receives every message, verification links, codes and new-device
+// notices included, so choosing it carries the authority the public URL does.
+var ErrTransportNeedsSuperAdmin = errors.New("mail: only a super administrator can change the SMTP server, port or username")
+
 // Save persists and activates a whole configuration. An empty password keeps
 // the current secret unless clearPassword explicitly removes it. changeOrigin
 // says whether the caller may move PublicURL; a caller that may not is refused
@@ -126,15 +132,19 @@ func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPa
 		if cfg.PublicURL != strings.TrimSpace(current.PublicURL) && !changeOrigin {
 			return ErrOriginNeedsSuperAdmin
 		}
+		// Not relaxed by a typed password: whoever chooses the relay receives
+		// the mail, whichever secret they sent it with. Sender address, TLS
+		// mode and the password itself stay open to the security grant.
+		if !changeOrigin && movesTransport(cfg, current) {
+			return ErrTransportNeedsSuperAdmin
+		}
 
 		if clearPassword {
 			cfg.Password = ""
 		} else if password != "" {
 			cfg.Password = password
 		} else {
-			moved := !strings.EqualFold(cfg.Host, strings.TrimSpace(current.Host)) ||
-				cfg.Port != current.Port || cfg.Username != strings.TrimSpace(current.Username)
-			if moved && currentPassword != "" {
+			if movesTransport(cfg, current) && currentPassword != "" {
 				return ErrPasswordNeededForMove
 			}
 			cfg.Password = currentPassword
@@ -174,6 +184,14 @@ func normalizeConfig(cfg Config) Config {
 	cfg.From = strings.TrimSpace(cfg.From)
 	cfg.PublicURL = strings.TrimSpace(cfg.PublicURL)
 	return cfg
+}
+
+// movesTransport reports whether a save changes the server a message is sent
+// through, or the account it is sent as. Save asks this of the row it read
+// under its lock, never of this manager's copy, which can be behind.
+func movesTransport(cfg, current Config) bool {
+	return !strings.EqualFold(cfg.Host, strings.TrimSpace(current.Host)) ||
+		cfg.Port != current.Port || cfg.Username != strings.TrimSpace(current.Username)
 }
 
 // ClaimTestSend records the shared, instance-wide test-mail cooldown before a

@@ -75,7 +75,7 @@ func TestPlainHTTPNeedsThatProvidersOptIn(t *testing.T) {
 	}
 
 	timeout := 300
-	updated, err := store.Update(ctx, record.ID, Update{TimeoutSeconds: &timeout})
+	updated, err := store.Update(ctx, record.ID, Update{TimeoutSeconds: &timeout}, false)
 	if err != nil {
 		t.Fatalf("edit an unrelated field: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestPlainHTTPNeedsThatProvidersOptIn(t *testing.T) {
 	// Clearing it is a real change of mind, and the address it was granted
 	// for stops being acceptable at the same moment.
 	off := false
-	if _, err := store.Update(ctx, record.ID, Update{AllowInsecure: &off}); err == nil {
+	if _, err := store.Update(ctx, record.ID, Update{AllowInsecure: &off}, false); err == nil {
 		t.Error("Update cleared the opt-in and kept the http address")
 	}
 
@@ -195,9 +195,9 @@ func TestAProviderStillNeedsAKeyFromSomewhere(t *testing.T) {
 }
 
 // The key goes wherever the base URL points, and nobody can read it back, so
-// it is only ever sent to a new address by somebody who typed it again.
-// Otherwise one edit and a "detect models" handed it to a server of the
-// editor's choosing.
+// it is only ever sent to a new address by somebody who typed it again. A
+// super administrator is the one who may choose that address at all, so the
+// key check is asked of them; it is not what stops a delegate.
 func TestTheKeyOnlyGoesSomewhereNewWhenTypedAgain(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()
@@ -211,7 +211,7 @@ func TestTheKeyOnlyGoesSomewhereNewWhenTypedAgain(t *testing.T) {
 	}
 
 	moved := "https://collector.example.net/v1"
-	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved}); !errors.Is(err, ErrKeyNeededForMove) {
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved}, true); !errors.Is(err, ErrKeyNeededForMove) {
 		t.Errorf("repointing without the key = %v, want ErrKeyNeededForMove", err)
 	}
 	if _, err := store.Create(ctx, CreateInput{
@@ -226,11 +226,60 @@ func TestTheKeyOnlyGoesSomewhereNewWhenTypedAgain(t *testing.T) {
 	// With the key typed again it moves, and so does an edit that leaves the
 	// address where it was.
 	key := "sk-a-new-key-value"
-	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved, APIKey: &key}); err != nil {
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved, APIKey: &key}, true); err != nil {
 		t.Errorf("repointing with the key: %v", err)
 	}
 	name := "Renamed"
-	if _, err := store.Update(ctx, source.ID, Update{Name: &name}); err != nil {
+	if _, err := store.Update(ctx, source.ID, Update{Name: &name}, false); err != nil {
 		t.Errorf("an edit that does not move the provider: %v", err)
+	}
+}
+
+// Every chat on a provider is sent to its base URL, prompts and attachments
+// included, so the address is the super administrator's to move, as the public
+// URL is. Holding the providers grant is not enough, and typing a key of one's
+// own does not change that: the refused edit stores neither the address nor
+// the key. Saving the address as it is stored, spelled the way it is stored, is
+// not a move and stays open to the grant.
+func TestOnlyASuperAdministratorMovesTheBaseURL(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	source, err := store.Create(ctx, CreateInput{
+		Name: "Primary", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	moved := "https://collector.example.net/v1"
+	typed := "sk-typed-by-a-delegate"
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved, APIKey: &typed}, false); !errors.Is(err, ErrBaseURLNeedsSuperAdmin) {
+		t.Fatalf("a delegate moved the base URL with a key of their own: %v, want ErrBaseURLNeedsSuperAdmin", err)
+	}
+	after, err := store.ByID(ctx, source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.BaseURL != source.BaseURL || after.APIKeyHint != source.APIKeyHint {
+		t.Errorf("the refused move changed the provider: address %q, key hint %q", after.BaseURL, after.APIKeyHint)
+	}
+
+	// Validation normalises the address before the comparison, so the stored
+	// address written with a trailing slash is the same address.
+	respelled := "https://api.example.com/v1/"
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &respelled}, false); err != nil {
+		t.Errorf("a delegate saving the stored address respelled: %v", err)
+	}
+
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved}, true); !errors.Is(err, ErrKeyNeededForMove) {
+		t.Errorf("the super administrator moving the address without the key = %v, want ErrKeyNeededForMove", err)
+	}
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved, APIKey: &typed}, true); err != nil {
+		t.Fatalf("the super administrator moving the address with the key: %v", err)
+	}
+	if current, err := store.ByID(ctx, source.ID); err != nil || current.BaseURL != moved {
+		t.Errorf("after the super administrator's move the address is %q, %v", current.BaseURL, err)
 	}
 }

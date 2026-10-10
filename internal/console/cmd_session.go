@@ -215,6 +215,10 @@ func init() {
 		Args: []Arg{
 			{Name: "command...", Hint: Text{EN: "the command to repeat", ZH: "要重复执行的命令"}, Required: true},
 		},
+		// The wrapped command is recorded on its own line by each run, with its
+		// own masking. This line must not repeat its arguments, or a password
+		// given to a repeated `user passwd` would be written twice.
+		SecretArgs: secretFrom(0),
 		Examples: []string{
 			"watch usage rpm",
 			"watch --interval 10s --count 6 health status",

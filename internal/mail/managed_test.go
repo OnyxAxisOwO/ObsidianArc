@@ -405,6 +405,69 @@ func TestOnlyASuperAdministratorMovesThePublicURL(t *testing.T) {
 	}
 }
 
+// The relay a save names receives every verification link, code and
+// new-device notice, so choosing it is the super administrator's, as the public
+// URL is. A typed password does not change who receives the mail. The sender
+// address and the password stay open to a save that may not choose the server.
+func TestOnlyASuperAdministratorChoosesTheSMTPServer(t *testing.T) {
+	ctx := context.Background()
+	db := mailDatabase(t)
+	master := []byte("test-instance-master-key")
+	manager, err := NewManager(ctx, db, New(Config{}), Config{}, master)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	cfg := Config{Host: "smtp.example.com", Port: 587, Username: "mailer", From: "sender@example.com", PublicURL: "https://arc.example.com"}
+	if err := manager.Save(ctx, cfg, "the-password", false, true); err != nil {
+		t.Fatalf("initial save: %v", err)
+	}
+
+	for label, edit := range map[string]func(*Config){
+		"host":     func(c *Config) { c.Host = "collector.example.net" },
+		"port":     func(c *Config) { c.Port = 2525 },
+		"username": func(c *Config) { c.Username = "someone-else" },
+	} {
+		moved := cfg
+		edit(&moved)
+		if err := manager.Save(ctx, moved, "", false, false); !errors.Is(err, ErrTransportNeedsSuperAdmin) {
+			t.Errorf("%s without a password: %v, want ErrTransportNeedsSuperAdmin", label, err)
+		}
+		if err := manager.Save(ctx, moved, "typed-again", false, false); !errors.Is(err, ErrTransportNeedsSuperAdmin) {
+			t.Errorf("%s with the password typed again: %v, want ErrTransportNeedsSuperAdmin", label, err)
+		}
+	}
+	reloaded, err := NewManager(ctx, db, New(Config{}), Config{}, master)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got, _ := reloaded.Config(); got.Host != cfg.Host || got.Port != cfg.Port || got.Username != cfg.Username || got.Password != "the-password" {
+		t.Fatalf("refused saves changed the stored relay: %+v", got)
+	}
+
+	// Only the sender address changes here. The password is typed again with
+	// the same server, which is what a rotation looks like.
+	edited := cfg
+	edited.From = "notifications@example.com"
+	if err := manager.Save(ctx, edited, "", false, false); err != nil {
+		t.Fatalf("saving the sender address with the server unchanged: %v", err)
+	}
+	if err := manager.Save(ctx, edited, "rotated-password", false, false); err != nil {
+		t.Fatalf("rotating the password with the server unchanged: %v", err)
+	}
+	if got, set := manager.Config(); got.From != edited.From || got.Password != "rotated-password" || !set {
+		t.Fatalf("the sender-only and password-only saves left %+v, password_set %v", got, set)
+	}
+
+	moved := edited
+	moved.Host = "collector.example.net"
+	if err := manager.Save(ctx, moved, "the-password", false, true); err != nil {
+		t.Fatalf("super administrator choosing the server: %v", err)
+	}
+	if got, _ := manager.Config(); got.Host != moved.Host {
+		t.Fatalf("host = %q after the super administrator's choice", got.Host)
+	}
+}
+
 // A manager that loaded before a move still compares against what is stored,
 // so it cannot put the old address back by saving the form it remembers.
 func TestAStaleManagerCannotRevertThePublicURL(t *testing.T) {

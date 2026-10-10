@@ -564,7 +564,7 @@ func init() {
 		Flags:   append([]Flag{{Name: "--provider", Hint: Text{EN: "provider ref, required", ZH: "服务商引用，必填"}, Value: "REF"}}, modelFlags(true)...),
 		Examples: []string{
 			"model create --provider OpenAI --model-id gpt-4o --display-name 'GPT-4o'",
-			"model create --provider Anthropic --model-id claude-3-7-sonnet --display-name Claude --supports-reasoning",
+			"model create --provider Anthropic --model-id claude-3-7-sonnet --display-name Claude --supports-reasoning true",
 		},
 		Permission: "models",
 		Endpoints:  []string{"POST /api/admin/models"},

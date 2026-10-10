@@ -129,13 +129,22 @@ func (h *Handlers) grantCards(w http.ResponseWriter, r *http.Request) error {
 // "the one you have lasts longer" are different answers to the same request,
 // and an operator who meant the second should not be able to produce the
 // first by mistyping a field.
+//
+// A delegate may still grant a super administrator cards, which only adds to
+// what they hold. Moving one takes away from the super administrator, and
+// CanManageAdmin refuses a delegate every other action that reaches one, so the
+// same refusal applies to revokeCard below.
 func (h *Handlers) rescheduleCards(w http.ResponseWriter, r *http.Request) error {
 	userID, err := pathID(r, "id")
 	if err != nil {
 		return err
 	}
-	if _, err := h.users.ByID(r.Context(), nil, userID); err != nil {
+	target, err := h.users.ByID(r.Context(), nil, userID)
+	if err != nil {
 		return translateUserError(err)
+	}
+	if target.IsSuperAdmin() && !auth.MustUser(r.Context()).IsSuperAdmin() {
+		return permissionDenied()
 	}
 
 	var body struct {
@@ -169,8 +178,14 @@ func (h *Handlers) revokeCard(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if _, err := h.users.ByID(r.Context(), nil, userID); err != nil {
+	target, err := h.users.ByID(r.Context(), nil, userID)
+	if err != nil {
 		return translateUserError(err)
+	}
+	// The same refusal as rescheduleCards: withdrawing a super administrator's
+	// card is taking something away from them.
+	if target.IsSuperAdmin() && !auth.MustUser(r.Context()).IsSuperAdmin() {
+		return permissionDenied()
 	}
 	if err := h.cards.Revoke(r.Context(), userID, cardID); err != nil {
 		return card.TranslateError(err)
