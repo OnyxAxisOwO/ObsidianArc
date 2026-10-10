@@ -43,6 +43,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -76,6 +77,14 @@ type Handlers struct {
 	// here is accounted for identically to one spent in a browser.
 	Guard  Guard
 	OnTurn func(context.Context, chat.TurnRecord)
+
+	// The two holds the browser's gates apply, with the same predicates they
+	// use, so the two doors cannot disagree about who is held. Those gates
+	// read the session cookie and never see a bearer key, so a key has to be
+	// checked here. Read per request, so a policy switched on takes effect on
+	// the next call. Nil means no hold; the server wires both.
+	MustEnrolTwoFactor func(user.User) bool
+	MustBindOIDC       func(context.Context, user.User) (bool, error)
 }
 
 func NewHandlers(
@@ -242,6 +251,41 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 		membership, err := h.groups.ByID(r.Context(), nil, account.GroupID)
 		if err != nil || !membership.APIAccess {
 			return caller{}, invalidKey()
+		}
+	}
+
+	// The two holds the session gates apply. A key issued before the operator
+	// switched a policy on would otherwise keep spending through it. Unlike the
+	// refusals above these name the hold: whoever holds the key is the account
+	// that has to enrol or link, and the browser says the same. They come after
+	// the grant check so a key in a group without API access still answers
+	// exactly as a bad key does.
+	if h.MustEnrolTwoFactor != nil && h.MustEnrolTwoFactor(account) {
+		return caller{}, apiError{
+			status:  http.StatusForbidden,
+			kind:    "permission_error",
+			code:    "two_factor_enrolment_required",
+			message: "Set up two-step sign-in before continuing.",
+		}
+	}
+	if h.MustBindOIDC != nil {
+		must, err := h.MustBindOIDC(r.Context(), account)
+		if err != nil {
+			// The browser's binding gate lets the account through on this same
+			// error. Here it refuses instead: letting a held key through on a
+			// failed lookup is the one thing the hold exists to prevent, and the
+			// client can simply ask again.
+			slog.ErrorContext(r.Context(), "could not check the OIDC binding requirement for an API key",
+				"error", err)
+			return caller{}, internalError(err)
+		}
+		if must {
+			return caller{}, apiError{
+				status:  http.StatusForbidden,
+				kind:    "permission_error",
+				code:    "oidc_binding_required",
+				message: "Link an OpenID Connect identity before continuing.",
+			}
 		}
 	}
 	return caller{account: account, key: key}, nil

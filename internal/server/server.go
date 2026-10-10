@@ -1036,6 +1036,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// connection is oauth.Service's question to answer, and the account
 	// payload is auth's to build.
 	authHandlers.MustBindOIDC = oauthService.MustBindOIDC
+	// The API's door to the same two holds. Set here rather than where the
+	// handlers are built because the OIDC service is only made below, and the
+	// fields are read per request.
+	compatHandlers.MustEnrolTwoFactor = authService.MustEnrolTwoFactor
+	compatHandlers.MustBindOIDC = oauthService.MustBindOIDC
 
 	// And the other direction: this instance as the place somebody else's site
 	// sends people to sign in. internal/idp is the provider; internal/oauth
