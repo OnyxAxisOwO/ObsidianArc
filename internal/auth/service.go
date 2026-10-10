@@ -1013,12 +1013,18 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 // count against one budget rather than two, and the same dummy verification,
 // so an unknown account costs the same wall-clock as a known one.
 //
+// It also returns the account's credential fingerprint (see
+// CredentialFingerprint), taken from the same read of the stored hash that the
+// password was checked against. A second read after the check would sit behind
+// the whole verification, and a change made in that span would pair the new
+// fingerprint with the old password.
+//
 // Every failure returns ErrInvalidCredentials. A caller that is about to tell
 // a stranger whether an account exists is the reason.
-func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip string) (user.User, error) {
+func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip string) (user.User, string, error) {
 	attempt, err := s.limiter.Begin(ip, identifier)
 	if err != nil {
-		return user.User{}, err
+		return user.User{}, "", err
 	}
 	defer attempt.finish(attemptCancelled)
 
@@ -1027,9 +1033,9 @@ func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip
 		if errors.Is(err, user.ErrNotFound) {
 			s.hasher.DummyVerify(ctx, password)
 			attempt.finish(attemptFailedUnknown)
-			return user.User{}, ErrInvalidCredentials
+			return user.User{}, "", ErrInvalidCredentials
 		}
-		return user.User{}, err
+		return user.User{}, "", err
 	}
 
 	ok, needsRehash, err := s.hasher.Verify(ctx, hash, password)
@@ -1038,27 +1044,32 @@ func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip
 		// same way for the same reason.
 		s.hasher.DummyVerify(ctx, password)
 		attempt.finish(attemptFailed)
-		return user.User{}, ErrInvalidCredentials
+		return user.User{}, "", ErrInvalidCredentials
 	}
 	if err != nil {
-		return user.User{}, err
+		return user.User{}, "", err
 	}
 	if !ok {
 		attempt.finish(attemptFailed)
-		return user.User{}, ErrInvalidCredentials
+		return user.User{}, "", ErrInvalidCredentials
 	}
 	if !account.IsActive() {
-		return user.User{}, &AccountDisabledError{Reason: account.BanReason}
+		return user.User{}, "", &AccountDisabledError{Reason: account.BanReason}
 	}
 
 	attempt.finish(attemptSucceeded)
 
+	// The rehash moves the stored hash, so the fingerprint returned below stops
+	// matching CredentialFingerprint, and the console connection this sign-in
+	// opens ends at its first command. That happens once per account per
+	// parameter change. Re-reading the hash after the upgrade would be the second
+	// read this function exists to avoid, so the cost is accepted.
 	if needsRehash {
 		if upgraded, hashErr := s.hasher.Hash(ctx, password); hashErr == nil {
 			_ = s.users.SetPasswordHash(ctx, nil, account.ID, upgraded)
 		}
 	}
-	return account, nil
+	return account, fingerprintOf(hash), nil
 }
 
 func (s *Service) Logout(ctx context.Context, token string) error {

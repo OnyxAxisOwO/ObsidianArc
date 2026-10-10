@@ -280,27 +280,31 @@ func TestSSHKeepsWorkingWhileTheAccountIsStillAnAdministrator(t *testing.T) {
 // the change itself, the way it notices a revoked grant.
 func TestSSHEndsItsNextCommandWhenThePasswordChanges(t *testing.T) {
 	var dispatches atomic.Int32
-	engine := console.New(console.Options{
-		Dispatch: func(context.Context, user.User, string, string, any) (console.Response, error) {
-			dispatches.Add(1)
-			return console.Response{Status: 200, Body: []byte(`{"users":[],"total":0}`)}, nil
-		},
-		Version:  "test",
-		SiteName: func() string { return "Test Arc" },
-	})
 	var mu sync.Mutex
 	credential := "fingerprint-before"
+	current := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return credential
+	}
 	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
+	fake := fakeAuthenticate(accounts)
 	srv := startTestServer(t, Config{
-		Console:      engine,
-		Authenticate: fakeAuthenticate(accounts),
+		Console: countingConsole(&dispatches),
+		// The check reports the fingerprint in force when it ran, as
+		// auth.VerifyCredential does.
+		Authenticate: func(ctx context.Context, username, password, ip string) (user.User, string, error) {
+			account, _, err := fake(ctx, username, password, ip)
+			if err != nil {
+				return user.User{}, "", err
+			}
+			return account, current(), nil
+		},
 		Reauthorize: func(context.Context, string) (user.User, error) {
 			return adminUser("admin"), nil
 		},
 		Credential: func(context.Context, string) (string, error) {
-			mu.Lock()
-			defer mu.Unlock()
-			return credential, nil
+			return current(), nil
 		},
 	})
 	client := dialInsecure(t, srv, "admin", "s3cret-pass")
@@ -338,4 +342,71 @@ func TestSSHEndsItsNextCommandWhenThePasswordChanges(t *testing.T) {
 	if !strings.Contains(output, "password for this account changed") {
 		t.Errorf("the session was not told why it ended:\n%q", output)
 	}
+}
+
+// The password can change while it is being checked, since the check takes as
+// long as Argon2 does. The connection has to carry the fingerprint the check
+// read: one read after the check would hold the new value, and the old password
+// would open a connection the change was meant to end.
+func TestSSHEndsItsNextCommandWhenThePasswordChangesDuringTheCheck(t *testing.T) {
+	var dispatches atomic.Int32
+	var mu sync.Mutex
+	credential := "fingerprint-before"
+	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
+	fake := fakeAuthenticate(accounts)
+	srv := startTestServer(t, Config{
+		Console: countingConsole(&dispatches),
+		Authenticate: func(ctx context.Context, username, password, ip string) (user.User, string, error) {
+			account, _, err := fake(ctx, username, password, ip)
+			if err != nil {
+				return user.User{}, "", err
+			}
+			// The check has read "fingerprint-before". The owner's change lands
+			// after that read and before the connection is opened.
+			mu.Lock()
+			checked := credential
+			credential = "fingerprint-after"
+			mu.Unlock()
+			return account, checked, nil
+		},
+		Reauthorize: func(context.Context, string) (user.User, error) {
+			return adminUser("admin"), nil
+		},
+		Credential: func(context.Context, string) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return credential, nil
+		},
+	})
+	client := dialInsecure(t, srv, "admin", "s3cret-pass")
+
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer session.Close()
+	raw, err := session.CombinedOutput("user list")
+	output := string(raw)
+	if _, ok := err.(*ssh.ExitError); !ok {
+		t.Fatalf("a command on a connection whose password changed during the check ran: err = %v; output:\n%s", err, output)
+	}
+	if got := dispatches.Load(); got != 0 {
+		t.Errorf("the command reached the admin API %d times, want 0", got)
+	}
+	if !strings.Contains(output, "password for this account changed") {
+		t.Errorf("the session was not told why it ended:\n%q", output)
+	}
+}
+
+// countingConsole is a console whose commands all reach the admin API as one
+// dispatch, counted, so a test can tell whether a command ran.
+func countingConsole(dispatches *atomic.Int32) *console.Console {
+	return console.New(console.Options{
+		Dispatch: func(context.Context, user.User, string, string, any) (console.Response, error) {
+			dispatches.Add(1)
+			return console.Response{Status: 200, Body: []byte(`{"users":[],"total":0}`)}, nil
+		},
+		Version:  "test",
+		SiteName: func() string { return "Test Arc" },
+	})
 }

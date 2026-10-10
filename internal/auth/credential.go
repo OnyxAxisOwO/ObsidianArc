@@ -19,6 +19,13 @@ func (s *Service) CredentialFingerprint(ctx context.Context, userID string) (str
 	if err != nil {
 		return "", err
 	}
+	return fingerprintOf(hash), nil
+}
+
+// fingerprintOf is the one digest both readers use. VerifyCredential takes it
+// from the hash it checked a password against, CredentialFingerprint from the
+// hash it reads, so the two agree for as long as the password does.
+func fingerprintOf(hash string) string {
 	sum := sha256.Sum256([]byte(hash))
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
 }

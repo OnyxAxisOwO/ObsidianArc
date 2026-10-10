@@ -242,9 +242,9 @@ func TestSSHCapsTheSessionsOneAccountCanHold(t *testing.T) {
 
 func TestSSHRefusesAnAbsurdUserNameBeforeCheckingAnything(t *testing.T) {
 	var checked atomic.Int32
-	srv := &Server{cfg: Config{Authenticate: func(context.Context, string, string, string) (user.User, error) {
+	srv := &Server{cfg: Config{Authenticate: func(context.Context, string, string, string) (user.User, string, error) {
 		checked.Add(1)
-		return user.User{}, errors.New("no")
+		return user.User{}, "", errors.New("no")
 	}}}
 
 	_, err := srv.passwordCallback(fakeConnMetadata{user: strings.Repeat("a", maxUsernameLen+1)}, []byte("pw"))

@@ -49,3 +49,76 @@ func TestCredentialFingerprintMovesWithThePasswordAndNothingElse(t *testing.T) {
 		t.Fatal("an administrator's password reset did not move the fingerprint")
 	}
 }
+
+// The fingerprint a check returns is the one of the hash it checked, so a
+// password change after the check leaves the connection holding a value the
+// account no longer has. Read as a second step, the value would be the new one.
+func TestVerifyCredentialReturnsTheFingerprintOfTheHashItChecked(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, _, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := f.auth.CredentialFingerprint(ctx, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, checked, err := f.auth.VerifyCredential(ctx, "arc", "a-good-password", "198.51.100.7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked != before {
+		t.Fatal("the fingerprint from the check is not the one the account reports before any change")
+	}
+
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", ""); err != nil {
+		t.Fatal(err)
+	}
+	now, err := f.auth.CredentialFingerprint(ctx, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if now == checked {
+		t.Fatal("after the change the account still reports the value the check returned")
+	}
+}
+
+// A sign-in that rehashes the stored hash returns the fingerprint of the hash it
+// checked. The rehash has moved the stored hash on by the time the check returns,
+// so the connection that sign-in opens ends at its first command, once.
+func TestVerifyCredentialOfARehashedPasswordReturnsTheOldFingerprint(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, _, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := testParams()
+	stale.Memory /= 2
+	old, err := NewHasher(stale).Hash(ctx, "a-good-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.users.SetPasswordHash(ctx, nil, account.ID, old); err != nil {
+		t.Fatal(err)
+	}
+
+	_, checked, err := f.auth.VerifyCredential(ctx, "arc", "a-good-password", "198.51.100.7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked != fingerprintOf(old) {
+		t.Fatal("the check did not return the fingerprint of the hash it checked")
+	}
+	now, err := f.auth.CredentialFingerprint(ctx, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if now == checked {
+		t.Fatal("the rehash left the stored hash where it was, so this test does not exercise the rehash")
+	}
+}

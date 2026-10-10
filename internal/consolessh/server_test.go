@@ -51,17 +51,19 @@ type testAccount struct {
 
 // fakeAuthenticate stands in for auth.Service.VerifyCredential: same shape,
 // same "every failure looks identical" contract, but with no database
-// behind it so these tests do not need internal/auth or a store.
-func fakeAuthenticate(accounts map[string]testAccount) func(context.Context, string, string, string) (user.User, error) {
-	return func(_ context.Context, username, password, _ string) (user.User, error) {
+// behind it so these tests do not need internal/auth or a store. It reports
+// no credential fingerprint, which is right for every test that does not
+// configure Credential; a test that does supplies its own Authenticate.
+func fakeAuthenticate(accounts map[string]testAccount) func(context.Context, string, string, string) (user.User, string, error) {
+	return func(_ context.Context, username, password, _ string) (user.User, string, error) {
 		entry, ok := accounts[username]
 		if !ok || entry.password != password {
-			return user.User{}, errors.New("fake: incorrect username or password")
+			return user.User{}, "", errors.New("fake: incorrect username or password")
 		}
 		if !entry.account.IsActive() {
-			return user.User{}, errors.New("fake: account disabled")
+			return user.User{}, "", errors.New("fake: account disabled")
 		}
-		return entry.account, nil
+		return entry.account, "", nil
 	}
 }
 

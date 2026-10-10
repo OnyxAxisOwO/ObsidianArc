@@ -41,11 +41,15 @@ type Config struct {
 	Console *console.Console
 
 	// Authenticate verifies a password against the same store the web login
-	// uses and returns the account. Whether that account may have a console
-	// is Permitted's question, asked by consolessh itself and folded into the
-	// same error a wrong password gets, so the prompt cannot be used to find
-	// out which accounts hold it.
-	Authenticate func(ctx context.Context, username, password, ip string) (user.User, error)
+	// uses and returns the account, with the credential fingerprint (see
+	// Credential) of the hash the password was checked against. The fingerprint
+	// must come from that check's own read: a change made while the password is
+	// being verified then leaves the connection with the old value, and its next
+	// command ends it. Whether that account may have a console is Permitted's
+	// question, asked by consolessh itself and folded into the same error a
+	// wrong password gets, so the prompt cannot be used to find out which
+	// accounts hold it.
+	Authenticate func(ctx context.Context, username, password, ip string) (user.User, string, error)
 
 	// Permitted answers whether an account may use the console at all: the
 	// same rule the web terminal applies, so the two doors cannot disagree
@@ -70,10 +74,12 @@ type Config struct {
 	Reauthorize func(ctx context.Context, userID string) (user.User, error)
 
 	// Credential fingerprints the account's password, and must change whenever
-	// the password does. A connection keeps the value it was opened with, and
-	// its next command ends once the account's value differs. A password change
-	// ends the sessions a web sign-in holds, but a console connection has no
-	// cookie and no session row for that to reach. Nil checks nothing.
+	// the password does. It must also agree with what Authenticate returns for
+	// the same password, or every connection would end at its first command. A
+	// connection keeps the value it was opened with, and its next command ends
+	// once the account's value differs. A password change ends the sessions a
+	// web sign-in holds, but a console connection has no cookie and no session
+	// row for that to reach. Nil checks nothing.
 	Credential func(ctx context.Context, userID string) (string, error)
 
 	// SecondFactor checks the code from an authenticator app, for an account
@@ -378,7 +384,15 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 		return nil, errAuthFailed
 	}
 	ip := hostOnly(conn.RemoteAddr())
-	account, err := s.cfg.Authenticate(context.Background(), conn.User(), string(password), ip)
+	// The credential is the one Config.Authenticate read while it checked the
+	// password, and it is not read again here. A second read would sit behind the
+	// whole verification, Argon2 included, so a password changed anywhere in that
+	// span would be recorded as the one this connection signed in with, and the
+	// old password would keep a console the change should have ended. A sign-in
+	// that rehashes the stored hash gets the fingerprint of the hash it checked,
+	// so its own connection ends at its first command; that happens once per
+	// account per parameter change and is accepted.
+	account, credential, err := s.cfg.Authenticate(context.Background(), conn.User(), string(password), ip)
 	if err != nil {
 		return nil, errAuthFailed
 	}
@@ -386,14 +400,6 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 	// error a wrong password gets is what stops this prompt from being
 	// usable to enumerate which accounts have a console.
 	if !s.permitted(context.Background(), account) {
-		return nil, errAuthFailed
-	}
-	// Read once the password has been checked, so the connection keeps the
-	// credential that let it in. A change landing between the two calls is not
-	// seen, and that window is as long as one call; a failed read refuses, as a
-	// failed permission check does.
-	credential, err := s.credentialOf(context.Background(), account.ID)
-	if err != nil {
 		return nil, errAuthFailed
 	}
 
@@ -419,15 +425,6 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 		}}
 	}
 	return actorPermissions(account, credential)
-}
-
-// credentialOf is the value a connection is opened with and checked against.
-// Empty when the instance checks nothing.
-func (s *Server) credentialOf(ctx context.Context, userID string) (string, error) {
-	if s.cfg.Credential == nil {
-		return "", nil
-	}
-	return s.cfg.Credential(ctx, userID)
 }
 
 func actorPermissions(account user.User, credential string) (*ssh.Permissions, error) {
