@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -75,10 +76,7 @@ func NewDispatcher(mux http.Handler) Dispatcher {
 			req.Header.Set("Content-Type", "application/json")
 		}
 		req.Header.Set("Accept", "application/json")
-		// There is no real peer to read one from; a handler that wants the
-		// caller's address reads it from Session.IP through the command,
-		// not from the request.
-		req.RemoteAddr = "127.0.0.1:0"
+		req.RemoteAddr = callerAddr(ctx)
 
 		rec := newRecorder()
 		// Recovered here because nothing further up will: the SSH console
@@ -87,6 +85,33 @@ func NewDispatcher(mux http.Handler) Dispatcher {
 		httpx.Recover()(mux).ServeHTTP(rec, req)
 		return Response{Status: rec.status, Body: rec.body.Bytes()}, nil
 	}
+}
+
+// callerKey is where a command's caller address travels, from runTokens to the
+// dispatcher. It rides the context rather than the Dispatcher's arguments
+// because every Dispatcher a test supplies is written against the current
+// shape, and the address is a value only the dispatcher reads.
+type callerKey struct{}
+
+func withCaller(ctx context.Context, ip string) context.Context {
+	return context.WithValue(ctx, callerKey{}, ip)
+}
+
+// callerAddr is the peer an in-process request reports. Nothing is on the far
+// end of it, so the person typing the command stands in for the socket: a
+// handler that keys a limit on its peer then keys it on that person, not on a
+// loopback bucket that every console user shares.
+//
+// Trust is not a concern. The request is built fresh and carries no forwarding
+// headers, so httpx.ClientIP answers with this peer whether or not its address
+// is one a proxy is trusted from. The loopback stand-in is kept for a caller
+// that has no address to give.
+func callerAddr(ctx context.Context) string {
+	ip, _ := ctx.Value(callerKey{}).(string)
+	if net.ParseIP(ip) == nil {
+		return "127.0.0.1:0"
+	}
+	return net.JoinHostPort(ip, "0")
 }
 
 // SSEFrame is one frame of a text/event-stream response. ParseSSE exists

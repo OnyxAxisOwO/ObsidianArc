@@ -196,12 +196,14 @@ func init() {
 		Usage:      "watch [--interval DURATION] [--count N] [--for DURATION] <command...>",
 		Help: Text{
 			EN: "Re-runs the given command, clearing between runs, until the connection is cancelled " +
-				"(Ctrl-C / closing the tab), --count is reached or --for runs out (default 1h, at most 24h). " +
-				"A flag meant for the wrapped " +
+				"(Ctrl-C / closing the tab), --count is reached, --for runs out (default 1h, at most 24h), " +
+				"or the account can no longer use the console. Every run after the first uses the account's " +
+				"current rights, not the ones it had when watch started. A flag meant for the wrapped " +
 				"command rather than for watch itself goes after a literal --, e.g. " +
 				"watch --interval 5s -- user list --q alice.",
-			ZH: "反复执行给定的命令，每次之间清屏，直到连接被取消（Ctrl-C / 关闭标签页）、达到 --count 次数或 --for 用完" +
-				"（默认 1 小时，最长 24 小时）。" +
+			ZH: "反复执行给定的命令，每次之间清屏，直到连接被取消（Ctrl-C / 关闭标签页）、达到 --count 次数、--for 用完" +
+				"（默认 1 小时，最长 24 小时），或此账户已无法使用控制台。从第二次执行起，按账户当前的权限运行，" +
+				"而不是 watch 启动时的权限。" +
 				"若某个选项是给被包裹的命令而非 watch 本身的，请放在字面量 -- 之后，例如" +
 				" watch --interval 5s -- user list --q alice。",
 		},
@@ -243,6 +245,27 @@ func init() {
 			defer stop()
 
 			for i := 0; count == 0 || i < count; i++ {
+				// The account this watch started under was checked when it
+				// started, and it can run for a day. Every run after the first
+				// asks again, so a sign-out, a disabled account or a grant taken
+				// away reaches a watch already in progress.
+				if i > 0 && rt.Session.Reauthorize != nil {
+					account, err := rt.Session.Reauthorize(ctx)
+					// A clock or a closed connection is the same quiet stop the
+					// wait below makes, not a revocation to report.
+					if ctx.Err() != nil {
+						watchStopped(rt, ctx, limit)
+						return nil
+					}
+					if err != nil {
+						if rt.Session.Lang == "zh" {
+							return rt.Errorf("watch 已停止：此次登录已结束，或此账户已无法使用控制台。")
+						}
+						return rt.Errorf("watch stopped: the sign-in has ended, or this account may no longer use the console.")
+					}
+					rt.Session.Actor = account
+				}
+
 				if rt.Session.Colour {
 					fmt.Fprint(rt.Out, "\x1b[H\x1b[2J")
 				} else if i > 0 {

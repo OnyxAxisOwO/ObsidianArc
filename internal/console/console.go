@@ -109,6 +109,14 @@ type Session struct {
 	Colour    bool // may emit ANSI SGR and cursor/erase sequences
 	Lang      string
 	JSON      bool // `format json` is in effect for this session
+
+	// Reauthorize answers the account this session may run as now. Actor is
+	// only what the request or connection that opened the session saw at the
+	// time, and a command that outlives that moment (watch, for up to a day)
+	// asks again before each run after the first. An error means the sign-in
+	// or the access has ended, and the command stops. Nil means nothing live
+	// stands behind the session, so Actor is all there is.
+	Reauthorize func(ctx context.Context) (user.User, error)
 }
 
 // Result is what Execute answers after one line, whatever the command's own
@@ -161,6 +169,10 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	if len(tokens) == 0 {
 		return Result{OK: true, Elapsed: time.Since(start)}
 	}
+	// Set here rather than per dispatch: every API call a command makes, and
+	// every nested run a watch makes, then reaches the dispatcher with the
+	// address of the person typing it.
+	ctx = withCaller(ctx, s.IP)
 
 	name, rest, found := c.match(tokens)
 	if !found {

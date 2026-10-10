@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -192,6 +193,54 @@ func TestSSHRereadsTheAccountBeforeEveryCommand(t *testing.T) {
 				t.Errorf("the session was not told why it ended:\n%q", output)
 			}
 		})
+	}
+}
+
+// A watch is one command that outlives the line it was typed on, so the same
+// re-read has to happen before each of its runs. Revoked in the middle, the
+// next run must not reach the API, and the watch must say why and exit
+// non-zero, the way a script watching for it would need.
+func TestSSHWatchStopsOnItsNextRunWhenTheAccountIsRevoked(t *testing.T) {
+	var dispatches atomic.Int32
+	engine := console.New(console.Options{
+		Dispatch: func(context.Context, user.User, string, string, any) (console.Response, error) {
+			dispatches.Add(1)
+			return console.Response{Status: 200, Body: []byte(`{"users":[],"total":0}`)}, nil
+		},
+		Version:  "test",
+		SiteName: func() string { return "Test Arc" },
+	})
+	var reads atomic.Int32
+	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
+	srv := startTestServer(t, Config{
+		Console:      engine,
+		Authenticate: fakeAuthenticate(accounts),
+		Reauthorize: func(context.Context, string) (user.User, error) {
+			// The first read is the command starting. The second is the
+			// watch's next run, by which time the account has been demoted.
+			if reads.Add(1) == 1 {
+				return adminUser("admin"), nil
+			}
+			return regularUser("admin"), nil
+		},
+	})
+	client := dialInsecure(t, srv, "admin", "s3cret-pass")
+
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer session.Close()
+
+	output, runErr := session.CombinedOutput("watch --interval 1s --count 5 -- user list")
+	if _, ok := runErr.(*ssh.ExitError); !ok {
+		t.Fatalf("watch should exit non-zero once its account is revoked, got %v; output:\n%s", runErr, output)
+	}
+	if got := dispatches.Load(); got != 1 {
+		t.Errorf("the watch reached the admin API %d times, want 1", got)
+	}
+	if !strings.Contains(string(output), "watch stopped") {
+		t.Errorf("the session was not told why the watch ended:\n%s", output)
 	}
 }
 
