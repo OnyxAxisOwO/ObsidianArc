@@ -20,6 +20,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -233,7 +234,18 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return fmt.Errorf("consolessh: listen on %s: %w", s.cfg.Addr, err)
 	}
+	return s.serve(listener)
+}
 
+// serve runs the accept loop on an already-bound listener. It is split from
+// ListenAndServe only so the tests can drive the loop with a scripted
+// listener; nothing else calls it.
+//
+// A transient Accept failure does not end the loop. Under descriptor
+// exhaustion Accept fails with EMFILE until a connection closes, and returning
+// that error hands main.go a reason to exit, which takes the HTTP listener down
+// with it. net/http's Serve waits out the same errors, and this does too.
+func (s *Server) serve(listener net.Listener) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -244,6 +256,7 @@ func (s *Server) ListenAndServe() error {
 	s.addr = listener.Addr().String()
 	s.mu.Unlock()
 
+	var retryDelay time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -253,14 +266,53 @@ func (s *Server) ListenAndServe() error {
 			if closed {
 				return nil
 			}
-			return err
+			if !retryableAcceptError(err) {
+				return err
+			}
+			retryDelay = nextAcceptDelay(retryDelay)
+			s.cfg.Logf(context.Background(), "consolessh: accept failed, retrying", "error", err, "delay", retryDelay)
+			time.Sleep(retryDelay)
+			continue
 		}
+		// A successful accept ends a run of failures. Without the reset, the
+		// next and unrelated failure would resume the old schedule, possibly at
+		// the one-second cap, instead of starting again at 5ms.
+		retryDelay = 0
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
 			s.handleConn(conn)
 		}()
 	}
+}
+
+// retryableAcceptError reports whether an Accept failure should be waited out
+// rather than returned. Temporary() is documented as ill-defined, but it is the
+// test net/http applies, so the two listeners agree on what is transient.
+// EMFILE and ENFILE are named as well:
+// they are what a process out of descriptors gets, which is the case this
+// exists for, and naming them keeps the retry from depending on how a
+// platform classifies them.
+func retryableAcceptError(err error) bool {
+	if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Temporary()
+}
+
+// nextAcceptDelay is the wait before retrying a failed Accept: 5ms, doubling
+// with each consecutive failure, and never more than a second. The short start
+// suits a descriptor that frees up a moment later. The cap means a listener
+// that stays broken is still retried often enough to notice when it recovers.
+func nextAcceptDelay(prev time.Duration) time.Duration {
+	if prev == 0 {
+		return 5 * time.Millisecond
+	}
+	if next := 2 * prev; next < time.Second {
+		return next
+	}
+	return time.Second
 }
 
 // Shutdown closes the listener and every live session, then waits for their
