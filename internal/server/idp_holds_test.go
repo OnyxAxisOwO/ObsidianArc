@@ -152,3 +152,119 @@ func TestTheOIDCBindingHoldReachesATokenIssuedBeforeThePolicy(t *testing.T) {
 
 	in.assertHeldAtTheProvider(clientID, refresh, access, code, verifier, "the OIDC binding policy")
 }
+
+// A hold applies to the account it names and to nothing else. An account that is
+// not held keeps consent, the code exchange, renewal, the identity endpoint and
+// revocation exactly as they were, so the provider's new checks cannot be the
+// reason an ordinary sign-in stops working.
+func TestAnUnheldAccountKeepsItsProviderAccessUnderTheHolds(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	clientID := in.publicApplication(founder)
+
+	// Enrolled before the policy is switched on, so the policy has nothing to
+	// hold this account for.
+	in.enrol(founder)
+	policy := map[string]string{"security.two_factor_policy": "everyone"}
+	if response := in.do(http.MethodPut, "/api/admin/settings", policy, founder); response.Code != http.StatusOK {
+		t.Fatalf("policy: %d %s", response.Code, response.Body.String())
+	}
+	if held := in.do(http.MethodGet, "/api/conversations", nil, founder); held.Code != http.StatusOK {
+		t.Fatalf("an enrolled account is held: %d %s", held.Code, held.Body.String())
+	}
+
+	refresh, access := in.signInThrough(clientID, founder)
+	if info := in.userinfo(access); info.Code != http.StatusOK {
+		t.Fatalf("userinfo for an unheld account = %d %s", info.Code, info.Body.String())
+	}
+	renewed := in.formPost("/oauth/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {clientID},
+		"refresh_token": {refresh},
+	})
+	if renewed.Code != http.StatusOK {
+		t.Fatalf("refresh for an unheld account = %d %s", renewed.Code, renewed.Body.String())
+	}
+	renewedAccess := decode[struct {
+		AccessToken string `json:"access_token"`
+	}](t, renewed).AccessToken
+	if info := in.userinfo(renewedAccess); info.Code != http.StatusOK {
+		t.Fatalf("userinfo with the renewed token = %d %s", info.Code, info.Body.String())
+	}
+
+	revoked := in.formPost("/oauth/revoke", url.Values{
+		"token": {renewedAccess}, "client_id": {clientID},
+	})
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("revoke = %d %s", revoked.Code, revoked.Body.String())
+	}
+	if info := in.userinfo(renewedAccess); info.Code != http.StatusUnauthorized {
+		t.Fatalf("userinfo after revoking = %d, want it refused", info.Code)
+	}
+}
+
+// A held account gets its provider access back once it connects the identity
+// the policy asks for, as a two-step account does once it enrols. The hold is
+// a state of the account, so lifting it is all a new sign-in needs.
+func TestTheOIDCBindingHoldLiftsOnceTheAccountConnects(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	member := in.register("member", "another-password")
+	clientID := in.publicApplication(founder)
+
+	stub := stubOIDCProvider(t)
+	configure := map[string]string{
+		"oauth.oidc_enabled":       "true",
+		"oauth.oidc_client_id":     "a-client-id",
+		"oauth.oidc_client_secret": "a-client-secret",
+		"oauth.oidc_auth_url":      stub.URL + "/authorize",
+		"oauth.oidc_token_url":     stub.URL + "/token",
+		"oauth.oidc_userinfo_url":  stub.URL + "/userinfo",
+	}
+	if response := in.do(http.MethodPut, "/api/admin/settings", configure, founder); response.Code != http.StatusOK {
+		t.Fatalf("configure: %d %s", response.Code, response.Body.String())
+	}
+	policy := map[string]string{"oauth.oidc_require_for_all": "true"}
+	if response := in.do(http.MethodPut, "/api/admin/settings", policy, founder); response.Code != http.StatusOK {
+		t.Fatalf("policy: %d %s", response.Code, response.Body.String())
+	}
+	if held := in.do(http.MethodGet, "/api/conversations", nil, member); held.Code != http.StatusForbidden {
+		t.Fatalf("the member is not held: %d %s", held.Code, held.Body.String())
+	}
+
+	start := in.do(http.MethodGet, "/api/auth/oauth/start/oidc?link=1", nil, member)
+	if start.Code != http.StatusFound {
+		t.Fatalf("start oidc link: %d %s", start.Code, start.Body.String())
+	}
+	stateCookie := start.Result().Cookies()[0]
+	target, err := url.Parse(start.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse authorise url: %v", err)
+	}
+	callback := in.doWithExtraCookies(http.MethodGet,
+		"/api/auth/oauth/callback/oidc?code=c&state="+target.Query().Get("state"), member, stateCookie)
+	if callback.Code != http.StatusFound || !strings.HasPrefix(callback.Header().Get("Location"), "/settings?oauth=connected") {
+		t.Fatalf("finish the link: %d %s", callback.Code, callback.Header().Get("Location"))
+	}
+	if held := in.do(http.MethodGet, "/api/conversations", nil, member); held.Code != http.StatusOK {
+		t.Fatalf("still held after connecting: %d %s", held.Code, held.Body.String())
+	}
+
+	code, verifier := in.authorisationCode(clientID, member)
+	exchanged := in.formPost("/oauth/token", url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {clientID},
+		"code":          {code},
+		"redirect_uri":  {idpCallback},
+		"code_verifier": {verifier},
+	})
+	if exchanged.Code != http.StatusOK {
+		t.Fatalf("a sign-in after connecting = %d %s, want the code exchanged", exchanged.Code, exchanged.Body.String())
+	}
+	access := decode[struct {
+		AccessToken string `json:"access_token"`
+	}](t, exchanged).AccessToken
+	if info := in.userinfo(access); info.Code != http.StatusOK {
+		t.Fatalf("userinfo after connecting = %d %s", info.Code, info.Body.String())
+	}
+}
