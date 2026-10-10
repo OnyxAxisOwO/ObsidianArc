@@ -187,6 +187,11 @@ type Service struct {
 	// window a password change has to be able to land in. Nil outside tests,
 	// which set it to make that change at exactly that point.
 	beforeRehashWrite func()
+	// Called by VerifyCredential between reading the stored hash and checking the
+	// password against it. A change landing there is the case the fingerprint it
+	// returns must survive: the check passes against the hash that was read, and
+	// the fingerprint has to describe that same hash. Nil outside tests.
+	afterCredentialRead func()
 }
 
 func NewService(
@@ -1050,6 +1055,9 @@ func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip
 			return user.User{}, "", ErrInvalidCredentials
 		}
 		return user.User{}, "", err
+	}
+	if s.afterCredentialRead != nil {
+		s.afterCredentialRead()
 	}
 
 	ok, needsRehash, err := s.hasher.Verify(ctx, hash, password)

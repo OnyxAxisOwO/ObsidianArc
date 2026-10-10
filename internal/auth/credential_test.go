@@ -75,15 +75,28 @@ func TestVerifyCredentialReturnsTheFingerprintOfTheHashItChecked(t *testing.T) {
 		t.Fatal("the fingerprint from the check is not the one the account reports before any change")
 	}
 
-	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", ""); err != nil {
+	// The password is changed between reading the stored hash and checking it.
+	// The check still passes, because it runs against the hash that was read, so
+	// the fingerprint has to be that hash's, not the one a second read would find.
+	f.auth.afterCredentialRead = func() {
+		if err := f.auth.SetPassword(ctx, account.ID, "a-better-password"); err != nil {
+			t.Error(err)
+		}
+	}
+	_, checked, err = f.auth.VerifyCredential(ctx, "arc", "a-good-password", "198.51.100.7")
+	if err != nil {
 		t.Fatal(err)
 	}
+	if checked != before {
+		t.Fatal("the fingerprint returned for a password changed during the check is not the one of the hash that was checked")
+	}
+
 	now, err := f.auth.CredentialFingerprint(ctx, account.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if now == checked {
-		t.Fatal("after the change the account still reports the value the check returned")
+		t.Fatal("the change made during the check did not land, so this test proves nothing")
 	}
 }
 
