@@ -250,8 +250,8 @@ describe('a record of a plugin\'s list, opened', () => {
   });
 
   // Two 520px panels side by side left the tables and the page heading one
-  // character wide, which is how an upgrade plugin's pending and decided
-  // applications were read.
+  // character wide, which is how a plugin's pending and decided requests
+  // were read.
   it('keeps one record open on a page with two lists', async () => {
     const pending = list(async () => ({ title: 'Pending one', fields: [] })).spec;
     const decided = { ...list(async () => ({ title: 'Decided one', fields: [] })).spec, id: 'decided' };
