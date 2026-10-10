@@ -357,7 +357,9 @@ onMounted(() => {
     if (code === 'disabled' && typeof banReason === 'string' && banReason.trim()) {
       error.value = t('accountBannedWithReason', { reason: banReason.trim() });
     } else {
-      const known = OAUTH_REFUSALS[code];
+      // Own keys only: the code is whatever the query carried, and every object
+      // inherits some names (constructor), which would pass for a known refusal.
+      const known = Object.hasOwn(OAUTH_REFUSALS, code) ? OAUTH_REFUSALS[code] : undefined;
       error.value = known ? t(known) : pluginOAuthError(code) ?? t('oauthFailed');
     }
     // Out of the address bar: a reload should not raise a message about a

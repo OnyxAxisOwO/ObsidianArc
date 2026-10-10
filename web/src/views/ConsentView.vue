@@ -77,7 +77,9 @@ const PROBLEMS: Record<string, StringKey> = {
 onMounted(() => {
   const refused = route.query['error'];
   if (typeof refused === 'string' && refused) {
-    problem.value = t(PROBLEMS[refused] ?? 'consentFailed');
+    // Own keys only, as in AuthView: an inherited name is not a refusal.
+    const known = Object.hasOwn(PROBLEMS, refused) ? PROBLEMS[refused] : undefined;
+    problem.value = t(known ?? 'consentFailed');
     return;
   }
   if (!ticket.value) {
