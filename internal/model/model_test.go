@@ -466,7 +466,7 @@ func TestAnEnableRefusedByTheProviderKeepsTheFlag(t *testing.T) {
 		t.Fatalf("the checker's disable: flipped=%v, err=%v", flipped, err)
 	}
 	disabled := false
-	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}); err != nil {
+	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}, false); err != nil {
 		t.Fatal(err)
 	}
 
