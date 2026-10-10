@@ -327,14 +327,16 @@ func TestAWalkThatFreedNothingIsNotRepeatedWithinTheInterval(t *testing.T) {
 // hand the attempt a fresh address budget in the middle of the attempt.
 func TestAWalkNeverReclaimsTheAttemptsOwnKeys(t *testing.T) {
 	l := NewLimiter()
-	l.ceiling = 2
 	failUnknown(t, l, "203.0.113.9", "")
 	failUnknown(t, l, "", "other")
 	l.buckets["ip:203.0.113.9"].lastFailure = time.Now().Add(-time.Minute)
+	// With a ceiling of one, admitting the new name means freeing two buckets.
+	// Only "other" may be taken: the address is the attempt's own key.
+	l.ceiling = 1
 
 	attempt, err := l.Begin("203.0.113.9", "new")
 	if err != nil {
-		t.Fatalf("an attempt that needed room for one name was refused: %v", err)
+		t.Fatalf("an attempt was refused for want of room: %v", err)
 	}
 	attempt.finish(attemptCancelled)
 
@@ -343,6 +345,27 @@ func TestAWalkNeverReclaimsTheAttemptsOwnKeys(t *testing.T) {
 	}
 	if _, ok := l.buckets["id:other"]; ok {
 		t.Error("the other name was kept while the room was needed")
+	}
+}
+
+// A walk can drop a bucket this attempt has already found, and then that key has
+// to be created after all. Counting the new keys before the walk would admit the
+// attempt one bucket past the ceiling.
+func TestAWalkThatDropsAnAttemptsOwnKeyStillCountsIt(t *testing.T) {
+	l := NewLimiter()
+	l.ceiling = 2
+	failUnknown(t, l, "203.0.113.9", "")
+	failUnknown(t, l, "", "other")
+	l.buckets["ip:203.0.113.9"].lastFailure = time.Now().Add(-(bucketTTL + time.Minute))
+
+	attempt, err := l.Begin("203.0.113.9", "new")
+	if err != nil {
+		t.Fatalf("an attempt was refused for want of room: %v", err)
+	}
+	attempt.finish(attemptFailedUnknown)
+
+	if n := reclaimable(l); n > 2 {
+		t.Fatalf("the map holds %d reclaimable buckets, above its ceiling of 2", n)
 	}
 }
 
@@ -506,14 +529,18 @@ func TestConcurrentAttemptsNeverExceedTheCeiling(t *testing.T) {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			ip := fmt.Sprintf("198.51.100.%d", g+1)
+			// No address, and names that match nothing: each failed attempt leaves
+			// one reclaimable bucket behind, which is what the ceiling counts. An
+			// address would be blocked after its thirty failures and stop filling
+			// the map, and a name that matched an account would be protected and
+			// never counted.
 			for i := 0; i < 300; i++ {
-				attempt, err := l.Begin(ip, fmt.Sprintf("g%d-%d", g, i))
+				attempt, err := l.Begin("", fmt.Sprintf("g%d-%d", g, i))
 				switch {
 				case err != nil && !isLimited(err):
 					t.Errorf("Begin: unexpected error %v", err)
 				case err == nil && i%2 == 0:
-					attempt.finish(attemptFailed)
+					attempt.finish(attemptFailedUnknown)
 				case err == nil:
 					attempt.finish(attemptCancelled)
 				}
