@@ -94,7 +94,7 @@ go build ./cmd/server                      # 不带任何构建标签 = 只要�
 | `database.Migrate` 的插件迁移目录 | 插件自己的表和列。从核心搬出来的迁移保留原版本号；插件新写的迁移命名为 `<插件>_NNNN_*.sql` |
 | `settings.Define` / `settings.AddCaptchaMode` | 插件的设置项（默认值、是否为密钥、所属后台权限、校验）和注册验证码模式 |
 | `user.DefineField` + `auth.Service.SetFieldRule` | 账户上的附加字段：自动参与查询、扫描、写入、唯一性检查与后台搜索；注册时是否必填由插件的设置决定 |
-| `auth.Service.AddGuard` | 注册 / 登录前的检查，令牌放在请求体的 `guards` 里 |
+| `auth.Service.AddGuard` | 注册 / 登录前的检查，令牌放在请求体的 `guards` 里。登录守卫的拒绝同样适用于 SSH 控制台的密码入口，以及第三方登录的回调和补全表单；这几处没有请求体，传给守卫的令牌为空，要求令牌的守卫应在这里拒绝 |
 | `auth.Handlers.Extend` | `/api/site` 里 `plugins.<名字>` 下给浏览器的配置 |
 | `oauth.Service.BindSubject` | 某个登录提供方的主体号即某个账户字段的值 |
 | `admin.Handlers.Mount` / `console.Register` | 后台接口（和其他后台接口走同一层权限包装）与控制台命令 |
