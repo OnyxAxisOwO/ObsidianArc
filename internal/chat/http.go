@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -187,10 +188,43 @@ func (h *Handlers) acquireDecode(ctx context.Context, account string) (func(), e
 // there as a disconnect, cancelling the request in the middle of whatever it
 // was doing. Best effort — a ResponseWriter that cannot set a deadline keeps
 // the server-wide timeout and the returned function does nothing.
-func boundBodyRead(w http.ResponseWriter) (bodyRead func()) {
+func boundBodyRead(w http.ResponseWriter, r *http.Request) (bodyRead func()) {
+	return boundBodyReadFor(w, r, decodeReadWindow)
+}
+
+// boundBodyReadFor is boundBodyRead with the window given, so a test can wait
+// for it.
+//
+// The deadline is lifted only once the body has reached EOF. A body left short
+// — refused as too large, or not valid JSON, or abandoned by a client that
+// stopped sending — keeps it: net/http reads what is left of an unread body
+// before it writes the response, and with no deadline that read waits forever
+// on a client that never sends the rest, holding the connection and its
+// goroutine. A body read to the end has nothing left for that read to wait on.
+func boundBodyReadFor(w http.ResponseWriter, r *http.Request, window time.Duration) (bodyRead func()) {
 	controller := http.NewResponseController(w)
-	_ = controller.SetReadDeadline(time.Now().Add(decodeReadWindow))
-	return func() { _ = controller.SetReadDeadline(time.Time{}) }
+	_ = controller.SetReadDeadline(time.Now().Add(window))
+	body := &eofBody{ReadCloser: r.Body}
+	r.Body = body
+	return func() {
+		if body.sawEOF {
+			_ = controller.SetReadDeadline(time.Time{})
+		}
+	}
+}
+
+// eofBody is a request body that remembers whether a read reached its end.
+type eofBody struct {
+	io.ReadCloser
+	sawEOF bool
+}
+
+func (b *eofBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		b.sawEOF = true
+	}
+	return n, err
 }
 
 func NewHandlers(service *Service, conversations *conversation.Store) *Handlers {
@@ -703,7 +737,7 @@ func (h *Handlers) uploadAttachment(w http.ResponseWriter, r *http.Request) erro
 		return err
 	}
 	defer release()
-	bodyRead := boundBodyRead(w)
+	bodyRead := boundBodyRead(w, r)
 
 	var body uploadRequest
 	// Base64 is a third larger than the bytes it carries, plus room for the
@@ -927,7 +961,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		// well for every path that leaves earlier.
 		defer release()
 		releaseDecode = release
-		bodyRead = boundBodyRead(w)
+		bodyRead = boundBodyRead(w, r)
 	}
 
 	var body imageGenRequest
