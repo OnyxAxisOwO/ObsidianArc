@@ -219,10 +219,21 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 26.27 MB (22.57 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 241.58 kB to open the chat (199.33 JS + 42.25 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 26.28 MB (22.58 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 242.11 kB to open the chat (199.86 JS + 42.25 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-10 (UTC), after this day's review fixes on the sign-in
+and binding paths: console password entry and provider sign-in ask the login
+guards, the details form asks them again before it completes a sign-in, invite
+guesses are counted per address before any paid check runs, and binding a
+provider asks for the account's password, or for a sign-in made in the last
+fifteen minutes, first. 242.11 kB (199.86 kB JS + 42.25 kB CSS) from the
+build's gzip column, up 0.53 kB from the figure below. The backoffice chunk is
+124.75 kB and the Chinese dictionary 48.52 kB. The binary is 26.28 MB (22.58 MB
+without SQLite), up 0.02 MB, built the same way as the figure below
+(`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`, `-trimpath`, `-ldflags "-s -w"`).
 
 Remeasured on 2026-10-10 (UTC), after the second round of that day's fixes
 merged: banning became its own action with a reason, the backoffice's account
