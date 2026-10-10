@@ -2,6 +2,7 @@ package backup
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -93,12 +94,19 @@ func (h *Handlers) export(w http.ResponseWriter, r *http.Request) error {
 	// the body streams, so the slot covers the whole download.
 	defer release()
 
-	// Read before the response starts, so a failure here is still an error
-	// response rather than a body that begins and stops. The file is named only
-	// once the body is about to begin: an error response carrying an attachment
-	// name would be saved to disk as the export.
+	// Measured before the response starts, so a refusal or a failed read is still
+	// an error response rather than a body that begins and stops. The file is
+	// named only once the body is about to begin: an error response carrying an
+	// attachment name would be saved to disk as the export.
 	stream, err := h.service.openExport(r.Context(), account)
 	if err != nil {
+		if errors.Is(err, ErrTooLarge) {
+			// 409, as the import answers a full account: the account is what is
+			// too large, and sending the same request again will not change it.
+			return httpx.Conflict("export_too_large", fmt.Sprintf(
+				"This account is too large for one export file: the server imports at most %d conversations, %d messages and %d MiB, and a larger file would be refused on the way back in. Delete some conversations and export again.",
+				MaxConversations, MaxMessagesPerImport, MaxDocumentBytes>>20))
+		}
 		return httpx.Internal(err)
 	}
 

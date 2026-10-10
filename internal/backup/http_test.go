@@ -142,3 +142,34 @@ func TestImportEndpointRefusesNULAsBadRequest(t *testing.T) {
 		t.Errorf("a refused file left %d conversations behind", len(threads))
 	}
 }
+
+// An account the import would refuse is refused here as well, before anything is
+// named or sent. The answer is a 409 that says what the limit is, rather than a
+// file that comes back as a 400 from the import.
+func TestExportEndpointRefusesAnAccountTooLargeForOneFile(t *testing.T) {
+	f := newFixture(t)
+	h := NewHandlers(f.service)
+	f.bulk(t, f.account, MaxConversations+1, 0, "")
+
+	rec := httptest.NewRecorder()
+	httpx.Wrap(h.export)(rec, asUser(httptest.NewRequest(http.MethodGet, "/api/account/export", nil), f.account))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != "" {
+		t.Errorf("a refused export named a file: %q", got)
+	}
+
+	var reply struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &reply); err != nil {
+		t.Fatalf("error body is not JSON: %v: %s", err, rec.Body)
+	}
+	if reply.Error.Code != "export_too_large" || !strings.Contains(reply.Error.Message, "2000 conversations") {
+		t.Errorf("error = %+v", reply.Error)
+	}
+}

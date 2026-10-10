@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -184,24 +187,170 @@ func TestExportCarriesEveryConversationAcrossPages(t *testing.T) {
 	}
 }
 
-// The export holds every conversation the account has. MaxConversations limits
-// what one import file may carry; it is not a reason to drop conversations on
-// the way out, which would leave the file silently short of the account.
-func TestExportIsWholeAboveTheImportLimit(t *testing.T) {
+// bulk writes conversations of messagesEach messages into an account. Each
+// conversation's messages go in as one INSERT ... SELECT rather than an Append
+// apiece: Append is several statements per message, and a fixture of fifty
+// thousand messages built that way would take longer than the import it is
+// there to test. Nothing under test reads the conversation's own message count,
+// which is the one thing this skips maintaining.
+func (f *fixture) bulk(t *testing.T, owner user.User, conversations, messagesEach int, content string) {
+	t.Helper()
+	ctx := context.Background()
+
+	err := f.service.db.Tx(ctx, func(tx *database.Tx) error {
+		for c := 0; c < conversations; c++ {
+			created, err := f.conversations.Create(ctx, tx, owner.ID,
+				conversation.NewConversation{Title: fmt.Sprintf("Bulk %d", c)})
+			if err != nil {
+				return err
+			}
+			if messagesEach == 0 {
+				continue
+			}
+			if _, err := tx.Exec(ctx, `WITH RECURSIVE numbers(n) AS (
+					SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < ?)
+				INSERT INTO messages (id, conversation_id, user_id, seq, role, content, created_at)
+				SELECT ? || '-' || n, ?, ?, n, 'user', ?, 0 FROM numbers`,
+				messagesEach, created.ID, created.ID, owner.ID, content); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The export and the import answer "is this too large" with the same figures.
+// Under each limit an export is written and reads back into another account;
+// one step past it the export is refused, because the file it would write is
+// one Import turns away. Before this, the export carried everything and the
+// import refused the result.
+func TestExportRoundTripsUnderEachLimitAndIsRefusedPastIt(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("conversations", func(t *testing.T) {
+		f := newFixture(t)
+		f.bulk(t, f.account, MaxConversations, 1, "hello")
+
+		_, document := f.export(t, f.account)
+		result, err := f.service.Import(ctx, f.stranger, document)
+		if err != nil {
+			t.Fatalf("import of %d conversations: %v", MaxConversations, err)
+		}
+		if result.Conversations != MaxConversations {
+			t.Fatalf("restored %d conversations, want %d", result.Conversations, MaxConversations)
+		}
+
+		f.write(t, f.account, "One too many", "hello")
+		if _, err := f.service.openExport(ctx, f.account); !errors.Is(err, ErrTooLarge) {
+			t.Fatalf("export of %d conversations gave %v, want ErrTooLarge", MaxConversations+1, err)
+		}
+	})
+
+	t.Run("messages", func(t *testing.T) {
+		f := newFixture(t)
+		const perConversation = 1000
+		f.bulk(t, f.account, MaxMessagesPerImport/perConversation, perConversation, "hello")
+
+		_, document := f.export(t, f.account)
+		result, err := f.service.Import(ctx, f.stranger, document)
+		if err != nil {
+			t.Fatalf("import of %d messages: %v", MaxMessagesPerImport, err)
+		}
+		if result.Messages != MaxMessagesPerImport {
+			t.Fatalf("restored %d messages, want %d", result.Messages, MaxMessagesPerImport)
+		}
+
+		f.write(t, f.account, "One too many", "hello")
+		if _, err := f.service.openExport(ctx, f.account); !errors.Is(err, ErrTooLarge) {
+			t.Fatalf("export of %d messages gave %v, want ErrTooLarge", MaxMessagesPerImport+1, err)
+		}
+	})
+
+	// The byte limit is not reached exactly here: messages are capped at
+	// 32000 characters, so the size comes in steps. The exact figure is held by
+	// TestSizeLimitRefusesOnlyPastTheImportBodyLimit. This case shows that a
+	// document well under the limit reads back, and one well over it is refused.
+	t.Run("bytes", func(t *testing.T) {
+		f := newFixture(t)
+		text := strings.Repeat("x", conversation.MaxContentChars)
+		f.bulk(t, f.account, 1, 500, text)
+
+		_, document := f.export(t, f.account)
+		if _, err := f.service.Import(ctx, f.stranger, document); err != nil {
+			t.Fatalf("import of about 16 MiB: %v", err)
+		}
+
+		f.bulk(t, f.account, 1, 600, text)
+		if _, err := f.service.openExport(ctx, f.account); !errors.Is(err, ErrTooLarge) {
+			t.Fatalf("export of about 35 MiB gave %v, want ErrTooLarge", err)
+		}
+	})
+}
+
+// The importer reads a body of exactly MaxDocumentBytes and refuses one byte
+// more, so the dry run must allow that much and not a byte beyond it.
+func TestSizeLimitRefusesOnlyPastTheImportBodyLimit(t *testing.T) {
+	var counter sizeLimit
+	chunk := make([]byte, 1<<16)
+	for written := 0; written < MaxDocumentBytes; written += len(chunk) {
+		if _, err := counter.Write(chunk); err != nil {
+			t.Fatalf("refused at %d bytes, inside the limit: %v", written, err)
+		}
+	}
+	if _, err := counter.Write([]byte{'}'}); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("one byte past the limit gave %v, want ErrTooLarge", err)
+	}
+}
+
+// Text can already hold a NUL: the chat path and renaming keep what they were
+// given, and SQLite keeps the byte. Import refuses one, so an export that wrote
+// it would be a file its own account could not restore. The export writes the
+// replacement character where the NUL was.
+func TestExportOfStoredNULImportsBack(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 
-	total := MaxConversations + 1
-	for i := 0; i < total; i++ {
-		if _, err := f.conversations.Create(ctx, nil, f.account.ID,
-			conversation.NewConversation{Title: fmt.Sprintf("t%d", i)}); err != nil {
-			t.Fatal(err)
-		}
+	id := f.write(t, f.account, "Lamp\x00s", "what is a lamp\x00?")
+	if _, err := f.conversations.Append(ctx, nil, conversation.AppendInput{
+		ConversationID: id, UserID: f.account.ID, Role: conversation.RoleAssistant,
+		Content: "a source of light", Reasoning: "lamps\x00 make light",
+		Error: "the provider\x00 timed out", ModelName: "Test\x00Model",
+	}); err != nil {
+		t.Fatal(err)
 	}
 
-	_, document := f.export(t, f.account)
-	if len(document.Conversations) != total {
-		t.Fatalf("exported %d conversations, want all %d", len(document.Conversations), total)
+	encoded, document := f.export(t, f.account)
+	if bytes.IndexByte(encoded, 0) >= 0 || bytes.Contains(encoded, []byte(`\u0000`)) {
+		t.Fatalf("the export still carries a NUL: %s", encoded)
+	}
+	if _, err := f.service.Import(ctx, f.stranger, document); err != nil {
+		t.Fatalf("import of an export that held a stored NUL: %v", err)
+	}
+
+	threads, err := f.conversations.List(ctx, f.stranger.ID, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 1 || threads[0].Title != "Lamp\uFFFDs" {
+		t.Fatalf("restored %+v, want one conversation titled Lamp\\uFFFDs", threads)
+	}
+	messages, err := f.conversations.Messages(ctx, nil, f.stranger.ID, threads[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("restored %d messages, want 2", len(messages))
+	}
+	if messages[0].Content != "what is a lamp\uFFFD?" {
+		t.Errorf("question restored as %q", messages[0].Content)
+	}
+	answer := messages[1]
+	if answer.Reasoning != "lamps\uFFFD make light" || answer.Error != "the provider\uFFFD timed out" ||
+		answer.ModelName != "Test\uFFFDModel" {
+		t.Errorf("answer restored as %+v", answer)
 	}
 }
 

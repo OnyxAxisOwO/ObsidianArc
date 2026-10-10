@@ -40,6 +40,10 @@ const Format = 1
 
 // Bounds on what an import may carry. An account can already create this much
 // by hand; the point is that one request cannot.
+//
+// An export refuses an account past the same figures, so every file this server
+// writes is one its own import reads back. Both sides compare against these
+// constants rather than keeping a copy each.
 const (
 	MaxDocumentBytes     = 32 << 20
 	MaxConversations     = 2000
@@ -79,7 +83,9 @@ var exportPageSize = 100
 
 var (
 	ErrWrongFormat = errors.New("backup: not an Obsidian Arc export")
-	ErrTooLarge    = errors.New("backup: this export is larger than the server will import")
+	// Returned by Import for a document past the limits, and by an export of an
+	// account past them: the file it would write is one Import refuses.
+	ErrTooLarge = errors.New("backup: this export is larger than the server will import")
 	// Distinct from ErrTooLarge: the document is fine, the account is full.
 	// Told apart because "make a smaller export" and "delete some
 	// conversations first" are different instructions.
@@ -140,20 +146,25 @@ func NewService(db *database.DB, conversations *conversation.Store, preferences 
 	return &Service{db: db, conversations: conversations, preferences: preferences}
 }
 
-// exportStream is an export that has been begun but not yet written. The
-// envelope and the first page are read by openExport, so whatever can be
-// refused is refused before the response has started.
+// exportStream is an export that has been measured and not yet written. Every
+// refusal an export can make is decided in openExport, before the response has
+// started: after the first byte the status is 200 and cannot be taken back.
 type exportStream struct {
 	service  *Service
 	account  user.User
 	pageSize int
 	envelope []byte
-	first    []conversation.Conversation
 }
 
-// openExport reads what an export needs before any of it is sent: the
-// envelope, which carries the preferences and the time the file is stamped
-// with, and the first page of conversations. writeTo streams the rest.
+// openExport measures the whole export before any of it is sent. The envelope
+// is built here because it carries the preferences and the time the file is
+// stamped with. The conversations are then written into a counter by writeTo
+// itself, so the counter sees exactly the bytes a download would carry, and the
+// walk stops at the first limit the import would refuse.
+//
+// That costs the account one more read than the download does, and the limits
+// bound it: the walk stops as soon as one is crossed, so an account far past
+// them is refused after about one import's worth of reads.
 func (s *Service) openExport(ctx context.Context, account user.User) (*exportStream, error) {
 	// Already a JSON document in the store, carried across as it is.
 	var preferences json.RawMessage
@@ -171,20 +182,18 @@ func (s *Service) openExport(ctx context.Context, account user.User) (*exportStr
 		return nil, err
 	}
 
-	// Zero or less would make writeTo index into an empty page to find the
-	// cursor, so the size is held at one at the least.
-	pageSize := max(exportPageSize, 1)
-	first, err := s.conversations.ListForExport(ctx, account.ID, "", pageSize)
-	if err != nil {
-		return nil, fmt.Errorf("backup: list conversations: %w", err)
-	}
-	return &exportStream{
+	// At zero no page is ever short, so the walk would not end, and the cursor
+	// would be taken from an empty page. Held at one at the least.
+	stream := &exportStream{
 		service:  s,
 		account:  account,
-		pageSize: pageSize,
+		pageSize: max(exportPageSize, 1),
 		envelope: envelope,
-		first:    first,
-	}, nil
+	}
+	if err := stream.writeTo(ctx, &sizeLimit{}); err != nil {
+		return nil, err
+	}
+	return stream, nil
 }
 
 // encodeEnvelope is the document up to where its conversations begin. It is
@@ -211,14 +220,15 @@ func encodeEnvelope(document Document) ([]byte, error) {
 //
 // The bytes are what json.Marshal of the same Document produces, so a file
 // from this server reads back into Import exactly as one from the previous
-// release did.
+// release did. The count limits are applied here too, so openExport's dry run
+// and the download refuse the same accounts.
 //
-// It is not atomic. The first byte commits a 200, so an error on a later page
-// or conversation truncates the body where it failed. A truncated body is not
-// valid JSON: a client that parses it fails, and Import refuses it, so nothing
-// is half-restored. The status cannot be changed to say so; the log carries the
-// cause. openExport reads everything that can fail before the first byte for
-// that reason.
+// Once w has been written to, a failure cannot be reported. An account that
+// changes between the dry run and this pass, or a read that fails, leaves the
+// body truncated where it stopped. That is not valid JSON, so a client that
+// parses it fails, and Import refuses it: nothing is half-restored, but the
+// file is not usable. The status cannot be changed to say so, and the log
+// carries the cause.
 func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
 	if _, err := w.Write(e.envelope); err != nil {
 		return err
@@ -227,19 +237,28 @@ func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
 		return err
 	}
 
-	page := e.first
-	written := 0
+	conversations, messages := 0, 0
+	cursor := ""
 	for {
+		page, err := e.service.conversations.ListForExport(ctx, e.account.ID, cursor, e.pageSize)
+		if err != nil {
+			return fmt.Errorf("backup: list conversations: %w", err)
+		}
 		for _, record := range page {
 			thread, err := e.service.threadOf(ctx, e.account, record)
 			if err != nil {
 				return err
 			}
+			conversations++
+			messages += len(thread.Messages)
+			if overImportLimits(conversations, messages) {
+				return ErrTooLarge
+			}
 			encoded, err := json.Marshal(thread)
 			if err != nil {
 				return fmt.Errorf("backup: encode %s: %w", record.ID, err)
 			}
-			if written > 0 {
+			if conversations > 1 {
 				if _, err := io.WriteString(w, ","); err != nil {
 					return err
 				}
@@ -247,7 +266,6 @@ func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
 			if _, err := w.Write(encoded); err != nil {
 				return err
 			}
-			written++
 		}
 
 		// A short page is the last one. A full page is followed by another
@@ -256,11 +274,7 @@ func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
 		if len(page) < e.pageSize {
 			break
 		}
-		next, err := e.service.conversations.ListForExport(ctx, e.account.ID, page[len(page)-1].ID, e.pageSize)
-		if err != nil {
-			return fmt.Errorf("backup: list conversations: %w", err)
-		}
-		page = next
+		cursor = page[len(page)-1].ID
 	}
 
 	_, err := io.WriteString(w, "]}")
@@ -269,6 +283,11 @@ func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
 
 // threadOf is one conversation as the document carries it. Its messages are
 // read whole, so the memory held for it is one conversation at a time.
+//
+// Every text field is scrubbed of NUL here rather than left for Import to
+// refuse. A conversation can already hold one, because the chat path and
+// renaming keep what they were given, and an export that carried it would be a
+// file its own account could not restore.
 func (s *Service) threadOf(ctx context.Context, account user.User, record conversation.Conversation) (Thread, error) {
 	messages, err := s.conversations.Messages(ctx, nil, account.ID, record.ID)
 	if err != nil {
@@ -276,18 +295,18 @@ func (s *Service) threadOf(ctx context.Context, account user.User, record conver
 	}
 
 	out := Thread{
-		Title:     record.Title,
+		Title:     scrubNUL(record.Title),
 		Pinned:    record.Pinned,
 		CreatedAt: record.CreatedAt,
 		Messages:  make([]Turn, 0, len(messages)),
 	}
 	for _, message := range messages {
 		out.Messages = append(out.Messages, Turn{
-			Role:      string(message.Role),
-			Content:   message.Content,
-			Reasoning: message.Reasoning,
-			Error:     message.Error,
-			ModelName: message.ModelName,
+			Role:      scrubNUL(string(message.Role)),
+			Content:   scrubNUL(message.Content),
+			Reasoning: scrubNUL(message.Reasoning),
+			Error:     scrubNUL(message.Error),
+			ModelName: scrubNUL(message.ModelName),
 			CreatedAt: message.CreatedAt,
 			Images:    len(message.Attachments),
 		})
@@ -315,15 +334,11 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	if document.Format != Format {
 		return Result{}, ErrWrongFormat
 	}
-	if len(document.Conversations) > MaxConversations {
-		return Result{}, ErrTooLarge
-	}
-
 	total := 0
 	for _, thread := range document.Conversations {
 		total += len(thread.Messages)
 	}
-	if total > MaxMessagesPerImport {
+	if overImportLimits(len(document.Conversations), total) {
 		return Result{}, ErrTooLarge
 	}
 	if hasNUL(document) {
@@ -413,6 +428,38 @@ func hasNUL(document Document) bool {
 		}
 	}
 	return false
+}
+
+// overImportLimits is the one place the count limits are compared. Import refuses
+// a document for which it holds, and an export refuses an account for which it
+// comes to hold; sharing the comparison is what keeps the two from drifting.
+func overImportLimits(conversations, messages int) bool {
+	return conversations > MaxConversations || messages > MaxMessagesPerImport
+}
+
+// sizeLimit counts an export's dry run and refuses as soon as the total is more
+// than the importer reads. The import body is cut by a MaxBytesReader at
+// MaxDocumentBytes (http.go), so a file of exactly that size is read and one
+// byte more is not.
+type sizeLimit struct {
+	written int64
+}
+
+func (s *sizeLimit) Write(p []byte) (int, error) {
+	s.written += int64(len(p))
+	if s.written > MaxDocumentBytes {
+		return 0, ErrTooLarge
+	}
+	return len(p), nil
+}
+
+// scrubNUL replaces U+0000 with U+FFFD. U+FFFD marks where something was rather
+// than deleting it, so the restored text shows the character was there.
+func scrubNUL(value string) string {
+	if strings.IndexByte(value, 0) < 0 {
+		return value
+	}
+	return strings.ReplaceAll(value, "\x00", "\uFFFD")
 }
 
 // ceiling is how many messages one account may store. Zero configures the
