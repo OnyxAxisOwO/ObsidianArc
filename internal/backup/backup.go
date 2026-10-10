@@ -67,9 +67,10 @@ const (
 	// The count above bounds rows, and a row may carry some ninety-two thousand
 	// characters across its content, reasoning and error: two hundred thousand
 	// of them is some eighteen gigabytes behind a ceiling that reads as modest.
-	// This is the figure the disk actually feels. Characters rather than bytes, counted the same way on both sides
-	// of the comparison; generous for a person (a heavy year is a few
-	// megabytes) and reached only by somebody trying.
+	// This is the figure the disk actually feels. Characters rather than
+	// bytes, counted the same way on both sides of the comparison; generous
+	// for a person (a heavy year is a few megabytes) and reached only by
+	// somebody trying.
 	MaxStoredChars        = 512 << 20
 	MaxTitleChars         = 200
 	MaxImportContentChars = conversation.MaxContentChars
