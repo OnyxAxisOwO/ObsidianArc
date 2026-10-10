@@ -336,6 +336,9 @@ type toolCallFilter struct {
 	// the moment its block closes rather than at the end of the turn, so a
 	// client sees it before the prose the model wrote after it.
 	announced int
+	// Where the search for the closing tag has got to in the block that is
+	// open. Starts over each time a block opens.
+	closing closeSearch
 }
 
 func (f *toolCallFilter) event(event Event) error {
@@ -370,9 +373,10 @@ func (f *toolCallFilter) delta(text string) error {
 			f.pending.Reset()
 			f.pending.WriteString(buffered[open+len(toolCallOpen):])
 			f.inside = true
+			f.closing = closeSearch{}
 			continue
 		}
-		end := indexCloseOutsideString(buffered)
+		end := f.closing.find(buffered)
 		if end < 0 {
 			// Nothing is emitted from inside a block, so there is nothing to
 			// hold back: the whole buffer stays until the tag arrives.
@@ -425,33 +429,50 @@ func (f *toolCallFilter) announce(call ToolCall) error {
 	return f.sink(Event{Type: EventToolCall, ToolCall: call})
 }
 
-// indexCloseOutsideString finds the closing tag, ignoring one that sits
-// inside a JSON string.
+// closeSearch is the search for the closing tag, kept across the deltas of one
+// block: how far into the block it has read, and the JSON string state at that
+// point.
 //
-// A plain substring search reads the tag in
-// {"content": "write </tool_call> to call a tool"} as the end of the block,
-// truncates the JSON mid-string, fails to parse what is left, and drops a
-// call the model wrote perfectly well — while spilling the raw tags into
-// the answer. Asking a tool to write documentation about this very format
-// is enough to hit it.
+// The tag is only recognised outside a JSON string. A plain substring search
+// reads the tag in {"content": "write </tool_call> to call a tool"} as the end
+// of the block, truncates the JSON mid-string, fails to parse what is left, and
+// drops a call the model wrote perfectly well — while spilling the raw tags into
+// the answer. Asking a tool to write documentation about this very format is
+// enough to hit it.
 //
-// -1 while the scan ends inside an unterminated string, because in a stream
+// It resumes where it stopped rather than rereading the block. A block that is
+// never closed would otherwise cost one full pass per delta, which is quadratic
+// in its length.
+type closeSearch struct {
+	at       int
+	inString bool
+	escaped  bool
+}
+
+// find returns the index of the closing tag in buffered, or -1 while the block
+// has not closed. buffered is the block so far, and each call sees it with more
+// appended, so the position saved from the last call still names the same byte.
+//
+// -1 also while the scan ends inside an unterminated string, because in a stream
 // that means the rest has not arrived yet. finish settles the case where it
 // never does.
-func indexCloseOutsideString(buffered string) int {
-	inString, escaped := false, false
-	for i := 0; i < len(buffered); i++ {
-		c := buffered[i]
+func (s *closeSearch) find(buffered string) int {
+	// A tag is decided only once all of it is here. A position that could start
+	// one but cannot yet hold all of it is left for the next delta, with the
+	// state exactly as it stood before that position.
+	last := len(buffered) - len(toolCallClose)
+	for ; s.at <= last; s.at++ {
+		c := buffered[s.at]
 		switch {
-		case escaped:
-			escaped = false
-		case inString && c == '\\':
-			escaped = true
+		case s.escaped:
+			s.escaped = false
+		case s.inString && c == '\\':
+			s.escaped = true
 		case c == '"':
-			inString = !inString
-		case !inString && c == toolCallClose[0] &&
-			strings.HasPrefix(buffered[i:], toolCallClose):
-			return i
+			s.inString = !s.inString
+		case !s.inString && c == toolCallClose[0] &&
+			strings.HasPrefix(buffered[s.at:], toolCallClose):
+			return s.at
 		}
 	}
 	return -1
@@ -485,7 +506,7 @@ func (f *toolCallFilter) finish(result *Result) error {
 		// closed. Every reading is tried rather than one preferred.
 		//
 		// The last resort is the plain substring search that
-		// indexCloseOutsideString deliberately refuses: no more text is
+		// closeSearch deliberately refuses: no more text is
 		// coming, so an unterminated string is malformed rather than
 		// unfinished, and a block that really did close is better read late
 		// than swallowed whole.

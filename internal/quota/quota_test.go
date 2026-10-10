@@ -183,23 +183,20 @@ func TestANumberAloneDoesNotTurnAWindowOn(t *testing.T) {
 		}
 	}
 
-	// Flipping it on is what makes the same number bite — and the window
-	// starts counting from zero, not from the five requests already made.
-	// Somebody capped part-way through a window gets that whole window over
-	// again, which is the opposite of what "they have had enough for today"
-	// means.
+	// Flipping it on is what makes the same number bite, and the window
+	// already holds the five requests made before it was switched on. Those
+	// were measured the whole time — the usage screen shows them — so a cap
+	// set part-way through a window is measured against what the account has
+	// actually used, and an account already past it is refused at once.
 	if _, err := service.Policies().Save(ctx, Policy{
 		Scope: ScopeUser, ScopeID: "typed-a-number",
 		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(1), nil, nil)},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
-		t.Fatalf("a freshly switched-on window counted the requests made before it: %v", err)
-	}
 	_, err := service.Reserve(ctx, person, Estimate{})
 	if _, ok := AsExceeded(err); !ok {
-		t.Errorf("the same number still did nothing once the window was switched on: %v", err)
+		t.Errorf("a window switched on did not count the requests made before it: %v", err)
 	}
 }
 
@@ -414,6 +411,119 @@ func TestAutoResetTargetingWindowVariantClearsOnlyTargetedWindow(t *testing.T) {
 	exceeded, ok := AsExceeded(err)
 	if !ok || exceeded.Window != Window5H {
 		t.Fatalf("expected 5h exceeded error, got: %v", err)
+	}
+}
+
+// A reservation an enforced window refuses is retried inside the same
+// transaction once a reset card is spent. The walk had already charged the
+// windows before the refusing one, and the card clears only the week, so unless
+// those charges are taken back the retry counts the request twice in the
+// five-hour window: it is not enforced, but it is still measured.
+func TestResetRetryCountsEachWindowOnce(t *testing.T) {
+	service, db := newService(t)
+	ctx := context.Background()
+	if _, err := service.Policies().Save(ctx, Policy{
+		Scope:   ScopeGlobal,
+		Windows: map[Window]Limits{WindowWeek: limits(true, nil, ptrInt(200), nil)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	person := account("reset-retry-user", "")
+	for range 2 {
+		if _, err := service.Reserve(ctx, person, Estimate{Tokens: 100}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{Tokens: 100},
+		func(ctx context.Context, q database.Queryer, needed Window) ([]string, bool, error) {
+			if needed != WindowWeek {
+				t.Fatalf("needed window = %s, want 1w", needed)
+			}
+			return []string{"1w"}, true, nil
+		}); err != nil {
+		t.Fatalf("reserve after reset: %v", err)
+	}
+
+	// Two turns before the reset and the one that followed it, in every window.
+	want := map[Window]counter{
+		Window5H:    {Requests: 3, Tokens: 300},
+		WindowWeek:  {Requests: 1, Tokens: 100},
+		WindowMonth: {Requests: 3, Tokens: 300},
+	}
+	for window, expect := range want {
+		var got counter
+		if err := db.QueryRow(ctx,
+			`SELECT requests, tokens FROM usage_counters WHERE scope_key = ? AND window_kind = ?`,
+			scopeKey(person.ID), window).Scan(&got.Requests, &got.Tokens); err != nil {
+			t.Fatal(err)
+		}
+		if got.Requests != expect.Requests || got.Tokens != expect.Tokens {
+			t.Errorf("%s has %d requests and %d tokens, want %d and %d",
+				window, got.Requests, got.Tokens, expect.Requests, expect.Tokens)
+		}
+	}
+}
+
+// The minute counters hold one request for each admitted request, however many
+// times the allowance is walked for it. A reset retry walks the allowance again
+// but does not charge the minute again. A card names allowance windows only, so
+// it does not clear the minute or the tokens charged to it either.
+func TestResetRetryChargesTheMinuteOnce(t *testing.T) {
+	service, db := newService(t)
+	ctx := context.Background()
+	if _, err := service.Policies().Save(ctx, Policy{
+		Scope:   ScopeGlobal,
+		RPM:     ptrInt(100),
+		TPM:     ptrInt(100000),
+		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(2), nil, nil)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	person := account("minute-user", "")
+	for range 2 {
+		if _, err := service.Reserve(ctx, person, Estimate{Tokens: 100}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The third request is refused by the five-hour window, a card that clears
+	// only that window pays for it, and the request runs on the retry.
+	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{Tokens: 100},
+		func(context.Context, database.Queryer, Window) ([]string, bool, error) {
+			return []string{"5h"}, true, nil
+		}); err != nil {
+		t.Fatalf("reserve after a five-hour card: %v", err)
+	}
+	if _, err := service.Reserve(ctx, person, Estimate{Tokens: 100}); err != nil {
+		t.Fatal(err)
+	}
+	// The window is full again, and a full card is what clears it this time.
+	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{Tokens: 100},
+		func(context.Context, database.Queryer, Window) ([]string, bool, error) {
+			return nil, true, nil
+		}); err != nil {
+		t.Fatalf("reserve after a full card: %v", err)
+	}
+
+	var requests, tokens int64
+	if err := db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(requests), 0), COALESCE(SUM(tokens), 0) FROM usage_counters
+		 WHERE scope_key = ? AND window_kind = ?`,
+		scopeKey(person.ID), string(WindowRPM)).Scan(&requests, &tokens); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 5 {
+		t.Errorf("the minute counted %d requests for five admitted, want 5", requests)
+	}
+	if err := db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(tokens), 0) FROM usage_counters
+		 WHERE scope_key = ? AND window_kind = ?`,
+		scopeKey(person.ID), string(WindowTPM)).Scan(&tokens); err != nil {
+		t.Fatal(err)
+	}
+	if tokens != 500 {
+		t.Errorf("the minute counted %d tokens for five admitted requests of a hundred, want 500", tokens)
 	}
 }
 
@@ -870,6 +980,99 @@ func TestReleaseGivesBackTheReservation(t *testing.T) {
 	}
 	if credits < actual.Credits-0.001 || credits > actual.Credits+0.001 {
 		t.Errorf("credits = %v, want %v", credits, actual.Credits)
+	}
+}
+
+// A window nobody enforces is still measured. The usage screen reads it, and a
+// limit switched on later has to count what the account has already used, so a
+// reservation that is settled and released must leave exactly the turn behind
+// in every window. Before this, the release took the hold back out of counters
+// it had never been put into, and the floor at zero kept only the remainder.
+func TestAnUnenforcedWindowMeasuresTheTurn(t *testing.T) {
+	service, _ := newService(t)
+	ctx := context.Background()
+
+	// A rate limit and no allowance window switched on.
+	if _, err := service.Policies().Save(ctx, Policy{
+		Scope: ScopeGlobal,
+		RPM:   ptrInt(60),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	person := account("user-1", "")
+	reserved, err := service.Reserve(ctx, person, Estimate{Tokens: 4000, Credits: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := Estimate{Tokens: 120, Credits: 0.12}
+	if err := service.Settle(ctx, person, Estimate{}, actual); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Release(ctx, person.ID, reserved); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := service.SummaryFor(ctx, person)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, window := range summary.Windows {
+		if window.Enforced {
+			t.Fatalf("%s is enforced under a rate-only policy", window.Kind)
+		}
+		if window.UsedRequests != 1 || window.UsedTokens != actual.Tokens {
+			t.Errorf("%s = %d requests and %d tokens, want the one turn: 1 and %d",
+				window.Kind, window.UsedRequests, window.UsedTokens, actual.Tokens)
+		}
+		if window.UsedCredits < actual.Credits-0.001 || window.UsedCredits > actual.Credits+0.001 {
+			t.Errorf("%s credits = %v, want %v", window.Kind, window.UsedCredits, actual.Credits)
+		}
+	}
+}
+
+// A reset card retries the reservation inside the same transaction, after the
+// refused attempt has already charged the enforced windows it got through. A
+// window that nobody enforces must count the request once, not once per attempt.
+func TestAResetRetryCountsAnUnenforcedWindowOnce(t *testing.T) {
+	service, _ := newService(t)
+	ctx := context.Background()
+
+	// The week is enforced at one request. The five-hour window is only
+	// measured, and it is the one a retry would count twice if it were charged
+	// inside the attempt that the week refused.
+	if _, err := service.Policies().Save(ctx, Policy{
+		Scope:   ScopeGlobal,
+		Windows: map[Window]Limits{WindowWeek: limits(true, ptrInt(1), nil, nil)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	person := account("user-1", "")
+	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+		t.Fatalf("the first request was refused: %v", err)
+	}
+
+	// The second is over the week's limit. A card that resets only the week
+	// pays for it, and the retry has to go through.
+	resetWeek := func(context.Context, database.Queryer, Window) ([]string, bool, error) {
+		return []string{string(WindowWeek)}, true, nil
+	}
+	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{}, resetWeek); err != nil {
+		t.Fatalf("the reset card did not let the second request through: %v", err)
+	}
+
+	summary, err := service.SummaryFor(ctx, person)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, window := range summary.Windows {
+		if window.Kind != Window5H {
+			continue
+		}
+		if window.UsedRequests != 2 {
+			t.Errorf("five-hour requests = %d after two requests, want 2", window.UsedRequests)
+		}
 	}
 }
 

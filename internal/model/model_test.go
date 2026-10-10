@@ -385,6 +385,104 @@ func TestDisableIfEnabledFlipsExactlyOnceUnderConcurrency(t *testing.T) {
 	}
 }
 
+// The checker's claim on a model ends with the first decision an operator makes
+// about its state. Left standing, the next sweep switches the model back on,
+// because the flag still says the checker turned it off.
+func TestAnOperatorsStateChangeRetiresTheCheckersFlag(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+	record := f.model(t, upstream.ID, "flaky-model")
+
+	if flipped, err := f.models.DisableIfEnabled(ctx, record.ID); err != nil || !flipped {
+		t.Fatalf("the checker's disable: flipped=%v, err=%v", flipped, err)
+	}
+
+	on, off := true, false
+	if _, err := f.models.Update(ctx, record.ID, Update{Enabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.Enabled || stored.AutoDisabled {
+		t.Fatalf("after the operator enabled it: %+v, want enabled with no checker flag", stored)
+	}
+
+	if _, err := f.models.Update(ctx, record.ID, Update{Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Enabled || stored.AutoDisabled {
+		t.Fatalf("after the operator disabled it: %+v, want disabled with no checker flag", stored)
+	}
+}
+
+// The editor sends every field on every save, the enabled one included. A save
+// that leaves the state where it was is no decision about it, so it must not
+// end the checker's claim: a model the system switched off still comes back on
+// its own once it answers.
+func TestASaveThatKeepsTheStateKeepsTheFlag(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+	record := f.model(t, upstream.ID, "flaky-model")
+
+	if flipped, err := f.models.DisableIfEnabled(ctx, record.ID); err != nil || !flipped {
+		t.Fatalf("the checker's disable: flipped=%v, err=%v", flipped, err)
+	}
+
+	name, off := "Corrected", false
+	if _, err := f.models.Update(ctx, record.ID, Update{DisplayName: &name, Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DisplayName != "Corrected" {
+		t.Fatalf("the save did not land: display name %q", stored.DisplayName)
+	}
+	if stored.Enabled || !stored.AutoDisabled {
+		t.Fatalf("a save that kept the state cleared the checker's flag: %+v", stored)
+	}
+}
+
+// Under a disabled provider an enable is refused and the model stays off, so
+// nothing about it changed and the checker keeps its claim on it. Clearing the
+// flag here would strand the model, because enabling a provider again does not
+// switch its models back on.
+func TestAnEnableRefusedByTheProviderKeepsTheFlag(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+	record := f.model(t, upstream.ID, "flaky-model")
+
+	if flipped, err := f.models.DisableIfEnabled(ctx, record.ID); err != nil || !flipped {
+		t.Fatalf("the checker's disable: flipped=%v, err=%v", flipped, err)
+	}
+	disabled := false
+	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+
+	on := true
+	if _, err := f.models.Update(ctx, record.ID, Update{Enabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Enabled || !stored.AutoDisabled {
+		t.Fatalf("a refused enable changed the model: %+v, want it off with the checker's flag", stored)
+	}
+}
+
 // Authorize returns everything a turn needs, including the decrypted
 // credential, in one query.
 func TestAuthorizeResolvesTheProvider(t *testing.T) {
