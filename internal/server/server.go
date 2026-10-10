@@ -1229,11 +1229,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return terminalAllowed(ctx, groups, account)
 	}
 	// A watch runs for as long as its request does, so it is asked again before
-	// each run after the first. The sign-in is read the way auth.Attach reads it
-	// on every request, and the account must still pass the rule a console
-	// opens under.
+	// each run after the first. The sign-in is checked but not renewed: a stream
+	// is not the person being there, so it must not extend the sign-in or count
+	// as activity. The account must still pass the rule a console opens under.
 	consoleHandlers.Reauthorize = func(ctx context.Context, r *http.Request) (user.User, error) {
-		account, _, err := authService.Authenticate(ctx, authService.TokenFrom(r))
+		account, err := authService.Resolve(ctx, authService.TokenFrom(r))
 		if err != nil {
 			return user.User{}, err
 		}

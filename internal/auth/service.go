@@ -1256,6 +1256,24 @@ func (s *Service) Authenticate(ctx context.Context, token string) (user.User, Se
 	return account, session, nil
 }
 
+// Resolve answers what Authenticate answers, which account this cookie is and
+// whether it may still act, and writes nothing. A background stream asks it
+// before each of its runs: the person behind a stream is not necessarily there,
+// so the stream must not renew the sign-in or stamp the account as active.
+func (s *Service) Resolve(ctx context.Context, token string) (user.User, error) {
+	session, account, err := s.sessions.GetWithUser(ctx, token)
+	if err != nil {
+		return user.User{}, err
+	}
+	if !account.IsActive() {
+		return user.User{}, &AccountDisabledError{Reason: account.BanReason}
+	}
+	if session.TwoFactorPending {
+		return user.User{}, ErrSignInIncomplete
+	}
+	return account, nil
+}
+
 // --- cookie ------------------------------------------------------------------
 
 func (s *Service) CookieName() string { return s.cfg.CookieName }
