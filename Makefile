@@ -85,6 +85,20 @@ ALL_PLUGIN_TAGS := $(foreach p,$(notdir $(wildcard plugins/*)),plugin_$(p))
 # project on the production host (see AGENTS.md: Arc, never Chat); the host
 # has no default, because guessing one is how a build lands on the wrong box.
 ARCH        ?= amd64
+# ARCH reaches the shell in the package recipe, in GOARCH= on the go build line
+# and in dist/ARCH, which deploy.sh reads back. So it is held to a platform name,
+# lower-case letters and digits as amd64 and arm64 are, before any recipe runs.
+# The override is the one VERSION uses: a value given on the command line or in
+# the environment is kept as typed, so a $(shell ...) in it is not run before the
+# check below reads it.
+override ARCH := $(if $(filter file,$(origin ARCH)),$(ARCH),$(value ARCH))
+ARCH_CHARS := a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9
+ARCH_LEFT := $(ARCH)
+$(foreach c,$(ARCH_CHARS),$(eval ARCH_LEFT := $$(subst $(c),,$$(ARCH_LEFT))))
+ARCH_BAD := $(ARCH_LEFT)$(if $(ARCH),,empty)
+ifneq ($(ARCH_BAD),)
+$(error ARCH "$(ARCH)" is refused: it must be a platform name of lower-case letters and digits, as amd64 and arm64 are, because it reaches the shell. Pass a plain ARCH=...)
+endif
 DEPLOY_HOST ?=
 DEPLOY_DIR  ?= /data/obsidian-arc
 # Set to deploy a build that lacks a plugin the running server carries; the

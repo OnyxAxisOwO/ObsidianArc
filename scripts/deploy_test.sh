@@ -174,5 +174,20 @@ fi
   || fail "make refused a plain plugin name and package path"
 grep -q "plugins: alpha alpha" "$tmp/out" || fail "the plain plugin list is not printed"
 echo "Makefile value guard: ok"
+# ARCH is spliced into the package recipe's go build line and into dist/ARCH, so
+# the Makefile holds it to a platform name as well, from the command line and
+# from the environment, before any recipe runs.
+make_refuses arch-proof package 'ARCH=amd64$(shell touch arch-proof)'
+make_refuses arch-proof package 'ARCH=amd64;touch arch-proof'
+make_refuses newline-proof package "ARCH=amd64${nl}touch newline-proof"
+make_refuses arch-proof version 'ARCH=AMD64'
+rm -f "$probe/env-arch-proof"
+if (cd "$probe" && ARCH='amd64$(shell touch env-arch-proof)' make -f "$root/Makefile" version) >"$tmp/out" 2>&1; then
+  fail "make accepted an ARCH from the environment that runs a command"
+fi
+[ -e "$probe/env-arch-proof" ] && fail "make ran an ARCH from the environment as a command"
+(cd "$probe" && make -s -f "$root/Makefile" version ARCH=arm64) >"$tmp/out" 2>&1 \
+  || fail "make refused a plain ARCH"
+echo "Makefile ARCH guard: ok"
 
 echo "deploy.sh plugin guard: ok"
