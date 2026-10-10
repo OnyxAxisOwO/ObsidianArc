@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,17 +85,9 @@ func TestSSHConsoleHoldsAnAccountTheOIDCBindingPolicyHolds(t *testing.T) {
 	}
 
 	// Connecting the identity is what lifts the hold, over SSH as on the web.
-	start := in.do(http.MethodGet, "/api/auth/oauth/start/oidc?link=1", nil, founder)
-	cookies := start.Result().Cookies()
-	if start.Code != http.StatusFound || len(cookies) == 0 {
-		t.Fatalf("start the connect flow: %d %s", start.Code, start.Body.String())
-	}
-	target, err := url.Parse(start.Header().Get("Location"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	stateCookie, nonce := in.startConnect("oidc", founder, "a-good-password", "")
 	callback := in.doWithExtraCookies(http.MethodGet,
-		"/api/auth/oauth/callback/oidc?code=c&state="+target.Query().Get("state"), founder, cookies[0])
+		"/api/auth/oauth/callback/oidc?code=c&state="+nonce, founder, stateCookie)
 	if callback.Code != http.StatusFound {
 		t.Fatalf("finish the connect flow: %d %s", callback.Code, callback.Body.String())
 	}

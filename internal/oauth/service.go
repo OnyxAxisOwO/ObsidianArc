@@ -345,6 +345,20 @@ func (s *Service) Complete(
 func (s *Service) resolve(
 	ctx context.Context, identity Identity, details Details, ask bool, adm Admission, ip, ua string,
 ) (user.User, error) {
+	// A completion that carries an invite code is a guess at it, and the paid
+	// screening below runs before the transaction that would refuse the guess.
+	// The place in the budget is taken before that work and held to the end of
+	// this call, as a registration holds it: the transaction records a wrong code
+	// against this same place rather than taking another.
+	var guess *auth.Attempt
+	if strings.TrimSpace(details.Invite) != "" {
+		held, err := s.auth.ReserveInviteGuess(ip)
+		if err != nil {
+			return user.User{}, err
+		}
+		guess = held
+		defer guess.Cancelled()
+	}
 	// The one address Provision could store. A provider's proven address wins;
 	// otherwise the completion form supplied it. The provider call below must
 	// stay outside the transaction, so cheap reads first keep linked identities
@@ -634,6 +648,7 @@ func (s *Service) resolve(
 				IP:               ip,
 				UA:               ua,
 				InviteCode:       strings.TrimSpace(details.Invite),
+				InviteGuess:      guess,
 			})
 			if err != nil {
 				return err

@@ -29,6 +29,10 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       }
       return t('accountBanned');
     }
+    // The sign-in page words the callback's refusal with the same string, so the
+    // completion form says the same thing for the same guard.
+    case 'login_refused':
+      return t('oauthLoginRefused');
     case 'signup_ip_blocked':
       return t('signupBlocked');
     case 'registration_closed':
@@ -108,6 +112,25 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
 /** Keep unknown accounts indistinguishable from wrong passwords at sign-in. */
 export function loginRefusalText(failure: unknown): string {
   if (failure instanceof ApiError && failure.status === 401) return t('invalidCredentials');
+  return refusalText(failure);
+}
+
+/**
+ * Why a connection to a provider was not started, once the account's proof has
+ * been asked for. The password step has its own answers on screen: the field asks
+ * for the password, and a wrong one is said there. What is left is the proof's
+ * refusal for an account with no password, and the rest, worded as refusalText
+ * words them.
+ */
+export function connectRefusalText(failure: unknown): string {
+  if (failure instanceof ApiError) {
+    switch (failure.code) {
+      case 'reauth_required':
+        return t('connectReauth');
+      case 'unavailable':
+        return t('oauthUnavailable');
+    }
+  }
   return refusalText(failure);
 }
 

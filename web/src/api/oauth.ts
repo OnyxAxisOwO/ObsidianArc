@@ -38,13 +38,13 @@ export interface OAuthConnections {
 }
 
 /**
- * Where the button goes.
+ * Where a sign-in button goes.
  *
  * A URL rather than a fetch: the response is a redirect to somebody else's
- * site, which is a navigation the browser has to make itself. `link` says
- * this is an account adding a connection rather than a visitor signing in;
- * `next` is where to land afterwards, and the server keeps it to a path of
- * this site whatever is passed.
+ * site, which is a navigation the browser has to make itself. `next` is where to
+ * land afterwards, and the server keeps it to a path of this site whatever is
+ * passed. Adding a connection to an account is not a navigation of this kind, and
+ * is started by connectProvider instead.
  *
  * `pow` is the proof of work a sign-up from the register page has solved. It
  * rides on this request because the request is the browser's own navigation to
@@ -54,7 +54,6 @@ export interface OAuthConnections {
 export function signInURL(
   provider: string,
   options: {
-    link?: boolean;
     next?: string;
     turnstile?: string;
     pow?: PoWSolution;
@@ -62,13 +61,34 @@ export function signInURL(
   } = {},
 ): string {
   const query = new URLSearchParams();
-  if (options.link) query.set('link', '1');
   if (options.next) query.set('next', options.next);
   if (options.turnstile) query.set('turnstile', options.turnstile);
   if (options.pow) query.set('pow', JSON.stringify(options.pow));
   if (options.register) query.set('register', '1');
   const suffix = query.toString();
   return `/api/auth/oauth/start/${encodeURIComponent(provider)}${suffix ? `?${suffix}` : ''}`;
+}
+
+/**
+ * Starts connecting a provider to this account, and answers with the address the
+ * browser has to leave for: the provider's consent screen, which comes back to
+ * this site when it is done.
+ *
+ * A request rather than a link, because the account has to prove itself first. An
+ * account with a password is asked for it: the server answers password_required
+ * until it is given, and current_password_wrong for a wrong one. An account with no
+ * password has to have signed in just now, and answers reauth_required when it has
+ * not. Nothing is connected by this call; the callback does that, and only for the
+ * browser that asked.
+ */
+export function connectProvider(
+  provider: string,
+  options: { password?: string; next?: string } = {},
+): Promise<{ redirect: string }> {
+  return api.post<{ redirect: string }>(`/api/auth/oauth/connections/${encodeURIComponent(provider)}`, {
+    password: options.password ?? '',
+    next: options.next ?? '',
+  });
 }
 
 /**

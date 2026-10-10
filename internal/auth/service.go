@@ -147,6 +147,11 @@ type Service struct {
 	verificationKey []byte
 	// Its own budget, apart from the password limiter's: see spendCode.
 	codes *Limiter
+	// The budget for guesses at an invite code, per address. Its own limiter
+	// for the reason codes has one: a wrong code is not a wrong password, and
+	// spending a sign-in's allowance on it would lock the same person out of
+	// both. See spendInvite.
+	invites *Limiter
 	// Told when the second step is switched on or off, or a recovery code
 	// is spent. Nil records nothing.
 	OnTwoFactor func(context.Context, TwoFactorEvent)
@@ -212,6 +217,7 @@ func NewService(
 		cfg:      cfg.Session,
 		limiter:  NewLimiter(),
 		codes:    NewLimiter(),
+		invites:  NewLimiter(),
 		signups:  newSignupGate(),
 		mailer:   mailer,
 	}
@@ -307,6 +313,10 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		return user.User{}, "", err
 	}
 	review := SignupReview{Decision: SignupAllow}
+	// The place this request holds in the invite guessing budget, when it carries
+	// a code. It is kept until the request returns, so the paid review and the
+	// hash below only run while the place is held; see ReserveInviteGuess.
+	var guess *Attempt
 	if total > 0 {
 		if !s.settings.Bool(settings.RegistrationEnabled) {
 			return user.User{}, "", ErrRegistrationClosed
@@ -329,6 +339,21 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		// finding that out.
 		if strings.TrimSpace(in.InviteCode) == "" && s.settings.Bool(settings.InvitesRequired) {
 			return user.User{}, "", ErrInviteRequired
+		}
+		// A code is a guess until it checks out, and the paid review, the screening
+		// and the hash below are all spent on a guess before anything learns whether
+		// it was right. The place in the budget is taken here, before any of that,
+		// and kept until this request returns. Requests from one address that arrive
+		// together share the budget while they run, instead of all getting past it
+		// before any of them has been counted; the transaction below counts a wrong
+		// code against this same place.
+		if strings.TrimSpace(in.InviteCode) != "" {
+			held, err := s.ReserveInviteGuess(in.IP)
+			if err != nil {
+				return user.User{}, "", err
+			}
+			guess = held
+			defer guess.Cancelled()
 		}
 		if allowed, retryAfter := s.signups.allow(
 			s.settings.Int(settings.SignupsPerMinute, 0),
@@ -513,7 +538,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			// account along with every other registration control, above.
 			var grant *InviteGrant
 			if !first {
-				grant, err = s.consumeInvite(ctx, tx, in.InviteCode)
+				grant, err = s.spendInvite(ctx, tx, in.InviteCode, in.IP, guess)
 				if err != nil {
 					return err
 				}
@@ -906,6 +931,62 @@ func (s *Service) consumeInvite(ctx context.Context, tx *database.Tx, code strin
 	return grant, nil
 }
 
+// spendInvite is consumeInvite for a code that arrives on a request somebody
+// may be guessing with. Every wrong code is a guess, and guesses from one
+// address are counted and slowed the way a wrong password is, so a short code
+// cannot be walked through at the speed of the registration form. A code that
+// works is not counted, and does not clear the count either: only time does.
+//
+// guess is the place the caller reserved for this request (ReserveInviteGuess),
+// and a wrong code is recorded against it. A nil guess means the caller reserved
+// none, so one is taken here for the code alone. A request takes one place and no
+// more: a second would count the request's own hold against its own guess, and a
+// run of paid reviews would then never be stopped.
+//
+// It runs inside the caller's transaction, but the limiter is in memory and is
+// not rolled back with it. That is the point: a transaction that refuses a guess
+// has to leave the count standing.
+func (s *Service) spendInvite(ctx context.Context, tx *database.Tx, code, ip string, guess *Attempt) (*InviteGrant, error) {
+	if strings.TrimSpace(code) == "" {
+		return s.consumeInvite(ctx, tx, code)
+	}
+	if guess == nil {
+		held, err := s.ReserveInviteGuess(ip)
+		if err != nil {
+			return nil, err
+		}
+		defer held.Cancelled()
+		guess = held
+	}
+	grant, err := s.consumeInvite(ctx, tx, code)
+	if errors.Is(err, ErrInviteInvalid) {
+		guess.Failed()
+	}
+	return grant, err
+}
+
+// ReserveInviteGuess takes the address's place in the invite guessing budget for
+// one request, and refuses when the address has used it up. The place is held
+// until the caller finishes with it: Failed when the code it was taken for is
+// wrong, and Cancelled otherwise. A code that works is not a guess, and a request
+// that stopped before its code was checked made none. A caller takes the place
+// before any paid work and holds it to the end of the request, so a burst of
+// guesses from one address cannot all get past the budget before any of them has
+// been counted.
+func (s *Service) ReserveInviteGuess(ip string) (*Attempt, error) {
+	return s.invites.Begin(inviteBudgetKey(ip), "")
+}
+
+// inviteBudgetKey is the address a guess is counted against. An address the
+// server could not read is one shared budget rather than none: a limit that an
+// empty address switched off would be a way round the limit.
+func inviteBudgetKey(ip string) string {
+	if ip == "" {
+		return "unknown"
+	}
+	return ip
+}
+
 // applyInvite finishes what consumeInvite started, once the account it was
 // spent for exists: the group days an admin code carries become an expiry
 // on the fresh row (permanent membership — group_days 0 — needs no write,
@@ -1027,10 +1108,12 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 // It is Login without the two things that only make sense in a browser: the
 // Turnstile gate, which no SSH client can solve, and the session cookie,
 // which a console session has no use for. Everything that protects the
-// credential itself is kept and deliberately shared with Login — the same
-// attempt limiter, so guessing over SSH and guessing over the sign-in form
-// count against one budget rather than two, and the same dummy verification,
-// so an unknown account costs the same wall-clock as a known one.
+// credential itself is kept and deliberately shared with Login — the plugin
+// login guards, the same attempt limiter, so guessing over SSH and guessing
+// over the sign-in form count against one budget rather than two, and the same
+// dummy verification, so an unknown account costs the same wall-clock as a
+// known one. A guard that refuses the sign-in form refuses this door too, or
+// the operator's refusal is one password away from being ignored.
 //
 // It also returns the account's credential fingerprint (see
 // CredentialFingerprint), taken from the same read of the stored hash that the
@@ -1041,6 +1124,13 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 // Every failure returns ErrInvalidCredentials. A caller that is about to tell
 // a stranger whether an account exists is the reason.
 func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip string) (user.User, string, error) {
+	// Asked before the limiter reserves anything, in the order Login asks.
+	// With no token: a console connection has no browser to carry one, so a
+	// guard that needs one refuses here as it refuses a provider sign-up.
+	if _, err := s.runGuards(ctx, GuardLogin, nil, ip, identifier); err != nil {
+		return user.User{}, "", err
+	}
+
 	attempt, err := s.limiter.Begin(ip, identifier)
 	if err != nil {
 		return user.User{}, "", err
@@ -1132,6 +1222,27 @@ func (s *Service) ConfirmPassword(ctx context.Context, userID, candidate string)
 		return ErrPasswordRequired
 	}
 	return s.checkPassword(ctx, userID, hash, candidate)
+}
+
+// ConfirmNewSignIn is the proof in front of a new way into an account, which is
+// what connecting a provider is. It asks what ChangePassword asks of the same
+// account: the current password where there is one, and a sign-in made just now
+// where there is none, the rule that lets an account opened through a provider
+// set its first password. A bare session is neither, so a copied session cookie
+// adds nothing without the password, and for an account with none, nothing once
+// the sign-in it came from is older than recentSignIn.
+func (s *Service) ConfirmNewSignIn(ctx context.Context, userID, candidate, sessionID string) error {
+	hash, err := s.users.PasswordHash(ctx, nil, userID)
+	if err != nil {
+		return err
+	}
+	if hash != "" {
+		if candidate == "" {
+			return ErrPasswordRequired
+		}
+		return s.checkPassword(ctx, userID, hash, candidate)
+	}
+	return s.requireRecentSignIn(ctx, s.db, userID, sessionID)
 }
 
 // recentSignIn is how long after signing in a session may still set the first

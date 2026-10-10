@@ -12,6 +12,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import { safeNext } from '../src/lib/next';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import AuthView from '../src/views/AuthView.vue';
+import BindOIDCView from '../src/views/BindOIDCView.vue';
 import CompleteSignupView from '../src/views/CompleteSignupView.vue';
 import ConsentView from '../src/views/ConsentView.vue';
 import TwoFactorEnrolView from '../src/views/TwoFactorEnrolView.vue';
@@ -86,6 +87,18 @@ async function mount(component: Component, props: Record<string, unknown> = {}):
   });
   app.mount(host);
   await settle();
+}
+
+/** Replaces where the page can go, so a test can see the navigation without making it. */
+function stubLocation(): { assign: ReturnType<typeof vi.fn>; restore: () => void } {
+  const original = window.location;
+  const assign = vi.fn();
+  const stub = { configurable: true, writable: true };
+  Object.defineProperty(window, 'location', { ...stub, value: { assign, href: '' } });
+  return {
+    assign,
+    restore: () => Object.defineProperty(window, 'location', { ...stub, value: original }),
+  };
 }
 
 function offer(providers: { id: string; name: string }[]): void {
@@ -337,7 +350,6 @@ describe('signing in with an account from elsewhere', () => {
   it('builds the start URL without empty parameters in it', () => {
     expect(signInURL('github')).toBe('/api/auth/oauth/start/github');
     expect(signInURL('github', { next: '' })).toBe('/api/auth/oauth/start/github');
-    expect(signInURL('github', { link: true })).toBe('/api/auth/oauth/start/github?link=1');
   });
 
   it('carries a proof of work on the start URL only when there is one', () => {
@@ -571,7 +583,7 @@ describe('the connections an account holds', () => {
     vi.spyOn(backupApi, 'exportAccount').mockResolvedValue({} as never);
   });
 
-  it('offers a connect link for a provider and a way out of one it holds', async () => {
+  it('offers a connect button for a provider and a way out of one it holds', async () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [{
         provider: 'github', login: 'octocat', email: 'cat@example.com',
@@ -588,10 +600,30 @@ describe('the connections an account holds', () => {
     const rows = [...host.querySelectorAll('.oa-connection')];
     expect(rows).toHaveLength(2);
     expect(rows[0]!.textContent).toContain('octocat');
-    // The one that is connected has no link to connect it again.
-    expect(rows[0]!.querySelector('a')).toBeNull();
-    expect(rows[1]!.querySelector('a')!.getAttribute('href'))
-      .toBe('/api/auth/oauth/start/google?link=1&next=%2Fsettings');
+    const labels = (row: Element) => [...row.querySelectorAll('button')].map((button) => button.textContent?.trim());
+    // The one that is connected has no button to connect it again, only the way out.
+    expect(labels(rows[0]!)).not.toContain(t('connect'));
+    expect(labels(rows[1]!)).toEqual([t('connect')]);
+  });
+
+  // A connection is started by a request that carries the account's proof, and the
+  // browser leaves for the provider only with the address that answers. An account
+  // with a password is asked for it first, and the field opens to ask.
+  it('asks an account with a password for it before starting a connection', async () => {
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
+      connections: [], providers: [{ id: 'google', name: 'Google', enabled: true }], has_password: true,
+    });
+    const { ApiError } = await import('../src/api/client');
+    const connect = vi.spyOn(oauthApi, 'connectProvider').mockRejectedValue(
+      new ApiError(400, 'password_required', 'Enter your current password to do this.', {}),
+    );
+    await mount(AccountSection);
+
+    host.querySelector<HTMLButtonElement>('.oa-connection button')!.click();
+    await settle();
+
+    expect(connect).toHaveBeenCalledWith('google', { password: '', next: '/settings' });
+    expect(host.textContent).toContain(t('connectPasswordHint', { provider: 'Google' }));
   });
 
   // A provider the operator has since switched off is still a way into this
@@ -1197,17 +1229,6 @@ describe('registering with proof-of-work (PoW)', () => {
 
   // The page's navigation is replaced for one test, so the test can see where
   // the sign-in was sent and put the page back afterwards.
-  function stubLocation(): { assign: ReturnType<typeof vi.fn>; restore: () => void } {
-    const original = window.location;
-    const assign = vi.fn();
-    const stub = { configurable: true, writable: true };
-    Object.defineProperty(window, 'location', { ...stub, value: { assign, href: '' } });
-    return {
-      assign,
-      restore: () => Object.defineProperty(window, 'location', { ...stub, value: original }),
-    };
-  }
-
   function providerLink(): HTMLAnchorElement {
     return host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
   }
@@ -1273,5 +1294,55 @@ describe('registering with proof-of-work (PoW)', () => {
     } finally {
       restore();
     }
+  });
+});
+
+// An account the OpenID Connect policy holds has to link that identity before it
+// can go on. The link is asked for the way the settings screen asks for it: with
+// the account's proof, and a password where it has one.
+describe('binding the OpenID Connect identity an account must hold', () => {
+  const SSO = { id: 'oidc', name: 'Campus SSO' };
+
+  beforeEach(() => {
+    route.path = '/bind-oidc';
+    route.query = {};
+    site.value = { ...siteInfo.value, oauth: [SSO] };
+  });
+
+  it('asks for the password before it leaves for the provider', async () => {
+    const connect = vi.spyOn(oauthApi, 'connectProvider')
+      .mockRejectedValueOnce(new ApiError(400, 'password_required', 'Enter your current password to do this.', {}))
+      .mockResolvedValueOnce({ redirect: 'https://sso.example/authorize?state=abc' });
+    const { assign, restore } = stubLocation();
+    try {
+      await mount(BindOIDCView);
+      button(host, t('oidcBindingButton', { provider: SSO.name })).click();
+      await settle();
+
+      expect(connect).toHaveBeenLastCalledWith('oidc', { password: '', next: '/bind-oidc?next=%2F' });
+      expect(assign).not.toHaveBeenCalled();
+      expect(host.textContent).toContain(t('connectPasswordHint', { provider: SSO.name }));
+
+      type(fieldInput(t('currentPassword')), 'a-good-password');
+      button(host, t('oidcBindingButton', { provider: SSO.name })).click();
+      await settle();
+
+      expect(connect).toHaveBeenLastCalledWith('oidc', { password: 'a-good-password', next: '/bind-oidc?next=%2F' });
+      expect(assign).toHaveBeenCalledWith('https://sso.example/authorize?state=abc');
+    } finally {
+      restore();
+    }
+  });
+
+  it('says a password is wrong and keeps the field open for another try', async () => {
+    vi.spyOn(oauthApi, 'connectProvider').mockRejectedValue(
+      new ApiError(400, 'current_password_wrong', 'That password is not correct.', {}),
+    );
+    await mount(BindOIDCView);
+    button(host, t('oidcBindingButton', { provider: SSO.name })).click();
+    await settle();
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('currentPasswordWrong'));
+    expect(fieldInput(t('currentPassword'))).not.toBeNull();
   });
 });

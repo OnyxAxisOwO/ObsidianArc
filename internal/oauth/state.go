@@ -44,8 +44,8 @@ type state struct {
 	Nonce string `json:"n"`
 	// PKCE, where the provider supports it.
 	Verifier string `json:"v,omitempty"`
-	// Set when an account that is already signed in is adding a connection,
-	// so the callback links rather than opens a session.
+	// Set only by connect, once the account has proved itself, so the callback
+	// links the connection to that account rather than opening a session.
 	UserID string `json:"u,omitempty"`
 	// Where to send the browser afterwards. A path of this site, never a URL:
 	// the whole value is put in a Location header, and one that could carry a

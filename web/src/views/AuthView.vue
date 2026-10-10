@@ -341,6 +341,9 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
   disabled: 'accountBanned',
   ip_blocked: 'signupBlocked',
   throttled: 'oauthThrottled',
+  // A plugin's login guard turned the sign-in away. The guard's own words are
+  // not sent on a redirect, so this is the general sentence, as for sign-up.
+  login_refused: 'oauthLoginRefused',
   domain: 'oauthDomain',
   disposable_email: 'disposableEmailRejected',
   email_screening_unavailable: 'emailScreeningUnavailable',

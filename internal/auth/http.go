@@ -641,6 +641,12 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 		InviteCode: body.InviteCode,
 	})
 	if err != nil {
+		// Only the handler has the response, so the header is set here; the body
+		// field comes from registrationError, which says the same number.
+		var limited *RateLimitError
+		if errors.As(err, &limited) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())+1))
+		}
 		return h.registrationError(err)
 	}
 
@@ -1045,6 +1051,14 @@ func (h *Handlers) registrationError(err error) error {
 		seconds := int(throttled.RetryAfter.Seconds()) + 1
 		return httpx.TooManyRequests("signups_throttled",
 			"Too many accounts have been created just now. Try again shortly.").
+			WithDetails(map[string]any{"retry_after_seconds": seconds})
+	}
+	// Only the invite guessing budget answers with this error on a registration:
+	// the sign-in budget is not spent here.
+	var limited *RateLimitError
+	if errors.As(err, &limited) {
+		seconds := int(limited.RetryAfter.Seconds()) + 1
+		return httpx.TooManyRequests("too_many_attempts", limited.Error()).
 			WithDetails(map[string]any{"retry_after_seconds": seconds})
 	}
 

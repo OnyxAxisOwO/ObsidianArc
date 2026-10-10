@@ -63,6 +63,10 @@ type ProvisionInput struct {
 	UA       string
 	// Empty unless the person was asked and answered — see Missing.Invite.
 	InviteCode string
+	// The place in the invite guessing budget the caller reserved for this
+	// request when it carries a code (see ReserveInviteGuess). Nil reserves one
+	// inside Provision instead, so a caller that reserved none is still counted.
+	InviteGuess *Attempt
 }
 
 // Missing is what an instance requires that a provider cannot answer.
@@ -159,7 +163,7 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 	// hands the use back by rolling back with everything else.
 	var grant *InviteGrant
 	if !first {
-		grant, err = s.consumeInvite(ctx, tx, in.InviteCode)
+		grant, err = s.spendInvite(ctx, tx, in.InviteCode, in.IP, in.InviteGuess)
 		if err != nil {
 			return user.User{}, err
 		}

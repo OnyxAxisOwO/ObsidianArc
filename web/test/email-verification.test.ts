@@ -246,6 +246,10 @@ describe('email verification controls', () => {
     );
   });
 
+  it('translates a login-guard refusal the same on the completion form as on the sign-in page', () => {
+    expect(refusalText(new ApiError(403, 'login_refused', 'raw'))).toBe(t('oauthLoginRefused'));
+  });
+
   it('explains the link and six-digit code on the registration form in both languages', async () => {
     await mount({ setup: () => () => h(AuthView, { mode: 'register' }) }, '/register');
     const email = host.querySelector<HTMLInputElement>('.oa-field input[type="email"]');
