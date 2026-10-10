@@ -11,6 +11,7 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -326,9 +327,14 @@ func loadOrCreateSecret(dataDir string) ([]byte, bool, error) {
 }
 
 // createSecretFile persists a new random key at path, which must not exist.
-// O_EXCL makes the absence check and the create a single step: two processes
-// starting on one empty data directory cannot both win, and the loser is
-// refused instead of overwriting the key the winner wrote.
+//
+// The key is staged in a temporary file beside path, synced, and then linked
+// into place. The link is exclusive as the O_EXCL create it replaces was: two
+// processes starting on one empty data directory cannot both win, and the loser
+// is refused instead of overwriting the key the winner wrote. Unlike that
+// create, the name at path never exists before the key it names is complete, so
+// a crash during first start cannot leave an empty file for the next start to
+// refuse.
 func createSecretFile(path string) ([]byte, bool, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -336,22 +342,71 @@ func createSecretFile(path string) ([]byte, bool, error) {
 	}
 	encoded := hex.EncodeToString(buf)
 
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if os.IsExist(err) {
-		// Reading the file back here could find the winner's file still empty
-		// and refuse with advice to delete it. Starting again reads the key once
-		// it is complete.
-		return nil, false, fmt.Errorf("%s was created by another process while this one was starting; start again to use the key it holds", path)
+	if err := publishSecretFile(path, encoded+"\n"); err != nil {
+		return nil, false, err
 	}
-	if err != nil {
-		return nil, false, fmt.Errorf("create %s: %w", path, err)
-	}
+	return []byte(encoded), true, nil
+}
 
-	_, err = file.WriteString(encoded + "\n")
+// publishSecretFile makes path name a file that holds content, and only ever a
+// complete one. Where the filesystem cannot make hard links, the file is created
+// in place instead, and the window a crash could hit is what it was before.
+func publishSecretFile(path, content string) error {
+	dir := filepath.Dir(path)
+	staged, err := os.CreateTemp(dir, SecretKeyFile+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	stagedName := staged.Name()
+	// Removed on every path. Once linked, path is a second name for the same
+	// file, so removing this one leaves the key where it belongs.
+	defer func() { _ = os.Remove(stagedName) }()
+
+	_, err = staged.WriteString(content)
 	if err == nil {
 		// The key must be on disk before anything is sealed with it. Otherwise a
 		// crash soon after first start can keep the database rows and lose the
 		// key that opens them.
+		err = staged.Sync()
+	}
+	if closeErr := staged.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+
+	err = linkSecretFile(stagedName, path)
+	if os.IsExist(err) {
+		return createdByAnotherStart(path)
+	}
+	if err != nil {
+		// FAT and exFAT, and some network and FUSE mounts, cannot make hard links.
+		// A first start there worked before publication by link and must still
+		// work, so it creates the file in place rather than failing.
+		return createInPlace(path, content)
+	}
+
+	// The name is a directory entry, and the key is used once this returns, so
+	// the entry must be on disk first. A failure here fails the start but keeps
+	// the file: another start may already be reading the same key from it.
+	return syncDirectory(dir)
+}
+
+// createInPlace creates path with O_EXCL and writes content into it. This is the
+// create the key file used before publication by link. It is kept for
+// filesystems that cannot link, where the name exists before its contents do.
+func createInPlace(path, content string) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if os.IsExist(err) {
+		return createdByAnotherStart(path)
+	}
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+
+	_, err = file.WriteString(content)
+	if err == nil {
 		err = file.Sync()
 	}
 	if closeErr := file.Close(); err == nil {
@@ -362,9 +417,37 @@ func createSecretFile(path string) ([]byte, bool, error) {
 		// half-written file is ours to remove. Leaving it would make the next
 		// start refuse, when a clean start could simply generate one.
 		_ = os.Remove(path)
-		return nil, false, fmt.Errorf("write %s: %w", path, err)
+		return fmt.Errorf("write %s: %w", path, err)
 	}
-	return []byte(encoded), true, nil
+	return nil
+}
+
+// createdByAnotherStart refuses a start that lost the race to create the key
+// file. It is told to start again rather than to read the file, because where
+// the winner created the name before writing it, a read here could find the
+// file still empty.
+func createdByAnotherStart(path string) error {
+	return fmt.Errorf("%s was created by another process while this one was starting; start again to use the key it holds", path)
+}
+
+// syncDirectory makes the directory entry durable. Windows cannot open a
+// directory to sync it, so the call is skipped there.
+func syncDirectory(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	handle, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("sync %s: %w", dir, err)
+	}
+	err = handle.Sync()
+	if closeErr := handle.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("sync %s: %w", dir, err)
+	}
+	return nil
 }
 
 // unusableSecretFile refuses a key file that exists without a usable key. It
@@ -372,12 +455,20 @@ func createSecretFile(path string) ([]byte, bool, error) {
 // opposite directions: restoring the original key keeps sealed values readable,
 // and deleting the file only starts over.
 func unusableSecretFile(path string) error {
-	return fmt.Errorf("%s does not hold a usable secret key (it needs at least %d characters), and it is not replaced: "+
+	return fmt.Errorf("%s %w (it needs at least %d characters), and it is not replaced: "+
 		"a new key cannot open what was sealed under the original. "+
 		"Restore this file from a backup, or set %sSECRET_KEY to the original key. "+
 		"Delete the file only if nothing was ever sealed with it",
-		path, minSecretLen, envPrefix)
+		path, errUnusableSecretFile, minSecretLen, envPrefix)
 }
+
+// errUnusableSecretFile is the refusal unusableSecretFile wraps. A test asks for
+// it with errors.Is, so the wording can change without the test following.
+var errUnusableSecretFile = errors.New("does not hold a usable secret key")
+
+// linkSecretFile publishes a new key file under its final name. A variable so a
+// test can watch the moment the name appears.
+var linkSecretFile = os.Link
 
 // minSecretLen is the floor for a key from the environment or from the file,
 // the same for both. A shorter key is refused, never used.

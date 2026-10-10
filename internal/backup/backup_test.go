@@ -442,3 +442,59 @@ func TestExportCarriesEveryConversationNotJustOnePage(t *testing.T) {
 		t.Errorf("ListForExport returned %d, want all %d", len(every), total)
 	}
 }
+
+// The store keeps reasoning up to a ceiling above the content one, so an export
+// carries reasoning longer than the content limit. The import used to cut that
+// reasoning at the content limit, which lost the middle of a long trace and
+// reported nothing.
+func TestRoundTripKeepsReasoningLongerThanTheContentLimit(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	const reasoningChars = 40000
+	id := f.write(t, f.account, "Long trace", "why is the sky blue?")
+	if _, err := f.conversations.Append(ctx, nil, conversation.AppendInput{
+		ConversationID: id, UserID: f.account.ID, Role: conversation.RoleAssistant,
+		Content: "Rayleigh scattering.", Reasoning: strings.Repeat("r", reasoningChars),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, document := f.export(t, f.account)
+
+	if _, err := f.service.Import(ctx, f.stranger, document); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	threads, err := f.conversations.List(ctx, f.stranger.ID, 50)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("restored %d conversations (%v), want 1", len(threads), err)
+	}
+	messages, err := f.conversations.Messages(ctx, nil, f.stranger.ID, threads[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("restored %d messages, want 2", len(messages))
+	}
+	if got := len([]rune(messages[1].Reasoning)); got != reasoningChars {
+		t.Errorf("restored %d characters of reasoning, want all %d", got, reasoningChars)
+	}
+}
+
+// An export promises the account's preferences. A read that fails is a failure
+// to export, not a file that quietly lacks them.
+func TestExportRefusesWhenPreferencesCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.write(t, f.account, "Still readable", "a question", "an answer")
+	if _, err := f.service.db.Exec(ctx, `DROP TABLE user_preferences`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := f.service.openExport(ctx, f.account)
+	if err == nil {
+		t.Fatal("export succeeded without the account's preferences")
+	}
+	if !strings.Contains(err.Error(), "preferences") {
+		t.Errorf("the export failed for another reason: %v", err)
+	}
+}

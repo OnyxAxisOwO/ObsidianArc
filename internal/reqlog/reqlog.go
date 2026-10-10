@@ -21,6 +21,7 @@ package reqlog
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -73,14 +74,21 @@ const (
 	flushEvery = 2 * time.Second
 	// An audit trail must not be an unauthenticated disk-filling primitive.
 	// The newest entries are retained and older ones are evicted once this
-	// ceiling is reached. At the current row shape this keeps the log in the
-	// low hundreds of megabytes even under sustained hostile traffic.
+	// ceiling is reached. The ceiling counts rows, so it bounds the table only
+	// if no single row can grow without limit: every free-text field an
+	// anonymous request can set is capped before it is queued, here in
+	// cleanEntry, and the request id, which httpx.RequestID replaces when it
+	// is longer than 64 bytes.
 	MaxStoredEntries = 200_000
 	// Checking the cap requires walking the time index to its boundary. Do it
 	// on the first write after boot, then once per several thousand rows rather
 	// than turning every batch into a full-cap scan.
 	trimEveryBatches = 50
 
+	// The server routes GET, POST, PUT, PATCH and DELETE, none longer than six
+	// characters. The cap sits far above that, and bounds what one
+	// client-chosen string can make a row carry.
+	MaxMethodChars    = 32
 	MaxPathChars      = 300
 	MaxUserAgentChars = 200
 )
@@ -127,7 +135,7 @@ func (s *Store) Record(entry Entry) {
 //
 // Clean runs before Truncate, so the limits count what is actually stored.
 func cleanEntry(entry Entry) Entry {
-	entry.Method = text.Clean(entry.Method)
+	entry.Method = text.Truncate(text.Clean(entry.Method), MaxMethodChars)
 	entry.Path = text.Truncate(text.Clean(entry.Path), MaxPathChars)
 	entry.UserID = text.Clean(entry.UserID)
 	entry.Username = text.Clean(entry.Username)
@@ -141,7 +149,8 @@ func cleanEntry(entry Entry) Entry {
 	return entry
 }
 
-// Dropped is how many entries were lost to a full buffer since boot.
+// Dropped is how many entries were lost before they reached the table since
+// boot: to a full buffer, or to a batch whose write failed.
 func (s *Store) Dropped() int64 { return s.dropped.Load() }
 
 // Evicted is how many old rows were removed by the hard storage ceiling
@@ -162,8 +171,10 @@ func (s *Store) Run(ctx context.Context) {
 			return
 		}
 		if err := s.write(ctx, batch); err != nil {
-			// Nowhere better to report this than the process log: the thing
-			// that failed is the recording of things.
+			// The rows are lost either way. The count reaches the administration
+			// screen, but only the process log keeps the cause, and the database
+			// that failed cannot be asked to record its own failure.
+			slog.ErrorContext(ctx, "request log write failed", "entries", len(batch), "error", err)
 			s.dropped.Add(int64(len(batch)))
 		}
 		batch = batch[:0]

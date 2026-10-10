@@ -1,11 +1,14 @@
 package reqlog
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -492,5 +495,69 @@ func TestAHostileRequestIsRecordedCleaned(t *testing.T) {
 	got := entries[0]
 	if got.Path != "/" || got.UserAgent != "probe\uFFFD" || got.RequestID != "trace\uFFFD" || got.Status != http.StatusNotFound {
 		t.Errorf("entry = %+v", got)
+	}
+}
+
+// The method is the one client-chosen string the log stored without a bound.
+// The transport caps the request line, but that cap is a deployment setting
+// this package does not own, so the bound is checked with a method far longer
+// than any the server would hand over.
+func TestAnOversizedMethodIsStoredBounded(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	store.Record(Entry{At: 1, Method: strings.Repeat("M", 1<<20), Path: "/long", Status: 405})
+	store.Record(Entry{At: 2, Method: "BASELINE-CONTROL", Path: "/named", Status: 405})
+	store.drain(t)
+
+	entries, total, err := store.List(ctx, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(entries) != 2 {
+		t.Fatalf("stored %d rows, want both", total)
+	}
+	for _, entry := range entries {
+		switch entry.Path {
+		case "/long":
+			if n := len([]rune(entry.Method)); n > MaxMethodChars {
+				t.Errorf("a method of %d characters was stored as %d, want at most %d", 1<<20, n, MaxMethodChars)
+			}
+		case "/named":
+			if entry.Method != "BASELINE-CONTROL" {
+				t.Errorf("a real method was altered to %q", entry.Method)
+			}
+		}
+	}
+}
+
+// A batch that cannot be written is counted as dropped, and the count says how
+// much was lost but not why. The cause is logged, because the failing database
+// cannot record its own failure.
+func TestAFailedBatchWriteIsLoggedWithItsCause(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	// The table the batch is written to is gone, so the insert is refused.
+	if _, err := store.db.Exec(ctx, `DROP TABLE request_log`); err != nil {
+		t.Fatal(err)
+	}
+	store.Record(Entry{At: 1, Method: "GET", Path: "/api/x", Status: 200})
+	store.drain(t)
+
+	if store.Dropped() != 1 {
+		t.Fatalf("dropped %d, want the one entry whose write failed", store.Dropped())
+	}
+	out := logged.String()
+	if !strings.Contains(out, "request log write failed") {
+		t.Fatalf("the failed write was not logged at all: %q", out)
+	}
+	if !strings.Contains(out, "reqlog: write 1 entries") {
+		t.Errorf("the log does not carry the cause of the failure: %q", out)
 	}
 }

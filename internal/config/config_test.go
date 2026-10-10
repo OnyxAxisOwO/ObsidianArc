@@ -1,11 +1,13 @@
 package config
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -335,6 +337,12 @@ func TestConcurrentFirstStartsAgreeOnOneKey(t *testing.T) {
 		succeeded := 0
 		for _, r := range outcomes {
 			if r.err != nil {
+				// A start that loses the race may be told to start again. It may
+				// not be told the file is unusable: that sends an operator to delete
+				// a key file that another start is using.
+				if errors.Is(r.err, errUnusableSecretFile) {
+					t.Fatalf("trial %d: a start that raced another found the key file unusable: %v", trial, r.err)
+				}
 				continue
 			}
 			succeeded++
@@ -354,6 +362,115 @@ func TestConcurrentFirstStartsAgreeOnOneKey(t *testing.T) {
 		if strings.TrimSpace(string(stored)) != string(agreed) {
 			t.Fatalf("trial %d: the key file does not hold the key the starts used", trial)
 		}
+	}
+}
+
+// The name a key file is published under must never name a partial key. The
+// key is staged in a temporary file, synced, and then linked into place, so at
+// the moment the name appears the file already holds the whole key, and the
+// staged file is gone afterwards.
+func TestTheKeyFileAppearsOnlyWhenItIsComplete(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, SecretKeyFile)
+
+	// 32 random bytes as 64 hex characters, and the newline the file ends with.
+	const keyFileBytes = 65
+
+	published := false
+	previous := linkSecretFile
+	linkSecretFile = func(oldname, newname string) error {
+		published = true
+		if _, err := os.Stat(newname); !os.IsNotExist(err) {
+			t.Errorf("the key file name existed before the key was published: %v", err)
+		}
+		staged, err := os.ReadFile(oldname)
+		if err != nil {
+			t.Errorf("read the staged key: %v", err)
+		} else if len(staged) != keyFileBytes || staged[len(staged)-1] != '\n' {
+			t.Errorf("the staged key is %d bytes, want the whole key and its newline", len(staged))
+		}
+		return previous(oldname, newname)
+	}
+	t.Cleanup(func() { linkSecretFile = previous })
+
+	key, generated, err := createSecretFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !published {
+		t.Fatal("the key was not published by linking a staged file")
+	}
+	if !generated {
+		t.Error("a key created here was not reported as generated")
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != string(key)+"\n" {
+		t.Errorf("the key file holds %q, want the key the start uses", stored)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != SecretKeyFile {
+		t.Errorf("publishing left %d entries in the data directory, want only the key file", len(entries))
+	}
+}
+
+// Some filesystems cannot make hard links, FAT and exFAT among them. A first
+// start there must still get a key: publication falls back to creating the file
+// in place, as it did before.
+func TestAFirstStartSucceedsWhereHardLinksAreRefused(t *testing.T) {
+	previous := linkSecretFile
+	linkSecretFile = func(oldname, newname string) error {
+		return &os.LinkError{Op: "link", Old: oldname, New: newname, Err: syscall.EPERM}
+	}
+	t.Cleanup(func() { linkSecretFile = previous })
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, SecretKeyFile)
+	key, _, err := createSecretFile(path)
+	if err != nil {
+		t.Fatalf("a filesystem without hard links refused the first start: %v", err)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != string(key)+"\n" {
+		t.Errorf("the key file holds %q, want the key the start uses", stored)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("the fallback left %d entries in the data directory, want only the key file", len(entries))
+	}
+}
+
+// A start whose publish finds the name taken lost the race. It is told to start
+// again, and the key the winner published is left as it was.
+func TestAStartThatLosesThePublishLeavesTheWinnersKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, SecretKeyFile)
+	const winner = "7f3c9a1e5b2d48608c7e1a4f9b3d2c5e8a6f01\n"
+	if err := os.WriteFile(path, []byte(winner), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := createSecretFile(path)
+	if err == nil || !strings.Contains(err.Error(), "start again") {
+		t.Fatalf("a start that lost the race returned %v, want the start-again refusal", err)
+	}
+	left, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(left) != winner {
+		t.Errorf("the winner's key was rewritten to %q", left)
 	}
 }
 

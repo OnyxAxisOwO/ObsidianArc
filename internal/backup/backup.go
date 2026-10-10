@@ -64,15 +64,20 @@ const (
 	MaxStoredMessages = 200000
 	// What one account may be storing in characters of message text.
 	//
-	// The count above bounds rows, and a row may carry sixty-four thousand
-	// characters: two hundred thousand of them is some twelve gigabytes behind
-	// a ceiling that reads as modest. This is the figure the disk actually
-	// feels. Characters rather than bytes, counted the same way on both sides
-	// of the comparison; generous for a person (a heavy year is a few
-	// megabytes) and reached only by somebody trying.
+	// The count above bounds rows, and a row may carry some ninety-two thousand
+	// characters across its content, reasoning and error: two hundred thousand
+	// of them is some eighteen gigabytes behind a ceiling that reads as modest.
+	// This is the figure the disk actually feels. Characters rather than
+	// bytes, counted the same way on both sides of the comparison; generous
+	// for a person (a heavy year is a few megabytes) and reached only by
+	// somebody trying.
 	MaxStoredChars        = 512 << 20
 	MaxTitleChars         = 200
 	MaxImportContentChars = conversation.MaxContentChars
+	// Reasoning is stored under its own ceiling, above the content one. An
+	// import that cut it at the content figure would drop what an export of
+	// the same account carries.
+	MaxImportReasoningChars = conversation.MaxReasoningChars
 )
 
 // exportPageSize is how many conversation rows one read of an export takes.
@@ -166,9 +171,16 @@ type exportStream struct {
 // bound it: the walk stops as soon as one is crossed, so an account far past
 // them is refused after about one import's worth of reads.
 func (s *Service) openExport(ctx context.Context, account user.User) (*exportStream, error) {
-	// Already a JSON document in the store, carried across as it is.
+	// Already a JSON document in the store, carried across as it is. Get answers
+	// an account that never saved preferences with an empty object, so an error
+	// here is a failed read. Refusing keeps the export from writing a file that
+	// quietly lacks the preferences the README says an export carries.
+	stored, err := s.preferences.Get(ctx, account.ID)
+	if err != nil {
+		return nil, fmt.Errorf("backup: read preferences: %w", err)
+	}
 	var preferences json.RawMessage
-	if stored, err := s.preferences.Get(ctx, account.ID); err == nil && len(stored) > 0 {
+	if len(stored) > 0 {
 		preferences = stored
 	}
 
@@ -552,7 +564,7 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 	var threadChars int64
 	for _, turn := range usable {
 		threadChars += int64(min(utf8.RuneCountInString(turn.Content), MaxImportContentChars) +
-			min(utf8.RuneCountInString(turn.Reasoning), MaxImportContentChars))
+			min(utf8.RuneCountInString(turn.Reasoning), MaxImportReasoningChars))
 	}
 
 	title := text.TrimAndTruncate(thread.Title, MaxTitleChars)
@@ -601,7 +613,7 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 				UserID:         account.ID,
 				Role:           role,
 				Content:        text.TrimAndTruncate(turn.Content, MaxImportContentChars),
-				Reasoning:      text.TrimAndTruncate(turn.Reasoning, MaxImportContentChars),
+				Reasoning:      text.TrimAndTruncate(turn.Reasoning, MaxImportReasoningChars),
 				Error:          text.TrimAndTruncate(turn.Error, 500),
 				ModelName:      text.TrimAndTruncate(turn.ModelName, 80),
 			}); err != nil {
