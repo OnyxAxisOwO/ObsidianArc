@@ -112,6 +112,9 @@ const canManage = computed(() => canAdmin('plugins_manage'));
 // Bringing a new package in is a super administrator's alone: its migrations
 // run as the database's owner, so the server refuses anybody else.
 const canUpload = computed(() => isSuperAdmin.value);
+// Erasing a plugin's data runs its SQL as the database's owner, so the server
+// refuses anybody else, and the switch is not offered to them.
+const canPurge = computed(() => isSuperAdmin.value);
 const canRemove = computed(() => canAdmin('plugins_remove'));
 const hasTwoFactor = computed(() => !!currentUser.value?.two_factor_at);
 
@@ -821,7 +824,7 @@ onMounted(load);
   >
     <p class="oa-field-hint">{{ confirming.action === 'disable' ? t('pluginDisableHint') : (confirming.plugin.kind === 'package' ? t('pluginRemoveHint') : t('pluginUninstallHint')) }}</p>
     <OaSwitchField
-      v-if="confirming.action === 'uninstall'"
+      v-if="confirming.action === 'uninstall' && canPurge"
       v-model="purge"
       :label="t('pluginPurge')"
       :hint="confirming.plugin.contributions.purges ? t('pluginPurgeHint') : t('pluginPurgeSettingsOnly')"

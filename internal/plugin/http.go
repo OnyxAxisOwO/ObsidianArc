@@ -159,6 +159,13 @@ func (h *Handlers) uninstall(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, 1024); err != nil {
 		return err
 	}
+	// A purge runs the plugin's own SQL as the database's owner, and nobody
+	// shows that SQL to whoever removes the plugin, so erasing the data is a
+	// super administrator's, as uploading a package is. Removing a plugin and
+	// keeping its data stays a delegable grant.
+	if body.Purge && !auth.MustUser(r.Context()).IsSuperAdmin() {
+		return httpx.ForbiddenCode("admin_permission_denied", "You do not have permission to access this page or perform this action.")
+	}
 	name := r.PathValue("name")
 	if _, err := h.manager.Info(name); err != nil {
 		return translate(err)
