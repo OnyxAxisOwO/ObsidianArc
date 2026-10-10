@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -572,6 +573,12 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 		Invite:   body.Invite,
 	}, h.admission(held.SignUp), h.address(r), r.UserAgent())
 	if err != nil {
+		// Set here for the same reason as on the sign-up form: the header belongs
+		// to the response, which completionError does not have.
+		var limited *auth.RateLimitError
+		if errors.As(err, &limited) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())+1))
+		}
 		return completionError(err)
 	}
 

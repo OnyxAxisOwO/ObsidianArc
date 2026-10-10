@@ -641,6 +641,12 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 		InviteCode: body.InviteCode,
 	})
 	if err != nil {
+		// Only the handler has the response, so the header is set here; the body
+		// field comes from registrationError, which says the same number.
+		var limited *RateLimitError
+		if errors.As(err, &limited) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())+1))
+		}
 		return h.registrationError(err)
 	}
 

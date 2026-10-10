@@ -347,12 +347,17 @@ func (s *Service) resolve(
 ) (user.User, error) {
 	// A completion that carries an invite code is a guess at it, and the paid
 	// screening below runs before the transaction that would refuse the guess.
-	// An address that has used up its guesses is turned away before that work,
-	// as a registration is.
+	// The place in the budget is taken before that work and held to the end of
+	// this call, as a registration holds it: the transaction records a wrong code
+	// against this same place rather than taking another.
+	var guess *auth.Attempt
 	if strings.TrimSpace(details.Invite) != "" {
-		if err := s.auth.InviteGuessAllowed(ip); err != nil {
+		held, err := s.auth.ReserveInviteGuess(ip)
+		if err != nil {
 			return user.User{}, err
 		}
+		guess = held
+		defer guess.Cancelled()
 	}
 	// The one address Provision could store. A provider's proven address wins;
 	// otherwise the completion form supplied it. The provider call below must
@@ -643,6 +648,7 @@ func (s *Service) resolve(
 				IP:               ip,
 				UA:               ua,
 				InviteCode:       strings.TrimSpace(details.Invite),
+				InviteGuess:      guess,
 			})
 			if err != nil {
 				return err

@@ -308,6 +308,10 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		return user.User{}, "", err
 	}
 	review := SignupReview{Decision: SignupAllow}
+	// The place this request holds in the invite guessing budget, when it carries
+	// a code. It is kept until the request returns, so the paid review and the
+	// hash below only run while the place is held; see ReserveInviteGuess.
+	var guess *Attempt
 	if total > 0 {
 		if !s.settings.Bool(settings.RegistrationEnabled) {
 			return user.User{}, "", ErrRegistrationClosed
@@ -333,12 +337,18 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		}
 		// A code is a guess until it checks out, and the paid review, the screening
 		// and the hash below are all spent on a guess before anything learns whether
-		// it was right. An address that has used up its guesses is turned away here,
-		// before any of that, rather than after the transaction has refused it.
+		// it was right. The place in the budget is taken here, before any of that,
+		// and kept until this request returns. Requests from one address that arrive
+		// together share the budget while they run, instead of all getting past it
+		// before any of them has been counted; the transaction below counts a wrong
+		// code against this same place.
 		if strings.TrimSpace(in.InviteCode) != "" {
-			if err := s.InviteGuessAllowed(in.IP); err != nil {
+			held, err := s.ReserveInviteGuess(in.IP)
+			if err != nil {
 				return user.User{}, "", err
 			}
+			guess = held
+			defer guess.Cancelled()
 		}
 		if allowed, retryAfter := s.signups.allow(
 			s.settings.Int(settings.SignupsPerMinute, 0),
@@ -523,7 +533,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			// account along with every other registration control, above.
 			var grant *InviteGrant
 			if !first {
-				grant, err = s.spendInvite(ctx, tx, in.InviteCode, in.IP)
+				grant, err = s.spendInvite(ctx, tx, in.InviteCode, in.IP, guess)
 				if err != nil {
 					return err
 				}
@@ -922,18 +932,27 @@ func (s *Service) consumeInvite(ctx context.Context, tx *database.Tx, code strin
 // cannot be walked through at the speed of the registration form. A code that
 // works is not counted, and does not clear the count either: only time does.
 //
+// guess is the place the caller reserved for this request (ReserveInviteGuess),
+// and a wrong code is recorded against it. A nil guess means the caller reserved
+// none, so one is taken here for the code alone. A request takes one place and no
+// more: a second would count the request's own hold against its own guess, and a
+// run of paid reviews would then never be stopped.
+//
 // It runs inside the caller's transaction, but the limiter is in memory and is
 // not rolled back with it. That is the point: a transaction that refuses a guess
 // has to leave the count standing.
-func (s *Service) spendInvite(ctx context.Context, tx *database.Tx, code, ip string) (*InviteGrant, error) {
+func (s *Service) spendInvite(ctx context.Context, tx *database.Tx, code, ip string, guess *Attempt) (*InviteGrant, error) {
 	if strings.TrimSpace(code) == "" {
 		return s.consumeInvite(ctx, tx, code)
 	}
-	guess, err := s.invites.Begin(inviteBudgetKey(ip), "")
-	if err != nil {
-		return nil, err
+	if guess == nil {
+		held, err := s.ReserveInviteGuess(ip)
+		if err != nil {
+			return nil, err
+		}
+		defer held.Cancelled()
+		guess = held
 	}
-	defer guess.Cancelled()
 	grant, err := s.consumeInvite(ctx, tx, code)
 	if errors.Is(err, ErrInviteInvalid) {
 		guess.Failed()
@@ -941,18 +960,16 @@ func (s *Service) spendInvite(ctx context.Context, tx *database.Tx, code, ip str
 	return grant, err
 }
 
-// InviteGuessAllowed says whether an address may still guess at an invite code.
-// A caller about to spend paid or expensive work on a registration that carries
-// a code asks first, so an address that has used up its guesses is refused
-// before the work rather than after it. Nothing is recorded here: spendInvite
-// counts the guess when it fails.
-func (s *Service) InviteGuessAllowed(ip string) error {
-	attempt, err := s.invites.Begin(inviteBudgetKey(ip), "")
-	if err != nil {
-		return err
-	}
-	attempt.Cancelled()
-	return nil
+// ReserveInviteGuess takes the address's place in the invite guessing budget for
+// one request, and refuses when the address has used it up. The place is held
+// until the caller finishes with it: Failed when the code it was taken for is
+// wrong, and Cancelled otherwise. A code that works is not a guess, and a request
+// that stopped before its code was checked made none. A caller takes the place
+// before any paid work and holds it to the end of the request, so a burst of
+// guesses from one address cannot all get past the budget before any of them has
+// been counted.
+func (s *Service) ReserveInviteGuess(ip string) (*Attempt, error) {
+	return s.invites.Begin(inviteBudgetKey(ip), "")
 }
 
 // inviteBudgetKey is the address a guess is counted against. An address the
