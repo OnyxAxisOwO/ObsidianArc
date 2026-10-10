@@ -139,9 +139,9 @@ type Arg struct {
 // refuses a value that does not fit before the command's Run is called, so a
 // Run never reads a malformed number as 0, which for some flags means never
 // expire, permanent, or unlimited. Any other placeholder is free text, and the
-// command checks it. An empty Value means the flag is boolean: its presence
-// alone is the signal, as with --hidden or --enabled, and a following true or
-// false is taken as its value.
+// command checks it. An empty Value makes the flag a bare switch: its presence
+// alone is the signal, and a following true or false is taken as its value. A
+// BOOL flag is not a switch, so one given without a value is refused.
 //
 // A command must not declare "-h", "--help", "--json", "-y" or "--yes": the
 // engine recognises all five on every command already (see parse.go and
