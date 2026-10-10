@@ -616,6 +616,10 @@ type Info struct {
 	HasUI       bool     `json:"has_ui,omitempty"`
 	// Why a package that is installed is not running, when it is not.
 	Fault string `json:"fault,omitempty"`
+	// The setting keys the viewer of one answer may read and write, each by its
+	// own grant. Only a request knows who is asking, so the handlers fill this
+	// in; the manager's answers leave it empty.
+	WritableSettings []string `json:"writable_settings"`
 }
 
 // InstallRecord is who installed it and when, and the version they did.
