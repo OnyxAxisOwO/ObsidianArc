@@ -122,7 +122,9 @@ go run ./cmd/arcpack build path/to/plugin -o demo.arcx     # 编译后端、打�
 go run ./cmd/arcpack inspect demo.arcx                      # 看它要什么
 ```
 
-`build` 先检查插件所在的 Go 模块（`go.mod` 所在的目录，从插件目录往上找）：模块里只要有符号链接，或有既不是文件也不是目录的东西，就报错；`go.mod` 里用 `replace` 把模块指到本地目录，也报错——只接受从模块代理来的模块。编译时不读 `go.work`。编译器会跟着符号链接走，一个指向操作员机器上某个文件的链接，就会被编进 `plugin.wasm` 并随包发出去，所以这些检查在编译之前完成。
+`build` 用本机的 Go 工具链照常编译源码：符号链接、`go.mod` 里指向本地目录的 `replace`、汇编文件的 `#include` 都按 Go 自己的规则处理，
+编译器能读到的文件就可能进 `plugin.wasm`。所以 `build` 只用来编译你信任的源码，相当于在本机运行它的构建；别人给的源码先读过再编。
+打包这一步（`manifest.json`、`migrations`、`purge`、`web`）不跟随符号链接，遇到链接或特殊文件直接报错。
 
 **每次调用是一个全新的模块实例**（约 2.5 毫秒），互不相通，没有跨调用的内存。状态放在数据库、设置里。`time.Now()` 是服务器的真实时间，`crypto/rand` 是真随机数（wazero 默认给的是假时钟和确定的随机源，运行时已经替换掉了）；没有文件系统、没有环境变量。SDK 里一次调用的全部能力都是 `*arc.Ctx` 的方法：`Query`/`QueryRow`/`Exec`/`Tx`、`Fetch`、`Setting`、`NewID`、`Log`、`RevokeSessions`、`Notify`、`RecordSecurity`、`SetStatus`、`DeleteUser`、`CountActiveAdmins`、`RevokeCards`、`GrantBonus`、`GrantCards`、`Challenge`、`VerifyChallenge`。`Tx` 之内的调用自动并入事务。
 
