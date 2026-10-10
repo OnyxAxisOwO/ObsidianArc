@@ -479,3 +479,22 @@ func TestRoundTripKeepsReasoningLongerThanTheContentLimit(t *testing.T) {
 		t.Errorf("restored %d characters of reasoning, want all %d", got, reasoningChars)
 	}
 }
+
+// An export promises the account's preferences. A read that fails is a failure
+// to export, not a file that quietly lacks them.
+func TestExportRefusesWhenPreferencesCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.write(t, f.account, "Still readable", "a question", "an answer")
+	if _, err := f.service.db.Exec(ctx, `DROP TABLE user_preferences`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := f.service.openExport(ctx, f.account)
+	if err == nil {
+		t.Fatal("export succeeded without the account's preferences")
+	}
+	if !strings.Contains(err.Error(), "preferences") {
+		t.Errorf("the export failed for another reason: %v", err)
+	}
+}
