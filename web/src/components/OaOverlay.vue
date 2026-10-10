@@ -37,9 +37,9 @@ useEventListener(document, 'keydown', (event: KeyboardEvent) => {
   if (event.key === 'Escape') close();
 });
 
-// The fade is still running if the sheet is taken away inside its 200 ms. The
-// caller's close handler usually navigates, and a navigation that lands after
-// the sheet has gone would drag the reader somewhere they did not ask to go.
+// A sheet taken away during its fade leaves nothing running. Vue already drops
+// the late close for an unmounted component, but the timer itself would outlive
+// the sheet, and the close it carries is usually a navigation.
 onBeforeUnmount(() => {
   closing = true;
   window.clearTimeout(closeTimer);
