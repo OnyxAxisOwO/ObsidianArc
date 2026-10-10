@@ -1404,6 +1404,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
 			skipFromLog,
 		),
+		// Inside the log, so the redirect is recorded. Ahead of compression and
+		// the security headers: the redirect's own short body needs neither, and
+		// the page it leads to gets both.
+		httpx.PlainHTTPRedirect(proxyTrust, mailer.PublicURL),
 		// Inside the log, so the byte count it records is what actually went
 		// on the wire rather than what the handler produced. Outside
 		// everything that writes a body, so there is one place that decides.
