@@ -463,7 +463,7 @@ async function install(): Promise<void> {
     }
   }
   try {
-    await applied(await adminApi.installPlugin(plugin.name, enableNow.value, settings));
+    await applied(await adminApi.installPlugin(plugin.name, enableNow.value, settings, code.value.trim()));
     installing.value = null;
   } catch (failure) {
     panelError.value = message(failure);
@@ -772,6 +772,7 @@ onMounted(load);
     v-if="installing"
     :title="t('pluginInstallTitle', { name: title(installing) })"
     :confirm-label="t('pluginInstall')"
+    :confirmable="!needCode || hasTwoFactor"
     :width="460"
     :busy="busy"
     :error="panelError"
@@ -784,6 +785,17 @@ onMounted(load);
     <template v-for="section in sectionsOf(installing.name)" :key="section.id">
       <h4 class="oa-field-label">{{ section.title() }}</h4>
       <PluginSettingControls :section="section" :draft="draft" :hints="noHints" />
+    </template>
+    <template v-if="needCode">
+      <p v-if="!hasTwoFactor" class="oa-field-hint" role="alert">{{ t('pluginInstallTwoFactorMissing') }}</p>
+      <OaTextField
+        v-else
+        v-model="code"
+        :label="t('pluginTwoFactorCode')"
+        :hint="t('pluginTwoFactorHint')"
+        autocomplete="one-time-code"
+        monospace
+      />
     </template>
   </OaPanel>
 

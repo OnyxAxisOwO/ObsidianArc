@@ -409,6 +409,7 @@ export const zh: Record<StringKey, string> = {
   pluginTwoFactorCode: '两步验证码',
   pluginTwoFactorHint: '验证器中的验证码，或一个恢复码。',
   pluginTwoFactorMissing: '禁用或卸载插件需要账户开启两步验证，请先在账户设置中开启。',
+  pluginInstallTwoFactorMissing: '安装插件需要账户开启两步验证，请先在账户设置中开启。',
   pluginManifest: '清单',
   pluginAuthor: '作者',
   pluginLicense: '许可证',

@@ -420,6 +420,7 @@ const en = {
   pluginTwoFactorCode: 'Two-step code',
   pluginTwoFactorHint: 'A code from your authenticator, or a recovery code.',
   pluginTwoFactorMissing: 'Switching off or removing a plugin needs two-step verification on your account. Set it up in your account settings first.',
+  pluginInstallTwoFactorMissing: 'Installing a plugin needs two-step verification on your account. Set it up in your account settings first.',
   pluginManifest: 'Manifest',
   pluginAuthor: 'Author',
   pluginLicense: 'License',
