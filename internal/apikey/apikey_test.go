@@ -61,7 +61,7 @@ func TestIssuedTokenResolvesBackToItsKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	if !strings.HasPrefix(token, tokenPrefix) {
+	if !strings.HasPrefix(token, TokenPrefix) {
 		t.Errorf("token %q does not carry the instance prefix", token)
 	}
 

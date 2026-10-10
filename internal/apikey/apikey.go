@@ -84,11 +84,12 @@ const (
 	tokenBytes = 32
 	// Marks our tokens in a log or a leaked config while staying inside the
 	// "sk-" shape that several OpenAI clients insist on before they will send
-	// a request at all.
-	tokenPrefix = "sk-oa-"
+	// a request at all. Exported so that code which passes a request's
+	// credentials on can tell one of ours from a credential of its own.
+	TokenPrefix = "sk-oa-"
 	// How much of the token the owner is shown afterwards. Enough to
 	// recognise, far short of guessable.
-	prefixChars = len(tokenPrefix) + 6
+	prefixChars = len(TokenPrefix) + 6
 )
 
 const columns = `id, user_id, prefix, name, disabled, model_id, expires_at, last_used_at, created_at, updated_at`
@@ -115,7 +116,7 @@ func (s *Store) IssueModels(ctx context.Context, userID, name string, modelIDs [
 	}
 
 	modelIDs = normalizeModelIDs(modelIDs)
-	token := tokenPrefix + id.Secret(tokenBytes)
+	token := TokenPrefix + id.Secret(tokenBytes)
 	record := Key{
 		ID:        id.New(),
 		UserID:    userID,

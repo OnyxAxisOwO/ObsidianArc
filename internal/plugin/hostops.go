@@ -373,7 +373,7 @@ func (m *Manager) dbOp(c *wasm.Call, st *callState, op string, raw json.RawMessa
 		return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
 	}
 	defer rows.Close()
-	return rowsToJSON(rows)
+	return rowsToJSON(rows, m.engine().MaxMessage())
 }
 
 // bindArgs turns JSON values into what the driver binds. Numbers arrive as
@@ -409,12 +409,27 @@ func bindArgs(in []any) ([]any, error) {
 	return out, nil
 }
 
-func rowsToJSON(rows *sql.Rows) (any, error) {
+// replyWrapping is what the answer adds around a result: the envelope the
+// server writes and the result's own keys and brackets. It is counted, so the
+// reply as a whole is what stays within a message, not only its rows.
+const replyWrapping = len(`{"ok":true,"result":{"columns":,"rows":[]}}`)
+
+// rowsToJSON reads a query's rows into the answer a backend is given. The guest
+// reads a reply only up to limit bytes, so the encoded size is counted as each
+// row is read, and the read stops as soon as the answer could no longer be read
+// whole. A wide result then costs the host what fits, not everything the query
+// selected.
+func rowsToJSON(rows *sql.Rows, limit int) (any, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, err
 	}
-	data := [][]any{}
+	names, err := json.Marshal(cols)
+	if err != nil {
+		return nil, err
+	}
+	size := replyWrapping + len(names)
+	data := []json.RawMessage{}
 	for rows.Next() {
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
@@ -432,9 +447,21 @@ func rowsToJSON(rows *sql.Rows) (any, error) {
 				vals[i] = x.UTC().Format(time.RFC3339Nano)
 			}
 		}
-		data = append(data, vals)
+		row, err := json.Marshal(vals)
+		if err != nil {
+			return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
+		}
+		// The reply has a comma between rows and none before the first.
+		if len(data) > 0 {
+			size++
+		}
+		size += len(row)
+		data = append(data, row)
 		if len(data) > maxRows {
 			return nil, &wasm.HostError{Code: "too_many_rows", Message: fmt.Sprintf("a query may return at most %d rows", maxRows)}
+		}
+		if size > limit {
+			return nil, &wasm.HostError{Code: "too_large", Message: fmt.Sprintf("a query's rows may be at most %d bytes", limit)}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -642,6 +669,12 @@ func (m *Manager) superAdminActing(ctx context.Context, q database.Queryer, acto
 	return err == nil && account.IsActive() && account.IsSuperAdmin()
 }
 
+// maxBonusDays is the longest lifetime a backend may give a bonus, in days. A
+// day is 8.64e13 nanoseconds and time.Duration holds about 292 years of them,
+// so past 106751 days the product wraps around, and a grant asked to last for
+// centuries can expire minutes after it is made. A century stays well clear.
+const maxBonusDays = 36500
+
 // rewardOp gives an account something the core knows how to spend, by the
 // same rules the check-in's rewards follow: a bonus without a lifetime of its
 // own keeps the bar's default one, and a card's days are clamped by the
@@ -688,6 +721,9 @@ func (m *Manager) rewardOp(c *wasm.Call, st *callState, plugin, op string, raw j
 	}
 	if a.BarID == "" {
 		return nil, badArg("rewards.bonus needs a bar_id")
+	}
+	if a.ValidDays > maxBonusDays {
+		return nil, badArg("rewards.bonus: valid_days is at most %d", maxBonusDays)
 	}
 	now := time.Now()
 	expires := int64(0)

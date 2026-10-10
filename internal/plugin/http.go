@@ -93,6 +93,14 @@ func (h *Handlers) install(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
 		return err
 	}
+	// The operator's setting covers installing as well as switching off: an
+	// install applies the plugin's migrations and can switch it on in the same
+	// request, so it takes the code the other changes take.
+	if h.twoFactorRequired() {
+		if err := h.verify(w, r, body.TwoFactorCode); err != nil {
+			return err
+		}
+	}
 	name := r.PathValue("name")
 	if err := h.manager.Install(r.Context(), h.actor(r), name, InstallOptions{
 		Enable: body.Enable, Settings: body.Settings,

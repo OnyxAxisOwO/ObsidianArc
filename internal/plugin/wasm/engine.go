@@ -138,6 +138,10 @@ func NewEngine(limits Limits) *Engine {
 	return e
 }
 
+// MaxMessage is the largest message either side reads. A host operation that
+// builds a reply sizes it against this, because the guest will not read more.
+func (e *Engine) MaxMessage() int { return e.limits.MaxMessage }
+
 // Actor is the account a call is made on behalf of, when there is one.
 type Actor struct {
 	ID          string   `json:"id"`
