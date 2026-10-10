@@ -334,6 +334,16 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A provider sign-in is a sign-in whichever door it came through, so the
+	// login guards stand in front of it as they stand in front of the sign-in
+	// form. Asked here rather than at start, because the identity the guard
+	// judges is only known once the provider has answered, and before SignIn,
+	// which is where an account may be written.
+	if err := h.service.auth.CheckGuards(r.Context(), auth.GuardLogin, nil, h.address(r), identity.Login); err != nil {
+		h.fail(w, r, "", "login_refused")
+		return
+	}
+
 	account, err := h.service.SignIn(r.Context(), identity, h.admission(value.SignUp), h.address(r), r.UserAgent())
 	if err != nil {
 		// This instance wants something the provider had no way to supply.

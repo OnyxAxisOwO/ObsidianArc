@@ -1022,10 +1022,12 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 // It is Login without the two things that only make sense in a browser: the
 // Turnstile gate, which no SSH client can solve, and the session cookie,
 // which a console session has no use for. Everything that protects the
-// credential itself is kept and deliberately shared with Login — the same
-// attempt limiter, so guessing over SSH and guessing over the sign-in form
-// count against one budget rather than two, and the same dummy verification,
-// so an unknown account costs the same wall-clock as a known one.
+// credential itself is kept and deliberately shared with Login — the plugin
+// login guards, the same attempt limiter, so guessing over SSH and guessing
+// over the sign-in form count against one budget rather than two, and the same
+// dummy verification, so an unknown account costs the same wall-clock as a
+// known one. A guard that refuses the sign-in form refuses this door too, or
+// the operator's refusal is one password away from being ignored.
 //
 // It also returns the account's credential fingerprint (see
 // CredentialFingerprint), taken from the same read of the stored hash that the
@@ -1036,6 +1038,13 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 // Every failure returns ErrInvalidCredentials. A caller that is about to tell
 // a stranger whether an account exists is the reason.
 func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip string) (user.User, string, error) {
+	// Asked before the limiter reserves anything, in the order Login asks.
+	// With no token: a console connection has no browser to carry one, so a
+	// guard that needs one refuses here as it refuses a provider sign-up.
+	if _, err := s.runGuards(ctx, GuardLogin, nil, ip, identifier); err != nil {
+		return user.User{}, "", err
+	}
+
 	attempt, err := s.limiter.Begin(ip, identifier)
 	if err != nil {
 		return user.User{}, "", err
