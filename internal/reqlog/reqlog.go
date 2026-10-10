@@ -21,6 +21,7 @@ package reqlog
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -148,7 +149,8 @@ func cleanEntry(entry Entry) Entry {
 	return entry
 }
 
-// Dropped is how many entries were lost to a full buffer since boot.
+// Dropped is how many entries were lost before they reached the table since
+// boot: to a full buffer, or to a batch whose write failed.
 func (s *Store) Dropped() int64 { return s.dropped.Load() }
 
 // Evicted is how many old rows were removed by the hard storage ceiling
@@ -169,8 +171,10 @@ func (s *Store) Run(ctx context.Context) {
 			return
 		}
 		if err := s.write(ctx, batch); err != nil {
-			// Nowhere better to report this than the process log: the thing
-			// that failed is the recording of things.
+			// The rows are lost either way. The count reaches the administration
+			// screen, but only the process log keeps the cause, and the database
+			// that failed cannot be asked to record its own failure.
+			slog.ErrorContext(ctx, "request log write failed", "entries", len(batch), "error", err)
 			s.dropped.Add(int64(len(batch)))
 		}
 		batch = batch[:0]

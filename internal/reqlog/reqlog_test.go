@@ -1,8 +1,10 @@
 package reqlog
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -526,5 +528,36 @@ func TestAnOversizedMethodIsStoredBounded(t *testing.T) {
 				t.Errorf("a real method was altered to %q", entry.Method)
 			}
 		}
+	}
+}
+
+// A batch that cannot be written is counted as dropped, and the count says how
+// much was lost but not why. The cause is logged, because the failing database
+// cannot record its own failure.
+func TestAFailedBatchWriteIsLoggedWithItsCause(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	// The table the batch is written to is gone, so the insert is refused.
+	if _, err := store.db.Exec(ctx, `DROP TABLE request_log`); err != nil {
+		t.Fatal(err)
+	}
+	store.Record(Entry{At: 1, Method: "GET", Path: "/api/x", Status: 200})
+	store.drain(t)
+
+	if store.Dropped() != 1 {
+		t.Fatalf("dropped %d, want the one entry whose write failed", store.Dropped())
+	}
+	out := logged.String()
+	if !strings.Contains(out, "request log write failed") {
+		t.Fatalf("the failed write was not logged at all: %q", out)
+	}
+	if !strings.Contains(out, "reqlog: write 1 entries") {
+		t.Errorf("the log does not carry the cause of the failure: %q", out)
 	}
 }

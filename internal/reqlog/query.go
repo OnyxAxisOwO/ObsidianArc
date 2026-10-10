@@ -147,8 +147,9 @@ type Facets struct {
 	ErrorCodes []Option `json:"error_codes"`
 	Statuses   []Option `json:"statuses"`
 	Total      int64    `json:"total"`
-	// Entries lost to a full buffer since boot. Shown so a gap in the log is
-	// visible rather than inferred.
+	// Entries lost before they reached the table since boot, to a full buffer
+	// or a failed write. Shown so a gap in the log is visible rather than
+	// inferred.
 	Dropped int64 `json:"dropped"`
 	// Old rows removed by the hard storage ceiling since boot. Distinct from
 	// queue drops: these entries were recorded, then aged out under pressure.
