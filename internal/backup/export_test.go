@@ -190,9 +190,9 @@ func TestExportCarriesEveryConversationAcrossPages(t *testing.T) {
 // bulk writes conversations of messagesEach messages into an account. Each
 // conversation's messages go in as one INSERT ... SELECT rather than an Append
 // apiece: Append is several statements per message, and a fixture of fifty
-// thousand messages built that way would take longer than the import it is
-// there to test. Nothing under test reads the conversation's own message count,
-// which is the one thing this skips maintaining.
+// thousand messages built that way would roughly double the test's run time.
+// The insert skips what Append keeps current on the conversation row
+// (message_count and updated_at); nothing under test reads either.
 func (f *fixture) bulk(t *testing.T, owner user.User, conversations, messagesEach int, content string) {
 	t.Helper()
 	ctx := context.Background()
@@ -280,12 +280,12 @@ func TestExportRoundTripsUnderEachLimitAndIsRefusedPastIt(t *testing.T) {
 
 		_, document := f.export(t, f.account)
 		if _, err := f.service.Import(ctx, f.stranger, document); err != nil {
-			t.Fatalf("import of about 16 MiB: %v", err)
+			t.Fatalf("import of about 15 MiB: %v", err)
 		}
 
 		f.bulk(t, f.account, 1, 600, text)
 		if _, err := f.service.openExport(ctx, f.account); !errors.Is(err, ErrTooLarge) {
-			t.Fatalf("export of about 35 MiB gave %v, want ErrTooLarge", err)
+			t.Fatalf("export of about 34 MiB gave %v, want ErrTooLarge", err)
 		}
 	})
 }
