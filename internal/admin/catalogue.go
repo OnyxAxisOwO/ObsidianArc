@@ -91,7 +91,10 @@ func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error 
 		in.SortOrder = *body.SortOrder
 	}
 
-	record, err := h.providers.Create(r.Context(), in)
+	// The store decides whether this caller may choose the address, as it does
+	// for an edit, so there is one rule rather than a check here that could
+	// drift from it.
+	record, err := h.providers.Create(r.Context(), in, auth.MustUser(r.Context()).IsSuperAdmin())
 	if err != nil {
 		return translateProviderError(err)
 	}

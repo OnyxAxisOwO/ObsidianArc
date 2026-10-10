@@ -61,7 +61,7 @@ func (f *fixture) provider(t *testing.T, name string) provider.Provider {
 		BaseURL: "https://api.example.com/v1",
 		APIKey:  "sk-test-key-1234",
 		Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("create provider: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestProviderRejectsUnsafeBaseURL(t *testing.T) {
 		Kind:    adapter.KindOpenAI,
 		BaseURL: "http://api.example.com/v1",
 		APIKey:  "sk-test",
-	})
+	}, true)
 	if err == nil {
 		t.Fatal("a plain-http remote base URL was accepted for a credential")
 	}

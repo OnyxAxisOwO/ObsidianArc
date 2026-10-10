@@ -457,7 +457,7 @@ func translateProviderError(err error) error {
 	case errors.Is(err, provider.ErrKeyNeededForMove):
 		return httpx.BadRequestCode("provider_key_needed", "A new base URL needs the API key entered again.")
 	case errors.Is(err, provider.ErrBaseURLNeedsSuperAdmin):
-		return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can change a provider's base URL.")
+		return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can set or change a provider's base URL.")
 	case errors.Is(err, provider.ErrTooManyHeaders):
 		return httpx.BadRequest("At most 20 extra headers.")
 	default:

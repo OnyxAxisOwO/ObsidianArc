@@ -189,7 +189,7 @@ func newFixture(t *testing.T) *fixture {
 	providerRecord, err := providers.Create(ctx, provider.CreateInput{
 		Name: "Secret Upstream", Kind: adapter.KindOpenAI,
 		BaseURL: upstream.server.URL + "/v1", APIKey: "sk-provider-secret", Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

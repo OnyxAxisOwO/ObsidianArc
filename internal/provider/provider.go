@@ -64,10 +64,11 @@ var (
 	// trusted with the providers page, at a server of their own.
 	ErrKeyNeededForMove = errors.New("provider: a new base URL needs the API key entered again")
 	// Every chat on the provider is sent to this address, prompts and
-	// attachments included, so moving it is the same decision as moving the
-	// public URL or an OIDC endpoint. Typing the key again does not make it
-	// safe: whoever moves the address chooses the key as well.
-	ErrBaseURLNeedsSuperAdmin = errors.New("provider: only a super administrator can change a provider's base URL")
+	// attachments included, so choosing it is the same decision as choosing
+	// the public URL or an OIDC endpoint, whether the provider is new or is
+	// being moved. Typing the key again does not make it safe: whoever picks
+	// the address chooses the key as well.
+	ErrBaseURLNeedsSuperAdmin = errors.New("provider: only a super administrator can set or change a provider's base URL")
 	ErrTooManyHeaders         = errors.New("provider: at most 20 extra headers")
 )
 
@@ -124,7 +125,10 @@ type CreateInput struct {
 	CopyKeyFrom string
 }
 
-func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
+// Create adds a provider. superAdmin says whether the caller may choose its
+// address, the same question Update asks of an existing one. Anybody else may
+// only duplicate a provider at the address that provider already has.
+func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Provider, error) {
 	record, err := validate(Provider{
 		ID:               id.New(),
 		Name:             in.Name,
@@ -147,14 +151,24 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
 	}
 	if copying {
 		// A copied key goes to the same address it already went to, or the
-		// copy is a way to send it somewhere new without knowing it.
+		// copy is a way to send it somewhere new without knowing it. A delegate
+		// is told the address is a super administrator's, not that the key needs
+		// typing again: typing it would not let them choose the address.
 		source, err := s.ByID(ctx, in.CopyKeyFrom)
 		if err != nil {
 			return Provider{}, err
 		}
 		if source.BaseURL != record.BaseURL {
+			if !superAdmin {
+				return Provider{}, ErrBaseURLNeedsSuperAdmin
+			}
 			return Provider{}, ErrKeyNeededForMove
 		}
+	} else if !superAdmin {
+		// A typed key goes wherever the address says, so creating a provider
+		// with one chooses the address. Refused before the insert, so there is
+		// no row for a detect call or a chat to be routed to.
+		return Provider{}, ErrBaseURLNeedsSuperAdmin
 	}
 
 	now := time.Now().UnixMilli()

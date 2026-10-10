@@ -101,7 +101,7 @@ func TestAResetLeavesAModelAnOperatorSwitchedOff(t *testing.T) {
 	upstream, err := providers.Create(ctx, provider.CreateInput{
 		Name: "Upstream", Kind: adapter.KindOpenAI,
 		BaseURL: "https://api.example.com/v1", APIKey: "sk-test-0123", Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

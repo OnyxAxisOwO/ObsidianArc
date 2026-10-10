@@ -151,7 +151,7 @@ func TestEmptyReasoningStyleInheritsTheProvider(t *testing.T) {
 		APIKey:         "sk-test-key-1234",
 		Enabled:        true,
 		ReasoningStyle: adapter.ReasoningStyle("openai_effort"),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("create provider: %v", err)
 	}
