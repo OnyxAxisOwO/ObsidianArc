@@ -140,7 +140,10 @@ const accentName = computed(() => {
   const accent = form.value.themeAccent;
   if (!accent) return t('siteThemeDefault');
   if (accent === 'custom') return form.value.themeCustomAccent.toUpperCase() || t('customColour');
-  return t(ACCENT_LABELS[accent] ?? 'siteThemeDefault');
+  // Own keys only: the stored name is whatever the server accepted, and an
+  // inherited one such as "constructor" would otherwise label the row with a function.
+  const label = Object.hasOwn(ACCENT_LABELS, accent) ? ACCENT_LABELS[accent] : undefined;
+  return t(label ?? 'siteThemeDefault');
 });
 
 function pickCustomAccent(value: string): void {
@@ -154,11 +157,14 @@ function pickCustomAccent(value: string): void {
 // operator is looking at; built-in is that of the chosen control colour.
 function tintSwatch(tint: AccentName | ''): string {
   const accent = form.value.themeAccent;
+  const preset = accent || DEFAULT_ACCENT;
+  // Checked as an own key for the reason accentName gives: ?? would pass an
+  // inherited name's Object on, and the palette then fails on it.
   const base = tint
     ? ACCENTS[tint]
     : accent === 'custom' && form.value.themeCustomAccent
       ? form.value.themeCustomAccent
-      : ACCENTS[(accent || DEFAULT_ACCENT) as AccentName] ?? ACCENTS[DEFAULT_ACCENT];
+      : Object.hasOwn(ACCENTS, preset) ? ACCENTS[preset as AccentName] : ACCENTS[DEFAULT_ACCENT];
   return accentPalette(base, pageTheme.dark())['--ai-field-bg'] ?? '';
 }
 

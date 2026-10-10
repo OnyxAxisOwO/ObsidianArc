@@ -188,7 +188,9 @@ onMounted(() => {
   const failure = route.query['oauth_error'];
   const done = route.query['oauth'];
   if (typeof failure === 'string' && failure) {
-    connectionFlash.value = t(OAUTH_REFUSALS[failure] ?? 'oauthFailed');
+    // Own keys only, as in AuthView: an inherited name is not a refusal.
+    const known = Object.hasOwn(OAUTH_REFUSALS, failure) ? OAUTH_REFUSALS[failure] : undefined;
+    connectionFlash.value = t(known ?? 'oauthFailed');
   } else if (done === 'connected') {
     connectionFlash.value = t('oauthConnected');
   }

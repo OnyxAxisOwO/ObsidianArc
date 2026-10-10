@@ -693,10 +693,19 @@ export async function removeConversation(conversation: Conversation): Promise<vo
 
 export async function clearEverything(): Promise<void> {
   if (!conversations.value.length) return;
+  const account = generation;
   try {
     await deleteAllConversations();
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : String(error));
+    // A failure that comes back after sign-out is the account that left's.
+    if (account === generation) setFlash(error instanceof ApiError ? error.message : String(error));
+    return;
+  }
+  // Signed out while the delete was in flight. Whoever is signed in now may hold
+  // a rail that predates the delete (the same account's sign-in read can), so it
+  // is read again rather than cleared.
+  if (account !== generation) {
+    if (currentUser.value) void refreshList();
     return;
   }
   conversations.value = [];

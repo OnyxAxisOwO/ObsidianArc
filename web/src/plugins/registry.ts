@@ -128,7 +128,9 @@ export function installPlugins(list: ArcPlugin[], blocks: Record<string, PluginC
 /** The spec for an account field, when a loaded plugin owns it. */
 export function fieldSpec(key: string): AccountFieldSpec | undefined {
   for (const plugin of loaded.value) {
-    const spec = plugin.fields?.[key];
+    // Own keys only: the key can come from a query string, and an inherited
+    // name (constructor) would otherwise come back as a spec.
+    const spec = plugin.fields && Object.hasOwn(plugin.fields, key) ? plugin.fields[key] : undefined;
     if (spec) return spec;
   }
   return undefined;
@@ -151,7 +153,10 @@ export function guards(): Array<{ guard: GuardSpec; config: PluginConfig }> {
 
 function lookup(pick: (plugin: ArcPlugin) => Record<string, Text> | undefined, key: string): string | null {
   for (const plugin of loaded.value) {
-    const text = pick(plugin)?.[key];
+    // Own keys only, for the reason fieldSpec gives: an inherited name would be
+    // called as though the plugin had written it.
+    const table = pick(plugin);
+    const text = table && Object.hasOwn(table, key) ? table[key] : undefined;
     if (text) return text();
   }
   return null;

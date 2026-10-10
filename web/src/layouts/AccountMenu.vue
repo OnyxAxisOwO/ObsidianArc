@@ -9,7 +9,7 @@ import { t } from '@/composables/useI18n';
 import { IconArchive, IconChart, IconGear, IconImage, IconInfo, IconKey, IconLogout, IconMessage, IconPulse, IconSliders, IconTerminal, IconTrophy } from '@/icons';
 import { displayName } from '@/lib/account';
 import { userPanels } from '@/plugins/registry';
-import { feedbackUnread, forgetFeedbackUnread, refreshFeedbackUnread } from '@/stores/feedback';
+import { feedbackUnread, refreshFeedbackUnread } from '@/stores/feedback';
 import { forget, siteInfo, isAdmin, canAdmin } from '@/stores/session';
 
 const props = defineProps<{ account: Account }>();
@@ -39,7 +39,6 @@ async function signOut(close: () => void): Promise<void> {
     // The cookie may already be gone. Either way the local state goes.
   }
   forget();
-  forgetFeedbackUnread();
   await router.replace('/login');
 }
 </script>

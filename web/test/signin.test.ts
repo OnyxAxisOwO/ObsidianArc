@@ -256,6 +256,29 @@ describe('signing in with an account from elsewhere', () => {
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthFailed'));
   });
 
+  // The code is whatever the query string carried, and every object inherits
+  // some names: an inherited name is not a refusal this page knows.
+  it.each(['constructor', '__proto__', 'toString'])(
+    'does not take the inherited name %s for a refusal it knows',
+    async (code) => {
+      route.query = { oauth_error: code };
+      await mount(AuthView, { mode: 'login' });
+      expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthFailed'));
+    },
+  );
+
+  // A plugin's table is read the same way, and its field lookup too: the
+  // plugin's own error for a missing field is only for a field it declares.
+  it.each(['constructor', '__proto__', 'constructor_required'])(
+    'does not take the inherited name %s for a plugin refusal either',
+    async (code) => {
+      installPlugins([example]);
+      route.query = { oauth_error: code };
+      await mount(AuthView, { mode: 'login' });
+      expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthFailed'));
+    },
+  );
+
   it('asks for the sign-up check when a provider sign-up skipped it', async () => {
     offer([{ id: 'github', name: 'GitHub' }]);
     route.query = { oauth_error: 'signup_challenge_required' };
@@ -590,6 +613,18 @@ describe('the connections an account holds', () => {
     expect(rows[0]!.textContent).toContain('GitHub');
   });
 
+  // The connect flow comes back with its outcome in the query, so the code is
+  // as untrusted here as on the sign-in page.
+  it('says a connection attempt failed when its code is a name every object inherits', async () => {
+    route.query = { oauth_error: 'constructor' };
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
+      connections: [], providers: [], has_password: true,
+    });
+    await mount(AccountSection);
+
+    expect(host.querySelector('.oa-group-flash')!.textContent).toBe(t('oauthFailed'));
+  });
+
   it('says a connection cannot be the last way in', async () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [{
@@ -783,6 +818,15 @@ describe('letting another site sign somebody in', () => {
     expect(host.textContent).toContain(t('consentBadRedirect'));
     // Nothing to agree to, so no button to agree with.
     expect(host.querySelector('.oa-consent-scopes')).toBeNull();
+  });
+
+  it('says the request failed when the refusal is a name every object inherits', async () => {
+    route.query = { error: 'constructor' };
+    await mount(ConsentView);
+
+    expect(host.textContent).toContain(t('consentProblemTitle'));
+    expect(host.textContent).toContain(t('consentFailed'));
+    expect(host.textContent).not.toContain('native code');
   });
 
   it('refuses to draw anything without a ticket', async () => {

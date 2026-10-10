@@ -51,12 +51,14 @@ function expectSaveState(dirty: boolean): void {
   expect(state?.textContent?.trim()).toBe(t(dirty ? 'controlUnsaved' : 'controlSaved'));
   expect(state?.classList.contains('dirty')).toBe(dirty);
 }
-async function mountSettings(): Promise<void> {
+async function mountSettings(onError?: (error: unknown) => void): Promise<void> {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
   app = createApp({ setup() {
     provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
     return () => h(AdminSettings);
   } });
+  // A render error goes here instead of being thrown, so the test can read it.
+  if (onError) app.config.errorHandler = onError;
   app.use(router);
   app.mount(host);
   await settle();
@@ -207,5 +209,21 @@ describe('admin settings payload', () => {
     expect(document.body.querySelector('.oa-modal-card')).toBeNull();
     expect(checkbox!.checked).toBe(false);
     expectSaveState(true);
+  });
+});
+
+describe('the site theme card', () => {
+  // The server accepts any short lowercase accent name, and "constructor" is
+  // one that every object inherits. It must read as an unknown accent, not
+  // take the whole card down.
+  it('draws when the stored accent is a name every object inherits', async () => {
+    const errors: unknown[] = [];
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture, 'theme.accent': 'constructor' } });
+    await mountSettings((error) => errors.push(error));
+
+    expect(errors).toEqual([]);
+    const card = host.querySelector<HTMLElement>('#secSiteTheme');
+    expect(card?.querySelectorAll('.oa-site-tints .oa-background-choice')).toHaveLength(6);
+    expect(card?.textContent).not.toContain('native code');
   });
 });
