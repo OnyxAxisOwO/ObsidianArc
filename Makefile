@@ -19,7 +19,10 @@ VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --dirty --always 2>/dev
 # commit landing between the two could make them disagree; and the frontend
 # build that runs in between can rewrite the lockfile and turn a clean tree
 # -dirty.
-VERSION := $(VERSION)
+# A value given on the command line or in the environment is kept as typed, so a
+# $(shell ...) in it does not run before the check below reads it. The override
+# is needed: an ordinary assignment does not replace a command-line value.
+override VERSION := $(if $(filter file,$(origin VERSION)),$(VERSION),$(value VERSION))
 # git accepts $(...), quotes and semicolons in a tag name, and this value reaches
 # the shell in several recipes and, through deploy.sh, on the server. So it is
 # refused here, before anything uses it, unless every character is one a plain
@@ -49,6 +52,29 @@ PLUGINS ?=
 # `arcpack build` names them (<name>-<version>.arcx). They travel in the image
 # and are installed, updated or taken over at boot — see OBSIDIAN_PLUGIN_DIR.
 PACKAGES ?=
+# Names and paths reach a shell. The package recipe copies the paths with an
+# unquoted loop, and the names go into dist/PLUGIN_LIST, which deploy.sh splices
+# into a command the server's shell runs. So a value holding anything a plain
+# file name would not is refused here, before any recipe runs, by the same
+# removal of allowed characters that VERSION gets below. A name holds letters,
+# digits, dot, underscore, plus and minus; a path may also hold slashes. Neither
+# may start with a dash, which echo and cp read as an option.
+EMPTY :=
+SPACE := $(EMPTY) $(EMPTY)
+NAME_CHARS := a b c d e f g h i j k l m n o p q r s t u v w x y z \
+  A B C D E F G H I J K L M N O P Q R S T U V W X Y Z 0 1 2 3 4 5 6 7 8 9 . _ + -
+PATH_CHARS := $(NAME_CHARS) /
+# $(value) reads the text as typed: expanding it first would run a $(shell ...) in it.
+NAMES_LEFT := $(value PLUGINS)
+$(foreach c,$(NAME_CHARS),$(eval NAMES_LEFT := $$(subst $(c),,$$(NAMES_LEFT))))
+PATHS_LEFT := $(value PACKAGES)
+$(foreach c,$(PATH_CHARS),$(eval PATHS_LEFT := $$(subst $(c),,$$(PATHS_LEFT))))
+# Only spaces separate names; a tab or a newline is left over and refused.
+PLAIN_LEFT := $(subst $(SPACE),,$(NAMES_LEFT) $(PATHS_LEFT))$(filter -%,$(value PLUGINS) $(value PACKAGES))
+PLAIN_SEEN := $(value PLUGINS) $(value PACKAGES)
+ifneq ($(PLAIN_LEFT),)
+$(error "$(PLAIN_SEEN)" is refused: a plugin name may hold only letters, digits, dot, underscore, plus and minus, and a package path may also hold slashes, because both reach a shell. Neither may start with a dash. Rename the package file, or pass plain names)
+endif
 PACKAGE_NAMES := $(foreach f,$(PACKAGES),$(firstword $(subst -, ,$(basename $(notdir $(f))))))
 PLUGIN_TAGS := $(strip $(foreach p,$(PLUGINS),plugin_$(p)))
 TAGS := -tags "$(PLUGIN_TAGS)"
@@ -59,6 +85,20 @@ ALL_PLUGIN_TAGS := $(foreach p,$(notdir $(wildcard plugins/*)),plugin_$(p))
 # project on the production host (see AGENTS.md: Arc, never Chat); the host
 # has no default, because guessing one is how a build lands on the wrong box.
 ARCH        ?= amd64
+# ARCH reaches the shell in the package recipe, in GOARCH= on the go build line
+# and in dist/ARCH, which deploy.sh reads back. So it is held to a platform name,
+# lower-case letters and digits as amd64 and arm64 are, before any recipe runs.
+# The override is the one VERSION uses: a value given on the command line or in
+# the environment is kept as typed, so a $(shell ...) in it is not run before the
+# check below reads it.
+override ARCH := $(if $(filter file,$(origin ARCH)),$(ARCH),$(value ARCH))
+ARCH_CHARS := a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9
+ARCH_LEFT := $(ARCH)
+$(foreach c,$(ARCH_CHARS),$(eval ARCH_LEFT := $$(subst $(c),,$$(ARCH_LEFT))))
+ARCH_BAD := $(ARCH_LEFT)$(if $(ARCH),,empty)
+ifneq ($(ARCH_BAD),)
+$(error ARCH "$(ARCH)" is refused: it must be a platform name of lower-case letters and digits, as amd64 and arm64 are, because it reaches the shell. Pass a plain ARCH=...)
+endif
 DEPLOY_HOST ?=
 DEPLOY_DIR  ?= /data/obsidian-arc
 # Set to deploy a build that lacks a plugin the running server carries; the

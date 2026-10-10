@@ -69,7 +69,7 @@ func newFixture(t *testing.T) *fixture {
 	store := NewStore(db)
 	return &fixture{
 		db: db, users: users, groups: groups, store: store, account: account,
-		service: NewService(store, NewKeys(db, box), users, groups),
+		service: NewService(store, NewKeys(db, box), users, groups, Holds{}),
 	}
 }
 
