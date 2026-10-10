@@ -98,7 +98,7 @@ type contentPart struct {
 
 func (h *Handlers) completions(w http.ResponseWriter, r *http.Request, who caller) error {
 	var body completionRequest
-	if err := decode(w, r, &body); err != nil {
+	if err := h.decode(w, r, who, &body); err != nil {
 		return err
 	}
 
@@ -923,7 +923,16 @@ func (h *Handlers) record(
 // whatever was added last month included, and refusing one of those ends the
 // agent's loop on its second step. Which fields are honoured is decided by
 // completionRequest, so nothing reaches a provider by being named here.
-func decode(w http.ResponseWriter, r *http.Request, dst any) error {
+//
+// The body is read while one of the account's places is held, and the place is
+// given back when decode returns. By then the body is in and parsed, and
+// nothing after this, the provider call included, holds one.
+func (h *Handlers) decode(w http.ResponseWriter, r *http.Request, who caller, dst any) error {
+	release, err := h.claimBody(r, who)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := httpx.DecodeJSONLenient(w, r, dst, maxBodyBytes); err != nil {
 		var decided *httpx.Error
 		if errors.As(err, &decided) {

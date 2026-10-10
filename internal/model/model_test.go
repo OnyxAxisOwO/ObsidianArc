@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
@@ -24,14 +26,21 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	ctx := context.Background()
-
-	db, err := database.Open(ctx, config.Database{
+	return newFixtureOn(t, config.Database{
 		Driver:       "sqlite",
 		DSN:          filepath.Join(t.TempDir(), "model.db"),
 		MaxOpenConns: 4,
 		MaxIdleConns: 2,
 	})
+}
+
+// newFixtureOn is newFixture on a database the caller chose, for the tests
+// whose subject is a lock and so have to run on Postgres as well as SQLite.
+func newFixtureOn(t *testing.T, cfg config.Database) *fixture {
+	t.Helper()
+	ctx := context.Background()
+
+	db, err := database.Open(ctx, cfg)
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -642,5 +651,53 @@ func TestWorstCaseCapsAtDefaultMaxOutput(t *testing.T) {
 	}
 	if wantCredits := 1.0 + float64(DefaultMaxOutput)/1000*1.0; credits != wantCredits {
 		t.Errorf("got credits %v, want %v", credits, wantCredits)
+	}
+}
+
+// The checker's switch-off is a write a save must not undo. A save that read
+// the model before the checker wrote it, and then wrote every column from that
+// copy, puts enabled back and clears the flag the checker set. The checker holds
+// its write open here while the save runs, so the save has read the row as it
+// was before the switch-off: that is the window this test is about. Runs on
+// Postgres as well when a DSN is named, because the lock is the thing under test.
+func TestAnOperatorsRenameDoesNotUndoACheckerDisable(t *testing.T) {
+	f := newFixtureOn(t, dbtest.Either(t, filepath.Join(t.TempDir(), "model-race.db")))
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+	record := f.model(t, upstream.ID, "flaky-model")
+
+	name := "Renamed"
+	saved := make(chan error, 1)
+	err := f.db.Tx(ctx, func(tx *database.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`UPDATE models SET enabled = ?, auto_disabled = ?, updated_at = ? WHERE id = ? AND enabled = ?`,
+			false, true, time.Now().UnixMilli(), record.ID, true); err != nil {
+			return err
+		}
+		go func() {
+			_, err := f.models.Update(ctx, record.ID, Update{DisplayName: &name})
+			saved <- err
+		}()
+		// Long enough for the save to read the row, and short of the lock
+		// timeout, so the save is still waiting when the checker commits.
+		time.Sleep(100 * time.Millisecond)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("the checker's disable: %v", err)
+	}
+	if err := <-saved; err != nil {
+		t.Fatalf("the rename: %v", err)
+	}
+
+	stored, err := f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DisplayName != name {
+		t.Fatalf("the rename did not land: display name %q", stored.DisplayName)
+	}
+	if stored.Enabled || !stored.AutoDisabled {
+		t.Fatalf("a rename that did not touch the state undid the checker's disable: %+v", stored)
 	}
 }

@@ -92,3 +92,64 @@ func TestRevokeReportsWhatItRemovedWhenASpendCommitsMidRevoke(t *testing.T) {
 		t.Fatalf("revoke reported %v removed, but the grant gave up 7", got.revoked)
 	}
 }
+
+// Revoke cuts a grant down to what it has spent, and a hold still in flight is
+// part of what it has spent. The turn that hold pays for then finishes: its
+// hold is given back, or its cost is settled and the hold given back after. No
+// way of finishing may turn the revoked grant back into credit an account can
+// spend, because the revoke is what took that credit away.
+func TestAHoldFinishingAfterARevokeReopensNothing(t *testing.T) {
+	finishes := []struct {
+		name   string
+		finish func(f *fixture, holds []Hold) error
+	}{
+		{"refund", func(f *fixture, holds []Hold) error {
+			return f.store.Refund(context.Background(), f.db, holds)
+		}},
+		{"settle, then refund", func(f *fixture, holds []Hold) error {
+			if _, err := f.store.Settle(context.Background(), f.db, holds, 1, false); err != nil {
+				return err
+			}
+			return f.store.Refund(context.Background(), f.db, holds)
+		}},
+		{"refund, then settle", func(f *fixture, holds []Hold) error {
+			if err := f.store.Refund(context.Background(), f.db, holds); err != nil {
+				return err
+			}
+			_, err := f.store.Settle(context.Background(), f.db, holds, 1, true)
+			return err
+		}},
+	}
+	for _, c := range finishes {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newFixture(t)
+			a := f.account(t, "alice")
+			bar := f.bar(t, Bar{Name: "gift", ToggleMode: ModeOn})
+			f.give(t, bar.ID, a.ID, 10, 0)
+			holds, err := f.take(t, a.ID, "m", 2, Priority)
+			if err != nil || !near(Total(holds), 2) {
+				t.Fatalf("the turn's hold: %v, %v", holds, err)
+			}
+			rows, _, err := f.store.GrantsInBar(ctx, bar.ID, 10, 0)
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("grants: %d (%v), want the one grant", len(rows), err)
+			}
+			revoked, err := f.store.Revoke(ctx, rows[0].ID)
+			if err != nil || !near(revoked, 8) {
+				t.Fatalf("revoke removed %v (%v), want the 8 that were not held", revoked, err)
+			}
+
+			if err := c.finish(f, holds); err != nil {
+				t.Fatalf("finishing the turn: %v", err)
+			}
+			spent, err := f.take(t, a.ID, "m", 5, Priority)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Total(spent); !near(got, 0) {
+				t.Fatalf("%v credits of the revoked grant became spendable again", got)
+			}
+		})
+	}
+}
