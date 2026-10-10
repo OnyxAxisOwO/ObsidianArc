@@ -9,18 +9,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
 func newStore(t *testing.T) *Store {
 	t.Helper()
 	ctx := context.Background()
 
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "log.db"),
-		MaxOpenConns: 4, MaxIdleConns: 2,
-	})
+	// The engine CI names, as well as SQLite: PostgreSQL refuses bytes that
+	// SQLite stores without complaint, so a suite that ran only on SQLite could
+	// not see the batch loss the hostile-string tests below guard against.
+	db, err := database.Open(ctx, dbtest.Either(t, filepath.Join(t.TempDir(), "log.db")))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -394,5 +395,102 @@ func TestMiddlewareRecordsPanicsBeforeRecovery(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Status != http.StatusInternalServerError {
 		t.Fatalf("panic entry = %+v, want one 500", entries)
+	}
+}
+
+// --- client-supplied strings PostgreSQL refuses --------------------------------
+
+// PostgreSQL rejects a text value holding a NUL byte or bytes that are not
+// UTF-8, and rejects the whole multi-row INSERT that carries it. Every string
+// a client or a handler can put in a row must therefore arrive stored cleaned.
+func TestHostileClientStringsAreStoredCleaned(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	store.Record(Entry{
+		At: 1, Method: "GE\x00T", Path: "/a\x00b\xff", Status: 404,
+		UserID: "u\xff", Username: "na\x00me", Channel: "we\x00b", IP: "10.0.0.\xff",
+		UserAgent: "agent\x00\xff", RequestID: "req\xfe",
+		ModelID: "m\x00", ModelName: "name\xff", ErrorCode: "code\x00",
+	})
+	store.drain(t)
+
+	entries, total, err := store.List(ctx, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(entries) != 1 {
+		t.Fatalf("stored %d rows, want the one hostile entry", total)
+	}
+
+	got := entries[0]
+	checks := []struct{ field, got, want string }{
+		{"method", got.Method, "GET"},
+		{"path", got.Path, "/ab\uFFFD"},
+		{"user id", got.UserID, "u\uFFFD"},
+		{"username", got.Username, "name"},
+		{"channel", got.Channel, "web"},
+		{"ip", got.IP, "10.0.0.\uFFFD"},
+		{"user agent", got.UserAgent, "agent\uFFFD"},
+		{"request id", got.RequestID, "req\uFFFD"},
+		{"model id", got.ModelID, "m"},
+		{"model name", got.ModelName, "name\uFFFD"},
+		{"error code", got.ErrorCode, "code"},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.field, c.got, c.want)
+		}
+	}
+}
+
+// One refused row fails the statement that carries it, and that statement holds
+// up to a hundred other requests. The neighbours are what this checks.
+func TestAHostileRowDoesNotCostItsBatchmates(t *testing.T) {
+	store := newStore(t)
+
+	store.Record(Entry{At: 1, Method: "GET", Path: "/api/one", Status: 200})
+	// The decoded form of GET /%00.
+	store.Record(Entry{At: 2, Method: "GET", Path: "/\x00", Status: 404})
+	store.Record(Entry{At: 3, Method: "GET", Path: "/api/three", Status: 200, UserAgent: "probe\xff"})
+	store.drain(t)
+
+	_, total, err := store.List(context.Background(), Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || store.Dropped() != 0 {
+		t.Fatalf("stored %d of 3 rows (dropped %d): the hostile row cost its batch", total, store.Dropped())
+	}
+}
+
+// The request as a client sends it, through the same layers the server uses:
+// the request id is read from the header, and the path and user agent are read
+// from the request by the log's own middleware.
+func TestAHostileRequestIsRecordedCleaned(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	handler := httpx.RequestID()(store.Middleware(nil, nil)(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		})))
+
+	request := httptest.NewRequest(http.MethodGet, "/%00", nil)
+	request.Header.Set("User-Agent", "probe\xff")
+	request.Header.Set("X-Request-Id", "trace\xff")
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	store.drain(t)
+
+	entries, total, err := store.List(ctx, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(entries) != 1 {
+		t.Fatalf("recorded %d requests, want the one hostile request", total)
+	}
+	got := entries[0]
+	if got.Path != "/" || got.UserAgent != "probe\uFFFD" || got.RequestID != "trace\uFFFD" || got.Status != http.StatusNotFound {
+		t.Errorf("entry = %+v", got)
 	}
 }

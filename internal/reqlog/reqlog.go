@@ -109,14 +109,36 @@ func NewStore(db *database.DB) *Store {
 // be held up, or made to fail, by the recording of it.
 func (s *Store) Record(entry Entry) {
 	entry.ID = id.New()
-	entry.Path = text.Truncate(entry.Path, MaxPathChars)
-	entry.UserAgent = text.Truncate(entry.UserAgent, MaxUserAgentChars)
+	entry = cleanEntry(entry)
 
 	select {
 	case s.entries <- entry:
 	default:
 		s.dropped.Add(1)
 	}
+}
+
+// cleanEntry makes every text field storable before the entry can share a
+// batch. PostgreSQL refuses the whole multi-row INSERT for one bad value, and
+// the rows lost with it belong to other requests, so this runs per entry here
+// rather than once per batch. Every field is checked, not only the ones a
+// client names: usernames and display names are typed by people, and nothing
+// in this package says which of them could hold a bad byte.
+//
+// Clean runs before Truncate, so the limits count what is actually stored.
+func cleanEntry(entry Entry) Entry {
+	entry.Method = text.Clean(entry.Method)
+	entry.Path = text.Truncate(text.Clean(entry.Path), MaxPathChars)
+	entry.UserID = text.Clean(entry.UserID)
+	entry.Username = text.Clean(entry.Username)
+	entry.Channel = text.Clean(entry.Channel)
+	entry.IP = text.Clean(entry.IP)
+	entry.UserAgent = text.Truncate(text.Clean(entry.UserAgent), MaxUserAgentChars)
+	entry.RequestID = text.Clean(entry.RequestID)
+	entry.ModelID = text.Clean(entry.ModelID)
+	entry.ModelName = text.Clean(entry.ModelName)
+	entry.ErrorCode = text.Clean(entry.ErrorCode)
+	return entry
 }
 
 // Dropped is how many entries were lost to a full buffer since boot.
