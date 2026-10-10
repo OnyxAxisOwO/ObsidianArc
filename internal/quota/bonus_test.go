@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -443,19 +444,26 @@ func TestAFallbackBarIsHeldToTheRequestRateToo(t *testing.T) {
 	a := f.person(t, "alice")
 	off := f.bar(t, "kept back", bonus.KindBonus, bonus.ModeOff, 100, a)
 	ctx := WithLedger(context.Background())
+	// The minute is the wall clock's, so requests made across a minute boundary
+	// land in two minutes and the fourth one is admitted. Every request is made at
+	// one instant instead, so they share a minute however long the test takes.
+	at := time.Now().Truncate(time.Minute).Add(30 * time.Second)
+	reserve := func(estimate Estimate) (Reservation, error) {
+		return f.svc.reserve(ctx, a, "m", estimate, nil, at)
+	}
 
-	if _, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Credits: 5}, nil); err != nil {
+	if _, err := reserve(Estimate{Credits: 5}); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Credits: 1}, nil); err != nil {
+		if _, err := reserve(Estimate{Credits: 1}); err != nil {
 			t.Fatalf("fallback request %d: %v", i+1, err)
 		}
 	}
 	if requests, _ := f.minute(t, a, WindowRPM); requests != 3 {
 		t.Fatalf("the minute counted %d requests of three", requests)
 	}
-	_, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Credits: 1}, nil)
+	_, err := reserve(Estimate{Credits: 1})
 	if exceeded, ok := AsExceeded(err); !ok || exceeded.Window != WindowRPM {
 		t.Fatalf("the fourth request in a minute was not refused by the rate: %v", err)
 	}
