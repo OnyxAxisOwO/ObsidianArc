@@ -69,6 +69,9 @@ const BODIES: Array<[RegExp, unknown]> = [
   [/\/api\/usage\/me$/, { unlimited: true, windows: [] }],
   [/\/api\/usage\/cards/, { cards: [] }],
   [/\/api\/uptime/, { uptime_sec: 10, models: [] }],
+  [/\/api\/auth\/oauth\/connections/, {
+    connections: [], has_password: true, providers: [{ id: 'github', name: 'GitHub', enabled: true }],
+  }],
 ];
 
 function stubServer(): void {
@@ -162,6 +165,22 @@ async function panelIsOpen(): Promise<boolean> {
 async function openFirstEntry(): Promise<void> {
   host.querySelector<HTMLButtonElement>('.oa-feedback-item')!.click();
   await settle();
+}
+
+/** Where the first connect link returns the browser to, as the server will read it. */
+function connectNext(): string | null {
+  const href = host.querySelector<HTMLAnchorElement>('.oa-connection a')?.getAttribute('href') ?? '';
+  return new URL(href, 'http://localhost').searchParams.get('next');
+}
+
+/** The messages the settings screen shows under its connections. */
+function connectionFlashes(): string[] {
+  return [...host.querySelectorAll('.oa-group-flash')].map((node) => node.textContent?.trim() ?? '');
+}
+
+/** Waits for what loads over the network, such as the list of connections. */
+async function until(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50 && !condition(); attempt += 1) await pause(10);
 }
 
 beforeEach(async () => {
@@ -317,6 +336,34 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     expect(host.querySelector('.oa-settings-tab.active')?.textContent?.trim()).toBe(t('secAppearance'));
   });
 
+  it('brings a connection back to the backoffice address the panel is drawn at', async () => {
+    adopt(ADMIN);
+    await mountAt('/admin/providers?keep=1#models');
+    await chooseFromAccountMenu(t('settings'));
+    await until(() => !!host.querySelector('.oa-connection a'));
+
+    expect(connectNext()).toBe('/admin/providers?keep=1&panel=settings#models');
+  });
+
+  it('takes the outcome of a connection out of the address, and keeps the page as it was', async () => {
+    adopt(ADMIN);
+    await mountAt('/admin/providers?keep=1&panel=settings&oauth=connected#models');
+    await settle();
+
+    expect(router.currentRoute.value.fullPath).toBe('/admin/providers?keep=1&panel=settings#models');
+    expect(connectionFlashes()).toContain(t('oauthConnected'));
+    expect(host.querySelector('.oa-admin-rail')).not.toBeNull();
+  });
+
+  it('shows a connection that came back refused, in the panel it was started from', async () => {
+    adopt(ADMIN);
+    await mountAt('/admin/providers?panel=settings&oauth_error=denied');
+    await settle();
+
+    expect(router.currentRoute.value.fullPath).toBe('/admin/providers?panel=settings');
+    expect(connectionFlashes()).toContain(t('oauthDenied'));
+  });
+
   it('leaves the logs page filters alone, and does not fetch the log again', async () => {
     adopt(ADMIN);
     await mountAt('/admin/logs?outcome=failed');
@@ -379,6 +426,23 @@ describe('the same menu from the chat', () => {
     expect(router.currentRoute.value.fullPath).toBe('/x/tips');
     expect(panelTitle()).toBe('Tips');
     expect(await panelIsOpen()).toBe(true);
+  });
+
+  it('brings a connection back to the settings screen, as it always has', async () => {
+    adopt(ACCOUNT);
+    await mountAt('/settings');
+    await until(() => !!host.querySelector('.oa-connection a'));
+
+    expect(connectNext()).toBe('/settings');
+  });
+
+  it('takes the outcome of a connection out of the chat address too', async () => {
+    adopt(ACCOUNT);
+    await mountAt('/settings?oauth=connected');
+    await settle();
+
+    expect(router.currentRoute.value.fullPath).toBe('/settings');
+    expect(connectionFlashes()).toContain(t('oauthConnected'));
   });
 
   it('still reads the tab from the chat address', async () => {

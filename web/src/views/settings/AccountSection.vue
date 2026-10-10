@@ -94,6 +94,13 @@ function mark(id: string): OaIcon {
 
 const linked = computed(() => new Map(connections.value.map((item) => [item.provider, item])));
 
+// Where the connect link brings the browser back to. In the chat that is the
+// settings screen, as it always was. Over the backoffice it is the address this
+// panel is drawn at, panel parameter and all, so the page underneath stays where
+// it was and the panel reopens with the outcome in it. The server returns a link
+// to the page it was given, when it fails as well as when it works.
+const connectBack = computed(() => (route.meta['admin'] ? route.fullPath : '/settings'));
+
 /** The line under a provider's name: who it is here, and since when — or that it is not connected. */
 function connectionMeta(id: string): string {
   const link = linked.value.get(id);
@@ -196,11 +203,12 @@ onMounted(() => {
   }
   if (failure || done) {
     // Only the two keys this section reads. It can be open over the backoffice,
-    // and the rest of that address belongs to the page underneath.
+    // and the rest of that address, its hash included, belongs to the page
+    // underneath.
     const query = { ...route.query };
     delete query['oauth'];
     delete query['oauth_error'];
-    void router.replace({ path: route.path, query });
+    void router.replace({ path: route.path, query, hash: route.hash });
   }
   void loadConnections();
   void loadAuthorizations();
@@ -385,7 +393,7 @@ function importData(): void {
       <a
         v-if="!linked.has(provider.id)"
         class="oa-btn"
-        :href="signInURL(provider.id, { link: true, next: '/settings' })"
+        :href="signInURL(provider.id, { link: true, next: connectBack })"
       >{{ t('connect') }}</a>
       <!-- A connection a plugin made permanent proves a detail of the
            account, so it has no remove control at all — deleting the

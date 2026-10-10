@@ -328,6 +328,79 @@ func TestLinkingBindsToTheAccountThatStartedIt(t *testing.T) {
 	}
 }
 
+// A link returns to the page it was started from, whether it worked or not, and
+// that page's own query and fragment come back with it: the backoffice names
+// its settings in its own address and returns to that address.
+func TestALinkReturnsToThePageItWasStartedFrom(t *testing.T) {
+	f := newFixture(t)
+	f.configure(t, "github")
+	stub(t, "github", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"a-token"}`))
+	}, Identity{Subject: "4218", Login: "octocat"})
+	_, mux := handlers(t, f)
+
+	owner, _, err := f.auth.Register(context.Background(), auth.RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	stranger, _, err := f.auth.Register(context.Background(), auth.RegisterInput{
+		Username: "member", Password: "another-password",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	page := "/admin/providers?keep=1&panel=settings#models"
+	start := get(mux, "/api/auth/oauth/start/github?link=1&next="+url.QueryEscape(page), nil, &owner)
+	state := start.Result().Cookies()[0]
+	target, _ := url.Parse(start.Header().Get("Location"))
+	nonce := target.Query().Get("state")
+
+	hijack := get(mux, "/api/auth/oauth/callback/github?code=c&state="+nonce,
+		[]*http.Cookie{state}, &stranger)
+	if want, location := "/admin/providers?keep=1&panel=settings&oauth_error=state#models", hijack.Header().Get("Location"); location != want {
+		t.Fatalf("a link completed by another session = %q, want %q", location, want)
+	}
+
+	back := get(mux, "/api/auth/oauth/callback/github?code=c&state="+nonce,
+		[]*http.Cookie{state}, &owner)
+	if want, location := "/admin/providers?keep=1&panel=settings&oauth=connected#models", back.Header().Get("Location"); location != want {
+		t.Fatalf("link = %q, want %q", location, want)
+	}
+}
+
+// What a link falls back to: the settings screen, as it always has, when the page
+// it names is not one of this site's, and the failure comes back to the page
+// given when it is. The failure here is the provider not being on, which is
+// answered before the provider is asked anything.
+func TestALinkWithNoSafePageFallsBackToSettings(t *testing.T) {
+	cases := []struct{ next, want string }{
+		{"", "/settings?oauth_error=unavailable"},
+		{"//evil.example/x", "/settings?oauth_error=unavailable"},
+		{"https://evil.example/", "/settings?oauth_error=unavailable"},
+		{"/\tevil.example", "/settings?oauth_error=unavailable"},
+		{"/admin/providers?panel=settings#models", "/admin/providers?panel=settings&oauth_error=unavailable#models"},
+		{"/bind-oidc?next=%2Fchat", "/bind-oidc?next=%2Fchat&oauth_error=unavailable"},
+	}
+
+	f := newFixture(t)
+	_, mux := handlers(t, f)
+	owner, _, err := f.auth.Register(context.Background(), auth.RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, c := range cases {
+		start := get(mux, "/api/auth/oauth/start/github?link=1&next="+url.QueryEscape(c.next), nil, &owner)
+		if location := start.Header().Get("Location"); location != c.want {
+			t.Errorf("next %q: start = %q, want %q", c.next, location, c.want)
+		}
+	}
+}
+
 func TestConnectionsAndDisconnectAnswerTheAccountsOwnScreen(t *testing.T) {
 	f := newFixture(t)
 	f.configure(t, "github")
