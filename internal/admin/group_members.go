@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -45,13 +46,31 @@ func (h *Handlers) assignGroupMembers(w http.ResponseWriter, r *http.Request) er
 	// Two operators selecting overlapping batches must take row locks in the
 	// same order. The whole batch commits together or leaves everyone alone.
 	sort.Strings(body.UserIDs)
+	actor := auth.MustUser(r.Context())
 	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
+		// The single-account edit refuses to move an administrator the actor
+		// cannot manage; a batch is the same write and holds the same line, or
+		// a groups grant would reach a super admin's membership through here.
+		if err := lockAdminPopulation(r.Context(), tx); err != nil {
+			return err
+		}
 		if _, err := h.groups.ByID(r.Context(), tx, groupID); err != nil {
 			return translateGroupError(err)
+		}
+		current, err := h.users.ByID(r.Context(), tx, actor.ID)
+		if err != nil {
+			return translateUserError(err)
 		}
 		for _, userID := range body.UserIDs {
 			if _, err := tx.Exec(r.Context(), `UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
 				return httpx.Internal(err)
+			}
+			target, err := h.users.ByID(r.Context(), tx, userID)
+			if err != nil {
+				return translateUserError(err)
+			}
+			if target.IsAdmin() && !current.CanManageAdmin(target) {
+				return permissionDenied()
 			}
 			if _, err := h.users.UpdateAdminFields(r.Context(), tx, userID, user.AdminUpdate{
 				GroupID: &groupID, GroupExpiresAt: &body.ExpiresAt,
