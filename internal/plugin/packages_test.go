@@ -81,9 +81,8 @@ func code(t *testing.T, res *httptest.ResponseRecorder) string {
 	return servertest.ErrorCode(t, res)
 }
 
-// repack rewrites a package's manifest, keeping its files, for the tests
-// that need the same plugin asking for something else.
-// withoutSQL is raw with its migrations and purge scripts left out.
+// withoutSQL is raw with its migrations and purge scripts left out, for the
+// packages that do not ask for db and so may not carry any.
 func withoutSQL(t *testing.T, raw []byte) []byte {
 	t.Helper()
 	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
@@ -114,6 +113,8 @@ func withoutSQL(t *testing.T, raw []byte) []byte {
 	return out.Bytes()
 }
 
+// repack rewrites a package's manifest, keeping its files, for the tests
+// that need the same plugin asking for something else.
 func repack(t *testing.T, raw []byte, edit func(manifest map[string]any)) []byte {
 	t.Helper()
 	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
@@ -800,6 +801,30 @@ func TestUploadingANewerVersionUpdatesInPlaceAndKeepsWhatTheOperatorSet(t *testi
 	res = a.do(http.MethodPost, "/api/admin/plugins/install-package", map[string]any{"token": token})
 	if res.Code != http.StatusConflict || code(t, res) != "plugin_unchanged" {
 		t.Fatalf("installing an installed file: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// A rule an update no longer names must stop being enforced when the update
+// lands. The sign-up's table keeps it until something removes it, and only the
+// update's own bookkeeping does that, so without it the form goes on asking for
+// the field until the next restart.
+func TestAnUpdateThatDropsAFieldRuleStopsEnforcingIt(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	a.setSettings(map[string]string{"demo.handle_rule": "required"})
+	register := func(username string) *httptest.ResponseRecorder {
+		return a.in.Do(http.MethodPost, "/api/auth/register", map[string]any{"username": username, "password": founderPassword}, nil)
+	}
+	if res := register("before"); res.Code != http.StatusBadRequest || code(t, res) != "handle_required" {
+		t.Fatalf("the rule before the update: %d %s", res.Code, res.Body.String())
+	}
+
+	a.in.InstallPackage(a.s, repack(t, pkgtest.Demo(t), func(m map[string]any) {
+		m["version"] = "1.1.0"
+		m["field_rules"] = nil
+	}), true, nil)
+	if res := register("after"); res.Code != http.StatusCreated {
+		t.Fatalf("the rule after an update that dropped it: %d %s", res.Code, res.Body.String())
 	}
 }
 
