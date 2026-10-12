@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/oauth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 )
@@ -58,5 +59,39 @@ func TestAnInternalCommandFailureIsNotShownToTheTerminal(t *testing.T) {
 	err = commandFailure(&wasm.GuestError{Code: "not_found", Message: "no such thing", Status: 404}, nil)
 	if err == nil || err.Error() != "no such thing" {
 		t.Fatalf("a deliberate refusal was not drawn as written: %v", err)
+	}
+}
+
+// An update that stops naming an OAuth binding or a field rule must take it
+// away, not leave it live until the next restart, where a later uninstall
+// would not find it either.
+func TestAnUpdateTakesAwayTheBindingAndRuleItRetired(t *testing.T) {
+	h := &Host{OAuth: &oauth.Service{}, Auth: &auth.Service{}}
+	m := &Manager{host: h}
+	oldMan := &arcx.Manifest{
+		OAuthBindings: []arcx.OAuthBinding{{Provider: "oidc", Field: "student_id", Pattern: "^[0-9]+$"}},
+		FieldRules:    []arcx.FieldRule{{Field: "handle", Setting: "demo.mode"}},
+	}
+	if err := h.OAuth.TryBindSubject(oauth.SubjectBinding{Provider: "oidc", Field: "student_id", Matches: func(string) bool { return true }}); err != nil {
+		t.Fatal(err)
+	}
+	h.Auth.SetFieldRule("handle", func() string { return auth.FieldRequired })
+
+	m.dropRetiredSeams(oldMan, &arcx.Manifest{})
+
+	if field := h.OAuth.SubjectBindingField(); field != "" {
+		t.Fatalf("the retired binding on %s is still live", field)
+	}
+	if got := h.Auth.FieldRule("handle"); got == auth.FieldRequired {
+		t.Fatal("the retired field rule is still live")
+	}
+
+	// A binding the new version still names is not the update's to remove.
+	if err := h.OAuth.TryBindSubject(oauth.SubjectBinding{Provider: "oidc", Field: "student_id", Matches: func(string) bool { return true }}); err != nil {
+		t.Fatal(err)
+	}
+	m.dropRetiredSeams(oldMan, oldMan)
+	if field := h.OAuth.SubjectBindingField(); field != "student_id" {
+		t.Fatalf("a binding the update kept was removed: %q", field)
 	}
 }

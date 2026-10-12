@@ -119,6 +119,36 @@ func (m *Manager) attach(l *loaded) (err error) {
 	return nil
 }
 
+// dropRetiredSeams takes away what an update's old version attached and the
+// new one no longer names. attach replaces what the new manifest names, so an
+// OAuth binding or field rule it dropped would stay live until the next
+// restart. An uninstall only walks the installed manifest, so it would not
+// take those away either: the stale binding would outlive the plugin.
+func (m *Manager) dropRetiredSeams(old, next *arcx.Manifest) {
+	h := m.host
+	if h == nil {
+		return
+	}
+	bound := map[string]bool{}
+	for _, b := range next.OAuthBindings {
+		bound[b.Field] = true
+	}
+	for _, b := range old.OAuthBindings {
+		if !bound[b.Field] {
+			h.OAuth.UnbindSubject(b.Field)
+		}
+	}
+	ruled := map[string]bool{}
+	for _, r := range next.FieldRules {
+		ruled[r.Field] = true
+	}
+	for _, r := range old.FieldRules {
+		if !ruled[r.Field] {
+			h.Auth.RemoveFieldRule(r.Field)
+		}
+	}
+}
+
 // detach takes everything l attached away. It is what an uninstall and a
 // failed update do, and it never fails: there is nothing to say no to.
 func (m *Manager) detach(l *loaded) {
