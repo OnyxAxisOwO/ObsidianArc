@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	// An export is streamed a conversation at a time, so its memory is bounded
-	// by one conversation rather than the account. It still holds its slot for
-	// as long as the download takes, and a slow reader keeps the slot. An import
+	// An export is streamed a page of messages at a time, so its memory is
+	// bounded by the page rather than by the conversation or the account. It
+	// holds its slot for as long as the download takes, and a slow reader keeps
+	// the slot; a reader that stops taking bytes is cut off by the write
+	// deadline. An import
 	// holds a document of up to 32 MiB decoded into several times that. A
 	// handful at once is a normal afternoon; a hundred accounts doing it
 	// together is an out-of-memory kill for everybody else.

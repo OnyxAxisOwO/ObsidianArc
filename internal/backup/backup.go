@@ -81,10 +81,14 @@ const (
 )
 
 // exportPageSize is how many conversation rows one read of an export takes.
-// An export holds one such page of rows, and the messages of the one
-// conversation being written, at a time. A variable so a test can span several
+// An export holds one such page of rows, and one page of messages (see
+// exportMessagePageSize), at a time. A variable so a test can span several
 // pages without writing a hundred conversations.
 var exportPageSize = 100
+
+// exportMessagePageSize is how many messages of one conversation one read of an
+// export takes. As with exportPageSize, a variable so a test can span pages.
+var exportMessagePageSize = 100
 
 var (
 	ErrWrongFormat = errors.New("backup: not an Obsidian Arc export")
@@ -159,7 +163,15 @@ type exportStream struct {
 	account  user.User
 	pageSize int
 	envelope []byte
+	// Reads one page of a conversation's messages. Set by openExport; a field so
+	// a test can stand in a conversation of any length.
+	pageMessages    messagePager
+	messagePageSize int
 }
+
+// messagePager reads up to limit messages of one conversation, oldest first,
+// after sequence number afterSeq.
+type messagePager func(ctx context.Context, userID, conversationID string, afterSeq, limit int) ([]conversation.Message, error)
 
 // openExport measures the whole export before any of it is sent. The envelope
 // is built here because it carries the preferences and the time the file is
@@ -201,6 +213,10 @@ func (s *Service) openExport(ctx context.Context, account user.User) (*exportStr
 		account:  account,
 		pageSize: max(exportPageSize, 1),
 		envelope: envelope,
+		pageMessages: func(ctx context.Context, userID, conversationID string, afterSeq, limit int) ([]conversation.Message, error) {
+			return s.conversations.MessagePage(ctx, nil, userID, conversationID, afterSeq, limit)
+		},
+		messagePageSize: max(exportMessagePageSize, 1),
 	}
 	if err := stream.writeTo(ctx, &sizeLimit{}); err != nil {
 		return nil, err
@@ -257,25 +273,17 @@ func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
 			return fmt.Errorf("backup: list conversations: %w", err)
 		}
 		for _, record := range page {
-			thread, err := e.service.threadOf(ctx, e.account, record)
-			if err != nil {
-				return err
-			}
 			conversations++
-			messages += len(thread.Messages)
 			if overImportLimits(conversations, messages) {
 				return ErrTooLarge
-			}
-			encoded, err := json.Marshal(thread)
-			if err != nil {
-				return fmt.Errorf("backup: encode %s: %w", record.ID, err)
 			}
 			if conversations > 1 {
 				if _, err := io.WriteString(w, ","); err != nil {
 					return err
 				}
 			}
-			if _, err := w.Write(encoded); err != nil {
+			messages, err = e.writeThread(ctx, w, record, conversations, messages)
+			if err != nil {
 				return err
 			}
 		}
@@ -293,37 +301,97 @@ func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
 	return err
 }
 
-// threadOf is one conversation as the document carries it. Its messages are
-// read whole, so the memory held for it is one conversation at a time.
+// writeThread streams one conversation as the next entry of the document. Its
+// messages are read a page at a time, and each page is checked against the
+// import limits before it is written, so a conversation past them is refused at
+// the page that crosses the limit. What is held in memory is bounded by the
+// limit plus one page, not by the conversation. messages is the total across
+// the threads before this one; the total including this one is returned.
 //
 // Every text field is scrubbed of NUL here rather than left for Import to
 // refuse. A conversation can already hold one, because the chat path and
 // renaming keep what they were given, and an export that carried it would be a
 // file its own account could not restore.
-func (s *Service) threadOf(ctx context.Context, account user.User, record conversation.Conversation) (Thread, error) {
-	messages, err := s.conversations.Messages(ctx, nil, account.ID, record.ID)
-	if err != nil {
-		return Thread{}, fmt.Errorf("backup: read %s: %w", record.ID, err)
-	}
-
-	out := Thread{
+func (e *exportStream) writeThread(ctx context.Context, w io.Writer, record conversation.Conversation, conversations, messages int) (int, error) {
+	header, err := encodeThreadHeader(Thread{
 		Title:     scrubNUL(record.Title),
 		Pinned:    record.Pinned,
 		CreatedAt: record.CreatedAt,
-		Messages:  make([]Turn, 0, len(messages)),
+	})
+	if err != nil {
+		return messages, err
 	}
-	for _, message := range messages {
-		out.Messages = append(out.Messages, Turn{
-			Role:      scrubNUL(string(message.Role)),
-			Content:   scrubNUL(message.Content),
-			Reasoning: scrubNUL(message.Reasoning),
-			Error:     scrubNUL(message.Error),
-			ModelName: scrubNUL(message.ModelName),
-			CreatedAt: message.CreatedAt,
-			Images:    len(message.Attachments),
-		})
+	if _, err := w.Write(header); err != nil {
+		return messages, err
 	}
-	return out, nil
+
+	written, afterSeq := 0, 0
+	for {
+		page, err := e.pageMessages(ctx, e.account.ID, record.ID, afterSeq, e.messagePageSize)
+		if err != nil {
+			return messages, fmt.Errorf("backup: read %s: %w", record.ID, err)
+		}
+		if overImportLimits(conversations, messages+len(page)) {
+			return messages, ErrTooLarge
+		}
+		messages += len(page)
+
+		for _, message := range page {
+			encoded, err := json.Marshal(turnOf(message))
+			if err != nil {
+				return messages, fmt.Errorf("backup: encode %s: %w", record.ID, err)
+			}
+			if written > 0 {
+				if _, err := io.WriteString(w, ","); err != nil {
+					return messages, err
+				}
+			}
+			if _, err := w.Write(encoded); err != nil {
+				return messages, err
+			}
+			written++
+		}
+
+		if len(page) < e.messagePageSize {
+			break
+		}
+		afterSeq = page[len(page)-1].Seq
+	}
+
+	_, err = io.WriteString(w, "]}")
+	return messages, err
+}
+
+// encodeThreadHeader is a thread up to where its messages begin, marshalled
+// through the Thread's own tags so the field names and omitempty rules cannot
+// drift from Import's. The empty messages array that marshalling adds at the
+// end is cut, so the messages can be written after it.
+func encodeThreadHeader(thread Thread) ([]byte, error) {
+	const tail = `"messages":[]}`
+	thread.Messages = []Turn{}
+	encoded, err := json.Marshal(thread)
+	if err != nil {
+		return nil, fmt.Errorf("backup: encode thread: %w", err)
+	}
+	if !bytes.HasSuffix(encoded, []byte(tail)) {
+		// Same reasoning as encodeEnvelope: a field added after messages would
+		// put the array somewhere Import does not expect it.
+		return nil, errors.New("backup: messages must stay the last field of Thread")
+	}
+	return append(encoded[:len(encoded)-len(tail)], `"messages":[`...), nil
+}
+
+// turnOf is one stored message as the document carries it.
+func turnOf(message conversation.Message) Turn {
+	return Turn{
+		Role:      scrubNUL(string(message.Role)),
+		Content:   scrubNUL(message.Content),
+		Reasoning: scrubNUL(message.Reasoning),
+		Error:     scrubNUL(message.Error),
+		ModelName: scrubNUL(message.ModelName),
+		CreatedAt: message.CreatedAt,
+		Images:    len(message.Attachments),
+	}
 }
 
 // Result reports what an import did, so the interface can say something
