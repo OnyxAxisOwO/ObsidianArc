@@ -714,6 +714,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		powKey = cfg.SecretKey
 	}
 	powManager := pow.NewManager(powKey, pow.NewTracker())
+	powManager.UseSaltStore(pow.NewSaltStore(db))
 	authService.PoW = powManager
 	chatHandlers.ImagePoW = powManager
 
@@ -1789,7 +1790,7 @@ func pluginChallenge(s *settings.Service, powManager *pow.Manager, client *http.
 				if err := json.Unmarshal(proof.PoW, &solution); err != nil {
 					return pow.ErrInvalidNonce
 				}
-				if err := powManager.Verify(&solution); err != nil {
+				if err := powManager.Verify(ctx, &solution); err != nil {
 					return err
 				}
 			}

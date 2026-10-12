@@ -3,11 +3,12 @@
 //
 // The server issues a challenge derived from a random salt and a bounded secret
 // number. The client increments from 0 up to maxNumber until finding the matching
-// nonce. The challenge is authenticated via HMAC-SHA256 and salt replay is
-// guarded in memory.
+// nonce. The challenge is authenticated via HMAC-SHA256. Salt replay is guarded
+// in the database when the manager has a SaltStore, and in memory otherwise.
 package pow
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -55,8 +56,18 @@ type Manager struct {
 	secretKey []byte
 	tracker   *Tracker
 
+	// Nil until UseSaltStore: spent salts then live in this process alone.
+	salts *SaltStore
+
 	mu        sync.Mutex
 	usedSalts map[string]int64 // salt -> expires (Unix seconds)
+}
+
+// UseSaltStore keeps spent salts in the database. Without it, an instance
+// refuses only the solutions it accepted itself, and a solution accepted by
+// another instance sharing the database would be accepted again.
+func (m *Manager) UseSaltStore(store *SaltStore) {
+	m.salts = store
 }
 
 func NewManager(secretKey []byte, tracker *Tracker) *Manager {
@@ -112,7 +123,7 @@ func (m *Manager) Issue(maxNumber int64) (Challenge, error) {
 }
 
 // Verify validates a submitted solution against signature, expiration, bounds, hash, and replay.
-func (m *Manager) Verify(sol *Solution) error {
+func (m *Manager) Verify(ctx context.Context, sol *Solution) error {
 	if sol == nil || sol.Challenge == "" || sol.Salt == "" || sol.Signature == "" {
 		return ErrMissingSolution
 	}
@@ -139,7 +150,19 @@ func (m *Manager) Verify(sol *Solution) error {
 		return ErrInvalidNonce
 	}
 
-	// Single-use salt guard
+	// Single-use salt guard. The store is asked first when there is one, so a
+	// solution spent on any instance sharing the database is refused here too.
+	if m.salts != nil {
+		fresh, err := m.salts.Spend(ctx, sol.Salt, sol.Expires)
+		if err != nil {
+			return err
+		}
+		if !fresh {
+			return ErrReplayed
+		}
+		return nil
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneExpiredSaltsLocked(now)

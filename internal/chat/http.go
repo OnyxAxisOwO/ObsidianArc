@@ -476,7 +476,7 @@ func (h *Handlers) requireImageChallenge(r *http.Request, account user.User, bod
 		if body.PoW == nil {
 			return httpx.BadRequestCode("pow_required", "Proof of work challenge solution is required.")
 		}
-		if err := h.ImagePoW.Verify(body.PoW); err != nil {
+		if err := h.ImagePoW.Verify(r.Context(), body.PoW); err != nil {
 			return powError(err)
 		}
 	}
