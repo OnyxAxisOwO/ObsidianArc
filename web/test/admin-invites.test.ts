@@ -150,11 +150,9 @@ describe('registration mode and rewards', () => {
 
     button(actions, t('save')).click();
     await settle();
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({
-      'invites.user_enabled': 'true',
-      'invites.user_limit': '10',
-      'invites.reward_every': '1',
-    }));
+    // The limit and reward shown are the server's own defaults, so they are not
+    // written: only the switch this card changed is sent.
+    expect(save).toHaveBeenCalledWith({ 'invites.user_enabled': 'true' });
   });
 
   it('reads the reward rule as one sentence, and explains a zero reward rather than stating it', async () => {

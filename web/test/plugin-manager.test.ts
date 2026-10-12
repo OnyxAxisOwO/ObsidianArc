@@ -318,9 +318,9 @@ describe('a page a plugin brings', () => {
     await nextTick();
     button(actions, t('save')).click();
     await settle();
-    expect(saved).toHaveBeenCalledWith({
-      'example.requirement': 'optional', 'example.webhook_token': 'a-new-token', 'example.mode': 'disable',
-    });
+    // Only the secret that was typed: the requirement and mode were loaded and
+    // not changed, so a save does not write them back.
+    expect(saved).toHaveBeenCalledWith({ 'example.webhook_token': 'a-new-token' });
   });
 });
 

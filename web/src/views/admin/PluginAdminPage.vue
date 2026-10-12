@@ -43,9 +43,21 @@ const loaded = ref(false);
 const error = ref('');
 const busy = ref(false);
 const saveError = ref('');
-const baseline = ref('');
+// What the server last sent for each of this page's keys. A save sends only the
+// keys that differ from it: a whole-page save would write back values loaded
+// before another administrator changed them.
+const baseline = ref<Record<string, string>>({});
 
-const dirty = computed(() => loaded.value && baseline.value !== JSON.stringify(settings.collect()));
+function changes(): Record<string, string> {
+  const current = settings.collect();
+  const changed: Record<string, string> = {};
+  for (const [key, value] of Object.entries(current)) {
+    if (baseline.value[key] !== value) changed[key] = value;
+  }
+  return changed;
+}
+
+const dirty = computed(() => loaded.value && Object.keys(changes()).length > 0);
 
 function message(failure: unknown): string {
   return failure instanceof ApiError ? failure.message : String(failure);
@@ -60,7 +72,7 @@ async function load(): Promise<void> {
   try {
     const { settings: values } = await adminApi.settings();
     settings.load(values);
-    baseline.value = JSON.stringify(settings.collect());
+    baseline.value = { ...settings.collect() };
     loaded.value = true;
   } catch (failure) {
     error.value = message(failure);
@@ -68,12 +80,14 @@ async function load(): Promise<void> {
 }
 
 async function save(): Promise<void> {
+  const values = changes();
+  if (Object.keys(values).length === 0) return;
   busy.value = true;
   saveError.value = '';
   try {
-    const { settings: values } = await adminApi.saveSettings(settings.collect());
-    settings.load(values);
-    baseline.value = JSON.stringify(settings.collect());
+    const { settings: saved } = await adminApi.saveSettings(values);
+    settings.load(saved);
+    baseline.value = { ...settings.collect() };
   } catch (failure) {
     saveError.value = message(failure);
   } finally {
