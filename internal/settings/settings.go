@@ -571,17 +571,25 @@ func (s *Service) RegistrationCaptchaMode() string {
 //
 // The operator's switch (TurnstileOnSignup) decides it, as it always has — it
 // is off by default even while the stored mode says Turnstile, so a keyless
-// instance is not locked out of registering. The one case the switch must not
-// decide is the fallback in RegistrationCaptchaMode: a mode this server cannot
+// instance is not locked out of registering. Two cases the switch must not
+// decide. The fallback in RegistrationCaptchaMode: a mode this server cannot
 // answer for (a plugin's, once that plugin is off) is replaced by Turnstile
 // precisely so the sign-up keeps a challenge, and the switch was never turned
-// on by somebody who had chosen another mode. Left to the switch alone, that
-// fallback drew a widget and checked nothing.
+// on by somebody who had chosen another mode. And a Turnstile mode with a site
+// key saved: the sign-up page draws the widget from the mode and the key alone,
+// so a switch left off showed a widget that nothing checked.
 func (s *Service) SignupTurnstileOn() bool {
 	if s.Bool(TurnstileOnSignup) {
 		return true
 	}
-	return !s.ValidCaptchaMode(s.Get(RegistrationCaptchaMode))
+	mode := s.Get(RegistrationCaptchaMode)
+	if !s.ValidCaptchaMode(mode) {
+		return true
+	}
+	if mode == CaptchaModeTurnstile || mode == CaptchaModeBoth {
+		return s.Get(TurnstileSiteKey) != ""
+	}
+	return false
 }
 
 func (s *Service) PoWBaseMaxNumber() int64 {
