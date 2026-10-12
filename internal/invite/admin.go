@@ -141,7 +141,10 @@ func (s *Store) Create(ctx context.Context, in CreateInput) ([]Code, error) {
 	if in.GroupDays < 0 || in.GroupDays > MaxGroupDays {
 		return nil, ErrInvalidGroupDays
 	}
-	if in.GroupDaysMax != 0 && (in.GroupDaysMax < in.GroupDays || in.GroupDaysMax > MaxGroupDays) {
+	// A range must start at one day or more. A draw from "0 to N" is zero about
+	// one time in N+1, and zero is permanent membership, so the operator would
+	// be handing out memberships they did not ask for.
+	if in.GroupDaysMax != 0 && (in.GroupDaysMax < in.GroupDays || in.GroupDaysMax > MaxGroupDays || in.GroupDays < 1) {
 		return nil, ErrInvalidGroupDays
 	}
 
