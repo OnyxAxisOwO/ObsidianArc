@@ -3,12 +3,28 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
+
+// A solution refused for a stale tier is the browser's cue to fetch a new
+// challenge, which the sign-up form does after any refusal. It must reach the
+// browser as a client refusal the form can word, not as a server fault.
+func TestAStaleTierSolutionIsAClientRefusalNotAServerFault(t *testing.T) {
+	var h Handlers
+	var httpErr *httpx.Error
+	if err := h.registrationError(pow.ErrBelowTier); !errors.As(err, &httpErr) {
+		t.Fatalf("registrationError(ErrBelowTier) = %v, want an httpx error", err)
+	}
+	if httpErr.Status != http.StatusBadRequest || httpErr.Code != "pow_expired" {
+		t.Fatalf("registrationError(ErrBelowTier) = %d %q, want 400 pow_expired", httpErr.Status, httpErr.Code)
+	}
+}
 
 // A challenge handed out at the base tier is refused once activity from the
 // address has raised the difficulty, and the difficulty actually required is

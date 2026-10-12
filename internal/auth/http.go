@@ -1075,6 +1075,11 @@ func (h *Handlers) registrationError(err error) error {
 		return httpx.BadRequestCode("pow_required", "Proof of work challenge solution is required.")
 	case errors.Is(err, pow.ErrExpired):
 		return httpx.BadRequestCode("pow_expired", "Proof of work challenge has expired. Please try again.")
+	// Issued before activity raised the difficulty. The browser answers it the
+	// way it answers an expired one, by fetching a new challenge, so it shares
+	// that code rather than falling through to a server fault.
+	case errors.Is(err, pow.ErrBelowTier):
+		return httpx.BadRequestCode("pow_expired", "Proof of work challenge has expired. Please try again.")
 	case errors.Is(err, pow.ErrInvalidSignature):
 		return httpx.BadRequestCode("pow_invalid_signature", "Invalid proof of work challenge signature.")
 	case errors.Is(err, pow.ErrMaxExceeded):
