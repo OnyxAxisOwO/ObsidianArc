@@ -1,6 +1,8 @@
 package oauth
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -86,5 +88,60 @@ func TestASignUpTicketSetByAnotherHostnameIsNotHeldWhenSecure(t *testing.T) {
 	held.AddCookie(&http.Cookie{Name: cookies[0].Name, Value: cookies[0].Value})
 	if _, err := h.heldSignup(held); err != nil {
 		t.Fatalf("the __Host- ticket was not held: %v", err)
+	}
+}
+
+// The verified flag belongs to the address its own source reported. Userinfo
+// names a victim's address unverified; the ID token verifies a different one.
+// The victim's address must not come out verified.
+func TestAnUnverifiedUserinfoAddressIsNotVouchedForByTheIDToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"sub":            "sub-mismatch",
+			"email":          "victim@example.com",
+			"email_verified": false,
+		})
+	}))
+	defer server.Close()
+
+	idToken := makeTestJWT(map[string]any{
+		"sub":            "sub-mismatch",
+		"email":          "attacker@example.com",
+		"email_verified": true,
+		"exp":            testFutureExp(),
+	})
+	id, err := identifyOIDC(context.Background(), server.Client(),
+		Credentials{UserInfoURL: server.URL}, tokenResponse{AccessToken: "access-token", IDToken: idToken})
+	if err != nil {
+		t.Fatalf("identifyOIDC: %v", err)
+	}
+	if id.Email != "" {
+		t.Fatalf("Email = %q, want none: the verified flag was for a different address", id.Email)
+	}
+}
+
+// The same address named by both documents is verified by either flag.
+func TestTheIDTokenVerifiesTheSameAddressUserinfoNamed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"sub":   "sub-same",
+			"email": "carol@example.com",
+		})
+	}))
+	defer server.Close()
+
+	idToken := makeTestJWT(map[string]any{
+		"sub":            "sub-same",
+		"email":          "carol@example.com",
+		"email_verified": true,
+		"exp":            testFutureExp(),
+	})
+	id, err := identifyOIDC(context.Background(), server.Client(),
+		Credentials{UserInfoURL: server.URL}, tokenResponse{AccessToken: "access-token", IDToken: idToken})
+	if err != nil {
+		t.Fatalf("identifyOIDC: %v", err)
+	}
+	if id.Email != "carol@example.com" {
+		t.Fatalf("Email = %q, want carol@example.com verified by the ID token", id.Email)
 	}
 }
