@@ -36,17 +36,16 @@ func (e *EmailDomainError) Error() string {
 	return "email address must be at " + strings.Join(e.Allowed, ", ")
 }
 
-// signupGate counts accounts created in the last minute and the last hour, as a
-// fast refusal before the paid review runs. It never grants an allowance: the
-// database count taken under the instance lock (checkSignupRate) is the one
-// that decides, and it counts every process's sign-ups, so this gate can only
-// refuse what that count would refuse too.
+// signupGate counts accounts created in the last minute and the last hour, so a
+// request the limit is going to refuse is refused before the paid review runs.
+// It is only a fast refusal: it is kept per process, so it never grants an
+// allowance, and the count that decides is the database's (checkSignupRate),
+// which every process sharing the database writes to and reads from.
 //
 // Instance-wide rather than per address: the abuse this is for is a script
 // making accounts, and a script that is worth throttling has more than one
-// address. In memory, like the login limiter, for the same reasons — a
-// counter table would be a write per attempt, and a restart forgiving the
-// window is an acceptable trade for one binary.
+// address. The fast gate stays in memory because a request that the database
+// would refuse anyway is cheaper to turn away without a query.
 type signupGate struct {
 	mu     sync.Mutex
 	recent []time.Time
