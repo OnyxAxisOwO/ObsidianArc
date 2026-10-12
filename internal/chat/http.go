@@ -864,6 +864,12 @@ const MaxImagesPerRequest = 4
 // MaxReferenceImages bounds how many pictures an edit request may carry.
 const MaxReferenceImages = 5
 
+// maxImageOptionChars bounds the size and style of an image call. Both are
+// sent upstream and kept in the library, so an unbounded value would be stored
+// and listed in full, a hundred rows at a time. Real values are a few
+// characters.
+const maxImageOptionChars = 64
+
 // A generation request no longer than this carries no picture worth a
 // decoding slot: it is a prompt and some settings.
 const imagePromptOnlyBytes = 64 << 10
@@ -983,6 +989,15 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	body.Prompt = strings.TrimSpace(body.Prompt)
 	if body.Prompt == "" {
 		return httpx.BadRequest("Prompt is required.")
+	}
+	// The same bound a chat message has. The prompt is stored with the picture
+	// and listed back, so an unbounded one is kept and sent out in full each
+	// time the library is opened.
+	if len([]rune(body.Prompt)) > conversation.MaxContentChars {
+		return httpx.BadRequest("Prompt must be %d characters or fewer.", conversation.MaxContentChars)
+	}
+	if len([]rune(body.Size)) > maxImageOptionChars || len([]rune(body.Style)) > maxImageOptionChars {
+		return httpx.BadRequest("Size and style must be %d characters or fewer.", maxImageOptionChars)
 	}
 	if body.ModelID == "" {
 		return httpx.BadRequest("Model is required.")
