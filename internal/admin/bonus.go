@@ -8,6 +8,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
 )
@@ -181,7 +182,25 @@ func (h *Handlers) bonusGrants(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handlers) revokeBonusGrant(w http.ResponseWriter, r *http.Request) error {
-	revoked, err := h.Bonus.Revoke(r.Context(), r.PathValue("id"))
+	grantID := r.PathValue("id")
+	// The usage grant takes money away from the grant's owner, so the owner
+	// decides whether it may: the rule every other delegated action on an
+	// account answers to, not the grant alone.
+	var owner string
+	if err := h.db.QueryRow(r.Context(), `SELECT user_id FROM bonus_grants WHERE id = ?`, grantID).Scan(&owner); err != nil {
+		if database.IsNotFound(err) {
+			return bonus.TranslateError(bonus.ErrNotFound)
+		}
+		return httpx.Internal(err)
+	}
+	target, err := h.users.ByID(r.Context(), nil, owner)
+	if err != nil {
+		return translateUserError(err)
+	}
+	if target.IsAdmin() && !auth.MustUser(r.Context()).CanManageAdmin(target) {
+		return permissionDenied()
+	}
+	revoked, err := h.Bonus.Revoke(r.Context(), grantID)
 	if err != nil {
 		return bonus.TranslateError(err)
 	}

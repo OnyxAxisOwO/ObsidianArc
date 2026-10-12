@@ -133,3 +133,54 @@ func TestUserScopedLimitsFollowTheAdministratorRule(t *testing.T) {
 		t.Fatalf("super administrator limit: %d %s", res.Code, res.Body.String())
 	}
 }
+
+// A bonus grant is money for the account it was made for. Revoking it takes
+// that money back, so a usage delegate may not do it to an administrator it
+// cannot manage, the way it may not write a limit on one.
+func TestUsageDelegateCannotRevokeAnAdministratorsBonus(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "usage")
+
+	created := in.do(http.MethodPost, "/api/admin/bonus/bars", map[string]any{
+		"name": "礼包", "toggle_mode": "user", "show_total": true,
+	}, founder)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("bar: %d %s", created.Code, created.Body.String())
+	}
+	bar := decode[struct {
+		Bar struct{ ID string } `json:"bar"`
+	}](t, created).Bar
+	grant := func(who *session) string {
+		t.Helper()
+		res := in.do(http.MethodPost, "/api/admin/bonus/bars/"+bar.ID+"/grants",
+			map[string]any{"user_ids": []string{who.userID}, "amount": 100, "days": 30}, founder)
+		if res.Code != http.StatusCreated {
+			t.Fatalf("grant: %d %s", res.Code, res.Body.String())
+		}
+		listed := decode[struct {
+			Grants []struct {
+				ID     string `json:"id"`
+				UserID string `json:"user_id"`
+			} `json:"grants"`
+		}](t, in.do(http.MethodGet, "/api/admin/bonus/bars/"+bar.ID+"/grants", nil, founder))
+		for _, row := range listed.Grants {
+			if row.UserID == who.userID {
+				return row.ID
+			}
+		}
+		t.Fatalf("no grant for %s", who.userID)
+		return ""
+	}
+
+	founderGrant := grant(founder)
+	if res := in.do(http.MethodDelete, "/api/admin/bonus/grants/"+founderGrant, nil, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("usage delegate revoked a super administrator's bonus: %d %s", res.Code, res.Body.String())
+	}
+	memberGrant := grant(member)
+	if res := in.do(http.MethodDelete, "/api/admin/bonus/grants/"+memberGrant, nil, operator); res.Code != http.StatusOK {
+		t.Fatalf("usage delegate revoked an ordinary account's bonus: %d %s", res.Code, res.Body.String())
+	}
+}
