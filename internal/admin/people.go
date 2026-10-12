@@ -94,7 +94,13 @@ func (h *Handlers) showUser(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-
+	// Holds the panel to the rule the account's other reads answer to: the
+	// usage, policy and held cards below are an administrator's own spend and
+	// limits, which a users grant alone may not read. It also confirms the
+	// account exists, so a guessed id is "no such account".
+	if err := h.authoriseSessionAction(r, userID); err != nil {
+		return err
+	}
 	account, err := h.users.ByID(r.Context(), nil, userID)
 	if err != nil {
 		return translateUserError(err)
