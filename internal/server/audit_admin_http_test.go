@@ -11,6 +11,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 )
 
@@ -599,5 +600,81 @@ func TestConcurrentDefaultChangeAndDeleteKeepOneDefault(t *testing.T) {
 		close(start)
 		wg.Wait()
 		defaultGroupID(t, in, founder)
+	}
+}
+
+// A provider header is sent on every call, and it is often the credential a
+// gateway wants (a token, an access secret). The providers grant reads the
+// provider list, so a header value is shown as its hint there, the same as a
+// key, and the value goes only to the call that sends it. Duplicating a
+// provider sends back what the list showed, and must keep the stored value
+// rather than store the hint.
+func TestProviderHeaderValuesStayWithTheServer(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	grantAdmin(t, in, founder, operator, "providers")
+	const token = "gw-token-value-7777"
+
+	created := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "gateway", "kind": "openai", "base_url": "https://gateway.example.com/v1",
+		"api_key": "sk-test-gateway-key", "headers": map[string]string{"X-Gateway-Token": token, "X-Title": "Arc"},
+	}, founder)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	if strings.Contains(created.Body.String(), token) {
+		t.Fatalf("the create response carries the header value: %s", created.Body.String())
+	}
+	providerID := decode[struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}](t, created).Provider.ID
+
+	listed := in.do(http.MethodGet, "/api/admin/providers", nil, operator)
+	if strings.Contains(listed.Body.String(), token) {
+		t.Fatalf("a providers-only administrator read a header value: %s", listed.Body.String())
+	}
+	shown := decode[struct {
+		Providers []struct {
+			ID      string            `json:"id"`
+			Headers map[string]string `json:"headers"`
+		} `json:"providers"`
+	}](t, listed)
+	var hint string
+	for _, p := range shown.Providers {
+		if p.ID == providerID {
+			hint = p.Headers["X-Gateway-Token"]
+		}
+	}
+	if !strings.HasSuffix(hint, "7777") {
+		t.Fatalf("the list did not show the hint of the header: %q", hint)
+	}
+
+	updated := in.do(http.MethodPatch, "/api/admin/providers/"+providerID, map[string]any{"enabled": true}, founder)
+	if strings.Contains(updated.Body.String(), token) {
+		t.Fatalf("the update response carries the header value: %s", updated.Body.String())
+	}
+
+	// The duplicate sends back the hint it was shown, as the browser does.
+	copied := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "gateway copy", "kind": "openai", "base_url": "https://gateway.example.com/v1",
+		"copy_key_from": providerID, "headers": map[string]string{"X-Gateway-Token": hint, "X-Title": "Arc"},
+	}, operator)
+	if copied.Code != http.StatusCreated {
+		t.Fatalf("duplicate: %d %s", copied.Code, copied.Body.String())
+	}
+	copyID := decode[struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}](t, copied).Provider.ID
+	stored, err := provider.NewStore(in.db, nil).ByID(context.Background(), copyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Headers["X-Gateway-Token"] != token {
+		t.Fatalf("the duplicate stored %q for the header, not the value it was copied from", stored.Headers["X-Gateway-Token"])
 	}
 }

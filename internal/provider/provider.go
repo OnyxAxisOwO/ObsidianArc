@@ -62,6 +62,38 @@ type Provider struct {
 	ModelCount int `json:"model_count"`
 }
 
+// Masked returns the record as an administrator's response shows it: each
+// header value replaced by its hint. A header is a credential as much as a key
+// is — a gateway token or an access secret travels in one — and the providers
+// grant reads these records, so the values are kept for Resolve alone, the one
+// reader that sends them.
+func (p Provider) Masked() Provider {
+	if len(p.Headers) == 0 {
+		return p
+	}
+	masked := make(map[string]string, len(p.Headers))
+	for name, value := range p.Headers {
+		masked[name] = secret.Hint(value)
+	}
+	p.Headers = masked
+	return p
+}
+
+// keepEchoedHeaders reads a header value that is the hint of the stored value
+// as "keep what is stored". Responses show headers as hints (see Masked), so a
+// client that sends back what it was shown sends hints, and these must not
+// overwrite the values they stand for. Keys work the same way, by position.
+func keepEchoedHeaders(sent, stored map[string]string) map[string]string {
+	out := make(map[string]string, len(sent))
+	for name, value := range sent {
+		if original, ok := stored[name]; ok && value == secret.Hint(original) {
+			value = original
+		}
+		out[name] = value
+	}
+	return out
+}
+
 // KeyRotation is how a call picks one of a provider's keys.
 type KeyRotation string
 
@@ -171,6 +203,15 @@ type CreateInput struct {
 // address, the same question Update asks of an existing one. Anybody else may
 // only duplicate a provider at the address that provider already has.
 func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Provider, error) {
+	// A duplicate's headers are the ones the request sends, with any value the
+	// list showed as a hint read back as the stored one. See keepEchoedHeaders.
+	if in.CopyKeyFrom != "" && in.Headers != nil {
+		source, err := s.ByID(ctx, in.CopyKeyFrom)
+		if err != nil {
+			return Provider{}, err
+		}
+		in.Headers = keepEchoedHeaders(in.Headers, source.Headers)
+	}
 	record, err := validate(Provider{
 		ID:               id.New(),
 		Name:             in.Name,
@@ -369,7 +410,7 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update, superA
 			next.AllowInsecure = *in.AllowInsecure
 		}
 		if in.Headers != nil {
-			next.Headers = *in.Headers
+			next.Headers = keepEchoedHeaders(*in.Headers, current.Headers)
 		}
 		if in.AnthropicVersion != nil {
 			next.AnthropicVersion = *in.AnthropicVersion
