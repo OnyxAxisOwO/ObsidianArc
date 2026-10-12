@@ -49,6 +49,10 @@ func (h *Handlers) listProviders(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 	// provider.Provider has no API key field at all, so this cannot leak one.
+	// Header values leave as hints only, as in every other provider response.
+	for i := range records {
+		records[i] = records[i].Masked()
+	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"providers": records})
 }
 
@@ -106,7 +110,7 @@ func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return translateProviderError(err)
 	}
-	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"provider": record})
+	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"provider": record.Masked()})
 }
 
 func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request) error {
@@ -153,7 +157,7 @@ func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return translateProviderError(err)
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"provider": record})
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"provider": record.Masked()})
 }
 
 func (h *Handlers) deleteProvider(w http.ResponseWriter, r *http.Request) error {

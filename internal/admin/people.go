@@ -37,6 +37,32 @@ import (
 // separated by a commit boundary.
 var errLastAdmin = errors.New("admin: that is the last administrator")
 
+// Account actions the security log keeps. The request log records them too,
+// but it is the table a prune removes from, and the security log is not
+// pruned. These are events in the security log's own vocabulary, so the
+// log's readers see them beside the rest of the account's history.
+const (
+	eventPasswordReset  = "password_reset"
+	eventAccountDeleted = "account_deleted"
+)
+
+// recordAccountAction writes one account action to the security log. It runs
+// after the action has happened, so a failure here is logged rather than
+// reported: the password is already changed or the account already gone.
+func (h *Handlers) recordAccountAction(r *http.Request, event string, actor, target user.User, reason string) {
+	if h.security == nil {
+		return
+	}
+	if err := h.security.Record(r.Context(), nil, securityevents.Event{
+		Event: event, Severity: securityevents.SeverityWarning,
+		UserID: target.ID, Username: target.Username,
+		ActorID: actor.ID, ActorUsername: actor.Username,
+		IP: h.clientIP(r), Source: "admin", Reason: reason,
+	}); err != nil {
+		slog.ErrorContext(r.Context(), "could not record an account action", "event", event, "error", err)
+	}
+}
+
 // lockAdminPopulation takes the row lock every change to the set of active
 // administrators must hold.
 //
@@ -94,7 +120,13 @@ func (h *Handlers) showUser(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-
+	// Holds the panel to the rule the account's other reads answer to: the
+	// usage, policy and held cards below are an administrator's own spend and
+	// limits, which a users grant alone may not read. It also confirms the
+	// account exists, so a guessed id is "no such account".
+	if err := h.authoriseSessionAction(r, userID); err != nil {
+		return err
+	}
 	account, err := h.users.ByID(r.Context(), nil, userID)
 	if err != nil {
 		return translateUserError(err)
@@ -581,7 +613,8 @@ func (h *Handlers) resetPassword(w http.ResponseWriter, r *http.Request) error {
 	if userID == actor.ID {
 		return httpx.BadRequestCode("own_password", "Change your own password from your profile.")
 	}
-	if _, err := h.users.ByID(r.Context(), nil, userID); err != nil {
+	target, err := h.users.ByID(r.Context(), nil, userID)
+	if err != nil {
 		return translateUserError(err)
 	}
 
@@ -607,6 +640,10 @@ func (h *Handlers) resetPassword(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 
+	// Recorded in the security log as well as the process log: the request log
+	// that shows this action can be pruned, and this one must outlive it.
+	h.recordAccountAction(r, eventPasswordReset, actor, target, "password reset by an administrator")
+
 	slog.InfoContext(r.Context(), "administrator reset a password", "actor", actor.ID, "target", userID)
 	return httpx.NoContent(w)
 }
@@ -621,6 +658,7 @@ func (h *Handlers) deleteUser(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("You cannot delete your own account.")
 	}
 
+	var removed user.User
 	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
 		if err := lockAdminPopulation(r.Context(), tx); err != nil {
 			return err
@@ -637,6 +675,7 @@ func (h *Handlers) deleteUser(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
+		removed = target
 		if target.IsAdmin() && !actor.CanManageAdmin(target) {
 			return permissionDenied()
 		}
@@ -661,6 +700,7 @@ func (h *Handlers) deleteUser(w http.ResponseWriter, r *http.Request) error {
 		}
 		return translateUserError(err)
 	}
+	h.recordAccountAction(r, eventAccountDeleted, actor, removed, "account deleted by an administrator")
 	slog.WarnContext(r.Context(), "administrator deleted an account", "actor", actor.ID, "target", userID)
 	return httpx.NoContent(w)
 }
@@ -763,9 +803,23 @@ func (h *Handlers) listGroups(w http.ResponseWriter, r *http.Request) error {
 		out = append(out, row{Group: record, Members: count, ModelIDs: modelIDs, ModelGrants: modelGrants})
 	}
 
-	policies, err := h.quota.Policies().List(r.Context())
+	// Filtered the way the policy list is, so this response carries only the
+	// limits the same grant could list at /api/admin/quota/policies. The groups
+	// page itself reads group-scoped limits only.
+	actor := auth.MustUser(r.Context())
+	all, err := h.quota.Policies().List(r.Context())
 	if err != nil {
 		return httpx.Internal(err)
+	}
+	policies := all[:0]
+	for _, policy := range all {
+		ok, err := h.policyVisible(r, actor, policy)
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		if ok {
+			policies = append(policies, policy)
+		}
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"groups": out, "policies": policies})
 }
@@ -820,7 +874,19 @@ func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 		in.SortOrder = *body.SortOrder
 	}
 
-	record, err := h.groups.Create(r.Context(), nil, in)
+	// A group made as the default clears the one the instance has, which is the
+	// same change deleteGroup and updateGroup make under the instance lock.
+	// Unlocked, two creates at once can each clear the other's default before
+	// either commits, and leave the instance with none.
+	var record group.Group
+	err := h.db.Tx(r.Context(), func(tx *database.Tx) error {
+		if err := settings.Lock(r.Context(), tx); err != nil {
+			return err
+		}
+		created, err := h.groups.Create(r.Context(), tx, in)
+		record = created
+		return err
+	})
 	if err != nil {
 		return translateGroupError(err)
 	}
@@ -847,17 +913,28 @@ func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	record, err := h.groups.Update(r.Context(), nil, groupID, group.Update{
-		Name:                     body.Name,
-		Description:              body.Description,
-		IsDefault:                body.IsDefault,
-		AllowAllModels:           body.AllowAllModels,
-		APIAccess:                body.APIAccess,
-		AllowStats:               body.AllowStats,
-		AllowDeleteConversations: body.AllowDeleteConversations,
-		AllowTerminal:            body.AllowTerminal,
-		ShowExpiry:               body.ShowExpiry,
-		SortOrder:                body.SortOrder,
+	// The default group is an instance-wide invariant, so a change to it holds
+	// the same lock deleteGroup does. Without it, a delete that has checked
+	// this group is not the default can race a change that makes it one, and
+	// leave the instance with no default at all.
+	var record group.Group
+	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
+		if err := settings.Lock(r.Context(), tx); err != nil {
+			return err
+		}
+		record, err = h.groups.Update(r.Context(), tx, groupID, group.Update{
+			Name:                     body.Name,
+			Description:              body.Description,
+			IsDefault:                body.IsDefault,
+			AllowAllModels:           body.AllowAllModels,
+			APIAccess:                body.APIAccess,
+			AllowStats:               body.AllowStats,
+			AllowDeleteConversations: body.AllowDeleteConversations,
+			AllowTerminal:            body.AllowTerminal,
+			ShowExpiry:               body.ShowExpiry,
+			SortOrder:                body.SortOrder,
+		})
+		return err
 	})
 	if err != nil {
 		return translateGroupError(err)
@@ -876,42 +953,53 @@ func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
 
 // deleteGroup moves the members somewhere before the row goes. Leaving them
 // with a dangling group would silently strip their model access.
+//
+// The default and last-group rules are checked and acted on inside one
+// transaction that holds the instance-wide lock, as the admin-population rule
+// does. Plain reads here would let two deletes, or a delete and a change of
+// default, each pass the check the other was about to falsify.
 func (h *Handlers) deleteGroup(w http.ResponseWriter, r *http.Request) error {
 	groupID, err := pathID(r, "id")
 	if err != nil {
 		return err
 	}
 
-	record, err := h.groups.ByID(r.Context(), nil, groupID)
+	var fallbackID string
+	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
+		if err := settings.Lock(r.Context(), tx); err != nil {
+			return err
+		}
+		record, err := h.groups.ByID(r.Context(), tx, groupID)
+		if err != nil {
+			return err
+		}
+		if record.IsDefault {
+			return group.ErrDeleteDefault
+		}
+		count, err := h.groups.Count(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		if count <= 1 {
+			return group.ErrDeleteLast
+		}
+		fallback, err := h.groups.Default(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		fallbackID = fallback.ID
+		if err := h.users.MoveGroupMembers(r.Context(), tx, groupID, fallback.ID); err != nil {
+			return err
+		}
+		return h.groups.Delete(r.Context(), tx, groupID)
+	})
 	if err != nil {
 		return translateGroupError(err)
-	}
-	if record.IsDefault {
-		return httpx.Conflict("default_group", "Make another group the default first.")
-	}
-
-	count, err := h.groups.Count(r.Context(), nil)
-	if err != nil {
-		return httpx.Internal(err)
-	}
-	if count <= 1 {
-		return httpx.Conflict("last_group", "The last group cannot be deleted.")
-	}
-
-	fallback, err := h.groups.Default(r.Context(), nil)
-	if err != nil {
-		return httpx.Internal(err)
-	}
-	if err := h.users.MoveGroupMembers(r.Context(), nil, groupID, fallback.ID); err != nil {
-		return httpx.Internal(err)
-	}
-	if err := h.groups.Delete(r.Context(), nil, groupID); err != nil {
-		return httpx.Internal(err)
 	}
 	// The group's own quota policy has no scope to belong to any more.
 	_ = h.quota.Policies().Delete(r.Context(), quota.ScopeGroup, groupID)
 
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"moved_to": fallback.ID})
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"moved_to": fallbackID})
 }
 
 // --- error translation --------------------------------------------------------------
@@ -949,6 +1037,10 @@ func translateGroupError(err error) error {
 		return httpx.Conflict("group_exists", "A group with that name already exists.")
 	case errors.Is(err, group.ErrInvalidName):
 		return httpx.BadRequest("Name must be 1-40 characters.")
+	case errors.Is(err, group.ErrDeleteDefault), errors.Is(err, group.ErrUnsetDefault):
+		return httpx.Conflict("default_group", "Make another group the default first.")
+	case errors.Is(err, group.ErrDeleteLast):
+		return httpx.Conflict("last_group", "The last group cannot be deleted.")
 	default:
 		return httpx.Internal(err)
 	}

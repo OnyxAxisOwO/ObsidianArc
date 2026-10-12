@@ -248,11 +248,14 @@ async function save(): Promise<void> {
     // Headers have no field in this form, and the keys are not something this
     // page could send even if it wanted to: it names the provider to take
     // them from, and which of them.
+    // The headers come back as the hints the list showed. The server reads
+    // them as the source's stored values, so the source is named even when no
+    // key is kept.
     payload['headers'] = template.value.headers;
-    if (kept.length) {
-      payload['copy_key_from'] = template.value.id;
-      if (!everyStored || typed.length) sendKept();
-    }
+    payload['copy_key_from'] = template.value.id;
+    // An empty list is sent too: left out, the copy takes every key the source
+    // holds, which is what keeping none is meant to prevent.
+    if (!kept.length || !everyStored || typed.length) sendKept();
   } else if (!creating.value && (typed.length || !everyStored)) {
     sendKept();
   }

@@ -745,8 +745,12 @@ type ListFilter struct {
 	Role    Role
 	Status  Status
 	GroupID string
-	Limit   int
-	Offset  int
+	// Matches the username and nickname only. The email address and any
+	// searchable plugin field are left out, so a caller that may not read them
+	// cannot confirm one by searching for it.
+	NameOnly bool
+	Limit    int
+	Offset   int
 }
 
 func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error) {
@@ -803,13 +807,19 @@ func (filter ListFilter) clauses(fields []Field) (string, []any) {
 		// none by default, so without it an operator searching for "_" gets
 		// every account back and reads it as a match.
 		pattern := "%" + escapeLike(strings.ToLower(search)) + "%"
-		match := `username_lower LIKE ? ESCAPE '\' OR email_lower LIKE ? ESCAPE '\'` +
-			` OR LOWER(nickname) LIKE ? ESCAPE '\'`
-		args = append(args, pattern, pattern, pattern)
-		for _, f := range fields {
-			if f.Searchable {
-				match += ` OR LOWER(` + f.Key + `) LIKE ? ESCAPE '\'`
-				args = append(args, pattern)
+		var match string
+		if filter.NameOnly {
+			match = `username_lower LIKE ? ESCAPE '\' OR LOWER(nickname) LIKE ? ESCAPE '\'`
+			args = append(args, pattern, pattern)
+		} else {
+			match = `username_lower LIKE ? ESCAPE '\' OR email_lower LIKE ? ESCAPE '\'` +
+				` OR LOWER(nickname) LIKE ? ESCAPE '\'`
+			args = append(args, pattern, pattern, pattern)
+			for _, f := range fields {
+				if f.Searchable {
+					match += ` OR LOWER(` + f.Key + `) LIKE ? ESCAPE '\'`
+					args = append(args, pattern)
+				}
 			}
 		}
 		conditions = append(conditions, "("+match+")")
