@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/totp"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -251,5 +253,39 @@ func TestAnAccountCannotSpendTheScreeningAllowanceWithoutLimit(t *testing.T) {
 	elsewhere := "other-moved@example.com"
 	if _, err := f.auth.UpdateProfile(ctx, other.ID, user.ProfileUpdate{Email: &elsewhere}, "a-good-password"); err != nil {
 		t.Errorf("another account was held to the first one's allowance: %v", err)
+	}
+}
+
+// The sign-up limit is instance-wide, and an instance may run two processes
+// against one database. Each process must count the sign-ups the other one has
+// made, or the limit is multiplied by the number of processes. The founder's
+// sign-up counts too, as every account does.
+func TestTheSignupRateLimitHoldsAcrossProcessesSharingADatabase(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"}); err != nil {
+		t.Fatal(err)
+	}
+	set(t, f, settings.RegistrationEnabled, "true")
+	set(t, f, settings.SignupsPerMinute, "3")
+
+	cfg := config.Config{
+		Password:  testParams(),
+		Session:   config.Session{TTL: time.Hour, CookieName: "obsidian_session", TouchInterval: time.Hour},
+		SecretKey: []byte("an-instance-secret-for-the-auth-tests"),
+	}
+	// A second process over the same database: its own in-memory gate, nothing
+	// shared with the first but the database.
+	second := NewService(f.db, f.users, f.groups, f.settings, mail.New(mail.Config{}), cfg)
+
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "one", Password: "a-good-password"}); err != nil {
+		t.Fatalf("first process, second sign-up: %v", err)
+	}
+	if _, _, err := second.Register(ctx, RegisterInput{Username: "two", Password: "a-good-password"}); err != nil {
+		t.Fatalf("second process, third sign-up: %v", err)
+	}
+	var throttled *SignupThrottleError
+	if _, _, err := second.Register(ctx, RegisterInput{Username: "three", Password: "a-good-password"}); !errors.As(err, &throttled) {
+		t.Fatalf("fourth sign-up in the minute on the second process = %v, want SignupThrottleError", err)
 	}
 }

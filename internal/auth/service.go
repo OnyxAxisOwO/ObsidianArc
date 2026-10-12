@@ -516,12 +516,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 				if err := s.checkFields(in.Fields); err != nil {
 					return err
 				}
-				allowed, retryAfter := s.signups.allow(
-					s.settings.Int(settings.SignupsPerMinute, 0),
-					s.settings.Int(settings.SignupsPerHour, 0),
-				)
-				if !allowed {
-					return &SignupThrottleError{RetryAfter: retryAfter}
+				if err := s.checkSignupRate(ctx, tx); err != nil {
+					return err
 				}
 
 				// Per address, and counted in the database inside the lock this
@@ -620,7 +616,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			// after commit leaves a scheduling gap in which the next queued
 			// registration can pass the throttle before this one is visible.
 			s.signups.record()
-			return nil
+			return recordAccountCreation(ctx, tx)
 		})
 		if !errors.Is(err, errNeedsEmailScreening) {
 			break

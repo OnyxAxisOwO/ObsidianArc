@@ -1,11 +1,13 @@
 package auth
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
@@ -34,7 +36,11 @@ func (e *EmailDomainError) Error() string {
 	return "email address must be at " + strings.Join(e.Allowed, ", ")
 }
 
-// signupGate counts accounts created in the last minute and the last hour.
+// signupGate counts accounts created in the last minute and the last hour, as a
+// fast refusal before the paid review runs. It never grants an allowance: the
+// database count taken under the instance lock (checkSignupRate) is the one
+// that decides, and it counts every process's sign-ups, so this gate can only
+// refuse what that count would refuse too.
 //
 // Instance-wide rather than per address: the abuse this is for is a script
 // making accounts, and a script that is worth throttling has more than one
@@ -92,6 +98,61 @@ func (g *signupGate) record() {
 	g.mu.Lock()
 	g.recent = append(g.recent, time.Now())
 	g.mu.Unlock()
+}
+
+// checkSignupRate refuses a sign-up that would pass the per-minute or per-hour
+// limit. It is counted from the account_creations rows, under the instance lock,
+// so the count and the account it allows cannot interleave with another
+// sign-up, in this process or another one sharing the database. Zero for a limit
+// means it is not enforced.
+func (s *Service) checkSignupRate(ctx context.Context, tx *database.Tx) error {
+	perMinute := s.settings.Int(settings.SignupsPerMinute, 0)
+	perHour := s.settings.Int(settings.SignupsPerHour, 0)
+	if perMinute <= 0 && perHour <= 0 {
+		return nil
+	}
+	if err := settings.Lock(ctx, tx); err != nil {
+		return err
+	}
+
+	now := time.Now()
+	var inMinute int
+	var oldestMinute int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(MIN(created_at), 0) FROM account_creations WHERE created_at > ?`,
+		now.Add(-time.Minute).UnixMilli()).Scan(&inMinute, &oldestMinute); err != nil {
+		return fmt.Errorf("auth: count sign-ups in the minute: %w", err)
+	}
+	if perMinute > 0 && inMinute >= perMinute {
+		return &SignupThrottleError{RetryAfter: time.Until(time.UnixMilli(oldestMinute).Add(time.Minute))}
+	}
+
+	var inHour int
+	var oldestHour int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(MIN(created_at), 0) FROM account_creations WHERE created_at > ?`,
+		now.Add(-time.Hour).UnixMilli()).Scan(&inHour, &oldestHour); err != nil {
+		return fmt.Errorf("auth: count sign-ups in the hour: %w", err)
+	}
+	if perHour > 0 && inHour >= perHour {
+		return &SignupThrottleError{RetryAfter: time.Until(time.UnixMilli(oldestHour).Add(time.Hour))}
+	}
+	return nil
+}
+
+// recordAccountCreation writes the sign-up the limit counts, inside the same
+// transaction as the account, and drops the rows that have left the hour.
+func recordAccountCreation(ctx context.Context, tx *database.Tx) error {
+	now := time.Now()
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM account_creations WHERE created_at <= ?`, now.Add(-time.Hour).UnixMilli()); err != nil {
+		return fmt.Errorf("auth: prune sign-up record: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO account_creations (created_at) VALUES (?)`, now.UnixMilli()); err != nil {
+		return fmt.Errorf("auth: record sign-up: %w", err)
+	}
+	return nil
 }
 
 // checkEmail applies the two email settings: whether one is needed at all,
