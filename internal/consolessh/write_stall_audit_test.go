@@ -64,3 +64,45 @@ func TestAWriteThatStallsEndsTheSession(t *testing.T) {
 		t.Fatal("a session whose client stopped reading was never ended")
 	}
 }
+
+// stalledCloseChannel is a client that has stopped taking bytes by the time the
+// session closes: the close message cannot be written, so CloseWrite and Close
+// wait on the connection the way a window that never reopens would.
+type stalledCloseChannel struct {
+	stalledChannel
+}
+
+func (c *stalledCloseChannel) CloseWrite() error {
+	<-c.gone
+	return io.ErrClosedPipe
+}
+
+func (c *stalledCloseChannel) Close() error {
+	<-c.gone
+	return io.ErrClosedPipe
+}
+
+// A command that finished while its client had stopped reading must not hold
+// its session. closeChannel runs under closeOnce, so a stall timer that went
+// through close would wait behind the write it was armed to end.
+func TestAStalledChannelCloseEndsTheSession(t *testing.T) {
+	previous := writeStallTimeout
+	writeStallTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { writeStallTimeout = previous })
+
+	gone := make(chan struct{})
+	srv := &Server{cfg: Config{Console: newTestConsole(t), IdleTimeout: time.Hour}}
+	channel := &stalledCloseChannel{stalledChannel: stalledChannel{gone: gone}}
+	sess := newSSHSession(srv, &closableConn{gone: gone}, channel, adminUser("admin"), "127.0.0.1", "")
+
+	done := make(chan struct{})
+	go func() {
+		sess.closeChannel()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a close stuck in a write to a client that stopped reading never returned")
+	}
+}

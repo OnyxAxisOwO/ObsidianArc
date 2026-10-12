@@ -835,15 +835,21 @@ func endNotice(err error) string {
 }
 
 func (sess *sshSession) close() {
-	sess.closeOnce.Do(func() {
-		sess.mu.Lock()
-		cancel := sess.cancel
-		sess.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
-		_ = sess.conn.Close()
-	})
+	sess.closeOnce.Do(sess.abort)
+}
+
+// abort ends the session without taking closeOnce. A close that is itself stuck
+// in a write to a client that stopped reading holds closeOnce for as long as the
+// write stays stuck, so a stall timer that went through close would wait on the
+// very write it was armed to end.
+func (sess *sshSession) abort() {
+	sess.mu.Lock()
+	cancel := sess.cancel
+	sess.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	_ = sess.conn.Close()
 }
 
 type ptyRequestPayload struct {
@@ -1024,7 +1030,7 @@ func (sess *sshSession) reply(req *ssh.Request, ok bool) {
 // the connection is what releases that write, and the timer does it once a
 // write has taken longer than writeStallTimeout.
 func (sess *sshSession) stalled(write func() error) error {
-	timer := time.AfterFunc(writeStallTimeout, sess.close)
+	timer := time.AfterFunc(writeStallTimeout, sess.abort)
 	defer timer.Stop()
 	return write()
 }
