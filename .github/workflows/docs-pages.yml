@@ -9,9 +9,8 @@ on:
   workflow_dispatch:
 
 # Read-only for every job. The Pages deployment and its OIDC token are granted
-# to the deploy job alone: the build job runs npm lifecycle scripts from every
-# transitive dependency, and those must not hold a token that can publish the
-# site.
+# to the deploy job alone, so nothing that runs while the site is built (the
+# docs' own dependencies included) holds a token that can publish it.
 permissions:
   contents: read
 
@@ -36,7 +35,10 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: docs/package-lock.json
-      - run: npm --prefix docs ci --no-fund --no-audit
+      # --ignore-scripts: the build needs no dependency's install script (esbuild
+      # runs from its optional platform package), and a script that ran here
+      # could alter the site this job uploads, whatever token it held.
+      - run: npm --prefix docs ci --ignore-scripts --no-fund --no-audit
       - run: npm --prefix docs run build
         env:
           DOCS_BASE: /ObsidianArc/

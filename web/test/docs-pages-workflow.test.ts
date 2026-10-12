@@ -1,8 +1,9 @@
-// The docs Pages workflow's token scopes. The build job runs every npm
-// lifecycle script the docs dependencies declare, so it must not hold a token
-// that can publish the site, and its checkout must not leave that token in
-// .git/config. The file is read as text: the repository has no YAML parser,
-// and the workflow's shape is simple enough to hold to by its lines.
+// The docs Pages workflow's token scopes and install flags. The build job must
+// not hold a token that can publish the site, its checkout must not leave that
+// token in .git/config, and its npm install must not run the lifecycle scripts
+// of the docs dependencies, which could alter what the job uploads. The file is
+// read as text: the repository has no YAML parser, and the workflow's shape is
+// simple enough to hold to by its lines.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -41,5 +42,9 @@ describe('docs pages workflow permissions', () => {
 
   it('does not persist the checkout token into the build job git config', () => {
     expect(build).toMatch(/uses: actions\/checkout@v4\n {8}with:\n {10}persist-credentials: false\n/);
+  });
+
+  it('installs the docs dependencies without running their install scripts', () => {
+    expect(build).toMatch(/run: npm --prefix docs ci --ignore-scripts /);
   });
 });
