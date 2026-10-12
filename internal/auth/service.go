@@ -1232,25 +1232,6 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	return s.sessions.DeleteByToken(ctx, token)
 }
 
-// ConfirmPassword is the guard in front of the changes a stolen session must
-// not be able to make on its own: switching two-step sign-in on, moving the
-// email address. It asks for the account's current password, and asks for
-// nothing where the account has none — one opened through a provider has no
-// password to prove, and demanding one would lock it out of its own settings.
-func (s *Service) ConfirmPassword(ctx context.Context, userID, candidate string) error {
-	hash, err := s.users.PasswordHash(ctx, nil, userID)
-	if err != nil {
-		return err
-	}
-	if hash == "" {
-		return nil
-	}
-	if candidate == "" {
-		return ErrPasswordRequired
-	}
-	return s.checkPassword(ctx, userID, hash, candidate)
-}
-
 // ConfirmNewSignIn is the proof in front of a new way into an account, which is
 // what connecting a provider is. It asks what ChangePassword asks of the same
 // account: the current password where there is one, and a sign-in made just now

@@ -211,7 +211,7 @@ func TestParallelPasswordGuessesGetTheSameAllowanceAsSequentialOnes(t *testing.T
 		go func() {
 			defer wg.Done()
 			<-gate
-			err := f.auth.ConfirmPassword(ctx, account.ID, "guess")
+			err := f.auth.ConfirmNewSignIn(ctx, account.ID, "guess", "")
 			var limited *RateLimitError
 			mu.Lock()
 			defer mu.Unlock()
@@ -264,11 +264,11 @@ func TestARightPasswordDoesNotForgiveTheWrongOnesBeforeIt(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		if err := f.auth.ConfirmPassword(ctx, account.ID, "guess"); !errors.Is(err, ErrCurrentPasswordWrong) {
+		if err := f.auth.ConfirmNewSignIn(ctx, account.ID, "guess", ""); !errors.Is(err, ErrCurrentPasswordWrong) {
 			t.Fatalf("a wrong password = %v, want ErrCurrentPasswordWrong", err)
 		}
 	}
-	if err := f.auth.ConfirmPassword(ctx, account.ID, "a-good-password"); err != nil {
+	if err := f.auth.ConfirmNewSignIn(ctx, account.ID, "a-good-password", ""); err != nil {
 		t.Fatalf("the right password was refused: %v", err)
 	}
 
