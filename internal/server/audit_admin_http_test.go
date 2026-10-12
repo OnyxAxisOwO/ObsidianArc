@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -514,5 +516,88 @@ func TestMemberPickerDoesNotMatchEmailAddresses(t *testing.T) {
 	}
 	if got := total(founder, "private-address"); got != 1 {
 		t.Fatalf("super administrator's email search: %d", got)
+	}
+}
+
+// Exactly one group is the default, and deleting it is refused. Clearing the
+// default without naming another left none, which the fallback then hid.
+func TestDefaultGroupCannotBeClearedOrDeleted(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	defaultID := defaultGroupID(t, in, founder)
+	other := decode[struct {
+		Group struct {
+			ID string `json:"id"`
+		} `json:"group"`
+	}](t, in.do(http.MethodPost, "/api/admin/groups", map[string]any{"name": "second"}, founder)).Group.ID
+
+	if res := in.do(http.MethodPatch, "/api/admin/groups/"+defaultID, map[string]any{"is_default": false}, founder); res.Code != http.StatusConflict {
+		t.Fatalf("cleared the default group: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodDelete, "/api/admin/groups/"+defaultID, nil, founder); res.Code != http.StatusConflict {
+		t.Fatalf("deleted the default group: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPatch, "/api/admin/groups/"+other, map[string]any{"is_default": true}, founder); res.Code != http.StatusOK {
+		t.Fatalf("moving the default: %d %s", res.Code, res.Body.String())
+	}
+	if got := defaultGroupID(t, in, founder); got != other {
+		t.Fatalf("default is %s, want %s", got, other)
+	}
+	if res := in.do(http.MethodDelete, "/api/admin/groups/"+defaultID, nil, founder); res.Code != http.StatusOK {
+		t.Fatalf("deleting a group that is no longer the default: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// defaultGroupID returns the id of the one group marked default.
+func defaultGroupID(t *testing.T, in *instance, as *session) string {
+	t.Helper()
+	var found []string
+	for _, g := range decode[struct {
+		Groups []struct {
+			ID        string `json:"id"`
+			IsDefault bool   `json:"is_default"`
+		} `json:"groups"`
+	}](t, in.do(http.MethodGet, "/api/admin/groups", nil, as)).Groups {
+		if g.IsDefault {
+			found = append(found, g.ID)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d default groups, want exactly one", len(found))
+	}
+	return found[0]
+}
+
+// A group's deletion and a change of default both touch the one default
+// group, so they run one after the other. Run concurrently, a delete of a
+// non-default group could read "not the default", lose the race to a change
+// that makes it the default and clears the old one, and then remove the new
+// default: the instance would be left with no default at all.
+func TestConcurrentDefaultChangeAndDeleteKeepOneDefault(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	for round := range 40 {
+		created := decode[struct {
+			Group struct {
+				ID string `json:"id"`
+			} `json:"group"`
+		}](t, in.do(http.MethodPost, "/api/admin/groups", map[string]any{"name": fmt.Sprintf("round-%02d", round)}, founder)).Group.ID
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			in.do(http.MethodPatch, "/api/admin/groups/"+created, map[string]any{"is_default": true}, founder)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			in.do(http.MethodDelete, "/api/admin/groups/"+created, nil, founder)
+		}()
+		close(start)
+		wg.Wait()
+		defaultGroupID(t, in, founder)
 	}
 }

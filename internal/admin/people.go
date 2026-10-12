@@ -897,17 +897,28 @@ func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	record, err := h.groups.Update(r.Context(), nil, groupID, group.Update{
-		Name:                     body.Name,
-		Description:              body.Description,
-		IsDefault:                body.IsDefault,
-		AllowAllModels:           body.AllowAllModels,
-		APIAccess:                body.APIAccess,
-		AllowStats:               body.AllowStats,
-		AllowDeleteConversations: body.AllowDeleteConversations,
-		AllowTerminal:            body.AllowTerminal,
-		ShowExpiry:               body.ShowExpiry,
-		SortOrder:                body.SortOrder,
+	// The default group is an instance-wide invariant, so a change to it holds
+	// the same lock deleteGroup does. Without it, a delete that has checked
+	// this group is not the default can race a change that makes it one, and
+	// leave the instance with no default at all.
+	var record group.Group
+	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
+		if err := settings.Lock(r.Context(), tx); err != nil {
+			return err
+		}
+		record, err = h.groups.Update(r.Context(), tx, groupID, group.Update{
+			Name:                     body.Name,
+			Description:              body.Description,
+			IsDefault:                body.IsDefault,
+			AllowAllModels:           body.AllowAllModels,
+			APIAccess:                body.APIAccess,
+			AllowStats:               body.AllowStats,
+			AllowDeleteConversations: body.AllowDeleteConversations,
+			AllowTerminal:            body.AllowTerminal,
+			ShowExpiry:               body.ShowExpiry,
+			SortOrder:                body.SortOrder,
+		})
+		return err
 	})
 	if err != nil {
 		return translateGroupError(err)
@@ -926,42 +937,53 @@ func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
 
 // deleteGroup moves the members somewhere before the row goes. Leaving them
 // with a dangling group would silently strip their model access.
+//
+// The default and last-group rules are checked and acted on inside one
+// transaction that holds the instance-wide lock, as the admin-population rule
+// does. Plain reads here would let two deletes, or a delete and a change of
+// default, each pass the check the other was about to falsify.
 func (h *Handlers) deleteGroup(w http.ResponseWriter, r *http.Request) error {
 	groupID, err := pathID(r, "id")
 	if err != nil {
 		return err
 	}
 
-	record, err := h.groups.ByID(r.Context(), nil, groupID)
+	var fallbackID string
+	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
+		if err := settings.Lock(r.Context(), tx); err != nil {
+			return err
+		}
+		record, err := h.groups.ByID(r.Context(), tx, groupID)
+		if err != nil {
+			return err
+		}
+		if record.IsDefault {
+			return group.ErrDeleteDefault
+		}
+		count, err := h.groups.Count(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		if count <= 1 {
+			return group.ErrDeleteLast
+		}
+		fallback, err := h.groups.Default(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		fallbackID = fallback.ID
+		if err := h.users.MoveGroupMembers(r.Context(), tx, groupID, fallback.ID); err != nil {
+			return err
+		}
+		return h.groups.Delete(r.Context(), tx, groupID)
+	})
 	if err != nil {
 		return translateGroupError(err)
-	}
-	if record.IsDefault {
-		return httpx.Conflict("default_group", "Make another group the default first.")
-	}
-
-	count, err := h.groups.Count(r.Context(), nil)
-	if err != nil {
-		return httpx.Internal(err)
-	}
-	if count <= 1 {
-		return httpx.Conflict("last_group", "The last group cannot be deleted.")
-	}
-
-	fallback, err := h.groups.Default(r.Context(), nil)
-	if err != nil {
-		return httpx.Internal(err)
-	}
-	if err := h.users.MoveGroupMembers(r.Context(), nil, groupID, fallback.ID); err != nil {
-		return httpx.Internal(err)
-	}
-	if err := h.groups.Delete(r.Context(), nil, groupID); err != nil {
-		return httpx.Internal(err)
 	}
 	// The group's own quota policy has no scope to belong to any more.
 	_ = h.quota.Policies().Delete(r.Context(), quota.ScopeGroup, groupID)
 
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"moved_to": fallback.ID})
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"moved_to": fallbackID})
 }
 
 // --- error translation --------------------------------------------------------------
@@ -999,6 +1021,10 @@ func translateGroupError(err error) error {
 		return httpx.Conflict("group_exists", "A group with that name already exists.")
 	case errors.Is(err, group.ErrInvalidName):
 		return httpx.BadRequest("Name must be 1-40 characters.")
+	case errors.Is(err, group.ErrDeleteDefault), errors.Is(err, group.ErrUnsetDefault):
+		return httpx.Conflict("default_group", "Make another group the default first.")
+	case errors.Is(err, group.ErrDeleteLast):
+		return httpx.Conflict("last_group", "The last group cannot be deleted.")
 	default:
 		return httpx.Internal(err)
 	}
