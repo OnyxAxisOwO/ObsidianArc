@@ -30,7 +30,7 @@ func translateInviteError(err error) error {
 	case errors.Is(err, invite.ErrInvalidMaxUses):
 		return httpx.BadRequest("Max uses must be between 0 and %d.", invite.MaxMaxUses)
 	case errors.Is(err, invite.ErrInvalidGroupDays):
-		return httpx.BadRequest("Group days must be between 0 and %d, and group_days_max must be 0 or at least group_days.", invite.MaxGroupDays)
+		return httpx.BadRequest("Group days must be between 0 and %d, group_days_max must be 0 or at least group_days, and a range must start at 1 or more.", invite.MaxGroupDays)
 	case errors.Is(err, invite.ErrGroupRequired):
 		return httpx.BadRequest("group_days_max requires a group to be set.")
 	case errors.Is(err, invite.ErrPartnerFields):

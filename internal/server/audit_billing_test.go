@@ -61,7 +61,7 @@ func TestAnImageCallIsAdmittedOnlyForEveryPictureItMayBill(t *testing.T) {
 	// The default group does not reach models unless it is told to, and a
 	// refusal for the wrong reason (no such model) would pass the checks below.
 	allowAll := true
-	if _, err := group.NewStore(in.db).Update(t.Context(), nil, defaultGroupID(t, in), group.Update{AllowAllModels: &allowAll}); err != nil {
+	if _, err := group.NewStore(in.db).Update(t.Context(), nil, storedDefaultGroupID(t, in), group.Update{AllowAllModels: &allowAll}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -118,7 +118,7 @@ func TestAnImageCallIsAdmittedOnlyForEveryPictureItMayBill(t *testing.T) {
 	}
 }
 
-func defaultGroupID(t *testing.T, in *instance) string {
+func storedDefaultGroupID(t *testing.T, in *instance) string {
 	t.Helper()
 	defaults, err := group.NewStore(in.db).Default(context.Background(), nil)
 	if err != nil {

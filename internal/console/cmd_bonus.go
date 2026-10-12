@@ -212,6 +212,14 @@ func init() {
 		Destructive: true,
 		Endpoints:   []string{"POST /api/admin/bonus/bars/{id}/grants"},
 		Run: func(_ context.Context, rt *Runtime) error {
+			// Refused before the lookup: a negative count is never a valid expiry, and
+			// the server would otherwise keep the credit forever.
+			if rt.Present("days") && rt.Int("days") < 0 {
+				if rt.Session.Lang == "zh" {
+					return rt.Errorf("--days 不能为负数")
+				}
+				return rt.Errorf("--days cannot be negative")
+			}
 			bar, err := findBar(rt, rt.Arg(0))
 			if err != nil {
 				return err

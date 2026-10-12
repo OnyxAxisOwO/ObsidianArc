@@ -46,11 +46,11 @@ const (
 // would hide that somebody tried.
 func sanitize(value string) string {
 	value = strings.ToValidUTF8(value, "�")
-	if strings.IndexFunc(value, isControl) < 0 {
+	if strings.IndexFunc(value, isStripped) < 0 {
 		return value
 	}
 	return strings.Map(func(r rune) rune {
-		if isControl(r) {
+		if isStripped(r) {
 			return -1
 		}
 		return r
@@ -80,12 +80,25 @@ func sanitizeText(value string) string {
 	}, value)
 }
 
-func isTextControl(r rune) bool { return r != '\n' && r != '\t' && isControl(r) }
+func isTextControl(r rune) bool { return r != '\n' && r != '\t' && isStripped(r) }
 
 // C0, DEL, and C1 — the last because a lone 0x9B is a CSI introducer in its
 // own right on terminals that still decode them.
 func isControl(r rune) bool {
 	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// isStripped is what sanitize and sanitizeText remove: the control characters,
+// and the format characters that change how the text around them is drawn.
+func isStripped(r rune) bool { return isControl(r) || isFormatCharacter(r) }
+
+// isFormatCharacter is the bidi overrides and isolates, the direction marks, the
+// zero-width characters and the byte-order mark. None of them is drawn itself,
+// so they are not control characters, but an override in a stranger's text
+// would show an administrator a line that reads differently from what is stored.
+func isFormatCharacter(r rune) bool {
+	return r == 0x061c || (r >= 0x200b && r <= 0x200f) || (r >= 0x202a && r <= 0x202e) ||
+		(r >= 0x2066 && r <= 0x2069) || r == 0xfeff
 }
 
 // minColumnWidth is the floor RenderTable shrinks a column to before it

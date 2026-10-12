@@ -100,6 +100,11 @@ func (h *Handlers) grantBonus(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
 		return err
 	}
+	// Neither branch below takes a negative count, so it would leave the expiry at
+	// zero, which the store keeps as a credit that never expires.
+	if body.Days < 0 {
+		return httpx.BadRequest("Days cannot be negative.")
+	}
 	barID := r.PathValue("id")
 	bar, err := h.Bonus.Bar(r.Context(), nil, barID)
 	if err != nil {

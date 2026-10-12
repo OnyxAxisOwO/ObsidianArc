@@ -138,7 +138,7 @@ var (
 	ErrNamedBatch       = errors.New("invite: a batch is generated, so it cannot be given a code of its own")
 	ErrInvalidCount     = errors.New("invite: count must be between 1 and 500")
 	ErrInvalidMaxUses   = errors.New("invite: max uses must be between 0 and 100000")
-	ErrInvalidGroupDays = errors.New("invite: group days must be between 0 and 3650, and group_days_max must be 0 or at least group_days")
+	ErrInvalidGroupDays = errors.New("invite: group days must be between 0 and 3650, group_days_max must be 0 or at least group_days, and a range must start at 1 or more")
 	ErrGroupRequired    = errors.New("invite: group_days_max requires a group")
 	// A partner code's own four required fields — see Create. One error for
 	// all of them, the same reasoning ErrInvalid collapses a guessed code's
@@ -454,10 +454,15 @@ func (s *Store) Consume(ctx context.Context, q database.Queryer, rawCode string,
 // cannot drift into disagreeing about what "days" means.
 func randomGroupDays(groupDays, groupDaysMax int) int64 {
 	if groupDaysMax > groupDays {
+		// A range never draws zero. Zero is permanent membership everywhere
+		// downstream, so a draw of it from "0 to N" would hand out a membership
+		// that never ends. Create refuses a range that starts at zero, so this
+		// floor only matters for codes that were stored before that check.
+		low := max(groupDays, 1)
 		// math/rand/v2, not crypto/rand: a trial length is not a secret,
 		// and this only has to spread registrations across a range, not
 		// resist being guessed.
-		return int64(groupDays + mathrand.IntN(groupDaysMax-groupDays+1))
+		return int64(low + mathrand.IntN(groupDaysMax-low+1))
 	}
 	return int64(groupDays)
 }
