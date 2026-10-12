@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode"
@@ -193,13 +194,7 @@ func (m *Manager) guardsOf(l *loaded) map[string][]auth.Guard {
 // into the guard's. A backend that cannot answer refuses: a check that is
 // down must not become a door that is open.
 func (m *Manager) judge(ctx context.Context, l *loaded, name string, req auth.GuardRequest) (auth.Verdict, error) {
-	var out struct {
-		Verdict string `json:"verdict"`
-		Reason  string `json:"reason"`
-		Status  int    `json:"status"`
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}
+	var out guardAnswer
 	err := m.invoke(ctx, l, wasm.CallInfo{IP: req.IP}, "guard", map[string]any{
 		"name": name, "action": req.Action, "token": req.Token, "ip": req.IP, "username": req.Username,
 	}, &out, nil)
@@ -208,27 +203,53 @@ func (m *Manager) judge(ctx context.Context, l *loaded, name string, req auth.Gu
 		if errors.As(err, &ge) && deliberate(ge) {
 			return auth.Verdict{}, &auth.GuardRefusal{Err: guestHTTPError(ge), Reason: ge.Code}
 		}
-		return auth.Verdict{}, &auth.GuardRefusal{
-			Err:    httpx.UnavailableCode("plugin_unavailable", "Verification is unavailable right now. Try again shortly.").WithCause(err),
-			Reason: "plugin unavailable",
-		}
+		return auth.Verdict{}, unavailableGuard(err)
 	}
-	switch out.Verdict {
+	return out.verdict()
+}
+
+// guardAnswer is what a guard's backend says about a visitor.
+type guardAnswer struct {
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason"`
+	Status  int    `json:"status"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// verdict is the guard's answer to the visitor. Only an explicit allow lets
+// the visitor through: an empty or unrecognised verdict is an answer nobody
+// meant, and the zero auth.Verdict is unrestricted, so letting it fall
+// through would open the door for a backend that spoke a different dialect.
+func (a guardAnswer) verdict() (auth.Verdict, error) {
+	switch a.Verdict {
+	case "allow":
+		return auth.Verdict{}, nil
 	case "refuse":
 		// Any error status: a check that is down is told apart from a visitor
 		// who failed it by a 503, which a monitor can count.
-		status := out.Status
+		status := a.Status
 		if status < 400 || status > 599 {
 			status = 403
 		}
 		return auth.Verdict{}, &auth.GuardRefusal{
-			Err:    &httpx.Error{Status: status, Code: out.Code, Message: out.Message},
-			Reason: out.Reason,
+			Err:    &httpx.Error{Status: status, Code: a.Code, Message: a.Message},
+			Reason: a.Reason,
 		}
 	case "restrict":
-		return auth.Verdict{Restrict: true, Reason: out.Reason}, nil
+		return auth.Verdict{Restrict: true, Reason: a.Reason}, nil
 	}
-	return auth.Verdict{}, nil
+	return auth.Verdict{}, unavailableGuard(fmt.Errorf("guard answered %q", a.Verdict))
+}
+
+// unavailableGuard is the refusal a check that could not answer gets. The
+// cause is kept for the log; the visitor is told only that verification is
+// down.
+func unavailableGuard(cause error) error {
+	return &auth.GuardRefusal{
+		Err:    httpx.UnavailableCode("plugin_unavailable", "Verification is unavailable right now. Try again shortly.").WithCause(cause),
+		Reason: "plugin unavailable",
+	}
 }
 
 // siteBlock is the plugin's part of /api/site: what its backend last said for
@@ -302,6 +323,13 @@ func (m *Manager) commandsOf(l *loaded) []console.Command {
 		for _, f := range c.Flags {
 			cmd.Flags = append(cmd.Flags, console.Flag{Name: f.Name, Hint: consoleText(f.Hint), Value: f.Value})
 		}
+		// A command with no grant named was open to every administrator. Its
+		// backend runs with the package's own host permissions and cannot tell
+		// which administrator asked, so an unnamed grant means the widest one a
+		// terminal can hold.
+		if cmd.Permission == "" {
+			cmd.Permission = "super_admin"
+		}
 		cmd.Run = func(ctx context.Context, rt *console.Runtime) error { return m.runCommand(ctx, l, c, rt) }
 		out = append(out, cmd)
 	}
@@ -335,17 +363,7 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 	st := &callState{console: rt}
 	err := m.invoke(ctx, l, info, "console", arg, &out, st)
 	if err != nil {
-		var ge *wasm.GuestError
-		if errors.As(err, &ge) && deliberate(ge) {
-			// A command that passed a refused Call on: what the console draws
-			// is the endpoint's own error, code and all, as it is for a
-			// command that was compiled in.
-			if ge.Code == "console" && st.consoleErr != nil {
-				return st.consoleErr
-			}
-			return errors.New(ge.Message)
-		}
-		return fmt.Errorf("the plugin failed: %w", err)
+		return commandFailure(err, st.consoleErr)
 	}
 	for _, line := range out.Out {
 		switch line.Kind {
@@ -369,6 +387,26 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 		}
 	}
 	return nil
+}
+
+// commandFailure is what the console draws for a command whose backend
+// failed. A deliberate refusal is shown as written. Anything else is the
+// backend's own failure, whose text may name a credential it was handed, so
+// it goes to the log and the operator sees a fixed sentence, as a guard's
+// visitor does.
+func commandFailure(err error, consoleErr error) error {
+	var ge *wasm.GuestError
+	if errors.As(err, &ge) && deliberate(ge) {
+		// A command that passed a refused Call on: what the console draws is
+		// the endpoint's own error, code and all, as it is for a command that
+		// was compiled in.
+		if ge.Code == "console" && consoleErr != nil {
+			return consoleErr
+		}
+		return errors.New(ge.Message)
+	}
+	slog.Error("plugin: a console command failed", "error", err)
+	return errors.New("the plugin failed; the server log has the details")
 }
 
 // plainText drops the control characters a terminal would obey: the escape
