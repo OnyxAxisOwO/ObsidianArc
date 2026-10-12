@@ -874,7 +874,19 @@ func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 		in.SortOrder = *body.SortOrder
 	}
 
-	record, err := h.groups.Create(r.Context(), nil, in)
+	// A group made as the default clears the one the instance has, which is the
+	// same change deleteGroup and updateGroup make under the instance lock.
+	// Unlocked, two creates at once can each clear the other's default before
+	// either commits, and leave the instance with none.
+	var record group.Group
+	err := h.db.Tx(r.Context(), func(tx *database.Tx) error {
+		if err := settings.Lock(r.Context(), tx); err != nil {
+			return err
+		}
+		created, err := h.groups.Create(r.Context(), tx, in)
+		record = created
+		return err
+	})
 	if err != nil {
 		return translateGroupError(err)
 	}

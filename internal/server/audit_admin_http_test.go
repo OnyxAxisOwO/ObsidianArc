@@ -793,3 +793,27 @@ func TestUsersGrantDoesNotListAnAdministratorsLimit(t *testing.T) {
 		t.Fatalf("super administrator's list is missing a limit: %s", got)
 	}
 }
+
+// Creating a group as the default clears the default the group before it held,
+// as a change of default does. Two creates at once each clear the other's
+// default before it is committed, so the instance could finish with none.
+func TestConcurrentDefaultCreatesKeepOneDefault(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	for round := range 40 {
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				in.do(http.MethodPost, "/api/admin/groups",
+					map[string]any{"name": fmt.Sprintf("race-%02d-%d", round, i), "is_default": true}, founder)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		defaultGroupID(t, in, founder)
+	}
+}
