@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 const (
@@ -25,6 +27,12 @@ const (
 
 type Handlers struct {
 	service *Service
+
+	// The gate every write an account makes must pass: an import writes a
+	// conversation per thread, so it spends disk the same way a message or an
+	// upload does. Wired to the same check as the chat, so an unconfirmed
+	// address is refused here too. Nil admits everyone.
+	Writable func(ctx context.Context, account user.User) error
 
 	// What is running right now. In this process's memory and behind a mutex,
 	// unlike the stored-message ceiling, because the thing being limited is
@@ -124,7 +132,14 @@ func (h *Handlers) export(w http.ResponseWriter, r *http.Request) error {
 func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
 
-	// Before the body is read, not after: the decode is the expensive part.
+	// Before the slot is taken, so a refused account does not hold one of the
+	// four, and before the body is read: the decode is the expensive part.
+	if h.Writable != nil {
+		if err := h.Writable(r.Context(), account); err != nil {
+			return err
+		}
+	}
+
 	release, err := h.enter(w, account.ID, &h.imports, maxConcurrentImports)
 	if err != nil {
 		return err
