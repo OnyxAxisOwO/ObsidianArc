@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -80,18 +81,33 @@ func (p Provider) Masked() Provider {
 }
 
 // keepEchoedHeaders reads a header value that is the hint of the stored value
-// as "keep what is stored". Responses show headers as hints (see Masked), so a
-// client that sends back what it was shown sends hints, and these must not
-// overwrite the values they stand for. Keys work the same way, by position.
-func keepEchoedHeaders(sent, stored map[string]string) map[string]string {
+// under the same name as "keep what is stored". Responses show headers as
+// hints (see Masked), so a client that sends back what it was shown sends
+// hints, and these must not overwrite the values they stand for. Keys work the
+// same way, by position.
+//
+// A hint with no stored value under its name is refused rather than kept. A
+// header renamed in the request would otherwise be saved with the mask as its
+// value, and every call would send that mask upstream in place of the secret.
+func keepEchoedHeaders(sent, stored map[string]string) (map[string]string, error) {
 	out := make(map[string]string, len(sent))
 	for name, value := range sent {
 		if original, ok := stored[name]; ok && value == secret.Hint(original) {
 			value = original
+		} else if isHint(value) {
+			return nil, ErrHiddenHeader
 		}
 		out[name] = value
 	}
-	return out
+	return out, nil
+}
+
+// isHint reports whether value has the shape secret.Hint gives: the mask, with
+// at most four characters after it. A value typed by hand has that shape only
+// when it was meant to.
+func isHint(value string) bool {
+	n := utf8.RuneCountInString(value)
+	return (n == 4 || n == 8) && strings.HasPrefix(value, "••••")
 }
 
 // KeyRotation is how a call picks one of a provider's keys.
@@ -111,6 +127,9 @@ var (
 	ErrInvalidKind  = errors.New("provider: kind must be openai or anthropic")
 	ErrInvalidStyle = errors.New("provider: unknown reasoning style")
 	ErrKeyRequired  = errors.New("provider: an API key is required")
+	// A header value the list showed as a hint is not a value. Stored as one,
+	// the mask would travel upstream in place of the secret, so it is refused.
+	ErrHiddenHeader = errors.New("provider: a header value shown as a hint cannot be saved; enter the value")
 	// The key is sent wherever the base URL points, so it only goes to a
 	// new address when whoever pointed it there typed it again. Otherwise the
 	// write-only key was one edit and one "detect models" away from anybody
@@ -205,12 +224,20 @@ type CreateInput struct {
 func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Provider, error) {
 	// A duplicate's headers are the ones the request sends, with any value the
 	// list showed as a hint read back as the stored one. See keepEchoedHeaders.
-	if in.CopyKeyFrom != "" && in.Headers != nil {
-		source, err := s.ByID(ctx, in.CopyKeyFrom)
+	if in.Headers != nil {
+		var stored map[string]string
+		if in.CopyKeyFrom != "" {
+			source, err := s.ByID(ctx, in.CopyKeyFrom)
+			if err != nil {
+				return Provider{}, err
+			}
+			stored = source.Headers
+		}
+		headers, err := keepEchoedHeaders(in.Headers, stored)
 		if err != nil {
 			return Provider{}, err
 		}
-		in.Headers = keepEchoedHeaders(in.Headers, source.Headers)
+		in.Headers = headers
 	}
 	record, err := validate(Provider{
 		ID:               id.New(),
@@ -410,7 +437,11 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update, superA
 			next.AllowInsecure = *in.AllowInsecure
 		}
 		if in.Headers != nil {
-			next.Headers = keepEchoedHeaders(*in.Headers, current.Headers)
+			kept, err := keepEchoedHeaders(*in.Headers, current.Headers)
+			if err != nil {
+				return err
+			}
+			next.Headers = kept
 		}
 		if in.AnthropicVersion != nil {
 			next.AnthropicVersion = *in.AnthropicVersion

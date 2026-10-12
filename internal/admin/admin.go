@@ -475,6 +475,8 @@ func translateProviderError(err error) error {
 		return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can set or change a provider's base URL.")
 	case errors.Is(err, provider.ErrTooManyHeaders):
 		return httpx.BadRequest("At most 20 extra headers.")
+	case errors.Is(err, provider.ErrHiddenHeader):
+		return httpx.BadRequestCode("header_hidden", "A header value shown as a hint cannot be saved. Enter the value again.")
 	case errors.Is(err, provider.ErrTooManyKeys):
 		return httpx.BadRequest("At most %d API keys.", provider.MaxAPIKeys)
 	case errors.Is(err, provider.ErrKeyTooLong):

@@ -678,3 +678,78 @@ func TestProviderHeaderValuesStayWithTheServer(t *testing.T) {
 		t.Fatalf("the duplicate stored %q for the header, not the value it was copied from", stored.Headers["X-Gateway-Token"])
 	}
 }
+
+// A header value the list showed as a hint is read back as the stored value
+// only under the name it was stored under. A duplicate that keeps no key still
+// has to read it back, since the browser sends the hints either way. A hint
+// with nothing stored to stand for it is refused: saved, it would be the
+// header's value, and every call would send the mask upstream in place of the
+// secret.
+func TestEchoedHeaderHintsAreReadBackOrRefused(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	grantAdmin(t, in, founder, operator, "providers")
+	const token = "gw-token-value-7777"
+	const hint = "••••7777"
+
+	created := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "gateway", "kind": "openai", "base_url": "https://gateway.example.com/v1",
+		"api_key": "sk-test-gateway-key", "headers": map[string]string{"X-Gateway-Token": token},
+	}, founder)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	providerID := decode[struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}](t, created).Provider.ID
+	storedToken := func() string {
+		t.Helper()
+		stored, err := provider.NewStore(in.db, nil).ByID(context.Background(), providerID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stored.Headers["X-Gateway-Token"]
+	}
+
+	renamed := in.do(http.MethodPatch, "/api/admin/providers/"+providerID,
+		map[string]any{"headers": map[string]string{"X-Renamed-Token": hint}}, operator)
+	if renamed.Code != http.StatusBadRequest {
+		t.Fatalf("a renamed header saved its hint: %d %s", renamed.Code, renamed.Body.String())
+	}
+	if got := storedToken(); got != token {
+		t.Fatalf("the refused rename changed the stored value to %q", got)
+	}
+
+	copied := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "gateway copy", "kind": "openai", "base_url": "https://gateway.example.com/v1",
+		"api_key": "sk-typed-second-key", "copy_key_from": providerID,
+		"keep_keys": []int{}, "key_hints": []string{},
+		"headers": map[string]string{"X-Gateway-Token": hint, "X-Title": "Arc"},
+	}, founder)
+	if copied.Code != http.StatusCreated {
+		t.Fatalf("duplicate that keeps no key: %d %s", copied.Code, copied.Body.String())
+	}
+	copyID := decode[struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}](t, copied).Provider.ID
+	stored, err := provider.NewStore(in.db, nil).ByID(context.Background(), copyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Headers["X-Gateway-Token"] != token {
+		t.Fatalf("the duplicate stored %q, not the value of the header it copies", stored.Headers["X-Gateway-Token"])
+	}
+
+	bare := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "bare", "kind": "openai", "base_url": "https://other.example.com/v1",
+		"api_key": "sk-other-key", "headers": map[string]string{"X-Gateway-Token": hint},
+	}, founder)
+	if bare.Code != http.StatusBadRequest {
+		t.Fatalf("a hint with no source was saved: %d %s", bare.Code, bare.Body.String())
+	}
+}
