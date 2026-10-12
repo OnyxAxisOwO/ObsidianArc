@@ -371,3 +371,32 @@ func TestPaidReviewAndProbeCallsAreLimited(t *testing.T) {
 		t.Fatalf("a repeat probe inside the cooldown: %d %s", second.Code, second.Body.String())
 	}
 }
+
+// An import and an ordinary save must agree on the bounds of a numeric
+// setting. The attachment retention bounds were checked by hand in the save
+// only, so an import carried out-of-range values into storage.
+func TestImportSkipsOutOfRangeAttachmentRetention(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	imported := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
+		"attachments.purge_after_days": "99999",
+		"attachments.orphan_minutes":   "1",
+	}, founder)
+	if imported.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", imported.Code, imported.Body.String())
+	}
+	skipped := decode[map[string]any](t, imported)["skipped"].([]any)
+	if len(skipped) != 2 {
+		t.Fatalf("out-of-range retention was not skipped: %v", skipped)
+	}
+
+	saved := in.do(http.MethodPut, "/api/admin/settings", map[string]string{"attachments.purge_after_days": "99999"}, founder)
+	if saved.Code != http.StatusBadRequest {
+		t.Fatalf("save of the same value: %d %s", saved.Code, saved.Body.String())
+	}
+	orphan := in.do(http.MethodPut, "/api/admin/settings", map[string]string{"attachments.orphan_minutes": "1"}, founder)
+	if orphan.Code != http.StatusBadRequest {
+		t.Fatalf("save of the same orphan window: %d %s", orphan.Code, orphan.Body.String())
+	}
+}

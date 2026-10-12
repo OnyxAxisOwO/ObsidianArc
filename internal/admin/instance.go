@@ -358,6 +358,10 @@ var numericBounds = map[string][2]int{
 	settings.ThemeWallpaperBlur: {0, 40},
 	settings.ThemeTranslucency:  {0, 90},
 	settings.ThemePanelBlur:     {0, 40},
+	// Checked in one place for both the save and the import. Checked by hand in
+	// the save alone, an import used to store a retention the save refuses.
+	settings.AttachmentPurgeDays:  {0, 3650},
+	settings.AttachmentOrphanMins: {5, 1440},
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
@@ -467,16 +471,6 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	if raw, present := body[settings.AttachmentPurgeDaily]; present && strings.TrimSpace(raw) != "" {
 		if _, _, ok := conversation.ParseDailyTime(raw); !ok {
 			return httpx.BadRequest("The daily cleanup time must be HH:MM, or empty for never.")
-		}
-	}
-	if raw, present := body[settings.AttachmentPurgeDays]; present {
-		if days, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || days < 0 || days > 3650 {
-			return httpx.BadRequest("Keep images for between 0 and 3650 days; 0 means no age limit.")
-		}
-	}
-	if raw, present := body[settings.AttachmentOrphanMins]; present {
-		if mins, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || mins < 5 || mins > 1440 {
-			return httpx.BadRequest("Unsent uploads must be kept for between 5 and 1440 minutes.")
 		}
 	}
 	for key, bounds := range numericBounds {
