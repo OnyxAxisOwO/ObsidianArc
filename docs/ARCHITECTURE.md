@@ -219,10 +219,18 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 26.30 MB (22.61 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 243.03 kB to open the chat (200.71 JS + 42.32 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 26.43 MB (22.72 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 243.11 kB to open the chat (200.79 JS + 42.32 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-12 (UTC), after the second audit's fixes were merged:
+the dictionary carries the new refusals and the settings controls show their
+keys. 243.11 kB (200.79 kB JS + 42.32 kB CSS), up 0.08 kB from the figure
+below; the Chinese dictionary is 48.80 kB, the backoffice chunk 126.35 kB and
+the terminal 7.54 kB. The binary is 26.43 MB (22.72 MB without SQLite), built
+with Go 1.27.1 for Linux amd64 with -trimpath and -s -w; the same build of the
+commit before these fixes is 26.33 MB, so they add 0.10 MB.
 
 Remeasured on 2026-10-12 (UTC), after the review of the security fixes. The
 settings pages now send only the keys they changed, the terminal keeps its
