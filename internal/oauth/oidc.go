@@ -184,12 +184,25 @@ func identifyOIDC(ctx context.Context, client *http.Client, creds Credentials, t
 		}
 	}
 
-	email := strings.TrimSpace(userinfo.Email)
+	// The address and its verified flag come from the same source. A flag
+	// attests to the one address its own document named: letting the ID
+	// token's flag vouch for a userinfo address (or the reverse) would make
+	// one document's verification cover an address it never mentioned.
+	userEmail := strings.TrimSpace(userinfo.Email)
+	idEmail := strings.TrimSpace(idClaims.Email)
+	email := userEmail
 	if email == "" {
-		email = strings.TrimSpace(idClaims.Email)
+		email = idEmail
 	}
-
-	emailVerified := bool(userinfo.EmailVerified) || bool(idClaims.EmailVerified) || creds.TrustEmail
+	emailVerified := creds.TrustEmail
+	if email != "" {
+		if email == userEmail && bool(userinfo.EmailVerified) {
+			emailVerified = true
+		}
+		if email == idEmail && bool(idClaims.EmailVerified) {
+			emailVerified = true
+		}
+	}
 
 	identity := Identity{
 		Provider: "oidc",

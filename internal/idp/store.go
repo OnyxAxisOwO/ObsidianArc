@@ -12,6 +12,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
 // Everything this feature stores: the applications, what each account has
@@ -103,9 +104,13 @@ func (s *Store) CreateApp(ctx context.Context, in CreateAppInput) (App, string, 
 		hash = Digest(secret)
 	}
 
-	// The ceiling is a check followed by an insert, so it holds the instance
-	// lock the way every other instance-wide count does.
+	// The ceiling is a check followed by an insert. Without the instance lock
+	// two creates can both count 99 and both insert, and the default isolation
+	// on Postgres does not stop that.
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := settings.Lock(ctx, tx); err != nil {
+			return err
+		}
 		var count int
 		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM oauth_apps`).Scan(&count); err != nil {
 			return fmt.Errorf("idp: count applications: %w", err)

@@ -10,6 +10,12 @@ type tokenBucket struct {
 	lastUpdate time.Time
 }
 
+// maxBuckets bounds the map. Callers choose the keys (a leaderboard keys on the
+// client address and the account), so the number of keys is whatever a caller
+// can produce, and memory must not follow it. The pow tracker keeps the same
+// ceiling for the same reason.
+const maxBuckets = 50_000
+
 // TokenBucketLimiter throttles requests using a token bucket algorithm.
 // It is stored in memory: analytics dashboards and leaderboards do not warrant
 // database-backed state, and dropping counts across a process restart is an
@@ -48,6 +54,20 @@ func (l *TokenBucketLimiter) AllowN(key string, now time.Time, n float64) bool {
 
 	b, ok := l.buckets[key]
 	if !ok {
+		// Checked before the insert, so a refused key leaves nothing behind.
+		// At the ceiling the idle keys are dropped first, but the walk runs at
+		// most once a second: a flood of new keys must not make every request
+		// pay for a scan. Still full after that, the key is refused rather than
+		// admitted untracked, since a caller who cannot be counted cannot be
+		// limited.
+		if len(l.buckets) >= maxBuckets {
+			if now.Sub(l.lastSwept) >= time.Second {
+				l.sweepLocked(now)
+			}
+			if len(l.buckets) >= maxBuckets {
+				return false
+			}
+		}
 		b = &tokenBucket{
 			tokens:     l.burst,
 			lastUpdate: now,
