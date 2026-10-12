@@ -79,8 +79,8 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 		if !isValidID(body.ID) {
 			return httpx.BadRequest("An account is required.")
 		}
-		if _, err := h.users.ByID(r.Context(), nil, body.ID); err != nil {
-			return translateUserError(err)
+		if err := h.authorisePolicyScope(r, quota.ScopeUser, body.ID, false); err != nil {
+			return err
 		}
 		if err := h.quota.Reset(r.Context(), []string{body.ID}); err != nil {
 			return httpx.Internal(err)
@@ -560,6 +560,29 @@ func (h *Handlers) listPolicies(w http.ResponseWriter, r *http.Request) error {
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"policies": visible})
 }
 
+// authorisePolicyScope applies the rule every other delegated write to an
+// account answers to, to a limit written on it. canPolicy only says whether the
+// actor may write user-scope limits at all, so a users grant could otherwise
+// set or clear the quota of a super administrator, or of a peer it may not
+// manage. Deleting the limit of an account that no longer exists is allowed,
+// because that is the only way to clear the row it left behind.
+func (h *Handlers) authorisePolicyScope(r *http.Request, scope quota.Scope, scopeID string, deleting bool) error {
+	if scope != quota.ScopeUser {
+		return nil
+	}
+	target, err := h.users.ByID(r.Context(), nil, scopeID)
+	if err != nil {
+		if deleting && errors.Is(err, user.ErrNotFound) {
+			return nil
+		}
+		return translateUserError(err)
+	}
+	if target.IsAdmin() && !auth.MustUser(r.Context()).CanManageAdmin(target) {
+		return permissionDenied()
+	}
+	return nil
+}
+
 type policyRequest struct {
 	Scope   quota.Scope                   `json:"scope"`
 	ScopeID string                        `json:"scope_id"`
@@ -600,6 +623,9 @@ func (h *Handlers) savePolicy(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
+	if err := h.authorisePolicyScope(r, body.Scope, body.ScopeID, false); err != nil {
+		return err
+	}
 	saved, err := h.quota.Policies().Save(r.Context(), quota.Policy{
 		Scope:   body.Scope,
 		ScopeID: body.ScopeID,
@@ -631,6 +657,9 @@ func (h *Handlers) deletePolicy(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("Scope must be global, group or user.")
 	}
 
+	if err := h.authorisePolicyScope(r, scope, scopeID, true); err != nil {
+		return err
+	}
 	if err := h.quota.Policies().Delete(r.Context(), scope, scopeID); err != nil {
 		return httpx.Internal(err)
 	}

@@ -89,3 +89,47 @@ func TestDelegateCannotMoveOrRevokeAPeersCards(t *testing.T) {
 		t.Fatalf("super administrator reschedule: %d %s", res.Code, res.Body.String())
 	}
 }
+
+// A users grant may write a limit on an ordinary account. It may not write one
+// on a super administrator or on a peer it cannot manage, and the same goes for
+// clearing one or resetting the account's quota. canPolicy alone decided this
+// before, and it only looks at the grant.
+func TestUserScopedLimitsFollowTheAdministratorRule(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	peer := in.register("peer", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "users")
+	grantAdmin(t, in, founder, peer, "usage")
+
+	limit := func(scopeID string) map[string]any {
+		return map[string]any{
+			"scope": "user", "scope_id": scopeID,
+			"windows": map[string]any{"5h": map[string]any{"enabled": true, "tokens": 1000}},
+		}
+	}
+	if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(founder.userID), operator); res.Code != http.StatusForbidden {
+		t.Fatalf("users-only delegate limited a super administrator: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(peer.userID), operator); res.Code != http.StatusForbidden {
+		t.Fatalf("users-only delegate limited a peer administrator: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(member.userID), operator); res.Code != http.StatusOK {
+		t.Fatalf("ordinary account limit: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodDelete, "/api/admin/quota/policies/user?scope_id="+founder.userID, nil, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("users-only delegate cleared a super administrator's limit: %d %s", res.Code, res.Body.String())
+	}
+	reset := map[string]any{"scope": "user", "id": founder.userID}
+	if res := in.do(http.MethodPost, "/api/admin/usage/reset", reset, peer); res.Code != http.StatusForbidden {
+		t.Fatalf("usage delegate reset a super administrator's quota: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPost, "/api/admin/usage/reset", map[string]any{"scope": "user", "id": member.userID}, peer); res.Code != http.StatusOK {
+		t.Fatalf("usage delegate reset an ordinary account: %d %s", res.Code, res.Body.String())
+	}
+	// A super administrator writes any of them.
+	if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(peer.userID), founder); res.Code != http.StatusOK {
+		t.Fatalf("super administrator limit: %d %s", res.Code, res.Body.String())
+	}
+}
