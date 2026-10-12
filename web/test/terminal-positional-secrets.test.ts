@@ -21,6 +21,9 @@ describe('positional passwords are kept out of the history', () => {
     'user list --q passwd',
     'user passwdx alice',
     'user edit alice --nickname Bob',
+    // Watching an ordinary command is not a secret, whatever it repeats.
+    'watch usage rpm',
+    'watch --interval 10s --count 6 health status',
   ])('still keeps ordinary lines in history: %s', (line) => {
     expect(isSensitiveTerminalLine(line)).toBe(false);
   });
