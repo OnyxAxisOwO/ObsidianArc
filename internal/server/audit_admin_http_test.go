@@ -481,3 +481,38 @@ func TestAccountResetAndDeletionAreRecordedInTheSecurityLog(t *testing.T) {
 		t.Fatalf("security log entries by the delegate = %v", seen)
 	}
 }
+
+// The member picker belongs to the groups grant, which may add people to a
+// group and may not read their addresses. Its search used to match the email
+// address too, so a groups-only administrator could confirm an address by
+// searching for it.
+func TestMemberPickerDoesNotMatchEmailAddresses(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "groups")
+	if res := in.do(http.MethodPatch, "/api/admin/users/"+member.userID, map[string]any{"email": "private-address@example.com"}, founder); res.Code != http.StatusOK {
+		t.Fatalf("set email: %d %s", res.Code, res.Body.String())
+	}
+
+	total := func(as *session, query string) int {
+		t.Helper()
+		res := in.do(http.MethodGet, "/api/admin/member-options?q="+query, nil, as)
+		if res.Code != http.StatusOK {
+			t.Fatalf("member options %q: %d %s", query, res.Code, res.Body.String())
+		}
+		return decode[struct {
+			Total int `json:"total"`
+		}](t, res).Total
+	}
+	if got := total(operator, "private-address"); got != 0 {
+		t.Fatalf("groups-only administrator found an account by its email: %d", got)
+	}
+	if got := total(operator, "member"); got != 1 {
+		t.Fatalf("groups-only administrator cannot find a member by name: %d", got)
+	}
+	if got := total(founder, "private-address"); got != 1 {
+		t.Fatalf("super administrator's email search: %d", got)
+	}
+}
