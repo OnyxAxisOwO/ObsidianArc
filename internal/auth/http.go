@@ -801,6 +801,7 @@ func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
 	}, body.CurrentPassword)
 	if err != nil {
 		if errors.Is(err, ErrPasswordRequired) || errors.Is(err, ErrCurrentPasswordWrong) ||
+			errors.Is(err, ErrReauthRequired) || errors.Is(err, ErrSessionNotFound) ||
 			errors.As(err, new(*RateLimitError)) {
 			return TranslateTwoFactorError(w, err)
 		}

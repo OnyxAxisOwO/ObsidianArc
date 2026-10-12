@@ -147,11 +147,8 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		if err := s.checkFields(in.Fields); err != nil {
 			return user.User{}, err
 		}
-		if allowed, retryAfter := s.signups.allow(
-			s.settings.Int(settings.SignupsPerMinute, 0),
-			s.settings.Int(settings.SignupsPerHour, 0),
-		); !allowed {
-			return user.User{}, &SignupThrottleError{RetryAfter: retryAfter}
+		if err := s.checkSignupRate(ctx, tx); err != nil {
+			return user.User{}, err
 		}
 		if err := s.checkSignupIP(ctx, tx, in.IP); err != nil {
 			return user.User{}, err
@@ -266,6 +263,9 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 	// leaves a gap in which the next queued sign-up passes a throttle this
 	// one should already have moved.
 	s.signups.record()
+	if err := recordAccountCreation(ctx, tx); err != nil {
+		return user.User{}, err
+	}
 	// RewardInvite is deliberately not called here: this method runs inside
 	// tx, a transaction it was handed rather than one it owns, and the use
 	// applyInvite just recorded through it is not visible outside tx until

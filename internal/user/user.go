@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
@@ -288,15 +289,16 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		record.ID, record.Username, strings.ToLower(record.Username),
 		record.Email, strings.ToLower(record.Email), in.PasswordHash, record.Nickname,
 		record.Role, nullable(record.GroupID), record.Status, record.EmailVerified,
-		record.CreatedAt, record.UpdatedAt, in.SignupIP, record.SignupUserAgent, record.APIRestricted,
+		record.CreatedAt, record.UpdatedAt, record.SignupIP, record.SignupUserAgent, record.APIRestricted,
 		record.APIRestrictedUntil, record.APIRestrictionSource, record.BanReason, record.EmailProvenAt,
+		signupRateKey(record.SignupIP),
 	}
 	_, err = q.Exec(ctx, `INSERT INTO users
 		(id, username, username_lower, email, email_lower, password_hash, nickname, avatar, bio,
 		 role, group_id, status, email_verified, created_at, updated_at, last_login_at, signup_ip,
 		 signup_user_agent, api_restricted, api_restricted_until, api_restriction_source, ban_reason,
-		 email_proven_at`+fieldColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?`+fieldMarks+`)`,
+		 email_proven_at, signup_rate_key`+fieldColumns+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?`+fieldMarks+`)`,
 		append(args, fieldArgs...)...)
 	if err != nil {
 		// Both engines report a violated unique index without naming a
@@ -1028,6 +1030,20 @@ func (s *Store) translateUniqueViolation(err error, hadEmail bool) error {
 	}
 }
 
+// signupRateKey is the key an account's sign-up address is counted under. An
+// IPv6 address stands for its /64, the same as every other rate limit in the
+// server, because one subscriber holds the whole block: counted as typed, each
+// address in it would be a separate count and the per-address limit would not
+// hold. The address itself stays exact in signup_ip, which an administrator
+// reads and a session is matched by. An empty address stays empty, so it is
+// never counted.
+func signupRateKey(ip string) string {
+	if strings.TrimSpace(ip) == "" {
+		return ip
+	}
+	return httpx.RateKey(ip)
+}
+
 // CountFromIP is how many accounts one address has created since a moment.
 //
 // The registration limit is checked against this and enforced by it, and both
@@ -1049,7 +1065,7 @@ func (s *Store) CountFromIP(ctx context.Context, q database.Queryer, ip string, 
 
 	var count int
 	err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM users WHERE signup_ip = ? AND created_at >= ?`, ip, since).Scan(&count)
+		`SELECT COUNT(*) FROM users WHERE signup_rate_key = ? AND created_at >= ?`, signupRateKey(ip), since).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("user: count from ip: %w", err)
 	}

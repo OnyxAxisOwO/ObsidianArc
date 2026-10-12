@@ -80,6 +80,7 @@ function refusal(failure: unknown): string {
     case 'two_factor_unavailable': return t('twoFactorUnavailable');
     case 'password_required': return t('twoFactorPasswordRequired');
     case 'current_password_wrong': return t('currentPasswordWrong');
+    case 'reauth_required': return t('reauthForTwoFactor');
     default: return failure.message;
   }
 }

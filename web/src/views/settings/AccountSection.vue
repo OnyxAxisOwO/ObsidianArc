@@ -27,7 +27,7 @@ import { t, type StringKey } from '@/composables/useI18n';
 import { IconGithub, IconGoogle, IconKey, type OaIcon } from '@/icons';
 import { allFields, fieldProblem, fieldValues } from '@/lib/account-fields';
 import { absoluteTime } from '@/lib/format';
-import { connectRefusalText } from '@/lib/refusal';
+import { connectRefusalText, refusalText } from '@/lib/refusal';
 import { pinnedProvider, pluginRefusal } from '@/plugins/registry';
 import { adopt, currentPreferences, currentUser, requireUser, siteInfo } from '@/stores/session';
 import { matchesSettings } from './search';
@@ -304,6 +304,12 @@ async function saveProfile(): Promise<void> {
       profilePassword.value = '';
     } else if (error instanceof ApiError && error.code === 'password_required') {
       profileFlash.value = t('emailChangePasswordHint');
+    } else if (error instanceof ApiError && error.code === 'reauth_required') {
+      profileFlash.value = t('reauthForAddress');
+    } else if (error instanceof ApiError && error.code === 'too_many_attempts') {
+      // Addresses that have used this hour's lookups come back with the wait,
+      // which refusalText words in the reader's language.
+      profileFlash.value = refusalText(error);
     } else if (error instanceof ApiError) {
       profileFlash.value = pluginRefusal(error.code ?? '') ?? error.message;
     } else {

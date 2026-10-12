@@ -16,10 +16,12 @@ import (
 //
 // It is in memory on purpose. The alternative — a counter table — would turn
 // every failed login into a database write, and the alternative to that is a
-// cache tier this project does not want. One process owns the login endpoint,
-// so a map is both correct and free. A restart forgives outstanding
-// penalties, which is an acceptable trade for keeping the deployment at one
-// binary.
+// cache tier this project does not want. A single process owns the login
+// endpoint, so a map is correct and free there. Each process keeps its own
+// map, though: a second instance against the same database has its own budget,
+// so every budget here is multiplied by the number of processes. A restart
+// forgives outstanding penalties, which is an acceptable trade for keeping the
+// deployment at one binary.
 //
 // Two keys are tracked for each attempt: the caller's address, so one host
 // cannot spray many accounts, and the account being targeted, so a botnet

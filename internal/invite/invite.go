@@ -25,6 +25,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -1140,11 +1141,15 @@ func (s *Store) evaluateReward(
 // sameIP catches an inviter rewarding themselves: a second account signed up
 // from the address the first registered from, or from an address the first
 // is still signed in on.
+//
+// Two sign-up addresses are the same party when they share an IPv6 /64, the
+// unit the sign-up limit counts by. A session is matched on its exact address
+// because that is what a session records; the /64 is not stored on it.
 func sameIP(ctx context.Context, q database.Queryer, invitee, inviter user.User) bool {
 	if invitee.SignupIP == "" {
 		return false
 	}
-	if inviter.SignupIP != "" && inviter.SignupIP == invitee.SignupIP {
+	if inviter.SignupIP != "" && httpx.RateKey(inviter.SignupIP) == httpx.RateKey(invitee.SignupIP) {
 		return true
 	}
 	var exists int
