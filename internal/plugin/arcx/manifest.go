@@ -272,6 +272,12 @@ var (
 // not, since the quote swallows the closing parenthesis. A pattern that passed
 // as itself and failed as used would panic in MustWhole on a request.
 func Whole(pattern string) (*regexp.Regexp, error) {
+	// An unmatched ')' is the only way a pattern can close the group early,
+	// and it is refused by the bare compile, not by the wrapped one: the
+	// wrapped form turns a stray ')' into a legal group boundary.
+	if _, err := regexp.Compile(pattern); err != nil {
+		return nil, err
+	}
 	return regexp.Compile(`^(?:` + pattern + `)$`)
 }
 
@@ -535,12 +541,31 @@ func (m *Manifest) validateRoutes() error {
 			if !strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/api/admin/") {
 				return fmt.Errorf("public route %q must live under /api/ and outside /api/admin/", r.Pattern)
 			}
+			if err := publicPathOK(path); err != nil {
+				return fmt.Errorf("public route %q: %w", r.Pattern, err)
+			}
 			if r.Permission != "" {
 				return fmt.Errorf("public route %q has no permission to check", r.Pattern)
 			}
 		default:
 			return fmt.Errorf("route %q: access must be admin or public", r.Pattern)
 		}
+	}
+	return nil
+}
+
+// publicPathOK holds a public route to a shape that cannot reach the admin
+// namespace. The prefix test above reads the text, but the mux decodes escapes
+// in a pattern's literal segments, so "/api/%61dmin/" is "/api/admin/" to it;
+// and a wildcard as the first segment matches "admin" as well. Neither shows
+// in the text prefix, so the first segment is required to be a plain literal.
+func publicPathOK(path string) error {
+	if strings.Contains(path, "%") {
+		return errors.New("percent-escapes are not allowed in the path of a public route")
+	}
+	first, _, _ := strings.Cut(strings.TrimPrefix(path, "/api/"), "/")
+	if first == "" || first == "admin" || strings.ContainsAny(first, "{}") {
+		return errors.New("the first segment after /api/ must be a literal name other than admin")
 	}
 	return nil
 }
@@ -557,6 +582,12 @@ func (m *Manifest) validateConsole() error {
 		seen[c.Name] = true
 		if strings.TrimSpace(c.Summary.EN) == "" {
 			return fmt.Errorf("console command %q needs a summary", c.Name)
+		}
+		// "anyone" would open the command to every account the terminal
+		// admits, and the backend runs with the package's own permissions and
+		// cannot tell which of them asked, so a package cannot grant it.
+		if c.Permission == "anyone" {
+			return fmt.Errorf("console command %q: a package cannot open a command to every terminal user", c.Name)
 		}
 		if c.Permission != "" && c.Permission != "super_admin" && !grantRE.MatchString(c.Permission) {
 			return fmt.Errorf("console command %q: permission %q is not a grant list", c.Name, c.Permission)

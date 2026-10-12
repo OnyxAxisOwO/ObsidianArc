@@ -48,6 +48,12 @@ import (
 type callState struct {
 	tx      *database.Tx
 	console *console.Runtime
+	// What the invocation has written to the log, and how many rows it has
+	// put in the notification and security tables. Both are per invocation:
+	// a call may run for fifteen seconds, and nothing else bounds what it
+	// writes.
+	logCalls, logBytes int
+	auditWrites        int
 	// The console's own error from the last operation that failed, as it was
 	// before it became a message a backend could read: what the terminal draws
 	// (the endpoint's code beside its sentence, JSON when asked) is made from
@@ -77,7 +83,33 @@ const (
 	maxRows = 20000
 	// A single outgoing response, kept in memory and handed to the guest.
 	maxFetchBody = 4 << 20
+	// The log a single invocation may write. Its messages are bytes the
+	// server then keeps, and the host decodes each one into memory outside
+	// the guest's ceiling, so both the count and the total are held.
+	maxLogCalls = 200
+	maxLogBytes = 64 << 10
+	// Rows an invocation may put in the notification and security tables.
+	maxAuditWrites = 100
+	// Lengths a package may give a notification. kind is a name the inbox
+	// formats, link is a path, params is what the template fills in.
+	maxKindLen   = 64
+	maxLinkLen   = 512
+	maxParamsLen = 4 << 10
 )
+
+// forwardedHeaders are the request headers the server reads a client's
+// address or scheme from. A backend's outgoing request must not carry them:
+// the server would take them for a proxy's word when the request comes back
+// from a trusted address, which a plugin's own loopback service is.
+var forwardedHeaders = map[string]bool{
+	"X-Forwarded-For":   true,
+	"X-Forwarded-Proto": true,
+	"X-Forwarded-Host":  true,
+	"X-Real-Ip":         true,
+	"Cf-Connecting-Ip":  true,
+	"Cf-Visitor":        true,
+	"Forwarded":         true,
+}
 
 func denied(perm string) error {
 	return &wasm.HostError{Code: "permission_denied", Message: "the plugin's manifest does not declare the " + perm + " permission"}
@@ -109,6 +141,13 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 		}
 		switch op {
 		case "log":
+			if st.logCalls >= maxLogCalls || st.logBytes+len(raw) > maxLogBytes {
+				// The SDK ignores a failed log call, so the guest carries on;
+				// what it wrote past the budget is simply not kept.
+				return nil, &wasm.HostError{Code: "log_limit", Message: "this call has written as much to the log as it may"}
+			}
+			st.logCalls++
+			st.logBytes += len(raw)
 			var a struct {
 				Level string         `json:"level"`
 				Msg   string         `json:"msg"`
@@ -201,6 +240,21 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if err := json.Unmarshal(raw, &a); err != nil || a.Kind == "" || (a.UserID == "" && !a.All) {
 				return nil, badArg("notify.push needs a kind, and a user_id or all")
 			}
+			if len(a.Kind) > maxKindLen || len(a.Link) > maxLinkLen {
+				return nil, badArg("notify.push: kind is at most %d bytes and link at most %d", maxKindLen, maxLinkLen)
+			}
+			if params, _ := json.Marshal(a.Params); len(params) > maxParamsLen {
+				return nil, badArg("notify.push: params are at most %d bytes", maxParamsLen)
+			}
+			// Everybody's inbox is an administrator's to fill. A public route or a
+			// guard is anybody's request, and one of those could otherwise reach
+			// every account with as many entries as its budget allows.
+			if a.All && !administrator(c.Info.Actor) {
+				return nil, &wasm.HostError{Code: "permission_denied", Message: "only an administrator's request may notify every account"}
+			}
+			if err := st.countAudit(); err != nil {
+				return nil, err
+			}
 			q, err := m.queryer(st, a.TX)
 			if err != nil {
 				return nil, err
@@ -239,13 +293,24 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			default:
 				return nil, badArg("security.record: severity must be info, warning or danger")
 			}
+			if err := st.countAudit(); err != nil {
+				return nil, err
+			}
 			q, err := m.queryer(st, a.TX)
 			if err != nil {
 				return nil, err
 			}
+			// The actor is whoever the request came from, as the core's entries record
+			// it, because a backend that named one could put an administrator's name
+			// on an event that administrator never did.
+			var actorID, actorName string
+			if c.Info.Actor != nil {
+				actorID, actorName = c.Info.Actor.ID, c.Info.Actor.Username
+			}
 			return nil, m.host.Security.Record(c.Ctx, q, securityevents.Event{
 				Event: a.Event, Severity: severity, UserID: a.UserID, Username: a.Username,
-				ActorID: a.ActorID, ActorUsername: a.ActorUsername, IP: a.IP, Source: a.Source,
+				ActorID: actorID, ActorUsername: actorName, IP: a.IP,
+				Source:   securitySource(l.name, a.Source, administrator(c.Info.Actor)),
 				Decision: a.Decision, Reason: truncate(a.Reason, 500),
 			})
 
@@ -591,7 +656,7 @@ func refuseFetchAddress(_, address string, _ syscall.RawConn) error {
 	if err != nil {
 		return err
 	}
-	ip := addrPort.Addr().Unmap().WithZone("")
+	ip := embeddedIPv4(addrPort.Addr().Unmap().WithZone(""))
 	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() ||
 		slices.Contains(cloudMetadataAddrs, ip) {
 		return errors.New("that address is not reachable from a plugin")
@@ -599,13 +664,29 @@ func refuseFetchAddress(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
+// nat64Prefix is the well-known prefix a NAT64 gateway maps IPv4 addresses
+// into. A connection to 64:ff9b::a9fe:a9fe goes through the gateway to
+// 169.254.169.254, so the address it stands for is the one to check.
+var nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+
+// embeddedIPv4 is the IPv4 address ip carries under the NAT64 prefix, or ip
+// itself when it carries none.
+func embeddedIPv4(ip netip.Addr) netip.Addr {
+	if !nat64Prefix.Contains(ip) {
+		return ip
+	}
+	b := ip.As16()
+	return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+}
+
 // cloudMetadataAddrs are the metadata services the link-local range does not
-// reach: Alibaba Cloud's, on a CGNAT address, and AWS's IPv6 one, in a
-// unique-local range. internal/adapter refuses the same two for provider
-// calls, and the two lists have to change together.
+// reach: Alibaba Cloud's, on a CGNAT address, and AWS's and Google's IPv6
+// ones, in unique-local ranges. internal/adapter refuses the same addresses
+// for provider calls, and the two lists have to change together.
 var cloudMetadataAddrs = []netip.Addr{
 	netip.MustParseAddr("100.100.100.200"),
 	netip.MustParseAddr("fd00:ec2::254"),
+	netip.MustParseAddr("fd20:ce::254"),
 }
 
 func (m *Manager) fetch(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -650,6 +731,9 @@ func (m *Manager) fetch(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, badArg("http.fetch: %v", err)
 	}
 	for k, v := range a.Header {
+		if forwardedHeaders[http.CanonicalHeaderKey(k)] {
+			continue
+		}
 		req.Header.Set(k, v)
 	}
 	res, err := fetchClient.Do(req)
@@ -919,4 +1003,52 @@ func (m *Manager) consoleOp(st *callState, op string, raw json.RawMessage) (any,
 		}
 		return map[string]any{"data": data}, nil
 	}
+}
+
+// countAudit charges one row to the invocation's notification and security
+// budget. A backend that loops over its accounts would otherwise write one
+// row per account with nothing to stop it.
+func (st *callState) countAudit() error {
+	if st.auditWrites >= maxAuditWrites {
+		return &wasm.HostError{Code: "write_limit", Message: "this call has written as many notifications and security events as it may"}
+	}
+	st.auditWrites++
+	return nil
+}
+
+// administrator reports whether a call was made by an administrator's own
+// request. Only such a request may speak for every account or for the
+// administrators' own labels.
+func administrator(actor *wasm.Actor) bool {
+	return actor != nil && user.User{Role: user.Role(actor.Role)}.IsAdmin()
+}
+
+// securitySource is the source a package's security event is filed under. A
+// package names its own events and nobody else's: a label the core writes its
+// own events under, or another package's "plugin:" label, is filed under this
+// package instead, so an event never reads as the core's or another package's.
+// Refusing every label would take away the ones a package uses for its own
+// events, which an installed package would then lose without a word.
+// "admin" is the exception an administrator's own request may carry, since an
+// administrator's page records its actions under it and the actor says who.
+func securitySource(plugin, claimed string, admin bool) string {
+	own := "plugin:" + plugin
+	switch {
+	case claimed == "", strings.HasPrefix(claimed, "plugin:"):
+		return own
+	case claimed == "admin":
+		if admin {
+			return claimed
+		}
+		return own
+	case coreSources[claimed]:
+		return own
+	}
+	return claimed
+}
+
+// coreSources are the labels the core writes security events under, apart
+// from "admin", which securitySource handles itself.
+var coreSources = map[string]bool{
+	"backoffice": true, "system": true, "user": true, "ai": true, "chat_speed": true,
 }
