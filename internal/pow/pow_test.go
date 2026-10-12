@@ -1,6 +1,7 @@
 package pow
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
@@ -38,12 +39,12 @@ func TestPoWLifecycleSuccess(t *testing.T) {
 		Nonce:     foundNonce,
 	}
 
-	if err := mgr.Verify(sol); err != nil {
+	if err := mgr.Verify(context.Background(), sol); err != nil {
 		t.Fatalf("verify failed: %v", err)
 	}
 
 	// Replay must fail
-	if err := mgr.Verify(sol); err != ErrReplayed {
+	if err := mgr.Verify(context.Background(), sol); err != ErrReplayed {
 		t.Fatalf("expected ErrReplayed, got %v", err)
 	}
 }
@@ -56,7 +57,7 @@ func TestPoWInvalidCases(t *testing.T) {
 	}
 
 	// 1. Missing solution
-	if err := mgr.Verify(nil); err != ErrMissingSolution {
+	if err := mgr.Verify(context.Background(), nil); err != ErrMissingSolution {
 		t.Fatalf("expected ErrMissingSolution, got %v", err)
 	}
 
@@ -69,7 +70,7 @@ func TestPoWInvalidCases(t *testing.T) {
 		Signature: challenge.Signature,
 		Nonce:     0,
 	}
-	if err := mgr.Verify(expiredSol); err != ErrExpired {
+	if err := mgr.Verify(context.Background(), expiredSol); err != ErrExpired {
 		t.Fatalf("expected ErrExpired, got %v", err)
 	}
 
@@ -82,7 +83,7 @@ func TestPoWInvalidCases(t *testing.T) {
 		Signature: challenge.Signature,
 		Nonce:     challenge.MaxNumber + 1,
 	}
-	if err := mgr.Verify(exceededSol); err != ErrMaxExceeded {
+	if err := mgr.Verify(context.Background(), exceededSol); err != ErrMaxExceeded {
 		t.Fatalf("expected ErrMaxExceeded, got %v", err)
 	}
 
@@ -95,7 +96,7 @@ func TestPoWInvalidCases(t *testing.T) {
 		Signature: "deadbeef",
 		Nonce:     0,
 	}
-	if err := mgr.Verify(tamperedSigSol); err != ErrInvalidSignature {
+	if err := mgr.Verify(context.Background(), tamperedSigSol); err != ErrInvalidSignature {
 		t.Fatalf("expected ErrInvalidSignature, got %v", err)
 	}
 
@@ -108,7 +109,7 @@ func TestPoWInvalidCases(t *testing.T) {
 		Signature: challenge.Signature,
 		Nonce:     0,
 	}
-	if err := mgr.Verify(tamperedMaxSol); err != ErrInvalidSignature {
+	if err := mgr.Verify(context.Background(), tamperedMaxSol); err != ErrInvalidSignature {
 		t.Fatalf("expected ErrInvalidSignature on tampered maxNumber, got %v", err)
 	}
 }

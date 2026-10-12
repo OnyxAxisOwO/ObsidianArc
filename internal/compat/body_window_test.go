@@ -172,7 +172,7 @@ func TestAGenerationOutlastingTheWindowIsNotCutOff(t *testing.T) {
 	f.upstream.reply(answer)
 	const window = 300 * time.Millisecond
 	ts := f.serveWithReadTimeout(t, window)
-	f.handlers.Guard = func(ctx context.Context, _ user.User, _ model.Model) (func(), error) {
+	f.handlers.Guard = func(ctx context.Context, _ user.User, _ model.Model, _ int) (func(), error) {
 		time.Sleep(3 * window)
 		if err := ctx.Err(); err != nil {
 			return nil, err

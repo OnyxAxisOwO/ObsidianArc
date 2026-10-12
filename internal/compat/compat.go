@@ -62,8 +62,9 @@ import (
 // Guard is the spend check, shared with the browser gateway rather than
 // reimplemented: one account, a bounded number of open generations, and an
 // allowance reserved at the worst case. The release it returns gives the
-// reservation back and is called however the turn ends.
-type Guard func(context.Context, user.User, model.Model) (func(), error)
+// reservation back and is called however the turn ends. The int is how many
+// pictures the call may bill, one for anything that is not an image call.
+type Guard func(context.Context, user.User, model.Model, int) (func(), error)
 
 type Handlers struct {
 	settings *settings.Service

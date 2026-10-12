@@ -1,6 +1,7 @@
 package pow
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
@@ -39,10 +40,10 @@ func TestVerifyAtRefusesABaseTierSolutionWithoutSpendingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	baseSolution := solveAudit(t, base)
-	if err := mgr.VerifyAt(baseSolution, 5000); err != ErrBelowTier {
+	if err := mgr.VerifyAt(context.Background(), baseSolution, 5000); err != ErrBelowTier {
 		t.Fatalf("base-tier solution under elevated tier = %v, want ErrBelowTier", err)
 	}
-	if err := mgr.Verify(baseSolution); err != nil {
+	if err := mgr.Verify(context.Background(), baseSolution); err != nil {
 		t.Fatalf("refused solution was spent: %v", err)
 	}
 
@@ -51,10 +52,10 @@ func TestVerifyAtRefusesABaseTierSolutionWithoutSpendingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	elevatedSolution := solveAudit(t, elevated)
-	if err := mgr.VerifyAt(elevatedSolution, 5000); err != nil {
+	if err := mgr.VerifyAt(context.Background(), elevatedSolution, 5000); err != nil {
 		t.Fatalf("elevated-tier solution = %v, want nil", err)
 	}
-	if err := mgr.VerifyAt(elevatedSolution, 5000); err != ErrReplayed {
+	if err := mgr.VerifyAt(context.Background(), elevatedSolution, 5000); err != ErrReplayed {
 		t.Fatalf("second use = %v, want ErrReplayed", err)
 	}
 }
@@ -70,7 +71,7 @@ func TestVerifyPrunesTheReplayTableAtMostOncePerSecond(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr.usedSalts["expired-a"] = at.Unix() - 1
-	if err := mgr.verify(solveAudit(t, first), 0, at); err != nil {
+	if err := mgr.verify(context.Background(), solveAudit(t, first), 0, at); err != nil {
 		t.Fatal(err)
 	}
 	if _, kept := mgr.usedSalts["expired-a"]; kept {
@@ -82,7 +83,7 @@ func TestVerifyPrunesTheReplayTableAtMostOncePerSecond(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr.usedSalts["expired-b"] = at.Unix() - 1
-	if err := mgr.verify(solveAudit(t, second), 0, at.Add(500*time.Millisecond)); err != nil {
+	if err := mgr.verify(context.Background(), solveAudit(t, second), 0, at.Add(500*time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
 	if _, kept := mgr.usedSalts["expired-b"]; !kept {

@@ -31,7 +31,7 @@ func (s *Service) verifyProof(ctx context.Context, ip, username string, solution
 		}
 		return pow.ErrMissingSolution
 	}
-	if err := s.PoW.VerifyAt(solution, s.requiredPoWMax(ip)); err != nil {
+	if err := s.PoW.VerifyAt(ctx, solution, s.requiredPoWMax(ip)); err != nil {
 		reason := "PoW 校验失败"
 		switch {
 		case errors.Is(err, pow.ErrExpired):

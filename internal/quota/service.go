@@ -1143,6 +1143,24 @@ func (s *Service) ResetWindows(ctx context.Context, userIDs []string, windows []
 	return nil
 }
 
+// ResetCardWindows is ResetWindows for a card that has been spent. A card puts
+// the allowance back and never the per-minute counters: those protect the
+// upstream provider from bursts, so no card may lift them. An empty list or one
+// that names "full" means every allowance window, and a minute window named in
+// the list is ignored.
+func (s *Service) ResetCardWindows(ctx context.Context, userIDs []string, windows []string) error {
+	var allowance []string
+	for _, window := range AllowanceWindows {
+		if resetsWindow(windows, window) {
+			allowance = append(allowance, string(window))
+		}
+	}
+	if len(allowance) == 0 {
+		return nil
+	}
+	return s.ResetWindows(ctx, userIDs, allowance)
+}
+
 // Reset does the same for named accounts across all windows.
 //
 // In batches, because the caller may hand it every member of a group and one

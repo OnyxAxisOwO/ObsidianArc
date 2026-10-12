@@ -129,7 +129,7 @@ func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller)
 		return err
 	}
 
-	release, err := h.reserve(r.Context(), who, resolved)
+	release, err := h.reserve(r.Context(), who, resolved, 1)
 	if err != nil {
 		return err
 	}
