@@ -300,7 +300,7 @@ func (a anthropicAdapter) Chat(ctx context.Context, client *http.Client, p Provi
 		// did not arrive progressively.
 		result, err := a.readOnce(response)
 		if err != nil {
-			return Result{}, err
+			return result, err
 		}
 		result.StreamFallbackReason = "the endpoint answered with " +
 			fallbackContentType(response.Header.Get("Content-Type")) + " instead of an event stream"
@@ -331,8 +331,12 @@ func (anthropicAdapter) readOnce(response *http.Response) (Result, error) {
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return Result{}, unreadable(err, "The provider returned a response we could not read.")
 	}
+	// A refusal is a delivered answer, so the provider billed the prompt and
+	// the refusal output. The counts travel with the error, or the ledger
+	// would record the turn as the request fee alone.
+	usage := Usage{InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens}
 	if payload.StopReason == "refusal" {
-		return Result{}, &Error{Kind: ErrorRefusal, Message: "The model declined to answer."}
+		return Result{Usage: usage}, &Error{Kind: ErrorRefusal, Message: "The model declined to answer."}
 	}
 
 	var result Result
@@ -353,7 +357,7 @@ func (anthropicAdapter) readOnce(response *http.Response) (Result, error) {
 		}
 	}
 	result.FinishReason = payload.StopReason
-	result.Usage = Usage{InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens}
+	result.Usage = usage
 	return result, nil
 }
 
