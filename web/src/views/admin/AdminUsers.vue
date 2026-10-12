@@ -492,7 +492,10 @@ function bulkRemove(): Promise<void> {
 
 async function save(): Promise<void> {
   const row = account.value;
-  if (!row) return;
+  // The row can be set while the form still holds another account: a failed
+  // detail leaves the panel open on this row. Writing that form would put the
+  // other account's values onto this one.
+  if (!row || !detailReady.value) return;
   busy.value = true;
   panelError.value = '';
   try {
@@ -980,6 +983,7 @@ const state = { q: '', role: '', status: '', group: '' };
     :footer="mode === 'account'"
     :cancel-label="mode === 'account' ? undefined : t('close')"
     :confirm-label="t('save')"
+    :confirmable="mode !== 'account' || detailReady || loadingDetail"
     :destructive-label="mode === 'account' && !self ? t('deleteLabel') : undefined"
     :destructive-confirm="mode === 'account' && !self
       ? t('confirmDeleteUser', { name: maskUser(account.username) })
