@@ -207,7 +207,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// The one check that decides whether an account may spend anything, and
 	// the release that undoes what it claimed. Shared with the API surface
 	// rather than written twice: two copies of a limit are two limits.
-	guard := func(ctx context.Context, account user.User, chosen model.Model) (func(), error) {
+	guard := func(ctx context.Context, account user.User, chosen model.Model, pictures int) (func(), error) {
 		// An unconfirmed address is checked here rather than at sign-in: the
 		// point is that it must not spend anything, and locking someone out
 		// of the interface entirely would leave them nowhere to press
@@ -239,6 +239,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// reservation carries the moment it was charged and is given back
 		// there rather than wherever the answer happened to finish.
 		tokens, credits := chosen.WorstCase()
+		// An image call is billed once for each picture it returns, so the
+		// reservation has to be for every picture it may ask for. One picture
+		// reserved and four billed overdraws the window by the difference.
+		if pictures > 1 {
+			credits *= float64(pictures)
+		}
 		estimate := quota.Estimate{Tokens: tokens, Credits: credits}
 		autoReset, err := preferences.Bool(ctx, account.ID, user.AutoUseResetCard)
 		if err != nil {
@@ -291,7 +297,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	chatService.Authorize = func(
 		ctx context.Context, req chat.TurnRequest, resolved model.Resolved,
 	) (chat.Release, error) {
-		return guard(ctx, req.User, resolved.Model)
+		return guard(ctx, req.User, resolved.Model, req.Pictures)
 	}
 	recordTurn := func(ctx context.Context, record chat.TurnRecord) {
 		if err := users.MarkActive(ctx, record.User.ID, record.FinishedAt.UnixMilli()); err != nil {

@@ -1011,24 +1011,27 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		ModelName: resolved.Model.DisplayName,
 	})
 
-	if h.service.Authorize != nil {
-		release, err := h.service.Authorize(r.Context(), TurnRequest{
-			User:    account,
-			ModelID: body.ModelID,
-			Model:   resolved.Model,
-		}, resolved)
-		if err != nil {
-			return translatePrepareError(err)
-		}
-		defer release()
-	}
-
+	// Decided before the allowance is claimed, because the reservation has to
+	// cover every picture the call may bill.
 	n := body.N
 	if n <= 0 {
 		n = 1
 	}
 	if n > MaxImagesPerRequest {
 		n = MaxImagesPerRequest
+	}
+
+	if h.service.Authorize != nil {
+		release, err := h.service.Authorize(r.Context(), TurnRequest{
+			User:     account,
+			ModelID:  body.ModelID,
+			Model:    resolved.Model,
+			Pictures: n,
+		}, resolved)
+		if err != nil {
+			return translatePrepareError(err)
+		}
+		defer release()
 	}
 
 	startedAt := time.Now()
