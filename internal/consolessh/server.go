@@ -151,6 +151,8 @@ type Server struct {
 
 	// Sessions held per account, so one account cannot take every slot.
 	perAccount map[string]int
+	// Authenticated connections held per account, sessions or not.
+	connsPerAccount map[string]int
 	// Connections still in the handshake: the total, and per address.
 	preauth   int
 	preauthIP map[string]int
@@ -499,6 +501,18 @@ func (s *Server) handleConn(conn net.Conn) {
 	if !ok {
 		return
 	}
+	if !s.acquireAccountConn(actor.ID) {
+		s.cfg.Logf(context.Background(), "consolessh: too many connections for this account", "remote", conn.RemoteAddr().String())
+		return
+	}
+	defer s.releaseAccountConn(actor.ID)
+
+	// Set for a connection that signs in and never opens a session: such a
+	// connection is in no slot, so nothing else would ever end it. Stopped by
+	// the first session admitted, after which the session's own timers govern.
+	noSession := time.AfterFunc(sessionStartTimeout, func() { _ = sconn.Close() })
+	defer noSession.Stop()
+
 	credential := credentialFromPermissions(sconn.Permissions)
 	base := context.Background()
 	if s.cfg.ConnectionContext != nil {
@@ -530,6 +544,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.releaseAccountSlot(actor.ID)
 			continue
 		}
+		noSession.Stop()
 
 		sess := newSSHSession(s, sconn, channel, actor, ip, credential)
 		sess.base = base
@@ -548,6 +563,15 @@ func (s *Server) handleConn(conn net.Conn) {
 // handshakeTimeout bounds the unauthenticated part of a connection: from
 // accept to a completed SSH handshake.
 const handshakeTimeout = 30 * time.Second
+
+// sessionStartTimeout bounds how long a signed-in connection may go without a
+// session, and how long an opened session may go without a shell or an exec.
+// A variable so a test can make it short.
+var sessionStartTimeout = handshakeTimeout
+
+// maxConnectionsPerAccount is how many connections one account may hold open at
+// once, whether or not they have opened a session.
+const maxConnectionsPerAccount = 8
 
 func (s *Server) addConn(conn net.Conn) {
 	s.mu.Lock()
@@ -581,6 +605,32 @@ func (s *Server) releaseSlot() {
 		return
 	}
 	<-s.sem
+}
+
+// acquireAccountConn counts an authenticated connection against its account. It
+// is separate from the session cap because a connection that never opens a
+// session holds a descriptor and a goroutine and is counted by neither.
+func (s *Server) acquireAccountConn(accountID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connsPerAccount[accountID] >= maxConnectionsPerAccount {
+		return false
+	}
+	if s.connsPerAccount == nil {
+		s.connsPerAccount = make(map[string]int)
+	}
+	s.connsPerAccount[accountID]++
+	return true
+}
+
+func (s *Server) releaseAccountConn(accountID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connsPerAccount[accountID] <= 1 {
+		delete(s.connsPerAccount, accountID)
+		return
+	}
+	s.connsPerAccount[accountID]--
 }
 
 func (s *Server) acquireAccountSlot(accountID string) bool {
@@ -818,6 +868,12 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 	// doc comment for why Channel.Close alone would not do that promptly.
 	defer sess.close()
 
+	// A session that never asks for a shell or an exec holds its slots, the
+	// global one and the account's, and nothing else would give them back until
+	// the client chose to leave. Stopped by either request.
+	started := time.AfterFunc(sessionStartTimeout, sess.close)
+	defer started.Stop()
+
 	for req := range requests {
 		switch req.Type {
 		case "pty-req":
@@ -853,6 +909,7 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 
 		case "shell":
 			reply(req, true)
+			started.Stop()
 			sess.runInteractive()
 			return
 
@@ -863,6 +920,7 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 			if !ok {
 				return
 			}
+			started.Stop()
 			sess.serveExec(requests, payload.Command)
 			// Deliberately not sess.close(): see closeChannel.
 			sess.closeChannel()
