@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -23,6 +24,20 @@ const (
 	// together is an out-of-memory kill for everybody else.
 	maxConcurrentExports = 2
 	maxConcurrentImports = 4
+
+	// The server sets no WriteTimeout, and a socket whose reader has stopped
+	// taking bytes blocks a write indefinitely. The slot is held until the body
+	// is written, so each write is armed with a deadline, as httpx's SSE does
+	// per frame. Chunked, so a deadline is per 64 KiB rather than per whole
+	// conversation: a slow reader that is still reading keeps its slot.
+	exportWriteTimeout = 30 * time.Second
+	exportWriteChunk   = 64 << 10
+
+	// The body of an import is read while the import holds one of four slots,
+	// and the server's own five-minute ReadTimeout is far too long for that. Two
+	// minutes is ample for the largest document the import accepts on any
+	// connection an operator would reasonably run.
+	importBodyTimeout = 2 * time.Minute
 )
 
 type Handlers struct {
@@ -126,7 +141,43 @@ func (h *Handlers) export(w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	w.WriteHeader(http.StatusOK)
-	return stream.writeTo(r.Context(), w)
+
+	// A failed write is left with its deadline in the past: the connection is
+	// broken and the server closes it, so nothing more is sent on it.
+	rc := http.NewResponseController(w)
+	if err := stream.writeTo(r.Context(), &deadlineWriter{w: w, rc: rc, timeout: exportWriteTimeout}); err != nil {
+		return err
+	}
+	_ = rc.SetWriteDeadline(time.Time{})
+	return nil
+}
+
+// deadlineWriter arms a write deadline before each chunk it passes on. A
+// writer without deadline support (a test recorder, the console's in-process
+// writer) is written to unchanged: the controller reports that it cannot set
+// one, and the write goes ahead.
+type deadlineWriter struct {
+	w       io.Writer
+	rc      *http.ResponseController
+	timeout time.Duration
+}
+
+func (d *deadlineWriter) Write(p []byte) (int, error) {
+	written := 0
+	for len(p) > 0 {
+		chunk := p
+		if len(chunk) > exportWriteChunk {
+			chunk = chunk[:exportWriteChunk]
+		}
+		_ = d.rc.SetWriteDeadline(time.Now().Add(d.timeout))
+		n, err := d.w.Write(chunk)
+		written += n
+		if err != nil {
+			return written, err
+		}
+		p = p[len(chunk):]
+	}
+	return written, nil
 }
 
 func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error {
@@ -146,11 +197,19 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 	}
 	defer release()
 
+	// Armed after the slot is held, so the time spent waiting for one does not
+	// count against the body. Cleared once the body is in, because the import
+	// that follows writes to the store and does not read from the connection.
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(importBodyTimeout))
+
 	// Lenient: an export from a later release carries fields this build has
 	// not heard of, and losing them is the right outcome — refusing the whole
 	// file is not.
 	var document Document
-	if err := httpx.DecodeJSONLenient(w, r, &document, MaxDocumentBytes); err != nil {
+	err = httpx.DecodeJSONLenient(w, r, &document, MaxDocumentBytes)
+	_ = rc.SetReadDeadline(time.Time{})
+	if err != nil {
 		return err
 	}
 
