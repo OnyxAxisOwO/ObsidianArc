@@ -139,6 +139,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	authService := auth.NewService(db, users, groups, settingsService, mailer, cfg)
 	authService.ScreenEmail = userCheckManager.Check
+	authService.ScreenEmailCharges = userCheckManager.Charges
 
 	// Provider API keys are encrypted with a key derived from the instance
 	// secret; the box is the only thing that can read them back.

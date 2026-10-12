@@ -275,6 +275,26 @@ func (m *Manager) Check(ctx context.Context, email string) error {
 	return nil
 }
 
+// Charges reports whether Check would spend a paid lookup on this address: the
+// service is on and the domain is not exempt. The caller meters its own
+// accounts' changes by this answer, so the metering follows the same policy as
+// the lookup instead of restating it.
+func (m *Manager) Charges(email string) bool {
+	m.mu.RLock()
+	cfg := m.cfg
+	m.mu.RUnlock()
+	if !cfg.Enabled || email == "" {
+		return false
+	}
+	domain := emailDomain(email)
+	for _, exempt := range cfg.ExemptDomains {
+		if domain == exempt {
+			return false
+		}
+	}
+	return true
+}
+
 // Test always calls the API so an operator can check the key and inspect a
 // domain even if the exemption list would skip it during registration.
 func (m *Manager) Test(ctx context.Context, email string) (Result, error) {

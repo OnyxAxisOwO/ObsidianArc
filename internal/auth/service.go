@@ -129,6 +129,9 @@ type Service struct {
 	// A paid disposable-address lookup, configured by the administrator.
 	// Call before account writes, never from inside a transaction.
 	ScreenEmail func(context.Context, string) error
+	// Whether ScreenEmail spends a paid lookup on an address. An account's address
+	// changes are metered by it, and a nil ScreenEmailCharges meters nothing.
+	ScreenEmailCharges func(string) bool
 	// Called after a review has a durable outcome, including a refusal where
 	// no account was created. Recording is best-effort and must not turn an
 	// audit failure into a registration failure.
@@ -874,6 +877,11 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 		}
 		if !errors.Is(err, errNeedsEmailScreening) {
 			break
+		}
+		if s.ScreenEmailCharges != nil && s.ScreenEmailCharges(address) {
+			if err := s.reserveEmailScreen(ctx, userID); err != nil {
+				return user.User{}, err
+			}
 		}
 		if err := s.CheckRegistrationEmail(ctx, address); err != nil {
 			return user.User{}, err

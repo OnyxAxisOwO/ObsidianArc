@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -199,5 +200,56 @@ func TestTheSignupLimitCountsAnIPv6BlockAsOneAddress(t *testing.T) {
 		Username: "delta", Password: "a-good-password", IP: "2001:db8:2::10",
 	}); err != nil {
 		t.Errorf("an address in another /64 was caught by the first block's limit: %v", err)
+	}
+}
+
+// Each address an account moves to is one paid lookup, and the account's own
+// password is the only thing asked for. Without a limit per account, one signed-in
+// account can spend the instance's lookup allowance and refuse every sign-up
+// that screens an address after it.
+func TestAnAccountCannotSpendTheScreeningAllowanceWithoutLimit(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "first", Password: "a-good-password"}); err != nil {
+		t.Fatal(err)
+	}
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "member", Email: "member@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookups := 0
+	f.auth.ScreenEmail = func(context.Context, string) error {
+		lookups++
+		return nil
+	}
+	f.auth.ScreenEmailCharges = func(string) bool { return true }
+
+	for i := 0; i < emailScreensPerHour; i++ {
+		address := fmt.Sprintf("member%d@example.com", i)
+		if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &address}, "a-good-password"); err != nil {
+			t.Fatalf("move %d: %v", i+1, err)
+		}
+	}
+	over := "member-over@example.com"
+	var limited *RateLimitError
+	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &over}, "a-good-password"); !errors.As(err, &limited) {
+		t.Fatalf("move %d = %v, want a RateLimitError", emailScreensPerHour+1, err)
+	}
+	if lookups != emailScreensPerHour {
+		t.Fatalf("%d lookups for %d moves: a refused move must not reach the provider", lookups, emailScreensPerHour)
+	}
+	if kept, err := f.users.ByID(ctx, nil, account.ID); err != nil || kept.Email == over {
+		t.Fatalf("the refused move changed the address to %q (%v)", kept.Email, err)
+	}
+
+	other, _, err := f.auth.Register(ctx, RegisterInput{Username: "other", Email: "other@example.com", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := "other-moved@example.com"
+	if _, err := f.auth.UpdateProfile(ctx, other.ID, user.ProfileUpdate{Email: &elsewhere}, "a-good-password"); err != nil {
+		t.Errorf("another account was held to the first one's allowance: %v", err)
 	}
 }
