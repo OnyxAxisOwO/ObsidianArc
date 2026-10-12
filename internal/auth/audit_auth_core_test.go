@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/totp"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -163,5 +164,40 @@ func TestAnAddressChangeCannotOverwriteAResetMadeAfterItWasChecked(t *testing.T)
 	}
 	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "member", Password: "admin-reset-password", IP: "198.51.100.22"}); err != nil {
 		t.Fatalf("the administrator's password was overwritten: %v", err)
+	}
+}
+
+// An IPv6 address is one subscriber's /64, which is how the login and proof-of-
+// work limiters already count it. A per-address sign-up limit that counted each
+// full address would let one subscriber make as many accounts as it has
+// addresses, so every address in the block shares one count.
+func TestTheSignupLimitCountsAnIPv6BlockAsOneAddress(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Password: "a-good-password", IP: "203.0.113.7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	set(t, f, settings.RegistrationEnabled, "true")
+	set(t, f, settings.SignupsPerIP, "2")
+	set(t, f, settings.SignupsIPWindowMin, "60")
+
+	for i, ip := range []string{"2001:db8:1::10", "2001:db8:1::20"} {
+		if _, _, err := f.auth.Register(ctx, RegisterInput{
+			Username: names[i], Password: "a-good-password", IP: ip,
+		}); err != nil {
+			t.Fatalf("account %d from %s was refused: %v", i+1, ip, err)
+		}
+	}
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "charlie", Password: "a-good-password", IP: "2001:db8:1::30",
+	}); !errors.Is(err, ErrSignupIPBlocked) {
+		t.Fatalf("a third address in the same /64 gave %v, want ErrSignupIPBlocked", err)
+	}
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "delta", Password: "a-good-password", IP: "2001:db8:2::10",
+	}); err != nil {
+		t.Errorf("an address in another /64 was caught by the first block's limit: %v", err)
 	}
 }
