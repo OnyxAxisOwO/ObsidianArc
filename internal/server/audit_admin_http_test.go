@@ -340,3 +340,34 @@ func TestResourcesPollingIsSharedAndLimited(t *testing.T) {
 		t.Fatal("40 resource polls in a row were all answered")
 	}
 }
+
+// A sign-up review and a model probe each call the upstream provider for every
+// model they touch, on the operator's key. Neither had a limit; both now refuse
+// repeats beyond a small instance-wide budget, so a script cannot spend the
+// key by calling them in a loop.
+func TestPaidReviewAndProbeCallsAreLimited(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	grantAdmin(t, in, founder, operator, "security", "availability")
+
+	refused := 0
+	for range 12 {
+		res := in.do(http.MethodPost, "/api/admin/security/review", map[string]any{"username": "probe-me"}, operator)
+		if res.Code == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Fatal("12 sign-up review calls in a row were all answered")
+	}
+
+	first := in.do(http.MethodPost, "/api/admin/health/probe", nil, operator)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first probe: %d %s", first.Code, first.Body.String())
+	}
+	second := in.do(http.MethodPost, "/api/admin/health/probe", nil, operator)
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("a repeat probe inside the cooldown: %d %s", second.Code, second.Body.String())
+	}
+}

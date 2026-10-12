@@ -109,6 +109,14 @@ type Handlers struct {
 
 	UsageLimiter *httpx.TokenBucketLimiter
 
+	// Paid calls to upstream models, one budget per instance. Each sign-up
+	// review and each model probe spends provider credit whatever its caller,
+	// so the budget is not per caller. Refusing rather than queueing matches
+	// the test-send cooldowns. It lives in memory, so a second instance keeps
+	// its own budget, the same trade the usage limiter makes.
+	reviewBudget *httpx.TokenBucketLimiter
+	probeBudget  *httpx.TokenBucketLimiter
+
 	usageCacheMu        sync.RWMutex
 	usageSummaryCache   map[string]*cachedUsageSummary
 	usageBreakdownCache map[string]*cachedUsageBreakdown
@@ -214,6 +222,8 @@ func NewHandlers(
 		apps:                apps,
 		invites:             invites,
 		UsageLimiter:        httpx.NewTokenBucketLimiter(5, 10),
+		reviewBudget:        httpx.NewTokenBucketLimiter(1.0/10, 3),
+		probeBudget:         httpx.NewTokenBucketLimiter(1.0/30, 1),
 		usageSummaryCache:   make(map[string]*cachedUsageSummary),
 		usageBreakdownCache: make(map[string]*cachedUsageBreakdown),
 	}
