@@ -1180,11 +1180,14 @@ func init() {
 			{Name: "card-id", Hint: Text{EN: "the card to delete", ZH: "要删掉的卡 id"}, Required: true},
 		},
 		Examples: []string{
-			"user cards drop alice 01ARZ3NDEKTSV4RRFFQ69G5FAV",
-			"user cards drop 01M1VG5FEB5GSSPAYG0PGRWN6F 01ARZ3NDEKTSV4RRFFQ69G5FAV",
+			"user cards drop alice 01ARZ3NDEKTSV4RRFFQ69G5FAV --yes",
+			"user cards drop 01M1VG5FEB5GSSPAYG0PGRWN6F 01ARZ3NDEKTSV4RRFFQ69G5FAV --yes",
 		},
-		Permission: "users",
-		Endpoints:  []string{"DELETE /api/admin/users/{id}/cards/{card}"},
+		// Deletion is permanent and the account is not told, so it asks for
+		// --yes like every other delete in this file.
+		Destructive: true,
+		Permission:  "users",
+		Endpoints:   []string{"DELETE /api/admin/users/{id}/cards/{card}"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			ref, err := requireRef(rt, "account id or username")
 			if err != nil {
