@@ -490,7 +490,9 @@ func (s *Service) charCeiling() int64 {
 	return MaxStoredChars
 }
 
-// storedChars is the message text an account holds now, in characters.
+// storedChars is the text an account holds now, in characters: message content,
+// reasoning and error, and conversation titles. It is every column an import
+// writes, so the ceiling counts what the import adds to.
 //
 // It is counted in Go rather than with SUM(LENGTH(...)). SQLite's LENGTH stops
 // at the first NUL, so text carrying one counts for almost nothing and an
@@ -499,7 +501,7 @@ func (s *Service) charCeiling() int64 {
 // time, so only one message is held in memory however large the account.
 func (s *Service) storedChars(ctx context.Context, userID string) (int64, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT content, reasoning FROM messages WHERE user_id = ?`, userID)
+		`SELECT content, reasoning, error FROM messages WHERE user_id = ?`, userID)
 	if err != nil {
 		return 0, fmt.Errorf("backup: measure stored text: %w", err)
 	}
@@ -507,27 +509,49 @@ func (s *Service) storedChars(ctx context.Context, userID string) (int64, error)
 
 	var chars int64
 	for rows.Next() {
-		var content, reasoning string
-		if err := rows.Scan(&content, &reasoning); err != nil {
+		var content, reasoning, errorText string
+		if err := rows.Scan(&content, &reasoning, &errorText); err != nil {
 			return 0, fmt.Errorf("backup: measure stored text: %w", err)
 		}
-		chars += int64(utf8.RuneCountInString(content) + utf8.RuneCountInString(reasoning))
+		chars += int64(utf8.RuneCountInString(content) + utf8.RuneCountInString(reasoning) +
+			utf8.RuneCountInString(errorText))
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("backup: measure stored text: %w", err)
+	}
+	rows.Close()
+
+	titles, err := s.db.Query(ctx,
+		`SELECT title FROM conversations WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("backup: measure stored titles: %w", err)
+	}
+	defer titles.Close()
+	for titles.Next() {
+		var title string
+		if err := titles.Scan(&title); err != nil {
+			return 0, fmt.Errorf("backup: measure stored titles: %w", err)
+		}
+		chars += int64(utf8.RuneCountInString(title))
+	}
+	if err := titles.Err(); err != nil {
+		return 0, fmt.Errorf("backup: measure stored titles: %w", err)
 	}
 	return chars, nil
 }
 
 // documentChars is an upper bound on what a document would write: the text as
-// sent, before the per-message truncation. It is counted in characters like
-// the rest of the ceiling. Counting bytes would refuse a CJK document for its
-// three bytes a character well before the document reached the ceiling.
+// sent, before the truncation, title and error included. It is counted in
+// characters like the rest of the ceiling. Counting bytes would refuse a CJK
+// document for its three bytes a character well before the document reached
+// the ceiling.
 func documentChars(document Document) int64 {
 	var chars int64
 	for _, thread := range document.Conversations {
+		chars += int64(utf8.RuneCountInString(thread.Title))
 		for _, turn := range thread.Messages {
-			chars += int64(utf8.RuneCountInString(turn.Content) + utf8.RuneCountInString(turn.Reasoning))
+			chars += int64(utf8.RuneCountInString(turn.Content) + utf8.RuneCountInString(turn.Reasoning) +
+				utf8.RuneCountInString(turn.Error))
 		}
 	}
 	return chars
@@ -558,18 +582,19 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 		return 0, nil
 	}
 
-	// What will be stored, so the character ceiling is held against the
-	// truncated text and not against a megabyte-long field that is about to be
-	// cut to size.
-	var threadChars int64
-	for _, turn := range usable {
-		threadChars += int64(min(utf8.RuneCountInString(turn.Content), MaxImportContentChars) +
-			min(utf8.RuneCountInString(turn.Reasoning), MaxImportReasoningChars))
-	}
-
 	title := text.TrimAndTruncate(thread.Title, MaxTitleChars)
 	if title == "" {
 		title = conversation.DeriveTitle(usable[0].Content)
+	}
+
+	// What will be stored, so the character ceiling is held against the
+	// truncated text and not against a megabyte-long field that is about to be
+	// cut to size.
+	threadChars := int64(utf8.RuneCountInString(title))
+	for _, turn := range usable {
+		threadChars += int64(min(utf8.RuneCountInString(turn.Content), MaxImportContentChars) +
+			min(utf8.RuneCountInString(turn.Reasoning), MaxImportReasoningChars) +
+			min(utf8.RuneCountInString(turn.Error), conversation.MaxErrorChars))
 	}
 
 	written := 0
@@ -614,7 +639,7 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 				Role:           role,
 				Content:        text.TrimAndTruncate(turn.Content, MaxImportContentChars),
 				Reasoning:      text.TrimAndTruncate(turn.Reasoning, MaxImportReasoningChars),
-				Error:          text.TrimAndTruncate(turn.Error, 500),
+				Error:          text.TrimAndTruncate(turn.Error, conversation.MaxErrorChars),
 				ModelName:      text.TrimAndTruncate(turn.ModelName, 80),
 			}); err != nil {
 				return err
