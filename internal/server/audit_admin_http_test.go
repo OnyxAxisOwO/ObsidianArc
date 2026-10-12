@@ -1,10 +1,14 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 )
 
 // grantAdmin makes account an administrator holding exactly these grants.
@@ -232,5 +236,61 @@ func TestGroupsGrantSeesNoAccountScopedLimits(t *testing.T) {
 	}
 	if strings.Contains(res.Body.String(), member.userID) {
 		t.Fatalf("an account id leaked through the groups response: %s", res.Body.String())
+	}
+}
+
+// A dashboard grant sees the instance's totals and its newest accounts. The
+// per-account rankings and the newest requests name who spent what, which is
+// the usage grant's data; a dashboard-only administrator gets empty lists in
+// those two places.
+func TestDashboardGrantSeesNoPerAccountUsage(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("spender", "a-good-password")
+	grantAdmin(t, in, founder, operator, "dashboard")
+
+	if err := usage.NewStore(in.db).Write(context.Background(), usage.Record{
+		UserID: member.userID, ModelID: id.New(), ModelName: "model",
+		InputTokens: 10, OutputTokens: 5, Credits: 1, Status: usage.StatusOK,
+		StartedAt: time.Now().UnixMilli(), FinishedAt: time.Now().UnixMilli() + 40,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	type rows struct {
+		TopUsers []map[string]any `json:"top_users"`
+		Recent   []map[string]any `json:"recent"`
+	}
+	delegated := in.do(http.MethodGet, "/api/admin/dashboard", nil, operator)
+	if delegated.Code != http.StatusOK {
+		t.Fatalf("dashboard grant: %d %s", delegated.Code, delegated.Body.String())
+	}
+	if got := decode[rows](t, delegated); len(got.TopUsers) != 0 || len(got.Recent) != 0 {
+		t.Fatalf("dashboard grant saw per-account usage: %d top users, %d recent", len(got.TopUsers), len(got.Recent))
+	}
+
+	full := in.do(http.MethodGet, "/api/admin/dashboard", nil, founder)
+	if got := decode[rows](t, full); len(got.TopUsers) == 0 || len(got.Recent) == 0 {
+		t.Fatalf("usage holder lost the rankings: %d top users, %d recent", len(got.TopUsers), len(got.Recent))
+	}
+}
+
+// The dashboard's aggregates are as expensive as the usage summary's, so it
+// takes the same per-caller budget that summary takes.
+func TestDashboardIsRateLimitedLikeTheUsageReads(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	grantAdmin(t, in, founder, operator, "dashboard")
+
+	refused := 0
+	for range 40 {
+		if res := in.do(http.MethodGet, "/api/admin/dashboard", nil, operator); res.Code == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Fatal("40 dashboard reads in a row were all answered")
 	}
 }

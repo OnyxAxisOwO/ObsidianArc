@@ -39,6 +39,23 @@ type dashboardAccount struct {
 // charts that exist because a dashboard is expected to have charts.
 func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
+	actor := auth.MustUser(ctx)
+	// The same budget and slot the usage reads take. A load runs about a dozen
+	// aggregates over the ledger, and without them a dashboard grant could drive
+	// the ledger as hard as the usage page, with no limit at all.
+	clientIP := r.RemoteAddr
+	if h.ClientIP != nil {
+		clientIP = h.ClientIP(r)
+	}
+	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(clientIP+":"+actor.ID) {
+		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	}
+	release, err := httpx.AcquireAggregationSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	now := time.Now()
 	zone, err := zoneFrom(r)
 	if err != nil {
@@ -91,20 +108,35 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 		heatmap                    []usage.Slot
 		recent                     []usage.Record
 	)
-	err = together(
+	reads := []func() error{
 		func() (err error) { today, err = h.usage.Totals(ctx, day); return },
 		func() (err error) { yesterday, err = h.usage.Totals(ctx, dayBefore); return },
 		func() (err error) { thisWeek, err = h.usage.Totals(ctx, week); return },
 		func() (err error) { topModels, err = h.usage.GroupBy(ctx, "model", metric, week); return },
-		func() (err error) { topUsers, err = h.usage.GroupBy(ctx, "user", metric, week); return },
 		func() (err error) { series, err = h.usage.Series(ctx, week, 6*time.Hour, zone); return },
 		// When in the week people use it: the shape an operator plans
 		// maintenance around, and the one a total over seven days hides.
 		func() (err error) { heatmap, err = h.usage.Heatmap(ctx, week, zone); return },
-		func() (err error) { recent, _, err = h.usage.List(ctx, usage.Filter{Limit: 8}); return },
-	)
-	if err != nil {
+	}
+	// Per-account spend and the newest requests name the people who made them,
+	// and that is what the usage grant is for. A dashboard grant sees the
+	// totals and the newest accounts (dashboardAccount), and nothing that
+	// says who spent what.
+	canSeeUsage := hasPermission(actor, "usage")
+	if canSeeUsage {
+		reads = append(reads,
+			func() (err error) { topUsers, err = h.usage.GroupBy(ctx, "user", metric, week); return },
+			func() (err error) { recent, _, err = h.usage.List(ctx, usage.Filter{Limit: 8}); return },
+		)
+	}
+	if err := together(reads...); err != nil {
 		return httpx.Internal(err)
+	}
+	if topUsers == nil {
+		topUsers = []usage.Breakdown{}
+	}
+	if recent == nil {
+		recent = []usage.Record{}
 	}
 
 	newest := make([]dashboardAccount, 0, len(users))
