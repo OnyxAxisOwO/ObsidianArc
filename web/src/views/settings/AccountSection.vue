@@ -304,6 +304,8 @@ async function saveProfile(): Promise<void> {
       profilePassword.value = '';
     } else if (error instanceof ApiError && error.code === 'password_required') {
       profileFlash.value = t('emailChangePasswordHint');
+    } else if (error instanceof ApiError && error.code === 'reauth_required') {
+      profileFlash.value = t('reauthForAddress');
     } else if (error instanceof ApiError) {
       profileFlash.value = pluginRefusal(error.code ?? '') ?? error.message;
     } else {

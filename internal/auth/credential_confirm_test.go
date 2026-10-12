@@ -68,7 +68,10 @@ func TestAPasswordlessAccountEnablesTwoFactorWithoutOne(t *testing.T) {
 		t.Fatal("the wizard would ask an account with no password for one")
 	}
 	code := codeAt(t, setup.Secret, totp.Step(time.Now()))
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "", code, "", "", ""); err != nil {
+	// No password is asked for, but the sign-in making the change must be a
+	// recent one: a session with no proof behind it adds nothing.
+	signedIn := sessionFor(t, f, account.ID)
+	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "", code, signedIn.ID, "", ""); err != nil {
 		t.Fatalf("enabling on a passwordless account: %v", err)
 	}
 }
@@ -127,7 +130,9 @@ func TestAPasswordlessAccountMovesItsEmailWithoutOne(t *testing.T) {
 		t.Fatalf("provision: %v", err)
 	}
 	moved := "octocat@example.com"
-	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &moved}, ""); err != nil {
+	// No password is asked for; the request has to come from a recent sign-in.
+	signedIn := context.WithValue(ctx, sessionContextKey, sessionFor(t, f, account.ID))
+	if _, err := f.auth.UpdateProfile(signedIn, account.ID, user.ProfileUpdate{Email: &moved}, ""); err != nil {
 		t.Fatalf("moving the address on a passwordless account: %v", err)
 	}
 }

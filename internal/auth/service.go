@@ -683,7 +683,8 @@ func (s *Service) recordSignupReview(
 // Moving the address also takes the account's current password, where it has
 // one. The address is where a reset link goes, so a session alone — which is
 // all a stolen cookie is — must not be able to repoint it. An account opened
-// through a provider has no password to ask for and is asked for nothing.
+// through a provider has no password, so the proof there is a sign-in made just
+// now, on the session the request carries; any other session is refused.
 func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.ProfileUpdate, currentPassword string) (user.User, error) {
 	var (
 		updated      user.User
@@ -843,7 +844,7 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 			return err
 		})
 		if errors.Is(err, errNeedsPasswordCheck) {
-			if err := s.ConfirmPassword(ctx, userID, currentPassword); err != nil {
+			if err := s.ConfirmNewSignIn(ctx, userID, currentPassword, sessionIDOf(ctx)); err != nil {
 				return user.User{}, err
 			}
 			passwordChecked = true
@@ -1275,6 +1276,16 @@ func (s *Service) requireRecentSignIn(ctx context.Context, q database.Queryer, u
 		return ErrReauthRequired
 	}
 	return nil
+}
+
+// sessionIDOf is the session a request is making a change from, as the sign-in
+// middleware put it on the context. A call with none, such as one made by the
+// console, has no sign-in to judge, and the recency check refuses it.
+func sessionIDOf(ctx context.Context) string {
+	if session, ok := SessionFrom(ctx); ok {
+		return session.ID
+	}
+	return ""
 }
 
 // checkPassword verifies the current password behind a guessing budget.
