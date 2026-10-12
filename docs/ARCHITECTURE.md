@@ -220,9 +220,17 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 26.30 MB (22.61 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 242.98 kB to open the chat (200.67 JS + 42.31 CSS) |
+| Frontend, on the wire | < 135 kB | 243.03 kB to open the chat (200.71 JS + 42.32 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-12 (UTC), after the review of the security fixes. The
+settings pages now send only the keys they changed, the terminal keeps its
+password-bearing lines out of history, and the chat's Markdown parser bounds its
+nesting. 243.03 kB (200.71 kB JS + 42.32 kB CSS), up 0.05 kB from the figure
+below, from the build's gzip column. The backoffice chunk is 126.35 kB, up
+0.35 kB, and the terminal 7.54 kB. The binary figure stands: the frontend grew by
+about a kilobyte before compression.
 
 Remeasured on 2026-10-10 (UTC), after providers took several API keys and the
 model editor several detected models at once: the dictionary carries the new
