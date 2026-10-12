@@ -179,8 +179,11 @@ type ListFilter struct {
 
 // ListWithFilter returns conversations matching the given filter.
 func (s *Store) ListWithFilter(ctx context.Context, userID string, filter ListFilter) ([]Conversation, error) {
+	// The same bound ListPage applies. The limit arrives from a query string, and
+	// without the ceiling one request reads and serialises every row the account
+	// holds.
 	limit := filter.Limit
-	if limit <= 0 {
+	if limit <= 0 || limit > MaxListLimit {
 		limit = DefaultListLimit
 	}
 	offset := max(0, filter.Offset)
