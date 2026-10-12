@@ -66,13 +66,14 @@ var (
 )
 
 // storedColumns are the core's columns that no query here selects into a User
-// but that exist on the table: the folded login names, the password hash and
-// the invite counter. A field is written by any account's own profile edit, so
-// one named like these would let a user rewrite who they log in as, or reset a
-// counter the invite rewards are limited by. A test holds this list and
+// but that exist on the table: the folded login names, the password hash, the
+// invite counter and the sign-up rate key. A field is written by any account's
+// own profile edit, so one named like these would let a user rewrite who they
+// log in as, reset a counter the invite rewards are limited by, or choose the
+// address group its sign-up is counted in. A test holds this list and
 // baseColumns together to the migrated schema, so a column added to users
 // without being listed fails there, not in production.
-var storedColumns = []string{"username_lower", "email_lower", "password_hash", "invite_reward_count"}
+var storedColumns = []string{"username_lower", "email_lower", "password_hash", "invite_reward_count", "signup_rate_key"}
 
 // isCoreColumn reports whether key is a column of the users table the core
 // owns.

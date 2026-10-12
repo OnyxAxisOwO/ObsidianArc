@@ -260,7 +260,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		// the caller hands back to the browser, and a field that is correct
 		// only after the account is read a second time is a field that reads
 		// as missing on the response that creates it.
-		SignupIP:             signupKey(in.SignupIP),
+		SignupIP:             in.SignupIP,
 		SignupUserAgent:      text.Truncate(in.SignupUserAgent, MaxSignupUserAgentChars),
 		APIRestricted:        in.APIRestricted,
 		APIRestrictedUntil:   in.APIRestrictedUntil,
@@ -291,13 +291,14 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		record.Role, nullable(record.GroupID), record.Status, record.EmailVerified,
 		record.CreatedAt, record.UpdatedAt, record.SignupIP, record.SignupUserAgent, record.APIRestricted,
 		record.APIRestrictedUntil, record.APIRestrictionSource, record.BanReason, record.EmailProvenAt,
+		signupRateKey(record.SignupIP),
 	}
 	_, err = q.Exec(ctx, `INSERT INTO users
 		(id, username, username_lower, email, email_lower, password_hash, nickname, avatar, bio,
 		 role, group_id, status, email_verified, created_at, updated_at, last_login_at, signup_ip,
 		 signup_user_agent, api_restricted, api_restricted_until, api_restriction_source, ban_reason,
-		 email_proven_at`+fieldColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?`+fieldMarks+`)`,
+		 email_proven_at, signup_rate_key`+fieldColumns+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?`+fieldMarks+`)`,
 		append(args, fieldArgs...)...)
 	if err != nil {
 		// Both engines report a violated unique index without naming a
@@ -1029,12 +1030,14 @@ func (s *Store) translateUniqueViolation(err error, hadEmail bool) error {
 	}
 }
 
-// signupKey is the value an account's sign-up address is stored and counted
-// under. An IPv6 address stands for its /64, the same as every other rate limit
-// in the server, because one subscriber holds the whole block: stored as typed,
-// each address in it would be a separate count and the per-address limit would
-// not hold. An empty address stays empty, so it is never counted.
-func signupKey(ip string) string {
+// signupRateKey is the key an account's sign-up address is counted under. An
+// IPv6 address stands for its /64, the same as every other rate limit in the
+// server, because one subscriber holds the whole block: counted as typed, each
+// address in it would be a separate count and the per-address limit would not
+// hold. The address itself stays exact in signup_ip, which an administrator
+// reads and a session is matched by. An empty address stays empty, so it is
+// never counted.
+func signupRateKey(ip string) string {
 	if strings.TrimSpace(ip) == "" {
 		return ip
 	}
@@ -1062,7 +1065,7 @@ func (s *Store) CountFromIP(ctx context.Context, q database.Queryer, ip string, 
 
 	var count int
 	err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM users WHERE signup_ip = ? AND created_at >= ?`, signupKey(ip), since).Scan(&count)
+		`SELECT COUNT(*) FROM users WHERE signup_rate_key = ? AND created_at >= ?`, signupRateKey(ip), since).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("user: count from ip: %w", err)
 	}
