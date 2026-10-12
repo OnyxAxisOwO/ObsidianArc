@@ -400,3 +400,84 @@ func TestImportSkipsOutOfRangeAttachmentRetention(t *testing.T) {
 		t.Fatalf("save of the same orphan window: %d %s", orphan.Code, orphan.Body.String())
 	}
 }
+
+// securityLog reads the security log as the super administrator sees it.
+func securityLog(t *testing.T, in *instance, as *session) []struct {
+	Event         string `json:"event"`
+	Username      string `json:"username"`
+	ActorUsername string `json:"actor_username"`
+} {
+	t.Helper()
+	res := in.do(http.MethodGet, "/api/admin/security/events?limit=200", nil, as)
+	if res.Code != http.StatusOK {
+		t.Fatalf("security events: %d %s", res.Code, res.Body.String())
+	}
+	return decode[struct {
+		Events []struct {
+			Event         string `json:"event"`
+			Username      string `json:"username"`
+			ActorUsername string `json:"actor_username"`
+		} `json:"events"`
+	}](t, res).Events
+}
+
+// The request log is the one table a prune removes from, and it is where the
+// only record of an administrator's action used to be. Pruning it is a super
+// administrator's act when it clears everything, and every prune leaves its
+// own entry in the security log, which is never pruned.
+func TestLogPruneIsSuperAdminWhenItClearsEverything(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	grantAdmin(t, in, founder, operator, "logs")
+
+	if res := in.do(http.MethodPost, "/api/admin/logs/prune", map[string]any{"days": 0}, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("logs-only administrator cleared the whole request log: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPost, "/api/admin/logs/prune", map[string]any{"days": 30}, operator); res.Code != http.StatusOK {
+		t.Fatalf("logs-only administrator's retention prune: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPost, "/api/admin/logs/prune", map[string]any{"days": 0}, founder); res.Code != http.StatusOK {
+		t.Fatalf("super administrator cleared the log: %d %s", res.Code, res.Body.String())
+	}
+
+	var pruned []string
+	for _, event := range securityLog(t, in, founder) {
+		if event.Event == "log_prune" && event.ActorUsername == "operator" {
+			pruned = append(pruned, event.Event)
+		}
+	}
+	if len(pruned) != 1 {
+		t.Fatalf("the retention prune left %d security entries, want 1", len(pruned))
+	}
+}
+
+// Resetting a password and deleting an account are the two administrative
+// actions whose only record used to be the process log and the request log.
+// Both are now written to the security log too.
+func TestAccountResetAndDeletionAreRecordedInTheSecurityLog(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	reset := in.register("reset-me", "a-good-password")
+	removed := in.register("delete-me", "a-good-password")
+	grantAdmin(t, in, founder, operator, "users")
+
+	if res := in.do(http.MethodPost, "/api/admin/users/"+reset.userID+"/password",
+		map[string]any{"new_password": "replacement-password"}, operator); res.Code != http.StatusNoContent {
+		t.Fatalf("password reset: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodDelete, "/api/admin/users/"+removed.userID, nil, operator); res.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", res.Code, res.Body.String())
+	}
+
+	seen := map[string]string{}
+	for _, event := range securityLog(t, in, founder) {
+		if event.ActorUsername == "operator" {
+			seen[event.Event] = event.Username
+		}
+	}
+	if seen["password_reset"] != "reset-me" || seen["account_deleted"] != "delete-me" {
+		t.Fatalf("security log entries by the delegate = %v", seen)
+	}
+}

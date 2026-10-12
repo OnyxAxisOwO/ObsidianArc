@@ -37,6 +37,32 @@ import (
 // separated by a commit boundary.
 var errLastAdmin = errors.New("admin: that is the last administrator")
 
+// Account actions the security log keeps. The request log records them too,
+// but it is the table a prune removes from, and the security log is not
+// pruned. These are events in the security log's own vocabulary, so the
+// log's readers see them beside the rest of the account's history.
+const (
+	eventPasswordReset  = "password_reset"
+	eventAccountDeleted = "account_deleted"
+)
+
+// recordAccountAction writes one account action to the security log. It runs
+// after the action has happened, so a failure here is logged rather than
+// reported: the password is already changed or the account already gone.
+func (h *Handlers) recordAccountAction(r *http.Request, event string, actor, target user.User, reason string) {
+	if h.security == nil {
+		return
+	}
+	if err := h.security.Record(r.Context(), nil, securityevents.Event{
+		Event: event, Severity: securityevents.SeverityWarning,
+		UserID: target.ID, Username: target.Username,
+		ActorID: actor.ID, ActorUsername: actor.Username,
+		IP: h.clientIP(r), Source: "admin", Reason: reason,
+	}); err != nil {
+		slog.ErrorContext(r.Context(), "could not record an account action", "event", event, "error", err)
+	}
+}
+
 // lockAdminPopulation takes the row lock every change to the set of active
 // administrators must hold.
 //
@@ -587,7 +613,8 @@ func (h *Handlers) resetPassword(w http.ResponseWriter, r *http.Request) error {
 	if userID == actor.ID {
 		return httpx.BadRequestCode("own_password", "Change your own password from your profile.")
 	}
-	if _, err := h.users.ByID(r.Context(), nil, userID); err != nil {
+	target, err := h.users.ByID(r.Context(), nil, userID)
+	if err != nil {
 		return translateUserError(err)
 	}
 
@@ -613,6 +640,10 @@ func (h *Handlers) resetPassword(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 
+	// Recorded in the security log as well as the process log: the request log
+	// that shows this action can be pruned, and this one must outlive it.
+	h.recordAccountAction(r, eventPasswordReset, actor, target, "password reset by an administrator")
+
 	slog.InfoContext(r.Context(), "administrator reset a password", "actor", actor.ID, "target", userID)
 	return httpx.NoContent(w)
 }
@@ -627,6 +658,7 @@ func (h *Handlers) deleteUser(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("You cannot delete your own account.")
 	}
 
+	var removed user.User
 	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
 		if err := lockAdminPopulation(r.Context(), tx); err != nil {
 			return err
@@ -643,6 +675,7 @@ func (h *Handlers) deleteUser(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
+		removed = target
 		if target.IsAdmin() && !actor.CanManageAdmin(target) {
 			return permissionDenied()
 		}
@@ -667,6 +700,7 @@ func (h *Handlers) deleteUser(w http.ResponseWriter, r *http.Request) error {
 		}
 		return translateUserError(err)
 	}
+	h.recordAccountAction(r, eventAccountDeleted, actor, removed, "account deleted by an administrator")
 	slog.WarnContext(r.Context(), "administrator deleted an account", "actor", actor.ID, "target", userID)
 	return httpx.NoContent(w)
 }
