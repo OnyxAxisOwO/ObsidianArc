@@ -973,7 +973,7 @@ will not be.
 | Provider keys | AES-256-GCM at rest, key derived by HKDF from `OBSIDIAN_SECRET_KEY`. Never serialised into any response — the admin UI sees `••••1234`. Never logged. |
 | Log redaction | A `redact()` helper for anything key-shaped; request bodies are never logged. |
 | Input validation | Every handler decodes into a typed struct with explicit bounds; `MaxBytesReader` on all bodies. |
-| Rate limiting | Per-IP on `/api/auth/*` (in-memory token bucket), per-user via quota everywhere else. |
+| Rate limiting | Per-IP on `/api/auth/*` (in-memory token bucket), per-user via quota everywhere else. The login, second-step, current-password and invite-code guess budgets are held in each process's memory, so N processes sharing one database give each budget N times its size; the instance-wide sign-up limit is counted in the database. |
 | Abuse review | Sign-up review produces `allow`, timed `restrict`, or `refuse`; restrictions gate all programmatic API keys at the account level. Browser chat bursts use a database-backed per-account counter and an on-demand Turnstile challenge. |
 | Security audit | Access decisions are persisted in `security_events`, separately from the ordinary HTTP request log. |
 
