@@ -202,6 +202,13 @@ func (ed *lineEditor) finishLine(line string) string {
 // every keystroke, and is copied into history.
 const maxLineRunes = 8192
 
+// maxSearchRunes bounds the reverse-search term. The term and the match beside
+// it are written in full on every keystroke, and a match can be a whole history
+// line, so the output of a search grows with the square of this figure. Eight
+// thousand runes of term would be tens of megabytes from one paste; no search
+// needs more than a few hundred.
+const maxSearchRunes = 256
+
 func (ed *lineEditor) insert(r rune) {
 	if len(ed.buf) >= maxLineRunes {
 		return
@@ -495,6 +502,9 @@ func (ed *lineEditor) handleSearchKey(r rune) (done bool, line string, submit bo
 		ed.endSearch(false)
 		return true, "", false
 	default:
+		if len(ed.searchTerm) >= maxSearchRunes {
+			return false, "", false
+		}
 		ed.searchTerm = append(ed.searchTerm, r)
 		ed.searchFrom(len(ed.hist.lines))
 		ed.redrawSearch(ed.searchMatch)
