@@ -59,8 +59,11 @@ const HISTORY_CAP = 500;
  * remember this file exists.
  */
 const SENSITIVE_FLAG = /(?:^|\s)-{1,2}[\w-]*(?:pass(?:word|wd)?|secret|token|api-?key|header|code|turnstile|credential)[\w-]*(?=$|[\s=])/i;
+// `user passwd bob hunter2` and `watch …` carry a password as a bare word with
+// no flag for SENSITIVE_FLAG to catch. The console masks those tokens on its
+// side, so the line is kept out of history whole.
 const SENSITIVE_COMMAND =
-  /(?:^|\s)(?:setting\s+import|2fa\s+(?:enable|disable|recovery|backoffice)|me\s+invite\s+claim|backup\s+import|login-bg\s+set|logo\s+set)(?=\s|$)/i;
+  /(?:^|\s)(?:setting\s+import|2fa\s+(?:enable|disable|recovery|backoffice)|me\s+invite\s+claim|backup\s+import|login-bg\s+set|logo\s+set|user\s+passwd|watch)(?=\s|$)/i;
 const SECRET_SETTING = /(?:^|\s)setting\s+set\s+\S*(?:secret|pass(?:word|wd)|token|key|credential)/i;
 
 export function isSensitiveTerminalLine(line: string): boolean {
