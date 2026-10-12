@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -182,5 +183,54 @@ func TestUsageDelegateCannotRevokeAnAdministratorsBonus(t *testing.T) {
 	memberGrant := grant(member)
 	if res := in.do(http.MethodDelete, "/api/admin/bonus/grants/"+memberGrant, nil, operator); res.Code != http.StatusOK {
 		t.Fatalf("usage delegate revoked an ordinary account's bonus: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// The groups page lists every group's limits in one response. A groups-only
+// administrator gets the group-scoped ones and nothing scoped to an account,
+// the same rows /api/admin/quota/policies would show that grant.
+func TestGroupsGrantSeesNoAccountScopedLimits(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "groups")
+
+	groups := decode[struct {
+		Groups []struct {
+			ID string `json:"id"`
+		} `json:"groups"`
+	}](t, in.do(http.MethodGet, "/api/admin/groups", nil, founder))
+	if len(groups.Groups) == 0 {
+		t.Fatal("no group to scope a limit to")
+	}
+	limit := func(scope, scopeID string) {
+		t.Helper()
+		body := map[string]any{
+			"scope": scope, "scope_id": scopeID,
+			"windows": map[string]any{"5h": map[string]any{"enabled": true, "tokens": 1000}},
+		}
+		if res := in.do(http.MethodPut, "/api/admin/quota/policies", body, founder); res.Code != http.StatusOK {
+			t.Fatalf("%s limit: %d %s", scope, res.Code, res.Body.String())
+		}
+	}
+	limit("user", member.userID)
+	limit("group", groups.Groups[0].ID)
+
+	res := in.do(http.MethodGet, "/api/admin/groups", nil, operator)
+	if res.Code != http.StatusOK {
+		t.Fatalf("groups: %d %s", res.Code, res.Body.String())
+	}
+	payload := decode[struct {
+		Policies []struct {
+			Scope   string `json:"scope"`
+			ScopeID string `json:"scope_id"`
+		} `json:"policies"`
+	}](t, res)
+	if len(payload.Policies) != 1 || payload.Policies[0].Scope != "group" {
+		t.Fatalf("groups-only administrator saw %+v", payload.Policies)
+	}
+	if strings.Contains(res.Body.String(), member.userID) {
+		t.Fatalf("an account id leaked through the groups response: %s", res.Body.String())
 	}
 }

@@ -769,9 +769,19 @@ func (h *Handlers) listGroups(w http.ResponseWriter, r *http.Request) error {
 		out = append(out, row{Group: record, Members: count, ModelIDs: modelIDs, ModelGrants: modelGrants})
 	}
 
-	policies, err := h.quota.Policies().List(r.Context())
+	// Filtered the way the policy list is, so this response carries only the
+	// limits the same grant could list at /api/admin/quota/policies. The groups
+	// page itself reads group-scoped limits only.
+	actor := auth.MustUser(r.Context())
+	all, err := h.quota.Policies().List(r.Context())
 	if err != nil {
 		return httpx.Internal(err)
+	}
+	policies := all[:0]
+	for _, policy := range all {
+		if canPolicy(actor, policy.Scope) {
+			policies = append(policies, policy)
+		}
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"groups": out, "policies": policies})
 }
