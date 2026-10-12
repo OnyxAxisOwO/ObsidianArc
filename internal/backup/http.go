@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,10 +39,18 @@ const (
 	// minutes is ample for the largest document the import accepts on any
 	// connection an operator would reasonably run.
 	importBodyTimeout = 2 * time.Minute
+
+	// Imports one account may start at once, and then one every importRefill.
+	importBurst  = 5
+	importRefill = 10 * time.Second
 )
 
 type Handlers struct {
 	service *Service
+
+	// Imports per account per time. Held in this process's memory for the same
+	// reason as the slots below: it limits this process's work.
+	importRate *httpx.TokenBucketLimiter
 
 	// The gate every write an account makes must pass: an import writes a
 	// conversation per thread, so it spends disk the same way a message or an
@@ -60,7 +69,11 @@ type Handlers struct {
 }
 
 func NewHandlers(service *Service) *Handlers {
-	return &Handlers{service: service, busy: map[string]struct{}{}}
+	return &Handlers{
+		service:    service,
+		busy:       map[string]struct{}{},
+		importRate: httpx.NewTokenBucketLimiter(1/importRefill.Seconds(), importBurst),
+	}
 }
 
 // enter claims the account's one slot and a place under the global ceiling
@@ -189,6 +202,15 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 		if err := h.Writable(r.Context(), account); err != nil {
 			return err
 		}
+	}
+
+	// Every import reads the account's stored text, whatever it writes, so a
+	// repeated one is a repeated scan of up to 512 MiB. A few at once is a
+	// person clicking through a file; a steady stream is not.
+	if !h.importRate.Allow(account.ID) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(importRefill/time.Second)))
+		return httpx.TooManyRequests("import_rate_limited",
+			"Too many imports in a short time. Wait a few seconds and try again.")
 	}
 
 	release, err := h.enter(w, account.ID, &h.imports, maxConcurrentImports)

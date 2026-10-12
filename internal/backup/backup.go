@@ -360,18 +360,23 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	// And what the account already holds, checked before anything is
 	// written: the per-request limits above say nothing about the twentieth
 	// request.
+	// A document with no messages writes none, so the account is not measured
+	// for it. Otherwise every empty import would scan the account's rows for
+	// nothing, and a signed-in account could repeat that scan at will.
 	ceiling := s.ceiling()
-	// A first, unlocked look, so a document that plainly does not fit is
-	// refused before any of it is written. It is not the enforcement: two
-	// imports arriving together both read the same figure here and both pass.
-	// importThread re-checks under the account's row lock, which is what the
-	// ceiling actually rests on.
-	stored, err := s.conversations.CountMessages(ctx, nil, account.ID)
-	if err != nil {
-		return Result{}, err
-	}
-	if stored+total > ceiling {
-		return Result{}, ErrStorageFull
+	if total > 0 {
+		// A first, unlocked look, so a document that plainly does not fit is
+		// refused before any of it is written. It is not the enforcement: two
+		// imports arriving together both read the same figure here and both
+		// pass. importThread re-checks under the account's row lock, which is
+		// what the ceiling actually rests on.
+		stored, err := s.conversations.CountMessages(ctx, nil, account.ID)
+		if err != nil {
+			return Result{}, err
+		}
+		if stored+total > ceiling {
+			return Result{}, ErrStorageFull
+		}
 	}
 
 	// The same question asked of the text itself. Read once, here, and carried
@@ -383,14 +388,18 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	// this import (a chat turn, another instance's import) can land between
 	// the read and the last thread. Each of those is itself bounded — a
 	// message holds at most 64 thousand characters, an import 32 MiB — so the
-	// overshoot is a request's worth, not unbounded.
-	storedChars, err := s.storedChars(ctx, account.ID)
-	if err != nil {
-		return Result{}, err
-	}
-	tally := &charTally{ceiling: s.charCeiling(), stored: storedChars}
-	if tally.stored+documentChars(document) > tally.ceiling {
-		return Result{}, ErrStorageFull
+	// overshoot is a request's worth, not unbounded. A document with no text
+	// writes none, so the scan is skipped for it, as the count above is.
+	tally := &charTally{ceiling: s.charCeiling()}
+	if chars := documentChars(document); chars > 0 {
+		storedChars, err := s.storedChars(ctx, account.ID)
+		if err != nil {
+			return Result{}, err
+		}
+		tally.stored = storedChars
+		if tally.stored+chars > tally.ceiling {
+			return Result{}, ErrStorageFull
+		}
 	}
 
 	var result Result
