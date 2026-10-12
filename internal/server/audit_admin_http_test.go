@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 )
@@ -292,5 +293,50 @@ func TestDashboardIsRateLimitedLikeTheUsageReads(t *testing.T) {
 	}
 	if refused == 0 {
 		t.Fatal("40 dashboard reads in a row were all answered")
+	}
+}
+
+// The resources page scans every attachment on each poll. Two things bound
+// that: the totals are shared for the page's own polling interval, so open
+// tabs do not each scan, and a caller polling in a loop meets the usage
+// budget. The first is checked by a second read inside the interval, which
+// must show the first read's figures.
+func TestResourcesPollingIsSharedAndLimited(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	member := in.register("uploader", "a-good-password")
+
+	heldCount := func() int64 {
+		t.Helper()
+		res := in.do(http.MethodGet, "/api/admin/resources", nil, founder)
+		if res.Code != http.StatusOK {
+			t.Fatalf("resources: %d %s", res.Code, res.Body.String())
+		}
+		return decode[struct {
+			Storage struct {
+				HeldCount int64 `json:"held_count"`
+			} `json:"storage"`
+		}](t, res).Storage.HeldCount
+	}
+	if got := heldCount(); got != 0 {
+		t.Fatalf("held before any upload = %d", got)
+	}
+	if _, err := conversation.NewStore(in.db).Upload(context.Background(), conversation.UploadInput{
+		UserID: member.userID, Mime: "image/png", Width: 1, Height: 1, Data: []byte("not really a png"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := heldCount(); got != 0 {
+		t.Fatalf("a poll inside the sharing interval scanned again: held = %d", got)
+	}
+
+	refused := 0
+	for range 40 {
+		if res := in.do(http.MethodGet, "/api/admin/resources", nil, founder); res.Code == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Fatal("40 resource polls in a row were all answered")
 	}
 }

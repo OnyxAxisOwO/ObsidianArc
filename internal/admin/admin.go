@@ -115,6 +115,11 @@ type Handlers struct {
 	usageSummarySF      singleflight.Group
 	usageBreakdownSF    singleflight.Group
 
+	// The resources page's storage totals, read at most once per
+	// storageCacheTTL; see resources.go.
+	storageMu    sync.Mutex
+	storageCache *storageTotals
+
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
 	cpu cpuSampler
