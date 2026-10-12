@@ -83,6 +83,37 @@ func code(t *testing.T, res *httptest.ResponseRecorder) string {
 
 // repack rewrites a package's manifest, keeping its files, for the tests
 // that need the same plugin asking for something else.
+// withoutSQL is raw with its migrations and purge scripts left out.
+func withoutSQL(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, "migrations/") || strings.HasPrefix(f.Name, "purge/") {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(rc)
+		rc.Close()
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write(body)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
 func repack(t *testing.T, raw []byte, edit func(manifest map[string]any)) []byte {
 	t.Helper()
 	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
@@ -537,9 +568,15 @@ func TestATransactionLeftOpenByAFailureTakesEverythingBackWithIt(t *testing.T) {
 
 func TestABackendCanOnlyDoWhatItsManifestSaysItMay(t *testing.T) {
 	a := newAdmin(t)
-	noDB := repack(t, pkgtest.Demo(t), func(m map[string]any) {
+	// Without the db grant the package may carry no SQL at all, so its
+	// migrations and purge scripts come out, and the account field their
+	// migration adds goes with them.
+	noDB := withoutSQL(t, repack(t, pkgtest.Demo(t), func(m map[string]any) {
 		m["permissions"] = []string{"network"}
-	})
+		delete(m, "fields")
+		delete(m, "field_rules")
+		delete(m, "oauth_bindings")
+	}))
 	a.in.InstallPackage(a.s, noDB, true, nil)
 	res := a.do(http.MethodGet, "/api/admin/x/demo/things", nil)
 	if res.Code != http.StatusInternalServerError {
