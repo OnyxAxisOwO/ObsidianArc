@@ -65,11 +65,26 @@ func (s *Service) CheckPluginDefinitions(plugin string, defs []Definition, modes
 	return s.checkPluginDefinitions(plugin, defs, modes)
 }
 
+// coreOwnedKeys are dotted settings the core reads and writes without a
+// Define, so they are not in Defaults and the check below cannot see them
+// there. quota keeps its allowance anchor under quota.global_reset_at and the
+// backup scheduler its lock under system_backup.lock (internal/quota and
+// internal/systembackup hold the names unexported). A package that declared
+// one would be handed the value the core reads back, and an install writes
+// the value it was given. Keep this list in step with those packages.
+var coreOwnedKeys = map[string]bool{
+	"quota.global_reset_at": true,
+	"system_backup.lock":    true,
+}
+
 // checkPluginDefinitions: the caller holds dyn.mu.
 func (s *Service) checkPluginDefinitions(plugin string, defs []Definition, modes []string) error {
 	for _, d := range defs {
 		if d.Key == "" {
 			return fmt.Errorf("settings: a definition with an empty key")
+		}
+		if coreOwnedKeys[d.Key] {
+			return fmt.Errorf("settings: %s belongs to the core", d.Key)
 		}
 		if _, taken := Defaults[d.Key]; taken {
 			return fmt.Errorf("settings: %s is already defined", d.Key)
