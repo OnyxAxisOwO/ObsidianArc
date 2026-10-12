@@ -543,8 +543,12 @@ async function openPolicy(): Promise<void> {
   try {
     const { policies } = await adminApi.policies();
     policy = policies.find((entry) => entry.scope === 'global') ?? policy;
-  } catch {
-    // Fall through with the blank policy; saving will create it.
+  } catch (failure) {
+    // A failed read is not an empty list. The blank form would show no limit
+    // anywhere, and Save would write those blanks over the stored instance
+    // defaults, so the panel stays shut and the page says what went wrong.
+    error.value = failure instanceof ApiError ? failure.message : String(failure);
+    return;
   }
   const windows = {} as typeof policyForm.value.windows;
   for (const kind of WINDOWS) {

@@ -34,6 +34,9 @@ function set(key: string, value: string): void {
 <template>
   <div class="oa-plugin-controls">
     <div v-for="control in shown" :key="control.key" class="oa-plugin-control-item">
+      <!-- A package names its own labels, so the key is shown too: it is what
+           the value is written under, and the install asks for it. -->
+      <code class="oa-plugin-control-key">{{ control.key }}</code>
       <OaTextField
         v-if="control.kind === 'text'"
         :model-value="draft[control.key] ?? ''"

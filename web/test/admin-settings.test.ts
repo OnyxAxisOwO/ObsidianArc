@@ -65,7 +65,7 @@ async function mountSettings(onError?: (error: unknown) => void): Promise<void> 
 }
 
 describe('admin settings payload', () => {
-  it('submits the complete shared payload, including hidden defaults, when enabling API keys', async () => {
+  it('submits only the key it changed when enabling API keys', async () => {
     vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture, 'api.enabled': 'false' } });
     const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture } });
     await mountSettings();
@@ -85,7 +85,7 @@ describe('admin settings payload', () => {
     button(actions, t('save')).click();
     await settle();
     expect(save).toHaveBeenCalledTimes(1);
-    expect(save).toHaveBeenCalledWith(settingsFixture);
+    expect(save).toHaveBeenCalledWith({ 'api.enabled': 'true' });
     expect(host.querySelector<HTMLElement>('#secChat')?.style.display).toBe('none');
     expectSaveState(false);
     expect(button(actions, t('saved')).disabled).toBe(false);
@@ -94,10 +94,9 @@ describe('admin settings payload', () => {
   it.each([
     { label: 'an edited value', input: '15', expected: '15' },
     { label: 'the default after clearing the field', input: '', expected: '40' },
-  ])('preserves the complete payload with $label', async ({ input, expected }) => {
+  ])('submits only the edited field with $label', async ({ input, expected }) => {
     vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture, 'chat.max_turns': '12' } });
-    const expectedSettings = { ...settingsFixture, 'chat.max_turns': expected };
-    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: expectedSettings });
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture, 'chat.max_turns': expected } });
     await mountSettings();
     expectSaveState(false);
 
@@ -114,15 +113,14 @@ describe('admin settings payload', () => {
     button(actions, t('save')).click();
     await settle();
     expect(save).toHaveBeenCalledTimes(1);
-    expect(save).toHaveBeenCalledWith(expectedSettings);
+    expect(save).toHaveBeenCalledWith({ 'chat.max_turns': expected });
     expectSaveState(false);
     expect(button(actions, t('saved')).disabled).toBe(false);
   });
 
   it('updates auth card position setting', async () => {
     vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
-    const expectedSettings = { ...settingsFixture, 'site.auth_card_position': 'left' };
-    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: expectedSettings });
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture, 'site.auth_card_position': 'left' } });
     await mountSettings();
     expectSaveState(false);
 
@@ -141,7 +139,7 @@ describe('admin settings payload', () => {
     button(actions, t('save')).click();
     await settle();
     expect(save).toHaveBeenCalledTimes(1);
-    expect(save).toHaveBeenCalledWith(expectedSettings);
+    expect(save).toHaveBeenCalledWith({ 'site.auth_card_position': 'left' });
     expectSaveState(false);
   });
 
