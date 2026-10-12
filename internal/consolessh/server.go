@@ -569,6 +569,10 @@ const handshakeTimeout = 30 * time.Second
 // A variable so a test can make it short.
 var sessionStartTimeout = handshakeTimeout
 
+// writeStallTimeout bounds one write to the client. A variable so a test can
+// make it short.
+var writeStallTimeout = 30 * time.Second
+
 // maxConnectionsPerAccount is how many connections one account may hold open at
 // once, whether or not they have opened a session.
 const maxConnectionsPerAccount = 8
@@ -792,8 +796,10 @@ func newSSHSession(server *Server, conn ssh.Conn, channel ssh.Channel, actor use
 // first wins and the other becomes a no-op.
 func (sess *sshSession) closeChannel() {
 	sess.closeOnce.Do(func() {
-		_ = sess.channel.CloseWrite()
-		_ = sess.channel.Close()
+		_ = sess.stalled(func() error {
+			_ = sess.channel.CloseWrite()
+			return sess.channel.Close()
+		})
 	})
 }
 
@@ -887,7 +893,7 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 				}
 				sess.mu.Unlock()
 			}
-			reply(req, ok)
+			sess.reply(req, ok)
 
 		case "window-change":
 			var payload windowChangePayload
@@ -897,7 +903,7 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 				sess.width = int(payload.Width)
 				sess.mu.Unlock()
 			}
-			reply(req, ok)
+			sess.reply(req, ok)
 
 		case "env":
 			var payload envPayload
@@ -905,10 +911,10 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 			if ok {
 				sess.applyEnv(payload.Name, payload.Value)
 			}
-			reply(req, ok)
+			sess.reply(req, ok)
 
 		case "shell":
-			reply(req, true)
+			sess.reply(req, true)
 			started.Stop()
 			sess.runInteractive()
 			return
@@ -916,7 +922,7 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 		case "exec":
 			var payload execPayload
 			ok := ssh.Unmarshal(req.Payload, &payload) == nil
-			reply(req, ok)
+			sess.reply(req, ok)
 			if !ok {
 				return
 			}
@@ -932,7 +938,7 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 			// shell, and the only requests it understands are the ones
 			// handled above. A `signal` arriving here has no command to
 			// interrupt; the one that does is handled in serveExec.
-			reply(req, false)
+			sess.reply(req, false)
 		}
 	}
 }
@@ -978,7 +984,7 @@ func (sess *sshSession) serveExec(requests <-chan *ssh.Request, line string) {
 					sess.interrupt()
 				}
 			}
-			reply(req, false)
+			sess.reply(req, false)
 		}
 	}
 }
@@ -1006,10 +1012,54 @@ func (sess *sshSession) interrupt() {
 	}
 }
 
-func reply(req *ssh.Request, ok bool) {
+func (sess *sshSession) reply(req *ssh.Request, ok bool) {
 	if req.WantReply {
-		_ = req.Reply(ok, nil)
+		_ = sess.stalled(func() error { return req.Reply(ok, nil) })
 	}
+}
+
+// stalled runs one write to the client under a timer. A client that has stopped
+// reading leaves its write blocked in the SSH window reservation, which has no
+// deadline and no context, so nothing else in the session can end it. Closing
+// the connection is what releases that write, and the timer does it once a
+// write has taken longer than writeStallTimeout.
+func (sess *sshSession) stalled(write func() error) error {
+	timer := time.AfterFunc(writeStallTimeout, sess.close)
+	defer timer.Stop()
+	return write()
+}
+
+// output is the client's main stream with every write under stalled, and
+// errOutput is its stderr.
+func (sess *sshSession) output() io.Writer {
+	return clientStream{sess: sess, stream: sess.channel}
+}
+
+func (sess *sshSession) errOutput() io.Writer {
+	return clientStream{sess: sess, stream: sess.channel.Stderr()}
+}
+
+type clientStream struct {
+	sess   *sshSession
+	stream io.Writer
+}
+
+func (c clientStream) Write(p []byte) (int, error) {
+	var n int
+	err := c.sess.stalled(func() error {
+		var err error
+		n, err = c.stream.Write(p)
+		return err
+	})
+	return n, err
+}
+
+// exitStatus tells the client how its command ended, under the same bound.
+func (sess *sshSession) exitStatus(status uint32) {
+	_ = sess.stalled(func() error {
+		_, err := sess.channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
+		return err
+	})
 }
 
 // zhPrefixes are LANG/LC_ALL values whose language subtag is Chinese. The
@@ -1115,15 +1165,15 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 
 	consoleSession, err := sess.currentSession(ctx, "ssh")
 	if err != nil {
-		_, _ = sess.channel.Write([]byte(endNotice(err)))
-		_, _ = sess.channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{1}))
+		_, _ = sess.output().Write([]byte(endNotice(err)))
+		sess.exitStatus(1)
 		return
 	}
 	consoleSession.Colour = false
 
 	go sess.watchCancel(ctx, cancel)
 
-	result := sess.server.cfg.Console.Execute(ctx, consoleSession, sess.channel, line)
+	result := sess.server.cfg.Console.Execute(ctx, consoleSession, sess.output(), line)
 
 	status := uint32(0)
 	if !result.OK {
@@ -1131,9 +1181,9 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		status = 1
-		_, _ = fmt.Fprintf(sess.channel.Stderr(), "command stopped after %s\n", sess.server.cfg.ExecTimeout)
+		_, _ = fmt.Fprintf(sess.errOutput(), "command stopped after %s\n", sess.server.cfg.ExecTimeout)
 	}
-	_, _ = sess.channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
+	sess.exitStatus(status)
 }
 
 // runInteractive is the pty path: banner, prompt, line editor, until `exit`,
@@ -1149,7 +1199,7 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 // signal.
 func (sess *sshSession) runInteractive() {
 	engine := sess.server.cfg.Console
-	_, _ = sess.channel.Write([]byte(engine.Banner(sess.snapshot("ssh"))))
+	_, _ = sess.output().Write([]byte(engine.Banner(sess.snapshot("ssh"))))
 
 	complete := func(line string, pos int) (int, []editorCompletion) {
 		c := engine.Complete(context.Background(), sess.snapshot("ssh"), line, pos)
@@ -1159,7 +1209,7 @@ func (sess *sshSession) runInteractive() {
 		}
 		return c.From, items
 	}
-	editor := newLineEditor(sess.channel, sess.channel, "> ", complete, newHistory())
+	editor := newLineEditor(sess.channel, sess.output(), "> ", complete, newHistory())
 	editor.Start()
 
 	type readEvent struct {
@@ -1243,11 +1293,11 @@ func (sess *sshSession) runInteractive() {
 			go func(line string) {
 				current, authErr := sess.currentSession(runCtx, "ssh")
 				if authErr != nil {
-					_, _ = sess.channel.Write([]byte(endNotice(authErr)))
+					_, _ = sess.output().Write([]byte(endNotice(authErr)))
 					results <- execEvent{result: console.Result{Exit: true}}
 					return
 				}
-				result := engine.Execute(runCtx, current, sess.channel, line)
+				result := engine.Execute(runCtx, current, sess.output(), line)
 				results <- execEvent{result}
 			}(line)
 
@@ -1263,7 +1313,7 @@ func (sess *sshSession) runInteractive() {
 			editor.Start()
 
 		case <-idleTimer.C:
-			_, _ = sess.channel.Write([]byte("\r\nidle timeout; closing.\r\n"))
+			_, _ = sess.output().Write([]byte("\r\nidle timeout; closing.\r\n"))
 			if cancel != nil {
 				cancel()
 			}
