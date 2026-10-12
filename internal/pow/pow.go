@@ -29,6 +29,8 @@ var (
 	ErrInvalidNonce     = errors.New("pow: hash does not match challenge")
 	ErrReplayed         = errors.New("pow: challenge salt has already been used")
 	ErrRateLimited      = errors.New("pow: too many challenge requests")
+	// The challenge was issued at an easier tier than the server requires now.
+	ErrBelowTier = errors.New("pow: challenge was issued below the current difficulty")
 )
 
 // Challenge is the bounded puzzle issued to the client.
@@ -57,6 +59,10 @@ type Manager struct {
 
 	mu        sync.Mutex
 	usedSalts map[string]int64 // salt -> expires (Unix seconds)
+	// When the replay table was last walked for expired salts. The walk is
+	// linear in the table and every accepted solution would otherwise pay for
+	// it under the lock all verifications share.
+	lastPruned int64
 }
 
 func NewManager(secretKey []byte, tracker *Tracker) *Manager {
@@ -113,11 +119,23 @@ func (m *Manager) Issue(maxNumber int64) (Challenge, error) {
 
 // Verify validates a submitted solution against signature, expiration, bounds, hash, and replay.
 func (m *Manager) Verify(sol *Solution) error {
+	return m.verify(sol, 0, time.Now())
+}
+
+// VerifyAt is Verify for a caller that knows the difficulty the server requires
+// now. A challenge stays valid for five minutes after it is issued, and activity
+// can raise the difficulty in that time; without this check, work done at the
+// base tier would keep counting after the elevated tier applies.
+func (m *Manager) VerifyAt(sol *Solution, requiredMax int64) error {
+	return m.verify(sol, requiredMax, time.Now())
+}
+
+func (m *Manager) verify(sol *Solution, requiredMax int64, at time.Time) error {
 	if sol == nil || sol.Challenge == "" || sol.Salt == "" || sol.Signature == "" {
 		return ErrMissingSolution
 	}
 
-	now := time.Now().Unix()
+	now := at.Unix()
 	if now > sol.Expires {
 		return ErrExpired
 	}
@@ -139,10 +157,20 @@ func (m *Manager) Verify(sol *Solution) error {
 		return ErrInvalidNonce
 	}
 
+	// The signature covers MaxNumber, so the tier it names is the one the
+	// challenge was issued at. Checked here, after the signature, and before the
+	// salt is spent, so a refused solution does not use up its challenge.
+	if sol.MaxNumber < requiredMax {
+		return ErrBelowTier
+	}
+
 	// Single-use salt guard
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.pruneExpiredSaltsLocked(now)
+	if now-m.lastPruned >= 1 {
+		m.pruneExpiredSaltsLocked(now)
+		m.lastPruned = now
+	}
 
 	if _, exists := m.usedSalts[sol.Salt]; exists {
 		return ErrReplayed
