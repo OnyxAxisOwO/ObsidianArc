@@ -29,6 +29,14 @@ func TestAnAnswerThatFailsWithUsageKeepsTheUsage(t *testing.T) {
 			output:  7,
 		},
 		{
+			name:     "anthropic refusal answered to a streaming request",
+			kind:     KindAnthropic,
+			body:     `{"content":[],"stop_reason":"refusal","usage":{"input_tokens":2000,"output_tokens":7}}`,
+			refusal:  true,
+			streamed: true,
+			output:   7,
+		},
+		{
 			name:    "openai refusal",
 			kind:    KindOpenAI,
 			body:    `{"choices":[{"message":{"content":null,"refusal":"no"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2000,"completion_tokens":7}}`,
