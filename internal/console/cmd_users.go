@@ -629,7 +629,14 @@ func init() {
 			}
 			body.str(rt, "role", "role")
 			if rt.Present("permissions") {
-				body["admin_permissions"] = splitCSV(rt.String("permissions"))
+				// An empty value clears the grants, so it must reach the server as an
+				// empty list. Null is read there as "not given", and the command would
+				// report success with the grants left as they were.
+				permissions := splitCSV(rt.String("permissions"))
+				if permissions == nil {
+					permissions = []string{}
+				}
+				body["admin_permissions"] = permissions
 			}
 			if rt.Present("group") {
 				if v := rt.String("group"); v == "" {
@@ -1155,7 +1162,16 @@ func init() {
 			body := bodyBuilder{}
 			body.int64v(rt, "expires-at", "expires_at")
 			if rt.Present("ids") {
-				body["card_ids"] = splitCSV(rt.String("ids"))
+				ids := splitCSV(rt.String("ids"))
+				// Refused rather than sent: an empty list reaches the server as null,
+				// which means every unused card, not no cards.
+				if len(ids) == 0 {
+					if rt.Session.Lang == "zh" {
+						return rt.Errorf("--ids 需要至少一个卡 id：空列表会改期全部未使用的卡")
+					}
+					return rt.Errorf("--ids needs at least one card id: an empty list would move every unused card")
+				}
+				body["card_ids"] = ids
 			}
 			data, _, err := rt.Call(http.MethodPatch, "/api/admin/users/"+url.PathEscape(uid)+"/cards", map[string]any(body))
 			if err != nil {
