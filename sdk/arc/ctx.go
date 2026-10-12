@@ -95,7 +95,9 @@ type SecurityEvent struct {
 	ActorID       string
 	ActorUsername string
 	IP            string
-	// Where it came from ("backoffice", "bot", ...) and what was decided.
+	// Where it came from ("bot", ...) and what was decided. The labels the core
+	// writes its own events under are not a plugin's to use: the event is filed
+	// under the plugin instead.
 	Source   string
 	Decision string
 	Reason   string

@@ -246,6 +246,12 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if params, _ := json.Marshal(a.Params); len(params) > maxParamsLen {
 				return nil, badArg("notify.push: params are at most %d bytes", maxParamsLen)
 			}
+			// Everybody's inbox is an administrator's to fill. A public route or a
+			// guard is anybody's request, and one of those could otherwise reach
+			// every account with as many entries as its budget allows.
+			if a.All && !administrator(c.Info.Actor) {
+				return nil, &wasm.HostError{Code: "permission_denied", Message: "only an administrator's request may notify every account"}
+			}
 			if err := st.countAudit(); err != nil {
 				return nil, err
 			}
@@ -294,10 +300,8 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if err != nil {
 				return nil, err
 			}
-			// The source is the package, never a name it chose: "backoffice" is
-			// what the core writes for an administrator's own action. The actor
-			// is whoever the request came from, as the core's entries record it,
-			// because a backend that named one could put an administrator's name
+			// The actor is whoever the request came from, as the core's entries record
+			// it, because a backend that named one could put an administrator's name
 			// on an event that administrator never did.
 			var actorID, actorName string
 			if c.Info.Actor != nil {
@@ -305,7 +309,8 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			}
 			return nil, m.host.Security.Record(c.Ctx, q, securityevents.Event{
 				Event: a.Event, Severity: severity, UserID: a.UserID, Username: a.Username,
-				ActorID: actorID, ActorUsername: actorName, IP: a.IP, Source: "plugin:" + l.name,
+				ActorID: actorID, ActorUsername: actorName, IP: a.IP,
+				Source:   securitySource(l.name, a.Source, administrator(c.Info.Actor)),
 				Decision: a.Decision, Reason: truncate(a.Reason, 500),
 			})
 
@@ -1009,4 +1014,41 @@ func (st *callState) countAudit() error {
 	}
 	st.auditWrites++
 	return nil
+}
+
+// administrator reports whether a call was made by an administrator's own
+// request. Only such a request may speak for every account or for the
+// administrators' own labels.
+func administrator(actor *wasm.Actor) bool {
+	return actor != nil && user.User{Role: user.Role(actor.Role)}.IsAdmin()
+}
+
+// securitySource is the source a package's security event is filed under. A
+// package names its own events and nobody else's: a label the core writes its
+// own events under, or another package's "plugin:" label, is filed under this
+// package instead, so an event never reads as the core's or another package's.
+// Refusing every label would take away the ones a package uses for its own
+// events, which an installed package would then lose without a word.
+// "admin" is the exception an administrator's own request may carry, since an
+// administrator's page records its actions under it and the actor says who.
+func securitySource(plugin, claimed string, admin bool) string {
+	own := "plugin:" + plugin
+	switch {
+	case claimed == "", strings.HasPrefix(claimed, "plugin:"):
+		return own
+	case claimed == "admin":
+		if admin {
+			return claimed
+		}
+		return own
+	case coreSources[claimed]:
+		return own
+	}
+	return claimed
+}
+
+// coreSources are the labels the core writes security events under, apart
+// from "admin", which securitySource handles itself.
+var coreSources = map[string]bool{
+	"backoffice": true, "system": true, "user": true, "ai": true, "chat_speed": true,
 }

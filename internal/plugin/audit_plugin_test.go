@@ -219,7 +219,8 @@ func TestNotificationsAndSecurityEventsHaveAPerCallBudget(t *testing.T) {
 		t.Fatal("a security event past the call's budget was written")
 	}
 
-	c2 := &wasm.Call{Ctx: context.Background()}
+	// An administrator's request, since an everybody notification is one.
+	c2 := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: &wasm.Actor{ID: "founder-id", Username: "founder", Role: "super_admin"}}}
 	if _, err := host(c2, "notify.push", json.RawMessage(`{"kind":"`+strings.Repeat("k", maxKindLen+1)+`","all":true}`)); err == nil {
 		t.Fatal("a notification with an over-long kind was accepted")
 	}
@@ -231,5 +232,69 @@ func TestNotificationsAndSecurityEventsHaveAPerCallBudget(t *testing.T) {
 	}
 	if _, err := host(c2, "notify.push", push); err == nil {
 		t.Fatal("a notification past the call's budget was written")
+	}
+}
+
+// A notification to every account is an administrator's to send. A public
+// route or a guard is anybody's request, and one of those would otherwise
+// reach every inbox, as many times as its budget allows.
+func TestAnAnonymousCallCannotNotifyEveryAccount(t *testing.T) {
+	r := newRig(t)
+	r.manager.host = &Host{Security: securityevents.NewStore(r.db), Notify: notify.NewStore(r.db)}
+	l := &loaded{name: "riskctl", pkg: &arcx.Package{Manifest: &arcx.Manifest{Permissions: []string{arcx.PermNotify}}}}
+	host := r.manager.hostFunc(l)
+	push := json.RawMessage(`{"kind":"risk","all":true}`)
+	for label, actor := range map[string]*wasm.Actor{
+		"an anonymous call":   nil,
+		"a signed-in visitor": {ID: "u1", Username: "visitor", Role: "user"},
+	} {
+		c := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: actor}}
+		if _, err := host(c, "notify.push", push); err == nil {
+			t.Errorf("%s notified every account", label)
+		}
+	}
+	admin := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: &wasm.Actor{ID: "founder-id", Username: "founder", Role: "admin"}}}
+	if _, err := host(admin, "notify.push", push); err != nil {
+		t.Fatalf("an administrator's request was refused: %v", err)
+	}
+}
+
+// A package files its security events under its own label. A label the core
+// writes its own events under, or another package's "plugin:" label, is not
+// its to claim. "admin" stands only for an administrator's own request, and
+// a label the package always used for its own events is kept as written.
+func TestAPackageFilesItsEventsUnderItsOwnLabelOnly(t *testing.T) {
+	r := newRig(t)
+	r.manager.host = &Host{Security: securityevents.NewStore(r.db), Notify: notify.NewStore(r.db)}
+	l := &loaded{name: "riskctl", pkg: &arcx.Package{Manifest: &arcx.Manifest{Permissions: []string{arcx.PermSecurityLog}}}}
+	host := r.manager.hostFunc(l)
+	admin := &wasm.Actor{ID: "founder-id", Username: "founder", Role: "admin"}
+	cases := []struct {
+		event, claimed, want string
+		actor                *wasm.Actor
+	}{
+		{"own_label", "bot", "bot", nil},
+		{"core_backoffice", "backoffice", "plugin:riskctl", nil},
+		{"core_backoffice_admin", "backoffice", "plugin:riskctl", admin},
+		{"core_user", "user", "plugin:riskctl", nil},
+		{"other_plugin", "plugin:other", "plugin:riskctl", nil},
+		{"admin_anonymous", "admin", "plugin:riskctl", nil},
+		{"admin_admin", "admin", "admin", admin},
+		{"no_source", "", "plugin:riskctl", nil},
+	}
+	for _, tc := range cases {
+		raw := json.RawMessage(`{"event":"` + tc.event + `","source":"` + tc.claimed + `"}`)
+		c := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: tc.actor}}
+		if _, err := host(c, "security.record", raw); err != nil {
+			t.Fatal(err)
+		}
+		var source string
+		if err := r.db.QueryRow(context.Background(),
+			`SELECT source FROM security_events WHERE event = ?`, tc.event).Scan(&source); err != nil {
+			t.Fatal(err)
+		}
+		if source != tc.want {
+			t.Errorf("claimed %q: filed under %q, want %q", tc.claimed, source, tc.want)
+		}
 	}
 }
