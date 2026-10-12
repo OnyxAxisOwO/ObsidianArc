@@ -244,7 +244,7 @@ func init() {
 				"accepts before it stops working; 0 means unlimited, the shape a partner link wants. " +
 				"--group puts every account that registers with the code into that group; --group-days " +
 				"is how many days the membership lasts, or a range N-M to draw a different random " +
-				"length for each registration (a partner's '3-7 day trial'); 0 alone means permanent. " +
+				"length for each registration (a partner's '3-7 day trial'); 0 alone means permanent, and a range starts at 1 or more. " +
 				"Give at most one of --days (from now) or --expires (a calendar date) for when the code " +
 				"itself stops being redeemable; neither means it never expires.\n\n" +
 				"--partner turns this into a named partner code rather than a plain batch one: it " +
@@ -258,7 +258,7 @@ func init() {
 				"折叠规则与手动输入邀请码相同（大小写和连字符不影响匹配）。--uses 是该码能被使用几次后失效，" +
 				"0 表示不限次数，合作链接通常这样设置。--group 会让用该码注册的账户加入该分组；--group-days " +
 				"是成员身份的天数，也可以给一个区间 N-M，让每次注册各自抽取不同的随机天数（例如合作方的" +
-				"「3-7 天试用」）；单独的 0 表示永久。--days（从现在起）和 --expires（具体日期）最多给一个，" +
+				"「3-7 天试用」）；单独的 0 表示永久，区间的起点至少为 1。--days（从现在起）和 --expires（具体日期）最多给一个，" +
 				"控制邀请码本身何时失效；两者都不给表示永不失效。\n\n" +
 				"--partner 把这个码变成一个命名的合作方码，而不是普通批量码：需要 --code、--group，且数量" +
 				"必须是 1（不给 --count 时默认就是 1）；它还会让这个码可以被**已有账户**领取（见 me invite " +
