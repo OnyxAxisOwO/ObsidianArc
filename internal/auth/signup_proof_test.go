@@ -48,7 +48,10 @@ func TestCheckSignupProofRefusesWhatRegisterRefusesAndLogsIt(t *testing.T) {
 		t.Fatalf("missing solution = %v, want ErrMissingSolution", err)
 	}
 
-	challenge, err := f.auth.PoW.Issue(100)
+	// At the tier the challenge endpoint would hand this address: a solution
+	// below the current tier is refused, so a smaller test tier would fail for
+	// the wrong reason.
+	challenge, err := f.auth.PoW.Issue(f.settings.PoWBaseMaxNumber())
 	if err != nil {
 		t.Fatalf("issue a challenge: %v", err)
 	}
