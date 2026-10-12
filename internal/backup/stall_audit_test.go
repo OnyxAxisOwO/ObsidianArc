@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,5 +113,51 @@ func TestAStalledImportBodyReleasesItsSlotPromptly(t *testing.T) {
 	}
 	if w.deadlineAtStall.IsZero() || time.Until(w.deadlineAtStall) > 2*time.Minute {
 		t.Fatalf("the body read deadline was %v away, want at most two minutes", time.Until(w.deadlineAtStall))
+	}
+}
+
+// A client that sent a whole document and then nothing more. The decode returns
+// once the document is complete, and what is left of the body is read by the
+// server after the handler, so the read deadline must still be armed then.
+type completeThenStalledBody struct {
+	w    *stalledReadWriter
+	data *strings.Reader
+}
+
+func (b completeThenStalledBody) Read(p []byte) (int, error) {
+	if b.data.Len() > 0 {
+		return b.data.Read(p)
+	}
+	if b.w.readDeadline.IsZero() {
+		select {}
+	}
+	return 0, os.ErrDeadlineExceeded
+}
+
+func (b completeThenStalledBody) Close() error { return nil }
+
+// Clearing the deadline once the decode returned left the server's own read of
+// the rest of the body with no bound, where the five-minute ReadTimeout used to
+// apply.
+func TestAnImportLeavesItsBodyReadBounded(t *testing.T) {
+	f := newFixture(t)
+	h := NewHandlers(f.service)
+
+	w := &stalledReadWriter{ResponseRecorder: httptest.NewRecorder()}
+	req := asUser(httptest.NewRequest(http.MethodPost, "/api/account/import", nil), f.account)
+	req.Body = completeThenStalledBody{w: w, data: strings.NewReader(`{"obsidian_arc_export":1,"conversations":[]}`)}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		httpx.Wrap(h.importDocument)(w, req)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an import whose body stopped after the document never returned")
+	}
+	if w.readDeadline.IsZero() {
+		t.Fatal("the import cleared its read deadline, leaving the server's read of the rest of the body unbounded")
 	}
 }

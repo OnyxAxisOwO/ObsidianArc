@@ -222,8 +222,12 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 	defer release()
 
 	// Armed after the slot is held, so the time spent waiting for one does not
-	// count against the body. Cleared once the body is in, because the import
-	// that follows writes to the store and does not read from the connection.
+	// count against the body. Deliberately not cleared once the decode returns:
+	// when the handler is done the server reads whatever is left of the body,
+	// so that it can reuse the connection, and with the deadline gone that read
+	// has no bound at all. A client that sent a complete document and then
+	// stopped would hold its goroutine and descriptor for ever. The next request
+	// on the connection resets the deadline, so nothing outlives this one.
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(importBodyTimeout))
 
@@ -231,9 +235,7 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 	// not heard of, and losing them is the right outcome — refusing the whole
 	// file is not.
 	var document Document
-	err = httpx.DecodeJSONLenient(w, r, &document, MaxDocumentBytes)
-	_ = rc.SetReadDeadline(time.Time{})
-	if err != nil {
+	if err := httpx.DecodeJSONLenient(w, r, &document, MaxDocumentBytes); err != nil {
 		return err
 	}
 
