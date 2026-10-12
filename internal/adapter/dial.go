@@ -20,10 +20,12 @@ var errDestinationRefused = errors.New("destination refused")
 // which is also the range Tailscale hands out, so that one address is refused
 // exactly rather than the whole range. AWS's IPv6 service sits in a
 // unique-local range that private networks use as well, so it too is refused
-// by address.
+// by address. Google's IPv6 service is in a unique-local range too, and only
+// IPv6-only instances have any other way to reach a credential.
 var cloudMetadata = []netip.Addr{
 	netip.MustParseAddr("100.100.100.200"),
 	netip.MustParseAddr("fd00:ec2::254"),
+	netip.MustParseAddr("fd20:ce::254"),
 }
 
 // refuseDestination is the provider dialer's Control hook. The dialer calls it
