@@ -327,7 +327,7 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 	// one in the browser. This clears the browser's copy only; the server
 	// keeps its own record of the nonce, written once the state has checked
 	// out, because a copy kept anywhere else is refused by that record alone.
-	cookie, err := r.Cookie(stateCookie)
+	cookie, err := r.Cookie(h.cookieName(stateCookie))
 	h.clearState(w)
 	if err != nil {
 		h.fail(w, r, "", "state")
@@ -613,7 +613,7 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 // worth a stack trace.
 func (h *Handlers) heldSignup(r *http.Request) (pending, error) {
 	stale := httpx.BadRequest("That sign-in is no longer in progress. Start again from the sign-in page.")
-	cookie, err := r.Cookie(pendingCookie)
+	cookie, err := r.Cookie(h.cookieName(pendingCookie))
 	if err != nil {
 		return pending{}, stale
 	}

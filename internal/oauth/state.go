@@ -19,12 +19,14 @@ import (
 // into a cookie, signed with the instance secret so that it can be believed
 // when it comes back.
 //
-// The signature is the point. The cookie is HttpOnly, but a cookie can also
-// be written by anything that has managed to get onto a neighbouring
-// hostname, and a forged one is a real attack: plant your own half-finished
-// sign-in in somebody else's browser and they come back signed in as you,
-// typing into an account you can read. A value this process did not sign is
-// not a state, it is noise.
+// The signature proves this process wrote the value. It cannot prove that it
+// was written in this browser: a cookie can be set by anything that has got
+// onto a neighbouring hostname, and a valid value from another browser is a
+// real attack. Plant your own half-finished sign-in in somebody else's browser
+// and they come back signed in as you, typing into an account you can read.
+// So when cookies are Secure they take the __Host- prefix, which a browser will
+// not accept with a Domain attribute, so a neighbouring hostname cannot set
+// them at all. A value this process did not sign is still noise.
 
 const (
 	// Long enough to read a consent screen and sign in to the provider first,
@@ -180,11 +182,29 @@ func (s *stamp) tag(body string) string {
 
 // --- the cookie ---------------------------------------------------------------
 
+// cookieName is the name a sign-in cookie is set and read under. See the note
+// at the top of this file for why Secure cookies carry the __Host- prefix.
+func (h *Handlers) cookieName(base string) string {
+	if h.SecureCookie {
+		return "__Host-" + base
+	}
+	return base
+}
+
+// cookiePath is the path a sign-in cookie is scoped to. A __Host- cookie has to
+// be sent for every path, so the Secure form gives up the narrower scope.
+func (h *Handlers) cookiePath() string {
+	if h.SecureCookie {
+		return "/"
+	}
+	return statePath
+}
+
 func (h *Handlers) setState(w http.ResponseWriter, value string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     stateCookie,
+		Name:     h.cookieName(stateCookie),
 		Value:    value,
-		Path:     statePath,
+		Path:     h.cookiePath(),
 		HttpOnly: true,
 		Secure:   h.SecureCookie,
 		// Lax rather than Strict: the provider sends the browser back with a
@@ -197,9 +217,9 @@ func (h *Handlers) setState(w http.ResponseWriter, value string) {
 
 func (h *Handlers) setPending(w http.ResponseWriter, value string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     pendingCookie,
+		Name:     h.cookieName(pendingCookie),
 		Value:    value,
-		Path:     statePath,
+		Path:     h.cookiePath(),
 		HttpOnly: true,
 		Secure:   h.SecureCookie,
 		SameSite: http.SameSiteLaxMode,
@@ -209,9 +229,9 @@ func (h *Handlers) setPending(w http.ResponseWriter, value string) {
 
 func (h *Handlers) clearPending(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     pendingCookie,
+		Name:     h.cookieName(pendingCookie),
 		Value:    "",
-		Path:     statePath,
+		Path:     h.cookiePath(),
 		HttpOnly: true,
 		Secure:   h.SecureCookie,
 		SameSite: http.SameSiteLaxMode,
@@ -221,9 +241,9 @@ func (h *Handlers) clearPending(w http.ResponseWriter) {
 
 func (h *Handlers) clearState(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     stateCookie,
+		Name:     h.cookieName(stateCookie),
 		Value:    "",
-		Path:     statePath,
+		Path:     h.cookiePath(),
 		HttpOnly: true,
 		Secure:   h.SecureCookie,
 		SameSite: http.SameSiteLaxMode,
