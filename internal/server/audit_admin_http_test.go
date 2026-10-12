@@ -753,3 +753,43 @@ func TestEchoedHeaderHintsAreReadBackOrRefused(t *testing.T) {
 		t.Fatalf("a hint with no source was saved: %d %s", bare.Code, bare.Body.String())
 	}
 }
+
+// The limit list follows the rule the account's panel follows. A users grant
+// reads the limits on ordinary accounts; the one on a super administrator is
+// not listed to it, though the usage grant still lists everything.
+func TestUsersGrantDoesNotListAnAdministratorsLimit(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "users")
+
+	limit := func(scopeID string) map[string]any {
+		return map[string]any{
+			"scope": "user", "scope_id": scopeID,
+			"windows": map[string]any{"5h": map[string]any{"enabled": true, "tokens": 1000}},
+		}
+	}
+	for _, who := range []*session{founder, member} {
+		if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(who.userID), founder); res.Code != http.StatusOK {
+			t.Fatalf("limit on %s: %d %s", who.userID, res.Code, res.Body.String())
+		}
+	}
+	list := func(as *session) string {
+		t.Helper()
+		res := in.do(http.MethodGet, "/api/admin/quota/policies", nil, as)
+		if res.Code != http.StatusOK {
+			t.Fatalf("policies: %d %s", res.Code, res.Body.String())
+		}
+		return res.Body.String()
+	}
+	if got := list(operator); strings.Contains(got, founder.userID) {
+		t.Fatalf("a users-only administrator listed a super administrator's limit: %s", got)
+	}
+	if got := list(operator); !strings.Contains(got, member.userID) {
+		t.Fatalf("a users-only administrator cannot see an ordinary account's limit: %s", got)
+	}
+	if got := list(founder); !strings.Contains(got, founder.userID) || !strings.Contains(got, member.userID) {
+		t.Fatalf("super administrator's list is missing a limit: %s", got)
+	}
+}

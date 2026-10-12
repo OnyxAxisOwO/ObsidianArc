@@ -813,7 +813,11 @@ func (h *Handlers) listGroups(w http.ResponseWriter, r *http.Request) error {
 	}
 	policies := all[:0]
 	for _, policy := range all {
-		if canPolicy(actor, policy.Scope) {
+		ok, err := h.policyVisible(r, actor, policy)
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		if ok {
 			policies = append(policies, policy)
 		}
 	}

@@ -551,13 +551,40 @@ func (h *Handlers) listPolicies(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
+	actor := auth.MustUser(r.Context())
 	visible := policies[:0]
 	for _, policy := range policies {
-		if canPolicy(auth.MustUser(r.Context()), policy.Scope) {
+		ok, err := h.policyVisible(r, actor, policy)
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		if ok {
 			visible = append(visible, policy)
 		}
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"policies": visible})
+}
+
+// policyVisible is whether the actor may see one limit in a list. canPolicy
+// only says which scopes a grant covers. A users grant does not see the limit
+// on an administrator it may not manage, as the account's own panel does not
+// show it that account's quota (see authorisePolicyScope for writes).
+func (h *Handlers) policyVisible(r *http.Request, actor user.User, policy quota.Policy) (bool, error) {
+	if !canPolicy(actor, policy.Scope) {
+		return false, nil
+	}
+	if policy.Scope != quota.ScopeUser || actor.CanAdmin("usage") {
+		return true, nil
+	}
+	target, err := h.users.ByID(r.Context(), nil, policy.ScopeID)
+	if errors.Is(err, user.ErrNotFound) {
+		// A limit left behind by a deleted account names nobody to protect.
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !target.IsAdmin() || actor.CanManageAdmin(target), nil
 }
 
 // authorisePolicyScope applies the rule every other delegated write to an
