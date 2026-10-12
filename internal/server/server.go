@@ -964,6 +964,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// admin surface because it is the user's copy of their own history, not
 	// the operator's copy of the instance.
 	backupHandlers := backup.NewHandlers(backup.NewService(db, conversations, preferences))
+	// The chat's write gate, so an import is held to the same rule as a message.
+	backupHandlers.Writable = chatHandlers.Uploadable
 	backupHandlers.Routes(mux)
 
 	projectHandlers := project.NewHandlers(projects)
