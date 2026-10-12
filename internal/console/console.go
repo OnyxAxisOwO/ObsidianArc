@@ -282,10 +282,10 @@ func (c *Console) recordAudit(ctx context.Context, s *Session, cmd *Command, par
 // Positional arguments are masked the same way (Arg.Sensitive, and
 // Command.SecretArgs for the ones that are secret only on some lines): the
 // line is read by every administrator who holds the security grant, who are
-// not the people a code or a credential was typed for. A command that declares
-// no positional arguments has nothing that says which of them is a secret, so
-// none of them is written; a value typed where a flag was meant is the usual
-// one.
+// not the people a code or a credential was typed for. A positional the
+// command does not declare is masked too, which covers a command that declares
+// none: a value typed where a flag was meant is the usual one, and nothing
+// else says which of the extra tokens it is.
 func (c *Console) auditLine(cmd *Command, parsed ParsedArgs) string {
 	var b strings.Builder
 	b.WriteString(cmd.Name)
@@ -295,7 +295,7 @@ func (c *Console) auditLine(cmd *Command, parsed ParsedArgs) string {
 	}
 	for i, a := range parsed.Args {
 		b.WriteByte(' ')
-		if secret[i] || argSensitive(cmd, i) || len(cmd.Args) == 0 {
+		if secret[i] || argSensitive(cmd, i) {
 			b.WriteString("***")
 			continue
 		}
@@ -374,14 +374,13 @@ func secretFrom(first int) func(*Console, []string) map[int]bool {
 	}
 }
 
-// argSensitive reports whether the i-th positional is declared Sensitive,
-// the last declaration standing for every token past it.
+// argSensitive reports whether the i-th positional is secret. A token past the
+// declared list is secret too: the last declaration must not be read as
+// describing it, or a password typed after `user create <name>` would inherit
+// that argument's non-sensitive status and be written in clear.
 func argSensitive(cmd *Command, i int) bool {
-	if len(cmd.Args) == 0 {
-		return false
-	}
 	if i >= len(cmd.Args) {
-		i = len(cmd.Args) - 1
+		return true
 	}
 	return cmd.Args[i].Sensitive
 }
