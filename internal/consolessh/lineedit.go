@@ -209,6 +209,11 @@ const maxLineRunes = 8192
 // needs more than a few hundred.
 const maxSearchRunes = 256
 
+// insert puts r at the cursor. Only what changed on the screen is written: at
+// the end of the line that is the rune alone, because nothing after the cursor
+// moves. Mid-line, the rune and the text after it are written, and the cursor
+// is walked back over that text. Redrawing the whole line here made a paste of
+// n runes write about n squared, since every rune repainted everything before it.
 func (ed *lineEditor) insert(r rune) {
 	if len(ed.buf) >= maxLineRunes {
 		return
@@ -217,7 +222,21 @@ func (ed *lineEditor) insert(r rune) {
 	copy(ed.buf[ed.pos+1:], ed.buf[ed.pos:])
 	ed.buf[ed.pos] = r
 	ed.pos++
-	ed.redraw()
+
+	if ed.pos == len(ed.buf) {
+		_, _ = ed.w.Write([]byte(string(r)))
+		return
+	}
+	tail := ed.buf[ed.pos:]
+	var b strings.Builder
+	b.WriteRune(r)
+	b.WriteString(string(tail))
+	if width := displayWidth(tail); width > 0 {
+		b.WriteString("\x1b[")
+		b.WriteString(strconv.Itoa(width))
+		b.WriteString("D")
+	}
+	_, _ = ed.w.Write([]byte(b.String()))
 }
 
 func (ed *lineEditor) backspace() {
@@ -247,17 +266,25 @@ func (ed *lineEditor) moveEnd() {
 	ed.redraw()
 }
 
+// moveLeft and moveRight move the terminal cursor over the one rune they pass,
+// by its width. Repainting the line for that was a reply of about the line's
+// length to a three-byte key.
 func (ed *lineEditor) moveLeft() {
 	if ed.pos > 0 {
 		ed.pos--
-		ed.redraw()
+		if width := runeWidth(ed.buf[ed.pos]); width > 0 {
+			_, _ = ed.w.Write([]byte("\x1b[" + strconv.Itoa(width) + "D"))
+		}
 	}
 }
 
 func (ed *lineEditor) moveRight() {
 	if ed.pos < len(ed.buf) {
+		width := runeWidth(ed.buf[ed.pos])
 		ed.pos++
-		ed.redraw()
+		if width > 0 {
+			_, _ = ed.w.Write([]byte("\x1b[" + strconv.Itoa(width) + "C"))
+		}
 	}
 }
 
