@@ -671,7 +671,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// What spending a card actually buys. The card package does not know the
 	// counters exist; this is the one line that connects the two.
 	cardHandlers.OnSpend = func(ctx context.Context, account user.User, c card.Card) error {
-		return quotaService.ResetWindows(ctx, []string{account.ID}, c.Windows)
+		return quotaService.ResetCardWindows(ctx, []string{account.ID}, c.Windows)
 	}
 	// So the limit on guessing at redemption codes counts one host's attempts
 	// together, not just one account's.
