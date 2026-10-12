@@ -197,6 +197,10 @@ type Service struct {
 	// returns must survive: the check passes against the hash that was read, and
 	// the fingerprint has to describe that same hash. Nil outside tests.
 	afterCredentialRead func()
+	// Called by a password or address change once it has verified the current
+	// password and before it takes the account's row lock to write. A reset that
+	// lands in that window is the case the write must refuse. Nil outside tests.
+	beforeChangeWrite func()
 }
 
 func NewService(
@@ -693,6 +697,10 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 	)
 	screened := false
 	passwordChecked := false
+	// The stored hash the password check ran against. The check happens before
+	// the transaction that writes the address, so the write must find this hash
+	// still in place under the row lock.
+	var checkedHash string
 	var err error
 	for {
 		err = s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -731,6 +739,15 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 			if moved {
 				if !passwordChecked {
 					return errNeedsPasswordCheck
+				}
+				current, err := s.users.PasswordHash(ctx, tx, userID)
+				if err != nil {
+					return err
+				}
+				if current != checkedHash {
+					// A reset or change committed after the check, so the password
+					// that was checked is not the one the account has now.
+					return ErrCurrentPasswordWrong
 				}
 				if err := checkEmail(s.settings, address); err != nil {
 					return err
@@ -844,10 +861,15 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 			return err
 		})
 		if errors.Is(err, errNeedsPasswordCheck) {
-			if err := s.ConfirmNewSignIn(ctx, userID, currentPassword, sessionIDOf(ctx)); err != nil {
+			checked, err := s.confirmNewSignIn(ctx, userID, currentPassword, sessionIDOf(ctx))
+			if err != nil {
 				return user.User{}, err
 			}
+			checkedHash = checked
 			passwordChecked = true
+			if s.beforeChangeWrite != nil {
+				s.beforeChangeWrite()
+			}
 			continue
 		}
 		if !errors.Is(err, errNeedsEmailScreening) {
@@ -1233,17 +1255,32 @@ func (s *Service) ConfirmPassword(ctx context.Context, userID, candidate string)
 // adds nothing without the password, and for an account with none, nothing once
 // the sign-in it came from is older than recentSignIn.
 func (s *Service) ConfirmNewSignIn(ctx context.Context, userID, candidate, sessionID string) error {
+	_, err := s.confirmNewSignIn(ctx, userID, candidate, sessionID)
+	return err
+}
+
+// confirmNewSignIn is ConfirmNewSignIn, and also returns the stored hash the
+// proof was checked against ("" for an account with no password). A caller that
+// writes after the check passes that hash back in under the row lock, so a
+// change that committed in between is seen rather than overwritten.
+func (s *Service) confirmNewSignIn(ctx context.Context, userID, candidate, sessionID string) (string, error) {
 	hash, err := s.users.PasswordHash(ctx, nil, userID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if hash != "" {
 		if candidate == "" {
-			return ErrPasswordRequired
+			return "", ErrPasswordRequired
 		}
-		return s.checkPassword(ctx, userID, hash, candidate)
+		if err := s.checkPassword(ctx, userID, hash, candidate); err != nil {
+			return "", err
+		}
+		return hash, nil
 	}
-	return s.requireRecentSignIn(ctx, s.db, userID, sessionID)
+	if err := s.requireRecentSignIn(ctx, s.db, userID, sessionID); err != nil {
+		return "", err
+	}
+	return "", nil
 }
 
 // recentSignIn is how long after signing in a session may still set the first
@@ -1356,6 +1393,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	if err != nil {
 		return "", err
 	}
+	if s.beforeChangeWrite != nil {
+		s.beforeChangeWrite()
+	}
 
 	var token string
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -1383,6 +1423,18 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 			}
 			if err := s.requireRecentSignIn(ctx, tx, userID, sessionID); err != nil {
 				return err
+			}
+		} else {
+			// The current password was checked before this transaction began.
+			// Under the row lock the stored hash must still be the one it was
+			// checked against, or a reset that committed in between would be
+			// overwritten by a change its owner never proved.
+			current, err := s.users.PasswordHash(ctx, tx, userID)
+			if err != nil {
+				return err
+			}
+			if current != hash {
+				return ErrCurrentPasswordWrong
 			}
 		}
 		if err := s.users.SetPasswordHash(ctx, tx, userID, updated); err != nil {

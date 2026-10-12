@@ -97,3 +97,71 @@ func TestAStaleSignInIsAForbiddenNotAServerError(t *testing.T) {
 		}
 	}
 }
+
+// The current password is checked before the change's transaction starts. An
+// administrator's reset that commits in between must not be overwritten by the
+// change, which was made on the strength of the password the reset replaced.
+func TestAPasswordChangeCannotOverwriteAResetMadeAfterItWasChecked(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.auth.beforeChangeWrite = func() {
+		if err := f.auth.SetPassword(ctx, account.ID, "admin-reset-password"); err != nil {
+			t.Errorf("the reset inside the window: %v", err)
+		}
+	}
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", ""); !errors.Is(err, ErrCurrentPasswordWrong) {
+		t.Fatalf("a change checked against the replaced password = %v, want ErrCurrentPasswordWrong", err)
+	}
+	f.auth.beforeChangeWrite = nil
+
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "admin-reset-password", IP: "198.51.100.21"}); err != nil {
+		t.Fatalf("the administrator's password was overwritten: %v", err)
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-better-password", IP: "198.51.100.21"}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("the password the change wrote opened the account: %v", err)
+	}
+}
+
+// The same window for an address change: the password is checked, then the
+// address is written in a later transaction. A reset landing between the two
+// must stop the write, or the address moves on a password nobody holds any more.
+func TestAnAddressChangeCannotOverwriteAResetMadeAfterItWasChecked(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "first", Password: "a-good-password"}); err != nil {
+		t.Fatal(err)
+	}
+	account, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "member", Email: "member@example.com", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.auth.beforeChangeWrite = func() {
+		if err := f.auth.SetPassword(ctx, account.ID, "admin-reset-password"); err != nil {
+			t.Errorf("the reset inside the window: %v", err)
+		}
+	}
+	moved := "thief@example.com"
+	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &moved}, "a-good-password"); !errors.Is(err, ErrCurrentPasswordWrong) {
+		t.Fatalf("moving the address on a replaced password = %v, want ErrCurrentPasswordWrong", err)
+	}
+	f.auth.beforeChangeWrite = nil
+
+	kept, err := f.users.ByID(ctx, nil, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Email != "member@example.com" {
+		t.Fatalf("address = %q after a refused move, want it untouched", kept.Email)
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "member", Password: "admin-reset-password", IP: "198.51.100.22"}); err != nil {
+		t.Fatalf("the administrator's password was overwritten: %v", err)
+	}
+}
