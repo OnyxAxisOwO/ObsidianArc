@@ -112,14 +112,26 @@ const (
 
 // Headers a provider may not override: they carry the credential and the
 // protocol contract, and an operator setting one by hand would either break
-// the request or send the key somewhere unintended.
+// the request or send the key somewhere unintended. The hop-by-hop ones
+// belong to each connection rather than to the request, so a value here could
+// only change how the transport reads the response: Upgrade would turn it into
+// a raw tunnel, and Proxy-Authorization would hand a proxy's credential to the
+// provider.
 var reservedHeaders = map[string]bool{
-	"authorization":     true,
-	"x-api-key":         true,
-	"anthropic-version": true,
-	"content-type":      true,
-	"content-length":    true,
-	"host":              true,
+	"authorization":       true,
+	"x-api-key":           true,
+	"anthropic-version":   true,
+	"content-type":        true,
+	"content-length":      true,
+	"host":                true,
+	"connection":          true,
+	"keep-alive":          true,
+	"proxy-authorization": true,
+	"proxy-connection":    true,
+	"te":                  true,
+	"trailer":             true,
+	"transfer-encoding":   true,
+	"upgrade":             true,
 }
 
 const columns = `id, name, kind, base_url, allow_insecure, api_key_hint, headers_json, anthropic_version,
@@ -586,7 +598,7 @@ func (s *Store) ResolveFrom(record Provider, sealed []byte) (adapter.Provider, e
 		Kind:             record.Kind,
 		BaseURL:          record.BaseURL,
 		APIKey:           s.pick(record.ID, record.KeyRotation, keys),
-		Headers:          record.Headers,
+		Headers:          outboundHeaders(record.Headers),
 		AnthropicVersion: record.AnthropicVersion,
 		ReasoningStyle:   record.ReasoningStyle,
 		Timeout:          timeout,
@@ -755,6 +767,20 @@ func validate(record Provider) (Provider, error) {
 	record.Headers = headers
 	record.AnthropicVersion = strings.TrimSpace(record.AnthropicVersion)
 	return record, nil
+}
+
+// outboundHeaders is what a call sends. sanitizeHeaders filters on the way in,
+// but a row written before a name was reserved still holds it, so the same
+// rule is applied again where the headers leave for the provider.
+func outboundHeaders(stored map[string]string) map[string]string {
+	out := make(map[string]string, len(stored))
+	for name, value := range stored {
+		if reservedHeaders[strings.ToLower(strings.TrimSpace(name))] {
+			continue
+		}
+		out[name] = value
+	}
+	return out
 }
 
 func sanitizeHeaders(in map[string]string) (map[string]string, error) {
