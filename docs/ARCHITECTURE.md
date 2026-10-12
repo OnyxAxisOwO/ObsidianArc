@@ -219,10 +219,18 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 26.30 MB (22.61 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
+| Binary (SQLite + embedded SPA) | < 30 MB | 26.35 MB (22.64 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
 | Frontend, on the wire | < 135 kB | 242.98 kB to open the chat (200.67 JS + 42.31 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-13 (UTC), after the build moved to Go 1.27.2, which carries the
+standard library's fixes for the advisories `govulncheck` reaches from this code, and
+after the remembered-browser cookie learned the password it was issued under. The
+frontend did not move: 242.98 kB (200.67 kB JS + 42.31 kB CSS), the same sizes as the
+figure below. The binary is 26.35 MB (22.64 MB without SQLite), up 0.02 MB from the
+parent commit built with Go 1.27.1 on the same embedded frontend, which measured 26.33 MB
+(22.63 MB). That difference covers the toolchain and the two code changes in this commit.
 
 Remeasured on 2026-10-10 (UTC), after providers took several API keys and the
 model editor several detected models at once: the dictionary carries the new
