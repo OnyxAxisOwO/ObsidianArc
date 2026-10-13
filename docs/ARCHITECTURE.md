@@ -240,6 +240,8 @@ below, from the build's gzip column. The backoffice chunk is 126.35 kB, up
 0.35 kB, and the terminal 7.54 kB. The binary figure stands: the frontend grew by
 about a kilobyte before compression.
 
+Built with Go 1.27.2 from the merged third audit round onward, which carries the standard library's fixes for the advisories `govulncheck` reaches from this code; the figures above were last measured before that toolchain move and the remembered-browser cookie change, which together moved the binary by about 0.02 MB.
+
 Remeasured on 2026-10-10 (UTC), after providers took several API keys and the
 model editor several detected models at once: the dictionary carries the new
 strings and the icon set an undo arrow. 242.98 kB (200.67 kB JS + 42.31 kB

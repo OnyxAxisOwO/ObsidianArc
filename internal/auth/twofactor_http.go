@@ -44,7 +44,7 @@ func (h *Handlers) completeSignIn(w http.ResponseWriter, r *http.Request) error 
 	h.service.SetCookie(w, token)
 	h.service.AttachDevice(r.Context(), w, r, account, token, httpx.ClientIP(r, h.trust), r.UserAgent())
 	if body.Remember {
-		h.service.Remember(w, account)
+		h.service.Remember(r.Context(), w, account)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": h.account(r, account)})
 }

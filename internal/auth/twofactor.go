@@ -747,7 +747,7 @@ func (s *Service) CompleteSignIn(ctx context.Context, token, code, ip, ua string
 // secondStep decides what a proven first factor buys: the whole session, or
 // the pending half and a request for the code.
 func (s *Service) secondStep(ctx context.Context, account user.User, remembered, ip, ua string) (string, error) {
-	if account.TwoFactorEnabled() && !s.rememberedBrowser(remembered, account) {
+	if account.TwoFactorEnabled() && !s.rememberedBrowser(ctx, remembered, account) {
 		token, _, err := s.sessions.CreatePending(ctx, account.ID, pendingSignInTTL, ip, ua)
 		if err != nil {
 			return "", err
@@ -982,10 +982,16 @@ func (s *Service) TwoFactorAdoption(ctx context.Context) (TwoFactorAdoption, err
 
 func (s *Service) rememberCookieName() string { return s.cfg.CookieName + "_2fa" }
 
-func (s *Service) rememberSignature(userID string, issuedAt, epoch int64) string {
+// rememberSignature also binds the cookie to the password hash it was issued
+// under. Without that a remembered browser outlives a password change: somebody
+// holding the cookie and the password that came after it would still skip the
+// code. The digest keeps the hash itself out of the cookie.
+func (s *Service) rememberSignature(userID string, issuedAt, epoch int64, credential string) string {
+	credentialDigest := sha256.Sum256([]byte(credential))
 	mac := hmac.New(sha256.New, s.twoFactorKey)
 	mac.Write([]byte("remember\x00" + userID + "\x00" +
-		strconv.FormatInt(issuedAt, 10) + "\x00" + strconv.FormatInt(epoch, 10)))
+		strconv.FormatInt(issuedAt, 10) + "\x00" + strconv.FormatInt(epoch, 10) + "\x00" +
+		base64.RawURLEncoding.EncodeToString(credentialDigest[:])))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -998,7 +1004,7 @@ func (s *Service) RememberedFrom(r *http.Request) string {
 	return cookie.Value
 }
 
-func (s *Service) rememberedBrowser(value string, account user.User) bool {
+func (s *Service) rememberedBrowser(ctx context.Context, value string, account user.User) bool {
 	days := s.RememberDays()
 	if value == "" || days <= 0 || !s.TwoFactorAvailable() || !account.TwoFactorEnabled() {
 		return false
@@ -1011,7 +1017,11 @@ func (s *Service) rememberedBrowser(value string, account user.User) bool {
 	if err != nil {
 		return false
 	}
-	want := s.rememberSignature(account.ID, issuedAt, account.TwoFactorAt)
+	credential, err := s.users.PasswordHash(ctx, nil, account.ID)
+	if err != nil {
+		return false
+	}
+	want := s.rememberSignature(account.ID, issuedAt, account.TwoFactorAt, credential)
 	if !hmac.Equal([]byte(parts[2]), []byte(want)) {
 		return false
 	}
@@ -1022,15 +1032,19 @@ func (s *Service) rememberedBrowser(value string, account user.User) bool {
 
 // Remember sets the cookie after a code was accepted and asked to be
 // remembered. It does nothing where the operator has not allowed it.
-func (s *Service) Remember(w http.ResponseWriter, account user.User) {
+func (s *Service) Remember(ctx context.Context, w http.ResponseWriter, account user.User) {
 	days := s.RememberDays()
 	if days <= 0 || !s.TwoFactorAvailable() || !account.TwoFactorEnabled() {
+		return
+	}
+	credential, err := s.users.PasswordHash(ctx, nil, account.ID)
+	if err != nil {
 		return
 	}
 	issuedAt := time.Now().UnixMilli()
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.rememberCookieName(),
-		Value:    account.ID + "." + strconv.FormatInt(issuedAt, 10) + "." + s.rememberSignature(account.ID, issuedAt, account.TwoFactorAt),
+		Value:    account.ID + "." + strconv.FormatInt(issuedAt, 10) + "." + s.rememberSignature(account.ID, issuedAt, account.TwoFactorAt, credential),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   s.cfg.SecureCookie,

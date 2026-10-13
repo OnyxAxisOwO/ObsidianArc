@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -568,5 +569,66 @@ func TestADuplicateTakesTheKeysItKept(t *testing.T) {
 	}
 	if !slices.Equal(whole.APIKeyHints, source.APIKeyHints) || whole.KeyRotation != RotateRandom {
 		t.Fatalf("whole copy = %v %q", whole.APIKeyHints, whole.KeyRotation)
+	}
+}
+
+// An operator's extra headers ride on every call, so a connection-level one
+// would change how the transport reads the answer, and a credential one would
+// reach the provider. Both are dropped, and the rest are kept.
+func TestConnectionLevelHeadersAreNotForwarded(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	record, err := store.Create(ctx, CreateInput{
+		Name: "Headers", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-headers-test",
+		Headers: map[string]string{
+			"X-Title":             "Arc",
+			"Connection":          "upgrade",
+			"Upgrade":             "websocket",
+			"Proxy-Authorization": "Basic b3BlcmF0b3I6c2VjcmV0",
+			"Transfer-Encoding":   "chunked",
+			"Keep-Alive":          "timeout=5",
+			"TE":                  "trailers",
+		},
+		Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{"X-Title": "Arc"}
+	if !reflect.DeepEqual(record.Headers, want) {
+		t.Fatalf("stored headers = %v, want %v", record.Headers, want)
+	}
+}
+
+// A row saved before a header was reserved still holds it, and the call must
+// not send it: the filter on the way in cannot reach a row already written.
+func TestAStoredConnectionLevelHeaderIsNotSentAfterAll(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	record, err := store.Create(ctx, CreateInput{
+		Name: "Legacy", Kind: adapter.KindAnthropic,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-legacy-test",
+		Headers: map[string]string{"X-Title": "Arc"},
+		Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(ctx, `UPDATE providers SET headers_json = ? WHERE id = ?`,
+		`{"X-Title":"Arc","Upgrade":"websocket","Proxy-Authorization":"Basic x"}`, record.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := store.Resolve(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"X-Title": "Arc"}
+	if !reflect.DeepEqual(resolved.Headers, want) {
+		t.Fatalf("headers sent = %v, want %v", resolved.Headers, want)
 	}
 }

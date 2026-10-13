@@ -453,7 +453,7 @@ func TestARememberedBrowserSkipsTheCode(t *testing.T) {
 
 	remember := func() string {
 		recorder := httptest.NewRecorder()
-		f.auth.Remember(recorder, account)
+		f.auth.Remember(ctx, recorder, account)
 		for _, cookie := range recorder.Result().Cookies() {
 			if cookie.Name == f.auth.rememberCookieName() {
 				return cookie.Value
@@ -516,6 +516,47 @@ func TestARememberedBrowserSkipsTheCode(t *testing.T) {
 	}
 	if err := loginWith(value); !errors.As(err, &second) {
 		t.Fatalf("a browser remembered before a re-enrolment skipped the code: %v", err)
+	}
+}
+
+// A password change ends the browsers remembered under the old password. The
+// cookie such a browser kept is no longer enough once somebody learns the new
+// password, which is the case the change exists for.
+func TestAPasswordChangeEndsRememberedBrowsers(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, _, _, _ := enrolled(t, f, "arc")
+	if err := f.settings.Set(ctx, settings.TwoFactorRememberDays, "30"); err != nil {
+		t.Fatal(err)
+	}
+	remember := func() string {
+		recorder := httptest.NewRecorder()
+		f.auth.Remember(ctx, recorder, account)
+		for _, cookie := range recorder.Result().Cookies() {
+			if cookie.Name == f.auth.rememberCookieName() {
+				return cookie.Value
+			}
+		}
+		return ""
+	}
+	before := remember()
+	if before == "" {
+		t.Fatal("no cookie was set")
+	}
+
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "another-good-password", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	var second *SecondFactorRequired
+	_, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "another-good-password", Remembered: before})
+	if !errors.As(err, &second) {
+		t.Fatalf("a browser remembered under the old password skipped the code after a change: %v", err)
+	}
+
+	after := remember()
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "another-good-password", Remembered: after}); err != nil {
+		t.Fatalf("a browser remembered under the new password was still asked for a code: %v", err)
 	}
 }
 
