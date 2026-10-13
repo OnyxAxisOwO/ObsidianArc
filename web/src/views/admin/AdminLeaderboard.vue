@@ -53,7 +53,7 @@ function collect(): Record<string, string> {
   };
 }
 
-const { dirty, accept } = useSettingsDraft(collect);
+const { dirty, changes, accept } = useSettingsDraft(collect);
 
 // What the preview is worth saying about: a board nobody has used yet looks
 // broken otherwise, and "there is nothing to rank" is the honest reading.
@@ -61,7 +61,9 @@ const participants = computed(() => preview.value?.me.participants ?? 0);
 
 async function save(): Promise<void> {
   if (!loaded.value || error.value || busy.value) return;
-  const values = collect();
+  // Only what this page changed, so the save cannot undo another screen's edit.
+  const values = changes();
+  if (Object.keys(values).length === 0) return;
   busy.value = true;
   saveLabel.value = t('saving');
   flash.value = '';

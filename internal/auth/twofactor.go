@@ -487,13 +487,15 @@ func (s *Service) BeginTwoFactor(ctx context.Context, account user.User) (TwoFac
 // That sign-out is also why it takes the account's password, where it has
 // one. A session is all a stolen cookie is; if it were enough, the thief
 // would enrol their own authenticator, end the owner's sessions everywhere,
-// and leave the owner unable to get back in.
+// and leave the owner unable to get back in. Where the account has no
+// password, the proof is a sign-in made just now, the same rule provider
+// connect applies: nothing else in a request proves the owner is here.
 func (s *Service) EnableTwoFactor(ctx context.Context, userID, password, code, keepSessionID, ip, userAgent string) ([]string, user.User, error) {
 	if !s.TwoFactorAvailable() {
 		return nil, user.User{}, ErrTwoFactorUnavailable
 	}
 	// Before the transaction, because it is an Argon2 verification.
-	if err := s.ConfirmPassword(ctx, userID, password); err != nil {
+	if err := s.ConfirmNewSignIn(ctx, userID, password, keepSessionID); err != nil {
 		return nil, user.User{}, err
 	}
 	codes := totp.RecoveryCodes()

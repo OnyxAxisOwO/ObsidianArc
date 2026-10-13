@@ -386,9 +386,9 @@ function restoreReviewPrompt(): void {
 const pluginSettings = usePluginSettings('security');
 
 /**
- * Only this page's keys. The settings endpoint writes what it is given and
- * leaves the rest alone, which is what lets two screens edit one store
- * without either one reverting the other's fields.
+ * Only this page's keys. A save sends the ones that changed (see
+ * useSettingsDraft), so a field this page only displays is never written back
+ * and two screens cannot revert each other's edits to it.
  */
 function collect(): Record<string, string> {
   return {
@@ -468,7 +468,7 @@ function collect(): Record<string, string> {
   };
 }
 
-const { dirty, accept } = useSettingsDraft(collect);
+const { dirty, changes, accept } = useSettingsDraft(collect);
 
 const initialReviewPrompt = ref('');
 const showTwoFactorModal = ref(false);
@@ -510,6 +510,7 @@ async function submitTwoFactor(): Promise<void> {
 async function save(): Promise<void> {
   if (!loaded.value || error.value || busy.value) return;
   const values = collect();
+  if (Object.keys(changes(values)).length === 0) return;
   const promptChanged = values['security.signup_review_prompt'] !== initialReviewPrompt.value;
   if (promptChanged) {
     if (selfWithout.value) {
@@ -532,8 +533,12 @@ async function save(): Promise<void> {
 
 async function performSave(codeParam?: string): Promise<void> {
   const values = collect();
+  // Only the keys this page changed. Two administrators, or two tabs, can edit
+  // the same settings: a whole-page save would revert the other's sign-up,
+  // captcha or two-step changes with values loaded before they were made.
+  const changed = changes(values);
   const payload: Record<string, string> = Object.fromEntries(
-    Object.entries(values).filter(([key]) => shownKeys.value.has(key)),
+    Object.entries(changed).filter(([key]) => shownKeys.value.has(key)),
   );
   if (codeParam) {
     payload['two_factor_code'] = codeParam;
@@ -543,7 +548,7 @@ async function performSave(codeParam?: string): Promise<void> {
   flash.value = '';
   try {
     await adminApi.saveSettings(payload);
-    accept(values);
+    accept(changed);
     initialReviewPrompt.value = values['security.signup_review_prompt'] ?? '';
     try {
       site.value = await fetchSite();

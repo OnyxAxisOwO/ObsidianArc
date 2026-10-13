@@ -20,10 +20,12 @@ var errDestinationRefused = errors.New("destination refused")
 // which is also the range Tailscale hands out, so that one address is refused
 // exactly rather than the whole range. AWS's IPv6 service sits in a
 // unique-local range that private networks use as well, so it too is refused
-// by address.
+// by address. Google's IPv6 service is in a unique-local range too, and only
+// IPv6-only instances have any other way to reach a credential.
 var cloudMetadata = []netip.Addr{
 	netip.MustParseAddr("100.100.100.200"),
 	netip.MustParseAddr("fd00:ec2::254"),
+	netip.MustParseAddr("fd20:ce::254"),
 }
 
 // refuseDestination is the provider dialer's Control hook. The dialer calls it
@@ -60,7 +62,7 @@ func refusalReason(address netip.Addr) string {
 	// fd00:ec2::254%eth0 would miss the metadata list and ::%eth0 would not
 	// satisfy IsUnspecified. The bit-level predicates read the address itself
 	// and were never affected.
-	address = address.Unmap().WithZone("")
+	address = embeddedIPv4(address.Unmap().WithZone(""))
 	switch {
 	case address.IsUnspecified():
 		return "an unspecified address"
@@ -72,4 +74,22 @@ func refusalReason(address netip.Addr) string {
 		return "a cloud metadata address"
 	}
 	return ""
+}
+
+// nat64Prefix is the well-known prefix a NAT64 gateway maps IPv4 addresses
+// into. On an IPv6-only network DNS64 gives a name that has only an IPv4
+// address this form, so 169.254.169.254 arrives here as 64:ff9b::a9fe:a9fe,
+// which none of the predicates recognise. The gateway connects to the embedded
+// address, so that is the one to check. internal/plugin unwraps the same prefix
+// for a plugin's fetches, and the two change together.
+var nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+
+// embeddedIPv4 is the IPv4 address a NAT64 address stands for, or the address
+// itself when it is not under the prefix.
+func embeddedIPv4(address netip.Addr) netip.Addr {
+	if !nat64Prefix.Contains(address) {
+		return address
+	}
+	b := address.As16()
+	return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
 }

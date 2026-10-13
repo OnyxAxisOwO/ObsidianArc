@@ -79,8 +79,8 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 		if !isValidID(body.ID) {
 			return httpx.BadRequest("An account is required.")
 		}
-		if _, err := h.users.ByID(r.Context(), nil, body.ID); err != nil {
-			return translateUserError(err)
+		if err := h.authorisePolicyScope(r, quota.ScopeUser, body.ID, false); err != nil {
+			return err
 		}
 		if err := h.quota.Reset(r.Context(), []string{body.ID}); err != nil {
 			return httpx.Internal(err)
@@ -551,13 +551,63 @@ func (h *Handlers) listPolicies(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
+	actor := auth.MustUser(r.Context())
 	visible := policies[:0]
 	for _, policy := range policies {
-		if canPolicy(auth.MustUser(r.Context()), policy.Scope) {
+		ok, err := h.policyVisible(r, actor, policy)
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		if ok {
 			visible = append(visible, policy)
 		}
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"policies": visible})
+}
+
+// policyVisible is whether the actor may see one limit in a list. canPolicy
+// only says which scopes a grant covers. A users grant does not see the limit
+// on an administrator it may not manage, as the account's own panel does not
+// show it that account's quota (see authorisePolicyScope for writes).
+func (h *Handlers) policyVisible(r *http.Request, actor user.User, policy quota.Policy) (bool, error) {
+	if !canPolicy(actor, policy.Scope) {
+		return false, nil
+	}
+	if policy.Scope != quota.ScopeUser || actor.CanAdmin("usage") {
+		return true, nil
+	}
+	target, err := h.users.ByID(r.Context(), nil, policy.ScopeID)
+	if errors.Is(err, user.ErrNotFound) {
+		// A limit left behind by a deleted account names nobody to protect.
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !target.IsAdmin() || actor.CanManageAdmin(target), nil
+}
+
+// authorisePolicyScope applies the rule every other delegated write to an
+// account answers to, to a limit written on it. canPolicy only says whether the
+// actor may write user-scope limits at all, so a users grant could otherwise
+// set or clear the quota of a super administrator, or of a peer it may not
+// manage. Deleting the limit of an account that no longer exists is allowed,
+// because that is the only way to clear the row it left behind.
+func (h *Handlers) authorisePolicyScope(r *http.Request, scope quota.Scope, scopeID string, deleting bool) error {
+	if scope != quota.ScopeUser {
+		return nil
+	}
+	target, err := h.users.ByID(r.Context(), nil, scopeID)
+	if err != nil {
+		if deleting && errors.Is(err, user.ErrNotFound) {
+			return nil
+		}
+		return translateUserError(err)
+	}
+	if target.IsAdmin() && !auth.MustUser(r.Context()).CanManageAdmin(target) {
+		return permissionDenied()
+	}
+	return nil
 }
 
 type policyRequest struct {
@@ -600,6 +650,9 @@ func (h *Handlers) savePolicy(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
+	if err := h.authorisePolicyScope(r, body.Scope, body.ScopeID, false); err != nil {
+		return err
+	}
 	saved, err := h.quota.Policies().Save(r.Context(), quota.Policy{
 		Scope:   body.Scope,
 		ScopeID: body.ScopeID,
@@ -631,6 +684,9 @@ func (h *Handlers) deletePolicy(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("Scope must be global, group or user.")
 	}
 
+	if err := h.authorisePolicyScope(r, scope, scopeID, true); err != nil {
+		return err
+	}
 	if err := h.quota.Policies().Delete(r.Context(), scope, scopeID); err != nil {
 		return httpx.Internal(err)
 	}

@@ -307,6 +307,9 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 
 		m.swapPackages(func(p map[string]*loaded) { p[name] = nl })
 		attached = true
+		if old != nil {
+			m.dropRetiredSeams(old.pkg.Manifest, nl.pkg.Manifest)
+		}
 		if err := m.attach(nl); err != nil {
 			return err
 		}

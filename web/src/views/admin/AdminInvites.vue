@@ -41,6 +41,7 @@ import { rememberedPageSize } from '@/lib/page-size';
 import { maskCredential, maskUser } from '@/admin/safeMode';
 import { site } from '@/stores/session';
 import AdminFailure from './AdminFailure.vue';
+import { useSettingsDraft } from './settingsDraft';
 import { useAdminView } from './adminView';
 
 const view = useAdminView();
@@ -77,9 +78,9 @@ const form = ref({
   rewardCardDays: 30 as number | null,
 });
 
-/** Only this page's keys — the settings endpoint leaves every other screen's
- *  fields alone, which is what lets this card and Security's own registration
- *  switch both write `registration.enabled` without either reverting it. */
+/** Only this page's keys, and of those only the ones changed since the page
+ *  loaded (see useSettingsDraft). Security's registration switch writes the
+ *  same `registration.enabled`, so a save from here must not send it back. */
 function collect(): Record<string, string> {
   return {
     'registration.enabled': String(form.value.mode !== 'closed'),
@@ -92,9 +93,7 @@ function collect(): Record<string, string> {
   };
 }
 
-const dirty = computed(() => saved.value !== null && saved.value !== JSON.stringify(collect()));
-const saved = ref<string | null>(null);
-function accept(values = collect()): void { saved.value = JSON.stringify(values); }
+const { dirty, changes, accept } = useSettingsDraft(collect);
 
 /** The reward read as one sentence, live under the three fields that make
  *  it up — the only way an operator sees the same rule the settings page
@@ -136,7 +135,10 @@ async function loadSettings(): Promise<void> {
 
 async function saveSettings(): Promise<void> {
   if (!settingsLoaded.value || settingsError.value || savingBusy.value) return;
-  const values = collect();
+  // Only what this card changed. Security's own registration switch writes the
+  // same key, and a save here must not reopen sign-ups it closed.
+  const values = changes();
+  if (Object.keys(values).length === 0) return;
   savingBusy.value = true;
   saveLabel.value = t('saving');
   saveFlash.value = '';

@@ -81,10 +81,14 @@ const (
 )
 
 // exportPageSize is how many conversation rows one read of an export takes.
-// An export holds one such page of rows, and the messages of the one
-// conversation being written, at a time. A variable so a test can span several
+// An export holds one such page of rows, and one page of messages (see
+// exportMessagePageSize), at a time. A variable so a test can span several
 // pages without writing a hundred conversations.
 var exportPageSize = 100
+
+// exportMessagePageSize is how many messages of one conversation one read of an
+// export takes. As with exportPageSize, a variable so a test can span pages.
+var exportMessagePageSize = 100
 
 var (
 	ErrWrongFormat = errors.New("backup: not an Obsidian Arc export")
@@ -159,7 +163,15 @@ type exportStream struct {
 	account  user.User
 	pageSize int
 	envelope []byte
+	// Reads one page of a conversation's messages. Set by openExport; a field so
+	// a test can stand in a conversation of any length.
+	pageMessages    messagePager
+	messagePageSize int
 }
+
+// messagePager reads up to limit messages of one conversation, oldest first,
+// after sequence number afterSeq.
+type messagePager func(ctx context.Context, userID, conversationID string, afterSeq, limit int) ([]conversation.Message, error)
 
 // openExport measures the whole export before any of it is sent. The envelope
 // is built here because it carries the preferences and the time the file is
@@ -201,6 +213,10 @@ func (s *Service) openExport(ctx context.Context, account user.User) (*exportStr
 		account:  account,
 		pageSize: max(exportPageSize, 1),
 		envelope: envelope,
+		pageMessages: func(ctx context.Context, userID, conversationID string, afterSeq, limit int) ([]conversation.Message, error) {
+			return s.conversations.MessagePage(ctx, nil, userID, conversationID, afterSeq, limit)
+		},
+		messagePageSize: max(exportMessagePageSize, 1),
 	}
 	if err := stream.writeTo(ctx, &sizeLimit{}); err != nil {
 		return nil, err
@@ -257,25 +273,17 @@ func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
 			return fmt.Errorf("backup: list conversations: %w", err)
 		}
 		for _, record := range page {
-			thread, err := e.service.threadOf(ctx, e.account, record)
-			if err != nil {
-				return err
-			}
 			conversations++
-			messages += len(thread.Messages)
 			if overImportLimits(conversations, messages) {
 				return ErrTooLarge
-			}
-			encoded, err := json.Marshal(thread)
-			if err != nil {
-				return fmt.Errorf("backup: encode %s: %w", record.ID, err)
 			}
 			if conversations > 1 {
 				if _, err := io.WriteString(w, ","); err != nil {
 					return err
 				}
 			}
-			if _, err := w.Write(encoded); err != nil {
+			messages, err = e.writeThread(ctx, w, record, conversations, messages)
+			if err != nil {
 				return err
 			}
 		}
@@ -293,37 +301,97 @@ func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
 	return err
 }
 
-// threadOf is one conversation as the document carries it. Its messages are
-// read whole, so the memory held for it is one conversation at a time.
+// writeThread streams one conversation as the next entry of the document. Its
+// messages are read a page at a time, and each page is checked against the
+// import limits before it is written, so a conversation past them is refused at
+// the page that crosses the limit. What is held in memory is bounded by the
+// limit plus one page, not by the conversation. messages is the total across
+// the threads before this one; the total including this one is returned.
 //
 // Every text field is scrubbed of NUL here rather than left for Import to
 // refuse. A conversation can already hold one, because the chat path and
 // renaming keep what they were given, and an export that carried it would be a
 // file its own account could not restore.
-func (s *Service) threadOf(ctx context.Context, account user.User, record conversation.Conversation) (Thread, error) {
-	messages, err := s.conversations.Messages(ctx, nil, account.ID, record.ID)
-	if err != nil {
-		return Thread{}, fmt.Errorf("backup: read %s: %w", record.ID, err)
-	}
-
-	out := Thread{
+func (e *exportStream) writeThread(ctx context.Context, w io.Writer, record conversation.Conversation, conversations, messages int) (int, error) {
+	header, err := encodeThreadHeader(Thread{
 		Title:     scrubNUL(record.Title),
 		Pinned:    record.Pinned,
 		CreatedAt: record.CreatedAt,
-		Messages:  make([]Turn, 0, len(messages)),
+	})
+	if err != nil {
+		return messages, err
 	}
-	for _, message := range messages {
-		out.Messages = append(out.Messages, Turn{
-			Role:      scrubNUL(string(message.Role)),
-			Content:   scrubNUL(message.Content),
-			Reasoning: scrubNUL(message.Reasoning),
-			Error:     scrubNUL(message.Error),
-			ModelName: scrubNUL(message.ModelName),
-			CreatedAt: message.CreatedAt,
-			Images:    len(message.Attachments),
-		})
+	if _, err := w.Write(header); err != nil {
+		return messages, err
 	}
-	return out, nil
+
+	written, afterSeq := 0, 0
+	for {
+		page, err := e.pageMessages(ctx, e.account.ID, record.ID, afterSeq, e.messagePageSize)
+		if err != nil {
+			return messages, fmt.Errorf("backup: read %s: %w", record.ID, err)
+		}
+		if overImportLimits(conversations, messages+len(page)) {
+			return messages, ErrTooLarge
+		}
+		messages += len(page)
+
+		for _, message := range page {
+			encoded, err := json.Marshal(turnOf(message))
+			if err != nil {
+				return messages, fmt.Errorf("backup: encode %s: %w", record.ID, err)
+			}
+			if written > 0 {
+				if _, err := io.WriteString(w, ","); err != nil {
+					return messages, err
+				}
+			}
+			if _, err := w.Write(encoded); err != nil {
+				return messages, err
+			}
+			written++
+		}
+
+		if len(page) < e.messagePageSize {
+			break
+		}
+		afterSeq = page[len(page)-1].Seq
+	}
+
+	_, err = io.WriteString(w, "]}")
+	return messages, err
+}
+
+// encodeThreadHeader is a thread up to where its messages begin, marshalled
+// through the Thread's own tags so the field names and omitempty rules cannot
+// drift from Import's. The empty messages array that marshalling adds at the
+// end is cut, so the messages can be written after it.
+func encodeThreadHeader(thread Thread) ([]byte, error) {
+	const tail = `"messages":[]}`
+	thread.Messages = []Turn{}
+	encoded, err := json.Marshal(thread)
+	if err != nil {
+		return nil, fmt.Errorf("backup: encode thread: %w", err)
+	}
+	if !bytes.HasSuffix(encoded, []byte(tail)) {
+		// Same reasoning as encodeEnvelope: a field added after messages would
+		// put the array somewhere Import does not expect it.
+		return nil, errors.New("backup: messages must stay the last field of Thread")
+	}
+	return append(encoded[:len(encoded)-len(tail)], `"messages":[`...), nil
+}
+
+// turnOf is one stored message as the document carries it.
+func turnOf(message conversation.Message) Turn {
+	return Turn{
+		Role:      scrubNUL(string(message.Role)),
+		Content:   scrubNUL(message.Content),
+		Reasoning: scrubNUL(message.Reasoning),
+		Error:     scrubNUL(message.Error),
+		ModelName: scrubNUL(message.ModelName),
+		CreatedAt: message.CreatedAt,
+		Images:    len(message.Attachments),
+	}
 }
 
 // Result reports what an import did, so the interface can say something
@@ -360,18 +428,23 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	// And what the account already holds, checked before anything is
 	// written: the per-request limits above say nothing about the twentieth
 	// request.
+	// A document with no messages writes none, so the account is not measured
+	// for it. Otherwise every empty import would scan the account's rows for
+	// nothing, and a signed-in account could repeat that scan at will.
 	ceiling := s.ceiling()
-	// A first, unlocked look, so a document that plainly does not fit is
-	// refused before any of it is written. It is not the enforcement: two
-	// imports arriving together both read the same figure here and both pass.
-	// importThread re-checks under the account's row lock, which is what the
-	// ceiling actually rests on.
-	stored, err := s.conversations.CountMessages(ctx, nil, account.ID)
-	if err != nil {
-		return Result{}, err
-	}
-	if stored+total > ceiling {
-		return Result{}, ErrStorageFull
+	if total > 0 {
+		// A first, unlocked look, so a document that plainly does not fit is
+		// refused before any of it is written. It is not the enforcement: two
+		// imports arriving together both read the same figure here and both
+		// pass. importThread re-checks under the account's row lock, which is
+		// what the ceiling actually rests on.
+		stored, err := s.conversations.CountMessages(ctx, nil, account.ID)
+		if err != nil {
+			return Result{}, err
+		}
+		if stored+total > ceiling {
+			return Result{}, ErrStorageFull
+		}
 	}
 
 	// The same question asked of the text itself. Read once, here, and carried
@@ -383,14 +456,18 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	// this import (a chat turn, another instance's import) can land between
 	// the read and the last thread. Each of those is itself bounded — a
 	// message holds at most 64 thousand characters, an import 32 MiB — so the
-	// overshoot is a request's worth, not unbounded.
-	storedChars, err := s.storedChars(ctx, account.ID)
-	if err != nil {
-		return Result{}, err
-	}
-	tally := &charTally{ceiling: s.charCeiling(), stored: storedChars}
-	if tally.stored+documentChars(document) > tally.ceiling {
-		return Result{}, ErrStorageFull
+	// overshoot is a request's worth, not unbounded. A document with no text
+	// writes none, so the scan is skipped for it, as the count above is.
+	tally := &charTally{ceiling: s.charCeiling()}
+	if chars := documentChars(document); chars > 0 {
+		storedChars, err := s.storedChars(ctx, account.ID)
+		if err != nil {
+			return Result{}, err
+		}
+		tally.stored = storedChars
+		if tally.stored+chars > tally.ceiling {
+			return Result{}, ErrStorageFull
+		}
 	}
 
 	var result Result
@@ -490,7 +567,9 @@ func (s *Service) charCeiling() int64 {
 	return MaxStoredChars
 }
 
-// storedChars is the message text an account holds now, in characters.
+// storedChars is the text an account holds now, in characters: message content,
+// reasoning and error, and conversation titles. It is every column an import
+// writes, so the ceiling counts what the import adds to.
 //
 // It is counted in Go rather than with SUM(LENGTH(...)). SQLite's LENGTH stops
 // at the first NUL, so text carrying one counts for almost nothing and an
@@ -499,7 +578,7 @@ func (s *Service) charCeiling() int64 {
 // time, so only one message is held in memory however large the account.
 func (s *Service) storedChars(ctx context.Context, userID string) (int64, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT content, reasoning FROM messages WHERE user_id = ?`, userID)
+		`SELECT content, reasoning, error FROM messages WHERE user_id = ?`, userID)
 	if err != nil {
 		return 0, fmt.Errorf("backup: measure stored text: %w", err)
 	}
@@ -507,27 +586,49 @@ func (s *Service) storedChars(ctx context.Context, userID string) (int64, error)
 
 	var chars int64
 	for rows.Next() {
-		var content, reasoning string
-		if err := rows.Scan(&content, &reasoning); err != nil {
+		var content, reasoning, errorText string
+		if err := rows.Scan(&content, &reasoning, &errorText); err != nil {
 			return 0, fmt.Errorf("backup: measure stored text: %w", err)
 		}
-		chars += int64(utf8.RuneCountInString(content) + utf8.RuneCountInString(reasoning))
+		chars += int64(utf8.RuneCountInString(content) + utf8.RuneCountInString(reasoning) +
+			utf8.RuneCountInString(errorText))
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("backup: measure stored text: %w", err)
+	}
+	rows.Close()
+
+	titles, err := s.db.Query(ctx,
+		`SELECT title FROM conversations WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("backup: measure stored titles: %w", err)
+	}
+	defer titles.Close()
+	for titles.Next() {
+		var title string
+		if err := titles.Scan(&title); err != nil {
+			return 0, fmt.Errorf("backup: measure stored titles: %w", err)
+		}
+		chars += int64(utf8.RuneCountInString(title))
+	}
+	if err := titles.Err(); err != nil {
+		return 0, fmt.Errorf("backup: measure stored titles: %w", err)
 	}
 	return chars, nil
 }
 
 // documentChars is an upper bound on what a document would write: the text as
-// sent, before the per-message truncation. It is counted in characters like
-// the rest of the ceiling. Counting bytes would refuse a CJK document for its
-// three bytes a character well before the document reached the ceiling.
+// sent, before the truncation, title and error included. It is counted in
+// characters like the rest of the ceiling. Counting bytes would refuse a CJK
+// document for its three bytes a character well before the document reached
+// the ceiling.
 func documentChars(document Document) int64 {
 	var chars int64
 	for _, thread := range document.Conversations {
+		chars += int64(utf8.RuneCountInString(thread.Title))
 		for _, turn := range thread.Messages {
-			chars += int64(utf8.RuneCountInString(turn.Content) + utf8.RuneCountInString(turn.Reasoning))
+			chars += int64(utf8.RuneCountInString(turn.Content) + utf8.RuneCountInString(turn.Reasoning) +
+				utf8.RuneCountInString(turn.Error))
 		}
 	}
 	return chars
@@ -558,18 +659,19 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 		return 0, nil
 	}
 
-	// What will be stored, so the character ceiling is held against the
-	// truncated text and not against a megabyte-long field that is about to be
-	// cut to size.
-	var threadChars int64
-	for _, turn := range usable {
-		threadChars += int64(min(utf8.RuneCountInString(turn.Content), MaxImportContentChars) +
-			min(utf8.RuneCountInString(turn.Reasoning), MaxImportReasoningChars))
-	}
-
 	title := text.TrimAndTruncate(thread.Title, MaxTitleChars)
 	if title == "" {
 		title = conversation.DeriveTitle(usable[0].Content)
+	}
+
+	// What will be stored, so the character ceiling is held against the
+	// truncated text and not against a megabyte-long field that is about to be
+	// cut to size.
+	threadChars := int64(utf8.RuneCountInString(title))
+	for _, turn := range usable {
+		threadChars += int64(min(utf8.RuneCountInString(turn.Content), MaxImportContentChars) +
+			min(utf8.RuneCountInString(turn.Reasoning), MaxImportReasoningChars) +
+			min(utf8.RuneCountInString(turn.Error), conversation.MaxErrorChars))
 	}
 
 	written := 0
@@ -614,7 +716,7 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 				Role:           role,
 				Content:        text.TrimAndTruncate(turn.Content, MaxImportContentChars),
 				Reasoning:      text.TrimAndTruncate(turn.Reasoning, MaxImportReasoningChars),
-				Error:          text.TrimAndTruncate(turn.Error, 500),
+				Error:          text.TrimAndTruncate(turn.Error, conversation.MaxErrorChars),
 				ModelName:      text.TrimAndTruncate(turn.ModelName, 80),
 			}); err != nil {
 				return err

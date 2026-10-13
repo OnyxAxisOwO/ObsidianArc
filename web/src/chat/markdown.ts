@@ -382,6 +382,21 @@ function columnAlign(cell: string): string {
 }
 
 export function parse(text: string): Block[] {
+  return parseBlocks(text, 0);
+}
+
+// A quote or a list item holds whole blocks, so the parser recurses once per
+// level of nesting. Past this depth the rest of the run is kept as paragraph
+// text: an unbounded run of '>' overflowed the call stack, and renderInto had
+// already emptied the element, so the whole message rendered blank.
+const MAX_NESTING = 16;
+
+function nested(body: string, depth: number): Block[] {
+  if (depth >= MAX_NESTING) return [{ type: 'paragraph', children: parseInline(body) }];
+  return parseBlocks(body, depth + 1);
+}
+
+function parseBlocks(text: string, depth: number): Block[] {
   const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
   const blocks: Block[] = [];
   let index = 0;
@@ -449,7 +464,7 @@ export function parse(text: string): Block[] {
         body.push(quoted ? quoted[1]! : lines[index]!);
         index += 1;
       }
-      blocks.push({ type: 'blockquote', children: parse(body.join('\n')) });
+      blocks.push({ type: 'blockquote', children: nested(body.join('\n'), depth) });
       continue;
     }
 
@@ -496,7 +511,7 @@ export function parse(text: string): Block[] {
           body.push(lines[index]!.replace(/^ {1,4}/, ''));
           index += 1;
         }
-        items.push(parse(body.join('\n')));
+        items.push(nested(body.join('\n'), depth));
       }
       blocks.push({ type: 'list', ordered, start, items });
       continue;

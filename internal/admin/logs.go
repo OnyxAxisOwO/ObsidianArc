@@ -1,14 +1,18 @@
 package admin
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
+	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 )
 
 // The request log: every call the server answered, filterable.
@@ -50,6 +54,10 @@ func (h *Handlers) logFacets(w http.ResponseWriter, r *http.Request) error {
 	return httpx.WriteJSON(w, http.StatusOK, facets)
 }
 
+// eventLogPrune is the security-log entry a prune writes. Kept beside the
+// prune rather than with the account actions because only this handler uses it.
+const eventLogPrune = "log_prune"
+
 // pruneLogs deletes entries older than a number of days.
 //
 // Nothing calls this on a schedule unless an operator sets a retention
@@ -66,19 +74,39 @@ func (h *Handlers) pruneLogs(w http.ResponseWriter, r *http.Request) error {
 	if body.Days < 0 || body.Days > 3650 {
 		return httpx.BadRequest("Give a number of days between 0 and 3650.")
 	}
+	actor := auth.MustUser(r.Context())
 
-	// Zero means everything: an operator clearing the log entirely is a
-	// legitimate thing to want, and making them pass -1 for it would be a
-	// puzzle rather than a safeguard.
+	// Zero means everything. That is the one prune that also takes away the
+	// record of other administrators' actions, which is why it is a
+	// super administrator's to do. The logs grant may still forget old
+	// entries on its own schedule.
 	window := time.Duration(body.Days) * 24 * time.Hour
 	if body.Days == 0 {
+		if !actor.IsSuperAdmin() {
+			return permissionDenied()
+		}
 		window = time.Nanosecond
+	}
+
+	// Recorded before the delete and in the security log, which is never pruned,
+	// so the record of the prune outlives the rows it removes. If the record
+	// cannot be written nothing is deleted: a prune nobody can see is refused.
+	if h.security != nil {
+		if err := h.security.Record(r.Context(), nil, securityevents.Event{
+			Event: eventLogPrune, Severity: securityevents.SeverityWarning,
+			ActorID: actor.ID, ActorUsername: actor.Username,
+			Source: "admin", Decision: "prune",
+			Reason: fmt.Sprintf("request log older than %d days removed", body.Days),
+		}); err != nil {
+			return httpx.Internal(err)
+		}
 	}
 
 	removed, err := h.requests.Prune(r.Context(), window)
 	if err != nil {
 		return httpx.Internal(err)
 	}
+	slog.WarnContext(r.Context(), "administrator pruned the request log", "actor", actor.ID, "days", body.Days, "removed", removed)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 

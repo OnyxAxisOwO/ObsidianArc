@@ -49,7 +49,7 @@ func TestEveryColumnOfTheUsersTableIsReservedFromPlugins(t *testing.T) {
 
 func TestAPluginCannotNameAFieldAfterALoginOrCounterColumn(t *testing.T) {
 	s := storeWithGate(map[string]bool{"zeta": true})
-	for _, key := range []string{"password_hash", "username_lower", "email_lower", "invite_reward_count"} {
+	for _, key := range []string{"password_hash", "username_lower", "email_lower", "invite_reward_count", "signup_rate_key"} {
 		if err := s.AddPluginFields("zeta", []Field{{Key: key}}); err == nil {
 			t.Errorf("%s was accepted as a plugin field", key)
 		}

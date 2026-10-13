@@ -910,7 +910,7 @@ func TestGuardRefusalStopsTheTurnBeforeTheProvider(t *testing.T) {
 	f.upstream.reply(answer)
 
 	consulted := false
-	f.handlers.Guard = func(context.Context, user.User, model.Model) (func(), error) {
+	f.handlers.Guard = func(context.Context, user.User, model.Model, int) (func(), error) {
 		consulted = true
 		return nil, httpx.TooManyRequests("quota_exceeded", "You have used your allowance for this week.")
 	}
@@ -938,7 +938,7 @@ func TestReservationIsAlwaysReleased(t *testing.T) {
 	f.upstream.fail(http.StatusInternalServerError, `{"error":{"message":"upstream is down"}}`)
 
 	released := 0
-	f.handlers.Guard = func(context.Context, user.User, model.Model) (func(), error) {
+	f.handlers.Guard = func(context.Context, user.User, model.Model, int) (func(), error) {
 		return func() { released++ }, nil
 	}
 
@@ -1212,7 +1212,7 @@ func TestAnUnverifiedAccountIsNotLockedOutOfTheAPI(t *testing.T) {
 
 	// And where verification IS in force, the guard is what says so — with the
 	// code a client can act on.
-	f.handlers.Guard = func(context.Context, user.User, model.Model) (func(), error) {
+	f.handlers.Guard = func(context.Context, user.User, model.Model, int) (func(), error) {
 		return nil, httpx.ForbiddenCode("email_unverified", "Confirm your email address first.")
 	}
 	refused := f.do(t, http.MethodPost, "/v1/chat/completions", token,

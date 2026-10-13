@@ -145,6 +145,10 @@ var unaudited = map[string]bool{
 	"version": true, "lang": true, "format": true, "echo": true,
 }
 
+// unparsedLine stands in for a line that did not tokenize, so the record says
+// that one was refused without saying what it said.
+const unparsedLine = "(unparsed input)"
+
 // Execute runs one line end to end: tokenize, resolve the command,
 // check its permission, parse its flags, refuse a destructive command
 // without --yes, run it, and render whatever it returns. Every one of
@@ -160,6 +164,10 @@ func (c *Console) Execute(ctx context.Context, s *Session, out io.Writer, line s
 	tokens, err := Tokenize(trimmed)
 	if err != nil {
 		RenderError(out, s.Colour, s.JSON, err)
+		// No command was found, so there is no name to write, and the line is
+		// not written either: an unclosed quote is often a password typed with
+		// a stray character, and the record must not carry it.
+		c.emit(ctx, s, unparsedLine, false, "parse_error")
 		return Result{Code: "parse_error", Elapsed: time.Since(start)}
 	}
 	return c.runTokens(ctx, s, out, tokens, start)
@@ -183,6 +191,7 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 
 	if !hasPermission(s.Actor, cmd.Permission) {
 		renderPermissionDenied(out, s, cmd)
+		c.recordRefusal(ctx, s, cmd, "permission_denied")
 		return Result{Code: "permission_denied", Elapsed: time.Since(start)}
 	}
 
@@ -192,6 +201,7 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	}
 	if err != nil {
 		RenderError(out, s.Colour, s.JSON, err)
+		c.recordRefusal(ctx, s, cmd, "parse_error")
 		return Result{Code: "parse_error", Elapsed: time.Since(start)}
 	}
 
@@ -202,6 +212,7 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 
 	if cmd.Destructive && !parsed.Yes {
 		renderConfirmRequired(out, s, cmd)
+		c.recordAudit(ctx, s, cmd, parsed, false, "confirmation_required")
 		return Result{Code: "confirmation_required", Elapsed: time.Since(start)}
 	}
 
@@ -259,15 +270,34 @@ func (c *Console) recordAudit(ctx context.Context, s *Session, cmd *Command, par
 	if c.opts.Audit == nil || unaudited[cmd.Name] {
 		return
 	}
-	// Detached like every other post-request write in this project
-	// (internal/security's own Record calls, chat/http.go's save): the
-	// command already ran and the actor already did it, so a reader
-	// closing the tab a moment later must not erase the record of that.
+	c.emit(ctx, s, c.auditLine(cmd, parsed), ok, code)
+}
+
+// recordRefusal records a command that was turned away before it ran, with its
+// name and nothing else. Its arguments were never parsed, so nothing has said
+// which of them is secret, and a password typed where a flag was meant is one of
+// the usual reasons a line is refused.
+func (c *Console) recordRefusal(ctx context.Context, s *Session, cmd *Command, code string) {
+	if c.opts.Audit == nil || unaudited[cmd.Name] {
+		return
+	}
+	c.emit(ctx, s, cmd.Name, false, code)
+}
+
+// emit hands one record to the audit sink. Detached like every other
+// post-request write in this project (internal/security's own Record calls,
+// chat/http.go's save): the command already ran, or was refused, and the actor
+// already did it, so a reader closing the tab a moment later must not erase the
+// record of that.
+func (c *Console) emit(ctx context.Context, s *Session, line string, ok bool, code string) {
+	if c.opts.Audit == nil {
+		return
+	}
 	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	c.opts.Audit(recCtx, AuditRecord{
 		Actor:     s.Actor,
-		Line:      c.auditLine(cmd, parsed),
+		Line:      line,
 		Transport: s.Transport,
 		IP:        s.IP,
 		OK:        ok,
@@ -282,10 +312,10 @@ func (c *Console) recordAudit(ctx context.Context, s *Session, cmd *Command, par
 // Positional arguments are masked the same way (Arg.Sensitive, and
 // Command.SecretArgs for the ones that are secret only on some lines): the
 // line is read by every administrator who holds the security grant, who are
-// not the people a code or a credential was typed for. A command that declares
-// no positional arguments has nothing that says which of them is a secret, so
-// none of them is written; a value typed where a flag was meant is the usual
-// one.
+// not the people a code or a credential was typed for. A positional the
+// command does not declare is masked too, which covers a command that declares
+// none: a value typed where a flag was meant is the usual one, and nothing
+// else says which of the extra tokens it is.
 func (c *Console) auditLine(cmd *Command, parsed ParsedArgs) string {
 	var b strings.Builder
 	b.WriteString(cmd.Name)
@@ -295,7 +325,7 @@ func (c *Console) auditLine(cmd *Command, parsed ParsedArgs) string {
 	}
 	for i, a := range parsed.Args {
 		b.WriteByte(' ')
-		if secret[i] || argSensitive(cmd, i) || len(cmd.Args) == 0 {
+		if secret[i] || argSensitive(cmd, i) {
 			b.WriteString("***")
 			continue
 		}
@@ -374,14 +404,13 @@ func secretFrom(first int) func(*Console, []string) map[int]bool {
 	}
 }
 
-// argSensitive reports whether the i-th positional is declared Sensitive,
-// the last declaration standing for every token past it.
+// argSensitive reports whether the i-th positional is secret. A token past the
+// declared list is secret too: the last declaration must not be read as
+// describing it, or a password typed after `user create <name>` would inherit
+// that argument's non-sensitive status and be written in clear.
 func argSensitive(cmd *Command, i int) bool {
-	if len(cmd.Args) == 0 {
-		return false
-	}
 	if i >= len(cmd.Args) {
-		i = len(cmd.Args) - 1
+		return true
 	}
 	return cmd.Args[i].Sensitive
 }

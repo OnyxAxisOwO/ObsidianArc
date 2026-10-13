@@ -109,11 +109,24 @@ type Handlers struct {
 
 	UsageLimiter *httpx.TokenBucketLimiter
 
+	// Paid calls to upstream models, one budget per instance. Each sign-up
+	// review and each model probe spends provider credit whatever its caller,
+	// so the budget is not per caller. Refusing rather than queueing matches
+	// the test-send cooldowns. It lives in memory, so a second instance keeps
+	// its own budget, the same trade the usage limiter makes.
+	reviewBudget *httpx.TokenBucketLimiter
+	probeBudget  *httpx.TokenBucketLimiter
+
 	usageCacheMu        sync.RWMutex
 	usageSummaryCache   map[string]*cachedUsageSummary
 	usageBreakdownCache map[string]*cachedUsageBreakdown
 	usageSummarySF      singleflight.Group
 	usageBreakdownSF    singleflight.Group
+
+	// The resources page's storage totals, read at most once per
+	// storageCacheTTL; see resources.go.
+	storageMu    sync.Mutex
+	storageCache *storageTotals
 
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
@@ -209,6 +222,8 @@ func NewHandlers(
 		apps:                apps,
 		invites:             invites,
 		UsageLimiter:        httpx.NewTokenBucketLimiter(5, 10),
+		reviewBudget:        httpx.NewTokenBucketLimiter(1.0/10, 3),
+		probeBudget:         httpx.NewTokenBucketLimiter(1.0/30, 1),
 		usageSummaryCache:   make(map[string]*cachedUsageSummary),
 		usageBreakdownCache: make(map[string]*cachedUsageBreakdown),
 	}
@@ -460,6 +475,8 @@ func translateProviderError(err error) error {
 		return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can set or change a provider's base URL.")
 	case errors.Is(err, provider.ErrTooManyHeaders):
 		return httpx.BadRequest("At most 20 extra headers.")
+	case errors.Is(err, provider.ErrHiddenHeader):
+		return httpx.BadRequestCode("header_hidden", "A header value shown as a hint cannot be saved. Enter the value again.")
 	case errors.Is(err, provider.ErrTooManyKeys):
 		return httpx.BadRequest("At most %d API keys.", provider.MaxAPIKeys)
 	case errors.Is(err, provider.ErrKeyTooLong):

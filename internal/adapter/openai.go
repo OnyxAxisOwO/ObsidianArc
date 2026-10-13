@@ -300,7 +300,7 @@ func (a openAIAdapter) Chat(ctx context.Context, client *http.Client, p Provider
 	if streaming {
 		result, err := a.readOnce(response)
 		if err != nil {
-			return Result{}, err
+			return result, err
 		}
 		result.StreamFallbackReason = "the endpoint answered with " +
 			fallbackContentType(response.Header.Get("Content-Type")) + " instead of an event stream"
@@ -330,13 +330,16 @@ func (openAIAdapter) readOnce(response *http.Response) (Result, error) {
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return Result{}, unreadable(err, "The provider returned a response we could not read.")
 	}
+	// Both failures below arrive with usage the provider billed, so it goes
+	// out with the error; the same reasoning as the Anthropic reader's refusal.
+	usage := payload.Usage.toUsage()
 	if len(payload.Choices) == 0 {
-		return Result{}, &Error{Kind: ErrorUpstream, Message: "The provider returned no answer."}
+		return Result{Usage: usage}, &Error{Kind: ErrorUpstream, Message: "The provider returned no answer."}
 	}
 
 	choice := payload.Choices[0]
 	if choice.Message.Refusal != "" {
-		return Result{}, &Error{Kind: ErrorRefusal, Message: choice.Message.Refusal}
+		return Result{Usage: usage}, &Error{Kind: ErrorRefusal, Message: choice.Message.Refusal}
 	}
 
 	reasoning, answer := splitThinking(choice.Message.Content)
@@ -344,7 +347,7 @@ func (openAIAdapter) readOnce(response *http.Response) (Result, error) {
 		Text:         answer,
 		Reasoning:    firstNonEmpty(choice.Message.ReasoningContent, choice.Message.Reasoning) + reasoning,
 		FinishReason: choice.FinishReason,
-		Usage:        payload.Usage.toUsage(),
+		Usage:        usage,
 	}
 	for _, call := range choice.Message.ToolCalls {
 		if call.Function.Name == "" {

@@ -201,22 +201,22 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 		return badRequest("model", "That model does not generate images.")
 	}
 
-	release, err := h.reserve(r.Context(), who, resolved)
-	if err != nil {
-		return err
-	}
-	defer release()
-
+	// Decided before the reservation, which has to cover every picture the
+	// call may bill. An unbounded n would otherwise be a way to spend far more
+	// than was reserved. The same bound as the panel's endpoint.
 	n := 1
 	if body.N != nil && *body.N > 0 {
 		n = *body.N
 	}
-	// The reservation above counts the call once however many pictures it
-	// asks for, so an unbounded n is a way to spend far more than was
-	// reserved. The same bound as the panel's endpoint.
 	if n > chat.MaxImagesPerRequest {
 		n = chat.MaxImagesPerRequest
 	}
+
+	release, err := h.reserve(r.Context(), who, resolved, n)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	startedAt := time.Now()
 	requestID := id.New()

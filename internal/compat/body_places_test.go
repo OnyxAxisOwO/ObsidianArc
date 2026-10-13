@@ -402,7 +402,7 @@ func TestNoPlaceIsHeldWhenTheProviderIsCalled(t *testing.T) {
 				reached         bool
 				inUse, requests int
 			)
-			f.handlers.Guard = func(_ context.Context, account user.User, _ model.Model) (func(), error) {
+			f.handlers.Guard = func(_ context.Context, account user.User, _ model.Model, _ int) (func(), error) {
 				reached = true
 				inUse, requests = placesState(f, account.ID)
 				return func() {}, nil

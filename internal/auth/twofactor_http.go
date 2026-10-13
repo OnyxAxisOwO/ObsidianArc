@@ -165,6 +165,13 @@ func TranslateTwoFactorError(w http.ResponseWriter, err error) error {
 		return httpx.BadRequestCode("two_factor_code", "That code is not valid.")
 	case errors.Is(err, ErrPasswordRequired):
 		return httpx.BadRequestCode("password_required", "Enter your current password to do this.")
+	case errors.Is(err, ErrReauthRequired):
+		// Not a 401: the session is fine, only too old to vouch for an account
+		// with no password. A 401 would sign the person out of a session that
+		// is still good, when all that is asked is a fresh sign-in.
+		return httpx.ForbiddenCode("reauth_required", "Sign in again to make this change.")
+	case errors.Is(err, ErrSessionNotFound):
+		return httpx.Unauthorized("Sign in to continue.")
 	case errors.Is(err, ErrCurrentPasswordWrong):
 		return httpx.BadRequestCode("current_password_wrong", "That password is not correct.")
 	case errors.Is(err, ErrNoPendingSignIn):

@@ -41,6 +41,9 @@ func (h *Handlers) trialReview(w http.ResponseWriter, r *http.Request) error {
 	if body.Username == "" {
 		return httpx.BadRequest("A username is required to review.")
 	}
+	if h.reviewBudget != nil && !h.reviewBudget.Allow("review") {
+		return httpx.TooManyRequests("review_rate_limited", "Sign-up review tests are limited; try again in a few seconds.")
+	}
 
 	decision, reason, err := h.TryReview(r.Context(), ReviewTrial{
 		Username: body.Username, Email: body.Email, Fields: body.Fields,
