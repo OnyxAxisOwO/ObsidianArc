@@ -112,7 +112,7 @@ func (h *Handlers) completions(w http.ResponseWriter, r *http.Request, who calle
 		return err
 	}
 
-	release, err := h.reserve(r.Context(), who, resolved)
+	release, err := h.reserve(r.Context(), who, resolved, 1)
 	if err != nil {
 		return err
 	}
@@ -160,11 +160,11 @@ func (h *Handlers) authorize(r *http.Request, who caller, wanted string) (model.
 // reserve takes the spend check. Called after the request has been read, so a
 // body that was never going to be answered does not hold an allowance while
 // it is refused.
-func (h *Handlers) reserve(ctx context.Context, who caller, resolved model.Resolved) (func(), error) {
+func (h *Handlers) reserve(ctx context.Context, who caller, resolved model.Resolved, pictures int) (func(), error) {
 	if h.Guard == nil {
 		return func() {}, nil
 	}
-	free, err := h.Guard(ctx, who.account, resolved.Model)
+	free, err := h.Guard(ctx, who.account, resolved.Model, pictures)
 	if err != nil {
 		return nil, translateGuardError(err)
 	}

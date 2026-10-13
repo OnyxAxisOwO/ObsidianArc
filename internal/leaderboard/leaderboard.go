@@ -99,7 +99,9 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 type Entry struct {
 	Rank int `json:"rank"`
 	// Empty in anonymous mode for everybody but the reader, who is always
-	// named: hiding somebody from themselves protects nobody.
+	// named: hiding somebody from themselves protects nobody. Also empty for an
+	// account that never set a nickname, outside handle mode, because its login
+	// is not published to other readers.
 	Name     string `json:"name,omitempty"`
 	Handle   string `json:"handle,omitempty"`
 	Avatar   string `json:"avatar,omitempty"`
@@ -348,6 +350,11 @@ func (h *Handlers) projectAccounts(b *cachedBoard, self, metric string, size int
 		}
 	}
 
+	shownCount := len(sorted)
+	if shownCount > size {
+		shownCount = size
+	}
+
 	standing := Standing{Participants: len(sorted)}
 	for i, row := range sorted {
 		if row.Key == self {
@@ -355,7 +362,12 @@ func (h *Handlers) projectAccounts(b *cachedBoard, self, metric string, size int
 			standing.Value = valueOf(row, metric)
 			for j := i - 1; j >= 0; j-- {
 				if above := valueOf(sorted[j], metric); above > standing.Value {
-					standing.Gap = above - standing.Value
+					// The gap is the place above's total less the reader's own. Only a
+					// place on the board may be measured: one past its end would reveal
+					// that unlisted account's total, which the board never publishes.
+					if j < shownCount {
+						standing.Gap = above - standing.Value
+					}
 					break
 				}
 			}
@@ -363,10 +375,6 @@ func (h *Handlers) projectAccounts(b *cachedBoard, self, metric string, size int
 		}
 	}
 
-	shownCount := len(sorted)
-	if shownCount > size {
-		shownCount = size
-	}
 	entries := make([]Entry, 0, shownCount)
 	for i := 0; i < shownCount; i++ {
 		row := sorted[i]
@@ -382,7 +390,11 @@ func (h *Handlers) projectAccounts(b *cachedBoard, self, metric string, size int
 			switch {
 			case entry.Self, identity != settings.LeaderboardAnonymous:
 				entry.Name = person.Nickname
-				if entry.Name == "" {
+				// A login name is half of a login credential, so another reader sees it
+				// only in handle mode, where the operator chose to show it. The reader's
+				// own login is theirs already. Any other account with no nickname is left
+				// unnamed, and the page shows that as an anonymous place.
+				if entry.Name == "" && (entry.Self || identity == settings.LeaderboardHandle) {
 					entry.Name = person.Username
 				}
 				entry.Avatar = person.Avatar

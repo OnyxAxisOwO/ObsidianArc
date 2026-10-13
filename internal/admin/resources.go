@@ -1,13 +1,60 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"runtime"
 	"sync"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
+
+// The storage totals scan every attachment the instance holds. The page asks
+// again every five seconds per open tab, and nothing shared the answer, so N
+// tabs meant N scans of the same table. The interval matches the page's own
+// polling, so no figure is older than the next poll would have made it, and the
+// scan runs once per interval however many tabs are open.
+const storageCacheTTL = 5 * time.Second
+
+type storageTotals struct {
+	at        time.Time
+	heldCount int64
+	heldBytes int64
+	discarded int64
+	byUser    []conversation.UserStorage
+}
+
+// storage returns the cached totals, or reads them. The lock is held across
+// the reads on purpose: a second request arriving while the first is scanning
+// waits for that scan instead of starting its own.
+func (h *Handlers) storage(ctx context.Context) (storageTotals, error) {
+	h.storageMu.Lock()
+	defer h.storageMu.Unlock()
+	if h.storageCache != nil && time.Since(h.storageCache.at) < storageCacheTTL {
+		return *h.storageCache, nil
+	}
+
+	var fresh storageTotals
+	var err error
+	fresh.heldCount, fresh.heldBytes, err = h.conversations.Held(ctx)
+	if err != nil {
+		return storageTotals{}, err
+	}
+	fresh.discarded, err = h.conversations.Discarded(ctx)
+	if err != nil {
+		return storageTotals{}, err
+	}
+	fresh.byUser, err = h.conversations.HeldByUser(ctx, 0)
+	if err != nil {
+		return storageTotals{}, err
+	}
+	fresh.at = time.Now()
+	h.storageCache = &fresh
+	return fresh, nil
+}
 
 // What this instance is costing the machine it runs on: the files its users
 // are storing, the memory the process holds, and how busy it has been.
@@ -57,18 +104,22 @@ func (s *cpuSampler) rate(now time.Time, used time.Duration) (percent, window fl
 func (h *Handlers) resources(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
-	heldCount, heldBytes, err := h.conversations.Held(ctx)
+	// The same budget the usage reads take. Each poll is a full scan of the
+	// attachments table, so a caller polling in a loop should meet the limit
+	// rather than the database.
+	clientIP := r.RemoteAddr
+	if h.ClientIP != nil {
+		clientIP = h.ClientIP(r)
+	}
+	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(clientIP+":"+auth.MustUser(ctx).ID) {
+		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	}
+
+	totals, err := h.storage(ctx)
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	discarded, err := h.conversations.Discarded(ctx)
-	if err != nil {
-		return httpx.Internal(err)
-	}
-	byUser, err := h.conversations.HeldByUser(ctx, 0)
-	if err != nil {
-		return httpx.Internal(err)
-	}
+	heldCount, heldBytes, discarded, byUser := totals.heldCount, totals.heldBytes, totals.discarded, totals.byUser
 
 	// ReadMemStats stops the world for the length of the read. It is
 	// microseconds on a heap this size, and this is the only place that asks.

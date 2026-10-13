@@ -152,13 +152,17 @@ func (s *Store) Sweep(ctx context.Context, policy Retention, lastRun int64) (Swe
 // DiscardBefore drops the bytes of every attachment written before a moment,
 // keeping the rows. Passing the current time means "all of them".
 //
-// Only attachments that belong to a message: an upload still waiting for one
-// has nothing recorded about it worth keeping, so it is the orphan sweep's to
+// Two kinds are covered: an attachment on a message, and an Image Lab picture
+// in the library. The second has no message, but the cleanup policy applies to
+// it as the Image Lab documentation says it does, so it is selected by its
+// generation record. An upload still waiting for a message is neither: it has
+// nothing recorded about it worth keeping, so it is the orphan sweep's to
 // delete outright rather than this one's to hollow out.
 func (s *Store) DiscardBefore(ctx context.Context, createdBefore int64) (int64, error) {
 	result, err := s.db.Exec(ctx,
 		`UPDATE attachments SET data = ?, discarded_at = ?
-		 WHERE discarded_at = 0 AND message_id IS NOT NULL AND created_at < ?`,
+		 WHERE discarded_at = 0 AND created_at < ?
+		   AND (message_id IS NOT NULL OR id IN (SELECT attachment_id FROM image_generations))`,
 		[]byte{}, time.Now().UnixMilli(), createdBefore)
 	if err != nil {
 		return 0, fmt.Errorf("conversation: discard before %d: %w", createdBefore, err)

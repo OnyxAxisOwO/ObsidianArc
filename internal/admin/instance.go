@@ -39,6 +39,23 @@ type dashboardAccount struct {
 // charts that exist because a dashboard is expected to have charts.
 func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
+	actor := auth.MustUser(ctx)
+	// The same budget and slot the usage reads take. A load runs about a dozen
+	// aggregates over the ledger, and without them a dashboard grant could drive
+	// the ledger as hard as the usage page, with no limit at all.
+	clientIP := r.RemoteAddr
+	if h.ClientIP != nil {
+		clientIP = h.ClientIP(r)
+	}
+	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(clientIP+":"+actor.ID) {
+		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	}
+	release, err := httpx.AcquireAggregationSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	now := time.Now()
 	zone, err := zoneFrom(r)
 	if err != nil {
@@ -91,20 +108,35 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 		heatmap                    []usage.Slot
 		recent                     []usage.Record
 	)
-	err = together(
+	reads := []func() error{
 		func() (err error) { today, err = h.usage.Totals(ctx, day); return },
 		func() (err error) { yesterday, err = h.usage.Totals(ctx, dayBefore); return },
 		func() (err error) { thisWeek, err = h.usage.Totals(ctx, week); return },
 		func() (err error) { topModels, err = h.usage.GroupBy(ctx, "model", metric, week); return },
-		func() (err error) { topUsers, err = h.usage.GroupBy(ctx, "user", metric, week); return },
 		func() (err error) { series, err = h.usage.Series(ctx, week, 6*time.Hour, zone); return },
 		// When in the week people use it: the shape an operator plans
 		// maintenance around, and the one a total over seven days hides.
 		func() (err error) { heatmap, err = h.usage.Heatmap(ctx, week, zone); return },
-		func() (err error) { recent, _, err = h.usage.List(ctx, usage.Filter{Limit: 8}); return },
-	)
-	if err != nil {
+	}
+	// Per-account spend and the newest requests name the people who made them,
+	// and that is what the usage grant is for. A dashboard grant sees the
+	// totals and the newest accounts (dashboardAccount), and nothing that
+	// says who spent what.
+	canSeeUsage := hasPermission(actor, "usage")
+	if canSeeUsage {
+		reads = append(reads,
+			func() (err error) { topUsers, err = h.usage.GroupBy(ctx, "user", metric, week); return },
+			func() (err error) { recent, _, err = h.usage.List(ctx, usage.Filter{Limit: 8}); return },
+		)
+	}
+	if err := together(reads...); err != nil {
 		return httpx.Internal(err)
+	}
+	if topUsers == nil {
+		topUsers = []usage.Breakdown{}
+	}
+	if recent == nil {
+		recent = []usage.Record{}
 	}
 
 	newest := make([]dashboardAccount, 0, len(users))
@@ -326,6 +358,10 @@ var numericBounds = map[string][2]int{
 	settings.ThemeWallpaperBlur: {0, 40},
 	settings.ThemeTranslucency:  {0, 90},
 	settings.ThemePanelBlur:     {0, 40},
+	// Checked in one place for both the save and the import. Checked by hand in
+	// the save alone, an import used to store a retention the save refuses.
+	settings.AttachmentPurgeDays:  {0, 3650},
+	settings.AttachmentOrphanMins: {5, 1440},
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
@@ -435,16 +471,6 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	if raw, present := body[settings.AttachmentPurgeDaily]; present && strings.TrimSpace(raw) != "" {
 		if _, _, ok := conversation.ParseDailyTime(raw); !ok {
 			return httpx.BadRequest("The daily cleanup time must be HH:MM, or empty for never.")
-		}
-	}
-	if raw, present := body[settings.AttachmentPurgeDays]; present {
-		if days, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || days < 0 || days > 3650 {
-			return httpx.BadRequest("Keep images for between 0 and 3650 days; 0 means no age limit.")
-		}
-	}
-	if raw, present := body[settings.AttachmentOrphanMins]; present {
-		if mins, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || mins < 5 || mins > 1440 {
-			return httpx.BadRequest("Unsent uploads must be kept for between 5 and 1440 minutes.")
 		}
 	}
 	for key, bounds := range numericBounds {

@@ -68,7 +68,10 @@ func TestAPasswordlessAccountEnablesTwoFactorWithoutOne(t *testing.T) {
 		t.Fatal("the wizard would ask an account with no password for one")
 	}
 	code := codeAt(t, setup.Secret, totp.Step(time.Now()))
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "", code, "", "", ""); err != nil {
+	// No password is asked for, but the sign-in making the change must be a
+	// recent one: a session with no proof behind it adds nothing.
+	signedIn := sessionFor(t, f, account.ID)
+	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "", code, signedIn.ID, "", ""); err != nil {
 		t.Fatalf("enabling on a passwordless account: %v", err)
 	}
 }
@@ -127,7 +130,9 @@ func TestAPasswordlessAccountMovesItsEmailWithoutOne(t *testing.T) {
 		t.Fatalf("provision: %v", err)
 	}
 	moved := "octocat@example.com"
-	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &moved}, ""); err != nil {
+	// No password is asked for; the request has to come from a recent sign-in.
+	signedIn := context.WithValue(ctx, sessionContextKey, sessionFor(t, f, account.ID))
+	if _, err := f.auth.UpdateProfile(signedIn, account.ID, user.ProfileUpdate{Email: &moved}, ""); err != nil {
 		t.Fatalf("moving the address on a passwordless account: %v", err)
 	}
 }
@@ -206,7 +211,7 @@ func TestParallelPasswordGuessesGetTheSameAllowanceAsSequentialOnes(t *testing.T
 		go func() {
 			defer wg.Done()
 			<-gate
-			err := f.auth.ConfirmPassword(ctx, account.ID, "guess")
+			err := f.auth.ConfirmNewSignIn(ctx, account.ID, "guess", "")
 			var limited *RateLimitError
 			mu.Lock()
 			defer mu.Unlock()
@@ -259,11 +264,11 @@ func TestARightPasswordDoesNotForgiveTheWrongOnesBeforeIt(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		if err := f.auth.ConfirmPassword(ctx, account.ID, "guess"); !errors.Is(err, ErrCurrentPasswordWrong) {
+		if err := f.auth.ConfirmNewSignIn(ctx, account.ID, "guess", ""); !errors.Is(err, ErrCurrentPasswordWrong) {
 			t.Fatalf("a wrong password = %v, want ErrCurrentPasswordWrong", err)
 		}
 	}
-	if err := f.auth.ConfirmPassword(ctx, account.ID, "a-good-password"); err != nil {
+	if err := f.auth.ConfirmNewSignIn(ctx, account.ID, "a-good-password", ""); err != nil {
 		t.Fatalf("the right password was refused: %v", err)
 	}
 

@@ -95,6 +95,11 @@ type Engine struct {
 	limits Limits
 	// One token per call in flight; nil when the engine is unbounded.
 	slots chan struct{}
+	// The share of slots a call other than a guard may hold. A guard answers a
+	// sign-in or a sign-up and is refused when it cannot run, so it keeps the
+	// rest: a flood of anonymous requests to a public route fills this share,
+	// and the sign-in gate still has room.
+	general chan struct{}
 }
 
 // shared is the compiled code kept across backends, keyed by the module's
@@ -134,8 +139,49 @@ func NewEngine(limits Limits) *Engine {
 	e := &Engine{limits: limits}
 	if limits.MaxConcurrent > 0 {
 		e.slots = make(chan struct{}, limits.MaxConcurrent)
+		e.general = make(chan struct{}, limits.MaxConcurrent-guardReserve(limits.MaxConcurrent))
 	}
 	return e
+}
+
+// guardReserve is how many of n slots only guards may take: a quarter of them,
+// once there are enough to spare.
+func guardReserve(n int) int {
+	if n < 4 {
+		return 0
+	}
+	return n / 4
+}
+
+// admit takes what a call of kind needs, or reports that the engine is full.
+// Every call takes one of the engine's slots; a call that is not a guard also
+// takes one of the general slots, which leave guardReserve slots for guards.
+func (e *Engine) admit(kind string) (release func(), ok bool) {
+	if e.slots == nil {
+		return func() {}, true
+	}
+	guard := kind == "guard"
+	if !guard {
+		select {
+		case e.general <- struct{}{}:
+		default:
+			return nil, false
+		}
+	}
+	select {
+	case e.slots <- struct{}{}:
+	default:
+		if !guard {
+			<-e.general
+		}
+		return nil, false
+	}
+	return func() {
+		<-e.slots
+		if !guard {
+			<-e.general
+		}
+	}, true
 }
 
 // MaxMessage is the largest message either side reads. A host operation that
@@ -465,14 +511,11 @@ type reply struct {
 func (b *Backend) Invoke(ctx context.Context, info CallInfo, kind string, arg, out, state any) error {
 	// Before the compile as well as the instance: callers waiting on a compile
 	// are in flight too, and each is holding its request.
-	if slots := b.engine.slots; slots != nil {
-		select {
-		case slots <- struct{}{}:
-			defer func() { <-slots }()
-		default:
-			return ErrBusy
-		}
+	release, ok := b.engine.admit(kind)
+	if !ok {
+		return ErrBusy
 	}
+	defer release()
 	w, err := b.acquire(ctx)
 	if err != nil {
 		return err

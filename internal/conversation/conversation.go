@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -179,8 +180,11 @@ type ListFilter struct {
 
 // ListWithFilter returns conversations matching the given filter.
 func (s *Store) ListWithFilter(ctx context.Context, userID string, filter ListFilter) ([]Conversation, error) {
+	// The same bound ListPage applies. The limit arrives from a query string, and
+	// without the ceiling one request reads and serialises every row the account
+	// holds.
 	limit := filter.Limit
-	if limit <= 0 {
+	if limit <= 0 || limit > MaxListLimit {
 		limit = DefaultListLimit
 	}
 	offset := max(0, filter.Offset)
@@ -378,32 +382,75 @@ func (s *Store) Messages(ctx context.Context, q database.Queryer, userID, conver
 	}
 	defer rows.Close()
 
+	messages, err := scanMessages(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(messages) == 0 {
+		return messages, nil
+	}
+	return messages, attachTo(ctx, q, userID, conversationID, messages, 0, math.MaxInt32)
+}
+
+// MessagePage returns up to limit messages of a conversation after sequence
+// afterSeq, oldest first, with their attachments. It is how an export reads a
+// conversation a page at a time, so the rows of a long one are never all held
+// at once.
+func (s *Store) MessagePage(ctx context.Context, q database.Queryer, userID, conversationID string, afterSeq, limit int) ([]Message, error) {
+	if q == nil {
+		q = s.db
+	}
+	rows, err := q.Query(ctx,
+		`SELECT `+messageColumns+`
+		 FROM messages m
+		 WHERE m.conversation_id = ? AND m.user_id = ? AND m.seq > ?
+		 ORDER BY m.seq
+		 LIMIT ?`,
+		conversationID, userID, afterSeq, limit)
+	if err != nil {
+		return nil, fmt.Errorf("conversation: message page: %w", err)
+	}
+	defer rows.Close()
+
+	messages, err := scanMessages(rows)
+	if err != nil || len(messages) == 0 {
+		return messages, err
+	}
+	// Seq is unique within a conversation, so the page's own range picks out
+	// exactly its attachments and no others.
+	return messages, attachTo(ctx, q, userID, conversationID, messages,
+		messages[0].Seq, messages[len(messages)-1].Seq)
+}
+
+func scanMessages(rows *sql.Rows) ([]Message, error) {
 	messages := []Message{}
-	index := map[string]int{}
 	for rows.Next() {
 		record, err := scanMessage(rows)
 		if err != nil {
 			return nil, err
 		}
-		index[record.ID] = len(messages)
 		messages = append(messages, record)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(messages) == 0 {
-		return messages, nil
+	return messages, rows.Err()
+}
+
+// attachTo fills in the attachments of messages whose seq lies in [fromSeq,
+// toSeq]. The messages must be the ones the caller read in that range.
+func attachTo(ctx context.Context, q database.Queryer, userID, conversationID string, messages []Message, fromSeq, toSeq int) error {
+	index := make(map[string]int, len(messages))
+	for position, message := range messages {
+		index[message.ID] = position
 	}
 
 	attachments, err := q.Query(ctx,
 		`SELECT a.id, a.message_id, a.mime, a.width, a.height, a.size, a.discarded_at
 		 FROM attachments a
 		 JOIN messages m ON m.id = a.message_id
-		 WHERE m.conversation_id = ? AND a.user_id = ?
+		 WHERE m.conversation_id = ? AND a.user_id = ? AND m.seq BETWEEN ? AND ?
 		 ORDER BY a.created_at`,
-		conversationID, userID)
+		conversationID, userID, fromSeq, toSeq)
 	if err != nil {
-		return nil, fmt.Errorf("conversation: attachments: %w", err)
+		return fmt.Errorf("conversation: attachments: %w", err)
 	}
 	defer attachments.Close()
 
@@ -415,14 +462,14 @@ func (s *Store) Messages(ctx context.Context, q database.Queryer, userID, conver
 		)
 		if err := attachments.Scan(&record.ID, &messageID, &record.Mime,
 			&record.Width, &record.Height, &record.Size, &discardedAt); err != nil {
-			return nil, fmt.Errorf("conversation: attachment scan: %w", err)
+			return fmt.Errorf("conversation: attachment scan: %w", err)
 		}
 		record.Discarded = discardedAt > 0
 		if position, ok := index[messageID]; ok {
 			messages[position].Attachments = append(messages[position].Attachments, record)
 		}
 	}
-	return messages, attachments.Err()
+	return attachments.Err()
 }
 
 // ForRequest is the part of a transcript the next turn re-sends: the newest

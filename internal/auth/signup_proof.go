@@ -8,6 +8,15 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 )
 
+// requiredPoWMax is the difficulty this address has to solve at right now: the
+// tier the challenge endpoint would hand it. A solution issued at an easier
+// tier is refused, so a challenge taken before activity raised the difficulty
+// does not keep its base-tier price for the rest of its five minutes.
+func (s *Service) requiredPoWMax(ip string) int64 {
+	return s.PoW.Tracker().DetermineMaxNumber(ip,
+		s.settings.PoWBaseMaxNumber(), s.settings.PoWElevatedMaxNumber(), s.settings.PoWThreshold(), time.Now())
+}
+
 // verifyProof checks the proof-of-work solution a sign-up arrived with. A form
 // sign-up checks it in Register; a provider sign-up checks it in
 // CheckSignupProof. Both refuse the same way and log under the same event, so
@@ -22,11 +31,13 @@ func (s *Service) verifyProof(ctx context.Context, ip, username string, solution
 		}
 		return pow.ErrMissingSolution
 	}
-	if err := s.PoW.Verify(solution); err != nil {
+	if err := s.PoW.VerifyAt(ctx, solution, s.requiredPoWMax(ip)); err != nil {
 		reason := "PoW 校验失败"
 		switch {
 		case errors.Is(err, pow.ErrExpired):
 			reason = "PoW 挑战已过期"
+		case errors.Is(err, pow.ErrBelowTier):
+			reason = "PoW 难度已提高，挑战需重新获取"
 		case errors.Is(err, pow.ErrInvalidSignature):
 			reason = "PoW 签名无效"
 		case errors.Is(err, pow.ErrMaxExceeded):

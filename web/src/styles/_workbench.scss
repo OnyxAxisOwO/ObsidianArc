@@ -214,6 +214,9 @@
 .oa-plugin-control-item { display: flex; flex-direction: column; gap: 8px; padding-bottom: 16px; border-bottom: 1px solid var(--ai-border); }
 .oa-plugin-control-item:last-child { padding-bottom: 0; border-bottom: 0; }
 .oa-plugin-control-item .oa-switch-field { padding: 0; border-bottom: 0; }
+/* The storage key a control writes, shown above it so an operator approving
+   the install sees where the value goes, not only the label the package chose. */
+.oa-plugin-control-key { align-self: flex-start; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--ai-text-secondary); }
 .oa-plugin-guide { display: flex; flex-direction: column; gap: 16px; }
 .oa-plugin-guide-banner { display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: 14px; background: var(--ai-surface-container); }
 .oa-plugin-guide-icon { color: var(--ai-primary); flex-shrink: 0; }

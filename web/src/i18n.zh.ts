@@ -2353,6 +2353,8 @@ export const zh: Record<StringKey, string> = {
   currentPasswordWrong: '密码不正确。',
   emailChangePasswordHint: '更换邮箱需要输入当前密码。',
   reauthForPassword: '请先用你的第三方账户重新登录，再设置密码。首个密码只能在刚刚登录后设置。',
+  reauthForAddress: '请先重新登录。没有密码的账户更换邮箱，需要刚刚完成的一次登录。',
+  reauthForTwoFactor: '请先重新登录。没有密码的账户开启两步验证，需要刚刚完成的一次登录。',
   twoFactorRequiredTitle: '设置两步验证',
   twoFactorRequiredBody: '{site} 要求在继续之前开启两步验证，大约只需一分钟。',
   twoFactorGateTitle: '需要两步验证',

@@ -246,14 +246,8 @@ func (m *Manager) Check(ctx context.Context, email string) error {
 	key := m.apiKey
 	backoffUntil := m.backoffUntil
 	m.mu.RUnlock()
-	if !cfg.Enabled || email == "" {
+	if !lookupRequired(cfg, email) {
 		return nil
-	}
-	domain := emailDomain(email)
-	for _, exempt := range cfg.ExemptDomains {
-		if domain == exempt {
-			return nil
-		}
 	}
 	var result Result
 	var err error
@@ -273,6 +267,31 @@ func (m *Manager) Check(ctx context.Context, email string) error {
 		return ErrDisposable
 	}
 	return nil
+}
+
+// Charges reports whether Check would spend a paid lookup on this address. The
+// caller meters its own accounts' changes by this answer, so the metering follows
+// the same rule the lookup does.
+func (m *Manager) Charges(email string) bool {
+	m.mu.RLock()
+	cfg := m.cfg
+	m.mu.RUnlock()
+	return lookupRequired(cfg, email)
+}
+
+// lookupRequired is the one place that decides whether an address is looked up:
+// the service is on, the address is not empty, and its domain is not exempt.
+func lookupRequired(cfg Config, email string) bool {
+	if !cfg.Enabled || email == "" {
+		return false
+	}
+	domain := emailDomain(email)
+	for _, exempt := range cfg.ExemptDomains {
+		if domain == exempt {
+			return false
+		}
+	}
+	return true
 }
 
 // Test always calls the API so an operator can check the key and inspect a

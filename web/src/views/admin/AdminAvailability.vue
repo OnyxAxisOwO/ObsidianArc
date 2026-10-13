@@ -62,11 +62,13 @@ function collect(): Record<string, string> {
   };
 }
 
-const { dirty, accept } = useSettingsDraft(collect);
+const { dirty, changes, accept } = useSettingsDraft(collect);
 
 async function save(): Promise<void> {
   if (!loaded.value || error.value || busy.value) return;
-  const values = collect();
+  // Only what this page changed, so the save cannot undo another screen's edit.
+  const values = changes();
+  if (Object.keys(values).length === 0) return;
   busy.value = true;
   saveLabel.value = t('saving');
   flash.value = '';

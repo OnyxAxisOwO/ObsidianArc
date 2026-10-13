@@ -25,10 +25,11 @@ func withProofOfWork(t *testing.T, f *fixture) {
 }
 
 // proofQuery is a solved challenge, the way the register page hands it to the
-// provider's start request. The range is small so that solving it is quick.
+// provider's start request. It is issued at the tier the server hands this
+// address, because a solution below the current tier is refused.
 func proofQuery(t *testing.T, f *fixture) string {
 	t.Helper()
-	challenge, err := f.auth.PoW.Issue(1000)
+	challenge, err := f.auth.PoW.Issue(f.settings.PoWBaseMaxNumber())
 	if err != nil {
 		t.Fatalf("issue a challenge: %v", err)
 	}

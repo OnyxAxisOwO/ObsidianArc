@@ -32,6 +32,10 @@ func packageOf(t *testing.T, name string, migrations map[string]string, edit ...
 		"arcx": 1, "name": name, "version": "1.0.0", "title": map[string]string{"en": name},
 		"requires": map[string]int{"api": 1},
 	}
+	if len(migrations) > 0 {
+		// Migrations run SQL, and a package may carry SQL only with the db grant.
+		manifest["permissions"] = []string{"db"}
+	}
 	for _, apply := range edit {
 		apply(manifest)
 	}

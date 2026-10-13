@@ -253,9 +253,15 @@ func init() {
 				if err != nil {
 					return err
 				}
+				// An empty value clears the grants, so it must reach the server as an
+				// empty list: null is read there as "not given", and the command would
+				// report success with every grant still in place.
+				if grants == nil {
+					grants = []map[string]any{}
+				}
 				body["model_grants"] = grants
 			} else if rt.Present("models") {
-				var ids []string
+				ids := []string{}
 				for _, r := range splitCSV(rt.String("models")) {
 					mid, err := resolveModelRef(rt, r)
 					if err != nil {

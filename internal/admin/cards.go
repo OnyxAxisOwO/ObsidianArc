@@ -130,10 +130,10 @@ func (h *Handlers) grantCards(w http.ResponseWriter, r *http.Request) error {
 // and an operator who meant the second should not be able to produce the
 // first by mistyping a field.
 //
-// A delegate may still grant a super administrator cards, which only adds to
-// what they hold. Moving one takes away from the super administrator, and
-// CanManageAdmin refuses a delegate every other action that reaches one, so the
-// same refusal applies to revokeCard below.
+// A delegate may still grant an administrator cards, which only adds to what
+// they hold. Moving one takes away from the administrator, so it takes the
+// same CanManageAdmin test every other action that reaches an administrator
+// takes (sessions, keys, password resets), and revokeCard below does too.
 func (h *Handlers) rescheduleCards(w http.ResponseWriter, r *http.Request) error {
 	userID, err := pathID(r, "id")
 	if err != nil {
@@ -143,7 +143,7 @@ func (h *Handlers) rescheduleCards(w http.ResponseWriter, r *http.Request) error
 	if err != nil {
 		return translateUserError(err)
 	}
-	if target.IsSuperAdmin() && !auth.MustUser(r.Context()).IsSuperAdmin() {
+	if target.IsAdmin() && !auth.MustUser(r.Context()).CanManageAdmin(target) {
 		return permissionDenied()
 	}
 
@@ -182,9 +182,10 @@ func (h *Handlers) revokeCard(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return translateUserError(err)
 	}
-	// The same refusal as rescheduleCards: withdrawing a super administrator's
-	// card is taking something away from them.
-	if target.IsSuperAdmin() && !auth.MustUser(r.Context()).IsSuperAdmin() {
+	// The same refusal as rescheduleCards: withdrawing an administrator's card
+	// is taking something away from them, which a delegate may do only to an
+	// administrator it could manage anyway.
+	if target.IsAdmin() && !auth.MustUser(r.Context()).CanManageAdmin(target) {
 		return permissionDenied()
 	}
 	if err := h.cards.Revoke(r.Context(), userID, cardID); err != nil {

@@ -283,7 +283,7 @@ describe('a plugin\'s settings on a backoffice page', () => {
     site.value = { ...siteInfo.value };
   });
 
-  it('draws the card under its category and saves its keys with the page\'s, secrets only when typed', async () => {
+  it('draws the card under its category and saves only the key that changed, never an untouched secret', async () => {
     installPlugins([example]);
     await mountSecurity({ 'example.base_url': '/rc', 'example.site': 'arc', 'example.secret_key': '••••••••', 'example.on_login': 'true' });
     openCategory(t('controlVerification'));
@@ -300,9 +300,9 @@ describe('a plugin\'s settings on a backoffice page', () => {
     type(field(card, 'Site key'), 'arc-2');
     button(actions, t('save')).click();
     await settle();
-    expect(saved).toHaveBeenCalledWith(expect.objectContaining({
-      'example.base_url': '/rc', 'example.site': 'arc-2', 'example.secret_key': '', 'example.on_login': 'true',
-    }));
+    // Unchanged keys are not written back: the page would otherwise undo any
+    // edit another administrator made to them since this page loaded.
+    expect(saved).toHaveBeenCalledWith({ 'example.site': 'arc-2' });
   });
 
   it('draws and sends only the keys the server showed this account', async () => {
@@ -320,14 +320,15 @@ describe('a plugin\'s settings on a backoffice page', () => {
     expect(card.textContent).not.toContain('Site secret');
 
     const saved = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    // The one switch this account is shown, edited: it is the only key a save
+    // may carry, and the hidden ones are never in the payload.
+    const toggle = card.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    if (!toggle) throw new Error('the switch was not drawn');
+    toggle.click();
+    await nextTick();
     button(actions, t('save')).click();
     await settle();
-    const payload = saved.mock.calls[0]![0] as Record<string, string>;
-    expect(payload['example.on_login']).toBe('true');
-    expect(payload['turnstile.on_login']).toBe('false');
-    for (const hidden of ['example.base_url', 'example.site', 'example.secret_key', 'oauth.oidc_issuer']) {
-      expect(payload).not.toHaveProperty(hidden);
-    }
+    expect(saved).toHaveBeenCalledWith({ 'example.on_login': 'false' });
   });
 
   it('offers a plugin\'s sign-up challenge in the page\'s own select', async () => {
@@ -342,10 +343,11 @@ describe('a plugin\'s settings on a backoffice page', () => {
     await mountSecurity({});
     expect(host.querySelector('#secExample')).toBeNull();
     const saved = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    // Nothing edited, so nothing is sent: a plugin that is not loaded has no
+    // key on this page that a save could carry.
     button(actions, t('save')).click();
     await settle();
-    const sent = saved.mock.calls[0]![0];
-    expect(Object.keys(sent).some((key) => key.startsWith('example.'))).toBe(false);
+    expect(saved).not.toHaveBeenCalled();
   });
 });
 

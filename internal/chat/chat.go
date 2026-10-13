@@ -94,6 +94,10 @@ type TurnRequest struct {
 	ProjectID string
 	// Resolved by Prepare, then used by the quota hook.
 	Model model.Model
+	// How many pictures an image call may bill. The allowance reserves for
+	// each of them, because the ledger charges each one that comes back. Zero
+	// for a text turn, which is one generation.
+	Pictures int
 }
 
 // TurnRecord is what happened, handed to OnTurn once the turn is over.

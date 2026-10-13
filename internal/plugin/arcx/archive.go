@@ -220,6 +220,13 @@ func Parse(data []byte) (*Package, error) {
 	if len(pkg.purge) > 0 && len(pkg.migrations) == 0 {
 		return nil, invalid("a purge without migrations has nothing to take back")
 	}
+	// Migrations and purge scripts run as the database's owner, outside the
+	// host's permission checks, so the manifest has to ask for db before any
+	// of their SQL is accepted. Otherwise a package that declares nothing
+	// would carry SQL the install dialog never shows.
+	if (len(pkg.migrations) > 0 || len(pkg.purge) > 0) && !pkg.Manifest.Has(PermDB) {
+		return nil, invalid("migrations and purge scripts run SQL against the database, so the manifest must declare the db permission")
+	}
 	return pkg, nil
 }
 

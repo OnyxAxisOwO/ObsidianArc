@@ -167,9 +167,12 @@ func (h *Handlers) references(w http.ResponseWriter, r *http.Request) error {
 
 func (h *Handlers) listMemberOptions(w http.ResponseWriter, r *http.Request) error {
 	query := r.URL.Query()
+	// The groups grant alone searches names. The email address is the users
+	// grant's to read, so an actor without it matches on the name only.
 	accounts, total, err := h.users.List(r.Context(), user.ListFilter{
 		Search: query.Get("q"), GroupID: query.Get("group_id"),
-		Limit: intParam(query.Get("limit"), 20), Offset: intParam(query.Get("offset"), 0),
+		NameOnly: !auth.MustUser(r.Context()).CanAdmin("users"),
+		Limit:    intParam(query.Get("limit"), 20), Offset: intParam(query.Get("offset"), 0),
 	})
 	if err != nil {
 		return httpx.Internal(err)

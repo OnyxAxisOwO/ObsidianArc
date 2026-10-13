@@ -129,6 +129,9 @@ type Service struct {
 	// A paid disposable-address lookup, configured by the administrator.
 	// Call before account writes, never from inside a transaction.
 	ScreenEmail func(context.Context, string) error
+	// Whether ScreenEmail spends a paid lookup on an address. An account's address
+	// changes are metered by it, and a nil ScreenEmailCharges meters nothing.
+	ScreenEmailCharges func(string) bool
 	// Called after a review has a durable outcome, including a refusal where
 	// no account was created. Recording is best-effort and must not turn an
 	// audit failure into a registration failure.
@@ -197,6 +200,10 @@ type Service struct {
 	// returns must survive: the check passes against the hash that was read, and
 	// the fingerprint has to describe that same hash. Nil outside tests.
 	afterCredentialRead func()
+	// Called by a password or address change once it has verified the current
+	// password and before it takes the account's row lock to write. A reset that
+	// lands in that window is the case the write must refuse. Nil outside tests.
+	beforeChangeWrite func()
 }
 
 func NewService(
@@ -509,12 +516,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 				if err := s.checkFields(in.Fields); err != nil {
 					return err
 				}
-				allowed, retryAfter := s.signups.allow(
-					s.settings.Int(settings.SignupsPerMinute, 0),
-					s.settings.Int(settings.SignupsPerHour, 0),
-				)
-				if !allowed {
-					return &SignupThrottleError{RetryAfter: retryAfter}
+				if err := s.checkSignupRate(ctx, tx); err != nil {
+					return err
 				}
 
 				// Per address, and counted in the database inside the lock this
@@ -613,7 +616,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			// after commit leaves a scheduling gap in which the next queued
 			// registration can pass the throttle before this one is visible.
 			s.signups.record()
-			return nil
+			return recordAccountCreation(ctx, tx)
 		})
 		if !errors.Is(err, errNeedsEmailScreening) {
 			break
@@ -683,7 +686,8 @@ func (s *Service) recordSignupReview(
 // Moving the address also takes the account's current password, where it has
 // one. The address is where a reset link goes, so a session alone — which is
 // all a stolen cookie is — must not be able to repoint it. An account opened
-// through a provider has no password to ask for and is asked for nothing.
+// through a provider has no password, so the proof there is a sign-in made just
+// now, on the session the request carries; any other session is refused.
 func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.ProfileUpdate, currentPassword string) (user.User, error) {
 	var (
 		updated      user.User
@@ -692,6 +696,10 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 	)
 	screened := false
 	passwordChecked := false
+	// The stored hash the password check ran against. The check happens before
+	// the transaction that writes the address, so the write must find this hash
+	// still in place under the row lock.
+	var checkedHash string
 	var err error
 	for {
 		err = s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -730,6 +738,15 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 			if moved {
 				if !passwordChecked {
 					return errNeedsPasswordCheck
+				}
+				current, err := s.users.PasswordHash(ctx, tx, userID)
+				if err != nil {
+					return err
+				}
+				if current != checkedHash {
+					// A reset or change committed after the check, so the password
+					// that was checked is not the one the account has now.
+					return ErrCurrentPasswordWrong
 				}
 				if err := checkEmail(s.settings, address); err != nil {
 					return err
@@ -843,14 +860,24 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 			return err
 		})
 		if errors.Is(err, errNeedsPasswordCheck) {
-			if err := s.ConfirmPassword(ctx, userID, currentPassword); err != nil {
+			checked, err := s.confirmNewSignIn(ctx, userID, currentPassword, sessionIDOf(ctx))
+			if err != nil {
 				return user.User{}, err
 			}
+			checkedHash = checked
 			passwordChecked = true
+			if s.beforeChangeWrite != nil {
+				s.beforeChangeWrite()
+			}
 			continue
 		}
 		if !errors.Is(err, errNeedsEmailScreening) {
 			break
+		}
+		if s.ScreenEmailCharges != nil && s.ScreenEmailCharges(address) {
+			if err := s.reserveEmailScreen(ctx, userID); err != nil {
+				return user.User{}, err
+			}
 		}
 		if err := s.CheckRegistrationEmail(ctx, address); err != nil {
 			return user.User{}, err
@@ -1205,25 +1232,6 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	return s.sessions.DeleteByToken(ctx, token)
 }
 
-// ConfirmPassword is the guard in front of the changes a stolen session must
-// not be able to make on its own: switching two-step sign-in on, moving the
-// email address. It asks for the account's current password, and asks for
-// nothing where the account has none — one opened through a provider has no
-// password to prove, and demanding one would lock it out of its own settings.
-func (s *Service) ConfirmPassword(ctx context.Context, userID, candidate string) error {
-	hash, err := s.users.PasswordHash(ctx, nil, userID)
-	if err != nil {
-		return err
-	}
-	if hash == "" {
-		return nil
-	}
-	if candidate == "" {
-		return ErrPasswordRequired
-	}
-	return s.checkPassword(ctx, userID, hash, candidate)
-}
-
 // ConfirmNewSignIn is the proof in front of a new way into an account, which is
 // what connecting a provider is. It asks what ChangePassword asks of the same
 // account: the current password where there is one, and a sign-in made just now
@@ -1232,17 +1240,32 @@ func (s *Service) ConfirmPassword(ctx context.Context, userID, candidate string)
 // adds nothing without the password, and for an account with none, nothing once
 // the sign-in it came from is older than recentSignIn.
 func (s *Service) ConfirmNewSignIn(ctx context.Context, userID, candidate, sessionID string) error {
+	_, err := s.confirmNewSignIn(ctx, userID, candidate, sessionID)
+	return err
+}
+
+// confirmNewSignIn is ConfirmNewSignIn, and also returns the stored hash the
+// proof was checked against ("" for an account with no password). A caller that
+// writes after the check passes that hash back in under the row lock, so a
+// change that committed in between is seen rather than overwritten.
+func (s *Service) confirmNewSignIn(ctx context.Context, userID, candidate, sessionID string) (string, error) {
 	hash, err := s.users.PasswordHash(ctx, nil, userID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if hash != "" {
 		if candidate == "" {
-			return ErrPasswordRequired
+			return "", ErrPasswordRequired
 		}
-		return s.checkPassword(ctx, userID, hash, candidate)
+		if err := s.checkPassword(ctx, userID, hash, candidate); err != nil {
+			return "", err
+		}
+		return hash, nil
 	}
-	return s.requireRecentSignIn(ctx, s.db, userID, sessionID)
+	if err := s.requireRecentSignIn(ctx, s.db, userID, sessionID); err != nil {
+		return "", err
+	}
+	return "", nil
 }
 
 // recentSignIn is how long after signing in a session may still set the first
@@ -1275,6 +1298,16 @@ func (s *Service) requireRecentSignIn(ctx context.Context, q database.Queryer, u
 		return ErrReauthRequired
 	}
 	return nil
+}
+
+// sessionIDOf is the session a request is making a change from, as the sign-in
+// middleware put it on the context. A call with none, such as one made by the
+// console, has no sign-in to judge, and the recency check refuses it.
+func sessionIDOf(ctx context.Context) string {
+	if session, ok := SessionFrom(ctx); ok {
+		return session.ID
+	}
+	return ""
 }
 
 // checkPassword verifies the current password behind a guessing budget.
@@ -1345,6 +1378,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	if err != nil {
 		return "", err
 	}
+	if s.beforeChangeWrite != nil {
+		s.beforeChangeWrite()
+	}
 
 	var token string
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -1372,6 +1408,18 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 			}
 			if err := s.requireRecentSignIn(ctx, tx, userID, sessionID); err != nil {
 				return err
+			}
+		} else {
+			// The current password was checked before this transaction began.
+			// Under the row lock the stored hash must still be the one it was
+			// checked against, or a reset that committed in between would be
+			// overwritten by a change its owner never proved.
+			current, err := s.users.PasswordHash(ctx, tx, userID)
+			if err != nil {
+				return err
+			}
+			if current != hash {
+				return ErrCurrentPasswordWrong
 			}
 		}
 		if err := s.users.SetPasswordHash(ctx, tx, userID, updated); err != nil {

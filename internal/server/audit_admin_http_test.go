@@ -1,0 +1,819 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
+)
+
+// grantAdmin makes account an administrator holding exactly these grants.
+// Every case below starts from a founder who can do it, so the test reads as
+// what the delegate is allowed to reach and nothing else.
+func grantAdmin(t *testing.T, in *instance, founder, account *session, permissions ...string) {
+	t.Helper()
+	res := in.do(http.MethodPatch, "/api/admin/users/"+account.userID,
+		map[string]any{"role": "admin", "admin_permissions": permissions}, founder)
+	if res.Code != http.StatusOK {
+		t.Fatalf("grant %v: %d %s", permissions, res.Code, res.Body.String())
+	}
+}
+
+// A users-only delegate reads an account's usage, quota and cards through
+// the detail panel. The sibling reads of the same account (keys, sessions,
+// conversations) already refuse a super administrator's account to that
+// delegate; the panel must answer the same way.
+func TestUserDetailPanelFollowsTheSiblingReadRule(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "users")
+
+	if res := in.do(http.MethodGet, "/api/admin/users/"+founder.userID, nil, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("users-only delegate read a super administrator's panel: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodGet, "/api/admin/users/"+founder.userID+"/keys", nil, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("sibling read changed: %d", res.Code)
+	}
+	if res := in.do(http.MethodGet, "/api/admin/users/"+member.userID, nil, operator); res.Code != http.StatusOK {
+		t.Fatalf("ordinary account panel: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodGet, "/api/admin/users/"+founder.userID, nil, founder); res.Code != http.StatusOK {
+		t.Fatalf("super administrator's own panel: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// Moving or withdrawing an administrator's unused cards is taking something
+// away from that administrator. A users-only delegate may not do it to a
+// peer administrator it could not manage; the other routes that reach an
+// administrator already refuse it, and these two were checked only against
+// super administrators.
+func TestDelegateCannotMoveOrRevokeAPeersCards(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	peer := in.register("peer", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "users")
+	grantAdmin(t, in, founder, peer, "usage")
+
+	granted := in.do(http.MethodPost, "/api/admin/users/"+peer.userID+"/cards",
+		map[string]any{"cards": 1, "card_days": 30}, founder)
+	if granted.Code != http.StatusCreated {
+		t.Fatalf("grant: %d %s", granted.Code, granted.Body.String())
+	}
+	payload := decode[struct {
+		Cards []struct {
+			ID string `json:"id"`
+		} `json:"cards"`
+	}](t, granted)
+	if len(payload.Cards) != 1 {
+		t.Fatalf("granted %d cards", len(payload.Cards))
+	}
+	cardID := payload.Cards[0].ID
+	later := map[string]any{"expires_at": time.Now().Add(90 * 24 * time.Hour).UnixMilli(), "card_ids": []string{cardID}}
+
+	if res := in.do(http.MethodPatch, "/api/admin/users/"+peer.userID+"/cards", later, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("users-only delegate rescheduled a peer's card: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodDelete, "/api/admin/users/"+peer.userID+"/cards/"+cardID, nil, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("users-only delegate revoked a peer's card: %d %s", res.Code, res.Body.String())
+	}
+
+	// Ordinary accounts keep their cards in the delegate's hands.
+	if res := in.do(http.MethodPost, "/api/admin/users/"+member.userID+"/cards", map[string]any{"cards": 1, "card_days": 30}, operator); res.Code != http.StatusCreated {
+		t.Fatalf("delegate granted a member: %d %s", res.Code, res.Body.String())
+	}
+	// The founder, a super administrator, still reaches the peer's card.
+	if res := in.do(http.MethodPatch, "/api/admin/users/"+peer.userID+"/cards", later, founder); res.Code != http.StatusOK {
+		t.Fatalf("super administrator reschedule: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// A users grant may write a limit on an ordinary account. It may not write one
+// on a super administrator or on a peer it cannot manage, and the same goes for
+// clearing one or resetting the account's quota. canPolicy alone decided this
+// before, and it only looks at the grant.
+func TestUserScopedLimitsFollowTheAdministratorRule(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	peer := in.register("peer", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "users")
+	grantAdmin(t, in, founder, peer, "usage")
+
+	limit := func(scopeID string) map[string]any {
+		return map[string]any{
+			"scope": "user", "scope_id": scopeID,
+			"windows": map[string]any{"5h": map[string]any{"enabled": true, "tokens": 1000}},
+		}
+	}
+	if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(founder.userID), operator); res.Code != http.StatusForbidden {
+		t.Fatalf("users-only delegate limited a super administrator: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(peer.userID), operator); res.Code != http.StatusForbidden {
+		t.Fatalf("users-only delegate limited a peer administrator: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(member.userID), operator); res.Code != http.StatusOK {
+		t.Fatalf("ordinary account limit: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodDelete, "/api/admin/quota/policies/user?scope_id="+founder.userID, nil, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("users-only delegate cleared a super administrator's limit: %d %s", res.Code, res.Body.String())
+	}
+	reset := map[string]any{"scope": "user", "id": founder.userID}
+	if res := in.do(http.MethodPost, "/api/admin/usage/reset", reset, peer); res.Code != http.StatusForbidden {
+		t.Fatalf("usage delegate reset a super administrator's quota: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPost, "/api/admin/usage/reset", map[string]any{"scope": "user", "id": member.userID}, peer); res.Code != http.StatusOK {
+		t.Fatalf("usage delegate reset an ordinary account: %d %s", res.Code, res.Body.String())
+	}
+	// A super administrator writes any of them.
+	if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(peer.userID), founder); res.Code != http.StatusOK {
+		t.Fatalf("super administrator limit: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// A bonus grant is money for the account it was made for. Revoking it takes
+// that money back, so a usage delegate may not do it to an administrator it
+// cannot manage, the way it may not write a limit on one.
+func TestUsageDelegateCannotRevokeAnAdministratorsBonus(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "usage")
+
+	created := in.do(http.MethodPost, "/api/admin/bonus/bars", map[string]any{
+		"name": "礼包", "toggle_mode": "user", "show_total": true,
+	}, founder)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("bar: %d %s", created.Code, created.Body.String())
+	}
+	bar := decode[struct {
+		Bar struct{ ID string } `json:"bar"`
+	}](t, created).Bar
+	grant := func(who *session) string {
+		t.Helper()
+		res := in.do(http.MethodPost, "/api/admin/bonus/bars/"+bar.ID+"/grants",
+			map[string]any{"user_ids": []string{who.userID}, "amount": 100, "days": 30}, founder)
+		if res.Code != http.StatusCreated {
+			t.Fatalf("grant: %d %s", res.Code, res.Body.String())
+		}
+		listed := decode[struct {
+			Grants []struct {
+				ID     string `json:"id"`
+				UserID string `json:"user_id"`
+			} `json:"grants"`
+		}](t, in.do(http.MethodGet, "/api/admin/bonus/bars/"+bar.ID+"/grants", nil, founder))
+		for _, row := range listed.Grants {
+			if row.UserID == who.userID {
+				return row.ID
+			}
+		}
+		t.Fatalf("no grant for %s", who.userID)
+		return ""
+	}
+
+	founderGrant := grant(founder)
+	if res := in.do(http.MethodDelete, "/api/admin/bonus/grants/"+founderGrant, nil, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("usage delegate revoked a super administrator's bonus: %d %s", res.Code, res.Body.String())
+	}
+	memberGrant := grant(member)
+	if res := in.do(http.MethodDelete, "/api/admin/bonus/grants/"+memberGrant, nil, operator); res.Code != http.StatusOK {
+		t.Fatalf("usage delegate revoked an ordinary account's bonus: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// The groups page lists every group's limits in one response. A groups-only
+// administrator gets the group-scoped ones and nothing scoped to an account,
+// the same rows /api/admin/quota/policies would show that grant.
+func TestGroupsGrantSeesNoAccountScopedLimits(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "groups")
+
+	groups := decode[struct {
+		Groups []struct {
+			ID string `json:"id"`
+		} `json:"groups"`
+	}](t, in.do(http.MethodGet, "/api/admin/groups", nil, founder))
+	if len(groups.Groups) == 0 {
+		t.Fatal("no group to scope a limit to")
+	}
+	limit := func(scope, scopeID string) {
+		t.Helper()
+		body := map[string]any{
+			"scope": scope, "scope_id": scopeID,
+			"windows": map[string]any{"5h": map[string]any{"enabled": true, "tokens": 1000}},
+		}
+		if res := in.do(http.MethodPut, "/api/admin/quota/policies", body, founder); res.Code != http.StatusOK {
+			t.Fatalf("%s limit: %d %s", scope, res.Code, res.Body.String())
+		}
+	}
+	limit("user", member.userID)
+	limit("group", groups.Groups[0].ID)
+
+	res := in.do(http.MethodGet, "/api/admin/groups", nil, operator)
+	if res.Code != http.StatusOK {
+		t.Fatalf("groups: %d %s", res.Code, res.Body.String())
+	}
+	payload := decode[struct {
+		Policies []struct {
+			Scope   string `json:"scope"`
+			ScopeID string `json:"scope_id"`
+		} `json:"policies"`
+	}](t, res)
+	if len(payload.Policies) != 1 || payload.Policies[0].Scope != "group" {
+		t.Fatalf("groups-only administrator saw %+v", payload.Policies)
+	}
+	if strings.Contains(res.Body.String(), member.userID) {
+		t.Fatalf("an account id leaked through the groups response: %s", res.Body.String())
+	}
+}
+
+// A dashboard grant sees the instance's totals and its newest accounts. The
+// per-account rankings and the newest requests name who spent what, which is
+// the usage grant's data; a dashboard-only administrator gets empty lists in
+// those two places.
+func TestDashboardGrantSeesNoPerAccountUsage(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("spender", "a-good-password")
+	grantAdmin(t, in, founder, operator, "dashboard")
+
+	if err := usage.NewStore(in.db).Write(context.Background(), usage.Record{
+		UserID: member.userID, ModelID: id.New(), ModelName: "model",
+		InputTokens: 10, OutputTokens: 5, Credits: 1, Status: usage.StatusOK,
+		StartedAt: time.Now().UnixMilli(), FinishedAt: time.Now().UnixMilli() + 40,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	type rows struct {
+		TopUsers []map[string]any `json:"top_users"`
+		Recent   []map[string]any `json:"recent"`
+	}
+	delegated := in.do(http.MethodGet, "/api/admin/dashboard", nil, operator)
+	if delegated.Code != http.StatusOK {
+		t.Fatalf("dashboard grant: %d %s", delegated.Code, delegated.Body.String())
+	}
+	if got := decode[rows](t, delegated); len(got.TopUsers) != 0 || len(got.Recent) != 0 {
+		t.Fatalf("dashboard grant saw per-account usage: %d top users, %d recent", len(got.TopUsers), len(got.Recent))
+	}
+
+	full := in.do(http.MethodGet, "/api/admin/dashboard", nil, founder)
+	if got := decode[rows](t, full); len(got.TopUsers) == 0 || len(got.Recent) == 0 {
+		t.Fatalf("usage holder lost the rankings: %d top users, %d recent", len(got.TopUsers), len(got.Recent))
+	}
+}
+
+// The dashboard's aggregates are as expensive as the usage summary's, so it
+// takes the same per-caller budget that summary takes.
+func TestDashboardIsRateLimitedLikeTheUsageReads(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	grantAdmin(t, in, founder, operator, "dashboard")
+
+	refused := 0
+	for range 40 {
+		if res := in.do(http.MethodGet, "/api/admin/dashboard", nil, operator); res.Code == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Fatal("40 dashboard reads in a row were all answered")
+	}
+}
+
+// The resources page scans every attachment on each poll. Two things bound
+// that: the totals are shared for the page's own polling interval, so open
+// tabs do not each scan, and a caller polling in a loop meets the usage
+// budget. The first is checked by a second read inside the interval, which
+// must show the first read's figures.
+func TestResourcesPollingIsSharedAndLimited(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	member := in.register("uploader", "a-good-password")
+
+	heldCount := func() int64 {
+		t.Helper()
+		res := in.do(http.MethodGet, "/api/admin/resources", nil, founder)
+		if res.Code != http.StatusOK {
+			t.Fatalf("resources: %d %s", res.Code, res.Body.String())
+		}
+		return decode[struct {
+			Storage struct {
+				HeldCount int64 `json:"held_count"`
+			} `json:"storage"`
+		}](t, res).Storage.HeldCount
+	}
+	if got := heldCount(); got != 0 {
+		t.Fatalf("held before any upload = %d", got)
+	}
+	if _, err := conversation.NewStore(in.db).Upload(context.Background(), conversation.UploadInput{
+		UserID: member.userID, Mime: "image/png", Width: 1, Height: 1, Data: []byte("not really a png"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := heldCount(); got != 0 {
+		t.Fatalf("a poll inside the sharing interval scanned again: held = %d", got)
+	}
+
+	refused := 0
+	for range 40 {
+		if res := in.do(http.MethodGet, "/api/admin/resources", nil, founder); res.Code == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Fatal("40 resource polls in a row were all answered")
+	}
+}
+
+// A sign-up review and a model probe each call the upstream provider for every
+// model they touch, on the operator's key. Neither had a limit; both now refuse
+// repeats beyond a small instance-wide budget, so a script cannot spend the
+// key by calling them in a loop.
+func TestPaidReviewAndProbeCallsAreLimited(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	grantAdmin(t, in, founder, operator, "security", "availability")
+
+	refused := 0
+	for range 12 {
+		res := in.do(http.MethodPost, "/api/admin/security/review", map[string]any{"username": "probe-me"}, operator)
+		if res.Code == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Fatal("12 sign-up review calls in a row were all answered")
+	}
+
+	first := in.do(http.MethodPost, "/api/admin/health/probe", nil, operator)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first probe: %d %s", first.Code, first.Body.String())
+	}
+	second := in.do(http.MethodPost, "/api/admin/health/probe", nil, operator)
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("a repeat probe inside the cooldown: %d %s", second.Code, second.Body.String())
+	}
+}
+
+// An import and an ordinary save must agree on the bounds of a numeric
+// setting. The attachment retention bounds were checked by hand in the save
+// only, so an import carried out-of-range values into storage.
+func TestImportSkipsOutOfRangeAttachmentRetention(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	imported := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
+		"attachments.purge_after_days": "99999",
+		"attachments.orphan_minutes":   "1",
+	}, founder)
+	if imported.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", imported.Code, imported.Body.String())
+	}
+	skipped := decode[map[string]any](t, imported)["skipped"].([]any)
+	if len(skipped) != 2 {
+		t.Fatalf("out-of-range retention was not skipped: %v", skipped)
+	}
+
+	saved := in.do(http.MethodPut, "/api/admin/settings", map[string]string{"attachments.purge_after_days": "99999"}, founder)
+	if saved.Code != http.StatusBadRequest {
+		t.Fatalf("save of the same value: %d %s", saved.Code, saved.Body.String())
+	}
+	orphan := in.do(http.MethodPut, "/api/admin/settings", map[string]string{"attachments.orphan_minutes": "1"}, founder)
+	if orphan.Code != http.StatusBadRequest {
+		t.Fatalf("save of the same orphan window: %d %s", orphan.Code, orphan.Body.String())
+	}
+}
+
+// securityLog reads the security log as the super administrator sees it.
+func securityLog(t *testing.T, in *instance, as *session) []struct {
+	Event         string `json:"event"`
+	Username      string `json:"username"`
+	ActorUsername string `json:"actor_username"`
+} {
+	t.Helper()
+	res := in.do(http.MethodGet, "/api/admin/security/events?limit=200", nil, as)
+	if res.Code != http.StatusOK {
+		t.Fatalf("security events: %d %s", res.Code, res.Body.String())
+	}
+	return decode[struct {
+		Events []struct {
+			Event         string `json:"event"`
+			Username      string `json:"username"`
+			ActorUsername string `json:"actor_username"`
+		} `json:"events"`
+	}](t, res).Events
+}
+
+// The request log is the one table a prune removes from, and it is where the
+// only record of an administrator's action used to be. Pruning it is a super
+// administrator's act when it clears everything, and every prune leaves its
+// own entry in the security log, which is never pruned.
+func TestLogPruneIsSuperAdminWhenItClearsEverything(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	grantAdmin(t, in, founder, operator, "logs")
+
+	if res := in.do(http.MethodPost, "/api/admin/logs/prune", map[string]any{"days": 0}, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("logs-only administrator cleared the whole request log: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPost, "/api/admin/logs/prune", map[string]any{"days": 30}, operator); res.Code != http.StatusOK {
+		t.Fatalf("logs-only administrator's retention prune: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPost, "/api/admin/logs/prune", map[string]any{"days": 0}, founder); res.Code != http.StatusOK {
+		t.Fatalf("super administrator cleared the log: %d %s", res.Code, res.Body.String())
+	}
+
+	var pruned []string
+	for _, event := range securityLog(t, in, founder) {
+		if event.Event == "log_prune" && event.ActorUsername == "operator" {
+			pruned = append(pruned, event.Event)
+		}
+	}
+	if len(pruned) != 1 {
+		t.Fatalf("the retention prune left %d security entries, want 1", len(pruned))
+	}
+}
+
+// Resetting a password and deleting an account are the two administrative
+// actions whose only record used to be the process log and the request log.
+// Both are now written to the security log too.
+func TestAccountResetAndDeletionAreRecordedInTheSecurityLog(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	reset := in.register("reset-me", "a-good-password")
+	removed := in.register("delete-me", "a-good-password")
+	grantAdmin(t, in, founder, operator, "users")
+
+	if res := in.do(http.MethodPost, "/api/admin/users/"+reset.userID+"/password",
+		map[string]any{"new_password": "replacement-password"}, operator); res.Code != http.StatusNoContent {
+		t.Fatalf("password reset: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodDelete, "/api/admin/users/"+removed.userID, nil, operator); res.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", res.Code, res.Body.String())
+	}
+
+	seen := map[string]string{}
+	for _, event := range securityLog(t, in, founder) {
+		if event.ActorUsername == "operator" {
+			seen[event.Event] = event.Username
+		}
+	}
+	if seen["password_reset"] != "reset-me" || seen["account_deleted"] != "delete-me" {
+		t.Fatalf("security log entries by the delegate = %v", seen)
+	}
+}
+
+// The member picker belongs to the groups grant, which may add people to a
+// group and may not read their addresses. Its search used to match the email
+// address too, so a groups-only administrator could confirm an address by
+// searching for it.
+func TestMemberPickerDoesNotMatchEmailAddresses(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "groups")
+	if res := in.do(http.MethodPatch, "/api/admin/users/"+member.userID, map[string]any{"email": "private-address@example.com"}, founder); res.Code != http.StatusOK {
+		t.Fatalf("set email: %d %s", res.Code, res.Body.String())
+	}
+
+	total := func(as *session, query string) int {
+		t.Helper()
+		res := in.do(http.MethodGet, "/api/admin/member-options?q="+query, nil, as)
+		if res.Code != http.StatusOK {
+			t.Fatalf("member options %q: %d %s", query, res.Code, res.Body.String())
+		}
+		return decode[struct {
+			Total int `json:"total"`
+		}](t, res).Total
+	}
+	if got := total(operator, "private-address"); got != 0 {
+		t.Fatalf("groups-only administrator found an account by its email: %d", got)
+	}
+	if got := total(operator, "member"); got != 1 {
+		t.Fatalf("groups-only administrator cannot find a member by name: %d", got)
+	}
+	if got := total(founder, "private-address"); got != 1 {
+		t.Fatalf("super administrator's email search: %d", got)
+	}
+}
+
+// Exactly one group is the default, and deleting it is refused. Clearing the
+// default without naming another left none, which the fallback then hid.
+func TestDefaultGroupCannotBeClearedOrDeleted(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	defaultID := defaultGroupID(t, in, founder)
+	other := decode[struct {
+		Group struct {
+			ID string `json:"id"`
+		} `json:"group"`
+	}](t, in.do(http.MethodPost, "/api/admin/groups", map[string]any{"name": "second"}, founder)).Group.ID
+
+	if res := in.do(http.MethodPatch, "/api/admin/groups/"+defaultID, map[string]any{"is_default": false}, founder); res.Code != http.StatusConflict {
+		t.Fatalf("cleared the default group: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodDelete, "/api/admin/groups/"+defaultID, nil, founder); res.Code != http.StatusConflict {
+		t.Fatalf("deleted the default group: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPatch, "/api/admin/groups/"+other, map[string]any{"is_default": true}, founder); res.Code != http.StatusOK {
+		t.Fatalf("moving the default: %d %s", res.Code, res.Body.String())
+	}
+	if got := defaultGroupID(t, in, founder); got != other {
+		t.Fatalf("default is %s, want %s", got, other)
+	}
+	if res := in.do(http.MethodDelete, "/api/admin/groups/"+defaultID, nil, founder); res.Code != http.StatusOK {
+		t.Fatalf("deleting a group that is no longer the default: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// defaultGroupID returns the id of the one group marked default.
+func defaultGroupID(t *testing.T, in *instance, as *session) string {
+	t.Helper()
+	var found []string
+	for _, g := range decode[struct {
+		Groups []struct {
+			ID        string `json:"id"`
+			IsDefault bool   `json:"is_default"`
+		} `json:"groups"`
+	}](t, in.do(http.MethodGet, "/api/admin/groups", nil, as)).Groups {
+		if g.IsDefault {
+			found = append(found, g.ID)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d default groups, want exactly one", len(found))
+	}
+	return found[0]
+}
+
+// A group's deletion and a change of default both touch the one default
+// group, so they run one after the other. Run concurrently, a delete of a
+// non-default group could read "not the default", lose the race to a change
+// that makes it the default and clears the old one, and then remove the new
+// default: the instance would be left with no default at all.
+func TestConcurrentDefaultChangeAndDeleteKeepOneDefault(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	for round := range 40 {
+		created := decode[struct {
+			Group struct {
+				ID string `json:"id"`
+			} `json:"group"`
+		}](t, in.do(http.MethodPost, "/api/admin/groups", map[string]any{"name": fmt.Sprintf("round-%02d", round)}, founder)).Group.ID
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			in.do(http.MethodPatch, "/api/admin/groups/"+created, map[string]any{"is_default": true}, founder)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			in.do(http.MethodDelete, "/api/admin/groups/"+created, nil, founder)
+		}()
+		close(start)
+		wg.Wait()
+		defaultGroupID(t, in, founder)
+	}
+}
+
+// A provider header is sent on every call, and it is often the credential a
+// gateway wants (a token, an access secret). The providers grant reads the
+// provider list, so a header value is shown as its hint there, the same as a
+// key, and the value goes only to the call that sends it. Duplicating a
+// provider sends back what the list showed, and must keep the stored value
+// rather than store the hint.
+func TestProviderHeaderValuesStayWithTheServer(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	grantAdmin(t, in, founder, operator, "providers")
+	const token = "gw-token-value-7777"
+
+	created := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "gateway", "kind": "openai", "base_url": "https://gateway.example.com/v1",
+		"api_key": "sk-test-gateway-key", "headers": map[string]string{"X-Gateway-Token": token, "X-Title": "Arc"},
+	}, founder)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	if strings.Contains(created.Body.String(), token) {
+		t.Fatalf("the create response carries the header value: %s", created.Body.String())
+	}
+	providerID := decode[struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}](t, created).Provider.ID
+
+	listed := in.do(http.MethodGet, "/api/admin/providers", nil, operator)
+	if strings.Contains(listed.Body.String(), token) {
+		t.Fatalf("a providers-only administrator read a header value: %s", listed.Body.String())
+	}
+	shown := decode[struct {
+		Providers []struct {
+			ID      string            `json:"id"`
+			Headers map[string]string `json:"headers"`
+		} `json:"providers"`
+	}](t, listed)
+	var hint string
+	for _, p := range shown.Providers {
+		if p.ID == providerID {
+			hint = p.Headers["X-Gateway-Token"]
+		}
+	}
+	if !strings.HasSuffix(hint, "7777") {
+		t.Fatalf("the list did not show the hint of the header: %q", hint)
+	}
+
+	updated := in.do(http.MethodPatch, "/api/admin/providers/"+providerID, map[string]any{"enabled": true}, founder)
+	if strings.Contains(updated.Body.String(), token) {
+		t.Fatalf("the update response carries the header value: %s", updated.Body.String())
+	}
+
+	// The duplicate sends back the hint it was shown, as the browser does.
+	copied := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "gateway copy", "kind": "openai", "base_url": "https://gateway.example.com/v1",
+		"copy_key_from": providerID, "headers": map[string]string{"X-Gateway-Token": hint, "X-Title": "Arc"},
+	}, operator)
+	if copied.Code != http.StatusCreated {
+		t.Fatalf("duplicate: %d %s", copied.Code, copied.Body.String())
+	}
+	copyID := decode[struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}](t, copied).Provider.ID
+	stored, err := provider.NewStore(in.db, nil).ByID(context.Background(), copyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Headers["X-Gateway-Token"] != token {
+		t.Fatalf("the duplicate stored %q for the header, not the value it was copied from", stored.Headers["X-Gateway-Token"])
+	}
+}
+
+// A header value the list showed as a hint is read back as the stored value
+// only under the name it was stored under. A duplicate that keeps no key still
+// has to read it back, since the browser sends the hints either way. A hint
+// with nothing stored to stand for it is refused: saved, it would be the
+// header's value, and every call would send the mask upstream in place of the
+// secret.
+func TestEchoedHeaderHintsAreReadBackOrRefused(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	grantAdmin(t, in, founder, operator, "providers")
+	const token = "gw-token-value-7777"
+	const hint = "••••7777"
+
+	created := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "gateway", "kind": "openai", "base_url": "https://gateway.example.com/v1",
+		"api_key": "sk-test-gateway-key", "headers": map[string]string{"X-Gateway-Token": token},
+	}, founder)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	providerID := decode[struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}](t, created).Provider.ID
+	storedToken := func() string {
+		t.Helper()
+		stored, err := provider.NewStore(in.db, nil).ByID(context.Background(), providerID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stored.Headers["X-Gateway-Token"]
+	}
+
+	renamed := in.do(http.MethodPatch, "/api/admin/providers/"+providerID,
+		map[string]any{"headers": map[string]string{"X-Renamed-Token": hint}}, operator)
+	if renamed.Code != http.StatusBadRequest {
+		t.Fatalf("a renamed header saved its hint: %d %s", renamed.Code, renamed.Body.String())
+	}
+	if got := storedToken(); got != token {
+		t.Fatalf("the refused rename changed the stored value to %q", got)
+	}
+
+	copied := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "gateway copy", "kind": "openai", "base_url": "https://gateway.example.com/v1",
+		"api_key": "sk-typed-second-key", "copy_key_from": providerID,
+		"keep_keys": []int{}, "key_hints": []string{},
+		"headers": map[string]string{"X-Gateway-Token": hint, "X-Title": "Arc"},
+	}, founder)
+	if copied.Code != http.StatusCreated {
+		t.Fatalf("duplicate that keeps no key: %d %s", copied.Code, copied.Body.String())
+	}
+	copyID := decode[struct {
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}](t, copied).Provider.ID
+	stored, err := provider.NewStore(in.db, nil).ByID(context.Background(), copyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Headers["X-Gateway-Token"] != token {
+		t.Fatalf("the duplicate stored %q, not the value of the header it copies", stored.Headers["X-Gateway-Token"])
+	}
+
+	bare := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "bare", "kind": "openai", "base_url": "https://other.example.com/v1",
+		"api_key": "sk-other-key", "headers": map[string]string{"X-Gateway-Token": hint},
+	}, founder)
+	if bare.Code != http.StatusBadRequest {
+		t.Fatalf("a hint with no source was saved: %d %s", bare.Code, bare.Body.String())
+	}
+}
+
+// The limit list follows the rule the account's panel follows. A users grant
+// reads the limits on ordinary accounts; the one on a super administrator is
+// not listed to it, though the usage grant still lists everything.
+func TestUsersGrantDoesNotListAnAdministratorsLimit(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "a-good-password")
+	grantAdmin(t, in, founder, operator, "users")
+
+	limit := func(scopeID string) map[string]any {
+		return map[string]any{
+			"scope": "user", "scope_id": scopeID,
+			"windows": map[string]any{"5h": map[string]any{"enabled": true, "tokens": 1000}},
+		}
+	}
+	for _, who := range []*session{founder, member} {
+		if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(who.userID), founder); res.Code != http.StatusOK {
+			t.Fatalf("limit on %s: %d %s", who.userID, res.Code, res.Body.String())
+		}
+	}
+	list := func(as *session) string {
+		t.Helper()
+		res := in.do(http.MethodGet, "/api/admin/quota/policies", nil, as)
+		if res.Code != http.StatusOK {
+			t.Fatalf("policies: %d %s", res.Code, res.Body.String())
+		}
+		return res.Body.String()
+	}
+	if got := list(operator); strings.Contains(got, founder.userID) {
+		t.Fatalf("a users-only administrator listed a super administrator's limit: %s", got)
+	}
+	if got := list(operator); !strings.Contains(got, member.userID) {
+		t.Fatalf("a users-only administrator cannot see an ordinary account's limit: %s", got)
+	}
+	if got := list(founder); !strings.Contains(got, founder.userID) || !strings.Contains(got, member.userID) {
+		t.Fatalf("super administrator's list is missing a limit: %s", got)
+	}
+}
+
+// Creating a group as the default clears the default the group before it held,
+// as a change of default does. Two creates at once each clear the other's
+// default before it is committed, so the instance could finish with none.
+func TestConcurrentDefaultCreatesKeepOneDefault(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	for round := range 40 {
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				in.do(http.MethodPost, "/api/admin/groups",
+					map[string]any{"name": fmt.Sprintf("race-%02d-%d", round, i), "is_default": true}, founder)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		defaultGroupID(t, in, founder)
+	}
+}

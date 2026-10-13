@@ -83,6 +83,15 @@ func (h *Handlers) history(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
+	// Both queries read the raw ledger, and any signed-in account can ask for
+	// this as often as it likes. They share the cap the analytics pages take,
+	// or a burst of them would starve the connections chat turns need.
+	release, err := httpx.AcquireAggregationSlot(r.Context())
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	totals, err := h.store.Totals(r.Context(), Filter{UserID: account.ID})
 	if err != nil {
 		return httpx.Internal(err)

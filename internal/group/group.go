@@ -56,6 +56,7 @@ var (
 	ErrInvalidName   = errors.New("group: name must be 1-40 characters")
 	ErrDeleteLast    = errors.New("group: the last group cannot be deleted")
 	ErrDeleteDefault = errors.New("group: the default group cannot be deleted; make another group the default first")
+	ErrUnsetDefault  = errors.New("group: the default group cannot be cleared; make another group the default instead")
 )
 
 const (
@@ -259,6 +260,19 @@ func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, 
 	if len(sets) == 0 {
 		return s.ByID(ctx, q, groupID)
 	}
+	// Exactly one default is the invariant. Clearing the default without
+	// naming another leaves none, which Default would then paper over by
+	// picking the first group. Refused here, so the only way to move the
+	// default is to make another group the default, which clears this one.
+	if in.IsDefault != nil && !*in.IsDefault {
+		current, err := s.ByID(ctx, q, groupID)
+		if err != nil {
+			return Group{}, err
+		}
+		if current.IsDefault {
+			return Group{}, ErrUnsetDefault
+		}
+	}
 
 	sets = append(sets, "updated_at = ?")
 	args = append(args, time.Now().UnixMilli(), groupID)
@@ -281,8 +295,16 @@ func (s *Store) Delete(ctx context.Context, q database.Queryer, groupID string) 
 	if q == nil {
 		q = s.db
 	}
-	if _, err := q.Exec(ctx, `DELETE FROM user_groups WHERE id = ?`, groupID); err != nil {
+	result, err := q.Exec(ctx, `DELETE FROM user_groups WHERE id = ?`, groupID)
+	if err != nil {
 		return fmt.Errorf("group: delete: %w", err)
+	}
+	// A delete that matched nothing is a group that was already gone, and the
+	// caller's check was made against a row that no longer exists.
+	if removed, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("group: delete: %w", err)
+	} else if removed == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

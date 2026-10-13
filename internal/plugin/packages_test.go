@@ -81,6 +81,38 @@ func code(t *testing.T, res *httptest.ResponseRecorder) string {
 	return servertest.ErrorCode(t, res)
 }
 
+// withoutSQL is raw with its migrations and purge scripts left out, for the
+// packages that do not ask for db and so may not carry any.
+func withoutSQL(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, "migrations/") || strings.HasPrefix(f.Name, "purge/") {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(rc)
+		rc.Close()
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write(body)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
 // repack rewrites a package's manifest, keeping its files, for the tests
 // that need the same plugin asking for something else.
 func repack(t *testing.T, raw []byte, edit func(manifest map[string]any)) []byte {
@@ -537,9 +569,15 @@ func TestATransactionLeftOpenByAFailureTakesEverythingBackWithIt(t *testing.T) {
 
 func TestABackendCanOnlyDoWhatItsManifestSaysItMay(t *testing.T) {
 	a := newAdmin(t)
-	noDB := repack(t, pkgtest.Demo(t), func(m map[string]any) {
+	// Without the db grant the package may carry no SQL at all, so its
+	// migrations and purge scripts come out, and the account field their
+	// migration adds goes with them.
+	noDB := withoutSQL(t, repack(t, pkgtest.Demo(t), func(m map[string]any) {
 		m["permissions"] = []string{"network"}
-	})
+		delete(m, "fields")
+		delete(m, "field_rules")
+		delete(m, "oauth_bindings")
+	}))
 	a.in.InstallPackage(a.s, noDB, true, nil)
 	res := a.do(http.MethodGet, "/api/admin/x/demo/things", nil)
 	if res.Code != http.StatusInternalServerError {
@@ -763,6 +801,30 @@ func TestUploadingANewerVersionUpdatesInPlaceAndKeepsWhatTheOperatorSet(t *testi
 	res = a.do(http.MethodPost, "/api/admin/plugins/install-package", map[string]any{"token": token})
 	if res.Code != http.StatusConflict || code(t, res) != "plugin_unchanged" {
 		t.Fatalf("installing an installed file: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// A rule an update no longer names must stop being enforced when the update
+// lands. The sign-up's table keeps it until something removes it, and only the
+// update's own bookkeeping does that, so without it the form goes on asking for
+// the field until the next restart.
+func TestAnUpdateThatDropsAFieldRuleStopsEnforcingIt(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	a.setSettings(map[string]string{"demo.handle_rule": "required"})
+	register := func(username string) *httptest.ResponseRecorder {
+		return a.in.Do(http.MethodPost, "/api/auth/register", map[string]any{"username": username, "password": founderPassword}, nil)
+	}
+	if res := register("before"); res.Code != http.StatusBadRequest || code(t, res) != "handle_required" {
+		t.Fatalf("the rule before the update: %d %s", res.Code, res.Body.String())
+	}
+
+	a.in.InstallPackage(a.s, repack(t, pkgtest.Demo(t), func(m map[string]any) {
+		m["version"] = "1.1.0"
+		m["field_rules"] = nil
+	}), true, nil)
+	if res := register("after"); res.Code != http.StatusCreated {
+		t.Fatalf("the rule after an update that dropped it: %d %s", res.Code, res.Body.String())
 	}
 }
 
