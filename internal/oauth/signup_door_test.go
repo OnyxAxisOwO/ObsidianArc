@@ -14,6 +14,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 )
 
@@ -289,9 +290,17 @@ func TestASignupGuardThatRestrictsOpensTheAccountRestricted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the account back: %v", err)
 	}
-	if !stored.APIRestricted || stored.APIRestrictionSource != "signup_review" {
-		t.Errorf("account restricted = %v from %q, want it restricted as a review restricts",
+	if !stored.APIRestricted || stored.APIRestrictionSource != "guard" {
+		t.Errorf("account restricted = %v from %q, want it restricted by the guard",
 			stored.APIRestricted, stored.APIRestrictionSource)
+	}
+	// A guard's restriction lapses on the operator's restrict-hours, as a review's
+	// does. Zero until would be indefinite, and only an administrator could lift it.
+	now := time.Now().UnixMilli()
+	const day = int64(24 * time.Hour / time.Millisecond)
+	const slack = int64(time.Hour / time.Millisecond)
+	if left := stored.APIRestrictedUntil - now; left < day-slack || left > day+slack {
+		t.Errorf("restricted until %d, want about a day from now", stored.APIRestrictedUntil)
 	}
 }
 
@@ -461,7 +470,8 @@ func TestAReplayedStateCannotOpenASecondAccount(t *testing.T) {
 
 	stubGitHubAs(t, "5150", "second")
 	replay := get(mux, "/api/auth/oauth/callback/github?code=another-code&state="+nonce, cookies, nil)
-	if location := replay.Header().Get("Location"); location != "/login?oauth_error=state" {
+	// The replay started on the register page, so the refusal goes back there.
+	if location := replay.Header().Get("Location"); location != "/register?oauth_error=state" {
 		t.Fatalf("replay = %q, want the state refused as already used", location)
 	}
 	if total := accountCount(t, f); total != 2 {
@@ -502,5 +512,131 @@ func TestSpentStatesAreDroppedOnceTheyExpire(t *testing.T) {
 	}
 	if spent, _ := f.store.SpendState(ctx, nil, "expired", now-1000); !spent {
 		t.Error("an expired state was kept rather than dropped")
+	}
+}
+
+// A sign-in that fails after starting on the register page goes back to that
+// page. The provider's redirect carries no query of its own, so the state is
+// what says which page the sign-up began on.
+func TestAFailedSignUpReturnsToTheRegisterPage(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	f.configure(t, "github")
+	_, mux := handlers(t, f)
+
+	begun := get(mux, "/api/auth/oauth/start/github?register=1", nil, nil)
+	if begun.Code != http.StatusFound {
+		t.Fatalf("start = %d %s", begun.Code, begun.Body.String())
+	}
+	target, err := url.Parse(begun.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect: %v", err)
+	}
+	refused := get(mux, "/api/auth/oauth/callback/github?error=access_denied&state="+target.Query().Get("state"),
+		begun.Result().Cookies(), nil)
+	if location := refused.Header().Get("Location"); location != "/register?oauth_error=denied" {
+		t.Fatalf("refused sign-up = %q, want the register page", location)
+	}
+}
+
+// A form parked for a provider that is then switched off is not completed.
+// The callback checks the switch on the way in; the form has to check it too,
+// because the ticket outlives the moment the callback looked.
+func TestAPendingSignUpIsNotOpenedAfterItsProviderIsSwitchedOff(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	require(t, f, badgeRule, auth.FieldRequired)
+	f.configure(t, "github")
+	stubGitHubAs(t, "4218", "octocat")
+	h, mux := handlers(t, f)
+	h.SignupChallenge = (&signupSwitch{on: true}).gate()
+
+	back := returnFrom(t, mux, "/api/auth/oauth/start/github?register=1&turnstile=good")
+	ticket := cookieNamed(back, pendingCookie)
+	if ticket == nil {
+		t.Fatal("no sign-up was parked for the form")
+	}
+
+	if err := f.settings.Set(context.Background(), settings.OAuthGitHubEnabled, "false"); err != nil {
+		t.Fatal(err)
+	}
+	before := accountCount(t, f)
+	done := postJSON(mux, "/api/auth/oauth/signup",
+		map[string]any{"fields": badgeOf("87654321")}, []*http.Cookie{ticket})
+	if done.Code != http.StatusServiceUnavailable {
+		t.Fatalf("complete = %d %s, want the switched-off provider refused", done.Code, done.Body.String())
+	}
+	if accountCount(t, f) != before {
+		t.Error("an account was opened through a provider that is switched off")
+	}
+}
+
+// The sign-up ticket is a credential like the state, and the form it opens
+// spends it. Once a completion has opened the session, the same ticket presented
+// again opens nothing.
+func TestACompletedSignUpTicketCannotOpenASecondSession(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	require(t, f, badgeRule, auth.FieldRequired)
+	f.configure(t, "github")
+	stubGitHubAs(t, "4218", "octocat")
+	h, mux := handlers(t, f)
+	h.SignupChallenge = (&signupSwitch{on: true}).gate()
+
+	back := returnFrom(t, mux, "/api/auth/oauth/start/github?register=1&turnstile=good")
+	ticket := cookieNamed(back, pendingCookie)
+	if ticket == nil {
+		t.Fatal("no sign-up was parked for the form")
+	}
+	first := postJSON(mux, "/api/auth/oauth/signup",
+		map[string]any{"fields": badgeOf("87654321")}, []*http.Cookie{ticket})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first completion = %d %s, want the account opened", first.Code, first.Body.String())
+	}
+	before := accountCount(t, f)
+
+	replay := postJSON(mux, "/api/auth/oauth/signup",
+		map[string]any{"fields": badgeOf("87654321")}, []*http.Cookie{ticket})
+	if replay.Code == http.StatusOK {
+		t.Fatalf("replayed completion = %d %s, want the spent ticket refused", replay.Code, replay.Body.String())
+	}
+	if cookieNamed(replay, "obsidian_session") != nil {
+		t.Error("a spent sign-up ticket opened a session")
+	}
+	if accountCount(t, f) != before {
+		t.Error("a spent sign-up ticket changed the accounts")
+	}
+}
+
+// A sign-in that fails keeps the page it was meant to reach. Otherwise an
+// authorisation request another site sent the visitor with is dropped at the
+// first refusal, and the card has nothing to resume once they try again.
+func TestAFailedSignInKeepsTheDestinationItWasFor(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	f.configure(t, "github")
+	_, mux := handlers(t, f)
+
+	destination := "/oauth/consent?request=abc"
+	begun := get(mux, "/api/auth/oauth/start/github?next="+url.QueryEscape(destination), nil, nil)
+	if begun.Code != http.StatusFound {
+		t.Fatalf("start = %d %s", begun.Code, begun.Body.String())
+	}
+	target, err := url.Parse(begun.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect: %v", err)
+	}
+	refused := get(mux, "/api/auth/oauth/callback/github?error=access_denied&state="+target.Query().Get("state"),
+		begun.Result().Cookies(), nil)
+
+	location, err := url.Parse(refused.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse refusal redirect: %v", err)
+	}
+	if location.Path != "/login" || location.Query().Get("oauth_error") != "denied" {
+		t.Fatalf("refusal = %q, want the login card with the refusal", refused.Header().Get("Location"))
+	}
+	if got := location.Query().Get("next"); got != destination {
+		t.Errorf("next = %q, want %q carried to the card", got, destination)
 	}
 }

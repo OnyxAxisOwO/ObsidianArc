@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
@@ -154,6 +155,16 @@ func TestAStoredPackageWhoseMigrationsCollideIsLeftOutAndTheBootCarriesOn(t *tes
 	store("clashone", "0021_shared.sql")
 	store("clashtwo", "0021_shared.sql")
 
+	// Switched on in the table, the collider left out must still read as off: it
+	// has nothing loaded behind it. The one that does load reads as on.
+	for _, name := range []string{"clashone", "clashtwo"} {
+		if _, err := r.db.Exec(ctx,
+			`INSERT INTO plugin_installs (name, state, version, installed_at, installed_by, updated_at, updated_by)
+			 VALUES (?, ?, '1.0.0', 1, '', 1, '')`, name, string(StateEnabled)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	again := reload(t, r.db)
 	if again.manager.loadedPackage("healthy") == nil {
 		t.Fatal("a healthy package was dropped along with the ones that collide")
@@ -165,6 +176,11 @@ func TestAStoredPackageWhoseMigrationsCollideIsLeftOutAndTheBootCarriesOn(t *tes
 	if one == two {
 		t.Errorf("of two packages holding one version, loaded: first=%v second=%v", one, two)
 	}
+	for _, name := range []string{"clashone", "clashtwo"} {
+		if loaded := again.manager.loadedPackage(name) != nil; again.manager.Enabled(name) != loaded {
+			t.Errorf("%s: enabled=%v with loaded=%v; a package left out at boot must read as off", name, again.manager.Enabled(name), loaded)
+		}
+	}
 }
 
 func accountOf(t *testing.T, r *rig, name string, role user.Role) user.User {
@@ -174,6 +190,16 @@ func accountOf(t *testing.T, r *rig, name string, role user.Role) user.User {
 		t.Fatal(err)
 	}
 	return account
+}
+
+// newAccountRig is newRig with the core's session store attached. Suspending an
+// account ends its sessions through the host's Auth service, which a running
+// server always attaches; without it the first suspension dereferences nil.
+func newAccountRig(t *testing.T) *rig {
+	t.Helper()
+	r := newRig(t)
+	r.manager.host = &Host{Auth: auth.NewService(r.db, r.users, nil, r.settings, nil, config.Config{})}
+	return r
 }
 
 // userCall is a package's backend asking the host to end an account, inside
@@ -198,16 +224,34 @@ func (r *rig) userCallAs(op, id string, actor user.User) error {
 // nobody else's: not a delegated administrator's, however broad the grant.
 // The last active super administrator stays protected whoever asks.
 func TestAPackageActsOnAnAdministratorOnlyForASuperAdministrator(t *testing.T) {
-	r := newRig(t)
+	r := newAccountRig(t)
 	boss := accountOf(t, r, "boss", user.RoleSuperAdmin)
 	staff := accountOf(t, r, "staff", user.RoleAdmin)
 	delegate := accountOf(t, r, "delegate", user.RoleAdmin)
+	// The delegate holds the users grant, so what refuses it below is the rule
+	// about administrators; without the grant the call is refused earlier.
+	if _, err := r.db.Exec(context.Background(), `UPDATE users SET admin_permissions = ? WHERE id = ?`, `["users"]`, delegate.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	if code := hostCode(r.userCallAs("users.set_status", staff.ID, delegate)); code != "admin_account" {
 		t.Errorf("a delegated administrator's call: %q", code)
 	}
 	if status, _ := r.statusOf(t, staff.ID); status != "active" {
 		t.Fatalf("a delegated administrator's call changed staff: %q", status)
+	}
+
+	// Signing an administrator out of their sessions is the same reach as
+	// suspending one, so the users grant does not cover it either. Staff's
+	// sessions are not checked here: the refusal is what matters, and the
+	// rule is shared with the suspension above.
+	sessions := r.manager.hostFunc(&loaded{name: "sessioner", pkg: &arcx.Package{Manifest: &arcx.Manifest{Permissions: []string{arcx.PermSessions}}}})
+	revoke := json.RawMessage(`{"user_id":"` + staff.ID + `"}`)
+	if _, err := sessions(&wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: actorOf(delegate)}}, "sessions.revoke_user", revoke); hostCode(err) != "admin_account" {
+		t.Errorf("a delegated administrator signing staff out of their sessions: %v", err)
+	}
+	if _, err := sessions(&wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: actorOf(boss)}}, "sessions.revoke_user", revoke); err != nil {
+		t.Fatalf("a super administrator signing staff out of their sessions: %v", err)
 	}
 
 	if err := r.userCallAs("users.set_status", staff.ID, boss); err != nil {
@@ -218,8 +262,9 @@ func TestAPackageActsOnAnAdministratorOnlyForASuperAdministrator(t *testing.T) {
 	}
 
 	// The actor is read again, not taken from the session: one demoted since
-	// is not a super administrator any more.
-	if _, err := r.db.Exec(context.Background(), `UPDATE users SET role = ? WHERE id = ?`, user.RoleAdmin, boss.ID); err != nil {
+	// is not a super administrator any more. It keeps the grant an
+	// administrator would have, so the refusal is the super administrator rule.
+	if _, err := r.db.Exec(context.Background(), `UPDATE users SET role = ?, admin_permissions = ? WHERE id = ?`, user.RoleAdmin, `["users"]`, boss.ID); err != nil {
 		t.Fatal(err)
 	}
 	if code := hostCode(r.userCallAs("users.delete", delegate.ID, boss)); code != "admin_account" {
@@ -258,7 +303,7 @@ func (r *rig) statusOf(t *testing.T, id string) (status string, exists bool) {
 // A package is not part of the administrators' hierarchy, and the last way
 // into the instance is the core's to protect.
 func TestAPackageCannotSuspendOrDeleteAnAdministrator(t *testing.T) {
-	r := newRig(t)
+	r := newAccountRig(t)
 	only := accountOf(t, r, "only", user.RoleSuperAdmin)
 	second := accountOf(t, r, "second", user.RoleSuperAdmin)
 	staff := accountOf(t, r, "staff", user.RoleAdmin)
@@ -306,7 +351,7 @@ func TestAPackageCannotSuspendOrDeleteAnAdministrator(t *testing.T) {
 // Inside the backend's own transaction the change is the transaction's: ended
 // with it, not committed on the side.
 func TestAnAccountChangeInABackendsTransactionIsPartOfIt(t *testing.T) {
-	r := newRig(t)
+	r := newAccountRig(t)
 	member := accountOf(t, r, "member", user.RoleUser)
 	tx, err := r.db.Begin(context.Background())
 	if err != nil {

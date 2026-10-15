@@ -7,7 +7,7 @@
 // made irrelevant, builds rows, and lists options the server knows.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App, type Component } from 'vue';
+import { createApp, h, nextTick, reactive, ref, type App, type Component } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
@@ -174,7 +174,138 @@ describe('a panel of entries an operator wrote', () => {
     expect(run).toHaveBeenCalledWith({ q1: '1', q2: [] }, { pow: { salt: 's', nonce: 7 } });
     expect(panelHost.textContent).toContain(t('challengeFailed'));
   });
+
+  it('shows and submits to the entry opened last, whichever answer comes back first', async () => {
+    const runs = { e1: vi.fn(async () => 'sent'), e2: vi.fn(async () => 'sent') };
+    const views: Record<string, UserEntryView> = {
+      e1: { title: 'First entry', submit: { label: 'Send first', run: runs.e1 } },
+      e2: { title: 'Second entry', submit: { label: 'Send second', run: runs.e2 } },
+    };
+    const release: Record<string, () => void> = {};
+    installPlugins([{ name: 'events', userPanels: [{
+      slug: 'events',
+      title: () => 'Events',
+      entries: {
+        empty: () => 'Nothing on',
+        load: async () => [{ id: 'e1', title: 'First entry', badge: { label: 'Open', tone: 'default' }, meta: [] }],
+        open: (id: string) => new Promise<UserEntryView>((resolve) => {
+          release[id] = () => resolve(views[id]!);
+        }),
+      },
+    }] }]);
+    const state = reactive({ slug: 'events', entry: 'e1' as string | undefined });
+    await mount(PluginUserPanel, state);
+
+    // The reader moves on from the first entry before its answer has come.
+    state.entry = 'e2';
+    await settle();
+    release.e2!();
+    await settle();
+    release.e1!();
+    await settle();
+
+    expect(panelHost.querySelector('.oa-panel-title')!.textContent).toBe('Second entry');
+    button(panelHost, 'Send second').click();
+    await settle();
+    expect(runs.e2).toHaveBeenCalledTimes(1);
+    expect(runs.e1).not.toHaveBeenCalled();
+  });
+
+  it('does not show an answer that comes back for an entry the reader has left', async () => {
+    let answer!: (sent: string) => void;
+    installEntries({
+      e1: { title: 'First entry', submit: { label: 'Send first', run: () => new Promise<string>((resolve) => { answer = resolve; }) } },
+      e2: { title: 'Second entry', submit: { label: 'Send second', run: async () => 'Second sent' } },
+    });
+    const state = reactive({ slug: 'events', entry: 'e1' as string | undefined });
+    await mount(PluginUserPanel, state);
+
+    button(panelHost, 'Send first').click();
+    await settle();
+    state.entry = 'e2';
+    await settle();
+    answer('First sent');
+    await settle();
+
+    expect(panelHost.querySelector('.oa-panel-title')!.textContent).toBe('Second entry');
+    expect(panelHost.textContent).not.toContain('First sent');
+  });
+
+  it('does not show an error that comes back for an entry the reader has left', async () => {
+    let refuse!: (failure: unknown) => void;
+    installEntries({
+      e1: { title: 'First entry', submit: { label: 'Send first', run: () => new Promise<string>((_, reject) => { refuse = reject; }) } },
+      e2: { title: 'Second entry', submit: { label: 'Send second', run: async () => 'Second sent' } },
+    });
+    const state = reactive({ slug: 'events', entry: 'e1' as string | undefined });
+    await mount(PluginUserPanel, state);
+
+    button(panelHost, 'Send first').click();
+    await settle();
+    state.entry = 'e2';
+    await settle();
+    refuse(new ApiError(500, 'boom', 'Entry closed'));
+    await settle();
+
+    expect(panelHost.querySelector('.oa-panel-title')!.textContent).toBe('Second entry');
+    expect(panelHost.textContent).not.toContain('Entry closed');
+  });
+
+  // The send for the first entry is still out when the reader opens the second.
+  // The second's button must be its own, and the first answer, arriving while
+  // the second is in flight, must not release it.
+  it('does not let a send left in flight on another entry hold or release this entry\'s send', async () => {
+    const answers: Record<string, (sent: string) => void> = {};
+    const runs = {
+      e1: vi.fn(() => new Promise<string>((resolve) => { answers.e1 = resolve; })),
+      e2: vi.fn(() => new Promise<string>((resolve) => { answers.e2 = resolve; })),
+    };
+    installEntries({
+      e1: { title: 'First entry', submit: { label: 'Send first', run: runs.e1 } },
+      e2: { title: 'Second entry', submit: { label: 'Send second', run: runs.e2 } },
+    });
+    const state = reactive({ slug: 'events', entry: 'e1' as string | undefined });
+    await mount(PluginUserPanel, state);
+
+    button(panelHost, 'Send first').click();
+    await settle();
+    state.entry = 'e2';
+    await settle();
+    const sendSecond = button(panelHost, 'Send second');
+    expect(sendSecond.disabled).toBe(false);
+
+    sendSecond.click();
+    await settle();
+    expect(runs.e2).toHaveBeenCalledTimes(1);
+    expect(sendSecond.disabled).toBe(true);
+
+    answers.e1!('First sent');
+    await settle();
+    expect(panelHost.textContent).not.toContain('First sent');
+    expect(sendSecond.disabled).toBe(true);
+
+    answers.e2!('Second sent');
+    await settle();
+    expect(panelHost.textContent).toContain('Second sent');
+    expect(sendSecond.disabled).toBe(false);
+  });
 });
+
+/** Two entries of one plugin panel, each with its own view and submit. */
+function installEntries(views: Record<string, UserEntryView>): void {
+  installPlugins([{ name: 'events', userPanels: [{
+    slug: 'events',
+    title: () => 'Events',
+    entries: {
+      empty: () => 'Nothing on',
+      load: async () => [
+        { id: 'e1', title: 'First entry', badge: { label: 'Open', tone: 'default' }, meta: [] },
+        { id: 'e2', title: 'Second entry', badge: { label: 'Open', tone: 'default' }, meta: [] },
+      ],
+      open: async (id: string) => views[id]!,
+    },
+  }] }]);
+}
 
 describe('an action card\'s controls', () => {
   function card(run: (draft: Record<string, string>) => Promise<string>): ActionCardSpec {
@@ -242,5 +373,40 @@ describe('an action card\'s controls', () => {
     bar!.querySelector<HTMLElement>('button')?.click();
     await settle();
     expect(document.body.textContent).toContain('Prize bar');
+  });
+});
+
+describe('an entry\'s address', () => {
+  it('names an entry whose id holds a slash or a question mark as one segment', async () => {
+    installPlugins([{ name: 'events', userPanels: [{
+      slug: 'events',
+      title: () => 'Events',
+      entries: {
+        empty: () => 'Nothing on',
+        load: async () => [{ id: 'a/b?c', title: 'Odd id', badge: { label: 'Open', tone: 'default' }, meta: [] }],
+        open: async () => ({ title: 'Odd entry', submit: { label: 'Send', run: async () => 'ok' } }),
+      },
+    }] }]);
+    // The same route the app declares, so an id that leaks into the path
+    // shows up as a different match, not as a silent success.
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/x/:slug/:entry?', component: { render: () => null } }],
+    });
+    await router.push('/x/events');
+    await router.isReady();
+    app = createApp({ setup() {
+      providePanelHost(ref(panelHost));
+      provideAdminView({ actionsHost: document.createElement('div'), setTitle() {}, reload() {}, params: [] });
+      return () => h(PluginUserPanel, { slug: 'events' });
+    } });
+    app.use(router);
+    app.mount(host);
+    await settle();
+
+    panelHost.querySelector<HTMLButtonElement>('.oa-feedback-item')!.click();
+    await settle();
+
+    expect(router.currentRoute.value.params['entry']).toBe('a/b?c');
   });
 });

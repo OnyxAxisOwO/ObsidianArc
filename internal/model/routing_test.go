@@ -2,9 +2,14 @@ package model
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 )
 
@@ -164,5 +169,162 @@ func TestEmptyReasoningStyleInheritsTheProvider(t *testing.T) {
 	if resolved.Provider.ReasoningStyle != "openai_effort" {
 		t.Errorf("reasoning style = %q, want the provider's openai_effort",
 			resolved.Provider.ReasoningStyle)
+	}
+}
+
+// Deleting a route's target used to clear the route through the foreign key,
+// and the source then answered from its own provider with no error at all.
+// The delete is refused until the routes into the target are gone.
+func TestDeletingARouteTargetIsRefused(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	upstream := f.provider(t, "Example")
+	target := f.model(t, upstream.ID, "target-model")
+	source := f.model(t, upstream.ID, "front-model")
+	f.route(t, source.ID, target.ID)
+
+	if err := f.models.Delete(ctx, target.ID); !errors.Is(err, ErrRouted) {
+		t.Fatalf("delete of a routed target gave %v, want ErrRouted", err)
+	}
+	if _, err := f.models.ByID(ctx, target.ID); err != nil {
+		t.Fatalf("the refused target is gone: %v", err)
+	}
+	if got, _ := f.models.ByID(ctx, source.ID); got.RouteToID != target.ID {
+		t.Fatalf("the source's route became %q after a refused delete", got.RouteToID)
+	}
+
+	// Once the operator has cleared the route, the target can go.
+	none := ""
+	if _, err := f.models.Update(ctx, source.ID, Update{RouteToID: &none}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.models.Delete(ctx, target.ID); err != nil {
+		t.Fatalf("delete after clearing the route: %v", err)
+	}
+}
+
+// A provider cascades its models away, so a route from another provider into
+// one of them is refused for the same reason a model delete is.
+func TestDeletingAProviderWithRoutedModelsIsRefused(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	elsewhere := f.provider(t, "Elsewhere")
+	upstream := f.provider(t, "Upstream")
+	target := f.model(t, upstream.ID, "target-model")
+	source := f.model(t, elsewhere.ID, "front-model")
+	f.route(t, source.ID, target.ID)
+
+	if err := f.providers.Delete(ctx, upstream.ID); !errors.Is(err, provider.ErrRouted) {
+		t.Fatalf("delete of a routed provider gave %v, want provider.ErrRouted", err)
+	}
+	if got, _ := f.models.ByID(ctx, source.ID); got.RouteToID != target.ID {
+		t.Fatalf("the source's route became %q after a refused provider delete", got.RouteToID)
+	}
+	if err := f.providers.Delete(ctx, elsewhere.ID); err != nil {
+		t.Fatalf("deleting the provider that holds only the source: %v", err)
+	}
+}
+
+// Route writes and deletes of the same target race on the target's row lock.
+// Whichever commits first, the route can never be left dangling: when the
+// source still points at the target, the target still exists. Runs on Postgres
+// as well when a DSN is named, because SQLite serialises the writers and the
+// two cannot interleave there.
+func TestRouteWritesRaceDeletesOfTheirTarget(t *testing.T) {
+	f := newFixtureOn(t, dbtest.Either(t, filepath.Join(t.TempDir(), "route-delete-race.db")))
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+
+	for round := 0; round < 20; round++ {
+		target := f.model(t, upstream.ID, "target-model-"+strconv.Itoa(round))
+		source := f.model(t, upstream.ID, "front-model-"+strconv.Itoa(round))
+
+		start := make(chan struct{})
+		var routeErr, deleteErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			toID := target.ID
+			_, routeErr = f.models.Update(ctx, source.ID, Update{RouteToID: &toID})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			deleteErr = f.models.Delete(ctx, target.ID)
+		}()
+		close(start)
+		wg.Wait()
+		// Both succeeding is the one outcome that clears the route: the route
+		// committed, the delete went through, and the foreign key cleared it.
+		// Delete refuses a routed target and a route to a deleted one is
+		// refused, so one of the two must fail.
+		if routeErr == nil && deleteErr == nil {
+			t.Fatalf("round %d: the route and the delete both succeeded, so the route was cleared", round)
+		}
+
+		got, err := f.models.ByID(ctx, source.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.RouteToID == target.ID {
+			if _, err := f.models.ByID(ctx, target.ID); err != nil {
+				t.Fatalf("round %d: the source routes to a target that is gone", round)
+			}
+		}
+	}
+}
+
+// Two routes that point at each other across providers are the case the lock
+// order in Update exists for. Each Update holds one model row and asks for the
+// other, so taken source-first they deadlock on PostgreSQL. Whichever commits
+// first lands, the other is refused as a second hop, and neither may come back
+// as a deadlock. Runs on Postgres as well when a DSN is named, because SQLite
+// serialises the writers and cannot show the cycle.
+func TestOppositeRoutesAcrossProvidersQueueInsteadOfDeadlocking(t *testing.T) {
+	f := newFixtureOn(t, dbtest.Either(t, filepath.Join(t.TempDir(), "model-opposite-routes.db")))
+	ctx := context.Background()
+	left := f.provider(t, "Left")
+	right := f.provider(t, "Right")
+
+	for round := 0; round < 20; round++ {
+		a := f.model(t, left.ID, "a-"+strconv.Itoa(round))
+		b := f.model(t, right.ID, "b-"+strconv.Itoa(round))
+
+		start := make(chan struct{})
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			toB := b.ID
+			_, errs[0] = f.models.Update(ctx, a.ID, Update{RouteToID: &toB})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			toA := a.ID
+			_, errs[1] = f.models.Update(ctx, b.ID, Update{RouteToID: &toA})
+		}()
+		close(start)
+		wg.Wait()
+
+		landed := 0
+		for _, err := range errs {
+			switch {
+			case err == nil:
+				landed++
+			case errors.Is(err, ErrRouteChain):
+			default:
+				t.Fatalf("round %d: an opposite route failed with %v, want a success or ErrRouteChain", round, err)
+			}
+		}
+		if landed != 1 {
+			t.Fatalf("round %d: %d of two opposite routes landed, want exactly one", round, landed)
+		}
 	}
 }

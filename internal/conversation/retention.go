@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -81,7 +82,11 @@ func DecidePurge(dailyAt string, now time.Time, lastRun int64) Decision {
 	if now.Before(scheduled) {
 		return DecisionSkip
 	}
-	if lastRun >= scheduled.UnixMilli() {
+	// A lastRun later than now cannot be a run of this schedule. It was recorded
+	// while the clock was ahead, or the clock has been corrected since, and
+	// counting it as done skipped every later day's purge until the real clock
+	// passed it.
+	if lastRun >= scheduled.UnixMilli() && lastRun <= now.UnixMilli() {
 		return DecisionSkip
 	}
 	return DecisionRun
@@ -191,52 +196,59 @@ type UserStorage struct {
 	Bytes  int64  `json:"bytes"`
 }
 
-// HeldByUser is Held, broken down by whose files they are.
-//
-// Zero means all accounts, for the paginated administrative table. Joining
-// names here avoids another query for every row on that page.
-func (s *Store) HeldByUser(ctx context.Context, limit int) ([]UserStorage, error) {
-	query := `
-		SELECT a.user_id, MAX(COALESCE(u.username, a.user_id)), COUNT(*), COALESCE(SUM(a.size), 0)
+// StorageTotals is everything the storage page shows, read together.
+type StorageTotals struct {
+	HeldCount int64
+	HeldBytes int64
+	Discarded int64
+	ByUser    []UserStorage
+}
+
+// Storage answers the storage page in one scan: what is held, what has been
+// discarded, and the held total broken down by account. The page asks every few
+// seconds, and three separate reads each walked the whole attachments table:
+// discarded_at has no index that would narrow them.
+func (s *Store) Storage(ctx context.Context) (StorageTotals, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT a.user_id, MAX(COALESCE(u.username, a.user_id)),
+			COALESCE(SUM(CASE WHEN a.discarded_at = 0 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN a.discarded_at = 0 THEN a.size ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN a.discarded_at <> 0 THEN 1 ELSE 0 END), 0)
 		FROM attachments a
 		LEFT JOIN users u ON u.id = a.user_id
-		WHERE a.discarded_at = 0
-		GROUP BY a.user_id
-		ORDER BY COALESCE(SUM(a.size), 0) DESC, a.user_id`
-	var args []any
-	if limit > 0 {
-		query += ` LIMIT ?`
-		args = append(args, limit)
-	}
-	rows, err := s.db.Query(ctx, query, args...)
+		GROUP BY a.user_id`)
 	if err != nil {
-		return nil, fmt.Errorf("conversation: held by user: %w", err)
+		return StorageTotals{}, fmt.Errorf("conversation: storage: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	held := []UserStorage{}
+	out := StorageTotals{ByUser: []UserStorage{}}
 	for rows.Next() {
 		var entry UserStorage
-		if err := rows.Scan(&entry.UserID, &entry.Name, &entry.Count, &entry.Bytes); err != nil {
-			return nil, fmt.Errorf("conversation: held by user: %w", err)
+		var discarded int64
+		if err := rows.Scan(&entry.UserID, &entry.Name, &entry.Count, &entry.Bytes, &discarded); err != nil {
+			return StorageTotals{}, fmt.Errorf("conversation: storage scan: %w", err)
 		}
-		held = append(held, entry)
+		out.Discarded += discarded
+		// An account whose files are all discarded holds nothing, so it is left
+		// out of the breakdown rather than listed at zero.
+		if entry.Count == 0 {
+			continue
+		}
+		out.HeldCount += entry.Count
+		out.HeldBytes += entry.Bytes
+		out.ByUser = append(out.ByUser, entry)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("conversation: held by user: %w", err)
+		return StorageTotals{}, fmt.Errorf("conversation: storage: %w", err)
 	}
-	return held, nil
-}
-
-// Discarded counts the rows whose bytes retention has already dropped. They
-// still cost a row and still name a message; what they no longer cost is the
-// storage, which is the number beside them on the page.
-func (s *Store) Discarded(ctx context.Context) (int64, error) {
-	var count int64
-	err := s.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM attachments WHERE discarded_at <> 0`).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("conversation: discarded attachments: %w", err)
-	}
-	return count, nil
+	// Heaviest first, then by id, so accounts with equal holdings keep a stable
+	// place on the page.
+	sort.Slice(out.ByUser, func(i, j int) bool {
+		if out.ByUser[i].Bytes != out.ByUser[j].Bytes {
+			return out.ByUser[i].Bytes > out.ByUser[j].Bytes
+		}
+		return out.ByUser[i].UserID < out.ByUser[j].UserID
+	})
+	return out, nil
 }

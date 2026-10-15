@@ -17,12 +17,12 @@
 
 import { computed, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { ApiError } from '@/api/client';
 import { decideConsent, fetchConsent, type ConsentRequest } from '@/api/consent';
 import OaAvatar from '@/components/OaAvatar.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { IconArrowUpRight, IconCheck, IconSpark } from '@/icons';
+import { apiFailureText } from '@/lib/api-error-text';
 import { initials } from '@/lib/account';
 import { currentUser, siteInfo } from '@/stores/session';
 
@@ -74,6 +74,17 @@ const PROBLEMS: Record<string, StringKey> = {
   failed: 'consentFailed',
 };
 
+/**
+ * A consent request that no longer stands is the screen's own "not valid any
+ * more" sentence, in whichever language is set. The server's English sentence
+ * for it is never shown, because the server sends the code for it too. A server
+ * outage is not a stale request, so it gets its own sentence rather than telling
+ * the reader their request is no longer valid.
+ */
+function problemText(error: unknown): string {
+  return apiFailureText(error, 'consentUnavailable', { request_stale: 'consentFailed' });
+}
+
 onMounted(() => {
   const refused = route.query['error'];
   if (typeof refused === 'string' && refused) {
@@ -89,7 +100,7 @@ onMounted(() => {
   void fetchConsent(ticket.value)
     .then((result) => { request.value = result; })
     .catch((error: unknown) => {
-      problem.value = error instanceof ApiError ? error.message : t('consentFailed');
+      problem.value = problemText(error);
     });
 });
 
@@ -107,7 +118,7 @@ function decide(approve: boolean): void {
       window.location.href = result.redirect;
     })
     .catch((error: unknown) => {
-      problem.value = error instanceof ApiError ? error.message : t('consentFailed');
+      problem.value = problemText(error);
       busy.value = false;
     });
 }

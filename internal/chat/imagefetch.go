@@ -45,7 +45,10 @@ var reservedRanges = []netip.Prefix{
 	netip.MustParsePrefix("192.0.0.0/24"),
 	netip.MustParsePrefix("198.18.0.0/15"),
 	netip.MustParsePrefix("240.0.0.0/4"),
-	netip.MustParsePrefix("::/128"),
+	// IPv4-compatible (::a.b.c.d, deprecated and never routed). ::7f00:1 is
+	// 127.0.0.1 written this way, and none of the predicates above see it as
+	// loopback. It also covers the unspecified address ::.
+	netip.MustParsePrefix("::/96"),
 	netip.MustParsePrefix("100::/64"),
 	netip.MustParsePrefix("2001:db8::/32"),
 	// RFC 8215: NAT64 for private IPv4, which no public address is written in.

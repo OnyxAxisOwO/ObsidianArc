@@ -180,3 +180,36 @@ func TestResolveRevertsALapsedMembership(t *testing.T) {
 			groupID, expires, fallback.ID)
 	}
 }
+
+// The first request after a membership lapses re-reads the account. That read
+// must go through the store the session join was built from, so the plugin
+// gate applies to it too: a field of a plugin that is switched off stays out
+// of the account on that request, as it does on every other one.
+func TestLapsedMembershipRereadHonoursThePluginGate(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(ctx, `UPDATE users SET badge = ? WHERE id = ?`, "12345", account.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.users.SetPluginGate(func(plugin string) bool { return plugin != "test-badge" })
+	if _, err := f.db.Exec(ctx, `UPDATE users SET group_expires_at = ? WHERE id = ?`,
+		time.Now().Add(-time.Hour).UnixMilli(), account.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := f.auth.Resolve(ctx, token)
+	if err != nil {
+		t.Fatalf("Resolve on a lapsed membership: %v", err)
+	}
+	if got.ID != account.ID {
+		t.Fatalf("Resolve returned account %q, want %q", got.ID, account.ID)
+	}
+	if v, ok := got.Fields[badge]; ok {
+		t.Fatalf("a switched-off plugin's field came back on the lapse request: %q", v)
+	}
+}

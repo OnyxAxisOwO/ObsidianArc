@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TurnHandlers } from '../src/api/chat';
 import { getConversation } from '../src/api/chat';
+import { t } from '../src/composables/useI18n';
 
 // Waiting for an answer used to mean waiting to read anything else: both
 // `openConversation` and `startNewConversation` returned early while a turn
@@ -32,8 +33,8 @@ vi.mock('@/api/chat', () => ({
   }),
 }));
 
-const { activeID, busy, flushDeltas, justSentID, messages, openConversation, pending, pendingID,
-  recentReasoningID, resetChat, runTurn, showPending } =
+const { activeID, busy, flash, flushDeltas, justSentID, messages, openConversation, pending, pendingID,
+  recentReasoningID, resetChat, runTurn, showPending, stoppable } =
   await import('../src/chat/useChat');
 const { models, selectedID } = await import('../src/chat/useModels');
 
@@ -150,5 +151,58 @@ describe('switching conversations while a turn runs', () => {
     // Leaving the conversation clears it, because the row it names is gone.
     await openConversation('B');
     expect(justSentID.value).toBe('');
+  });
+
+  // The send button is in stop mode only while there is something to stop. The
+  // answer is in by the time the saved row is being read, so the button must
+  // not offer to stop a generation that has finished.
+  it('leaves stop mode once the answer is in, while the saved row is still being read', async () => {
+    let finishReload: ((value: Awaited<ReturnType<typeof getConversation>>) => void) | undefined;
+    vi.mocked(getConversation).mockImplementationOnce(() => new Promise((resolve) => { finishReload = resolve; }));
+
+    const running = runTurn({ content: 'hi' });
+    start();
+    expect(stoppable.value).toBe(true);
+
+    turn.handlers?.onDone?.({ message_id: 'saved', stopped: false, streamed: true });
+    turn.finish?.();
+    await vi.waitFor(() => expect(finishReload).toBeTypeOf('function'));
+
+    expect(busy.value).toBe(true);
+    expect(stoppable.value).toBe(false);
+
+    finishReload!({
+      conversation: { id: 'A', title: 'A', model_id: 'm', pinned: false, message_count: 2, created_at: 0, updated_at: 0 },
+      messages: [{ id: 'saved', seq: 2, role: 'assistant', content: 'answer', created_at: 0 }],
+    });
+    await running;
+    expect(busy.value).toBe(false);
+    expect(stoppable.value).toBe(false);
+  });
+
+  it('does not blank or reload the conversation that is already open when it is selected again', async () => {
+    await openConversation('B');
+    expect(messages.value[0]?.id).toBe('B-row');
+    vi.mocked(getConversation).mockClear();
+
+    // A double-click on a row selects it twice.
+    await openConversation('B');
+    await openConversation('B');
+
+    expect(messages.value[0]?.id).toBe('B-row');
+    expect(getConversation).not.toHaveBeenCalled();
+  });
+
+  it('says so when the open conversation cannot be read, rather than showing it as empty', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getConversation).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    flash.value = '';
+
+    await openConversation('B');
+
+    expect(messages.value).toEqual([]);
+    expect(activeID.value).toBe('B');
+    expect(flash.value).toBe(t('failed'));
+    warn.mockRestore();
   });
 });

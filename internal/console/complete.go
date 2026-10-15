@@ -6,10 +6,12 @@ import (
 )
 
 // Completion is what one Tab press answers: replace line[From:pos] with
-// any Item's Value to complete it.
+// any Item's Value to complete it. The json tags are the wire contract the
+// browser reads (ConsoleCompletion in web/src/api/console.ts); without them
+// the keys would follow the Go field names and the client would find no items.
 type Completion struct {
-	From  int
-	Items []CompletionItem
+	From  int              `json:"from"`
+	Items []CompletionItem `json:"items"`
 }
 
 // CompletionItem is one candidate. Value is what replaces the partial word;
@@ -17,7 +19,9 @@ type Completion struct {
 // full command name, for a noun-only match); Hint is the bilingual summary
 // or flag description.
 type CompletionItem struct {
-	Value, Label, Hint string
+	Value string `json:"value"`
+	Label string `json:"label"`
+	Hint  string `json:"hint"`
 }
 
 // Complete answers a Tab press at byte offset pos in line. It completes
@@ -59,7 +63,9 @@ func (c *Console) Complete(ctx context.Context, s *Session, line string, pos int
 func (c *Console) completeName(s *Session, already, partial string, from int) Completion {
 	trimmed := strings.TrimRight(already, " \t")
 	seen := map[string]bool{}
-	var items []CompletionItem
+	// Never nil: a nil slice encodes as null, and the browser reads
+	// items.length, so Tab on a word that matches nothing would throw.
+	items := []CompletionItem{}
 
 	for _, cmd := range c.reg.visible(s.Actor) {
 		var remainder string
@@ -95,14 +101,26 @@ func (c *Console) completeName(s *Session, already, partial string, from int) Co
 	return Completion{From: from, Items: items}
 }
 
+// commandBefore finds the command the words typed so far belong to. It uses
+// the same longest-name rule Execute does, so a positional argument or a flag
+// that already has its value may sit between the name and the flag being
+// completed; `user edit alice --st` is a user edit line.
+func (c *Console) commandBefore(already string) (*Command, bool) {
+	words, err := Tokenize(already)
+	if err != nil || len(words) == 0 {
+		return nil, false
+	}
+	cmd, _, _, found := c.resolve(words)
+	return cmd, found
+}
+
 func (c *Console) completeFlag(s *Session, already, partial string, from int) Completion {
-	trimmed := strings.TrimRight(already, " \t")
-	cmd, ok := c.reg.lookup(trimmed)
+	cmd, ok := c.commandBefore(already)
 	if ok && !hasPermission(s.Actor, cmd.Permission) {
 		ok = false
 	}
 
-	var items []CompletionItem
+	items := []CompletionItem{}
 	add := func(name, hint string) {
 		if strings.HasPrefix(name, partial) {
 			items = append(items, CompletionItem{Value: name, Label: name, Hint: hint})

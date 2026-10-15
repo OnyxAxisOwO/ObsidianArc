@@ -65,8 +65,8 @@ func (g *signupGate) allow(perMinute, perHour int) (bool, time.Duration) {
 	defer g.mu.Unlock()
 
 	// One pass, dropping anything past the longer window and counting the
-	// shorter one on the way. The slice is bounded by the hourly limit, so
-	// this stays small even under attack.
+	// shorter one on the way. record prunes too, because this returns before
+	// reaching here while neither limit is set.
 	kept := g.recent[:0]
 	inMinute := 0
 	for _, at := range g.recent {
@@ -94,9 +94,19 @@ func (g *signupGate) allow(perMinute, perHour int) (bool, time.Duration) {
 // record marks an account as created. Called only on success, so a rejected
 // attempt does not spend anyone else's allowance.
 func (g *signupGate) record() {
+	now := time.Now()
 	g.mu.Lock()
-	g.recent = append(g.recent, time.Now())
-	g.mu.Unlock()
+	defer g.mu.Unlock()
+	// Pruned here, not only in allow: with both limits at zero allow never
+	// reaches its own pass, so without this the slice would grow for the life
+	// of the process.
+	kept := g.recent[:0]
+	for _, at := range g.recent {
+		if now.Sub(at) < time.Hour {
+			kept = append(kept, at)
+		}
+	}
+	g.recent = append(kept, now)
 }
 
 // checkSignupRate refuses a sign-up that would pass the per-minute or per-hour
@@ -200,6 +210,11 @@ func parseDomains(raw string) []string {
 		domain = strings.TrimPrefix(domain, "@")
 		domain = strings.TrimPrefix(domain, "https://")
 		domain = strings.TrimPrefix(domain, "http://")
+		// A pasted URL keeps its path and port, and an address's domain never
+		// has either, so keep only the host or no address would match it.
+		if i := strings.IndexAny(domain, "/:"); i >= 0 {
+			domain = domain[:i]
+		}
 		domain = strings.Trim(domain, ".")
 		if domain != "" {
 			out = append(out, domain)

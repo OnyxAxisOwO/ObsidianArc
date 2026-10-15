@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -241,6 +242,14 @@ func PrimaryKeys(ctx context.Context, q Queryer, table string) ([]string, error)
 	defer rows.Close()
 	var columns []string
 	if q.Dialect() == SQLite {
+		// PRAGMA table_info lists columns in declaration order, which is not
+		// the key order when the key is declared (a, b) over columns (b, a).
+		// The pk value is each column's 1-based position in the key.
+		type keyColumn struct {
+			name     string
+			position int
+		}
+		var keyColumns []keyColumn
 		for rows.Next() {
 			var cid, notNull, primary int
 			var name, kind string
@@ -249,8 +258,14 @@ func PrimaryKeys(ctx context.Context, q Queryer, table string) ([]string, error)
 				return nil, fmt.Errorf("database: scan SQLite columns for %s: %w", table, err)
 			}
 			if primary > 0 {
-				columns = append(columns, name)
+				keyColumns = append(keyColumns, keyColumn{name: name, position: primary})
 			}
+		}
+		sort.SliceStable(keyColumns, func(i, j int) bool {
+			return keyColumns[i].position < keyColumns[j].position
+		})
+		for _, column := range keyColumns {
+			columns = append(columns, column.name)
 		}
 	} else {
 		for rows.Next() {

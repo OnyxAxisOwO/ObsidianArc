@@ -6,15 +6,6 @@
  * synchronous patch, and is read by the panel that arrives inside it.
  */
 let vacating: HTMLElement | null = null;
-
-/**
- * The panels open now, oldest first. Escape goes to the last of them only: a
- * drawer and the account panel beside it both listen on document, and one key
- * used to close both, losing whatever the drawer had unsaved. A panel leaves the
- * list when it unmounts rather than when it starts to close, so a second Escape
- * during the slide-out does not reach the panel beneath.
- */
-const openPanels: object[] = [];
 </script>
 
 <script setup lang="ts">
@@ -33,12 +24,14 @@ const openPanels: object[] = [];
 // the template, because it is opened from screens several components deep in
 // that row and it has to be a flex sibling of them, not a descendant.
 
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useEventListener } from '@vueuse/core';
 import { t } from '@/composables/useI18n';
 import { usePanelHost } from '@/composables/usePanelHost';
+import { joinPanelStack, type PanelStackEntry } from '@/composables/usePanelStack';
 import { storedWidth } from '@/composables/useStoredWidth';
 import { IconChevron, IconClose } from '@/icons';
+import { closeModal, isTopModal, openModal } from '@/lib/modal-stack';
 import OaIconButton from './OaIconButton.vue';
 import OaResizer from './OaResizer.vue';
 import OaScrollArea from './OaScrollArea.vue';
@@ -126,10 +119,30 @@ const zooming = ref(false);
 const swapping = ref(false);
 const confirming = ref(false);
 
+// The host arrives after this component does (see the watch on `panel`), so
+// the place in the row is taken when it is there, not in setup. A shallow ref,
+// because a deep one unwraps the entry's computed and `.collapsed.value` reads
+// undefined.
+const stack = shallowRef<PanelStackEntry | null>(null);
+const collapsed = computed(() => stack.value?.collapsed.value ?? false);
+watch(host, (row) => {
+  if (row && !stack.value) stack.value = joinPanelStack(row);
+}, { immediate: true });
+
 let closed = false;
 let closeTimer = 0;
 
 const width = storedWidth(PANEL_WIDTH_KEY, props.width);
+
+// Written whenever the column itself appears, rather than bound in the template.
+// A bound style is restated on every re-render, so Save going busy or an error
+// appearing put the mount-time width back over the one the reader had dragged
+// to, while the stored value still held the drag. OaResizer owns the property
+// after this.
+//
+// It cannot run in onMounted: the column sits in a Teleport that is absent until
+// the row arrives, and a panel in the first render mounts before that.
+watch(panel, (el) => el?.style.setProperty('--oa-panel-width', `${width}px`), { flush: 'post' });
 
 onMounted(async () => {
   // Already in place: it took the previous panel's column, at its width.
@@ -152,6 +165,7 @@ function close(): void {
   if (closed) return;
   closed = true;
   shown.value = false;
+  stack.value?.leave();
   if (props.immediateClose) {
     emit('close');
   } else {
@@ -160,12 +174,13 @@ function close(): void {
 }
 
 // Escape closes, unless something inside wants the key first — a select that
-// is open, for instance — or a panel opened after this one, which answers it.
+// is open, for instance — or a panel or sheet opened after this one, which
+// answers it.
 const token = {};
-openPanels.push(token);
+openModal(token);
 useEventListener(document, 'keydown', (event: KeyboardEvent) => {
   if (event.key !== 'Escape' || event.defaultPrevented) return;
-  if (openPanels[openPanels.length - 1] === token) close();
+  if (isTopModal(token)) close();
 });
 
 // --- full screen --------------------------------------------------------------
@@ -176,6 +191,14 @@ useEventListener(document, 'keydown', (event: KeyboardEvent) => {
 
 let zoomTimer = 0;
 let swapTimer = 0;
+/**
+ * The columns beside the panel, pinned for the zoom that is still travelling.
+ *
+ * Kept here rather than only in that zoom's timer: a second toggle clears the
+ * timer, and a restore that never runs leaves the columns pinned at the pixel
+ * widths the panel had mid-animation until the page is reloaded.
+ */
+let restoreSiblings: (() => void) | null = null;
 
 /**
  * Pins the other columns at the width they have while the panel is one of
@@ -256,6 +279,11 @@ function toggleFullscreen(onDone?: () => void): boolean {
 
   window.clearTimeout(zoomTimer);
   window.clearTimeout(swapTimer);
+  // Put the columns back before measuring them again. Otherwise the widths
+  // pinned by the zoom still travelling are recorded as the originals, and
+  // they are what gets restored.
+  restoreSiblings?.();
+  restoreSiblings = null;
   const drawerWidth = storedWidth(PANEL_WIDTH_KEY, props.width);
   const next = !fullscreen.value;
 
@@ -279,6 +307,7 @@ function toggleFullscreen(onDone?: () => void): boolean {
   };
 
   const release = next ? freezeSiblings() : freezeSiblingsForDrawer(drawerWidth);
+  restoreSiblings = release;
   zooming.value = true;
   swapping.value = true;
   pin(next ? `${self.getBoundingClientRect().width || drawerWidth}px` : '100%');
@@ -292,6 +321,7 @@ function toggleFullscreen(onDone?: () => void): boolean {
     swapping.value = false;
   }, SWAP_AT_MS);
   zoomTimer = window.setTimeout(() => {
+    restoreSiblings = null;
     zooming.value = false;
     unpin();
     release();
@@ -304,13 +334,17 @@ function toggleFullscreen(onDone?: () => void): boolean {
 onBeforeUnmount(() => {
   window.clearTimeout(zoomTimer);
   window.clearTimeout(swapTimer);
+  // Leaving mid-zoom would otherwise leave the columns beside this panel pinned
+  // at the widths it had at that moment, with nothing left to release them.
+  restoreSiblings?.();
+  restoreSiblings = null;
   // The slide-out was interrupted by something else taking the screen. Every
   // caller navigates in that callback, so letting it fire now would drag the
   // reader back to wherever this panel thought they should go next.
   window.clearTimeout(closeTimer);
 
-  const at = openPanels.indexOf(token);
-  if (at !== -1) openPanels.splice(at, 1);
+  closeModal(token);
+  stack.value?.leave();
 
   // Vue unmounts the outgoing component before it mounts the incoming one,
   // both inside one synchronous flush — so a panel being replaced can only be
@@ -346,9 +380,19 @@ defineExpose({
       v-bind="$attrs"
       ref="panel"
       class="oa-panel"
-      :class="{ open: shown, fullscreen: zoomed, zooming, swapping, replacing, 'no-footer': !props.footer }"
-      :style="{ '--oa-panel-width': `${width}px` }"
+      :class="{ open: shown, fullscreen: zoomed, zooming, swapping, replacing, collapsed, 'no-footer': !props.footer }"
     >
+      <button
+        v-if="collapsed"
+        type="button"
+        class="oa-panel-strip"
+        :aria-label="props.title"
+        @click="stack?.activate()"
+      >
+        <IconChevron :size="14" />
+        <span>{{ props.title }}</span>
+      </button>
+
       <div class="oa-panel-head">
         <OaIconButton v-if="props.back" class="oa-icon-btn" :label="t('back')" @click="emit('back')">
           <IconChevron :size="16" />

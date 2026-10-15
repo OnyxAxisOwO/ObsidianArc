@@ -30,3 +30,22 @@ func TestAnEmbeddedIPv4AddressIsJudgedByTheIPv4Inside(t *testing.T) {
 		}
 	}
 }
+
+// The IPv4-compatible form (::a.b.c.d) of a private address is not one that
+// any predicate recognises, so it has to be refused by its own prefix.
+func TestAnIPv4CompatibleAddressIsNotPublic(t *testing.T) {
+	refused := []string{
+		"::7f00:1",    // 127.0.0.1
+		"::a9fe:a9fe", // 169.254.169.254, the metadata endpoint
+		"::a00:1",     // 10.0.0.1
+		"::",          // unspecified
+	}
+	for _, raw := range refused {
+		if publicAddr(netip.MustParseAddr(raw)) {
+			t.Errorf("%s was accepted as a public address", raw)
+		}
+	}
+	if !publicAddr(netip.MustParseAddr("2606:4700:4700::1111")) {
+		t.Error("a public IPv6 address was refused")
+	}
+}

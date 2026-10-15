@@ -116,7 +116,7 @@ func (s *Store) CreateApp(ctx context.Context, in CreateAppInput) (App, string, 
 			return fmt.Errorf("idp: count applications: %w", err)
 		}
 		if count >= MaxApps {
-			return fmt.Errorf("idp: this instance already has the maximum of %d applications", MaxApps)
+			return ErrTooManyApplications
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO oauth_apps
 			(id, client_id, secret_hash, name, description, redirect_uris, scopes,
@@ -393,20 +393,73 @@ func scanApp(row rowScanner) (App, string, error) {
 
 // --- consent ------------------------------------------------------------------
 
-// RecordGrant writes what an account has agreed to, widening what was there
-// rather than replacing it: a second application asking for less does not
-// take away what the first one was allowed.
+// RecordGrant writes what an account has agreed to for this application. The
+// stored list only grows: an approval that asks for less than the last one
+// leaves the earlier scopes in place, so a narrower sign-in cannot make the
+// application ask again for something the person already gave.
+//
+// The merge is a read followed by a write, so it runs under the grant row's
+// lock. Without that, two approvals landing together could each drop the
+// other's scopes.
 func (s *Store) RecordGrant(ctx context.Context, q database.Queryer, appID, userID string, scopes []string) error {
+	if q != nil {
+		return recordGrant(ctx, q, appID, userID, scopes)
+	}
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		return recordGrant(ctx, tx, appID, userID, scopes)
+	})
+}
+
+func recordGrant(ctx context.Context, q database.Queryer, appID, userID string, scopes []string) error {
 	now := time.Now().UnixMilli()
-	_, err := s.queryer(q).Exec(ctx,
+	// Creates the row when it is new, and leaves an existing one to the merge.
+	if _, err := q.Exec(ctx,
 		`INSERT INTO oauth_grants (id, app_id, user_id, scopes, created_at, last_used_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT (app_id, user_id) DO UPDATE SET scopes = excluded.scopes, last_used_at = excluded.last_used_at`,
-		id.New(), appID, userID, strings.Join(scopes, " "), now, now)
+		 ON CONFLICT (app_id, user_id) DO NOTHING`,
+		id.New(), appID, userID, strings.Join(scopes, " "), now, now); err != nil {
+		return fmt.Errorf("idp: record consent: %w", err)
+	}
+	held, err := lockGrant(ctx, q, appID, userID)
 	if err != nil {
+		return err
+	}
+	if !held {
+		return fmt.Errorf("idp: record consent: the grant was withdrawn during the approval")
+	}
+	var stored string
+	if err := q.QueryRow(ctx,
+		`SELECT scopes FROM oauth_grants WHERE app_id = ? AND user_id = ?`, appID, userID).Scan(&stored); err != nil {
+		return fmt.Errorf("idp: read consent: %w", err)
+	}
+	merged := ParseScopes(stored + " " + strings.Join(scopes, " "))
+	if _, err := q.Exec(ctx,
+		`UPDATE oauth_grants SET scopes = ?, last_used_at = ? WHERE app_id = ? AND user_id = ?`,
+		strings.Join(merged, " "), now, appID, userID); err != nil {
 		return fmt.Errorf("idp: record consent: %w", err)
 	}
 	return nil
+}
+
+// lockGrant holds the account's grant row until the enclosing transaction
+// ends, and reports whether the row still exists. RevokeGrant deletes that row
+// before it revokes the tokens, so a token inserted under this lock is either
+// seen by that revocation or refused here. Without the lock, a token minted
+// just before the revocation committed would outlive it.
+//
+// The statement changes nothing; it is there for the lock, as lockApp is.
+func lockGrant(ctx context.Context, q database.Queryer, appID, userID string) (bool, error) {
+	result, err := q.Exec(ctx,
+		`UPDATE oauth_grants SET last_used_at = last_used_at WHERE app_id = ? AND user_id = ?`,
+		appID, userID)
+	if err != nil {
+		return false, fmt.Errorf("idp: lock consent: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("idp: lock consent: %w", err)
+	}
+	return affected > 0, nil
 }
 
 // GrantedScopes is what this account has already agreed to let this
@@ -527,6 +580,18 @@ func (s *Store) SaveCode(ctx context.Context, code string, in Code) error {
 // also the only safe reading: one of the two presentations was not the
 // application.
 func (s *Store) RedeemCode(ctx context.Context, code string) (Code, error) {
+	return s.RedeemVerifiedCode(ctx, code, nil)
+}
+
+// RedeemVerifiedCode is RedeemCode with the presentation checked first. verify
+// sees the code as stored and decides whether this presentation may count as a
+// use at all. A presentation that fails it changes nothing: a holder of a
+// copied code who guesses the verifier wrong must not spend the code, and must
+// not trigger the replay revocation below against the real application.
+//
+// verify runs inside the transaction, so it must be pure Go and must not call a
+// provider or any other service.
+func (s *Store) RedeemVerifiedCode(ctx context.Context, code string, verify func(Code) error) (Code, error) {
 	hash := Digest(code)
 	var (
 		out    Code
@@ -534,6 +599,46 @@ func (s *Store) RedeemCode(ctx context.Context, code string) (Code, error) {
 	)
 
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		// Read before anything is spent. The expiry is checked here rather
+		// than in the UPDATE, so an expired code that was already used still
+		// reaches the replay branch, as it always has.
+		var (
+			scopes    string
+			used      bool
+			expiresAt int64
+		)
+		if err := tx.QueryRow(ctx,
+			`SELECT app_id, user_id, redirect_uri, scopes, nonce, code_challenge, challenge_method, used, expires_at
+			 FROM oauth_codes WHERE code_hash = ?`, hash).
+			Scan(&out.AppID, &out.UserID, &out.RedirectURI, &scopes, &out.Nonce,
+				&out.CodeChallenge, &out.ChallengeMethod, &used, &expiresAt); err != nil {
+			if database.IsNotFound(err) {
+				return ErrBadCode
+			}
+			return fmt.Errorf("idp: read code: %w", err)
+		}
+		out.Scopes = ParseScopes(scopes)
+
+		if !used && expiresAt <= time.Now().UnixMilli() {
+			return ErrBadCode
+		}
+		if verify != nil {
+			if err := verify(out); err != nil {
+				return err
+			}
+		}
+		if used {
+			// Unlike the spend below, this one is not a race lost: the code was
+			// spent before this presentation arrived, and it passed verify, so
+			// the holder is presenting a copy. The revocation happens outside
+			// this transaction, which is about to be rolled back with the error.
+			replay.appID, replay.userID = out.AppID, out.UserID
+			return ErrBadCode
+		}
+
+		// The spending is the UPDATE, not the read: marking it used with the old
+		// value in the WHERE clause is a compare-and-set that both engines make
+		// atomic, so two exchanges arriving together cannot both find it unused.
 		result, err := tx.Exec(ctx,
 			`UPDATE oauth_codes SET used = ? WHERE code_hash = ? AND used = ? AND expires_at > ?`,
 			true, hash, false, time.Now().UnixMilli())
@@ -545,34 +650,23 @@ func (s *Store) RedeemCode(ctx context.Context, code string) (Code, error) {
 			return fmt.Errorf("idp: spend code: %w", err)
 		}
 		if affected == 0 {
-			// Unknown, expired, or already spent. Only the last of those is
-			// worth acting on, and it is the one worth acting on hard — but
-			// not from in here: this transaction is about to be rolled back
-			// with the error below, and a revocation written inside it would
-			// be rolled back with everything else.
+			// Another presentation spent it between the read and this write, or
+			// it expired in that gap. Only the first of those is a replay, and
+			// it is worth acting on hard — but not from in here, for the reason
+			// given above.
 			var (
 				appID  string
 				userID string
-				used   bool
+				spent  bool
 			)
 			readErr := tx.QueryRow(ctx,
 				`SELECT app_id, user_id, used FROM oauth_codes WHERE code_hash = ?`, hash).
-				Scan(&appID, &userID, &used)
-			if readErr == nil && used {
+				Scan(&appID, &userID, &spent)
+			if readErr == nil && spent {
 				replay.appID, replay.userID = appID, userID
 			}
 			return ErrBadCode
 		}
-
-		var scopes string
-		if err := tx.QueryRow(ctx,
-			`SELECT app_id, user_id, redirect_uri, scopes, nonce, code_challenge, challenge_method
-			 FROM oauth_codes WHERE code_hash = ?`, hash).
-			Scan(&out.AppID, &out.UserID, &out.RedirectURI, &scopes, &out.Nonce,
-				&out.CodeChallenge, &out.ChallengeMethod); err != nil {
-			return fmt.Errorf("idp: read code: %w", err)
-		}
-		out.Scopes = ParseScopes(scopes)
 		return nil
 	})
 	if err != nil {
@@ -630,6 +724,29 @@ func (s *Store) SaveToken(ctx context.Context, q database.Queryer,
 	return record, nil
 }
 
+// SaveGrantedToken issues a token pair only while the account still holds
+// its grant. The check and the insert share a transaction under the grant's
+// lock, which is what lets RevokeGrant either see the new pair or be seen by
+// the refusal here.
+func (s *Store) SaveGrantedToken(ctx context.Context, access, refresh, appID, userID string, scopes []string) (Token, error) {
+	var record Token
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		held, err := lockGrant(ctx, tx, appID, userID)
+		if err != nil {
+			return err
+		}
+		if !held {
+			return ErrBadCode
+		}
+		record, err = s.SaveToken(ctx, tx, access, refresh, appID, userID, scopes)
+		return err
+	})
+	if err != nil {
+		return Token{}, err
+	}
+	return record, nil
+}
+
 // ResolveAccess finds a live access token. Expired, revoked and unknown are
 // all the same answer: the caller is a stranger holding a string.
 func (s *Store) ResolveAccess(ctx context.Context, token string) (Token, error) {
@@ -652,6 +769,32 @@ func (s *Store) ResolveAccess(ctx context.Context, token string) (Token, error) 
 	}
 	record.Scopes = ParseScopes(scopes)
 	return record, nil
+}
+
+// liveRefreshApp reads the application, the account and the scopes that a
+// live refresh token was issued for. Refresh needs all three before the spend:
+// the application to refuse another's token, and the account and scopes to
+// build the identity token while a failure can still leave the token unspent.
+// Anything else answers false and is left to Rotate, which tells an expired or
+// spent token apart from one that never existed.
+func (s *Store) liveRefreshApp(ctx context.Context, refresh string) (Token, bool, error) {
+	var (
+		record Token
+		scopes string
+	)
+	err := s.db.QueryRow(ctx,
+		`SELECT app_id, user_id, scopes FROM oauth_tokens
+		 WHERE refresh_hash = ? AND revoked = ? AND refresh_expires_at > ?`,
+		Digest(refresh), false, time.Now().UnixMilli()).
+		Scan(&record.AppID, &record.UserID, &scopes)
+	if err != nil {
+		if database.IsNotFound(err) {
+			return Token{}, false, nil
+		}
+		return Token{}, false, fmt.Errorf("idp: read refresh token: %w", err)
+	}
+	record.Scopes = ParseScopes(scopes)
+	return record, true, nil
 }
 
 // Rotate spends a refresh token and issues a new pair in its place.
@@ -679,19 +822,36 @@ func (s *Store) Rotate(ctx context.Context, refresh, access, newRefresh string) 
 			Scan(&previous.ID, &previous.AppID, &previous.UserID, &scopes)
 		if err != nil {
 			if database.IsNotFound(err) {
-				// Either it never existed, or it has already been rotated
-				// away. The second is a copy in somebody else's hands, and it
-				// is acted on after this transaction rather than inside it:
-				// the error below rolls back everything written in here.
+				// Either it never existed, or it has been spent. A spent token
+				// still within its lifetime is taken as a copy in somebody
+				// else's hands. An expired one is only old: treating it as a
+				// copy revoked the live session beside it, so it is refused and
+				// nothing else is touched. The revocation is acted on after this
+				// transaction rather than inside it: the error below rolls back
+				// everything written here.
 				var appID, userID string
 				if found := tx.QueryRow(ctx,
-					`SELECT app_id, user_id FROM oauth_tokens WHERE refresh_hash = ?`, hash).
+					`SELECT app_id, user_id FROM oauth_tokens
+					 WHERE refresh_hash = ? AND revoked = ? AND refresh_expires_at > ?`,
+					hash, true, time.Now().UnixMilli()).
 					Scan(&appID, &userID); found == nil {
 					replay.appID, replay.userID = appID, userID
 				}
 				return ErrBadToken
 			}
 			return fmt.Errorf("idp: read refresh token: %w", err)
+		}
+
+		// The grant is held before the spend, in the order RevokeGrant takes
+		// its locks: a withdrawal that got here first refuses the rotation, and
+		// one that comes after waits for the new pair to commit and then
+		// revokes it.
+		held, err := lockGrant(ctx, tx, previous.AppID, previous.UserID)
+		if err != nil {
+			return err
+		}
+		if !held {
+			return ErrBadToken
 		}
 
 		// Spend it. The condition is what makes two simultaneous refreshes

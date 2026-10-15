@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -210,6 +211,27 @@ func TestAUserBarTheAccountSwitchedOffWaitsForTheFallback(t *testing.T) {
 	}
 }
 
+// The windows refused, so the switched-on bar was not spent in the priority
+// phase, and the fallback has to choose. The off bar expires sooner, which must
+// not make it go first.
+func TestTheFallbackSpendsASwitchedOnBarBeforeASwitchedOffOne(t *testing.T) {
+	f := newFixture(t)
+	a := f.account(t, "alice")
+	on := f.bar(t, Bar{Name: "on", ToggleMode: ModeOn})
+	off := f.bar(t, Bar{Name: "off", ToggleMode: ModeOff})
+	f.give(t, on.ID, a.ID, 0.5, time.Now().Add(72*time.Hour).UnixMilli())
+	f.give(t, off.ID, a.ID, 1, time.Now().Add(24*time.Hour).UnixMilli())
+
+	holds, err := f.take(t, a.ID, "m", 1.2, Fallback)
+	if err != nil || !near(Total(holds), 1.2) {
+		t.Fatalf("fallback: %v %v", holds, err)
+	}
+	if !near(f.used(t, on.ID, a.ID), 0.5) || !near(f.used(t, off.ID, a.ID), 0.7) {
+		t.Fatalf("on %v off %v; want the switched-on bar spent whole first",
+			f.used(t, on.ID, a.ID), f.used(t, off.ID, a.ID))
+	}
+}
+
 func TestOnlyABarTheAccountMaySwitchCanBeSwitched(t *testing.T) {
 	f := newFixture(t)
 	a := f.account(t, "alice")
@@ -237,6 +259,27 @@ func TestABarOnlyCoversTheModelsItNames(t *testing.T) {
 	}
 }
 
+// Only a write outside this code can damage a model list. Read as empty, it
+// would make a restricted bar spendable on every model, so the grant must be
+// skipped instead.
+func TestAMalformedModelListCoversNoModel(t *testing.T) {
+	f := newFixture(t)
+	a := f.account(t, "alice")
+	bar := f.bar(t, Bar{Name: "gift", ToggleMode: ModeOn, ModelIDs: []string{"cheap"}})
+	f.give(t, bar.ID, a.ID, 5, 0)
+	if _, err := f.db.Exec(context.Background(), `UPDATE bonus_bars SET model_ids = ? WHERE id = ?`, "[cheap", bar.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range []string{"cheap", "expensive"} {
+		if holds, _ := f.take(t, a.ID, model, 1, Priority); len(holds) != 0 {
+			t.Fatalf("spent on %s from a bar whose model list cannot be read: %v", model, holds)
+		}
+	}
+	if _, err := f.take(t, a.ID, "expensive", 1, Fallback); !errors.Is(err, ErrInsufficient) {
+		t.Fatalf("the fallback spent a bar whose model list cannot be read: %v", err)
+	}
+}
+
 func TestExpiredInactiveAndRevokedGrantsAreNotSpent(t *testing.T) {
 	f := newFixture(t)
 	a := f.account(t, "alice")
@@ -250,14 +293,14 @@ func TestExpiredInactiveAndRevokedGrantsAreNotSpent(t *testing.T) {
 	}
 	f.give(t, bar.ID, a.ID, 2, 0)
 	bar.Active = false
-	if _, err := f.store.UpdateBar(context.Background(), bar); err != nil {
+	if _, err := f.store.UpdateBar(context.Background(), nil, bar); err != nil {
 		t.Fatal(err)
 	}
 	if holds, _ := f.take(t, a.ID, "m", 1, Priority); len(holds) != 0 {
 		t.Fatalf("a bar that was switched off was spent: %v", holds)
 	}
 	bar.Active = true
-	if _, err := f.store.UpdateBar(context.Background(), bar); err != nil {
+	if _, err := f.store.UpdateBar(context.Background(), nil, bar); err != nil {
 		t.Fatal(err)
 	}
 	rows, _, _ := f.store.GrantsInBar(context.Background(), bar.ID, 10, 0)
@@ -477,5 +520,165 @@ func TestAnAccountIsToldOnceWhatIsAboutToExpire(t *testing.T) {
 	}
 	if again, _ := f.store.TakeExpiring(context.Background(), 72*time.Hour); len(again) != 0 {
 		t.Fatalf("told twice: %+v", again)
+	}
+}
+
+// Bar names are not unique, so an account holding two bars called the same
+// thing must be told about each: merged, the notice gave the first bar's expiry
+// for the sum of both.
+func TestTwoBarsWithOneNameAreTwoNotices(t *testing.T) {
+	f := newFixture(t)
+	a := f.account(t, "alice")
+	soon := time.Now().Add(24 * time.Hour).UnixMilli()
+	later := time.Now().Add(48 * time.Hour).UnixMilli()
+	first := f.bar(t, Bar{Name: "Welcome", ToggleMode: ModeOn})
+	second := f.bar(t, Bar{Name: "Welcome", ToggleMode: ModeOn})
+	f.give(t, first.ID, a.ID, 10, soon)
+	f.give(t, second.ID, a.ID, 5, later)
+
+	got, err := f.store.TakeExpiring(context.Background(), 72*time.Hour)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("expiring: %+v %v; want one notice per bar", got, err)
+	}
+	byBar := map[string]Expiring{}
+	for _, e := range got {
+		byBar[e.BarID] = e
+	}
+	if e := byBar[first.ID]; !near(e.Remaining, 10) || e.ExpiresAt != soon {
+		t.Fatalf("first bar: %+v", e)
+	}
+	if e := byBar[second.ID]; !near(e.Remaining, 5) || e.ExpiresAt != later {
+		t.Fatalf("second bar: %+v", e)
+	}
+}
+
+// A sweep whose transaction fails after it has marked one grant must report
+// nothing, and the marks must come back with the rollback so the next sweep
+// tells the account once. The failure is a trigger on the second grant, which
+// only SQLite can express here.
+func TestAFailedExpirySweepTellsNobodyAndLeavesEverythingUntold(t *testing.T) {
+	f := newFixture(t)
+	if f.db.DriverName() != "sqlite" {
+		t.Skip("the refusal is written as a SQLite trigger")
+	}
+	ctx := context.Background()
+	a := f.account(t, "alice")
+	bar := f.bar(t, Bar{Name: "gift", ToggleMode: ModeOn})
+	f.give(t, bar.ID, a.ID, 3, time.Now().Add(24*time.Hour).UnixMilli())
+	f.give(t, bar.ID, a.ID, 7, time.Now().Add(48*time.Hour).UnixMilli())
+	if _, err := f.db.Exec(ctx, `CREATE TRIGGER refuse_mark BEFORE UPDATE OF warned_at ON bonus_grants
+		WHEN OLD.amount = 7 BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := f.store.TakeExpiring(ctx, 72*time.Hour)
+	if err == nil || len(got) != 0 {
+		t.Fatalf("a sweep that rolled back told %+v (err %v)", got, err)
+	}
+	if _, err := f.db.Exec(ctx, `DROP TRIGGER refuse_mark`); err != nil {
+		t.Fatal(err)
+	}
+	got, err = f.store.TakeExpiring(ctx, 72*time.Hour)
+	if err != nil || len(got) != 1 || !near(got[0].Remaining, 10) {
+		t.Fatalf("the next sweep: %+v %v; want the account told once for all of it", got, err)
+	}
+}
+
+// A grant into a switched-off bar is refused on every path that makes one. The
+// batch grant used to store the rows and report them, and the notices that
+// followed went to accounts that could never see or spend the credit.
+func TestAGrantIntoASwitchedOffBarIsRefusedOnEveryPath(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	a := f.account(t, "alice")
+	bar := f.bar(t, Bar{Name: "gift", ToggleMode: ModeOn})
+	bar.Active = false
+	if _, err := f.store.UpdateBar(ctx, nil, bar); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := f.store.Grant(ctx, bar.ID, Target{All: true}, 5, 0, "admin", "", "test")
+	if !errors.Is(err, ErrBarOff) {
+		t.Fatalf("batch grant into a switched-off bar gave %v, want ErrBarOff", err)
+	}
+	err = f.db.Tx(ctx, func(tx *database.Tx) error {
+		_, err := f.store.GrantTo(ctx, tx, bar.ID, a.ID, 5, 0, "check-in", "")
+		return err
+	})
+	if !errors.Is(err, ErrBarOff) {
+		t.Fatalf("single grant into a switched-off bar gave %v, want ErrBarOff", err)
+	}
+	// Still ErrNotFound underneath, which the check-in and plugin paths match.
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("ErrBarOff no longer matches ErrNotFound: %v", err)
+	}
+
+	var stored int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM bonus_grants`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 0 {
+		t.Fatalf("%d grants were written into a switched-off bar", stored)
+	}
+}
+
+// A recipient nobody holds is named as such: TranslateError answers it with the
+// name, and not with a bonus that does not exist.
+func TestAGrantToAnUnknownNameIsRecognisedAsOne(t *testing.T) {
+	f := newFixture(t)
+	bar := f.bar(t, Bar{Name: "gift", ToggleMode: ModeOn})
+
+	_, err := f.store.Grant(context.Background(), bar.ID, Target{Usernames: []string{"nobody"}}, 5, 0, "admin", "", "test")
+	if !errors.Is(err, ErrNoAccount) {
+		t.Fatalf("grant to an unknown name gave %v, want ErrNoAccount", err)
+	}
+}
+
+// Two expiry sweeps can both read a grant as untold before either marks it. On
+// PostgreSQL's READ COMMITTED the second sweep's mark then finds the grant
+// already marked, matches nothing, and the account is told once. SQLite does
+// not allow the overlap, so this runs only on PostgreSQL.
+func TestTwoExpirySweepsTellAnAccountOnce(t *testing.T) {
+	if os.Getenv(dbtest.DSNVariable) == "" {
+		t.Skipf("set %s: the overlap only exists under PostgreSQL's READ COMMITTED", dbtest.DSNVariable)
+	}
+	ctx := context.Background()
+	f := newFixture(t)
+	a := f.account(t, "alice")
+	bar := f.bar(t, Bar{Name: "gift", ToggleMode: ModeOn})
+	f.give(t, bar.ID, a.ID, 5, time.Now().Add(48*time.Hour).UnixMilli())
+	rows, _, err := f.store.GrantsInBar(ctx, bar.ID, 10, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("grants: %d (%v), want the one grant", len(rows), err)
+	}
+	grantID := rows[0].ID
+
+	type outcome struct {
+		told []Expiring
+		err  error
+	}
+	done := make(chan outcome, 1)
+	err = f.db.Tx(ctx, func(tx *database.Tx) error {
+		// The first sweep has marked the grant and has not committed.
+		if _, err := tx.Exec(ctx, `UPDATE bonus_grants SET warned_at = ? WHERE id = ?`, time.Now().UnixMilli(), grantID); err != nil {
+			return err
+		}
+		go func() {
+			told, err := f.store.TakeExpiring(ctx, 72*time.Hour)
+			done <- outcome{told, err}
+		}()
+		// Commit only once the second sweep is blocked on the row, which means it
+		// has already read the grant as untold.
+		return waitForRowWait(ctx, f.db, "bonus_grants")
+	})
+	if err != nil {
+		t.Fatalf("holding the grant while the second sweep runs: %v", err)
+	}
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("second sweep: %v", got.err)
+	}
+	if len(got.told) != 0 {
+		t.Fatalf("the second sweep told the account again: %+v", got.told)
 	}
 }

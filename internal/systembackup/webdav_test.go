@@ -46,6 +46,16 @@ func TestValidateWebDAVConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "reject a password in the URL",
+			cfg: Config{
+				Type:           StorageTypeWebDAV,
+				WebDAVURL:      "https://arc:hunter2@dav.example.com/dav",
+				WebDAVUsername: "user",
+				WebDAVPassword: "password",
+			},
+			wantErr: true,
+		},
+		{
 			name: "missing username",
 			cfg: Config{
 				Type:           StorageTypeWebDAV,

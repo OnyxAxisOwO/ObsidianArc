@@ -869,3 +869,205 @@ func TestABackofficeVisitEndsWhenTheRequestMoves(t *testing.T) {
 		t.Fatal("the network switch is off but a new address ended the visit")
 	}
 }
+
+// A request that read its visit before the visit was left must not reopen it
+// when it slides the visit afterwards, and a burst of requests holding the same
+// older snapshot must not each write.
+func TestSlidingAVisitNeverReopensOneThatWasLeft(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	admin, _, _, _ := enrolled(t, f, "founder")
+	if err := f.settings.Set(ctx, settings.TwoFactorBackofficeMode, settings.BackofficeVerifyVisit); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := f.auth.Sessions().Create(ctx, admin.ID, time.Hour, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowAt := func() int64 {
+		t.Helper()
+		var at int64
+		if err := f.db.QueryRow(ctx, `SELECT backoffice_at FROM sessions WHERE id = ?`, HashToken(token)).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+
+	// An open visit, last slid over half a minute ago, read as a stale snapshot.
+	opened := time.Now().Add(-time.Minute).UnixMilli()
+	if err := f.auth.Sessions().SetBackofficeAt(ctx, HashToken(token), opened); err != nil {
+		t.Fatal(err)
+	}
+	_, stale, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.BackofficeAt != opened {
+		t.Fatalf("snapshot holds visit %d, want %d", stale.BackofficeAt, opened)
+	}
+
+	// The visit is left after the request read it, then the request slides it.
+	_, fresh, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.auth.LeaveBackoffice(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	f.auth.KeepBackofficeOpen(context.WithValue(ctx, sessionContextKey, stale), admin)
+	if at := rowAt(); at != 0 {
+		t.Fatalf("a slide from a stale snapshot reopened a visit that was left: row holds %d", at)
+	}
+
+	// A visit another request has just slid is not slid again by a request
+	// holding an older snapshot.
+	recent := time.Now().Add(-10 * time.Second).UnixMilli()
+	if err := f.auth.Sessions().SetBackofficeAt(ctx, HashToken(token), recent); err != nil {
+		t.Fatal(err)
+	}
+	burst := stale
+	burst.BackofficeAt = opened
+	f.auth.KeepBackofficeOpen(context.WithValue(ctx, sessionContextKey, burst), admin)
+	if at := rowAt(); at != recent {
+		t.Fatalf("a request with an old snapshot rewrote a visit slid %v ago: row holds %d, want %d",
+			time.Since(time.UnixMilli(recent)).Round(time.Second), at, recent)
+	}
+}
+
+// The policy is checked on the account's stored row, under the lock that
+// deletes the factor, and not only on the snapshot the request carried. A
+// snapshot taken before the account became an administrator, while the policy
+// covered administrators, must not be enough to switch the factor off.
+func TestSwitchingOffRechecksThePolicyOnTheLockedRow(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	enrolled(t, f, "founder")
+	member, secret, _, used := enrolled(t, f, "arc")
+	if member.IsAdmin() {
+		t.Fatal("the second account is an administrator")
+	}
+	if err := f.settings.Set(ctx, settings.TwoFactorPolicy, settings.TwoFactorAdmins); err != nil {
+		t.Fatal(err)
+	}
+	// Promoted after the snapshot was taken, so the snapshot still says member.
+	if _, err := f.db.Exec(ctx, `UPDATE users SET role = ? WHERE id = ?`, user.RoleAdmin, member.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.auth.DisableTwoFactor(ctx, member, codeAt(t, secret, used+1), ""); !errors.Is(err, ErrTwoFactorMandatory) {
+		t.Fatalf("switched off on a stale snapshot after promotion: %v", err)
+	}
+	var rows int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM two_factor WHERE user_id = ?`, member.ID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("the second step row is gone after a refused switch-off (%d rows)", rows)
+	}
+}
+
+// The sequential form of the window between the password check and the
+// enrolment's transaction: the reset has committed before the transaction
+// begins, so the hash read under the row lock must refuse the enrolment. An
+// enrolment sealed over the replaced password would also sign the owner out of
+// every other session. The race itself is the next test.
+func TestEnablingTwoStepCannotSealOverAResetMadeAfterItWasChecked(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := f.auth.BeginTwoFactor(ctx, account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := totp.Code(setup.Secret, totp.Step(time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.auth.beforeEnableWrite = func() {
+		if err := f.auth.SetPassword(ctx, account.ID, "admin-reset-password"); err != nil {
+			t.Errorf("the reset inside the window: %v", err)
+		}
+	}
+	_, _, err = f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", code, session.ID, "", "")
+	f.auth.beforeEnableWrite = nil
+	if !errors.Is(err, ErrCurrentPasswordWrong) {
+		t.Fatalf("enrolling on the replaced password = %v, want ErrCurrentPasswordWrong", err)
+	}
+	if got, _ := f.users.ByID(ctx, nil, account.ID); got.TwoFactorEnabled() {
+		t.Fatal("the second step switched on against a password that was replaced")
+	}
+}
+
+// A reset that starts while the enrolment is inside its transaction must wait
+// for the enrolment to decide, not land between its read of the password and
+// its switch-on. The enrolment is paused once it holds the row lock, and the
+// reset is only allowed to finish after it commits.
+func TestEnablingTwoStepHoldsTheAccountAgainstAReset(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := f.auth.BeginTwoFactor(ctx, account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := totp.Code(setup.Secret, totp.Step(time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	f.auth.afterEnableLock = func() {
+		close(locked)
+		<-release
+	}
+	enrolled := make(chan error, 1)
+	go func() {
+		_, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", code, session.ID, "", "")
+		enrolled <- err
+	}()
+	<-locked
+
+	reset := make(chan error, 1)
+	go func() {
+		reset <- f.auth.SetPassword(ctx, account.ID, "admin-reset-password")
+	}()
+	// A reset that is not held by the lock finishes well inside this window.
+	select {
+	case err := <-reset:
+		close(release)
+		<-enrolled
+		t.Fatalf("the reset finished while the enrolment held the account's row lock: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-enrolled; err != nil {
+		t.Fatalf("the enrolment on the password it checked: %v", err)
+	}
+	if err := <-reset; err != nil {
+		t.Fatalf("the reset after the enrolment committed: %v", err)
+	}
+	got, err := f.users.ByID(ctx, nil, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TwoFactorEnabled() {
+		t.Fatal("the second step is off after the enrolment committed")
+	}
+}

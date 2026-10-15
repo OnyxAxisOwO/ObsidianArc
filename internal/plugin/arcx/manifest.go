@@ -31,7 +31,16 @@ const Format = 1
 // hooks the host calls on it. A package says which it needs (Requires.API);
 // one that needs more than this build offers is refused at install, which is
 // the moment the operator can still do something about it.
-const APILevel = 4
+//
+// 5 tightened what a level-4 package may do: sessions.revoke_user needs the
+// users grant and cannot sign out an administrator, rewards for an account
+// other than the request's own need the usage or users grant, users.set_status
+// ends the account's sessions, security.record refuses the core's own event
+// names, and console.call refuses to run inside a transaction. It also added
+// the rest and sensitive keys to console arguments. A level-4 package keeps
+// installing, so one that depends on the new keys says 5, and an older server
+// refuses it at install instead of silently ignoring them.
+const APILevel = 5
 
 // Text is one string in both of the interface's languages. An empty ZH falls
 // back to EN when the interface is drawn.
@@ -232,19 +241,28 @@ type ConsoleCommand struct {
 	Endpoints   []string      `json:"endpoints,omitempty"`
 }
 
-// ConsoleArg is a positional argument.
+// ConsoleArg is a positional argument. Rest on the last one says the backend
+// reads every token after it, so a destructive command given more positionals
+// than declared is what it asked for rather than a mistake to refuse.
+// Sensitive has the value written as *** in the audit line: the line is read by
+// every administrator holding the security grant, and an import document can
+// carry credentials that were never meant for them.
 type ConsoleArg struct {
-	Name     string `json:"name"`
-	Hint     Text   `json:"hint,omitempty"`
-	Required bool   `json:"required,omitempty"`
+	Name      string `json:"name"`
+	Hint      Text   `json:"hint,omitempty"`
+	Required  bool   `json:"required,omitempty"`
+	Rest      bool   `json:"rest,omitempty"`
+	Sensitive bool   `json:"sensitive,omitempty"`
 }
 
 // ConsoleFlag is a flag. Value names its argument ("N", "MODE"); empty is a
-// switch.
+// switch. Sensitive has a flag's value written as *** in the audit line, as the
+// core's own credential flags are, and does nothing for a switch.
 type ConsoleFlag struct {
-	Name  string `json:"name"`
-	Hint  Text   `json:"hint,omitempty"`
-	Value string `json:"value,omitempty"`
+	Name      string `json:"name"`
+	Hint      Text   `json:"hint,omitempty"`
+	Value     string `json:"value,omitempty"`
+	Sensitive bool   `json:"sensitive,omitempty"`
 }
 
 // UI is the browser half.
@@ -591,6 +609,14 @@ func (m *Manifest) validateConsole() error {
 		}
 		if c.Permission != "" && c.Permission != "super_admin" && !grantRE.MatchString(c.Permission) {
 			return fmt.Errorf("console command %q: permission %q is not a grant list", c.Name, c.Permission)
+		}
+		// The console honours Rest only on the last declared argument. Anywhere
+		// else it is ignored, and the command refuses surplus tokens as though the
+		// flag were absent, so the mistake would surface only at the terminal.
+		for i, a := range c.Args {
+			if a.Rest && i != len(c.Args)-1 {
+				return fmt.Errorf("console command %q: argument %q takes the rest of the line, so it must be the last one", c.Name, a.Name)
+			}
 		}
 	}
 	return nil

@@ -10,6 +10,7 @@ import { createProject as apiCreateProject, listProjects } from '../src/api/proj
 import type { PreparedImage } from '../src/chat/image';
 import { prepareImage } from '../src/chat/image';
 import { adopt, forget } from '../src/stores/session';
+import { ownWallpaper, setWallpaper } from '../src/theme/theme';
 
 // Chat and project state live in module-level refs, so nothing else clears
 // them when the account changes: a sign-out that does not reset them shows
@@ -282,6 +283,18 @@ describe('signing out leaves nothing of the account behind', () => {
     adopt(bob);
     restorePreferences();
     expect(selectedID.value).toBe('');
+  });
+
+  it('takes the reader\'s own wallpaper with the account, so the next screen does not paint it', () => {
+    adopt(alice);
+    setWallpaper({ url: '/api/preferences/wallpaper?v=7', dim: 10, blur: 0, translucency: 0, panelBlur: 0 });
+    expect(ownWallpaper()?.url).toBe('/api/preferences/wallpaper?v=7');
+
+    forget();
+
+    expect(ownWallpaper()).toBeNull();
+    expect(document.documentElement.classList.contains('has-wallpaper')).toBe(false);
+    expect(localStorage.getItem('obsidian-arc-wallpaper')).toBeFalsy();
   });
 
   it('clears the answer-waiting dot on sign-out, whichever screen the sign-out came from', () => {

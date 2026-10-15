@@ -107,3 +107,58 @@ func TestQQNumberUsedAsHandleAndAddressIsNotACohortSignal(t *testing.T) {
 		t.Fatalf("QQ address convention was flagged as a bot cohort: %+v", cohort)
 	}
 }
+
+// The model's refusal is the reason the operator reads in the security log. A
+// confirmed batch used to replace it with the cohort's own sentence, which
+// described the same accounts but was not what the model decided.
+func TestConfirmedCohortKeepsTheModelsRefusalReason(t *testing.T) {
+	facts := Facts{Username: "user35041", Email: "u977143@uberip.com"}
+	for i, item := range [][2]string{
+		{"user37854", "u491421@uberip.com"},
+		{"user81904", "u869803@uberip.com"},
+		{"user35640", "u556446@uberip.com"},
+		{"user39369", "u544956@uberip.com"},
+		{"user35910", "u882554@uberip.com"},
+		{"user32616", "u205544@uberip.com"},
+		{"user49414", "u474569@uberip.com"},
+	} {
+		facts.Recent = append(facts.Recent, RecentSignup{
+			Username: item[0], Email: item[1],
+			Status: user.StatusDisabled, APIRestricted: i < 5,
+			APIRestrictionSource: "signup_review",
+		})
+	}
+	cohort := cohortFor(facts)
+	if !cohort.confirmed() {
+		t.Fatalf("cohort = %+v, want a confirmed batch", cohort)
+	}
+	got := cohort.protectModel(Verdict{Decision: DecisionRefuse, Reason: "The name is a generated pattern."})
+	if got.Decision != DecisionRefuse || got.Reason != "The name is a generated pattern." {
+		t.Fatalf("the model's refusal was rewritten by the cohort: %+v", got)
+	}
+}
+
+// A plugin guard's restriction is a judgement of its own, not the reviewer's, so
+// rows it closed do not count toward a confirmed batch of bot sign-ups.
+func TestAGuardsRestrictionDoesNotConfirmABatch(t *testing.T) {
+	facts := Facts{Username: "user35041", Email: "u977143@uberip.com"}
+	for i, item := range [][2]string{
+		{"user37854", "u491421@uberip.com"},
+		{"user81904", "u869803@uberip.com"},
+		{"user35640", "u556446@uberip.com"},
+		{"user39369", "u544956@uberip.com"},
+		{"user35910", "u882554@uberip.com"},
+		{"user32616", "u205544@uberip.com"},
+		{"user49414", "u474569@uberip.com"},
+	} {
+		facts.Recent = append(facts.Recent, RecentSignup{
+			Username: item[0], Email: item[1],
+			Status: user.StatusDisabled, APIRestricted: i < 5,
+			APIRestrictionSource: "guard",
+		})
+	}
+	cohort := cohortFor(facts)
+	if cohort.restricted != 0 || cohort.confirmed() {
+		t.Fatalf("cohort = %+v, want the guard's restrictions left out of the batch", cohort)
+	}
+}

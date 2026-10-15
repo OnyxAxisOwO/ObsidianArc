@@ -19,6 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +64,10 @@ type Options struct {
 	Dispatch Dispatcher
 	Version  string
 	SiteName func() string
+	// ShowVersion reports whether the build version is shown to accounts that
+	// are not administrators. It is the setting /api/health honours; the console
+	// must not answer around it. Nil means shown.
+	ShowVersion func() bool
 	// Audit records one executed command. Never nil in production wiring;
 	// a nil Audit simply means nothing is recorded, which is what lets a
 	// unit test build a Console without a security-events store.
@@ -163,7 +170,9 @@ func (c *Console) Execute(ctx context.Context, s *Session, out io.Writer, line s
 
 	tokens, err := Tokenize(trimmed)
 	if err != nil {
-		RenderError(out, s.Colour, s.JSON, err)
+		// The line never tokenized, so --json is read from its raw words: a
+		// refusal under --json is still the JSON envelope, not prose.
+		RenderError(out, s.Colour, s.JSON || wantsJSON(strings.Fields(trimmed)), err)
 		// No command was found, so there is no name to write, and the line is
 		// not written either: an unclosed quote is often a password typed with
 		// a stray character, and the record must not carry it.
@@ -182,15 +191,22 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	// address of the person typing it.
 	ctx = withCaller(ctx, s.IP)
 
-	name, rest, found := c.match(tokens)
+	// A refusal is written before ParseFlags has read the line, so whether the
+	// caller asked for JSON is read from the tokens here as well as from the
+	// session: a pipeline must not receive prose where it expects an object.
+	jsonWanted := s.JSON || wantsJSON(tokens)
+
+	// One lookup for the whole line. A plugin's commands can be removed between
+	// two lookups, and the second would then answer nothing for a command the
+	// first one had just found.
+	cmd, name, rest, found := c.resolve(tokens)
 	if !found {
-		renderUnknown(out, s, name)
+		renderUnknown(out, s, jsonWanted, name)
 		return Result{Code: "unknown_command", Elapsed: time.Since(start)}
 	}
-	cmd, _ := c.reg.lookup(name)
 
 	if !hasPermission(s.Actor, cmd.Permission) {
-		renderPermissionDenied(out, s, cmd)
+		renderPermissionDenied(out, s, jsonWanted, cmd)
 		c.recordRefusal(ctx, s, cmd, "permission_denied")
 		return Result{Code: "permission_denied", Elapsed: time.Since(start)}
 	}
@@ -200,7 +216,7 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 		err = refuseLooseValues(cmd, parsed)
 	}
 	if err != nil {
-		RenderError(out, s.Colour, s.JSON, err)
+		RenderError(out, s.Colour, jsonWanted, err)
 		c.recordRefusal(ctx, s, cmd, "parse_error")
 		return Result{Code: "parse_error", Elapsed: time.Since(start)}
 	}
@@ -210,8 +226,17 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 		return Result{OK: true, Elapsed: time.Since(start)}
 	}
 
+	// The arguments were parsed, so the record is the line as it was typed with
+	// every extra positional masked, as any other one is. A name alone would
+	// hide what was refused from the people who read the trail.
+	if err := refuseSurplusArgs(cmd, parsed, s.Lang); err != nil {
+		RenderError(out, s.Colour, jsonWanted, err)
+		c.recordAudit(ctx, s, cmd, parsed, false, "parse_error")
+		return Result{Code: "parse_error", Elapsed: time.Since(start)}
+	}
+
 	if cmd.Destructive && !parsed.Yes {
-		renderConfirmRequired(out, s, cmd)
+		renderConfirmRequired(out, s, jsonWanted, cmd)
 		c.recordAudit(ctx, s, cmd, parsed, false, "confirmation_required")
 		return Result{Code: "confirmation_required", Elapsed: time.Since(start)}
 	}
@@ -228,7 +253,7 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 		jsonFlag: parsed.JSON,
 	}
 
-	runErr := cmd.Run(ctx, rt)
+	runErr := runRecovered(ctx, cmd, rt)
 	elapsed := time.Since(start)
 
 	ok := runErr == nil
@@ -248,22 +273,65 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	return Result{OK: ok, Code: code, Elapsed: elapsed}
 }
 
-// match finds the longest registered command name that is a prefix of
+// resolve finds the longest registered command name that is a prefix of
 // tokens, up to 4 words — every command today is 1 or 2 words ("clear",
 // "user edit"), and the cap just keeps a wildly long unknown line from
-// costing more than a handful of map lookups.
-func (c *Console) match(tokens []string) (name string, rest []string, found bool) {
+// costing more than a handful of map lookups. The command it returns is the
+// one the caller must run: looking the name up again later can find nothing,
+// because a plugin may have been switched off in between.
+func (c *Console) resolve(tokens []string) (cmd *Command, name string, rest []string, found bool) {
 	max := len(tokens)
 	if max > 4 {
 		max = 4
 	}
 	for n := max; n >= 1; n-- {
 		candidate := strings.Join(tokens[:n], " ")
-		if _, ok := c.reg.lookup(candidate); ok {
-			return candidate, tokens[n:], true
+		if hit, ok := c.reg.lookup(candidate); ok {
+			return hit, candidate, tokens[n:], true
 		}
 	}
-	return tokens[0], tokens[1:], false
+	return nil, tokens[0], tokens[1:], false
+}
+
+// wantsJSON reports whether the line asks for --json before any "--". Every
+// flag after "--" is a positional, so it cannot be the request.
+func wantsJSON(tokens []string) bool {
+	for _, tok := range tokens {
+		if tok == "--" {
+			return false
+		}
+		if tok == "--json" {
+			return true
+		}
+	}
+	return false
+}
+
+// runRecovered runs one command's Run and turns a panic in it into an ordinary
+// internal error. The SSH goroutine's recoverSession would also stop a panic
+// from ending the process, but it ends the whole session and leaves the command
+// unaudited. Recovering here gives both transports the same audited internal
+// error and keeps the session open. The panic value and stack go
+// to the server log only: the value can carry text the command was handed, and
+// the terminal reads what it is shown.
+func runRecovered(ctx context.Context, cmd *Command, rt *Runtime) (err error) {
+	defer func() {
+		p := recover()
+		if p == nil {
+			return
+		}
+		slog.ErrorContext(ctx, "console command panicked",
+			"command", cmd.Name,
+			"panic", p,
+			"stack", string(debug.Stack()),
+		)
+		message := "Something went wrong on our side. The server has logged it."
+		if rt.Session.Lang == "zh" {
+			message = "服务器内部出错，已记入日志。"
+		}
+		err = &CallError{Status: http.StatusInternalServerError, Code: "internal", Message: message}
+	}()
+	return cmd.Run(ctx, rt)
 }
 
 func (c *Console) recordAudit(ctx context.Context, s *Session, cmd *Command, parsed ParsedArgs, ok bool, code string) {
@@ -429,6 +497,17 @@ func quoteIfNeeded(s string) string {
 	return s
 }
 
+// visibleVersion is the build string this account may read, and whether it may
+// read one at all. The version is only a string, but it tells a member which
+// build an attacker would need to target, which is the reason the operator can
+// hide it.
+func (c *Console) visibleVersion(actor user.User) (string, bool) {
+	if c.opts.ShowVersion != nil && !c.opts.ShowVersion() && !actor.IsAdmin() {
+		return "", false
+	}
+	return c.opts.Version, true
+}
+
 // Banner is the SSH login banner and the web terminal's first block.
 func (c *Console) Banner(s *Session) string {
 	site := "Obsidian Arc"
@@ -481,15 +560,28 @@ func roleLabel(role user.Role, lang string) string {
 	return "admin"
 }
 
-func renderUnknown(out io.Writer, s *Session, name string) {
-	if s.Lang == "zh" {
-		fmt.Fprintf(out, "未知命令 %q。输入 'help' 查看可用命令。\n", name)
+// refuse writes a refusal the way the caller reads output. In text it is the
+// sentence a terminal reads; under --json it is the {"error":…} envelope a
+// failing command writes, because `… --json | jq` must not receive prose where
+// it expects an object. Every refusal goes through here so no path forgets which
+// of the two it is.
+func refuse(out io.Writer, jsonMode bool, code, message string) {
+	if jsonMode {
+		RenderError(out, false, true, &CallError{Code: code, Message: message})
 		return
 	}
-	fmt.Fprintf(out, "Unknown command %q. Type 'help' to see what is available.\n", name)
+	fmt.Fprintln(out, message)
 }
 
-func renderPermissionDenied(out io.Writer, s *Session, cmd *Command) {
+func renderUnknown(out io.Writer, s *Session, jsonMode bool, name string) {
+	if s.Lang == "zh" {
+		refuse(out, jsonMode, "unknown_command", fmt.Sprintf("未知命令 %q。输入 'help' 查看可用命令。", name))
+		return
+	}
+	refuse(out, jsonMode, "unknown_command", fmt.Sprintf("Unknown command %q. Type 'help' to see what is available.", name))
+}
+
+func renderPermissionDenied(out io.Writer, s *Session, jsonMode bool, cmd *Command) {
 	grant := cmd.Permission
 	if grant == "" {
 		// Unreachable in practice: hasPermission("") is true for any
@@ -499,16 +591,16 @@ func renderPermissionDenied(out io.Writer, s *Session, cmd *Command) {
 		grant = "administrators"
 	}
 	if s.Lang == "zh" {
-		fmt.Fprintf(out, "权限不足：此命令需要 %q 权限。\n", grant)
+		refuse(out, jsonMode, "permission_denied", fmt.Sprintf("权限不足：此命令需要 %q 权限。", grant))
 		return
 	}
-	fmt.Fprintf(out, "permission denied: this command needs the %q grant\n", grant)
+	refuse(out, jsonMode, "permission_denied", fmt.Sprintf("permission denied: this command needs the %q grant", grant))
 }
 
-func renderConfirmRequired(out io.Writer, s *Session, cmd *Command) {
+func renderConfirmRequired(out io.Writer, s *Session, jsonMode bool, cmd *Command) {
 	if s.Lang == "zh" {
-		fmt.Fprintf(out, "此操作不可撤销：加上 --yes（或 -y）确认，例如 %s --yes\n", cmd.Name)
+		refuse(out, jsonMode, "confirmation_required", fmt.Sprintf("此操作不可撤销：加上 --yes（或 -y）确认，例如 %s --yes", cmd.Name))
 		return
 	}
-	fmt.Fprintf(out, "this is destructive: add --yes (or -y) to confirm, e.g. %s --yes\n", cmd.Name)
+	refuse(out, jsonMode, "confirmation_required", fmt.Sprintf("this is destructive: add --yes (or -y) to confirm, e.g. %s --yes", cmd.Name))
 }

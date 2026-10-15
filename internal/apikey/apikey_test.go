@@ -408,3 +408,79 @@ func TestKeyCanRestrictSeveralModelsAndClearTheRestriction(t *testing.T) {
 		t.Errorf("cleared restriction = %+v, want no models", updated)
 	}
 }
+
+// A key that is both paused and past its end is absent, as an expired key is.
+// Resuming it could never make it work, so it must not be reported as paused.
+func TestPausedAndExpiredKeyIsReportedAbsent(t *testing.T) {
+	ctx := context.Background()
+	store, owner, _ := newStore(t)
+
+	created, token, err := store.Issue(ctx, owner, "paused then expired", "", time.Now().Add(time.Hour).UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := true
+	if _, err := store.Update(ctx, owner, created.ID, Update{Disabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Minute).UnixMilli()
+	if _, err := store.Update(ctx, owner, created.ID, Update{ExpiresAt: &past}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Resolve(ctx, token); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("paused and expired key resolved as %v, want ErrNotFound", err)
+	}
+}
+
+// List reads every restriction in one query now. Each key must still get its
+// own models, the unrestricted key none, a legacy row its single model, and
+// another account's key must not appear at all.
+func TestListCarriesEachKeysOwnRestrictions(t *testing.T) {
+	ctx := context.Background()
+	store, owner, stranger := newStore(t)
+
+	restricted, _, err := store.IssueModels(ctx, owner, "restricted", []string{"model-b", "model-a"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, _, err := store.IssueModels(ctx, owner, "open", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, _, err := store.IssueModels(ctx, owner, "legacy", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(ctx, `UPDATE api_keys SET model_id = ? WHERE id = ?`, "model-legacy", legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+	theirs, _, err := store.IssueModels(ctx, stranger, "theirs", []string{"model-other"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := store.List(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Key{}
+	for _, key := range listed {
+		byID[key.ID] = key
+	}
+	if len(listed) != 3 {
+		t.Fatalf("listed %d keys, want the owner's three", len(listed))
+	}
+	if got := strings.Join(byID[restricted.ID].ModelIDs, ","); got != "model-a,model-b" {
+		t.Errorf("restricted key models = %q, want model-a,model-b", got)
+	}
+	if got := byID[open.ID].ModelIDs; got == nil || len(got) != 0 {
+		t.Errorf("unrestricted key models = %#v, want an empty list", got)
+	}
+	if got := strings.Join(byID[legacy.ID].ModelIDs, ","); got != "model-legacy" {
+		t.Errorf("legacy key models = %q, want model-legacy", got)
+	}
+	if _, leaked := byID[theirs.ID]; leaked {
+		t.Error("another account's key appeared in the owner's list")
+	}
+}

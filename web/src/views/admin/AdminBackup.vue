@@ -36,7 +36,7 @@ interface BackupForm {
 }
 
 const view = useAdminView();
-view.setTitle(t('navBackup'), t('backupSubtitle'));
+view.setTitle(() => t('navBackup'), () => t('backupSubtitle'));
 
 const snapshot = ref<AdminBackup | null>(null);
 const form = ref<BackupForm>({
@@ -58,6 +58,9 @@ const baseline = ref('');
 const loaded = ref(false);
 const loading = ref(false);
 const busy = ref(false);
+// Only the run itself reads as "Running": busy also covers a save and a storage
+// test, which start nothing.
+const runPending = ref(false);
 const error = ref('');
 const actionError = ref('');
 const notice = ref('');
@@ -263,6 +266,7 @@ async function testStorage(): Promise<void> {
 async function runBackup(): Promise<void> {
   if (actionDisabled.value) return;
   busy.value = true;
+  runPending.value = true;
   actionError.value = '';
   notice.value = '';
   try {
@@ -273,6 +277,7 @@ async function runBackup(): Promise<void> {
     actionError.value = message(failure);
   } finally {
     busy.value = false;
+    runPending.value = false;
   }
 }
 
@@ -360,7 +365,7 @@ onMounted(load);
             {{ t('backupTest') }}
           </button>
           <button type="button" class="oa-btn primary" :disabled="actionDisabled" @click="runBackup">
-            {{ busy && !dirty ? t('backupStatusRunning') : t('backupRun') }}
+            {{ runPending || snapshot?.running ? t('backupStatusRunning') : t('backupRun') }}
           </button>
         </div>
         <p v-if="dirty" class="oa-field-hint">{{ t('backupActionsHint') }}</p>

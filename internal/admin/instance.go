@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/screening"
@@ -93,11 +95,15 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	day := usage.Filter{Since: now.Add(-24 * time.Hour).UnixMilli()}
+	// Both edges sit on the hour. The ledger is rolled up by hour and the
+	// store compares the start hour-aligned but the end exactly, so an edge
+	// inside an hour would count that hour on both sides of the boundary.
+	dayStart := now.Add(-24 * time.Hour).Truncate(time.Hour).UnixMilli()
+	day := usage.Filter{Since: dayStart}
 	// The day before that, so each of the day's figures can say which way it
 	// moved. A figure with no direction is a number to memorise; one with an
 	// arrow is a thing to act on.
-	dayBefore := usage.Filter{Since: now.Add(-48 * time.Hour).UnixMilli(), Until: day.Since}
+	dayBefore := usage.Filter{Since: now.Add(-48 * time.Hour).Truncate(time.Hour).UnixMilli(), Until: dayStart}
 	week := usage.Filter{Since: now.AddDate(0, 0, -7).UnixMilli()}
 
 	metric := r.URL.Query().Get("metric")
@@ -126,7 +132,7 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 	if canSeeUsage {
 		reads = append(reads,
 			func() (err error) { topUsers, err = h.usage.GroupBy(ctx, "user", metric, week); return },
-			func() (err error) { recent, _, err = h.usage.List(ctx, usage.Filter{Limit: 8}); return },
+			func() (err error) { recent, err = h.usage.Newest(ctx, 8); return },
 		)
 	}
 	if err := together(reads...); err != nil {
@@ -316,6 +322,7 @@ var writableSettings = map[string]bool{
 	settings.TrialModel:                 true,
 	settings.DefaultSystemPrompt:        true,
 	settings.ConversationMaxTurns:       true,
+	settings.AllowArchive:               true,
 	settings.APIEnabled:                 true,
 	settings.AttachmentMaxMB:            true,
 	settings.AttachmentRetain:           true,
@@ -362,6 +369,60 @@ var numericBounds = map[string][2]int{
 	// the save alone, an import used to store a retention the save refuses.
 	settings.AttachmentPurgeDays:  {0, 3650},
 	settings.AttachmentOrphanMins: {5, 1440},
+	// Thresholds and retention the availability checker applies to every model.
+	// Above 100 a success-rate threshold disables every model that has samples,
+	// and a retention of zero stops pruning, so these are bounded like the rest.
+	settings.HealthWindowMins:   {1, 7 * 24 * 60},
+	settings.HealthDisableAfter: {0, 1000},
+	settings.HealthRetainDays:   {1, 3650},
+	settings.HealthDisableBelow: {0, 100},
+	settings.HealthWarnBelow:    {0, 100},
+	// The signup throttles, the proof-of-work numbers, the concurrency and turn
+	// limits and the trial. Where the form gives a range it is used; where it gives
+	// only a minimum, the ceiling is the server's own, far above anything a site
+	// uses.
+	// Unbounded, a value typed as text was read as the default, and a limit of
+	// zero or less is not enforced at all, so sign-up throttling went quietly off.
+	settings.SignupsPerMinute:     {0, 1000},
+	settings.SignupsPerHour:       {0, 10000},
+	settings.SignupsPerIP:         {0, 10000},
+	settings.SignupsIPWindowMin:   {1, 7 * 24 * 60},
+	settings.PoWBaseMaxNumber:     {1, 10000000},
+	settings.PoWElevatedMaxNumber: {1, 10000000},
+	settings.PoWThreshold:         {1, 1000},
+	settings.QuotaMaxConcurrent:   {0, 100},
+	settings.ConversationMaxTurns: {2, 200},
+	settings.TrialTurns:           {1, 20},
+	settings.AttachmentMaxMB:      {1, settings.MaxAttachmentCeilingMB},
+	// A millisecond timestamp, written by the reset itself. Only its sign and
+	// its width are checked, which is all the uptime baseline can use.
+	settings.HealthResetAt: {0, math.MaxInt},
+}
+
+// overlongNotice lists the home-notice keys holding more characters than they
+// may, in the order the save reports them. The notice is served to people who
+// have not signed in, so the save and the import both measure it here rather
+// than trusting what the form or the file sent.
+func overlongNotice(body map[string]string) []string {
+	var over []string
+	if text, present := body[settings.HomeNotice]; present && utf8.RuneCountInString(text) > settings.MaxHomeNoticeTitleChars {
+		over = append(over, settings.HomeNotice)
+	}
+	if text, present := body[settings.HomeNoticeBody]; present && utf8.RuneCountInString(text) > settings.MaxHomeNoticeBodyChars {
+		over = append(over, settings.HomeNoticeBody)
+	}
+	return over
+}
+
+// twoFactorRecheckNeeded reports whether a save changes one of the two second-step
+// switches whose check reads the saver's own row. Only those saves take the
+// instance lock inside the write; any other save would queue behind every
+// registration and demotion for nothing. The issuer is left out because its
+// check reads only the request, and the snapshot pass already refuses a bad one.
+func twoFactorRecheckNeeded(values map[string]string) bool {
+	_, policy := values[settings.TwoFactorPolicy]
+	_, backoffice := values[settings.TwoFactorBackofficeMode]
+	return policy || backoffice
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
@@ -445,8 +506,14 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		return httpx.BadRequest("The PWA icon must be a path on this server or a data URI.")
 	}
 	// A trial model that does not exist would make the front door offer a
-	// conversation it cannot hold.
-	if modelID, present := body[settings.TrialModel]; present && modelID != "" {
+	// conversation it cannot hold, and a missing sign-up reviewer model would
+	// point the reviewer at nothing. The import checks the same two keys and
+	// clears what it cannot use; a save names the problem instead.
+	for _, key := range []string{settings.TrialModel, settings.SignupReviewModel} {
+		modelID, present := body[key]
+		if !present || modelID == "" {
+			continue
+		}
 		if !isValidID(modelID) {
 			return httpx.BadRequest("Malformed model id.")
 		}
@@ -491,11 +558,11 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	if tone, present := body[settings.HomeNoticeTone]; present && !settings.ValidHomeNoticeTone(tone) {
 		return httpx.BadRequest("Unknown notice tone %q.", tone)
 	}
-	if text, present := body[settings.HomeNotice]; present && utf8.RuneCountInString(text) > settings.MaxHomeNoticeTitleChars {
-		return httpx.BadRequest("The notice line is at most %d characters; put the rest in the text that opens from it.",
-			settings.MaxHomeNoticeTitleChars)
-	}
-	if text, present := body[settings.HomeNoticeBody]; present && utf8.RuneCountInString(text) > settings.MaxHomeNoticeBodyChars {
+	if over := overlongNotice(body); len(over) > 0 {
+		if over[0] == settings.HomeNotice {
+			return httpx.BadRequest("The notice line is at most %d characters; put the rest in the text that opens from it.",
+				settings.MaxHomeNoticeTitleChars)
+		}
 		return httpx.BadRequest("The notice text is at most %d characters.", settings.MaxHomeNoticeBodyChars)
 	}
 	if identity, present := body[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
@@ -517,8 +584,29 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 
-	if err := h.settings.SetMany(r.Context(), body); err != nil {
-		return httpx.Internal(err)
+	// The check above reads the saver's account from the request, which can
+	// predate a second step switched off by another request in the meantime.
+	// The same test runs on the row read inside the write's transaction, under
+	// the instance lock that disabling a second step also takes.
+	recheck := func(q database.Queryer) error {
+		fresh, err := h.users.ByID(r.Context(), q, auth.MustUser(r.Context()).ID)
+		if err != nil {
+			return translateUserError(err)
+		}
+		return checkTwoFactorSettings(fresh, body)
+	}
+	var save error
+	if twoFactorRecheckNeeded(body) {
+		save = h.settings.SetManyChecked(r.Context(), body, recheck)
+	} else {
+		save = h.settings.SetMany(r.Context(), body)
+	}
+	if save != nil {
+		var response *httpx.Error
+		if errors.As(save, &response) {
+			return response
+		}
+		return httpx.Internal(save)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"settings": h.visibleSettings(auth.MustUser(r.Context()))})
 }
@@ -536,6 +624,9 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 //
 // Unknown keys are skipped rather than refused for the same reason: a
 // document written by a newer release should not be unusable by this one.
+// Keys outside this administrator's grants are skipped and named too: a file
+// spans several sections, and refusing it whole would drop the ones they may
+// change.
 func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error {
 	var body map[string]string
 	if err := httpx.DecodeJSON(w, r, &body, 256*1024); err != nil {
@@ -555,10 +646,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 	skipped := []string{}
 
 	for key, value := range body {
-		if !hasPermission(auth.MustUser(r.Context()), h.settingPermission(key)) {
-			return permissionDenied()
-		}
-		if !h.writable(key) || len(value) > 8*1024 {
+		if !hasPermission(auth.MustUser(r.Context()), h.settingPermission(key)) || !h.writable(key) || len(value) > 8*1024 {
 			skipped = append(skipped, key)
 			continue
 		}
@@ -661,6 +749,13 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 
+	// The save refuses these lengths; the import drops the key and names it, so a
+	// file from elsewhere cannot put a longer notice in front of signed-out visitors.
+	for _, key := range overlongNotice(applied) {
+		delete(applied, key)
+		skipped = append(skipped, key)
+	}
+
 	// The identifiers that name a model, and the one that names a group. A
 	// dangling one is cleared rather than carried, so the instance ends up in
 	// a state it can describe: "no default group" beats "a default group that
@@ -698,8 +793,34 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 
-	if err := h.settings.SetMany(r.Context(), applied); err != nil {
-		return httpx.Internal(err)
+	// The two-step keys were checked against the request's snapshot above. The
+	// same keys are checked again against the saver's row as the write commits,
+	// as updateSettings does, and dropped and named there too.
+	recheck := func(q database.Queryer) error {
+		fresh, err := h.users.ByID(r.Context(), q, auth.MustUser(r.Context()).ID)
+		if err != nil {
+			return translateUserError(err)
+		}
+		for _, key := range []string{settings.TwoFactorPolicy, settings.TwoFactorIssuer, settings.TwoFactorBackofficeMode} {
+			if value, present := applied[key]; present && checkTwoFactorSettings(fresh, map[string]string{key: value}) != nil {
+				delete(applied, key)
+				skipped = append(skipped, key)
+			}
+		}
+		return nil
+	}
+	var save error
+	if twoFactorRecheckNeeded(applied) {
+		save = h.settings.SetManyChecked(r.Context(), applied, recheck)
+	} else {
+		save = h.settings.SetMany(r.Context(), applied)
+	}
+	if save != nil {
+		var response *httpx.Error
+		if errors.As(save, &response) {
+			return response
+		}
+		return httpx.Internal(save)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"settings": h.visibleSettings(auth.MustUser(r.Context())),
@@ -816,6 +937,14 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 	}
 
 	if body.HTML != nil {
+		// A page runs script for every visitor, signed in or not, and the
+		// front door frames it with the sign-in form in view. The settings
+		// grant covers pictures; a delegated holder must not be able to put
+		// a page in front of people that sends what they type somewhere else,
+		// so the page itself is reserved for a super administrator.
+		if !auth.MustUser(r.Context()).IsSuperAdmin() {
+			return permissionDenied()
+		}
 		at, err := h.settings.SetHTMLBackground(r.Context(), variant, *body.HTML)
 		switch {
 		case errors.Is(err, settings.ErrLoginBackgroundTooLarge):

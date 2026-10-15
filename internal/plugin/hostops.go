@@ -54,11 +54,21 @@ type callState struct {
 	// writes.
 	logCalls, logBytes int
 	auditWrites        int
-	// The console's own error from the last operation that failed, as it was
-	// before it became a message a backend could read: what the terminal draws
-	// (the endpoint's code beside its sentence, JSON when asked) is made from
-	// it, and a command that only passes the failure on should get exactly that.
-	consoleErr error
+	// The console's own errors from the operations of this invocation that
+	// failed, as they were before each became a message a backend could read,
+	// keyed by that message. What the terminal draws (the endpoint's code beside
+	// its sentence, JSON when asked) is made from them: a command may make
+	// several refused calls and return one of them, and the terminal must draw
+	// the one returned, not whichever failed last.
+	consoleErrs map[string]error
+}
+
+// noteConsoleErr keeps a console failure under the message the backend is given.
+func (st *callState) noteConsoleErr(err error) {
+	if st.consoleErrs == nil {
+		st.consoleErrs = map[string]error{}
+	}
+	st.consoleErrs[err.Error()] = err
 }
 
 // finish ends whatever the invocation left open. A transaction the backend
@@ -223,7 +233,22 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if err != nil {
 				return nil, err
 			}
-			return nil, m.host.Auth.Sessions().DeleteByUser(c.Ctx, q, a.UserID)
+			return nil, m.granted(c.Ctx, q, c.Info.Actor, a.UserID, "users", func(q database.Queryer) error {
+				// Signing an administrator out is the same reach as suspending one,
+				// so it takes the super administrator rule changeAccount applies. The
+				// users grant alone would let a delegate end the owner's sessions. A
+				// sweep has no actor and is refused the same way.
+				target, err := m.users.ByID(c.Ctx, q, a.UserID)
+				switch {
+				case err == nil:
+					if target.IsAdmin() && !m.superAdminActing(c.Ctx, q, c.Info.Actor) && (c.Info.Actor == nil || c.Info.Actor.ID != a.UserID) {
+						return &wasm.HostError{Code: "admin_account", Message: "a plugin cannot sign an administrator out of their sessions"}
+					}
+				case !errors.Is(err, user.ErrNotFound):
+					return &wasm.HostError{Code: "users", Message: err.Error()}
+				}
+				return m.host.Auth.Sessions().DeleteByUser(c.Ctx, q, a.UserID)
+			})
 
 		case "notify.push":
 			if err := need(arcx.PermNotify); err != nil {
@@ -287,6 +312,13 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if err := json.Unmarshal(raw, &a); err != nil || a.Event == "" {
 				return nil, badArg("security.record needs an event")
 			}
+			// A package names its own events. An entry under one of the core's
+			// names would read as the core's own (a console command that never
+			// ran, say), and a source label cannot say otherwise, so it is refused
+			// rather than filed.
+			if coreEvents[strings.TrimSpace(a.Event)] {
+				return nil, badArg("security.record: %s is an event the server writes itself", strings.TrimSpace(a.Event))
+			}
 			severity := securityevents.Severity(a.Severity)
 			switch severity {
 			case "", securityevents.SeverityInfo, securityevents.SeverityWarning, securityevents.SeverityDanger:
@@ -336,9 +368,17 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if err != nil {
 				return nil, err
 			}
-			revoked, err := m.host.Cards.RevokeAvailable(c.Ctx, q, a.UserID, a.Count)
+			var revoked int
+			err = m.granted(c.Ctx, q, c.Info.Actor, a.UserID, "users", func(q database.Queryer) error {
+				n, err := m.host.Cards.RevokeAvailable(c.Ctx, q, a.UserID, a.Count)
+				if err != nil {
+					return &wasm.HostError{Code: "cards", Message: err.Error()}
+				}
+				revoked = n
+				return nil
+			})
 			if err != nil {
-				return nil, &wasm.HostError{Code: "cards", Message: err.Error()}
+				return nil, err
 			}
 			return revoked, nil
 
@@ -369,7 +409,7 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if st.console == nil {
 				return nil, &wasm.HostError{Code: "no_console", Message: "this call is not running a console command"}
 			}
-			return m.consoleOp(st, op, raw)
+			return m.consoleOp(c, st, op, raw)
 		}
 		return nil, &wasm.HostError{Code: "unknown_op", Message: "the server has no host call named " + op}
 	}
@@ -384,12 +424,21 @@ func truncate(s string, n int) string {
 
 // queryer is the database the call is talking to: the open transaction when
 // the backend said its statement belongs to it, the pool otherwise.
+//
+// While a transaction is open the pool is refused. The transaction holds the
+// instance row from db.begin, and a statement on another connection that
+// needs that row (any change to an account takes it) would wait on the call's
+// own transaction until the deadline. The backend has to end the transaction
+// or put the statement inside it.
 func (m *Manager) queryer(st *callState, useTx bool) (database.Queryer, error) {
 	if useTx {
 		if st.tx == nil {
 			return nil, &wasm.HostError{Code: "no_tx", Message: "there is no open transaction"}
 		}
 		return st.tx, nil
+	}
+	if st.tx != nil {
+		return nil, &wasm.HostError{Code: "tx_open", Message: "a statement outside the open transaction cannot run; put it in the transaction or end the transaction first"}
 	}
 	return m.db, nil
 }
@@ -402,6 +451,15 @@ func (m *Manager) dbOp(c *wasm.Call, st *callState, op string, raw json.RawMessa
 		}
 		tx, err := m.db.Begin(c.Ctx)
 		if err != nil {
+			return nil, err
+		}
+		// The instance row is taken here, before the backend's first write and
+		// in the order the backoffice takes it (the instance row, then accounts).
+		// Taken at the first write instead, a read-only transaction would hold
+		// nothing, and a transaction that writes an account first would deadlock
+		// against an administrator's change to the same account.
+		if err := settings.Lock(c.Ctx, tx); err != nil {
+			_ = tx.Rollback()
 			return nil, err
 		}
 		st.tx = tx
@@ -631,9 +689,18 @@ var fetchClient = &http.Client{
 		IdleConnTimeout:       60 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 	},
-	CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("too many redirects")
+		}
+		// The headers a backend sets are the package's own upstream credentials,
+		// and the client copies them to every hop. Go's client removes its
+		// credential headers (Authorization, Cookie, and the WWW-Authenticate and
+		// Proxy variants) when a hop leaves the domain, but copies every other
+		// header, including the backend's own key, so on a hop to another origin
+		// every header is dropped here, before the copy is sent.
+		if req.URL.Scheme != via[0].URL.Scheme || req.URL.Host != via[0].URL.Host {
+			req.Header = http.Header{}
 		}
 		return nil
 	},
@@ -785,8 +852,18 @@ func (m *Manager) userOp(c *wasm.Call, st *callState, op string, raw json.RawMes
 			return nil, badArg("users.set_status needs an id and a status of active or disabled")
 		}
 		return nil, m.changeAccount(c.Ctx, q, c.Info.Actor, a.ID, false, func(q database.Queryer) error {
-			_, err := m.users.UpdateAdminFields(c.Ctx, q, a.ID, user.AdminUpdate{Status: &status})
-			return err
+			if _, err := m.users.UpdateAdminFields(c.Ctx, q, a.ID, user.AdminUpdate{Status: &status}); err != nil {
+				return err
+			}
+			// The core ends the account's sessions in the same transaction as the
+			// suspension. Left alone, a session survives it and comes back when
+			// an administrator re-activates the account. A Manager with no host
+			// has no session store to end, and a running server always attaches
+			// its host.
+			if status == user.StatusDisabled && m.host != nil {
+				return m.host.Auth.Sessions().DeleteByUser(c.Ctx, q, a.ID)
+			}
+			return nil
 		})
 	default:
 		if a.ID == "" {
@@ -819,6 +896,12 @@ func (m *Manager) changeAccount(ctx context.Context, q database.Queryer, actor *
 		if err := settings.Lock(ctx, tx); err != nil {
 			return err
 		}
+		// Before the lookup, so a caller without the grant gets the same refusal
+		// whether or not the account exists; after it, the answer would tell
+		// apart an account that is there from one that is not.
+		if !m.actorMay(ctx, tx, actor, id, "users") {
+			return actorGrantDenied()
+		}
 		target, err := m.users.ByID(ctx, tx, id)
 		if err != nil {
 			if deleting && errors.Is(err, user.ErrNotFound) {
@@ -849,6 +932,52 @@ func (m *Manager) changeAccount(ctx context.Context, q database.Queryer, actor *
 	return m.db.Tx(ctx, run)
 }
 
+// actorGrantDenied is the refusal for a request that acts on an account it does
+// not speak for, without the administrator's grant that covers the change.
+func actorGrantDenied() error {
+	return &wasm.HostError{Code: "permission_denied", Message: "a plugin acting for another account needs that administrator's grant"}
+}
+
+// granted makes a change to target that the request's grant must cover, with the
+// check and the change in one unit. Left apart, a grant an administrator takes
+// away between the two is still honoured. The acting account's row is locked
+// first, so a revocation either waits for the change to end or lands before the
+// check reads the grant. When the backend has a transaction open the lock is
+// taken in that one and held until the backend ends it; otherwise the check and
+// the change share a short transaction of their own, which never spans a
+// provider call.
+func (m *Manager) granted(ctx context.Context, q database.Queryer, actor *wasm.Actor, target, permission string, change func(database.Queryer) error) error {
+	run := func(tx *database.Tx) error {
+		if actor != nil && actor.ID != "" && actor.ID != target {
+			if _, err := tx.Exec(ctx, `UPDATE users SET updated_at = updated_at WHERE id = ?`, actor.ID); err != nil {
+				return err
+			}
+		}
+		if !m.actorMay(ctx, tx, actor, target, permission) {
+			return actorGrantDenied()
+		}
+		return change(tx)
+	}
+	if tx, ok := q.(*database.Tx); ok {
+		return run(tx)
+	}
+	return m.db.Tx(ctx, run)
+}
+
+// actorMay is whether the request a call answers for may act on the account
+// target under the grant permission. An account acting on itself is
+// self-service, and a call with no actor is a sweep's, which has no request to
+// answer for. Anybody else's account needs an active administrator holding the
+// grant, read again here as superAdminActing reads the role, so a grant taken
+// away since the session began is not used.
+func (m *Manager) actorMay(ctx context.Context, q database.Queryer, actor *wasm.Actor, target, permission string) bool {
+	if actor == nil || actor.ID == "" || actor.ID == target {
+		return true
+	}
+	account, err := m.users.ByID(ctx, q, actor.ID)
+	return err == nil && account.IsActive() && account.CanAdmin(permission)
+}
+
 // superAdminActing is whether the call is being made by an active super
 // administrator, as the account reads now rather than as the session read
 // when the request began.
@@ -872,16 +1001,7 @@ const maxBonusDays = 36500
 // card store. The grant is marked as the plugin's, so the bonus page can say
 // where it came from.
 func (m *Manager) rewardOp(c *wasm.Call, st *callState, plugin, op string, raw json.RawMessage) (any, error) {
-	var a struct {
-		UserID    string  `json:"user_id"`
-		BarID     string  `json:"bar_id"`
-		Amount    float64 `json:"amount"`
-		Count     int     `json:"count"`
-		ValidDays int     `json:"valid_days"`
-		Name      string  `json:"name"`
-		Note      string  `json:"note"`
-		TX        bool    `json:"tx"`
-	}
+	var a rewardRequest
 	if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" || a.ValidDays < 0 {
 		return nil, badArg("%s needs a user_id, and valid_days of zero or more", op)
 	}
@@ -889,6 +1009,40 @@ func (m *Manager) rewardOp(c *wasm.Call, st *callState, plugin, op string, raw j
 	if err != nil {
 		return nil, err
 	}
+	// Crediting an account another person is signed in to is an administrator's
+	// grant, the same one the backoffice needs for it; a package may still reward
+	// the account a request is for.
+	grant := "usage"
+	if op == "rewards.cards" {
+		grant = "users"
+	}
+	var out any
+	err = m.granted(c.Ctx, q, c.Info.Actor, a.UserID, grant, func(q database.Queryer) error {
+		var err error
+		out, err = m.reward(c, q, plugin, op, a)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// rewardRequest is what the rewards.bonus and rewards.cards calls take.
+type rewardRequest struct {
+	UserID    string  `json:"user_id"`
+	BarID     string  `json:"bar_id"`
+	Amount    float64 `json:"amount"`
+	Count     int     `json:"count"`
+	ValidDays int     `json:"valid_days"`
+	Name      string  `json:"name"`
+	Note      string  `json:"note"`
+	TX        bool    `json:"tx"`
+}
+
+// reward makes the credit a rewards call asks for. rewardOp has already checked
+// the grant under the same transaction, so this only reads and writes.
+func (m *Manager) reward(c *wasm.Call, q database.Queryer, plugin, op string, a rewardRequest) (any, error) {
 	if op == "rewards.cards" {
 		if m.host == nil || m.host.Cards == nil {
 			return nil, &wasm.HostError{Code: "unavailable", Message: "this server has no reset cards"}
@@ -920,14 +1074,24 @@ func (m *Manager) rewardOp(c *wasm.Call, st *callState, plugin, op string, raw j
 	expires := int64(0)
 	if a.ValidDays > 0 {
 		expires = now.Add(time.Duration(a.ValidDays) * 24 * time.Hour).UnixMilli()
-	} else if bar, err := m.host.Bonus.Bar(c.Ctx, q, a.BarID); err == nil && bar.DefaultExpiresAt > 0 {
-		// A bar whose default lifetime has run out would, taken as zero, hand out
-		// credit that never expires — the opposite of what its owner set. The
-		// plugin can still say how long it wants with valid_days.
-		if bar.DefaultExpiresAt <= now.UnixMilli() {
-			return nil, &wasm.HostError{Code: "bonus_bar_expired", Message: "the bonus bar's default expiry has passed; give valid_days"}
+	} else {
+		bar, err := m.host.Bonus.Bar(c.Ctx, q, a.BarID)
+		switch {
+		case errors.Is(err, bonus.ErrNotFound):
+			// GrantTo answers for a bar that is not there.
+		case err != nil:
+			// A lookup that failed for any other reason must not fall through to
+			// zero, which is the same credit that never expires.
+			return nil, &wasm.HostError{Code: "bonus", Message: err.Error()}
+		case bar.DefaultExpiresAt > 0:
+			// A bar whose default lifetime has run out would, taken as zero, hand
+			// out credit that never expires — the opposite of what its owner set.
+			// The plugin can still say how long it wants with valid_days.
+			if bar.DefaultExpiresAt <= now.UnixMilli() {
+				return nil, &wasm.HostError{Code: "bonus_bar_expired", Message: "the bonus bar's default expiry has passed; give valid_days"}
+			}
+			expires = bar.DefaultExpiresAt
 		}
-		expires = bar.DefaultExpiresAt
 	}
 	if _, err := m.host.Bonus.GrantTo(c.Ctx, q, a.BarID, a.UserID, a.Amount, expires, "plugin:"+plugin, a.Note); err != nil {
 		switch {
@@ -968,7 +1132,16 @@ func (m *Manager) challengeOp(c *wasm.Call, op string, raw json.RawMessage) (any
 	return nil, nil
 }
 
-func (m *Manager) consoleOp(st *callState, op string, raw json.RawMessage) (any, error) {
+func (m *Manager) consoleOp(c *wasm.Call, st *callState, op string, raw json.RawMessage) (any, error) {
+	// Bound to the invocation: a call the backend made must not outlive the
+	// deadline the backend was given, which the console session's own context
+	// does not carry. The runtime is the command's own, not a copy: Call leaves
+	// the body it received on the receiver, which is what --json prints, so the
+	// command has to read it from the runtime that made the call. Its context is
+	// put back when the call returns, since the command goes on under its own.
+	prev := st.console.Ctx
+	st.console.Ctx = c.Ctx
+	defer func() { st.console.Ctx = prev }()
 	rt := st.console
 	switch op {
 	case "console.resolve_user":
@@ -980,11 +1153,18 @@ func (m *Manager) consoleOp(st *callState, op string, raw json.RawMessage) (any,
 		}
 		id, err := console.ResolveUser(rt, a.Ref)
 		if err != nil {
-			st.consoleErr = err
+			st.noteConsoleErr(err)
 			return nil, &wasm.HostError{Code: "console", Message: err.Error()}
 		}
 		return id, nil
 	default:
+		// The endpoint may reach outside the server (a mail test, a health probe),
+		// and a transaction held open across that call keeps its connection and
+		// the rows it locked for as long as the call takes. http.fetch refuses for
+		// the same reason.
+		if st.tx != nil {
+			return nil, &wasm.HostError{Code: "tx_open", Message: "a console command cannot run while a transaction is open"}
+		}
 		var a struct {
 			Method string `json:"method"`
 			Path   string `json:"path"`
@@ -996,9 +1176,12 @@ func (m *Manager) consoleOp(st *callState, op string, raw json.RawMessage) (any,
 		if !strings.HasPrefix(a.Path, "/api/admin/") {
 			return nil, badArg("console.call reaches administrative endpoints only")
 		}
+		if !rt.MayCall(a.Method) {
+			return nil, badArg("console.call: %s is not an endpoint this command declares", a.Method)
+		}
 		data, _, err := rt.Call(a.Method, a.Path, a.Body)
 		if err != nil {
-			st.consoleErr = err
+			st.noteConsoleErr(err)
 			return nil, &wasm.HostError{Code: "console", Message: err.Error()}
 		}
 		return map[string]any{"data": data}, nil
@@ -1048,7 +1231,28 @@ func securitySource(plugin, claimed string, admin bool) string {
 }
 
 // coreSources are the labels the core writes security events under, apart
-// from "admin", which securitySource handles itself.
+// from "admin", which securitySource handles itself. "web" and "ssh" are the
+// transports a console command is recorded under.
 var coreSources = map[string]bool{
 	"backoffice": true, "system": true, "user": true, "ai": true, "chat_speed": true,
+	"web": true, "ssh": true,
+}
+
+// coreEvents are the event names the core records itself (internal/security,
+// the admin's account actions and log prune). A package's entries carry its
+// own names.
+var coreEvents = map[string]bool{
+	securityevents.EventSignupReview:       true,
+	securityevents.EventAPIRestriction:     true,
+	securityevents.EventAPIRestrictionLift: true,
+	securityevents.EventChatChallenge:      true,
+	securityevents.EventPoWChallenge:       true,
+	securityevents.EventTurnstileChallenge: true,
+	securityevents.EventConsoleCommand:     true,
+	securityevents.EventTwoFactor:          true,
+	securityevents.EventNewDevice:          true,
+	securityevents.EventPlugin:             true,
+	securityevents.EventPasswordReset:      true,
+	securityevents.EventAccountDeleted:     true,
+	"log_prune":                            true,
 }

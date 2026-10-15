@@ -104,7 +104,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) ([]Code, error) {
 	if kind != CodeKindBatch && kind != CodeKindPartner {
 		// CodeKindPersonal is minted only by createPersonal, never through
 		// this administrative path.
-		return nil, ErrPartnerFields
+		return nil, ErrInvalidKind
 	}
 	custom := Normalise(in.Code)
 	if custom != "" {
@@ -293,8 +293,14 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]Code, int, error
 		where = append(where, "ic.revoked_at <> 0")
 	}
 	if q := strings.TrimSpace(filter.Query); q != "" {
-		where = append(where, "(ic.code LIKE ? OR u.username LIKE ?)")
-		args = append(args, "%"+Normalise(q)+"%", "%"+q+"%")
+		// The escape is declared and the owner's name is lowered, so the
+		// search reads the same on SQLite and PostgreSQL: LIKE is
+		// case-sensitive on PostgreSQL, and an unescaped "_" matches every
+		// row on both.
+		where = append(where, `(ic.code LIKE ? ESCAPE '\' OR LOWER(u.username) LIKE ? ESCAPE '\')`)
+		args = append(args,
+			"%"+database.EscapeLike(Normalise(q))+"%",
+			"%"+database.EscapeLike(strings.ToLower(q))+"%")
 	}
 	clause := strings.Join(where, " AND ")
 

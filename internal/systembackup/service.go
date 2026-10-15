@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,12 @@ type Service struct {
 	mu       sync.Mutex
 	root     context.Context
 	startOne sync.Once
+	// The scheduler's done channel, set inside startOne and read only after it.
+	schedulerDone <-chan struct{}
+	// Scheduled runs, so the scheduler's done channel waits for them as well.
+	// Only the scheduler adds to it, and it is waited on only after the
+	// scheduler has returned, so an Add can never race the Wait.
+	runs sync.WaitGroup
 }
 
 func NewService(db *database.DB, masterKey []byte, version string) (*Service, error) {
@@ -46,13 +53,25 @@ func (s *Service) Save(ctx context.Context, cfg Config) error { return s.store.S
 
 // Start runs the one-minute scheduler. The persisted lease is the exclusion
 // boundary across replicas; this goroutine only decides when to ask for it.
-func (s *Service) Start(ctx context.Context) {
+//
+// The returned channel closes once the scheduler has returned and every backup
+// it started has finished. A backup writes its final status to the database
+// after its context is cancelled, so the caller waits on the channel before
+// closing the database.
+func (s *Service) Start(ctx context.Context) <-chan struct{} {
 	s.startOne.Do(func() {
 		s.mu.Lock()
 		s.root = ctx
 		s.mu.Unlock()
-		go s.schedule(ctx)
+		done := make(chan struct{})
+		s.schedulerDone = done
+		go func() {
+			defer close(done)
+			s.schedule(ctx)
+			s.runs.Wait()
+		}()
 	})
+	return s.schedulerDone
 }
 
 func (s *Service) schedule(ctx context.Context) {
@@ -91,7 +110,11 @@ func (s *Service) startAutomatic(ctx context.Context) {
 		s.complete(ctx, token, "error", err.Error(), 0)
 		return
 	}
-	go s.runClaimed(ctx, token, cfg)
+	s.runs.Add(1)
+	go func() {
+		defer s.runs.Done()
+		s.runClaimed(ctx, token, cfg)
+	}()
 }
 
 // RunNow claims the persistent lease before returning, then runs independently
@@ -152,13 +175,7 @@ func (s *Service) TestConnection(ctx context.Context) error {
 	if err := backend.PutObject(ctx, key, strings.NewReader(string(payload)), int64(len(payload)), hex.EncodeToString(payloadSum[:])); err != nil {
 		return err
 	}
-	var found bool
-	listErr := backend.ListObjects(ctx, key, func(object listedObject) error {
-		if object.Key == key {
-			found = true
-		}
-		return nil
-	})
+	found, listErr := probeListed(ctx, backend, key)
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	deleteErr := backend.DeleteObject(cleanupCtx, key)
@@ -174,12 +191,33 @@ func (s *Service) TestConnection(ctx context.Context) error {
 	return nil
 }
 
+// probeListed reports whether the probe's own directory lists the probe. It
+// lists the directory rather than the probe's key: WebDAV names each object by
+// its folder plus its file name, so a listing of the key itself can never match.
+// Both sides are trimmed of slashes because the backends disagree about them at
+// the edges.
+func probeListed(ctx context.Context, backend StorageBackend, key string) (bool, error) {
+	var found bool
+	err := backend.ListObjects(ctx, path.Dir(key), func(object listedObject) error {
+		if strings.Trim(object.Key, "/") == strings.Trim(key, "/") {
+			found = true
+		}
+		return nil
+	})
+	return found, err
+}
+
 func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 	ctx, cancel := context.WithTimeout(parent, MaxRunDuration)
 	defer cancel()
 
+	// Written on a context that outlives the run's deadline. The line that says
+	// why a run timed out is the one written after the deadline has passed, and
+	// it used to be dropped for exactly those runs.
 	log := func(msg string) {
-		_ = s.store.appendLog(ctx, token, msg)
+		logCtx, cancelLog := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancelLog()
+		_ = s.store.appendLog(logCtx, token, msg)
 	}
 
 	log("Staging database snapshot...")
@@ -232,9 +270,13 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 						retentionHours = DefaultRetentionHours
 					}
 					log(fmt.Sprintf("Upload completed. Checking retention policy (%d hours)...", retentionHours))
-					var pruned int
-					pruned, err = pruneExpired(ctx, backend, cfg, status.InstanceID, time.Now())
-					if err == nil {
+					// The archive is already stored, so a failed prune is a warning on
+					// this run, not a failed run. Reporting it as one would show an
+					// operator a failed backup that exists, and the next run retries.
+					pruned, pruneErr := pruneExpired(ctx, backend, cfg, status.InstanceID, time.Now())
+					if pruneErr != nil {
+						log(fmt.Sprintf("Retention policy could not be applied: %s", pruneErr.Error()))
+					} else {
 						log(fmt.Sprintf("Retention policy applied (pruned %d expired backup(s)).", pruned))
 					}
 				}

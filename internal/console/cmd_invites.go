@@ -51,6 +51,14 @@ func normaliseInviteRef(raw string) string {
 	return out.String()
 }
 
+// The server takes at most 200 rows a page. The cap on pages bounds a search
+// text short enough to match nearly every code: past it the operator is asked
+// for the full code rather than left to wait on hundreds of requests.
+const (
+	inviteSearchPageSize = 200
+	inviteSearchMaxPages = 25
+)
+
 // resolveInviteRef resolves ref to an invite code's id via
 // GET /api/admin/invites, the same shape resolveUserRef gives account
 // commands. The code text is tried first and an id only after: a custom
@@ -60,15 +68,34 @@ func normaliseInviteRef(raw string) string {
 // "invite revoke ab12-cd34" and "invite revoke AB12CD34" both work.
 func resolveInviteRef(rt *Runtime, ref string) (string, error) {
 	norm := normaliseInviteRef(ref)
-	q := url.Values{"kind": {"all"}, "status": {"all"}, "q": {norm}, "limit": {"50"}}
-	data, _, err := rt.Call(http.MethodGet, "/api/admin/invites?"+q.Encode(), nil)
-	if err != nil {
-		return "", err
-	}
-	for _, raw := range asSlice(asMap(data)["codes"]) {
-		c := asMap(raw)
-		if asStr(c["code"]) == norm {
-			return asStr(c["id"]), nil
+	// The search is newest-first, so an older exact match can sit past the first
+	// page. Pages are read until the code turns up or the search is exhausted;
+	// "no such invite code" is only true once every match has been seen.
+	for offset, pages := 0, 0; ; pages++ {
+		if pages == inviteSearchMaxPages {
+			if rt.Session.Lang == "zh" {
+				return "", fmt.Errorf("匹配的邀请码超过 %d 个，请给出完整的邀请码", inviteSearchMaxPages*inviteSearchPageSize)
+			}
+			return "", fmt.Errorf("more than %d codes match: give the full code", inviteSearchMaxPages*inviteSearchPageSize)
+		}
+		q := url.Values{
+			"kind": {"all"}, "status": {"all"}, "q": {norm},
+			"limit": {strconv.Itoa(inviteSearchPageSize)}, "offset": {strconv.Itoa(offset)},
+		}
+		data, _, err := rt.Call(http.MethodGet, "/api/admin/invites?"+q.Encode(), nil)
+		if err != nil {
+			return "", err
+		}
+		page := asSlice(asMap(data)["codes"])
+		for _, raw := range page {
+			c := asMap(raw)
+			if asStr(c["code"]) == norm {
+				return asStr(c["id"]), nil
+			}
+		}
+		offset += len(page)
+		if len(page) == 0 || offset >= int(asNum(asMap(data)["total"])) {
+			break
 		}
 	}
 	if id.Valid(ref) {
@@ -153,7 +180,7 @@ func inviteCodeRow(c map[string]any) []string {
 	}
 	return []string{
 		asStr(c["id"]), displayInviteCode(asStr(c["code"])), asStr(c["kind"]), name, asStr(c["status"]),
-		owner, group, fmt.Sprint(asNum(c["uses"])), fmt.Sprint(asNum(c["claims"])), maxUses,
+		owner, group, formatNumber(asNum(c["uses"])), formatNumber(asNum(c["claims"])), maxUses,
 		formatMS(c["expires_at"]), formatMS(c["created_at"]),
 	}
 }
@@ -161,6 +188,12 @@ func inviteCodeRow(c map[string]any) []string {
 var inviteListHeaders = []string{
 	"id", "code", "kind", "name", "status", "owner", "group", "uses", "claims", "max_uses", "expires", "created",
 }
+
+// maxInviteDays is a sanity limit on --days, not an overflow guard: the expiry
+// is computed with AddDate, which does the calendar arithmetic in days. The
+// old time.Duration(days)*24*time.Hour wrapped past about 106,750 days, so that
+// is the ceiling this bound must stay under.
+const maxInviteDays = 100000
 
 func init() {
 	registerCommand(Command{
@@ -218,9 +251,9 @@ func init() {
 			}
 			if !rt.effectiveJSON() {
 				if rt.Session.Lang == "zh" {
-					rt.Printf("\n共 %v 个\n", asNum(asMap(data)["total"]))
+					rt.Printf("\n共 %v 个\n", formatNumber(asNum(asMap(data)["total"])))
 				} else {
-					rt.Printf("\n%v total\n", asNum(asMap(data)["total"]))
+					rt.Printf("\n%v total\n", formatNumber(asNum(asMap(data)["total"])))
 				}
 			}
 			return nil
@@ -312,7 +345,14 @@ func init() {
 				}
 				body["expires_at"] = ms
 			case rt.Present("days"):
-				body["expires_at"] = time.Now().Add(time.Duration(rt.Int("days")) * 24 * time.Hour).UnixMilli()
+				days := rt.Int("days")
+				if days < 1 || days > maxInviteDays {
+					if rt.Session.Lang == "zh" {
+						return rt.Errorf("--days 必须在 1 到 %d 之间", maxInviteDays)
+					}
+					return rt.Errorf("--days must be between 1 and %d", maxInviteDays)
+				}
+				body["expires_at"] = time.Now().AddDate(0, 0, days).UnixMilli()
 			}
 
 			if rt.Present("group") {
@@ -427,7 +467,7 @@ func init() {
 					if asStr(u["reward_skipped"]) != "" {
 						rewarded = asStr(u["reward_skipped"])
 					} else {
-						rewarded = fmt.Sprintf("+%v cards", asNum(u["reward_cards"]))
+						rewarded = fmt.Sprintf("+%v cards", formatNumber(asNum(u["reward_cards"])))
 					}
 				}
 				// via tells a fresh registration (invite_uses, which can earn
@@ -435,10 +475,20 @@ func init() {
 				// claim (invite_claims, which never does) — see invite.Use.
 				rows = append(rows, []string{
 					asStr(u["user_id"]), asStr(u["username"]), asStr(u["nickname"]), asStr(u["via"]),
-					fmt.Sprint(asNum(u["group_days"])), formatMS(u["created_at"]), rewarded,
+					formatNumber(asNum(u["group_days"])), formatMS(u["created_at"]), rewarded,
 				})
 			}
-			return rt.Table([]string{"user_id", "username", "nickname", "via", "group_days", "joined", "reward"}, rows)
+			if err := rt.Table([]string{"user_id", "username", "nickname", "via", "group_days", "joined", "reward"}, rows); err != nil {
+				return err
+			}
+			if total := int(asNum(asMap(data)["total"])); total > len(rows) && !rt.effectiveJSON() {
+				if rt.Session.Lang == "zh" {
+					rt.Printf("仅显示最新的 %d 条，共 %d 条。\n", len(rows), total)
+				} else {
+					rt.Printf("showing the newest %d of %d.\n", len(rows), total)
+				}
+			}
+			return nil
 		},
 	})
 
@@ -459,9 +509,9 @@ func init() {
 			m := asMap(data)
 			jsonMode := rt.effectiveJSON()
 			if err := rt.Fields([][2]string{
-				{"active", fmt.Sprint(asNum(m["active"]))},
-				{"uses_total", fmt.Sprint(asNum(m["uses_total"]))},
-				{"uses_7d", fmt.Sprint(asNum(m["uses_7d"]))},
+				{"active", formatNumber(asNum(m["active"]))},
+				{"uses_total", formatNumber(asNum(m["uses_total"]))},
+				{"uses_7d", formatNumber(asNum(m["uses_7d"]))},
 			}); err != nil {
 				return err
 			}
@@ -474,7 +524,7 @@ func init() {
 				t := asMap(raw)
 				rows = append(rows, []string{
 					asStr(t["user_id"]), asStr(t["username"]), asStr(t["nickname"]),
-					fmt.Sprint(asNum(t["invites"])), fmt.Sprint(asNum(t["rewarded"])),
+					formatNumber(asNum(t["invites"])), formatNumber(asNum(t["rewarded"])),
 				})
 			}
 			RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour, []string{"user_id", "username", "nickname", "invites", "rewarded"}, rows)
@@ -485,7 +535,7 @@ func init() {
 				p := asMap(raw)
 				partnerRows = append(partnerRows, []string{
 					asStr(p["id"]), displayInviteCode(asStr(p["code"])), asStr(p["name"]),
-					fmt.Sprint(asNum(p["registrations"])), fmt.Sprint(asNum(p["claims"])),
+					formatNumber(asNum(p["registrations"])), formatNumber(asNum(p["claims"])),
 				})
 			}
 			RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour, []string{"id", "code", "name", "registrations", "claims"}, partnerRows)

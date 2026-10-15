@@ -2,6 +2,7 @@ import { createApp } from 'vue';
 import App from './App.vue';
 import { router } from './router';
 import { primeLanguage } from './composables/useI18n';
+import { mountWhenReady } from './mountWhenReady';
 import { startSession } from './stores/session';
 import { startTheme } from './theme/theme';
 import './styles/index.scss';
@@ -26,6 +27,5 @@ async function boot(): Promise<void> {
 
   const app = createApp(App);
   app.use(router);
-  await router.isReady();
-  app.mount(root!);
+  await mountWhenReady(app, router, root!);
 }

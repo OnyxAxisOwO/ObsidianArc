@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -82,6 +83,70 @@ func TestTheAuthorisationURLCarriesWhatTheProviderNeeds(t *testing.T) {
 	}
 }
 
+// An endpoint an operator configured with its own query keeps that query, and
+// the parameters this server adds follow it with '&' rather than a second '?'.
+func TestAnAuthoriseEndpointWithAQueryKeepsItsParameters(t *testing.T) {
+	oidc := ByID("oidc")
+	creds := Credentials{
+		ClientID: "client-id",
+		AuthURL:  "https://idp.example.com/authorize?policy=B2C_1_signup",
+	}
+	parsed, err := url.Parse(oidc.authorise(creds, "https://arc.example/cb", "the-nonce", challengeFor("v")))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	query := parsed.Query()
+	if query.Get("policy") != "B2C_1_signup" {
+		t.Errorf("policy = %q, want the endpoint's own parameter kept intact", query.Get("policy"))
+	}
+	if query.Get("client_id") != "client-id" || query.Get("state") != "the-nonce" {
+		t.Errorf("query = %v, want client_id and state as separate parameters", query)
+	}
+}
+
+// A token endpoint names its refusal in the body of a 4xx reply (RFC 6749
+// section 5.2). That body decides whether the visitor was refused or the
+// operator has an outage, so it is read before the status is judged.
+func TestATokenRefusalIsReadFromItsBody(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   error
+	}{
+		{"an expired code is a refusal", http.StatusBadRequest, `{"error":"invalid_grant"}`, ErrDenied},
+		{"a wrong secret is the operator's outage", http.StatusUnauthorized, `{"error":"invalid_client"}`, ErrUnavailable},
+		{"an unreadable 4xx stays an outage", http.StatusBadRequest, `<html>gateway</html>`, ErrUnavailable},
+		{"a bare 401 is still a denial", http.StatusUnauthorized, ``, ErrDenied},
+		{"a 503 that names an error is still an outage", http.StatusServiceUnavailable, `{"error":"temporarily_unavailable"}`, ErrUnavailable},
+		{"a 200 that names GitHub's wrong secret is the operator's outage", http.StatusOK, `{"error":"incorrect_client_credentials"}`, ErrUnavailable},
+		{"a 200 that names a mismatched redirect is the operator's outage", http.StatusOK, `{"error":"redirect_uri_mismatch"}`, ErrUnavailable},
+		// These arrive as 400s and describe this instance's request or its
+		// configuration, which the visitor cannot change, so they are not a denial.
+		{"an invalid request is the operator's outage", http.StatusBadRequest, `{"error":"invalid_request"}`, ErrUnavailable},
+		{"an unsupported grant type is the operator's outage", http.StatusBadRequest, `{"error":"unsupported_grant_type"}`, ErrUnavailable},
+		{"an unauthorised client is the operator's outage", http.StatusBadRequest, `{"error":"unauthorized_client"}`, ErrUnavailable},
+		{"an invalid scope is the operator's outage", http.StatusBadRequest, `{"error":"invalid_scope"}`, ErrUnavailable},
+		{"a device code the visitor typed wrongly is a refusal", http.StatusOK, `{"error":"bad_verification_code"}`, ErrDenied},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			creds := Credentials{ClientID: "client-id", ClientSecret: "secret", TokenURL: server.URL}
+			_, err := ByID("github").exchange(context.Background(), server.Client(), creds,
+				"the-code", "https://arc.example/cb", "")
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("exchange = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 // The state is the whole CSRF defence on a flow that has no body to check an
 // origin on. A value this process did not sign is not a state.
 func TestStateComesBackOnlyIfThisProcessWroteIt(t *testing.T) {
@@ -150,10 +215,86 @@ func TestNextStaysOnThisSite(t *testing.T) {
 		"/\t/evil.example", "/\r/evil.example", "/\n/evil.example",
 		"/\x00/evil.example", "/\x7f/evil.example", "/ok/\x1f",
 		"/ok\\evil.example", "/ok/..\\..\\evil.example",
+		// The encoder would write each bad byte as a six-byte replacement
+		// character, which is what the cookie bound is worked out against.
+		"/bad\xffutf8", "/ok/\xc3",
 	} {
 		if got := safeNext(unsafe); got != "" {
 			t.Errorf("safeNext(%q) = %q, want it dropped", unsafe, got)
 		}
+	}
+
+	// A path the state cookie cannot carry is dropped whole, not cut short into a
+	// different page; the limit sits exactly at maxNextBytes.
+	atLimit := "/" + strings.Repeat("a", maxNextBytes-1)
+	if got := safeNext(atLimit); got != atLimit {
+		t.Errorf("a %d-byte path = %q, want it kept", maxNextBytes, got)
+	}
+	if got := safeNext(atLimit + "a"); got != "" {
+		t.Errorf("a %d-byte path = %q, want it dropped", maxNextBytes+1, got)
+	}
+	if got := safeNext("/" + strings.Repeat("a", 4096)); got != "" {
+		t.Errorf("a 4 KB path = %q, want it dropped", got)
+	}
+}
+
+// A browser drops a cookie over 4 KB, and a dropped state cookie fails the
+// callback after the provider has approved the sign-in. The destinations that
+// grow most under JSON encoding, at the longest safeNext admits, must still fit.
+func TestTheLongestDestinationFitsTheStateCookie(t *testing.T) {
+	stamp := newStamp([]byte("an-instance-secret"))
+	longest := map[string]string{
+		"angle brackets, which an HTML-escaping encoder would grow sixfold": "/" + strings.Repeat("<", maxNextBytes-1),
+		"quotes, which grow twofold":                                        "/" + strings.Repeat(`"`, maxNextBytes-1),
+		"line separators, which grow twofold":                               "/" + strings.Repeat("\u2028", 340) + "abc",
+	}
+	for name, next := range longest {
+		if safeNext(next) != next {
+			t.Fatalf("%s: safeNext refused a %d-byte path it must keep", name, len(next))
+		}
+		issued, err := stamp.issue(state{
+			Provider: "github", Nonce: token(), Verifier: token(), UserID: "01HZ0000000000000000000000",
+			Next: next, SignUp: true, Register: true,
+			Expiry: time.Now().Add(stateTTL).UnixMilli(),
+		})
+		if err != nil {
+			t.Fatalf("%s: issue: %v", name, err)
+		}
+		if size := len(stateCookie) + len("__Host-") + 1 + len(issued); size > 4096 {
+			t.Errorf("%s: the state cookie is %d bytes, over the 4096 a browser keeps", name, size)
+		}
+		if _, err := stamp.read(issued); err != nil {
+			t.Errorf("%s: the state did not read back: %v", name, err)
+		}
+	}
+}
+
+// The pending ticket is refused when its details would not fit a cookie, and a
+// ticket that fits reads back as it was written.
+func TestAPendingTicketIsRefusedWhenItWouldNotFitACookie(t *testing.T) {
+	stamp := newPendingStamp([]byte("an-instance-secret"))
+	expiry := time.Now().Add(pendingTTL).UnixMilli()
+
+	fits := pending{
+		Provider: "oidc", Subject: "sub-1", Login: "ada", Name: "Ada Lovelace",
+		Email: "ada@example.com", Next: "/" + strings.Repeat(`"`, maxNextBytes-1),
+		Nonce: token(), Expiry: expiry,
+	}
+	ticket, err := stamp.issuePending(fits)
+	if err != nil {
+		t.Fatalf("issuePending(fits) = %v, want a ticket", err)
+	}
+	if size := len("__Host-oa_oauth_signup") + 1 + len(ticket); size > 4096 {
+		t.Errorf("the longest ticket is %d bytes, over the 4096 a browser keeps", size)
+	}
+	if read, err := stamp.readPending(ticket); err != nil || read.Name != fits.Name || read.Next != fits.Next {
+		t.Errorf("readPending = %+v, %v; want what was issued", read, err)
+	}
+
+	tooLarge := fits
+	tooLarge.Name = strings.Repeat("a", 1000)
+	if _, err := stamp.issuePending(tooLarge); !errors.Is(err, errPendingTooLarge) {
+		t.Errorf("issuePending(too large) = %v, want errPendingTooLarge", err)
 	}
 }
 

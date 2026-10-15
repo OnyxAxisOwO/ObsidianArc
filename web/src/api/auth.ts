@@ -283,8 +283,8 @@ export function register(input: RegisterInput): Promise<{ user: Account }> {
   });
 }
 
-export function logout(): Promise<void> {
-  return api.post<void>('/api/auth/logout');
+export function logout(signal?: AbortSignal): Promise<void> {
+  return api.post<void>('/api/auth/logout', undefined, signal ? { signal } : undefined);
 }
 
 export interface ProfilePatch {

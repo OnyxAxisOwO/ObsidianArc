@@ -58,3 +58,21 @@ func TestTogetherWaitsForEveryReadBeforeFailing(t *testing.T) {
 		t.Fatal("returned before the slower read had finished")
 	}
 }
+
+// A read runs on its own goroutine, where net/http's recovery cannot reach it.
+// The panic has to come back as this call's error, and the reads beside it
+// still have to finish, or one bad query would end the process.
+func TestTogetherTurnsAPanicIntoAnErrorAndFinishesTheRest(t *testing.T) {
+	var finished atomic.Int32
+	err := together(
+		func() error { panic("index out of range") },
+		func() error { time.Sleep(10 * time.Millisecond); finished.Add(1); return nil },
+		func() error { finished.Add(1); return nil },
+	)
+	if err == nil {
+		t.Fatal("a panicking read returned no error")
+	}
+	if finished.Load() != 2 {
+		t.Fatalf("%d of the other reads finished, want 2", finished.Load())
+	}
+}

@@ -15,9 +15,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"mime"
 	"net"
 	netmail "net/mail"
+	"net/netip"
 	"net/smtp"
 	"net/url"
 	"strings"
@@ -77,7 +79,10 @@ func (c Config) sender() string {
 // externally visible links before they reach the live sender.
 func ValidateConfig(c Config) error {
 	host := strings.TrimSpace(c.Host)
-	if strings.ContainsAny(host, "\r\n \t") || strings.Contains(host, "/") || strings.Contains(host, ":") {
+	// An IPv6 literal has colons of its own. JoinHostPort brackets it when the
+	// sender dials, so only a colon that does not parse as an address marks a
+	// port.
+	if strings.ContainsAny(host, "\r\n \t") || strings.Contains(host, "/") || (strings.Contains(host, ":") && !isIPLiteral(host)) {
 		return errors.New("mail: host must be a hostname without a port")
 	}
 	if c.Port != 0 && (c.Port < 1 || c.Port > 65535) {
@@ -103,6 +108,11 @@ func ValidateConfig(c Config) error {
 		return errors.New("mail: public URL must be an HTTPS origin")
 	}
 	return nil
+}
+
+func isIPLiteral(host string) bool {
+	_, err := netip.ParseAddr(host)
+	return err == nil
 }
 
 func validPublicURL(raw string) bool {
@@ -175,7 +185,7 @@ func (s *Sender) Send(ctx context.Context, message Message) error {
 	}
 	// A header cannot contain a newline. Refusing beats silently sending a
 	// message with an injected Bcc.
-	if strings.ContainsAny(to, "\r\n") || strings.ContainsAny(message.Subject, "\r\n") {
+	if strings.ContainsAny(to, "\r\n") || strings.ContainsAny(message.Subject, "\r\n") || strings.ContainsAny(cfg.sender(), "\r\n") {
 		return errors.New("mail: header contains a line break")
 	}
 
@@ -230,7 +240,15 @@ func (s *Sender) Send(ctx context.Context, message Message) error {
 		}
 	}
 
-	sender := cfg.sender()
+	return deliver(ctx, client, cfg.sender(), to, message)
+}
+
+// deliver runs the envelope and the DATA on an open session. Once the relay
+// has answered the end of DATA with 250 the message is accepted, so a failure
+// after that, QUIT included, is logged rather than returned: a caller that
+// retried on error would send a second copy of a verification or new-device
+// code.
+func deliver(ctx context.Context, client *smtp.Client, sender, to string, message Message) error {
 	if err := client.Mail(sender); err != nil {
 		return fmt.Errorf("mail: from: %w", err)
 	}
@@ -248,7 +266,10 @@ func (s *Sender) Send(ctx context.Context, message Message) error {
 	if err := writer.Close(); err != nil {
 		return fmt.Errorf("mail: close: %w", err)
 	}
-	return client.Quit()
+	if err := client.Quit(); err != nil {
+		slog.WarnContext(ctx, "mail: QUIT failed after the relay accepted the message", "error", err)
+	}
+	return nil
 }
 
 // compose builds a plain-text message. UTF-8 subjects are encoded per RFC

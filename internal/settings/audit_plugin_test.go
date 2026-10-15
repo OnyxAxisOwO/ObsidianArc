@@ -7,7 +7,7 @@ import "testing"
 // could overwrite, the value the core reads back on every request.
 func TestAPluginCannotClaimAKeyTheCoreKeepsItsOwnStateIn(t *testing.T) {
 	s := serviceWithGate(map[string]bool{})
-	for _, key := range []string{"quota.global_reset_at", "system_backup.lock"} {
+	for _, key := range []string{"quota.global_reset_at", "system_backup.lock", "system_backup.consecutive_failures"} {
 		defs := []Definition{{Key: key, Default: "1"}}
 		if err := s.CheckPluginDefinitions("zeta", defs, nil); err == nil {
 			t.Errorf("CheckPluginDefinitions accepted %s", key)

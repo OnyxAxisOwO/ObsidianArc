@@ -64,3 +64,20 @@ func TestTheConsoleAsksTheLoginGuardsWhatTheSignInFormAsks(t *testing.T) {
 		t.Errorf("guard asked %+v, want the login door with no token, the address, and the identifier as typed", got)
 	}
 }
+
+// A guard with no owner would run for every instance and could never be removed
+// at runtime, so AddGuard refuses it at setup instead of standing it in front of
+// every sign-up and sign-in.
+func TestAGuardWithNoPluginIsRefusedAtSetup(t *testing.T) {
+	f := newFixture(t)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("AddGuard accepted a guard with no plugin")
+		}
+	}()
+	f.auth.AddGuard(GuardLogin, Guard{
+		Name:  "unowned",
+		Event: "login_refused",
+		Check: func(context.Context, GuardRequest) (Verdict, error) { return Verdict{}, nil },
+	})
+}

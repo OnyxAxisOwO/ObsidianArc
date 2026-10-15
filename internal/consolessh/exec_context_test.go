@@ -2,7 +2,6 @@ package consolessh
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -162,7 +161,8 @@ func TestSSHRereadsTheAccountBeforeEveryCommand(t *testing.T) {
 	}{
 		{name: "demoted to a regular account", account: regularUser("admin")},
 		{name: "disabled", account: disabledAdminUser("admin")},
-		{name: "deleted", err: errors.New("fake: no such account")},
+		// What the account store returns for a row that is no longer there.
+		{name: "deleted", err: user.ErrNotFound},
 	} {
 		t.Run(revoked.name, func(t *testing.T) {
 			engine, report := observingConsole(t)

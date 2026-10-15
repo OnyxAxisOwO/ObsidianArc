@@ -15,7 +15,7 @@ import OaRangeField from '@/components/OaRangeField.vue';
 import { IconImage, IconChevronRight } from '@/icons';
 import { t } from '@/composables/useI18n';
 import { useTheme } from '@/composables/useTheme';
-import { setWallpaper, type Wallpaper } from '@/theme/theme';
+import { previewWallpaper, setWallpaper, type Wallpaper } from '@/theme/theme';
 import { syncPreferences } from '@/stores/session';
 
 const theme = useTheme();
@@ -47,16 +47,22 @@ function readSliders(): Wallpaper | null {
   };
 }
 
-/** On every move: local only, so the change is on screen at once. */
+/** On every move: painted only, so the change is on screen at once. */
 function preview(): void {
   const next = readSliders();
-  if (next) setWallpaper(next);
+  if (next) previewWallpaper(next);
 }
 
-/** On release: the same value, this time remembered by the account. */
+/**
+ * On release: stored, and remembered by the account. Storing is deferred to
+ * here because it notifies every theme listener, which a slider cannot afford
+ * on each step.
+ */
 function persist(): void {
   const next = readSliders();
-  if (next) syncPreferences({ wallpaper: next });
+  if (!next) return;
+  setWallpaper(next);
+  syncPreferences({ wallpaper: next });
 }
 
 async function upload(file: File): Promise<void> {

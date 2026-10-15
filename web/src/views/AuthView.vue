@@ -13,6 +13,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { safeNext, serverOwned } from '@/lib/next';
+import { GUARD_DEADLINE_MS, GuardTimeout, withDeadline } from '@/lib/deadline';
 import { completeSignIn, fetchPoWChallenge, login, logout, register, type LoginResult, type PoWSolution } from '@/api/auth';
 import { solvePoW, type PoWTask } from '@/lib/pow';
 import { signInURL } from '@/api/oauth';
@@ -88,34 +89,68 @@ const guard = ref<InstanceType<typeof OaTurnstile> | null>(null);
 let currentPoWTask: PoWTask | null = null;
 let powPromise: Promise<PoWSolution> | null = null;
 let powSolution: PoWSolution | null = null;
+// Bumped by every reset. An attempt that was started before a reset must not
+// start a worker, write a solution or clear the state of the attempt after it.
+let powGeneration = 0;
+// Whoever is waiting on a proof, released when it is abandoned: cancel() ends
+// the worker without settling the promise, and a submit awaiting it would stay
+// busy until reload.
+let proofWaiters: Array<() => void> = [];
 
 function startPoWIfNeeded(): void {
   if (!registering.value || !site.value.pow_on_signup) return;
   if (powSolution || powPromise) return;
 
-  powPromise = fetchPoWChallenge()
+  const generation = powGeneration;
+  const attempt = fetchPoWChallenge()
     .then((challenge) => {
+      if (generation !== powGeneration) throw new Error('proof of work abandoned');
       currentPoWTask = solvePoW(challenge);
       return currentPoWTask.promise;
     })
     .then((solution) => {
-      powSolution = solution;
+      if (generation === powGeneration) powSolution = solution;
       return solution;
     })
     .catch((err) => {
-      powPromise = null;
-      currentPoWTask = null;
+      if (generation === powGeneration) {
+        powPromise = null;
+        currentPoWTask = null;
+      }
       throw err;
     });
+  powPromise = attempt;
+  // Every waiter handles a failure itself; this keeps an unwaited one, such as
+  // a reset's, from being reported as unhandled.
+  attempt.catch(() => {});
 }
 
 function resetPoW(): void {
+  powGeneration += 1;
   if (currentPoWTask) {
     currentPoWTask.cancel();
     currentPoWTask = null;
   }
   powPromise = null;
   powSolution = null;
+  const waiters = proofWaiters;
+  proofWaiters = [];
+  for (const release of waiters) release();
+}
+
+/** The solved proof, or null when the attempt was abandoned while it was awaited. */
+function awaitProof(promise: Promise<PoWSolution>): Promise<PoWSolution | null> {
+  return new Promise((resolve, reject) => {
+    const release = (): void => resolve(null);
+    proofWaiters.push(release);
+    const settle = (): void => {
+      proofWaiters = proofWaiters.filter((entry) => entry !== release);
+    };
+    promise.then(
+      (solution) => { settle(); resolve(solution); },
+      (failure: unknown) => { settle(); reject(failure); },
+    );
+  });
 }
 
 watch(
@@ -251,13 +286,17 @@ function onTurnstileSolved(): void {
 // start request is one redirect away, and the server refuses an expired one.
 const PROOF_SLACK_MS = 30_000;
 
+function proofIsFresh(solution: PoWSolution): boolean {
+  return solution.expires * 1000 - Date.now() > PROOF_SLACK_MS;
+}
+
 /**
  * The proof of work for a provider sign-up. The one already being solved on this
  * page is used if it is still good; a stale one is solved again. Whatever is
  * taken is spent, because the start request uses up its salt.
  */
 async function proofForProvider(): Promise<PoWSolution> {
-  if (powSolution && powSolution.expires * 1000 - Date.now() > PROOF_SLACK_MS) {
+  if (powSolution && proofIsFresh(powSolution)) {
     const solution = powSolution;
     resetPoW();
     return solution;
@@ -265,7 +304,8 @@ async function proofForProvider(): Promise<PoWSolution> {
   if (powSolution) resetPoW();
   startPoWIfNeeded();
   if (!powPromise) throw new Error('no proof of work is being solved');
-  const solution = await powPromise;
+  const solution = await awaitProof(powPromise);
+  if (!solution) throw new Error('no proof of work is being solved');
   resetPoW();
   return solution;
 }
@@ -366,8 +406,10 @@ onMounted(() => {
       error.value = known ? t(known) : pluginOAuthError(code) ?? t('oauthFailed');
     }
     // Out of the address bar: a reload should not raise a message about a
-    // sign-in that is long over.
-    void router.replace({ path: route.path, query: {} });
+    // sign-in that is long over. The page the sign-in was for stays, so the
+    // next try carries the visitor on to it.
+    const next = safeNext(route.query['next']);
+    void router.replace({ path: route.path, query: next ? { next } : {} });
   }
   // A partner or friend's link: the code the visitor arrived with is worth
   // more than an empty field they would have to go find again.
@@ -385,6 +427,13 @@ onUnmounted(() => {
     document.body.classList.remove('has-auth-page');
   }
 });
+
+// The server's sign-up rules (internal/user and internal/auth), mirrored so a
+// mistake in them is named on the spot. Passwords count characters, as the
+// server does.
+const USERNAME_RE = /^[A-Za-z0-9._-]{3,32}$/;
+const EMAIL_RE = /^[^@\s]+@[^@\s.]+\.[^@\s]+$/;
+const MIN_PASSWORD_CHARS = 8;
 
 async function onSubmit(): Promise<void> {
   if (busy.value) return;
@@ -410,18 +459,47 @@ async function onSubmit(): Promise<void> {
     error.value = t('inviteRequiredHere');
     return;
   }
+  // The rules the server applies to a sign-up, checked here only so the reason
+  // is said in words. A refusal from the server would reach the reader as a
+  // generic sentence, because the server's codes for these are not separate.
+  if (registering.value) {
+    if (!USERNAME_RE.test(identity)) {
+      error.value = t('usernameInvalid');
+      return;
+    }
+    if ([...secret].length < MIN_PASSWORD_CHARS) {
+      error.value = t('passwordTooShort');
+      return;
+    }
+    if (email.value.trim() && !EMAIL_RE.test(email.value.trim())) {
+      error.value = t('emailInvalid');
+      return;
+    }
+  }
 
   busy.value = true;
   error.value = '';
 
   let solution: PoWSolution | undefined;
   if (registering.value && site.value.pow_on_signup) {
+    // A solution that has run out is solved again, as proofForProvider does:
+    // the server refuses an expired one, and the reader would have to click
+    // a second time to get past it.
+    if (powSolution && !proofIsFresh(powSolution)) resetPoW();
     if (!powSolution) {
       buttonLabel.value = t('powSolving');
       if (!powPromise) startPoWIfNeeded();
       try {
         if (powPromise) {
-          solution = await powPromise;
+          const proof = await awaitProof(powPromise);
+          // The reader moved to another form while the proof was solving, so
+          // this sign-up is no longer what the form is asking for.
+          if (!proof) {
+            busy.value = false;
+            buttonLabel.value = '';
+            return;
+          }
+          solution = proof;
         }
       } catch (failure) {
         busy.value = false;
@@ -444,11 +522,14 @@ async function onSubmit(): Promise<void> {
   for (const { guard, config } of activeGuards.value) {
     buttonLabel.value = guard.checking();
     try {
-      guardTokens[guard.name] = await guard.token(guardAction.value, config, formEl.value ?? undefined);
+      guardTokens[guard.name] = await withDeadline(
+        guard.token(guardAction.value, config, formEl.value ?? undefined),
+        GUARD_DEADLINE_MS,
+      );
     } catch (failure: unknown) {
       busy.value = false;
       buttonLabel.value = '';
-      error.value = guard.failed(failure);
+      error.value = failure instanceof GuardTimeout ? t('guardTimeout') : guard.failed(failure);
       return;
     }
   }

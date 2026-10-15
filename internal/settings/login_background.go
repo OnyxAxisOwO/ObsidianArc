@@ -153,6 +153,8 @@ func (s *Service) storeBackground(ctx context.Context, variant, mime string, dat
 		return 0, fmt.Errorf("settings: unknown variant %q", variant)
 	}
 	at := time.Now().UnixMilli()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err := s.db.Exec(ctx,
 		`INSERT INTO login_backgrounds (variant, mime, data, updated_at)
 		 VALUES (?, ?, ?, ?)
@@ -165,6 +167,9 @@ func (s *Service) storeBackground(ctx context.Context, variant, mime string, dat
 		return 0, fmt.Errorf("settings: save login background: %w", err)
 	}
 
+	if s.afterWrite != nil {
+		s.afterWrite(variant)
+	}
 	s.mu.Lock()
 	if s.loginBackgrounds == nil {
 		s.loginBackgrounds = map[string]Background{}
@@ -200,6 +205,8 @@ func (s *Service) DeleteLoginBackground(ctx context.Context, variant string) err
 		return nil
 	}
 
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err := s.db.Exec(ctx, `DELETE FROM login_backgrounds WHERE variant = ?`, variant)
 	if err != nil {
 		return fmt.Errorf("settings: delete login background: %w", err)

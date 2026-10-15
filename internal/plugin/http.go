@@ -94,14 +94,8 @@ func (h *Handlers) install(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
 		return err
 	}
-	// Each setting is written under its own grant, as the shared settings route
-	// writes it. plugins_manage alone is not a grant to set every key a plugin
-	// declares, and a key the security grant owns is not one it may set.
-	actor := auth.MustUser(r.Context())
-	for key := range body.Settings {
-		if !admin.CanWriteSetting(h.settings, actor, key) {
-			return httpx.ForbiddenCode("admin_permission_denied", "You do not have permission to access this page or perform this action.")
-		}
+	if err := h.checkSettingGrants(auth.MustUser(r.Context()), body.Settings); err != nil {
+		return err
 	}
 	// The operator's setting covers installing as well as switching off: an
 	// install applies the plugin's migrations and can switch it on in the same
@@ -118,6 +112,20 @@ func (h *Handlers) install(w http.ResponseWriter, r *http.Request) error {
 		return translate(err)
 	}
 	return h.answer(w, r, name)
+}
+
+// checkSettingGrants holds an install's settings to each key's own grant, as
+// the shared settings route does. plugins_manage alone is not a grant to set
+// every key a plugin declares, and a key the security grant owns is not one it
+// may set. Both install paths call it, so a package install and a compiled-in
+// one cannot disagree about who may write what.
+func (h *Handlers) checkSettingGrants(actor user.User, values map[string]string) error {
+	for key := range values {
+		if !admin.CanWriteSetting(h.settings, actor, key) {
+			return httpx.ForbiddenCode("admin_permission_denied", "You do not have permission to access this page or perform this action.")
+		}
+	}
+	return nil
 }
 
 func (h *Handlers) enable(w http.ResponseWriter, r *http.Request) error {
@@ -315,6 +323,9 @@ type installPackageBody struct {
 func (h *Handlers) installPackage(w http.ResponseWriter, r *http.Request) error {
 	var body installPackageBody
 	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
+		return err
+	}
+	if err := h.checkSettingGrants(auth.MustUser(r.Context()), body.Settings); err != nil {
 		return err
 	}
 	if h.twoFactorRequired() {

@@ -1093,3 +1093,59 @@ func holdVerificationMail(t *testing.T, f *fixture) (<-chan struct{}, func()) {
 	})
 	return reached, releaseMail
 }
+
+// The reward is persisted after the verification has committed, so a browser
+// that disconnects at that point must not take the reward with it. The hook
+// cancels the request's own context, the way a dropped connection does, and
+// then looks at the context it was handed.
+func TestRewardAfterVerificationSurvivesADisconnect(t *testing.T) {
+	for _, viaCode := range []bool{false, true} {
+		name := "link"
+		if viaCode {
+			name = "code"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			verifying(t, f)
+			ctx := context.Background()
+			if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"}); err != nil {
+				t.Fatal(err)
+			}
+			account, _, err := f.auth.Register(ctx, RegisterInput{
+				Username: "member", Email: "member@example.com", Password: "a-good-password",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			reqCtx, disconnect := context.WithCancel(ctx)
+			defer disconnect()
+			var offered bool
+			var rewardErr error
+			f.auth.RewardInvite = func(rewardCtx context.Context, _ string, _ bool) {
+				disconnect()
+				offered = true
+				rewardErr = rewardCtx.Err()
+			}
+
+			if viaCode {
+				err = f.auth.VerifyCode(reqCtx, account.ID, f.auth.verificationCode(token))
+			} else {
+				_, err = f.auth.Verify(reqCtx, token)
+			}
+			if err != nil {
+				t.Fatalf("verify: %v", err)
+			}
+			if !offered {
+				t.Fatal("the reward was not offered after verification")
+			}
+			if rewardErr != nil {
+				t.Fatalf("the reward ran on a cancelled context: %v", rewardErr)
+			}
+		})
+	}
+}

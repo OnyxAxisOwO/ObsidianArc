@@ -6,16 +6,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
 const singletonID = "instance"
 const schedulerLockKey = "system_backup.lock"
+
+// failureCountKey holds how many automatic runs have failed in a row. It lives
+// in settings beside schedulerLockKey rather than in a column of system_backups,
+// because a column would need a migration for a counter the scheduler alone
+// reads, and it is excluded from archives and restores for the same reason the
+// lock is: it describes this instance's scheduler, not the data it backs up.
+const failureCountKey = "system_backup.consecutive_failures"
 
 const (
 	DefaultRegion               = "us-east-1"
@@ -127,9 +138,17 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, fmt.Errorf("system backup: read status: %w", err)
 	}
+	failures, err := failureCount(ctx, s.db)
+	if err != nil {
+		return Status{}, err
+	}
 	if status.Type == "" {
 		status.Type = StorageTypeS3
 	}
+	// A URL saved before userinfo was refused still holds its password. The admin
+	// page is shown the address without it, so the password is not echoed back on
+	// every status poll.
+	status.WebDAVURL = withoutUserinfo(status.WebDAVURL)
 	status.Enabled = enabled
 	status.SecretConfigured = len(access) > 0 && len(secretValue) > 0
 	status.WebDAVSecretConfigured = len(webdavPass) > 0
@@ -164,14 +183,11 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 		status.Prefix = DefaultPrefix
 	}
 	if status.Enabled && !status.Running {
-		next := time.Now().UnixMilli()
-		if status.LastFinishedAt > 0 {
-			next = time.UnixMilli(status.LastFinishedAt).Add(time.Duration(status.IntervalHours) * time.Hour).UnixMilli()
-			if next < time.Now().UnixMilli() {
-				next = time.Now().UnixMilli()
-			}
+		next := time.Now()
+		if at, ok := nextAutomaticRun(status.IntervalHours, status.LastStatus, status.LastFinishedAt, status.LastSuccessAt, failures); ok && at.After(next) {
+			next = at
 		}
-		status.NextRunAt = next
+		status.NextRunAt = next.UnixMilli()
 	}
 	return status, nil
 }
@@ -242,12 +258,29 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 	if cfg.Type == "" {
 		cfg.Type = StorageTypeS3
 	}
+	// Checked whether or not the backup is enabled: a type the backend factory
+	// does not know would otherwise be saved quietly and fail only once someone
+	// turns the backup on.
+	if cfg.Type != StorageTypeS3 && cfg.Type != StorageTypeWebDAV {
+		return invalidConfig("Unsupported storage type: " + cfg.Type)
+	}
 	cfg.Endpoint = strings.TrimSpace(cfg.Endpoint)
 	cfg.Bucket = strings.TrimSpace(cfg.Bucket)
 	cfg.Region = strings.TrimSpace(cfg.Region)
 	cfg.Prefix = strings.Trim(cfg.Prefix, "/")
 	cfg.WebDAVURL = strings.TrimRight(strings.TrimSpace(cfg.WebDAVURL), "/")
 	cfg.WebDAVUsername = strings.TrimSpace(cfg.WebDAVUsername)
+	// Stored in plain text beside the sealed password and echoed to the admin
+	// page on every status poll, so it is refused here rather than only when
+	// the backup runs. An S3 save never reads this URL, so a legacy one that
+	// still carries a password is stripped instead: refusing it would hold the
+	// switch to S3 hostage to a field the operator is not using.
+	if hasUserinfo(cfg.WebDAVURL) {
+		if cfg.Type == StorageTypeWebDAV {
+			return invalidConfig(errWebDAVURLCredentials)
+		}
+		cfg.WebDAVURL = withoutUserinfo(cfg.WebDAVURL)
+	}
 	if cfg.Region == "" {
 		cfg.Region = DefaultRegion
 	}
@@ -278,7 +311,10 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 		// a host it was never saved for, including from a form for the other
 		// storage type that still shows the old S3 endpoint or WebDAV URL.
 		s3Moved := cfg.Endpoint != savedEndpoint || cfg.Bucket != savedBucket || cfg.Region != savedRegion
-		webdavMoved := cfg.WebDAVURL != savedWebDAVURL
+		// Compared without userinfo: the password is bound to the destination
+		// it was saved for, and a legacy URL with its password still in it is
+		// that same destination once the password is stripped.
+		webdavMoved := cfg.WebDAVURL != withoutUserinfo(savedWebDAVURL)
 		keysNotTyped := (len(access) > 0 && cfg.AccessKeyID == "") || (len(secretValue) > 0 && cfg.SecretKey == "")
 		passwordNotTyped := len(webdavPass) > 0 && cfg.WebDAVPassword == ""
 		if (s3Moved && keysNotTyped) || (webdavMoved && passwordNotTyped) {
@@ -361,12 +397,18 @@ func (s *Store) claim(ctx context.Context, now time.Time, manual bool) (string, 
 			return err
 		}
 		var enabled bool
-		var leaseUntil, lastFinished int64
+		var leaseUntil, lastFinished, lastSuccess int64
 		var interval int
+		var lastStatus string
 		if err := tx.QueryRow(ctx,
-			`SELECT enabled, lease_until, last_finished_at, interval_hours FROM system_backups WHERE id = ?`, singletonID,
-		).Scan(&enabled, &leaseUntil, &lastFinished, &interval); err != nil {
+			`SELECT enabled, lease_until, last_status, last_finished_at, last_success_at, interval_hours
+			 FROM system_backups WHERE id = ?`, singletonID,
+		).Scan(&enabled, &leaseUntil, &lastStatus, &lastFinished, &lastSuccess, &interval); err != nil {
 			return fmt.Errorf("system backup: read scheduler state: %w", err)
+		}
+		failures, err := failureCount(ctx, tx)
+		if err != nil {
+			return err
 		}
 		if leaseUntil > nowMS {
 			return ErrAlreadyRunning
@@ -375,7 +417,7 @@ func (s *Store) claim(ctx context.Context, now time.Time, manual bool) (string, 
 			if !enabled {
 				return nil
 			}
-			if lastFinished > 0 && now.Before(time.UnixMilli(lastFinished).Add(time.Duration(defaultInt(interval, DefaultIntervalHours))*time.Hour)) {
+			if next, ok := nextAutomaticRun(interval, lastStatus, lastFinished, lastSuccess, failures); ok && now.Before(next) {
 				return nil
 			}
 		}
@@ -407,30 +449,68 @@ func (s *Store) claim(ctx context.Context, now time.Time, manual bool) (string, 
 }
 
 func (s *Store) finish(ctx context.Context, token, status, failure string, now time.Time, uploadedAt int64) error {
-	if len(failure) > 600 {
-		failure = failure[:600]
-	}
-	var err error
-	if uploadedAt > 0 {
-		_, err = s.db.Exec(ctx, `UPDATE system_backups SET lease_token = '', lease_until = 0,
-			last_finished_at = ?, last_success_at = ?,
-			last_status = ?, last_error = ? WHERE id = ? AND lease_token = ?`,
-			now.UnixMilli(), uploadedAt, status, failure, singletonID, token)
-	} else {
-		_, err = s.db.Exec(ctx, `UPDATE system_backups SET lease_token = '', lease_until = 0,
-			last_finished_at = ?,
-			last_status = ?, last_error = ? WHERE id = ? AND lease_token = ?`,
-			now.UnixMilli(), status, failure, singletonID, token)
-	}
-	if err != nil {
-		return fmt.Errorf("system backup: release scheduler lease: %w", err)
-	}
-	return nil
+	// PostgreSQL refuses the whole UPDATE for invalid UTF-8 or a NUL byte, which
+	// would leave the lease held until it expires. Cleaning first keeps the
+	// value storable; truncation is by rune so the cut never splits a character.
+	failure = text.Truncate(text.Clean(failure), 600)
+	// The count is a read-modify-write, so it holds the settings row lock across
+	// both: two instances finishing at once must not each read the same count and
+	// store it plus one. The lease release and the count share a transaction, so
+	// a failure is never stored without its count and the count never drifts from
+	// the status it describes.
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := settings.Lock(ctx, tx); err != nil {
+			return err
+		}
+		var (
+			query string
+			args  []any
+		)
+		if uploadedAt > 0 {
+			query = `UPDATE system_backups SET lease_token = '', lease_until = 0,
+				last_finished_at = ?, last_success_at = ?,
+				last_status = ?, last_error = ?
+				WHERE id = ? AND lease_token = ?`
+			args = []any{now.UnixMilli(), uploadedAt, status, failure, singletonID, token}
+		} else {
+			query = `UPDATE system_backups SET lease_token = '', lease_until = 0,
+				last_finished_at = ?,
+				last_status = ?, last_error = ?
+				WHERE id = ? AND lease_token = ?`
+			args = []any{now.UnixMilli(), status, failure, singletonID, token}
+		}
+		result, err := tx.Exec(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("system backup: release scheduler lease: %w", err)
+		}
+		released, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("system backup: release scheduler lease: %w", err)
+		}
+		// Another instance took the lease over, so this result is not the one the
+		// scheduler is recording and the count must not move for it.
+		if released == 0 {
+			return nil
+		}
+		failures, err := failureCount(ctx, tx)
+		if err != nil {
+			return err
+		}
+		next := 0
+		if status != "success" {
+			next = failures + 1
+		}
+		return setFailureCount(ctx, tx, next)
+	})
 }
 
 func (s *Store) appendLog(ctx context.Context, token, message string) error {
 	now := time.Now().UTC().Format("15:04:05")
-	line := fmt.Sprintf("[%s] %s\n", now, message)
+	// The message can carry a failure reason copied from a provider or a file
+	// system, so it is cleaned as finish cleans the stored error: a NUL or invalid
+	// UTF-8 would make PostgreSQL refuse the whole concatenation, and the callers
+	// discard that error, dropping the line without a trace.
+	line := fmt.Sprintf("[%s] %s\n", now, text.Clean(message))
 	_, err := s.db.Exec(ctx, `UPDATE system_backups SET last_log = last_log || ?
 		WHERE id = ? AND lease_token = ?`, line, singletonID, token)
 	if err != nil {
@@ -439,19 +519,58 @@ func (s *Store) appendLog(ctx context.Context, token, message string) error {
 	return nil
 }
 
-func (s *Store) due(ctx context.Context, now time.Time) (bool, error) {
-	status, err := s.Status(ctx)
-	if err != nil {
-		return false, err
+// retryAfterFailure is how long the scheduler waits before it tries again
+// after a run that did not succeed. A full interval would leave an instance
+// with no backup for a day after one outage.
+const retryAfterFailure = 30 * time.Minute
+
+// nextAutomaticRun reports when the scheduler may start the next automatic
+// run; ok is false when that is already. The interval is measured from the
+// last archive that was stored, so failed runs do not push the recovery point
+// further away. A run that did not succeed is retried after retryDelay instead
+// of waiting out the interval.
+func nextAutomaticRun(intervalHours int, lastStatus string, lastFinished, lastSuccess int64, failures int) (time.Time, bool) {
+	interval := time.Duration(defaultInt(intervalHours, DefaultIntervalHours)) * time.Hour
+	if lastStatus != "success" {
+		if lastFinished == 0 {
+			return time.Time{}, false
+		}
+		return time.UnixMilli(lastFinished).Add(retryDelay(failures, interval)), true
 	}
-	if !status.Enabled || status.Running {
-		return false, nil
+	if lastSuccess == 0 {
+		return time.Time{}, false
 	}
-	if status.LastFinishedAt == 0 {
-		return true, nil
+	return time.UnixMilli(lastSuccess).Add(interval), true
+}
+
+// retryDelay is how long a failed run waits before the next attempt. It doubles
+// with each consecutive failure and stops at the interval, so a persistent
+// outage costs one attempt an interval rather than one every retryAfterFailure
+// for as long as it lasts.
+func retryDelay(failures int, interval time.Duration) time.Duration {
+	delay := retryAfterFailure
+	for i := 1; i < failures && delay < interval; i++ {
+		delay *= 2
 	}
-	next := time.UnixMilli(status.LastFinishedAt).Add(time.Duration(status.IntervalHours) * time.Hour)
-	return !now.Before(next), nil
+	return min(delay, interval)
+}
+
+// withoutUserinfo returns the URL with any username and password removed. The
+// password of a saved WebDAV destination is bound to the address without them,
+// so both the move check in Save and the address the admin page is shown use
+// this form.
+func withoutUserinfo(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
+}
+
+func hasUserinfo(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.User != nil
 }
 
 func defaultInt(value, fallback int) int {
@@ -475,6 +594,38 @@ func lockInstance(ctx context.Context, tx *database.Tx) error {
 		schedulerLockKey, "", time.Now().UnixMilli())
 	if err != nil {
 		return fmt.Errorf("system backup: lock instance state: %w", err)
+	}
+	return nil
+}
+
+// failureCount reads the consecutive-failure count. A missing row is zero: no
+// run has failed since the scheduler last stored a success, or none has run.
+func failureCount(ctx context.Context, q database.Queryer) (int, error) {
+	var raw string
+	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key = ?`, failureCountKey).Scan(&raw)
+	if database.IsNotFound(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("system backup: read failure count: %w", err)
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("system backup: failure count %q is not a count", raw)
+	}
+	return n, nil
+}
+
+// setFailureCount writes the count as a raw upsert, as lockInstance writes its
+// row. The count is scheduler state rather than an operator setting, so it does
+// not go through the settings service's write path.
+func setFailureCount(ctx context.Context, tx *database.Tx, n int) error {
+	_, err := tx.Exec(ctx,
+		`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		failureCountKey, strconv.Itoa(n), time.Now().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("system backup: store failure count: %w", err)
 	}
 	return nil
 }

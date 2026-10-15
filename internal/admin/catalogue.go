@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
@@ -166,7 +167,7 @@ func (h *Handlers) deleteProvider(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	if err := h.providers.Delete(r.Context(), providerID); err != nil {
-		return httpx.Internal(err)
+		return translateProviderError(err)
 	}
 	return httpx.NoContent(w)
 }
@@ -180,6 +181,17 @@ func (h *Handlers) detectModels(w http.ResponseWriter, r *http.Request) error {
 	providerID, err := pathID(r, "id")
 	if err != nil {
 		return err
+	}
+
+	// Listing sends the stored key upstream, and the operator has switched
+	// this provider off. Authorize refuses a disabled provider for the same
+	// reason, so the listing does too.
+	owner, err := h.providers.ByID(r.Context(), providerID)
+	if err != nil {
+		return translateProviderError(err)
+	}
+	if !owner.Enabled {
+		return httpx.Conflict("provider_disabled", "This provider is switched off. Switch it on before listing its models.")
 	}
 
 	resolved, err := h.providers.Resolve(r.Context(), providerID)
@@ -298,6 +310,9 @@ func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
 	if err := h.checkRoute(r.Context(), "", body); err != nil {
 		return err
 	}
+	if err := checkModelGroupAccess(body.GroupGrants); err != nil {
+		return err
+	}
 
 	in := model.CreateInput{
 		ProviderID: body.ProviderID,
@@ -319,16 +334,12 @@ func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
 	setIf(&in.ReasoningStyle, body.ReasoningStyle)
 	setIf(&in.ReasoningTiers, body.ReasoningTiers)
 	setIf(&in.RequestOverride, body.RequestOverride)
+	// Written with the model, so a refused grant leaves no model behind.
+	in.GroupGrants = body.GroupGrants
 
 	record, err := h.models.Create(r.Context(), in)
 	if err != nil {
 		return model.TranslateError(err)
-	}
-	if body.GroupGrants != nil {
-		if err := h.models.SetModelGroups(r.Context(), record.ID, *body.GroupGrants); err != nil {
-			return httpx.Internal(err)
-		}
-		record.GroupGrants = *body.GroupGrants
 	}
 	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"model": record})
 }
@@ -344,6 +355,9 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if err := h.checkRoute(r.Context(), modelID, body); err != nil {
+		return err
+	}
+	if err := checkModelGroupAccess(body.GroupGrants); err != nil {
 		return err
 	}
 
@@ -376,22 +390,35 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 		ReasoningStyle:       body.ReasoningStyle,
 		ReasoningTiers:       body.ReasoningTiers,
 		RequestOverride:      body.RequestOverride,
+		GroupGrants:          body.GroupGrants,
 	})
 	if err != nil {
 		return model.TranslateError(err)
 	}
-	if body.GroupGrants != nil {
-		if err := h.models.SetModelGroups(r.Context(), modelID, *body.GroupGrants); err != nil {
-			return httpx.Internal(err)
-		}
-		record.GroupGrants = *body.GroupGrants
-	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"model": record})
 }
 
-// checkRoute rejects the two routes that cannot work: one pointing at
-// the model itself, and one pointing at a model that is itself routed.
-// Resolution is a single hop by design, so a chain would silently do
+// checkModelGroupAccess answers a bad access word with its 400 before any write
+// begins. The grants share the model's transaction, so a refusal there would
+// roll the whole save back, and this check is what keeps it a 400 rather than
+// the 500 the write would give.
+func checkModelGroupAccess(grants *[]model.ModelGroupGrant) error {
+	if grants == nil {
+		return nil
+	}
+	for _, grant := range *grants {
+		if err := model.CheckAccess(grant.Access); err != nil {
+			return model.TranslateError(err)
+		}
+	}
+	return nil
+}
+
+// checkRoute answers the routes that cannot work before anything is written,
+// with a sentence for the editor. It reads outside any lock, so it is not the
+// guard: model.Store repeats these checks, and the incoming ones this cannot
+// see, under the rows' own locks, which is what holds against a concurrent
+// write. Resolution is a single hop by design, so a chain would silently do
 // something other than what the second link says.
 func (h *Handlers) checkRoute(ctx context.Context, modelID string, body modelRequest) error {
 	if body.RouteToID == nil || *body.RouteToID == "" {
@@ -405,14 +432,17 @@ func (h *Handlers) checkRoute(ctx context.Context, modelID string, body modelReq
 		return httpx.BadRequest("A model cannot route to itself.")
 	}
 	target, err := h.models.ByID(ctx, targetID)
+	// The pre-check reads the target before the store does, so it has to say
+	// the same thing the store would: a missing target is not an unavailable
+	// model being saved.
+	if errors.Is(err, model.ErrNotFound) {
+		return model.TranslateError(model.ErrRouteTargetMissing)
+	}
 	if err != nil {
 		return model.TranslateError(err)
 	}
 	if target.RouteToID != "" {
 		return httpx.BadRequest("That model is itself routed elsewhere; routes are a single hop.")
-	}
-	if body.ReasoningStyle != nil && !body.ReasoningStyle.Valid() && *body.ReasoningStyle != "" {
-		return httpx.BadRequest("Unknown reasoning style.")
 	}
 	return nil
 }
@@ -452,7 +482,7 @@ func (h *Handlers) deleteModel(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if err := h.models.Delete(r.Context(), modelID); err != nil {
-		return httpx.Internal(err)
+		return model.TranslateError(err)
 	}
 	return httpx.NoContent(w)
 }

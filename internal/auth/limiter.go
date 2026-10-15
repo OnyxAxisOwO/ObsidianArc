@@ -230,10 +230,13 @@ func (l *Limiter) Begin(ip, identifier string) (*loginAttempt, error) {
 		if wait := entry.blockedUntil.Sub(now); wait > 0 {
 			return nil, &RateLimitError{RetryAfter: wait}
 		}
-		// Sequential behaviour permits the sixth try and blocks after it
-		// fails. Parallel requests get the same allowance, not an unlimited
-		// wave that happened to arrive before the first hash completed.
-		if entry.failures+entry.inFlight > allowance(key) {
+		// Settled failures are priced by blockedUntil above, and that expires.
+		// Counting them here as well would refuse every later attempt for as
+		// long as the bucket lived, so the backoff could never grow past a
+		// second. Only attempts running at the same moment are capped, so
+		// parallel requests get the same allowance rather than an unlimited
+		// wave that arrived before the first hash completed.
+		if entry.inFlight > 0 && entry.failures+entry.inFlight > allowance(key) {
 			return nil, &RateLimitError{RetryAfter: time.Second}
 		}
 	}

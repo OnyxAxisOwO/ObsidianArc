@@ -21,6 +21,9 @@ const (
 	maxHealthHours     = 24 * 30
 	manualProbeWorkers = 4
 	manualProbeTimeout = 20 * time.Second
+	// The newest evidence per model that the page reads for its error list
+	// and its current state. Counting the window is Rates' job.
+	healthSampleCap = 500
 )
 
 // modelHealth answers with one entry per model, whether or not it has any
@@ -47,13 +50,25 @@ func (h *Handlers) modelHealth(w http.ResponseWriter, r *http.Request) error {
 		since = resetAt
 	}
 
+	// Uptime and counts come from the whole window in one query. The capped
+	// sample below only feeds the error list and the current state, and
+	// reading the uptime from it would describe the newest few hours as the
+	// period's figure.
+	rates, err := h.health.Rates(ctx, since)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+
 	entries := make([]map[string]any, 0, len(models))
 	for _, record := range models {
-		samples, err := h.health.Samples(ctx, record.ID, since, 500)
+		samples, err := h.health.Samples(ctx, record.ID, since, healthSampleCap)
 		if err != nil {
 			return httpx.Internal(err)
 		}
 		status := health.Summarise(record.ID, samples)
+		rate := rates[record.ID]
+		status.Samples = rate.Total
+		status.Uptime = rate.Share()
 		entries = append(entries, map[string]any{
 			"model_id":      record.ID,
 			"name":          record.DisplayName,
@@ -99,13 +114,7 @@ func (h *Handlers) probeAllHealth(w http.ResponseWriter, r *http.Request) error 
 		return httpx.Internal(err)
 	}
 
-	type progress struct {
-		Completed int `json:"completed"`
-		Total     int `json:"total"`
-		Succeeded int `json:"succeeded"`
-		Failed    int `json:"failed"`
-	}
-	state := progress{Total: len(records)}
+	state := probeProgress{Total: len(records)}
 	if err := stream.Event("progress", state); err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -113,16 +122,8 @@ func (h *Handlers) probeAllHealth(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 
-	type outcome struct {
-		modelID string
-		ok      bool
-		code    string
-		message string
-		latency time.Duration
-	}
-
 	jobs := make(chan model.Model, len(records))
-	results := make(chan outcome, len(records))
+	results := make(chan probeOutcome, len(records))
 	for _, record := range records {
 		jobs <- record
 	}
@@ -132,7 +133,23 @@ func (h *Handlers) probeAllHealth(w http.ResponseWriter, r *http.Request) error 
 	for range workers {
 		go func() {
 			for record := range jobs {
-				result := outcome{modelID: record.ID}
+				result := probeOutcome{modelID: record.ID}
+				// The operator switched this provider's key off, so probing through
+				// it would spend credit they stopped and record the refusal as
+				// health evidence. Probing a disabled model stays allowed: that is
+				// the diagnostic an operator asks for before turning it back on.
+				owner, ownerErr := h.providers.ByID(ctx, record.ProviderID)
+				if ownerErr != nil {
+					result.code = "provider_unavailable"
+					result.message = ownerErr.Error()
+					results <- result
+					continue
+				}
+				if !owner.Enabled {
+					result.skipped = true
+					results <- result
+					continue
+				}
 				upstream, resolveErr := h.providers.Resolve(ctx, record.ProviderID)
 				if resolveErr != nil {
 					result.code = "provider_unavailable"
@@ -155,30 +172,96 @@ func (h *Handlers) probeAllHealth(w http.ResponseWriter, r *http.Request) error 
 		}()
 	}
 
-	for range len(records) {
-		result := <-results
+	final, err := h.recordProbes(ctx, results, len(records), stream)
+	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if err := h.health.Record(ctx, result.modelID, result.ok, result.code, result.message, result.latency); err != nil {
-			_ = stream.Event("error", map[string]string{"code": "record_failed"})
-			return httpx.Internal(err)
+		return err
+	}
+	// A client that left has no one to read the closing event, and the write
+	// would fail after the response is already streaming, which httpx.Wrap
+	// would then record as a failed request.
+	if ctx.Err() != nil {
+		return nil
+	}
+	return stream.Event("done", final)
+}
+
+// probeOutcome is one probe as a worker hands it to the loop that records it.
+type probeOutcome struct {
+	modelID string
+	ok      bool
+	// skipped means nothing was sent to the provider, so there is nothing to
+	// record.
+	skipped bool
+	code    string
+	message string
+	latency time.Duration
+}
+
+// probeProgress is what the screen is told after each probe.
+type probeProgress struct {
+	Completed int `json:"completed"`
+	Total     int `json:"total"`
+	Succeeded int `json:"succeeded"`
+	Failed    int `json:"failed"`
+	Skipped   int `json:"skipped"`
+}
+
+// probeRecordTimeout bounds the write for a probe that finished after the
+// client left. It is one row; a database that cannot take it in this long
+// should not hold the request's goroutine.
+const probeRecordTimeout = 5 * time.Second
+
+// cutShort reports a result the disconnect itself produced. A probe the
+// cancellation ended reads as cancelled, and a resolve it ended reads as an
+// unavailable provider, which the provider may not be.
+func (o probeOutcome) cutShort() bool {
+	return o.code == "cancelled" || o.code == "provider_unavailable"
+}
+
+// recordProbes stores each probe as its result arrives and returns the
+// progress it reached. Once the client has gone nothing more is streamed, but
+// a probe that finished before it left has spent provider credit, so its
+// outcome is still recorded, on a context the disconnect cannot cancel. Every
+// result is read even after that, because each worker sends exactly one.
+func (h *Handlers) recordProbes(ctx context.Context, results <-chan probeOutcome, total int, stream *httpx.SSE) (probeProgress, error) {
+	state := probeProgress{Total: total}
+	for range total {
+		result := <-results
+		gone := ctx.Err() != nil
+		if gone && result.cutShort() {
+			continue
+		}
+		if !result.skipped {
+			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), probeRecordTimeout)
+			err := h.health.Record(recordCtx, result.modelID, result.ok, result.code, result.message, result.latency)
+			cancel()
+			if err != nil {
+				if !gone {
+					_ = stream.Event("error", map[string]string{"code": "record_failed"})
+				}
+				return state, httpx.Internal(err)
+			}
 		}
 		state.Completed++
-		if result.ok {
+		switch {
+		case result.skipped:
+			state.Skipped++
+		case result.ok:
 			state.Succeeded++
-		} else {
+		default:
 			state.Failed++
 		}
+		if gone {
+			continue
+		}
 		if err := stream.Event("progress", state); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
+			return state, err
 		}
 	}
-
-	return stream.Event("done", state)
+	return state, nil
 }
 
 // resetHealth resets the instance's uptime baseline, clears past probe samples,
@@ -243,9 +326,19 @@ func reenableAutoDisabled(
 			continue
 		}
 		on, off := true, false
-		if _, err := update(ctx, m.ID, model.Update{Enabled: &on, AutoDisabled: &off}); err != nil {
+		updated, err := update(ctx, m.ID, model.Update{Enabled: &on, AutoDisabled: &off})
+		if err != nil {
 			slog.ErrorContext(ctx, "could not re-enable a model after a health reset",
 				"error", err, "model", m.ID)
+			refused = append(refused, m.ID)
+			continue
+		}
+		// A write that succeeds can still leave the model off: the store keeps
+		// a model of a disabled provider off whatever it is asked. That is a
+		// refusal too, and not one the count should claim.
+		if !updated.Enabled {
+			slog.WarnContext(ctx, "a health reset could not re-enable a model; its provider is off",
+				"model", m.ID)
 			refused = append(refused, m.ID)
 			continue
 		}

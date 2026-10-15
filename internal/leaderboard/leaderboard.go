@@ -25,6 +25,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -161,7 +162,9 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 	if h.ClientIP != nil {
 		clientIP = h.ClientIP(r)
 	}
-	rateKey := clientIP + ":" + account.ID
+	// An IPv6 subscriber can present a new address per request inside one
+	// /64, so the limit is kept per prefix, as every other per-address limit is.
+	rateKey := httpx.RateKey(clientIP) + ":" + account.ID
 	if h.Limiter != nil && !h.Limiter.Allow(rateKey) {
 		return httpx.TooManyRequests("rate_limited", "Too many leaderboard requests. Please try again later.")
 	}
@@ -193,7 +196,12 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 		identity = settings.LeaderboardNickname
 	}
 
-	cacheKey := period
+	// The models board is fetched only when its setting is on at build time,
+	// so a board cached with it off has no model rows. The flag is part of the
+	// key, or switching the setting on would serve that empty board for the
+	// rest of the 30-second TTL.
+	showModels := h.settings.Bool(settings.LeaderboardShowModels)
+	cacheKey := period + "|models=" + strconv.FormatBool(showModels)
 	board := h.getCache(cacheKey)
 	if board == nil {
 		res, err, _ := h.sf.Do(cacheKey, func() (any, error) {
@@ -221,10 +229,11 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 				return nil, err
 			}
 
+			// The cache is shared by every reader and outlives a size change, so it
+			// resolves the largest board an operator can set. A place past the
+			// fetched profiles is shown as anonymous, which is wrong for a place the
+			// board does show.
 			maxFetch := settings.MaxLeaderboardSize
-			if maxFetch < 1 || maxFetch > 50 {
-				maxFetch = 50
-			}
 
 			// Pre-collect top user IDs by tokens and by requests so that whichever
 			// metric the caller asks for, the top accounts have their profiles resolved.
@@ -264,7 +273,7 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 			}
 
 			var modelRows []usage.Breakdown
-			if h.settings.Bool(settings.LeaderboardShowModels) {
+			if showModels {
 				modelRows, err = h.usage.GroupBy(queryCtx, "model", usage.MetricUsers, filter)
 				if err != nil {
 					return nil, err
@@ -298,7 +307,7 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 		"accounts": accounts,
 		"me":       standing,
 	}
-	if h.settings.Bool(settings.LeaderboardShowModels) {
+	if showModels {
 		models, err := h.projectModels(r.Context(), board.modelRows, account, metric, size)
 		if err != nil {
 			return httpx.Internal(err)
@@ -425,11 +434,14 @@ func (h *Handlers) projectModels(ctx context.Context, modelRows []usage.Breakdow
 		}
 	}
 
+	// Ranked by the metric before the cut. Cutting by distinct users first kept
+	// the wrong models: the one with the most tokens but few users was dropped
+	// before the page could sort by tokens.
 	sort.SliceStable(kept, func(i, j int) bool {
-		if kept[i].Users != kept[j].Users {
-			return kept[i].Users > kept[j].Users
+		if vi, vj := valueOf(kept[i], metric), valueOf(kept[j], metric); vi != vj {
+			return vi > vj
 		}
-		return valueOf(kept[i], metric) > valueOf(kept[j], metric)
+		return kept[i].Users > kept[j].Users
 	})
 	if len(kept) > size {
 		kept = kept[:size]

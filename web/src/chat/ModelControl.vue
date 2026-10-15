@@ -133,7 +133,14 @@ function onRangeInput(event: Event): void {
   else commit(Math.round(raw));
 }
 
+/** Takes the window listeners of the drag in progress back off, if there is one. */
+let endDrag: (() => void) | null = null;
+
 function onPointerDown(): void {
+  // A second finger on the track arrives while the first drag's window
+  // listeners are still attached. Take them off before endDrag is replaced,
+  // or the first release would outlive the component and commit later.
+  endDrag?.();
   pressed = true;
   // The class comes on the first move, not the press: a click on the track
   // should glide to where it landed, and only a drag needs the easing out of
@@ -142,12 +149,16 @@ function onPointerDown(): void {
   const release = () => {
     pressed = false;
     dragging.value = false;
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', release);
-    window.removeEventListener('pointercancel', release);
+    endDrag?.();
     // The easing is back on before this runs, so the thumb travels the last
     // fraction to its stop rather than teleporting.
     commit(Math.round(at.value));
+  };
+  endDrag = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', release);
+    window.removeEventListener('pointercancel', release);
+    endDrag = null;
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', release);
@@ -198,7 +209,14 @@ watch(position, (next) => {
   if (!pressed) at.value = next;
 });
 
-onBeforeUnmount(() => window.clearTimeout(hideTimer));
+onBeforeUnmount(() => {
+  window.clearTimeout(hideTimer);
+  // A drag the unmount cut short is not a choice the reader made, so it must
+  // not reach commit(). Its window listeners would otherwise stay attached and
+  // fire on whatever pointerup comes next.
+  endDrag?.();
+  pressed = false;
+});
 </script>
 
 <template>

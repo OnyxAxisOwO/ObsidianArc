@@ -3,10 +3,12 @@ package feedback
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -438,7 +440,7 @@ func TestThreadIsScopedToItsOwner(t *testing.T) {
 	}
 }
 
-func TestMarkSeenAndUnreadCount(t *testing.T) {
+func TestOpenThreadClearsOnlyTheReadersFlag(t *testing.T) {
 	store, author, staff := fixture(t)
 	ctx := context.Background()
 
@@ -466,8 +468,8 @@ func TestMarkSeenAndUnreadCount(t *testing.T) {
 		t.Errorf("unread = %d, want 2", count)
 	}
 
-	if err := store.MarkSeen(ctx, first.ID, false); err != nil {
-		t.Fatalf("mark seen: %v", err)
+	if _, err := store.OpenThread(ctx, first.ID, author.ID, false); err != nil {
+		t.Fatalf("open thread: %v", err)
 	}
 	if count, _ = store.UnreadFor(ctx, nil, author.ID); count != 1 {
 		t.Errorf("unread after reading one = %d, want 1", count)
@@ -575,6 +577,186 @@ func TestTheThreadCapHoldsUnderConcurrentReplies(t *testing.T) {
 	}
 }
 
+// A search is a literal: "_" must not match every title, and "100%" must not
+// match "1000". The list and its count are both narrowed by the same clause, so
+// both are checked.
+func TestSearchTreatsWildcardsAsText(t *testing.T) {
+	store, author, _ := fixture(t)
+	ctx := context.Background()
+
+	percent, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Quota at 100% after upload"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Quota at 1000 after upload")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	underscore, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Login_fails"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Login fails")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	byPercent, total, err := store.List(ctx, nil, Filter{Search: "100%"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if total != 1 || len(byPercent) != 1 || byPercent[0].ID != percent.ID {
+		t.Errorf("search for 100%% matched %d reports (total %d), want only the one that says 100%%", len(byPercent), total)
+	}
+
+	byUnderscore, total, err := store.List(ctx, nil, Filter{Search: "_"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if total != 1 || len(byUnderscore) != 1 || byUnderscore[0].ID != underscore.ID {
+		t.Errorf("search for _ matched %d reports (total %d), want only the one with an underscore", len(byUnderscore), total)
+	}
+}
+
+// PostgreSQL refuses a NUL byte in text, so a report or reply carrying one
+// would fail its insert as a 500 and lose the words. What is stored, and what
+// the length limit counts, is the text with the NULs removed.
+func TestNULBytesAreStrippedBeforeStorage(t *testing.T) {
+	store, author, staff := fixture(t)
+	ctx := context.Background()
+
+	record, err := store.Create(ctx, author.ID, Input{
+		Kind: KindBug, Priority: PriorityLow,
+		Title: "Upload\x00 fails", Body: "first\x00 line\n\x00",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if record.Title != "Upload fails" {
+		t.Errorf("title = %q, want the NUL removed", record.Title)
+	}
+	if record.Body != "first line" {
+		t.Errorf("body = %q, want the NULs removed and the edges trimmed", record.Body)
+	}
+
+	reply, err := store.AddReply(ctx, ReplyInput{
+		FeedbackID: record.ID, UserID: staff.ID, FromStaff: true, Body: "\x00answer\x00",
+	})
+	if err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	if reply.Body != "answer" {
+		t.Errorf("reply body = %q, want the NULs removed", reply.Body)
+	}
+}
+
+// The author's unread dot counts every report with an answer they have not
+// opened, but the thread can only be opened from the list. A report older than
+// the newest fifty must still be on that list, or the dot can never be cleared.
+func TestListForKeepsAnUnreadAnswerOutsideTheNewestFifty(t *testing.T) {
+	store, author, staff := fixture(t)
+	ctx := context.Background()
+
+	old, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Old"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err := store.db.Exec(ctx,
+		`UPDATE feedback SET created_at = ? WHERE id = ?`,
+		now-3*DayWindow.Milliseconds(), old.ID); err != nil {
+		t.Fatalf("age report: %v", err)
+	}
+	// The daily cap would refuse fifty reports from one account, so the newer
+	// ones are written directly.
+	for i := 0; i < 50; i++ {
+		if _, err := store.db.Exec(ctx, `INSERT INTO feedback
+			(id, user_id, kind, priority, status, title, body, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			fmt.Sprintf("newer-%02d", i), author.ID, KindIdea, PriorityLow, StatusOpen,
+			"Newer", "filler", now-int64(i)*1000, now-int64(i)*1000); err != nil {
+			t.Fatalf("newer report %d: %v", i, err)
+		}
+	}
+	if _, err := store.AddReply(ctx, ReplyInput{
+		FeedbackID: old.ID, UserID: staff.ID, FromStaff: true, Body: "answered",
+	}); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+
+	records, err := store.ListFor(ctx, nil, author.ID)
+	if err != nil {
+		t.Fatalf("list for author: %v", err)
+	}
+	listed := false
+	for _, record := range records {
+		if record.ID == old.ID {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("the author's list has %d reports without the one with an unread answer", len(records))
+	}
+	if count, _ := store.UnreadFor(ctx, nil, author.ID); count != 1 {
+		t.Errorf("unread = %d, want 1", count)
+	}
+}
+
+// Opening a thread reads it and clears the reader's flag as one step. A staff
+// reply committing during the open either appears in the response, or it is
+// still flagged afterwards. The failure this guards against is a reply that
+// neither appears nor flags: the dot clears for an answer the reader never saw.
+func TestOpeningAThreadNeverClearsAnUnseenReply(t *testing.T) {
+	store, author, staff := fixture(t)
+	ctx := context.Background()
+
+	record, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Racing"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	const rounds = 30
+	for round := 0; round < rounds; round++ {
+		var (
+			wg      sync.WaitGroup
+			written Reply
+			opened  Thread
+			openErr error
+			addErr  error
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			written, addErr = store.AddReply(ctx, ReplyInput{
+				FeedbackID: record.ID, UserID: staff.ID, FromStaff: true, Body: "answer",
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			opened, openErr = store.OpenThread(ctx, record.ID, author.ID, false)
+		}()
+		wg.Wait()
+		if addErr != nil {
+			t.Fatalf("round %d reply: %v", round, addErr)
+		}
+		if openErr != nil {
+			t.Fatalf("round %d open: %v", round, openErr)
+		}
+
+		seen := false
+		for _, reply := range opened.Replies {
+			if reply.ID == written.ID {
+				seen = true
+			}
+		}
+		flagged, err := store.ByID(ctx, nil, record.ID)
+		if err != nil {
+			t.Fatalf("round %d: by id: %v", round, err)
+		}
+		if !seen && !flagged.AuthorUnread {
+			t.Fatalf("round %d: a reply the open did not return cleared the author's flag", round)
+		}
+	}
+}
+
 func TestDeletingOneReplyAndThenTheWholeThread(t *testing.T) {
 	store, author, staff := fixture(t)
 	ctx := context.Background()
@@ -622,6 +804,167 @@ func TestDeletingOneReplyAndThenTheWholeThread(t *testing.T) {
 	if len(left) != 0 {
 		t.Errorf("%d replies outlived the report they were about", len(left))
 	}
+}
+
+// Rows written before turns were stamped apart can still share a timestamp.
+// The id breaks that tie, so the thread reads the same way on every request.
+func TestRepliesWithEqualTimestampsReadInIDOrder(t *testing.T) {
+	store, author, staff := fixture(t)
+	ctx := context.Background()
+
+	record, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Tied"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	const stamp = int64(1_700_000_000_000)
+	// Inserted in reverse id order, so insertion order alone would fail this.
+	for _, row := range []struct{ id, body string }{
+		{"reply-b", "written first"},
+		{"reply-a", "written second"},
+	} {
+		if _, err := store.db.Exec(ctx, `INSERT INTO feedback_replies
+			(id, feedback_id, user_id, from_staff, body, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			row.id, record.ID, staff.ID, true, row.body, stamp); err != nil {
+			t.Fatalf("insert %s: %v", row.id, err)
+		}
+	}
+	replies, err := store.Replies(ctx, nil, record.ID)
+	if err != nil {
+		t.Fatalf("replies: %v", err)
+	}
+	if len(replies) != 2 || replies[0].ID != "reply-a" || replies[1].ID != "reply-b" {
+		t.Errorf("order = %+v, want reply-a then reply-b", replies)
+	}
+}
+
+// A reply that queued behind another writer's hold on the thread was said after
+// that writer committed, so its timestamp must come from after the wait.
+func TestAReplyThatWaitedForTheThreadLockIsStampedAfterIt(t *testing.T) {
+	store, author, staff := fixture(t)
+	ctx := context.Background()
+
+	record, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Queued"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	holding := make(chan struct{})
+	var released int64
+	held := make(chan error, 1)
+	go func() {
+		held <- store.db.Tx(ctx, func(tx *database.Tx) error {
+			if _, err := tx.Exec(ctx,
+				`UPDATE feedback SET updated_at = updated_at WHERE id = ?`, record.ID); err != nil {
+				return err
+			}
+			close(holding)
+			// Long enough that the reply started below is certainly waiting on the lock.
+			time.Sleep(200 * time.Millisecond)
+			released = time.Now().UnixMilli()
+			return nil
+		})
+	}()
+	<-holding
+	reply, err := store.AddReply(ctx, ReplyInput{
+		FeedbackID: record.ID, UserID: staff.ID, FromStaff: true, Body: "after the wait",
+	})
+	if err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	if err := <-held; err != nil {
+		t.Fatalf("holder: %v", err)
+	}
+	if reply.CreatedAt < released {
+		t.Errorf("reply stamped %d, but the lock it waited for was released at %d", reply.CreatedAt, released)
+	}
+}
+
+// The unread flags describe the newest turn. Deleting that turn must not leave a
+// dot for an answer that is gone, and deleting an older turn must not move them.
+func TestDeletingTheNewestReplyRecomputesTheUnreadFlags(t *testing.T) {
+	store, author, staff := fixture(t)
+	ctx := context.Background()
+
+	record, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Flags"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	post := func(in ReplyInput) Reply {
+		t.Helper()
+		in.FeedbackID = record.ID
+		got, err := store.AddReply(ctx, in)
+		if err != nil {
+			t.Fatalf("reply %q: %v", in.Body, err)
+		}
+		return got
+	}
+	expectFlags := func(when string, wantAuthor, wantOperator bool) {
+		t.Helper()
+		got, err := store.ByID(ctx, nil, record.ID)
+		if err != nil {
+			t.Fatalf("by id: %v", err)
+		}
+		if got.AuthorUnread != wantAuthor || got.OperatorUnread != wantOperator {
+			t.Errorf("%s: author_unread=%v operator_unread=%v, want %v/%v",
+				when, got.AuthorUnread, got.OperatorUnread, wantAuthor, wantOperator)
+		}
+	}
+
+	question := post(ReplyInput{UserID: staff.ID, FromStaff: true, Body: "question"})
+	answer := post(ReplyInput{UserID: author.ID, Body: "answer", RequireOwner: true})
+	followUp := post(ReplyInput{UserID: staff.ID, FromStaff: true, Body: "follow-up"})
+	expectFlags("after the follow-up", true, false)
+
+	if err := store.DeleteReply(ctx, record.ID, question.ID); err != nil {
+		t.Fatalf("delete older reply: %v", err)
+	}
+	expectFlags("after deleting an older turn", true, false)
+
+	// The author's answer is now last, and the operator wrote the deleted turn
+	// after reading it, so neither side is owed anything.
+	if err := store.DeleteReply(ctx, record.ID, followUp.ID); err != nil {
+		t.Fatalf("delete newest reply: %v", err)
+	}
+	expectFlags("after deleting the newest turn over the author's answer", false, false)
+	if n, err := store.UnreadFor(ctx, nil, author.ID); err != nil || n != 0 {
+		t.Errorf("author unread = %d, %v; want 0", n, err)
+	}
+
+	// Two operator turns in a row: deleting the newest leaves the other one
+	// last, written by the same side, so the author is owed a look at it.
+	second := post(ReplyInput{UserID: staff.ID, FromStaff: true, Body: "second"})
+	third := post(ReplyInput{UserID: staff.ID, FromStaff: true, Body: "third"})
+	if err := store.DeleteReply(ctx, record.ID, third.ID); err != nil {
+		t.Fatalf("delete third: %v", err)
+	}
+	expectFlags("after deleting the newest of two operator turns", true, false)
+
+	// Two author turns in a row: deleting the newer leaves the earlier one
+	// last, so the operator is owed a look at it.
+	again := post(ReplyInput{UserID: author.ID, Body: "again", RequireOwner: true})
+	expectFlags("after the author answers again", false, true)
+	withdrawn := post(ReplyInput{UserID: author.ID, Body: "withdrawn", RequireOwner: true})
+	if err := store.DeleteReply(ctx, record.ID, withdrawn.ID); err != nil {
+		t.Fatalf("delete withdrawn answer: %v", err)
+	}
+	expectFlags("after deleting the author's newest turn over their earlier answer", false, true)
+
+	// The newest turn is the author's, and the one before it is the operator's:
+	// the author wrote it after reading the operator's turn, so neither is owed.
+	if err := store.DeleteReply(ctx, record.ID, again.ID); err != nil {
+		t.Fatalf("delete again: %v", err)
+	}
+	expectFlags("after deleting the author's turn over an operator turn", false, false)
+
+	// Clearing the last turns returns the report to the state Create leaves it in.
+	if err := store.DeleteReply(ctx, record.ID, second.ID); err != nil {
+		t.Fatalf("delete second: %v", err)
+	}
+	if err := store.DeleteReply(ctx, record.ID, answer.ID); err != nil {
+		t.Fatalf("delete answer: %v", err)
+	}
+	expectFlags("with no turns left", false, false)
 }
 
 func TestAReplyNeedsSomethingInIt(t *testing.T) {

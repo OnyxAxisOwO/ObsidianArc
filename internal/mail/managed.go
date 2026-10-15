@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +38,27 @@ func NewManager(ctx context.Context, db *database.DB, sender *Sender, legacy Con
 	if err := m.read(ctx); err != nil {
 		return nil, err
 	}
-	sender.Update(m.cfg)
+	// The environment values never went through Save, and the sender writes
+	// its address into a header as given, so the sending fields are checked
+	// before the sender sees them. PublicURL is checked on its own: it only
+	// builds links, and a bad origin there must not switch SMTP off for the
+	// whole instance. It is kept as configured rather than cleared, because a
+	// plugin's path base resolves against it; VerificationReady already refuses
+	// to build a verification link from an origin that is not HTTPS.
+	//
+	// m.cfg stays as read so the admin mail page shows the stored values,
+	// including the refused one, for the operator to correct. Only the sender
+	// is given an empty configuration.
+	probe := m.cfg
+	probe.PublicURL = ""
+	senderCfg := m.cfg
+	if err := ValidateConfig(probe); err != nil {
+		slog.ErrorContext(ctx, "mail: configuration refused, mail stays off", "error", err)
+		senderCfg = Config{}
+	} else if err := ValidateConfig(m.cfg); err != nil {
+		slog.WarnContext(ctx, "mail: public URL refused, SMTP stays on and verification links stay off", "error", err)
+	}
+	sender.Update(senderCfg)
 	return m, nil
 }
 
@@ -103,24 +124,17 @@ func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPa
 		var (
 			currentSealed []byte
 			current       Config
+			hasRow        bool
 		)
 		readErr := tx.QueryRow(ctx, `SELECT host, port, username, public_url, password FROM mail_config WHERE id = 1`).
 			Scan(&current.Host, &current.Port, &current.Username, &current.PublicURL, &currentSealed)
-		currentPassword := ""
 		switch {
 		case readErr == nil:
-			if len(currentSealed) > 0 {
-				opened, err := m.box.Open(currentSealed)
-				if err != nil {
-					return fmt.Errorf("mail: open stored password: %w", err)
-				}
-				currentPassword = opened
-			}
+			hasRow = true
 		case database.IsNotFound(readErr):
 			// Keep the legacy environment credential when creating the first
 			// database override without entering a replacement password.
 			current = m.cfg
-			currentPassword = m.cfg.Password
 		default:
 			return fmt.Errorf("mail: read stored password: %w", readErr)
 		}
@@ -144,10 +158,25 @@ func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPa
 		} else if password != "" {
 			cfg.Password = password
 		} else {
-			if movesTransport(cfg, current) && currentPassword != "" {
+			// Only a save that keeps the stored secret opens it. A typed or
+			// cleared password replaces the value unread, so a secret the box can
+			// no longer open (a rotated key, a damaged row) cannot block the save
+			// that would fix it.
+			kept := m.cfg.Password
+			if hasRow {
+				kept = ""
+				if len(currentSealed) > 0 {
+					opened, err := m.box.Open(currentSealed)
+					if err != nil {
+						return fmt.Errorf("mail: open stored password: %w", err)
+					}
+					kept = opened
+				}
+			}
+			if movesTransport(cfg, current) && kept != "" {
 				return ErrPasswordNeededForMove
 			}
-			cfg.Password = currentPassword
+			cfg.Password = kept
 		}
 		var sealed any
 		if cfg.Password != "" {

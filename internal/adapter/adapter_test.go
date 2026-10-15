@@ -325,6 +325,7 @@ func TestAnthropicStreamSeparatesThinking(t *testing.T) {
 		`{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":" it up"}}`,
 		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"Four."}}`,
 		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}`,
+		`{"type":"message_stop"}`,
 	}
 	server := sseServer(t, frames, nil)
 
@@ -350,9 +351,117 @@ func TestAnthropicStreamSeparatesThinking(t *testing.T) {
 	}
 }
 
+// A stream can end cleanly, with no error from the connection, after the
+// provider stopped writing: an intermediary that closes the body on a timeout
+// does exactly that. Without message_stop it is a cut answer, so it must not
+// read as a finished one, and what did arrive is kept for the caller.
+func TestAnthropicStreamCutBeforeItsEndIsAnError(t *testing.T) {
+	server := sseServer(t, []string{
+		`{"type":"message_start","message":{"usage":{"input_tokens":25}}}`,
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"Four"}}`,
+	}, nil)
+
+	var out collected
+	result, err := testRegistry().Chat(context.Background(),
+		Provider{Kind: KindAnthropic, BaseURL: server.URL, APIKey: "k"},
+		ChatRequest{Model: testModel(), Stream: true, Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+		out.sink)
+	var upstream *Error
+	if !errors.As(err, &upstream) || upstream.Kind != ErrorUpstream {
+		t.Fatalf("err = %v, want an upstream error for the cut answer", err)
+	}
+	if result.Text != "Four" {
+		t.Errorf("partial text = %q, want the part that arrived", result.Text)
+	}
+}
+
+// The stop_reason is the provider saying the answer is whole, and a
+// compatible provider that sends it and closes without message_stop has not
+// cut the answer short. Refusing it would fail every turn from that provider.
+func TestAnthropicStreamWithStopReasonButNoMessageStopIsComplete(t *testing.T) {
+	server := sseServer(t, []string{
+		`{"type":"message_start","message":{"usage":{"input_tokens":25}}}`,
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"Four."}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}`,
+	}, nil)
+
+	var out collected
+	result, err := testRegistry().Chat(context.Background(),
+		Provider{Kind: KindAnthropic, BaseURL: server.URL, APIKey: "k"},
+		ChatRequest{Model: testModel(), Stream: true, Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+		out.sink)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if result.Text != "Four." || result.FinishReason != "end_turn" {
+		t.Errorf("result = %+v, want the whole answer with its stop reason", result)
+	}
+}
+
+// A caller's budget is clamped so that the raise buildBody makes to fit it
+// stays under the ceiling. Where the ceiling leaves no room for the smallest
+// budget, the answer is not thinking at all.
+func TestClampThinkingBudgetKeepsTheRaiseUnderTheCeiling(t *testing.T) {
+	cases := []struct {
+		budget, ceiling, want int
+		fits                  bool
+	}{
+		{200000, 8192, 8192 - budgetHeadroom, true},
+		{budgetLow, 8192, budgetLow, true},
+		{200000, 0, 200000, true},
+		{0, 8192, 8192 - budgetHeadroom, true},
+		{5000, budgetMin + budgetHeadroom - 1, 0, false},
+	}
+	for _, tc := range cases {
+		got, fits := ClampThinkingBudget(tc.budget, tc.ceiling)
+		if fits != tc.fits || (fits && got != tc.want) {
+			t.Errorf("ClampThinkingBudget(%d, %d) = %d, %v; want %d, %v",
+				tc.budget, tc.ceiling, got, fits, tc.want, tc.fits)
+		}
+		if fits && tc.ceiling > 0 && got+budgetHeadroom > tc.ceiling {
+			t.Errorf("ClampThinkingBudget(%d, %d) = %d lifts the answer past the ceiling", tc.budget, tc.ceiling, got)
+		}
+	}
+}
+
+// One frame past the reader's buffer is the provider's event being larger than
+// this server takes. It is an upstream fault, and reporting it as a network
+// error would say the provider was unreachable, which is untrue and retryable.
+func TestAnOversizedStreamFrameIsAnUpstreamError(t *testing.T) {
+	server := sseServer(t, []string{strings.Repeat("x", 1500<<10)}, nil)
+
+	var out collected
+	_, err := testRegistry().Chat(context.Background(),
+		Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
+		ChatRequest{Model: testModel(), Stream: true, Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+		out.sink)
+	var upstream *Error
+	if !errors.As(err, &upstream) || upstream.Kind != ErrorUpstream {
+		t.Fatalf("err = %v, want an upstream error for the oversized frame", err)
+	}
+}
+
+// The same frame on the Anthropic protocol, which reads its stream the same way.
+func TestAnAnthropicOversizedStreamFrameIsAnUpstreamError(t *testing.T) {
+	server := sseServer(t, []string{strings.Repeat("x", 1500<<10)}, nil)
+
+	var out collected
+	_, err := testRegistry().Chat(context.Background(),
+		Provider{Kind: KindAnthropic, BaseURL: server.URL, APIKey: "k"},
+		ChatRequest{Model: testModel(), Stream: true, Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+		out.sink)
+	var upstream *Error
+	if !errors.As(err, &upstream) || upstream.Kind != ErrorUpstream {
+		t.Fatalf("err = %v, want an upstream error for the oversized frame", err)
+	}
+}
+
 func TestAnthropicThinkingBudgetAndTemperature(t *testing.T) {
 	var body map[string]any
-	server := sseServer(t, []string{`{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`}, &body)
+	server := sseServer(t, []string{
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`,
+		`{"type":"message_stop"}`,
+	}, &body)
 
 	temperature := 0.7
 	var out collected
@@ -419,6 +528,47 @@ func TestTranscriptIsRepaired(t *testing.T) {
 	}
 }
 
+// A transcript that opens mid-turn can begin with the results of a call whose
+// request was trimmed away. The API refuses a result that has no call before
+// it, so the result goes and the turn it sat in goes with it if nothing else
+// is left.
+func TestTrimmedLeadingCallLeavesNoResultBehind(t *testing.T) {
+	calls := []Message{
+		{Role: RoleAssistant, Parts: []Part{{Kind: PartToolCall, ToolCallID: "t1", ToolName: "lookup", ToolArgs: `{}`}}},
+		{Role: RoleTool, Parts: []Part{{Kind: PartToolResult, ToolCallID: "t1", Text: "a language"}}},
+		{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "continue"}}},
+	}
+	out, _ := anthropicAdapter{}.buildMessages(ChatRequest{Model: testModel(), Messages: calls})
+	if len(out) != 1 || out[0].Role != "user" {
+		t.Fatalf("messages = %+v, want one user turn", out)
+	}
+	blocks, _ := out[0].Content.([]any)
+	if len(blocks) != 1 {
+		t.Fatalf("head turn = %+v, want only the text", out[0].Content)
+	}
+	if text, ok := blocks[0].(anthropicTextBlock); !ok || text.Text != "continue" {
+		t.Errorf("head turn = %+v, want the text kept", blocks[0])
+	}
+
+	// The same stranding with the answer in between, so the result's turn is
+	// emptied and the assistant reply after it is trimmed in turn.
+	stranded := []Message{
+		{Role: RoleAssistant, Parts: []Part{{Kind: PartToolCall, ToolCallID: "t1", ToolName: "lookup", ToolArgs: `{}`}}},
+		{Role: RoleUser, Parts: []Part{{Kind: PartToolResult, ToolCallID: "t1", Text: "a language"}}},
+		{Role: RoleAssistant, Parts: []Part{{Kind: PartText, Text: "done"}}},
+		{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "thanks"}}},
+	}
+	out, _ = anthropicAdapter{}.buildMessages(ChatRequest{Model: testModel(), Messages: stranded})
+	if len(out) != 1 || out[0].Role != "user" {
+		t.Fatalf("messages = %+v, want one user turn", out)
+	}
+	for _, block := range out[0].Content.([]any) {
+		if _, isResult := block.(anthropicToolResultBlock); isResult {
+			t.Errorf("a tool result with no call before it was sent: %+v", block)
+		}
+	}
+}
+
 func TestImagesAreDroppedForTextOnlyModels(t *testing.T) {
 	spec := testModel()
 	spec.SupportsImages = false
@@ -458,6 +608,11 @@ func TestErrorClassification(t *testing.T) {
 		// A text-only model rejects an image by naming the wire format; the
 		// cause is that it cannot see.
 		{400, `{"error":{"message":"invalid content type"}}`, true, ErrorImagesUnsupported},
+		// The same status on a picture-bearing request can be a refusal of
+		// something else; the message is what tells them apart.
+		{400, `{"error":{"message":"maximum context length is 8192 tokens"}}`, true, ErrorInvalidRequest},
+		{400, `{"error":{"message":"expected text, got image_url"}}`, true, ErrorImagesUnsupported},
+		{415, `{"error":{"message":"unsupported"}}`, true, ErrorImagesUnsupported},
 	}
 
 	for _, tc := range cases {
@@ -712,6 +867,14 @@ func TestImagesEndpointResolution(t *testing.T) {
 		{"https://api.openai.com/v1", "https://api.openai.com/v1/images/generations"},
 		{"https://api.openai.com/v1/chat/completions", "https://api.openai.com/v1/images/generations"},
 		{"https://api.openai.com/v1/images/generations", "https://api.openai.com/v1/images/generations"},
+		// Providers that name their own version, anywhere in the path, and
+		// whose images live beside their chat endpoint.
+		{"https://open.bigmodel.cn/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4/images/generations"},
+		{"https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v3/images/generations"},
+		// A version in the host is not a version segment of the path.
+		{"https://v1.example.com", "https://v1.example.com/v1/images/generations"},
+		// A path with no version named still gets the version added.
+		{"https://gateway.example.com/openai", "https://gateway.example.com/openai/v1/images/generations"},
 	}
 	for _, tc := range cases {
 		if got := imagesEndpoint(tc.in); got != tc.want {

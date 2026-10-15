@@ -2,8 +2,11 @@ package checkin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -223,7 +227,7 @@ func TestACheckInStandsWhenItsRewardCannotBePaid(t *testing.T) {
 	f := newFixture(t)
 	bar := f.bar(t)
 	f.configure(t, Settings{Enabled: true, Config: Config{Daily: Reward{Kind: KindBonus, BarID: bar.ID, Amount: 1, ValidDays: 3}}})
-	if err := f.bonus.DeleteBar(context.Background(), bar.ID); err != nil {
+	if err := f.bonus.DeleteBar(context.Background(), nil, bar.ID); err != nil {
 		t.Fatal(err)
 	}
 	a := f.person(t, "alice")
@@ -233,6 +237,100 @@ func TestACheckInStandsWhenItsRewardCannotBePaid(t *testing.T) {
 	}
 	if _, err := f.checkInOn(t, a.ID, 1); !errors.Is(err, ErrAlreadyToday) {
 		t.Fatalf("it was not recorded: %v", err)
+	}
+}
+
+// A daily reward that fails for a reason other than the bar being gone — here
+// an amount no Save would accept, written past it — must not stand the check-in
+// without its reward: the day would be recorded, and the reward could never be
+// paid for it afterwards. The check-in rolls back so the day can be tried again.
+func TestADailyRewardThatFailsForAnotherReasonRollsTheCheckInBack(t *testing.T) {
+	f := newFixture(t)
+	bar := f.bar(t)
+	raw, err := json.Marshal(Config{Daily: Reward{Kind: KindBonus, BarID: bar.ID, Amount: 2_000_000, ValidDays: 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := f.svc.settings.SetMany(ctx, map[string]string{
+		settings.CheckinEnabled:  "true",
+		settings.CheckinTimezone: "UTC",
+		settings.CheckinConfig:   string(raw),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a := f.person(t, "alice")
+	if _, err := f.checkInOn(t, a.ID, 1); err == nil || errors.Is(err, ErrAlreadyToday) {
+		t.Fatalf("a failed grant stood the check-in without its reward: %v", err)
+	}
+	var recorded int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM checkins WHERE user_id = ?`, a.ID).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != 0 {
+		t.Fatalf("the day was recorded %d time(s) despite the failure", recorded)
+	}
+}
+
+// A milestone whose bar has been switched off or deleted is a reward the
+// account can do nothing about. It is refused as a conflict, not answered as a
+// server fault that is logged on every attempt.
+func TestAMilestoneWhoseBarIsGoneIsRefusedAsAConflict(t *testing.T) {
+	f := newFixture(t)
+	bar := f.bar(t)
+	f.configure(t, Settings{Enabled: true, Config: Config{Rules: []Rule{{
+		ID: "week", Title: "week", Basis: BasisStreak, Days: 1,
+		Reward: Reward{Kind: KindBonus, BarID: bar.ID, Amount: 5, ValidDays: 3},
+	}}}})
+	a := f.person(t, "alice")
+	if _, err := f.checkInOn(t, a.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.bonus.DeleteBar(context.Background(), nil, bar.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := f.svc.Claim(context.Background(), a.ID, "week")
+	if !errors.Is(err, ErrRewardUnavailable) {
+		t.Fatalf("claim against a deleted bar: %v", err)
+	}
+	var apiErr *httpx.Error
+	if answer := TranslateError(err); !errors.As(answer, &apiErr) || apiErr.Status != http.StatusConflict {
+		t.Fatalf("answered %v, want a 409", answer)
+	}
+	if n, _ := f.grants(t, a.ID); n != 0 {
+		t.Fatalf("%d grants were made for a reward that could not be paid", n)
+	}
+}
+
+// Switching a bar off is the same break as deleting it for a milestone that
+// names it: the grant is refused, and the account must be told the reward can
+// no longer be paid, not sent a server fault on every press.
+func TestAMilestoneWhoseBarIsSwitchedOffIsRefusedAsAConflict(t *testing.T) {
+	f := newFixture(t)
+	bar := f.bar(t)
+	f.configure(t, Settings{Enabled: true, Config: Config{Rules: []Rule{{
+		ID: "week", Title: "week", Basis: BasisStreak, Days: 1,
+		Reward: Reward{Kind: KindBonus, BarID: bar.ID, Amount: 5, ValidDays: 3},
+	}}}})
+	a := f.person(t, "alice")
+	if _, err := f.checkInOn(t, a.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(context.Background(), `UPDATE bonus_bars SET active = ? WHERE id = ?`, false, bar.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := f.svc.Claim(context.Background(), a.ID, "week")
+	if !errors.Is(err, ErrRewardUnavailable) {
+		t.Fatalf("claim against a switched-off bar: %v", err)
+	}
+	var apiErr *httpx.Error
+	if answer := TranslateError(err); !errors.As(answer, &apiErr) || apiErr.Status != http.StatusConflict {
+		t.Fatalf("answered %v, want a 409", answer)
+	}
+	if n, _ := f.grants(t, a.ID); n != 0 {
+		t.Fatalf("%d grants were made for a reward that could not be paid", n)
 	}
 }
 
@@ -428,6 +526,10 @@ func TestSettingsAreCheckedWhenSavedNotWhenSomebodyPressesTheButton(t *testing.T
 		"more days than a month has":       {Timezone: "UTC", Config: Config{Rules: []Rule{{ID: "a", Basis: BasisMonth, Days: 32, Reward: good}}}},
 		"a milestone that gives nothing":   {Timezone: "UTC", Config: Config{Rules: []Rule{{ID: "a", Basis: BasisStreak, Days: 1}}}},
 		"a card reward that never expires": {Timezone: "UTC", Config: Config{Daily: Reward{Kind: KindCard, Cards: 1}}},
+		"a card reward naming no such window": {Timezone: "UTC", Config: Config{Daily: Reward{
+			Kind: KindCard, Cards: 1, ValidDays: 1, Windows: []string{"7d"}}}},
+		"a card reward whose name cannot be kept": {Timezone: "UTC", Config: Config{Daily: Reward{
+			Kind: KindCard, Cards: 1, ValidDays: 1, Name: strings.Repeat("名", card.MaxNameChars+1)}}},
 	}
 	for name, in := range cases {
 		if err := f.svc.Save(context.Background(), in); !errors.Is(err, ErrInvalid) {
@@ -439,5 +541,43 @@ func TestSettingsAreCheckedWhenSavedNotWhenSomebodyPressesTheButton(t *testing.T
 	}
 	if got := f.svc.Current(); !got.Enabled || got.Daily.Amount != 1 {
 		t.Fatalf("current = %+v", got)
+	}
+}
+
+// A grant trims a card's name before it cuts it, so padding that the trim removes
+// must not count toward the limit: a name that fits once trimmed is accepted.
+// The name past the limit is still refused, padding or not.
+func TestAPaddedCardNameThatFitsIsAccepted(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	reward := func(name string) Settings {
+		return Settings{Enabled: true, Timezone: "UTC", Config: Config{Daily: Reward{
+			Kind: KindCard, Cards: 1, ValidDays: 1, Name: name}}}
+	}
+	padded := "  " + strings.Repeat("名", card.MaxNameChars) + "  "
+	if err := f.svc.Save(ctx, reward(padded)); err != nil {
+		t.Fatalf("a padded name that fits once trimmed: %v", err)
+	}
+	tooLong := "  " + strings.Repeat("名", card.MaxNameChars+1) + "  "
+	if err := f.svc.Save(ctx, reward(tooLong)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a padded name over the limit: err = %v, want ErrInvalid", err)
+	}
+}
+
+// Location reads the zone trimmed, so Save must accept a padded name and store
+// it trimmed; refusing it would tell the administrator a valid zone is wrong.
+func TestAPaddedTimeZoneIsSavedTrimmed(t *testing.T) {
+	f := newFixture(t)
+	if err := f.svc.Save(context.Background(), Settings{Enabled: true, Timezone: " Asia/Shanghai "}); err != nil {
+		t.Fatalf("a padded zone: %v", err)
+	}
+	if got := f.svc.Current().Timezone; got != "Asia/Shanghai" {
+		t.Fatalf("stored zone = %q", got)
+	}
+	if loc := f.svc.Location(); loc.String() != "Asia/Shanghai" {
+		t.Fatalf("location = %s", loc)
+	}
+	if err := f.svc.Save(context.Background(), Settings{Timezone: "   "}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a blank zone: %v", err)
 	}
 }

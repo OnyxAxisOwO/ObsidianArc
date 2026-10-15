@@ -185,7 +185,9 @@ func ClientIP(r *http.Request, trust ProxyTrust) string {
 		if err != nil {
 			// An unparseable entry is a forged or broken chain. Everything to
 			// its left is unusable, so stop here rather than reading past it.
-			break
+			// X-Real-Ip is no way out either: it is read only when every hop
+			// was a trusted proxy, and this chain is not.
+			return addrString(peer, r.RemoteAddr)
 		}
 		if !trust.trusts(candidate) {
 			return candidate.Unmap().String()

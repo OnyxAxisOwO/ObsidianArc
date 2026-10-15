@@ -26,7 +26,7 @@ import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 
 const view = useAdminView();
-view.setTitle(t('navAvailability'), t('availabilitySubtitle'));
+view.setTitle(() => t('navAvailability'), () => t('availabilitySubtitle'));
 
 const error = ref('');
 const loaded = ref(false);
@@ -50,22 +50,32 @@ const form = ref({
   healthRetainDays: 14 as number | null,
 });
 
+// A blank box is not a value. It used to be saved as the default it stood for,
+// and then the box was left blank on screen, so the page showed one number and
+// stored another. A blank box now keeps the save shut until a number is typed,
+// and "0" is how auto-disable is turned off.
 function collect(): Record<string, string> {
   return {
     'health.probe': String(form.value.healthProbe),
-    'health.window_minutes': String(form.value.healthWindow ?? 30),
-    'health.disable_after': String(form.value.healthDisableAfter ?? 0),
-    'health.disable_below': String(form.value.healthDisableBelow ?? 0),
-    'health.warn_below': String(form.value.healthWarnBelow ?? 90),
+    'health.window_minutes': String(form.value.healthWindow ?? ''),
+    'health.disable_after': String(form.value.healthDisableAfter ?? ''),
+    'health.disable_below': String(form.value.healthDisableBelow ?? ''),
+    'health.warn_below': String(form.value.healthWarnBelow ?? ''),
     'health.show_users': String(form.value.healthShowUsers),
-    'health.retain_days': String(form.value.healthRetainDays ?? 14),
+    'health.retain_days': String(form.value.healthRetainDays ?? ''),
   };
 }
+
+const settingsValid = computed(() => {
+  const f = form.value;
+  return f.healthWindow !== null && f.healthDisableAfter !== null && f.healthDisableBelow !== null
+    && f.healthWarnBelow !== null && f.healthRetainDays !== null;
+});
 
 const { dirty, changes, accept } = useSettingsDraft(collect);
 
 async function save(): Promise<void> {
-  if (!loaded.value || error.value || busy.value) return;
+  if (!loaded.value || error.value || busy.value || !settingsValid.value) return;
   // Only what this page changed, so the save cannot undo another screen's edit.
   const values = changes();
   if (Object.keys(values).length === 0) return;
@@ -117,6 +127,7 @@ async function probeAllModels(): Promise<void> {
       succeeded: result.succeeded,
       total: result.total,
       failed: result.failed,
+      skipped: result.skipped,
     });
     window.setTimeout(() => { flashSuccess.value = ''; }, 5000);
     await Promise.all([refreshHealth(), loadModels()]);
@@ -177,13 +188,14 @@ onMounted(load);
     <span v-if="loaded && !error" class="oa-control-save-state" :class="{ dirty }" role="status">
       <span class="oa-dashboard-dot" />{{ dirty ? t('controlUnsaved') : t('controlSaved') }}
     </span>
-    <button type="button" class="oa-btn primary" :disabled="busy || !loaded || !!error" @click="save">
+    <button type="button" class="oa-btn primary" :disabled="busy || !loaded || !!error || !settingsValid" @click="save">
       {{ saveLabel || t('save') }}
     </button>
   </Teleport>
   <AdminFailure v-if="error" :message="error" @retry="load" />
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
   <AdminWorkbench v-else page="availability" :groups="categories" :searchable="false" v-slot="{ visible }">
+    <p v-if="!settingsValid" class="oa-field-hint" role="alert">{{ t('settingNumberRequired') }}</p>
     <div v-show="visible('modelHealthOverview')" class="oa-health-summary oa-control-card-wide">
       <div><IconPulse :size="22" /><span>{{ t('controlTotalModels') }}</span><strong>{{ models.length }}</strong></div>
       <div><span>{{ t('uptimeOperational') }}</span><strong>{{ counts.up }}</strong></div>

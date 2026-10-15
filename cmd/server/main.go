@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -140,7 +141,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	// Closed through closeDB rather than db.Close, so that the background loops
+	// can close it after their final write; see stopBackgroundThenClose. This
+	// defer covers the returns that happen before the loops start.
+	closeDB := sync.OnceValue(db.Close)
+	defer closeDB()
 
 	// The core's alone. An installed plugin's run when the server loads the
 	// plugin states, and an uninstalled one's run when somebody installs
@@ -163,10 +168,14 @@ func run() error {
 		return err
 	}
 
-	// Cancelled by the shutdown path below, which signals the background loops.
+	// The loops are stopped and waited for before the database closes, on
+	// every return path that gets this far: see stopBackgroundThenClose.
 	backgroundCtx, stopBackground := context.WithCancel(context.Background())
-	defer stopBackground()
-	app.StartJanitor(backgroundCtx)
+	janitorDone := app.StartJanitor(backgroundCtx)
+	stopJanitor := sync.OnceValue(func() bool {
+		return stopBackgroundThenClose(stopBackground, janitorDone, closeDB)
+	})
+	defer stopJanitor()
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
@@ -235,11 +244,83 @@ func run() error {
 			slog.Error("console ssh did not stop cleanly", "error", err)
 		}
 	}
-	if err := srv.Shutdown(stopCtx); err != nil {
+	if err := shutdownHTTP(stopCtx, srv); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
-	slog.Info("stopped")
+	// Read before stopJanitor: its wait can run past the deadline, and that does
+	// not mean an answer was cut.
+	answersCut := stopCtx.Err() != nil
+	reportStopped(stopJanitor(), answersCut)
 	return nil
+}
+
+// reportStopped logs how the process ended. "stopped" promises that the final
+// request-log write has landed, so it is logged only when the background loops
+// returned in time and no answer was still running at the deadline: an answer
+// that completes after the database closes loses its row. The scheduled backups
+// are waited on with the loops, since a backup's final status is a database
+// write too. A backup started from the admin page is not: it runs on its own
+// goroutine and may still be writing when the database closes. Both paths exit
+// 0 either way: the process is stopping, and a non-zero status is what a
+// service manager counts as a crash.
+func reportStopped(loopsStopped, answersCut bool) {
+	if !loopsStopped || answersCut {
+		slog.Error("stopped without the final request-log write",
+			"loops_stopped", loopsStopped, "answers_cut", answersCut)
+		return
+	}
+	slog.Info("stopped")
+}
+
+// janitorGrace bounds the wait in waitForJanitor. It is a variable only so a
+// test can shorten it.
+var janitorGrace = 10 * time.Second
+
+// stopBackgroundThenClose cancels the background loops, waits for them to
+// return, and then closes the database. The request logger's final write begins
+// after cancellation, so a database closed before the loops have returned fails
+// that write and drops the last requests of the run. The close happens even
+// when the wait times out: the process is stopping either way, and a stuck loop
+// must not hold it open. It reports whether the loops returned in time.
+//
+// The scheduled backups are among the loops: a backup's final status is written
+// after cancellation, the same way the request logger's last batch is.
+func stopBackgroundThenClose(stop context.CancelFunc, done <-chan struct{}, closeDB func() error) bool {
+	finished := waitForJanitor(stop, done)
+	if err := closeDB(); err != nil {
+		slog.Warn("close database", "error", err)
+	}
+	return finished
+}
+
+// waitForJanitor cancels the background loops and waits for them to return.
+// The wait is bounded so that a loop which is stuck cannot hold the process
+// open after the operator has asked it to stop. It reports whether the loops
+// returned in time.
+func waitForJanitor(stop context.CancelFunc, done <-chan struct{}) bool {
+	stop()
+	select {
+	case <-done:
+		return true
+	case <-time.After(janitorGrace):
+		slog.Warn("background loops did not stop in time")
+		return false
+	}
+}
+
+// shutdownHTTP stops srv and lets in-flight requests finish until ctx ends.
+//
+// Reaching that deadline is the stop the grace period was set to impose, not
+// a failure: an answer still streaming when the process is told to stop is
+// cut there. Returning it as an error reported every such restart as a failed
+// start, with a failure exit status a service manager counts as a crash.
+func shutdownHTTP(ctx context.Context, srv *http.Server) error {
+	err := srv.Shutdown(ctx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		slog.Warn("shutdown deadline reached; in-flight answers were cut", "error", err)
+		return nil
+	}
+	return err
 }
 
 func setupLogging(cfg config.Config) {

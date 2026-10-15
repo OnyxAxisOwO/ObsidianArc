@@ -58,8 +58,20 @@ function fingerprint(value: string): string {
   return (hash >>> 0).toString(36);
 }
 
-/** The line and the text behind it: changing either is saying something new. */
-const signature = computed(() => fingerprint(`${text.value}\n${body.value}`));
+/**
+ * The line and the text behind it: changing either is saying something new.
+ *
+ * Hashed as JSON, not joined with a newline: the line itself may contain
+ * line breaks, so "a\nb" with body "c" and "a" with body "b\nc" would otherwise
+ * share a digest and a notice dismissed under one wording would stay hidden
+ * under the other.
+ */
+const signature = computed(() => fingerprint(JSON.stringify([text.value, body.value])));
+
+// Dismissals saved before the change above hold the old digest. Still honoured,
+// so upgrading does not bring back every notice somebody already put away; a
+// fresh dismissal writes the new digest.
+const legacySignature = computed(() => fingerprint(`${text.value}\n${body.value}`));
 
 function readDismissed(): string | null {
   try {
@@ -77,7 +89,7 @@ const reading = ref(false);
 const visible = computed(() => {
   if (!text.value) return false;
   if (!dismissible.value) return true;
-  return dismissed.value !== signature.value;
+  return dismissed.value !== signature.value && dismissed.value !== legacySignature.value;
 });
 
 function dismiss(): void {
@@ -131,6 +143,7 @@ function dismiss(): void {
       v-if="reading"
       v-slot="{ close }"
       overlay-class="oa-announce-overlay"
+      :label="text"
       @close="reading = false"
     >
       <div class="oa-announce">

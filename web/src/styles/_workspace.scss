@@ -538,7 +538,20 @@
   border: none;
   border-radius: 999px;
   background: transparent;
+  /* The thumb ring below is the focus indication; without this the browser
+     outlines the whole 28px box, which no other field in the project does. */
+  outline: none;
   cursor: pointer;
+}
+
+/* The field-wide hover fill and focus ring match a slider at the same
+   specificity and come later, so they would paint the whole 28px box. These
+   out-rank them for sliders alone, which leaves every other field's cascade
+   as it was. */
+.oa-range-field input[type="range"]:hover,
+.oa-range-field input[type="range"]:focus {
+  background-color: transparent;
+  box-shadow: none;
 }
 
 .oa-range-field input[type="range"]::-webkit-slider-runnable-track {
@@ -685,6 +698,12 @@
   display: flex;
   gap: 6px;
   align-items: center;
+}
+
+/* The row is a flex box, so its own `display` would beat the UA's [hidden]
+   rule and the redeem row would never close. Same trap as .oa-icon-btn. */
+.oa-input-row[hidden] {
+  display: none;
 }
 
 .oa-input-row input {

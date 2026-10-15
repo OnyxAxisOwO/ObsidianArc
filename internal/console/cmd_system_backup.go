@@ -9,11 +9,17 @@ import (
 
 func init() {
 	registerCommand(Command{
-		Name:       "backup status",
-		Group:      "backup",
-		Summary:    Text{EN: "Show instance backup settings and latest run", ZH: "查看实例备份设置和最近运行状态"},
-		Usage:      "backup status",
-		Help:       Text{EN: "Shows the S3-compatible destination, schedule, last successful upload, and any recent error. Storage credentials are never returned.", ZH: "显示 S3 兼容存储目标、计划、最近一次成功上传时间和错误。不会返回存储凭据。"},
+		Name:    "backup status",
+		Group:   "backup",
+		Summary: Text{EN: "Show instance backup settings and latest run", ZH: "查看实例备份设置和最近运行状态"},
+		Usage:   "backup status",
+		Help: Text{
+			EN: "Shows the destination (S3-compatible or WebDAV), schedule, last successful upload, and any recent error. " +
+				"Storage credentials are never returned. A WebDAV destination is set on the super-administrator Backup page; " +
+				"this command shows it but cannot change it.",
+			ZH: "显示备份目标（S3 兼容存储或 WebDAV）、计划、最近一次成功上传时间和错误。不会返回存储凭据。" +
+				"WebDAV 目标需在超级管理员的备份页面设置；本命令只显示，不能修改。",
+		},
 		Examples:   []string{"backup status", "backup status --json"},
 		SeeAlso:    []string{"backup configure", "backup test", "backup run"},
 		Permission: "super_admin",
@@ -27,6 +33,9 @@ func init() {
 			return rt.Fields([][2]string{
 				{"enabled", yesNo(asBoolVal(state["enabled"]))},
 				{"configured", yesNo(asBoolVal(state["configured"]))},
+				{"type", asStr(state["type"])},
+				{"webdav_url", asStr(state["webdav_url"])},
+				{"webdav_username", asStr(state["webdav_username"])},
 				{"endpoint", asStr(state["endpoint"])},
 				{"bucket", asStr(state["bucket"])},
 				{"region", asStr(state["region"])},

@@ -110,6 +110,10 @@ type Manager struct {
 	router atomic.Pointer[routeTable]
 	// Uploads the operator has looked at and not yet confirmed.
 	pending pendingUploads
+	// The installed packages whose archive could not be read at boot. Set by
+	// loadPackages; a package that is installed again, from a readable archive,
+	// is in pkgs and so stops being listed here.
+	unreadable atomic.Pointer[map[string]bool]
 }
 
 type record struct {
@@ -168,8 +172,28 @@ func (m *Manager) plugin(name string) (Plugin, bool) {
 	if l := (*m.pkgs.Load())[name]; l != nil {
 		return packagePlugin{l}, true
 	}
+	// Installed, but nothing of it loads: its archive could not be read at
+	// boot, or it collides with another's migrations. It can still be switched
+	// off and removed, which is what the operator needs to do with it. Keyed on
+	// the boot-time set rather than the recorded state, because a row for a
+	// plugin this build does not carry is not ours to stand in for.
+	if u := m.unreadable.Load(); u != nil && (*u)[name] {
+		return unreadablePlugin{name: name}, true
+	}
 	return nil, false
 }
+
+// unreadablePlugin stands in for an installed package whose archive cannot be read:
+// there are no migrations, purge scripts or seams to take away, only the record.
+type unreadablePlugin struct{ name string }
+
+func (u unreadablePlugin) Name() string { return u.name }
+
+func (u unreadablePlugin) Manifest() Manifest {
+	return Manifest{Title: Text{EN: u.name, ZH: u.name}}
+}
+
+func (unreadablePlugin) Setup(*Host) error { return nil }
 
 func (m *Manager) loadedPackage(name string) *loaded { return (*m.pkgs.Load())[name] }
 
@@ -183,6 +207,14 @@ func (m *Manager) Enabled(name string) bool {
 		return true
 	}
 	if (*m.states.Load())[name].State != StateEnabled {
+		return false
+	}
+	// A package whose archive could not be read at boot, or whose migrations
+	// collide with another's, has nothing loaded behind it. Switched on, it
+	// would be a gate open on nothing, so it is off.
+	// A row for a plugin this build does not carry is different: it is read
+	// as it stands, and there is simply nothing registered under it.
+	if stuck := m.unreadable.Load(); stuck != nil && (*stuck)[name] && (*m.pkgs.Load())[name] == nil {
 		return false
 	}
 	if l := (*m.pkgs.Load())[name]; l != nil && l.faulted() != "" {
@@ -394,6 +426,13 @@ func (m *Manager) toggle(ctx context.Context, actor Actor, name string, to State
 	if _, ok := m.plugin(name); !ok {
 		return ErrUnknown
 	}
+	// Switching on needs the backend compiled, and one given back while idle
+	// takes most of a minute to compile again. That happens before the lock is
+	// taken, so the other plugin operations do not wait behind it; the describe
+	// below then runs on code that is already warm.
+	if l := m.loadedPackage(name); l != nil && to == StateEnabled && m.State(name) != StateEnabled && l.backend != nil {
+		_ = l.backend.Ready(ctx)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UnixMilli()
@@ -446,13 +485,24 @@ func (m *Manager) toggle(ctx context.Context, actor Actor, name string, to State
 // from here on has to stop naming it before it goes. A failed uninstall
 // puts the state back.
 func (m *Manager) Uninstall(ctx context.Context, actor Actor, name string, purge bool) error {
+	// Which version is installed is read under the lock an update holds while it
+	// swaps the new one in. Read before it, a concurrent update would leave this
+	// uninstall purging and detaching the old version while the new one's seams
+	// and backend stay behind.
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, ok := m.plugin(name)
 	if !ok {
 		return ErrUnknown
 	}
+	// Refused before the plugin is switched off, so a refusal leaves it as it was.
+	// An unreadable archive has no purge scripts, migration records or settings
+	// to walk, so a purge would report success and leave them all behind for a
+	// reinstall to reuse.
+	if _, unreadable := p.(unreadablePlugin); unreadable && purge {
+		return preflight("%s's archive cannot be read, so its purge cannot remove its settings or tables; uninstall it without --purge", name)
+	}
 	pkg := m.loadedPackage(name)
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	before := (*m.states.Load())[name]
 	if before.State == StateEnabled {
 		off := before
@@ -498,8 +548,10 @@ func (m *Manager) Uninstall(ctx context.Context, actor Actor, name string, purge
 		}
 		// A package is not something an uninstall leaves behind for a
 		// reinstall to find: it goes, and what the operator dragged in is
-		// gone from the list. Its data stays unless they asked otherwise.
-		if pkg != nil {
+		// gone from the list. Its data stays unless they asked otherwise. This
+		// holds for an archive that could not be read at boot too, which has
+		// no loaded copy but still has its row.
+		if _, builtin := Lookup(name); !builtin {
 			if _, err := tx.Exec(ctx, `DELETE FROM plugin_packages WHERE name = ?`, name); err != nil {
 				return fmt.Errorf("plugin: remove package %s: %w", name, err)
 			}

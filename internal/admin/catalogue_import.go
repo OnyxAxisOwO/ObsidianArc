@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -22,7 +24,9 @@ import (
 // and one who did not would have lost a model.
 
 // modelRef names a model the way a file has to: by its provider and the
-// upstream id, which together are unique here.
+// upstream id. That pair is not unique: migration 0025 lets one upstream model
+// have several configurations, so an entry naming a pair that more than one row
+// carries is skipped rather than matched (see sharedKey in importModels).
 type modelRef struct {
 	Provider string `json:"provider"`
 	ModelID  string `json:"model_id"`
@@ -56,6 +60,58 @@ type modelImport struct {
 	model.Weights
 
 	Groups []grantImport `json:"groups"`
+
+	// The keys the file carried, so a weight it leaves out can be told from a
+	// weight of zero. See UnmarshalJSON.
+	carried map[string]json.RawMessage
+}
+
+// UnmarshalJSON records which keys the entry carries. The decoder cannot tell
+// an absent weight from a zero one, and a zero weight makes a model free, so
+// an entry that omits a weight must not write one.
+//
+// The entry is decoded here rather than by the request's decoder, which does
+// not reach into a type with its own UnmarshalJSON. Strictness is repeated
+// here, or a misspelt key inside an entry would be dropped silently.
+func (e *modelImport) UnmarshalJSON(data []byte) error {
+	type plain modelImport
+	var fields plain
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&fields); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	*e = modelImport(fields)
+	e.carried = keys
+	return nil
+}
+
+// null is an omitted weight, not a zero one: it decodes to zero, and a zero
+// weight makes the model free to every group using it.
+func (e modelImport) carries(key string) bool {
+	raw, ok := e.carried[key]
+	return ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// createWeights is what a new model gets from an entry. A weight the file
+// leaves out takes the default a model created here takes: one for every
+// weight but the flat per-request one, which createModel leaves at zero.
+func (e modelImport) createWeights() model.Weights {
+	weights := e.Weights
+	if !e.carries("input_token_weight") {
+		weights.InputToken = 1
+	}
+	if !e.carries("output_token_weight") {
+		weights.OutputToken = 1
+	}
+	if !e.carries("reasoning_token_weight") {
+		weights.ReasoningToken = 1
+	}
+	return weights
 }
 
 type importRequest struct {
@@ -66,6 +122,17 @@ type importRequest struct {
 // JSON. Larger than that is not an export.
 const maxImportBody = 4 * 1024 * 1024
 
+// entryName is what an entry is reported as: its display name, or its model id
+// where it has none. Every skip message uses it, so one model is not named one
+// way on one line and another way on the next.
+func entryName(entry modelImport) string {
+	name := strings.TrimSpace(entry.DisplayName)
+	if name == "" {
+		name = strings.TrimSpace(entry.ModelID)
+	}
+	return name
+}
+
 func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
@@ -75,6 +142,15 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 	}
 	if len(body.Models) == 0 {
 		return httpx.BadRequest("That file contains no models.")
+	}
+	// Refused before the first model is written: a file with one misspelt
+	// level would otherwise import everything above it and then stop.
+	for _, entry := range body.Models {
+		for _, grant := range entry.Groups {
+			if err := model.CheckAccess(grant.Access); err != nil {
+				return model.TranslateError(err)
+			}
+		}
 	}
 
 	providers, err := h.providers.List(ctx)
@@ -102,8 +178,14 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 	// Keyed the way the file names things, so an entry finds the row it is an
 	// update of without either side carrying an id.
 	byRef := make(map[modelRef]model.Model, len(existing))
+	// Two configurations of one upstream model share a key. The file cannot say
+	// which one it means, so an entry for such a key is reported and left alone,
+	// rather than written over whichever row happened to come last.
+	sharedKey := make(map[modelRef]int, len(existing))
 	for _, record := range existing {
-		byRef[modelRef{Provider: fold(record.ProviderName), ModelID: fold(record.ModelID)}] = record
+		key := modelRef{Provider: fold(record.ProviderName), ModelID: fold(record.ModelID)}
+		byRef[key] = record
+		sharedKey[key]++
 	}
 
 	var (
@@ -116,10 +198,7 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 	landed := make(map[modelRef]string, len(body.Models))
 
 	for _, entry := range body.Models {
-		name := strings.TrimSpace(entry.DisplayName)
-		if name == "" {
-			name = strings.TrimSpace(entry.ModelID)
-		}
+		name := entryName(entry)
 
 		providerID, known := providerByName[fold(entry.Provider)]
 		if !known {
@@ -132,12 +211,35 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		ref := modelRef{Provider: fold(entry.Provider), ModelID: fold(entry.ModelID)}
+		if sharedKey[ref] > 1 {
+			skipped = append(skipped, name+" — several configurations of "+entry.ModelID+" are here, and the file cannot say which one this is")
+			continue
+		}
 		record, present := byRef[ref]
+
+		// Resolved before the write and handed to it, so the grants are saved with
+		// the model. Written after it, a refused grant would leave a saved model
+		// holding the default grant to every group, and the failure would stop the
+		// whole import without saying what had landed.
+		var grants *[]model.ModelGroupGrant
+		var unknownGroups []string
+		if entry.Groups != nil {
+			list := make([]model.ModelGroupGrant, 0, len(entry.Groups))
+			for _, grant := range entry.Groups {
+				groupID, ok := groupByName[fold(grant.Group)]
+				if !ok {
+					unknownGroups = append(unknownGroups, name+" — no group named "+grant.Group)
+					continue
+				}
+				list = append(list, model.ModelGroupGrant{GroupID: groupID, Access: grant.Access})
+			}
+			grants = &list
+		}
 
 		var saved model.Model
 		var err error
 		if present {
-			saved, err = h.models.Update(ctx, record.ID, updateFromImport(entry))
+			saved, err = h.models.Update(ctx, record.ID, updateFromImport(entry, grants))
 		} else {
 			saved, err = h.models.Create(ctx, model.CreateInput{
 				ProviderID:      providerID,
@@ -154,7 +256,8 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 				ReasoningTiers:  entry.ReasoningTiers,
 				RequestOverride: entry.RequestOverride,
 				Capabilities:    entry.Capabilities,
-				Weights:         entry.Weights,
+				Weights:         entry.createWeights(),
+				GroupGrants:     grants,
 			})
 		}
 		if err != nil {
@@ -163,27 +266,13 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 			skipped = append(skipped, name+" — "+plainError(err))
 			continue
 		}
+		skipped = append(skipped, unknownGroups...)
 
 		landed[ref] = saved.ID
 		if present {
 			updated++
 		} else {
 			created++
-		}
-
-		if entry.Groups != nil {
-			grants := make([]model.ModelGroupGrant, 0, len(entry.Groups))
-			for _, grant := range entry.Groups {
-				groupID, ok := groupByName[fold(grant.Group)]
-				if !ok {
-					skipped = append(skipped, name+" — no group named "+grant.Group)
-					continue
-				}
-				grants = append(grants, model.ModelGroupGrant{GroupID: groupID, Access: grant.Access})
-			}
-			if err := h.models.SetModelGroups(ctx, saved.ID, grants); err != nil {
-				return httpx.Internal(err)
-			}
 		}
 	}
 
@@ -209,12 +298,16 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 			continue
 		}
 		target := modelRef{Provider: fold(entry.RouteTo.Provider), ModelID: fold(entry.RouteTo.ModelID)}
+		if sharedKey[target] > 1 {
+			skipped = append(skipped, entryName(entry)+" —route target "+entry.RouteTo.ModelID+" has several configurations here, and a route names one of them")
+			continue
+		}
 		to, ok := landed[target]
 		if !ok {
 			if here, present := byRef[target]; present {
 				to = here.ID
 			} else {
-				skipped = append(skipped, entry.DisplayName+" — route target "+entry.RouteTo.ModelID+" is not here")
+				skipped = append(skipped, entryName(entry)+" —route target "+entry.RouteTo.ModelID+" is not here")
 				continue
 			}
 		}
@@ -224,20 +317,20 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 		// a loop, and a target that is itself routed is a second hop that
 		// Authorize will not follow.
 		if to == from || routed[target] {
-			skipped = append(skipped, entry.DisplayName+" — a route is one hop, and "+entry.RouteTo.ModelID+" is routed itself")
+			skipped = append(skipped, entryName(entry)+" —a route is one hop, and "+entry.RouteTo.ModelID+" is routed itself")
 			continue
 		}
 		existing, err := h.models.ByID(ctx, to)
 		if err != nil {
-			skipped = append(skipped, entry.DisplayName+" — route: "+plainError(err))
+			skipped = append(skipped, entryName(entry)+" —route: "+plainError(err))
 			continue
 		}
 		if existing.RouteToID != "" {
-			skipped = append(skipped, entry.DisplayName+" — a route is one hop, and "+entry.RouteTo.ModelID+" is routed itself")
+			skipped = append(skipped, entryName(entry)+" —a route is one hop, and "+entry.RouteTo.ModelID+" is routed itself")
 			continue
 		}
 		if _, err := h.models.Update(ctx, from, model.Update{RouteToID: &to}); err != nil {
-			skipped = append(skipped, entry.DisplayName+" — route: "+plainError(err))
+			skipped = append(skipped, entryName(entry)+" —route: "+plainError(err))
 		}
 	}
 
@@ -251,13 +344,26 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 	})
 }
 
-func updateFromImport(entry modelImport) model.Update {
+// updateFromImport is the update of a model already here. grants is nil when
+// the file leaves the groups out, which keeps the grants the model has.
+func updateFromImport(entry modelImport, grants *[]model.ModelGroupGrant) model.Update {
 	// Every field, because an import of a model that is already here is that
 	// file's version of it — a partial apply would leave a row that matches
-	// neither what was here nor what was sent.
+	// neither what was here nor what was sent. The weights are the one part an
+	// entry may leave out; see weightIfCarried.
 	capabilities := entry.Capabilities
 	weights := entry.Weights
+	// The second pass writes the file's route and writes nothing for an entry
+	// without one, so an unrouted entry is cleared here. Left to the second pass,
+	// a model the file says is unrouted would keep the route it had.
+	var routeToID *string
+	if entry.RouteTo == nil || entry.RouteTo.ModelID == "" {
+		none := ""
+		routeToID = &none
+	}
 	return model.Update{
+		RouteToID:            routeToID,
+		GroupGrants:          grants,
 		ModelID:              &entry.ModelID,
 		APIName:              &entry.APIName,
 		SystemPrompt:         &entry.SystemPrompt,
@@ -281,11 +387,20 @@ func updateFromImport(entry modelImport) model.Update {
 		EmulateTools:         &capabilities.EmulateTools,
 		ContextWindow:        &capabilities.ContextWindow,
 		MaxOutputTokens:      &capabilities.MaxOutputTokens,
-		RequestWeight:        &weights.Request,
-		InputTokenWeight:     &weights.InputToken,
-		OutputTokenWeight:    &weights.OutputToken,
-		ReasoningTokenWeight: &weights.ReasoningToken,
+		RequestWeight:        weightIfCarried(entry, "request_weight", &weights.Request),
+		InputTokenWeight:     weightIfCarried(entry, "input_token_weight", &weights.InputToken),
+		OutputTokenWeight:    weightIfCarried(entry, "output_token_weight", &weights.OutputToken),
+		ReasoningTokenWeight: weightIfCarried(entry, "reasoning_token_weight", &weights.ReasoningToken),
 	}
+}
+
+// weightIfCarried leaves a weight the file omitted as the model has it. Written
+// as zero, an omitted weight would make the model free to every group using it.
+func weightIfCarried(entry modelImport, key string, value *float64) *float64 {
+	if !entry.carries(key) {
+		return nil
+	}
+	return value
 }
 
 // Names are compared the way a person would compare them, because the file

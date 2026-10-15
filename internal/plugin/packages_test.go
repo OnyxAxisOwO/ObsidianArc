@@ -81,6 +81,20 @@ func code(t *testing.T, res *httptest.ResponseRecorder) string {
 	return servertest.ErrorCode(t, res)
 }
 
+// eventually polls cond until it holds. Some things follow a change in the
+// background rather than inside the request that made it. The bound is what
+// says how long "a moment" may be.
+func eventually(t *testing.T, failure string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal(failure)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // withoutSQL is raw with its migrations and purge scripts left out, for the
 // packages that do not ask for db and so may not carry any.
 func withoutSQL(t *testing.T, raw []byte) []byte {
@@ -377,10 +391,10 @@ func TestEnablingAPackageAttachesEverythingItBrought(t *testing.T) {
 	// A setting it defines is writable and validated by its manifest.
 	a.mustDo(http.MethodPut, "/api/admin/settings", map[string]string{"demo.mode": "sideways"}, http.StatusBadRequest)
 	a.setSettings(map[string]string{"demo.mode": "closed"})
-	// ...and the site block follows it: the backend is asked again when a
-	// setting of the plugin changes.
-	if a.pluginBlock()["mode"] != "closed" || a.pluginBlock()["on_signup"] != true {
-		t.Fatalf("the block did not follow the setting: %v", a.pluginBlock())
+	// ...and the site block follows it: the backend is asked again before the
+	// save returns, so a read made straight after it sees the change.
+	if block := a.pluginBlock(); block["mode"] != "closed" || block["on_signup"] != true {
+		t.Fatalf("the block did not follow the setting when the save returned: %v", block)
 	}
 
 	// Its guard now stands in front of sign-up.
@@ -538,6 +552,82 @@ func TestAPublicRouteAuthenticatesItselfAndReachesTheDatabase(t *testing.T) {
 	}
 }
 
+// A plugin's routes act with the package's own permissions, so the core's rules
+// for administrator accounts have to hold through them: a delegated
+// administrator holding the users grant cannot suspend or retire another
+// administrator's account, and the refusal reaches the client as the core's
+// sentence and status, not as a 500 with the text hidden.
+func TestADelegatedAdministratorCannotEndAnotherAdministratorThroughThePlugin(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	grantUsers := func(name string) *servertest.Session {
+		s := a.in.Register(name, founderPassword)
+		a.mustDo(http.MethodPatch, "/api/admin/users/"+s.UserID,
+			map[string]any{"role": "admin", "admin_permissions": []string{"users"}}, http.StatusOK)
+		return s
+	}
+	delegate := grantUsers("delegate")
+	peer := grantUsers("peer")
+
+	res := a.in.Do(http.MethodPost, "/api/admin/x/demo/disable/"+peer.UserID, map[string]any{}, delegate)
+	if res.Code != http.StatusForbidden || code(t, res) != "admin_account" {
+		t.Fatalf("a delegate suspended an administrator through the plugin: %d %s", res.Code, res.Body.String())
+	}
+	res = a.in.Do(http.MethodPost, "/api/admin/x/demo/retire/"+peer.UserID, map[string]any{"mode": "delete"}, delegate)
+	if res.Code != http.StatusForbidden || code(t, res) != "admin_account" {
+		t.Fatalf("a delegate deleted an administrator through the plugin: %d %s", res.Code, res.Body.String())
+	}
+	if res := a.in.Do(http.MethodGet, "/api/auth/me", nil, peer); res.Code != http.StatusOK {
+		t.Fatalf("the refused administrator lost its session anyway: %d", res.Code)
+	}
+	// A missing account is still a 404, not a fault.
+	if res := a.in.Do(http.MethodPost, "/api/admin/x/demo/retire/01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{}, a.s); res.Code != http.StatusNotFound || code(t, res) != "no_such_account" {
+		t.Fatalf("retiring a missing account: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// A reward is validated before the core is asked, so a zero amount or a
+// negative lifetime is the request's fault and says so.
+func TestARewardRefusesAZeroAmountOrANegativeLifetime(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	winner := a.in.Register("winner", founderPassword)
+	for label, body := range map[string]map[string]any{
+		"zero amount":       {"bar_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "amount": 0},
+		"negative lifetime": {"bar_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "amount": 1, "days": -1},
+	} {
+		res := a.do(http.MethodPost, "/api/admin/x/demo/reward/"+winner.UserID, body)
+		if res.Code != http.StatusBadRequest || code(t, res) != "bad_argument" {
+			t.Errorf("%s: %d %s", label, res.Code, res.Body.String())
+		}
+	}
+}
+
+// The webhook is what a bot's route copies, so it keeps the rules the admin
+// route keeps: no blank or oversized name, and a token that differs in one
+// place is refused like any other.
+func TestAWebhookRefusesBlankAndOversizedNamesAndNearTokens(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	a.setSettings(map[string]string{"demo.secret": "s3cret-token"})
+	post := func(name, token string) *httptest.ResponseRecorder {
+		return a.in.DoWith(http.MethodPost, "/api/x/demo/hook", map[string]string{"name": name}, nil,
+			http.Header{"Authorization": {"Bearer " + token}})
+	}
+	if res := post("from-bot", "s3cret-tokex"); res.Code != http.StatusUnauthorized {
+		t.Fatalf("a token one byte off: %d", res.Code)
+	}
+	if res := post("   ", "s3cret-token"); res.Code != http.StatusBadRequest || code(t, res) != "name_required" {
+		t.Fatalf("a blank name: %d %s", res.Code, res.Body.String())
+	}
+	if res := post(strings.Repeat("a", 201), "s3cret-token"); res.Code != http.StatusBadRequest || code(t, res) != "name_too_long" {
+		t.Fatalf("a name of 201 bytes: %d %s", res.Code, res.Body.String())
+	}
+	if res := post("from-bot", "s3cret-token"); res.Code != http.StatusOK {
+		t.Fatalf("the right token: %d %s", res.Code, res.Body.String())
+	}
+}
+
 func TestATransactionLeftOpenByAFailureTakesEverythingBackWithIt(t *testing.T) {
 	a := newAdmin(t)
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
@@ -612,13 +702,15 @@ func TestAPackageOutgoingRequestsNeedNetworkAndOriginsFollowSettings(t *testing.
 	csp := func() string {
 		return a.in.Do(http.MethodGet, "/", nil, nil).Header().Get("Content-Security-Policy")
 	}
-	if !strings.Contains(csp(), upstream.URL) || !strings.Contains(csp(), "blob:") {
-		t.Fatalf("the policy does not carry the plugin's origin: %s", csp())
-	}
+	// The plugin is asked again in the background when its settings change, so
+	// its origins follow a moment after the save.
+	eventually(t, "the policy does not carry the plugin's origin", func() bool {
+		return strings.Contains(csp(), upstream.URL) && strings.Contains(csp(), "blob:")
+	})
 	a.setSettings(map[string]string{"demo.upstream": ""})
-	if strings.Contains(csp(), upstream.URL) {
-		t.Fatal("the origin outlived the setting that asked for it")
-	}
+	eventually(t, "the origin outlived the setting that asked for it", func() bool {
+		return !strings.Contains(csp(), upstream.URL)
+	})
 	a.setSettings(map[string]string{"demo.upstream": upstream.URL})
 	a.mustDo(http.MethodPost, "/api/admin/plugins/demo/disable", map[string]any{}, http.StatusOK)
 	if strings.Contains(csp(), upstream.URL) {
@@ -825,6 +917,48 @@ func TestAnUpdateThatDropsAFieldRuleStopsEnforcingIt(t *testing.T) {
 	}), true, nil)
 	if res := register("after"); res.Code != http.StatusCreated {
 		t.Fatalf("the rule after an update that dropped it: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// An update that drops the invitee decorator and the console commands must
+// take them away at once: the old backend is only kept running for a grace
+// period, and what it still answers would be what the operator sees.
+func TestAnUpdateThatDropsTheInviteDecoratorAndCommandsStopsRunningThem(t *testing.T) {
+	a := newAdmin(t)
+	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	a.setSettings(map[string]string{"invites.user_enabled": "true", "invites.user_limit": "5"})
+	inviter := a.in.Register("inviter", founderPassword)
+	res := a.in.Do(http.MethodGet, "/api/profile/invites", nil, inviter)
+	inviteCode := servertest.Decode[struct{ Code string }](t, res).Code
+	if inviteCode == "" {
+		t.Fatalf("no personal code: %s", res.Body.String())
+	}
+	a.in.RegisterWith(map[string]any{"username": "invitee", "password": founderPassword, "invite_code": inviteCode})
+	if _, ok := consoleLine(t, a, "demo things"); !ok {
+		t.Fatal("the command did not run before the update")
+	}
+	// Without this the absence checked after the update proves nothing: the
+	// decorator has to run once for "hello invitee" to be able to appear at all.
+	res = a.in.Do(http.MethodGet, "/api/profile/invites", nil, inviter)
+	if !strings.Contains(res.Body.String(), "hello invitee") {
+		t.Fatalf("the decorator did not run before the update: %s", res.Body.String())
+	}
+
+	a.in.InstallPackage(a.s, repack(t, pkgtest.Demo(t), func(m map[string]any) {
+		m["version"] = "1.1.0"
+		m["hooks"] = []string{"describe", "sweep"}
+		m["console"] = nil
+	}), true, nil)
+
+	res = a.in.Do(http.MethodGet, "/api/profile/invites", nil, inviter)
+	if res.Code != http.StatusOK {
+		t.Fatalf("the invite panel after the update: %d %s", res.Code, res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), "hello invitee") {
+		t.Fatal("the decorator of the version the update dropped still ran")
+	}
+	if out, ok := consoleLine(t, a, "demo things"); ok {
+		t.Fatalf("a command the update dropped still ran: %s", out)
 	}
 }
 
@@ -1224,6 +1358,12 @@ func TestABackendEndsAccountsWithTheOperationsTheServerOffers(t *testing.T) {
 	if res := a.in.Do(http.MethodGet, "/api/auth/me", nil, victim); res.Code != http.StatusUnauthorized {
 		t.Fatalf("a retired account's session: %d", res.Code)
 	}
+	// The session the suspension ended must not come back with the account.
+	a.mustDo(http.MethodPatch, "/api/admin/users/"+victim.UserID, map[string]any{"status": "active"}, http.StatusOK)
+	if res := a.in.Do(http.MethodGet, "/api/auth/me", nil, victim); res.Code != http.StatusUnauthorized {
+		t.Fatalf("a session the suspension ended came back on re-activation: %d", res.Code)
+	}
+	a.mustDo(http.MethodPost, "/api/admin/x/demo/retire/"+victim.UserID, map[string]any{"mode": "disable"}, http.StatusOK)
 	var status string
 	if err := a.in.DB.QueryRow(t.Context(), `SELECT status FROM users WHERE id = ?`, victim.UserID).Scan(&status); err != nil || status != "disabled" {
 		t.Fatalf("status = %q %v", status, err)
@@ -1283,12 +1423,11 @@ func TestBundledMigrationsOffersEveryValidPackageInTheBundle(t *testing.T) {
 	}
 }
 
-// The runtime's defaults are fakes — a clock that reads 2022-01-01 and a
-// deterministic random source — and a plugin could not tell: its rows would be
-// stamped with the wrong year and its tokens would repeat. Checked through a
-// whole server, where the row is written.
 // A package that lists the sweep hook is given a turn by the server's
-// periodic cleanup while it is switched on, and none while it is off.
+// periodic cleanup while it is switched on, and none while it is off. The demo's
+// sweep upserts its one "swept" row (sdk/examples/demo/main.go), so two turns
+// leave one row: a sweep every ten minutes must not add a row each
+// time.
 func TestASweepingPackageGetsItsTurnOnlyWhileSwitchedOn(t *testing.T) {
 	a := newAdmin(t)
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
@@ -1301,12 +1440,16 @@ func TestASweepingPackageGetsItsTurnOnlyWhileSwitchedOn(t *testing.T) {
 	}
 	a.in.Server.SweepPlugins(t.Context())
 	a.in.Server.SweepPlugins(t.Context())
-	if n := swept(); n != 2 {
-		t.Fatalf("%d turns from two sweeps", n)
+	if n := swept(); n != 1 {
+		t.Fatalf("%d rows from two sweeps, want one", n)
 	}
 	a.mustDo(http.MethodPost, "/api/admin/plugins/demo/disable", map[string]any{}, http.StatusOK)
+	// Without the row, a turn taken while switched off would show as a new one.
+	if _, err := a.in.DB.Exec(t.Context(), `DELETE FROM demo_things WHERE name = 'swept'`); err != nil {
+		t.Fatal(err)
+	}
 	a.in.Server.SweepPlugins(t.Context())
-	if n := swept(); n != 2 {
+	if n := swept(); n != 0 {
 		t.Fatal("a switched-off package was given a turn")
 	}
 }

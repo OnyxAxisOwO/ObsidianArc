@@ -19,7 +19,7 @@ import { t, tn } from '@/composables/useI18n';
 import { compactNumber, relativeTime } from '@/lib/format';
 import { formatDuration, percent } from './scale';
 import { useScrollFade } from './useScrollFade';
-import { metricOf, type BoardKind, type BoardMetric } from './shape';
+import { largestUsers, metricOf, type BoardKind, type BoardMetric } from './shape';
 import { maskUser, maskProvider, maskBilling, isMasked } from '@/admin/safeMode';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 
@@ -49,9 +49,14 @@ const ranked = computed(() => [...props.rows]
 const total = computed(() => props.metric === 'users'
   // People overlap between rows, so a share of "all users" is a share of the
   // widest row's audience rather than of a sum that counts some twice.
-  ? Math.max(0, ...ranked.value.map((row) => row.users ?? 0))
+  ? largestUsers(ranked.value)
   : ranked.value.reduce((sum, row) => sum + metricOf(row, props.metric), 0));
 const overflows = computed(() => ranked.value.length > props.limit);
+// A row is a button only when it can be selected and has a key to select by.
+// The scroller takes focus when some row is not, because those rows past the
+// visible ones have no other keyboard path; keyed buttons are reached by Tab,
+// which scrolls them into view.
+const hasPlainRow = computed(() => ranked.value.some((row) => !(props.selectable && row.key)));
 
 const { onScroll, reset, scrollClass } = useScrollFade(overflows);
 watch(() => ranked.value.length, reset);
@@ -102,7 +107,13 @@ function notes(row: UsageBreakdown): string[] {
 <template>
   <p v-if="!ranked.length" class="oa-board-empty">{{ props.emptyText }}</p>
   <div v-else class="oa-board-frame" :style="{ '--board-rows': props.limit }">
-    <OaScrollArea wrap-class="oa-board-wrap" :scroll-class="scrollClass" @scroll="onScroll">
+    <OaScrollArea
+      wrap-class="oa-board-wrap"
+      :scroll-class="scrollClass"
+      :focusable="overflows && hasPlainRow"
+      :label="t('boardCount', { count: ranked.length })"
+      @scroll="onScroll"
+    >
       <ol class="oa-board" :class="`oa-board-${props.kind}`">
         <li v-for="(row, index) in ranked" :key="row.key || `row-${index}`">
           <component

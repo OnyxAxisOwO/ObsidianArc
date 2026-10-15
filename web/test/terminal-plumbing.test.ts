@@ -24,6 +24,7 @@ import {
   terminalHistorySnapshot,
   type TerminalSession,
 } from '../src/terminal/session';
+import { changeLanguage } from '../src/composables/useI18n';
 
 const PREFS_KEY = 'obsidian-arc-terminal-prefs';
 
@@ -122,6 +123,27 @@ describe('the ANSI tokeniser', () => {
 
 // --- prefs.ts ------------------------------------------------------------------
 
+describe('extended colour arguments', () => {
+  const classesOf = (chunk: string): string[] => tokenizeAnsiChunk(chunk, initialAnsiState()).tokens[0]!.cls;
+
+  it('reads the index of a 256-colour sequence as a value, not as an SGR code', () => {
+    // 7 is inverse as an SGR code; here it is the colour index and must not turn inverse on.
+    expect(classesOf('\x1b[38;5;7mx')).not.toContain('ansi-inverse');
+  });
+
+  it('reads the channels of a truecolour sequence as values, not as SGR codes', () => {
+    // 2 is dim and 30 is a foreground colour as SGR codes; both are channel values here.
+    const classes = classesOf('\x1b[38;2;30;30;30mx');
+    expect(classes).not.toContain('ansi-dim');
+    expect(classes).not.toContain('ansi-fg-30');
+  });
+
+  it('still applies the codes that follow an extended colour in the same sequence', () => {
+    expect(classesOf('\x1b[38;5;196;1mx')).toContain('ansi-bold');
+    expect(classesOf('\x1b[48;2;0;0;0;4mx')).toContain('ansi-underline');
+  });
+});
+
 describe('terminal prefs', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -148,7 +170,6 @@ describe('terminal prefs', () => {
       lineHeight: 1.8,
       letterSpacing: 1,
       cursorStyle: 'underline',
-      cursorBlink: false,
       scrollback: 10000,
       timestamps: true,
       ligatures: true,
@@ -158,6 +179,9 @@ describe('terminal prefs', () => {
   });
 
   it('clamps a hand-edited value that is out of range', () => {
+    // cursorBlink is a stored key for a preference that no longer exists; older
+    // versions wrote it. It stays in the fixture on purpose: the loader must
+    // ignore keys it does not know, so an upgraded browser keeps its other prefs.
     localStorage.setItem(
       PREFS_KEY,
       JSON.stringify({
@@ -191,6 +215,14 @@ describe('terminal prefs', () => {
     expect(loadTerminalPrefs().fontFamily).toBe(DEFAULT_TERMINAL_FONT_FAMILY);
   });
 
+  it('takes a null or blank stored number as absent, not as zero clamped to the minimum', () => {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ fontSize: null, lineHeight: '', letterSpacing: '  ' }));
+    const prefs = loadTerminalPrefs();
+    expect(prefs.fontSize).toBe(TERMINAL_PREFS_DEFAULTS.fontSize);
+    expect(prefs.lineHeight).toBe(TERMINAL_PREFS_DEFAULTS.lineHeight);
+    expect(prefs.letterSpacing).toBe(TERMINAL_PREFS_DEFAULTS.letterSpacing);
+  });
+
   it('reads and writes through a localStorage that throws, without throwing itself', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
       throw new DOMException('blocked', 'SecurityError');
@@ -209,6 +241,25 @@ describe('terminal prefs', () => {
     expect(vars['--oa-term-font-size']).toBe('13px');
     expect(vars['--oa-term-line-height']).toBe('1.5');
     expect(vars['--oa-term-cursor-style']).toBe('bar');
+  });
+
+  it('maps the underline cursor to the caret-shape keyword it is called in CSS', () => {
+    const vars = terminalCSSVariables({ ...TERMINAL_PREFS_DEFAULTS, cursorStyle: 'underline' });
+    expect(vars['--oa-term-cursor-style']).toBe('underscore');
+    expect(terminalCSSVariables({ ...TERMINAL_PREFS_DEFAULTS, cursorStyle: 'block' })['--oa-term-cursor-style']).toBe(
+      'block',
+    );
+  });
+
+  it('gives a blank font stack the default monospace stack, not an empty custom property', () => {
+    // An empty value leaves the terminal on the inherited UI font until a
+    // reload, when the loader resets it; the live view must match the reload.
+    expect(terminalCSSVariables({ ...TERMINAL_PREFS_DEFAULTS, fontFamily: '' })['--oa-term-font-family']).toBe(
+      DEFAULT_TERMINAL_FONT_FAMILY,
+    );
+    expect(terminalCSSVariables({ ...TERMINAL_PREFS_DEFAULTS, fontFamily: '   ' })['--oa-term-font-family']).toBe(
+      DEFAULT_TERMINAL_FONT_FAMILY,
+    );
   });
 });
 
@@ -261,6 +312,41 @@ function makeSession(id: string, cap = 2000): TerminalSession {
 describe('terminal session', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('follows the UI language after a command that never set one, and keeps one a command did set', async () => {
+    const sentLanguages: Array<string | undefined> = [];
+    // Every done frame reports the session language, as a real exec does, so
+    // `answer` says what that language is for each request.
+    const serverAnswers =
+      (answer: (requested: string | undefined) => string) => (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as { lang?: string };
+        sentLanguages.push(body.lang);
+        const lang = answer(body.lang);
+        return sseResponse([{ event: 'done', data: { ok: true, code: '', exit: false, elapsed_ms: 0, json: false, lang } }]);
+      };
+
+    await changeLanguage('en');
+    try {
+      stubFetch(serverAnswers((requested) => requested ?? 'en'));
+      const session = makeSession('run-ui-language');
+      await session.run('user list');
+      await changeLanguage('zh');
+      await session.run('user list');
+      expect(sentLanguages).toEqual(['en', 'zh']);
+
+      sentLanguages.length = 0;
+      await changeLanguage('en');
+      // A `lang zh` command, under an English UI, is a choice the tab keeps
+      // for its next command even though the UI has not changed.
+      stubFetch(serverAnswers(() => 'zh'));
+      const pinned = makeSession('run-pinned-language');
+      await pinned.run('lang zh');
+      await pinned.run('user list');
+      expect(sentLanguages).toEqual(['en', 'zh']);
+    } finally {
+      await changeLanguage('en');
+    }
   });
 
   it('runs a line, threading SSE output through the ANSI tokeniser into the scrollback', async () => {
@@ -415,5 +501,86 @@ describe('terminal session', () => {
 
     const session = makeSession('complete-failure');
     await expect(session.complete('user ed', 7)).resolves.toEqual({ from: 7, items: [] });
+  });
+
+  it('completes at the caret in bytes on the wire, and reads the reply back in UTF-16 units', async () => {
+    let sent: { line: string; pos: number } | undefined;
+    stubFetch((url, init) => {
+      expect(url).toContain('/api/console/complete');
+      sent = JSON.parse(String(init.body)) as { line: string; pos: number };
+      // `from` is where the word starts, in bytes: "user edit " (10) + 张 (3) + 三 (3) + " " (1).
+      return new Response(JSON.stringify({ from: 17, items: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const session = makeSession('complete-utf8');
+    const line = 'user edit 张三 --';
+    const result = await session.complete(line, line.length);
+
+    // Sent as bytes: the caret is after " --", 10 + 6 + 3 = 19 bytes in.
+    expect(sent?.line).toBe(line);
+    expect(sent?.pos).toBe(19);
+    // Read back in UTF-16 units, which is what the draft is sliced by: 10 + 2 + 1.
+    expect(result.from).toBe(13);
+  });
+
+  it('trims the oldest output once the rendered tokens outgrow the budget, even under the line cap', async () => {
+    // Each colour change ends a token, so this one chunk is 60,000 tokens:
+    // more spans than the page should mount, in a block count well under the cap.
+    const frames = '\x1b[31ma\x1b[32mb'.repeat(30_000);
+    stubFetch(() =>
+      sseResponse([
+        { event: 'out', data: { text: `${frames}\x1b[0mlast` } },
+        { event: 'done', data: { ok: true, code: '', exit: false, elapsed_ms: 0 } },
+      ]),
+    );
+
+    const session = makeSession('token-budget', 10_000);
+    await session.run('watch big');
+
+    const retained = session.scrollback.value.reduce((count, block) => count + block.tokens.length, 0);
+    // The budget, plus at most the one block still being written into.
+    expect(retained).toBeLessThanOrEqual(50_000 + 400);
+    expect(session.scrollback.value.length).toBeLessThan(10_000);
+    const newest = session.scrollback.value[session.scrollback.value.length - 1]!;
+    expect(newest.tokens.map((token) => token.text).join('')).toContain('last');
+  });
+
+  it('reports a stream that ends without a done frame as a dropped connection, not a cancel', async () => {
+    stubFetch(() => sseResponse([{ event: 'out', data: { text: 'partial output' } }]));
+
+    const session = makeSession('run-truncated');
+    const outcome = await session.run('watch dash');
+
+    expect(outcome).toEqual({ ok: false, code: 'stream', exit: false });
+    expect(session.running.value).toBe(false);
+    expect(session.scrollback.value[session.scrollback.value.length - 1]?.kind).toBe('error');
+  });
+
+  it('closes the request when a handler throws, so the server stops streaming into nothing', async () => {
+    let requestSignal: AbortSignal | undefined;
+    stubFetch((_url, init) => {
+      requestSignal = init.signal ?? undefined;
+      // A null payload makes the output handler throw. The stream stays open
+      // after the frame, as a live command's does, so only the abort ends it.
+      const frame = new TextEncoder().encode('event: out\ndata: null\n\n');
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(frame);
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      );
+    });
+
+    const session = makeSession('run-handler-throws');
+    const outcome = await session.run('watch dash');
+
+    expect(outcome.code).toBe('stream');
+    expect(session.running.value).toBe(false);
+    expect(requestSignal?.aborted).toBe(true);
   });
 });

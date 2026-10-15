@@ -35,3 +35,39 @@ func TestConversationPagesHaveStableOrderingAndOwnerTotals(t *testing.T) {
 		t.Fatalf("another owner's conversations: %d %d %v", len(rows), total, err)
 	}
 }
+
+// The total has to count what the pages list. An archived conversation is not
+// on any page, so counting it made the total larger than the pages could ever
+// reach.
+func TestConversationTotalExcludesArchivedConversations(t *testing.T) {
+	store, _, account := attachmentFixture(t)
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		archived := i >= 3
+		if _, err := store.db.Exec(ctx, `INSERT INTO conversations (id, user_id, title, archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, fmt.Sprintf("a-%02d", i), account.ID, "Title", archived, 1, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed := 0
+	for offset := 0; ; offset += 2 {
+		rows, total, err := store.ListPage(ctx, account.ID, 2, offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if total != 3 {
+			t.Fatalf("total %d, want the 3 active conversations", total)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, row := range rows {
+			if row.Archived {
+				t.Fatalf("archived conversation %s on an active page", row.ID)
+			}
+		}
+		listed += len(rows)
+	}
+	if listed != 3 {
+		t.Fatalf("pages listed %d conversations, want 3", listed)
+	}
+}

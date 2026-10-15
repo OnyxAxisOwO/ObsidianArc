@@ -26,6 +26,7 @@ import OaTextField from '@/components/OaTextField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { IconGithub, IconGoogle, IconKey, type OaIcon } from '@/icons';
 import { allFields, fieldProblem, fieldValues } from '@/lib/account-fields';
+import { apiErrorText } from '@/lib/api-error';
 import { absoluteTime } from '@/lib/format';
 import { connectRefusalText, refusalText } from '@/lib/refusal';
 import { pinnedProvider, pluginRefusal } from '@/plugins/registry';
@@ -78,21 +79,26 @@ const connecting = ref('');
 const connectPassword = ref('');
 const connectBusy = ref(false);
 /**
- * Whether this account also has a password.
+ * Whether this account also has a password: true, false, or null while the
+ * connections have not loaded.
  *
- * Unknown until the connections load, and assumed true until then, because
- * that is the state every account created by the sign-up form is in — the
- * password box should not flicker from "set one" to "change it" on the way
- * past. An account with no password is one that only ever signed in through a
- * provider, and this is what lets it give itself a way in that does not
- * depend on the operator leaving that provider switched on.
+ * The password forms are not offered until this is known. Assuming an answer
+ * shows the wrong form for one of the two kinds of account: a password box for
+ * an account that has none asks for a thing it cannot give. An account with no
+ * password is one that only ever signed in through a provider, and this is
+ * what lets it give itself a way in that does not depend on the operator
+ * leaving that provider switched on.
  */
-const hasPassword = ref(true);
+const hasPassword = ref<boolean | null>(null);
 
 /** The server compares addresses case-insensitively, so this does too. */
 const emailMoving = computed(() =>
   email.value.trim().toLowerCase() !== (currentUser.value?.email ?? '').trim().toLowerCase());
-const askForPassword = computed(() => emailMoving.value && hasPassword.value);
+// Asked for unless the account is known to have no password. While the
+// connections are loading or have failed to load, the state is null, and hiding
+// the field then would leave the server's password_required refusal with
+// nothing to type into.
+const askForPassword = computed(() => emailMoving.value && hasPassword.value !== false);
 
 const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
 function mark(id: string): OaIcon {
@@ -134,7 +140,12 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
   unavailable: 'oauthUnavailable',
   provider: 'oauthProviderFailed',
   already_linked: 'oauthAlreadyLinked',
+  address_taken: 'oauthConnectAddressTaken',
 };
+
+// The message of the last read that failed, so a later read that works can take
+// back its own failure from both places it was shown, and nothing else.
+let failedLoad = '';
 
 async function loadConnections(): Promise<void> {
   try {
@@ -142,8 +153,18 @@ async function loadConnections(): Promise<void> {
     connections.value = result.connections ?? [];
     providers.value = result.providers ?? [];
     hasPassword.value = result.has_password;
+    if (failedLoad) {
+      if (connectionFlash.value === failedLoad) connectionFlash.value = '';
+      if (passwordFlash.value === failedLoad) passwordFlash.value = '';
+      failedLoad = '';
+    }
   } catch (error) {
-    connectionFlash.value = error instanceof ApiError ? error.message : String(error);
+    const message = error instanceof ApiError ? error.message : String(error);
+    failedLoad = message;
+    connectionFlash.value = message;
+    // Until this loads the password section cannot say which form it is, so the
+    // failure is reported there too, with a way to try again.
+    passwordFlash.value = message;
   }
 }
 
@@ -340,6 +361,8 @@ async function savePassword(): Promise<void> {
   } catch (error) {
     if (error instanceof ApiError && error.code === 'reauth_required') {
       passwordFlash.value = t('reauthForPassword');
+    } else if (error instanceof ApiError && error.code === 'current_password_wrong') {
+      passwordFlash.value = t('currentPasswordWrong');
     } else {
       passwordFlash.value = error instanceof ApiError ? error.message : String(error);
     }
@@ -359,7 +382,9 @@ function exportData(): void {
   void exportAccount()
     .then((document) => {
       const stamp = new Date().toISOString().slice(0, 10);
-      saveAsFile(`obsidian-arc-${stamp}.json`, JSON.stringify(document, null, 2));
+      // Compact on purpose: indentation can push a file over the size the
+      // server will import, and the file is read back by the same importer.
+      saveAsFile(`obsidian-arc-${stamp}.json`, JSON.stringify(document));
       dataStatus.value = t('exportDone', { count: document.conversations.length });
     })
     .catch((error: unknown) => {
@@ -393,7 +418,24 @@ function importData(): void {
       window.setTimeout(() => window.location.reload(), 1200);
     })
     .catch((error: unknown) => {
-      dataStatus.value = error instanceof ApiError ? error.message : t('failed');
+      // Any failure after the import has started carries the counts of what it
+      // wrote before stopping, whatever its code. What was written is in the
+      // account already. Say how much, or the reader re-sends the same file and
+      // gets a second copy of it. A failure that wrote nothing has no partial
+      // import to describe, so it falls through to its own reason.
+      if (error instanceof ApiError && typeof error.details['conversations'] === 'number') {
+        const counts = {
+          conversations: Number(error.details['conversations']),
+          messages: Number(error.details['messages'] ?? 0),
+        };
+        if (counts.conversations > 0 || counts.messages > 0) {
+          dataStatus.value = error.code === 'storage_full'
+            ? t('importStorageFull', counts)
+            : t('importPartialFailed', counts);
+          return;
+        }
+      }
+      dataStatus.value = apiErrorText(error);
     })
     .finally(() => { importing.value = false; });
 }
@@ -522,17 +564,20 @@ function importData(): void {
 
   <OaGroup
     v-show="matchesSettings(props.query, 'password')"
-    :title="hasPassword ? t('secPassword') : t('setPassword')"
-    :hint="hasPassword ? t('passwordSectionHint') : t('setPasswordHint')"
+    :title="hasPassword === false ? t('setPassword') : t('secPassword')"
+    :hint="hasPassword === false ? t('setPasswordHint') : t('passwordSectionHint')"
   >
-    <OaRow v-if="hasPassword" stacked>
+    <OaRow v-if="hasPassword === null" stacked>
+      <button type="button" class="oa-btn" @click="loadConnections">{{ t('retry') }}</button>
+    </OaRow>
+    <OaRow v-if="hasPassword === true" stacked>
       <OaTextField v-model="currentPassword" :label="t('currentPassword')" type="password" />
     </OaRow>
-    <OaRow stacked>
+    <OaRow v-if="hasPassword !== null" stacked>
       <OaTextField v-model="newPassword" :label="t('newPassword')" type="password" :hint="t('newPasswordHint')" />
     </OaRow>
     <p v-if="passwordFlash" class="oa-group-flash" role="alert">{{ passwordFlash }}</p>
-    <OaRow>
+    <OaRow v-if="hasPassword !== null">
       <button type="button" class="oa-btn" :disabled="passwordBusy" @click="savePassword">
         {{ passwordLabel || (hasPassword ? t('changePassword') : t('setPassword')) }}
       </button>

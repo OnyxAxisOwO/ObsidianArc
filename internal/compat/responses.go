@@ -8,11 +8,12 @@ package compat
 // complete the other two surfaces are.
 //
 // It is the same translation as the others and none of the protocol's own
-// ambition. There is no `store`, no `previous_response_id` and no background
-// mode, because all three mean the server keeps the conversation — and this
-// package's first promise is that it keeps nothing. A client that asks for
-// one is told so rather than silently answered as though its transcript had
-// been remembered.
+// ambition. There is no `store`, no `previous_response_id`, no `conversation`
+// and no background mode, because all four mean the server keeps something
+// between requests — and this package's first promise is that it keeps nothing.
+// A client that asks for one is told so rather than silently answered as though
+// its transcript had been remembered, or a response it expects to fetch later
+// had been stored.
 
 import (
 	"context"
@@ -48,10 +49,13 @@ type responsesRequest struct {
 		Effort string `json:"effort"`
 	} `json:"reasoning"`
 
-	// Read only to be refused: both mean the server is keeping the
-	// conversation, and this one does not.
-	Store              *bool  `json:"store"`
-	PreviousResponseID string `json:"previous_response_id"`
+	// Read only to be refused: each means the server is keeping the
+	// conversation, or a response, and this one does not. Background is
+	// refused only when true; false is what a synchronous client sends.
+	Store              *bool           `json:"store"`
+	PreviousResponseID string          `json:"previous_response_id"`
+	Conversation       json.RawMessage `json:"conversation"`
+	Background         *bool           `json:"background"`
 }
 
 // responsesTool is flat, unlike the chat/completions shape that nests the
@@ -117,6 +121,19 @@ func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller)
 	if body.Store != nil && *body.Store {
 		return badRequest("store",
 			"This server keeps no conversations. Set store to false.")
+	}
+	// A conversation is named by id, and the server would have to hold the
+	// transcript to answer it. Read as absent, the answer would come back
+	// without any of the history the client believes it sent.
+	if conversation := strings.TrimSpace(string(body.Conversation)); conversation != "" && conversation != "null" {
+		return badRequest("conversation",
+			"This server keeps no conversations. Send the whole transcript in input, and leave conversation out.")
+	}
+	// A background response is answered later, from storage this server does
+	// not have, so a GET for it would find nothing.
+	if body.Background != nil && *body.Background {
+		return badRequest("background",
+			"This server answers within the request and keeps no responses to fetch later. Set background to false.")
 	}
 
 	resolved, err := h.authorize(r, who, body.Model)
@@ -209,12 +226,16 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 				return adapter.ChatRequest{}, nil, badRequest("input",
 					"A "+item.Type+" must name the call it answers in call_id.")
 			}
+			output, err := readResponsesOutput(item.Output)
+			if err != nil {
+				return adapter.ChatRequest{}, nil, err
+			}
 			messages = append(messages, adapter.Message{
 				Role: adapter.RoleTool,
 				Parts: []adapter.Part{{
 					Kind:       adapter.PartToolResult,
 					ToolCallID: item.CallID,
-					Text:       readResponsesOutput(item.Output),
+					Text:       output,
 				}},
 			})
 
@@ -413,24 +434,62 @@ func readResponsesContent(raw json.RawMessage) ([]adapter.Part, error) {
 
 // A function_call_output's payload is a string in every client, and an array
 // of parts in the newest schema. Both flatten to the one string the layer
-// below carries.
-func readResponsesOutput(raw json.RawMessage) string {
+// below carries. A picture in the array cannot be carried in that string, so it
+// is refused: flattening it away would show the model a result with nothing
+// attached to it.
+func readResponsesOutput(raw json.RawMessage) (string, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
-		return ""
+		return "", nil
 	}
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil {
-		return text
+		return text, nil
+	}
+	// Decided by type before anything decodes the picture. A picture that fails
+	// the size or sniff check is an error from readResponsesContent, and falling
+	// back to the raw JSON there would hand its base64 to the provider unchecked.
+	if responsesOutputHasPicture(raw) {
+		return "", badRequest("input",
+			"A function_call_output may contain only text: an image cannot travel inside one. Send the picture in a user message instead.")
 	}
 	parts, err := readResponsesContent(raw)
 	if err != nil {
 		// Not a refusal: an output this layer cannot read is still an answer
 		// the model should see, and the raw JSON is closer to it than
 		// nothing.
-		return trimmed
+		return trimmed, nil
 	}
-	return joinText(parts)
+	for _, part := range parts {
+		if part.Kind != adapter.PartText {
+			return "", badRequest("input",
+				"A function_call_output may contain only text: an image cannot travel inside one. Send the picture in a user message instead.")
+		}
+	}
+	return joinText(parts), nil
+}
+
+// responsesOutputHasPicture reports whether a function_call_output's payload
+// holds a picture part. Each element is read for its type alone, so one whose
+// other fields are malformed is still seen; a payload that is not a list is
+// read as a single part.
+func responsesOutputHasPicture(raw json.RawMessage) bool {
+	var elements []json.RawMessage
+	if err := json.Unmarshal(raw, &elements); err != nil {
+		elements = []json.RawMessage{raw}
+	}
+	for _, element := range elements {
+		var part struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(element, &part) != nil {
+			continue
+		}
+		if part.Type == "input_image" || part.Type == "image_url" {
+			return true
+		}
+	}
+	return false
 }
 
 // readResponsesTools turns the declared tools into the ones offered to the
@@ -604,11 +663,23 @@ func (h *Handlers) responsesStreamed(
 		return sse.Event(name, payload)
 	}
 
+	// Each open item has its own text and id. The turn-wide answer and thinking
+	// stay cumulative for the checks below; the done events of an item carry
+	// only what that item holds, or a segment after a tool call would repeat
+	// the text before it.
 	index := 0
 	textOpen := false
-	textItemID := "msg_" + requestID
+	textItems := 0
+	textItemID := ""
+	var segmentText strings.Builder
 	reasoningOpen := false
-	reasoningItemID := "rs_" + requestID
+	reasoningItems := 0
+	reasoningItemID := ""
+	var segmentThinking strings.Builder
+	// The items as they finished, in stream order. response.completed lists
+	// these, so the final object is the one the stream described.
+	var finished []map[string]any
+	var closeText func() error
 
 	_ = emit("response.created", map[string]any{
 		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}),
@@ -624,6 +695,14 @@ func (h *Handlers) responsesStreamed(
 			return nil
 		}
 		reasoningOpen = true
+		// Thinking that follows an answer is its own item, and the answer
+		// closes first so the two arrive in the order they happened.
+		if err := closeText(); err != nil {
+			return err
+		}
+		reasoningItems++
+		reasoningItemID = streamItemID("rs_", requestID, reasoningItems)
+		segmentThinking.Reset()
 		if err := emit("response.output_item.added", map[string]any{
 			"output_index": index,
 			"item": map[string]any{
@@ -643,24 +722,27 @@ func (h *Handlers) responsesStreamed(
 			return nil
 		}
 		reasoningOpen = false
+		segment := segmentThinking.String()
 		if err := emit("response.reasoning_summary_text.done", map[string]any{
 			"item_id": reasoningItemID, "output_index": index, "summary_index": 0,
-			"text": thinking.String(),
+			"text": segment,
 		}); err != nil {
 			return err
 		}
 		if err := emit("response.reasoning_summary_part.done", map[string]any{
 			"item_id": reasoningItemID, "output_index": index, "summary_index": 0,
-			"part": map[string]any{"type": "summary_text", "text": thinking.String()},
+			"part": map[string]any{"type": "summary_text", "text": segment},
 		}); err != nil {
 			return err
 		}
+		done := reasoningItem(reasoningItemID, segment)
 		if err := emit("response.output_item.done", map[string]any{
 			"output_index": index,
-			"item":         reasoningItem(reasoningItemID, thinking.String()),
+			"item":         done,
 		}); err != nil {
 			return err
 		}
+		finished = append(finished, done)
 		index++
 		return nil
 	}
@@ -675,6 +757,9 @@ func (h *Handlers) responsesStreamed(
 			return err
 		}
 		textOpen = true
+		textItems++
+		textItemID = streamItemID("msg_", requestID, textItems)
+		segmentText.Reset()
 		if err := emit("response.output_item.added", map[string]any{
 			"output_index": index,
 			"item": map[string]any{
@@ -690,31 +775,34 @@ func (h *Handlers) responsesStreamed(
 		})
 	}
 
-	closeText := func() error {
+	closeText = func() error {
 		if !textOpen {
 			return nil
 		}
 		textOpen = false
+		segment := segmentText.String()
 		if err := emit("response.output_text.done", map[string]any{
 			"item_id": textItemID, "output_index": index, "content_index": 0,
-			"text": answer.String(),
+			"text": segment,
 		}); err != nil {
 			return err
 		}
 		if err := emit("response.content_part.done", map[string]any{
 			"item_id": textItemID, "output_index": index, "content_index": 0,
 			"part": map[string]any{
-				"type": "output_text", "text": answer.String(), "annotations": []any{},
+				"type": "output_text", "text": segment, "annotations": []any{},
 			},
 		}); err != nil {
 			return err
 		}
+		done := textItem(textItemID, segment)
 		if err := emit("response.output_item.done", map[string]any{
 			"output_index": index,
-			"item":         textItem(textItemID, answer.String()),
+			"item":         done,
 		}); err != nil {
 			return err
 		}
+		finished = append(finished, done)
 		index++
 		return nil
 	}
@@ -766,6 +854,7 @@ func (h *Handlers) responsesStreamed(
 		}); err != nil {
 			return err
 		}
+		finished = append(finished, item)
 		index++
 		return nil
 	}
@@ -777,6 +866,7 @@ func (h *Handlers) responsesStreamed(
 				return err
 			}
 			answer.WriteString(event.Text)
+			segmentText.WriteString(event.Text)
 			return emit("response.output_text.delta", map[string]any{
 				"item_id": textItemID, "output_index": index, "content_index": 0,
 				"delta": event.Text,
@@ -786,6 +876,7 @@ func (h *Handlers) responsesStreamed(
 				return err
 			}
 			thinking.WriteString(event.Text)
+			segmentThinking.WriteString(event.Text)
 			return emit("response.reasoning_summary_text.delta", map[string]any{
 				"item_id": reasoningItemID, "output_index": index, "summary_index": 0,
 				"delta": event.Text,
@@ -799,22 +890,26 @@ func (h *Handlers) responsesStreamed(
 		return nil
 	}
 
-	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, request, sink)
+	clientGone := false
+	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, request, watchWrites(sink, &clientGone))
 	usage = usage.Merge(result.Usage)
 
 	// A provider that could not stream answered all at once, and the answer
-	// still has to reach the client as items.
+	// still has to reach the client as items. The reasoning is not tied to the
+	// text: a turn that only called a tool may still have reasoned first.
+	if result.Reasoning != "" && thinking.Len() == 0 {
+		_ = openReasoning()
+		thinking.WriteString(result.Reasoning)
+		segmentThinking.WriteString(result.Reasoning)
+		_ = emit("response.reasoning_summary_text.delta", map[string]any{
+			"item_id": reasoningItemID, "output_index": index, "summary_index": 0,
+			"delta": result.Reasoning,
+		})
+	}
 	if result.Text != "" && answer.Len() == 0 {
-		if result.Reasoning != "" && thinking.Len() == 0 {
-			_ = openReasoning()
-			thinking.WriteString(result.Reasoning)
-			_ = emit("response.reasoning_summary_text.delta", map[string]any{
-				"item_id": reasoningItemID, "output_index": index, "summary_index": 0,
-				"delta": result.Reasoning,
-			})
-		}
 		_ = openText()
 		answer.WriteString(result.Text)
+		segmentText.WriteString(result.Text)
 		_ = emit("response.output_text.delta", map[string]any{
 			"item_id": textItemID, "output_index": index, "content_index": 0,
 			"delta": result.Text,
@@ -829,10 +924,12 @@ func (h *Handlers) responsesStreamed(
 	_ = closeReasoning()
 	_ = closeText()
 
-	h.record(context.WithoutCancel(r.Context()), who, resolved, requestID, usage, startedAt, chatErr)
+	gone := abandoned(clientGone, r, chatErr)
+	h.record(context.WithoutCancel(r.Context()), who, resolved, requestID, usage, startedAt,
+		abortedWhenGone(chatErr, gone))
 
 	if chatErr != nil {
-		if r.Context().Err() != nil {
+		if gone {
 			return nil
 		}
 		rendered := translateUpstream(chatErr)
@@ -842,6 +939,7 @@ func (h *Handlers) responsesStreamed(
 				"error": map[string]any{"code": rendered.code, "message": rendered.message},
 			},
 		})
+		logFailure(r, rendered)
 		return nil
 	}
 
@@ -854,8 +952,7 @@ func (h *Handlers) responsesStreamed(
 		closing = "response." + status
 	}
 	_ = emit(closing, map[string]any{
-		"response": responseObject(requestID, label, startedAt, status, incomplete,
-			responsesOutput(requestID, thinking.String(), answer.String(), calls, custom), usage),
+		"response": responseObject(requestID, label, startedAt, status, incomplete, finished, usage),
 	})
 	return nil
 }
@@ -895,6 +992,16 @@ func responseObject(
 		}
 	}
 	return object
+}
+
+// streamItemID names the nth text or reasoning item of one turn. The first keeps
+// the id the non-streamed output has always used; a later one carries its number,
+// because a client that keys its items by id would otherwise merge them.
+func streamItemID(prefix, requestID string, n int) string {
+	if n <= 1 {
+		return prefix + requestID
+	}
+	return prefix + requestID + "_" + strconv.Itoa(n)
 }
 
 func responsesOutput(requestID, thinking, text string, calls []adapter.ToolCall, custom map[string]bool) []map[string]any {

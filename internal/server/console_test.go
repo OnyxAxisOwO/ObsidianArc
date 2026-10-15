@@ -332,6 +332,86 @@ func TestConsoleNeitherListsNorCompletesWhatTheActorCannotRun(t *testing.T) {
 	}
 }
 
+// The browser reads these keys literally (ConsoleCompletion in
+// web/src/api/console.ts), and encoding/json matches keys case-insensitively,
+// so the struct decode above would pass with Go field names too. Decode into
+// raw keys so the wire casing is what is checked.
+func TestConsoleCompletionUsesTheKeysTheBrowserReads(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	response := in.do(http.MethodPost, "/api/console/complete",
+		map[string]any{"line": "user l", "pos": 6}, founder)
+	if response.Code != http.StatusOK {
+		t.Fatalf("complete: %d %s", response.Code, response.Body.String())
+	}
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &top); err != nil {
+		t.Fatalf("decode completion: %v", err)
+	}
+	if len(top) != 2 || top["from"] == nil || top["items"] == nil {
+		t.Fatalf("completion keys = %v, want exactly from and items", keysOf(top))
+	}
+	var from int
+	if err := json.Unmarshal(top["from"], &from); err != nil || from != 5 {
+		t.Fatalf("from = %s, want 5", top["from"])
+	}
+
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(top["items"], &items); err != nil {
+		t.Fatalf("decode items: %v", err)
+	}
+	found := false
+	for _, item := range items {
+		if len(item) != 3 || item["value"] == nil || item["label"] == nil || item["hint"] == nil {
+			t.Fatalf("item keys = %v, want exactly value, label and hint", keysOf(item))
+		}
+		var value string
+		if err := json.Unmarshal(item["value"], &value); err != nil {
+			t.Fatalf("decode value: %v", err)
+		}
+		if value == "list" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("completing %q offered no %q item: %s", "user l", "list", response.Body.String())
+	}
+}
+
+// A word that matches nothing used to answer "items": null. The browser reads
+// items.length, so Tab threw and did nothing. Both completers are checked: the
+// command name and the flag after a command.
+func TestConsoleCompletionWithNoMatchSendsAnEmptyList(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	for _, line := range []string{"user zzq", "user list --zzq"} {
+		response := in.do(http.MethodPost, "/api/console/complete",
+			map[string]any{"line": line, "pos": len(line)}, founder)
+		if response.Code != http.StatusOK {
+			t.Fatalf("complete %q: %d %s", line, response.Code, response.Body.String())
+		}
+
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &top); err != nil {
+			t.Fatalf("decode completion for %q: %v", line, err)
+		}
+		if raw := strings.TrimSpace(string(top["items"])); raw != "[]" {
+			t.Errorf("completing %q: items = %s, want an empty JSON array", line, raw)
+		}
+	}
+}
+
+func keysOf[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // The other direction: a super administrator is not held to a narrower list
 // than the backoffice gives them, or the console would be a downgrade.
 func TestConsoleGivesASuperAdministratorTheWholeSurface(t *testing.T) {

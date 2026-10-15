@@ -136,6 +136,53 @@ describe('OaTable sort cycling', () => {
     expect(reordered.slice(20).map((row) => row.name)).toEqual(['21', '22', '23', '24', '20']);
   });
 
+  it('offers no reordering on a server page, where the rows are only part of the list', async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ name: String(20 + i) }));
+    const reorders: unknown[] = [];
+    app = createApp({ render: () => h(OaTable, {
+      columns: [{ key: 'name', header: 'Name', text: (row: { name: string }) => row.name }],
+      rows, empty: 'Empty', reorderable: true,
+      pagination: { page: 2, pageSize: 20, total: 25 },
+      onReorder: (next: unknown[]) => reorders.push(next),
+    }) });
+    app.mount(host);
+    const visible = host.querySelectorAll<HTMLTableRowElement>('tbody tr');
+    expect(visible).toHaveLength(5);
+    expect([...visible].some((row) => row.getAttribute('draggable') === 'true')).toBe(false);
+    visible[0]!.dispatchEvent(new Event('dragstart'));
+    visible[3]!.dispatchEvent(new Event('drop', { cancelable: true }));
+    expect(reorders).toHaveLength(0);
+  });
+
+  it('leaves Enter, Space and clicks on a control inside a selectable row to that control', async () => {
+    const selected: unknown[] = [];
+    app = createApp({ render: () => h(OaTable, {
+      columns: [{ key: 'name', header: 'Name' }],
+      rows: [{ name: 'Alpha' }], empty: 'Empty', selectable: true,
+      onSelect: (row: unknown) => selected.push(row),
+    }, {
+      'cell-name': () => h('button', { type: 'button' }, 'Copy'),
+    }) });
+    app.mount(host);
+    const button = host.querySelector<HTMLButtonElement>('tbody button')!;
+    for (const key of ['Enter', ' ']) {
+      const press = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      button.dispatchEvent(press);
+      expect(press.defaultPrevented).toBe(false);
+    }
+    // A browser turns Enter and Space on a button into a click; jsdom does not,
+    // so the click is dispatched here as well.
+    button.click();
+    expect(selected).toHaveLength(0);
+
+    // The row itself still opens from the keyboard and from the mouse.
+    const row = host.querySelector<HTMLTableRowElement>('tbody tr')!;
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    expect(selected).toHaveLength(1);
+    row.click();
+    expect(selected).toHaveLength(2);
+  });
+
   it('cycles sort through ascending -> descending -> reset (null) on 3rd click', async () => {
     const sort = ref<SortState | null>(null);
     const emitted: Array<SortState | null> = [];

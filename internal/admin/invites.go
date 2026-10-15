@@ -33,6 +33,8 @@ func translateInviteError(err error) error {
 		return httpx.BadRequest("Group days must be between 0 and %d, group_days_max must be 0 or at least group_days, and a range must start at 1 or more.", invite.MaxGroupDays)
 	case errors.Is(err, invite.ErrGroupRequired):
 		return httpx.BadRequest("group_days_max requires a group to be set.")
+	case errors.Is(err, invite.ErrInvalidKind):
+		return httpx.BadRequestCode("invite_kind", "The kind must be batch or partner.")
 	case errors.Is(err, invite.ErrPartnerFields):
 		return httpx.BadRequestCode("invite_partner_fields",
 			"A partner code needs a count of 1, a custom code, a name (1-%d characters) and a group.",
@@ -126,7 +128,14 @@ func (h *Handlers) inviteUses(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"uses": uses})
+	// total lets a reader tell the list is the newest page of a longer one; the
+	// list itself is capped, and an audit that reads only it would be quietly
+	// incomplete.
+	total, err := h.invites.UsesTotal(r.Context(), codeID)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"uses": uses, "total": total})
 }
 
 func (h *Handlers) inviteStats(w http.ResponseWriter, r *http.Request) error {

@@ -88,8 +88,11 @@
     box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Prefixed as `_app.scss` prefixes its own: Safari before 18 reads only the
+   `-webkit-` name, and without it the header is a bare 82% wash over text. */
 .oa-front-head.lifted {
   background: color-mix(in srgb, var(--ai-surface-container) 82%, transparent);
+  -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
   box-shadow: 0 1px 0 var(--ai-border);
 }
@@ -380,6 +383,13 @@
   animation-play-state: paused;
 }
 
+/* Inside the hero but not in the aurora, so the rule above does not reach
+   them: the headline's sheen moves a background, and the cue nudges forever. */
+.oa-front-hero.idle .oa-front-line.accent > span,
+.oa-front-hero.idle .oa-front-scroll {
+  animation-play-state: paused;
+}
+
 .oa-front-kicker {
   display: inline-flex;
   align-items: center;
@@ -575,7 +585,10 @@
   transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* The nudge animates `opacity` itself, and an animation beats any normal
+   declaration, so `opacity: 0` alone never applies while it runs. */
 .oa-front-scroll.gone {
+  animation: none;
   opacity: 0;
 }
 
@@ -632,7 +645,7 @@
 
 .oa-front-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr));
   gap: 14px;
 }
 
@@ -672,7 +685,9 @@
    transition is read from the style being moved *to* — declared only on hover
    the card would lift smoothly and drop instantly. Both the card's own class
    and `.shown` carry it: `.oa-front-card` is also a `.oa-front-reveal`, and
-   this rule is what supplies that reveal's timing as well as the hover's. */
+   this rule replaces that reveal's transition. Only opacity keeps the
+   per-card stagger: the transform is the hover lift's too, and a delay on it
+   would make every hover wait for the card's place in the grid. */
 .oa-front-card,
 .oa-front-card.shown {
   transition:
@@ -815,6 +830,14 @@
   animation-delay: 0.6s;
 }
 
+/* The flow sits below the hero, so the hero's own switch never reaches it.
+   FrontPage.vue's idle observer sets `idle` here the same way it does for the
+   hero. */
+.oa-front-flow.idle .oa-front-wire,
+.oa-front-flow.idle .oa-front-core-ring {
+  animation-play-state: paused;
+}
+
 /* Under about a tablet the row cannot hold three columns, and a diagram that
    reads left-to-right is not worth preserving at the cost of 90px-wide
    cards — so it stacks, and the wires turn to run downward with it. */
@@ -844,9 +867,12 @@
 
 /* --- code and terminal ----------------------------------------------------- */
 
+/* `min(…, 100%)` on the track minimum: a bare 340px track is wider than the
+   section's content box on phones under about 376px, and the overflow is
+   clipped by the page rather than scrolled. */
 .oa-front-panes {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
   gap: 14px;
 }
 
@@ -926,6 +952,9 @@
      its line box under this value, which is what makes the blank row before
      the token line a blank row. */
   white-space: pre-wrap;
+  /* Starts hidden: the keyframes only set the end value, so without this the
+     fade's start is the element's own opacity of 1 and nothing fades. */
+  opacity: 0;
   animation: oaFrontFade 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
@@ -1075,6 +1104,20 @@
 
   .oa-front-foot {
     flex-wrap: wrap;
+  }
+
+  /* Brand, theme toggle and the sign-in pair do not fit one row at 360px:
+     the buttons cannot shrink, and the sticky header clips instead of
+     scrolling, so the right-hand button was lost. The header wraps the way
+     the footer does, and the primary action keeps the right edge when it is
+     alone on its row. */
+  .oa-front-head {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .oa-front-head .oa-btn.primary {
+    margin-left: auto;
   }
 
   /* The spacer pushes the two links to the far edge, which on one line with
@@ -1262,7 +1305,8 @@
   .oa-front-lede,
   .oa-front-actions,
   .oa-front-speaks,
-  .oa-front-reveal {
+  .oa-front-reveal,
+  .oa-front-term-out {
     opacity: 1;
     transform: none;
   }
@@ -1292,7 +1336,8 @@
 .oa-front.still .oa-front-lede,
 .oa-front.still .oa-front-actions,
 .oa-front.still .oa-front-speaks,
-.oa-front.still .oa-front-reveal {
+.oa-front.still .oa-front-reveal,
+.oa-front.still .oa-front-term-out {
   opacity: 1;
   transform: none;
 }

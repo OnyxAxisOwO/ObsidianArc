@@ -290,12 +290,21 @@ async function fetchCards(): Promise<{ cards: Card[] }> {
   return api.get<{ cards: Card[] }>('/api/usage/cards');
 }
 
+// The cards list is written by three paths: this read, the periodic refresh
+// and the read after a spend or a redemption. A read asked for before a later
+// change can arrive after it, so only the newest read may write the list —
+// otherwise a spent card comes back until the next tick.
+let cardsTicket = 0;
+
 async function loadCards(): Promise<void> {
+  const mine = ++cardsTicket;
   cardsError.value = '';
   try {
     const payload = await fetchCards();
+    if (mine !== cardsTicket) return;
     cards.value = payload.cards;
   } catch {
+    if (mine !== cardsTicket) return;
     cardsError.value = t('usageUnavailable');
   }
 }
@@ -315,7 +324,9 @@ function refreshQuietly(): void {
     turns.value = payload.turns;
     historyError.value = '';
   }).catch(() => {});
+  const mine = ++cardsTicket;
   fetchCards().then((payload) => {
+    if (mine !== cardsTicket) return;
     cards.value = payload.cards;
     cardsError.value = '';
   }).catch(() => {});
@@ -560,6 +571,7 @@ watch(visibility, (now, was) => {
     v-if="redeemChallenge"
     v-slot="{ close }"
     overlay-class="oa-modal-overlay"
+    :label="t('redeemChallengeTitle')"
     :dismissible="!redeeming"
     @close="cancelRedeemChallenge"
   >

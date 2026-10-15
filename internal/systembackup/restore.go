@@ -78,6 +78,11 @@ func PrepareRestore(ctx context.Context, db *database.DB, path string, masterKey
 	if err != nil {
 		return err
 	}
+	// Refused before the first migration runs. Migrating a populated database
+	// would change its schema, and only then would RestoreArchive refuse it.
+	if err := db.Tx(ctx, func(tx *database.Tx) error { return requireEmptyDatabase(ctx, tx) }); err != nil {
+		return err
+	}
 	_, err = db.MigrateFor(ctx, manifest.Migration, append(carried, extra...)...)
 	return err
 }
@@ -198,8 +203,9 @@ func RestoreArchive(ctx context.Context, db *database.DB, path string, masterKey
 		}
 		// The instance lock row is coordination state, not an operator setting.
 		// Releasing the database row lock still waits until commit, but removing
-		// its marker keeps it out of the restored settings table.
-		if _, err := tx.Exec(ctx, `DELETE FROM settings WHERE key = ?`, schedulerLockKey); err != nil {
+		// its marker keeps it out of the restored settings table. The failure count
+		// goes with it: it describes the destination's scheduler, not the archive's.
+		if _, err := tx.Exec(ctx, `DELETE FROM settings WHERE key IN (?, ?)`, schedulerLockKey, failureCountKey); err != nil {
 			return fmt.Errorf("system backup: release restore marker: %w", err)
 		}
 		return nil
@@ -336,8 +342,8 @@ func requireEmptyDatabase(ctx context.Context, tx database.Queryer) error {
 		query := `SELECT COUNT(*) FROM "` + table + `"`
 		var args []any
 		if table == "settings" {
-			query += ` WHERE key <> ?`
-			args = append(args, schedulerLockKey)
+			query += ` WHERE key NOT IN (?, ?)`
+			args = append(args, schedulerLockKey, failureCountKey)
 		}
 		if err := tx.QueryRow(ctx, query, args...).Scan(&count); err != nil {
 			return fmt.Errorf("system backup: inspect destination table %s: %w", table, err)

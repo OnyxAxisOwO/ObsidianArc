@@ -15,6 +15,7 @@ import { api, ApiError } from '@/api/client';
 import { currentLanguage } from '@/composables/useI18n';
 import * as icons from '@/icons';
 import { absoluteTime } from '@/lib/format';
+import { within } from '@/lib/deadline';
 import type {
   AccountFieldSpec, ArcPlugin, GuardSpec, KeyIssuingSpec, NotificationText, PluginConfig, PluginFactory, PluginHost, Text,
   UserPanelSpec,
@@ -28,6 +29,9 @@ import type {
 const modules = import.meta.glob<{ default: ArcPlugin }>('./*/*.plugin.ts');
 
 const loaded = shallowRef<readonly ArcPlugin[]>([]);
+// Set once the first load has answered, whatever it found. Until then a
+// missing plugin may simply not have arrived; after, it is not coming.
+const settled = shallowRef(false);
 let configs: Record<string, PluginConfig> = {};
 
 /**
@@ -65,7 +69,21 @@ export async function loadPlugins(blocks: Record<string, PluginConfig> | undefin
     return typeof ui === 'string' && ui ? loadPackageModule(name, ui) : loadPluginModule(name);
   }));
   loaded.value = found.filter((plugin): plugin is ArcPlugin => plugin !== null);
+  settled.value = true;
 }
+
+/**
+ * Whether the plugins have answered at least once. Reactive: a screen that
+ * reads "not found" before this is true is reading an answer not yet given.
+ */
+export function pluginsSettled(): boolean {
+  return settled.value;
+}
+
+// Boot waits for every package before the first paint, so a request that is
+// accepted and never answered would hold the whole page on its spinner. A
+// package that has not answered by then is left out like one that failed.
+const PACKAGE_DEADLINE_MS = 10_000;
 
 /**
  * A package's browser half: its module fetched from the server, called with
@@ -75,12 +93,15 @@ export async function loadPlugins(blocks: Record<string, PluginConfig> | undefin
  */
 export async function loadPackageModule(name: string, url: string): Promise<ArcPlugin | null> {
   try {
-    const module = await importModule(url);
+    const module = await within(importModule(url), PACKAGE_DEADLINE_MS);
     if (typeof module.default !== 'function') {
       console.warn(`plugin ${name}: its browser half does not export a function`);
       return null;
     }
-    const plugin = await (module.default as PluginFactory)(pluginHost());
+    const plugin = await within(
+      Promise.resolve((module.default as PluginFactory)(pluginHost())),
+      PACKAGE_DEADLINE_MS,
+    );
     if (!plugin || plugin.name !== name) {
       console.warn(`plugin ${name}: its browser half declares ${plugin?.name ?? 'nothing'}`);
       return null;
@@ -123,6 +144,7 @@ export function pluginConfig(name: string): PluginConfig {
 export function installPlugins(list: ArcPlugin[], blocks: Record<string, PluginConfig> = {}): void {
   configs = blocks;
   loaded.value = list;
+  settled.value = true;
 }
 
 /** The spec for an account field, when a loaded plugin owns it. */
@@ -184,15 +206,19 @@ export function pluginOAuthError(code: string): string | null {
 /** Why provider's connection cannot be removed, when a plugin pins it. */
 export function pinnedProvider(provider: string): { hint: Text; refused: Text } | null {
   for (const plugin of loaded.value) {
-    const pinned = plugin.pinnedProviders?.[provider];
+    const table = plugin.pinnedProviders;
+    const pinned = table && Object.hasOwn(table, provider) ? table[provider] : undefined;
     if (pinned) return pinned;
   }
   return null;
 }
 
+// Own keys only, as lookup() and fieldSpec() are: a kind such as "constructor"
+// is otherwise found on every object and called as though a plugin wrote it.
 export function pluginNotification(kind: string, params: Record<string, unknown>): NotificationText | null {
   for (const plugin of loaded.value) {
-    const word = plugin.notifications?.[kind];
+    const table = plugin.notifications;
+    const word = table && Object.hasOwn(table, kind) ? table[kind] : undefined;
     if (word) return word(params);
   }
   return null;

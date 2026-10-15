@@ -46,7 +46,7 @@ import { useAdminView } from './adminView';
 
 const view = useAdminView();
 provideOpenRecord();
-view.setTitle(t('navInvites'), t('invitesSubtitle'));
+view.setTitle(() => t('navInvites'), () => t('invitesSubtitle'));
 
 /** A generated code reads as XXXX-XXXX. A partner's code is a name
  *  somebody chose — PARTNERX is eight letters too, and splitting it into
@@ -78,19 +78,43 @@ const form = ref({
   rewardCardDays: 30 as number | null,
 });
 
+// A page that loaded closed has no invite choice to make, so it keeps the stored
+// invites.required as the server holds it. Deriving it from the mode recorded
+// 'false' over a stored 'true', and picking open then sent nothing for it, so
+// the server kept requiring a code after the page reported the change saved.
+const closedAtLoad = ref(false);
+const requiredAsStored = ref('false');
+
+/** A cleared number field reads as null, and collect() leaves that key out, so
+ *  a save would keep the stored value under a field still drawn as empty. Only
+ *  fields on screen count: the reward fields are drawn only while invites are
+ *  on, and a day count only while cards are rewarded. */
+const settingsValid = computed(() => {
+  const f = form.value;
+  if (!f.userEnabled) return true;
+  if (f.userLimit === null || f.rewardEvery === null || f.rewardCards === null) return false;
+  return f.rewardCards <= 0 || f.rewardCardDays !== null;
+});
+
 /** Only this page's keys, and of those only the ones changed since the page
  *  loaded (see useSettingsDraft). Security's registration switch writes the
  *  same `registration.enabled`, so a save from here must not send it back. */
 function collect(): Record<string, string> {
-  return {
+  const values: Record<string, string> = {
     'registration.enabled': String(form.value.mode !== 'closed'),
-    'invites.required': String(form.value.mode === 'invite'),
+    'invites.required': form.value.mode === 'closed' && closedAtLoad.value
+      ? requiredAsStored.value
+      : String(form.value.mode === 'invite'),
     'invites.user_enabled': String(form.value.userEnabled),
-    'invites.user_limit': String(form.value.userLimit ?? 10),
-    'invites.reward_every': String(form.value.rewardEvery ?? 1),
-    'invites.reward_cards': String(form.value.rewardCards ?? 0),
-    'invites.reward_card_days': String(form.value.rewardCardDays ?? 30),
   };
+  // A number left empty is left out rather than replaced by its default: the
+  // default would be written as though the operator had typed it, and a key
+  // that is absent is simply not changed, so the stored value stands.
+  if (form.value.userLimit !== null) values['invites.user_limit'] = String(form.value.userLimit);
+  if (form.value.rewardEvery !== null) values['invites.reward_every'] = String(form.value.rewardEvery);
+  if (form.value.rewardCards !== null) values['invites.reward_cards'] = String(form.value.rewardCards);
+  if (form.value.rewardCardDays !== null) values['invites.reward_card_days'] = String(form.value.rewardCardDays);
+  return values;
 }
 
 const { dirty, changes, accept } = useSettingsDraft(collect);
@@ -125,6 +149,8 @@ async function loadSettings(): Promise<void> {
       rewardCards: Number(values['invites.reward_cards'] ?? 0),
       rewardCardDays: Number(values['invites.reward_card_days'] ?? 30),
     };
+    closedAtLoad.value = !enabled;
+    requiredAsStored.value = String(required);
     accept();
   } catch (failure) {
     settingsError.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -134,7 +160,7 @@ async function loadSettings(): Promise<void> {
 }
 
 async function saveSettings(): Promise<void> {
-  if (!settingsLoaded.value || settingsError.value || savingBusy.value) return;
+  if (!settingsLoaded.value || settingsError.value || savingBusy.value || !settingsValid.value) return;
   // Only what this card changed. Security's own registration switch writes the
   // same key, and a save here must not reopen sign-ups it closed.
   const values = changes();
@@ -145,6 +171,8 @@ async function saveSettings(): Promise<void> {
   try {
     await adminApi.saveSettings(values);
     accept(values);
+    const sentRequired = values['invites.required'];
+    if (sentRequired !== undefined) requiredAsStored.value = sentRequired;
     try {
       // Registration mode is the one setting here a signed-out visitor reads
       // straight off this response, so the change should be visible without
@@ -232,11 +260,15 @@ async function list(): Promise<void> {
   }
 }
 
-/** The partner-code list embedded in its own card is a separate, unpaged
- *  fetch — always every partner code, not whatever page and filter the
- *  operator left the big list on — so creating or revoking one refreshes it
- *  on its own rather than through `list()`. */
+/** The partner-code list embedded in its own card is a separate fetch, not
+ *  whatever page and filter the operator left the big list on, so creating or
+ *  revoking one refreshes it on its own rather than through `list()`. The
+ *  server returns at most 200 a page, so that is what the card asks for; past
+ *  it the card says how many it is not showing rather than dropping them
+ *  silently. */
+const PARTNER_LIST_LIMIT = 200;
 const partnerCodes = ref<InviteCode[]>([]);
+const partnerTotal = ref(0);
 const partnerLoading = ref(false);
 const partnerListError = ref('');
 
@@ -244,8 +276,9 @@ async function loadPartners(): Promise<void> {
   partnerLoading.value = true;
   partnerListError.value = '';
   try {
-    const result = await adminApi.invites('?kind=partner&limit=50&offset=0');
+    const result = await adminApi.invites(`?kind=partner&limit=${PARTNER_LIST_LIMIT}&offset=0`);
     partnerCodes.value = result.codes ?? [];
+    partnerTotal.value = result.total;
   } catch (failure) {
     partnerListError.value = failure instanceof ApiError ? failure.message : String(failure);
   } finally {
@@ -338,6 +371,9 @@ const panelError = ref('');
 const copyFlash = ref('');
 
 const uses = ref<InviteUse[]>([]);
+/** Every use of the code, which can be more than `uses` holds: the list is the
+ *  newest page only, and the audit has to say when it is not the whole. */
+const usesTotal = ref(0);
 const usesLoading = ref(false);
 const usesError = ref('');
 
@@ -371,6 +407,7 @@ function openGenerate(kind: 'batch' | 'partner' = 'batch'): void {
   panelError.value = '';
   copyFlash.value = '';
   uses.value = [];
+  usesTotal.value = 0;
   usesError.value = '';
   genForm.value = {
     kind, count: 1, code: '', name: '',
@@ -389,6 +426,7 @@ function openExisting(row: InviteCode): void {
   panelError.value = '';
   copyFlash.value = '';
   uses.value = [];
+  usesTotal.value = 0;
   usesError.value = '';
   usesLoading.value = true;
   panelOpen.value = true;
@@ -398,7 +436,10 @@ function openExisting(row: InviteCode): void {
 async function loadUses(id: string): Promise<void> {
   try {
     const result = await adminApi.inviteUses(id);
-    if (existing.value?.id === id) uses.value = result.uses ?? [];
+    if (existing.value?.id === id) {
+      uses.value = result.uses ?? [];
+      usesTotal.value = result.total;
+    }
   } catch (failure) {
     if (existing.value?.id === id) usesError.value = failure instanceof ApiError ? failure.message : String(failure);
   } finally {
@@ -504,7 +545,7 @@ onMounted(() => {
     <span v-if="settingsLoaded && !settingsError" class="oa-control-save-state" :class="{ dirty }" role="status">
       <span class="oa-dashboard-dot" />{{ dirty ? t('controlUnsaved') : t('controlSaved') }}
     </span>
-    <button type="button" class="oa-btn" :disabled="savingBusy || !settingsLoaded || !!settingsError" @click="saveSettings">
+    <button type="button" class="oa-btn" :disabled="savingBusy || !settingsLoaded || !!settingsError || !settingsValid" @click="saveSettings">
       {{ saveLabel || t('save') }}
     </button>
     <button id="generateInvites" type="button" class="oa-btn primary" @click="openGenerate('batch')">{{ t('generateInvites') }}</button>
@@ -540,6 +581,7 @@ onMounted(() => {
               :max="3650"
             />
             <p class="oa-field-hint" role="status">{{ rewardSummary }}</p>
+            <p v-if="!settingsValid" class="oa-field-hint" role="alert">{{ t('settingNumberRequired') }}</p>
           </template>
         </AdminControlCard>
 
@@ -600,6 +642,7 @@ onMounted(() => {
               <OaBadge :tone="statusTone(row.status)">{{ statusLabel(row.status) }}</OaBadge>
             </template>
           </OaTable>
+          <p v-if="!partnerLoading && !partnerListError && partnerTotal > partnerCodes.length" class="oa-field-hint">{{ t('partnerCodesCapped', { shown: partnerCodes.length, total: partnerTotal }) }}</p>
         </AdminControlCard>
       </div>
     </div>
@@ -721,6 +764,7 @@ onMounted(() => {
           <span class="oa-card-expiry">{{ relativeTime(use.created_at) }}</span>
         </div>
       </div>
+      <p v-if="usesTotal > uses.length" class="oa-field-hint">{{ t('inviteUsesCapped', { shown: uses.length, total: usesTotal }) }}</p>
     </template>
 
     <template v-else-if="genForm.kind === 'partner'">

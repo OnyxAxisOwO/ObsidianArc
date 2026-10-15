@@ -99,6 +99,19 @@ func TestAHostAnswerBiggerThanTheGuestsBufferStillArrives(t *testing.T) {
 	}
 }
 
+// The host's answer is what makes the reply big: the echo op hands it back
+// inside the guest's reply, and the request stays small, so only the reply is
+// over the limit. The route layer maps this sentinel to a 502 by identity, so
+// the engine must return it rather than an error that says the same thing.
+func TestAnAnswerLongerThanMaxMessageIsErrResponseTooLarge(t *testing.T) {
+	answer := strings.Repeat("x", 2000)
+	b := load(t, Limits{MaxMessage: 1000}, func(*Call, string, json.RawMessage) (any, error) { return answer, nil })
+	err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", map[string]int{"n": 7}, nil, nil)
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("err = %v, want ErrResponseTooLarge", err)
+	}
+}
+
 func TestPerCallStateReachesTheHostAndIsPerCall(t *testing.T) {
 	b := load(t, Limits{}, func(c *Call, op string, _ json.RawMessage) (any, error) {
 		counter := c.State.(*int32)
@@ -522,4 +535,84 @@ func TestTheDefaultLimitIsBoundedAndANegativeOneIsNot(t *testing.T) {
 	if NewEngine(Limits{MaxConcurrent: -1}).slots != nil {
 		t.Fatal("a negative limit still bounds the engine")
 	}
+}
+
+// Two modules that compile and export the three names the SDK's do, but are
+// not its shape: one has no memory, one has an arc_alloc that returns nothing.
+// Both used to load, and the first call then indexed a result or a memory that
+// was not there, with no recover around it — the janitor's sweep would take the
+// server down with it. Each must be refused at load, and a call must fail.
+func TestAModuleOfTheWrongShapeIsRefusedAtLoadNotCrashedOnACall(t *testing.T) {
+	// (module) with _initialize, arc_alloc and arc_call, and no memory section.
+	noMemory := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0f, 0x03, 0x60, 0x00, 0x00, 0x60, 0x01,
+		0x7f, 0x01, 0x7f, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e, 0x03, 0x04, 0x03, 0x00, 0x01, 0x02, 0x07,
+		0x26, 0x03, 0x0b, 0x5f, 0x69, 0x6e, 0x69, 0x74, 0x69, 0x61, 0x6c, 0x69, 0x7a, 0x65, 0x00, 0x00,
+		0x09, 0x61, 0x72, 0x63, 0x5f, 0x61, 0x6c, 0x6c, 0x6f, 0x63, 0x00, 0x01, 0x08, 0x61, 0x72, 0x63,
+		0x5f, 0x63, 0x61, 0x6c, 0x6c, 0x00, 0x02, 0x0a, 0x0e, 0x03, 0x02, 0x00, 0x0b, 0x04, 0x00, 0x20,
+		0x00, 0x0b, 0x04, 0x00, 0x42, 0x00, 0x0b,
+	}
+	// The same with a memory section and a "memory" export, and arc_alloc
+	// declared to return nothing, so the signature is the only thing wrong with it.
+	allocReturnsNothing := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0e, 0x03, 0x60, 0x00, 0x00, 0x60, 0x01,
+		0x7f, 0x00, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e, 0x03, 0x04, 0x03, 0x00, 0x01, 0x02, 0x05, 0x03,
+		0x01, 0x00, 0x01, 0x07, 0x2f, 0x04, 0x0b, 0x5f, 0x69, 0x6e, 0x69, 0x74, 0x69, 0x61, 0x6c, 0x69,
+		0x7a, 0x65, 0x00, 0x00, 0x09, 0x61, 0x72, 0x63, 0x5f, 0x61, 0x6c, 0x6c, 0x6f, 0x63, 0x00, 0x01,
+		0x08, 0x61, 0x72, 0x63, 0x5f, 0x63, 0x61, 0x6c, 0x6c, 0x00, 0x02, 0x06, 0x6d, 0x65, 0x6d, 0x6f,
+		0x72, 0x79, 0x02, 0x00, 0x0a, 0x0c, 0x03, 0x02, 0x00, 0x0b, 0x02, 0x00, 0x0b, 0x04, 0x00, 0x42,
+		0x00, 0x0b,
+	}
+	for name, module := range map[string][]byte{"without memory": noMemory, "with an arc_alloc that returns nothing": allocReturnsNothing} {
+		t.Run(name, func(t *testing.T) {
+			b := NewEngine(Limits{}).Load("wrong", module, nil)
+			t.Cleanup(b.Close)
+			if err := b.Ready(t.Context()); err == nil || !strings.Contains(err.Error(), "plugin SDK") {
+				t.Fatalf("a backend of the wrong shape was not refused as one: %v", err)
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("a call into it panicked: %v", r)
+				}
+			}()
+			if err := b.Invoke(t.Context(), CallInfo{Plugin: "wrong"}, "sweep", nil, nil, nil); err == nil {
+				t.Fatal("a backend that failed to load answered a call")
+			}
+		})
+	}
+}
+
+// Close lands while a compile is parked. The compile takes its copy of the module
+// bytes under the lock before it starts, so Close clearing the field meanwhile
+// does not reach it: the compile still builds, and Ready reports the backend
+// removed. Parking the compile holds the window open, so this is decided by the
+// outcome and not left to the race detector.
+func TestCloseDuringACompileIsNotADataRace(t *testing.T) {
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	compileHook = func() {
+		close(entered)
+		<-proceed
+	}
+	t.Cleanup(func() { compileHook = nil })
+
+	b := NewEngine(Limits{}).Load("demo", guest(t), nil)
+	ready := make(chan error, 1)
+	go func() { ready <- b.Ready(t.Context()) }()
+	<-entered
+
+	closeDone := make(chan struct{})
+	go func() {
+		b.Close()
+		close(closeDone)
+	}()
+	waitUntil(t, "close", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.closed
+	})
+	close(proceed)
+	if err := <-ready; err != nil && !errors.Is(err, errRemoved) {
+		t.Fatalf("a compile that Close landed in failed for another reason: %v", err)
+	}
+	<-closeDone
 }

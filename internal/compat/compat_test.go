@@ -22,6 +22,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -30,6 +31,7 @@ import (
 // --- fixture ------------------------------------------------------------------
 
 type fixture struct {
+	db       *database.DB
 	mux      *http.ServeMux
 	handlers *Handlers
 	settings *settings.Service
@@ -226,6 +228,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	f := &fixture{
+		db:       db,
 		settings: set, models: models, groups: groups, keys: keys, users: users,
 		upstream: upstream, openGroup: openGroup, account: account,
 		token: token, admin: adminToken, model: modelRecord,
@@ -623,7 +626,7 @@ func TestViewOnlyModelIsNotOfferedToClients(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.models.SetGroupModels(ctx, restricted.ID,
+	if err := f.models.SetGroupModels(ctx, nil, restricted.ID,
 		[]model.GroupGrant{{ModelID: f.model.ID, Access: model.AccessView}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1453,5 +1456,123 @@ func TestADocumentIsAssembledFromAStreamUpstream(t *testing.T) {
 	usage, _ := body["usage"].(map[string]any)
 	if usage["completion_tokens"] != float64(2) {
 		t.Fatalf("usage = %v", usage)
+	}
+}
+
+// A refused request still has a caller. The request log has an account column
+// for exactly this, and an operator reading it needs to see whose key was
+// turned away and why. Each refusal is written against the account it belongs
+// to. An unknown key is the one refusal with no account to name.
+func TestRefusedRequestsAreLoggedAgainstTheirCaller(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	store := reqlog.NewStore(f.db)
+	logged := store.Middleware(nil, nil)(f.mux)
+
+	call := func(method, path, token, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		r := httptest.NewRequest(method, path, reader)
+		r.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		logged.ServeHTTP(w, r)
+		return w
+	}
+
+	unknown := call(http.MethodGet, "/v1/models", "sk-not-a-real-key", "")
+	if unknown.Code != http.StatusUnauthorized || errorCode(t, unknown) != "invalid_api_key" {
+		t.Fatalf("unknown key: %d %s", unknown.Code, unknown.Body.String())
+	}
+
+	// A paused key is refused by name: the owner is known, and the row must say so.
+	pausedKey, pausedToken, err := f.keys.Issue(ctx, f.account.ID, "paused", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pausedYes := true
+	if _, err := f.keys.Update(ctx, f.account.ID, pausedKey.ID, apikey.Update{Disabled: &pausedYes}); err != nil {
+		t.Fatal(err)
+	}
+	paused := call(http.MethodGet, "/v1/models", pausedToken, "")
+	if paused.Code != http.StatusUnauthorized || errorCode(t, paused) != "api_key_paused" {
+		t.Fatalf("paused key: %d %s", paused.Code, paused.Body.String())
+	}
+
+	// The same write the administration ban makes.
+	disabled, reason := user.StatusDisabled, "spam"
+	if _, err := f.users.UpdateAdminFields(ctx, nil, f.account.ID, user.AdminUpdate{
+		Status: &disabled, BanReason: &reason,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	banned := call(http.MethodGet, "/v1/models", f.token, "")
+	if banned.Code != http.StatusForbidden || errorCode(t, banned) != "account_banned" {
+		t.Fatalf("banned models: %d %s", banned.Code, banned.Body.String())
+	}
+	bannedCompletion := call(http.MethodPost, "/v1/chat/completions", f.token, completionBody("upstream-real-name"))
+	if bannedCompletion.Code != http.StatusForbidden || errorCode(t, bannedCompletion) != "account_banned" {
+		t.Fatalf("banned completion: %d %s", bannedCompletion.Code, bannedCompletion.Body.String())
+	}
+
+	active := user.StatusActive
+	if _, err := f.users.UpdateAdminFields(ctx, nil, f.account.ID, user.AdminUpdate{Status: &active}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.users.UpdateAPIRestriction(
+		ctx, nil, f.account.ID, true, time.Now().Add(time.Hour).UnixMilli(), "signup_review"); err != nil {
+		t.Fatal(err)
+	}
+	restricted := call(http.MethodGet, "/v1/models", f.token, "")
+	if restricted.Code != http.StatusForbidden || errorCode(t, restricted) != "api_restricted" {
+		t.Fatalf("restricted: %d %s", restricted.Code, restricted.Body.String())
+	}
+
+	// Run returns once the queued rows are written. The cancelled context
+	// makes it take the final drain straight away.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	store.Run(cancelled)
+
+	entries, _, err := store.List(ctx, reqlog.Filter{Path: "/v1/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("logged %d /v1 requests, want 5: %+v", len(entries), entries)
+	}
+
+	type row struct{ method, path, code string }
+	attributed := map[row]bool{
+		{http.MethodGet, "/v1/models", "invalid_api_key"}:           false,
+		{http.MethodGet, "/v1/models", "api_key_paused"}:            true,
+		{http.MethodGet, "/v1/models", "account_banned"}:            true,
+		{http.MethodPost, "/v1/chat/completions", "account_banned"}: true,
+		{http.MethodGet, "/v1/models", "api_restricted"}:            true,
+	}
+	for _, entry := range entries {
+		key := row{entry.Method, entry.Path, entry.ErrorCode}
+		named, known := attributed[key]
+		if !known {
+			t.Errorf("unexpected row %s %s code %q", entry.Method, entry.Path, entry.ErrorCode)
+			continue
+		}
+		if entry.Channel != reqlog.ChannelAPI {
+			t.Errorf("%s %s %s: channel %q, want api", entry.Method, entry.Path, entry.ErrorCode, entry.Channel)
+		}
+		if named {
+			if entry.UserID != f.account.ID || entry.Username != f.account.Username {
+				t.Errorf("%s %s %s: attributed to %q (%s), want %q (%s)",
+					entry.Method, entry.Path, entry.ErrorCode,
+					entry.Username, entry.UserID, f.account.Username, f.account.ID)
+			}
+		} else if entry.UserID != "" || entry.Username != "" {
+			t.Errorf("an unknown key was attributed to %q (%s)", entry.Username, entry.UserID)
+		}
 	}
 }

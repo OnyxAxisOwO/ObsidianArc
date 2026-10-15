@@ -20,6 +20,7 @@ import (
 	"io"
 	"io/fs"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -220,7 +221,10 @@ func (in *Instance) do(ip, method, path string, body any, as *Session, header ht
 
 	request := httptest.NewRequest(method, path, reader)
 	if ip != "" {
-		request.RemoteAddr = ip + ":40000"
+		// JoinHostPort brackets an IPv6 address; a bare concatenation leaves
+		// colons that net.SplitHostPort refuses, so per-address code reads the
+		// client wrong.
+		request.RemoteAddr = net.JoinHostPort(ip, "40000")
 	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")

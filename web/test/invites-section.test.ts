@@ -418,3 +418,22 @@ describe('the invites card', () => {
   });
 });
 
+describe('the claim box in search and in the address bar', () => {
+  it('stays in view when the search asks for what it does', async () => {
+    vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue(OFF);
+    await mount(InvitesSection, { query: 'redeem' });
+    expect(host.querySelector<HTMLElement>('.oa-settings-panel')!.style.display).not.toBe('none');
+    expect(claimInput()).toBeTruthy();
+  });
+
+  it('takes the code out of the address once it is in the claim box', async () => {
+    route.query = { claim: 'PARTNER1', tab: 'x' };
+    vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue(OFF);
+    await mount(InvitesSection);
+    expect(claimInput().value).toBe('PARTNER1');
+    expect(router.replace).toHaveBeenCalledTimes(1);
+    const [target] = router.replace.mock.calls[0]! as [{ path: string; query: Record<string, string> }];
+    expect(target.path).toBe('/settings');
+    expect(target.query).toEqual({ tab: 'x' });
+  });
+});

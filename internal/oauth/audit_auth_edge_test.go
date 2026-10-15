@@ -58,6 +58,9 @@ func TestASignInStateSetByAnotherHostnameIsNotReadWhenSecure(t *testing.T) {
 // The sign-up ticket follows the same rule: a plain-named copy is not held.
 func TestASignUpTicketSetByAnotherHostnameIsNotHeldWhenSecure(t *testing.T) {
 	f := newFixture(t)
+	// A ticket is held only for a provider that is still on, so the provider the
+	// ticket names has to be configured for the cookie to be held at all.
+	f.configure(t, "github")
 	h, _ := handlers(t, f)
 	h.SecureCookie = true
 

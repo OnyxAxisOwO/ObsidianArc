@@ -253,8 +253,13 @@ func (s *Service) Verify(ctx context.Context, token string) (string, error) {
 	// registered unverified through a personal code qualified for nothing
 	// at Register's own call, and this is the only other event this package
 	// tells that package about it again.
+	// The verification has committed, so a browser that disconnects now must
+	// not cancel the reward. The bound keeps a stuck database from holding the
+	// response; a reward that still fails is picked up by RewardPending.
 	if s.RewardInvite != nil {
-		s.RewardInvite(ctx, userID, s.VerificationRequired())
+		rewardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		s.RewardInvite(rewardCtx, userID, s.VerificationRequired())
+		cancel()
 	}
 	return userID, nil
 }
@@ -394,8 +399,13 @@ func (s *Service) VerifyCode(ctx context.Context, userID, code string) error {
 	if outcome != nil {
 		return outcome
 	}
+	// The verification has committed, so a browser that disconnects now must
+	// not cancel the reward. The bound keeps a stuck database from holding the
+	// response; a reward that still fails is picked up by RewardPending.
 	if s.RewardInvite != nil {
-		s.RewardInvite(ctx, userID, s.VerificationRequired())
+		rewardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		s.RewardInvite(rewardCtx, userID, s.VerificationRequired())
+		cancel()
 	}
 	return nil
 }

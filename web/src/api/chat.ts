@@ -6,8 +6,8 @@
 // the server's request context is cancelled, and the provider stops
 // generating. Pressing Stop is one `AbortController.abort()`.
 
-import { t } from '../i18n';
-import { ApiError, api } from './client';
+import { t } from '@/composables/useI18n';
+import { ApiError, api, fetchApi, noteSessionEnded } from './client';
 
 export interface Conversation {
   id: string;
@@ -54,6 +54,7 @@ export interface Message {
   content: string;
   reasoning?: string;
   error?: string;
+  error_code?: string;
   model_id?: string;
   model_name?: string;
   stats?: MessageStats;
@@ -65,6 +66,7 @@ export interface ListConversationsParams {
   project_id?: string;
   archived?: boolean;
   limit?: number;
+  offset?: number;
 }
 
 export function listConversations(params?: ListConversationsParams): Promise<{ conversations: Conversation[] }> {
@@ -72,6 +74,7 @@ export function listConversations(params?: ListConversationsParams): Promise<{ c
   if (params?.project_id !== undefined) query.set('project_id', params.project_id);
   if (params?.archived !== undefined) query.set('archived', String(params.archived));
   if (params?.limit !== undefined) query.set('limit', String(params.limit));
+  if (params?.offset !== undefined) query.set('offset', String(params.offset));
   const qs = query.toString();
   return api.get<{ conversations: Conversation[] }>(`/api/conversations${qs ? `?${qs}` : ''}`);
 }
@@ -156,17 +159,18 @@ export interface TurnHandlers {
 }
 
 /**
- * Runs one turn. Resolves when the stream ends; rejects only if the request
- * could not be made at all. A failure the server reported arrives through
- * onError, because by then the response has already started and there is no
- * status code left to carry it.
+ * Runs one turn. Resolves when the stream ends. Rejects when the request could
+ * not be made, when the server refuses it before the stream opens, or when the
+ * stream breaks partway (an abort, a dropped connection, or a handler that
+ * throws). A failure the server reports once the stream is open arrives through
+ * onError, because by then there is no status code left to carry it.
  */
 export async function sendTurn(
   request: TurnRequest,
   handlers: TurnHandlers,
   signal: AbortSignal,
 ): Promise<void> {
-  const response = await fetch('/api/chat', {
+  const response = await fetchApi('/api/chat', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -180,7 +184,7 @@ export async function sendTurn(
     // JSON error with a real status.
     const text = await response.text();
     let code = 'error';
-    let message = `Request failed with HTTP ${response.status}.`;
+    let message = t('failed');
     let details: Record<string, unknown> = {};
     try {
       const body = JSON.parse(text) as { error?: { code?: string; message?: string } & Record<string, unknown> };
@@ -193,6 +197,9 @@ export async function sendTurn(
     } catch {
       // A non-JSON body (a proxy's error page) leaves the defaults.
     }
+    // A stream is a request like any other: a session that ended while the
+    // page was open must sign this tab out too, not only the JSON calls.
+    noteSessionEnded(code);
     throw new ApiError(response.status, code, message, details);
   }
 
@@ -202,21 +209,29 @@ export async function sendTurn(
   const decoder = new TextDecoder();
   let buffer = '';
 
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    // Events are separated by a blank line. `\r\n\r\n` as well as `\n\n`,
-    // because some proxies rewrite line endings and a parser that only knows
-    // about `\n` sees one enormous event that never ends.
-    let boundary = /\r?\n\r?\n/.exec(buffer);
-    while (boundary) {
-      const frame = buffer.slice(0, boundary.index);
-      buffer = buffer.slice(boundary.index + boundary[0].length);
-      boundary = /\r?\n\r?\n/.exec(buffer);
-      dispatch(frame, handlers);
+      // Events are separated by a blank line. `\r\n\r\n` as well as `\n\n`,
+      // because some proxies rewrite line endings and a parser that only knows
+      // about `\n` sees one enormous event that never ends.
+      let boundary = /\r?\n\r?\n/.exec(buffer);
+      while (boundary) {
+        const frame = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        boundary = /\r?\n\r?\n/.exec(buffer);
+        dispatch(frame, handlers);
+      }
     }
+  } catch (error) {
+    // A handler that throws leaves the body open, and the server keeps
+    // generating into it. Cancelling closes the connection, which is what
+    // ends the generation.
+    await reader.cancel().catch(() => undefined);
+    throw error;
   }
 }
 
@@ -236,6 +251,9 @@ function dispatch(frame: string, handlers: TurnHandlers): void {
   } catch {
     return;
   }
+  // Valid JSON that is not an object (`null`, a bare number) has no fields to
+  // read; reading `.text` from it threw inside the read loop and ended the turn.
+  if (typeof payload !== 'object' || payload === null) return;
 
   switch (event) {
     case 'start':

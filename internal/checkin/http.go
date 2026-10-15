@@ -88,6 +88,8 @@ func translate(err error) error {
 		return httpx.Conflict("milestone_not_reached", "You have not reached that milestone yet.")
 	case errors.Is(err, ErrAlreadyClaimd):
 		return httpx.Conflict("milestone_claimed", "You have already claimed that milestone.")
+	case errors.Is(err, ErrRewardUnavailable):
+		return httpx.Conflict("reward_unavailable", "This reward can no longer be paid.")
 	case errors.Is(err, ErrInvalid):
 		return httpx.BadRequest("%s", err.Error())
 	}

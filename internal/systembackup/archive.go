@@ -201,10 +201,11 @@ func writeTable(ctx context.Context, q database.Queryer, archive *zip.Writer, ta
 	query := `SELECT ` + strings.Join(quotedColumns, ",") + ` FROM "` + table + `"`
 	var args []any
 	if table == "settings" {
-		// This row only coordinates scheduler/restore writers across replicas.
-		// It is recreated by the destination and must not be replayed as data.
-		query += ` WHERE key <> ?`
-		args = append(args, schedulerLockKey)
+		// These rows are the scheduler's own state: they coordinate writers across
+		// replicas and count the source's failed runs. Replaying them would hand
+		// the destination the source's scheduler, so it recreates them instead.
+		query += ` WHERE key NOT IN (?, ?)`
+		args = append(args, schedulerLockKey, failureCountKey)
 	}
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {

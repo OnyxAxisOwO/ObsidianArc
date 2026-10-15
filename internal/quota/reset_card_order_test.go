@@ -48,7 +48,7 @@ func resetRetryAgainstSettlement(t *testing.T, cardWindows []string) {
 
 	person := account("reset-card-order-user", "")
 	key := scopeKey(person.ID)
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(1), nil, nil)},
 	}); err != nil {

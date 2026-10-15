@@ -243,6 +243,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// An image call is billed once for each picture it returns, so the
 		// reservation has to be for every picture it may ask for. One picture
 		// reserved and four billed overdraws the window by the difference.
+		// Tokens stay as they are: an image turn records none, so nothing
+		// is charged to the per-minute token window for the extra pictures.
 		if pictures > 1 {
 			credits *= float64(pictures)
 		}
@@ -383,16 +385,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// What readers are told about liveness, decided here because it is the
 	// operator's policy and neither the model package nor the health one has
 	// any business reading settings.
-	//
-	// Cached for half a minute: this runs on every model listing, which the
-	// chat asks for on load, and the underlying figure moves on a ten-minute
-	// sweep. Thirty seconds is far fresher than the data behind it.
-	var (
-		livenessMu   sync.Mutex
-		livenessAt   time.Time
-		livenessRev  uint64
-		livenessSeen map[string]model.Liveness
-	)
+	var liveness livenessCache
 	modelHandlers.Liveness = func(ctx context.Context) map[string]model.Liveness {
 		show := settingsService.Bool(settings.HealthShowUsers)
 		warnBelow := settingsService.Int(settings.HealthWarnBelow, 0)
@@ -400,58 +393,50 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			return nil
 		}
 
-		livenessMu.Lock()
-		defer livenessMu.Unlock()
-		revision := healthStore.Revision()
-		if time.Since(livenessAt) < 30*time.Second && livenessRev == revision {
-			return livenessSeen
-		}
-
-		window := time.Duration(settingsService.Int(settings.HealthWindowMins, 30)) * time.Minute
-		// A reader's window is the day, not the sweep's: "unstable" should
-		// mean the model has been unreliable, not that it missed once in the
-		// last half hour.
-		if window < 24*time.Hour {
-			window = 24 * time.Hour
-		}
-		since := time.Now().Add(-window).UnixMilli()
-		if resetAt := int64(settingsService.Int(settings.HealthResetAt, 0)); resetAt > since {
-			since = resetAt
-		}
-		rates, err := healthStore.Rates(ctx, since)
-		if err != nil {
-			slog.ErrorContext(ctx, "liveness for readers", "error", err)
-			return livenessSeen
-		}
-		// The published figure is the last hour, not the day: it is what a
-		// reader choosing a model right now wants to know, and a day of good
-		// answers hides a model that has just gone down. The warning keeps the
-		// day, so one bad minute does not flag a model as unstable.
-		hourSince := max(time.Now().Add(-time.Hour).UnixMilli(), since)
-		hourRates, err := healthStore.Rates(ctx, hourSince)
-		if err != nil {
-			slog.ErrorContext(ctx, "liveness for readers", "error", err)
-			return livenessSeen
-		}
-
-		seen := make(map[string]model.Liveness, len(rates))
-		for modelID, rate := range rates {
-			// Both the published figure and its configured warning describe
-			// observed evidence, so one real sample is enough. Automatic
-			// disabling keeps its separate evidence floor: that action changes
-			// availability rather than merely telling readers what was observed.
-			share := rate.Share()
-			entry := model.Liveness{
-				Unstable: warnBelow > 0 && share*100 < float64(warnBelow),
+		return liveness.get(ctx, healthStore.Revision(), func(ctx context.Context) (map[string]model.Liveness, error) {
+			window := time.Duration(settingsService.Int(settings.HealthWindowMins, 30)) * time.Minute
+			// A reader's window is the day, not the sweep's: "unstable" should
+			// mean the model has been unreliable, not that it missed once in the
+			// last half hour.
+			if window < 24*time.Hour {
+				window = 24 * time.Hour
 			}
-			if hour, ok := hourRates[modelID]; show && ok && hour.Total > 0 {
-				value := hour.Share()
-				entry.Uptime = &value
+			since := time.Now().Add(-window).UnixMilli()
+			if resetAt := int64(settingsService.Int(settings.HealthResetAt, 0)); resetAt > since {
+				since = resetAt
 			}
-			seen[modelID] = entry
-		}
-		livenessSeen, livenessAt, livenessRev = seen, time.Now(), revision
-		return seen
+			rates, err := healthStore.Rates(ctx, since)
+			if err != nil {
+				return nil, err
+			}
+			// The published figure is the last hour, not the day: it is what a
+			// reader choosing a model right now wants to know, and a day of good
+			// answers hides a model that has just gone down. The warning keeps the
+			// day, so one bad minute does not flag a model as unstable.
+			hourSince := max(time.Now().Add(-time.Hour).UnixMilli(), since)
+			hourRates, err := healthStore.Rates(ctx, hourSince)
+			if err != nil {
+				return nil, err
+			}
+
+			seen := make(map[string]model.Liveness, len(rates))
+			for modelID, rate := range rates {
+				// Both the published figure and its configured warning describe
+				// observed evidence, so one real sample is enough. Automatic
+				// disabling keeps its separate evidence floor: that action changes
+				// availability rather than merely telling readers what was observed.
+				share := rate.Share()
+				entry := model.Liveness{
+					Unstable: warnBelow > 0 && share*100 < float64(warnBelow),
+				}
+				if hour, ok := hourRates[modelID]; show && ok && hour.Total > 0 {
+					value := hour.Share()
+					entry.Uptime = &value
+				}
+				seen[modelID] = entry
+			}
+			return seen, nil
+		})
 	}
 	modelHandlers.Routes(mux)
 
@@ -671,9 +656,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	cardHandlers := card.NewHandlers(cards)
 	// What spending a card actually buys. The card package does not know the
 	// counters exist; this is the one line that connects the two.
-	cardHandlers.OnSpend = func(ctx context.Context, account user.User, c card.Card) error {
-		return quotaService.ResetCardWindows(ctx, []string{account.ID}, c.Windows)
-	}
+	cardHandlers.OnSpend = cardSpentReset(quotaService)
+	// The lock every reservation takes before it can spend a card. A spend
+	// takes it first too, or the two can wait on each other.
+	cardHandlers.LockReset = quota.LockAllowanceBoundary
 	// So the limit on guessing at redemption codes counts one host's attempts
 	// together, not just one account's.
 	cardHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
@@ -694,6 +680,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// auth.RequireUser alone, like notify's and card's own account-facing
 	// routes — see internal/invite/http.go.
 	inviteHandlers := invite.NewHandlers(invites)
+	inviteHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	inviteHandlers.ReserveGuess = authService.ReserveInviteGuess
 	inviteHandlers.Routes(mux)
 
 	// Programmatic access. The key store is what an account manages from the
@@ -718,6 +706,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	powManager.UseSaltStore(pow.NewSaltStore(db))
 	authService.PoW = powManager
 	chatHandlers.ImagePoW = powManager
+	chatHandlers.ImagePoWTier = authService.RequiredPoWMax
 
 	// Exactly when a Turnstile widget can appear, which is when the page's
 	// policy lets one load. A key with every switch off draws nothing, and an
@@ -876,6 +865,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// InviteGrant, which is otherwise identical.
 	authService.ConsumeInvite = func(ctx context.Context, tx *database.Tx, code string) (*auth.InviteGrant, error) {
 		grant, err := invites.Consume(ctx, tx, code, time.Now().UnixMilli())
+		// Only a rejected code is the guesser's to be charged for. A database
+		// error from the same call is passed on as itself, so it is not
+		// counted against the address's invite budget.
+		if errors.Is(err, invite.ErrInvalid) {
+			return nil, auth.ErrInviteInvalid
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -891,6 +886,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			slog.ErrorContext(ctx, "could not resolve an invite reward", "error", err, "user", userID)
 		}
 	}
+	// Long enough to span a bot wave's burst, short enough that a flagged sign-up
+	// an hour later still gets its own entry.
+	const flaggedSignupNoticeWindow = 10 * time.Minute
 	authService.OnSignupReview = func(ctx context.Context, in auth.RegisterInput, account *user.User, review auth.SignupReview) {
 		event := securityevents.Event{
 			Event: securityevents.EventSignupReview, Severity: securityevents.SeverityInfo,
@@ -911,11 +909,32 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// Only what the reviewer held back: a notice for every approval
 		// would be a notice per sign-up, and nobody reads those.
 		if review.Decision == auth.SignupRestrict || review.Decision == auth.SignupRefuse {
-			if err := notifyStore.Push(ctx, nil, notify.Notification{
-				Audience: notify.AudienceAdmins, Permission: "security",
-				Kind: "signup_flagged", Params: map[string]any{"username": in.Username},
-				Link: "/admin/security",
-			}); err != nil {
+			// A bot wave refuses sign-ups one after another, and the bell would
+			// fill with an entry per bot. One entry per window is what a reader
+			// can act on; the security log above keeps every event. The check
+			// and the push share a transaction under the instance lock, so two
+			// refusals landing together cannot both find the window empty.
+			// A failed lock or check means nothing is pushed; the security
+			// log still keeps the event.
+			since := time.Now().Add(-flaggedSignupNoticeWindow).UnixMilli()
+			err := db.Tx(ctx, func(tx *database.Tx) error {
+				if err := settings.Lock(ctx, tx); err != nil {
+					return err
+				}
+				waiting, err := notifyStore.HasAdminNoticeSince(ctx, tx, "signup_flagged", "security", since)
+				if err != nil {
+					return err
+				}
+				if waiting {
+					return nil
+				}
+				return notifyStore.Push(ctx, tx, notify.Notification{
+					Audience: notify.AudienceAdmins, Permission: "security",
+					Kind: "signup_flagged", Params: map[string]any{"username": in.Username},
+					Link: "/admin/security",
+				})
+			})
+			if err != nil {
 				slog.ErrorContext(ctx, "could not notify a flagged signup", "error", err)
 			}
 		}
@@ -960,6 +979,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		_, err := models.Authorize(r.Context(), account.GroupID, modelID, account.IsAdmin())
 		if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrNotPermitted) {
 			return httpx.BadRequest("That model is not available to this account.")
+		}
+		// A disabled model, or a route whose target is off, is a state the
+		// operator can reach at any time, so it is a refusal rather than a
+		// server fault. Routing it through model.TranslateError gives the same
+		// answer the chat turn gives.
+		if errors.Is(err, model.ErrDisabled) {
+			return model.TranslateError(err)
 		}
 		if err != nil {
 			return httpx.Internal(err)
@@ -1032,7 +1058,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// Which buttons the sign-in card draws. Read per request, so switching a
 	// provider on takes effect on the next visitor rather than the next
 	// restart.
-	authHandlers.SignInProviders = func() []auth.SignInProvider {
+	signInProviders := func() []auth.SignInProvider {
 		out := []auth.SignInProvider{}
 		for _, provider := range oauth.Providers() {
 			if oauthService.Enabled(provider.ID) {
@@ -1044,6 +1070,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 		return out
 	}
+	authHandlers.SignInProviders = signInProviders
+	// The sign-up door asks the card's question too, so a registration is
+	// refused only where a button for the third-party route is on the page.
+	authService.SignInProviderCount = func() int { return len(signInProviders()) }
 	// Same import-direction reason: whether an account owes an OIDC
 	// connection is oauth.Service's question to answer, and the account
 	// payload is auth's to build.
@@ -1118,7 +1148,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		ClientIP:  func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
 		PublicURL: mailer.PublicURL,
 		Gate:      pluginGate,
-		Challenge: pluginChallenge(settingsService, powManager, challengeClient, turnstileDrawn),
+		Challenge: pluginChallenge(settingsService, powManager, authService.RequiredPoWMax, challengeClient, turnstileDrawn),
 	}
 	if err := plugin.SetupAll(host); err != nil {
 		return nil, err
@@ -1190,7 +1220,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Plugins:  pluginGate,
 		Version:  deps.Version,
 		SiteName: func() string { return settingsService.Get(settings.SiteName) },
-		SSH:      sshInfo,
+		// Read on every call, as /api/health reads it: an operator who hides
+		// the build must see it hidden from the console at once.
+		ShowVersion: func() bool { return settingsService.Bool(settings.AboutShowSoftwareInfo) },
+		SSH:         sshInfo,
 		// Credentials of plugins installed while the server runs are known
 		// to the settings service alone; the audit trail masks them.
 		SecretSetting: func(key string) bool {
@@ -1238,16 +1271,30 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	//
 	// A failed binding lookup lets the account through, as oauth.BindingGate
 	// does: a database hiccup is not a reason to lock everyone out.
-	consoleAllowed := func(ctx context.Context, account user.User) bool {
-		if terminalAllowed(ctx, groups, account) != nil || authService.MustEnrolTwoFactor(account) {
-			return false
+	consoleAllowed := func(ctx context.Context, account user.User) (bool, error) {
+		// terminalAllowed folds a failed group lookup into the refusal a missing
+		// permission gets. An open SSH session would then report a database outage
+		// as a revocation, so the lookup is made here and its error is kept.
+		if !account.IsAdmin() {
+			membership, err := groups.ByID(ctx, nil, account.GroupID)
+			switch {
+			case errors.Is(err, group.ErrNotFound):
+				return false, nil
+			case err != nil:
+				return false, err
+			case !membership.AllowTerminal:
+				return false, nil
+			}
+		}
+		if authService.MustEnrolTwoFactor(account) {
+			return false, nil
 		}
 		mustBind, err := oauthService.MustBindOIDC(ctx, account)
 		if err != nil {
 			slog.ErrorContext(ctx, "could not check the OIDC binding requirement for a console", "error", err)
-			return true
+			return true, nil
 		}
-		return !mustBind
+		return !mustBind, nil
 	}
 
 	consoleHandlers := console.NewHandlers(consoleEngine)
@@ -1264,7 +1311,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		if err != nil {
 			return user.User{}, err
 		}
-		if !consoleAllowed(ctx, account) {
+		allowed, err := consoleAllowed(ctx, account)
+		if err != nil || !allowed {
 			return user.User{}, errors.New("this account may no longer use the console")
 		}
 		return account, nil
@@ -1421,8 +1469,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 				next.ServeHTTP(w, r.WithContext(quota.WithLedger(r.Context())))
 			})
 		},
-		httpx.Recover(),
+		// Logger outside Recover, so the recorder is what Recover sees: a panic
+		// after the first byte of a stream then gets no JSON 500 written into
+		// the stream, and the log still names the request that panicked.
 		httpx.Logger(),
+		httpx.Recover(),
 		// Outside the session lookup so the duration it measures is the whole
 		// answer and a request refused before any handler is still recorded;
 		// inside the request id so both records name the same request.
@@ -1488,7 +1539,12 @@ func apiAllowed(
 			"API access is restricted for this account.").
 			WithDetails(map[string]any{"until": account.APIRestrictedUntil})
 	}
+	// A failed read is not a refusal: answering it as one tells the person
+	// their group lost the grant, and sends them to ask for it back.
 	membership, err := groups.ByID(ctx, nil, account.GroupID)
+	if err != nil && !errors.Is(err, group.ErrNotFound) {
+		return err
+	}
 	if err != nil || !membership.APIAccess {
 		return httpx.ForbiddenCode("api_not_permitted",
 			"Your group does not have API access.")
@@ -1575,14 +1631,29 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // starts and stops it alongside the HTTP server; nothing else touches it.
 func (s *Server) SSH() *consolessh.Server { return s.ssh }
 
-// StartJanitor starts the three idle application loops: request-log writing,
-// backup scheduling and periodic cleanup. Sharing ctx lets shutdown signal
-// all three together; the request logger drains its queue when it stops.
-func (s *Server) StartJanitor(ctx context.Context) {
-	go s.requests.Run(ctx)
-	s.instanceBackup.Start(ctx)
+// StartJanitor starts the idle application loops: request-log writing, backup
+// scheduling and periodic cleanup. Sharing ctx lets shutdown signal them
+// together. The returned channel closes once the request logger, the sweep
+// and the backup scheduler have returned, and any backup the scheduler started
+// has finished. The request logger's final drain and a backup's final status
+// are database writes, so the caller must wait on the channel before it closes
+// the database.
+func (s *Server) StartJanitor(ctx context.Context) <-chan struct{} {
+	var loops sync.WaitGroup
+	loops.Add(3)
 
 	go func() {
+		defer loops.Done()
+		s.requests.Run(ctx)
+	}()
+	backupDone := s.instanceBackup.Start(ctx)
+	go func() {
+		defer loops.Done()
+		<-backupDone
+	}()
+
+	go func() {
+		defer loops.Done()
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -1596,6 +1667,13 @@ func (s *Server) StartJanitor(ctx context.Context) {
 			}
 		}
 	}()
+
+	done := make(chan struct{})
+	go func() {
+		loops.Wait()
+		close(done)
+	}()
+	return done
 }
 
 func (s *Server) sweep(ctx context.Context) {
@@ -1688,11 +1766,19 @@ func (s *Server) sweepHealth(ctx context.Context) {
 	healthCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	// Every field the operator can set has to be passed on here: the checker
+	// reads only what the Policy carries, so a missing one is a setting the
+	// screen accepts and nothing enforces.
 	s.health.Run(healthCtx, health.Policy{
 		Probe:        s.settings.Bool(settings.HealthProbe),
 		Window:       time.Duration(s.settings.Int(settings.HealthWindowMins, 30)) * time.Minute,
 		DisableAfter: s.settings.Int(settings.HealthDisableAfter, 0),
+		DisableBelow: s.settings.Int(settings.HealthDisableBelow, 0),
 		Retain:       time.Duration(s.settings.Int(settings.HealthRetainDays, 14)) * 24 * time.Hour,
+		// An administrator's reset must also stop the checker counting what
+		// came before it, or a model it just re-enabled is switched off again
+		// on the next pass by the failures that caused the first switch-off.
+		ResetAt: int64(s.settings.Int(settings.HealthResetAt, 0)),
 	})
 }
 
@@ -1753,7 +1839,7 @@ func devServerURL(cfg config.Config) string {
 // mean something when a plugin asked for a check, so it falls back to
 // Turnstile where the page already loads it and to proof of work, which needs
 // nobody else's server, everywhere else.
-func pluginChallenge(s *settings.Service, powManager *pow.Manager, client *http.Client, turnstileDrawn func() bool) plugin.Challenge {
+func pluginChallenge(s *settings.Service, powManager *pow.Manager, requiredTier func(ip string) int64, client *http.Client, turnstileDrawn func() bool) plugin.Challenge {
 	describe := func() plugin.ChallengeKinds {
 		key := s.Get(settings.TurnstileSiteKey)
 		ready := key != "" && s.Get(settings.TurnstileSecretKey) != ""
@@ -1793,7 +1879,10 @@ func pluginChallenge(s *settings.Service, powManager *pow.Manager, client *http.
 				if err := json.Unmarshal(proof.PoW, &solution); err != nil {
 					return pow.ErrInvalidNonce
 				}
-				if err := powManager.Verify(ctx, &solution); err != nil {
+				// The tier is the one the challenge endpoint hands this address now,
+				// the same bar the sign-up door sets, so a plugin cannot be passed
+				// with work that the site would no longer accept.
+				if err := powManager.VerifyAt(ctx, &solution, requiredTier(ip)); err != nil {
 					return err
 				}
 			}

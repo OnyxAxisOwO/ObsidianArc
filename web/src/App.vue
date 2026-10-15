@@ -3,7 +3,7 @@
 // the outlet — and the one piece of global, always-on state that has nowhere
 // else to live: the browser tab itself is not part of any route's template.
 
-import { computed, ref, watch, watchEffect } from 'vue';
+import { computed, onBeforeUnmount, ref, watch, watchEffect } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { siteInfo } from './stores/session';
 import { useTheme } from './composables/useTheme';
@@ -58,15 +58,17 @@ const backdrop = computed(() => {
 const transitionName = ref<PageTransitionName>('page-slide-left');
 
 // Sync transition name before the route change begins to ensure leave-active classes use the right direction
-if (router) {
-  router.beforeEach((to, from) => {
-    if (!to.path || !from.path) return;
-    const nextTransition = computePageTransition(from.path, to.path);
-    if (nextTransition) {
-      transitionName.value = nextTransition;
-    }
-  });
-}
+const stopTransitionGuard = router?.beforeEach((to, from) => {
+  if (!to.path || !from.path) return;
+  const nextTransition = computePageTransition(from.path, to.path);
+  if (nextTransition) {
+    transitionName.value = nextTransition;
+  }
+});
+
+// The router outlives this root: a guard left behind would keep running after
+// the page is gone, and every later mount (tests, dev hot reload) adds another.
+onBeforeUnmount(() => stopTransitionGuard?.());
 
 // Fallback watcher for non-router test setups
 if (route) {

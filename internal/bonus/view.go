@@ -82,7 +82,7 @@ func (s *Store) ViewFor(ctx context.Context, userID string) ([]View, error) {
 				BarID: b.ID, Name: b.Name, Description: b.Description, Kind: b.Kind, ToggleMode: b.ToggleMode,
 				Choosable: b.Kind == KindBonus && b.ToggleMode == ModeUser,
 				Enabled:   b.Kind == KindBonus && on,
-				ShowTotal: b.ShowTotal, ModelIDs: parseModels(models),
+				ShowTotal: b.ShowTotal, ModelIDs: modelsForScreen(models),
 			}}
 			byBar[b.ID] = a
 			order = append(order, b.ID)

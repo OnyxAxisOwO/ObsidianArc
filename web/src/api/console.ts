@@ -6,7 +6,7 @@
 // aborting a fetch is the only cancellation mechanism: there is no stop
 // endpoint, so `Ctrl-C` in the pane is one `AbortController.abort()`.
 
-import { ApiError, api } from '@/api/client';
+import { ApiError, api, fetchApi, noteSessionEnded } from '@/api/client';
 import { currentLanguage, t } from '@/composables/useI18n';
 
 export interface ConsoleYou {
@@ -78,20 +78,33 @@ export interface ConsoleCompletion {
   items: ConsoleCompletionItem[];
 }
 
-export function completeConsoleLine(line: string, pos: number, signal?: AbortSignal): Promise<ConsoleCompletion> {
+// The hints should match the language the tab's output comes back in, so a tab
+// that ran `lang` passes its language; otherwise the UI language applies.
+export function completeConsoleLine(
+  line: string,
+  pos: number,
+  lang?: string,
+  signal?: AbortSignal,
+): Promise<ConsoleCompletion> {
   return api.post<ConsoleCompletion>(
     '/api/console/complete',
-    { line, pos, lang: currentLanguage() },
+    { line, pos, lang: lang ?? currentLanguage() },
     signal ? { signal } : {},
   );
 }
 
-/** `POST /api/console/exec` request body. `lang` is not a caller-supplied field — `execConsoleLine` fills it from `currentLanguage()`, the same way every other admin request does. */
+/** `POST /api/console/exec` request body. `lang` defaults to `currentLanguage()` in `execConsoleLine`, the same as every other admin request; a tab that has run `lang` passes the value back so it sticks. */
 export interface ConsoleExecRequest {
   line: string;
   /** Terminal columns, for the server's own table layout (`render.Table`). */
   cols: number;
   json: boolean;
+  /**
+   * The language the last `lang` command left this tab on, carried back from
+   * the done frame. Absent until a command sets one; then the UI language is
+   * the default.
+   */
+  lang?: string;
 }
 
 /** `event: done` payload — the command's own verdict, not a transport-level failure. */
@@ -137,11 +150,11 @@ export async function execConsoleLine(
   handlers: ConsoleExecHandlers,
   signal: AbortSignal,
 ): Promise<void> {
-  const response = await fetch('/api/console/exec', {
+  const response = await fetchApi('/api/console/exec', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ ...request, lang: currentLanguage() }),
+    body: JSON.stringify({ ...request, lang: request.lang ?? currentLanguage() }),
     signal,
   });
 
@@ -151,7 +164,7 @@ export async function execConsoleLine(
     // ordinary JSON error with a real status, same as `sendTurn`.
     const text = await response.text();
     let code = 'error';
-    let message = `Request failed with HTTP ${response.status}.`;
+    let message = t('failed');
     let details: Record<string, unknown> = {};
     try {
       const body = JSON.parse(text) as { error?: { code?: string; message?: string } & Record<string, unknown> };
@@ -164,6 +177,9 @@ export async function execConsoleLine(
     } catch {
       // A non-JSON body (a proxy's error page) leaves the defaults.
     }
+    // The terminal is a stream too; a console left open when the session
+    // ends has to sign out with every other page, not sit on a dead prompt.
+    noteSessionEnded(code);
     throw new ApiError(response.status, code, message, details);
   }
 

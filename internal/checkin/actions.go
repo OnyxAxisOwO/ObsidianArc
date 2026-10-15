@@ -143,8 +143,9 @@ type Result struct {
 	Streak int    `json:"streak"`
 	// What was given for the day, if anything.
 	Reward Reward `json:"reward"`
-	// The reward was meant to be given and could not be — the bar it names is
-	// gone — and the check-in stands without it.
+	// The reward was meant to be given and could no longer be paid — its bar is
+	// gone, switched off or ended, or its card windows are invalid — and the
+	// check-in stands without it.
 	RewardFailed bool `json:"reward_failed"`
 }
 
@@ -187,7 +188,14 @@ func (s *Service) CheckIn(ctx context.Context, userID string) (Result, error) {
 			}
 			if pay && !cfg.Daily.none() {
 				if err := s.give(ctx, tx, userID, cfg.Daily, "checkin", now); err != nil {
-					return rewardError{err}
+					// Only a reward that has gone away may be given up for the day.
+					// A failure to write it is not the reward's fault, and standing
+					// the check-in without it would make the day's reward
+					// impossible to pay later: the day is already recorded.
+					if rewardUnavailable(err) {
+						return rewardError{err}
+					}
+					return err
 				}
 				res.Reward = cfg.Daily
 			}
@@ -238,7 +246,16 @@ func (s *Service) Claim(ctx context.Context, userID, ruleID string) (Reward, err
 		if n, _ := res.RowsAffected(); n == 0 {
 			return ErrAlreadyClaimd
 		}
-		return s.give(ctx, tx, userID, rule.Reward, "checkin", now)
+		if err := s.give(ctx, tx, userID, rule.Reward, "checkin", now); err != nil {
+			// Named so the response can say the reward is gone rather than
+			// answer with a server error that an account can do nothing about.
+			// The claim row written above is rolled back with it.
+			if rewardUnavailable(err) {
+				return fmt.Errorf("%w: %w", ErrRewardUnavailable, err)
+			}
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		return Reward{}, err

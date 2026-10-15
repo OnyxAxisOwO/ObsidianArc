@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -76,5 +77,18 @@ func TestACommitInTheEnclosingRepositoryDoesNotChangeThePackage(t *testing.T) {
 	}
 	if sums[0] != sums[1] {
 		t.Error("the same plugin packed differently after a commit in the repository around it")
+	}
+}
+
+// A directory with no manifest cannot become a package. The compile is the slow
+// part of building one, so the refusal has to come before it, and the error
+// names the manifest rather than the compiler.
+func TestBuildRefusesADirectoryWithoutAManifestBeforeCompiling(t *testing.T) {
+	err := build([]string{t.TempDir(), "-o", filepath.Join(t.TempDir(), "plugin.arcx")})
+	if err == nil {
+		t.Fatal("a directory with no manifest was built")
+	}
+	if !strings.Contains(err.Error(), "manifest.json") || strings.Contains(err.Error(), "compiling") {
+		t.Errorf("error = %v, want the missing manifest and no compile", err)
 	}
 }

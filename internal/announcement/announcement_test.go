@@ -2,7 +2,10 @@ package announcement
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -127,6 +130,35 @@ func TestMarkReadIsIdempotent(t *testing.T) {
 		if err := f.store.MarkRead(ctx, reader.ID, record.ID); err != nil {
 			t.Fatalf("mark read %d: %v", i, err)
 		}
+	}
+}
+
+// The store refuses a draft itself, not only the handler in front of it. A read
+// row written for a draft would stop its popup for good once it is published,
+// and the published check has to hold the row lock Update takes, or an unpublish
+// could land between the check and the write.
+func TestMarkReadRefusesADraftAtTheStore(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	reader := f.reader(t, "reader")
+	draft := f.write(t, Input{Title: "Draft", DisplayMode: DisplayOnce})
+
+	if err := f.store.MarkRead(ctx, reader.ID, draft.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("mark read on a draft = %v, want ErrNotFound", err)
+	}
+	if err := f.store.MarkRead(ctx, reader.ID, "no-such-announcement"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("mark read on an unknown id = %v, want ErrNotFound", err)
+	}
+
+	if _, err := f.store.Update(ctx, draft.ID, Input{Title: "Draft", DisplayMode: DisplayOnce, Published: true}); err != nil {
+		t.Fatalf("publish draft: %v", err)
+	}
+	mine, err := f.store.ListFor(ctx, reader.ID)
+	if err != nil {
+		t.Fatalf("list for reader: %v", err)
+	}
+	if len(mine) != 1 || mine[0].Read {
+		t.Fatalf("the draft was marked read before it was published: %+v", mine)
 	}
 }
 
@@ -313,10 +345,226 @@ func TestDeletingAPublishedAnnouncementRetractsItsNotice(t *testing.T) {
 	}
 }
 
+// A silent announcement is in the list and marks the bell. A push would also
+// raise a toast on every open tab, which is exactly what silent promises not
+// to do, so neither publishing nor editing it may push.
+func TestSilentAnnouncementPushesNothing(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	notifyStore := notify.NewStore(f.store.db)
+	f.store.Notify = notifyStore
+	everyone := user.User{CreatedAt: 0}
+
+	f.write(t, Input{Title: "Quiet, already live", Published: true, DisplayMode: DisplaySilent})
+	draft := f.write(t, Input{Title: "Quiet draft", DisplayMode: DisplaySilent})
+	if _, err := f.store.Update(ctx, draft.ID, Input{Title: "Quiet draft", DisplayMode: DisplaySilent, Published: true}); err != nil {
+		t.Fatalf("publish silent draft: %v", err)
+	}
+
+	notices, err := notifyStore.List(ctx, everyone, 10, 0)
+	if err != nil || len(notices) != 0 {
+		t.Fatalf("notices for silent publishes = %+v (err %v), want none", notices, err)
+	}
+}
+
+// Two saves publishing the same draft at once. Before the row lock, each could
+// read it as unpublished and each push, so one publication rang the bell twice.
+func TestConcurrentPublishRingsOnce(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	notifyStore := notify.NewStore(f.store.db)
+	f.store.Notify = notifyStore
+	everyone := user.User{CreatedAt: 0}
+
+	draft := f.write(t, Input{Title: "Race", DisplayMode: DisplayOnce})
+
+	const saves = 8
+	start := make(chan struct{})
+	failures := make(chan error, saves)
+	var workers sync.WaitGroup
+	for range saves {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			if _, err := f.store.Update(ctx, draft.ID, Input{Title: "Race", DisplayMode: DisplayOnce, Published: true}); err != nil {
+				failures <- err
+			}
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(failures)
+	for err := range failures {
+		t.Errorf("publish: %v", err)
+	}
+
+	notices, err := notifyStore.List(ctx, everyone, 10, 0)
+	if err != nil {
+		t.Fatalf("list notices: %v", err)
+	}
+	if len(notices) != 1 {
+		t.Fatalf("%d notices for one publication, want exactly 1", len(notices))
+	}
+}
+
+// The push of a publish runs after its save has committed. If the announcement
+// was unpublished or deleted in between, that change's retract may already have
+// run, so the push would be left behind with nothing to retract it later.
+func TestNoticePushedAfterUnpublishingIsRetracted(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	notifyStore := notify.NewStore(f.store.db)
+	f.store.Notify = notifyStore
+	everyone := user.User{CreatedAt: 0}
+
+	live := f.write(t, Input{Title: "Stale push", Published: true})
+	if _, err := f.store.Update(ctx, live.ID, Input{Title: live.Title, Published: false}); err != nil {
+		t.Fatalf("unpublish: %v", err)
+	}
+
+	f.store.notifyPublished(ctx, live)
+
+	notices, err := notifyStore.List(ctx, everyone, 10, 0)
+	if err != nil || len(notices) != 0 {
+		t.Fatalf("notices after a late push for an unpublished row = %+v (err %v), want none", notices, err)
+	}
+}
+
+// The same race for a row that no longer exists at all: a delete's retract can
+// run before a late push of the publish that preceded it.
+func TestNoticePushedForADeletedAnnouncementIsRetracted(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	notifyStore := notify.NewStore(f.store.db)
+	f.store.Notify = notifyStore
+	everyone := user.User{CreatedAt: 0}
+
+	f.store.notifyPublished(ctx, Announcement{ID: "deleted-before-push", Title: "Gone", DisplayMode: DisplayOnce, Published: true})
+
+	notices, err := notifyStore.List(ctx, everyone, 10, 0)
+	if err != nil || len(notices) != 0 {
+		t.Fatalf("notices for a deleted announcement = %+v (err %v), want none", notices, err)
+	}
+}
+
+// The bell marks what it showed. An announcement published after its list was
+// fetched was never shown, so it must stay unread and keep its popup. A draft
+// whose id the bell sent is skipped the same way, and stays unread once it is
+// published.
+func TestMarkSeenLeavesWhatTheReaderWasNotShown(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	reader := f.reader(t, "reader")
+
+	shown := f.write(t, Input{Title: "Shown", Published: true})
+	listed := []string{shown.ID}
+	late := f.write(t, Input{Title: "Late", Published: true, DisplayMode: DisplayOnce})
+	draft := f.write(t, Input{Title: "Draft", Body: "d"})
+	listed = append(listed, draft.ID)
+
+	if err := f.store.MarkSeen(ctx, reader.ID, listed); err != nil {
+		t.Fatalf("mark seen: %v", err)
+	}
+	if _, err := f.store.Update(ctx, draft.ID, Input{Title: "Draft", Body: "d", DisplayMode: DisplayOnce, Published: true}); err != nil {
+		t.Fatalf("publish draft: %v", err)
+	}
+
+	mine, err := f.store.ListFor(ctx, reader.ID)
+	if err != nil {
+		t.Fatalf("list for reader: %v", err)
+	}
+	if len(mine) != 3 {
+		t.Fatalf("listed %d published announcements, want 3", len(mine))
+	}
+	for _, record := range mine {
+		switch record.ID {
+		case shown.ID:
+			if !record.Read {
+				t.Error("the announcement the reader was shown is still unread")
+			}
+		case late.ID:
+			if record.Read {
+				t.Error("an announcement published after the list was fetched was marked read unseen")
+			}
+		case draft.ID:
+			if record.Read {
+				t.Error("a draft sent with the list was marked read before it was published")
+			}
+		}
+	}
+}
+
+// A long history names more announcements than one statement may bind:
+// PostgreSQL refuses more than 65,535 parameters in a statement. The published
+// rows at both ends of the list must still be marked, so the list is cut into
+// batches and neither end is lost.
+func TestMarkSeenBindsALongHistoryInBatches(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	reader := f.reader(t, "reader")
+	first := f.write(t, Input{Title: "First", Body: "b", Published: true, DisplayMode: DisplaySilent})
+	last := f.write(t, Input{Title: "Last", Body: "b", Published: true, DisplayMode: DisplaySilent})
+
+	const history = 70000
+	ids := make([]string, 0, history)
+	ids = append(ids, first.ID)
+	for len(ids) < history-1 {
+		ids = append(ids, "withdrawn")
+	}
+	ids = append(ids, last.ID)
+
+	if err := f.store.MarkSeen(ctx, reader.ID, ids); err != nil {
+		t.Fatalf("mark seen: %v", err)
+	}
+	mine, err := f.store.ListFor(ctx, reader.ID)
+	if err != nil {
+		t.Fatalf("list for reader: %v", err)
+	}
+	if len(mine) != 2 {
+		t.Fatalf("listed %d announcements, want 2", len(mine))
+	}
+	for _, record := range mine {
+		if !record.Read {
+			t.Errorf("%q was not marked read from a long history", record.Title)
+		}
+	}
+}
+
 func titles(records []Announcement) []string {
 	out := make([]string, 0, len(records))
 	for _, record := range records {
 		out = append(out, record.Title)
 	}
 	return out
+}
+
+// The body limit counts characters, as the home notice, chat messages and
+// feedback do. Counting bytes admitted about a third as much Chinese text as
+// the constant's name promises.
+func TestBodyLimitCountsCharactersNotBytes(t *testing.T) {
+	f := newFixture(t)
+	cases := map[string]struct {
+		body string
+		want error
+	}{
+		"a full run of CJK characters": {strings.Repeat("界", MaxBodyChars), nil},
+		"one CJK character over":       {strings.Repeat("界", MaxBodyChars+1), ErrInvalidBody},
+		"a full run of ASCII":          {strings.Repeat("a", MaxBodyChars), nil},
+		"one ASCII character over":     {strings.Repeat("a", MaxBodyChars+1), ErrInvalidBody},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := f.store.Create(context.Background(), Input{Title: "Limit", Body: tc.body, DisplayMode: DisplayOnce})
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("create = %v, want %v", err, tc.want)
+			}
+		})
+	}
 }

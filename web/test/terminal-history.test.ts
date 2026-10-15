@@ -145,6 +145,29 @@ describe('the history a signed-in tab keeps', () => {
   });
 });
 
+describe('what the scrollback shows of a line kept out of history', () => {
+  // The echo is the scrollback's copy of what was typed. It stays on screen for
+  // the life of the tab, so a credential line must not be echoed whole, though
+  // the server still has to receive it whole.
+  it('echoes the command words and masks the rest, while the server gets the line', async () => {
+    const session = createTerminalSession({ id: 'echo-redaction', scrollbackCap: 100, getColumns: () => 100 });
+    await session.run('user passwd alice hunter2');
+
+    const shown = session.scrollback.value.map((block) => block.tokens.map((token) => token.text).join(''));
+    expect(shown).toContain('user passwd ***');
+    expect(shown.join('\n')).not.toContain('hunter2');
+    expect(vi.mocked(execConsoleLine).mock.calls[0]?.[0].line).toBe('user passwd alice hunter2');
+  });
+
+  it('echoes an ordinary line exactly as typed', async () => {
+    const session = createTerminalSession({ id: 'echo-plain', scrollbackCap: 100, getColumns: () => 100 });
+    await session.run('user list --q alice');
+
+    const shown = session.scrollback.value.map((block) => block.tokens.map((token) => token.text).join(''));
+    expect(shown).toContain('user list --q alice');
+  });
+});
+
 describe('signing out', () => {
   it('forgets every stored history and leaves the other stored things alone', async () => {
     localStorage.setItem(TERMINAL_HISTORY_KEY_PREFIX, '["legacy"]');

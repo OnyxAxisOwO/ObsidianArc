@@ -35,9 +35,8 @@ interface StoredSafeMode {
   categories: Record<SafeCategory, boolean>;
 }
 
-function loadStored(): StoredSafeMode {
+function parseStored(raw: string | null): StoredSafeMode {
   try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
     if (raw) {
       const parsed = JSON.parse(raw);
       if (typeof parsed === 'object' && parsed !== null) {
@@ -54,7 +53,7 @@ function loadStored(): StoredSafeMode {
       }
     }
   } catch {
-    // Local storage unavailable or unparseable
+    // Unparseable: fall back to the defaults below
   }
   return {
     enabled: false,
@@ -68,9 +67,30 @@ function loadStored(): StoredSafeMode {
   };
 }
 
+function loadStored(): StoredSafeMode {
+  try {
+    return parseStored(typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null);
+  } catch {
+    // Local storage unavailable
+    return parseStored(null);
+  }
+}
+
 const initial = loadStored();
 export const safeModeEnabled = ref(initial.enabled);
 export const safeModeCategories = ref<Record<SafeCategory, boolean>>(initial.categories);
+
+// The state belongs to the browser, not to one tab. Without this, a tab opened
+// before a change made elsewhere writes its stale copy of the other settings
+// the next time anything toggles, and silently undoes that change.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== STORAGE_KEY || event.newValue === null) return;
+    const next = parseStored(event.newValue);
+    safeModeEnabled.value = next.enabled;
+    safeModeCategories.value = next.categories;
+  });
+}
 
 function persist(): void {
   try {

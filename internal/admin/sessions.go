@@ -57,7 +57,7 @@ func (h *Handlers) userSessions(w http.ResponseWriter, r *http.Request) error {
 	out := make([]adminSessionPayload, 0, len(sessions))
 	for _, s := range sessions {
 		out = append(out, adminSessionPayload{
-			ID: s.ID[:16], CreatedAt: s.CreatedAt, LastSeenAt: s.LastSeenAt, IP: s.IP, UserAgent: s.UserAgent,
+			ID: auth.SessionRef(s.ID), CreatedAt: s.CreatedAt, LastSeenAt: s.LastSeenAt, IP: s.IP, UserAgent: s.UserAgent,
 		})
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"sessions": out})

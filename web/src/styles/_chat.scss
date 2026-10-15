@@ -243,6 +243,13 @@
   padding-top: 4px;
 }
 
+/* The `hidden` attribute is only a user-agent `display: none`, and the rule
+   above is an author `display: flex` that beats it. Without this the button
+   stays on an empty history, under "no conversations yet". */
+.ai-chat-sidebar-foot[hidden] {
+  display: none;
+}
+
 .ai-chat-clear-all {
   display: inline-flex;
   align-items: center;
@@ -424,6 +431,15 @@
 .ai-chat-list-more.active {
   background: var(--ai-surface-container-high);
   color: var(--ai-text);
+}
+
+/* Without a pointer there is no hover to reveal the trigger, and on a phone
+   the rename, archive and delete actions live behind it. Kept faint, as the
+   message actions are, rather than as loud as a desktop row's on hover. */
+@media (hover: none) {
+  .ai-chat-list-more {
+    opacity: 0.45;
+  }
 }
 
 .ai-chat-context-menu {
@@ -1717,6 +1733,12 @@
     border-radius: 14px;
     background: var(--ai-surface-card);
     box-shadow: var(--ai-shadow-md);
+    /* The desktop rail feathers its trailing edge while it leaves (above).
+       That feather belongs to a column sliding under a card; this overlay
+       is a card, and a persisted rail collapse would otherwise fade its
+       right edge and clip the shadow with it. */
+    -webkit-mask-image: none;
+    mask-image: none;
     /* It comes down from under the header rather than appearing there. The
        same 0.34s the rail travels in when it is a column: one button should
        not glide on a wide screen and blink on a narrow one.
@@ -2353,6 +2375,12 @@
   padding: 0 18px 18px;
 }
 
+.oa-archive-load-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
 .oa-archive-row {
   display: flex;
   align-items: center;
@@ -2374,8 +2402,10 @@
   color: inherit;
 }
 
+/* `--ai-primary` is the accent the theme writes; there is no `--ai-accent`
+   token, so the hover used to resolve to the inherited colour. */
 .oa-archive-item-main:hover .oa-card-title {
-  color: var(--ai-accent);
+  color: var(--ai-primary);
 }
 
 .oa-archive-item-actions {

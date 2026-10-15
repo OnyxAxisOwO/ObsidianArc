@@ -102,6 +102,12 @@ func DefineField(f Field) {
 	if isCoreColumn(f.Key) {
 		panic("user: field " + f.Key + " is a core column")
 	}
+	// An empty owner reads as core, which is always on: the column would then
+	// be selected and written on every account even while its migration has
+	// not run or was purged.
+	if f.Plugin == "" {
+		panic("user: field " + f.Key + " has no owning plugin")
+	}
 	for _, other := range fields {
 		if other.Key == f.Key {
 			panic("user: field " + f.Key + " is defined twice")
@@ -323,10 +329,31 @@ func (s *Store) takenField(message string) string {
 		if !f.Unique {
 			continue
 		}
-		if strings.Contains(message, "users."+f.Key) || strings.Contains(message, "ux_users_"+f.Key) ||
-			strings.Contains(message, "("+f.Key+")") {
+		if namesColumn(message, "users."+f.Key) || namesColumn(message, "ux_users_"+f.Key) ||
+			namesColumn(message, "("+f.Key+")") {
 			return f.Key
 		}
 	}
 	return ""
+}
+
+// namesColumn reports whether message contains name as a whole identifier. A
+// bare substring match let a field keyed user claim users.username_lower, and
+// wechat claim users.wechat_id, so the byte after the match must end the name.
+func namesColumn(message, name string) bool {
+	for rest := message; ; {
+		at := strings.Index(rest, name)
+		if at < 0 {
+			return false
+		}
+		end := at + len(name)
+		if end == len(rest) || !isColumnByte(rest[end]) {
+			return true
+		}
+		rest = rest[end:]
+	}
+}
+
+func isColumnByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }

@@ -10,7 +10,7 @@
 // inside the same card, so the thing being set up and the steps setting it up
 // read as one object instead of a stack of loose parts.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { ApiError } from '@/api/client';
 import { fetchSessions, revokeOtherSessions, revokeSession, type DeviceSession } from '@/api/sessions';
@@ -25,6 +25,7 @@ import { IconAuto, IconCheck, IconCopy, IconShield } from '@/icons';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { describeUserAgent } from '@/lib/ua';
 import { adopt, currentPreferences } from '@/stores/session';
+import { pendingRecovery } from './recovery';
 import { matchesSettings } from './search';
 import TwoFactorWizard from './TwoFactorWizard.vue';
 
@@ -39,7 +40,15 @@ const wizard = ref(false);
 const action = ref<'' | 'disable' | 'recovery'>('');
 const code = ref('');
 const busy = ref(false);
-const fresh = ref<string[]>([]);
+// The codes a regeneration just returned, held in recovery.ts so that they
+// survive this section being unmounted. Cleared by Finish, after the reader has
+// said they are saved, or by turning two-step verification off, since the codes
+// are then of no use.
+const fresh = computed<string[]>(() => pendingRecovery.value?.codes ?? []);
+const savedCodes = computed({
+  get: (): boolean => pendingRecovery.value?.saved ?? false,
+  set: (saved: boolean) => { if (pendingRecovery.value) pendingRecovery.value.saved = saved; },
+});
 const copied = ref(false);
 
 /** Few enough left that running out is a real prospect. */
@@ -66,7 +75,11 @@ function open(next: 'disable' | 'recovery'): void {
   action.value = action.value === next ? '' : next;
   code.value = '';
   flash.value = '';
-  fresh.value = [];
+}
+
+function finishFresh(): void {
+  pendingRecovery.value = null;
+  action.value = '';
 }
 
 function refusal(failure: unknown): string {
@@ -88,9 +101,12 @@ async function confirm(): Promise<void> {
       const { user } = await disableTwoFactor(code.value.trim());
       adopt(user, currentPreferences.value);
       notice.value = t('twoFactorTurnedOff');
+      // Codes from before this setup are of no use to a later one, and would
+      // show again when it is switched back on.
+      pendingRecovery.value = null;
     } else {
       const { recovery_codes: codes } = await regenerateRecovery(code.value.trim());
-      fresh.value = codes;
+      pendingRecovery.value = { codes, saved: false };
     }
     action.value = action.value === 'recovery' ? 'recovery' : '';
     code.value = '';
@@ -109,6 +125,20 @@ function copyFresh(): void {
     window.setTimeout(() => { copied.value = false; }, 1500);
   });
 }
+
+// Closing or reloading the tab while regenerated codes are on screen leaves
+// two-step verification on with codes nobody has seen, and the server keeps
+// only their digests, so they cannot be shown again. The browser is asked
+// before that happens. Leaving this page inside the app asks nothing: the codes
+// stay in memory (see recovery.ts), so coming back shows them again.
+function warnBeforeLeaving(event: BeforeUnloadEvent): void {
+  if (!fresh.value.length || savedCodes.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+onMounted(() => window.addEventListener('beforeunload', warnBeforeLeaving));
+onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeaving));
 
 // --- signed-in devices --------------------------------------------------------
 //
@@ -240,13 +270,17 @@ async function signOutOthers(): Promise<void> {
             <ol class="oa-2fa-codes">
               <li v-for="entry in fresh" :key="entry">{{ entry }}</li>
             </ol>
+            <label class="oa-checkbox-field">
+              <input v-model="savedCodes" type="checkbox">
+              <span>{{ t('twoFactorSavedConfirm') }}</span>
+            </label>
             <div class="oa-2fa-codes-actions">
               <button type="button" class="oa-btn" @click="copyFresh">
                 <IconCheck v-if="copied" :size="14" />
                 <IconCopy v-else :size="14" />
                 {{ copied ? t('copied') : t('copy') }}
               </button>
-              <button type="button" class="oa-btn primary" @click="fresh = []; action = ''">
+              <button type="button" class="oa-btn primary" :disabled="!savedCodes" @click="finishFresh">
                 {{ t('twoFactorFinish') }}
               </button>
             </div>

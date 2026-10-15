@@ -21,7 +21,7 @@ import UsageHeatmap from './usage/UsageHeatmap.vue';
 import { formatDuration, percent } from './usage/scale';
 
 const view = useAdminView();
-view.setTitle(t('navDashboard'));
+view.setTitle(() => t('navDashboard'));
 const data = ref<Dashboard | null>(null);
 const error = ref('');
 const busy = ref(false);

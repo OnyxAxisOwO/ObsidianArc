@@ -123,3 +123,23 @@ describe('worstCase and priciest calculations', () => {
     expect(models.map((m) => m.id)).toEqual(['a', 'b', 'c']);
   });
 });
+
+describe('the price list the allowance forms read', () => {
+  // The empty answer of a failed lookup is shown as "no price" and it used to
+  // stay that way until sign-out; the next form asks again instead.
+  it('asks again after a failed lookup, and keeps a good answer', async () => {
+    const { adminApi } = await import('../src/admin/api');
+    const { pricedModels } = await import('../src/views/admin/shared');
+    const lookup = vi.spyOn(adminApi, 'models')
+      .mockRejectedValueOnce(new Error('upstream down'))
+      .mockResolvedValueOnce({ models: [{ id: 'm1', enabled: true }, { id: 'off', enabled: false }] } as never);
+    try {
+      expect(await pricedModels()).toEqual([]);
+      expect((await pricedModels()).map((entry) => entry.id)).toEqual(['m1']);
+      expect(await pricedModels()).toHaveLength(1);
+      expect(lookup).toHaveBeenCalledTimes(2);
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+});

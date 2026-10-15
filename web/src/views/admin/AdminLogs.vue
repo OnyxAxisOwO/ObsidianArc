@@ -47,7 +47,7 @@ const WINDOWS: Array<{ value: string; label: StringKey; hours: number }> = [
 ];
 
 const view = useAdminView();
-view.setTitle(t('navLogs'), t('logsSubtitle'));
+view.setTitle(() => t('navLogs'), () => t('logsSubtitle'));
 
 const router = useRouter();
 const route = useRoute();
@@ -88,6 +88,7 @@ const listError = ref('');
 const loading = ref(true);
 const opened = ref<LogEntry | null>(null);
 let listRequest = 0;
+let facetRequest = 0;
 
 function since(): number {
   const entry = WINDOWS.find((window) => window.value === query.value.window);
@@ -133,12 +134,18 @@ function narrow(): void {
 
 async function reload(): Promise<void> {
   error.value = '';
+  // Ticketed like paint(): a window changed twice in quick succession sends
+  // two requests, and the older answer must not land after the newer one.
+  const ticket = ++facetRequest;
   try {
     // The facets follow the window: which accounts and models appear in the
     // last hour is a different list from the last month's.
     const at = since();
-    facets.value = await adminApi.logFacets(at > 0 ? `?since=${at}` : '');
+    const next = await adminApi.logFacets(at > 0 ? `?since=${at}` : '');
+    if (ticket !== facetRequest) return;
+    facets.value = next;
   } catch (failure) {
+    if (ticket !== facetRequest) return;
     error.value = failure instanceof Error ? failure.message : String(failure);
     return;
   }
@@ -165,6 +172,10 @@ async function paint(): Promise<void> {
 }
 
 function clearFilters(): void {
+  // The window is not one of the address's filters, so it has to be written back
+  // here: the route watch re-reads the address after this replace, and without
+  // it Clear fell back to the default window and undid the operator's choice.
+  const window = query.value.window;
   query.value = {
     ...query.value,
     userID: '', modelID: '', outcome: '', status: '',
@@ -173,9 +184,13 @@ function clearFilters(): void {
   if (Object.keys(route.query).length > 0) {
     // Clearing the filters must not close a panel open beside the page.
     const panel = route.query[BACKOFFICE_PANEL_PARAM];
-    const keep = typeof panel === 'string' ? { [BACKOFFICE_PANEL_PARAM]: panel } : {};
+    const keep: Record<string, string> = typeof panel === 'string' ? { [BACKOFFICE_PANEL_PARAM]: panel } : {};
+    keep.window = window;
     void router.replace({ path: '/admin/logs', query: keep });
   }
+  // Kept even when the replace also reloads through the route watch: the watch
+  // fires only if the parsed address changed, and a Clear that changes nothing
+  // in the address would otherwise leave the filtered rows on screen.
   void paint();
 }
 

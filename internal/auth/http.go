@@ -267,13 +267,16 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"pow_on_signup":             populated && (h.settings.RegistrationCaptchaMode() == settings.CaptchaModePoW || h.settings.RegistrationCaptchaMode() == settings.CaptchaModeBoth),
 		"turnstile_site_key":        h.turnstileSiteKey(!populated),
 		"turnstile_on_login":        populated && h.settings.Bool(settings.TurnstileOnLogin),
-		"turnstile_on_signup":       populated && (h.settings.RegistrationCaptchaMode() == settings.CaptchaModeTurnstile || h.settings.RegistrationCaptchaMode() == settings.CaptchaModeBoth),
-		"turnstile_on_api_key":      h.settings.Bool(settings.TurnstileOnAPIKey),
-		"turnstile_on_redeem":       h.settings.Bool(settings.TurnstileOnRedeem),
-		"turnstile_on_feedback":     h.settings.Bool(settings.TurnstileOnFeedback),
-		"turnstile_on_images":       h.settings.Bool(settings.TurnstileOnImages),
-		"pow_on_images":             h.settings.Bool(settings.PoWOnImages),
-		"turnstile_on_chat_speed":   h.settings.Int(settings.ChatChallengeRequests, 0) > 0,
+		// Advertised only where the server checks it. The mode alone is not that:
+		// on a default instance Turnstile is the mode but its switch is off, and
+		// a widget drawn there would have nothing to check it against.
+		"turnstile_on_signup":     populated && (h.settings.RegistrationCaptchaMode() == settings.CaptchaModeTurnstile || h.settings.RegistrationCaptchaMode() == settings.CaptchaModeBoth) && h.settings.SignupTurnstileOn(),
+		"turnstile_on_api_key":    h.settings.Bool(settings.TurnstileOnAPIKey),
+		"turnstile_on_redeem":     h.settings.Bool(settings.TurnstileOnRedeem),
+		"turnstile_on_feedback":   h.settings.Bool(settings.TurnstileOnFeedback),
+		"turnstile_on_images":     h.settings.Bool(settings.TurnstileOnImages),
+		"pow_on_images":           h.settings.Bool(settings.PoWOnImages),
+		"turnstile_on_chat_speed": h.settings.Int(settings.ChatChallengeRequests, 0) > 0,
 		// The compiled-in plugins, each with whatever its browser half needs
 		// — see Extend. A plugin that is not in this build is not named, and
 		// the browser fetches none of its code.
@@ -843,15 +846,20 @@ func (h *Handlers) changePassword(w http.ResponseWriter, r *http.Request) error 
 		return httpx.NoContent(w)
 	case errors.Is(err, ErrSessionNotFound):
 		// The session that asked was ended while the change was being made. The
-		// password is left as it was, and the caller has to sign in again.
-		return httpx.Unauthorized("Sign in to continue.")
+		// password is left as it was, and the caller has to sign in again. The code
+		// is the session one, so the page signs out rather than showing the
+		// sentence on a screen that is still signed in.
+		return httpx.UnauthorizedCode("session_required", "Sign in to continue.")
 	case errors.Is(err, ErrReauthRequired):
 		// Not a 401: the session is fine, it is only too old to vouch for a first
 		// password. A 401 would make the screen sign the person out, when all
 		// that is asked is a fresh sign-in with their provider.
 		return httpx.ForbiddenCode("reauth_required", "Sign in again with your provider to set a password.")
 	case errors.Is(err, ErrCurrentPasswordWrong):
-		return httpx.Unauthorized("Current password is incorrect.")
+		// Coded and a 400, as the profile and two-factor paths answer the same
+		// refusal: the page translates the code, and a 401 would read to any
+		// caller as a lost session.
+		return httpx.BadRequestCode("current_password_wrong", "That password is not correct.")
 	case errors.Is(err, ErrPasswordUnchanged):
 		return httpx.BadRequest("The new password is the same as the current one.")
 	case errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooLong):
@@ -1061,6 +1069,9 @@ func (h *Handlers) registrationError(err error) error {
 		seconds := int(limited.RetryAfter.Seconds()) + 1
 		return httpx.TooManyRequests("too_many_attempts", limited.Error()).
 			WithDetails(map[string]any{"retry_after_seconds": seconds})
+	}
+	if errors.Is(err, errSignupRetry) {
+		return httpx.Conflict("signup_retry", "Another account was being opened at the same moment. Send the sign-up again.")
 	}
 
 	switch {

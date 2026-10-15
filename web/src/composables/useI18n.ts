@@ -12,6 +12,7 @@
 
 import { ref } from 'vue';
 import {
+  fallBackToEnglish,
   language,
   loadLanguage,
   setLanguage as applyLanguage,
@@ -20,6 +21,7 @@ import {
   type Language,
   type StringKey,
 } from '@/i18n';
+import { within } from '@/lib/deadline';
 
 export type { Language, StringKey };
 
@@ -61,8 +63,29 @@ export async function changeLanguage(next: Language): Promise<void> {
   version.value += 1;
 }
 
-/** Called once at boot, before the first render. */
+// Same limit as a plugin package's browser half: boot waits on both before the
+// first paint, and neither may hold the spinner for longer than this.
+const DICTIONARY_DEADLINE_MS = 10_000;
+
+/**
+ * Called once at boot, before the first render.
+ *
+ * A dictionary that does not arrive must not hold up the mount: the boot
+ * waits on this alongside the session, and a rejection here would leave the
+ * page on its spinner. The page falls back to English through language() as
+ * well as t(), because a component that keys a date locale off language()
+ * would otherwise format English text with Chinese dates. The choice stays
+ * stored, so the next boot asks for the dictionary again.
+ *
+ * A dictionary that is accepted and never answers is treated as one that
+ * failed, for the same reason.
+ */
 export async function primeLanguage(): Promise<void> {
-  await loadLanguage();
+  try {
+    await within(loadLanguage(), DICTIONARY_DEADLINE_MS);
+  } catch (failure) {
+    fallBackToEnglish();
+    console.warn('language dictionary did not load; the page stays in English', failure);
+  }
   version.value += 1;
 }

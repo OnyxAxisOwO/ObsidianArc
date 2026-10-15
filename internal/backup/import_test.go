@@ -2,11 +2,13 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 // SQLite's LENGTH stops counting at the first NUL, so a message whose text
@@ -65,6 +67,9 @@ func TestImportRefusesNULInAnyTextItWouldStore(t *testing.T) {
 		{"error", Document{Format: Format, Conversations: []Thread{{
 			Title: "t", Messages: []Turn{{Role: "assistant", Error: withNUL}},
 		}}}},
+		{"error code", Document{Format: Format, Conversations: []Thread{{
+			Title: "t", Messages: []Turn{{Role: "assistant", Error: "x", ErrorCode: withNUL}},
+		}}}},
 		{"model name", Document{Format: Format, Conversations: []Thread{{
 			Title: "t", Messages: []Turn{{Role: "assistant", Content: "x", ModelName: withNUL}},
 		}}}},
@@ -109,5 +114,53 @@ func TestTextCeilingCountsCharactersNotBytes(t *testing.T) {
 	}
 	if _, err := f.service.Import(ctx, f.account, document(6001)); !errors.Is(err, ErrStorageFull) {
 		t.Fatalf("4000 stored plus 6001 incoming gave %v, want ErrStorageFull", err)
+	}
+}
+
+// The message limit and the storage check count only the turns the import
+// writes. A file whose extra turns are of a role it does not keep is not too
+// large for what it holds.
+func TestTurnsTheImportDropsDoNotCountTowardTheLimit(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	turns := make([]Turn, 0, MaxMessagesPerImport+2)
+	for range MaxMessagesPerImport + 1 {
+		turns = append(turns, Turn{Role: "system"})
+	}
+	turns = append(turns, Turn{Role: "user", Content: "kept"})
+	document := Document{Format: Format, Conversations: []Thread{{Title: "t", Messages: turns}}}
+
+	result, err := f.service.Import(ctx, f.account, document)
+	if err != nil {
+		t.Fatalf("import refused for turns it would never write: %v", err)
+	}
+	if result.Messages != 1 {
+		t.Fatalf("wrote %d messages, want the one turn that is kept", result.Messages)
+	}
+}
+
+// A merge that would take the account's preferences past their limit is refused
+// as a preferences problem, and nothing is written: the preferences go first.
+func TestPreferencesThatWouldOverflowRefuseTheImport(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	stored := map[string]json.RawMessage{"stored": json.RawMessage(`"` + strings.Repeat("a", 400*1024) + `"`)}
+	if _, err := f.service.preferences.Merge(ctx, f.account.ID, stored); err != nil {
+		t.Fatal(err)
+	}
+	document := Document{
+		Format:        Format,
+		Preferences:   json.RawMessage(`{"incoming":"` + strings.Repeat("b", 200*1024) + `"}`),
+		Conversations: []Thread{{Title: "t", Messages: []Turn{{Role: "user", Content: "question"}}}},
+	}
+
+	_, err := f.service.Import(ctx, f.account, document)
+	if !errors.Is(err, user.ErrPreferencesTooLarge) {
+		t.Fatalf("import past the preferences limit gave %v, want ErrPreferencesTooLarge", err)
+	}
+	if n, _ := f.conversations.CountMessages(ctx, nil, f.account.ID); n != 0 {
+		t.Fatalf("a refused import wrote %d messages", n)
 	}
 }

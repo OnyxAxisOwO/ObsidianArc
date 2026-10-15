@@ -40,14 +40,34 @@ function apply(accent: AccentName | 'custom', value: string): void {
   setAccentPreference({ accent, customAccent: normalized ?? '' });
   syncPreferences({ accent, custom_accent: normalized ?? '' });
 }
+// The native picker fires input for every step of a drag. Only the screen
+// follows those; the account is told once, on change, so the server is not
+// sent a run of saves that can land out of order and leave an earlier colour
+// stored.
+function previewCustom(value: string): void {
+  const normalized = normalizeHex(value, null);
+  if (normalized) setAccentPreference({ accent: 'custom', customAccent: normalized });
+}
 function chooseBackground(value: AccentName | ''): void {
   setBackgroundAccent(value);
   // The palette also colours panels over a wallpaper, so neither choice replaces the other.
   syncPreferences({ background_accent: value });
 }
 function onTheme(mode: ThemeMode): void { persistTheme(mode); }
-function onLanguage(next: Language): void {
-  void changeLanguage(next);
+const languageFlash = ref('');
+async function onLanguage(next: Language): Promise<void> {
+  languageFlash.value = '';
+  try {
+    await changeLanguage(next);
+  } catch {
+    // The dictionary did not arrive, so the language did not change. The
+    // account must not be told about a choice the reader never saw.
+    languageFlash.value = t('languageLoadFailed');
+    return;
+  }
+  // A later pick may have taken over while this dictionary loaded; setLanguage
+  // then leaves the language alone, and that later pick saves its own choice.
+  if (currentLanguage() !== next) return;
   syncPreferences({ language: next });
 }
 </script>
@@ -90,7 +110,7 @@ function onLanguage(next: Language): void {
           <IconCheck v-if="!custom && preference.accent === name" :size="16" />
         </button>
         <label class="oa-custom-colour" :class="{ active: custom }" :title="t('customColour')">
-          <Palette :size="18" /><input type="color" :aria-label="t('customColour')" :value="base" @input="apply('custom', ($event.target as HTMLInputElement).value)">
+          <Palette :size="18" /><input type="color" :aria-label="t('customColour')" :value="base" @input="previewCustom(($event.target as HTMLInputElement).value)" @change="apply('custom', ($event.target as HTMLInputElement).value)">
         </label>
       </div>
       <div v-if="custom" class="oa-field oa-custom-hex"><label>{{ t('customColour') }}<input v-model="hex" type="text" maxlength="7" @change="apply('custom', hex)"></label></div>
@@ -107,5 +127,6 @@ function onLanguage(next: Language): void {
     </section>
     <OaSelectField :model-value="currentLanguage()" :label="t('languageLabel')" :hint="t('languageHint')"
       :options="[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]" @update:model-value="onLanguage" />
+    <p v-if="languageFlash" class="oa-field-hint" role="alert">{{ languageFlash }}</p>
   </div>
 </template>

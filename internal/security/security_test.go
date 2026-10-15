@@ -3,9 +3,11 @@ package security
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -137,5 +139,31 @@ func TestSuccessfulChatChallengeGrantsTemporaryClearance(t *testing.T) {
 	}
 	if state, err := f.store.ChatAttempt(ctx, f.account.ID, now.Add(31*time.Minute), 1, time.Minute); err != nil || state.Required {
 		t.Fatalf("first attempt after clearance = %+v, err = %v", state, err)
+	}
+}
+
+// A User-Agent or a username is a stranger's bytes. Invalid UTF-8 and NUL
+// bytes are refused by PostgreSQL, and the row with them is lost, so the
+// stored event must come back clean rather than as sent.
+func TestEventsStoreOnlyCleanText(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.store.Record(ctx, nil, Event{
+		Event: EventNewDevice, Username: "reader\x00\xff", Reason: "Mozilla/5.0 \xfe\x00 (tail)",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	events, _, err := f.store.List(ctx, Filter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	for label, value := range map[string]string{"username": events[0].Username, "reason": events[0].Reason} {
+		if !utf8.ValidString(value) || strings.ContainsRune(value, 0) {
+			t.Errorf("%s stored as %q, want valid UTF-8 without NUL bytes", label, value)
+		}
 	}
 }

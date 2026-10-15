@@ -50,6 +50,9 @@ type loaded struct {
 	// What the backend said about itself the last time it was asked — see
 	// describe. Read on every request that needs it, replaced whole.
 	described atomic.Pointer[described]
+	// Keeps the describe refreshes that settings changes start from running
+	// two at a time; see requestDescribe.
+	describe describeQueue
 	// Why the package could not be attached at boot, if it could not. A
 	// faulted package is inert whatever its state says.
 	fault atomic.Pointer[string]

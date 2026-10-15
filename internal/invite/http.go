@@ -3,9 +3,11 @@ package invite
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -19,6 +21,14 @@ import (
 // handlers, so they need no browser session either.
 type Handlers struct {
 	store *Store
+	// ClientIP names the address a claim comes from, for the guess budget.
+	ClientIP func(*http.Request) string
+	// ReserveGuess takes the address's place in the invite-guessing budget that
+	// registration draws on (auth.Service.ReserveInviteGuess). Without it a
+	// claim is counted only against its account, and an account costs one
+	// signup, so the short partner codes could be walked a few guesses at a
+	// time from any number of new accounts.
+	ReserveGuess func(ip string) (*auth.Attempt, error)
 	// Set by a plugin that has something to add to the invitee list: during
 	// setup, or when one is installed or removed while the server runs.
 	decMu      sync.RWMutex
@@ -137,10 +147,17 @@ func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]an
 		if !h.gate.Allows(decorate.plugin) {
 			continue
 		}
-		invitees, err = decorate.fn(ctx, accountID, invitees)
+		decorated, err := decorate.fn(ctx, accountID, invitees)
 		if err != nil {
-			return nil, err
+			// A decorator that fails is skipped and the list keeps the rows it
+			// had before that decorator ran, so one plugin's fault does not
+			// fail the panel for every inviter, and regenerate does not answer
+			// 500 after its new code was committed.
+			slog.ErrorContext(ctx, "invite: invitee decorator failed",
+				"plugin", decorate.plugin, "account_id", accountID, "error", err)
+			continue
 		}
+		invitees = decorated
 	}
 	entries := make([]map[string]any, 0, len(invitees))
 	for _, invitee := range invitees {
@@ -185,6 +202,23 @@ type claimRequest struct {
 	Code string `json:"code"`
 }
 
+func (h *Handlers) clientIP(r *http.Request) string {
+	if h.ClientIP == nil {
+		return ""
+	}
+	return h.ClientIP(r)
+}
+
+// tooManyClaims answers a refused claim with how long to wait. The retry hint
+// is in whole seconds, rounded up, so a client that waits it out is not told
+// to wait again immediately.
+func tooManyClaims(w http.ResponseWriter, wait time.Duration, message string) error {
+	retryAfter := int(wait.Seconds()) + 1
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	return httpx.TooManyRequests("too_many_attempts", message).
+		WithDetails(map[string]any{"retry_after_seconds": retryAfter})
+}
+
 // claim redeems a batch or partner code for the signed-in account itself —
 // see Store.Claim for the rules. Reachable from /register?invite=CODE
 // redirecting a signed-in visitor to the settings screen with the code
@@ -196,14 +230,33 @@ func (h *Handlers) claim(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	account := auth.MustUser(r.Context())
+
+	// A claim whose code is wrong is a guess, so the address's place in the
+	// guess budget is held until the claim is decided, as registration holds
+	// it. A refusal about the account itself, such as an already-claimed code,
+	// is not a guess and releases the place unused.
+	var guess *auth.Attempt
+	if h.ReserveGuess != nil {
+		held, err := h.ReserveGuess(h.clientIP(r))
+		if err != nil {
+			var limited *auth.RateLimitError
+			if errors.As(err, &limited) {
+				return tooManyClaims(w, limited.RetryAfter, limited.Error())
+			}
+			return httpx.Internal(err)
+		}
+		guess = held
+		defer guess.Cancelled()
+	}
+
 	result, err := h.store.Claim(r.Context(), account.ID, body.Code)
+	if errors.Is(err, ErrInvalid) {
+		guess.Failed()
+	}
 	if err != nil {
 		var throttled *ClaimThrottled
 		if errors.As(err, &throttled) {
-			retryAfter := int(throttled.RetryAfter.Seconds()) + 1
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			return httpx.TooManyRequests("too_many_attempts", throttled.Error()).
-				WithDetails(map[string]any{"retry_after_seconds": retryAfter})
+			return tooManyClaims(w, throttled.RetryAfter, throttled.Error())
 		}
 		switch {
 		case errors.Is(err, ErrClaimed):

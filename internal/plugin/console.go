@@ -22,7 +22,7 @@ func init() {
 		EN: "a code from your authenticator, or a recovery code", ZH: "验证器中的验证码，或一个恢复码"},
 		Value: "CODE", Sensitive: true}
 
-	console.Register(console.Command{
+	console.RegisterCore(console.Command{
 		Name:    "plugin list",
 		Group:   "instance",
 		Summary: console.Text{EN: "List the plugins this build carries", ZH: "列出本构建带有的插件"},
@@ -58,7 +58,7 @@ func init() {
 		},
 	})
 
-	console.Register(console.Command{
+	console.RegisterCore(console.Command{
 		Name:    "plugin show",
 		Group:   "instance",
 		Summary: console.Text{EN: "Show one plugin's manifest", ZH: "查看插件清单"},
@@ -116,7 +116,7 @@ func init() {
 		},
 	})
 
-	console.Register(console.Command{
+	console.RegisterCore(console.Command{
 		Name:    "plugin install",
 		Group:   "instance",
 		Summary: console.Text{EN: "Install a plugin", ZH: "安装插件"},
@@ -143,7 +143,7 @@ func init() {
 		},
 	})
 
-	console.Register(console.Command{
+	console.RegisterCore(console.Command{
 		Name:       "plugin enable",
 		Group:      "instance",
 		Summary:    console.Text{EN: "Switch an installed plugin on", ZH: "启用已安装的插件"},
@@ -158,7 +158,7 @@ func init() {
 		},
 	})
 
-	console.Register(console.Command{
+	console.RegisterCore(console.Command{
 		Name:    "plugin disable",
 		Group:   "instance",
 		Summary: console.Text{EN: "Switch a plugin off", ZH: "禁用插件"},
@@ -178,16 +178,17 @@ func init() {
 		},
 	})
 
-	console.Register(console.Command{
+	console.RegisterCore(console.Command{
 		Name:    "plugin uninstall",
 		Group:   "instance",
 		Summary: console.Text{EN: "Uninstall a plugin", ZH: "卸载插件"},
 		Usage:   "plugin uninstall <name> --code CODE [--purge] --yes",
 		Help: console.Text{
 			EN: "Takes the plugin off this instance. Its data stays for a later reinstall unless --purge is " +
-				"given, which deletes its settings and drops its tables and columns. Needs a two-step code.",
+				"given, which deletes its settings and, if the plugin ships a purge script, drops its tables " +
+				"and columns. Needs a two-step code.",
 			ZH: "从本实例移除插件。除非给出 --purge，其数据会保留以便日后重新安装；" +
-				"--purge 会删除其设置并删除其数据表和字段。需要两步验证码。",
+				"--purge 会删除其设置，若插件提供清除脚本，还会删除其数据表和字段。需要两步验证码。",
 		},
 		Args: nameArg,
 		Flags: []console.Flag{

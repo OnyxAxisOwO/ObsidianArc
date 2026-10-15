@@ -464,7 +464,11 @@ func describe(facts Facts) string {
 	}
 	write("User agent", facts.UserAgent)
 	fmt.Fprintf(&out, "Accounts already created from this address recently: %d\n", facts.FromThisAddress)
-	write("Recent registration cohort (past three hours)", cohortFor(facts).description())
+	// Not capped like the submitted values above. The line is built from counts
+	// and from templates that cohort.description already bounds, and a cap here
+	// cut off the templates, which are the part that identifies the batch.
+	cohort := lineBreaks.Replace(cohortFor(facts).description())
+	fmt.Fprintf(&out, "Recent registration cohort (past three hours): %s\n", cohort)
 	return out.String()
 }
 

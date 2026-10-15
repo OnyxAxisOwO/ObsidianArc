@@ -158,6 +158,78 @@ func TestExportedDocumentImportsBackUnchanged(t *testing.T) {
 	}
 }
 
+// A failed turn keeps its code through export and import. Without the code the
+// reader's screen shows the stored English sentence again, which is the
+// symptom the code exists to remove. A file with no code keeps the sentence,
+// and a code longer than any the server writes is cut, because it came from a
+// file this server did not write.
+func TestFailedTurnCodeSurvivesExportAndImport(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	const sentence = "The provider is rate limiting this server. Try again shortly."
+	id := f.write(t, f.account, "Failure", "what is a lamp?")
+	if _, err := f.conversations.Append(ctx, nil, conversation.AppendInput{
+		ConversationID: id, UserID: f.account.ID, Role: conversation.RoleAssistant,
+		Error: sentence, ErrorCode: "provider_rate_limited",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	encoded, document := f.export(t, f.account)
+	if !bytes.Contains(encoded, []byte(`"error_code":"provider_rate_limited"`)) {
+		t.Fatalf("export lacks the failed turn's code: %s", encoded)
+	}
+	if _, err := f.service.Import(ctx, f.stranger, document); err != nil {
+		t.Fatalf("import of the export: %v", err)
+	}
+
+	// A file as an older build wrote it, and one whose code is far longer than
+	// any the server stores.
+	legacy := f.freshAccount(t, "legacy-file")
+	if _, err := f.service.Import(ctx, legacy, Document{Format: Format, Conversations: []Thread{
+		{Title: "Old", Messages: []Turn{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", Error: sentence},
+		}},
+		{Title: "Long", Messages: []Turn{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", Error: sentence, ErrorCode: strings.Repeat("c", 100)},
+		}},
+	}}); err != nil {
+		t.Fatalf("import of a hand-written file: %v", err)
+	}
+
+	codes := map[string]string{}
+	for _, account := range []user.User{f.stranger, legacy} {
+		threads, err := f.conversations.List(ctx, account.ID, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, thread := range threads {
+			messages, err := f.conversations.Messages(ctx, nil, account.ID, thread.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			last := messages[len(messages)-1]
+			if last.Error != sentence {
+				t.Errorf("%q restored its sentence as %q", thread.Title, last.Error)
+			}
+			codes[thread.Title] = last.ErrorCode
+		}
+	}
+
+	if codes["Failure"] != "provider_rate_limited" {
+		t.Errorf("round trip restored code %q, want provider_rate_limited", codes["Failure"])
+	}
+	if codes["Old"] != "" {
+		t.Errorf("file with no code restored code %q, want none", codes["Old"])
+	}
+	if codes["Long"] != strings.Repeat("c", 64) {
+		t.Errorf("over-long code restored as %d characters, want 64", len(codes["Long"]))
+	}
+}
+
 // The export reads conversations a page at a time. Every conversation must
 // arrive once, including when the account is an exact multiple of the page and
 // the last read comes back empty.

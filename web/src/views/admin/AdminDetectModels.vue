@@ -69,13 +69,18 @@ function reset(): void {
 watch(() => props.providerId, reset);
 
 async function detect(): Promise<void> {
-  if (!props.providerId || detecting.value) return;
+  const asked = props.providerId;
+  if (!asked || detecting.value) return;
   detecting.value = true;
   reset();
   try {
-    const { models } = await adminApi.detect(props.providerId);
+    const { models } = await adminApi.detect(asked);
+    // The editor can switch providers while this is in flight. The list is the
+    // old provider's, and rows ticked from it would be created under the new one.
+    if (asked !== props.providerId) return;
     found.value = models;
   } catch (error) {
+    if (asked !== props.providerId) return;
     failure.value = error instanceof ApiError ? error.message : String(error);
   } finally {
     detecting.value = false;
@@ -94,16 +99,33 @@ function choose(entry: DetectedModel): void {
 async function addPicked(): Promise<void> {
   const entries = picked.value;
   if (!entries.length || adding.value) return;
+  const forProvider = props.providerId;
   adding.value = true;
   failure.value = '';
   try {
-    await Promise.all(entries.map((entry) => adminApi.createModel({
-      provider_id: props.providerId,
+    // Settled, not all: a row that was created must stop being ticked, or
+    // pressing add again creates it a second time. The rows that failed stay
+    // ticked so they can be retried.
+    const results = await Promise.allSettled(entries.map((entry) => adminApi.createModel({
+      provider_id: forProvider,
       model_id: entry.model_id,
       display_name: entry.display_name || entry.model_id,
     })));
-    for (const entry of entries) entry.configured = true;
-    picked.value = [];
+    const failed: DetectedModel[] = [];
+    results.forEach((result, index) => {
+      const entry = entries[index]!;
+      if (result.status === 'fulfilled') entry.configured = true;
+      else failed.push(entry);
+    });
+    // The editor may have switched providers meanwhile, and its ticks were
+    // cleared for the new one; the failed rows are not for it.
+    if (forProvider !== props.providerId) return;
+    picked.value = failed;
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (rejected) {
+      const reason: unknown = rejected.reason;
+      failure.value = reason instanceof ApiError ? reason.message : String(reason);
+    }
   } catch (error) {
     failure.value = error instanceof ApiError ? error.message : String(error);
   } finally {

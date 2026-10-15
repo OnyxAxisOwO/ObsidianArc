@@ -32,7 +32,7 @@ type DisplayMode = Announcement['display_mode'];
 
 const route = useRoute();
 const view = useAdminView();
-view.setTitle(t('announcements'), t('announcementsSubtitle'));
+view.setTitle(() => t('announcements'), () => t('announcementsSubtitle'));
 
 const announcements = ref<Announcement[]>([]);
 const error = ref('');
@@ -61,10 +61,15 @@ const columns = computed<Array<Column<Announcement>>>(() => [
   { key: 'updated', header: t('colUpdated'), text: (row) => relativeTime(row.updated_at), secondary: true, width: '110px' },
 ]);
 
-/** The first ~60 characters of the body, for the table's second line. */
+/**
+ * The first ~60 characters of the body, for the table's second line. Cut by
+ * code point: a cut between the halves of an emoji leaves a lone surrogate,
+ * which renders as a replacement glyph.
+ */
 function preview(body: string): string {
   const collapsed = body.replace(/\s+/g, ' ').trim();
-  return collapsed.length > 60 ? `${collapsed.slice(0, 60)}…` : collapsed;
+  const chars = Array.from(collapsed);
+  return chars.length > 60 ? `${chars.slice(0, 60).join('')}…` : collapsed;
 }
 
 function modeLabel(mode: DisplayMode): string {

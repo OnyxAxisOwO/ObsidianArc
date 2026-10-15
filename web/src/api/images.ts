@@ -24,6 +24,8 @@ export interface ImageGenerationRecord {
   size: string;
   style: string;
   created_at: number;
+  /** The picture's type; absent when its row has gone, which names it .png. */
+  mime?: string;
 }
 
 export interface ImageGenerationRequest {
@@ -52,10 +54,15 @@ export function generateImages(req: ImageGenerationRequest): Promise<ImageGenera
   return api.post<ImageGenerationResponse>('/api/images/generate', req);
 }
 
-export function listImageGenerations(params?: { limit?: number; before?: number }): Promise<{ generations: ImageGenerationRecord[] }> {
+export function listImageGenerations(params?: {
+  limit?: number;
+  before?: number;
+  beforeId?: string | undefined;
+}): Promise<{ generations: ImageGenerationRecord[] }> {
   const query = new URLSearchParams();
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.before) query.set('before', String(params.before));
+  if (params?.before && params.beforeId) query.set('before_id', params.beforeId);
   const qs = query.toString();
   return api.get<{ generations: ImageGenerationRecord[] }>(`/api/images/generations${qs ? `?${qs}` : ''}`);
 }

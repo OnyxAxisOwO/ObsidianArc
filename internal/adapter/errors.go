@@ -64,6 +64,27 @@ func (e *Error) Retryable() bool {
 	return e.Kind == ErrorRateLimit || e.Kind == ErrorUpstream || e.Kind == ErrorNetwork
 }
 
+// rejectsImage reports whether a failure on a request that carried a picture
+// is about the picture. A 400 or 422 is also how a provider refuses a context
+// length or a bad parameter, and reading those as an image rejection tells
+// the user the model cannot see what was attached. A 415 names the media
+// itself, so it needs no wording to be trusted.
+func rejectsImage(status int, message string) bool {
+	if status == 415 {
+		return true
+	}
+	if status != 400 && status != 422 {
+		return false
+	}
+	lower := strings.ToLower(message)
+	for _, term := range []string{"image", "media type", "content type", "content part", "multimodal"} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyHTTP turns a response status and a decoded error body into one of
 // the kinds above.
 //
@@ -102,7 +123,7 @@ func classifyHTTP(p Provider, endpoint string, status int, retryAfter string, pa
 			RetryAfter: parseRetryAfter(retryAfter),
 		}
 
-	case carriedImages && (status == 400 || status == 415 || status == 422):
+	case carriedImages && rejectsImage(status, message):
 		return &Error{
 			Kind:    ErrorImagesUnsupported,
 			Status:  status,

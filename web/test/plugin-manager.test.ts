@@ -559,6 +559,56 @@ describe('a plugin package', () => {
     expect(document.body.textContent).not.toContain(t('pluginDropRelease'));
   });
 
+  it('cancels a file dropped on the page where this card does not take it, so the browser does not open it', async () => {
+    adopt({ ...ADMIN, role: 'admin', admin_permissions: ['plugins'] });
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [] });
+    const previewed = vi.spyOn(adminApi, 'previewPlugin');
+    await mount(AdminPlugins);
+
+    const over = dragOver('dragover', new File(['zip'], 'demo.arcx'));
+    const drop = dragOver('drop', new File(['zip'], 'demo.arcx'));
+    await settle();
+
+    expect(over.defaultPrevented).toBe(true);
+    expect(drop.defaultPrevented).toBe(true);
+    expect(previewed).not.toHaveBeenCalled();
+  });
+
+  // A plugin that was not in the list at load has its module fetched only when
+  // it is installed, or its icon and pages stayed missing until a reload.
+  it('draws an enabled package\'s pages from the session, which holds its browser half', async () => {
+    // A package's browser half is not compiled into this build, so the screen
+    // cannot fetch it from the module map. The session has loaded it already.
+    installPlugins([{ ...example, name: 'pkg' }]);
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [plugin('pkg', 'enabled')], two_factor_required: false });
+    await mount(AdminPlugins);
+
+    button(card('pkg'), t('pluginDetails')).click();
+    await settle();
+    expect(panels.textContent).toContain('Example');
+  });
+
+  it('draws the pages of a package installed while the screen is open, without a reload', async () => {
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [], two_factor_required: false });
+    vi.spyOn(adminApi, 'previewPlugin').mockResolvedValue({
+      preview: preview({ manifest: { ...preview().manifest, name: 'example' } }),
+    });
+    vi.spyOn(adminApi, 'installPluginPackage').mockResolvedValue({ ...change(pack('example', 'enabled')), did: 'install' });
+    vi.spyOn(authApi, 'fetchSite').mockResolvedValue({ ...siteInfo.value, plugins: {} } as SiteInfo);
+    await mount(AdminPlugins);
+    dropFile(new File(['zip'], 'example.arcx'));
+    await settle();
+
+    button(panels, t('pluginInstall')).click();
+    await settle();
+    button(card('example'), t('pluginDetails')).click();
+    await settle();
+
+    // The fixture's admin page is titled "Example"; the detail lists it only
+    // once the module is loaded.
+    expect(panels.textContent).toContain('Example');
+  });
+
   it('asks for the two-step code when the instance wants one, and sends it', async () => {
     adopt({ ...ADMIN, two_factor_at: 1 });
     vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [], two_factor_required: true });

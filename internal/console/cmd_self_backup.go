@@ -31,7 +31,10 @@ func init() {
 		Permission: Anyone,
 		Endpoints:  []string{"GET /api/account/export"},
 		Run: func(_ context.Context, rt *Runtime) error {
-			if _, _, err := rt.Call(http.MethodGet, "/api/account/export", nil); err != nil {
+			// CallRaw, not Call: the export is printed as it arrived, so decoding
+			// it into a generic tree first would only double the memory a large
+			// account's document takes, and the decoded value is never read.
+			if _, _, err := rt.CallRaw(http.MethodGet, "/api/account/export", nil); err != nil {
 				return err
 			}
 			// A conversation nests its messages, and the document nests every
@@ -52,12 +55,19 @@ func init() {
 				"(Shift+Enter in the web terminal spreads it over several lines first). Conversations " +
 				"are always added as new copies — importing the same file twice leaves you with two " +
 				"copies of everything in it, never a merge — but a preference key present in the " +
-				"document overwrites your current value for that key.",
+				"document overwrites your current value for that key. Single quotes have no escapes, " +
+				"so a document with an apostrophe in it must use double quotes, where only \\\" and \\\\ " +
+				"are escapes and \\\\ reads as one backslash. The web terminal refuses a request over 64 KiB, " +
+				"which carries the line JSON-encoded, so a large export with quotes in it may not fit; the " +
+				"SSH line editor refuses a line over 8192 characters, so a larger export cannot be typed in.",
 			ZH: "参数是一份完整的备份导出文档，作为一个带引号的参数粘贴（网页终端中可先用 Shift+Enter 分行" +
 				"输入）。对话总是作为新副本被添加——同一份文件导入两次，其中的内容就会有两份，而不是合并——" +
-				"但文档中出现的偏好设置键会覆盖你当前对应键的值。",
+				"但文档中出现的偏好设置键会覆盖你当前对应键的值。单引号内没有转义，所以含撇号的文档必须用双引号；" +
+				"双引号内只有 \\\" 和 \\\\ 两种转义，\\\\ 会被读成一个反斜杠。网页终端拒绝超过 64 KiB 的请求，" +
+				"而这一行在请求中是经过 JSON 编码的，因此含引号的大型导出文件可能放不下；SSH 行编辑器拒绝超过 " +
+				"8192 个字符的一行，因此更大的导出文件无法直接输入。",
 		},
-		Args: []Arg{{Name: "json", Hint: Text{EN: "the export document", ZH: "导出文档"}, Required: true, Sensitive: true}},
+		Args: []Arg{{Name: "json", Hint: Text{EN: "the export document", ZH: "导出文档"}, Required: true, Sensitive: true, Rest: true}},
 		Examples: []string{
 			`backup import '{"obsidian_arc_export":1,"conversations":[]}' --yes`,
 			`backup import '{"obsidian_arc_export":1}' -y`,

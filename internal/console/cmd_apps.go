@@ -125,7 +125,7 @@ func init() {
 				if !asBoolVal(app["confidential"]) {
 					kind = "public (PKCE)"
 				}
-				return rt.Fields([][2]string{
+				return rt.FieldsOf(app, [][2]string{
 					{"id", asStr(app["id"])},
 					{"name", asStr(app["name"])},
 					{"description", asStr(app["description"])},
@@ -372,6 +372,9 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete,
 				"/api/admin/applications/"+url.PathEscape(appID), nil); err != nil {
 				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
 			if rt.Session.Lang == "zh" {
 				rt.Printf("已删除。\n")

@@ -30,7 +30,7 @@ func TestAGuessThroughTheCompletionFormRunsOut(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
 	f.auth.ConsumeInvite = func(context.Context, *database.Tx, string) (*auth.InviteGrant, error) {
-		return nil, errors.New("invite: that code is not valid")
+		return nil, auth.ErrInviteInvalid
 	}
 	ctx := context.Background()
 
@@ -76,7 +76,7 @@ func TestABurstOfWrongCodesThroughTheFormIsCountedOnce(t *testing.T) {
 	populate(t, f)
 	require(t, f, settings.OAuthAllowSignup, "true")
 	f.auth.ConsumeInvite = func(context.Context, *database.Tx, string) (*auth.InviteGrant, error) {
-		return nil, errors.New("invite: that code is not valid")
+		return nil, auth.ErrInviteInvalid
 	}
 	var screened atomic.Int64
 	f.auth.ScreenEmail = func(context.Context, string) error {
@@ -140,7 +140,7 @@ func TestTheCompletionFormSendsRetryAfterWithTheBudget(t *testing.T) {
 	f.configure(t, "github")
 	stubGitHubAs(t, "4218", "octocat")
 	f.auth.ConsumeInvite = func(context.Context, *database.Tx, string) (*auth.InviteGrant, error) {
-		return nil, errors.New("invite: that code is not valid")
+		return nil, auth.ErrInviteInvalid
 	}
 	_, mux := handlers(t, f)
 	ticket := pendingTicket(t, mux)

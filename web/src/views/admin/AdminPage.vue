@@ -296,8 +296,12 @@ onBeforeUnmount(() => {
   leave();
 });
 
-const title = ref('');
-const subtitle = ref('');
+// The heading is held as a getter and drawn through it, so the shell's own
+// title and every page's are translated at render, as PAGES is. A string
+// stored here would keep the language it was written in.
+const NO_HEADING = (): string => '';
+const title = ref<() => string>(NO_HEADING);
+const subtitle = ref<() => string>(NO_HEADING);
 const reloadCount = ref(0);
 /** Which way the body arrives: further down the rail, back up it, or fresh. */
 const direction = ref<'forward' | 'back' | 'rise'>('rise');
@@ -313,7 +317,7 @@ const railState = useRailCollapse('obsidian-arc-admin-rail-collapsed');
 provideAdminView({
   setTitle(next, hint) {
     title.value = next;
-    subtitle.value = hint ?? '';
+    subtitle.value = hint ?? NO_HEADING;
   },
   reload() {
     reloadCount.value += 1;
@@ -350,8 +354,8 @@ watch(current, (next, previous) => {
   const from = pages.value.indexOf(previous);
   const to = pages.value.indexOf(next);
   direction.value = to > from ? 'forward' : to < from ? 'back' : 'rise';
-  title.value = pageLabel(next);
-  subtitle.value = '';
+  title.value = () => pageLabel(next);
+  subtitle.value = NO_HEADING;
 });
 
 const bodyKey = computed(() => `${current.value.slug}:${reloadCount.value}`);
@@ -366,7 +370,7 @@ watch(updateReady, (ready) => {
 
 onMounted(() => {
   void checkVisit();
-  title.value = pageLabel(current.value);
+  title.value = () => pageLabel(current.value);
   // Which build is running, from the server rather than from the bundle: the
   // two can differ behind a stale cache, and the server's answer is the one
   // that matters.
@@ -506,8 +510,8 @@ onMounted(() => {
            and a heading above an empty page is what made it look lost. -->
       <div v-if="(current.slug || !allowed) && !gated && visit === 'open'" class="oa-admin-head" :ref="attachActions">
         <div>
-          <h1 class="oa-admin-title">{{ title }}</h1>
-          <p class="oa-admin-subtitle" :hidden="!subtitle">{{ subtitle }}</p>
+          <h1 class="oa-admin-title">{{ title() }}</h1>
+          <p class="oa-admin-subtitle" :hidden="!subtitle()">{{ subtitle() }}</p>
         </div>
         <span class="oa-admin-head-spacer" />
       </div>

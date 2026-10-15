@@ -11,7 +11,14 @@ import (
 // RequireUser; everything here is behind RequireAdmin by virtue of being
 // mounted in Routes.
 
-const maxAnnouncementBody = 64 * 1024
+// Sized for MaxBodyChars characters at the longest escaped form JSON allows. A
+// character outside the Basic Multilingual Plane may arrive as its UTF-16
+// surrogate pair, 😀, which is twelve bytes for one character; a
+// client that escapes everything sends that. The encoder's own output writes
+// <, > and & as six-byte escapes and never escapes these, but the decoder
+// takes both, so the cap follows the longer one. The title and the other fields
+// are small beside the margin.
+const maxAnnouncementBody = announcement.MaxBodyChars*12 + 64*1024
 
 type announcementRequest struct {
 	Title               string                   `json:"title"`

@@ -3,6 +3,7 @@ package bonus
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -51,8 +52,9 @@ type candidate struct {
 //
 // Priority ones are those that are switched on — forced on, or the account's
 // own bars it has left on. Everything else that could pay is a fallback:
-// forced off, the account's bars it has switched off, and reserves. A reserve
-// is last of all, and a grant that expires sooner goes before one that lasts.
+// forced off, the account's bars it has switched off, and reserves. Within the
+// same switch state, a grant that expires sooner goes first. Switched-on grants
+// go before switched-off ones whatever their expiry, and reserves go last of all.
 func (s *Store) candidates(ctx context.Context, q database.Queryer, userID, modelID string, phase Phase, now int64) ([]candidate, error) {
 	rows, err := q.Query(ctx, `SELECT g.id, g.amount - g.used, g.expires_at, g.created_at,
 		b.kind, b.toggle_mode, b.default_on, b.model_ids, c.enabled
@@ -79,7 +81,14 @@ func (s *Store) candidates(ctx context.Context, q database.Queryer, userID, mode
 		if err := rows.Scan(&c.grantID, &c.remaining, &c.expiresAt, &c.created, &kind, &mode, &defOn, &models, &enabled); err != nil {
 			return nil, fmt.Errorf("bonus: scan grant: %w", err)
 		}
-		if !(Bar{ModelIDs: parseModels(models)}).covers(modelID) {
+		ids, err := parseModels(models)
+		if err != nil {
+			// A grant is spent only where its bar can be read. Skipping it is
+			// the safe answer; spending it would ignore the restriction.
+			slog.Error("bonus: skipping a grant whose bar's model list is damaged", "grant", c.grantID, "error", err)
+			continue
+		}
+		if !(Bar{ModelIDs: ids}).covers(modelID) {
 			continue
 		}
 		c.reserve = kind == KindReserve
@@ -107,6 +116,12 @@ func (s *Store) candidates(ctx context.Context, q database.Queryer, userID, mode
 		if a.reserve != b.reserve {
 			return !a.reserve
 		}
+		// Switched on before switched off, whatever expires first. Without this
+		// the fallback drains a switched-off bar that expires sooner while a
+		// switched-on one still holds credit, which ModeOn and ModeOff rule out.
+		if a.priority != b.priority {
+			return a.priority
+		}
 		// Expiring grants first; never-expiring ones after.
 		if (a.expiresAt == 0) != (b.expiresAt == 0) {
 			return a.expiresAt != 0
@@ -132,8 +147,8 @@ func (s *Store) candidates(ctx context.Context, q database.Queryer, userID, mode
 // A Priority take gives what there is, up to want: the rest is the windows'
 // business. A Fallback take is all or nothing, because it is spent when the
 // windows have nothing to give and a request half-paid for is not one that can
-// run; it returns ErrInsufficient and takes nothing, and the caller's
-// transaction is what puts back what was claimed on the way there.
+// run; it returns ErrInsufficient, and the claims made on the way there stay
+// applied to q, so the caller's transaction must roll back on that error.
 func (s *Store) Take(ctx context.Context, q database.Queryer, userID, modelID string, want float64, phase Phase) ([]Hold, error) {
 	if want <= 0 {
 		return nil, nil
@@ -150,7 +165,12 @@ func (s *Store) Take(ctx context.Context, q database.Queryer, userID, modelID st
 			break
 		}
 		remaining := c.remaining
-		for attempt := 0; attempt < 3 && remaining > epsilon && need > epsilon; attempt++ {
+		// No attempt cap. A claim loses only when the grant changed after it was
+		// read: another take, a settlement or a revoke. Each retry re-reads the
+		// grant, so the loop ends once no credit is left. A cap gave up with
+		// credit still on the grant, and a fallback then refused a request the
+		// grants together could cover.
+		for remaining > epsilon && need > epsilon {
 			take := min(remaining, need)
 			res, err := q.Exec(ctx, `UPDATE bonus_grants SET used = used + ? WHERE id = ? AND amount - used >= ?`,
 				take, c.grantID, take)
@@ -224,12 +244,24 @@ func (s *Store) Settle(ctx context.Context, q database.Queryer, holds []Hold, co
 		if _, err := q.Exec(ctx, `UPDATE bonus_grants SET used = used WHERE id = ?`, h.GrantID); err != nil {
 			return 0, fmt.Errorf("bonus: lock grant: %w", err)
 		}
-		var amount, used float64
-		if err := q.QueryRow(ctx, `SELECT amount, used FROM bonus_grants WHERE id = ?`, h.GrantID).Scan(&amount, &used); err != nil {
+		var (
+			amount, used float64
+			revokedAt    int64
+		)
+		if err := q.QueryRow(ctx, `SELECT amount, used, revoked_at FROM bonus_grants WHERE id = ?`, h.GrantID).
+			Scan(&amount, &used, &revokedAt); err != nil {
 			if database.IsNotFound(err) {
 				continue
 			}
 			return 0, err
+		}
+		// A revoked grant gives no room, whatever released says. Its amount was
+		// cut to what it had been used for, and the hold still in flight is part
+		// of that use: adding it back would let this request be covered by credit
+		// the revoke has just taken away, and the figure would depend on whether
+		// the release or the settlement happened first.
+		if revokedAt != 0 {
+			continue
 		}
 		room := amount - used
 		if !released {

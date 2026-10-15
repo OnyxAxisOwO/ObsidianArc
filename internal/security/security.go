@@ -62,6 +62,12 @@ const (
 	// says which and the reason names the plugin: turning a sign-up guard
 	// off is a front-door change like any other on this list.
 	EventPlugin = "plugin"
+	// An administrator reset an account's password or deleted the account. The
+	// request log records them too, but it is the table a prune removes from,
+	// and the security log is not pruned; these sit beside the rest of an
+	// account's history for the same reason. The admin package writes them.
+	EventPasswordReset  = "password_reset"
+	EventAccountDeleted = "account_deleted"
 
 	maxReasonChars = 500
 	MaxPageSize    = 200
@@ -81,13 +87,16 @@ func (s *Store) Record(ctx context.Context, q database.Queryer, event Event) err
 	if event.At == 0 {
 		event.At = time.Now().UnixMilli()
 	}
-	event.Event = text.TrimAndTruncate(strings.TrimSpace(event.Event), 80)
-	event.Username = text.TrimAndTruncate(strings.TrimSpace(event.Username), 80)
-	event.ActorUsername = text.TrimAndTruncate(strings.TrimSpace(event.ActorUsername), 80)
-	event.IP = text.TrimAndTruncate(strings.TrimSpace(event.IP), 80)
-	event.Source = text.TrimAndTruncate(strings.TrimSpace(event.Source), 80)
-	event.Decision = text.TrimAndTruncate(strings.TrimSpace(event.Decision), 40)
-	event.Reason = text.TrimAndTruncate(strings.TrimSpace(event.Reason), maxReasonChars)
+	// Several of these are typed by a stranger (a username, a User-Agent sent as
+	// a reason), and PostgreSQL refuses the whole row for one bad byte. Clean
+	// runs before the limits, so the limits count what is stored.
+	event.Event = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.Event)), 80)
+	event.Username = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.Username)), 80)
+	event.ActorUsername = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.ActorUsername)), 80)
+	event.IP = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.IP)), 80)
+	event.Source = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.Source)), 80)
+	event.Decision = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.Decision)), 40)
+	event.Reason = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.Reason)), maxReasonChars)
 	if event.Event == "" {
 		return fmt.Errorf("security: event type is required")
 	}

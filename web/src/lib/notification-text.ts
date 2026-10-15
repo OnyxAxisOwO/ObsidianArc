@@ -59,7 +59,12 @@ const TWO_FACTOR: Record<string, StringKey> = {
 function changed(value: unknown): string {
   if (!Array.isArray(value)) return '';
   return value
-    .map((key) => (typeof key === 'string' && CHANGED[key] ? t(CHANGED[key]) : ''))
+    .map((key) => {
+      // Own keys only: "constructor" is otherwise found on every object and
+      // would be shown as the text of a field.
+      const word = typeof key === 'string' && Object.hasOwn(CHANGED, key) ? CHANGED[key] : undefined;
+      return word ? t(word) : '';
+    })
     .filter(Boolean)
     .join(t('notifyWhatJoin'));
 }
@@ -157,9 +162,10 @@ export function describeNotification(n: Notification): NotificationText {
     }
     case 'two_factor_changed': {
       const kind = text(params['kind']);
+      const twoFactor = Object.hasOwn(TWO_FACTOR, kind) ? TWO_FACTOR[kind] : undefined;
       return {
         title: t('notifyTitleTwoFactorChanged'),
-        body: TWO_FACTOR[kind] ? t(TWO_FACTOR[kind]) : t('notifyBodyTwoFactorChanged'),
+        body: twoFactor ? t(twoFactor) : t('notifyBodyTwoFactorChanged'),
         icon: IconLock,
       };
     }

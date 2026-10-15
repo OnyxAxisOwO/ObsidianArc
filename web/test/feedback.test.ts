@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
 import { adminApi } from '../src/admin/api';
+import { ApiError } from '../src/api/client';
 import * as feedbackApi from '../src/api/feedback';
 import type { Feedback, FeedbackReply, FeedbackThread } from '../src/api/feedback';
 import { providePanelHost } from '../src/composables/usePanelHost';
@@ -108,6 +109,27 @@ describe('the feedback panel somebody writes in', () => {
     expect(panels.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('');
   });
 
+  it('says which type and priority are chosen, not only by colour', async () => {
+    vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({ feedback: [], remaining: 10, max_per_day: 10 });
+    await mount(FeedbackPanel);
+    const pressed = (label: string) => button(panels, label).getAttribute('aria-pressed');
+
+    // The defaults are the bug type at medium priority.
+    expect(pressed(t('feedbackKindBug'))).toBe('true');
+    expect(pressed(t('feedbackKindIdea'))).toBe('false');
+    expect(pressed(t('feedbackPriorityMedium'))).toBe('true');
+    expect(pressed(t('feedbackPriorityHigh'))).toBe('false');
+
+    button(panels, t('feedbackKindIdea')).click();
+    button(panels, t('feedbackPriorityHigh')).click();
+    await nextTick();
+
+    expect(pressed(t('feedbackKindIdea'))).toBe('true');
+    expect(pressed(t('feedbackKindBug'))).toBe('false');
+    expect(pressed(t('feedbackPriorityHigh'))).toBe('true');
+    expect(pressed(t('feedbackPriorityMedium'))).toBe('false');
+  });
+
   it('refuses an empty title or body without asking the server', async () => {
     vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({ feedback: [], remaining: 10, max_per_day: 10 });
     const send = vi.spyOn(feedbackApi, 'sendFeedback');
@@ -198,6 +220,102 @@ describe('the feedback panel somebody writes in', () => {
     expect(panels.textContent).toContain('Already reported');
     expect(panels.textContent).toContain(t('feedbackStatusResolved'));
     expect(panels.textContent).toContain(t('feedbackRemaining', { count: 9 }));
+  });
+
+  it('will not take a body longer than the server keeps', async () => {
+    vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({ feedback: [], remaining: 10, max_per_day: 10 });
+    await mount(FeedbackPanel);
+
+    expect(panels.querySelector('textarea')!.getAttribute('maxlength')).toBe('8000');
+  });
+
+  it('shows the report opened last, whichever thread arrives first', async () => {
+    const reports = [record(), record({ id: 'f2', title: 'Second report', body: 'Second body' })];
+    vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({ feedback: reports, remaining: 9, max_per_day: 10 });
+    vi.spyOn(feedbackApi, 'fetchFeedbackUnread').mockResolvedValue({ unread: 0 });
+    let releaseFirst!: (value: FeedbackThread) => void;
+    const firstThread = new Promise<FeedbackThread>((resolve) => { releaseFirst = resolve; });
+    let releaseSecond!: (value: FeedbackThread) => void;
+    const secondThread = new Promise<FeedbackThread>((resolve) => { releaseSecond = resolve; });
+    vi.spyOn(feedbackApi, 'fetchThread')
+      .mockReturnValueOnce(firstThread)
+      .mockReturnValueOnce(secondThread);
+    await mount(FeedbackPanel);
+
+    const items = panels.querySelectorAll<HTMLButtonElement>('.oa-feedback-item');
+    items[0]!.click();
+    items[1]!.click();
+    releaseSecond(thread({ feedback: reports[1]! }));
+    await settle();
+    releaseFirst(thread({ feedback: reports[0]! }));
+    await settle();
+
+    expect(panels.querySelector('.oa-thread-body')?.textContent).toContain('Second body');
+    expect(panels.querySelector('.oa-thread-body')?.textContent).not.toContain('It stops half way');
+  });
+
+  /**
+   * Replies to the first report, leaves that reply in flight, goes back and
+   * opens the second, and types a draft for it. The returned function finishes
+   * the first reply with the given outcome.
+   */
+  async function replyToFirstThenOpenSecond(): Promise<(outcome: FeedbackReply | ApiError) => Promise<void>> {
+    const reports = [record(), record({ id: 'f2', title: 'Second report', body: 'Second body' })];
+    vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({ feedback: reports, remaining: 9, max_per_day: 10 });
+    vi.spyOn(feedbackApi, 'fetchFeedbackUnread').mockResolvedValue({ unread: 0 });
+    let releaseSecond!: (value: FeedbackThread) => void;
+    const secondThread = new Promise<FeedbackThread>((resolve) => { releaseSecond = resolve; });
+    vi.spyOn(feedbackApi, 'fetchThread')
+      .mockResolvedValueOnce(thread({ feedback: reports[0]! }))
+      .mockReturnValueOnce(secondThread);
+    let finishReply!: (outcome: FeedbackReply | ApiError) => void;
+    const replyInFlight = new Promise<FeedbackReply>((resolve, reject) => {
+      finishReply = (outcome) => (outcome instanceof ApiError ? reject(outcome) : resolve(outcome));
+    });
+    vi.spyOn(feedbackApi, 'replyToFeedback').mockReturnValueOnce(replyInFlight);
+    await mount(FeedbackPanel);
+
+    panels.querySelector<HTMLButtonElement>('.oa-feedback-item')!.click();
+    await settle();
+    type(panels.querySelector<HTMLTextAreaElement>('.oa-feedback-answer textarea')!, 'answer for the first');
+    await settle();
+    button(panels, t('feedbackReplySend')).click();
+    await settle();
+
+    panels.querySelector<HTMLButtonElement>(`button[aria-label="${t('back')}"]`)!.click();
+    await settle();
+    panels.querySelectorAll<HTMLButtonElement>('.oa-feedback-item')[1]!.click();
+    releaseSecond(thread({ feedback: reports[1]! }));
+    await settle();
+    type(panels.querySelector<HTMLTextAreaElement>('.oa-feedback-answer textarea')!, 'draft for the second');
+    await settle();
+
+    return async (outcome) => {
+      finishReply(outcome);
+      await settle();
+    };
+  }
+
+  // The reply was written for the first report. Its success must not clear the
+  // draft the reader has started on the second.
+  it('keeps the draft for another report when an earlier reply is sent', async () => {
+    const finish = await replyToFirstThenOpenSecond();
+    await finish(reply({ id: 'r2', from_staff: false, body: 'answer for the first' }));
+
+    expect(panels.querySelector<HTMLTextAreaElement>('.oa-feedback-answer textarea')!.value)
+      .toBe('draft for the second');
+    expect(panels.querySelector('.oa-thread-body')?.textContent).toContain('Second body');
+  });
+
+  // Likewise its failure: the error belongs to the first report, not to the one
+  // now on screen.
+  it('does not show an earlier reply failure on another report', async () => {
+    const finish = await replyToFirstThenOpenSecond();
+    await finish(new ApiError(409, 'feedback_closed', 'This report is closed'));
+
+    expect(panels.textContent).not.toContain('This report is closed');
+    expect(panels.querySelector<HTMLTextAreaElement>('.oa-feedback-answer textarea')!.value)
+      .toBe('draft for the second');
   });
 
   // Off unless the operator switched it on: an account that is already
@@ -388,5 +506,109 @@ describe('the operator’s feedback page', () => {
     await settle();
 
     expect(reads).toHaveBeenCalledWith(expect.stringContaining('status=open'));
+  });
+
+  function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  it('shows the report that was clicked last, whichever thread arrives first', async () => {
+    list([record(), record({ id: 'f2', title: 'Second report' })]);
+    const first = deferred<FeedbackThread>();
+    const second = deferred<FeedbackThread>();
+    vi.spyOn(adminApi, 'feedbackThread')
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    await mount(AdminFeedback);
+
+    const cards = host.querySelectorAll<HTMLButtonElement>('.oa-feedback-card');
+    cards[0]!.click();
+    cards[1]!.click();
+    second.resolve(thread({ feedback: record({ id: 'f2', title: 'Second report' }) }));
+    await settle();
+    first.resolve(thread({ feedback: record({ title: 'First report' }) }));
+    await settle();
+
+    expect(panels.textContent).toContain('Second report');
+    expect(panels.textContent).not.toContain('First report');
+  });
+
+  it('does not reopen a report closed while its thread was still loading', async () => {
+    list([record()]);
+    const pending = deferred<FeedbackThread>();
+    vi.spyOn(adminApi, 'feedbackThread').mockReturnValueOnce(pending.promise);
+    await mount(AdminFeedback);
+
+    host.querySelector<HTMLButtonElement>('.oa-feedback-card')!.click();
+    await settle();
+    panels.querySelector<HTMLButtonElement>('.oa-panel-head .oa-icon-btn')!.click();
+    // OaPanel tells the page to close only after its exit animation, so wait for
+    // the panel to leave the DOM rather than for a fixed delay that tracks the animation.
+    await vi.waitFor(() => expect(panels.querySelector('.oa-panel')).toBeNull());
+    await settle();
+    expect(panels.querySelector('.oa-panel')).toBeNull();
+
+    pending.resolve(thread({ replies: [] }));
+    await settle();
+    expect(panels.querySelector('.oa-panel')).toBeNull();
+  });
+
+  it('lowers the awaiting count only when the opened thread was waiting', async () => {
+    const counts = { total: 2, open: 2, bugs: 2, ideas: 0, high_open: 0, awaiting: 1 };
+    vi.spyOn(adminApi, 'feedback').mockResolvedValue({
+      feedback: [record(), record({ id: 'f2', title: 'Second report', operator_unread: true })],
+      total: 2, offset: 0, summary: counts,
+    });
+    vi.spyOn(adminApi, 'feedbackThread').mockImplementation(async (id) =>
+      thread({ feedback: record({ id, operator_unread: id === 'f2' }) }));
+    await mount(AdminFeedback);
+
+    const awaiting = () => [...host.querySelectorAll<HTMLElement>('.oa-stat')]
+      .find((stat) => stat.querySelector('.oa-stat-label')?.textContent === t('feedbackStatAwaiting'))!
+      .querySelector('.oa-stat-value')!.textContent;
+    const cards = host.querySelectorAll<HTMLButtonElement>('.oa-feedback-card');
+
+    // An answered thread was not waiting, so opening it changes nothing.
+    cards[0]!.click();
+    await settle();
+    expect(awaiting()).toBe('1');
+
+    cards[1]!.click();
+    await settle();
+    expect(awaiting()).toBe('0');
+
+    // Reopening the same thread is not a second answer to a question.
+    cards[1]!.click();
+    await settle();
+    expect(awaiting()).toBe('0');
+  });
+
+  it('redraws the heading in the new language, not only the text it was set with', async () => {
+    list([]);
+    const heading = shallowRef<() => string>(() => '');
+    app = createApp({
+      setup() {
+        providePanelHost(shallowRef(panels));
+        provideAdminView({
+          actionsHost: actions,
+          setTitle: (title) => { heading.value = title; },
+          reload: () => {},
+          params: [],
+        });
+        // What the shell does: draw the page's heading through its getter.
+        return () => h('div', [h('h1', heading.value()), h(AdminFeedback)]);
+      },
+    });
+    app.mount(host);
+    await settle();
+    const english = t('navFeedback');
+    expect(host.querySelector('h1')!.textContent).toBe(english);
+
+    await changeLanguage('zh');
+    await settle();
+    expect(t('navFeedback')).not.toBe(english);
+    expect(host.querySelector('h1')!.textContent).toBe(t('navFeedback'));
   });
 });

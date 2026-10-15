@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -100,21 +101,23 @@ func verifyAt(ctx context.Context, client *http.Client, endpoint, secret, token,
 		return fmt.Errorf("%w: status %d", ErrUnavailable, reply.StatusCode)
 	}
 
+	// Bounded like the other provider reads: the endpoint is trusted, but a
+	// misbehaving proxy in front of it should not be able to stream into memory.
 	var body response
-	if err := json.NewDecoder(reply.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(reply.Body, 64<<10)).Decode(&body); err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	if body.Success {
 		return nil
 	}
 
-	// Two of Cloudflare's codes are about this instance's own configuration
-	// rather than about the reader, and telling a visitor they failed a
-	// challenge when the operator typed the secret wrong sends them round the
-	// loop forever.
+	// Some of Cloudflare's codes describe this instance or Cloudflare itself,
+	// not the reader: a wrong secret, a request this server built badly, or
+	// Cloudflare failing. Telling a visitor they failed a challenge in those
+	// cases sends them round the loop forever while nothing they do can help.
 	for _, code := range body.Codes {
 		switch code {
-		case "invalid-input-secret", "missing-input-secret":
+		case "invalid-input-secret", "missing-input-secret", "internal-error", "bad-request":
 			return fmt.Errorf("%w: %s", ErrUnavailable, code)
 		}
 	}

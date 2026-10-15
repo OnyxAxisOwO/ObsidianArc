@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
@@ -70,7 +71,22 @@ var (
 	ErrNotReached    = errors.New("checkin: the milestone has not been reached")
 	ErrAlreadyClaimd = errors.New("checkin: that milestone was already claimed for this period")
 	ErrInvalid       = errors.New("checkin: invalid configuration")
+	// The reward a milestone names cannot be paid any more: its bar was
+	// switched off or ended, or its card windows are gone. The claim is
+	// refused, and nothing is recorded, so it can be tried again once the
+	// administrator has put it right.
+	ErrRewardUnavailable = errors.New("checkin: the reward can no longer be paid")
 )
+
+// rewardUnavailable is the set of grant failures that mean the reward itself
+// has gone away, as opposed to a database or a bug that a retry might clear.
+// Only these are allowed to stand a check-in without its reward; anything else
+// rolls the check-in back so the same day can try again.
+func rewardUnavailable(err error) bool {
+	return errors.Is(err, bonus.ErrNotFound) ||
+		errors.Is(err, bonus.ErrInvalidExpiry) ||
+		errors.Is(err, card.ErrInvalidWindow)
+}
 
 // Limits on what a configuration may hold: nothing legitimate is beyond them.
 const (
@@ -106,8 +122,25 @@ func (s *Service) Location() *time.Location {
 
 // Config is the rewards as saved, empty when none were.
 func (s *Service) Config() Config {
+	return parseConfig(s.settings.Get(settings.CheckinConfig))
+}
+
+// StoredConfig is the rewards as the database holds them now, read through q.
+// Config reads the settings cache, which a save fills only after its
+// transaction commits, so a caller holding the instance lock must read here to
+// see what the save that held the lock before it committed.
+func (s *Service) StoredConfig(ctx context.Context, q database.Queryer) (Config, error) {
+	var raw string
+	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key = ?`, settings.CheckinConfig).Scan(&raw)
+	if err != nil && !database.IsNotFound(err) {
+		return Config{}, fmt.Errorf("checkin: read rewards: %w", err)
+	}
+	return parseConfig(raw), nil
+}
+
+func parseConfig(raw string) Config {
 	var c Config
-	if raw := strings.TrimSpace(s.settings.Get(settings.CheckinConfig)); raw != "" {
+	if raw = strings.TrimSpace(raw); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &c); err != nil {
 			slog.Warn("checkin: the saved rewards cannot be read; none are given", "error", err)
 			return Config{}
@@ -135,11 +168,11 @@ func (s *Service) Current() Settings {
 // here, where an administrator can fix it, rather than when an account presses
 // the button.
 func (s *Service) Save(ctx context.Context, in Settings) error {
-	if _, err := time.LoadLocation(in.Timezone); err != nil || strings.TrimSpace(in.Timezone) == "" {
+	// Trimmed before it is checked, because Location reads it trimmed: a padded
+	// name that was refused here would have been a valid zone everywhere else.
+	in.Timezone = strings.TrimSpace(in.Timezone)
+	if _, err := time.LoadLocation(in.Timezone); err != nil || in.Timezone == "" {
 		return fmt.Errorf("%w: %q is not a time zone", ErrInvalid, in.Timezone)
-	}
-	if err := s.checkReward(ctx, in.Daily, "the daily reward"); err != nil {
-		return err
 	}
 	if len(in.Rules) > maxRules {
 		return fmt.Errorf("%w: at most %d milestones", ErrInvalid, maxRules)
@@ -166,22 +199,36 @@ func (s *Service) Save(ctx context.Context, in Settings) error {
 		if r.Reward.none() {
 			return fmt.Errorf("%w: milestone %q gives nothing", ErrInvalid, r.ID)
 		}
-		if err := s.checkReward(ctx, r.Reward, "milestone "+r.ID); err != nil {
-			return err
-		}
 	}
 	raw, err := json.Marshal(in.Config)
 	if err != nil {
 		return err
 	}
-	return s.settings.SetMany(ctx, map[string]string{
+	values := map[string]string{
 		settings.CheckinEnabled:  fmt.Sprint(in.Enabled),
-		settings.CheckinTimezone: strings.TrimSpace(in.Timezone),
+		settings.CheckinTimezone: in.Timezone,
 		settings.CheckinConfig:   string(raw),
+	}
+	// The bars named here are checked under the instance lock. A removal or a
+	// switch-off takes that lock before it looks for rewards that name the bar,
+	// so a check made before the lock could approve a bar that is removed before
+	// this save commits.
+	return s.settings.SetManyChecked(ctx, values, func(q database.Queryer) error {
+		if err := s.checkReward(ctx, q, in.Daily, "the daily reward"); err != nil {
+			return err
+		}
+		for _, r := range in.Rules {
+			if err := s.checkReward(ctx, q, r.Reward, "milestone "+r.ID); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
-func (s *Service) checkReward(ctx context.Context, r Reward, what string) error {
+// checkReward reads any bar it names through q, so inside a transaction it sees
+// what that transaction would commit over, not the cache.
+func (s *Service) checkReward(ctx context.Context, q database.Queryer, r Reward, what string) error {
 	switch r.Kind {
 	case KindNone:
 		return nil
@@ -189,13 +236,27 @@ func (s *Service) checkReward(ctx context.Context, r Reward, what string) error 
 		if r.Amount <= 0 || r.Amount > bonus.MaxAmount || r.ValidDays < 0 || r.ValidDays > maxDays {
 			return fmt.Errorf("%w: %s needs an amount and a number of days it lasts", ErrInvalid, what)
 		}
-		bar, err := s.bonus.Bar(ctx, nil, r.BarID)
+		bar, err := s.bonus.Bar(ctx, q, r.BarID)
 		if err != nil || !bar.Active {
 			return fmt.Errorf("%w: %s names a bonus bar that does not exist or is switched off", ErrInvalid, what)
 		}
 	case KindCard:
 		if r.Cards < 1 || r.Cards > maxCardCount || r.ValidDays < 1 || r.ValidDays > maxDays {
 			return fmt.Errorf("%w: %s needs a number of cards and the days they last", ErrInvalid, what)
+		}
+		// Checked here for the same reason as everything else in this function:
+		// a window the card cannot reset fails every grant that names it, and
+		// the failure would surface on an account's press, not the save.
+		if err := card.CheckWindows(r.Windows); err != nil {
+			return fmt.Errorf("%w: %s names a quota window that does not exist", ErrInvalid, what)
+		}
+		// A grant cuts a longer name down to MaxNameChars without a word, and the
+		// settings blob that holds it is returned to every account, so it is
+		// refused here while the administrator can still see why. The grant trims
+		// the name before it cuts, so the length is measured the same way: padding
+		// the trim removes must not get a name that fits refused.
+		if utf8.RuneCountInString(strings.TrimSpace(r.Name)) > card.MaxNameChars {
+			return fmt.Errorf("%w: %s has a name longer than %d characters", ErrInvalid, what, card.MaxNameChars)
 		}
 	default:
 		return fmt.Errorf("%w: %s is neither a bonus nor a card", ErrInvalid, what)

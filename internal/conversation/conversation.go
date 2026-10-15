@@ -16,6 +16,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -82,6 +83,9 @@ type Message struct {
 	Content   string `json:"content"`
 	Reasoning string `json:"reasoning,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// The code the error sentence was written for. The reader's screen
+	// translates the code, and the sentence is only the fallback.
+	ErrorCode string `json:"error_code,omitempty"`
 	ModelID   string `json:"model_id,omitempty"`
 	// Names the model as it was when the message was written, so a renamed or
 	// deleted model does not leave old turns unattributed.
@@ -361,8 +365,8 @@ func (s *Store) DeleteAll(ctx context.Context, userID string) (int64, error) {
 
 // --- messages --------------------------------------------------------------
 
-const messageColumns = `m.id, m.seq, m.role, m.content, m.reasoning, m.error, m.model_id,
-	m.model_name, m.stats_json, m.created_at`
+const messageColumns = `m.id, m.seq, m.role, m.content, m.reasoning, m.error, m.error_code,
+	m.model_id, m.model_name, m.stats_json, m.created_at`
 
 // Messages returns a conversation's transcript in order, with attachments
 // attached. Two queries rather than a join with fan-out, so a conversation
@@ -523,11 +527,32 @@ func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conv
 		return messages, nil
 	}
 
-	index := make(map[string]int, len(messages))
-	marks := make([]string, 0, len(messages))
-	ids := make([]any, 0, len(messages)+1)
+	// The pictures are asked for a batch of messages at a time. One placeholder
+	// per message fails once a long transcript has more of them than a driver
+	// takes in one statement, and the turn fails with it. A subquery with the
+	// same filter would avoid the list, but it could pick a different window
+	// from the messages read above if a message is appended in between, and
+	// the pictures of the older ones would be lost.
+	for start := 0; start < len(messages); start += requestPictureBatch {
+		if err := s.requestPictures(ctx, q, userID, messages[start:min(start+requestPictureBatch, len(messages))]); err != nil {
+			return nil, err
+		}
+	}
+	return messages, nil
+}
+
+// requestPictureBatch is how many messages one picture query names.
+const requestPictureBatch = 500
+
+// requestPictures attaches the pictures of batch to its messages, in place.
+// A picture whose message is not in the batch is not in the index and is
+// skipped.
+func (s *Store) requestPictures(ctx context.Context, q database.Queryer, userID string, batch []Message) error {
+	index := make(map[string]int, len(batch))
+	marks := make([]string, 0, len(batch))
+	ids := make([]any, 0, len(batch)+1)
 	ids = append(ids, userID)
-	for position, message := range messages {
+	for position, message := range batch {
 		index[message.ID] = position
 		marks = append(marks, "?")
 		ids = append(ids, message.ID)
@@ -538,7 +563,7 @@ func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conv
 		 WHERE a.user_id = ? AND a.message_id IN (`+strings.Join(marks, ", ")+`)
 		 ORDER BY a.created_at`, ids...)
 	if err != nil {
-		return nil, fmt.Errorf("conversation: attachments for request: %w", err)
+		return fmt.Errorf("conversation: attachments for request: %w", err)
 	}
 	defer attachments.Close()
 	for attachments.Next() {
@@ -549,14 +574,14 @@ func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conv
 		)
 		if err := attachments.Scan(&record.ID, &messageID, &record.Mime,
 			&record.Width, &record.Height, &record.Size, &discardedAt); err != nil {
-			return nil, fmt.Errorf("conversation: attachment scan: %w", err)
+			return fmt.Errorf("conversation: attachment scan: %w", err)
 		}
 		record.Discarded = discardedAt > 0
 		if position, ok := index[messageID]; ok {
-			messages[position].Attachments = append(messages[position].Attachments, record)
+			batch[position].Attachments = append(batch[position].Attachments, record)
 		}
 	}
-	return messages, attachments.Err()
+	return attachments.Err()
 }
 
 // AppendInput is one message to add. Seq is assigned by the store so two
@@ -568,7 +593,10 @@ type AppendInput struct {
 	Content        string
 	Reasoning      string
 	Error          string
-	ModelID        string
+	// The stable code for Error, stored beside it so a reader's screen can
+	// translate the code rather than show the stored English.
+	ErrorCode string
+	ModelID   string
 	// The model's name at the time. Stored rather than joined, so deleting a
 	// model does not unattribute every answer it ever gave.
 	ModelName     string
@@ -581,8 +609,8 @@ func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) 
 	// A caller that already has a transaction passes it in and gets the same
 	// lock inside that one; appendIn takes it first, before the maximum is
 	// read, so the two paths cannot disagree about the order.
-	if q != nil {
-		return s.appendIn(ctx, q, in)
+	if tx, ok := q.(*database.Tx); ok {
+		return s.appendIn(ctx, tx, in)
 	}
 
 	// The sequence number is read and then written, so the two have to be one
@@ -592,7 +620,8 @@ func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) 
 	// ux_messages_seq turns the loser into a unique-constraint error: the
 	// reader gets a turn that failed for no reason they can act on, and
 	// because the append returns before the usage is recorded, the turn never
-	// reaches the ledger either.
+	// reaches the ledger either. A non-transaction handle is not used directly
+	// for the same reason: its lock would be committed on its own at once.
 	var record Message
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
 		var err error
@@ -605,16 +634,33 @@ func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) 
 	return record, nil
 }
 
-func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput) (Message, error) {
-	// The lock, first, before the maximum below is read. A no-op update is the
-	// portable spelling AGENTS.md names for a row lock: it changes nothing,
-	// the engine does not optimise it away, and a second appender waits here
-	// instead of reading the same maximum. On PostgreSQL it is a row lock; on
-	// SQLite it is the write transaction the whole append now runs inside.
-	if _, err := q.Exec(ctx,
+// lockConversation takes the conversation's row lock for the rest of the
+// transaction, before anything is read that the write depends on. A no-op update
+// is the portable spelling AGENTS.md names for a row lock: it changes nothing,
+// the engine does not optimise it away, and a second writer waits here. On
+// PostgreSQL it is a row lock; on SQLite it is the write transaction the whole
+// change runs inside.
+func lockConversation(ctx context.Context, q database.Queryer, userID, conversationID string) error {
+	result, err := q.Exec(ctx,
 		`UPDATE conversations SET updated_at = updated_at WHERE id = ? AND user_id = ?`,
-		in.ConversationID, in.UserID); err != nil {
-		return Message{}, fmt.Errorf("conversation: lock for append: %w", err)
+		conversationID, userID)
+	if err != nil {
+		return fmt.Errorf("conversation: lock: %w", err)
+	}
+	// The owner is in the WHERE clause, so zero rows means the conversation is
+	// gone or belongs to someone else. Without this check the caller's insert
+	// would still go through, filed under the caller's id in a stranger's thread.
+	if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput) (Message, error) {
+	// The lock, first, before the maximum below is read, so a second appender
+	// waits here instead of reading the same maximum.
+	if err := lockConversation(ctx, q, in.UserID, in.ConversationID); err != nil {
+		return Message{}, err
 	}
 
 	var next int
@@ -636,6 +682,7 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 		Content:   text.TrimAndTruncate(text.Clean(in.Content), MaxContentChars),
 		Reasoning: text.TrimAndTruncate(text.Clean(in.Reasoning), MaxReasoningChars),
 		Error:     text.TrimAndTruncate(text.Clean(in.Error), MaxErrorChars),
+		ErrorCode: in.ErrorCode,
 		ModelID:   in.ModelID,
 		ModelName: in.ModelName,
 		Stats:     in.Stats,
@@ -655,10 +702,10 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 	// wrote it, and the rows it wrote keep what they had.
 	_, err = q.Exec(ctx,
 		`INSERT INTO messages (id, conversation_id, user_id, seq, role, content, reasoning,
-		 error, model_id, model_name, provider_id, stats_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 error, error_code, model_id, model_name, provider_id, stats_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, in.ConversationID, in.UserID, record.Seq, record.Role, record.Content,
-		record.Reasoning, record.Error, nullable(in.ModelID), record.ModelName,
+		record.Reasoning, record.Error, record.ErrorCode, nullable(in.ModelID), record.ModelName,
 		nullable(in.ProviderID), stats, record.CreatedAt)
 	if err != nil {
 		return Message{}, fmt.Errorf("conversation: append: %w", err)
@@ -682,8 +729,21 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 // editing an earlier turn and regenerating an answer the same operation: the
 // replies to a question that no longer exists go with it.
 func (s *Store) TruncateFrom(ctx context.Context, q database.Queryer, userID, conversationID, messageID string) error {
-	if q == nil {
-		q = s.db
+	// A plain handle is not used directly, for the same reason as in Append:
+	// the lock below would commit on its own at once, and the position read and
+	// the delete after it would run unlocked.
+	if _, ok := q.(*database.Tx); !ok {
+		return s.db.Tx(ctx, func(tx *database.Tx) error {
+			return s.TruncateFrom(ctx, tx, userID, conversationID, messageID)
+		})
+	}
+
+	// The position read below and the delete after it are a check and a write,
+	// so the conversation is locked first: a turn appending at the same moment
+	// must not commit a message between the two that the delete then removes
+	// without the reader having chosen it.
+	if err := lockConversation(ctx, q, userID, conversationID); err != nil {
+		return err
 	}
 
 	var seq int
@@ -810,8 +870,32 @@ func (s *Store) SetTitle(ctx context.Context, q database.Queryer, userID, conver
 // DeriveTitle names a conversation by its opening line, which is what a user
 // recognises it by. Stored rather than derived on read, so a rename sticks.
 func DeriveTitle(content string) string {
-	collapsed := strings.Join(strings.Fields(content), " ")
-	return text.TrimAndTruncate(collapsed, 60)
+	// Only the opening can reach the title, and splitting the whole message
+	// into words would allocate for every one of them. The scan walks the
+	// message once and stops as soon as it has sixty-one characters of
+	// collapsed text, one more than the title keeps, so the cut lands in text
+	// that runs on past it, as it would for the whole message. It does not stop
+	// after a fixed number of bytes: whitespace it drops does not count, so a
+	// message that opens with a long run of newlines still gets its title from
+	// the words after the run.
+	var b strings.Builder
+	pending, runes := false, 0
+	for i := 0; i < len(content) && runes <= 60; {
+		r, size := utf8.DecodeRuneInString(content[i:])
+		i += size
+		if unicode.IsSpace(r) {
+			pending = b.Len() > 0
+			continue
+		}
+		if pending {
+			b.WriteByte(' ')
+			pending = false
+			runes++
+		}
+		b.WriteString(content[i-size : i])
+		runes++
+	}
+	return text.TrimAndTruncate(b.String(), 60)
 }
 
 // --- scanning ---------------------------------------------------------------
@@ -850,7 +934,7 @@ func scanMessage(row rowScanner) (Message, error) {
 		stats   string
 	)
 	err := row.Scan(&record.ID, &record.Seq, &record.Role, &record.Content, &record.Reasoning,
-		&record.Error, &modelID, &record.ModelName, &stats, &record.CreatedAt)
+		&record.Error, &record.ErrorCode, &modelID, &record.ModelName, &stats, &record.CreatedAt)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Message{}, ErrMessageNotFound

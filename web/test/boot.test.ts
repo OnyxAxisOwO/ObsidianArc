@@ -165,11 +165,11 @@ function stubServer(): void {
       return new Response(new ReadableStream({
         start(controller) {
           controller.enqueue(encoder.encode(
-            'event: progress\ndata: {"completed":1,"total":2,"succeeded":1,"failed":0}\n\n',
+            'event: progress\ndata: {"completed":1,"total":2,"succeeded":1,"failed":0,"skipped":0}\n\n',
           ));
           window.setTimeout(() => {
             controller.enqueue(encoder.encode(
-              'event: done\ndata: {"completed":2,"total":2,"succeeded":1,"failed":1}\n\n',
+              'event: done\ndata: {"completed":2,"total":2,"succeeded":1,"failed":1,"skipped":0}\n\n',
             ));
             controller.close();
           }, 50);
@@ -636,6 +636,29 @@ describe('what moves, and what does not', () => {
     expect(host.querySelector('.oa-2fa-wizard')).not.toBeNull();
   });
 
+  // An account owing both steps used to be sent back and forth between the
+  // factor page and the connect page, nesting its destination on every hop.
+  it('settles an account owing both steps on the factor page, then on the connect page', async () => {
+    adopt({ ...ACCOUNT, two_factor_enrol: true, oidc_binding_required: true });
+    await mountAt('/');
+    expect(router.currentRoute.value.path).toBe('/two-factor');
+    expect(router.currentRoute.value.query['next']).toBeUndefined();
+
+    adopt({ ...ACCOUNT, two_factor_enrol: false, oidc_binding_required: true });
+    await router.replace({ path: '/two-factor', query: { next: '/settings' } });
+    expect(router.currentRoute.value.path).toBe('/bind-oidc');
+    expect(router.currentRoute.value.query['next']).toBe('/settings');
+  });
+
+  // An object location drops the query of a path that carries one, so a deep
+  // link into a tab used to land on the panel without its tab.
+  it('keeps the query of a destination carried through the sign-in page', async () => {
+    adopt(ACCOUNT);
+    await router.replace({ path: '/login', query: { next: '/settings?tab=keys' } });
+    expect(router.currentRoute.value.path).toBe('/settings');
+    expect(router.currentRoute.value.query['tab']).toBe('keys');
+  });
+
   it('draws the setup in place of a backoffice page the policy has closed', async () => {
     adopt({ ...ACCOUNT, role: 'super_admin', two_factor_backoffice: true });
     await mountAt('/admin/users');
@@ -676,7 +699,10 @@ describe('what moves, and what does not', () => {
     host.querySelector<HTMLButtonElement>('.oa-admin-actions button')!.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(host.querySelector('.oa-table-block')).toBe(table);
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Refresh unavailable');
+    // A failed fetch is shown as the translated connection line; the browser's
+    // own wording ('Refresh unavailable' here) travels in details, not on screen.
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(t('connectionFailed'));
+    expect(host.querySelector('[role="alert"]')?.textContent).not.toContain('Refresh unavailable');
     expect(host.querySelector('.oa-resource-metrics')?.textContent).toContain(t('resMeasuring'));
   });
 
@@ -845,7 +871,7 @@ describe('what moves, and what does not', () => {
 
     const calls = vi.mocked(globalThis.fetch).mock.calls;
     expect(calls.some(([input]) => String(input).includes('/api/admin/health/probe'))).toBe(true);
-    expect(body?.textContent).toContain(t('probeAllModelsDone', { total: 2, succeeded: 1, failed: 1 }));
+    expect(body?.textContent).toContain(t('probeAllModelsDone', { total: 2, succeeded: 1, failed: 1, skipped: 0 }));
     expect(host.querySelector<HTMLInputElement>('#secDegradationPolicy input')?.value).toBe('77');
     expect(host.querySelector('.oa-control-save-state')?.textContent).toContain(t('controlUnsaved'));
     expect(calls.filter(([input, init]) => String(input).endsWith('/api/admin/settings') && init?.method === 'GET')).toHaveLength(1);
@@ -898,7 +924,9 @@ describe('what moves, and what does not', () => {
     };
     await mountAt('/');
 
-    expect(host.querySelector('.oa-landing-chat')).not.toBeNull();
+    // The landing page is a lazy chunk, so it can arrive after mountAt has
+    // settled, and how long that takes depends on which test loaded it first.
+    await vi.waitFor(() => expect(host.querySelector('.oa-landing-chat')).not.toBeNull());
     expect(host.querySelector('.oa-landing-thread')).toBeNull();
     expect(host.querySelector('.oa-landing-entry')).not.toBeNull();
   });
@@ -952,7 +980,7 @@ describe('what moves, and what does not', () => {
     };
     await mountAt('/');
 
-    expect(host.querySelector('.oa-landing-thread')).not.toBeNull();
+    await vi.waitFor(() => expect(host.querySelector('.oa-landing-thread')).not.toBeNull());
     expect(host.querySelector('.oa-landing-composer')).not.toBeNull();
   });
 });

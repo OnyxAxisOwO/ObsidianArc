@@ -29,6 +29,7 @@ package arc
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"runtime/debug"
@@ -226,8 +227,10 @@ func Serve(in []byte) (out []byte) {
 // fail is the error envelope. An *Error keeps its status, code and details;
 // anything else is a 500 the host logs and hides.
 func fail(err error) []byte {
-	e, ok := err.(*Error)
-	if !ok {
+	// errors.As, as serveGuard and IsDenied use: a handler that wraps an *Error
+	// with %w still answers with that error's status, not a hidden 500.
+	var e *Error
+	if !errors.As(err, &e) {
 		e = &Error{Status: 500, Code: "internal", Message: err.Error(), Internal: true}
 	}
 	body, _ := json.Marshal(struct {
@@ -250,7 +253,10 @@ func serveGuard(c *Ctx, raw json.RawMessage) (any, error) {
 		return nil, &Error{Status: 500, Code: "no_handler", Message: "no guard registered as " + req.Name, Internal: true}
 	}
 	res, err := h(c, req.GuardRequest)
-	if r, refused := err.(*Refusal); refused {
+	// errors.As, not a type assertion: a refusal the guard wrapped with %w is
+	// still the refusal it wrapped, and must not reach the client as a 500.
+	var r *Refusal
+	if errors.As(err, &r) {
 		return map[string]any{
 			"verdict": "refuse", "status": r.Status, "code": r.Code, "message": r.Message, "reason": r.Reason,
 		}, nil
@@ -310,8 +316,9 @@ func (e *HostError) Error() string {
 	return e.Code + ": " + e.Message
 }
 
-// IsDenied reports whether err is the server refusing for want of a permission.
+// IsDenied reports whether err is the server refusing for want of a permission,
+// wrapped or not.
 func IsDenied(err error) bool {
-	he, ok := err.(*HostError)
-	return ok && he.Code == "permission_denied"
+	var he *HostError
+	return errors.As(err, &he) && he.Code == "permission_denied"
 }

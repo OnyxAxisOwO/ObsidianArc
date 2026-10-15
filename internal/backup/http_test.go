@@ -173,3 +173,110 @@ func TestExportEndpointRefusesAnAccountTooLargeForOneFile(t *testing.T) {
 		t.Errorf("error = %+v", reply.Error)
 	}
 }
+
+// The second conversation is refused by the database after the first has
+// committed. The answer has to say what landed, or a client that retries sends
+// the first conversation again.
+func TestImportFailingPartWayAnswersWithWhatWasWritten(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	h := NewHandlers(f.service)
+	if _, err := f.service.db.Exec(ctx,
+		`CREATE TRIGGER refuse_boom BEFORE INSERT ON messages WHEN NEW.content = 'boom'
+		 BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"obsidian_arc_export":1,"conversations":[` +
+		`{"title":"first","messages":[{"role":"user","content":"one"}]},` +
+		`{"title":"second","messages":[{"role":"user","content":"boom"}]}]}`
+	rec := httptest.NewRecorder()
+	httpx.Wrap(h.importDocument)(rec, asUser(
+		httptest.NewRequest(http.MethodPost, "/api/account/import", strings.NewReader(body)), f.account))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500: %s", rec.Code, rec.Body)
+	}
+	var reply struct {
+		Error struct {
+			Code          string `json:"code"`
+			Conversations int    `json:"conversations"`
+			Messages      int    `json:"messages"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &reply); err != nil {
+		t.Fatalf("error body is not JSON: %v: %s", err, rec.Body)
+	}
+	if reply.Error.Code != "internal" || reply.Error.Conversations != 1 || reply.Error.Messages != 1 {
+		t.Errorf("error = %+v, want the one conversation that committed", reply.Error)
+	}
+
+	threads, err := f.conversations.List(ctx, f.account.ID, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 1 || threads[0].Title != "first" {
+		t.Errorf("stored %+v, want only the conversation that committed", threads)
+	}
+}
+
+// An import that is still writing when its browser goes away finishes the file.
+// Stopping it part way would leave the account with half of what it sent.
+func TestImportFinishesWhenTheClientHasGone(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	h := NewHandlers(f.service)
+
+	body := `{"obsidian_arc_export":1,"conversations":[` +
+		`{"title":"one","messages":[{"role":"user","content":"a"}]},` +
+		`{"title":"two","messages":[{"role":"user","content":"b"}]}]}`
+	req := asUser(httptest.NewRequest(http.MethodPost, "/api/account/import", strings.NewReader(body)), f.account)
+	gone, cancel := context.WithCancel(req.Context())
+	cancel()
+	rec := httptest.NewRecorder()
+	httpx.Wrap(h.importDocument)(rec, req.WithContext(gone))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+
+	threads, err := f.conversations.List(ctx, f.account.ID, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 2 {
+		t.Errorf("stored %d conversations, want both", len(threads))
+	}
+}
+
+// A file whose preferences would overflow the account's are refused as a
+// preferences problem, with a 409 that says nothing was imported. It used to
+// fall through to a 500 that read as a fault in the server.
+func TestImportEndpointNamesAPreferencesProblem(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	h := NewHandlers(f.service)
+	stored := map[string]json.RawMessage{"stored": json.RawMessage(`"` + strings.Repeat("a", 400*1024) + `"`)}
+	if _, err := f.service.preferences.Merge(ctx, f.account.ID, stored); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"obsidian_arc_export":1,"preferences":{"incoming":"` + strings.Repeat("b", 200*1024) +
+		`"},"conversations":[{"title":"t","messages":[{"role":"user","content":"q"}]}]}`
+	rec := httptest.NewRecorder()
+	httpx.Wrap(h.importDocument)(rec, asUser(
+		httptest.NewRequest(http.MethodPost, "/api/account/import", strings.NewReader(body)), f.account))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409: %.200s", rec.Code, rec.Body)
+	}
+	var reply struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &reply); err != nil {
+		t.Fatalf("error body is not JSON: %v", err)
+	}
+	if reply.Error.Code != "preferences_too_large" || !strings.Contains(reply.Error.Message, "preferences") {
+		t.Errorf("error = %+v", reply.Error)
+	}
+}

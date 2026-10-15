@@ -6,7 +6,7 @@
 // administrator's answer, and getting it wrong is visible immediately — the
 // composer stops offering attachments, or the thinking toggle disappears.
 
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   adminApi,
@@ -32,6 +32,7 @@ import OaTextField from '@/components/OaTextField.vue';
 import OaTierList from '@/components/OaTierList.vue';
 import type { ListItem } from '@/components/list-items';
 import type { Column, SortState } from '@/components/table-types';
+import { copyToClipboard } from '@/chat/markdown';
 import { t } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
@@ -50,18 +51,21 @@ import UsageBoard from './usage/UsageBoard.vue';
 const router = useRouter();
 const route = useRoute();
 const view = useAdminView();
-view.setTitle(t('modelsTitle'), t('modelsSubtitle'));
+view.setTitle(() => t('modelsTitle'), () => t('modelsSubtitle'));
 
 const idCopied = ref(false);
+// Kept so the reset can be cancelled: a page left within 1.5s would otherwise
+// get its timer fired into a component that is already gone.
+let idCopiedTimer = 0;
 
 async function copyID(value: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(value);
-    idCopied.value = true;
-    setTimeout(() => { idCopied.value = false; }, 1500);
-  } catch {
-    // clipboard failure ignored
-  }
+  // The shared helper has the execCommand fallback. A bare writeText did nothing
+  // on a plain-http origin, where navigator.clipboard does not exist, and the
+  // button gave no sign that it had failed.
+  if (!(await copyToClipboard(value))) return;
+  idCopied.value = true;
+  window.clearTimeout(idCopiedTimer);
+  idCopiedTimer = window.setTimeout(() => { idCopied.value = false; }, 1500);
 }
 
 const models = ref<AdminModel[]>([]);
@@ -70,6 +74,9 @@ const groups = ref<Pick<Group, 'id' | 'name'>[]>([]);
 const meta = ref<Meta | null>(null);
 const health = ref(new Map<string, ModelHealth>());
 const error = ref('');
+// Kept apart from `error`: load() clears that one before the reorder's message
+// could be drawn, and a refused move is not a failed load.
+const reorderError = ref('');
 const loaded = ref(false);
 
 /**
@@ -222,10 +229,11 @@ async function reorder(reordered: AdminModel[]): Promise<void> {
   const moved = new Set(reordered.map((row) => row.id));
   const queue = [...reordered];
   const next = models.value.map((row) => (moved.has(row.id) ? queue.shift()! : row));
+  reorderError.value = '';
   try {
     await adminApi.reorderModels(next.map((row) => row.id));
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : String(failure);
+    reorderError.value = failure instanceof ApiError ? failure.message : String(failure);
   }
   // Either way: on success to show the stored order, and on failure to snap
   // back to it rather than leaving the screen claiming a move never written.
@@ -293,12 +301,12 @@ const form = ref({
 // box and saving used to produce a model that is free to use however often —
 // which is not what turning image generation on is meant to mean. Seeded
 // rather than enforced: an operator who wants it free can still set it back.
-watch(
-  () => form.value.imageGen,
-  (on) => {
-    if (on && !form.value.requestWeight) form.value.requestWeight = 1;
-  },
-);
+// It runs from the switch, not a watch on the flag: a watch also fires when
+// open() loads a stored image model, and a free one saved at 0 came back as 1.
+function setImageGen(on: boolean): void {
+  form.value.imageGen = on;
+  if (on && !form.value.requestWeight) form.value.requestWeight = 1;
+}
 
 const creating = computed(() => existing.value === null);
 
@@ -686,6 +694,7 @@ watch(() => route.hash, () => {
 });
 
 onMounted(load);
+onBeforeUnmount(() => window.clearTimeout(idCopiedTimer));
 </script>
 
 <script lang="ts">
@@ -731,6 +740,7 @@ let sortState: SortState | null = null;
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <template v-else>
+    <p v-if="reorderError" role="alert" class="oa-drawer-flash visible oa-control-flash">{{ reorderError }}</p>
     <div id="modelsList" class="oa-filters" :hidden="models.length === 0">
       <input v-model="filters.q" type="search" :placeholder="t('searchModels')" @input="onFilter">
       <OaSelect
@@ -983,7 +993,12 @@ let sortState: SortState | null = null;
     </AdminControlCard>
 
     <AdminControlCard id="secCapabilities" :title="t('secCapabilities')" :hint="t('capabilitiesHint')">
-      <OaSwitchField v-model="form.imageGen" :label="t('capImageGen')" :hint="t('capImageGenHint')" />
+      <OaSwitchField
+        :model-value="form.imageGen"
+        :label="t('capImageGen')"
+        :hint="t('capImageGenHint')"
+        @update:model-value="setImageGen"
+      />
       <OaSwitchField
         v-model="form.chatImageGen"
         :label="t('capChatImageGen')"
@@ -1063,7 +1078,7 @@ let sortState: SortState | null = null;
     <template v-else>
       <p class="oa-field-hint">{{ t('importModelsSkipped', { count: report.skipped.length }) }}</p>
       <div class="oa-code-list">
-        <code v-for="line in report.skipped" :key="line" class="oa-code-line">{{ line }}</code>
+        <code v-for="(line, index) in report.skipped" :key="index" class="oa-code-line">{{ line }}</code>
       </div>
     </template>
   </OaPanel>

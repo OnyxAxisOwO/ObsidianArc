@@ -208,10 +208,14 @@ func printRecoveryCodes(rt *Runtime, raw any) error {
 	for _, code := range asSlice(raw) {
 		rows = append(rows, []string{asStr(code)})
 	}
-	if rt.Session.Lang == "zh" {
-		rt.Printf("恢复码（仅显示这一次，每个只能用一次）：\n")
-	} else {
-		rt.Printf("recovery codes (shown once; each works once):\n")
+	// The header is for a person reading the codes. Under --json the table
+	// prints the response body, and a line of text before it is not JSON.
+	if !rt.effectiveJSON() {
+		if rt.Session.Lang == "zh" {
+			rt.Printf("恢复码（仅显示这一次，每个只能用一次）：\n")
+		} else {
+			rt.Printf("recovery codes (shown once; each works once):\n")
+		}
 	}
 	return rt.Table([]string{"recovery_code"}, rows)
 }

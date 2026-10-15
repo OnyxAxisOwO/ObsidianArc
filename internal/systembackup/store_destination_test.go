@@ -3,6 +3,7 @@ package systembackup
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
@@ -296,5 +297,71 @@ func TestSavingS3WithTheWebDAVDestinationUnchangedIsAnOrdinarySave(t *testing.T)
 	if loaded.Type != StorageTypeS3 || loaded.WebDAVURL != "https://dav.example.test/backups" || loaded.WebDAVPassword != "saved-password" {
 		t.Fatalf("after the S3 save: type %q, WebDAV url %q, WebDAV password %q",
 			loaded.Type, loaded.WebDAVURL, loaded.WebDAVPassword)
+	}
+}
+
+// A WebDAV URL saved before userinfo was refused still holds its password. The
+// admin page is shown the address without it, and an S3 save drops the
+// password from the stored address rather than being refused over it.
+func TestLegacyWebDAVURLWithAPasswordIsHiddenAndDroppedBySwitchingToS3(t *testing.T) {
+	store := savedWebDAVStore(t)
+	ctx := context.Background()
+	// Written directly: Save refuses this URL now, so only data saved before the
+	// rule can carry one.
+	if _, err := store.db.Exec(ctx, `UPDATE system_backups SET webdav_url = ? WHERE id = ?`,
+		"https://arc:hunter2@dav.example.test/backups", singletonID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := store.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(status.WebDAVURL, "hunter2") || status.WebDAVURL != "https://dav.example.test/backups" {
+		t.Fatalf("status shows the legacy WebDAV URL as %q", status.WebDAVURL)
+	}
+
+	// The S3 form sends back the address it was shown, which here still carries the password.
+	if err := store.Save(ctx, Config{
+		Type: StorageTypeS3, Enabled: true, Endpoint: "https://s3.example.test", Bucket: "arc-backups",
+		Region: "us-east-1", Prefix: "arc", AccessKeyID: "s3-access", SecretKey: "s3-secret",
+		WebDAVURL: "https://arc:hunter2@dav.example.test/backups", WebDAVUsername: "arc",
+		IntervalHours: 24, RetentionDays: 7,
+	}); err != nil {
+		t.Fatalf("switch to S3 with a legacy WebDAV URL: %v", err)
+	}
+	loaded, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Type != StorageTypeS3 || loaded.WebDAVURL != "https://dav.example.test/backups" || loaded.WebDAVPassword != "saved-password" {
+		t.Fatalf("after the S3 save: type %q, WebDAV url %q, WebDAV password %q",
+			loaded.Type, loaded.WebDAVURL, loaded.WebDAVPassword)
+	}
+}
+
+// Saving the WebDAV destination again with the address the page was shown is
+// the same destination once its password is stripped, so the saved password
+// stays and the save goes through.
+func TestResavingALegacyWebDAVURLWithoutItsPasswordKeepsTheSavedPassword(t *testing.T) {
+	store := savedWebDAVStore(t)
+	ctx := context.Background()
+	if _, err := store.db.Exec(ctx, `UPDATE system_backups SET webdav_url = ? WHERE id = ?`,
+		"https://arc:hunter2@dav.example.test/backups", singletonID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Save(ctx, Config{
+		Type: StorageTypeWebDAV, Enabled: true, WebDAVURL: "https://dav.example.test/backups",
+		WebDAVUsername: "arc", IntervalHours: 24, RetentionDays: 7,
+	}); err != nil {
+		t.Fatalf("re-save the WebDAV storage with the address it was shown: %v", err)
+	}
+	loaded, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.WebDAVURL != "https://dav.example.test/backups" || loaded.WebDAVPassword != "saved-password" {
+		t.Fatalf("re-saved WebDAV storage = url %q password %q", loaded.WebDAVURL, loaded.WebDAVPassword)
 	}
 }

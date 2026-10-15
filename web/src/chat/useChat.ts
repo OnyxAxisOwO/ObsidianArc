@@ -11,7 +11,7 @@
 // touches the message that moved. The fast path was the thing most likely to
 // go subtly wrong, and it is gone rather than reimplemented.
 
-import { computed, ref } from 'vue';
+import { computed, ref, shallowRef } from 'vue';
 import {
   archiveConversation as archiveConversationApi,
   deleteAllConversations,
@@ -27,6 +27,7 @@ import {
 } from '@/api/chat';
 import { ApiError } from '@/api/client';
 import { t, type StringKey } from '@/composables/useI18n';
+import { apiErrorText, storedErrorText } from '@/lib/api-error';
 import { pendingProjectID } from '@/stores/workspace';
 import { currentPreferences, currentUser, onSignOut } from '@/stores/session';
 import { ImageError, prepareImage, type PreparedImage } from './image';
@@ -44,6 +45,7 @@ const SUGGESTIONS_SHOWN = 3;
 // feature and not a file picker.
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_FILE_CHARS = 24000;
+const TRUNCATION_MARK = '\n… (truncated)';
 
 export const TEXT_FILE_ACCEPT = [
   '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl', '.yaml', '.yml',
@@ -99,7 +101,10 @@ export const draft = ref('');
 export const dragging = ref(false);
 export const suggestions = ref<Array<(typeof SUGGESTION_KEYS)[number]>>(pickSuggestions(SUGGESTIONS_SHOWN));
 
-let controller: AbortController | null = null;
+// A ref, not a plain variable: stoppable is computed from it, and a plain
+// variable would leave that computed stale when a turn hands over to its
+// post-turn reload.
+const controller = shallowRef<AbortController | null>(null);
 // Bumped by resetChat. Whatever an await brings back after a sign-out was
 // asked for by the account that signed out, so it is dropped rather than
 // written into the next account's composer or rail.
@@ -184,7 +189,7 @@ const pendingView = ref(-1);
 
 export const active = computed(() => conversations.value.find((entry) => entry.id === activeID.value) ?? null);
 export const isEmpty = computed(() => messages.value.length === 0 && !busy.value);
-export const stoppable = computed(() => busy.value && controller !== null);
+export const stoppable = computed(() => busy.value && controller.value !== null);
 /** The streamed block is rendered by the conversation it is being written into. */
 export const showPending = computed(() => busy.value && pending.value !== null && pendingView.value === switchTick.value);
 
@@ -226,11 +231,27 @@ function setFlash(text: string): void {
   flash.value = text;
 }
 
+/**
+ * What a reader is shown for a request that failed. An ApiError carries text the
+ * server wrote for a reader; anything else is a network or runtime failure
+ * (`TypeError: Failed to fetch`), whose English is for a developer, so it is
+ * logged and the translated generic sentence is shown instead.
+ */
+export function failureText(error: unknown): string {
+  if (error instanceof ApiError) return apiErrorText(error);
+  console.warn('chat request failed', error);
+  return t('failed');
+}
+
 function scrollToEnd(): void {
   scrollTick.value += 1;
 }
 
 // --- attachments ----------------------------------------------------------------
+
+// Uploads that have started and not yet landed. They hold a slot each, so two
+// picks in a row cannot both see room for the same six pictures.
+let pendingUploads = 0;
 
 /**
  * One file at a time rather than in parallel: each is decoded and re-encoded
@@ -238,45 +259,59 @@ function scrollToEnd(): void {
  * up the page for a noticeable moment.
  */
 export async function addImages(list: FileList | File[] | null): Promise<void> {
-  if (busy.value || !status.value.configured || !status.value.vision) return;
+  if (busy.value || !status.value.configured) return;
 
   const files = Array.from(list ?? []).filter((file) => file.type.startsWith('image/'));
   if (!files.length) return;
+  // Said rather than silent: the picker and the paste offered this, and a
+  // refused picture with no word about it looks like a broken app.
+  if (!status.value.vision) {
+    setFlash(t('imagesUnsupported'));
+    return;
+  }
 
-  const room = MAX_IMAGES - attachments.value.length;
+  const room = MAX_IMAGES - attachments.value.length - pendingUploads;
   if (files.length > room) setFlash(t('tooManyImages', { count: MAX_IMAGES }));
   if (room <= 0) return;
 
   const account = generation;
-  for (const file of files.slice(0, room)) {
-    let prepared: PreparedImage;
+  for (const file of files) {
+    // Checked and counted with no await in between, so no other call can take
+    // the last slot between the check and the increment.
+    if (attachments.value.length + pendingUploads >= MAX_IMAGES) break;
+    pendingUploads += 1;
     try {
-      prepared = await prepareImage(file);
-    } catch (error) {
-      setFlash(error instanceof ImageError && error.kind === 'too-large' ? t('imageTooLarge') : t('imageFailed'));
-      continue;
-    }
-    // Signed out while the picture was decoded: it is not uploaded under the
-    // next account's session, which would be the wrong person's file.
-    if (account !== generation) {
-      URL.revokeObjectURL(prepared.previewURL);
-      return;
-    }
-    try {
-      const { attachment } = await uploadAttachment({
-        mime: prepared.mime,
-        data: prepared.data,
-        width: prepared.width,
-        height: prepared.height,
-      });
+      let prepared: PreparedImage;
+      try {
+        prepared = await prepareImage(file);
+      } catch (error) {
+        setFlash(error instanceof ImageError && error.kind === 'too-large' ? t('imageTooLarge') : t('imageFailed'));
+        continue;
+      }
+      // Signed out while the picture was decoded: it is not uploaded under the
+      // next account's session, which would be the wrong person's file.
       if (account !== generation) {
         URL.revokeObjectURL(prepared.previewURL);
         return;
       }
-      attachments.value = [...attachments.value, { ref: attachment, preview: prepared.previewURL }];
-    } catch (error) {
-      URL.revokeObjectURL(prepared.previewURL);
-      setFlash(error instanceof ApiError ? error.message : t('imageFailed'));
+      try {
+        const { attachment } = await uploadAttachment({
+          mime: prepared.mime,
+          data: prepared.data,
+          width: prepared.width,
+          height: prepared.height,
+        });
+        if (account !== generation) {
+          URL.revokeObjectURL(prepared.previewURL);
+          return;
+        }
+        attachments.value = [...attachments.value, { ref: attachment, preview: prepared.previewURL }];
+      } catch (error) {
+        URL.revokeObjectURL(prepared.previewURL);
+        setFlash(error instanceof ApiError ? apiErrorText(error) : t('imageFailed'));
+      }
+    } finally {
+      pendingUploads -= 1;
     }
   }
 }
@@ -326,14 +361,32 @@ export async function addTextFiles(list: FileList | File[] | null): Promise<void
       continue;
     }
 
-    let body = text;
-    if (body.length > MAX_FILE_CHARS) body = `${body.slice(0, MAX_FILE_CHARS)}\n… (truncated)`;
+    // The message the server receives is the whole draft, so a file is cut to
+    // what is left after the text already there, not only to its own cap.
+    // trimEnd, not /\s*$/: the regex retries from every position in a long run
+    // of spaces, which is quadratic on a pasted block of them.
+    const existing = draft.value.trimEnd();
+    const prefix = existing ? existing.length + 2 : 0;
+    const fence = fenceFor(text);
+    const frame = (content: string): string =>
+      `${file.name}:\n\n${fence}${fenceLanguage(file.name)}\n${content}\n${fence}\n`;
+    const room = Math.min(MAX_FILE_CHARS, MAX_MESSAGE_CHARS - prefix - frame('').length);
 
-    const fence = '```';
-    const block = `${file.name}:\n\n${fence}${fenceLanguage(file.name)}\n${body}\n${fence}\n`;
-    const existing = draft.value.replace(/\s*$/, '');
+    let body = text;
+    let cut = false;
+    if (body.length > room) {
+      const keep = room - TRUNCATION_MARK.length;
+      if (keep <= 0) {
+        setFlash(t('fileTooLarge'));
+        continue;
+      }
+      body = `${body.slice(0, keep)}${TRUNCATION_MARK}`;
+      cut = true;
+    }
+
+    const block = frame(body);
     draft.value = existing ? `${existing}\n\n${block}` : block;
-    setFlash(t('fileAdded', { name: file.name }));
+    setFlash(t(cut ? 'fileTruncated' : 'fileAdded', { name: file.name }));
   }
 }
 
@@ -342,6 +395,11 @@ export async function addTextFiles(list: FileList | File[] | null): Promise<void
 interface TurnOptions {
   content?: string;
   attachmentIDs?: string[];
+  /**
+   * The pictures this turn carries, for the optimistic row. Not the composer's
+   * staged list: an edit-and-resend carries the message's own pictures.
+   */
+  sentAttachments?: AttachmentRef[];
   truncateFrom?: string;
   conversationID?: string;
 }
@@ -349,7 +407,12 @@ interface TurnOptions {
 export const chatChallenge = ref<TurnOptions | null>(null);
 export const chatChallengeError = ref('');
 
-export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done' | 'challenge'> {
+/**
+ * `unsent` means the server never took the turn: it refused the request before
+ * any stream opened. The text is put back into the composer, because nothing
+ * was saved and the optimistic row is about to be replaced by the server copy.
+ */
+export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done' | 'challenge' | 'unsent'> {
   if (busy.value || !status.value.configured) return 'done';
   recentReasoningID.value = '';
   const account = generation;
@@ -361,13 +424,13 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
     const cut = messages.value.findIndex((message) => message.id === turn.truncateFrom);
     if (cut >= 0) messages.value = messages.value.slice(0, cut);
   }
-  if (turn.content || turn.attachmentIDs?.length || attachments.value.length) {
+  if (turn.content || turn.attachmentIDs?.length) {
     const userMessage: Message = {
       id: `local-${Date.now()}`,
       seq: messages.value.length + 1,
       role: 'user',
       content: turn.content ?? '',
-      attachments: attachments.value.map((entry) => entry.ref),
+      attachments: turn.sentAttachments ?? [],
       created_at: Date.now(),
     };
     markFlying(userMessage.id);
@@ -391,11 +454,15 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
   // stops being on screen when the screen moves to another conversation or
   // resets, and those are where it is cleared.
 
-  // The turn's own controller: resetChat clears the module-level one on
-  // sign-out, and this function still has to read its signal afterwards.
+  // The turn's own controller: resetChat clears the shared one on sign-out,
+  // and this function still has to read its signal afterwards.
   const turnController = new AbortController();
-  controller = turnController;
+  controller.value = turnController;
   let failed = false;
+  // Set once the server has taken the turn. After that the user message exists
+  // on the server, so a failure must not hand the text back to the composer.
+  let accepted = false;
+  let unsent = false;
 
   try {
     await sendTurn(
@@ -417,6 +484,7 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
       },
       {
         onStart: (payload) => {
+          accepted = true;
           turnID = payload.conversation_id;
           pendingID.value = turnID;
           // Adopting the new id is how the first message of a conversation
@@ -438,9 +506,15 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
         },
         onError: (payload) => {
           failed = true;
+          // An error before `start` can only be the server rolling back its own
+          // opening transaction, so nothing was saved and the text can go back
+          // to the composer, as a refused request does.
+          if (!accepted) unsent = true;
           // Not lost when the reader is elsewhere: the server writes an error
           // row, so opening the conversation shows what went wrong.
-          if (watching()) setFlash(payload.message);
+          // The server's sentence is English and is only the fallback: a code the
+          // interface has a reader's version of is shown in the reader's language.
+          if (watching()) setFlash(storedErrorText(payload.code, payload.message));
         },
       },
       turnController.signal,
@@ -461,13 +535,23 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
         chatChallengeError.value = error.code === 'chat_challenge_required' ? '' : error.message;
       } else {
         failed = true;
-        if (watching()) setFlash(error instanceof ApiError ? error.message : String(error));
+        // The server commits the user's message before it sends `start`, so a
+        // dropped connection or an abort in between leaves the message on the
+        // server. Only a refusal answered with a status, before the stream
+        // opened, means the turn was never taken.
+        if (!accepted && error instanceof ApiError && error.status > 0) unsent = true;
+        if (watching()) setFlash(failureText(error));
       }
     }
   } finally {
     settleDeltas();
-    if (controller === turnController) controller = null;
+    if (controller.value === turnController) controller.value = null;
   }
+  // What the reader was looking at when the stream ended. Read after
+  // settleDeltas so the last buffered text is in it.
+  const partial = pending.value;
+  const stoppedWithText = turnController.signal.aborted &&
+    !!(partial?.answer.trim() || partial?.reasoning.trim());
 
   // A sign-out ended this turn: resetChat already cleared the transcript, the
   // busy flag and the pending block, and the next account may have started a
@@ -480,7 +564,8 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
     // Only reload the conversation that owns this turn: the reader may have
     // moved on while it was streaming.
     if (activeID.value === turnID) {
-      await reloadActive();
+      if (stoppedWithText) await reloadUntilSaved(turnID);
+      else await reloadActive();
       scrollToEnd();
     }
   } finally {
@@ -490,24 +575,40 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
   }
   if (!failed) setFlash(flash.value);
   void refreshList();
-  return chatChallenge.value ? 'challenge' : 'done';
+  if (chatChallenge.value) return 'challenge';
+  if (unsent) {
+    if (turn.content) draft.value = draft.value.trim() ? `${turn.content}\n\n${draft.value}` : turn.content;
+    return 'unsent';
+  }
+  return 'done';
+}
+
+/** Drops the composer's staged pictures that a turn carried, and no others. */
+function releaseAttachments(ids: string[]): void {
+  const sent = new Set(ids);
+  for (const entry of attachments.value) {
+    if (sent.has(entry.ref.id)) URL.revokeObjectURL(entry.preview);
+  }
+  // A picture whose upload finished while the turn was streaming was not part
+  // of it, and stays staged for the next message.
+  attachments.value = attachments.value.filter((entry) => !sent.has(entry.ref.id));
 }
 
 export async function submit(): Promise<void> {
   if (busy.value || !status.value.configured) return;
 
   const text = draft.value.trim();
-  const ids = attachments.value.map((entry) => entry.ref.id);
+  const staged = attachments.value.map((entry) => entry.ref);
+  const ids = staged.map((ref) => ref.id);
   if (!text && !ids.length) return;
 
   draft.value = '';
-  const previews = attachments.value.map((entry) => entry.preview);
-  const result = await runTurn({ content: text, attachmentIDs: ids });
+  const result = await runTurn({ content: text, attachmentIDs: ids, sentAttachments: staged });
 
-  if (result === 'challenge') return;
-
-  for (const url of previews) URL.revokeObjectURL(url);
-  attachments.value = [];
+  // A challenge keeps the text and the pictures for when it is solved, and a
+  // refused turn keeps them in the composer for another try.
+  if (result !== 'done') return;
+  releaseAttachments(ids);
 }
 
 export async function completeChatChallenge(token: string): Promise<void> {
@@ -516,9 +617,8 @@ export async function completeChatChallenge(token: string): Promise<void> {
   chatChallenge.value = null;
   chatChallengeError.value = '';
   const result = await runTurn(turn, token);
-  if (result === 'challenge') return;
-  for (const entry of attachments.value) URL.revokeObjectURL(entry.preview);
-  attachments.value = [];
+  if (result !== 'done') return;
+  releaseAttachments(turn.attachmentIDs ?? []);
 }
 
 export function cancelChatChallenge(): void {
@@ -534,7 +634,7 @@ export function cancelChatChallenge(): void {
  * upstream stops billing.
  */
 export function stop(): void {
-  controller?.abort();
+  controller.value?.abort();
 }
 
 // --- conversations ---------------------------------------------------------------
@@ -581,10 +681,33 @@ async function reloadActive(): Promise<void> {
     messages.value = list;
     if (conversation) pendingProjectID.value = conversation.project_id || '';
   } catch (error) {
-    if (error instanceof ApiError && error.status === 404 && activeID.value === id) {
-      activeID.value = '';
-      messages.value = [];
+    if (error instanceof ApiError && error.status === 404) {
+      if (activeID.value === id) {
+        activeID.value = '';
+        messages.value = [];
+      }
+      return;
     }
+    // The transcript is empty after a failure, which reads as a conversation
+    // with nothing in it. Said only while the reader is still on it: a failure
+    // for a conversation they have left is not theirs to see.
+    if (activeID.value === id) setFlash(failureText(error));
+  }
+}
+
+/**
+ * A stopped answer is saved by the server after the connection that asked for
+ * it has closed, and the client gets no signal when that write lands, so read
+ * until the row shows up. The schedule is bounded (about 2.2 s): past it the
+ * composer is released anyway, rather than held on a save that never comes.
+ */
+async function reloadUntilSaved(id: string): Promise<void> {
+  for (const delay of [0, 150, 300, 600, 1200]) {
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    if (activeID.value !== id) return;
+    await reloadActive();
+    if (activeID.value !== id) return;
+    if (messages.value[messages.value.length - 1]?.role === 'assistant') return;
   }
 }
 
@@ -595,6 +718,14 @@ async function reloadActive(): Promise<void> {
  * an answer is no longer waiting to look at anything else.
  */
 export async function openConversation(id: string): Promise<void> {
+  // Selecting the conversation already on screen changes nothing. Clearing the
+  // transcript here blanked it for a reload, and a double-click on a row (which
+  // is how a rename starts) selects it twice. An empty transcript is still
+  // loaded, so a failed read can be tried again by selecting it.
+  if (id && id === activeID.value && messages.value.length > 0) {
+    historyOpen.value = false;
+    return;
+  }
   activeID.value = id;
   editingID.value = '';
   justSentID.value = '';
@@ -647,17 +778,22 @@ export async function rename(conversation: Conversation): Promise<void> {
   try {
     const { conversation: updated } = await renameConversation(conversation.id, next.trim());
     conversation.title = updated.title;
+    // The rail and the header read their own copies, which are not the objects
+    // a project row was given, so the rail's entry is renamed as well.
+    const listed = conversations.value.find((entry) => entry.id === conversation.id);
+    if (listed) listed.title = updated.title;
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : String(error));
+    setFlash(failureText(error));
   }
 }
 
-export async function archiveConversation(conversation: Conversation): Promise<void> {
+/** True only when the server accepted it and the rail has been updated. */
+export async function archiveConversation(conversation: Conversation): Promise<boolean> {
   try {
     await archiveConversationApi(conversation.id, true);
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : String(error));
-    return;
+    setFlash(failureText(error));
+    return false;
   }
   conversations.value = conversations.value.filter((entry) => entry.id !== conversation.id);
   if (activeID.value === conversation.id) {
@@ -665,30 +801,38 @@ export async function archiveConversation(conversation: Conversation): Promise<v
     messages.value = [];
   }
   setFlash(t('archiveSuccess'));
+  return true;
 }
 
-export async function unarchiveConversation(id: string): Promise<void> {
+// Resolves to whether the conversation left the archive. The failure is also a
+// flash, but a caller that drops the row from its own list needs the answer, not
+// the message on screen.
+export async function unarchiveConversation(id: string): Promise<boolean> {
   try {
     await archiveConversationApi(id, false);
     await refreshList();
     setFlash(t('unarchiveSuccess'));
+    return true;
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : String(error));
+    setFlash(failureText(error));
+    return false;
   }
 }
 
-export async function removeConversation(conversation: Conversation): Promise<void> {
+/** True only when the server deleted it and the rail has been updated. */
+export async function removeConversation(conversation: Conversation): Promise<boolean> {
   try {
     await deleteConversation(conversation.id);
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : String(error));
-    return;
+    setFlash(failureText(error));
+    return false;
   }
   conversations.value = conversations.value.filter((entry) => entry.id !== conversation.id);
   if (activeID.value === conversation.id) {
     activeID.value = '';
     messages.value = [];
   }
+  return true;
 }
 
 export async function clearEverything(): Promise<void> {
@@ -698,7 +842,7 @@ export async function clearEverything(): Promise<void> {
     await deleteAllConversations();
   } catch (error) {
     // A failure that comes back after sign-out is the account that left's.
-    if (account === generation) setFlash(error instanceof ApiError ? error.message : String(error));
+    if (account === generation) setFlash(failureText(error));
     return;
   }
   // Signed out while the delete was in flight. Whoever is signed in now may hold
@@ -721,8 +865,8 @@ export async function clearEverything(): Promise<void> {
  */
 export function resetChat(): void {
   generation += 1;
-  controller?.abort();
-  controller = null;
+  controller.value?.abort();
+  controller.value = null;
   // Deltas buffered for the turn being cut off must not land in the pending
   // block of whichever turn runs next.
   if (frame) cancelAnimationFrame(frame);
@@ -768,6 +912,17 @@ function pickSuggestions(count: number): Array<(typeof SUGGESTION_KEYS)[number]>
   return picked;
 }
 
+/**
+ * A fence one backtick longer than any run that starts a line of the file.
+ * A file with its own three-backtick line would close the wrapper early, and
+ * everything after it would be read as prose.
+ */
+function fenceFor(body: string): string {
+  let longest = 2;
+  for (const match of body.matchAll(/^[ \t]*(`+)/gm)) longest = Math.max(longest, match[1]!.length);
+  return '`'.repeat(longest + 1);
+}
+
 /** The fence language, so a code file arrives highlighted rather than as prose. */
 function fenceLanguage(name: string): string {
   const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
@@ -779,7 +934,9 @@ function fenceLanguage(name: string): string {
     yaml: 'yaml', yml: 'yaml', toml: 'toml', xml: 'xml', html: 'html', css: 'css',
     md: 'markdown', markdown: 'markdown', csv: 'csv', tsv: 'csv',
   };
-  return known[extension] ?? '';
+  // A file named `x.constructor` or `x.__proto__` would otherwise read
+  // Object's own members as a language tag.
+  return Object.hasOwn(known, extension) ? known[extension]! : '';
 }
 
 /**

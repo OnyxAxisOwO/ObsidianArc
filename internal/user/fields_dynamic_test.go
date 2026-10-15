@@ -100,3 +100,26 @@ func TestFieldConflictsAreRefusedWholeAndPerStore(t *testing.T) {
 		t.Fatal("one store's install is visible to another")
 	}
 }
+
+// Both engines name the column in a unique-violation message, so the field
+// whose key is a prefix of another's must not claim the other's error.
+func TestTakenFieldNamesOnlyTheColumnTheMessageNames(t *testing.T) {
+	s := storeWithGate(map[string]bool{"zeta": true})
+	if err := s.AddPluginFields("zeta", []Field{
+		{Key: "wechat", Unique: true},
+		{Key: "wechat_id", Unique: true},
+		{Key: "user", Unique: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for message, want := range map[string]string{
+		"UNIQUE constraint failed: users.wechat_id":                           "wechat_id",
+		`duplicate key value violates unique constraint "ux_users_wechat_id"`: "wechat_id",
+		"UNIQUE constraint failed: users.wechat":                              "wechat",
+		"UNIQUE constraint failed: users.username_lower":                      "",
+	} {
+		if got := s.takenField(message); got != want {
+			t.Errorf("takenField(%q) = %q, want %q", message, got, want)
+		}
+	}
+}

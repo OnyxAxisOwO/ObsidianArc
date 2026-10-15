@@ -427,7 +427,7 @@ func securityLog(t *testing.T, in *instance, as *session) []struct {
 // The request log is the one table a prune removes from, and it is where the
 // only record of an administrator's action used to be. Pruning it is a super
 // administrator's act when it clears everything, and every prune leaves its
-// own entry in the security log, which is never pruned.
+// own entries in the security log, which is never pruned.
 func TestLogPruneIsSuperAdminWhenItClearsEverything(t *testing.T) {
 	in := newInstance(t)
 	founder := in.register("founder", "a-good-password")
@@ -450,8 +450,10 @@ func TestLogPruneIsSuperAdminWhenItClearsEverything(t *testing.T) {
 			pruned = append(pruned, event.Event)
 		}
 	}
-	if len(pruned) != 1 {
-		t.Fatalf("the retention prune left %d security entries, want 1", len(pruned))
+	// The request is written before the delete and the outcome after it, so one
+	// prune leaves two entries: what was asked for, and how many rows went.
+	if len(pruned) != 2 {
+		t.Fatalf("the retention prune left %d security entries, want 2 (the request and its outcome)", len(pruned))
 	}
 }
 

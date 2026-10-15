@@ -28,6 +28,13 @@ const rows = ref<Row[]>(props.modelValue.map((tier) => ({
   budget: tier.budget ? String(tier.budget) : '',
 })));
 
+// A budget that does not parse to a finite number is 0. Infinity is truthy, so
+// a `|| 0` fallback lets it through, and JSON sends it as null.
+function budgetOf(text: string): number {
+  const parsed = Number(text.trim());
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+}
+
 // Half-filled rows are dropped here as well as on the server: a tier with no
 // name would be a blank stop on the slider, and one with no value could never
 // be told apart from its neighbour.
@@ -36,7 +43,7 @@ watch(rows, (next) => {
     .map((row) => ({
       id: row.id.trim(),
       name: row.name.trim(),
-      budget: Math.max(0, Math.trunc(Number(row.budget.trim()) || 0)),
+      budget: budgetOf(row.budget),
     }))
     .filter((tier) => tier.id !== '' && tier.name !== ''));
 }, { deep: true });

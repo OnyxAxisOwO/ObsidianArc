@@ -38,8 +38,24 @@ export function loadTurnstile(): Promise<TurnstileAPI | null> {
     const script = document.createElement('script');
     script.src = SCRIPT;
     script.async = true;
-    script.onload = () => resolve(window.turnstile ?? null);
-    script.onerror = () => resolve(null);
+    script.onload = () => {
+      const api = window.turnstile ?? null;
+      // A script that ran without its API has failed as surely as one that
+      // did not load, and the next widget should get another attempt. Its tag
+      // goes too, or every retry leaves one more dead script in the document.
+      if (!api) {
+        loading = null;
+        script.remove();
+      }
+      resolve(api);
+    };
+    script.onerror = () => {
+      // Remembered for the page's lifetime, this made every later widget draw
+      // nothing after one blip on the network. The next one tries again.
+      loading = null;
+      script.remove();
+      resolve(null);
+    };
     document.head.appendChild(script);
   });
   return loading;

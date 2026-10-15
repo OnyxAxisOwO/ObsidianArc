@@ -34,6 +34,8 @@ import { IconClose } from '@/icons';
 import { compactNumber, relativeTime, tokenFigure } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser, maskProvider, maskBilling } from '@/admin/safeMode';
+import { windowFigure } from '@/admin/quota';
+import { customUntilBound } from '@/admin/usageRange';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import StatusBadge from './StatusBadge.vue';
@@ -74,7 +76,7 @@ type CellMetric = 'requests' | 'total_tokens' | 'credits';
 type Spread = 'group' | 'provider' | 'status';
 
 const view = useAdminView();
-view.setTitle(t('usageTitle'), t('usageSubtitle'));
+view.setTitle(() => t('usageTitle'), () => t('usageSubtitle'));
 
 const currentRPM = ref(0);
 const rpmTimer = ref<number | null>(null);
@@ -135,7 +137,14 @@ const records = ref<UsageRecord[]>([]);
 const recordTotal = ref(0);
 const recordPage = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 const recordsBusy = ref(false);
+// The ledger's own failure. It stays out of error, which replaces the whole
+// report: a page of records that did not load should not take the figures
+// down with it.
+const recordError = ref('');
 const error = ref('');
+// Kept apart from error: the refresh clears error after every good answer, and
+// a message about the defaults must not vanish fifteen seconds after it shows.
+const policyReadError = ref('');
 const loaded = ref(false);
 let recordRequest = 0;
 // The summary fetch needs a ticket of its own. A request that outlives a
@@ -173,7 +182,11 @@ function figure(value: number | undefined): number {
 // eventually disagree about which slice is on screen.
 function sliceQuery(): URLSearchParams {
   const params = new URLSearchParams();
-  if (periodSince > 0) params.set('since', String(periodSince));
+  // The all preset sends since=0 on purpose. Left out, the server starts the
+  // window at thirty days, and the summary would answer a window the preset
+  // does not name; with it, the server answers its widest window, the same
+  // one the chart already asks for.
+  if (periodSince > 0 || range.value === 'all') params.set('since', String(periodSince));
   if (periodUntil > 0) params.set('until', String(periodUntil));
   if (filters.value.model) params.set('model_id', filters.value.model);
   if (filters.value.user) params.set('user_id', filters.value.user);
@@ -228,9 +241,12 @@ async function loadRecords(quiet = false, signal?: AbortSignal): Promise<void> {
     if (ticket !== recordRequest || signal?.aborted) return;
     records.value = result.records ?? [];
     recordTotal.value = result.total;
+    recordError.value = '';
   } catch (failure) {
     if (signal?.aborted || isAbortError(failure)) return;
-    if (!quiet && ticket === recordRequest) error.value = String(failure);
+    if (!quiet && ticket === recordRequest) {
+      recordError.value = failure instanceof Error ? failure.message : String(failure);
+    }
   } finally {
     if (ticket === recordRequest) recordsBusy.value = false;
     if (recordController?.signal === signal) {
@@ -246,6 +262,10 @@ function changeRecords(next: PageState): void {
   void loadRecords(false, ctrl.signal);
 }
 
+function sameList(a: UsageBreakdown[], b: UsageBreakdown[]): boolean {
+  return a.length === b.length && a.every((row, i) => row.key === b[i]!.key && row.label === b[i]!.label && row.detail === b[i]!.detail);
+}
+
 function applyReport(next: UsageReport): void {
   report.value = next;
   loaded.value = true;
@@ -254,8 +274,26 @@ function applyReport(next: UsageReport): void {
     model: next.by_model ?? [], user: next.by_user ?? [], group: next.by_group ?? [], provider: next.by_provider ?? [],
   };
   for (const dimension of Object.keys(lists) as Dimension[]) {
-    if (!filters.value[dimension]) known.value[dimension] = lists[dimension];
+    // Every refresh brings new arrays. The filter menus watch their choices by
+    // identity, so an unchanged list must keep its old identity or an open
+    // menu is reset on each refresh.
+    if (!filters.value[dimension] && !sameList(known.value[dimension], lists[dimension])) known.value[dimension] = lists[dimension];
   }
+}
+
+// A preset is a rolling window: "last 24 hours" means the 24 hours before the
+// request is sent, not before the page was opened. So the bounds are worked
+// out again for every request that is built, and only a custom range keeps
+// the bounds it was given.
+function startPeriod(): void {
+  if (range.value === 'custom') {
+    periodSince = customSince;
+    periodUntil = customUntil > 0 ? customUntilBound(customUntil) : 0;
+    return;
+  }
+  const preset = RANGE_PRESETS.find((p) => p.key === range.value) ?? RANGE_PRESETS[1]!;
+  periodSince = preset.hours > 0 ? Date.now() - preset.hours * 3600_000 : 0;
+  periodUntil = 0;
 }
 
 async function load(): Promise<void> {
@@ -267,14 +305,8 @@ async function load(): Promise<void> {
   recordController = currentRecordCtrl;
 
   error.value = '';
-  if (range.value === 'custom') {
-    periodSince = customSince;
-    periodUntil = customUntil;
-  } else {
-    const preset = RANGE_PRESETS.find((p) => p.key === range.value) ?? RANGE_PRESETS[1]!;
-    periodSince = preset.hours > 0 ? Date.now() - preset.hours * 3600_000 : 0;
-    periodUntil = 0;
-  }
+  policyReadError.value = '';
+  startPeriod();
   offsetMs = -new Date().getTimezoneOffset() * 60_000;
   recordPage.value.page = 1;
 
@@ -336,13 +368,26 @@ function choicesFor(dimension: Dimension, all: StringKey): Array<{ value: string
   const selected = filters.value[dimension];
   // The one in force stays pickable even if the cached list predates it.
   if (selected && !rows.some((row) => row.key === selected)) rows.unshift({ key: selected, label: nameOf(dimension, selected) } as UsageBreakdown);
+  // Account and provider names are what safe mode hides, and the filter menus
+  // are where they are most often written out in full. A model's second line is
+  // its provider, so it is masked there too.
   const labelled = (row: UsageBreakdown): string => {
-    const name = row.label || row.key;
+    const plain = row.label || row.key;
+    const name = dimension === 'user' ? maskUser(plain) : dimension === 'provider' ? maskProvider(plain) : plain;
     if (!row.detail || row.detail === row.label) return name;
-    return dimension === 'user' ? `${name} · @${row.detail}` : `${name} · ${row.detail}`;
+    if (dimension === 'user') return `${name} · @${maskUser(row.detail)}`;
+    if (dimension === 'model') return `${name} · ${maskProvider(row.detail)}`;
+    return `${name} · ${row.detail}`;
   };
   return [{ value: '', label: t(all) }, ...rows.slice(0, 200).map((row) => ({ value: row.key, label: labelled(row) }))];
 }
+
+// Cached for the same reason as the lists above: a new array on each render
+// would reset an open menu on every refresh.
+const modelChoices = computed(() => choicesFor('model', 'filterAllModels'));
+const userChoices = computed(() => choicesFor('user', 'filterAllUsers'));
+const groupChoices = computed(() => choicesFor('group', 'anyGroup'));
+const providerChoices = computed(() => choicesFor('provider', 'filterAllProviders'));
 
 const outcomeChoices = computed<Array<{ value: Outcome; label: string }>>(() => [
   { value: '', label: t('filterAllOutcomes') },
@@ -360,7 +405,7 @@ const focus = computed(() => {
   }
   if (filters.value.user) {
     const row = byUser.value.find((entry) => entry.key === filters.value.user);
-    return { kind: 'user' as const, name: nameOf('user', filters.value.user), row };
+    return { kind: 'user' as const, name: maskUser(nameOf('user', filters.value.user)), row };
   }
   return null;
 });
@@ -370,10 +415,10 @@ function focusNotes(): string[] {
   if (!row) return [t('noRequestsPeriod')];
   const notes: string[] = [];
   if (focus.value?.kind === 'model') {
-    if (row.detail) notes.push(row.detail);
+    if (row.detail) notes.push(maskProvider(row.detail));
     notes.push(tn(row.users, 'boardUsersOne', 'boardUsersOther', { count: row.users }));
   } else {
-    if (row.detail) notes.push(`@${row.detail}`);
+    if (row.detail) notes.push(`@${maskUser(row.detail)}`);
     notes.push(tn(row.models, 'boardModelsOne', 'boardModelsOther', { count: row.models }));
   }
   notes.push(t('boardRequests', { count: compactNumber(row.requests) }));
@@ -540,6 +585,9 @@ const policyForm = ref({
 
 async function openPolicy(): Promise<void> {
   let policy = emptyPolicy('global', '');
+  // The retry button on a failed read comes back here, so a good read has to
+  // take its own failure off the page.
+  policyReadError.value = '';
   try {
     const { policies } = await adminApi.policies();
     policy = policies.find((entry) => entry.scope === 'global') ?? policy;
@@ -547,7 +595,7 @@ async function openPolicy(): Promise<void> {
     // A failed read is not an empty list. The blank form would show no limit
     // anywhere, and Save would write those blanks over the stored instance
     // defaults, so the panel stays shut and the page says what went wrong.
-    error.value = failure instanceof ApiError ? failure.message : String(failure);
+    policyReadError.value = failure instanceof ApiError ? failure.message : String(failure);
     return;
   }
   const windows = {} as typeof policyForm.value.windows;
@@ -565,6 +613,15 @@ async function openPolicy(): Promise<void> {
   policyOpen.value = true;
 }
 
+// A saved allowance or a reset changes the figures, but the page need not start
+// over: a full reload also drops the drill-down, which is in the component's
+// own state. The allowance list loads itself on mount, so it is re-keyed.
+const allowanceRevision = ref(0);
+function refreshAfterChange(): void {
+  allowanceRevision.value++;
+  void load();
+}
+
 async function savePolicy(): Promise<void> {
   policyBusy.value = true;
   try {
@@ -575,13 +632,13 @@ async function savePolicy(): Promise<void> {
       tpm: policyForm.value.tpm,
       windows: Object.fromEntries(WINDOWS.map((kind) => [kind, {
         enabled: policyForm.value.windows[kind].enabled ? true : null,
-        requests: policyForm.value.windows[kind].requests,
-        tokens: policyForm.value.windows[kind].tokens,
-        credits: policyForm.value.windows[kind].credits,
+        requests: windowFigure(policyForm.value.windows[kind].requests),
+        tokens: windowFigure(policyForm.value.windows[kind].tokens),
+        credits: windowFigure(policyForm.value.windows[kind].credits),
       }])),
     });
     policyOpen.value = false;
-    view.reload();
+    refreshAfterChange();
   } catch (failure) {
     policyError.value = failure instanceof ApiError ? failure.message : String(failure);
   } finally {
@@ -632,7 +689,7 @@ async function runReset(): Promise<void> {
     resetTitle.value = t('resetDone', { count: accounts });
     resetError.value = '';
     celebrate();
-    view.reload();
+    refreshAfterChange();
   } catch (failure) {
     resetError.value = failure instanceof ApiError ? failure.message : String(failure);
   }
@@ -663,7 +720,10 @@ function applyCustomRange(): void {
     return;
   }
   const startMs = new Date(customStart.value).getTime();
-  const endMs = new Date(customEnd.value).getTime();
+  // The picker has minute precision, so the end is the whole minute that was
+  // picked, through its last millisecond. startPeriod widens it to the hour
+  // that holds it, because the server rounds its bound down to the hour.
+  const endMs = new Date(customEnd.value).getTime() + 59_999;
   if (isNaN(startMs) || isNaN(endMs) || startMs >= endMs) {
     customRangeError.value = t('customInvalidRange');
     return;
@@ -734,7 +794,11 @@ function setPreset(preset: Preset): void {
 async function refreshRPM(): Promise<void> {
   if (visibility.value === 'hidden') return;
   try {
-    const res = await adminApi.rpm();
+    // The summary's live figure is narrowed by the filters, so this poll must
+    // be too, or the header flips between two numbers on every tick. The
+    // server fixes the window at the last minute whatever period is sent.
+    const query = sliceQuery().toString();
+    const res = await adminApi.rpm(query ? `?${query}` : '');
     currentRPM.value = res.rpm;
   } catch {
     // Keep existing RPM on transient error
@@ -764,6 +828,7 @@ watch(visibility, (now, was) => {
 
 function refreshQuietly(): void {
   if (visibility.value === 'hidden' || !loaded.value) return;
+  startPeriod();
   abortSummary();
   abortRecords();
   const currentSummaryCtrl = new AbortController();
@@ -832,15 +897,16 @@ let savedCustomUntil = 0;
   <div v-else-if="!loaded" class="oa-report-loading" role="status" :aria-label="t('loading')"><div /><div /><div /></div>
 
   <div v-else class="oa-report">
+    <AdminFailure v-if="policyReadError" :message="policyReadError" @retry="openPolicy" />
     <div id="usageFilters" class="oa-report-filters">
       <OaSelect class="oa-filter-select" :class="{ set: !!filters.model }" :model-value="filters.model" :aria-label="t('colModel')"
-        :choices="choicesFor('model', 'filterAllModels')" @update:model-value="setFilter('model', $event)" />
+        :choices="modelChoices" @update:model-value="setFilter('model', $event)" />
       <OaSelect class="oa-filter-select" :class="{ set: !!filters.user }" :model-value="filters.user" :aria-label="t('colUser')"
-        :choices="choicesFor('user', 'filterAllUsers')" @update:model-value="setFilter('user', $event)" />
+        :choices="userChoices" @update:model-value="setFilter('user', $event)" />
       <OaSelect class="oa-filter-select" :class="{ set: !!filters.group }" :model-value="filters.group" :aria-label="t('colGroup')"
-        :choices="choicesFor('group', 'anyGroup')" @update:model-value="setFilter('group', $event)" />
+        :choices="groupChoices" @update:model-value="setFilter('group', $event)" />
       <OaSelect class="oa-filter-select" :class="{ set: !!filters.provider }" :model-value="filters.provider" :aria-label="t('colProvider')"
-        :choices="choicesFor('provider', 'filterAllProviders')" @update:model-value="setFilter('provider', $event)" />
+        :choices="providerChoices" @update:model-value="setFilter('provider', $event)" />
       <OaSelect class="oa-filter-select" :class="{ set: !!filters.status }" :model-value="filters.status" :aria-label="t('colStatus')"
         :choices="outcomeChoices" :searchable="false" @update:model-value="setFilter('status', $event)" />
       <button v-if="anyFilter" type="button" class="oa-text-btn" @click="clearFilters">{{ t('filterClear') }}</button>
@@ -938,7 +1004,7 @@ let savedCustomUntil = 0;
       <UsagePlot
         v-if="plotPoints.some((point) => point.value > 0)"
         ref="plot" v-model:active="activePoint" :points="plotPoints" :bucket-ms="report?.bucket_ms ?? 3600000"
-        :format="trendFormat" :label="t('dashboardChartKeyboard')" :height="190"
+        :offset-ms="offsetMs" :format="trendFormat" :label="t('dashboardChartKeyboard')" :height="190"
       />
       <p v-else class="oa-viz-empty">{{ t('noRequestsPeriod') }}</p>
       <footer class="oa-viz-foot">
@@ -947,7 +1013,7 @@ let savedCustomUntil = 0;
       </footer>
     </section>
 
-    <UsageAllowances v-if="!filters.user" :group-id="filters.group" @select="setFilter('user', $event)" />
+    <UsageAllowances v-if="!filters.user" :key="allowanceRevision" :group-id="filters.group" @select="setFilter('user', $event)" />
 
     <div class="oa-report-row">
       <section v-if="!filters.model" id="secPopularModels" class="oa-viz-card">
@@ -1007,7 +1073,7 @@ let savedCustomUntil = 0;
             <button type="button" :aria-pressed="spread === 'status'" @click="onSpreadChoice('status')">{{ t('spreadOutcomes') }}</button>
           </div>
         </header>
-        <UsageBoard :rows="spreadRows" :kind="spread === 'status' ? 'provider' : spread" metric="requests" :limit="5" :empty-text="t('nothingInPeriod')" @select="onSpread" />
+        <UsageBoard :rows="spreadRows" :kind="spread" metric="requests" :limit="5" :empty-text="t('nothingInPeriod')" @select="onSpread" />
       </section>
     </div>
 
@@ -1015,7 +1081,9 @@ let savedCustomUntil = 0;
       <header class="oa-viz-head">
         <div><span class="oa-kicker">{{ t('recordsHint') }}</span><h2>{{ t('secRequestsN', { count: recordTotal }) }}</h2></div>
       </header>
+      <AdminFailure v-if="recordError" :message="recordError" @retry="changeRecords(recordPage)" />
       <OaTable
+        v-else
         :pagination="{ ...recordPage, total: recordTotal }"
         :busy="recordsBusy"
         :columns="recordColumns"
@@ -1076,13 +1144,13 @@ let savedCustomUntil = 0;
         v-model="policyForm.windows[kind].requests"
         :label="t('limitRequests')"
         :placeholder="t('noLimit')"
-        :min="0"
+        :min="1"
       />
       <OaNumberField
         v-model="policyForm.windows[kind].tokens"
         :label="t('limitTokens')"
         :placeholder="t('noLimit')"
-        :min="0"
+        :min="1"
       />
       <CreditsField v-model="policyForm.windows[kind].credits" />
     </template>

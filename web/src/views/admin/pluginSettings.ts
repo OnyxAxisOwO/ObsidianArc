@@ -55,6 +55,36 @@ export function usePluginSettings(page: SettingsSection['page']) {
     return out;
   }
 
+  /**
+   * After a save, only the keys it sent take what the server now holds. Loading
+   * the whole response again would also overwrite what was typed while the
+   * request was in flight: that edit is not in the payload, so it stays in the
+   * draft, unsaved.
+   *
+   * Returns the baseline for the sent keys. A secret's baseline is the empty
+   * draft that collect() reads as "keep what is stored", as load() leaves it.
+   */
+  function settle(sent: Record<string, string>, saved: Record<string, string>): Record<string, string> {
+    const baseline: Record<string, string> = {};
+    for (const section of sections.value) {
+      for (const control of section.controls) {
+        const key = control.key;
+        if (!(key in sent)) continue;
+        if (control.kind === 'secret') {
+          hints[key] = saved[key] ?? '';
+          if ((draft[key] ?? '').trim() === sent[key]) draft[key] = '';
+          baseline[key] = '';
+          continue;
+        }
+        const typed = control.kind === 'text' ? (draft[key] ?? '').trim() : (draft[key] ?? '');
+        const now = saved[key] ?? sent[key] ?? '';
+        if (typed === sent[key]) draft[key] = now;
+        baseline[key] = now;
+      }
+    }
+    return baseline;
+  }
+
   /** The page's categories with each plugin section listed under its own. */
   function withSections(groups: WorkbenchGroup[]): WorkbenchGroup[] {
     return groups.map((group) => ({
@@ -77,5 +107,5 @@ export function usePluginSettings(page: SettingsSection['page']) {
     [section.title(), section.hint?.() ?? '', ...section.controls.map((c) => c.label()), ...(section.keywords ?? [])],
   ])));
 
-  return { sections, draft, hints, load, collect, withSections, withColumns, words };
+  return { sections, draft, hints, load, collect, settle, withSections, withColumns, words };
 }

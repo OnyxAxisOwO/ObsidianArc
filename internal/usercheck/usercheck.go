@@ -33,6 +33,15 @@ var (
 	ErrUnavailable   = errors.New("usercheck: email screening is temporarily unavailable")
 	ErrNotConfigured = errors.New("usercheck: an API key is required when screening is enabled")
 	ErrInvalidConfig = errors.New("usercheck: invalid configuration")
+	// The provider saying the key is wrong or revoked. It is not an outage, so
+	// the admin test can ask for the key to be fixed rather than telling the
+	// operator to wait.
+	ErrKeyRefused = errors.New("usercheck: the API key was refused")
+	// A stored key sealed under a master secret this process no longer has,
+	// as after a key-lost restore. It is an invalid configuration (it wraps
+	// ErrInvalidConfig) with an answer of its own, because the one thing the
+	// administrator can do is enter a new key or clear the old one.
+	ErrKeyUnreadable = fmt.Errorf("%w: the stored API key cannot be read", ErrInvalidConfig)
 	domainRE         = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$`)
 )
 
@@ -110,13 +119,19 @@ func (m *Manager) load(ctx context.Context) error {
 		return fmt.Errorf("usercheck: invalid stored configuration: %w", err)
 	}
 	if len(sealed) > 0 {
-		m.apiKey, err = m.box.Open(sealed)
+		key, err := m.box.Open(sealed)
 		if err != nil {
-			return fmt.Errorf("usercheck: open stored API key: %w", err)
+			// Sealed under a master secret this process no longer has (a
+			// key-lost restore, a rotated SECRET_KEY). Refusing to boot would
+			// also take down the settings screen that can enter the key again,
+			// so start without it and let the lookup follow the failure policy.
+			slog.ErrorContext(ctx, "UserCheck stored API key cannot be opened; enter it again in the settings", "error", err)
+		} else {
+			m.apiKey = key
 		}
 	}
 	if cfg.Enabled && m.apiKey == "" {
-		return ErrNotConfigured
+		slog.WarnContext(ctx, "UserCheck is enabled without a usable API key; lookups follow the failure policy")
 	}
 	cfg.APIKeySet = m.apiKey != ""
 	m.cfg = cfg
@@ -127,7 +142,9 @@ func (m *Manager) Config() Config {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	cfg := m.cfg
-	cfg.ExemptDomains = append([]string(nil), cfg.ExemptDomains...)
+	// A nil copy of an empty list marshals as JSON null, which the backoffice
+	// cannot read back as a list; an empty exemption list must stay [].
+	cfg.ExemptDomains = append(make([]string, 0, len(cfg.ExemptDomains)), cfg.ExemptDomains...)
 	return cfg
 }
 
@@ -155,14 +172,27 @@ func (m *Manager) Save(ctx context.Context, cfg Config, apiKey string, clearKey 
 		// reaches the shared row lock, not the key cached when it started.
 		var currentSealed []byte
 		readErr := tx.QueryRow(ctx, `SELECT api_key FROM usercheck_config WHERE id = 1`).Scan(&currentSealed)
+		// Only a save that keeps the stored key needs it opened. Opening it for a
+		// save that replaces or clears it would let an unreadable row block the
+		// very save that repairs it.
+		keepStored := !clearKey && strings.TrimSpace(apiKey) == ""
 		currentKey := ""
 		switch {
 		case readErr == nil && len(currentSealed) > 0:
-			opened, err := m.box.Open(currentSealed)
-			if err != nil {
-				return fmt.Errorf("usercheck: open stored API key: %w", err)
+			if keepStored {
+				opened, err := m.box.Open(currentSealed)
+				switch {
+				case err == nil:
+					currentKey = opened
+				case cfg.Enabled:
+					return fmt.Errorf("%w; enter a new key or clear it", ErrKeyUnreadable)
+				default:
+					// Screening is being switched off, which needs no key. The
+					// unreadable blob is dropped with the save, as clearing it
+					// would; this process could not have used it.
+					slog.WarnContext(ctx, "UserCheck stored API key cannot be opened and is dropped while screening is off", "error", err)
+				}
 			}
-			currentKey = opened
 		case database.IsNotFound(readErr):
 			currentKey = m.apiKey
 		case readErr != nil:
@@ -319,7 +349,10 @@ func (m *Manager) lookup(ctx context.Context, email, key string) (Result, error)
 	req, err := http.NewRequestWithContext(lookupCtx, http.MethodGet,
 		apiURL+url.PathEscape(email)+"?include_mx=false", nil)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: create request: %v", ErrUnavailable, err)
+		// The parse error quotes the whole URL, and the address is in it. The
+		// lookup failure is logged at Warn, so it must not carry the address
+		// the rest of this function keeps out of logs.
+		return Result{}, fmt.Errorf("%w: create request", ErrUnavailable)
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Accept", "application/json")
@@ -333,6 +366,9 @@ func (m *Manager) lookup(ctx context.Context, email, key string) (Result, error)
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusTooManyRequests {
 			m.backoff(resp.Header.Get("Retry-After"))
+		}
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return Result{}, fmt.Errorf("%w: HTTP %d", ErrKeyRefused, resp.StatusCode)
 		}
 		return Result{}, fmt.Errorf("%w: HTTP %d", ErrUnavailable, resp.StatusCode)
 	}
@@ -376,6 +412,15 @@ func emailDomain(email string) string {
 		return ""
 	}
 	return strings.ToLower(email[at+1:])
+}
+
+// ReleaseTest gives back a claim whose lookup was refused before it could
+// answer, so the corrected key can be tested at once. It resets only the claim
+// it made: a later claim that has since been written stands.
+func (m *Manager) ReleaseTest(ctx context.Context, claimed time.Time) error {
+	_, err := m.db.Exec(ctx, `UPDATE usercheck_test_limiter SET last_sent_at = 0
+		WHERE id = 1 AND last_sent_at = ?`, claimed.UnixMilli())
+	return err
 }
 
 // The test endpoint spends paid credits, so its cooldown is shared through

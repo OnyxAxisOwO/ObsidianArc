@@ -41,6 +41,9 @@ const TERMS = {
   ],
   invites: [
     'secInvites', 'inviteYourCode', 'inviteYourLink', 'inviteRegenerate', 'inviteesEmpty', 'haveInviteCode',
+    // The claim box is inside this group's panel, so a search for it has to
+    // match the box or the box is hidden by the very search that asks for it.
+    'inviteClaimTitle', 'inviteClaimHint', 'inviteCodePlaceholder',
   ],
 } satisfies Record<string, StringKey[]>;
 

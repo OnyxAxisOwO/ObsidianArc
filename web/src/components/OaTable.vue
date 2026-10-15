@@ -34,7 +34,9 @@ const props = defineProps<{
    * Makes the rows draggable, and hands back the whole list in the order they
    * were left in. Ignored while a column sort is on: the rows would be
    * showing an order nobody stored, and dropping one into it would be writing
-   * down a position the reader never actually chose.
+   * down a position the reader never actually chose. Also ignored when the
+   * caller pages the rows itself: the rows on screen are one server page, and
+   * the positions dragged between them are not positions in the whole list.
    */
   reorderable?: boolean;
   pagination?: PageState & { total: number };
@@ -127,7 +129,7 @@ const ordered = computed<T[]>(() => {
   });
 });
 
-const draggable = computed(() => !!props.reorderable && !props.sort);
+const draggable = computed(() => !!props.reorderable && !props.sort && !props.pagination);
 
 const dragging = ref<number | null>(null);
 const dropBefore = ref<number | null>(null);
@@ -185,8 +187,28 @@ function onDrop(event: DragEvent, index: number): void {
   if (from === null || from === index) return;
   const next = [...ordered.value];
   const [moved] = next.splice(from, 1);
-  next.splice(index, 0, moved!);
+  // The rows can shrink while a drag is in flight (a filter, a deletion); the
+  // position it started from may then hold nothing, and writing that hole back
+  // would hand the caller an undefined row.
+  if (moved === undefined) return;
+  next.splice(index, 0, moved);
   emit('reorder', next);
+}
+
+// A key that bubbles up from a control inside a cell is that control's: Enter
+// on a button there has to click the button, not open the row around it.
+function onRowKey(event: KeyboardEvent, row: T): void {
+  if (!props.selectable || event.target !== event.currentTarget) return;
+  event.preventDefault();
+  emit('select', row);
+}
+
+// The same rule for the click that Enter or Space on a button turns into: the
+// control's click must not reach the row's handler.
+function onRowClick(event: MouseEvent, row: T): void {
+  const target = event.target as Element;
+  if (target !== event.currentTarget && target.closest('button,a,input,select,textarea')) return;
+  emit('select', row);
 }
 
 function clearMarks(): void {
@@ -258,9 +280,9 @@ function clearMarks(): void {
           }"
           :draggable="draggable"
           :tabindex="props.selectable ? 0 : undefined"
-          @click="props.selectable && emit('select', row)"
-          @keydown.enter.prevent="props.selectable && emit('select', row)"
-          @keydown.space.prevent="props.selectable && emit('select', row)"
+          @click="props.selectable && onRowClick($event, row)"
+          @keydown.enter="onRowKey($event, row)"
+          @keydown.space="onRowKey($event, row)"
           @dragstart="draggable && onDragStart($event, index)"
           @dragover="draggable && onDragOver($event, index)"
           @drop="draggable && onDrop($event, index)"

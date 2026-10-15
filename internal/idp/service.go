@@ -79,7 +79,12 @@ func (e *RedirectableError) Error() string { return "idp: " + e.Code + ": " + e.
 func (s *Service) Read(ctx context.Context, query url.Values) (Request, error) {
 	app, err := s.store.AppByClientID(ctx, nil, strings.TrimSpace(query.Get("client_id")))
 	if err != nil {
-		return Request{}, ErrNotFound
+		// A read failure is not an unknown application. Calling it one would
+		// show the person "unknown application" during an outage.
+		if errors.Is(err, ErrNotFound) {
+			return Request{}, ErrNotFound
+		}
+		return Request{}, err
 	}
 	if app.Disabled {
 		return Request{}, ErrNotFound
@@ -263,40 +268,52 @@ func (s *Service) Exchange(ctx context.Context, issuer string, app App, form url
 		return Tokens{}, ErrBadCode
 	}
 
-	record, err := s.store.RedeemCode(ctx, code)
+	// The checks run before the code is spent. A presentation that fails them
+	// is not a use of the code, so a guessed verifier cannot burn it for the
+	// application that holds it.
+	record, err := s.store.RedeemVerifiedCode(ctx, code, func(record Code) error {
+		return checkPresentation(app, form, record)
+	})
 	if err != nil {
 		return Tokens{}, err
-	}
-	// The code belongs to whoever it was issued to. Without this, any
-	// application that can authenticate itself could spend another's code.
-	if record.AppID != app.ID {
-		return Tokens{}, ErrBadCode
-	}
-	// And to the callback it was issued for: the specification requires the
-	// same value again, and it is what stops a code issued for one of an
-	// application's callbacks being spent against another.
-	if redirect := form.Get("redirect_uri"); redirect != record.RedirectURI {
-		return Tokens{}, ErrBadCode
-	}
-
-	if record.CodeChallenge != "" {
-		verifier := form.Get("code_verifier")
-		if verifier == "" {
-			return Tokens{}, ErrPKCE
-		}
-		sum := sha256.Sum256([]byte(verifier))
-		computed := base64.RawURLEncoding.EncodeToString(sum[:])
-		if subtle.ConstantTimeCompare([]byte(computed), []byte(record.CodeChallenge)) != 1 {
-			return Tokens{}, ErrPKCE
-		}
-	} else if !app.Confidential {
-		return Tokens{}, ErrPKCERequired
 	}
 
 	if !s.mayBeVouched(ctx, record.UserID) {
 		return Tokens{}, ErrBadCode
 	}
 	return s.issue(ctx, issuer, app, record.UserID, within(record.Scopes, app.Scopes), record.Nonce)
+}
+
+// checkPresentation is every check a code presentation must pass before it
+// counts as a use of the code: the code belongs to this application, to the
+// callback it was issued for, and the verifier matches the challenge.
+func checkPresentation(app App, form url.Values, record Code) error {
+	// The code belongs to whoever it was issued to. Without this, any
+	// application that can authenticate itself could spend another's code.
+	if record.AppID != app.ID {
+		return ErrBadCode
+	}
+	// And to the callback it was issued for: the specification requires the
+	// same value again, and it is what stops a code issued for one of an
+	// application's callbacks being spent against another.
+	if redirect := form.Get("redirect_uri"); redirect != record.RedirectURI {
+		return ErrBadCode
+	}
+
+	if record.CodeChallenge != "" {
+		verifier := form.Get("code_verifier")
+		if verifier == "" {
+			return ErrPKCE
+		}
+		sum := sha256.Sum256([]byte(verifier))
+		computed := base64.RawURLEncoding.EncodeToString(sum[:])
+		if subtle.ConstantTimeCompare([]byte(computed), []byte(record.CodeChallenge)) != 1 {
+			return ErrPKCE
+		}
+	} else if !app.Confidential {
+		return ErrPKCERequired
+	}
+	return nil
 }
 
 // mayBeVouched is asked before anything is issued in an account's name. A
@@ -340,6 +357,32 @@ func (s *Service) Refresh(ctx context.Context, issuer string, app App, form url.
 		return Tokens{}, ErrBadToken
 	}
 
+	// A token issued to another application is refused before the rotation
+	// spends it. Spending it here would let anyone holding a copy burn the
+	// owner's token by presenting it under a client id of their own, and the
+	// owner's next refresh would then read as a replay.
+	holder, live, err := s.store.liveRefreshApp(ctx, presented)
+	if err != nil {
+		return Tokens{}, err
+	}
+	if live && holder.AppID != app.ID {
+		return Tokens{}, ErrBadToken
+	}
+
+	// The identity token is built before the spend, as issue builds it. It can
+	// fail on a read, and a failure after the spend would leave the token spent
+	// with nothing handed back: the client's retry would present a spent token,
+	// which reads as a replay and signs the application out everywhere. A token
+	// that is not live is refused by Rotate below, so there is nothing to build.
+	var idToken string
+	if live {
+		idToken, err = s.identityToken(ctx, issuer, app, holder.UserID,
+			within(holder.Scopes, app.Scopes), "")
+		if err != nil {
+			return Tokens{}, err
+		}
+	}
+
 	access := id.Secret(32)
 	refresh := id.Secret(32)
 	rotated, err := s.store.Rotate(ctx, presented, access, refresh)
@@ -347,9 +390,10 @@ func (s *Service) Refresh(ctx context.Context, issuer string, app App, form url.
 		return Tokens{}, err
 	}
 	if rotated.AppID != app.ID {
-		// Issued to somebody else. The row has already been spent by the
-		// rotation above, which is the right outcome for a token presented by
-		// an application that does not hold it.
+		// Unreachable: the pre-check above refuses a live token of another
+		// application before the spend, and a row's app_id does not change. The
+		// guard stays so that loosening the pre-check cannot issue a pair for the
+		// wrong application.
 		return Tokens{}, ErrBadToken
 	}
 	// After the rotation, so the token presented is spent either way: it
@@ -361,10 +405,6 @@ func (s *Service) Refresh(ctx context.Context, issuer string, app App, form url.
 
 	// What the application may hold now, not what the token was issued with.
 	scopes := within(rotated.Scopes, app.Scopes)
-	idToken, err := s.identityToken(ctx, issuer, app, rotated.UserID, scopes, "")
-	if err != nil {
-		return Tokens{}, err
-	}
 	return Tokens{
 		AccessToken:  access,
 		TokenType:    "Bearer",
@@ -380,11 +420,16 @@ func (s *Service) issue(
 ) (Tokens, error) {
 	access := id.Secret(32)
 	refresh := id.Secret(32)
-	if _, err := s.store.SaveToken(ctx, nil, access, refresh, app.ID, userID, scopes); err != nil {
-		return Tokens{}, err
-	}
+	// The identity token is built before the pair is saved, because it can fail
+	// (a group read) and a pair saved first would be left live with nothing
+	// handed back for it.
 	idToken, err := s.identityToken(ctx, issuer, app, userID, scopes, nonce)
 	if err != nil {
+		return Tokens{}, err
+	}
+	// Only while the account still holds the application: a withdrawal that
+	// committed after the code was redeemed must not leave a live pair behind.
+	if _, err := s.store.SaveGrantedToken(ctx, access, refresh, app.ID, userID, scopes); err != nil {
 		return Tokens{}, err
 	}
 	return Tokens{
@@ -414,14 +459,20 @@ func (s *Service) identityToken(
 		Nonce:    nonce,
 		Scope:    strings.Join(scopes, " "),
 	}
-	s.fill(ctx, &claims, account, scopes)
+	if err := s.fill(ctx, &claims, account, scopes); err != nil {
+		return "", err
+	}
 	return s.keys.Sign(ctx, claims)
 }
 
 // fill adds the claims each granted scope carries. One place, so the identity
 // token and the identity endpoint cannot come to disagree about what a scope
 // means.
-func (s *Service) fill(ctx context.Context, claims *Claims, account user.User, scopes []string) {
+//
+// A failed read is an error, not a missing claim: an application that maps
+// groups to roles would otherwise treat the account as ungrouped, and nothing
+// would say so.
+func (s *Service) fill(ctx context.Context, claims *Claims, account user.User, scopes []string) error {
 	if Covers(scopes, []string{ScopeProfile}) {
 		claims.Username = account.Username
 		claims.Name = account.DisplayName()
@@ -442,10 +493,18 @@ func (s *Service) fill(ctx context.Context, claims *Claims, account user.User, s
 		claims.EmailVerified = &verified
 	}
 	if Covers(scopes, []string{ScopeGroups}) && account.GroupID != "" {
-		if found, err := s.groups.ByID(ctx, nil, account.GroupID); err == nil {
+		found, err := s.groups.ByID(ctx, nil, account.GroupID)
+		switch {
+		case err == nil:
 			claims.Groups = []string{found.Name}
+		case errors.Is(err, group.ErrNotFound):
+			// The group was deleted from under the account: there is no name to
+			// send, and that is not a failure of the request.
+		default:
+			return fmt.Errorf("idp: read the account's group: %w", err)
 		}
 	}
+	return nil
 }
 
 // UserInfo answers the identity endpoint.
@@ -485,7 +544,9 @@ func (s *Service) UserInfo(ctx context.Context, issuer, token string) (map[strin
 	// The application's current scopes bound what the token may carry, for the
 	// same reason Refresh gives: see within.
 	claims := Claims{Issuer: issuer, Subject: account.ID}
-	s.fill(ctx, &claims, account, within(record.Scopes, app.Scopes))
+	if err := s.fill(ctx, &claims, account, within(record.Scopes, app.Scopes)); err != nil {
+		return nil, err
+	}
 
 	out := map[string]any{"sub": claims.Subject}
 	if claims.Username != "" {

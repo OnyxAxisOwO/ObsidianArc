@@ -9,6 +9,7 @@
 
 import { ref, watch, type Ref } from 'vue';
 import { completeConsoleLine, execConsoleLine, type ConsoleCompletion } from '@/api/console';
+import { t } from '@/composables/useI18n';
 import { currentUser } from '@/stores/session';
 import { createAnsiTokenizer, initialAnsiState, tokenizeAnsiChunk, type AnsiToken } from './ansi';
 
@@ -54,9 +55,10 @@ const HISTORY_CAP = 500;
  * from the text alone, and on the safe side — a line wrongly kept out of
  * history costs a retype, one wrongly kept is a password in localStorage.
  *
- * The flag names are the ones the console marks Sensitive plus anything that
- * reads like them, so a flag added later is covered without anyone having to
- * remember this file exists.
+ * The regex covers only flag names that are credential-shaped (passwords,
+ * secrets, tokens, API keys, headers, codes, credentials). The server masks a wider set
+ * marked Sensitive, but only in its audit line, and most of that wider set is
+ * not a credential, so those flags stay in history.
  */
 const SENSITIVE_FLAG = /(?:^|\s)-{1,2}[\w-]*(?:pass(?:word|wd)?|secret|token|api-?key|header|code|turnstile|credential)[\w-]*(?=$|[\s=])/i;
 // `user passwd bob hunter2` carries a password as a bare word with no flag for
@@ -65,11 +67,73 @@ const SENSITIVE_FLAG = /(?:^|\s)-{1,2}[\w-]*(?:pass(?:word|wd)?|secret|token|api
 // another command, which is matched here by its own words, so `watch usage rpm`
 // stays in history like any other line.
 const SENSITIVE_COMMAND =
-  /(?:^|\s)(?:setting\s+import|2fa\s+(?:enable|disable|recovery|backoffice)|me\s+invite\s+claim|backup\s+import|login-bg\s+set|logo\s+set|user\s+passwd)(?=\s|$)/i;
+  /(?:^|\s)(?:setting\s+import|2fa\s+(?:enable|disable|recovery|backoffice)|me\s+invite\s+claim|me\s+passwd|backup\s+import|login-bg\s+set|logo\s+set|user\s+passwd)(?=\s|$)/i;
+// `user create <name> <password>`: the console declares only the name, so the
+// second positional is the secret, and the server masks it for the same reason.
+const SENSITIVE_POSITIONAL = /(?:^|\s)user\s+create\s+\S+\s+[^\s-]/i;
 const SECRET_SETTING = /(?:^|\s)setting\s+set\s+\S*(?:secret|pass(?:word|wd)|token|key|credential)/i;
 
+/**
+ * Quotes and backslashes are stripped before matching, as the server's own
+ * tokeniser strips them before it reads a line: `'--password'` and
+ * `'user passwd' bob` are the same command to the console, so they must be the
+ * same line here. Stripping is not always the safe direction, though: it turns
+ * `"-hunter2"` into a dash-led token the positional rule's lookahead rejects,
+ * so that rule is also run on the raw line. The stripped text is still needed
+ * for quoted command words, as in `"user" create bob hunter2`.
+ */
 export function isSensitiveTerminalLine(line: string): boolean {
-  return SENSITIVE_FLAG.test(line) || SENSITIVE_COMMAND.test(line) || SECRET_SETTING.test(line);
+  const text = line.replace(/["'\\]/g, '');
+  return (
+    SENSITIVE_FLAG.test(text) ||
+    SENSITIVE_COMMAND.test(text) ||
+    SENSITIVE_POSITIONAL.test(text) ||
+    SENSITIVE_POSITIONAL.test(line) ||
+    SECRET_SETTING.test(text)
+  );
+}
+
+/**
+ * What the scrollback shows for a line that must not be kept: its command
+ * words, then `***`. The echo is the one copy of the typed text that would
+ * otherwise stay on screen for the life of the tab; the server's audit line
+ * masks the same tail.
+ */
+function redactTerminalEcho(line: string): string {
+  const words = line.trim().split(/\s+/);
+  const shown: string[] = [];
+  for (const word of words) {
+    // A flag is where a value may start, so the words stop before it.
+    if (shown.length === 2 || word.startsWith('-')) break;
+    shown.push(word);
+  }
+  return shown.length === words.length ? shown.join(' ') : [...shown, '***'].join(' ');
+}
+
+/**
+ * Whether the line is the `lang` command. The console looks a command up by
+ * its exact first word. Quotes are dropped before the comparison because the
+ * console reads `"lang"` as the word `lang`, so `"lang" zh` counts too.
+ */
+function isLangCommand(line: string): boolean {
+  const first = line.trim().split(/\s+/)[0] ?? '';
+  return first.replace(/["'\\]/g, '') === 'lang';
+}
+
+function utf8Length(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/** The UTF-16 index of a UTF-8 byte offset into `line`; an offset past the end is the end. */
+function utf16IndexOfByteOffset(line: string, byteOffset: number): number {
+  let bytes = 0;
+  let index = 0;
+  for (const ch of line) {
+    if (bytes >= byteOffset) break;
+    bytes += utf8Length(ch);
+    index += ch.length;
+  }
+  return index;
 }
 
 function historyKey(userId: string | null): string | null {
@@ -155,6 +219,7 @@ export interface TerminalSession {
   cancel(): void;
   /** Walks command history into `draft`, saving the in-progress draft on the first `'up'` and restoring it once `'down'` walks back past the newest entry — the same model a shell's readline uses. */
   recall(direction: RecallDirection): void;
+  /** `pos` and the returned `from` are UTF-16 indexes into `line`, the units the draft is held in; the server's byte offsets are converted here and nowhere else. */
   complete(line: string, pos: number): Promise<ConsoleCompletion>;
   /** `Ctrl-L`: an instant, local clear — no round trip, unlike the server's own `clear` command, whose ANSI clear sequence arrives through the normal `run()` path and is handled identically. */
   clearScrollback(): void;
@@ -175,6 +240,25 @@ export interface CreateTerminalSessionOptions {
   getColumns: () => number;
 }
 
+/**
+ * How many ANSI tokens one scrollback block holds before the next one starts.
+ * Small enough that a long-running command is trimmed promptly, large enough
+ * that an ordinary table is still one block.
+ */
+const maxTokensPerBlock = 400;
+
+/**
+ * Every token is one span the page mounts, and a coloured listing can put 400
+ * of them in one block, so the block count alone allowed millions of nodes at
+ * the largest setting. Ordinary output sits far under this: a plain line is
+ * one or two tokens, so the line setting still decides what is kept and this
+ * only trims heavily coloured output.
+ *
+ * Module scope: the factory pushes the banner, and that push trims against
+ * this budget, so a `const` further down the factory would not be set yet.
+ */
+const MAX_RETAINED_TOKENS = 50_000;
+
 export function createTerminalSession(options: CreateTerminalSessionOptions): TerminalSession {
   const id = options.id;
   const title = ref(options.title ?? '');
@@ -188,6 +272,9 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
   let currentOutputBlock: ScrollbackBlock | null = null;
   let historyIndex = -1; // -1 means "not browsing history, draft is live"
   let savedDraft = '';
+  // Tokens held across every block, kept as a running total so trimming never
+  // has to walk the scrollback to count them.
+  let retainedTokens = 0;
 
   if (options.banner) {
     pushBlock('banner', tokenizeAnsiChunk(options.banner, initialAnsiState()).tokens);
@@ -197,27 +284,34 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
     const block: ScrollbackBlock = { id: nextBlockId, kind, tokens, timestamp: Date.now() };
     nextBlockId += 1;
     scrollback.value.push(block);
+    retainedTokens += tokens.length;
     trimScrollback();
     // Return the reactive proxy inside scrollback rather than the raw block,
     // so subsequent token appends to currentOutputBlock trigger Vue updates.
     return scrollback.value[scrollback.value.length - 1] ?? block;
   }
 
-  /**
-   * How many ANSI tokens one scrollback block holds before the next one
-   * starts. Small enough that a long-running command is trimmed promptly,
-   * large enough that an ordinary table is still one block.
-   */
-  const maxTokensPerBlock = 400;
-
   function trimScrollback(): void {
     // Capped by block count, not by rendered line count: a block can hold
     // embedded newlines, and computing how those wrap needs the pane's own
-    // column width, which this module never measures. One block is one
-    // echoed line or one SSE `out` chunk, which in practice is the same
-    // granularity a reader thinks of as "one thing that happened".
-    const overflow = scrollback.value.length - scrollbackCap;
-    if (overflow > 0) scrollback.value.splice(0, overflow);
+    // column width, which this module never measures. Output also rolls over
+    // to a new block every maxTokensPerBlock tokens, so one SSE chunk can span
+    // several blocks and one block can hold several chunks; the total is
+    // bounded by MAX_RETAINED_TOKENS.
+    //
+    // The newest block is never dropped: it is the one output is still being
+    // written into.
+    const blocks = scrollback.value;
+    let drop = 0;
+    let tokens = retainedTokens;
+    while (drop < blocks.length - 1 && (blocks.length - drop > scrollbackCap || tokens > MAX_RETAINED_TOKENS)) {
+      tokens -= blocks[drop]!.tokens.length;
+      drop += 1;
+    }
+    if (drop > 0) {
+      blocks.splice(0, drop);
+      retainedTokens = tokens;
+    }
   }
 
   function appendEcho(line: string): void {
@@ -234,6 +328,7 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
         // `watch` redraws a whole frame from nothing each tick, exactly as
         // running `clear` in a real terminal would — CONTRACT.md #1.7.
         scrollback.value = [];
+        retainedTokens = 0;
         currentOutputBlock = null;
         continue;
       }
@@ -246,11 +341,17 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
         currentOutputBlock = pushBlock('output', []);
       }
       currentOutputBlock.tokens.push(token);
+      retainedTokens += 1;
     }
+    // Appended tokens can take the total over the budget without adding a
+    // block, so the trim that pushBlock runs is not enough on its own here.
+    trimScrollback();
   }
 
   /** Whether `format json` is in effect for this tab. See ConsoleExecDone. */
   let jsonFormat = false;
+  /** The language `lang` last set for this tab; undefined means the UI language. */
+  let lang: string | undefined;
 
   async function run(line: string): Promise<RunOutcome> {
     if (running.value) {
@@ -260,7 +361,10 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
       return { ok: false, code: 'busy', exit: false };
     }
 
-    appendEcho(line);
+    // The echo is the scrollback's own copy of what was typed, so a line kept
+    // out of history is not kept here either: its secret would stay on screen
+    // for the life of the tab. The raw line still goes to the server below.
+    appendEcho(isSensitiveTerminalLine(line) ? redactTerminalEcho(line) : line);
     draft.value = '';
     historyIndex = -1;
     savedDraft = '';
@@ -278,16 +382,24 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
     currentOutputBlock = null;
     const tokenizer = createAnsiTokenizer();
     let outcome: RunOutcome | null = null;
+    // Only `lang` changes the language a tab carries. The done frame echoes the
+    // session language after every command, so a comparison against what was
+    // sent cannot tell a `lang` that set the language it already had from an
+    // echo: the change was dropped whenever the UI language matched it.
+    const setsLang = isLangCommand(line);
 
     try {
       await execConsoleLine(
-        { line, cols: options.getColumns(), json: jsonFormat },
+        { line, cols: options.getColumns(), json: jsonFormat, ...(lang ? { lang } : {}) },
         {
           onOut: (text) => appendOutput(tokenizer.push(text)),
           onDone: (payload) => {
-            // `format json` is a session setting, and this is where a tab
-            // learns that it changed.
+            // `format json` and `lang` are session settings, and this is where
+            // a tab learns that they changed.
             jsonFormat = payload.json;
+            // A refused `lang` answers with the language it was sent with, and
+            // adopting that would pin the tab to the UI language for good.
+            if (setsLang && payload.ok && payload.lang) lang = payload.lang;
             outcome = { ok: payload.ok, code: payload.code, exit: payload.exit };
           },
           onError: (payload) => {
@@ -297,12 +409,23 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
         },
         controller.signal,
       );
+      // The stream ended with neither a done nor an error frame, so the
+      // connection dropped mid-command. Without this the spinner clears as if
+      // the command had stopped by itself.
+      if (outcome === null && !controller.signal.aborted) {
+        appendError(t('streamInterrupted'));
+        outcome = { ok: false, code: 'stream', exit: false };
+      }
     } catch (error) {
       if (!controller.signal.aborted) {
         appendError(error instanceof Error ? error.message : String(error));
         outcome = { ok: false, code: 'stream', exit: false };
       }
     } finally {
+      // Closes the request on every exit path. A handler that throws leaves the
+      // stream open otherwise, and the server keeps generating output for a tab
+      // that has stopped listening; after a normal finish this is a no-op.
+      controller.abort();
       running.value = false;
       if (activeController === controller) activeController = null;
       currentOutputBlock = null;
@@ -339,8 +462,12 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
   }
 
   async function complete(line: string, pos: number): Promise<ConsoleCompletion> {
+    // The server counts UTF-8 bytes. Sending the caret's UTF-16 index instead
+    // lands inside a multi-byte character as soon as a CJK argument precedes
+    // the caret, so the server completes against the wrong word.
     try {
-      return await completeConsoleLine(line, pos);
+      const result = await completeConsoleLine(line, utf8Length(line.slice(0, pos)), lang);
+      return { from: utf16IndexOfByteOffset(line, result.from), items: result.items };
     } catch {
       // Tab-completion is a convenience, not the command itself; a network
       // hiccup should leave the line alone, not surface as an error block.
@@ -350,6 +477,7 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
 
   function clearScrollback(): void {
     scrollback.value = [];
+    retainedTokens = 0;
     currentOutputBlock = null;
   }
 

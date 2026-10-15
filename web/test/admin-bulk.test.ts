@@ -7,8 +7,16 @@ import OaTable from '../src/components/OaTable.vue';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { t } from '../src/composables/useI18n';
 import AdminAnnouncements from '../src/views/admin/AdminAnnouncements.vue';
+import { pickJSONFile } from '../src/api/backup';
 import AdminModels from '../src/views/admin/AdminModels.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+
+// The import reads a file from the operator's disk; the test hands it a JSON
+// body directly. Everything else in the backup module stays real.
+vi.mock('../src/api/backup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/api/backup')>()),
+  pickJSONFile: vi.fn(),
+}));
 
 const settle = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -289,6 +297,189 @@ describe('AdminModels, several at once and in place', () => {
     expect(create.mock.calls[0]![0]['supports_streaming']).toBe(true);
     expect(panels.querySelector('.oa-drawer-flash')?.textContent).toContain('gpt-5.5');
     expect(rows().filter((row) => row.classList.contains('picked')).map((row) => row.textContent?.trim())).toEqual(['gpt-5.5']);
+  });
+
+  // Opening a stored free image model used to reset its weight to 1, because
+  // the seeding watched the flag that open() also sets. Saving then kept it.
+  it('keeps a stored free image model at weight zero when it is opened and saved', async () => {
+    const update = vi.spyOn(adminApi, 'updateModel').mockResolvedValue({ model: model('img') });
+    await mount([model('img', { supports_image_gen: true, request_weight: 0 })]);
+
+    host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
+    await settle();
+    panels.querySelector<HTMLButtonElement>('.oa-panel-foot .oa-btn.primary')!.click();
+    await settle();
+
+    expect(update).toHaveBeenCalledWith('img', expect.objectContaining({ request_weight: 0 }));
+  });
+
+  it('seeds the weight to one when the operator ticks image generation on', async () => {
+    const update = vi.spyOn(adminApi, 'updateModel').mockResolvedValue({ model: model('txt') });
+    await mount([model('txt', { request_weight: 0 })]);
+
+    host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
+    await settle();
+    const toggle = [...panels.querySelectorAll<HTMLLabelElement>('.oa-checkbox-field')]
+      .find((field) => field.querySelector('span')?.textContent === t('capImageGen'))!
+      .querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    toggle.click();
+    await settle();
+    panels.querySelector<HTMLButtonElement>('.oa-panel-foot .oa-btn.primary')!.click();
+    await settle();
+
+    expect(update).toHaveBeenCalledWith('txt', expect.objectContaining({ request_weight: 1, supports_image_gen: true }));
+  });
+
+  // navigator.clipboard is absent on a plain-http origin; the shared helper
+  // falls back to execCommand, and the button must say the copy worked.
+  it('copies a model ID through the fallback where the clipboard API is missing', async () => {
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true });
+    try {
+      await mount([model('a')]);
+      host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
+      await settle();
+      const copy = panels.querySelector<HTMLButtonElement>(`button[aria-label="${t('copy')}"]`)!;
+      copy.click();
+      await settle();
+
+      expect(execCommand).toHaveBeenCalledWith('copy');
+      expect(panels.querySelector<HTMLButtonElement>(`button[aria-label="${t('copied')}"]`)).not.toBeNull();
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+      Reflect.deleteProperty(document, 'execCommand');
+    }
+  });
+
+  it('says why a refused move was refused, and still snaps back to the stored order', async () => {
+    vi.spyOn(adminApi, 'reorderModels').mockRejectedValue(new ApiError(409, 'order_conflict', 'Another administrator moved this model first.'));
+    await mount([model('a'), model('b')]);
+
+    const rows = host.querySelectorAll('tbody tr');
+    rows[0]!.dispatchEvent(new Event('dragstart'));
+    rows[1]!.dispatchEvent(new Event('drop', { cancelable: true }));
+    await settle();
+
+    expect(adminApi.reorderModels).toHaveBeenCalledWith(['b', 'a']);
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Another administrator moved this model first.');
+    expect(adminApi.models).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('AdminModels, what the filter hides', () => {
+  let app: App | undefined;
+  let host: HTMLElement;
+  let panels: HTMLElement;
+  let actions: HTMLElement;
+
+  const model = (id: string): AdminModel => ({
+    id, provider_id: 'p1', provider_name: 'Prov', provider_kind: 'openai',
+    model_id: `up-${id}`, api_name: '', system_prompt: '', auto_disabled: false,
+    display_name: `Model ${id}`, description: '', avatar: '', enabled: true, hidden: false, sort_order: 0,
+    route_to_id: '', reasoning_style: '', reasoning_tiers: [],
+    supports_reasoning: false, supports_images: false, supports_vision: false, supports_streaming: true,
+    supports_system_prompt: true, supports_tools: false, supports_image_gen: false, supports_chat_image_gen: false,
+    emulate_tools: false, context_window: 0, max_output_tokens: 0,
+    request_weight: 0, input_token_weight: 1, output_token_weight: 1, reasoning_token_weight: 1,
+  });
+
+  async function mount(models: AdminModel[]): Promise<void> {
+    actions = document.createElement('div');
+    vi.spyOn(adminApi, 'models').mockResolvedValue({ models });
+    vi.spyOn(adminApi, 'providerOptions').mockResolvedValue({ providers: [{ id: 'p1', name: 'Prov', kind: 'openai', enabled: true }] });
+    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
+    vi.spyOn(adminApi, 'meta').mockResolvedValue({ provider_kinds: ['openai'], reasoning_styles: ['auto'] });
+    vi.spyOn(adminApi, 'health').mockResolvedValue({ hours: 24, models: [], policy: { probe: true, window_mins: 30, disable_after: 0 } });
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
+    app = createApp({
+      setup() {
+        providePanelHost(shallowRef(panels));
+        provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
+        return () => h(AdminModels);
+      },
+    });
+    app.use(router);
+    app.mount(host);
+    await settle();
+  }
+
+  const rowBox = (index: number) => host.querySelectorAll<HTMLInputElement>('tbody input[type="checkbox"]')[index]!;
+  const search = () => host.querySelector<HTMLInputElement>('input[type="search"]')!;
+  const typeSearch = async (value: string) => {
+    search().value = value;
+    search().dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+  };
+
+  beforeEach(() => {
+    host = document.createElement('div');
+    panels = document.createElement('div');
+    document.body.append(host, panels);
+  });
+
+  afterEach(async () => {
+    // The filter is kept for the page's lifetime, so it must not leak into the next test.
+    if (search()) await typeSearch('');
+    app?.unmount();
+    app = undefined;
+    host.remove();
+    panels.remove();
+    vi.restoreAllMocks();
+  });
+
+  it('counts and acts on the ticked rows it shows, and lets go of the ones it hides', async () => {
+    const update = vi.spyOn(adminApi, 'updateModel').mockResolvedValue({ model: model('a') });
+    await mount([model('a'), model('b'), model('c')]);
+    rowBox(0).click();
+    await nextTick();
+    rowBox(1).click();
+    await nextTick();
+    rowBox(2).click();
+    await nextTick();
+    expect(host.querySelector('.oa-bulk-bar')!.textContent).toContain(t('bulkSelected', { count: 3 }));
+
+    await typeSearch('Model a');
+    // b and c are still ticked but off screen: the bar must not count them, or
+    // the confirm would name rows the action never touches.
+    expect(host.querySelector('.oa-bulk-bar')!.textContent).toContain(t('bulkSelected', { count: 1 }));
+
+    const disable = [...host.querySelectorAll<HTMLButtonElement>('.oa-bulk-bar button')]
+      .find((button) => button.textContent?.trim() === t('bulkDisable'))!;
+    disable.click();
+    await settle();
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith('a', { enabled: false });
+
+    await typeSearch('');
+    expect(rowBox(1).checked).toBe(false);
+    expect(rowBox(2).checked).toBe(false);
+  });
+
+  // The report lists what an import would not take, keyed by the line. Two
+  // refusals with the same text (or a later report that repeats one) gave
+  // Vue duplicate keys to patch between.
+  it('lists skipped lines that repeat without a duplicate-key clash', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await mount([model('a')]);
+    vi.mocked(pickJSONFile).mockResolvedValue({ models: [] });
+    const importButton = () => [...host.querySelectorAll<HTMLButtonElement>('button'), ...actions.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === t('importModels'))!;
+    const importing = (skipped: string[]) => vi.spyOn(adminApi, 'importModels')
+      .mockResolvedValueOnce({ created: 0, updated: 0, skipped } as unknown as Awaited<ReturnType<typeof adminApi.importModels>>);
+
+    importing(['a', 'b']);
+    importButton().click();
+    await settle();
+    await settle();
+    expect(panels.querySelectorAll('.oa-code-line')).toHaveLength(2);
+
+    importing(['c', 'd', 'd']);
+    importButton().click();
+    await settle();
+    await settle();
+    expect(panels.querySelectorAll('.oa-code-line')).toHaveLength(3);
+    expect(warn.mock.calls.some((args) => String(args[0]).includes('Duplicate keys'))).toBe(false);
   });
 });
 

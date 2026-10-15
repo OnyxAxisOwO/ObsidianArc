@@ -3,6 +3,7 @@ package screening
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -318,5 +319,24 @@ func TestBotRegistrationMachinePatternsAreMentioned(t *testing.T) {
 				t.Errorf("%s prompt does not mention bot registration pattern or action %q:\n%s", mode, term, prompt)
 			}
 		}
+	}
+}
+
+// The cohort line names the batch by its templates, which sit at the end of
+// the line. Cutting the line at the length of a submitted value removed them
+// from every large batch, so the model was given counts and no shape.
+func TestCohortSummaryKeepsItsTemplatesOnALargeBatch(t *testing.T) {
+	facts := Facts{
+		Username: "user" + strings.Repeat("3", 28),
+		Email:    "u" + strings.Repeat("7", 31) + "@outlook.com",
+	}
+	for i := range 120 {
+		facts.Recent = append(facts.Recent, RecentSignup{
+			Username: "peer" + strconv.Itoa(i), Email: "p" + strconv.Itoa(i) + "@outlook.com",
+		})
+	}
+	described := describe(facts)
+	if !strings.Contains(described, "@outlook.com.") {
+		t.Fatalf("the cohort line lost its templates:\n%s", described)
 	}
 }

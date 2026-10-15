@@ -44,9 +44,10 @@ export default defineConfig({
   build: {
     outDir: OUT_DIR,
     emptyOutDir: true,
-    // Every byte here ends up inside the server binary and in the browser on
-    // first paint, so a regression is worth failing the build over rather
-    // than discovering in production.
+    // This limit only prints a warning; it never fails the build. The
+    // first-paint budget is asserted in web/test/bundle.test.ts, because every
+    // byte here is embedded in the server binary, and the entry script and
+    // stylesheet are what the browser downloads on first paint.
     chunkSizeWarningLimit: 400,
     target: 'es2022',
     sourcemap: false,

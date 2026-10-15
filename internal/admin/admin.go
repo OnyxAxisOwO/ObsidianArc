@@ -122,6 +122,13 @@ type Handlers struct {
 	usageBreakdownCache map[string]*cachedUsageBreakdown
 	usageSummarySF      singleflight.Group
 	usageBreakdownSF    singleflight.Group
+	// The allowances ranking is built once per search and group for each
+	// short window, and paged from that copy; see allowances.go.
+	allowanceSF singleflight.Group
+	// Bumped by every write that changes what an account has left, so a ranking
+	// built before the write is neither cached nor handed to a request after
+	// it. Guarded by usageCacheMu; see forgetAllowanceRankings.
+	allowanceGeneration uint64
 
 	// The resources page's storage totals, read at most once per
 	// storageCacheTTL; see resources.go.
@@ -353,13 +360,18 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/usage/reset", protected("usage", h.resetQuota))
 	mux.Handle("GET /api/admin/checkin", protected("usage", h.checkinSettings))
 	mux.Handle("PUT /api/admin/checkin", protected("usage", h.saveCheckinSettings))
-	mux.Handle("GET /api/admin/bonus/bars", protected("usage", h.bonusBars))
-	mux.Handle("POST /api/admin/bonus/bars", protected("usage", h.createBonusBar))
-	mux.Handle("PUT /api/admin/bonus/bars/{id}", protected("usage", h.updateBonusBar))
-	mux.Handle("DELETE /api/admin/bonus/bars/{id}", protected("usage", h.deleteBonusBar))
-	mux.Handle("POST /api/admin/bonus/bars/{id}/grants", protected("usage", h.grantBonus))
-	mux.Handle("GET /api/admin/bonus/bars/{id}/grants", protected("usage", h.bonusGrants))
-	mux.Handle("DELETE /api/admin/bonus/grants/{id}", protected("usage", h.revokeBonusGrant))
+	// Without a bonus store these routes are not mounted, so the mux answers
+	// 404 as the Bonus field promises. The handlers would otherwise
+	// dereference the nil store.
+	if h.Bonus != nil {
+		mux.Handle("GET /api/admin/bonus/bars", protected("usage", h.bonusBars))
+		mux.Handle("POST /api/admin/bonus/bars", protected("usage", h.createBonusBar))
+		mux.Handle("PUT /api/admin/bonus/bars/{id}", protected("usage", h.updateBonusBar))
+		mux.Handle("DELETE /api/admin/bonus/bars/{id}", protected("usage", h.deleteBonusBar))
+		mux.Handle("POST /api/admin/bonus/bars/{id}/grants", protected("usage", h.grantBonus))
+		mux.Handle("GET /api/admin/bonus/bars/{id}/grants", protected("usage", h.bonusGrants))
+		mux.Handle("DELETE /api/admin/bonus/grants/{id}", protected("usage", h.revokeBonusGrant))
+	}
 	mux.Handle("GET /api/admin/codes", protected("codes", h.listCodes))
 	mux.Handle("POST /api/admin/codes", protected("codes", h.createCode))
 	mux.Handle("GET /api/admin/codes/{id}/redemptions", protected("codes", h.codeRedemptions))
@@ -467,6 +479,8 @@ func translateProviderError(err error) error {
 		return httpx.BadRequest("Provider type must be openai or anthropic.")
 	case errors.Is(err, provider.ErrInvalidStyle):
 		return httpx.BadRequest("Unknown reasoning style.")
+	case errors.Is(err, provider.ErrRouted):
+		return httpx.Conflict("provider_routed", "Models on other providers route into this one. Clear those routes first.")
 	case errors.Is(err, provider.ErrKeyRequired):
 		return httpx.BadRequest("An API key is required.")
 	case errors.Is(err, provider.ErrKeyNeededForMove):
@@ -477,6 +491,20 @@ func translateProviderError(err error) error {
 		return httpx.BadRequest("At most 20 extra headers.")
 	case errors.Is(err, provider.ErrHiddenHeader):
 		return httpx.BadRequestCode("header_hidden", "A header value shown as a hint cannot be saved. Enter the value again.")
+	case errors.Is(err, provider.ErrInvalidHeaderName):
+		// sanitizeHeaders wraps the sentinel with the refused name; the person
+		// needs it to find the row, since the same save fails until it is fixed.
+		// The name also travels as a detail so the page can word the refusal in
+		// its own language with the name in place.
+		name := headerNameFrom(err, provider.ErrInvalidHeaderName)
+		return httpx.BadRequestCode("header_name_invalid", "Header name %s is not valid. A header name may use only letters, digits and !#$%%&'*+-.^_`|~.", name).
+			WithDetails(map[string]any{"name": name})
+	case errors.Is(err, provider.ErrDuplicateHeader):
+		// Named for the same reason as the invalid name: two rows collide, and
+		// the person has to know which one to look for.
+		name := headerNameFrom(err, provider.ErrDuplicateHeader)
+		return httpx.BadRequestCode("header_duplicate", "Header name %s matches another header once spaces are trimmed and letter case is ignored. Keep one of them.", name).
+			WithDetails(map[string]any{"name": name})
 	case errors.Is(err, provider.ErrTooManyKeys):
 		return httpx.BadRequest("At most %d API keys.", provider.MaxAPIKeys)
 	case errors.Is(err, provider.ErrKeyTooLong):
@@ -485,6 +513,8 @@ func translateProviderError(err error) error {
 		return httpx.BadRequest("Key rotation must be sequential or random.")
 	case errors.Is(err, provider.ErrKeysChanged):
 		return httpx.Conflict("provider_keys_changed", "The API keys were changed meanwhile. Open the provider again.")
+	case errors.Is(err, provider.ErrInvalidBaseURL):
+		return httpx.BadRequest("%s", strings.TrimPrefix(err.Error(), "provider: "))
 	default:
 		// A base-URL rejection is a validation message written for a person,
 		// so it is passed through rather than swallowed into a 500.
@@ -492,29 +522,24 @@ func translateProviderError(err error) error {
 		if errors.As(err, &adapterErr) {
 			return httpx.BadRequest("%s", adapterErr.Message)
 		}
-		if isValidationMessage(err) {
-			return httpx.BadRequest("%s", strings.TrimPrefix(err.Error(), "provider: "))
-		}
 		return httpx.Internal(err)
 	}
-}
-
-// The provider store's validation failures are sentences written for a
-// person ("base URL must use https…"), wrapped rather than enumerated as
-// sentinels. Recognising them keeps a typo in a form from being reported as
-// a server fault.
-func isValidationMessage(err error) bool {
-	message := strings.ToLower(err.Error())
-	for _, marker := range []string{"base url", "credentials", "https"} {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 // asAdapter is errors.As with the adapter error type, named so the call sites
 // above read as a question rather than as plumbing.
 func asAdapter(err error, target **adapter.Error) bool {
 	return errors.As(err, target)
+}
+
+// headerNameFrom returns the name sanitizeHeaders appended to a header refusal,
+// or "" when there is none. It matches the sentinel's own text instead of
+// trimming blindly, so a refusal that carries no name cannot have its whole
+// sentence shown as one.
+func headerNameFrom(err error, sentinel error) string {
+	name, ok := strings.CutPrefix(err.Error(), sentinel.Error()+": ")
+	if !ok {
+		return ""
+	}
+	return name
 }

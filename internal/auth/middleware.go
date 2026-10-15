@@ -99,11 +99,13 @@ func (s *Service) Attach() httpx.Middleware {
 	}
 }
 
-// RequireUser rejects anonymous requests.
+// RequireUser rejects anonymous requests. The code is what a page that was open
+// when its session ended keys on to sign itself out; the other 401s (a wrong
+// password, a second factor still due) carry their own codes and do not.
 func RequireUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := UserFrom(r.Context()); !ok {
-			httpx.WriteError(w, r, httpx.Unauthorized("Sign in to continue."))
+			httpx.WriteError(w, r, httpx.UnauthorizedCode("session_required", "Sign in to continue."))
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -119,7 +121,10 @@ func RequireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		account, ok := UserFrom(r.Context())
 		if !ok {
-			httpx.WriteError(w, r, httpx.Unauthorized("Sign in to continue."))
+			// The session code, as RequireUser answers: an open backoffice tab whose
+			// session ended must sign itself out rather than sit on the admin
+			// screen behind a generic 401.
+			httpx.WriteError(w, r, httpx.UnauthorizedCode("session_required", "Sign in to continue."))
 			return
 		}
 		if !account.IsAdmin() {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApp, h, nextTick, ref, type App as VueApp } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import App from '../src/App.vue';
@@ -181,6 +181,40 @@ describe('App.vue transition wrapper', () => {
     await nextTick();
     expect(host.textContent).toContain('Chat');
   });
+
+  it('takes its navigation guard back when the page unmounts', async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/', component: { render: () => h('div', { class: 'test-chat' }, 'Chat') } },
+        { path: '/admin', component: { render: () => h('div', { class: 'test-admin' }, 'Admin') } },
+      ],
+    });
+    // The router is shared across mounts, so what App adds and what it takes
+    // back are counted against it directly.
+    const addGuard = router.beforeEach.bind(router);
+    let registered = 0;
+    let removed = 0;
+    vi.spyOn(router, 'beforeEach').mockImplementation((guard) => {
+      registered += 1;
+      const stop = addGuard(guard);
+      return () => {
+        removed += 1;
+        stop();
+      };
+    });
+
+    app = createApp(App);
+    app.use(router);
+    await router.isReady();
+    app.mount(host);
+    await nextTick();
+    expect(registered - removed).toBe(1);
+
+    app.unmount();
+    app = null;
+    expect(registered - removed).toBe(0);
+  });
 });
 
 describe('OaPanel and TerminalPanel immediateClose', () => {
@@ -252,6 +286,18 @@ describe('page slide stylesheet specifications', () => {
     expect(appScss).toContain('@media (prefers-reduced-motion: reduce)');
     expect(appScss).toContain('position: absolute');
     expect(appScss).toContain('transform: none !important');
+  });
+
+  it('does not clip the depth shadow that sits outside a sliding layer', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const appScss = fs.readFileSync(path.resolve(__dirname, '../src/styles/_app.scss'), 'utf8');
+
+    // An overflow clip on the layer would cut off the ::before shadow at left: -28px.
+    const layer = /\.page-slide-left-enter-active,\s*\.page-slide-left-leave-active,\s*\.page-slide-right-enter-active,\s*\.page-slide-right-leave-active \{([^}]*)\}/
+      .exec(appScss)?.[1] ?? '';
+    expect(layer).toMatch(/will-change:\s*transform, opacity/);
+    expect(layer).not.toMatch(/overflow\s*:\s*hidden/);
   });
 
   it('constrains horizontal slide transition to inner workspace container (.oa-chat-root) while pinning .oa-header', async () => {

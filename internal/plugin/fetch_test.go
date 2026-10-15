@@ -2,8 +2,11 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -77,5 +80,57 @@ func TestFetchClientRefusesCloudMetadata(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("the refusal took %v; it should not wait on the network", elapsed)
+	}
+}
+
+// The headers a backend sets are its own upstream credentials. A redirect to
+// the same host keeps them, as the client always has; a redirect to another
+// origin must not carry them, or the upstream would hand the package's key to
+// whatever host it names next.
+func TestAFetchRedirectToAnotherOriginDoesNotCarryTheBackendsHeaders(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]http.Header{}
+	record := func(r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen[r.URL.Path] = r.Header.Clone()
+	}
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+	}))
+	defer other.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		switch r.URL.Path {
+		case "/start":
+			http.Redirect(w, r, "/same", http.StatusFound)
+		case "/same":
+			http.Redirect(w, r, other.URL+"/elsewhere", http.StatusFound)
+		}
+	}))
+	defer upstream.Close()
+
+	raw, err := json.Marshal(map[string]any{
+		"method": "GET", "url": upstream.URL + "/start",
+		"header": map[string]string{"X-Api-Key": "package-upstream-secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t)
+	if _, err := r.manager.fetch(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := seen["/same"].Get("X-Api-Key"); got != "package-upstream-secret" {
+		t.Fatalf("a redirect within the host lost the backend's header: %q", got)
+	}
+	if _, ok := seen["/elsewhere"]; !ok {
+		t.Fatal("the redirect target was never reached, so the header check proves nothing")
+	}
+	if got := seen["/elsewhere"].Get("X-Api-Key"); got != "" {
+		t.Fatalf("a redirect to another origin was sent the backend's key: %q", got)
 	}
 }

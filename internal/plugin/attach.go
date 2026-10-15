@@ -46,11 +46,17 @@ func ptr[T any](v T) *T { return &v }
 
 // attach makes every seam of l's manifest live behind the plugin's gate. It
 // changes nothing on failure — what was done is undone — so the caller only
-// has to say what it was doing when it goes wrong. Without a host there is
-// nothing to attach to; Attach calls it again when the host arrives.
+// has to say what it was doing when it goes wrong. Without a host only the
+// console commands can be attached; Attach calls it again when the host
+// arrives and the rest follow.
 func (m *Manager) attach(l *loaded) (err error) {
 	h := m.host
 	if h == nil {
+		// detach takes console commands away with or without a host, so an update
+		// or a restore that runs while there is none must put them back the same way.
+		if m.console != nil {
+			return m.console.AddCommands(l.name, m.commandsOf(l))
+		}
 		return nil
 	}
 	man := l.pkg.Manifest
@@ -84,8 +90,9 @@ func (m *Manager) attach(l *loaded) (err error) {
 
 	for _, b := range man.OAuthBindings {
 		re := arcx.MustWhole(b.Pattern)
-		// Its own binding first: an update replaces it. Somebody else's is
-		// the answer "no".
+		// Its own binding first: an update replaces it. An install has already
+		// refused a field another package holds (checkPackage), so what this
+		// clears is this package's own binding from an earlier version.
 		h.OAuth.UnbindSubject(b.Field)
 		if err = h.OAuth.TryBindSubject(oauth.SubjectBinding{Provider: b.Provider, Field: b.Field, Matches: re.MatchString}); err != nil {
 			return err
@@ -100,13 +107,18 @@ func (m *Manager) attach(l *loaded) (err error) {
 	h.AuthHandlers.Extend(name, m.siteBlock(l))
 	undo = append(undo, func() { h.AuthHandlers.Unextend(name) })
 
+	// Removed whether or not the new version declares the hook: a decorator an
+	// update dropped would keep calling the old backend, which closeLater closes,
+	// and every invitee page would then fail until the next restart.
+	h.InviteHandlers.RemoveDecorators(name)
 	if l.has(arcx.HookDecorateInvitees) {
-		h.InviteHandlers.RemoveDecorators(name)
 		h.InviteHandlers.DecorateInvitees(name, m.decorator(l))
 		undo = append(undo, func() { h.InviteHandlers.RemoveDecorators(name) })
 	}
 
-	if m.console != nil && len(man.Console) > 0 {
+	// An empty list is still a list: AddCommands replaces what the plugin
+	// registered before, so a command an update no longer declares goes away.
+	if m.console != nil {
 		if err = m.console.AddCommands(name, m.commandsOf(l)); err != nil {
 			return err
 		}
@@ -152,6 +164,12 @@ func (m *Manager) dropRetiredSeams(old, next *arcx.Manifest) {
 // detach takes everything l attached away. It is what an uninstall and a
 // failed update do, and it never fails: there is nothing to say no to.
 func (m *Manager) detach(l *loaded) {
+	// Console commands are added by AttachConsole whether or not a host is
+	// there, so they come off on the same terms; otherwise a package removed
+	// before the host arrives keeps its commands and the backend they close over.
+	if m.console != nil {
+		m.console.RemoveCommands(l.name)
+	}
 	h := m.host
 	if h != nil {
 		man := l.pkg.Manifest
@@ -166,9 +184,6 @@ func (m *Manager) detach(l *loaded) {
 		h.Auth.RemoveGuards(l.name)
 		h.AuthHandlers.Unextend(l.name)
 		h.InviteHandlers.RemoveDecorators(l.name)
-		if m.console != nil {
-			m.console.RemoveCommands(l.name)
-		}
 	}
 }
 
@@ -216,6 +231,24 @@ func (m *Manager) guardsOf(l *loaded) map[string][]auth.Guard {
 				return m.judge(ctx, l, g.Name, req)
 			},
 		})
+	}
+	return out
+}
+
+// refusingGuards is the guards the manifests list, each refusing. They stand in
+// for guards that could not be put back: a door whose check is missing is open,
+// so the check stays and refuses, as a backend that cannot answer does.
+func refusingGuards(name string, manifests ...*arcx.Manifest) map[string][]auth.Guard {
+	out := map[string][]auth.Guard{}
+	for _, man := range manifests {
+		for _, g := range man.Guards {
+			out[g.Action] = append(out[g.Action], auth.Guard{
+				Name: g.Name, Plugin: name, Event: g.Event,
+				Check: func(context.Context, auth.GuardRequest) (auth.Verdict, error) {
+					return auth.Verdict{}, unavailableGuard(errPluginFault)
+				},
+			})
+		}
 	}
 	return out
 }
@@ -322,6 +355,10 @@ func (m *Manager) decorator(l *loaded) invite.InviteeDecorator {
 		err := m.invoke(ctx, l, wasm.CallInfo{}, "decorate_invitees",
 			map[string]any{"inviter_id": inviterID, "invitees": in}, &out, nil)
 		if err != nil {
+			// The invite list skips a decorator that fails and keeps the rows it had,
+			// and logs the failure once, so a backend that is down shows the list as
+			// it is. A guard fails closed because it decides who gets in; this
+			// decides nothing.
 			return nil, err
 		}
 		result := make([]invite.Invitee, len(out.Invitees))
@@ -348,10 +385,10 @@ func (m *Manager) commandsOf(l *loaded) []console.Command {
 			Destructive: c.Destructive, Endpoints: c.Endpoints, Plugin: l.name,
 		}
 		for _, a := range c.Args {
-			cmd.Args = append(cmd.Args, console.Arg{Name: a.Name, Hint: consoleText(a.Hint), Required: a.Required})
+			cmd.Args = append(cmd.Args, console.Arg{Name: a.Name, Hint: consoleText(a.Hint), Required: a.Required, Rest: a.Rest, Sensitive: a.Sensitive})
 		}
 		for _, f := range c.Flags {
-			cmd.Flags = append(cmd.Flags, console.Flag{Name: f.Name, Hint: consoleText(f.Hint), Value: f.Value})
+			cmd.Flags = append(cmd.Flags, console.Flag{Name: f.Name, Hint: consoleText(f.Hint), Value: f.Value, Sensitive: f.Sensitive})
 		}
 		// A command with no grant named was open to every administrator. Its
 		// backend runs with the package's own host permissions and cannot tell
@@ -393,7 +430,7 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 	st := &callState{console: rt}
 	err := m.invoke(ctx, l, info, "console", arg, &out, st)
 	if err != nil {
-		return commandFailure(err, st.consoleErr)
+		return commandFailure(err, st.consoleErrs)
 	}
 	for _, line := range out.Out {
 		switch line.Kind {
@@ -424,14 +461,18 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 // backend's own failure, whose text may name a credential it was handed, so
 // it goes to the log and the operator sees a fixed sentence, as a guard's
 // visitor does.
-func commandFailure(err error, consoleErr error) error {
+func commandFailure(err error, consoleErrs map[string]error) error {
 	var ge *wasm.GuestError
 	if errors.As(err, &ge) && deliberate(ge) {
 		// A command that passed a refused Call on: what the console draws is
 		// the endpoint's own error, code and all, as it is for a command that
-		// was compiled in.
-		if ge.Code == "console" && consoleErr != nil {
-			return consoleErr
+		// was compiled in. The error is looked up by the message the backend
+		// returned, so a command that made another refused call after this one
+		// still gets this one's sentence.
+		if ge.Code == "console" {
+			if refused, ok := consoleErrs[ge.Message]; ok {
+				return refused
+			}
 		}
 		return errors.New(ge.Message)
 	}

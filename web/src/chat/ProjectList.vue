@@ -31,6 +31,7 @@ import {
   flash, openConversation, pendingID, removeConversation, rename,
   startProjectConversation,
 } from './useChat';
+import { useArmedItem } from './useArmedItem';
 
 onMounted(() => void loadProjects());
 
@@ -48,22 +49,33 @@ const projectConversations = ref<Record<string, Conversation[]>>({});
 const loadingProjects = ref<Record<string, boolean>>({});
 const openUpMap = ref<Record<string, boolean>>({});
 
+// The watch below refetches on every change to the conversations, so two
+// requests for one project can overlap. Only the newest may write: an older
+// response that arrives last would otherwise put back a list that is already
+// out of date.
+const latestLoad: Record<string, number> = {};
+
 async function loadProjectConversations(projectID: string): Promise<void> {
+  const load = (latestLoad[projectID] ?? 0) + 1;
+  latestLoad[projectID] = load;
+  const current = () => latestLoad[projectID] === load;
   loadingProjects.value[projectID] = true;
   try {
     const { conversations: list } = await listConversations({ project_id: projectID, archived: false });
-    projectConversations.value[projectID] = list;
+    if (current()) projectConversations.value[projectID] = list;
   } catch (error) {
-    reportFailure(error);
+    if (current()) reportFailure(error);
   } finally {
-    loadingProjects.value[projectID] = false;
+    if (current()) loadingProjects.value[projectID] = false;
   }
 }
 
 function toggleExpand(project: Project): void {
-  setProject(project.id);
   expandedProjects.value[project.id] = !expandedProjects.value[project.id];
   if (expandedProjects.value[project.id]) {
+    // Opening a project makes it the one the next chat goes into. Closing it
+    // only tidies the list, so it must not change where new work lands.
+    setProject(project.id);
     void loadProjectConversations(project.id);
   }
 }
@@ -78,8 +90,10 @@ function openProjectConv(projectID: string, convID: string): void {
   void openConversation(convID);
 }
 
-async function archiveProjectConv(project: Project, conv: Conversation): Promise<void> {
-  await archiveConversation(conv);
+// The list and its count change only when the server has changed the
+// conversation. A refused request leaves the row where it was, and the
+// failure is already in the flash.
+function dropProjectConv(project: Project, conv: Conversation): void {
   if (projectConversations.value[project.id]) {
     projectConversations.value[project.id] = projectConversations.value[project.id]!.filter(
       (entry) => entry.id !== conv.id,
@@ -88,14 +102,23 @@ async function archiveProjectConv(project: Project, conv: Conversation): Promise
   project.conversations = Math.max(0, project.conversations - 1);
 }
 
+async function archiveProjectConv(project: Project, conv: Conversation): Promise<void> {
+  if (!(await archiveConversation(conv))) return;
+  dropProjectConv(project, conv);
+}
+
 async function removeProjectConv(project: Project, conv: Conversation): Promise<void> {
-  await removeConversation(conv);
-  if (projectConversations.value[project.id]) {
-    projectConversations.value[project.id] = projectConversations.value[project.id]!.filter(
-      (entry) => entry.id !== conv.id,
-    );
-  }
-  project.conversations = Math.max(0, project.conversations - 1);
+  if (!(await removeConversation(conv))) return;
+  dropProjectConv(project, conv);
+}
+
+const { armed: armedDelete, press: pressDelete } = useArmedItem();
+
+// As in the rail: the first press arms the delete and leaves the menu open.
+function deleteFromMenu(project: Project, conv: Conversation, close: () => void): void {
+  if (!pressDelete(conv.id)) return;
+  close();
+  void removeProjectConv(project, conv);
 }
 
 function handleMenuTrigger(event: MouseEvent, id: string, toggle: () => void): void {
@@ -370,7 +393,11 @@ async function remove(project: Project): Promise<void> {
                       <OaMenuItem v-if="canArchive" :title="t('archive')" @click.stop="close(); archiveProjectConv(project, conv)">
                         <template #leading><IconArchive :size="13" /></template>
                       </OaMenuItem>
-                      <OaMenuItem v-if="canDelete" :title="t('deleteChat')" @click.stop="close(); removeProjectConv(project, conv)">
+                      <OaMenuItem
+                        v-if="canDelete"
+                        :title="armedDelete === conv.id ? t('confirmDelete') : t('deleteChat')"
+                        @click.stop="deleteFromMenu(project, conv, close)"
+                      >
                         <template #leading><IconTrash :size="13" /></template>
                       </OaMenuItem>
                     </template>

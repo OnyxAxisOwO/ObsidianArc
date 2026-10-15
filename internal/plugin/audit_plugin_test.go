@@ -68,6 +68,24 @@ func TestAnInternalCommandFailureIsNotShownToTheTerminal(t *testing.T) {
 	}
 }
 
+// A command may make two refused endpoint calls, ignore the first and return
+// it. The console must draw the first endpoint's sentence, not the second's,
+// which is the one recorded last.
+func TestACommandDrawsTheRefusalItReturnedNotTheLastOne(t *testing.T) {
+	st := &callState{}
+	first := errors.New("Quota window must be 5h, 1w, 1m, or full.")
+	second := errors.New("No such account.")
+	st.noteConsoleErr(first)
+	st.noteConsoleErr(second)
+
+	// The backend gets the refusal's message back in its own error, as the
+	// SDK passes it on.
+	err := commandFailure(&wasm.GuestError{Code: "console", Message: first.Error(), Status: 400}, st.consoleErrs)
+	if err != first {
+		t.Fatalf("the console drew %v; the command returned %v", err, first)
+	}
+}
+
 // An update that stops naming an OAuth binding or a field rule must take it
 // away, not leave it live until the next restart, where a later uninstall
 // would not find it either.
@@ -277,6 +295,8 @@ func TestAPackageFilesItsEventsUnderItsOwnLabelOnly(t *testing.T) {
 		{"core_backoffice", "backoffice", "plugin:riskctl", nil},
 		{"core_backoffice_admin", "backoffice", "plugin:riskctl", admin},
 		{"core_user", "user", "plugin:riskctl", nil},
+		{"core_web", "web", "plugin:riskctl", nil},
+		{"core_ssh", "ssh", "plugin:riskctl", nil},
 		{"other_plugin", "plugin:other", "plugin:riskctl", nil},
 		{"admin_anonymous", "admin", "plugin:riskctl", nil},
 		{"admin_admin", "admin", "admin", admin},
@@ -296,5 +316,31 @@ func TestAPackageFilesItsEventsUnderItsOwnLabelOnly(t *testing.T) {
 		if source != tc.want {
 			t.Errorf("claimed %q: filed under %q, want %q", tc.claimed, source, tc.want)
 		}
+	}
+}
+
+// An event under one of the core's own names would read as the core's entry,
+// so the package is refused rather than having its entry filed under a label.
+func TestAPackageCannotWriteAnEventTheCoreWritesItself(t *testing.T) {
+	r := newRig(t)
+	r.manager.host = &Host{Security: securityevents.NewStore(r.db), Notify: notify.NewStore(r.db)}
+	l := &loaded{name: "riskctl", pkg: &arcx.Package{Manifest: &arcx.Manifest{Permissions: []string{arcx.PermSecurityLog}}}}
+	host := r.manager.hostFunc(l)
+	c := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{}}
+	for _, event := range []string{"console_command", " two_factor ", "plugin", "log_prune", "password_reset", "account_deleted"} {
+		raw := json.RawMessage(`{"event":"` + event + `","source":"ssh","decision":"run"}`)
+		_, err := host(c, "security.record", raw)
+		var he *wasm.HostError
+		if !errors.As(err, &he) || he.Code != "bad_argument" {
+			t.Fatalf("the core's event %q was filed: %v", event, err)
+		}
+	}
+	var n int
+	if err := r.db.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM security_events WHERE source = ?`, "ssh").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d entries were filed under the console's ssh label", n)
 	}
 }

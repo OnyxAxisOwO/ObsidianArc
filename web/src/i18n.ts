@@ -4,8 +4,10 @@
 // same sentence turns up in the chat, in settings and in the backoffice, and
 // three copies of it drift. Keys are grouped by screen only by convention.
 //
-// The language follows the browser unless the account has chosen one. It is
-// read before any network call, so the sign-in page is already translated.
+// The language follows the browser unless the account has chosen one. The
+// browser's choice is read before any network call, so the sign-in page is
+// already translated; the account's is applied once the session has loaded,
+// before the first paint of a signed-in page (see stores/session.ts).
 //
 // English is the source of truth: `StringKey` is derived from it, so a key
 // added here and forgotten in the other dictionary is a type error rather
@@ -119,7 +121,6 @@ const en = {
   noGroup: 'No group',
   allAccounts: 'All accounts',
   selectMembers: 'Select accounts',
-  memberPage: '{from}–{to} of {total}',
   membersSelected: '{count} selected (up to 200)',
   membershipExpiry: 'Membership expires at',
   membershipExpiryHint: 'Leave blank for permanent membership. At expiry, the account returns to the current default group. Times use your local time zone.',
@@ -139,6 +140,7 @@ const en = {
   administration: 'Administration',
   account: 'Account',
   signOut: 'Sign out',
+  signOutFailed: 'Could not end the session on the server, so this browser is still signed in. Try again.',
   admin: 'Admin',
   railToggle: 'Conversation list',
   navToggle: 'Sections',
@@ -156,6 +158,8 @@ const en = {
   loading: 'Loading…',
   tryAgain: 'Try again',
   couldNotLoad: 'Could not load',
+  savedBeforeError: 'Part of this was saved before the error: {error}',
+  accountChangeFailed: 'The change to {name} did not go through: {error}',
   enabled: 'Enabled',
   disabled: 'Disabled',
   sortOrder: 'Sort order',
@@ -180,9 +184,9 @@ const en = {
   username: 'Username',
   usernameHint: '3–32 letters, numbers, or . - _',
   usernameRequired: 'Please enter a username.',
-  usernameOptional: 'Username (optional)',
   usernameTaken: 'That username is already taken.',
   usernameInvalid: 'That username is not valid. Use 3–32 letters, numbers, dots, hyphens, or underscores.',
+  emailInvalid: 'That email address is not valid.',
   usernameOrEmail: 'Username or email',
   emailOptional: 'Email (optional)',
   password: 'Password',
@@ -200,6 +204,34 @@ const en = {
   accountBannedWithReason: 'This account has been banned: {reason}',
   invalidCredentials: 'The username or password is incorrect. Check them and try again.',
   connectionFailed: 'Could not connect to the server. Check your connection and try again.',
+  errQuotaRPM: 'You are sending requests too quickly. Try again in a moment.',
+  errQuotaTPM: "You have hit this minute's token limit. Try again in a moment.",
+  errQuota5H: 'You have used your allowance for this five-hour window.',
+  errQuotaWeek: 'You have used your allowance for this week.',
+  errQuotaMonth: 'You have used your allowance for this month.',
+  errQuotaGeneric: 'You have reached a usage limit.',
+  errTooManyPendingImages: 'Too many images are waiting to be sent. Send or discard some first.',
+  errAttachmentQuotaFull: 'This account is holding as many images as it may. Delete some conversations first.',
+  errStorageFull: 'This account is already storing as many messages as it may. Delete some conversations and try again.',
+  errProbeCooldown: 'All models can be tested once every thirty seconds.',
+  errEmailUnverified: 'Confirm your email address before sending a message.',
+  errCurrentSession: 'That is this session. Use "sign out other devices" instead.',
+  errAttachmentUnavailable: 'An attached image is no longer available. Attach it again.',
+  errRewardUnavailable: 'This reward can no longer be paid.',
+  errProviderRateLimited: 'The provider is rate limiting this server. Try again shortly.',
+  errProviderUnreachable: 'Could not reach the provider.',
+  errProviderError: 'The provider returned an error. Try again, or choose another model.',
+  errProviderAuth: 'This model is not configured correctly. Ask an administrator to check its provider.',
+  errSessionEnded: 'Your session has ended. Sign in again to continue.',
+  errBonusBarOff: 'That bonus is switched off. Switch it on before granting into it.',
+  errBonusNoAccount: 'No account has that name or ID.',
+  errCardBatchTooLarge: 'That batch is too large. Make fewer codes at a time.',
+  errBonusModelsUnreadable: "This bonus's stored model list cannot be read, so the change was not saved. Delete the bonus and create it again.",
+  errPreferencesTooLarge: "This account's saved preferences are too large to take this file's preferences as well. Nothing was imported.",
+  errBonusBarInCheckin: 'A check-in reward still pays from this bonus. Change the check-in rewards first.',
+  errProviderDisabled: 'This provider is switched off. Switch it on before listing its models.',
+  errModelRouted: 'Another model routes to this one. Clear that route first.',
+  errPluginTimeout: 'This feature took too long to answer. Try again shortly.',
   authServiceFailed: 'The sign-in service is temporarily unavailable. Try again shortly.',
   authRequestFailed: 'We could not complete that request. Try again.',
 
@@ -222,7 +254,6 @@ const en = {
   saveProject: 'Save',
   projectsFull: 'This account already holds the maximum number of projects.',
   openProject: 'Open project',
-  inProject: 'In project',
   noHistory: 'No conversations yet.',
   deleteChat: 'Delete this conversation',
   confirmDelete: 'Delete this conversation?',
@@ -237,6 +268,7 @@ const en = {
   archivedConversations: 'Archived conversations',
   searchArchived: 'Search archived conversations',
   noArchivedConversations: 'No archived conversations',
+  loadMoreArchived: 'Load more conversations',
   archiveSuccess: 'Conversation archived',
   unarchiveSuccess: 'Conversation restored',
   moreOptions: 'More options',
@@ -254,8 +286,10 @@ const en = {
   imageNotAnImage: 'That is not an image.',
   imageFormats: 'Images must be PNG, JPEG, WebP, AVIF or GIF.',
   generatedImage: 'Generated image',
+  zoomImage: 'Enlarge image',
   streamMissing: 'The server did not return a stream.',
-  imagesUnsupported: 'This model cannot read images. Pick a vision-capable model, or edit the message and remove the picture.',
+  streamInterrupted: 'The connection closed before the command finished.',
+  imagesUnsupported: 'This model cannot read images. Pick a vision-capable model to attach pictures.',
   streamFallback: 'Streaming was not available this time, so the whole answer arrived at once — {reason}.',
   statsStreamed: 'streamed',
   statsOneShot: 'one-shot',
@@ -318,6 +352,7 @@ const en = {
   fileUnsupported: 'Only text and code files can be attached. Use “Add an image” for pictures.',
   fileTooLarge: 'That file is too large.',
   fileAdded: 'Added {name}.',
+  fileTruncated: 'Added {name}, cut short to fit the message.',
   quotaUnlimited: 'No usage limit on this account.',
   quota5h: '5 hours',
   quotaWeek: 'This week',
@@ -338,7 +373,6 @@ const en = {
   // --- notices
   noSuchPage: 'Nothing here',
   noSuchPageBody: 'No page matches {path}.',
-  notAvailable: 'Not available',
   noAdminAccess: 'You do not have access to the administration area.',
   accessDenied: 'Access denied',
   switchAccount: 'Switch account',
@@ -356,7 +390,6 @@ const en = {
   navLeaderboard: 'Leaderboard',
   leaderboardSubtitle: 'What readers are shown about each other, and how much of it.',
   navResources: 'Resources',
-  resourcesSubtitle: 'What this instance is costing the machine it runs on.',
   resStorage: 'Storage',
   resHeld: 'Held',
   resHeldNote: 'Files uploaded by users, still stored',
@@ -394,7 +427,6 @@ const en = {
   pluginStateDisabled: 'Disabled',
   pluginMissing: 'Missing from this build',
   pluginMissingHint: 'Installed by a build that carried it, and inert until one does again.',
-  pluginsEmpty: 'This build carries no plugins.',
   pluginInstall: 'Install',
   pluginUninstall: 'Uninstall',
   pluginDetails: 'Details',
@@ -440,7 +472,6 @@ const en = {
   pluginSecret: 'write-only',
   pluginDropTitle: 'Drop a plugin package here',
   pluginDropHint: 'Drag a .arcx file onto this page, or choose one. Nothing is installed until you have seen what it asks for.',
-  pluginChoose: 'Choose a file',
   pluginDropRelease: 'Release to look at this plugin',
   pluginUploadReading: 'Reading the package…',
   pluginUploadWrongType: 'That is not a plugin package (.arcx).',
@@ -531,9 +562,6 @@ const en = {
   statRequests: 'Requests',
   statTokens: 'Tokens',
   statCredits: 'Credits',
-  statInputTokens: 'Input tokens',
-  statOutputTokens: 'Output tokens',
-  statReasoningTokens: 'Reasoning tokens',
   nActive: '{count} active',
   nEnabled: '{count} enabled',
   nFailed: '{count} failed',
@@ -544,8 +572,6 @@ const en = {
   noRequestsWeek: 'No requests in the last seven days.',
   noRequestsPeriod: 'No requests in this period.',
   nothingInPeriod: 'Nothing in this period.',
-  chartAria: 'Token usage in {hours}-hour buckets',
-  chartTooltip: '{when} — {requests} requests, {tokens} tokens',
 
   // --- admin: shared columns
   colWhen: 'When',
@@ -556,7 +582,6 @@ const en = {
   colTokens: 'Tokens',
   colRequests: 'Requests',
   colCredits: 'Credits',
-  colFailed: 'Failed',
   colIn: 'In',
   colOut: 'Out',
   colTook: 'Took',
@@ -645,6 +670,7 @@ const en = {
   creditsTop: 'Reserved before each turn, top five by cost:',
   creditsRow: '{name} · reserves {cost} · ≈ {turns} turns',
   creditsRowShort: '{name} · reserves {cost} · not enough for one turn, it would be refused outright',
+  creditsRowFree: '{name} · reserves nothing, so the limit never runs out on it',
   limitCredits: 'Credits',
 
   secConversations: 'Conversations',
@@ -664,6 +690,8 @@ const en = {
 
   // --- admin: groups
   groupsTitle: 'Groups',
+  groupQuotaNotWhole: 'Quota limits are whole numbers. Enter 2 rather than 2.5.',
+  groupQuotaNegative: 'Quota limits cannot be negative. Leave a field empty for no limit.',
   groupsSubtitle: 'Which models a set of people may use, and what they may spend.',
   addGroup: 'Add a group',
   noGroups: 'No groups yet.',
@@ -740,6 +768,10 @@ const en = {
   providerKeysChanged: 'Someone changed this provider\'s keys meanwhile. Close it and open it again.',
   providerKeyNeeded: 'A new base URL needs the API key entered again — the stored one is only sent where it was sent before.',
   providerBaseURLSuperAdmin: 'Only a super administrator can set or change the base URL of a provider.',
+  providerModelRouted: 'Models on other providers route into this one. Clear those routes first.',
+  providerHeaderNameInvalid: "Header name {name} is not valid. A header name may use only letters, digits and !#$%&'*+-.^_`|~.",
+  providerHeaderDuplicate: 'Header name {name} matches another header once spaces are trimmed and letter case is ignored. Keep one of them.',
+  providerHeaderHidden: 'A header value shown as a hint cannot be saved. Enter the value again.',
   secModelBasics: 'Basics',
   secModelShown: 'Visibility',
   secProviderConnection: 'Connection',
@@ -818,7 +850,6 @@ const en = {
   rescheduleOne: 'Move',
   revokeCard: 'Delete',
   revokeCardConfirm: 'Delete it?',
-  cardRevoked: 'Deleted.',
   cardsMoved: 'Moved {count}.',
   secCards: 'Usage limit reset',
   cardsHeldCount: '{count} left',
@@ -917,7 +948,7 @@ const en = {
   rangeWeek: 'Last 7 days',
   rangeMonth: 'Last 30 days',
   rangeQuarter: 'Last 90 days',
-  rangeAll: 'All time',
+  rangeAll: 'Last 365 days',
   rangeCustom: 'Custom range…',
   customTimeTitle: 'Custom Time Range',
   customTimeHint: 'Set start and end dates to filter usage data.',
@@ -928,7 +959,6 @@ const en = {
   customInvalidRange: 'Start time must be before end time.',
   statRPM: 'Current RPM',
   rpmRealtime: 'Requests / min (live)',
-  editTimeRange: 'Edit range',
   presetToday: 'Today',
   presetYesterday: 'Yesterday',
   presetThisWeek: 'This week',
@@ -946,7 +976,6 @@ const en = {
   resetHolding: 'Hold…',
   resetHoldHint: 'Press and hold. Let go early and nothing happens.',
   resetConfirmLabel: 'Reset',
-  resetConfirm: 'Reset the allowance for everyone chosen above?',
   resetNoGroup: 'Choose a group first.',
   resetNoAccount: 'Enter an account id first.',
   resetDone: 'Reset {count} accounts',
@@ -969,7 +998,7 @@ const en = {
   range7d: '7d',
   range30d: '30d',
   range90d: '90d',
-  rangeAllShort: 'All',
+  rangeAllShort: '365d',
   rangeCustomShort: 'Custom',
   filterAllModels: 'All models',
   filterAllUsers: 'All accounts',
@@ -1021,6 +1050,8 @@ const en = {
   allowanceExhausted: 'Used up',
   allowanceNoLimit: 'No limit',
   allowanceEmpty: 'No account matches.',
+  allowanceCapped: 'Showing the newest {count} of {total} accounts. The ranking and the counts above cover only those.',
+  allowanceCappedMatching: '{count} matching accounts among the newest {loaded}. Accounts beyond those are not counted.',
 
   // --- the leaderboard readers open from their own menu
   leaderboardTitle: 'Leaderboard',
@@ -1108,9 +1139,10 @@ const en = {
   instanceSystemPromptHint: 'Prepended to every conversation on this server, for models that take one. Leave empty for none.',
   turnsResent: 'Turns re-sent per request',
   turnsResentHint: 'How much of a conversation goes back to the provider each time. Higher remembers more and costs more, every turn.',
+  chatAllowArchive: 'Let ordinary users archive conversations',
+  chatAllowArchiveHint: 'Off stops ordinary users from archiving. Conversations already archived stay archived and can still be restored.',
 
   // --- user settings
-  switchSection: 'Sections',
   fullscreen: 'Full screen',
   exitFullscreen: 'Exit full screen',
   secAppearance: 'Appearance',
@@ -1131,6 +1163,7 @@ const en = {
   accentOrange: 'Orange',
   languageLabel: 'Language',
   languageHint: 'Takes effect on the next screen you open.',
+  languageLoadFailed: 'Could not load that language. The page stays as it was.',
 
   secWallpaper: 'Wallpaper',
   chooseImage: 'Choose an image…',
@@ -1210,7 +1243,6 @@ const en = {
 
   // --- image lab
   imageLab: 'Image Lab',
-  imageLabSettings: 'Generation Settings',
   generateImage: 'Generate',
   generatingImage: 'Generating…',
   download: 'Download',
@@ -1314,12 +1346,11 @@ const en = {
   loginBgPortraitDark: 'Phone · Dark',
   loginBgUpload: 'Upload image',
   loginBgReplace: 'Replace image',
-  loginBgClear: 'Clear image',
-  loginBgClearConfirm: 'Remove this background image?',
   loginBgDropHint: 'Click or drag image here to upload',
   loginBgFormats: 'PNG, JPEG, WebP, or AVIF (max 6MB)',
   loginBgUploaded: 'Background image uploaded.',
   loginBgDeleted: 'Background image cleared.',
+  loginBgRemoveConfirm: 'Remove the {name} background? Its HTML source, if any, is discarded with it.',
   loginBgFallbackNote: 'If dark mode or portrait variant is not set, it falls back to the configured background image.',
   bgScreen: 'Screen',
   bgScheme: 'Scheme',
@@ -1356,7 +1387,6 @@ const en = {
   siteLogoReplace: 'Replace logo',
   siteLogoClear: 'Clear logo',
   siteLogoClearConfirm: 'Remove custom logo?',
-  siteLogoDropHint: 'Click or drag logo here to upload',
   siteLogoFormats: 'PNG, JPEG, SVG, WebP, AVIF, or ICO (max 4MB)',
   siteLogoUploaded: 'Site logo updated.',
   siteLogoDeleted: 'Site logo cleared.',
@@ -1370,6 +1400,9 @@ const en = {
   landingChat: 'The chat itself',
   landingIntroHTML: 'Introduction',
   landingIntroHTMLHint: 'HTML. Scripts in it will not run \u2014 the page\u2019s content policy allows none \u2014 so this is markup and text only.',
+  fieldByteCount: '{used} of {limit} bytes',
+  fieldByteCountOver: 'Over the limit: {used} of {limit} bytes. Shorten it to save.',
+  settingTooLong: 'A field is longer than 8 KB, which the server refuses for the whole save. Shorten it first.',
   trialEnabled: 'Let visitors try it',
   trialEnabledHint: 'Every trial answer is paid for from your own provider credit by someone who has not identified themselves. Off unless you mean it.',
   trialTurns: 'Questions a visitor may ask',
@@ -1383,6 +1416,13 @@ const en = {
   trialSignIn: 'Sign in',
   trialPlaceholder: 'Ask it something\u2026',
   trialFailed: 'That did not work. Try again in a moment.',
+  trialExhausted: 'You have used the trial for now. Create an account to keep going.',
+  trialBusy: 'The trial is busy right now. Try again in a moment.',
+  trialEndedSignUp: 'That is the end of the trial. Create an account to keep going.',
+  trialNothingToSend: 'Nothing to send.',
+  trialTooLong: 'That conversation is too long for a trial.',
+  trialMessageTooLong: 'Message must be {max} characters or fewer.',
+  trialUnavailable: 'No model is available right now.',
   landingSignIn: 'Sign in',
   landingRegister: 'Create an account',
   landingSite: 'The built-in front page',
@@ -1469,6 +1509,7 @@ const en = {
   emailRequiredHere: 'An email address is required to register here.',
   emailDomainRejected: 'Use an address at {domains}.',
   signupsThrottled: 'Too many accounts have just been created. Try again in about {count} seconds.',
+  signupRetry: 'Another account was being opened at the same moment. Send the sign-up again.',
   emailAccepted: 'Accepted: {domains}',
 
   // --- email verification
@@ -1480,10 +1521,10 @@ const en = {
   verifyBannerNoAddress: 'Add an email address in settings, then ask for a link.',
   verifyResend: 'Send it again',
   verifyResendSent: 'A verification email was sent.',
+  verifyCodeAcceptedReload: 'The code was accepted. Reload the page to finish.',
   verifyCodeLabel: 'Six-digit verification code',
   verifyCodePlaceholder: '123456',
   verifyCodeSubmit: 'Verify code',
-  verifyCodeSuccess: 'Email address confirmed.',
   verifyErrorInvalid: 'This verification link or code is not valid.',
   verifyErrorExpired: 'This verification link has expired. Request a new email.',
   verifyCodeExpired: 'This verification code has expired. Request a new email.',
@@ -1581,6 +1622,10 @@ const en = {
   keyName: 'Name',
   keyNamePlaceholder: 'Laptop, home server, a script…',
   keyNameRequired: 'Give the key a name so you can recognise it later.',
+  keyErrorTooMany: 'You already have the maximum of {max} keys. Delete one first.',
+  keyErrorNameInvalid: 'Give the key a name of 60 characters or fewer.',
+  keyErrorExpiryPast: 'Choose an expiry in the future.',
+  keyErrorNotFound: 'No such key.',
   keyExpires: 'Expires',
   keyCreate: 'Create key',
   keyCreated: 'Created {name}',
@@ -1594,8 +1639,8 @@ const en = {
   keyCCSwitchImport: 'One-click import to CC Switch',
   keyCCSwitchAvailable: 'After creating a key, you can import it into CC Switch before closing the success screen.',
   keyCCSwitchClient: 'Target client',
-  keyCCSwitchClaude: 'Сlaude Code',
-  keyCCSwitchCodex: 'Сodex',
+  keyCCSwitchClaude: 'Claude Code',
+  keyCCSwitchCodex: 'Codex',
   keyCCSwitchModel: 'Default model',
   keyCCSwitchHint: 'Requires CC Switch on this device. Sends this key to the app for confirmation, without switching your active provider. If it does not open, copy the key and Base URL manually.',
   keyCCSwitchNoModels: 'No models available to this key. Copy and save the key; configure the client after model access is available.',
@@ -1619,14 +1664,12 @@ const en = {
   keyDays90: 'In 90 days',
   keyDays365: 'In a year',
   keyPaused: 'Paused',
-  keyActive: 'Active',
   keyPause: 'Pause',
   keyResume: 'Resume',
   keyStatus: 'Status',
   keyStatusActive: 'Active (ready to use)',
   keyStatusPaused: 'Paused (refuse requests)',
   keyModel: 'Allowed models',
-  keyModelAll: 'All models (unrestricted)',
   keyModelHint: 'Check one or more models to allow only those with this key; requests for any other model are refused. Leave all unchecked to allow every available model.',
   keyNoModels: 'No usable models are available.',
   keyOnlyModel: 'Only: {model}',
@@ -1637,7 +1680,6 @@ const en = {
   apiEnabledHint: 'Serves an OpenAI-compatible interface at /v1, authenticated with keys users create for themselves. Turns count against the same quota as the chat.',
   groupApiAccess: 'May use the API',
   groupApiAccessHint: 'Members can create keys and call /v1. Administrators may regardless.',
-  groupApiOff: 'No API',
 
   // --- attachments and retention
   secAttachments: 'Images',
@@ -1662,11 +1704,16 @@ const en = {
   importData: 'Import a file',
   importWorking: 'Importing…',
   importDone: 'Added {conversations} conversations and {messages} messages.',
+  importStorageFull: 'Stopped part way: {conversations} conversations and {messages} messages were added before the account ran out of room. They are already in the account, so importing this file again would copy them. Delete some conversations before importing anything else.',
+  importPartialFailed: 'Stopped part way: {conversations} conversations and {messages} messages were added before the failure. They are already in the account, so importing this file again would copy them.',
   exportSettings: 'Export',
   importSettings: 'Import',
   importSettingsDone: 'Applied {count} settings.',
   importSettingsPartial: 'Applied {count} settings. Skipped: {skipped}',
   importSettingsMalformed: 'That file is not a settings export.',
+  importFileTooLarge: 'That file is too large to import.',
+  importFileUnreadable: 'That file could not be read.',
+  importFileNotJSON: 'That file is not valid JSON.',
 
   // --- instance backup
   backupConfig: 'Storage and schedule',
@@ -1795,7 +1842,6 @@ const en = {
   turnstileOnLogin: 'Challenge on sign-in',
   turnstileOnLoginHint: 'Require passing a challenge before signing in, mitigating credential-stuffing and brute-force attacks.',
   turnstileOnSignup: 'Challenge on sign-up',
-  turnstileOnSignupHint: 'Never applies to the first account on an empty instance, which would otherwise be locked out of its own setup.',
   turnstileOnAPIKey: 'Challenge on new API keys',
   turnstileOnAPIKeyHint: 'A key outlives the session that asked for it, which is what a stolen cookie would rather turn into.',
   turnstileOnRedeem: 'Challenge on code redemption',
@@ -1817,7 +1863,6 @@ const en = {
   secSecurityLog: 'Security log',
   securityLogHint: 'Access decisions, separate from ordinary request traffic. The newest 50 are shown.',
   securityLogEmpty: 'No security decisions have been recorded.',
-  securityLogShowing: 'Showing {shown} of {total} events.',
   securityLogActor: 'by {name}',
   securityEventSignupReview: 'Sign-up review',
   securityEventAPIRestriction: 'API restriction',
@@ -1902,7 +1947,7 @@ const en = {
   probeAllModels: 'Test all models now',
   probeAllModelsRunning: 'Testing…',
   probeAllModelsProgress: 'Testing {completed}/{total}',
-  probeAllModelsDone: '{succeeded} of {total} models answered; {failed} failed.',
+  probeAllModelsDone: '{succeeded} of {total} models answered; {failed} failed; {skipped} skipped because their provider is switched off.',
   probeAllModelsFailed: 'Could not complete the model test.',
   healthWindow: 'Window (minutes)',
   healthWindowHint: 'How far back counts as evidence, and therefore how quiet a model has to be before it is asked directly.',
@@ -1910,7 +1955,6 @@ const en = {
   healthDisableAfterHint: 'Turn a model off after this many failures in a row, and on again when it answers. 0 never turns anything off. Only models turned off this way are turned back on.',
   healthRetainDays: 'Keep checks for (days)',
   healthRetainDaysHint: "How long the system's own check results are kept. Readers' turns live in the usage ledger and are not pruned.",
-  secLiveness: 'Model liveness',
   livenessHint: 'Uptime is contributed by readers. These settings are about the models nobody is using.',
   modelUniqueID: 'Unique ID',
   viewModelErrorHistory: 'View error logs',
@@ -1980,7 +2024,6 @@ const en = {
   logAnonymous: 'Not signed in',
   logHolding: '{count} requests recorded.',
   logDropped: '{count} not recorded',
-  logRange: '{first}–{last} of {total}',
   logWhen: 'When',
   logDuration: 'Took',
   logBytes: 'Bytes sent',
@@ -1994,8 +2037,6 @@ const en = {
   secRanking: 'Ranking',
   rankBy: 'Rank',
   rankModels: 'Models',
-  rankUsers: 'Accounts',
-  rankProviders: 'Providers',
   rankMetric: 'By',
   metricCredits: 'Credits spent',
   metricTokens: 'Tokens used',
@@ -2023,6 +2064,7 @@ const en = {
   terminalRenameTab: 'Rename tab',
   terminalCloseTab: 'Close tab (Alt+W)',
   terminalNewTab: 'New tab (Alt+T)',
+  terminalTabList: 'Terminal tabs',
   terminalSettings: 'Terminal settings',
   terminalSSHHint: 'Connect over SSH: ssh {user}@{host}{addr}',
   terminalJumpToBottom: 'Jump to bottom',
@@ -2042,7 +2084,6 @@ const en = {
   terminalCursorBlock: 'Block',
   terminalCursorBar: 'Bar',
   terminalCursorUnderline: 'Underline',
-  terminalCursorBlink: 'Blinking cursor',
   terminalScrollback: 'Scrollback',
   terminalScrollbackLines: '{n} lines',
   terminalTimestamps: 'Show timestamps',
@@ -2069,7 +2110,6 @@ const en = {
   feedbackTitlePlaceholder: 'One line: what happened, or what you would like',
   feedbackBodyLabel: 'Details',
   feedbackBodyPlaceholder: 'What you did, what you expected, and what happened instead.',
-  feedbackBodyHint: 'Steps that reproduce it help more than anything else.',
   feedbackSend: 'Send',
   feedbackSent: 'Sent — thank you.',
   pluginPanelMissing: 'This page is not available on this site.',
@@ -2133,6 +2173,10 @@ const en = {
   oauthUnavailable: 'This server is not offering that sign-in right now.',
   oauthProviderFailed: 'The provider could not be reached. Try again shortly.',
   oauthAddressTaken: 'An account here already uses that address. Sign in the usual way and connect it from Settings.',
+  // A connection refused inside Settings or the bind page, where the sign-in
+  // has already happened, so the sentence above would send the person round in
+  // a circle.
+  oauthConnectAddressTaken: 'Another account here already uses the details this sign-in carries, so it cannot be connected to this one.',
   oauthSignupClosed: 'This server does not open new accounts from a provider sign-in.',
   oauthSignupChallengeRequired: 'This server asks for a human check before it opens a new account. Start the sign-up from the register page.',
   oauthThrottled: 'Too many accounts have been created just now. Try again shortly.',
@@ -2202,6 +2246,7 @@ const en = {
   consentUnknownClient: 'That application is not registered on this server.',
   consentBadRedirect: 'That application asked to be sent somewhere it has not registered.',
   consentFailed: 'That sign-in request is not valid any more.',
+  consentUnavailable: 'Something went wrong on the server. Try again.',
   scopeOpenID: 'Which account you are, as an identifier that does not change',
   scopeProfile: 'Your username, display name and avatar',
   scopeEmail: 'Your email address, and whether it has been confirmed',
@@ -2218,9 +2263,11 @@ const en = {
   applicationsHint: 'Other sites that may offer a “sign in with this instance” button. Each one gets a client id and a secret; the rest they discover for themselves.',
   applicationsIssuer: 'Issuer, for the other side’s configuration: {issuer}',
   applicationsEmpty: 'No applications are registered.',
+  applicationsFull: 'This instance already has the maximum number of applications.',
   applicationTrusted: 'Trusted',
   applicationPublic: 'Public',
   applicationRotate: 'New secret',
+  applicationRotateConfirm: 'Rotate {application}? The current secret stops working at once.',
   applicationDeleteConfirm: 'Delete {application}? Everyone who authorised it is forgotten.',
   applicationSecretOnce: 'The client secret is shown once. Save it now.',
   applicationRegister: 'Register an application',
@@ -2277,7 +2324,6 @@ const en = {
   feedbackReopen: 'Reopen',
   feedbackDeleteConfirm: 'Delete this report? The author will not be told.',
   feedbackFrom: 'From {name}',
-  feedbackViewAuthor: 'Open this account',
 
   safeMode: 'Safe Mode',
   safeModeActive: 'Safe Mode: On (sensitive info masked)',
@@ -2304,11 +2350,9 @@ const en = {
   twoFactorOn: 'On',
   twoFactorOff: 'Off',
   twoFactorOnSince: 'On since {date}',
-  twoFactorRecoveryLeft: '{count} recovery codes left',
   twoFactorRecoveryLow: 'Only {count} recovery codes left. Make a new set before you run out.',
   twoFactorMandatoryNote: 'This server requires two-step verification for your account, so it cannot be turned off.',
   twoFactorMandatoryOff: 'This server requires two-step verification for your account.',
-  twoFactorRecommended: 'Recommended — it takes about a minute.',
   twoFactorSetUp: 'Set up two-step verification',
   twoFactorRegenerate: 'New recovery codes',
   twoFactorTurnOff: 'Turn off two-step verification',
@@ -2448,7 +2492,6 @@ const en = {
   copyFailed: 'Copy failed — select it and copy by hand.',
   secInviteCodes: 'Codes',
   inviteKindAll: 'All codes',
-  inviteKindAdmin: 'Admin-issued',
   inviteKindUser: 'Personal',
   inviteStatusAll: 'Any status',
   inviteStatusActive: 'Active',
@@ -2467,6 +2510,7 @@ const en = {
   confirmRevokeInvite: 'Revoke {code}? It stops working immediately.',
   inviteUsedBy: 'Used by',
   inviteNoUses: 'No one has used this code yet.',
+  inviteUsesCapped: 'Showing the latest {shown} of {total} uses.',
   inviteRewardedBadge: 'Rewarded',
   inviteSkippedSameIP: 'Same IP as inviter',
   inviteSkippedLimit: 'Inviter’s limit reached',
@@ -2484,6 +2528,7 @@ const en = {
   inviteRewardEveryHint: 'How many qualifying invites earn one round of cards.',
   inviteRewardRuleSummary: 'Every {every} successful invites reward {cards} reset cards, valid {days} days.',
   inviteRewardRuleNone: 'Every {every} successful invites are counted, but nothing is granted.',
+  settingNumberRequired: 'A field is empty. Enter a number in it to save these settings.',
   invitePartnerName: 'Partner name',
   invitePartnerNameHint: 'Shown only in this list, never to the people who register.',
   inviteAllowExisting: 'Existing accounts may also claim it',
@@ -2496,6 +2541,7 @@ const en = {
   inviteViaClaim: 'Claimed',
   topPartnerCodes: 'Top partner codes',
   noPartnerCodes: 'No partner codes yet.',
+  partnerCodesCapped: 'Showing {shown} of {total} partner codes. Filter the code list below by kind to see the rest.',
   invitePartnerSummary: '{registrations} registrations · {claims} claims',
   inviteClaimsCount: '{count} claims',
   secTwoFactorPolicy: 'Two-step policy',
@@ -2528,11 +2574,16 @@ const en = {
   securityEventConsoleCommand: 'Console command',
   securityEventTwoFactor: 'Two-step verification',
   securityEventNewDevice: 'New device sign-in',
+  securityEventPasswordReset: 'Password reset by an administrator',
+  securityEventAccountDeleted: 'Account deleted by an administrator',
   securityDecisionEnabled: 'Turned on',
   securityDecisionDisabled: 'Turned off',
   securityDecisionReset: 'Reset by an administrator',
   securityDecisionRecoveryUsed: 'Recovery code used',
   securityDecisionRecoveryRegenerated: 'Recovery codes replaced',
+  securityDecisionPrune: 'Prune requested',
+  securityDecisionPruned: 'Pruned',
+  securityEventLogPrune: 'Request log pruned by an administrator',
   colTwoFactor: 'Two-step verification',
   twoFactorBadge: '2FA',
   twoFactorResetLabel: 'Reset',
@@ -2688,6 +2739,7 @@ const en = {
   bonusModelsOther: 'Only {count} models',
   bonusLoadFailed: 'Could not load your bonus.',
   bonusChoiceFailed: 'Could not change that.',
+  bonusNotChoosable: 'That bonus is not yours to switch on or off.',
   secCheckin: 'Daily check-in',
   checkinNow: 'Check in',
   checkinDone: 'Checked in today',
@@ -2767,6 +2819,7 @@ const en = {
   bonusRevoke: 'Take back',
   bonusLoadMore: 'Load more',
   bonusRevoked: 'Took back {amount} credits.',
+  bonusRevokeConfirm: 'Take back {amount} credits?',
   secBonusBarsHint: 'A bar is an extra allowance beside the three windows. Open one to change its rules or to grant into it.',
   secCheckinAdmin: 'Check-in',
   secCheckinAdminHint: 'Once a day an account presses a button; days of doing so earn rewards.',
@@ -2819,6 +2872,15 @@ export async function loadLanguage(next: Language = active): Promise<void> {
 
 let active: Language = detect();
 
+/**
+ * For this page load only: the dictionary did not arrive, so every reader of
+ * language() must see English too, not just t(). The stored choice is left
+ * alone, so the next boot asks for the dictionary again.
+ */
+export function fallBackToEnglish(): void {
+  active = 'en';
+}
+
 function detect(): Language {
   try {
     const stored = localStorage.getItem(LANGUAGE_KEY);
@@ -2833,19 +2895,36 @@ export function language(): Language {
   return active;
 }
 
+// The newest pick. A dictionary can arrive after a later pick has already been
+// applied, and that late arrival must not switch the reader back.
+let latestPick = 0;
+
 /**
- * Returns the load of the new dictionary, so a caller that needs the next
- * render translated can wait for it. Ignoring it is safe: until the chunk
- * lands, t() falls back to English rather than to nothing.
+ * Switches the language once its dictionary has arrived. Until then the
+ * previous language stays in force everywhere — `language()`, the stored
+ * choice and every render — so nothing reads a language whose text is not
+ * there. It rejects when the chunk cannot be fetched for the newest pick, and
+ * the caller must handle that: an ignored rejection is unhandled, not harmless.
+ * A pick that a later one overtook resolves quietly, because the reader has
+ * already moved on and there is nothing left to report.
  */
-export function setLanguage(next: Language): Promise<void> {
+export async function setLanguage(next: Language): Promise<void> {
+  const pick = ++latestPick;
+  try {
+    await loadLanguage(next);
+  } catch (failure) {
+    // A stale failure has no one left to tell: the newer pick already decided
+    // what the reader sees, and a rejection here would flash an error over it.
+    if (pick === latestPick) throw failure;
+    return;
+  }
+  if (pick !== latestPick) return;
   active = next;
   try {
     localStorage.setItem(LANGUAGE_KEY, next);
   } catch {
     // Best effort; the choice still applies for this page load.
   }
-  return loadLanguage(next);
 }
 
 /** Looks up a string, substituting {name} placeholders. */

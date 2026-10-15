@@ -3,9 +3,11 @@ package database
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 )
 
 func TestRebind(t *testing.T) {
@@ -61,7 +63,10 @@ func containsLine(haystack, needle string) bool {
 }
 
 func TestSQLiteDSNPragmas(t *testing.T) {
-	dsn := sqliteDSN("/tmp/x.db")
+	dsn, err := sqliteDSN("/tmp/x.db")
+	if err != nil {
+		t.Fatalf("plain path refused: %v", err)
+	}
 	for _, want := range []string{
 		"journal_mode%28WAL%29",
 		"busy_timeout%285000%29",
@@ -75,8 +80,32 @@ func TestSQLiteDSNPragmas(t *testing.T) {
 
 	// A caller who wrote their own file: URL keeps full control.
 	custom := "file:/tmp/y.db?_pragma=foreign_keys(0)"
-	if got := sqliteDSN(custom); got != custom {
-		t.Errorf("explicit DSN rewritten: %q", got)
+	if got, err := sqliteDSN(custom); err != nil || got != custom {
+		t.Errorf("explicit DSN rewritten: %q (%v)", got, err)
+	}
+}
+
+// A '?' or '#' in a plain path would be read by SQLite as the start of a query
+// or a fragment, so the pragmas would vanish and a different file would open.
+// A %XX escape is decoded by SQLite inside the file: URI the driver builds, so
+// /srv/arc%20x/obsidian.db opens /srv/arc x/obsidian.db. The DSN is refused
+// rather than built, and Open refuses before it touches the disk.
+func TestSQLiteDSNRefusesPathsSQLiteWouldCut(t *testing.T) {
+	for _, path := range []string{"/srv/arc#2/obsidian.db", "/srv/arc?x/obsidian.db", "/srv/arc%20x/obsidian.db"} {
+		if got, err := sqliteDSN(path); err == nil {
+			t.Errorf("sqliteDSN(%q) = %q, want a refusal", path, got)
+		}
+		if _, err := Open(context.Background(), config.Database{
+			Driver: "sqlite", DSN: path, MaxOpenConns: 1, MaxIdleConns: 1,
+		}); err == nil {
+			t.Errorf("Open(%q) succeeded; it would open a truncated or decoded path", path)
+		}
+	}
+
+	// A % that SQLite leaves alone is a plain character, and refusing it would
+	// turn away installs that open correctly today.
+	if got, err := sqliteDSN("/srv/50%zz/obsidian.db"); err != nil {
+		t.Errorf("sqliteDSN refused a percent sign that is not an escape: %v (got %q)", err, got)
 	}
 }
 
@@ -109,6 +138,79 @@ func TestMigrateIsIdempotent(t *testing.T) {
 		if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
 			t.Errorf("table %s is not queryable: %v", table, err)
 		}
+	}
+}
+
+// Two processes booting against one database both read schema_migrations
+// before either has committed, so both see the same migrations pending. The
+// one that loses must skip what the other recorded, not run its DDL again and
+// refuse to start. Between them each version is applied exactly once.
+func TestConcurrentMigrateAppliesEachVersionOnce(t *testing.T) {
+	want := len(coreVersions(t))
+
+	t.Run("sqlite", func(t *testing.T) {
+		for round := 0; round < 6; round++ {
+			assertMigratedOnceBy(t, config.Database{
+				Driver:       "sqlite",
+				DSN:          filepath.Join(t.TempDir(), "race.db"),
+				MaxOpenConns: 2,
+				MaxIdleConns: 1,
+			}, want)
+		}
+	})
+	t.Run("postgres", func(t *testing.T) {
+		// The first-boot collision is a window a few milliseconds wide, so one
+		// round rarely hits it; each round here gets a fresh schema.
+		for round := 0; round < 15; round++ {
+			assertMigratedOnceBy(t, dbtest.Postgres(t, "the concurrent-migration race on PostgreSQL goes unchecked"), want)
+		}
+	})
+}
+
+func assertMigratedOnceBy(t *testing.T, cfg config.Database, want int) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Both processes boot on an empty schema, so the first-boot CREATE TABLE
+	// IF NOT EXISTS is part of the race. Pre-creating the table here would hide
+	// the collision on PostgreSQL's catalog that a real second instance hits.
+	var handles [2]*DB
+	for i := range handles {
+		db, err := Open(ctx, cfg)
+		if err != nil {
+			t.Fatalf("open handle %d: %v", i, err)
+		}
+		defer db.Close()
+		handles[i] = db
+	}
+
+	var (
+		applied [2][]string
+		errs    [2]error
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+	)
+	for i := range handles {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			applied[i], errs[i] = handles[i].Migrate(ctx)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("process %d failed to boot: %v", i, err)
+		}
+	}
+	if total := len(applied[0]) + len(applied[1]); total != want {
+		t.Errorf("the two processes applied %d migrations between them, want %d, each applied once", total, want)
+	}
+	if again, err := handles[0].Migrate(ctx); err != nil || len(again) != 0 {
+		t.Errorf("after the race a further migrate applied %v (err %v), want nothing", again, err)
 	}
 }
 

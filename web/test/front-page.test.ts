@@ -71,10 +71,11 @@ beforeEach(async () => {
   reduced = false;
   push.mockClear();
   stubMatchMedia();
-  // jsdom has no IntersectionObserver. The page makes two — one for the
-  // reveals, one that pauses the hero's background off screen — so the stub
-  // records each separately, with its callback, which is what lets a test
-  // tell them apart and drive either one by hand.
+  // jsdom has no IntersectionObserver. The page makes three: one for the
+  // reveals, one that pauses the hero and the flow off screen, and one that
+  // stops the terminal demo typing. The stub records each separately, with its
+  // callback, which is what lets a test tell them apart and drive any one by
+  // hand.
   observers = [];
   vi.stubGlobal('IntersectionObserver', class {
     private readonly record: StubObserver;
@@ -145,10 +146,14 @@ describe('the front page', () => {
       landing: { mode: 'intro', intro: '', trial: false, trial_turns: 0 },
     };
     await mount(RootView);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The landing page is fetched like the front page, so it is not there on
+    // the first tick, and how long the chunk takes depends on which test
+    // loaded it first. Waiting on the element rather than on a timer keeps
+    // this from passing or failing by order.
+    await vi.waitFor(() => expect(host.querySelector('.oa-landing')).not.toBeNull());
 
     expect(host.querySelector('.oa-front')).toBeNull();
-    expect(host.querySelector('.oa-landing')).not.toBeNull();
   });
 
   it('hands every section to the observer rather than revealing them itself', async () => {
@@ -266,6 +271,29 @@ describe('the front page', () => {
     expect(watcher!.disconnected).toBe(true);
   });
 
+  it('pauses the flow diagram\'s wires once it is scrolled away, and resumes them on the way back', async () => {
+    await mount(FrontPage);
+
+    // The wires and the core ring animate background position and rotation,
+    // and sit below the hero, so the hero's own switch never reaches them. They
+    // share the hero's observer, which is why the same watcher answers here.
+    const flow = host.querySelector('.oa-front-flow')!;
+    const watcher = observerOf(flow);
+    expect(watcher).toBeDefined();
+
+    const report = (isIntersecting: boolean): void => {
+      watcher!.callback(
+        [{ isIntersecting, target: flow } as unknown as IntersectionObserverEntry],
+        {} as IntersectionObserver,
+      );
+    };
+
+    report(false);
+    expect(flow.classList.contains('idle')).toBe(true);
+    report(true);
+    expect(flow.classList.contains('idle')).toBe(false);
+  });
+
   it('offers a way in, and only offers sign-up where sign-up is open', async () => {
     site.value = { ...siteInfo.value, registration_enabled: false };
     await mount(FrontPage);
@@ -305,5 +333,52 @@ describe('the front page', () => {
 
     await mount(FrontPage);
     expect(host.querySelector('.oa-front-title')?.textContent).toContain(zh.frontHeroLineOne);
+  });
+
+  it('stops typing the terminal demo while its pane is off screen, and resumes it on the way back', async () => {
+    await mount(FrontPage);
+
+    const terminal = host.querySelector('.oa-front-term')!;
+    const watcher = observerOf(terminal);
+    expect(watcher).toBeDefined();
+    const typedText = (): string => terminal.querySelector('.oa-front-term-line')!.children[1]!.textContent ?? '';
+    const report = (isIntersecting: boolean): void => {
+      watcher!.callback(
+        [{ isIntersecting, target: terminal } as unknown as IntersectionObserverEntry],
+        {} as IntersectionObserver,
+      );
+    };
+    const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+    report(false);
+    const frozen = typedText();
+    await pause(200);
+    // Nothing is scheduled, so nothing is typed and nothing redraws.
+    expect(typedText()).toBe(frozen);
+
+    report(true);
+    await pause(200);
+    expect(typedText().length).toBeGreaterThan(frozen.length);
+  });
+
+  it('moves the progress bar as the page scrolls, without re-rendering the page for it', async () => {
+    await mount(FrontPage);
+
+    const node = host.querySelector<HTMLElement>('.oa-front')!;
+    // jsdom has no layout: give the scroller a size so there is somewhere to scroll.
+    Object.defineProperty(node, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(node, 'clientHeight', { configurable: true, value: 500 });
+    node.scrollTop = 250;
+    node.dispatchEvent(new Event('scroll'));
+    await nextTick();
+
+    const bar = host.querySelector<HTMLElement>('.oa-front-progress')!;
+    expect(bar.style.transform).toBe('scaleX(0.5)');
+
+    // No await: the bar moves in the scroll handler itself, not on a render that
+    // would have to run first.
+    node.scrollTop = 500;
+    node.dispatchEvent(new Event('scroll'));
+    expect(bar.style.transform).toBe('scaleX(1)');
   });
 });

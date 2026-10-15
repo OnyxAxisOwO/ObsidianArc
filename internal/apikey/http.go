@@ -110,15 +110,25 @@ func (h *Handlers) create(w http.ResponseWriter, r *http.Request) error {
 	if h.ClientIP != nil {
 		address = h.ClientIP(r)
 	}
-	if err := h.Challenge.Check(r.Context(), body.Turnstile, address); err != nil {
-		return challengeError(err)
+	// Everything that can be refused without Cloudflare goes before the
+	// challenge. The token is single-use and Check spends it whether or not the
+	// request then succeeds, so a request refused afterwards would have to solve
+	// the challenge again.
+	if err := CheckNew(body.Name, body.ExpiresAt); err != nil {
+		return translate(err)
 	}
-
+	if err := h.keys.CheckRoom(r.Context(), account.ID); err != nil {
+		return translate(err)
+	}
 	modelIDs := requestModelIDs(body.ModelIDs, body.ModelID)
 	for _, modelID := range modelIDs {
 		if err := h.modelAllowed(r, modelID); err != nil {
 			return err
 		}
+	}
+
+	if err := h.Challenge.Check(r.Context(), body.Turnstile, address); err != nil {
+		return challengeError(err)
 	}
 
 	record, token, err := h.keys.IssueModels(r.Context(), account.ID, body.Name, modelIDs, body.ExpiresAt)
@@ -222,16 +232,16 @@ func (h *Handlers) modelAllowed(r *http.Request, modelID string) error {
 	return h.ModelAllowed(r, modelID)
 }
 
+// translate gives each refusal a code, so the interface words it in the
+// reader's language rather than showing the English sentence here.
 func translate(err error) error {
 	switch {
 	case errors.Is(err, ErrNotFound):
-		return httpx.NotFound("No such key.")
-	case errors.Is(err, ErrPaused):
-		return httpx.Forbidden("This key is paused.")
+		return httpx.NotFoundCode("key_not_found", "No such key.")
 	case errors.Is(err, ErrInvalidName):
-		return httpx.BadRequest("Give the key a name of %d characters or fewer.", MaxNameChars)
+		return httpx.BadRequestCode("key_name_invalid", "Give the key a name of %d characters or fewer.", MaxNameChars)
 	case errors.Is(err, ErrPastExpiry):
-		return httpx.BadRequest("Choose an expiry in the future.")
+		return httpx.BadRequestCode("key_expiry_past", "Choose an expiry in the future.")
 	case errors.Is(err, ErrTooMany):
 		return httpx.Conflict("too_many_keys",
 			fmt.Sprintf("You already have the maximum of %d keys. Delete one first.", MaxPerUser))

@@ -5,9 +5,9 @@ import { t } from '@/composables/useI18n';
 import { onSignOut } from '@/stores/session';
 
 /**
- * The models an allowance is actually spent on. Fetched once per visit and
- * shared by every policy form, because three screens ask the same question
- * and none of them is worth a request of its own.
+ * The models an allowance is actually spent on. Fetched once and shared by
+ * every policy form until sign-out, because three screens ask the same
+ * question and none of them is worth a request of its own.
  */
 let pricing: Promise<AdminModel[]> | null = null;
 // The list belongs to the session that fetched it, so the next administrator
@@ -16,12 +16,32 @@ onSignOut(() => { pricing = null; });
 
 export function pricedModels(): Promise<AdminModel[]> {
   if (!pricing) {
-    pricing = adminApi.models()
+    const lookup: Promise<AdminModel[]> = adminApi.models()
       .then(({ models }) => models.filter((entry) => entry.enabled))
-      // A failed lookup costs the note, not the form.
-      .catch((): AdminModel[] => []);
+      // A failed lookup costs the note, not the form. It is not kept either:
+      // one transient failure must not blank every readout until sign-out.
+      .catch((): AdminModel[] => {
+        if (pricing === lookup) pricing = null;
+        return [];
+      });
+    pricing = lookup;
   }
   return pricing;
+}
+
+/**
+ * `months` on from `from`, on the same day of the month or the last day of
+ * that month when it has no such day: setMonth alone rolls 31 January over
+ * into March.
+ */
+export function addMonths(from: Date, months: number): Date {
+  const date = new Date(from.getTime());
+  const day = date.getDate();
+  date.setDate(1);
+  date.setMonth(date.getMonth() + months);
+  const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  date.setDate(Math.min(day, lastDay));
+  return date;
 }
 
 /**

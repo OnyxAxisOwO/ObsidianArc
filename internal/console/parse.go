@@ -292,6 +292,29 @@ func refuseLooseValues(cmd *Command, parsed ParsedArgs) error {
 	return nil
 }
 
+// refuseSurplusArgs refuses a command that writes, given more positionals than
+// it declares. Such a command reads the ones it names and nothing else, so
+// `user delete alice bob --yes` would delete alice, say so, and leave bob
+// alone without a word; `setting set site.name a b` would store "a" and drop
+// "b" just as silently. The refusal does not echo the extra tokens: one of them
+// may be a password typed where a flag belonged, and the terminal is the wrong
+// place for it. A command that really does read its whole line says so with
+// Rest on its last Arg. Reads are left alone, since ignoring an extra word there
+// changes nothing.
+func refuseSurplusArgs(cmd *Command, parsed ParsedArgs, lang string) error {
+	declared := len(cmd.Args)
+	if !cmd.writes() || len(parsed.Args) <= declared {
+		return nil
+	}
+	if declared > 0 && cmd.Args[declared-1].Rest {
+		return nil
+	}
+	if lang == "zh" {
+		return fmt.Errorf("%s 只接受 %d 个参数，此行给出了 %d 个。含空格的值请加引号。", cmd.Name, declared, len(parsed.Args))
+	}
+	return fmt.Errorf("%s takes %d argument(s), and the line has %d. Quote a value that has spaces.", cmd.Name, declared, len(parsed.Args))
+}
+
 // valueKind is what a Flag.Value placeholder says a flag's value must be. The
 // placeholder is already the word help and the spec print for the flag, so it
 // is the declaration; a second table here would be one more thing to forget.

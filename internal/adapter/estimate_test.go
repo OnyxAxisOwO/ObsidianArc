@@ -87,6 +87,23 @@ func TestHalfAReportIsCompletedNotReplaced(t *testing.T) {
 	}
 }
 
+// A gateway that reports reasoning but no output figure still wrote the
+// answer. The output has to be estimated from the text, and the reasoning it
+// reported is kept as reported rather than replaced by an estimate.
+func TestReportedReasoningDoesNotSuppressTheOutputEstimate(t *testing.T) {
+	result := Result{Text: strings.Repeat("wxyz", 500)}
+	got := fillUsage(userSays("hello"), result, Usage{InputTokens: 100, ReasoningTokens: 50})
+	if got.OutputTokens != len(result.Text)/bytesPerToken {
+		t.Errorf("output = %d, want %d estimated from the text", got.OutputTokens, len(result.Text)/bytesPerToken)
+	}
+	if got.ReasoningTokens != 50 {
+		t.Errorf("reasoning = %d, want the reported 50 kept", got.ReasoningTokens)
+	}
+	if !got.Estimated {
+		t.Errorf("usage = %+v, want the estimate marked", got)
+	}
+}
+
 // A call that failed before it wrote anything is not estimated: a provider
 // that refused outright did not bill either.
 func TestAFailedCallIsNotEstimated(t *testing.T) {

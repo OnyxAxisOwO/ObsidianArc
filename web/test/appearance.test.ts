@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
 import AppearanceSection from '../src/views/settings/AppearanceSection.vue';
-import { accentPreference, backgroundAccent, setAccentPreference, setBackgroundAccent, setThemeMode, setWallpaper, ownWallpaper as wallpaper } from '../src/theme/theme';
-import { t } from '../src/composables/useI18n';
+import ChatSection from '../src/views/settings/ChatSection.vue';
+import { accentPreference, backgroundAccent, onThemeChange, setAccentPreference, setBackgroundAccent, setThemeMode, setWallpaper, ownWallpaper as wallpaper } from '../src/theme/theme';
+import { changeLanguage, t } from '../src/composables/useI18n';
 import * as auth from '../src/api/auth';
 import { api } from '../src/api/client';
 import { prepareImage } from '../src/chat/image';
@@ -24,9 +25,10 @@ beforeEach(() => {
   vi.spyOn(auth, 'savePreferences').mockResolvedValue({ preferences: {} });
   adopt(account);
 });
-afterEach(() => {
+afterEach(async () => {
   app?.unmount(); app = undefined; document.body.textContent = '';
   setWallpaper(null); localStorage.clear(); forget(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+  await changeLanguage('en');
 });
 
 it('keeps wallpaper, background and control colours independent, including a background reset', async () => {
@@ -101,4 +103,93 @@ it('preserves the selected background through wallpaper upload, session restore 
   expect(mint.getAttribute('aria-pressed')).toBe('true');
   expect(currentPreferences.value.background_accent).toBe('teal');
   expect(auth.savePreferences).toHaveBeenLastCalledWith({ wallpaper: null });
+});
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 3; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextTick();
+  }
+}
+
+it('sends the custom colour once, when the picker closes, not on every step of the drag', async () => {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  app = createApp(AppearanceSection); app.mount(host);
+  const picker = host.querySelector<HTMLInputElement>('input[type="color"]')!;
+  for (const hex of ['#100000', '#400000', '#700000', '#a00000']) {
+    picker.value = hex;
+    picker.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  await nextTick();
+  expect(auth.savePreferences).not.toHaveBeenCalled();
+  expect(accentPreference().accent).toBe('custom');
+  expect(accentPreference().customAccent).toBe('#A00000');
+
+  picker.value = '#a00000';
+  picker.dispatchEvent(new Event('change', { bubbles: true }));
+  await nextTick();
+  expect(auth.savePreferences).toHaveBeenCalledTimes(1);
+  expect(auth.savePreferences).toHaveBeenCalledWith({ accent: 'custom', custom_accent: '#A00000' });
+});
+
+it('moves a wallpaper slider without storing or announcing each step, and stores once on release', async () => {
+  const paper = { url: '/api/preferences/wallpaper?v=3', dim: 20, blur: 3, translucency: 40, panelBlur: 5 };
+  setWallpaper(paper);
+  const listener = vi.fn();
+  const stop = onThemeChange(listener);
+  const stored = () => vi.mocked(Storage.prototype.setItem).mock.calls.filter(([key]) => key === 'obsidian-arc-wallpaper');
+  vi.spyOn(Storage.prototype, 'setItem');
+  const host = document.createElement('div'); document.body.appendChild(host);
+  app = createApp(AppearanceSection); app.mount(host);
+  await nextTick();
+  listener.mockClear();
+  vi.mocked(Storage.prototype.setItem).mockClear();
+
+  const dim = host.querySelector<HTMLInputElement>('input[type="range"]')!;
+  for (const value of [30, 40, 50]) {
+    dim.value = String(value);
+    dim.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  await nextTick();
+  expect(document.documentElement.style.getPropertyValue('--ai-wallpaper-dim')).toBe('0.5');
+  expect(stored()).toHaveLength(0);
+  expect(listener).not.toHaveBeenCalled();
+  expect(auth.savePreferences).not.toHaveBeenCalled();
+
+  dim.dispatchEvent(new Event('change', { bubbles: true }));
+  await nextTick();
+  expect(stored()).toHaveLength(1);
+  expect(JSON.parse(stored()[0]![1])).toMatchObject({ dim: 50 });
+  expect(listener).toHaveBeenCalledTimes(1);
+  expect(auth.savePreferences).toHaveBeenCalledTimes(1);
+  expect(auth.savePreferences).toHaveBeenCalledWith({ wallpaper: expect.objectContaining({ dim: 50 }) });
+  stop();
+});
+
+it('paints the wallpaper with no filter at zero blur, and with one blur otherwise', () => {
+  const style = document.documentElement.style;
+  const paper = { url: '/api/preferences/wallpaper?v=4', dim: 20, translucency: 0, panelBlur: 0 };
+
+  setWallpaper({ ...paper, blur: 0 });
+  // The stylesheet reads this for the wallpaper layers. blur(0px) would still
+  // promote a full-viewport layer, so the no-blur case has to be `none`.
+  expect(style.getPropertyValue('--ai-wallpaper-filter')).toBe('none');
+  setWallpaper({ ...paper, blur: 3 });
+  expect(style.getPropertyValue('--ai-wallpaper-filter')).toBe('blur(3px)');
+  setWallpaper(null);
+  expect(style.getPropertyValue('--ai-wallpaper-filter')).toBe('');
+});
+
+it('relabels the default-model choices when the language changes under a panel that stays mounted', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({ models: [{ id: 'm1', display_name: 'Model One' }] });
+  const host = document.createElement('div'); document.body.appendChild(host);
+  app = createApp(ChatSection); app.mount(host);
+  await settle();
+  expect(host.textContent).toContain(t('firstAvailableModel'));
+
+  await changeLanguage('zh');
+  await settle();
+  expect(t('firstAvailableModel')).not.toBe('The first available model');
+  expect(host.textContent).toContain(t('firstAvailableModel'));
+  expect(host.textContent).not.toContain('The first available model');
 });

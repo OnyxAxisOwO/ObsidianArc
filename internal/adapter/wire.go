@@ -33,7 +33,7 @@ const (
 	// exists so that a provider (or a hostile base URL an administrator was
 	// talked into) cannot make a request cost unbounded memory by never
 	// ending, or by answering with one enormous document. A client-level
-	// timeout cannot do it: this package deliberately has none, and a fast
+	// timeout cannot do it: it would cut a long stream short, and a fast
 	// link moves gigabytes inside any deadline a long stream is allowed.
 	MaxResponseBytes = 64 << 20
 	// MaxToolArgumentBytes is the most one tool call's arguments may grow to.
@@ -215,10 +215,30 @@ func imagesAction(base, action string) string {
 	if strings.HasSuffix(trimmed, "/v1") {
 		return trimmed + "/images/" + action
 	}
-	if !strings.Contains(trimmed, "/v1") {
+	// A base that already names its API version (".../api/v3", ".../api/paas/v4")
+	// is complete as it stands, the same as the chat endpoint treats it. Only a
+	// base that names none gets the version added.
+	if !hasVersionSegment(trimmed) {
 		return trimmed + "/v1/images/" + action
 	}
 	return trimmed + "/images/" + action
+}
+
+// hasVersionSegment reports whether the path of base has a segment that names
+// an API version, such as v1 or v4, wherever it sits in the path. Checked on
+// the parsed path rather than the whole string, so a version in the host
+// ("https://v1.example.com") does not count.
+func hasVersionSegment(base string) bool {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if len(segment) >= 2 && segment[0] == 'v' && segment[1] >= '0' && segment[1] <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 func applyHeaders(req *http.Request, p Provider) {
@@ -272,11 +292,7 @@ func post(
 	if err != nil {
 		done(nil, err)
 		if timedOut() {
-			return nil, &Error{
-				Kind:    ErrorNetwork,
-				Message: "The provider did not start responding within its configured timeout.",
-				cause:   err,
-			}
+			return nil, providerTimedOut(err)
 		}
 		return nil, networkError(ctx, err)
 	}
@@ -286,6 +302,17 @@ func post(
 	return limitResponse(done(response, nil)), nil
 }
 
+// providerTimedOut is the error for a provider that did not start answering
+// within its own timeout. post and the model listing both apply the deadline,
+// so both report it the same way.
+func providerTimedOut(err error) *Error {
+	return &Error{
+		Kind:    ErrorNetwork,
+		Message: "The provider did not start responding within its configured timeout.",
+		cause:   err,
+	}
+}
+
 // providerDeadline bounds how long a provider may take to *start* answering.
 //
 // The per-provider timeout an operator sets in the backoffice used to be read
@@ -293,7 +320,8 @@ func post(
 // the control saved, and the request still hung for as long as the browser
 // held it. It is applied here rather than as a client-level Timeout because a
 // deadline over the whole call would cut a long streamed answer off
-// mid-sentence, which is exactly why this package sets no such Timeout.
+// mid-sentence, which is why the client has no Timeout unless an operator sets
+// UPSTREAM_REQUEST_TIMEOUT.
 //
 // So the timer is stopped once the headers land, and its cancel is handed to
 // the response body: reading the stream keeps the context alive for as long
@@ -423,6 +451,9 @@ func readErrorBody(response *http.Response) []byte {
 //
 // Returning an error from fn stops the read, which is how a disconnected
 // client ends an upstream generation.
+//
+// The slice fn receives is the scanner's own buffer, reused for the next line,
+// so fn must decode it before returning and must not keep it.
 func readEventStream(body io.Reader, fn func(data []byte) error) error {
 	// The scanner's buffer bounds one event; what bounds how many a provider
 	// may send is the limit on the response body, put there by post.
@@ -432,25 +463,32 @@ func readEventStream(body io.Reader, fn func(data []byte) error) error {
 	scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
 
 	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
-		if line == "" || strings.HasPrefix(line, ":") {
+		line := bytes.TrimRight(scanner.Bytes(), "\r")
+		if len(line) == 0 || line[0] == ':' {
 			continue
 		}
-		data, found := strings.CutPrefix(line, "data:")
+		data, found := bytes.CutPrefix(line, []byte("data:"))
 		if !found {
 			// `event:` and `id:` lines carry nothing either protocol needs;
 			// the payload itself names its own type.
 			continue
 		}
-		trimmed := strings.TrimSpace(data)
-		if trimmed == "" || trimmed == "[DONE]" {
+		trimmed := bytes.TrimSpace(data)
+		if len(trimmed) == 0 || string(trimmed) == "[DONE]" {
 			continue
 		}
-		if err := fn([]byte(trimmed)); err != nil {
+		if err := fn(trimmed); err != nil {
 			return err
 		}
 	}
-	return scanner.Err()
+	// A line past the buffer is the provider's frame being larger than this
+	// reader takes, not the connection failing. Reported as a network error it
+	// reads as an unreachable provider, which is retryable and untrue.
+	err := scanner.Err()
+	if errors.Is(err, bufio.ErrTooLong) {
+		return &Error{Kind: ErrorUpstream, Message: "The provider sent one event larger than this server reads."}
+	}
+	return err
 }
 
 // --- inline reasoning --------------------------------------------------------
@@ -460,15 +498,23 @@ const (
 	thinkClose = "</think>"
 )
 
-// splitThinking separates reasoning that a model emitted inline at the head
-// of its answer, which is what several reasoning models do on an
-// OpenAI-compatible endpoint instead of using a dedicated field.
+// splitThinking separates reasoning that a model emitted inline in its answer,
+// which is what several reasoning models do on an OpenAI-compatible endpoint
+// instead of using a dedicated field.
+//
+// An opening tag at the head of the answer starts reasoning whether or not it
+// is ever closed. One after visible text is reasoning only once its closing tag
+// arrives; see inlineThinking.
 //
 // One shot, for a response that arrived whole. A stream uses inlineThinking
 // below, which is the same rule with a memory of where it has already looked.
 func splitThinking(buffer string) (reasoning, answer string) {
 	var once inlineThinking
-	return once.split(buffer)
+	reasoning, answer = once.split(buffer)
+	if once.unresolved() {
+		return "", buffer
+	}
+	return reasoning, answer
 }
 
 // inlineThinking is that split, kept across the deltas of one answer.
@@ -489,6 +535,12 @@ type inlineThinking struct {
 	openAt      int
 	openFound   bool
 	openScanned int
+	// Whether visible text comes before the opening tag. An answer that
+	// mentions the literal tag ("wrap it in <think> tags") must not have
+	// everything after the mention taken for reasoning, so such a tag is
+	// reasoning only once its closing tag has arrived. Until then the text
+	// after it is held back from the answer rather than shown and taken back.
+	afterText bool
 
 	// Measured from the end of the opening tag rather than from the buffer,
 	// which is where the closing one is looked for.
@@ -510,6 +562,7 @@ func (s *inlineThinking) split(buffer string) (reasoning, answer string) {
 			return "", buffer
 		}
 		s.openAt, s.openFound = from+index, true
+		s.afterText = strings.TrimSpace(buffer[:s.openAt]) != ""
 	}
 
 	rest := buffer[s.openAt+len(thinkOpen):]
@@ -518,9 +571,19 @@ func (s *inlineThinking) split(buffer string) (reasoning, answer string) {
 		index := strings.Index(rest[from:], thinkClose)
 		if index < 0 {
 			s.closeScanned = len(rest)
+			if s.afterText {
+				return "", buffer[:s.openAt]
+			}
 			return rest, buffer[:s.openAt]
 		}
 		s.closeAt, s.closeFound = from+index, true
 	}
 	return rest[:s.closeAt], buffer[:s.openAt] + rest[s.closeAt+len(thinkClose):]
+}
+
+// unresolved reports a tag after visible text whose closing tag has not come.
+// It was never reasoning, so the answer is the whole buffer, the tag included.
+// A stream learns this only when it ends, which is why the caller asks.
+func (s *inlineThinking) unresolved() bool {
+	return s.openFound && s.afterText && !s.closeFound
 }

@@ -560,8 +560,8 @@ func TestTrustCloudflareParsesOn(t *testing.T) {
 
 // A value that will not parse falls back to the default rather than refusing
 // to boot. That is a deliberate choice — a typo in a tuning knob should not
-// take the server down — and it means a typo is silent, so it is worth
-// stating rather than discovering.
+// take the server down — and the fallback is logged, so a typo is stated rather
+// than discovered later.
 func TestUnparseableValuesFallBackToTheDefault(t *testing.T) {
 	cfg := load(t, map[string]string{
 		"SESSION_TTL":      "not-a-duration",
@@ -599,6 +599,75 @@ func TestPoolAndHasherAreKeptSelfConsistent(t *testing.T) {
 
 	if got := load(t, map[string]string{"ARGON_MAX_PARALLEL": "0"}).Password.MaxParallel; got < 1 {
 		t.Errorf("MaxParallel = %d; zero would let no password ever be hashed", got)
+	}
+}
+
+// The fallback is the documented behaviour, and the value is pinned above. What
+// this adds is the log line: without it OBSIDIAN_TRUST_PROXY=yes leaves every
+// client behind a proxy keyed to the proxy's address, and nothing says why.
+func TestAnUnparseableSettingIsLoggedWithItsName(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	if load(t, map[string]string{"TRUST_PROXY": "yes"}).TrustProxy {
+		t.Fatal("TRUST_PROXY=yes was read as true")
+	}
+	if !strings.Contains(logged.String(), "OBSIDIAN_TRUST_PROXY") || !strings.Contains(logged.String(), "yes") {
+		t.Errorf("no log line names the setting and its value:\n%s", logged.String())
+	}
+}
+
+// A pool of zero is unlimited to database/sql, and a touch interval of zero
+// writes last_seen_at on every request. Both used to pass through unchanged.
+func TestAPoolOrTouchIntervalThatCannotBeUsedFallsBack(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	for _, value := range []string{"0", "-3"} {
+		cfg := load(t, map[string]string{"DB_MAX_CONNS": value})
+		if cfg.Database.MaxOpenConns != 4 {
+			t.Errorf("DB_MAX_CONNS=%s gave MaxOpenConns %d, want the sqlite default 4",
+				value, cfg.Database.MaxOpenConns)
+		}
+		if cfg.Database.MaxIdleConns != 4 {
+			t.Errorf("DB_MAX_CONNS=%s gave MaxIdleConns %d, want 4", value, cfg.Database.MaxIdleConns)
+		}
+	}
+	if got := load(t, map[string]string{"SESSION_TOUCH_INTERVAL": "0s"}).Session.TouchInterval; got != time.Hour {
+		t.Errorf("TouchInterval = %s, want the default 1h", got)
+	}
+	for _, name := range []string{"OBSIDIAN_DB_MAX_CONNS", "OBSIDIAN_SESSION_TOUCH_INTERVAL"} {
+		if !strings.Contains(logged.String(), name) {
+			t.Errorf("no warning names %s:\n%s", name, logged.String())
+		}
+	}
+}
+
+// A zero or negative parallel-hash bound falls back to the same default an unset
+// one gets, and is reported like the other fallbacks. Quietly taking one hash at
+// a time would serialise every login on a host meant to run several.
+func TestAnUnusableMaxParallelFallsBackToTheDefaultAndSaysSo(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	want := min(4, runtime.NumCPU())
+	if got := load(t, nil).Password.MaxParallel; got != want {
+		t.Fatalf("unset MaxParallel = %d, want the default %d", got, want)
+	}
+	for _, value := range []string{"0", "-1"} {
+		logged.Reset()
+		if got := load(t, map[string]string{"ARGON_MAX_PARALLEL": value}).Password.MaxParallel; got != want {
+			t.Errorf("ARGON_MAX_PARALLEL=%s gave %d, want the default %d", value, got, want)
+		}
+		if !strings.Contains(logged.String(), "OBSIDIAN_ARGON_MAX_PARALLEL") {
+			t.Errorf("ARGON_MAX_PARALLEL=%s is not reported:\n%s", value, logged.String())
+		}
 	}
 }
 

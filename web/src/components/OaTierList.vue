@@ -48,13 +48,14 @@ function set(value: string, tier: AccessTier): void {
           <span class="oa-check-title">{{ item.label }}</span>
           <span v-if="item.sub" class="oa-check-sub">{{ item.sub }}</span>
         </span>
-        <div class="oa-segmented">
+        <div class="oa-segmented" role="group" :aria-label="item.label">
           <button
             v-for="entry in TIERS"
             :key="entry.tier"
             type="button"
             class="oa-segmented-option"
             :class="{ active: tierOf(item.value) === entry.tier }"
+            :aria-pressed="tierOf(item.value) === entry.tier"
             @click="set(item.value, entry.tier)"
           >
             {{ entry.label() }}

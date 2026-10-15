@@ -25,7 +25,7 @@ const props = defineProps<{ page: AdminPluginPage }>();
 
 const view = useAdminView();
 provideOpenRecord();
-view.setTitle(props.page.title(), props.page.hint?.());
+view.setTitle(() => props.page.title(), () => props.page.hint?.() ?? '');
 
 const placement = `plugin:${props.page.slug}` as const;
 const settings = usePluginSettings(placement);
@@ -86,8 +86,9 @@ async function save(): Promise<void> {
   saveError.value = '';
   try {
     const { settings: saved } = await adminApi.saveSettings(values);
-    settings.load(saved);
-    baseline.value = { ...settings.collect() };
+    // Only the keys just sent: the operator may have typed into another field
+    // while the request was in flight, and that edit must stay unsaved.
+    baseline.value = { ...baseline.value, ...settings.settle(values, saved) };
   } catch (failure) {
     saveError.value = message(failure);
   } finally {

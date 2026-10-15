@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 
@@ -55,11 +56,15 @@ var (
 	ErrInvalidHash      = errors.New("auth: stored password hash is malformed")
 )
 
+// Lengths are counted in characters, as the messages say. A byte count would
+// let a three-character Chinese password through the eight-character minimum
+// and refuse a ninety-character one. A rune is at most four bytes, so the
+// character cap also bounds the input Argon2 is given.
 func ValidatePassword(password string) error {
-	switch {
-	case len(password) < MinPasswordChars:
+	switch n := utf8.RuneCountInString(password); {
+	case n < MinPasswordChars:
 		return ErrPasswordTooShort
-	case len(password) > MaxPasswordChars:
+	case n > MaxPasswordChars:
 		return ErrPasswordTooLong
 	default:
 		return nil
@@ -102,7 +107,10 @@ func (h *Hasher) Verify(ctx context.Context, encoded, password string) (ok bool,
 	if err != nil {
 		return false, false, err
 	}
-	if len(password) > MaxPasswordChars {
+	// Same upper bound as ValidatePassword, and no lower bound: a password
+	// stored under the old byte rule can be shorter than the character minimum,
+	// and checking it here would lock that account out.
+	if utf8.RuneCountInString(password) > MaxPasswordChars {
 		return false, false, nil
 	}
 	if err := h.acquire(ctx); err != nil {

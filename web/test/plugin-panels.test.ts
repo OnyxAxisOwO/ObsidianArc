@@ -17,6 +17,14 @@ import PluginUserPanel from '../src/views/PluginUserPanel.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { provideOpenRecord } from '../src/views/admin/openRecord';
 import PluginList from '../src/views/admin/PluginList.vue';
+import PluginActionCard from '../src/views/admin/PluginActionCard.vue';
+import { safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+};
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -79,6 +87,7 @@ afterEach(() => {
   host.remove();
   panelHost.remove();
   installPlugins([]);
+  safeModeEnabled.value = false;
   vi.restoreAllMocks();
 });
 
@@ -189,8 +198,12 @@ describe('a plugin\'s panel for everybody signed in', () => {
   });
 
   it('says so when no loaded plugin has the panel', async () => {
+    // The plugins have answered by the time a panel is drawn: boot waits for them.
+    installPlugins([]);
     await mount(PluginUserPanel, { slug: 'nowhere' });
     expect(panelHost.textContent).toContain(t('pluginPanelMissing'));
+    // Once answered, the title must not stay on "Loading" over the missing notice.
+    expect(panelHost.textContent).not.toContain(t('loading'));
   });
 });
 
@@ -277,5 +290,293 @@ describe('a record of a plugin\'s list, opened', () => {
     await settle();
     expect(titles()).toBe(1);
     expect(panelHost.textContent).toContain('Pending one');
+  });
+
+  // Rows need not carry an id, so the panel cannot be told apart by one. A
+  // second record must start with its own drafts, not the first one's typing.
+  it('starts a second record with its own drafts when the rows carry no id', async () => {
+    const spec: AdminListSpec = {
+      id: 'reports', page: 'plugin:tips', title: () => 'Reports', empty: () => 'None',
+      columns: [{ key: 'title', header: () => 'Title' }],
+      load: async () => ({ rows: [{ title: 'First' }, { title: 'Second' }], total: 2 }),
+      cell: (key, row) => ({ title: String(row[key]) }),
+      detail: async (row) => ({
+        title: String(row.title),
+        fields: [],
+        actions: [{
+          id: 'grant', label: 'Grant',
+          controls: [{ kind: 'text', key: 'cards', label: () => 'Cards' }],
+          defaults: { cards: '1' },
+          run: async () => 'Granted',
+        }],
+      }),
+    };
+    await mount(PluginList, { spec });
+    host.querySelectorAll<HTMLElement>('tbody tr')[0]!.click();
+    await settle();
+    type(input(panelHost, 'Cards'), '3');
+    await nextTick();
+
+    host.querySelectorAll<HTMLElement>('tbody tr')[1]!.click();
+    await settle();
+    expect(panelHost.textContent).toContain('Second');
+    expect((input(panelHost, 'Cards') as HTMLInputElement).value).toBe('1');
+  });
+
+  // The table and its page controls are the only way to ask for another page,
+  // so a page that failed must leave them on screen, with a retry that asks for
+  // that page again.
+  it('keeps the table and its pages under a failed page, and retries that page', async () => {
+    const load = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ id: 'r1', title: 'Leak' }], total: 500 })
+      .mockRejectedValueOnce(new Error('upstream down'))
+      .mockResolvedValueOnce({ rows: [{ id: 'r2', title: 'Second page' }], total: 500 });
+    const spec: AdminListSpec = {
+      id: 'reports', page: 'plugin:tips', title: () => 'Reports', empty: () => 'None',
+      columns: [{ key: 'title', header: () => 'Title' }],
+      load, cell: (key, row) => ({ title: String(row[key]) }),
+    };
+    await mount(PluginList, { spec });
+    button(host, t('next')).click();
+    await settle();
+
+    expect(host.textContent).toContain('upstream down');
+    expect(host.querySelector('tbody')!.textContent).toContain('Leak');
+    expect(host.querySelector('nav.oa-pagination')).not.toBeNull();
+
+    button(host, t('tryAgain')).click();
+    await settle();
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(host.textContent).not.toContain('upstream down');
+    expect(host.querySelector('tbody')!.textContent).toContain('Second page');
+  });
+
+  it('draws a destructive action as a destructive button', async () => {
+    const detail: RecordDetail = {
+      title: 'Leak report',
+      fields: [],
+      actions: [{ id: 'revoke', label: 'Revoke access', danger: true, run: async () => 'Revoked' }],
+    };
+    const { spec } = list(async () => detail);
+    await mount(PluginList, { spec });
+    host.querySelector<HTMLElement>('tbody tr')!.click();
+    await settle();
+
+    expect(button(panelHost, 'Revoke access').classList.contains('oa-btn-danger')).toBe(true);
+  });
+
+  // The address is hidden on screen, so its link must not carry it either: a
+  // hover or a click would show the address that the mask is there to hide.
+  it('does not link a masked address, even when it is http(s)', async () => {
+    safeModeEnabled.value = true;
+    safeModeCategories.value.users = true;
+    const detail: RecordDetail = {
+      title: 'Leak report',
+      fields: [{ label: 'Where', value: 'https://forum.example/thread', link: true, mask: true }],
+    };
+    const { spec } = list(async () => detail);
+    await mount(PluginList, { spec });
+    host.querySelector<HTMLElement>('tbody tr')!.click();
+    await settle();
+
+    expect(panelHost.querySelector('.oa-plugin-record a')).toBeNull();
+    expect(panelHost.querySelector('.oa-plugin-record')!.innerHTML).not.toContain('forum.example');
+  });
+});
+
+describe('a plugin\'s action card', () => {
+  it('draws a destructive button as one', async () => {
+    const card = {
+      id: 'revoke-all', page: 'plugin:tips' as const, title: () => 'Revoke', controls: [],
+      button: { label: () => 'Revoke everything', danger: true, run: async () => 'Revoked' },
+    };
+    await mount(PluginActionCard, { card });
+
+    expect(button(host, 'Revoke everything').classList.contains('oa-btn-danger')).toBe(true);
+  });
+
+  // A plugin that wrote no question for its destructive button used to get a
+  // one-click action: the core drew the danger but asked nothing in place.
+  it('asks before a destructive button runs when the plugin wrote no question', async () => {
+    const run = vi.fn(async () => 'Revoked');
+    const card = {
+      id: 'revoke-all', page: 'plugin:tips' as const, title: () => 'Revoke', controls: [],
+      button: { label: () => 'Revoke everything', danger: true, run },
+    };
+    await mount(PluginActionCard, { card });
+
+    button(host, 'Revoke everything').click();
+    await settle();
+    expect(run).not.toHaveBeenCalled();
+    button(host, 'Revoke everything').click();
+    await settle();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a plugin\'s list read again while an older read is in flight', () => {
+  const rowsSpec = (over: Partial<AdminListSpec>): AdminListSpec => ({
+    id: 'reports', page: 'plugin:tips', title: () => 'Reports', empty: () => 'None',
+    columns: [{ key: 'title', header: () => 'Title' }],
+    load: async () => ({ rows: [], total: 0 }),
+    cell: (key, row) => ({ title: String(row[key]) }),
+    ...over,
+  });
+
+  // A page change does not wait for the page before it, so the older answer can
+  // arrive last. The reader asked for the newer page, and must keep seeing it.
+  it('shows the page asked for last, not the page whose answer came back last', async () => {
+    const second = deferred<{ rows: Array<Record<string, unknown>>; total: number }>();
+    const spec = rowsSpec({
+      load: vi.fn(async (offset: number) => {
+        if (offset === 0) return { rows: [{ id: 'p1', title: 'Page one' }], total: 60 };
+        if (offset === 20) return second.promise;
+        return { rows: [{ id: 'p3', title: 'Page three' }], total: 60 };
+      }),
+    });
+    await mount(PluginList, { spec });
+
+    button(host, t('next')).click();
+    await settle();
+    button(host, t('next')).click();
+    await settle();
+    expect(host.textContent).toContain('Page three');
+
+    second.resolve({ rows: [{ id: 'p2', title: 'Page two' }], total: 60 });
+    await settle();
+    expect(host.textContent).toContain('Page three');
+    expect(host.textContent).not.toContain('Page two');
+  });
+
+  // Two rows opened in turn: the record of the row clicked last is the one shown.
+  it('shows the record of the row opened last, not the one whose detail came back last', async () => {
+    const first = deferred<RecordDetail>();
+    const spec = rowsSpec({
+      load: async () => ({ rows: [{ id: 'r1', title: 'First row' }, { id: 'r2', title: 'Second row' }], total: 2 }),
+      detail: (row) => (row.id === 'r1' ? first.promise : Promise.resolve({ title: 'Second record', fields: [] })),
+    });
+    await mount(PluginList, { spec });
+    const rows = () => [...host.querySelectorAll<HTMLElement>('tbody tr')];
+
+    rows()[0]!.click();
+    await nextTick();
+    rows()[1]!.click();
+    await settle();
+    first.resolve({ title: 'First record', fields: [] });
+    await settle();
+
+    expect(panelHost.textContent).toContain('Second record');
+    expect(panelHost.textContent).not.toContain('First record');
+  });
+
+  // An action reads the table again. A row opened while that read is in flight
+  // is the one the panel shows, so the refresh of the record opened before it
+  // must not be written over the newer one when it lands.
+  it('keeps the record opened during an action\'s table read, not the refresh of the one before it', async () => {
+    const reload = deferred<{ rows: Array<Record<string, unknown>>; total: number }>();
+    const bDetail = deferred<RecordDetail>();
+    const refreshA = deferred<RecordDetail>();
+    const rowsNow = { rows: [{ id: 'r1', title: 'Row A' }, { id: 'r2', title: 'Row B' }], total: 2 };
+    let loads = 0;
+    let aReads = 0;
+    const recordA: RecordDetail = {
+      title: 'Record A',
+      fields: [],
+      actions: [{ id: 'mark', label: 'Mark', controls: [], defaults: {}, run: async () => 'Marked' }],
+    };
+    const spec = rowsSpec({
+      load: async () => {
+        loads += 1;
+        return loads === 2 ? reload.promise : rowsNow;
+      },
+      detail: (row) => {
+        if (row.id === 'r2') return bDetail.promise;
+        aReads += 1;
+        return aReads === 1 ? Promise.resolve(recordA) : refreshA.promise;
+      },
+    });
+    await mount(PluginList, { spec });
+    const rows = () => [...host.querySelectorAll<HTMLElement>('tbody tr')];
+
+    rows()[0]!.click();
+    await settle();
+    button(panelHost, 'Mark').click();
+    await settle();
+    rows()[1]!.click();
+    await settle();
+    reload.resolve(rowsNow);
+    await settle();
+    bDetail.resolve({ title: 'Record B', fields: [] });
+    await settle();
+    refreshA.resolve({ title: 'Record A again', fields: [] });
+    await settle();
+
+    expect(panelHost.textContent).toContain('Record B');
+    expect(panelHost.textContent).not.toContain('Record A again');
+  });
+});
+
+describe('a record whose detail is still loading when the reader moves on', () => {
+  const oneRowList = (id: string, title: string, detail: NonNullable<AdminListSpec['detail']>): AdminListSpec => ({
+    id, page: 'plugin:tips', title: () => id, empty: () => 'None',
+    columns: [{ key: 'title', header: () => 'Title' }],
+    load: async () => ({ rows: [{ id: `${id}-row`, title }], total: 1 }),
+    cell: (key, row) => ({ title: String(row[key]) }),
+    detail,
+  });
+
+  // The reader dismissed the panel while B was loading. B must stay away.
+  it('does not show the record once the reader has closed the panel', async () => {
+    const detailB = deferred<RecordDetail>();
+    const spec: AdminListSpec = {
+      id: 'reports', page: 'plugin:tips', title: () => 'Reports', empty: () => 'None',
+      columns: [{ key: 'title', header: () => 'Title' }],
+      load: async () => ({ rows: [{ id: 'a', title: 'Row A' }, { id: 'b', title: 'Row B' }], total: 2 }),
+      cell: (key, row) => ({ title: String(row[key]) }),
+      detail: async (row) => (row.id === 'a' ? { title: 'Record A', fields: [] } : detailB.promise),
+    };
+    await mount(PluginList, { spec });
+    const rows = () => [...host.querySelectorAll<HTMLElement>('tbody tr')];
+
+    rows()[0]!.click();
+    await settle();
+    expect(panelHost.textContent).toContain('Record A');
+
+    rows()[1]!.click();
+    await nextTick();
+    panelHost.querySelector<HTMLButtonElement>(`button[aria-label="${t('close')}"]`)!.click();
+    // The panel closes after its 340ms exit, so the close lands only once that
+    // has run; B's detail must arrive after it, with the reader already gone.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(panelHost.querySelector('.oa-plugin-record')).toBeNull();
+
+    detailB.resolve({ title: 'Record B', fields: [] });
+    await settle();
+    expect(panelHost.textContent).not.toContain('Record B');
+  });
+
+  // Another list took the one shared panel after this list's open began. This
+  // list's older answer must not put its record back over that one.
+  it('does not let a record still loading in one list replace one another list opened later', async () => {
+    const pendingX = deferred<RecordDetail>();
+    const pending = oneRowList('pending', 'Pending row', async () => pendingX.promise);
+    const decided = oneRowList('decided', 'Decided row', async () => ({ title: 'Decided record', fields: [] }));
+    await mount({ setup() {
+      provideOpenRecord();
+      return () => [h(PluginList, { spec: pending }), h(PluginList, { spec: decided })];
+    } });
+    const rows = () => [...host.querySelectorAll<HTMLElement>('tbody tr')];
+
+    rows()[0]!.click();
+    await nextTick();
+    rows()[1]!.click();
+    await settle();
+    expect(panelHost.textContent).toContain('Decided record');
+
+    pendingX.resolve({ title: 'Pending record', fields: [] });
+    await settle();
+    expect(panelHost.textContent).toContain('Decided record');
+    expect(panelHost.textContent).not.toContain('Pending record');
+    expect(panelHost.querySelectorAll('.oa-plugin-record')).toHaveLength(1);
   });
 });

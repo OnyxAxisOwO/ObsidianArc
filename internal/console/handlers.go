@@ -108,11 +108,11 @@ type doneFrame struct {
 	ElapsedMS int64  `json:"elapsed_ms"`
 	// What `format` and `lang` left the session set to.
 	//
-	// The SSH transport keeps one Session for a whole connection, so those
-	// two commands simply mutate it and the next line sees the change. The
-	// web transport has no connection to keep anything on: every exec builds
-	// a fresh Session out of the request body, so the mutation was being
-	// thrown away the moment the response ended and `format json` did
+	// The SSH transport builds a fresh Session per line and copies these two
+	// values back onto the connection afterwards, so the next line sees the
+	// change. The web transport has no connection to keep anything on: every
+	// exec builds a fresh Session out of the request body, so the mutation was
+	// being thrown away the moment the response ended and `format json` did
 	// nothing at all here. Handing the values back lets the client carry
 	// them on the next request, which is the browser's version of the same
 	// session.

@@ -1,14 +1,17 @@
 package oauth
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Carrying a sign-in across the trip to the provider and back.
@@ -58,8 +61,12 @@ type state struct {
 	// started. A sign-in that opens an account is held to it while the operator
 	// has the challenge on, so a state minted before this field existed decodes
 	// as not passed and is held to it like any other sign-in that skipped it.
-	SignUp bool  `json:"g,omitempty"`
-	Expiry int64 `json:"e"`
+	SignUp bool `json:"g,omitempty"`
+	// Whether the sign-in began on the register page. A sign-in that fails is
+	// sent back to the page it began on, and the provider's redirect carries no
+	// query to say which that was.
+	Register bool  `json:"i,omitempty"`
+	Expiry   int64 `json:"e"`
 }
 
 // pending is a sign-in that stopped to ask something.
@@ -85,8 +92,12 @@ type pending struct {
 	Next  string `json:"r,omitempty"`
 	// Carried from the state that started the sign-in. The form is where the
 	// account is opened, and it has no state cookie of its own to ask.
-	SignUp bool  `json:"g,omitempty"`
-	Expiry int64 `json:"x"`
+	SignUp bool `json:"g,omitempty"`
+	// The ticket's own id. The completion that opens a session spends it, so a
+	// copy of the cookie cannot open a second session; a ticket with none was
+	// issued before this field existed and is not honoured.
+	Nonce  string `json:"i,omitempty"`
+	Expiry int64  `json:"x"`
 }
 
 // How long somebody has to fill the form in. Long enough to go and look up a
@@ -115,10 +126,42 @@ func newPendingStamp(secret []byte) *stamp {
 	return &stamp{key: sum[:]}
 }
 
+// maxPendingJSON is the most JSON a pending ticket may carry, so its cookie
+// stays inside the browser's limit of 4096 bytes for name and value together.
+// The name is 22 bytes with its __Host- prefix. The value is the base64 of the
+// JSON, then a dot and a 43-byte tag: at 3000 bytes of JSON that is 4000 + 1 +
+// 43, and the cookie comes to 4067 bytes. The JSON is the destination (at most
+// 2048 bytes once escaped, see safeNext), about 130 bytes of fixed fields, and
+// the identity the provider gave, which has no length of its own. A ticket that
+// would not fit is refused, not sent with a cookie the browser would drop.
+const maxPendingJSON = 3000
+
+var errPendingTooLarge = errors.New("oauth: the sign-in's details do not fit in a cookie")
+
+// encodeCookie is the JSON a signed cookie carries. HTML escaping is off because
+// nothing here is written into a page, and with it on '<', '>' and '&' each grow
+// to six bytes, so a 1 KB destination would be a 6 KB cookie. With it off the
+// encoder still writes '"' as two bytes and U+2028 as six for three; safeNext
+// refuses control characters, backslashes and invalid UTF-8, the only other
+// things that grow, so the JSON is never more than twice the value it carries.
+// Encode's trailing newline is not part of the value.
+func encodeCookie(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
 func (s *stamp) issuePending(value pending) (string, error) {
-	body, err := json.Marshal(value)
+	body, err := encodeCookie(value)
 	if err != nil {
 		return "", err
+	}
+	if len(body) > maxPendingJSON {
+		return "", errPendingTooLarge
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(body)
 	return encoded + "." + s.tag(encoded), nil
@@ -143,8 +186,12 @@ func (s *stamp) readPending(cookie string) (pending, error) {
 	return value, nil
 }
 
+// The state is bounded by safeNext's cap: the destination is at most 2048 bytes
+// of JSON, and everything else is short and fixed, so the cookie stays near 3 KB,
+// under the 4 KB the browser keeps. TestTheLongestDestinationFitsTheStateCookie
+// holds that.
 func (s *stamp) issue(value state) (string, error) {
-	body, err := json.Marshal(value)
+	body, err := encodeCookie(value)
 	if err != nil {
 		return "", err
 	}
@@ -269,6 +316,12 @@ func challengeFor(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
+// maxNextBytes is the longest destination a sign-in carries. A consent request
+// from another site, which is what a signed-out visitor is sent here with, runs
+// to several hundred bytes, and a cap below that drops it after the provider has
+// already approved, leaving the visitor on the home page.
+const maxNextBytes = 1024
+
 // safeNext keeps the browser on this site.
 //
 // The value ends up in a Location header, so anything that could name a host
@@ -280,9 +333,23 @@ func challengeFor(verifier string) string {
 // a URL and reads a backslash as a slash, so "/<TAB>/evil.example" is
 // "//evil.example" by the time it is followed. Checking the prefix of the raw
 // string is checking something other than what the browser will read.
+//
+// The value rides in the signed state cookie, and a browser that drops a cookie
+// over about 4 KB refuses the callback after the provider has approved the
+// sign-in. Two things keep the cookie under that at the cap: encodeCookie does
+// not HTML-escape, so the only growth left is '"' (two bytes) and U+2028 (six
+// for three), at most doubling the value, and invalid UTF-8 is refused because
+// the encoder would write each bad byte as a six-byte replacement character. So
+// the destination is at most 2 KB of JSON, about 2.7 KB of base64.
 func safeNext(raw string) string {
 	value := strings.TrimSpace(raw)
 	if !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") {
+		return ""
+	}
+	if len(value) > maxNextBytes {
+		return ""
+	}
+	if !utf8.ValidString(value) {
 		return ""
 	}
 	for i := 0; i < len(value); i++ {

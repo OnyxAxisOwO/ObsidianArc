@@ -9,6 +9,7 @@ import { saveAsFile } from '../src/api/backup';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
+import { MASK_PLACEHOLDER, safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
 import { adopt, forget } from '../src/stores/session';
 
 vi.mock('../src/api/backup', () => ({ saveAsFile: vi.fn() }));
@@ -358,6 +359,24 @@ describe('moving the expiry on cards an account already holds', () => {
 });
 
 describe('redemption code creation and details', () => {
+  it('masks the code in the list while safe mode hides credentials', async () => {
+    vi.spyOn(adminApi, 'codes').mockResolvedValue({ codes: [code('SECRET-CODE-1', '2026-09-13T12:00:00')] });
+    const credentials = safeModeCategories.value.credentials;
+    safeModeEnabled.value = true;
+    safeModeCategories.value.credentials = true;
+    try {
+      await mount(AdminCodes);
+      await settle();
+
+      const row = host.querySelector<HTMLElement>('.oa-table tbody tr')!;
+      expect(row.textContent).not.toContain('SECRET-CODE-1');
+      expect(row.textContent).toContain(MASK_PLACEHOLDER);
+    } finally {
+      safeModeEnabled.value = false;
+      safeModeCategories.value.credentials = credentials;
+    }
+  });
+
   it('shows window variant as title when code has no custom name', async () => {
     const item = { ...code('5H-CODE', '2026-09-13T12:00:00'), windows: ['5h'], name: '' };
     vi.spyOn(adminApi, 'codes').mockResolvedValue({ codes: [item] });
@@ -503,5 +522,31 @@ describe('group member selection', () => {
     expect(assign).toHaveBeenCalledWith('premium', ['user-0'], 0);
     expect(host.textContent).toContain('Save failed');
     expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+  });
+  // A tick made under an earlier search is off the screen once the search
+  // changes. Save must not assign it along with the ones made under the new one.
+  it('does not save a tick made under an earlier search', async () => {
+    const listing = users();
+    // The shared fixture ignores the search term, so the pre-search row would
+    // stay on screen and the test would not exercise an off-screen tick.
+    listing.mockImplementation(async (query: string) => {
+      const q = new URLSearchParams(query).get('q') ?? '';
+      const hits = accounts.filter((a) => a.username.includes(q));
+      return { users: hits, total: hits.length };
+    });
+    const assign = vi.spyOn(adminApi, 'assignGroupMembers').mockResolvedValue({ updated: 1 });
+    await mount(GroupMembers, { group, groups: [group] });
+    host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[0]!.click();
+    await settle();
+    input(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'member7');
+    await vi.waitFor(() => expect(listing).toHaveBeenLastCalledWith(expect.stringContaining('q=member7')));
+    await settle();
+    expect(host.textContent).toContain(t('membersSelected', { count: 0 }));
+
+    host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[0]!.click();
+    await settle();
+    button(host, t('saveMembers')).click();
+    await settle();
+    expect(assign).toHaveBeenCalledWith('premium', ['user-7'], 0);
   });
 });

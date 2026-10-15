@@ -2,6 +2,7 @@ package consolessh
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -34,6 +35,23 @@ type lineEditor struct {
 	// accumulates into it across calls rather than reading the rest of the
 	// sequence itself — see feedEscape.
 	escape []rune
+	// escapeFromSearch is set when the Esc that starts escape cancelled a
+	// reverse search. Whatever sequence follows is swallowed, and a rune that
+	// cannot open one is a key of its own.
+	escapeFromSearch bool
+	// overflowed is set once a rune has been refused for the length bound, so
+	// one paste that runs past it prints a single notice rather than one per rune.
+	overflowed bool
+	// dropped is set when a rune was refused for the length bound on this line.
+	// Enter does not run such a line: its kept prefix can parse as a complete
+	// command with the tail that mattered missing, so the line is refused whole.
+	dropped bool
+	// draftDropped carries dropped across a trip into history and back, since
+	// the draft is what Down restores and the flag has to come back with it.
+	draftDropped bool
+	// lang chooses the language of the notices the editor writes. The session
+	// sets it before the first key is read; empty is English.
+	lang string
 
 	searching    bool
 	searchTerm   []rune
@@ -83,10 +101,13 @@ func (ed *lineEditor) Start() {
 	ed.pos = 0
 	ed.histIdx = -1
 	ed.draft = nil
+	ed.dropped = false
+	ed.draftDropped = false
 	ed.searching = false
 	ed.searchTerm = nil
 	ed.searchIdx = -1
 	ed.escape = nil
+	ed.escapeFromSearch = false
 	ed.redraw()
 }
 
@@ -101,11 +122,32 @@ func (ed *lineEditor) NextRune() (rune, error) {
 // Enter (including accepting a reverse-search match) produces a line; eof
 // is true only for Ctrl-D on an empty line, the session's cue to close.
 func (ed *lineEditor) Feed(r rune) (line string, done bool, eof bool) {
+	// A lone Esc that cancelled a search is followed by an ordinary key. Only
+	// '[' or 'O' can open a sequence, so anything else is fed through again as
+	// if the Esc had never come.
+	if ed.escapeFromSearch && len(ed.escape) == 1 && r != '[' && r != 'O' {
+		ed.escape = nil
+		ed.escapeFromSearch = false
+		return ed.Feed(r)
+	}
 	if len(ed.escape) > 0 {
-		ed.feedEscape(r)
-		return "", false, false
+		if ed.feedEscape(r) {
+			return "", false, false
+		}
+		// The Esc did not open a sequence, so only the Esc is dropped and r is an
+		// ordinary key. Otherwise Esc then Enter (Alt-Enter) lost the Enter.
+		return ed.Feed(r)
 	}
 	if ed.searching {
+		if r == 0x1B {
+			// Cancelled at once, not when the rest of an arrow key arrives: a
+			// lone Esc has to act now. The bytes of an arrow key that follow are
+			// swallowed by feedEscape rather than typed as "[A".
+			ed.endSearch(true)
+			ed.escape = []rune{r}
+			ed.escapeFromSearch = true
+			return "", false, false
+		}
 		if searchDone, matched, submit := ed.handleSearchKey(r); searchDone {
 			if !submit {
 				return "", false, false
@@ -117,12 +159,18 @@ func (ed *lineEditor) Feed(r rune) (line string, done bool, eof bool) {
 
 	switch {
 	case r == '\r' || r == '\n':
+		if ed.dropped {
+			ed.refuseLine()
+			return "", false, false
+		}
 		return ed.finishLine(string(ed.buf)), true, false
 	case r == 0x03: // Ctrl-C: abandon the line, idle or not.
 		_, _ = ed.w.Write([]byte("^C\r\n"))
 		ed.buf = nil
 		ed.pos = 0
 		ed.histIdx = -1
+		ed.dropped = false
+		ed.draftDropped = false
 		ed.redraw()
 	case r == 0x04: // Ctrl-D
 		if len(ed.buf) == 0 {
@@ -158,6 +206,7 @@ func (ed *lineEditor) Feed(r rune) (line string, done bool, eof bool) {
 		ed.tab()
 	case r == 0x1B: // Escape: the start of a CSI/SS3 sequence, or nothing.
 		ed.escape = []rune{r}
+		ed.escapeFromSearch = false
 	case r < 0x20:
 		// Unhandled control byte; nothing in the required table maps to
 		// it, and echoing it verbatim would corrupt the terminal.
@@ -195,6 +244,21 @@ func (ed *lineEditor) finishLine(line string) string {
 	return line
 }
 
+// refuseLine discards a line that lost runes to the bound, and clears it so the
+// prompt comes back empty. It is not added to history: the history is what Up
+// shows, and a line that was never run should not be offered again.
+func (ed *lineEditor) refuseLine() {
+	_, _ = ed.w.Write([]byte(fmt.Sprintf(noticeLineNotRun.in(ed.lang), maxLineRunes)))
+	ed.buf = nil
+	ed.pos = 0
+	ed.histIdx = -1
+	ed.draft = nil
+	ed.dropped = false
+	ed.draftDropped = false
+	ed.overflowed = false
+	ed.redraw()
+}
+
 // maxLineRunes bounds one command line. The console's longest real command
 // is a pasted JSON document for `setting import` or `model import`, which is
 // nowhere near this; the bound exists because an authenticated peer can
@@ -216,8 +280,19 @@ const maxSearchRunes = 256
 // n runes write about n squared, since every rune repainted everything before it.
 func (ed *lineEditor) insert(r rune) {
 	if len(ed.buf) >= maxLineRunes {
+		// A paste past the bound is refused here, and the line is refused whole
+		// on Enter (see dropped). Saying so once is what tells the person why
+		// nothing ran; the flag clears when the line has room again, so the next
+		// overflow is reported too.
+		ed.dropped = true
+		if !ed.overflowed {
+			ed.overflowed = true
+			_, _ = ed.w.Write([]byte(fmt.Sprintf(noticeLineTooLong.in(ed.lang), maxLineRunes)))
+			ed.redraw()
+		}
 		return
 	}
+	ed.overflowed = false
 	ed.buf = append(ed.buf, 0)
 	copy(ed.buf[ed.pos+1:], ed.buf[ed.pos:])
 	ed.buf[ed.pos] = r
@@ -304,6 +379,7 @@ func (ed *lineEditor) deleteWordLeft() {
 	}
 	ed.buf = append(ed.buf[:i], ed.buf[end:]...)
 	ed.pos = i
+	ed.clearRefusalIfEmpty()
 	ed.redraw()
 }
 
@@ -313,6 +389,7 @@ func (ed *lineEditor) killToStart() {
 	}
 	ed.buf = append([]rune{}, ed.buf[ed.pos:]...)
 	ed.pos = 0
+	ed.clearRefusalIfEmpty()
 	ed.redraw()
 }
 
@@ -321,7 +398,26 @@ func (ed *lineEditor) killToEnd() {
 		return
 	}
 	ed.buf = append([]rune{}, ed.buf[:ed.pos]...)
+	ed.clearRefusalIfEmpty()
 	ed.redraw()
+}
+
+// clearRefusalIfEmpty lifts the refusal once a kill has taken the whole line.
+// What was refused went with it, so the next line typed is not the one that
+// lost runes. A kill that leaves text keeps the refusal, because the runes
+// that were lost may still be in what is left.
+func (ed *lineEditor) clearRefusalIfEmpty() {
+	if len(ed.buf) == 0 {
+		ed.dropped = false
+	}
+}
+
+// refuseOnEnter marks the line being edited as one that lost runes before the
+// editor saw them, so Enter refuses it as it refuses an overlong paste. The
+// session calls it for keys discarded from the type-ahead queue while a
+// command ran, which are the same loss.
+func (ed *lineEditor) refuseOnEnter() {
+	ed.dropped = true
 }
 
 func (ed *lineEditor) clearScreen() {
@@ -339,6 +435,7 @@ func (ed *lineEditor) historyUp() {
 	}
 	if ed.histIdx == -1 {
 		ed.draft = append([]rune{}, ed.buf...)
+		ed.draftDropped = ed.dropped
 		ed.histIdx = len(lines) - 1
 	} else if ed.histIdx > 0 {
 		ed.histIdx--
@@ -346,6 +443,7 @@ func (ed *lineEditor) historyUp() {
 		return
 	}
 	ed.buf = []rune(lines[ed.histIdx])
+	ed.dropped = false
 	ed.pos = len(ed.buf)
 	ed.redraw()
 }
@@ -359,13 +457,21 @@ func (ed *lineEditor) historyDown() {
 	if ed.histIdx >= len(lines) {
 		ed.histIdx = -1
 		ed.buf = ed.draft
+		ed.dropped = ed.draftDropped
 		ed.draft = nil
+		ed.draftDropped = false
 	} else {
 		ed.buf = []rune(lines[ed.histIdx])
+		ed.dropped = false
 	}
 	ed.pos = len(ed.buf)
 	ed.redraw()
 }
+
+// maxEscapeRunes bounds an escape sequence while it is being collected. The
+// longest one the editor acts on is a few bytes; a peer that never sends a
+// final byte must not be able to grow the buffer without limit.
+const maxEscapeRunes = 16
 
 // feedEscape accumulates an escape sequence one rune at a time.
 //
@@ -381,26 +487,95 @@ func (ed *lineEditor) historyDown() {
 // Feeding the sequence through the same NextRune/Feed path as every other
 // rune is what makes that true, rather than merely stated.
 //
-// Recognised: `ESC [ A/B/C/D` (arrows), `ESC [ H/F` and `ESC [ 1~/4~`
-// (Home/End), `ESC [ 3~` (Delete), and the `ESC O` forms clients send in
-// cursor-application mode. Anything else is dropped.
-func (ed *lineEditor) feedEscape(r rune) {
+// A CSI or SS3 sequence is its introducer, then parameter and intermediate
+// bytes (0x20-0x3F), then one final byte (0x40-0x7E). Collecting up to the
+// final byte is what lets a sequence with a parameter, such as PageUp's
+// ESC [ 5 ~ or a modified arrow's ESC [ 1 ; 5 C, be consumed whole instead of
+// having its tail typed into the line.
+//
+// It reports whether r was consumed. A second byte that cannot open a sequence
+// is not: the Esc before it was a lone key or an Alt prefix, and r must be
+// handled as ordinary input by the caller.
+func (ed *lineEditor) feedEscape(r rune) bool {
+	if r == 0x1B {
+		// A new Esc abandons whatever was pending and starts over. It is not the
+		// Esc that cancelled a search, so the swallowing that goes with that Esc
+		// must not carry over to the sequence it opens.
+		ed.escape = []rune{r}
+		ed.escapeFromSearch = false
+		return true
+	}
 	ed.escape = append(ed.escape, r)
-	defer func() {
-		// Whatever this rune completed or invalidated, only a sequence still
-		// waiting for more keeps the buffer.
-		if len(ed.escape) > 4 {
-			ed.escape = nil
-		}
-	}()
-
-	switch len(ed.escape) {
-	case 2:
+	if len(ed.escape) == 2 {
 		if r != '[' && r != 'O' {
 			ed.escape = nil
+			return false
 		}
-	case 3:
-		switch r {
+		return true
+	}
+	if !plausibleEscapeTail(ed.escape) {
+		// The Esc was a key of its own, and what came after it is typed text. The
+		// rune that failed the check is handed back to the caller, which feeds it
+		// again; only what was collected before it is typed here.
+		typed := ed.escape[1 : len(ed.escape)-1]
+		ed.escape = nil
+		ed.escapeFromSearch = false
+		for _, t := range typed {
+			ed.insert(t)
+		}
+		return false
+	}
+	if len(ed.escape) > maxEscapeRunes || r < 0x20 || r > 0x7E {
+		ed.escape = nil
+		return true
+	}
+	if r < 0x40 {
+		return true
+	}
+	seq := ed.escape
+	ed.escape = nil
+	ed.runEscape(seq)
+	return true
+}
+
+// plausibleEscapeTail reports whether the bytes after an Esc can still be a key
+// the editor knows. When they cannot, the Esc was a key of its own and the
+// letters after it are typed; without this check "Esc Obvious" lost its O and b
+// to a sequence the O seemed to open. ESC O takes one final byte, and only the
+// SS3 keys use one. ESC [ takes parameters and then a final byte. The finals
+// listed are the ones the editor acts on or swallows on purpose, Shift-Tab (Z)
+// among them, so ESC [ b is typed and ESC [ Z stays swallowed.
+func plausibleEscapeTail(seq []rune) bool {
+	r := seq[len(seq)-1]
+	switch seq[1] {
+	case 'O':
+		return strings.ContainsRune("ABCDHFPQRS", r)
+	case '[':
+		if r == ';' || (r >= '0' && r <= '9') {
+			return true
+		}
+		return strings.ContainsRune("ABCDHFZ~", r)
+	}
+	return true
+}
+
+// runEscape acts on one complete escape sequence: the Esc, its introducer,
+// any parameters, and the final byte. Only the unparameterised arrows, Home
+// and End, and the tilde forms for Home, Delete and End are acted on. Every
+// other sequence, including the modified forms, is dropped whole.
+func (ed *lineEditor) runEscape(seq []rune) {
+	fromSearch := ed.escapeFromSearch
+	ed.escapeFromSearch = false
+	if fromSearch {
+		// The search has already been cancelled by its Esc. The arrow keys
+		// that followed it have nothing to act on.
+		return
+	}
+
+	final := seq[len(seq)-1]
+	params := string(seq[2 : len(seq)-1])
+	if params == "" {
+		switch final {
 		case 'A':
 			ed.historyUp()
 		case 'B':
@@ -413,28 +588,21 @@ func (ed *lineEditor) feedEscape(r rune) {
 			ed.moveHome()
 		case 'F':
 			ed.moveEnd()
-		case '1', '3', '4':
-			if ed.escape[1] == '[' {
-				return // the tilde has not arrived yet
-			}
 		}
-		ed.escape = nil
-	case 4:
-		if r == '~' {
-			switch ed.escape[2] {
-			case '1':
-				ed.moveHome()
-			case '3':
-				ed.deleteForward()
-			case '4':
-				ed.moveEnd()
-			}
+		return
+	}
+	if final == '~' {
+		switch params {
+		case "1", "7":
+			ed.moveHome()
+		case "3":
+			ed.deleteForward()
+		case "4", "8":
+			ed.moveEnd()
 		}
-		ed.escape = nil
-	default:
-		ed.escape = nil
 	}
 }
+
 func (ed *lineEditor) tab() {
 	if ed.complete == nil {
 		return
@@ -512,7 +680,7 @@ func (ed *lineEditor) handleSearchKey(r rune) (done bool, line string, submit bo
 		ed.searchFrom(ed.searchIdx)
 		ed.redrawSearch(ed.searchMatch)
 		return false, "", false
-	case r == 0x07 || r == 0x1B || r == 0x03: // Ctrl-G, Esc, Ctrl-C: cancel.
+	case r == 0x07 || r == 0x03: // Ctrl-G, Ctrl-C: cancel. Esc is handled in Feed.
 		ed.endSearch(true)
 		return true, "", false
 	case r == 0x7F || r == 0x08: // Backspace: shrink the search term.
@@ -568,6 +736,9 @@ func (ed *lineEditor) endSearch(cancelled bool) {
 	} else {
 		ed.buf = []rune(ed.searchMatch)
 		ed.pos = len(ed.buf)
+		// The match is a history line, which is never over the bound. Cancelling
+		// keeps the flag, because the buffer it restores may be the overlong one.
+		ed.dropped = false
 	}
 	ed.preSearchBuf = nil
 	ed.redraw()

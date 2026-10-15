@@ -41,6 +41,11 @@ const AutoUseResetCard = "auto_use_reset_card"
 // wallpaper thumbnail, small enough that it cannot be used as free storage.
 const MaxPreferencesBytes = 512 * 1024
 
+// ErrPreferencesTooLarge is what a merge returns when the result would pass
+// MaxPreferencesBytes. Nothing is stored in that case. Callers that merge a
+// document from elsewhere tell it apart from a server fault with errors.Is.
+var ErrPreferencesTooLarge = errors.New("user: preferences exceed the size limit")
+
 type PreferenceStore struct{ db *database.DB }
 
 func NewPreferenceStore(db *database.DB) *PreferenceStore { return &PreferenceStore{db: db} }
@@ -92,6 +97,13 @@ func (p *PreferenceStore) Merge(ctx context.Context, userID string, patch map[st
 	var merged json.RawMessage
 
 	err := p.db.Tx(ctx, func(tx *database.Tx) error {
+		// The account row lock comes before the read. Two devices merging at
+		// once would otherwise both read the old document, and the later write
+		// would drop the other's keys on Postgres, where READ COMMITTED does not
+		// serialise them. SQLite already serialises writers.
+		if _, err := tx.Exec(ctx, `UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
+			return fmt.Errorf("user: lock account: %w", err)
+		}
 		var raw string
 		err := tx.QueryRow(ctx, `SELECT data FROM user_preferences WHERE user_id = ?`, userID).Scan(&raw)
 		if err != nil && !database.IsNotFound(err) {
@@ -117,7 +129,7 @@ func (p *PreferenceStore) Merge(ctx context.Context, userID string, patch map[st
 			return fmt.Errorf("user: encode preferences: %w", err)
 		}
 		if len(encoded) > MaxPreferencesBytes {
-			return fmt.Errorf("user: preferences exceed %d bytes", MaxPreferencesBytes)
+			return fmt.Errorf("%w of %d bytes", ErrPreferencesTooLarge, MaxPreferencesBytes)
 		}
 
 		_, err = tx.Exec(ctx,

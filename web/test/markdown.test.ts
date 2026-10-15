@@ -274,4 +274,17 @@ describe('markdown renderer', () => {
       expect(parseInline('a `b')).toEqual([text('a `b')]);
     });
   });
+
+  // ESCAPABLE is a string, and every string includes the empty one, so a
+  // backslash at the end of a block used to append `undefined` to the text.
+  describe('a backslash at the end of a block', () => {
+    it('stays a literal backslash rather than rendering the word undefined', () => {
+      expect(render('C:\\Users\\').textContent).toBe('C:\\Users\\');
+      expect(render('# Path\\').textContent).not.toContain('undefined');
+    });
+
+    it('still escapes a punctuation character that follows it', () => {
+      expect(render('a\\*b').textContent).toBe('a*b');
+    });
+  });
 });

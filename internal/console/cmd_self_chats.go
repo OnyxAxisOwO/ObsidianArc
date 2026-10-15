@@ -41,8 +41,18 @@ func init() {
 		Permission: Anyone,
 		Endpoints:  []string{"GET /api/conversations"},
 		Run: func(_ context.Context, rt *Runtime) error {
+			// The server answers an out-of-range limit with its default, 60, and
+			// says nothing, so a request for 500 would print 60 rows as if they
+			// were the list. Refuse it here instead; the page is 200 at most.
+			limit := rt.IntOr("limit", 60)
+			if limit < 1 || limit > 200 {
+				if rt.Session.Lang == "zh" {
+					return rt.Errorf("--limit 必须在 1 到 200 之间")
+				}
+				return rt.Errorf("--limit must be between 1 and 200")
+			}
 			q := url.Values{}
-			q.Set("limit", strconv.Itoa(rt.IntOr("limit", 60)))
+			q.Set("limit", strconv.Itoa(limit))
 			if rt.Present("archived") {
 				q.Set("archived", strconv.FormatBool(rt.Bool("archived")))
 			}
@@ -141,7 +151,8 @@ func init() {
 			{Name: "conversation-id", Hint: Text{EN: "from chat list", ZH: "来自 chat list"}, Required: true},
 		},
 		Flags: []Flag{
-			{Name: "--title", Hint: Text{EN: "new title, ≤120 chars", ZH: "新标题，≤120 字符"}, Value: "TEXT"},
+			// Free text the member wrote: the audit keeps the flag, not its value.
+			{Name: "--title", Hint: Text{EN: "new title, ≤120 chars", ZH: "新标题，≤120 字符"}, Value: "TEXT", Sensitive: true},
 			{Name: "--pinned", Hint: Text{EN: "pin or unpin", ZH: "置顶或取消置顶"}, Value: "BOOL"},
 		},
 		Examples:   []string{"chat rename 01H9Z… --title \"trip planning\"", "chat rename 01H9Z… --pinned=false"},
@@ -246,7 +257,7 @@ func init() {
 			{Name: "conversation-id", Hint: Text{EN: "from chat list", ZH: "来自 chat list"}, Required: true},
 			{Name: "seq", Hint: Text{EN: "the message's number, from chat show", ZH: "消息序号，来自 chat show"}, Required: true},
 		},
-		Flags:      []Flag{{Name: "--content", Hint: Text{EN: "the new text, required", ZH: "新的内容，必填"}, Value: "TEXT"}},
+		Flags:      []Flag{{Name: "--content", Hint: Text{EN: "the new text, required", ZH: "新的内容，必填"}, Value: "TEXT", Sensitive: true}},
 		Examples:   []string{`chat edit 01H9Z… 3 --content "Use Go 1.27, not 1.26."`, `chat edit 01H9Z… 1 --content "Summarise this in English."`},
 		SeeAlso:    []string{"chat show"},
 		Permission: Anyone,

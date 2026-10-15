@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
@@ -241,5 +242,60 @@ func TestNumericSettingRequiresSettingsPermission(t *testing.T) {
 				t.Fatalf("%s writes %s: %d %s", grant, endpoint.path, response.Code, response.Body.String())
 			}
 		}
+	}
+}
+
+// Archiving is a switch an administrator turns off for everyone who is not an
+// administrator. The settings write, the site response members read and the
+// refusal on the archive itself have to agree, or the switch looks on while
+// it refuses, or looks off while it lets people through.
+func TestArchiveSettingCanBeTurnedOff(t *testing.T) {
+	in := newInstance(t)
+	ctx := context.Background()
+	admin := in.register("founder", "a-good-password")
+	member := in.register("member", "a-good-password")
+
+	adminChat, err := conversation.NewStore(in.db).Create(ctx, nil, admin.userID, conversation.NewConversation{Title: "Admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberChat, err := conversation.NewStore(in.db).Create(ctx, nil, member.userID, conversation.NewConversation{Title: "Member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := map[string]any{"archived": true}
+	path := func(id string) string { return "/api/conversations/" + id }
+
+	if response := in.do(http.MethodPut, "/api/admin/settings",
+		map[string]string{settings.AllowArchive: "false"}, admin); response.Code != http.StatusOK {
+		t.Fatalf("turn archiving off: %d %s", response.Code, response.Body.String())
+	}
+
+	saved := decode[struct {
+		Settings map[string]string `json:"settings"`
+	}](t, in.do(http.MethodGet, "/api/admin/settings", nil, admin)).Settings
+	if saved[settings.AllowArchive] != "false" {
+		t.Errorf("GET %s = %q, want false", settings.AllowArchive, saved[settings.AllowArchive])
+	}
+
+	site := decode[map[string]any](t, in.do(http.MethodGet, "/api/site", nil, nil))
+	if site["allow_archive_conversations"] != false {
+		t.Errorf("site allow_archive_conversations = %v, want false", site["allow_archive_conversations"])
+	}
+
+	refused := in.do(http.MethodPatch, path(memberChat.ID), archive, member)
+	if refused.Code != http.StatusForbidden || errCode(t, refused) != "archive_not_permitted" {
+		t.Fatalf("member archive while off: %d %s", refused.Code, refused.Body.String())
+	}
+	if allowed := in.do(http.MethodPatch, path(adminChat.ID), archive, admin); allowed.Code != http.StatusOK {
+		t.Fatalf("administrator archive while off: %d %s", allowed.Code, allowed.Body.String())
+	}
+
+	if response := in.do(http.MethodPut, "/api/admin/settings",
+		map[string]string{settings.AllowArchive: "true"}, admin); response.Code != http.StatusOK {
+		t.Fatalf("turn archiving back on: %d %s", response.Code, response.Body.String())
+	}
+	if response := in.do(http.MethodPatch, path(memberChat.ID), archive, member); response.Code != http.StatusOK {
+		t.Fatalf("member archive after turning it back on: %d %s", response.Code, response.Body.String())
 	}
 }

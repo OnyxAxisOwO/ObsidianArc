@@ -40,6 +40,7 @@ func (m *Manager) loadPackages(ctx context.Context) error {
 	states := *m.states.Load()
 	repaired := map[string]record{}
 	next := map[string]*loaded{}
+	stuck := map[string]bool{}
 	var dirs []fs.FS
 	ledger, err := newMigrationLedger()
 	if err != nil {
@@ -56,6 +57,7 @@ func (m *Manager) loadPackages(ctx context.Context) error {
 		pkg, err := arcx.Parse(archive)
 		if err != nil || pkg.Manifest.Name != name {
 			slog.Error("plugin package cannot be read; it stays installed and inert", "plugin", name, "error", err)
+			stuck[name] = true
 			continue
 		}
 		if _, builtin := Lookup(name); builtin {
@@ -67,6 +69,7 @@ func (m *Manager) loadPackages(ctx context.Context) error {
 		// what an older build let in is left out here instead.
 		if err := ledger.take(name, pkg); err != nil {
 			slog.Error("plugin package's migrations collide with another's; it stays installed and inert", "plugin", name, "error", err)
+			stuck[name] = true
 			continue
 		}
 		l := &loaded{name: name, pkg: pkg, source: source, addedAt: addedAt, addedBy: addedBy}
@@ -102,6 +105,7 @@ func (m *Manager) loadPackages(ctx context.Context) error {
 	}
 	m.states.Store(&states)
 	m.pkgs.Store(&next)
+	m.unreadable.Store(&stuck)
 	for _, l := range next {
 		m.startBackend(l)
 	}
@@ -119,7 +123,17 @@ func (m *Manager) Attach(h *Host) {
 	m.host = h
 	h.dynamicOrigins = m.packageOrigins
 	m.settings.OnChange(m.settingsChanged)
-	for _, l := range *m.pkgs.Load() {
+	// In name order: attaching a package rebuilds the route table over every
+	// package attached before it, so the one attached first is the one a route
+	// conflict faults. Map order would change which one that is from boot to boot.
+	pkgs := *m.pkgs.Load()
+	names := make([]string, 0, len(pkgs))
+	for name := range pkgs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		l := pkgs[name]
 		if err := m.attach(l); err != nil {
 			slog.Error("plugin package cannot be attached; it stays inert", "plugin", l.name, "error", err)
 			l.fault.Store(ptr(err.Error()))
@@ -152,14 +166,78 @@ func (m *Manager) packageOrigins() []string {
 // settingsChanged asks every enabled package that derives something from its
 // settings to derive it again, when one of them changed.
 func (m *Manager) settingsChanged(keys []string) {
+	var waits []<-chan struct{}
 	for name, l := range *m.pkgs.Load() {
 		if !l.has(arcx.HookDescribe) || !m.Enabled(name) {
 			continue
 		}
 		if touches(l, keys) {
-			m.refreshDescribe(l)
+			waits = append(waits, m.requestDescribe(l))
 		}
 	}
+	// The save returns only once the description reflects it. The page's origin
+	// policy and /api/site are built from the description, so a page or a probe
+	// made straight after the save must already see the change.
+	for _, done := range waits {
+		<-done
+	}
+}
+
+// describeQueue serialises a package's describe refreshes; see requestDescribe.
+type describeQueue struct {
+	mu      sync.Mutex
+	running bool
+	pending bool
+	// Closed once the run that reads the latest request has finished. Nil while
+	// no request is waiting for a run.
+	waiting chan struct{}
+}
+
+// requestDescribe asks for l's description to be refreshed and returns a channel
+// closed once a refresh that reads the change has finished. The save that caused
+// it waits on that channel. A backend that has to compile again first takes most
+// of a minute, and until the refresh lands the description in force is the
+// previous one, so an origin the save removed stays in the page's policy that
+// long.
+func (m *Manager) requestDescribe(l *loaded) <-chan struct{} {
+	return l.describe.request(func() { m.refreshDescribe(l) })
+}
+
+// request runs refresh in the background, unless one is already running, and
+// returns a channel closed when a run that starts after this request has
+// finished. A request that arrives meanwhile is folded into one more run, which
+// starts once the running one has finished: it reads every change made before
+// the request, where the running one may have read the settings before them.
+func (q *describeQueue) request(refresh func()) <-chan struct{} {
+	q.mu.Lock()
+	if q.waiting == nil {
+		q.waiting = make(chan struct{})
+	}
+	done := q.waiting
+	q.pending = true
+	if q.running {
+		q.mu.Unlock()
+		return done
+	}
+	q.running = true
+	q.mu.Unlock()
+	go func() {
+		for {
+			q.mu.Lock()
+			if !q.pending {
+				q.running = false
+				q.mu.Unlock()
+				return
+			}
+			q.pending = false
+			finished := q.waiting
+			q.waiting = nil
+			q.mu.Unlock()
+			refresh()
+			close(finished)
+		}
+	}()
+	return done
 }
 
 func touches(l *loaded, keys []string) bool {
@@ -207,12 +285,24 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 		return "", err
 	}
 
+	// The refusals come first, and before any compile: they are cheap, and a
+	// package they turn away should not cost a backend's compile. They run again
+	// under the lock below, since what is installed may have changed meanwhile.
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	old := m.loadedPackage(name)
 	if old != nil && old.pkg.SHA256 == pkg.SHA256 {
+		m.mu.Unlock()
 		return "", ErrUnchanged
 	}
+	err = m.checkPackage(pkg, old)
+	m.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+
+	// The backend compiles without the lock: a compile is most of a minute on a
+	// small server, and every other plugin operation waits on the lock for as
+	// long as one runs. Nothing about the new backend is shared until below.
 	now := time.Now().UnixMilli()
 	nl := &loaded{name: name, pkg: pkg, source: source, addedAt: now, addedBy: actor.ID}
 	m.startBackend(nl)
@@ -222,6 +312,14 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 			closeNew()
 			return "", preflight("the backend does not load: %v", err)
 		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	old = m.loadedPackage(name)
+	if old != nil && old.pkg.SHA256 == pkg.SHA256 {
+		closeNew()
+		return "", ErrUnchanged
 	}
 	if err := m.checkPackage(pkg, old); err != nil {
 		closeNew()
@@ -233,22 +331,6 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 		attached bool
 		version  = man.Version
 	)
-	restore := func() {
-		if !attached {
-			return
-		}
-		if old != nil {
-			m.swapPackages(func(p map[string]*loaded) { p[name] = old })
-			if err := m.attach(old); err != nil {
-				slog.Error("plugin: could not put the previous version back", "plugin", name, "error", err)
-			}
-		} else {
-			m.detach(nl)
-			m.swapPackages(func(p map[string]*loaded) { delete(p, name) })
-			_ = m.rebuildRouter()
-		}
-	}
-
 	var rec record
 	err = m.db.Tx(ctx, func(tx *database.Tx) error {
 		current, err := m.lock(ctx, tx, name)
@@ -316,7 +398,9 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 		return m.audit(ctx, tx, actor, name, decision)
 	})
 	if err != nil {
-		restore()
+		if attached {
+			m.restoreInstall(name, old, nl)
+		}
 		closeNew()
 		return "", err
 	}
@@ -330,6 +414,28 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 	m.set(name, rec)
 	closeLater(old)
 	return op, nil
+}
+
+// restoreInstall puts back what an install that failed after attaching had
+// replaced: the previous version of the package, or nothing when there was none.
+// The new version's seams come off first. Attaching the old one can need a slot
+// the new one holds, such as the single OAuth subject binding, and what only the
+// new version brought must not outlive the rollback. If the old one will not
+// attach, its guards are left as refusals rather than absent (see refusingGuards).
+func (m *Manager) restoreInstall(name string, old, nl *loaded) {
+	m.detach(nl)
+	if old != nil {
+		m.swapPackages(func(p map[string]*loaded) { p[name] = old })
+		if err := m.attach(old); err != nil {
+			slog.Error("plugin: could not put the previous version back", "plugin", name, "error", err)
+			if m.host != nil {
+				m.host.Auth.ReplaceGuards(name, refusingGuards(name, old.pkg.Manifest, nl.pkg.Manifest))
+			}
+		}
+		return
+	}
+	m.swapPackages(func(p map[string]*loaded) { delete(p, name) })
+	_ = m.rebuildRouter()
 }
 
 // checkPackage is everything about a package that depends on this server and
@@ -347,11 +453,22 @@ func (m *Manager) checkPackage(pkg *arcx.Package, old *loaded) error {
 	if err := m.users.CheckPluginFields(name, fieldsOf(man)); err != nil {
 		return preflight("%v", err)
 	}
+	// The sign-in has one subject binding, so a package with two could never be
+	// installed; say so here rather than failing inside the transaction.
+	if len(man.OAuthBindings) > 1 {
+		return preflight("a package may bind one account field to a sign-in, not %d", len(man.OAuthBindings))
+	}
 	if m.host != nil {
 		for _, b := range man.OAuthBindings {
-			if bound := m.host.OAuth.SubjectBindingField(); bound != "" && bound != b.Field {
-				return preflight("the %s sign-in's subject is already bound to another account field", b.Provider)
+			bound := m.host.OAuth.SubjectBindingField()
+			// An update may move its own binding: the install drops the
+			// retired one before it attaches the new one. A field another package
+			// holds is refused even when it is the one this package wants: attaching
+			// would unbind that package's binding on the same field.
+			if bound == "" || (old != nil && bindsField(old.pkg.Manifest, bound)) {
+				continue
 			}
+			return preflight("the %s sign-in's subject is already bound to another account field", b.Provider)
 		}
 	}
 	trial := map[string]*loaded{}
@@ -376,6 +493,16 @@ func (m *Manager) checkPackage(pkg *arcx.Package, old *loaded) error {
 		}
 	}
 	return nil
+}
+
+// bindsField is whether a manifest's OAuth bindings include field.
+func bindsField(man *arcx.Manifest, field string) bool {
+	for _, b := range man.OAuthBindings {
+		if b.Field == field {
+			return true
+		}
+	}
+	return false
 }
 
 // checkMigrations refuses a package whose migrations would be recorded under
@@ -609,6 +736,12 @@ func BundledMigrations(dir string) []fs.FS {
 			slog.Warn("bundled plugin package is not valid; its migrations are not offered to the restore", "file", entry.Name(), "error", err)
 			continue
 		}
+		// A plugin compiled in is offered by plugin.Migrations already, and
+		// LoadBundled skips its archive for the same reason. Offering both
+		// would hand the restore one migration twice.
+		if _, builtin := Lookup(pkg.Manifest.Name); builtin {
+			continue
+		}
 		if pkg.HasMigrations() {
 			out = append(out, pkg.Migrations())
 		}
@@ -695,7 +828,9 @@ type pendingUploads struct {
 }
 
 type pendingUpload struct {
-	pkg   *arcx.Package
+	// The archive as it was uploaded. The decoded package is several times
+	// its size, so it is parsed again when it is confirmed, not held.
+	raw   []byte
 	actor string
 	at    time.Time
 }
@@ -703,6 +838,9 @@ type pendingUpload struct {
 const (
 	pendingTTL = 15 * time.Minute
 	pendingMax = 8
+	// The archives held at once, in bytes. A count alone allows eight of the
+	// largest archive an upload may be.
+	pendingBudget = 64 << 20
 )
 
 func (p *pendingUploads) put(actor string, pkg *arcx.Package) string {
@@ -712,24 +850,28 @@ func (p *pendingUploads) put(actor string, pkg *arcx.Package) string {
 		p.items = map[string]pendingUpload{}
 	}
 	now := time.Now()
+	held := 0
 	for token, item := range p.items {
 		if now.Sub(item.at) > pendingTTL {
 			delete(p.items, token)
+			continue
 		}
+		held += len(item.raw)
 	}
-	for len(p.items) >= pendingMax {
+	for len(p.items) > 0 && (len(p.items) >= pendingMax || held+len(pkg.Raw) > pendingBudget) {
 		var oldest string
 		for token, item := range p.items {
 			if oldest == "" || item.at.Before(p.items[oldest].at) {
 				oldest = token
 			}
 		}
+		held -= len(p.items[oldest].raw)
 		delete(p.items, oldest)
 	}
 	buf := make([]byte, 16)
 	_, _ = rand.Read(buf)
 	token := hex.EncodeToString(buf)
-	p.items[token] = pendingUpload{pkg: pkg, actor: actor, at: now}
+	p.items[token] = pendingUpload{raw: pkg.Raw, actor: actor, at: now}
 	return token
 }
 
@@ -738,12 +880,18 @@ func (p *pendingUploads) put(actor string, pkg *arcx.Package) string {
 // refused — can be tried again without uploading the file twice.
 func (p *pendingUploads) take(actor, token string) (*arcx.Package, bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	item, ok := p.items[token]
+	p.mu.Unlock()
 	if !ok || item.actor != actor || time.Since(item.at) > pendingTTL {
 		return nil, false
 	}
-	return item.pkg, true
+	// Parsed outside the lock, which other uploads wait on. The archive parsed
+	// when it was uploaded, so this does not fail on what was checked before.
+	pkg, err := arcx.Parse(item.raw)
+	if err != nil {
+		return nil, false
+	}
+	return pkg, true
 }
 
 func (p *pendingUploads) drop(token string) {

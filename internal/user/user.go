@@ -313,6 +313,10 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 // MarkEmailProven records that a provider which checks addresses has vouched
 // for the account's current one. Matched on the address, so a proof for an
 // address the account has since left lands nowhere.
+//
+// It also sets email_verified, as following a verification link does (see
+// internal/auth/verify.go). Recording the proof alone left an account that had
+// proved its address still reporting it unconfirmed, and mailing it a link.
 func (s *Store) MarkEmailProven(ctx context.Context, q database.Queryer, userID, email string) error {
 	if q == nil {
 		q = s.db
@@ -322,8 +326,8 @@ func (s *Store) MarkEmailProven(ctx context.Context, q database.Queryer, userID,
 		return nil
 	}
 	_, err := q.Exec(ctx,
-		`UPDATE users SET email_proven_at = ? WHERE id = ? AND email_lower = ? AND email_proven_at = 0`,
-		time.Now().UnixMilli(), userID, email)
+		`UPDATE users SET email_verified = ?, email_proven_at = ? WHERE id = ? AND email_lower = ? AND email_proven_at = 0`,
+		true, time.Now().UnixMilli(), userID, email)
 	if err != nil {
 		return fmt.Errorf("user: mark email proven: %w", err)
 	}
@@ -749,6 +753,10 @@ type ListFilter struct {
 	// searchable plugin field are left out, so a caller that may not read them
 	// cannot confirm one by searching for it.
 	NameOnly bool
+	// Username, when set, matches that username exactly, ignoring case. It is
+	// a lookup rather than a search: the search is newest-first and paged, so
+	// an older account can be unreachable by its own name through it.
+	Username string
 	Limit    int
 	Offset   int
 }
@@ -824,6 +832,10 @@ func (filter ListFilter) clauses(fields []Field) (string, []any) {
 		}
 		conditions = append(conditions, "("+match+")")
 	}
+	if name := strings.ToLower(strings.TrimSpace(filter.Username)); name != "" {
+		conditions = append(conditions, "username_lower = ?")
+		args = append(args, name)
+	}
 	if filter.Role != "" {
 		conditions = append(conditions, "role = ?")
 		args = append(args, filter.Role)
@@ -893,18 +905,78 @@ func (s *Store) CountActiveAdmins(ctx context.Context, q database.Queryer, exclu
 }
 
 func (s *Store) Delete(ctx context.Context, q database.Queryer, userID string) error {
+	// Standalone, the three deletes must commit together: a failure on the user
+	// row after the rollup went would leave an account with its history erased.
 	if q == nil {
-		q = s.db
+		return s.db.Tx(ctx, func(tx *database.Tx) error {
+			return s.Delete(ctx, tx, userID)
+		})
 	}
 	// Personal invite codes carry owner_id rather than a foreign key with
 	// ON DELETE CASCADE, because admin-issued codes use '' rather than NULL.
 	if _, err := q.Exec(ctx, `DELETE FROM invite_codes WHERE owner_id = ?`, userID); err != nil {
 		return fmt.Errorf("user: delete invite codes: %w", err)
 	}
+	// usage_records cascades from users, but the hourly rollup has no foreign
+	// key (an ALTER cannot add one on SQLite). Totals for any window of an hour
+	// or more read the rollup, so without this the deleted account's spend would
+	// keep counting there after the raw rows are gone.
+	if _, err := q.Exec(ctx, `DELETE FROM usage_rollup_hourly WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("user: delete usage rollup: %w", err)
+	}
 	if _, err := q.Exec(ctx, `DELETE FROM users WHERE id = ?`, userID); err != nil {
 		return fmt.Errorf("user: delete: %w", err)
 	}
 	return nil
+}
+
+// CountByGroup is how many accounts each group holds, in one query. The groups
+// page wants every count at once; a List per group would sweep memberships on
+// every call and read the table once per group.
+func (s *Store) CountByGroup(ctx context.Context, q database.Queryer) (map[string]int, error) {
+	if q == nil {
+		q = s.db
+	}
+	rows, err := q.Query(ctx, `SELECT COALESCE(group_id, ''), COUNT(*) FROM users GROUP BY COALESCE(group_id, '')`)
+	if err != nil {
+		return nil, fmt.Errorf("user: count by group: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var groupID string
+		var count int
+		if err := rows.Scan(&groupID, &count); err != nil {
+			return nil, fmt.Errorf("user: count by group scan: %w", err)
+		}
+		out[groupID] = count
+	}
+	return out, rows.Err()
+}
+
+// AdminAccounts is every account that holds an administrator role, keyed by id,
+// in one query. A list of limits asks, for each account-scoped one, whether it
+// names an administrator; asking per limit read the same few rows over and over.
+func (s *Store) AdminAccounts(ctx context.Context, q database.Queryer) (map[string]User, error) {
+	if q == nil {
+		q = s.db
+	}
+	rows, err := q.Query(ctx, `SELECT `+s.columns()+` FROM users WHERE role IN (?, ?)`, RoleAdmin, RoleSuperAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("user: admin accounts: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]User{}
+	for rows.Next() {
+		record, err := s.scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[record.ID] = record
+	}
+	return out, rows.Err()
 }
 
 // MoveGroupMembers reassigns everyone in one group, which is what a group

@@ -1,16 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 
 // Asserts code-splitting invariants across build artifacts.
 //
 // The main entry bundle must not pull in the lazy-loaded chunks: the admin
-// shell, the terminal, the Chinese dictionary, the LaTeX renderer and the
-// public front page. Those five are the only splits this project has, and
-// each is deliberate — a quarter of the code most accounts can never reach, a
-// panel every account may open and few ever will, a dictionary only half the
-// readers need, a renderer only a maths answer wakes, and a marketing page
-// only an instance that has chosen it ever draws.
+// shell, the terminal, the Chinese dictionary, the LaTeX renderer, the public
+// front page and the landing page. Those six are the only splits this project
+// has, and each is deliberate — a quarter of the code most accounts can never
+// reach, a panel every account may open and few ever will, a dictionary only
+// half the readers need, a renderer only a maths answer wakes, a marketing
+// page and a landing page only an instance that has chosen one ever draws.
 describe('code splitting invariants in production bundle', () => {
   const assetsDir = path.resolve(__dirname, '../../internal/web/dist/assets');
 
@@ -46,16 +47,17 @@ describe('code splitting invariants in production bundle', () => {
     expect(pluginFiles, `plugin chunks: ${pluginFiles.join(', ')}`).toHaveLength(pluginNames.length);
     const core = files.filter((f) => !pluginFiles.includes(f));
 
-    // Exactly seven besides the plugins', and deliberately exact: the project ships no fonts, no
-    // images and no other chunks, so an eighth file is either a split that
+    // Exactly eight besides the plugins', and deliberately exact: the project ships no fonts, no
+    // images and no other chunks, so a ninth file is either a split that
     // was not meant to happen or an asset nobody decided to ship. Route-level
     // splitting in particular produces a dozen of these on its own and is
     // switched off for everything but the backoffice and the terminal — see
     // src/router. It was five until the terminal moved out of the backoffice
-    // into every account's menu, and six until the front page arrived.
+    // into every account's menu, six until the front page arrived, and seven
+    // when the landing page moved out of RootView's static imports.
     // A chunk shared between two plugins — a helper both import — shows up
-    // here as an eighth file: keep such helpers in the entry instead.
-    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(7);
+    // here as a ninth file: keep such helpers in the entry instead.
+    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(8);
 
     const indexJs = files.filter((f) => /^index-[^.]+\.js$/.test(f));
     const indexCss = files.filter((f) => /^index-[^.]+\.css$/.test(f));
@@ -64,6 +66,7 @@ describe('code splitting invariants in production bundle', () => {
     const mathJs = files.filter((f) => /^math-[^.]+\.js$/.test(f));
     const terminalJs = files.filter((f) => /^TerminalPanel-[^.]+\.js$/.test(f));
     const frontJs = files.filter((f) => /^FrontPage-[^.]+\.js$/.test(f));
+    const landingJs = files.filter((f) => /^LandingView-[^.]+\.js$/.test(f));
 
     expect(indexJs.length).toBe(1);
     expect(indexCss.length).toBe(1);
@@ -72,6 +75,7 @@ describe('code splitting invariants in production bundle', () => {
     expect(mathJs.length).toBe(1);
     expect(terminalJs.length).toBe(1);
     expect(frontJs.length).toBe(1);
+    expect(landingJs.length).toBe(1);
   });
 
   it('keeps admin, Chinese translation, and math renderer out of the main bundle', () => {
@@ -126,6 +130,16 @@ describe('code splitting invariants in production bundle', () => {
     const frontContent = fs.readFileSync(path.join(assetsDir, frontJsFile), 'utf8');
     expect(frontContent).toContain('oa-front-marquee');
     expect(indexContent).not.toContain('oa-front-marquee');
+
+    // 6. The landing page and its trial client: only present in their own
+    // chunk. RootView draws it only for a signed-out visitor to an instance
+    // whose front door is the intro or the trial, so the trial's streaming
+    // client is not on the first paint of everyone who signed in. Its class
+    // prefix, as with the front page above.
+    const landingJsFile = files.find((f) => /^LandingView-[^.]+\.js$/.test(f))!;
+    const landingContent = fs.readFileSync(path.join(assetsDir, landingJsFile), 'utf8');
+    expect(landingContent).toContain('oa-landing-chat');
+    expect(indexContent).not.toContain('oa-landing-chat');
   });
 
   it('ships one copy of the framework, in the entry', () => {
@@ -158,6 +172,46 @@ describe('code splitting invariants in production bundle', () => {
       // Its own name is in its chunk as the plugin's registered name, and
       // nowhere in the entry but the registry's list of loaders.
       expect(content).toContain(`name:"${name}"`);
+    }
+  });
+
+  // What a first paint downloads: the entry script and its stylesheet, gzipped
+  // by zlib at its default level. That is the build's own estimate, the figure
+  // the docs call the build's gzip column, and it is not what a server sends:
+  // the server compresses at a different level, and internal/web/wire_test.go
+  // holds the budget on the bytes it sends. This check still matters, because
+  // Vite's chunk-size limit only warns, so it is what fails a build which grew
+  // the core. The budget only ever ratchets down toward the 135 kB target in
+  // AGENTS.md: raising it to let a change pass is the change being refused,
+  // not the budget being wrong.
+  function firstPaintGzipBytes(): number {
+    const files = builtAssets();
+    const firstPaint = files.filter((f) => /^index-[^.]+\.(js|css)$/.test(f));
+    expect(firstPaint).toHaveLength(2);
+    return firstPaint.reduce(
+      (sum, f) => sum + zlib.gzipSync(fs.readFileSync(path.join(assetsDir, f))).length,
+      0,
+    );
+  }
+
+  it('keeps the first paint within its gzip budget', () => {
+    const FIRST_PAINT_GZIP_BUDGET = 250_000;
+    const gzipped = firstPaintGzipBytes();
+    expect(gzipped, `first paint is ${gzipped} bytes gzipped, budget ${FIRST_PAINT_GZIP_BUDGET}`).toBeLessThanOrEqual(
+      FIRST_PAINT_GZIP_BUDGET,
+    );
+  });
+
+  // The docs quote this figure, and they drifted once while the bundle moved
+  // under them. Naming the documents that quote it means the next change that
+  // moves the bundle has to move them in the same change.
+  it('quotes the built first paint in the README, the architecture notes and AGENTS.md', () => {
+    const kb = (firstPaintGzipBytes() / 1000).toFixed(2);
+    // Not a bare substring: 1248.80 kB would otherwise quote 248.80 kB by accident.
+    const quoted = new RegExp(`(?<![\\d.])${kb.replace('.', '\\.')} kB`);
+    for (const doc of ['README.md', 'docs/ARCHITECTURE.md', 'AGENTS.md']) {
+      const text = fs.readFileSync(path.resolve(__dirname, '../../', doc), 'utf8');
+      expect(quoted.test(text), `${doc} does not quote the first paint as ${kb} kB`).toBe(true);
     }
   });
 });

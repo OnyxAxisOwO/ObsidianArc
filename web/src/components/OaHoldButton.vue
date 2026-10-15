@@ -64,8 +64,18 @@ function begin(event: Event): void {
 // The keyboard has no press-and-hold, so it gets the same delay from the key
 // going down to the key coming up rather than being locked out of the one
 // action on the screen.
+// Auto-repeat is the same physical press still going down. Re-arming on it
+// fired the action again every hold-length for as long as the key stayed
+// down, and the reset it guards is not something to repeat. The repeat is
+// still prevented, as the first keydown is, so the key's default action (a
+// click on this button) does not run for it either.
 function onKeyDown(event: KeyboardEvent): void {
-  if (event.key === 'Enter' || event.key === ' ') begin(event);
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  if (event.repeat) {
+    event.preventDefault();
+    return;
+  }
+  begin(event);
 }
 
 onBeforeUnmount(stop);

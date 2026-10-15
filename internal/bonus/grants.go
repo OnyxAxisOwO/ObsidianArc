@@ -21,9 +21,12 @@ type Target struct {
 	Usernames []string
 }
 
-// Result is what a grant did.
+// Result is what a grant did. UserIDs is exactly who received a grant, so the
+// notices that follow a commit can go to that set rather than to a second
+// reading of the group or the names, which may have changed since.
 type Result struct {
-	Count int `json:"count"`
+	Count   int      `json:"count"`
+	UserIDs []string `json:"-"`
 }
 
 func checkAmount(amount float64) error {
@@ -54,10 +57,26 @@ func (s *Store) Grant(ctx context.Context, barID string, target Target, amount f
 	}
 	note = truncate(strings.TrimSpace(note), maxNote)
 
-	var count int
+	var (
+		count   int
+		granted []string
+	)
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		if _, err := s.Bar(ctx, tx, barID); err != nil {
+		// Lock the bar before reading its switch. Switching it off writes this
+		// row, and on PostgreSQL's READ COMMITTED a read taken first can still
+		// see it on while the switch-off commits; the grant would then be
+		// written into a bar that is off.
+		if _, err := tx.Exec(ctx, `UPDATE bonus_bars SET updated_at = updated_at WHERE id = ?`, barID); err != nil {
 			return err
+		}
+		bar, err := s.Bar(ctx, tx, barID)
+		if err != nil {
+			return err
+		}
+		// A switched-off bar is not spent, so a grant into it would be stored,
+		// reported and announced, and never usable. GrantTo refuses it too.
+		if !bar.Active {
+			return ErrBarOff
 		}
 		ids, err := s.recipients(ctx, tx, target)
 		if err != nil {
@@ -72,12 +91,13 @@ func (s *Store) Grant(ctx context.Context, barID string, target Target, amount f
 			}
 		}
 		count = len(ids)
+		granted = ids
 		return nil
 	})
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Count: count}, nil
+	return Result{Count: count, UserIDs: granted}, nil
 }
 
 // GrantTo is one grant to one account inside the caller's transaction, for
@@ -91,12 +111,17 @@ func (s *Store) GrantTo(ctx context.Context, q database.Queryer, barID, userID s
 	if err := checkExpiry(expiresAt, now); err != nil {
 		return Grant{}, err
 	}
+	// The same lock as Grant, taken inside the caller's transaction: the switch
+	// is read under it, so a switch-off that commits meanwhile waits.
+	if _, err := q.Exec(ctx, `UPDATE bonus_bars SET updated_at = updated_at WHERE id = ?`, barID); err != nil {
+		return Grant{}, err
+	}
 	bar, err := s.Bar(ctx, q, barID)
 	if err != nil {
 		return Grant{}, err
 	}
 	if !bar.Active {
-		return Grant{}, ErrNotFound
+		return Grant{}, ErrBarOff
 	}
 	g := Grant{BarID: barID, UserID: userID, Amount: amount, ExpiresAt: expiresAt,
 		Source: source, Note: truncate(strings.TrimSpace(note), maxNote), CreatedAt: now}
@@ -138,7 +163,7 @@ func (s *Store) recipients(ctx context.Context, q database.Queryer, t Target) ([
 			var found string
 			if err := q.QueryRow(ctx, query, ref).Scan(&found); err != nil {
 				if database.IsNotFound(err) {
-					return fmt.Errorf("%w: no account %s", ErrNotFound, ref)
+					return fmt.Errorf("%w: %s", ErrNoAccount, ref)
 				}
 				return err
 			}
@@ -272,6 +297,7 @@ func (s *Store) SetChoice(ctx context.Context, userID, barID string, enabled boo
 // Expiring is what an account is about to lose in one bar.
 type Expiring struct {
 	UserID    string
+	BarID     string
 	BarName   string
 	Remaining float64
 	ExpiresAt int64
@@ -281,49 +307,74 @@ type Expiring struct {
 // time and whose holders have not been told, one entry per account and bar, and
 // marks those grants as told. Marking comes first: a notice lost is better
 // than the same one sent every ten minutes.
+//
+// The mark is a conditional write. Two sweeps against one database, which the
+// deployment notes allow from two instances, can both read a grant as untold
+// before either commits. The write that finds it already marked matches
+// nothing, so only the sweep that makes the mark is counted and tells the
+// account.
 func (s *Store) TakeExpiring(ctx context.Context, within time.Duration) ([]Expiring, error) {
 	now := time.Now().UnixMilli()
 	until := now + within.Milliseconds()
 	var out []Expiring
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT g.id, g.user_id, b.name, g.amount - g.used, g.expires_at
+		out = nil
+		rows, err := tx.Query(ctx, `SELECT g.id, g.user_id, g.bar_id, b.name, g.amount - g.used, g.expires_at
 			FROM bonus_grants g JOIN bonus_bars b ON b.id = g.bar_id
 			WHERE b.active = ? AND g.warned_at = 0 AND g.amount - g.used > 0 AND g.expires_at > ? AND g.expires_at <= ?
 			ORDER BY g.expires_at`, true, now, until)
 		if err != nil {
 			return fmt.Errorf("bonus: find expiring: %w", err)
 		}
-		var ids []string
-		index := map[string]int{}
+		type candidate struct {
+			id string
+			e  Expiring
+		}
+		var found []candidate
 		for rows.Next() {
-			var (
-				id string
-				e  Expiring
-			)
-			if err := rows.Scan(&id, &e.UserID, &e.BarName, &e.Remaining, &e.ExpiresAt); err != nil {
+			var c candidate
+			if err := rows.Scan(&c.id, &c.e.UserID, &c.e.BarID, &c.e.BarName, &c.e.Remaining, &c.e.ExpiresAt); err != nil {
 				rows.Close()
 				return err
 			}
-			ids = append(ids, id)
-			key := e.UserID + "|" + e.BarName
-			if i, ok := index[key]; ok {
-				out[i].Remaining += e.Remaining
-				continue
-			}
-			index[key] = len(out)
-			out = append(out, e)
+			found = append(found, c)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
 			return err
 		}
 		rows.Close()
-		for _, id := range ids {
-			if _, err := tx.Exec(ctx, `UPDATE bonus_grants SET warned_at = ? WHERE id = ?`, now, id); err != nil {
+
+		index := map[string]int{}
+		for _, c := range found {
+			res, err := tx.Exec(ctx, `UPDATE bonus_grants SET warned_at = ? WHERE id = ? AND warned_at = 0`, now, c.id)
+			if err != nil {
 				return err
 			}
+			marked, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if marked == 0 {
+				continue
+			}
+			// Keyed by bar ID: names are not unique, and two bars that share one
+			// would otherwise be one notice with the first bar's expiry.
+			key := c.e.UserID + "|" + c.e.BarID
+			if i, ok := index[key]; ok {
+				out[i].Remaining += c.e.Remaining
+				continue
+			}
+			index[key] = len(out)
+			out = append(out, c.e)
 		}
 		return nil
 	})
-	return out, err
+	// A failed transaction has unmarked every grant it touched, so what it
+	// collected must not reach the caller: the next sweep would find those grants
+	// untold again and notify the same accounts twice.
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

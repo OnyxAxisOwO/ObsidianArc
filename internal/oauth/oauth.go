@@ -29,8 +29,8 @@ import (
 
 // How long to wait for a provider. Longer than either should ever take, and
 // short enough that an outage at GitHub is a failed sign-in rather than a
-// request that never ends.
-const timeout = 15 * time.Second
+// request that never ends. A variable so a test can shorten it.
+var timeout = 15 * time.Second
 
 var (
 	// The provider refused, or the browser came back without a code. Usually
@@ -180,7 +180,13 @@ func (p *Provider) authorise(creds Credentials, redirect, state, challenge strin
 		query.Set("code_challenge", challenge)
 		query.Set("code_challenge_method", "S256")
 	}
-	return authURL + "?" + query.Encode()
+	// An operator's endpoint may already carry a query (a B2C policy, say), and
+	// a second '?' would fold the first parameter into that value.
+	sep := "?"
+	if strings.Contains(authURL, "?") {
+		sep = "&"
+	}
+	return authURL + sep + query.Encode()
 }
 
 type tokenResponse struct {
@@ -223,15 +229,28 @@ func (p *Provider) exchange(
 	// ignores the header and answers JSON either way.
 	request.Header.Set("Accept", "application/json")
 
-	var body tokenResponse
-	if err := fetchJSON(ctx, client, request, &body); err != nil {
+	status, raw, err := doRequest(client, request)
+	if err != nil {
 		return tokenResponse{}, err
 	}
+	// RFC 6749 section 5.2 puts a refusal (an expired code, a secret that does
+	// not match) in the body of a 4xx reply, so only a 4xx body is read for one.
+	// A 5xx is the provider's outage whatever its body names, and a redirect is
+	// never followed, so both are judged by status alone.
+	if status != http.StatusOK {
+		var refusal tokenResponse
+		if status >= http.StatusBadRequest && status < http.StatusInternalServerError &&
+			json.Unmarshal(raw, &refusal) == nil && refusal.Error != "" {
+			return tokenResponse{}, refusalError(refusal.Error)
+		}
+		return tokenResponse{}, statusError(status)
+	}
+	var body tokenResponse
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return tokenResponse{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
 	if body.Error != "" {
-		// The provider naming its own refusal — an expired code, a secret
-		// that does not match. Nothing the visitor can do except start again,
-		// so it reads as a denial rather than as an outage.
-		return tokenResponse{}, fmt.Errorf("%w: %s", ErrDenied, body.Error)
+		return tokenResponse{}, refusalError(body.Error)
 	}
 	if body.AccessToken == "" && body.IDToken == "" {
 		return tokenResponse{}, fmt.Errorf("%w: no access token in the reply", ErrUnavailable)
@@ -375,6 +394,50 @@ func getJSON(ctx context.Context, client *http.Client, endpoint, token string, i
 }
 
 func fetchJSON(ctx context.Context, client *http.Client, request *http.Request, into any) error {
+	status, body, err := doRequest(client, request)
+	if err != nil {
+		return err
+	}
+	if err := statusError(status); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, into); err != nil {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	return nil
+}
+
+// statusError classifies a provider reply by its status alone: a refusal of the
+// credentials is the visitor's, anything else that is not a 200 is the provider's.
+func statusError(status int) error {
+	switch {
+	case status == http.StatusUnauthorized, status == http.StatusForbidden:
+		return fmt.Errorf("%w: status %d", ErrDenied, status)
+	case status != http.StatusOK:
+		return fmt.Errorf("%w: status %d", ErrUnavailable, status)
+	}
+	return nil
+}
+
+// refusalError is the answer to an error reply the provider named in its body.
+// Only the codes that describe the visitor's own code are a denial. Every other
+// RFC 6749 section 5.2 code (invalid_request, unauthorized_client,
+// unsupported_grant_type, invalid_scope) is a fault in this instance's request
+// or configuration, which the visitor cannot fix and the operator has to, so
+// they stay an outage. The same goes for invalid_client, which GitHub names
+// incorrect_client_credentials, and for redirect_uri_mismatch.
+func refusalError(code string) error {
+	switch code {
+	case "invalid_grant", "bad_verification_code":
+		return fmt.Errorf("%w: %s", ErrDenied, code)
+	}
+	return fmt.Errorf("%w: %s", ErrUnavailable, code)
+}
+
+// doRequest sends one request and reads its reply, returning the status
+// unjudged: a token endpoint puts the reason for a refusal in the body of a 4xx
+// reply, and the caller needs that body before it can classify the status.
+func doRequest(client *http.Client, request *http.Request) (int, []byte, error) {
 	// Every request here carries the client secret or a bearer token. Following
 	// a redirect would send the same form body or token on to the Location,
 	// which may be plain http even though this request was https, or another
@@ -393,7 +456,7 @@ func fetchJSON(ctx context.Context, client *http.Client, request *http.Request, 
 	}
 	reply, err := copied.Do(request)
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+		return 0, nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	defer func() { _ = reply.Body.Close() }()
 
@@ -402,16 +465,7 @@ func fetchJSON(ctx context.Context, client *http.Client, request *http.Request, 
 	// this process out of memory.
 	body, err := io.ReadAll(io.LimitReader(reply.Body, 1<<20))
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+		return 0, nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	switch {
-	case reply.StatusCode == http.StatusUnauthorized, reply.StatusCode == http.StatusForbidden:
-		return fmt.Errorf("%w: status %d", ErrDenied, reply.StatusCode)
-	case reply.StatusCode != http.StatusOK:
-		return fmt.Errorf("%w: status %d", ErrUnavailable, reply.StatusCode)
-	}
-	if err := json.Unmarshal(body, into); err != nil {
-		return fmt.Errorf("%w: %w", ErrUnavailable, err)
-	}
-	return nil
+	return reply.StatusCode, body, nil
 }

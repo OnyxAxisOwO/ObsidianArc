@@ -77,14 +77,20 @@ func fillUsage(request ChatRequest, result Result, reported Usage) Usage {
 		out.Estimated = true
 	}
 
+	// Gated on the output figure alone: a gateway that reports reasoning
+	// but no output still wrote the answer, and the answer is what the
+	// output count is for. The output estimate counts only the text and
+	// the calls, so it cannot repeat the reasoning the provider reported.
 	produced := result.Text != "" || result.Reasoning != "" || len(result.ToolCalls) > 0
-	if out.OutputTokens == 0 && out.ReasoningTokens == 0 && produced {
+	if out.OutputTokens == 0 && produced {
 		output := len(result.Text) / bytesPerToken
 		for _, call := range result.ToolCalls {
 			output += perToolCallTax + (len(call.Name)+len(call.Arguments))/bytesPerToken
 		}
 		out.OutputTokens = output
-		out.ReasoningTokens = len(result.Reasoning) / bytesPerToken
+		if out.ReasoningTokens == 0 {
+			out.ReasoningTokens = len(result.Reasoning) / bytesPerToken
+		}
 		out.Estimated = true
 	}
 	return out

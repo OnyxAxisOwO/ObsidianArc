@@ -51,7 +51,15 @@ export function fillBuckets<T extends { at: number }>(
   if (!(bucketMs > 0)) return [...points];
   const sorted = [...points].sort((a, b) => a.at - b.at);
   const floor = (at: number): number => at - (((at + window.offsetMs) % bucketMs) + bucketMs) % bucketMs;
-  const first = window.since > 0 ? floor(window.since) : sorted[0]?.at;
+  const start = window.since > 0 ? floor(window.since) : undefined;
+  let first = start ?? sorted[0]?.at;
+  // The server cut its window a moment before the reader asked for it, so its
+  // earliest bucket can sit one boundary before this grid. Extending the grid
+  // to it keeps the fill — but only when it lands on this grid. One that does
+  // not was cut on another clock, and the guard below must still see it.
+  if (start !== undefined && sorted.length && start - sorted[0]!.at === bucketMs) {
+    first = sorted[0]!.at;
+  }
   const last = sorted.length ? Math.max(sorted.at(-1)!.at, floor(window.until)) : floor(window.until);
   if (first === undefined || last < first) return sorted;
   // A window so long that its buckets would be thousands of points is left as
@@ -117,25 +125,54 @@ const TICK_STEPS = [HOUR, 2 * HOUR, 3 * HOUR, 4 * HOUR, 6 * HOUR, 12 * HOUR, DAY
 
 /**
  * Which buckets get a label on the time axis: the ones that start on a round
- * hour or day on the reader's clock, a step apart.
+ * hour or day on the reader's clock, one step apart — and that step, which
+ * the label format follows.
  *
  * Spreading labels evenly by index put them at 05:00, 10:00, 14:00 and 19:00,
  * which is even on the screen and nowhere else — nobody counts a day in
  * irregular hours. A step from a fixed list keeps them on 00:00, 04:00, 08:00,
  * and falls back to the even spread only when nothing lands on the grid.
+ *
+ * `offsetMs` is the offset fillBuckets was given, so the grid is read on the
+ * clock the server cut it on. Each instant's own offset would put a day on
+ * either side of a change of clock off the grid, and that day would go
+ * unlabelled.
  */
-export function timeTicks(ats: readonly number[], bucketMs: number, most = 6): number[] {
-  if (ats.length <= 1) return ats.map((_, index) => index);
-  const span = ats.at(-1)! - ats[0]!;
+export function timeTicks(
+  ats: readonly number[],
+  bucketMs: number,
+  offsetMs: number,
+  most = 6,
+): { indices: number[]; step: number } {
+  const span = ats.length > 1 ? ats.at(-1)! - ats[0]! : 0;
   const step = TICK_STEPS.find((candidate) => candidate >= bucketMs && span / candidate <= most) ?? TICK_STEPS.at(-1)!;
+  if (ats.length <= 1) return { indices: ats.map((_, index) => index), step };
   const picked: number[] = [];
   ats.forEach((at, index) => {
-    const local = at - new Date(at).getTimezoneOffset() * 60_000;
-    if (local % step === 0) picked.push(index);
+    if ((at + offsetMs) % step === 0) picked.push(index);
   });
-  if (picked.length >= 2) return picked;
+  if (picked.length >= 2) return { indices: picked, step };
   const count = Math.min(ats.length, most);
-  return Array.from({ length: count }, (_, i) => Math.round(i * (ats.length - 1) / (count - 1)));
+  return {
+    indices: Array.from({ length: count }, (_, i) => Math.round(i * (ats.length - 1) / (count - 1))),
+    step,
+  };
+}
+
+/**
+ * How a time-axis label reads, given the step its ticks were chosen at and the
+ * span they cover.
+ *
+ * A label is a date when the ticks are a day or more apart. Finer ticks across
+ * more than a day need the date as well: "00:00" and "12:00" over three days
+ * read as the same two times repeated. A window inside one day needs only the
+ * time.
+ */
+export function tickFormat(step: number, span: number): Intl.DateTimeFormatOptions {
+  const date: Intl.DateTimeFormatOptions = { month: 'numeric', day: 'numeric' };
+  const time: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
+  if (step >= DAY) return date;
+  return span > DAY ? { ...date, ...time } : time;
 }
 
 /**
@@ -154,6 +191,9 @@ export function change(current: number, previous: number | undefined | null): nu
 export function percent(ratio: number, signed = false): string {
   const value = Math.abs(ratio) >= 0.1 ? (ratio * 100).toFixed(1) : (ratio * 100).toFixed(2);
   const trimmed = value.replace(/\.?0+$/, '');
+  // A change too small to show rounds to "-0.00" above; "-0%" would read as a
+  // fall that did not happen.
+  if (Number(trimmed) === 0) return '0%';
   return `${signed && ratio > 0 ? '+' : ''}${trimmed}%`;
 }
 

@@ -7,7 +7,7 @@ import ComposerMenu from './ComposerMenu.vue';
 import ModelControl from './ModelControl.vue';
 import {
   MAX_MESSAGE_CHARS, TEXT_FILE_ACCEPT, addImages, addTextFiles, attachments, busy,
-  draft, messages, removeAttachment, status, stoppable, submit, stop,
+  draft, messages, removeAttachment, setFlash, status, stoppable, submit, stop,
 } from './useChat';
 import { captureComposerRect } from './useSendAnimation';
 
@@ -37,8 +37,20 @@ function onKeyDown(event: KeyboardEvent): void {
 function onPaste(event: ClipboardEvent): void {
   const files = Array.from(event.clipboardData?.files ?? []);
   if (!files.length) return;
-  event.preventDefault();
+  // Without vision there is nothing to take the pictures, so the paste is left
+  // to the browser; addImages says why they were refused.
+  if (status.value.vision) event.preventDefault();
   void addImages(files);
+}
+
+// The item stays on the menu for a model without vision, and says why when it
+// is chosen, rather than opening a picker whose choice would then vanish.
+function pickImages(): void {
+  if (!status.value.vision) {
+    setFlash(t('imagesUnsupported'));
+    return;
+  }
+  imagePicker.value?.click();
 }
 
 function onSend(event: MouseEvent): void {
@@ -121,7 +133,7 @@ defineExpose({
     <div class="ai-chat-composer-row">
       <ComposerMenu
         :disabled="busy || !status.configured"
-        @pick-images="imagePicker?.click()"
+        @pick-images="pickImages"
         @pick-files="filePicker?.click()"
       />
 

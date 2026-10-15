@@ -1,8 +1,12 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -17,11 +21,19 @@ import (
 // accounts says nothing about the ones closest to their ceiling.
 
 // A listing this size is already more accounts than anyone reads one screen
-// of; past it the page says how many there are rather than loading them all.
+// of. Past it the rows and the state counts cover only the newest accounts,
+// so the response says it is capped and carries the real total, rather than
+// presenting the partial figures as complete.
 const allowanceAccountCap = 5000
 
 // Shares of a window from which an account counts as running low.
 const allowanceLow = 0.8
+
+// How many allowance rankings the usage cache holds at once. Each one is up to
+// allowanceAccountCap rows and every distinct search makes another, so the
+// general bound on the map would let a burst of searches hold all of them for
+// the whole 15-second window.
+const allowanceRankingsCached = 4
 
 type allowanceRow struct {
 	ID           string `json:"id"`
@@ -36,6 +48,17 @@ type allowanceRow struct {
 	Windows   []quota.WindowUsage `json:"windows"`
 }
 
+// rankedAllowances is every matching account, ranked, before the state filter
+// and the page are taken. Building it reads every account and its usage, which
+// is what each scroll of the page used to repeat, so it is kept briefly.
+type rankedAllowances struct {
+	rows      []allowanceRow
+	matching  int
+	capped    bool
+	low       int
+	exhausted int
+}
+
 func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error {
 	actor := auth.MustUser(r.Context())
 	clientIP := r.RemoteAddr
@@ -47,13 +70,8 @@ func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error
 	}
 
 	query := r.URL.Query()
-	filter := user.ListFilter{
-		Search:  query.Get("q"),
-		Status:  user.StatusActive,
-		GroupID: query.Get("group_id"),
-		Limit:   200,
-	}
-	if filter.GroupID != "" && !isValidID(filter.GroupID) {
+	groupID := query.Get("group_id")
+	if groupID != "" && !isValidID(groupID) {
 		return httpx.BadRequest("Malformed group id.")
 	}
 	state := query.Get("state")
@@ -63,12 +81,168 @@ func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error
 		return httpx.BadRequest("Unknown state filter.")
 	}
 
-	var accounts []user.User
-	for {
-		page, total, err := h.users.List(r.Context(), filter)
-		if err != nil {
-			return httpx.Internal(err)
+	ranked, err := h.rankedAllowances(r.Context(), query.Get("q"), groupID)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+
+	// The low and exhausted counts describe the whole ranking, whichever state
+	// is being listed; the state only narrows the rows the page is taken from.
+	rows := ranked.rows
+	if state != "" {
+		rows = make([]allowanceRow, 0, len(ranked.rows))
+		for _, row := range ranked.rows {
+			if state == "low" && (row.Pressure == nil || *row.Pressure < allowanceLow) {
+				continue
+			}
+			if state == "exhausted" && (row.Pressure == nil || *row.Pressure < 1) {
+				continue
+			}
+			rows = append(rows, row)
 		}
+	}
+
+	// listed is what the paging can reach; total is the real number of accounts
+	// behind the list. A state filter can only be counted over the accounts
+	// that were loaded, so past the cap it reports that count, and loaded says
+	// how many accounts that count was drawn from.
+	listed := len(rows)
+	total := ranked.matching
+	if state != "" {
+		total = listed
+	}
+	limit := intParam(query.Get("limit"), 50)
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset := min(max(intParam(query.Get("offset"), 0), 0), listed)
+	rows = rows[offset:min(offset+limit, listed)]
+
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"rows":      rows,
+		"total":     total,
+		"listed":    listed,
+		"capped":    ranked.capped,
+		"loaded":    len(ranked.rows),
+		"display":   h.quota.Display(),
+		"low":       ranked.low,
+		"exhausted": ranked.exhausted,
+	})
+}
+
+// rankedAllowances answers the ranking for one search and group from the cache
+// when it is fresh. The cache is the usage summary's, with the same lifetime,
+// and singleflight keeps a page scroll that arrives while the ranking is being
+// built from starting a second build.
+func (h *Handlers) rankedAllowances(ctx context.Context, search, groupID string) (rankedAllowances, error) {
+	key := "allowances:" + groupID + ":" + search
+	if ranked, ok := cachedRanking(h.getSummaryCache(key)); ok {
+		return ranked, nil
+	}
+	// The generation is read before the build starts, and it is part of the
+	// singleflight key. A request that comes after a write therefore never joins
+	// a build begun before it, and a build that finishes after a write is not
+	// cached, because the write may have changed what it read.
+	generation := h.allowanceGenerationNow()
+	res, err, _ := h.allowanceSF.Do(strconv.FormatUint(generation, 10)+"|"+key, func() (any, error) {
+		if ranked, ok := cachedRanking(h.getSummaryCache(key)); ok {
+			return ranked, nil
+		}
+		// Detached from this request: the build is shared by everyone waiting on
+		// it, so the viewer who started it leaving must not fail the rest.
+		buildCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		ranked, err := h.buildAllowances(buildCtx, search, groupID)
+		if err != nil {
+			return nil, err
+		}
+		h.cacheRankingIfCurrent(key, ranked, generation)
+		return ranked, nil
+	})
+	if err != nil {
+		return rankedAllowances{}, err
+	}
+	return res.(rankedAllowances), nil
+}
+
+// forgetAllowanceRankings is called after a write that changes what an account
+// has left: a reset, or a limit saved or removed. The ranking is read from the
+// usage counters and the policies, so without this the list would show the
+// pressure from before the write for as long as the cache holds it. It runs
+// after the write has committed, so a rebuild cannot read the old figures back.
+func (h *Handlers) forgetAllowanceRankings() {
+	h.usageCacheMu.Lock()
+	defer h.usageCacheMu.Unlock()
+	for key := range h.usageSummaryCache {
+		if strings.HasPrefix(key, "allowances:") {
+			delete(h.usageSummaryCache, key)
+		}
+	}
+	h.allowanceGeneration++
+}
+
+func (h *Handlers) allowanceGenerationNow() uint64 {
+	h.usageCacheMu.RLock()
+	defer h.usageCacheMu.RUnlock()
+	return h.allowanceGeneration
+}
+
+// cacheRankingIfCurrent stores a ranking only when no write has come in since
+// the build began. The check and the insert share the lock forgetAllowanceRankings
+// takes, so a write cannot land between them and be followed by this stale copy.
+func (h *Handlers) cacheRankingIfCurrent(key string, ranked rankedAllowances, generation uint64) {
+	h.usageCacheMu.Lock()
+	defer h.usageCacheMu.Unlock()
+	if h.allowanceGeneration != generation {
+		return
+	}
+	h.putSummaryLocked(key, map[string]any{"ranked": ranked})
+}
+
+// capAllowanceRankingsLocked makes room for key among the cached rankings by
+// dropping the oldest one whatever its age. It runs under usageCacheMu, from
+// putSummaryLocked, and a key that is already cached is replaced rather than
+// added, so it does not count against the cap.
+func (h *Handlers) capAllowanceRankingsLocked(key string) {
+	var oldestKey string
+	var oldest time.Time
+	cached := 0
+	for k, entry := range h.usageSummaryCache {
+		if k == key || !strings.HasPrefix(k, "allowances:") {
+			continue
+		}
+		cached++
+		if oldestKey == "" || entry.createdAt.Before(oldest) {
+			oldestKey, oldest = k, entry.createdAt
+		}
+	}
+	if cached >= allowanceRankingsCached {
+		delete(h.usageSummaryCache, oldestKey)
+	}
+}
+
+func cachedRanking(cached map[string]any) (rankedAllowances, bool) {
+	ranked, ok := cached["ranked"].(rankedAllowances)
+	return ranked, ok
+}
+
+// buildAllowances reads every matching account, summarises each one's usage
+// and sorts them by pressure. Nothing is filtered or paged here.
+func (h *Handlers) buildAllowances(ctx context.Context, search, groupID string) (rankedAllowances, error) {
+	filter := user.ListFilter{
+		Search:  search,
+		Status:  user.StatusActive,
+		GroupID: groupID,
+		Limit:   200,
+	}
+	var accounts []user.User
+	var matching int
+	for {
+		page, total, err := h.users.List(ctx, filter)
+		if err != nil {
+			return rankedAllowances{}, err
+		}
+		matching = total
 		accounts = append(accounts, page...)
 		filter.Offset += len(page)
 		if len(page) == 0 || filter.Offset >= total || len(accounts) >= allowanceAccountCap {
@@ -76,13 +250,16 @@ func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error
 		}
 	}
 
-	summaries, err := h.quota.SummariesFor(r.Context(), accounts)
+	summaries, err := h.quota.SummariesFor(ctx, accounts)
 	if err != nil {
-		return httpx.Internal(err)
+		return rankedAllowances{}, err
 	}
 
-	rows := make([]allowanceRow, 0, len(accounts))
-	var low, exhausted int
+	ranked := rankedAllowances{
+		rows:     make([]allowanceRow, 0, len(accounts)),
+		matching: matching,
+		capped:   matching > len(accounts),
+	}
 	for _, account := range accounts {
 		summary := summaries[account.ID]
 		row := allowanceRow{
@@ -92,51 +269,26 @@ func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error
 		}
 		if row.Pressure != nil {
 			if *row.Pressure >= 1 {
-				exhausted++
+				ranked.exhausted++
 			}
 			if *row.Pressure >= allowanceLow {
-				low++
+				ranked.low++
 			}
 		}
-		switch state {
-		case "low":
-			if row.Pressure == nil || *row.Pressure < allowanceLow {
-				continue
-			}
-		case "exhausted":
-			if row.Pressure == nil || *row.Pressure < 1 {
-				continue
-			}
-		}
-		rows = append(rows, row)
+		ranked.rows = append(ranked.rows, row)
 	}
 
-	sort.SliceStable(rows, func(i, j int) bool {
-		a, b := rows[i].Pressure, rows[j].Pressure
+	sort.SliceStable(ranked.rows, func(i, j int) bool {
+		a, b := ranked.rows[i].Pressure, ranked.rows[j].Pressure
 		switch {
 		case a == nil || b == nil:
 			return a != nil && b == nil
 		case *a != *b:
 			return *a > *b
 		}
-		return rows[i].LastActiveAt > rows[j].LastActiveAt
+		return ranked.rows[i].LastActiveAt > ranked.rows[j].LastActiveAt
 	})
-
-	total := len(rows)
-	limit := intParam(query.Get("limit"), 50)
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	offset := min(intParam(query.Get("offset"), 0), total)
-	rows = rows[offset:min(offset+limit, total)]
-
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"rows":      rows,
-		"total":     total,
-		"display":   h.quota.Display(),
-		"low":       low,
-		"exhausted": exhausted,
-	})
+	return ranked, nil
 }
 
 // allowancePressure is how full the fullest enforced window is, judged on

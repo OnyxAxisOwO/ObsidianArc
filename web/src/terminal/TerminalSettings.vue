@@ -22,6 +22,7 @@ import type { Choice } from '@/components/choice';
 import { t } from '@/composables/useI18n';
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
+  FONT_FAMILY_MAX_LENGTH,
   TERMINAL_CURSOR_STYLES,
   TERMINAL_FONT_FAMILY_PRESETS,
   TERMINAL_PREFS_DEFAULTS,
@@ -57,10 +58,16 @@ function commit(patch: Partial<TerminalPrefs>): void {
 
 const CUSTOM_FONT = '__custom__';
 
-const isCustomFont = computed(() => !TERMINAL_FONT_FAMILY_PRESETS.includes(props.modelValue.fontFamily));
-const fontFamilySelectValue = computed(() => (isCustomFont.value ? CUSTOM_FONT : props.modelValue.fontFamily));
-/** What to seed the text field with the moment "Custom…" is picked — the current stack, so switching to it is never a blank field. */
-const customDraft = ref(isCustomFont.value ? props.modelValue.fontFamily : DEFAULT_TERMINAL_FONT_FAMILY);
+// Whether the custom field is open is a mode the user chooses, not a fact
+// about the stack: picking "Custom…" with a preset active has to open the
+// field even though the stack is still a preset. So it is held here, set once
+// from the stored value, and the stack alone never decides it.
+const customMode = ref(!TERMINAL_FONT_FAMILY_PRESETS.includes(props.modelValue.fontFamily));
+// What the custom field shows while it is typed. It may be blank, and a blank
+// value is never committed, so the field keeps what the user typed instead of
+// being refilled with the stored stack while they retype it.
+const fontDraft = ref(props.modelValue.fontFamily);
+const fontFamilySelectValue = computed(() => (customMode.value ? CUSTOM_FONT : props.modelValue.fontFamily));
 
 function presetLabel(stack: string): string {
   if (stack === DEFAULT_TERMINAL_FONT_FAMILY) return t('terminalFontDefault');
@@ -90,16 +97,21 @@ const scrollbackOptions = computed<Choice[]>(() =>
 
 function onFontFamilyChange(value: string): void {
   if (value === CUSTOM_FONT) {
-    customDraft.value = isCustomFont.value ? props.modelValue.fontFamily : customDraft.value;
-    set({ fontFamily: customDraft.value });
+    // Opens the field on the stack in use, so choosing it never changes the
+    // font by itself and never leaves the field blank.
+    fontDraft.value = props.modelValue.fontFamily;
+    customMode.value = true;
     return;
   }
+  customMode.value = false;
   set({ fontFamily: value });
 }
 
 function onCustomFontInput(value: string): void {
-  customDraft.value = value;
-  set({ fontFamily: value });
+  fontDraft.value = value;
+  // Only a usable stack is committed, so the stored font is always one the
+  // terminal can render; a blank draft waits for the next non-blank keystroke.
+  if (value.trim()) set({ fontFamily: value });
 }
 
 function onCursorStyleChange(value: TerminalCursorStyle): void {
@@ -112,7 +124,7 @@ function onScrollbackChange(value: string): void {
 
 function resetDefaults(): void {
   const next = { ...TERMINAL_PREFS_DEFAULTS };
-  customDraft.value = next.fontFamily;
+  customMode.value = false;
   emit('update:modelValue', next);
   emit('commit', next);
 }
@@ -129,10 +141,11 @@ function resetDefaults(): void {
       @update:model-value="onFontFamilyChange"
     />
     <OaTextField
-      v-if="isCustomFont"
-      :model-value="props.modelValue.fontFamily"
+      v-if="customMode"
+      :model-value="fontDraft"
       :label="t('terminalCustomFontFamily')"
       :hint="t('terminalCustomFontHint')"
+      :max-length="FONT_FAMILY_MAX_LENGTH"
       monospace
       @update:model-value="onCustomFontInput"
     />
@@ -168,11 +181,6 @@ function resetDefaults(): void {
       :options="cursorStyleOptions"
       :searchable="false"
       @update:model-value="onCursorStyleChange"
-    />
-    <OaSwitchField
-      :model-value="props.modelValue.cursorBlink"
-      :label="t('terminalCursorBlink')"
-      @update:model-value="(value) => set({ cursorBlink: value })"
     />
 
     <OaSelectField

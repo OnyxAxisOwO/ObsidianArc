@@ -27,6 +27,15 @@ var (
 	// indefinitely is a way to fill the operator's disk.
 	ErrTooManyPending      = errors.New("conversation: too many images are waiting to be sent")
 	ErrAttachmentQuotaFull = errors.New("conversation: this account is holding as many images as it may")
+	// An id in a send that cannot be claimed: expired and removed, already sent
+	// with another message, discarded by retention, not this user's, or a library
+	// picture. The send is refused as a whole, so nobody is left with a message
+	// that quietly lacks the picture they attached.
+	ErrAttachmentUnavailable = errors.New("conversation: an attached image is no longer available")
+	// More distinct pictures than one message may hold. A cut would send the
+	// message without the rest, which is the silent loss this file refuses
+	// everywhere else.
+	ErrTooManyAttachments = errors.New("conversation: too many images for one message")
 )
 
 const (
@@ -259,23 +268,62 @@ type ImageData struct {
 	Data []byte
 }
 
-// linkAttachments claims previously uploaded images for a message. Only rows
-// this user owns and that are not already attached can be claimed, so an id
-// guessed from somewhere else is silently skipped rather than stolen.
-func (s *Store) linkAttachments(ctx context.Context, q database.Queryer, userID, messageID string, attachmentIDs []string) ([]Attachment, error) {
-	claimed := []Attachment{}
-	for i, attachmentID := range attachmentIDs {
-		if i >= MaxAttachmentsPerMessage {
-			break
+// distinctAttachmentIDs is the list a send actually claims. A picture named
+// twice is claimed once: the second claim finds the row already taken and would
+// refuse the whole send as a picture that is gone. The budget is counted after
+// that, because a repeated id is not a second picture, and a list over the
+// budget is refused rather than cut.
+func distinctAttachmentIDs(attachmentIDs []string) ([]string, error) {
+	seen := make(map[string]bool, len(attachmentIDs))
+	distinct := make([]string, 0, len(attachmentIDs))
+	for _, attachmentID := range attachmentIDs {
+		if seen[attachmentID] {
+			continue
 		}
+		seen[attachmentID] = true
+		distinct = append(distinct, attachmentID)
+	}
+	if len(distinct) > MaxAttachmentsPerMessage {
+		return nil, ErrTooManyAttachments
+	}
+	return distinct, nil
+}
+
+// linkAttachments claims previously uploaded images for a message. Only rows
+// this user owns, that are not already attached, and whose bytes are still held
+// can be claimed. An id that cannot be claimed fails the whole call with
+// ErrAttachmentUnavailable, which the caller's transaction turns into nothing
+// stored; the same error covers "gone", "someone else's", "already sent" and
+// "discarded", so it reveals nothing about the others. A discarded picture must
+// not be claimable: a detach lifts it off a message without restoring its bytes,
+// and claiming it would store a message whose provider call silently omits the
+// picture.
+//
+// A library picture is unattached too, but it belongs to the Image Lab
+// library, not to a message. Claiming it would let the turn's dispatch wipe
+// its bytes and deleting the library entry later would take it out of the
+// transcript, so it is excluded here exactly as DeleteOrphans excludes it.
+func (s *Store) linkAttachments(ctx context.Context, q database.Queryer, userID, messageID string, attachmentIDs []string) ([]Attachment, error) {
+	ids, err := distinctAttachmentIDs(attachmentIDs)
+	if err != nil {
+		return nil, err
+	}
+	claimed := []Attachment{}
+	for _, attachmentID := range ids {
 		result, err := q.Exec(ctx,
-			`UPDATE attachments SET message_id = ? WHERE id = ? AND user_id = ? AND message_id IS NULL`,
+			`UPDATE attachments SET message_id = ?
+			 WHERE id = ? AND user_id = ? AND message_id IS NULL AND discarded_at = 0
+			   AND id NOT IN (SELECT attachment_id FROM image_generations)`,
 			messageID, attachmentID, userID)
 		if err != nil {
 			return nil, fmt.Errorf("conversation: link attachment: %w", err)
 		}
-		if affected, _ := result.RowsAffected(); affected == 0 {
-			continue
+		affected, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return nil, fmt.Errorf("conversation: link attachment: %w", rowsErr)
+		}
+		if affected == 0 {
+			return nil, ErrAttachmentUnavailable
 		}
 
 		var record Attachment
@@ -288,6 +336,48 @@ func (s *Store) linkAttachments(ctx context.Context, q database.Queryer, userID,
 		claimed = append(claimed, record)
 	}
 	return claimed, nil
+}
+
+// DetachPictures lifts the listed pictures off the messages that a truncation
+// from messageID is about to delete. The delete cascades to attachment rows,
+// so a picture the edited message re-sends would be gone before linkAttachments
+// looks for it, and the edited message would silently lose it. Only pictures on
+// the truncated tail are detached; one on an earlier message, or another
+// user's, stays where it is.
+func (s *Store) DetachPictures(ctx context.Context, q database.Queryer, userID, conversationID, messageID string, attachmentIDs []string) error {
+	// Refused before any lock is taken: a send over the budget must not hold the
+	// conversation for a detach that will never be followed by its claim.
+	ids, err := distinctAttachmentIDs(attachmentIDs)
+	if err != nil {
+		return err
+	}
+	// A plain handle is routed through a transaction, as TruncateFrom does: the
+	// lock below would otherwise commit on its own and the detach would run outside it.
+	if _, ok := q.(*database.Tx); !ok {
+		return s.db.Tx(ctx, func(tx *database.Tx) error {
+			return s.DetachPictures(ctx, tx, userID, conversationID, messageID, attachmentIDs)
+		})
+	}
+	// Attachment rows are written only once the conversation is locked, the same
+	// order appendIn keeps (lock, then linkAttachments). Two requests in one
+	// conversation that touch the same picture would otherwise each hold a row
+	// the other needs, and PostgreSQL fails one of them.
+	if err := lockConversation(ctx, q, userID, conversationID); err != nil {
+		return err
+	}
+	for _, attachmentID := range ids {
+		if _, err := q.Exec(ctx,
+			`UPDATE attachments SET message_id = NULL
+			 WHERE id = ? AND user_id = ?
+			   AND message_id IN (
+			     SELECT m.id FROM messages m
+			     WHERE m.conversation_id = ? AND m.user_id = ?
+			       AND m.seq >= (SELECT seq FROM messages WHERE id = ? AND conversation_id = ? AND user_id = ?))`,
+			attachmentID, userID, conversationID, userID, messageID, conversationID, userID); err != nil {
+			return fmt.Errorf("conversation: detach attachment: %w", err)
+		}
+	}
+	return nil
 }
 
 // DeleteOrphans removes uploads that were never attached to a message: a

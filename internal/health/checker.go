@@ -16,7 +16,9 @@ import (
 // the next restart.
 type Policy struct {
 	// Ask models nobody has used. Off means uptime comes from readers only,
-	// and a model with no readers stays unknown.
+	// and a model with no readers stays unknown, except one this checker has
+	// switched off: that one is still asked, because a probe is the only way
+	// it can answer again.
 	Probe bool
 	// How far back counts as evidence, and therefore how quiet a model has to
 	// be before it is asked directly.
@@ -86,6 +88,16 @@ func (c *Checker) Run(ctx context.Context, policy Policy) {
 	}
 
 	for _, record := range models {
+		// Past the sweep's deadline every probe would fail at once with the
+		// context error. The guard avoids provider calls that cannot succeed and
+		// the misleading error logs they would produce; the writes that would
+		// follow fail on the same expired context and are not recorded. The
+		// models not reached are left for the next pass. This breaks rather than
+		// returns so that retention below still runs.
+		if ctx.Err() != nil {
+			break
+		}
+
 		// A model an administrator switched off is not a model that is down.
 		// The exception is one this checker switched off, which has to keep
 		// being asked or it could never come back.
@@ -102,7 +114,7 @@ func (c *Checker) Run(ctx context.Context, policy Policy) {
 		// Readers first. A model with traffic has better evidence than
 		// anything a probe could add, and asking it again costs tokens to
 		// learn nothing.
-		if len(samples) == 0 && policy.Probe {
+		if len(samples) == 0 && (policy.Probe || record.AutoDisabled) {
 			if sample, ok := c.probe(ctx, record); ok {
 				samples = append([]Sample{sample}, samples...)
 			}
@@ -115,7 +127,12 @@ func (c *Checker) Run(ctx context.Context, policy Policy) {
 	}
 
 	if policy.Retain > 0 {
-		if _, err := c.Store.Prune(ctx, time.Now().Add(-policy.Retain).UnixMilli()); err != nil {
+		// Not tied to the sweep's deadline: a pass that overran is the one most
+		// in need of dropping the rows that have aged out. The minute bounds the
+		// detached write so it cannot hold the sweep open.
+		pruneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		if _, err := c.Store.Prune(pruneCtx, time.Now().Add(-policy.Retain).UnixMilli()); err != nil {
 			slog.ErrorContext(ctx, "health: prune probes", "error", err)
 		}
 	}
@@ -151,20 +168,22 @@ func (c *Checker) probe(ctx context.Context, record model.Model) (Sample, bool) 
 
 // apply is the only place a model's enabled flag moves on its own.
 func (c *Checker) apply(ctx context.Context, record model.Model, status Status, policy Policy) {
-	on, off := true, false
-
 	// Back from the dead. Only a model this checker turned off: an operator
 	// who disabled one has said something, and a model answering again is not
 	// an argument against it.
 	if record.AutoDisabled && status.State == StateUp {
-		if _, err := c.Models.Update(ctx, record.ID, model.Update{
-			Enabled: &on, AutoDisabled: &off,
-		}); err != nil {
+		// Conditional for the same reason as the disable below: the snapshot
+		// is from before the probes, so an operator may have changed the model
+		// since. Only a row still carrying the checker's claim is switched on.
+		flipped, err := c.Models.EnableIfAutoDisabled(ctx, record.ID)
+		if err != nil {
 			slog.ErrorContext(ctx, "health: re-enable", "model", record.ID, "error", err)
 			return
 		}
-		slog.InfoContext(ctx, "model answering again, enabled",
-			"model", record.ID, "name", record.DisplayName)
+		if flipped {
+			slog.InfoContext(ctx, "model answering again, enabled",
+				"model", record.ID, "name", record.DisplayName)
+		}
 		return
 	}
 

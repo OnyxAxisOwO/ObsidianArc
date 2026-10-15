@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { logout, type Account } from '@/api/auth';
+import { ApiError } from '@/api/client';
 import OaAvatar from '@/components/OaAvatar.vue';
 import OaMenu from '@/components/OaMenu.vue';
 import OaMenuItem from '@/components/OaMenuItem.vue';
@@ -41,13 +42,33 @@ function openPanel(close: () => void, path: string): void {
   panels.open(path);
 }
 
+// The account stays on screen until the server has ended the session. Only a
+// 401 proves it is already gone; any other failure leaves the session live, and
+// the next load would sign this browser straight back in, so the menu says so
+// instead of showing a signed-out page that does not hold.
+const SIGN_OUT_WAIT_MS = 10_000;
+const signOutError = ref('');
+const signingOut = ref(false);
+
 async function signOut(close: () => void): Promise<void> {
-  close();
+  if (signingOut.value) return;
+  signingOut.value = true;
+  signOutError.value = '';
+  // A stalled request must not keep the menu on the account indefinitely.
+  const controller = new AbortController();
+  const deadline = window.setTimeout(() => controller.abort(), SIGN_OUT_WAIT_MS);
   try {
-    await logout();
-  } catch {
-    // The cookie may already be gone. Either way the local state goes.
+    await logout(controller.signal);
+  } catch (failure) {
+    if (!(failure instanceof ApiError && failure.isAuth)) {
+      signOutError.value = t('signOutFailed');
+      return;
+    }
+  } finally {
+    window.clearTimeout(deadline);
+    signingOut.value = false;
   }
+  close();
   forget();
   await router.replace('/login');
 }
@@ -168,6 +189,7 @@ async function signOut(close: () => void): Promise<void> {
       <OaMenuItem :title="t('signOut')" @click="signOut(close)">
         <template #leading><IconLogout :size="14" /></template>
       </OaMenuItem>
+      <p v-if="signOutError" class="oa-menu-empty" role="alert">{{ signOutError }}</p>
     </template>
   </OaMenu>
 </template>

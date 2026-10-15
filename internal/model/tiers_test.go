@@ -123,3 +123,87 @@ func TestReasoningTiersAreCapped(t *testing.T) {
 		t.Errorf("kept %d tiers, want the cap of %d", got, MaxReasoningTiers)
 	}
 }
+
+// The slider's budgets are the picked model's own, and Authorize is the read
+// a chat turn is built from. A list that does not survive that read reaches
+// the provider as the adapter's built-in budgets instead.
+func TestAuthorizeCarriesTheModelsTiers(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "authz-tiers")
+
+	record, err := f.models.Create(ctx, CreateInput{
+		ProviderID:  upstream.ID,
+		ModelID:     "custom-tiers",
+		DisplayName: "Custom tiers",
+		Enabled:     true,
+		ReasoningTiers: []ReasoningTier{
+			{ID: "low", Name: "轻", Budget: 2000},
+			{ID: "high", Name: "深", Budget: 30000},
+		},
+		Capabilities: Capabilities{SupportsReasoning: true},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	resolved, err := f.models.Authorize(ctx, "", record.ID, true)
+	if err != nil {
+		t.Fatalf("authorize: %v", err)
+	}
+	if n := len(resolved.Model.ReasoningTiers); n != 2 {
+		t.Fatalf("authorize returned %d tiers, want 2: %+v", n, resolved.Model.ReasoningTiers)
+	}
+	if effort, budget := resolved.Model.ResolveTier(adapter.EffortHigh); effort != adapter.EffortHigh || budget != 30000 {
+		t.Errorf("high resolved to (%q, %d), want (high, 30000)", effort, budget)
+	}
+	if effort, budget := resolved.Model.ResolveTier(adapter.EffortLow); effort != adapter.EffortLow || budget != 2000 {
+		t.Errorf("low resolved to (%q, %d), want (low, 2000)", effort, budget)
+	}
+}
+
+// Under a route the slider belongs to the model the user picked, not to the
+// one that answers. Each side keeps its own list.
+func TestAuthorizeRoutedKeepsThePickedModelsTiers(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "authz-route-tiers")
+
+	source, err := f.models.Create(ctx, CreateInput{
+		ProviderID:     upstream.ID,
+		ModelID:        "source-tiers",
+		DisplayName:    "Source tiers",
+		Enabled:        true,
+		ReasoningTiers: []ReasoningTier{{ID: "low", Name: "轻", Budget: 1000}},
+		Capabilities:   Capabilities{SupportsReasoning: true},
+	})
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	target, err := f.models.Create(ctx, CreateInput{
+		ProviderID:     upstream.ID,
+		ModelID:        "target-tiers",
+		DisplayName:    "Target tiers",
+		Enabled:        true,
+		ReasoningTiers: []ReasoningTier{{ID: "high", Name: "深", Budget: 50000}},
+		Capabilities:   Capabilities{SupportsReasoning: true},
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	f.route(t, source.ID, target.ID)
+
+	resolved, err := f.models.Authorize(ctx, "", source.ID, true)
+	if err != nil {
+		t.Fatalf("authorize: %v", err)
+	}
+	if resolved.Upstream.ModelID != "target-tiers" {
+		t.Errorf("upstream model = %q, want target-tiers", resolved.Upstream.ModelID)
+	}
+	if n := len(resolved.Model.ReasoningTiers); n != 1 || resolved.Model.ReasoningTiers[0].ID != "low" {
+		t.Errorf("the picked model's tiers were replaced: %+v", resolved.Model.ReasoningTiers)
+	}
+	if effort, budget := resolved.Model.ResolveTier(adapter.EffortLow); effort != adapter.EffortLow || budget != 1000 {
+		t.Errorf("low resolved to (%q, %d), want (low, 1000)", effort, budget)
+	}
+}

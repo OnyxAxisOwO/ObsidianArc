@@ -37,7 +37,7 @@ import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
 
 const view = useAdminView();
-view.setTitle(t('providersTitle'), t('providersSubtitle'));
+view.setTitle(() => t('providersTitle'), () => t('providersSubtitle'));
 
 const providers = ref<Provider[]>([]);
 const meta = ref<Meta | null>(null);
@@ -136,9 +136,15 @@ function toggleStored(position: number): void {
     : [...removedKeys.value, position];
 }
 
-/** The same shape as the server's hint, so a new key reads like the stored ones beside it. */
+/**
+ * Follows secret.Hint, the server's hint for a stored key, so a new key reads
+ * like the stored ones beside it: four characters or fewer show only the mask,
+ * because the last four would be most of the key.
+ */
 function hintOf(key: string): string {
-  return `••••${[...key].slice(-4).join('')}`;
+  const chars = [...key];
+  if (chars.length <= 4) return '••••';
+  return `••••${chars.slice(-4).join('')}`;
 }
 
 function storedMeta(position: number): string | undefined {
@@ -266,19 +272,28 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? saveFailureText(failure) : String(failure);
+    panelError.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
   }
 }
 
 /**
- * The server words its refusals in English. The two a person can act on from
- * this form are translated here, so they read in the language they chose.
+ * The server words its refusals in English. The ones this page has words for
+ * are translated here, for a save and a delete alike, so both read in the
+ * language the person chose. A code not listed keeps the server's sentence.
  */
-function saveFailureText(failure: ApiError): string {
-  if (failure.code === 'provider_key_needed') return t('providerKeyNeeded');
-  if (failure.code === 'super_admin_required') return t('providerBaseURLSuperAdmin');
-  if (failure.code === 'provider_keys_changed') return t('providerKeysChanged');
-  return failure.message;
+function refusalText(failure: ApiError): string {
+  switch (failure.code) {
+    case 'provider_key_needed': return t('providerKeyNeeded');
+    case 'super_admin_required': return t('providerBaseURLSuperAdmin');
+    case 'provider_keys_changed': return t('providerKeysChanged');
+    case 'model_routed': return t('providerModelRouted');
+    case 'header_name_invalid':
+      return t('providerHeaderNameInvalid', { name: String(failure.details['name'] ?? '') });
+    case 'header_duplicate':
+      return t('providerHeaderDuplicate', { name: String(failure.details['name'] ?? '') });
+    case 'header_hidden': return t('providerHeaderHidden');
+    default: return failure.message;
+  }
 }
 
 async function remove(): Promise<void> {
@@ -290,7 +305,7 @@ async function remove(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
   }
 }
 
@@ -478,7 +493,7 @@ onMounted(load);
       />
     </AdminControlCard>
 
-    <AdminControlCard :title="t('secBehaviour')">
+    <AdminControlCard id="secBehaviour" :title="t('secBehaviour')">
       <OaSelectField
         v-model="form.reasoning"
         :label="t('reasoningStyle')"

@@ -46,7 +46,7 @@ let host: HTMLElement;
 let actions: HTMLElement;
 let panels: HTMLElement;
 
-function mount(policies: () => Promise<unknown>): void {
+function mount(policies: () => Promise<unknown>, reload: () => void = () => {}): void {
   vi.spyOn(adminApi, 'policies').mockImplementation(policies as typeof adminApi.policies);
   const savePolicy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: {} as never });
   vi.spyOn(adminApi, 'usage').mockResolvedValue(usagePayload as never);
@@ -57,7 +57,7 @@ function mount(policies: () => Promise<unknown>): void {
   app = createApp({
     setup() {
       providePanelHost(shallowRef(panels));
-      provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
+      provideAdminView({ actionsHost: actions, setTitle() {}, reload, params: [] });
       return () => h(AdminUsage);
     },
   });
@@ -97,6 +97,59 @@ describe('AdminUsage default allowance', () => {
     expect(document.body.textContent).not.toContain(t('adminsExemptHint'));
     expect(document.body.textContent).toContain('policy service unavailable');
     expect(adminApi.savePolicy).not.toHaveBeenCalled();
+  });
+
+  // The page refreshes itself every fifteen seconds and clears its general
+  // error after each good answer. A failed read of the defaults is not a
+  // general error: it must still be there when the refresh has come back.
+  it('keeps a failed read of the defaults on screen through the refresh', async () => {
+    vi.useFakeTimers();
+    try {
+      mount(async () => { throw new Error('policy service unavailable'); });
+      await vi.advanceTimersByTimeAsync(0);
+      await nextTick();
+
+      openDefaults();
+      await vi.advanceTimersByTimeAsync(0);
+      await nextTick();
+      expect(document.body.textContent).toContain('policy service unavailable');
+
+      // The initial load also calls usage, so the refresh is only proven by a
+      // call made after this point.
+      const before = vi.mocked(adminApi.usage).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(15_000);
+      await nextTick();
+      expect(document.body.textContent).toContain('policy service unavailable');
+      expect(vi.mocked(adminApi.usage).mock.calls.length).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Saving the defaults used to reload the whole page, which dropped the
+  // drill-down the operator was reading. The figures refresh in place instead.
+  it('keeps the drill-down when the defaults are saved', async () => {
+    const modelId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    window.history.replaceState(null, '', `/admin/usage?model=${modelId}`);
+    const reload = vi.fn();
+    try {
+      mount(async () => ({ policies: [] }), reload);
+      await settle();
+
+      openDefaults();
+      await settle();
+      const save = [...panels.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.trim() === t('save'));
+      expect(save).toBeDefined();
+      save!.click();
+      await settle();
+
+      expect(adminApi.savePolicy).toHaveBeenCalledTimes(1);
+      expect(reload).not.toHaveBeenCalled();
+      const lastUsage = vi.mocked(adminApi.usage).mock.calls.at(-1)?.[0] ?? '';
+      expect(lastUsage).toContain(`model_id=${modelId}`);
+    } finally {
+      window.history.replaceState(null, '', '/');
+    }
   });
 
   it('still opens blank when the list really has no global policy yet', async () => {

@@ -7,6 +7,7 @@
 // with the first. That is what `reset` is exposed for.
 
 import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { t } from '@/composables/useI18n';
 import { loadTurnstile } from '@/composables/useTurnstile';
 
 const props = defineProps<{ siteKey: string }>();
@@ -14,12 +15,20 @@ const emit = defineEmits<{ (event: 'solved'): void }>();
 
 const host = ref<HTMLElement | null>(null);
 const token = ref('');
+// The script could not be fetched, which is what a firewall or a blocker does
+// to this one. The form says so, rather than leaving an empty box where the
+// challenge should be and a refusal that gives no reason.
+const unavailable = ref(false);
 let widget = '';
 
 onMounted(() => {
   if (!props.siteKey) return;
   void loadTurnstile().then((api) => {
-    if (!api || !host.value?.isConnected) return;
+    if (!host.value?.isConnected) return;
+    if (!api) {
+      unavailable.value = true;
+      return;
+    }
     widget = api.render(host.value, {
       sitekey: props.siteKey,
       callback: (solved: string) => {
@@ -48,5 +57,7 @@ defineExpose({
 </script>
 
 <template>
-  <div ref="host" class="oa-challenge" />
+  <div ref="host" class="oa-challenge">
+    <p v-if="unavailable" class="oa-auth-error" role="alert">{{ t('challengeUnavailable') }}</p>
+  </div>
 </template>

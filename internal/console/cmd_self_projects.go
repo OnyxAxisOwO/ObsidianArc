@@ -112,7 +112,7 @@ func init() {
 		},
 		Flags: []Flag{
 			{Name: "--name", Hint: Text{EN: "project name, ≤80 chars", ZH: "项目名称，≤80 字符"}, Value: "TEXT"},
-			{Name: "--instructions", Hint: Text{EN: "system instructions inherited by conversations, ≤8000 chars", ZH: "对话继承的系统指令提示词，≤8000 字符"}, Value: "TEXT"},
+			{Name: "--instructions", Hint: Text{EN: "system instructions inherited by conversations, ≤8000 chars", ZH: "对话继承的系统指令提示词，≤8000 字符"}, Value: "TEXT", Sensitive: true},
 		},
 		Examples: []string{
 			`project create --name "Code Review"`,
@@ -160,7 +160,7 @@ func init() {
 		},
 		Flags: []Flag{
 			{Name: "--name", Hint: Text{EN: "new project name, ≤80 chars", ZH: "新项目名称，≤80 字符"}, Value: "TEXT"},
-			{Name: "--instructions", Hint: Text{EN: "new instructions, ≤8000 chars", ZH: "新指令提示词，≤8000 字符"}, Value: "TEXT"},
+			{Name: "--instructions", Hint: Text{EN: "new instructions, ≤8000 chars", ZH: "新指令提示词，≤8000 字符"}, Value: "TEXT", Sensitive: true},
 		},
 		Examples: []string{
 			`project edit 01H9Z… --name "Updated Title"`,

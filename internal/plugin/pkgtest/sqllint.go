@@ -41,7 +41,10 @@ var runtimeNonPortable = []struct {
 	{regexp.MustCompile(`\w::\w`), "PostgreSQL only; use CAST(... AS ...)"},
 }
 
-var looksLikeSQL = regexp.MustCompile(`(?is)^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE)\b`)
+// PRAGMA and DDL are read as SQL too: a backend that runs them is the case the
+// lint exists for, and the object keyword after CREATE, ALTER and DROP keeps
+// prose such as "create a user" from being taken for a statement.
+var looksLikeSQL = regexp.MustCompile(`(?is)^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE|PRAGMA|CREATE\s+(TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(TABLE|INDEX|VIEW|TRIGGER))\b`)
 
 // SQLProblems reads the Go sources directly in dir (tests excluded) and
 // returns a line for each statement in them that uses a spelling only one of
@@ -106,14 +109,33 @@ func problemsIn(sql string) []string {
 	return problems
 }
 
+// stripLineComments blanks each "--" comment to the end of its line. A "--"
+// inside a quoted literal is text, not a comment: cutting there would hide the
+// rest of the statement from the runtime rules. Quotes are tracked the way SQL
+// spells them: two quote marks in a row inside a literal are one escaped quote,
+// so toggling on each mark leaves the literal open.
 func stripLineComments(sql string) string {
-	lines := strings.Split(sql, "\n")
-	for i, line := range lines {
-		if index := strings.Index(line, "--"); index >= 0 {
-			lines[i] = line[:index]
+	var out strings.Builder
+	quoted := false
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		switch {
+		case c == '\'':
+			quoted = !quoted
+			out.WriteByte(c)
+		case !quoted && c == '-' && i+1 < len(sql) && sql[i+1] == '-':
+			end := strings.IndexByte(sql[i:], '\n')
+			if end < 0 {
+				return out.String()
+			}
+			// Stop on the newline itself, which is kept, so the lines of the
+			// stripped text still match the source.
+			i += end - 1
+		default:
+			out.WriteByte(c)
 		}
 	}
-	return strings.Join(lines, "\n")
+	return out.String()
 }
 
 // constantString is the value of a string literal, or of literals joined by +.

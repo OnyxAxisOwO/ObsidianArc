@@ -10,7 +10,7 @@
 // restrictions, revoking — is housekeeping on rows that no longer contain a
 // secret.
 
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ApiError, api } from '@/api/client';
 import { createKey, deleteKey, listKeys, updateKey, type ApiKey } from '@/api/keys';
 import { copyToClipboard } from '@/chat/markdown';
@@ -43,6 +43,14 @@ const LIFETIMES: Array<{ days: number; label: StringKey }> = [
 ];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+// The refusals that come after the server has checked the challenge, and so
+// spent its single-use token, plus an internal failure, which may have come
+// after the check. A refusal before the check keeps the token for the
+// corrected request. too_many_keys is refused before the check, so it is not
+// listed: only the rare race that fills the last slot after the check leaves
+// a spent token, and that fails as challenge_failed on reuse, which is when
+// the widget resets.
+const POST_CHALLENGE_CODES = new Set(['challenge_failed', 'challenge_unavailable', 'internal']);
 // How long a revoke button stays armed. Long enough to read the question and
 // decide; short enough that an armed button left alone goes back to being a
 // safe one.
@@ -223,20 +231,52 @@ function expiryLabel(row: ApiKey): string {
   return t('keyExpiresAt', { when: absoluteTime(row.expires_at) });
 }
 
+// A refusal the interface has no words for is shown as the server wrote it.
+function refusalText(failure: unknown): string {
+  if (!(failure instanceof ApiError)) return t('failed');
+  switch (failure.code) {
+    case 'too_many_keys':
+      return t('keyErrorTooMany', { max: max.value });
+    case 'key_name_invalid':
+      return t('keyErrorNameInvalid');
+    case 'key_expiry_past':
+      return t('keyErrorExpiryPast');
+    case 'key_not_found':
+      return t('keyErrorNotFound');
+    default:
+      return failure.message;
+  }
+}
+
+// Keys only: creating, pausing, editing or revoking a key leaves the model
+// catalogue as it was, so it is fetched when the panel opens, and again on a
+// refresh only when that fetch failed.
 async function refresh(): Promise<void> {
   try {
-    const [result, modelsResult] = await Promise.all([
-      listKeys(),
-      api.get<{ models: AvailableModel[] }>('/api/models').catch(() => ({ models: [] })),
-    ]);
+    const result = await listKeys();
     keys.value = result.keys;
     enabled.value = result.enabled;
     max.value = result.max;
-    models.value = modelsResult.models ?? [];
+    if (catalogueFailed) void loadModelCatalogue();
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    error.value = refusalText(failure);
   } finally {
     loaded.value = true;
+  }
+}
+
+// A dropped request must not leave the model picker empty until the panel is
+// reopened, so the next refresh asks again; a success clears the flag.
+let catalogueFailed = false;
+
+async function loadModelCatalogue(): Promise<void> {
+  try {
+    const result = await api.get<{ models: AvailableModel[] }>('/api/models');
+    models.value = result.models ?? [];
+    catalogueFailed = false;
+  } catch {
+    models.value = [];
+    catalogueFailed = true;
   }
 }
 
@@ -255,18 +295,29 @@ async function create(): Promise<void> {
     // preceded by a warning; before the human-verification token is read, which
     // would otherwise go stale while the question is being answered.
     if (!(await confirmIssuing())) return;
-    issued.value = await createKey(
-      label,
-      days > 0 ? Date.now() + days * DAY_MS : 0,
-      newModels.value,
-      guard.value?.token() ?? '',
-    );
+    const token = guard.value?.token() ?? '';
+    let spent = true;
+    try {
+      issued.value = await createKey(
+        label,
+        days > 0 ? Date.now() + days * DAY_MS : 0,
+        newModels.value,
+        token,
+      );
+    } catch (failure) {
+      spent = !(failure instanceof ApiError) || POST_CHALLENGE_CODES.has(failure.code);
+      throw failure;
+    } finally {
+      // A refusal that came before the check keeps the solved token, so the
+      // owner corrects the field and resubmits without solving it again.
+      if (spent) guard.value?.reset();
+    }
     newName.value = '';
     newModels.value = [];
     newLifetime.value = '0';
     await refresh();
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    error.value = refusalText(failure);
   } finally {
     busy.value = false;
   }
@@ -278,7 +329,7 @@ async function togglePaused(row: ApiKey): Promise<void> {
     await updateKey(row.id, { disabled: !row.disabled });
     await refresh();
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    error.value = refusalText(failure);
   } finally {
     busy.value = false;
   }
@@ -315,7 +366,7 @@ async function saveEdit(): Promise<void> {
     editing.value = null;
     await refresh();
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    error.value = refusalText(failure);
   } finally {
     busy.value = false;
   }
@@ -339,13 +390,15 @@ function revoke(row: ApiKey): void {
   void deleteKey(row.id)
     .then(refresh)
     .catch((failure: unknown) => {
-      error.value = failure instanceof ApiError ? failure.message : t('failed');
+      error.value = refusalText(failure);
     })
     .finally(() => { busy.value = false; });
 }
 
 const copied = ref(false);
 const endpointCopied = ref(false);
+let copiedTimer = 0;
+let endpointCopiedTimer = 0;
 
 function copyToken(): void {
   const token = issued.value?.token;
@@ -353,7 +406,8 @@ function copyToken(): void {
   void copyToClipboard(token).then((ok) => {
     if (!ok) return;
     copied.value = true;
-    window.setTimeout(() => { copied.value = false; }, 1600);
+    window.clearTimeout(copiedTimer);
+    copiedTimer = window.setTimeout(() => { copied.value = false; }, 1600);
   });
 }
 
@@ -361,11 +415,22 @@ function copyEndpoint(): void {
   void copyToClipboard(endpoint).then((ok) => {
     if (!ok) return;
     endpointCopied.value = true;
-    window.setTimeout(() => { endpointCopied.value = false; }, 1500);
+    window.clearTimeout(endpointCopiedTimer);
+    endpointCopiedTimer = window.setTimeout(() => { endpointCopied.value = false; }, 1500);
   });
 }
 
-onMounted(() => void refresh());
+// A timer left running would write into a panel that is no longer on screen.
+onBeforeUnmount(() => {
+  window.clearTimeout(armTimer);
+  window.clearTimeout(copiedTimer);
+  window.clearTimeout(endpointCopiedTimer);
+});
+
+onMounted(() => {
+  void refresh();
+  void loadModelCatalogue();
+});
 </script>
 
 <template>

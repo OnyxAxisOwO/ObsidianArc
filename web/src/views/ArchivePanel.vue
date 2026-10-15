@@ -7,7 +7,6 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { deleteConversation, listConversations, type Conversation } from '@/api/chat';
-import { ApiError } from '@/api/client';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaPanel from '@/components/OaPanel.vue';
@@ -15,10 +14,10 @@ import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
-import { IconArchive, IconCollapse, IconExpand, IconTrash } from '@/icons';
+import { IconArchive, IconCheck, IconCollapse, IconExpand, IconTrash } from '@/icons';
 import { relativeTime } from '@/lib/format';
 import { matchesSearch } from '@/lib/search';
-import { activeID, canDelete, openConversation, setFlash, unarchiveConversation } from '@/chat/useChat';
+import { activeID, canDelete, failureText, messages, openConversation, setFlash, unarchiveConversation } from '@/chat/useChat';
 
 const router = useRouter();
 const panels = usePanelExit();
@@ -26,9 +25,17 @@ const panels = usePanelExit();
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
 const fullscreen = ref(false);
 
+const PAGE_SIZE = 100;
+
 const archivedList = ref<Conversation[]>([]);
 const loading = ref(false);
+const hasMore = ref(false);
 const query = ref('');
+
+// Archived rows the server has handed over and still holds as archived: the
+// next page starts after them. Restoring or deleting a row moves the rest up,
+// so the count goes down with it.
+let listed = 0;
 
 const filteredArchived = computed(() =>
   archivedList.value.filter((entry) =>
@@ -36,32 +43,67 @@ const filteredArchived = computed(() =>
   ),
 );
 
+// The server answers a page against the archive as it stands when the page
+// runs. A restore or delete that lands first shifts the rows under the offset,
+// so the page would skip one row and repeat another. Paging and changes wait
+// for each other: neither starts while the other is pending.
+const changing = ref(0);
+
 async function loadArchived(): Promise<void> {
+  if (loading.value || changing.value > 0) return;
   loading.value = true;
   try {
-    const { conversations: list } = await listConversations({ archived: true, limit: 100 });
-    archivedList.value = list;
+    const { conversations: list } = await listConversations({
+      archived: true,
+      limit: PAGE_SIZE,
+      offset: listed,
+    });
+    archivedList.value = [...archivedList.value, ...list];
+    listed += list.length;
+    // A short page is the end of the archive; a full one may have more behind it.
+    hasMore.value = list.length === PAGE_SIZE;
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : t('failed'));
+    setFlash(failureText(error));
   } finally {
     loading.value = false;
   }
 }
 
+function dropRow(id: string): void {
+  if (!archivedList.value.some((entry) => entry.id === id)) return;
+  archivedList.value = archivedList.value.filter((entry) => entry.id !== id);
+  listed -= 1;
+}
+
 async function restore(conversation: Conversation): Promise<void> {
-  await unarchiveConversation(conversation.id);
-  archivedList.value = archivedList.value.filter((entry) => entry.id !== conversation.id);
+  if (loading.value) return;
+  changing.value += 1;
+  try {
+    // A conversation that failed to leave the archive is still archived, so it
+    // stays listed here too.
+    if (!(await unarchiveConversation(conversation.id))) return;
+    dropRow(conversation.id);
+  } finally {
+    changing.value -= 1;
+  }
 }
 
 async function remove(conversation: Conversation): Promise<void> {
+  if (loading.value) return;
+  changing.value += 1;
   try {
     await deleteConversation(conversation.id);
-    archivedList.value = archivedList.value.filter((entry) => entry.id !== conversation.id);
+    dropRow(conversation.id);
+    // Without clearing the transcript, the next send would append to the
+    // deleted conversation's messages, as the chat store's own removal avoids.
     if (activeID.value === conversation.id) {
       activeID.value = '';
+      messages.value = [];
     }
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : t('failed'));
+    setFlash(failureText(error));
+  } finally {
+    changing.value -= 1;
   }
 }
 
@@ -132,6 +174,7 @@ onMounted(() => {
                 class="oa-icon-btn"
                 :title="t('unarchive')"
                 :aria-label="t('unarchive')"
+                :disabled="loading"
                 @click.stop="restore(conv)"
               >
                 <IconArchive :size="15" />
@@ -148,6 +191,12 @@ onMounted(() => {
               </OaConfirmButton>
             </div>
           </div>
+        </div>
+
+        <div v-if="hasMore" class="oa-archive-load-more">
+          <button type="button" class="oa-btn" :disabled="loading || changing > 0" @click="loadArchived">
+            {{ loading ? t('thinking') : t('loadMoreArchived') }}
+          </button>
         </div>
       </div>
     </OaScrollArea>

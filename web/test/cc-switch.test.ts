@@ -34,7 +34,7 @@ describe('CC Switch provider import', () => {
     expect(url.searchParams.getAll('model')).toHaveLength(1);
   });
 
-  it('uses /v1 for Сodex without Claude aliases or remote configuration', () => {
+  it('uses /v1 for Codex without Claude aliases or remote configuration', () => {
     const url = new URL(ccSwitchImportURL({ ...PROVIDER, app: 'codex' }));
     expect(Object.fromEntries(url.searchParams)).toEqual({
       resource: 'provider',

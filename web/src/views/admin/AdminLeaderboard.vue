@@ -28,7 +28,7 @@ import { useSettingsDraft } from './settingsDraft';
 import type { WorkbenchGroup } from './workbench';
 
 const view = useAdminView();
-view.setTitle(t('navLeaderboard'), t('leaderboardSubtitle'));
+view.setTitle(() => t('navLeaderboard'), () => t('leaderboardSubtitle'));
 
 const error = ref('');
 const loaded = ref(false);
@@ -72,9 +72,15 @@ async function save(): Promise<void> {
     accept(values);
     saveLabel.value = t('saved');
     window.setTimeout(() => { saveLabel.value = ''; }, 1500);
-    // The preview is the readers' own endpoint, and identity is applied by
-    // the server, so it has to be re-asked rather than re-rendered.
-    preview.value = await fetchLeaderboard('week', 'tokens');
+    try {
+      // The preview is the readers' own endpoint, and identity is applied by
+      // the server, so it has to be re-asked rather than re-rendered. A refresh
+      // that fails leaves the saved settings saved, so it is not reported as a
+      // failed save; the old preview simply stays on screen.
+      preview.value = await fetchLeaderboard('week', 'tokens');
+    } catch {
+      // See above: the save already stands.
+    }
   } catch (failure) {
     flash.value = failure instanceof ApiError ? failure.message : String(failure);
     saveLabel.value = '';

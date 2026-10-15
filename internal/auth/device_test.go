@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -278,5 +279,47 @@ func TestDeleteByPrefixForUserIsScopedToTheAccount(t *testing.T) {
 	}
 	if !removed {
 		t.Fatal("the owner should have been able to delete their own session by its ref")
+	}
+}
+
+// Someone holding the password can clear cookies and sign in again, and each
+// sign-in then looks like a new device. Past the cap the notice stops, but every
+// device is still recorded, so the list the owner sees stays honest. The account
+// here already has an older device, so the window starts empty and the notices
+// are exactly the cap.
+func TestNewDeviceNoticesStopAtTheCapButEveryDeviceIsRecorded(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	var notices int
+	f.auth.OnNewDevice = func(context.Context, NewDeviceEvent) { notices++ }
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	long := time.Now().Add(-2 * time.Hour).UnixMilli()
+	if _, err := f.db.Exec(ctx,
+		`INSERT INTO user_devices (user_id, device_id, first_seen, last_seen, last_ip, user_agent)
+		 VALUES (?, ?, ?, ?, '', '')`, account.ID, "old-device", long, long); err != nil {
+		t.Fatalf("seed an older device: %v", err)
+	}
+
+	const signIns = newDeviceNoticesPerWindow + 4
+	for i := 0; i < signIns; i++ {
+		if _, _, err := f.auth.RecordDevice(ctx, account, token, "", "198.51.100.4", "fresh browser"); err != nil {
+			t.Fatalf("sign-in %d from a fresh browser: %v", i, err)
+		}
+	}
+
+	if notices != newDeviceNoticesPerWindow {
+		t.Fatalf("notices = %d, want the cap of %d", notices, newDeviceNoticesPerWindow)
+	}
+	var devices int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM user_devices WHERE user_id = ?`, account.ID).Scan(&devices); err != nil {
+		t.Fatal(err)
+	}
+	if want := signIns + 1; devices != want {
+		t.Fatalf("recorded devices = %d, want %d (every sign-in plus the older one)", devices, want)
 	}
 }

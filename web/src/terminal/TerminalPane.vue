@@ -22,6 +22,7 @@ import TerminalLine from './TerminalLine.vue';
 const props = defineProps<{
   session: TerminalSession;
   fontSize: number;
+  letterSpacing: number;
   timestamps: boolean;
 }>();
 
@@ -44,14 +45,30 @@ const FOLLOW_THRESHOLD = 24;
 // wide to draw a table; this estimate is what that number is worth.
 const CHAR_WIDTH_RATIO = 0.6015;
 
-function estimateColumns(widthPx: number, fontSizePx: number): number {
+function estimateColumns(widthPx: number, fontSizePx: number, letterSpacingPx: number): number {
   if (widthPx <= 0 || fontSizePx <= 0) return 80;
-  return Math.max(20, Math.floor(widthPx / (fontSizePx * CHAR_WIDTH_RATIO)));
+  // Letter spacing is added to every glyph's advance, so the same width holds
+  // fewer columns when it is wider. The font family is not measured: the ratio
+  // above is the estimate for every monospace stack this pane offers.
+  return Math.max(20, Math.floor(widthPx / (fontSizePx * CHAR_WIDTH_RATIO + letterSpacingPx)));
 }
 
-useResizeObserver(() => scrollComp.value?.scroller, (entries) => {
-  const width = entries[0]?.contentRect.width ?? 0;
-  emit('measure', estimateColumns(width, props.fontSize));
+/**
+ * The width the text is laid out in: the scroller's client width less its own
+ * horizontal padding. Both measurement paths use this one box. The resize path
+ * used to read the content rect (padding excluded) and the font-size path the
+ * client width (padding included), and they disagreed by about four columns.
+ */
+function measureColumns(): number {
+  const el = scrollComp.value?.scroller;
+  if (!el) return estimateColumns(0, props.fontSize, props.letterSpacing);
+  const style = getComputedStyle(el);
+  const padding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+  return estimateColumns(el.clientWidth - padding, props.fontSize, props.letterSpacing);
+}
+
+useResizeObserver(() => scrollComp.value?.scroller, () => {
+  emit('measure', measureColumns());
 });
 
 // Auto-follow when output lines stream into the current block and expand the container.
@@ -61,9 +78,8 @@ useResizeObserver(blocksRef, () => {
   }
 });
 
-watch(() => props.fontSize, () => {
-  const width = scrollComp.value?.scroller?.clientWidth ?? 0;
-  emit('measure', estimateColumns(width, props.fontSize));
+watch(() => [props.fontSize, props.letterSpacing], () => {
+  emit('measure', measureColumns());
 });
 
 function resizeInput(): void {
@@ -80,6 +96,10 @@ function scrollToBottom(): void {
   following.value = true;
 }
 
+// Bound as a plain `@scroll` in the template, never `@scroll.passive`: on a
+// component the modifier renames the listener to `onScrollPassive`, which
+// OaScrollArea's emit never looks up, so this would silently never run and
+// following would never release.
 function onScroll(): void {
   const el = scrollComp.value?.scroller;
   if (!el) return;
@@ -125,15 +145,20 @@ async function submit(): Promise<void> {
 }
 
 async function onTab(el: HTMLTextAreaElement): Promise<void> {
-  const pos = el.selectionStart ?? props.session.draft.value.length;
-  const result = await props.session.complete(props.session.draft.value, pos);
+  const requested = props.session.draft.value;
+  const pos = el.selectionStart ?? requested.length;
+  const result = await props.session.complete(requested, pos);
+  // The reply answers the line as it was when Tab was pressed. If the reader
+  // has typed since, or submitted the line, splicing it in would write an
+  // old completion into text it was never computed for.
+  if (props.session.draft.value !== requested || props.session.running.value) return;
   if (result.items.length !== 1) {
     completions.value = result.items;
     return;
   }
   const item = result.items[0]!;
-  const before = props.session.draft.value.slice(0, result.from);
-  const after = props.session.draft.value.slice(pos);
+  const before = requested.slice(0, result.from);
+  const after = requested.slice(pos);
   props.session.draft.value = `${before}${item.value}${after}`;
   completions.value = [];
   await nextTick();
@@ -146,14 +171,19 @@ async function onTab(el: HTMLTextAreaElement): Promise<void> {
 function onKeyDown(event: KeyboardEvent): void {
   const el = event.currentTarget as HTMLTextAreaElement;
 
-  if (event.key === 'Tab') {
+  // Shift+Tab is left alone so focus can leave the prompt backwards. Plain Tab
+  // stays a completion key, as it is in a shell.
+  if (event.key === 'Tab' && !event.shiftKey) {
     event.preventDefault();
     void onTab(el);
     return;
   }
   completions.value = [];
 
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+  // Safari fires the keydown that commits an IME candidate after
+  // compositionend, so isComposing is already false and keyCode is 229. Without
+  // the keyCode test, Enter confirming pinyin would submit the half-typed line.
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     void submit();
     return;
@@ -191,7 +221,7 @@ function onPaneMouseUp(): void {
 
 <template>
   <div class="oa-terminal-pane" @mouseup="onPaneMouseUp">
-    <OaScrollArea ref="scrollComp" wrap-class="oa-terminal-scroll-wrap" scroll-class="oa-terminal-scroll" @scroll.passive="onScroll">
+    <OaScrollArea ref="scrollComp" wrap-class="oa-terminal-scroll-wrap" scroll-class="oa-terminal-scroll" @scroll="onScroll">
       <div ref="blocksRef" class="oa-terminal-blocks">
         <TerminalLine
           v-for="block in props.session.scrollback.value"

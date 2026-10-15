@@ -6,7 +6,7 @@
 // separate is what confines a delta to re-rendering this subtree instead of
 // the whole conversation.
 
-import { onBeforeUnmount, ref } from 'vue';
+import { onBeforeUnmount, ref, watch } from 'vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import { t } from '@/composables/useI18n';
 import ChatThinking from './ChatThinking.vue';
@@ -24,16 +24,25 @@ const props = defineProps<{ pending: Pending }>();
  */
 const elapsed = ref('0.0');
 
-// Only when there is a line to write it into. Reading the clock ten times a
+function tick(): void {
+  const ms = Math.max(0, Date.now() - props.pending.startedAt);
+  elapsed.value = (Math.round(ms / 100) / 10).toFixed(1);
+}
+
+// Only while there is a line to write it into. Reading the clock ten times a
 // second re-renders this component ten times a second, and doing that for an
 // account that has the timing line switched off spends a frame budget on
 // nothing — during a stream, which is the one moment that budget is tight.
-const timer = statsWanted.value
-  ? window.setInterval(() => {
-      const ms = Math.max(0, Date.now() - props.pending.startedAt);
-      elapsed.value = (Math.round(ms / 100) / 10).toFixed(1);
-    }, 100)
-  : 0;
+// It follows the setting, which can be flipped mid-answer: a clock decided once
+// at setup would freeze at 0.0s, or keep running after it was turned off.
+let timer = 0;
+watch(statsWanted, (wanted) => {
+  if (timer) window.clearInterval(timer);
+  timer = 0;
+  if (!wanted) return;
+  tick();
+  timer = window.setInterval(tick, 100);
+}, { immediate: true });
 
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer);

@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -83,9 +84,21 @@ func (m *Manager) buildRouter(pkgs map[string]*loaded) (table *routeTable, err e
 			continue
 		}
 		for _, route := range l.pkg.Manifest.Routes {
-			var h http.Handler = httpx.Wrap(m.routeHandler(l.name, route))
-			if route.Access == arcx.AccessAdmin && m.host != nil && m.host.Admin != nil {
+			var h http.Handler
+			switch {
+			case route.Access != arcx.AccessAdmin:
+				h = httpx.Wrap(m.routeHandler(l.name, route))
+			case m.host != nil && m.host.Admin != nil:
 				h = m.host.Admin.Protect(route.Permission, m.routeHandler(l.name, route))
+			default:
+				// An admin route without the backoffice's checks has nothing to
+				// answer it. Serving it bare would hand the backend's answer to
+				// whoever asks, so it answers as a route that does not exist. This
+				// is not a preflight error: checkPackage builds the table with no
+				// host at all, and must still be able to ask about the package.
+				h = httpx.Wrap(func(http.ResponseWriter, *http.Request) error {
+					return httpx.NotFound("No such endpoint.")
+				})
 			}
 			gate, name := m.Gate(), l.name
 			inner := h
@@ -125,7 +138,14 @@ func (m *Manager) routeHandler(name string, route arcx.Route) httpx.Handler {
 		if r.Body != nil {
 			var err error
 			if body, err = io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody)); err != nil {
-				return httpx.BadRequestCode("request_too_large", "The request body is too large.")
+				// Only the size limit is a 413. A client that hung up mid-upload
+				// fails the read too, and is not told its body was too large.
+				var tooLarge *http.MaxBytesError
+				if errors.As(err, &tooLarge) {
+					return &httpx.Error{Status: http.StatusRequestEntityTooLarge, Code: "request_too_large",
+						Message: "The request body is too large."}
+				}
+				return httpx.BadRequest("The request body could not be read.")
 			}
 		}
 		params := map[string]string{}
@@ -161,11 +181,7 @@ func (m *Manager) routeHandler(name string, route arcx.Route) httpx.Handler {
 		if out.Status < 200 || out.Status > 599 {
 			return httpx.Internal(fmt.Errorf("plugin: %d is not a status a route may answer with", out.Status))
 		}
-		for name, value := range out.Header {
-			if allowedResponseHeader(name) {
-				w.Header().Set(name, value)
-			}
-		}
+		copyBackendHeaders(w.Header(), out.Header, info.Actor != nil)
 		if w.Header().Get("Content-Type") == "" && len(payload) > 0 {
 			w.Header().Set("Content-Type", "application/octet-stream")
 		}
@@ -186,6 +202,27 @@ var responseHeaders = map[string]bool{
 }
 
 func allowedResponseHeader(name string) bool { return responseHeaders[strings.ToLower(name)] }
+
+// copyBackendHeaders sets the response headers a backend chose that may be
+// passed on. Cache-Control is the backend's word on who may keep an answer, and
+// an answer built for a signed-in account must not reach the next visitor from
+// a shared cache: for those the server's no-store, set before the backend ran,
+// stands. What may be kept for anyone is marked as varying on the credentials,
+// since a cache that ignored them would serve an account's answer to a stranger.
+func copyBackendHeaders(dst http.Header, from map[string]string, signedIn bool) {
+	for name, value := range from {
+		if !allowedResponseHeader(name) {
+			continue
+		}
+		if strings.EqualFold(name, "Cache-Control") {
+			if signedIn {
+				continue
+			}
+			dst.Add("Vary", "Cookie, Authorization")
+		}
+		dst.Set(name, value)
+	}
+}
 
 // backendHeaders is the request's headers as a backend is given them. A backend
 // is told who the request is for in the call's context, not handed the means to
@@ -236,6 +273,22 @@ func translateGuest(err error) error {
 	}
 	if errors.Is(err, wasm.ErrBusy) {
 		return httpx.UnavailableCode("plugin_busy", "This feature is busy right now. Try again shortly.").WithCause(err)
+	}
+	if errors.Is(err, wasm.ErrResponseTooLarge) {
+		return (&httpx.Error{Status: http.StatusBadGateway, Code: "plugin_response_too_large",
+			Message: "This feature's answer is too large to send."}).WithCause(err)
+	}
+	// A call that ran out of time is the backend being slow, not broken, so 503
+	// rather than 500. httpx.WriteError still logs it at error level, as it does
+	// every 5xx, which is what an operator wants to see when a backend keeps
+	// timing out.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return httpx.UnavailableCode("plugin_timeout", "This feature took too long to answer. Try again shortly.").WithCause(err)
+	}
+	// The client went away, so nothing is waiting for an answer. 499 is the
+	// convention for that, and as a 4xx it is not logged as a server error.
+	if errors.Is(err, context.Canceled) {
+		return (&httpx.Error{Status: 499, Code: "client_closed_request", Message: "The request was cancelled."}).WithCause(err)
 	}
 	return httpx.Internal(err)
 }

@@ -11,10 +11,19 @@
 
 import { ref, watch, type Ref } from 'vue';
 import { useDocumentVisibility, useIntervalFn, useWindowFocus } from '@vueuse/core';
-import { fetchNotifications, markNotificationsRead, pollNotifications, type Notification } from '@/api/notifications';
+import {
+  fetchNotifications, markNotificationsRead, pollNotifications,
+  type Notification, type NotificationPoll,
+} from '@/api/notifications';
 import { router } from '@/router';
+import { refreshFeedbackUnread } from '@/stores/feedback';
 
 const POLL_MS = 30_000;
+// Mirrors internal/notify's pollGraceMillis and pollLimit. The grace window
+// is reached back from `after`, so asking again from a page's last row sends
+// that row plus the grace.
+const POLL_GRACE_MS = 10_000;
+const POLL_PAGE = 200;
 
 export interface Toast {
   /** The notification's own id doubles as the toast's — one arrival, one card. */
@@ -84,6 +93,27 @@ async function load(): Promise<void> {
   }
 }
 
+/**
+ * Every row newer than `after`, across as many pages as it takes. A full page
+ * can be made of rows this session already has, because the grace window
+ * reaches back over them. Asking again from the same cursor would then return
+ * the same page for ever, and nothing newer would ever reach the reader, so
+ * the next page starts at the last row of the one before.
+ */
+async function pollAfter(after: number): Promise<NotificationPoll> {
+  let feed = await pollNotifications(after);
+  const rows = [...feed.notifications];
+  while (feed.notifications.length >= POLL_PAGE) {
+    // Read and checked per page: an index read is possibly undefined, and the
+    // check has to sit beside the read it guards.
+    const tail = feed.notifications[feed.notifications.length - 1];
+    if (!tail) break;
+    feed = await pollNotifications(tail.created_at + POLL_GRACE_MS);
+    rows.push(...feed.notifications);
+  }
+  return { ...feed, notifications: rows };
+}
+
 async function poll(): Promise<void> {
   if (!active || inFlight) return;
   if (!loaded) {
@@ -93,7 +123,7 @@ async function poll(): Promise<void> {
   const gen = generation;
   inFlight = true;
   try {
-    const feed = await pollNotifications(cursor);
+    const feed = await pollAfter(cursor);
     if (gen !== generation) return;
     unread.value = feed.unread;
     if (!feed.notifications.length) return;
@@ -106,6 +136,9 @@ async function poll(): Promise<void> {
       cursor = Math.max(cursor, record.created_at);
     }
     if (!fresh.length) return;
+    // The account menu's dot is the same answer as this row, and nothing else
+    // asks for it between page loads.
+    if (fresh.some((record) => record.kind === 'feedback_reply')) void refreshFeedbackUnread();
     // Ascending from the server, oldest first, so the toasts raised below
     // appear in the order the events actually happened, and so the cap below
     // keeps the newest of the batch rather than the earliest.
@@ -198,10 +231,22 @@ export async function markAllNotificationsRead(): Promise<void> {
 export async function openNotification(n: Notification): Promise<void> {
   dismissToast(n.id);
   if (n.link) void router.push(n.link);
-  unread.value = Math.max(0, unread.value - 1);
+  const account = generation;
   try {
     await markNotificationsRead(n.created_at);
   } catch {
     // Best effort; the next poll's unread count corrects it either way.
+    return;
+  }
+  // Not taken down locally: the client cannot tell whether this row was unread,
+  // and the watermark also covers every older row, so a guess here was wrong
+  // whenever the row had already been read. The server's count is asked for
+  // instead. The cursor and the list are left alone, so rows this poll returns
+  // are still raised by the poll that owns them.
+  try {
+    const feed = await pollNotifications(cursor);
+    if (account === generation) unread.value = feed.unread;
+  } catch {
+    // Transient; the next poll corrects it.
   }
 }

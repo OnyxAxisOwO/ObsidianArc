@@ -16,6 +16,7 @@ import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaCheckList from '@/components/OaCheckList.vue';
+import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
@@ -25,6 +26,8 @@ import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column, SortState } from '@/components/table-types';
 import { t, tn } from '@/composables/useI18n';
+import { maskProvider, maskUser } from '@/admin/safeMode';
+import { apiErrorText } from '@/lib/api-error';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { IconCheck, IconGift } from '@/icons';
 import AdminControlCard from './AdminControlCard.vue';
@@ -34,7 +37,7 @@ import ExpiryPresets from './ExpiryPresets.vue';
 import { useAdminView } from './adminView';
 
 const view = useAdminView();
-view.setTitle(t('bonusTitle'), t('bonusSubtitle'));
+view.setTitle(() => t('bonusTitle'), () => t('bonusSubtitle'));
 
 const bars = ref<BonusBarRow[]>([]);
 const models = ref<AdminModel[]>([]);
@@ -77,6 +80,12 @@ const existing = ref<BonusBarRow | null>(null);
 const form = ref<BarForm>(blankForm());
 const busy = ref(false);
 const panelError = ref('');
+/**
+ * A refresh that fails after an action has already closed its panel. The
+ * panel's own error would be written where nothing is drawn, so this one is
+ * shown on the page.
+ */
+const pageError = ref('');
 const flash = ref('');
 
 function blankForm(): BarForm {
@@ -125,11 +134,22 @@ async function saveBar(): Promise<void> {
       model_ids: form.value.model_ids, default_expires_at: fromLocalInput(form.value.expiry), active: form.value.active,
     });
     panel.value = 'closed';
-    bars.value = (await adminApi.bonusBars()).bars;
+    await refreshBars();
   } catch (failure) {
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
   } finally {
     busy.value = false;
+  }
+}
+
+// The save or delete is committed before this runs, so a failed read-back is
+// reported where the page is, not as a failed save in a panel that is closed.
+async function refreshBars(): Promise<void> {
+  pageError.value = '';
+  try {
+    bars.value = (await adminApi.bonusBars()).bars;
+  } catch (failure) {
+    pageError.value = failure instanceof ApiError ? failure.message : String(failure);
   }
 }
 
@@ -139,7 +159,7 @@ async function removeBar(): Promise<void> {
   try {
     await adminApi.deleteBonusBar(existing.value.id);
     panel.value = 'closed';
-    bars.value = (await adminApi.bonusBars()).bars;
+    await refreshBars();
   } catch (failure) {
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
   } finally {
@@ -156,7 +176,7 @@ const modeChoices = computed(() => [
   { value: 'on', label: t('bonusModeOn') },
   { value: 'off', label: t('bonusModeOff') },
 ]);
-const modelItems = computed(() => models.value.map((m) => ({ value: m.id, label: m.display_name || m.model_id, sub: m.provider_name })));
+const modelItems = computed(() => models.value.map((m) => ({ value: m.id, label: m.display_name || m.model_id, sub: maskProvider(m.provider_name) })));
 
 function modeLabel(row: BonusBarRow): string {
   if (row.kind === 'reserve') return t('bonusKindReserve');
@@ -182,16 +202,32 @@ const columns = computed<Array<Column<BonusBarRow>>>(() => [
 const grants = ref<BonusGrantRow[]>([]);
 const grantsTotal = ref(0);
 const grantsError = ref('');
+const grantsLoading = ref(false);
+// Each request supersedes the ones before it: a page asked for before the
+// operator reopened the bar, or before a second press, must not land on the
+// list that is shown now.
+let grantsTicket = 0;
 
 async function loadGrants(barID: string, offset: number): Promise<void> {
+  // A page already on its way asks for the same offset; a second press would
+  // fetch it again and append it twice.
+  if (offset && grantsLoading.value) return;
+  const mine = ++grantsTicket;
+  grantsLoading.value = true;
   grantsError.value = '';
   try {
     const result = await adminApi.bonusGrants(barID, offset);
-    if (existing.value?.id !== barID) return;
-    grants.value = offset ? [...grants.value, ...result.grants] : result.grants;
+    if (mine !== grantsTicket || existing.value?.id !== barID) return;
+    const known = new Set(grants.value.map((row) => row.id));
+    grants.value = offset
+      ? [...grants.value, ...result.grants.filter((row) => !known.has(row.id))]
+      : result.grants;
     grantsTotal.value = result.total;
   } catch (failure) {
+    if (mine !== grantsTicket) return;
     grantsError.value = failure instanceof ApiError ? failure.message : String(failure);
+  } finally {
+    if (mine === grantsTicket) grantsLoading.value = false;
   }
 }
 
@@ -208,15 +244,19 @@ function grantLine(row: BonusGrantRow): string {
   return parts.join(' · ');
 }
 
+// As with grant(): the revoke is committed before the reads run, so a failed
+// read-back is reported at the page, not as a failed revoke.
 async function revoke(row: BonusGrantRow): Promise<void> {
+  let revoked: number;
   try {
-    const { revoked } = await adminApi.revokeBonusGrant(row.id);
-    flash.value = t('bonusRevoked', { amount: credits(revoked) });
-    if (existing.value) await loadGrants(existing.value.id, 0);
-    bars.value = (await adminApi.bonusBars()).bars;
+    revoked = (await adminApi.revokeBonusGrant(row.id)).revoked;
   } catch (failure) {
     grantsError.value = failure instanceof ApiError ? failure.message : String(failure);
+    return;
   }
+  flash.value = t('bonusRevoked', { amount: credits(revoked) });
+  if (existing.value) await loadGrants(existing.value.id, 0);
+  await refreshBars();
 }
 
 // Starts on named accounts: granting to everyone is one press of a button and
@@ -252,13 +292,18 @@ async function grant(): Promise<void> {
     });
     flash.value = tn(result.granted, 'bonusGrantedOne', 'bonusGrantedOther');
     panel.value = 'bar';
-    bars.value = (await adminApi.bonusBars()).bars;
-    await loadGrants(bar.id, 0);
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    // A grant's refusals carry codes (no such name, bar switched off), which
+    // are worded in the reader's language here rather than the server's.
+    panelError.value = apiErrorText(failure);
+    return;
   } finally {
     busy.value = false;
   }
+  // The grant is committed by here. A failed read-back is not a failed grant:
+  // reporting it as one sends the operator back to grant again, doubling it.
+  await refreshBars();
+  void loadGrants(bar.id, 0);
 }
 
 // --- check-in ----------------------------------------------------------------
@@ -267,10 +312,21 @@ const checkin = ref<CheckinSettings>({ enabled: false, timezone: 'Asia/Shanghai'
 const checkinError = ref('');
 const checkinFlash = ref('');
 const checkinBusy = ref(false);
+/**
+ * A failed read leaves the form on its empty defaults, and saving those would
+ * overwrite the stored rules. So the save is shut until a read succeeds; the
+ * bars beside it are a separate read and stay up either way.
+ */
+const checkinLoadError = ref('');
 
 async function loadCheckin(): Promise<void> {
-  const current = await adminApi.checkinSettings();
-  checkin.value = { ...current, rules: current.rules ?? [], daily: current.daily?.kind ? current.daily : { kind: '' } };
+  checkinLoadError.value = '';
+  try {
+    const current = await adminApi.checkinSettings();
+    checkin.value = { ...current, rules: current.rules ?? [], daily: current.daily?.kind ? current.daily : { kind: '' } };
+  } catch (failure) {
+    checkinLoadError.value = failure instanceof ApiError ? failure.message : String(failure);
+  }
 }
 
 function addRule(): void {
@@ -312,6 +368,7 @@ onMounted(load);
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <div v-else class="oa-workbench">
+    <p v-if="pageError" class="oa-field-hint" role="alert">{{ pageError }}</p>
     <div class="oa-workbench-grid">
       <AdminControlCard id="secBonusBars" class="oa-control-card-wide" :title="t('secBonusBars')" :hint="t('secBonusBarsHint')" :icon="IconGift">
         <OaTable
@@ -339,7 +396,7 @@ onMounted(load);
 
       <AdminControlCard id="secCheckinAdmin" class="oa-control-card-wide" :title="t('secCheckinAdmin')" :hint="t('secCheckinAdminHint')" :icon="IconCheck">
         <template #actions>
-          <button type="button" class="oa-btn primary" :disabled="checkinBusy" @click="saveCheckin">{{ t('checkinSave') }}</button>
+          <button type="button" class="oa-btn primary" :disabled="checkinBusy || !!checkinLoadError" @click="saveCheckin">{{ t('checkinSave') }}</button>
         </template>
         <OaSwitchField v-model="checkin.enabled" :label="t('checkinEnabled')" :hint="t('checkinEnabledHint')" />
         <OaTextField v-model="checkin.timezone" :label="t('checkinTimezone')" :hint="t('checkinTimezoneHint')" placeholder="Asia/Shanghai" monospace />
@@ -361,6 +418,7 @@ onMounted(load);
           <button type="button" class="oa-btn" @click="addRule">{{ t('checkinAddRule') }}</button>
         </div>
         <p v-if="checkinFlash" class="oa-field-hint" role="status">{{ checkinFlash }}</p>
+        <p v-if="checkinLoadError" class="oa-field-hint" role="alert">{{ checkinLoadError }}</p>
         <p v-if="checkinError" class="oa-field-hint" role="alert">{{ checkinError }}</p>
       </AdminControlCard>
     </div>
@@ -411,11 +469,21 @@ onMounted(load);
       <p v-else-if="!grants.length" class="oa-field-hint">{{ t('bonusNoGrants') }}</p>
       <div v-else class="oa-card-list">
         <div v-for="row in grants" :key="row.id" class="oa-card-row">
-          <OaCellStack :title="row.username" :sub="grantLine(row)" />
+          <OaCellStack :title="maskUser(row.username)" :sub="grantLine(row)" />
           <span class="oa-header-spacer" />
-          <button type="button" class="oa-btn" :disabled="row.amount <= row.used" @click="revoke(row)">{{ t('bonusRevoke') }}</button>
+          <!-- Taking back removes credits from a balance, so it is armed first,
+               and the armed label says how much is going. -->
+          <OaConfirmButton
+            class="oa-btn"
+            :label="t('bonusRevoke')"
+            :armed-label="t('bonusRevokeConfirm', { amount: credits(row.amount - row.used) })"
+            :armed-title="t('bonusRevokeConfirm', { amount: credits(row.amount - row.used) })"
+            :resting-title="t('bonusRevoke')"
+            :disabled="row.amount <= row.used"
+            @confirm="revoke(row)"
+          />
         </div>
-        <button v-if="grants.length < grantsTotal" type="button" class="oa-btn" @click="loadGrants(existing!.id, grants.length)">{{ t('bonusLoadMore') }}</button>
+        <button v-if="grants.length < grantsTotal" type="button" class="oa-btn" :disabled="grantsLoading" @click="loadGrants(existing!.id, grants.length)">{{ t('bonusLoadMore') }}</button>
       </div>
     </template>
   </OaPanel>

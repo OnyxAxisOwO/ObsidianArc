@@ -15,6 +15,7 @@ import {
 import OaBadge from '@/components/OaBadge.vue';
 import OaCollapsible from '@/components/OaCollapsible.vue';
 import { t } from '@/composables/useI18n';
+import { apiFailureText } from '@/lib/api-error-text';
 
 const emit = defineEmits<{ changed: [] }>();
 
@@ -29,7 +30,7 @@ async function load(): Promise<void> {
     status.value = await fetchCheckin();
     error.value = '';
   } catch (caught) {
-    error.value = caught instanceof ApiError ? caught.message : t('checkinLoadFailed');
+    error.value = apiFailureText(caught, 'checkinLoadFailed');
   }
 }
 
@@ -164,6 +165,16 @@ onMounted(load);
           :disabled="!rule.claimable || busy === rule.id"
           @click="claim(rule)"
         >{{ rule.claimed ? t('checkinClaimed') : t('checkinClaim') }}</button>
+      </div>
+    </div>
+  </OaCollapsible>
+  <!-- A failed first read leaves no status to draw the section from, but the
+       reason still has to reach the reader, so the section stays with only the
+       error in it. -->
+  <OaCollapsible v-else-if="!status && error" id="usage-checkin" ref="section" :title="t('secCheckin')">
+    <div class="oa-usage-card">
+      <div class="oa-usage-card-row">
+        <p class="oa-usage-note error" role="alert">{{ error }}</p>
       </div>
     </div>
   </OaCollapsible>

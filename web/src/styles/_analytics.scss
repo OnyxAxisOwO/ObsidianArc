@@ -579,7 +579,6 @@
 
 .oa-matrix thead th {
   min-width: 78px;
-  max-width: 128px;
   padding: 0 0 4px;
   vertical-align: bottom;
 }
@@ -604,9 +603,13 @@
   transition: background-color 0.15s ease;
 }
 
+/* The cap belongs here rather than on the header cell: browsers ignore max-width
+   on a table cell, and without a cap the nowrap name sets the column's width,
+   so the ellipsis below never has anything to cut. */
 .oa-matrix-head {
   flex-direction: column;
   gap: 1px;
+  max-width: 128px;
   padding: 5px 7px;
   border-radius: 9px;
 }
@@ -711,7 +714,18 @@
   list-style: none;
 }
 
-.oa-board-row {
+/* The leaderboards reuse the row, rank, main, name, value and track class names,
+   and _surfaces.scss (which loads first) defines their rows. Every rule that
+   shares a name with it is scoped under .oa-board-frame, which the usage report
+   always wraps, so these win on their own specificity rather than on file
+   order. The usage report's boards keep the 64px rows, transparent fill, 0 10px
+   padding and surface-container track they had at HEAD. The leaderboard panel
+   and the admin preview sit outside the frame and take _surfaces.scss's rows
+   instead: no fixed height, a surface-container-low fill and 9px 12px padding
+   where HEAD gave them 64px transparent rows with 0 10px padding, and a
+   field-background track with a full-strength fill, where HEAD gave a
+   surface-container track with the fill dimmed to 70%. */
+.oa-board-frame .oa-board-row {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -727,21 +741,21 @@
   text-align: left;
 }
 
-button.oa-board-row {
+.oa-board-frame button.oa-board-row {
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
 
-button.oa-board-row:hover {
+.oa-board-frame button.oa-board-row:hover {
   background: var(--ai-state-hover);
 }
 
-button.oa-board-row:focus-visible {
+.oa-board-frame button.oa-board-row:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
-.oa-board-rank {
+.oa-board-frame .oa-board-rank {
   width: 18px;
   flex-shrink: 0;
   color: var(--ai-text-secondary);
@@ -774,7 +788,7 @@ button.oa-board-row:focus-visible {
   color: var(--ai-badge-text);
 }
 
-.oa-board-main {
+.oa-board-frame .oa-board-main {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -790,19 +804,23 @@ button.oa-board-row:focus-visible {
   min-width: 0;
 }
 
-.oa-board-name,
-.oa-board-notes {
+.oa-board-frame .oa-board-name,
+.oa-board-frame .oa-board-notes {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.oa-board-name {
+/* The base rule makes the name a flex container, so a plain-text name becomes
+   an anonymous flex item that will not shrink and ellipsis has no line box to
+   apply to. Block lets the ellipsis draw. */
+.oa-board-frame .oa-board-name {
+  display: block;
   font-size: 12.5px;
   font-weight: 600;
 }
 
-.oa-board-value {
+.oa-board-frame .oa-board-value {
   flex-shrink: 0;
   font-size: 12.5px;
   font-weight: 600;
@@ -820,7 +838,7 @@ button.oa-board-row:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-.oa-board-track {
+.oa-board-frame .oa-board-track {
   display: block;
   height: 3px;
   overflow: hidden;
@@ -828,7 +846,7 @@ button.oa-board-row:focus-visible {
   background: var(--ai-surface-container);
 }
 
-.oa-board-track > span {
+.oa-board-frame .oa-board-track > span {
   display: block;
   height: 100%;
   border-radius: inherit;
@@ -885,6 +903,18 @@ button.oa-board-row:focus-visible {
   &.fade-bottom {
     mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent);
   }
+}
+
+/* A board takes focus only when its rows cannot (see UsageBoard). The ring sits
+   on the wrapper because the scroller's own fade mask would hide an outset
+   shadow drawn past its edge. */
+.oa-board-scroll:focus-visible {
+  outline: none;
+}
+
+.oa-board-wrap:has(> .oa-board-scroll:focus-visible) {
+  border-radius: 12px;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 /* One account per row: who, then its three windows side by side. The height is
@@ -964,6 +994,16 @@ button.oa-board-row:focus-visible {
   container: allow / inline-size;
 }
 
+/* Declared before the narrow-width block below: both rules have the same
+   specificity, so the later one wins, and the narrow gap has to be the later. */
+.oa-allow-none {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+}
+
 @container allow (max-width: 560px) {
   .oa-allow-frame {
     --board-row: 128px;
@@ -991,14 +1031,6 @@ button.oa-board-row:focus-visible {
     flex-direction: column;
     gap: 1px;
   }
-}
-
-.oa-allow-none {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--ai-text-secondary);
-  font-size: 11.5px;
 }
 
 .oa-board-wrap .oa-overlay-track {

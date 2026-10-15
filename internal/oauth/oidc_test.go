@@ -230,6 +230,79 @@ func TestIdentifyOIDC(t *testing.T) {
 	})
 }
 
+// OIDC Core 5.3.2: the userinfo document and the ID token are about one person.
+// A subject that differs between them is refused, not resolved in favour of one.
+func TestUserinfoAndIDTokenMustNameTheSameSubject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"sub": "someone-else"})
+	}))
+	defer server.Close()
+
+	idToken := makeTestJWT(map[string]any{
+		"sub": "sub-fallback",
+		"exp": testFutureExp(),
+	})
+	_, err := identifyOIDC(context.Background(), server.Client(),
+		Credentials{UserInfoURL: server.URL}, tokenResponse{AccessToken: "access-token", IDToken: idToken})
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("identifyOIDC = %v, want ErrUnavailable when the two subjects differ", err)
+	}
+}
+
+// An address the provider did not verify may still be stored when the operator
+// trusts such addresses, but it does not name the person: the login comes from
+// what they called themselves.
+func TestAnUnverifiedAddressDoesNotChooseTheLogin(t *testing.T) {
+	idToken := makeTestJWT(map[string]any{
+		"sub":            "sub-selfreg",
+		"email":          "admin@corp.example",
+		"email_verified": false,
+		"name":           "Ada Lovelace",
+		"exp":            testFutureExp(),
+	})
+	id, err := identifyOIDC(context.Background(), http.DefaultClient,
+		Credentials{TrustEmail: true}, tokenResponse{IDToken: idToken})
+	if err != nil {
+		t.Fatalf("identifyOIDC: %v", err)
+	}
+	if id.Login == "admin" {
+		t.Fatal("the login was taken from an address the provider never verified")
+	}
+	if id.Login != "Ada Lovelace" {
+		t.Errorf("Login = %q, want the display name when no verified address is given", id.Login)
+	}
+}
+
+// A userinfo document the decoder rejects part way through still has the fields
+// before the bad one filled in. Once the lookup is refused, none of them may
+// name the person: the identity is the ID token's alone.
+func TestARefusedUserinfoDocumentDoesNotReachTheIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"sub":"sub-half","preferred_username":"mallory",` +
+			`"email":"mallory@example.com","email_verified":"maybe"}`))
+	}))
+	defer server.Close()
+
+	idToken := makeTestJWT(map[string]any{
+		"sub":            "sub-half",
+		"email":          "ada@example.com",
+		"email_verified": true,
+		"name":           "Ada Lovelace",
+		"exp":            testFutureExp(),
+	})
+	id, err := identifyOIDC(context.Background(), server.Client(),
+		Credentials{UserInfoURL: server.URL}, tokenResponse{AccessToken: "access-token", IDToken: idToken})
+	if err != nil {
+		t.Fatalf("identifyOIDC: %v", err)
+	}
+	if id.Login != "ada" {
+		t.Errorf("Login = %q, want the one the ID token's verified address gives", id.Login)
+	}
+	if id.Email != "ada@example.com" {
+		t.Errorf("Email = %q, want the ID token's verified address", id.Email)
+	}
+}
+
 func TestIdentifyOIDCRejectsInvalidIDTokens(t *testing.T) {
 	ctx := context.Background()
 	past := time.Now().Add(-time.Hour).Unix()
@@ -391,6 +464,29 @@ func TestOIDCDiscovery(t *testing.T) {
 	}
 	if requestCount != 1 {
 		t.Errorf("requestCount = %d, want 1 (cache not hit)", requestCount)
+	}
+}
+
+// The discovery fetch runs before Authenticate's deadline exists, so it needs
+// its own. An issuer that accepts the connection and never answers must fail
+// the sign-in at the provider deadline rather than hold it open.
+func TestDiscoveryThatNeverAnswersEndsAtTheProviderDeadline(t *testing.T) {
+	previous := timeout
+	timeout = 50 * time.Millisecond
+	t.Cleanup(func() { timeout = previous })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	started := time.Now()
+	_, err := (&Service{}).discover(context.Background(), server.Client(), server.URL)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("discover = %v, want ErrUnavailable once the deadline passes", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("discover held on for %v, want it to stop at the deadline", elapsed)
 	}
 }
 

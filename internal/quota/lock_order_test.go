@@ -27,7 +27,7 @@ func TestConcurrentReserveSettleAndReleaseTakeRowsInOneOrder(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{WindowWeek: limits(true, nil, ptrInt(1<<40), nil)},
 	}); err != nil {
@@ -132,7 +132,7 @@ func concurrentAccountRun(t *testing.T, tokenRate, withBar bool) {
 	if tokenRate {
 		policy.TPM = ptrInt(1 << 30)
 	}
-	if _, err := f.svc.Policies().Save(ctx, policy); err != nil {
+	if _, err := f.svc.Policies().Save(ctx, nil, policy); err != nil {
 		t.Fatal(err)
 	}
 	person := f.person(t, "lock-order-user")
@@ -195,7 +195,7 @@ func concurrentAccountRun(t *testing.T, tokenRate, withBar bool) {
 	go func() {
 		defer wait.Done()
 		for range 30 {
-			if err := f.svc.ResetWindows(ctx, []string{person.ID}, []string{"5h"}); err != nil {
+			if err := f.svc.ResetWindows(ctx, nil, []string{person.ID}, []string{"5h"}); err != nil {
 				t.Errorf("reset windows: %v", err)
 				return
 			}
@@ -238,7 +238,7 @@ func concurrentAccountRun(t *testing.T, tokenRate, withBar bool) {
 	if err := f.svc.ResetAll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.Policies().Save(ctx, Policy{
+	if _, err := f.svc.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeGlobal,
 		RPM:   ptrInt(1 << 30),
 		TPM:   ptrInt(1 << 30),

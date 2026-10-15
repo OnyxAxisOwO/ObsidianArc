@@ -39,7 +39,7 @@ import { useAdminView } from './adminView';
 import { permissionsOf } from './pluginPermissions';
 
 const view = useAdminView();
-view.setTitle(t('navPlugins'), t('pluginsSubtitle'));
+view.setTitle(() => t('navPlugins'), () => t('pluginsSubtitle'));
 
 let route: ReturnType<typeof useRoute> | undefined;
 let router: ReturnType<typeof useRouter> | undefined;
@@ -56,6 +56,14 @@ const error = ref('');
 const twoFactorRequired = ref(true);
 /** The browser halves, by name, for the icon and the declared settings and pages. */
 const modules = reactive<Record<string, ArcPlugin | null>>({});
+
+/** A plugin's browser half for the icon, pages and settings. A package's is
+ *  not fetched here (loadPluginModule only knows this build's own plugins), so
+ *  an enabled package takes the one the session already loaded, which is also
+ *  what the tab strip reads. */
+function browserHalf(name: string): ArcPlugin | null {
+  return modules[name] ?? plugins().find((plugin) => plugin.name === name) ?? null;
+}
 
 const enabledPages = computed(() => {
   return plugins().flatMap((plugin) => plugin.adminPages ?? []);
@@ -80,11 +88,11 @@ function switchTab(slug: string): void {
 
 function updateTitle(): void {
   if (activeTab.value === 'manage') {
-    view.setTitle(t('navPlugins'), t('pluginsSubtitle'));
+    view.setTitle(() => t('navPlugins'), () => t('pluginsSubtitle'));
   } else {
     const page = currentPage.value;
     if (page) {
-      view.setTitle(page.title(), page.hint?.());
+      view.setTitle(() => page.title(), () => page.hint?.() ?? '');
     }
   }
 }
@@ -160,17 +168,24 @@ async function load(): Promise<void> {
     list.value = res.plugins;
     twoFactorRequired.value = res.two_factor_required ?? true;
     loaded.value = true;
-    await Promise.all(res.plugins.filter((plugin) => !plugin.missing && !(plugin.name in modules)).map(async (plugin) => {
-      modules[plugin.name] = await loadPluginModule(plugin.name);
-    }));
+    await loadModules(res.plugins);
   } catch (failure) {
     error.value = message(failure);
   }
 }
 
+/** Fetches the browser half of each plugin not yet loaded. The icon, pages and
+ *  settings of a plugin come from its module, so a plugin that appears later
+ *  needs the same fetch as one that was there at load. */
+async function loadModules(candidates: AdminPlugin[]): Promise<void> {
+  await Promise.all(candidates.filter((plugin) => !plugin.missing && !(plugin.name in modules)).map(async (plugin) => {
+    modules[plugin.name] = await loadPluginModule(plugin.name);
+  }));
+}
+
 /** Every settings section the plugin declares, wherever it would be drawn. */
 function sectionsOf(name: string) {
-  return modules[name]?.settings ?? [];
+  return browserHalf(name)?.settings ?? [];
 }
 
 /** The install's sections that hold a key this administrator may write. */
@@ -190,6 +205,11 @@ async function applied(change: PluginChange): Promise<void> {
     await refreshSite();
   } catch {
     // The change stands; the rail catches up on the next page load.
+  }
+  try {
+    await loadModules(change.plugins);
+  } catch {
+    // The change stands; the plugin's icon and pages wait for the next page load.
   }
 }
 
@@ -214,7 +234,7 @@ function openDetail(plugin: AdminPlugin): void {
 const detailPages = computed(() => {
   const plugin = detail.value;
   if (!plugin) return [];
-  return modules[plugin.name]?.adminPages ?? [];
+  return browserHalf(plugin.name)?.adminPages ?? [];
 });
 
 interface ContributionItem {
@@ -239,7 +259,7 @@ const contributionGroups = computed<ContributionGroup[]>(() => {
   const c = plugin.contributions;
   const groups: ContributionGroup[] = [];
 
-  const pages = modules[plugin.name]?.adminPages ?? [];
+  const pages = browserHalf(plugin.name)?.adminPages ?? [];
   if (pages.length) {
     groups.push({
       key: 'pages',
@@ -391,7 +411,14 @@ function onDragEnter(event: DragEvent): void {
 }
 
 function onDragOver(event: DragEvent): void {
-  if (dragging.value) event.preventDefault();
+  // Every file drag is cancelled, not only the ones this card takes: a file the
+  // page does not cancel is opened by the browser, and the unsaved screen goes
+  // with it. Refusing the drop where the card will not take it shows that. The
+  // guard is registered only while this page is mounted, so other admin pages
+  // with unsaved edits are not covered by it.
+  if (!hasFiles(event)) return;
+  event.preventDefault();
+  if (!dragging.value && event.dataTransfer) event.dataTransfer.dropEffect = 'none';
 }
 
 function onDragLeave(): void {
@@ -400,8 +427,8 @@ function onDragLeave(): void {
 }
 
 function onDrop(event: DragEvent): void {
+  if (hasFiles(event)) event.preventDefault();
   if (!dragging.value) return;
-  event.preventDefault();
   depth = 0;
   dragging.value = false;
   const file = event.dataTransfer?.files?.[0];
@@ -596,7 +623,7 @@ onMounted(load);
           :id="`plugin-${plugin.name}`"
           :key="plugin.name"
           class="oa-plugin-row"
-          :icon="modules[plugin.name]?.icon ?? IconPuzzle"
+          :icon="browserHalf(plugin.name)?.icon ?? IconPuzzle"
           :title="title(plugin)"
           :meta="[
             t('pluginVersion', { version: plugin.manifest.version || plugin.installed.version || '—' }),
@@ -650,7 +677,7 @@ onMounted(load);
     <div class="oa-plugin-detail">
       <div class="oa-plugin-detail-hero">
         <div class="oa-plugin-detail-icon">
-          <component :is="modules[detail.name]?.icon ?? IconPuzzle" :size="24" />
+          <component :is="browserHalf(detail.name)?.icon ?? IconPuzzle" :size="24" />
         </div>
         <div class="oa-plugin-detail-lead">
           <div class="oa-plugin-detail-header-row">

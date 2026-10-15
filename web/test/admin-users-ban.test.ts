@@ -3,9 +3,18 @@ import { createApp, h, nextTick, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, type Account } from '../src/admin/api';
 import { providePanelHost } from '../src/composables/usePanelHost';
+import { currentUser, site, siteInfo } from '../src/stores/session';
+import { installPlugins } from '../src/plugins/registry';
 import { t } from '../src/composables/useI18n';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import example from './fixtures/example.plugin';
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+};
 
 const settle = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -93,6 +102,9 @@ describe('AdminUsers, banning with a reason', () => {
     app = undefined;
     host.remove();
     panels.remove();
+    currentUser.value = null;
+    installPlugins([]);
+    site.value = null;
     vi.restoreAllMocks();
   });
 
@@ -229,5 +241,146 @@ describe('AdminUsers, banning with a reason', () => {
       ['c', { status: 'active' }],
     ]);
     expect(rowOf('b').textContent).not.toContain(t('statusDisabled'));
+  });
+  const footerSave = () => panels.querySelector<HTMLButtonElement>('.oa-panel-foot .oa-btn.primary');
+  // The field of the account panel with this label, as a reader would find it.
+  const fieldFor = (label: string) => [...panels.querySelectorAll<HTMLElement>('.oa-field')]
+    .find((node) => node.querySelector('.oa-field-label')?.textContent?.trim() === label)!
+    .querySelector<HTMLInputElement>('input')!;
+
+  // A save that is still in flight when another account is opened writes what
+  // it was sent for, to the account it was sent for. The form it used to read
+  // belonged to the account opened last.
+  it('saves the account a save started with when another is opened during the save', async () => {
+    currentUser.value = account('root', { role: 'super_admin' });
+    await mount([account('a'), account('b')]);
+    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({} as never);
+    const update = deferred<{ user: Account }>();
+    vi.mocked(adminApi.updateUser).mockImplementationOnce(() => update.promise);
+
+    rowOf('a').click();
+    await settle();
+    typeInto(fieldFor(t('nickname')), 'Alpha');
+    typeInto(fieldFor(t('requestsPerMinute')), '50');
+    await nextTick();
+    footerSave()!.click();
+    await nextTick();
+    rowOf('b').click();
+    await settle();
+    update.resolve({ user: { ...account('a'), nickname: 'Alpha' } });
+    await settle();
+
+    expect(updates()[0]![0]).toBe('a');
+    expect(policy).toHaveBeenCalledTimes(1);
+    expect(policy.mock.calls[0]![0]).toMatchObject({ scope_id: 'a', rpm: 50 });
+    // The panel stays on the account opened last, and offers its own Save.
+    expect(footerSave()).not.toBeNull();
+  });
+
+  // A panel left open while another administrator edits the account must not
+  // write its older copy of the profile back: only what was typed is sent, and
+  // the limits only when they changed.
+  it('sends only the fields the operator changed', async () => {
+    currentUser.value = account('root', { role: 'super_admin' });
+    await mount([account('a', { nickname: 'Old', bio: 'Kept' })]);
+    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({} as never);
+    rowOf('a').click();
+    await settle();
+    typeInto(fieldFor(t('nickname')), 'Alpha');
+    await nextTick();
+
+    footerSave()!.click();
+    await settle();
+
+    expect(updates()).toEqual([['a', { nickname: 'Alpha' }]]);
+    expect(policy).not.toHaveBeenCalled();
+  });
+
+  // The same holds one level down: a plugin field another administrator changed
+  // is not written back by a panel that only edited a different one.
+  it('sends only the plugin field the operator changed', async () => {
+    installPlugins([{ name: 'ops', fields: { ref: example.fields!['ref']!, tag: example.fields!['ref']! } }]);
+    site.value = { ...siteInfo.value, fields: { ref: 'optional', tag: 'optional' } };
+    currentUser.value = account('root', { role: 'super_admin' });
+    await mount([account('a', { fields: { ref: '10001', tag: '20002' } })]);
+    rowOf('a').click();
+    await settle();
+
+    typeInto(panels.querySelector<HTMLInputElement>('input[name="field-tag"]')!, '30003');
+    await nextTick();
+    footerSave()!.click();
+    await settle();
+
+    expect(updates()).toEqual([['a', { fields: { tag: '30003' } }]]);
+  });
+
+  // A save that fails after the profile went through says so, and a second
+  // Save writes what is still missing without sending the profile again.
+  it('reports a half-finished save as partly saved, and retries only what is left', async () => {
+    currentUser.value = account('root', { role: 'super_admin' });
+    await mount([account('a')]);
+    const policy = vi.spyOn(adminApi, 'savePolicy')
+      .mockRejectedValueOnce(new Error('policy store down'))
+      .mockResolvedValue({} as never);
+    rowOf('a').click();
+    await settle();
+    typeInto(fieldFor(t('nickname')), 'Alpha');
+    typeInto(fieldFor(t('requestsPerMinute')), '50');
+    await nextTick();
+
+    footerSave()!.click();
+    await settle();
+    // A plain Error is shown as String() makes it, which is what the panel shows.
+    expect(panels.textContent).toContain(t('savedBeforeError', { error: 'Error: policy store down' }));
+    expect(updates()).toHaveLength(1);
+
+    footerSave()!.click();
+    await settle();
+    // The retry's profile request is empty: the name is not sent a second time.
+    expect(updates()).toHaveLength(2);
+    expect(updates()[1]![1]).toEqual({});
+    expect(policy).toHaveBeenCalledTimes(2);
+    expect(policy.mock.calls[1]![0]).toMatchObject({ scope_id: 'a', rpm: 50 });
+  });
+
+  // The two-step reset does not block the list, so the account it was sent for
+  // can be left while it is in flight. Its answer must not change the panel.
+  it('does not put a two-step reset of one account into the panel of another', async () => {
+    await mount([account('a', { two_factor_at: 1 }), account('b', { nickname: 'Bee' })]);
+    rowOf('a').click();
+    await settle();
+    const reset = deferred<{ user: Account }>();
+    vi.spyOn(adminApi, 'resetTwoFactor').mockImplementation(() => reset.promise);
+    const resetButton = [...panels.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === t('twoFactorResetLabel'))!;
+    resetButton.click();
+    await nextTick();
+    resetButton.click();
+    await nextTick();
+
+    rowOf('b').click();
+    await settle();
+    reset.resolve({ user: account('a', { two_factor_at: 0 }) });
+    await settle();
+
+    expect(panels.textContent).not.toContain(t('twoFactorResetDone'));
+    footerSave()!.click();
+    await settle();
+    expect(updates().at(-1)![0]).toBe('b');
+  });
+
+  // Nothing about the list needs the page any more, so a search that was
+  // waiting out its pause when the page was left must not run.
+  it('does not run a search that was typed just before the page was left', async () => {
+    await mount([account('a')]);
+    const searches = () => vi.mocked(adminApi.users).mock.calls.length;
+    const before = searches();
+    typeInto(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'alp');
+    await nextTick();
+
+    app!.unmount();
+    app = undefined;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(searches()).toBe(before);
   });
 });

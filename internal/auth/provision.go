@@ -44,7 +44,13 @@ type ProvisionInput struct {
 	ExplicitUsername bool
 	// Password is an optional or required password chosen on third-party registration.
 	// When non-empty, the account receives this password and can log in with it.
+	// Hashed inside the caller's transaction unless PasswordHash is given.
 	Password string
+	// PasswordHash is Password already hashed by HashPassword, before the caller
+	// opened its transaction. Argon2 under the instance lock holds every other
+	// writer for as long as the hash waits for a slot, so a caller that can hash
+	// first should, and then Password is left empty.
+	PasswordHash string
 	// The address, from whichever of the two places it came: proved by the
 	// provider, or typed by the person when this instance asked for one the
 	// provider could not supply.
@@ -221,8 +227,8 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		role = user.RoleSuperAdmin
 	}
 
-	var passwordHash string
-	if in.Password != "" {
+	passwordHash := in.PasswordHash
+	if passwordHash == "" && in.Password != "" {
 		if err := ValidatePassword(in.Password); err != nil {
 			return user.User{}, err
 		}

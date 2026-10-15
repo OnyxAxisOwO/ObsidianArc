@@ -331,8 +331,9 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, o
 // site. Together with a SameSite=Lax session cookie this is the whole CSRF
 // defence: no token table, no hidden form field, nothing to keep in sync.
 //
-// Sec-Fetch-Site is checked first because every current browser sends it and
-// it cannot be set by page script. Origin is the fallback for the rest.
+// The operator's allowlist is consulted first, then Sec-Fetch-Site, because
+// every current browser sends that header and page script cannot set it.
+// Origin is the fallback for clients that send no Sec-Fetch-Site.
 func SameOrigin(allowed []string) Middleware {
 	permitted := map[string]bool{}
 	for _, origin := range allowed {
@@ -347,6 +348,16 @@ func SameOrigin(allowed []string) Middleware {
 				return
 			}
 
+			// An operator-listed origin is checked before Sec-Fetch-Site:
+			// every current browser sends that header, so a cross-site or
+			// same-site origin the operator deliberately allowed would
+			// otherwise never reach this list.
+			origin := strings.ToLower(strings.TrimSpace(r.Header.Get("Origin")))
+			if origin != "" && permitted[strings.TrimRight(origin, "/")] {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			switch r.Header.Get("Sec-Fetch-Site") {
 			case "same-origin", "none":
 				next.ServeHTTP(w, r)
@@ -356,15 +367,10 @@ func SameOrigin(allowed []string) Middleware {
 				return
 			}
 
-			origin := strings.ToLower(strings.TrimSpace(r.Header.Get("Origin")))
 			if origin == "" {
 				// No Origin and no Sec-Fetch-Site: an old browser or a
 				// non-browser client. A session cookie would not have been
 				// attached cross-site in the first place, so this is allowed.
-				next.ServeHTTP(w, r)
-				return
-			}
-			if permitted[strings.TrimRight(origin, "/")] {
 				next.ServeHTTP(w, r)
 				return
 			}

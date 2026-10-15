@@ -5,7 +5,7 @@
 // its own click, says whose transcript it is, and leaves a line in the server
 // log. Nothing about it is incidental to opening the account panel.
 
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
 import {
   adminApi, emptyPolicy,
@@ -49,6 +49,7 @@ import { fieldSpec, plugins } from '@/plugins/registry';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginUserActions from './PluginUserActions.vue';
 import { isMasked, maskUser, maskLog, maskBilling, maskCredential } from '@/admin/safeMode';
+import { windowFigure } from '@/admin/quota';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
@@ -58,7 +59,12 @@ import { useAdminView } from './adminView';
 const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
 
 const view = useAdminView();
-view.setTitle(t('usersTitle'));
+// Null until the first list lands, so the heading shows no count before then.
+const listedTotal = ref<number | null>(null);
+view.setTitle(
+  () => t('usersTitle'),
+  () => (listedTotal.value === null ? '' : tn(listedTotal.value, 'accountsCountOne', 'accountsCountOther')),
+);
 
 const groups = ref<Pick<Group, 'id' | 'name'>[]>([]);
 const users = ref<Account[]>([]);
@@ -91,9 +97,14 @@ function groupName(id: string): string {
   return groups.value.find((group) => group.id === id)?.name ?? '—';
 }
 
+// Once the page is left, a late list must not set the title: the heading is
+// the shell's, and the page that replaced this one has already set its own.
+let disposed = false;
+onBeforeUnmount(() => { disposed = true; });
+
 // Typing filters after a pause rather than on each keystroke: one request per
 // word, not one per letter.
-const debouncedList = useDebounceFn(() => void list(), 250);
+const debouncedList = useDebounceFn(() => { if (!disposed) void list(); }, 250);
 watch(() => filters.value.q, () => { paging.value.page = 1; ++request; void debouncedList(); });
 
 async function list(): Promise<void> {
@@ -110,20 +121,32 @@ async function list(): Promise<void> {
 
   try {
     const result = await adminApi.users(query.toString() ? `?${query}` : '');
-    if (ticket !== request) return;
+    if (ticket !== request || disposed) return;
     if (result.total > 0 && (paging.value.page - 1) * paging.value.pageSize >= result.total) {
       paging.value.page = Math.ceil(result.total / paging.value.pageSize);
       await list(); return;
     }
     users.value = result.users ?? [];
     total.value = result.total;
-    view.setTitle(t('usersTitle'), tn(result.total, 'accountsCountOne', 'accountsCountOther'));
+    listedTotal.value = result.total;
   } catch (failure) {
     if (ticket !== request) return;
     listError.value = failure instanceof ApiError ? failure.message : String(failure);
   } finally {
     if (ticket === request) listing.value = false;
   }
+}
+
+/**
+ * A change that failed for an account the panel has since left. The panel now
+ * belongs to another account, so the failure goes to the list, named, where the
+ * operator will read it. list() clears listError as it starts, which is why the
+ * message is written after it.
+ */
+function failedForAccount(row: Account, failure: unknown): void {
+  void list();
+  const message = failure instanceof ApiError ? failure.message : String(failure);
+  listError.value = t('accountChangeFailed', { name: maskUser(row.nickname || row.username), error: message });
 }
 
 // --- the account panel ------------------------------------------------------------
@@ -145,6 +168,11 @@ const banDraft = ref('');
 const banBusy = ref(false);
 
 const account = ref<Account | null>(null);
+// The account as the form was loaded, or as the last save left it. Save diffs
+// the form against this and not against `account`, which refreshFacts re-reads
+// for display: diffing against the fresher copy would send this form's older
+// values back over a change made since the panel opened.
+const baseline = ref<Account | null>(null);
 const usage = ref<UsageSummary | null>(null);
 const lifetime = ref<{ requests: number; total_tokens: number; credits: number } | null>(null);
 const cards = ref<CardHolding | null>(null);
@@ -171,9 +199,22 @@ const grantName = ref('');
 const grantScopePreset = ref<'full' | '5h' | '1w' | '1m' | 'custom'>('full');
 const grantCustomWindows = ref<string[]>(['5h']);
 const grantExpiresAt = ref(defaultGrantExpiry());
+// The result line under the card buttons. Kept apart from the buttons' own
+// state: a button that reads "granted" and stays disabled leaves nothing to
+// click until the panel is reopened.
 const grantLabel = ref('');
+const granting = ref(false);
 const rescheduleLabel = ref('');
 const rescheduling = ref('');
+
+/**
+ * Whether the panel still shows this account. An answer to a request sent for
+ * one account, arriving after another was opened, must not be written into
+ * the panel of the other.
+ */
+function panelShows(id: string): boolean {
+  return account.value?.id === id;
+}
 
 function grantSelectedWindows(): string[] {
   if (grantScopePreset.value === 'custom') {
@@ -254,6 +295,19 @@ const form = ref({
     requests: number | null; tokens: number | null; credits: number | null;
   }>,
 });
+// Whether an operator has edited a limit since the form was loaded. The policy
+// is one row that a save replaces whole, so a Save that touched only the
+// profile must not write the limits it was loaded with over another
+// administrator's change to them. A switch flipped on and off again still
+// counts: what the operator left on the form is what gets written.
+let limitsEdited = false;
+// Counts the edits, so a save can tell whether one came after it took its copy.
+let limitEdits = 0;
+watch(() => JSON.stringify(policyBody(form.value)), () => {
+  if (!detailReady.value) return;
+  limitsEdited = true;
+  limitEdits += 1;
+}, { flush: 'sync' });
 
 /**
  * "No limits at all", as one switch over the fields that already say it.
@@ -351,6 +405,7 @@ async function open(id: string): Promise<void> {
   sessions.value = null;
   sessionsError.value = '';
   grantLabel.value = '';
+  granting.value = false;
   rescheduleLabel.value = '';
   rescheduling.value = '';
   grantName.value = '';
@@ -368,6 +423,7 @@ async function open(id: string): Promise<void> {
   const ticket = ++opening;
   const listed = users.value.find((candidate) => candidate.id === id);
   account.value = listed ?? null;
+  baseline.value = null;
   usage.value = null;
   lifetime.value = null;
   models.value = [];
@@ -410,6 +466,7 @@ async function open(id: string): Promise<void> {
   }
 
   account.value = row;
+  baseline.value = row;
   usage.value = detail.usage;
   lifetime.value = detail.lifetime;
   models.value = detail.models ?? [];
@@ -436,18 +493,32 @@ async function open(id: string): Promise<void> {
     tpm: policy.tpm,
     windows,
   };
+  limitsEdited = false;
   detailReady.value = true;
 
+  loadAccess(id);
+}
+
+/**
+ * The keys and devices are a second round trip after the detail, so each
+ * answer is checked against the panel when it lands: opening another account
+ * in the meantime must not show this one's keys under the other's name.
+ */
+function loadAccess(id: string): void {
   // The list and nothing else: the server keeps a digest, so there is no token
   // to show and no endpoint that could produce one. What an operator needs
   // here is to see that a key exists and to be able to revoke it.
   void adminApi.userKeys(id)
-    .then(({ keys: list }) => { keys.value = list; })
-    .catch(() => { keys.value = []; });
+    .then(({ keys: list }) => { if (panelShows(id)) keys.value = list; })
+    .catch(() => { if (panelShows(id)) keys.value = []; });
   void adminApi.userSessions(id)
-    .then(({ sessions: list }) => { sessions.value = list; })
+    .then(({ sessions: list }) => {
+      if (!panelShows(id)) return;
+      sessions.value = list;
+      sessionsError.value = '';
+    })
     .catch((failure: unknown) => {
-      sessionsError.value = failure instanceof ApiError ? failure.message : String(failure);
+      if (panelShows(id)) sessionsError.value = failure instanceof ApiError ? failure.message : String(failure);
     });
 }
 
@@ -491,68 +562,121 @@ function bulkRemove(): Promise<void> {
 }
 
 async function save(): Promise<void> {
-  const row = account.value;
-  // The row can be set while the form still holds another account: a failed
-  // detail leaves the panel open on this row. Writing that form would put the
-  // other account's values onto this one.
+  // The baseline, not the displayed account: the form is diffed against the
+  // copy it was loaded from. The displayed account is set before the detail
+  // lands, so a failed detail leaves it on a row the form does not hold.
+  const row = baseline.value;
   if (!row || !detailReady.value) return;
+  // The form belongs to whichever account was opened last, and that can be
+  // another account while this save is in flight: the requests below await
+  // in between, and opening an account replaces the form. Every value is read
+  // from this copy, taken before the first await, so the save describes the
+  // account it was sent for.
+  const draft = JSON.parse(JSON.stringify(form.value)) as typeof form.value;
+  const sendLimits = limitsEdited;
+  const editsAtStart = limitEdits;
   busy.value = true;
   panelError.value = '';
+  // Whether anything was written before the failure, which decides what the
+  // error has to say: a save that half went through is not a failed save.
+  let saved = false;
   try {
-    const patch: Record<string, unknown> = {
-      nickname: form.value.nickname.trim(),
-      email: form.value.email.trim(),
-      ...(fieldPlan.value.keys.length ? { fields: fieldValues(form.value.fields, fieldPlan.value) } : {}),
-      bio: form.value.bio.trim(),
-      avatar: form.value.avatar.trim(),
-    };
-    if (canAdmin('administrators') && form.value.role !== row.role) patch.role = form.value.role;
-    if (canAdmin('administrators') && (form.value.role === 'admin') &&
-      (form.value.role !== row.role || JSON.stringify(form.value.permissions) !== JSON.stringify(row.admin_permissions ?? []))) {
-      patch.admin_permissions = form.value.permissions;
+    // Only what the operator changed is sent. The panel can stay open while
+    // another administrator edits this account, and resending every field would
+    // write this form's older copy of their edit back over it.
+    const patch: Record<string, unknown> = {};
+    if (draft.nickname.trim() !== row.nickname) patch.nickname = draft.nickname.trim();
+    if (draft.email.trim() !== row.email) patch.email = draft.email.trim();
+    if (draft.bio.trim() !== row.bio) patch.bio = draft.bio.trim();
+    if (draft.avatar.trim() !== row.avatar) patch.avatar = draft.avatar.trim();
+    if (fieldPlan.value.keys.length) {
+      const next = fieldValues(draft.fields, fieldPlan.value);
+      const was = fieldValues(row.fields ?? {}, fieldPlan.value);
+      const changed = Object.fromEntries(
+        fieldPlan.value.keys.filter((key) => next[key] !== was[key]).map((key) => [key, next[key]!]),
+      );
+      if (Object.keys(changed).length) patch.fields = changed;
+    }
+    if (canAdmin('administrators') && draft.role !== row.role) patch.role = draft.role;
+    if (canAdmin('administrators') && (draft.role === 'admin') &&
+      (draft.role !== row.role || JSON.stringify(draft.permissions) !== JSON.stringify(row.admin_permissions ?? []))) {
+      patch.admin_permissions = draft.permissions;
     }
     // Only send a membership change when the operator edited it. A profile
     // panel left open across expiry must not silently renew the old group.
     const originalExpiry = row.group_expires_at ? dateTimeLocal(row.group_expires_at) : '';
-    if (form.value.group !== row.group_id || form.value.groupExpiresAt !== originalExpiry) {
-      const expiry = form.value.groupExpiresAt ? new Date(form.value.groupExpiresAt).getTime() : 0;
-      if (form.value.groupExpiresAt && (!Number.isFinite(expiry) || expiry <= Date.now())) {
+    if (draft.group !== row.group_id || draft.groupExpiresAt !== originalExpiry) {
+      const expiry = draft.groupExpiresAt ? new Date(draft.groupExpiresAt).getTime() : 0;
+      if (draft.groupExpiresAt && (!Number.isFinite(expiry) || expiry <= Date.now())) {
         throw new Error(t('membershipExpiryInvalid'));
       }
-      patch.group_id = form.value.group;
+      patch.group_id = draft.group;
       patch.group_expires_at = expiry;
     }
     if (apiRestrictionTouched.value) {
-      patch.api_restricted = form.value.apiRestricted;
-      patch.api_restriction_hours = form.value.apiRestrictionHours ?? 0;
+      patch.api_restricted = draft.apiRestricted;
+      patch.api_restriction_hours = draft.apiRestrictionHours ?? 0;
     }
+    // Sent even when empty: the server answers that as a no-op, and one path for
+    // every Save keeps the errors it can raise the same whatever was edited.
     const result = await adminApi.updateUser(row.id, patch);
+    // An empty patch writes nothing, so a failure in a later step must not be
+    // reported as one that came after a save.
+    if (Object.keys(patch).length) saved = true;
     if (currentUser.value?.id === row.id) currentUser.value = { ...currentUser.value, ...result.user };
+    // The saved profile is the baseline for the next Save: a retry after a
+    // later step failed sends only what is still different from it. The save
+    // can outlive the panel's account, so the baseline moves only if it is
+    // still this one.
+    if (baseline.value?.id === row.id) baseline.value = { ...baseline.value, ...result.user };
+    applyAccount(row.id, result.user);
 
-    if (form.value.newPassword) {
-      await adminApi.resetPassword(row.id, form.value.newPassword);
+    if (draft.newPassword) {
+      await adminApi.resetPassword(row.id, draft.newPassword);
+      saved = true;
     }
 
-    if (canAdmin('users') || canAdmin('usage')) await adminApi.savePolicy({
-      scope: 'user',
-      scope_id: row.id,
-      rpm: form.value.rpm,
-      tpm: form.value.tpm,
-      windows: Object.fromEntries(WINDOWS.map((kind) => [kind, form.value.windows[kind].override
-        ? {
-            enabled: form.value.windows[kind].enabled,
-            requests: form.value.windows[kind].requests,
-            tokens: form.value.windows[kind].tokens,
-            credits: form.value.windows[kind].credits,
-          }
-        : { enabled: null, requests: null, tokens: null, credits: null }])),
-    });
+    if ((canAdmin('users') || canAdmin('usage')) && sendLimits) {
+      await adminApi.savePolicy({ scope: 'user', scope_id: row.id, ...policyBody(draft) });
+      saved = true;
+      // An edit made after this save took its copy is not in what was written,
+      // so the limits stay marked as edited for the next Save.
+      if (panelShows(row.id)) limitsEdited = limitEdits !== editsAtStart;
+    }
 
-    finish();
+    // Closing the panel is for the account it showed when the save began. If
+    // another one is shown now, its panel stays and the list is refreshed.
+    if (panelShows(row.id)) finish(); else void list();
   } catch (failure) {
+    // The failure belongs to the account that was saved; a panel now showing
+    // another one keeps its own busy state and error, and the failure is
+    // written to the list instead.
+    if (!panelShows(row.id)) { failedForAccount(row, failure); return; }
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    const message = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = saved ? t('savedBeforeError', { error: message }) : message;
   }
+}
+
+/** The limits in the shape the policy endpoint takes them. */
+function policyBody(source: typeof form.value) {
+  return {
+    rpm: source.rpm,
+    tpm: source.tpm,
+    // The form has no windows until an account is opened, and the change
+    // watcher reads this before then.
+    windows: Object.fromEntries(WINDOWS.map((kind) => {
+      const limits = source.windows[kind];
+      return [kind, limits?.override
+        ? {
+            enabled: limits.enabled,
+            requests: windowFigure(limits.requests),
+            tokens: windowFigure(limits.tokens),
+            credits: windowFigure(limits.credits),
+          }
+        : { enabled: null, requests: null, tokens: null, credits: null }];
+    })),
+  };
 }
 
 /**
@@ -567,11 +691,13 @@ async function resetTwoFactor(): Promise<void> {
   panelError.value = '';
   try {
     const { user } = await adminApi.resetTwoFactor(row.id);
-    account.value = { ...row, ...user };
-    users.value = users.value.map((entry) => (entry.id === row.id ? { ...entry, ...user } : entry));
-    twoFactorFlash.value = t('twoFactorResetDone');
+    // The row is the account the reset was sent for, but the panel may show
+    // another one by now: applyAccount only touches the panel for this id.
+    applyAccount(row.id, user);
+    if (panelShows(row.id)) twoFactorFlash.value = t('twoFactorResetDone');
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    else failedForAccount(row, failure);
   }
 }
 
@@ -588,12 +714,14 @@ async function ban(): Promise<void> {
   try {
     const { user } = await adminApi.updateUser(row.id, { status: 'disabled', ban_reason: banDraft.value.trim() });
     applyAccount(row.id, user);
+    if (!panelShows(row.id)) return;
     banDraft.value = '';
     // The ban signed every device out in the same transaction, so the devices
     // the panel shows are none.
-    if (account.value?.id === row.id) sessions.value = [];
+    sessions.value = [];
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    else failedForAccount(row, failure);
   } finally {
     banBusy.value = false;
   }
@@ -608,7 +736,8 @@ async function unban(): Promise<void> {
     const { user } = await adminApi.updateUser(row.id, { status: 'active' });
     applyAccount(row.id, user);
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    else failedForAccount(row, failure);
   } finally {
     banBusy.value = false;
   }
@@ -633,8 +762,10 @@ async function remove(): Promise<void> {
   busy.value = true;
   try {
     await adminApi.deleteUser(row.id);
-    finish();
+    // As in save(): the panel closes only if it still shows the deleted account.
+    if (panelShows(row.id)) finish(); else void list();
   } catch (failure) {
+    if (!panelShows(row.id)) { failedForAccount(row, failure); return; }
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
   }
@@ -661,9 +792,32 @@ function actionDone(closePanel: boolean): void {
     return;
   }
   // The panel stays, so what it shows is fetched again: the action changed
-  // some of it.
+  // some of it. The form is not rebuilt from the server, which would throw
+  // away edits nobody has saved yet.
   void list();
-  if (account.value) void open(account.value.id);
+  if (account.value) void refreshFacts(account.value.id);
+}
+
+/**
+ * Re-reads what a plugin action can change without the operator's form
+ * changing with it: the account's status, role and group, the figures, the
+ * cards and the keys and devices. The account is replaced for display only; Save
+ * compares the form against the baseline, which this does not move, so a field
+ * the operator has not touched is never sent back.
+ */
+async function refreshFacts(id: string): Promise<void> {
+  loadAccess(id);
+  try {
+    const detail = await adminApi.user(id);
+    if (!panelShows(id)) return;
+    account.value = detail.user;
+    usage.value = detail.usage;
+    lifetime.value = detail.lifetime;
+    models.value = detail.models ?? [];
+    cards.value = detail.cards;
+  } catch (failure) {
+    if (panelShows(id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+  }
 }
 
 function actionFailed(message: string): void {
@@ -675,7 +829,7 @@ function actionFailed(message: string): void {
  * changes, because "why does this person have no allowance left" and "give
  * them another" are one thought.
  */
-function grant(): void {
+async function grant(): Promise<void> {
   const row = account.value;
   if (!row) return;
   if (grantScopePreset.value === 'custom' && grantCustomWindows.value.length === 0) {
@@ -688,22 +842,38 @@ function grant(): void {
     panelError.value = t('grantCardExpiryInvalid');
     return;
   }
-  grantLabel.value = '…';
-  void adminApi.grantCards(row.id, {
-    cards: count,
-    expires_at: expiresAt,
-    name: grantName.value.trim(),
-    windows: grantSelectedWindows(),
-  })
-    .then(async () => {
-      grantLabel.value = t('granted', { count });
-      const detail = await adminApi.user(row.id);
-      cards.value = detail.cards;
-    })
-    .catch((failure: unknown) => {
-      grantLabel.value = '';
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+  granting.value = true;
+  grantLabel.value = '';
+  try {
+    await adminApi.grantCards(row.id, {
+      cards: count,
+      expires_at: expiresAt,
+      name: grantName.value.trim(),
+      windows: grantSelectedWindows(),
     });
+    if (panelShows(row.id)) grantLabel.value = t('granted', { count });
+    await refreshCards(row.id);
+  } catch (failure) {
+    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    else failedForAccount(row, failure);
+  } finally {
+    if (panelShows(row.id)) granting.value = false;
+  }
+}
+
+/**
+ * Re-reads the cards after one of them changed. The change has already been
+ * made when this runs, so a failed re-read is not reported as the change
+ * failing: the cards on screen are the last ones read, and the next open reads
+ * them again.
+ */
+async function refreshCards(id: string): Promise<void> {
+  try {
+    const detail = await adminApi.user(id);
+    if (panelShows(id)) cards.value = detail.cards;
+  } catch {
+    // See above: there is nothing for the operator to act on.
+  }
 }
 
 /**
@@ -724,22 +894,23 @@ async function reschedule(cardIDs?: string[]): Promise<void> {
   }
 
   rescheduling.value = cardIDs?.length ? cardIDs[0]! : 'all';
-  rescheduleLabel.value = '…';
+  rescheduleLabel.value = '';
   try {
     const result = await adminApi.rescheduleCards(row.id, {
       expires_at: expiresAt,
       ...(cardIDs?.length ? { card_ids: cardIDs } : {}),
     });
-    rescheduleLabel.value = t('cardsMoved', { count: result.moved });
+    if (panelShows(row.id)) rescheduleLabel.value = t('cardsMoved', { count: result.moved });
     // Re-read rather than patch the list in place: a lapsed card that was
     // moved forward is spendable again, and the counts above it move with it.
-    const detail = await adminApi.user(row.id);
-    cards.value = detail.cards;
+    await refreshCards(row.id);
   } catch (failure) {
-    rescheduleLabel.value = '';
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    else failedForAccount(row, failure);
   } finally {
-    rescheduling.value = '';
+    // A request for an account the panel has left must not clear the flag of
+    // the one running for the account it shows now.
+    if (panelShows(row.id)) rescheduling.value = '';
   }
 }
 
@@ -755,16 +926,17 @@ async function revoke(cardID: string): Promise<void> {
   const row = account.value;
   if (!row) return;
   rescheduling.value = cardID;
+  rescheduleLabel.value = '';
   try {
+    // Silent on purpose, like the grant of a card: an operator undoing a
+    // mistake should not be told about it. The list shows what is left.
     await adminApi.revokeCard(row.id, cardID);
-    rescheduleLabel.value = t('cardRevoked');
-    const detail = await adminApi.user(row.id);
-    cards.value = detail.cards;
+    await refreshCards(row.id);
   } catch (failure) {
-    rescheduleLabel.value = '';
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    else failedForAccount(row, failure);
   } finally {
-    rescheduling.value = '';
+    if (panelShows(row.id)) rescheduling.value = '';
   }
 }
 
@@ -772,9 +944,10 @@ function revokeKey(key: ApiKey): void {
   const row = account.value;
   if (!row) return;
   void adminApi.revokeUserKey(row.id, key.id)
-    .then(() => { keys.value = (keys.value ?? []).filter((entry) => entry.id !== key.id); })
+    .then(() => { if (panelShows(row.id)) keys.value = (keys.value ?? []).filter((entry) => entry.id !== key.id); })
     .catch((failure: unknown) => {
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      else failedForAccount(row, failure);
     });
 }
 
@@ -783,9 +956,10 @@ function revokeSession(session: AdminSession): void {
   if (!row) return;
   revokingSession.value = session.id;
   adminApi.revokeUserSession(row.id, session.id)
-    .then(() => { sessions.value = (sessions.value ?? []).filter((entry) => entry.id !== session.id); })
+    .then(() => { if (panelShows(row.id)) sessions.value = (sessions.value ?? []).filter((entry) => entry.id !== session.id); })
     .catch((failure: unknown) => {
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      else failedForAccount(row, failure);
     })
     .finally(() => { revokingSession.value = ''; });
 }
@@ -795,9 +969,10 @@ function signOutEverywhere(): void {
   if (!row) return;
   signOutAllBusy.value = true;
   adminApi.revokeAllUserSessions(row.id)
-    .then(() => { sessions.value = []; })
+    .then(() => { if (panelShows(row.id)) sessions.value = []; })
     .catch((failure: unknown) => {
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      else failedForAccount(row, failure);
     })
     .finally(() => { signOutAllBusy.value = false; });
 }
@@ -812,10 +987,11 @@ async function openConversations(): Promise<void> {
   panelError.value = '';
   try {
     const result = await adminApi.userConversations(row.id, `?limit=${conversationPage.value.pageSize}&offset=${(conversationPage.value.page - 1) * conversationPage.value.pageSize}`);
+    if (!panelShows(row.id)) return;
     conversations.value = result.conversations;
     conversationTotal.value = result.total;
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
   }
 }
 
@@ -828,9 +1004,11 @@ async function openTranscript(conversation: Conversation): Promise<void> {
   panelError.value = '';
   try {
     const { messages } = await adminApi.userTranscript(row.id, conversation.id);
-    transcript.value = messages;
+    // An audit view of one person's messages must not sit under another
+    // account's title: the answer is shown only while its account is.
+    if (panelShows(row.id)) transcript.value = messages;
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
   }
 }
 
@@ -1083,7 +1261,7 @@ const state = { q: '', role: '', status: '', group: '' };
       <!-- What they are holding, before the control that adds more: an
            operator is usually here because somebody asked, and "you already
            have two" is the answer more often than a third card is. -->
-      <AdminControlCard v-if="cards" :title="t('secHeldCards')">
+      <AdminControlCard id="secHeldCards" v-if="cards" :title="t('secHeldCards')">
         <OaRow v-if="cards.total === 0" :meta="t('cardsNone')" />
         <template v-else>
           <!-- The three together, because "none left" and "never had any" are
@@ -1172,15 +1350,17 @@ const state = { q: '', role: '', status: '', group: '' };
             class="oa-btn small"
             :disabled="!movableCards || !!rescheduling"
             @click="reschedule()"
-          >{{ rescheduleLabel || t('rescheduleCards', { count: movableCards }) }}</button>
-          <button type="button" class="oa-btn small primary" :disabled="!!grantLabel" @click="grant">
-            {{ grantLabel || t('grantCards') }}
+          >{{ t('rescheduleCards', { count: movableCards }) }}</button>
+          <button type="button" class="oa-btn small primary" :disabled="granting" @click="grant">
+            {{ t('grantCards') }}
           </button>
         </OaRow>
+        <p v-if="grantLabel" class="oa-group-flash ok" role="status">{{ grantLabel }}</p>
+        <p v-if="rescheduleLabel" class="oa-group-flash ok" role="status">{{ rescheduleLabel }}</p>
         <p class="oa-field-hint">{{ t('rescheduleCardsHint') }}</p>
       </AdminControlCard>
 
-      <AdminControlCard :title="t('secProfile')">
+      <AdminControlCard id="secProfile" :title="t('secProfile')">
         <!-- Masking these would break editing them, so the value stays real
              and only its focus state decides whether it can be read: blurred
              until the operator actually clicks in, same as a screen share
@@ -1198,7 +1378,7 @@ const state = { q: '', role: '', status: '', group: '' };
         />
       </AdminControlCard>
 
-      <AdminControlCard :title="t('secAccess')">
+      <AdminControlCard id="secAccess" :title="t('secAccess')">
         <OaSelectField
           v-if="canAdmin('administrators')"
           v-model="form.role"
@@ -1282,7 +1462,7 @@ const state = { q: '', role: '', status: '', group: '' };
         <p v-if="twoFactorFlash" class="oa-group-flash ok" role="status">{{ twoFactorFlash }}</p>
       </AdminControlCard>
 
-      <AdminControlCard :title="t('secAllowanceOverride')" :hint="t('allowanceOverrideHint')">
+      <AdminControlCard id="secAllowanceOverride" :title="t('secAllowanceOverride')" :hint="t('allowanceOverrideHint')">
         <OaSwitchField
           v-model="unlimitedQuota"
           :label="t('unlimitedQuota')"
@@ -1407,7 +1587,7 @@ const state = { q: '', role: '', status: '', group: '' };
         />
       </template>
 
-      <AdminControlCard :title="t('secConversations')">
+      <AdminControlCard id="secConversations" :title="t('secConversations')">
         <OaRow :meta="t('conversationsHint')">
           <button type="button" class="oa-btn small" @click="openConversations">
             {{ t('viewConversations') }}
@@ -1417,10 +1597,12 @@ const state = { q: '', role: '', status: '', group: '' };
     </template>
 
     <template v-else-if="mode === 'conversations'">
-      <p v-if="conversations === null" class="oa-field-hint">{{ t('loading') }}</p>
-      <p v-else-if="!conversations.length" class="oa-field-hint">{{ t('noConversations') }}</p>
+      <!-- A failed read leaves the list unloaded: neither the loading line nor an
+           empty list is true then, and the error above says what happened. -->
+      <p v-if="conversations === null && !panelError" class="oa-field-hint">{{ t('loading') }}</p>
+      <p v-else-if="conversations && !conversations.length" class="oa-field-hint">{{ t('noConversations') }}</p>
       <OaTable
-        v-else
+        v-else-if="conversations"
         :pagination="{ ...conversationPage, total: conversationTotal }"
         @page="changeConversationPage"
         :columns="conversationColumns"
@@ -1432,8 +1614,8 @@ const state = { q: '', role: '', status: '', group: '' };
     </template>
 
     <template v-else-if="mode === 'transcript'">
-      <p v-if="transcript === null" class="oa-field-hint">{{ t('loading') }}</p>
-      <div v-else class="oa-transcript">
+      <p v-if="transcript === null && !panelError" class="oa-field-hint">{{ t('loading') }}</p>
+      <div v-else-if="transcript" class="oa-transcript">
         <div v-for="message in transcript" :key="message.id" class="oa-transcript-turn">
           <span class="oa-transcript-role">{{ turnLabel(message) }}</span>
           <!-- Plain text, not markdown: this is an audit view of what was

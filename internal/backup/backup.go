@@ -130,6 +130,9 @@ type Turn struct {
 	Content   string `json:"content"`
 	Reasoning string `json:"reasoning,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// The stable code behind Error, so an import can be shown in the reader's
+	// language. Files written before it existed have none and keep the sentence.
+	ErrorCode string `json:"error_code,omitempty"`
 	ModelName string `json:"model_name,omitempty"`
 	CreatedAt int64  `json:"created_at,omitempty"`
 	// How many images the message carried. The pictures themselves are not
@@ -388,6 +391,7 @@ func turnOf(message conversation.Message) Turn {
 		Content:   scrubNUL(message.Content),
 		Reasoning: scrubNUL(message.Reasoning),
 		Error:     scrubNUL(message.Error),
+		ErrorCode: scrubNUL(message.ErrorCode),
 		ModelName: scrubNUL(message.ModelName),
 		CreatedAt: message.CreatedAt,
 		Images:    len(message.Attachments),
@@ -414,9 +418,12 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	if document.Format != Format {
 		return Result{}, ErrWrongFormat
 	}
+	// Only the turns importThread will write count. A file whose extra
+	// messages are blank, or of a role this import does not keep, is not too
+	// large for what it holds.
 	total := 0
 	for _, thread := range document.Conversations {
-		total += len(thread.Messages)
+		total += len(importedTurns(thread))
 	}
 	if overImportLimits(len(document.Conversations), total) {
 		return Result{}, ErrTooLarge
@@ -509,7 +516,7 @@ func hasNUL(document Document) bool {
 			return true
 		}
 		for _, turn := range thread.Messages {
-			for _, field := range [...]string{turn.Role, turn.Content, turn.Reasoning, turn.Error, turn.ModelName} {
+			for _, field := range [...]string{turn.Role, turn.Content, turn.Reasoning, turn.Error, turn.ErrorCode, turn.ModelName} {
 				if strings.IndexByte(field, 0) >= 0 {
 					return true
 				}
@@ -641,27 +648,74 @@ type charTally struct {
 	stored  int64
 }
 
-// importThread writes one conversation in a transaction, so a file that goes
-// wrong halfway leaves whole conversations behind rather than half of one.
-func (s *Service) importThread(ctx context.Context, account user.User, thread Thread, tally *charTally) (int, error) {
+// usableTurn reports whether a turn is one the import keeps on its own. The
+// thread it belongs to can still be dropped whole by importedTurns.
+func usableTurn(turn Turn) bool {
+	role := conversation.Role(strings.ToLower(strings.TrimSpace(turn.Role)))
+	if role != conversation.RoleUser && role != conversation.RoleAssistant {
+		return false
+	}
+	// A question is kept even with no text. An image sent on its own has no
+	// words, but the answer after it was written in reply to it, and importing
+	// that answer alone would leave it with nothing in front of it. Import attaches
+	// no images, so the question comes back empty. A re-export writes it back as
+	// an empty user turn, which this keeps again, so the count holds across
+	// generations.
+	//
+	// An answer with nothing in it is dropped. A stopped answer that produced only
+	// reasoning is not empty, and is kept: it is still an answer to the question
+	// before it.
+	if role == conversation.RoleAssistant && !hasText(turn) {
+		return false
+	}
+	return true
+}
+
+// importedTurns is what importThread writes from a thread, in order, and what
+// the size checks count. A thread with no text anywhere in it is not written:
+// its only turns would be empty questions, and restoring those would produce
+// conversations with nothing in them.
+func importedTurns(thread Thread) []Turn {
 	usable := make([]Turn, 0, len(thread.Messages))
+	anyText := false
 	for _, turn := range thread.Messages {
-		role := conversation.Role(strings.ToLower(strings.TrimSpace(turn.Role)))
-		if role != conversation.RoleUser && role != conversation.RoleAssistant {
-			continue
-		}
-		if strings.TrimSpace(turn.Content) == "" && strings.TrimSpace(turn.Error) == "" {
+		if !usableTurn(turn) {
 			continue
 		}
 		usable = append(usable, turn)
+		anyText = anyText || hasText(turn)
 	}
+	if !anyText {
+		return nil
+	}
+	return usable
+}
+
+// hasText reports whether a turn has words to restore. An image is not text:
+// import attaches no images, so an image-only turn has nothing to write.
+func hasText(turn Turn) bool {
+	return strings.TrimSpace(turn.Content) != "" ||
+		strings.TrimSpace(turn.Reasoning) != "" ||
+		strings.TrimSpace(turn.Error) != ""
+}
+
+// importThread writes one conversation in a transaction, so a file that goes
+// wrong halfway leaves whole conversations behind rather than half of one.
+func (s *Service) importThread(ctx context.Context, account user.User, thread Thread, tally *charTally) (int, error) {
+	usable := importedTurns(thread)
 	if len(usable) == 0 {
 		return 0, nil
 	}
 
 	title := text.TrimAndTruncate(thread.Title, MaxTitleChars)
 	if title == "" {
-		title = conversation.DeriveTitle(usable[0].Content)
+		// The first turn may be an image with no words to name the thread by.
+		for _, turn := range usable {
+			if strings.TrimSpace(turn.Content) != "" {
+				title = conversation.DeriveTitle(turn.Content)
+				break
+			}
+		}
 	}
 
 	// What will be stored, so the character ceiling is held against the
@@ -717,6 +771,7 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 				Content:        text.TrimAndTruncate(turn.Content, MaxImportContentChars),
 				Reasoning:      text.TrimAndTruncate(turn.Reasoning, MaxImportReasoningChars),
 				Error:          text.TrimAndTruncate(turn.Error, conversation.MaxErrorChars),
+				ErrorCode:      text.TrimAndTruncate(turn.ErrorCode, 64),
 				ModelName:      text.TrimAndTruncate(turn.ModelName, 80),
 			}); err != nil {
 				return err

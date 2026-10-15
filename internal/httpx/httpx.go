@@ -24,8 +24,11 @@ import (
 type Error struct {
 	Status int
 	// A stable machine-readable token the frontend can branch on
-	// ("quota_exceeded", "invalid_credentials"). Never localise this; the
-	// message is what gets translated.
+	// ("quota_exceeded", "invalid_credentials"). Never localise it. The
+	// frontend maps the codes it knows to the reader's language (apiErrorText,
+	// or a screen's own mapping such as KeysPanel's refusalText). A code it
+	// does not know shows this message, which is English and written for logs
+	// and API clients.
 	Code    string
 	Message string
 	// Extra fields merged into the error object — the reset time on a quota
@@ -100,6 +103,12 @@ func ForbiddenCode(code, message string) *Error {
 
 func NotFound(message string) *Error {
 	return newError(http.StatusNotFound, "not_found", message)
+}
+
+// NotFoundCode is NotFound with a code the client can switch on, for a refusal
+// the interface words itself.
+func NotFoundCode(code, message string) *Error {
+	return newError(http.StatusNotFound, code, message)
 }
 
 func Conflict(code, message string) *Error {
@@ -223,11 +232,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64,
 	if err := decoder.Decode(dst); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			return &Error{
-				Status:  http.StatusRequestEntityTooLarge,
-				Code:    "payload_too_large",
-				Message: fmt.Sprintf("Request body must be under %d bytes.", maxBytes),
-			}
+			return tooLargeError(maxBytes)
 		}
 		if errors.Is(err, io.EOF) {
 			return BadRequest("Request body is empty.")
@@ -235,11 +240,31 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64,
 		return BadRequest("Request body is not valid JSON: %s", err.Error())
 	}
 	// A second JSON value in the same body is a sign of a confused client, and
-	// accepting it silently hides that.
-	if decoder.More() {
+	// accepting it silently hides that. More() is not the test for this: it
+	// reports false for a stray ] or }, which would let {"a":1}} through. Only
+	// io.EOF after the value means nothing follows but whitespace.
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		// The cap is reached here too, by a valid value followed by padding that
+		// passes it. That body is too large, not malformed, and the client has to
+		// be told which to fix.
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return tooLargeError(maxBytes)
+		}
 		return BadRequest("Request body must contain a single JSON object.")
 	}
 	return nil
+}
+
+// tooLargeError is the answer to a body over its cap. Both reads that can hit
+// the cap return it, so a client that sent too much is never told that a body
+// it sent in full was malformed.
+func tooLargeError(maxBytes int64) *Error {
+	return &Error{
+		Status:  http.StatusRequestEntityTooLarge,
+		Code:    "payload_too_large",
+		Message: fmt.Sprintf("Request body must be under %d bytes.", maxBytes),
+	}
 }
 
 type contextKey string

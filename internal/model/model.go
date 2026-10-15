@@ -226,6 +226,23 @@ var (
 	ErrNotPermitted           = errors.New("model: not available to this account")
 	ErrDisabled               = errors.New("model: this model is currently unavailable")
 	ErrInvalidRequestOverride = errors.New("model: request override must be a valid JSON object")
+	// Another model routes to this one. Deleting it would clear that route
+	// (the foreign key sets it to NULL), and the source would then be served
+	// by its own provider: the one the operator routed away from.
+	ErrRouted        = errors.New("model: other models route to this one")
+	ErrInvalidAccess = errors.New("model: access must be use, view or none")
+	// Checked before the insert: left to the foreign key, the failure is an
+	// internal error, and the caller cannot tell it was the request's fault.
+	ErrGrantModelMissing = errors.New("model: a grant names a model that does not exist")
+	// A route is one hop. Authorize follows exactly one, so a route to a
+	// routed model, or from a model that other routes already point at,
+	// would make a chain that quietly ignores its last link.
+	ErrRouteChain = errors.New("model: a route is one hop, and that model is already part of a route")
+	// Not ErrNotFound: that one reads as "the model being saved is
+	// unavailable", and the mistake is in the target the operator typed.
+	ErrRouteTargetMissing = errors.New("model: the route's target does not exist")
+	// Empty means inherit the provider's style and is always accepted.
+	ErrInvalidReasoningStyle = errors.New("model: unknown reasoning style")
 )
 
 const (
@@ -276,6 +293,9 @@ type CreateInput struct {
 	ReasoningStyle  adapter.ReasoningStyle
 	ReasoningTiers  []ReasoningTier
 	RequestOverride string
+	// When set, these grants replace the default of 'use' for every group, in
+	// the same transaction as the model row.
+	GroupGrants *[]ModelGroupGrant
 	Capabilities
 	Weights
 }
@@ -305,10 +325,14 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		return Model{}, err
 	}
 	record = normalized
+	if err := checkReasoningStyle(record.ReasoningStyle); err != nil {
+		return Model{}, err
+	}
 
 	now := time.Now().UnixMilli()
 	record.CreatedAt, record.UpdatedAt = now, now
 
+	var granted []ModelGroupGrant
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
 		// A provider being disabled and a model being added are one invariant,
 		// even when two server instances do them at the same time. Both paths
@@ -329,6 +353,12 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 			record.Enabled = false
 		}
 
+		if err := lockRouteTarget(ctx, tx, record.RouteToID); err != nil {
+			return err
+		}
+		if err := checkRouteTx(ctx, tx, record.ID, record.RouteToID); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `INSERT INTO models
 			(id, provider_id, model_id, display_name, description, avatar, enabled, hidden, sort_order,
 			 supports_reasoning, supports_images, supports_vision, supports_streaming,
@@ -349,6 +379,16 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		if err != nil {
 			return err
 		}
+		// Chosen grants go in this transaction, not after it: a grant the
+		// database refuses then refuses the model too, rather than leaving a
+		// saved model with the default grant to every group.
+		if in.GroupGrants != nil {
+			if err := setModelGroups(ctx, tx, record.ID, *in.GroupGrants); err != nil {
+				return err
+			}
+			granted, err = modelGroupGrants(ctx, tx, record.ID)
+			return err
+		}
 		// Default all existing groups to 'use' if not already present
 		_, err = tx.Exec(ctx, `INSERT INTO group_models (group_id, model_id, access)
 			SELECT g.id, ?, ? FROM user_groups g
@@ -362,6 +402,11 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 			return Model{}, s.whichDuplicate(ctx, record.APIName, record.ID)
 		}
 		return Model{}, fmt.Errorf("model: create: %w", err)
+	}
+	// What was stored, not what was asked for: the store drops 'none' and
+	// repeated groups, so an echo of the request would not match the grants.
+	if in.GroupGrants != nil {
+		record.GroupGrants = granted
 	}
 	return record, nil
 }
@@ -382,6 +427,8 @@ type Update struct {
 	ReasoningStyle  *adapter.ReasoningStyle
 	ReasoningTiers  *[]ReasoningTier
 	RequestOverride *string
+	// Replaces the model's grants in the same transaction as the other fields.
+	GroupGrants *[]ModelGroupGrant
 
 	SupportsReasoning    *bool
 	SupportsImages       *bool
@@ -402,6 +449,14 @@ type Update struct {
 }
 
 func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, error) {
+	// Checked only when the caller sends a style. A row stored before this
+	// check existed is not re-validated by an edit that leaves its style alone,
+	// or that row could never be saved again.
+	if in.ReasoningStyle != nil {
+		if err := checkReasoningStyle(*in.ReasoningStyle); err != nil {
+			return Model{}, err
+		}
+	}
 	// The provider row is taken before the model row, as Create does and as
 	// provider.Update's cascade does, so the two cannot wait on each other. A
 	// model's provider never changes, so naming it before the transaction is
@@ -412,10 +467,28 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 	}
 
 	var next Model
+	var granted []ModelGroupGrant
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE providers SET updated_at = updated_at WHERE id = ?`, owner.ProviderID); err != nil {
 			return fmt.Errorf("model: lock provider: %w", err)
+		}
+		// A route write takes two model rows, the source's and its target's.
+		// Two routes that point at each other across providers would each hold
+		// one row and wait for the other if both took source first, and
+		// PostgreSQL aborts one as a deadlock. The lower id first makes them
+		// queue instead.
+		if in.RouteToID != nil && *in.RouteToID != "" {
+			first, second := modelID, *in.RouteToID
+			if second < first {
+				first, second = second, first
+			}
+			for _, id := range []string{first, second} {
+				if _, err := tx.Exec(ctx,
+					`UPDATE models SET updated_at = updated_at WHERE id = ?`, id); err != nil {
+					return fmt.Errorf("model: lock route: %w", err)
+				}
+			}
 		}
 		// Everything below is decided from the row as it stands under the model's
 		// own lock. The checker's DisableIfEnabled takes that lock when it switches
@@ -465,6 +538,11 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 		if err != nil {
 			return err
 		}
+		if next.RouteToID != current.RouteToID {
+			if err := checkRouteTx(ctx, tx, modelID, next.RouteToID); err != nil {
+				return err
+			}
+		}
 		var providerEnabled bool
 		if err := tx.QueryRow(ctx,
 			`SELECT enabled FROM providers WHERE id = ?`, next.ProviderID).Scan(&providerEnabled); err != nil {
@@ -472,6 +550,13 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 		}
 		if !providerEnabled {
 			next.Enabled = false
+			// An enable the provider refused must leave the checker's claim standing,
+			// even when the caller also clears it (a health reset does): otherwise the
+			// refusal would erase the one record that says the model was switched off
+			// by the system and not by an operator.
+			if in.Enabled != nil && *in.Enabled {
+				next.AutoDisabled = current.AutoDisabled
+			}
 		}
 		// An operator changing the state is a decision about the model, and it
 		// ends the checker's claim on it: left standing, the next sweep would
@@ -501,6 +586,16 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 			next.Request, next.InputToken, next.OutputToken, next.ReasoningToken,
 			routeValue(next.RouteToID), next.ReasoningStyle, encodeTiers(next.ReasoningTiers),
 			next.APIName, next.AutoDisabled, next.SystemPrompt, next.RequestOverride, next.UpdatedAt, modelID)
+		if err != nil {
+			return err
+		}
+		if in.GroupGrants == nil {
+			return nil
+		}
+		if err := setModelGroups(ctx, tx, modelID, *in.GroupGrants); err != nil {
+			return err
+		}
+		granted, err = modelGroupGrants(ctx, tx, modelID)
 		return err
 	})
 	if err != nil {
@@ -508,6 +603,9 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 			return Model{}, s.whichDuplicate(ctx, next.APIName, modelID)
 		}
 		return Model{}, fmt.Errorf("model: update: %w", err)
+	}
+	if in.GroupGrants != nil {
+		next.GroupGrants = granted
 	}
 	return next, nil
 }
@@ -538,6 +636,47 @@ func (s *Store) DisableIfEnabled(ctx context.Context, modelID string) (bool, err
 		return false, fmt.Errorf("model: disable if enabled rows affected: %w", err)
 	}
 	return affected == 1, nil
+}
+
+// EnableIfAutoDisabled is the mirror of DisableIfEnabled: the checker's own
+// write, switching a model back on only while the row still carries the
+// checker's claim. The checker decides from a snapshot taken before its probes,
+// which can run for minutes, so an operator may have switched the model off in
+// the meantime. An unconditional write would undo that decision.
+//
+// A model whose provider is off stays off and keeps the claim, so the next
+// pass asks again once the provider is back. The provider's row lock is taken
+// first, the one Update and Create take, so the check reads the provider as
+// committed: a provider disable still in flight either finishes before the
+// check or waits for this transaction and then cascades over the model. A
+// test inside the single UPDATE would not do this, because under PostgreSQL's
+// READ COMMITTED it sees the provider as it was before that disable committed.
+func (s *Store) EnableIfAutoDisabled(ctx context.Context, modelID string) (bool, error) {
+	var flipped bool
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		// Naming the provider through the model means a model that does not
+		// exist locks nothing, and the update below then matches nothing.
+		if _, err := tx.Exec(ctx,
+			`UPDATE providers SET updated_at = updated_at
+			 WHERE id = (SELECT provider_id FROM models WHERE id = ?)`, modelID); err != nil {
+			return fmt.Errorf("model: lock provider: %w", err)
+		}
+		result, err := tx.Exec(ctx,
+			`UPDATE models SET enabled = ?, auto_disabled = ?, updated_at = ?
+			 WHERE id = ? AND enabled = ? AND auto_disabled = ?
+			   AND EXISTS (SELECT 1 FROM providers WHERE providers.id = models.provider_id AND providers.enabled = ?)`,
+			true, false, time.Now().UnixMilli(), modelID, false, true, true)
+		if err != nil {
+			return fmt.Errorf("model: enable if auto disabled: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("model: enable if auto disabled rows affected: %w", err)
+		}
+		flipped = affected == 1
+		return nil
+	})
+	return flipped, err
 }
 
 // The public API name has a unique index (idx_models_api_name). Multiple
@@ -692,6 +831,12 @@ func (s *Store) FindAPIModel(
 	}
 	defer rows.Close()
 
+	// The rows arrive in sort order, so the first hit in a tier is the one
+	// the operator listed first. Taking the first hit of any tier let a
+	// display name at sort 0 shadow an API name at sort 5: a label should
+	// never beat a name.
+	const noMatch = 3
+	bestID, bestTier := "", noMatch
 	for rows.Next() {
 		var candidate struct {
 			ID          string
@@ -713,15 +858,35 @@ func (s *Store) FindAPIModel(
 				ref += "-" + modelIDTail(candidate.ID)
 			}
 		}
-		if candidate.ID == wanted || strings.EqualFold(ref, wanted) ||
-			strings.EqualFold(candidate.DisplayName, wanted) {
+		// An unnamed row's display name defaults to its upstream id. Where several
+		// rows share that id, each would match the bare id at this tier and the
+		// first by sort order would answer, though the listing offers only their
+		// qualified refs. The bare id reaches none of them.
+		sharedBareID := candidate.APIName == "" && candidate.Claims > 1 &&
+			strings.EqualFold(candidate.DisplayName, candidate.ModelID)
+		tier := noMatch
+		switch {
+		case candidate.ID == wanted:
+			tier = 0
+		case strings.EqualFold(ref, wanted):
+			tier = 1
+		case !sharedBareID && strings.EqualFold(candidate.DisplayName, wanted):
+			tier = 2
+		}
+		if tier == 0 {
 			return candidate.ID, nil
+		}
+		if tier < bestTier {
+			bestID, bestTier = candidate.ID, tier
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return "", fmt.Errorf("model: read API model candidates: %w", err)
 	}
-	return "", ErrNotFound
+	if bestTier == noMatch {
+		return "", ErrNotFound
+	}
+	return bestID, nil
 }
 
 func splitQualifiedAPIRef(wanted string) (string, string, bool) {
@@ -886,6 +1051,10 @@ func (s *Store) readCallable(
 		return Model{}, provider.Provider{}, nil, fmt.Errorf("model: read callable: %w", err)
 	}
 	record.RouteToID = route.String
+	// Authorize resolves the reasoning slider against this record, so its
+	// tiers must be here. scan() decodes them too; leaving this out made
+	// every chat request fall back to the adapter's built-in budgets.
+	record.ReasoningTiers = decodeTiers(tiers)
 	upstream.Headers = decodeHeaders(headerJSON)
 	return record, upstream, sealed, nil
 }
@@ -905,19 +1074,95 @@ func (s *Store) Reorder(ctx context.Context, modelIDs []string) error {
 	now := time.Now().UnixMilli()
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		for position, modelID := range modelIDs {
-			if _, err := tx.Exec(ctx,
+			res, err := tx.Exec(ctx,
 				`UPDATE models SET sort_order = ?, updated_at = ? WHERE id = ?`,
-				position, now, modelID); err != nil {
+				position, now, modelID)
+			if err != nil {
 				return fmt.Errorf("model: reorder: %w", err)
+			}
+			// An id that names no model matches nothing and fails silently. The
+			// order is then wrong for the row the caller meant to move, so the
+			// whole batch is refused and rolled back rather than half applied.
+			if n, _ := res.RowsAffected(); n == 0 {
+				return ErrNotFound
 			}
 		}
 		return nil
 	})
 }
 
+// Delete removes a model, unless another one routes to it. The check and the
+// delete run under the target's row lock, the same lock a route write takes
+// on its target, so a route set concurrently either lands first and is
+// refused here, or waits and finds the row gone.
 func (s *Store) Delete(ctx context.Context, modelID string) error {
-	if _, err := s.db.Exec(ctx, `DELETE FROM models WHERE id = ?`, modelID); err != nil {
-		return fmt.Errorf("model: delete: %w", err)
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`UPDATE models SET updated_at = updated_at WHERE id = ?`, modelID); err != nil {
+			return fmt.Errorf("model: lock model: %w", err)
+		}
+		var routed int
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM models WHERE route_to_id = ?`, modelID).Scan(&routed); err != nil {
+			return fmt.Errorf("model: count routes: %w", err)
+		}
+		if routed > 0 {
+			return ErrRouted
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM models WHERE id = ?`, modelID); err != nil {
+			return fmt.Errorf("model: delete: %w", err)
+		}
+		return nil
+	})
+}
+
+// lockRouteTarget takes the target's row lock for a route write. Delete takes
+// the same lock, so a route to a model and that model's deletion cannot both
+// commit: without it, a route committed after Delete's check would be cleared
+// by the foreign key when the target went.
+func lockRouteTarget(ctx context.Context, tx *database.Tx, routeToID string) error {
+	if routeToID == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE models SET updated_at = updated_at WHERE id = ?`, routeToID); err != nil {
+		return fmt.Errorf("model: lock route target: %w", err)
+	}
+	return nil
+}
+
+// checkRouteTx refuses a new route that would leave a chain for Authorize to
+// stop short of. Its callers hold the provider's row lock and the target's
+// row lock: Create takes the target's with lockRouteTarget, and Update takes
+// it and the source's, in id order, before it gets here. So a route written
+// beside this one is already committed or waits for it. Checking the incoming
+// routes is what the target-side check alone misses: with A routed to B, a
+// route from B to C passes that check, and a request for A would silently use
+// B's upstream while ignoring B's own route.
+func checkRouteTx(ctx context.Context, tx *database.Tx, modelID, routeToID string) error {
+	if routeToID == "" {
+		return nil
+	}
+	if routeToID == modelID {
+		return ErrRouteChain
+	}
+	target, err := byID(ctx, tx, routeToID)
+	if errors.Is(err, ErrNotFound) {
+		return ErrRouteTargetMissing
+	}
+	if err != nil {
+		return err
+	}
+	if target.RouteToID != "" {
+		return ErrRouteChain
+	}
+	var incoming int
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM models WHERE route_to_id = ?`, modelID).Scan(&incoming); err != nil {
+		return fmt.Errorf("model: read incoming routes: %w", err)
+	}
+	if incoming > 0 {
+		return ErrRouteChain
 	}
 	return nil
 }
@@ -957,6 +1202,30 @@ func (s *Store) GroupModelGrants(ctx context.Context, groupID string) ([]GroupGr
 	return out, rows.Err()
 }
 
+// AllGroupGrants is every group's grants in one query, keyed by group id, for
+// a page that lists all the groups. A group with no grants is absent.
+func (s *Store) AllGroupGrants(ctx context.Context, q database.Queryer) (map[string][]GroupGrant, error) {
+	if q == nil {
+		q = s.db
+	}
+	rows, err := q.Query(ctx, `SELECT group_id, model_id, access FROM group_models`)
+	if err != nil {
+		return nil, fmt.Errorf("model: all group grants: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string][]GroupGrant{}
+	for rows.Next() {
+		var groupID string
+		var g GroupGrant
+		if err := rows.Scan(&groupID, &g.ModelID, &g.Access); err != nil {
+			return nil, fmt.Errorf("model: all group grants scan: %w", err)
+		}
+		out[groupID] = append(out[groupID], g)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) GroupModelIDs(ctx context.Context, groupID string) ([]string, error) {
 	grants, err := s.GroupModelGrants(ctx, groupID)
 	if err != nil {
@@ -971,45 +1240,68 @@ func (s *Store) GroupModelIDs(ctx context.Context, groupID string) ([]string, er
 	return out, nil
 }
 
-// SetGroupModels replaces a group's grants wholesale, in one transaction, so
-// a half-applied permission change cannot exist.
-func (s *Store) SetGroupModels(ctx context.Context, groupID string, grants []GroupGrant) error {
-	return s.db.Tx(ctx, func(tx *database.Tx) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM group_models WHERE group_id = ?`, groupID); err != nil {
-			return fmt.Errorf("model: clear group models: %w", err)
+// SetGroupModels replaces a group's grants wholesale. A nil q runs it in its
+// own transaction; a caller that has just written the group passes its
+// transaction, so the group and its grants commit or roll back together. A
+// grant written after the group's own commit would leave a group with no
+// grants behind when it fails, and the retry would then be refused as a
+// duplicate name.
+func (s *Store) SetGroupModels(ctx context.Context, q database.Queryer, groupID string, grants []GroupGrant) error {
+	if q == nil {
+		return s.db.Tx(ctx, func(tx *database.Tx) error {
+			return s.SetGroupModels(ctx, tx, groupID, grants)
+		})
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM group_models WHERE group_id = ?`, groupID); err != nil {
+		return fmt.Errorf("model: clear group models: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, g := range grants {
+		if g.ModelID == "" || seen[g.ModelID] {
+			continue
 		}
-		seen := map[string]bool{}
-		for _, g := range grants {
-			if g.ModelID == "" || seen[g.ModelID] {
-				continue
-			}
-			access := normalizeAccess(g.Access)
-			if access == "" {
-				continue
-			}
-			seen[g.ModelID] = true
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO group_models (group_id, model_id, access) VALUES (?, ?, ?)`,
-				groupID, g.ModelID, access); err != nil {
-				return fmt.Errorf("model: grant %s: %w", g.ModelID, err)
-			}
+		access, err := normalizeAccess(g.Access)
+		if err != nil {
+			return err
 		}
-		return nil
-	})
+		if access == "" {
+			continue
+		}
+		seen[g.ModelID] = true
+		// The lookup shares the caller's transaction, so a missing model rolls
+		// the group and its other grants back with it.
+		var found int
+		switch err := q.QueryRow(ctx, `SELECT 1 FROM models WHERE id = ?`, g.ModelID).Scan(&found); {
+		case errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("model: grant %s: %w", g.ModelID, ErrGrantModelMissing)
+		case err != nil:
+			return fmt.Errorf("model: look up grant %s: %w", g.ModelID, err)
+		}
+		if _, err := q.Exec(ctx,
+			`INSERT INTO group_models (group_id, model_id, access) VALUES (?, ?, ?)`,
+			groupID, g.ModelID, access); err != nil {
+			return fmt.Errorf("model: grant %s: %w", g.ModelID, err)
+		}
+	}
+	return nil
 }
 
 // SetGroupModelIDs is a convenience wrapper for callers specifying only IDs.
-func (s *Store) SetGroupModelIDs(ctx context.Context, groupID string, modelIDs []string) error {
+func (s *Store) SetGroupModelIDs(ctx context.Context, q database.Queryer, groupID string, modelIDs []string) error {
 	grants := make([]GroupGrant, len(modelIDs))
 	for i, id := range modelIDs {
 		grants[i] = GroupGrant{ModelID: id, Access: AccessUse}
 	}
-	return s.SetGroupModels(ctx, groupID, grants)
+	return s.SetGroupModels(ctx, q, groupID, grants)
 }
 
 // ModelGroupGrants returns which groups are granted access to a specific model.
 func (s *Store) ModelGroupGrants(ctx context.Context, modelID string) ([]ModelGroupGrant, error) {
-	rows, err := s.db.Query(ctx, `SELECT group_id, access FROM group_models WHERE model_id = ?`, modelID)
+	return modelGroupGrants(ctx, s.db, modelID)
+}
+
+func modelGroupGrants(ctx context.Context, q database.Queryer, modelID string) ([]ModelGroupGrant, error) {
+	rows, err := q.Query(ctx, `SELECT group_id, access FROM group_models WHERE model_id = ?`, modelID)
 	if err != nil {
 		return nil, fmt.Errorf("model: model group grants: %w", err)
 	}
@@ -1029,27 +1321,36 @@ func (s *Store) ModelGroupGrants(ctx context.Context, modelID string) ([]ModelGr
 // SetModelGroups replaces a model's grants across all groups in one transaction.
 func (s *Store) SetModelGroups(ctx context.Context, modelID string, grants []ModelGroupGrant) error {
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM group_models WHERE model_id = ?`, modelID); err != nil {
-			return fmt.Errorf("model: clear model groups: %w", err)
-		}
-		seen := map[string]bool{}
-		for _, g := range grants {
-			if g.GroupID == "" || seen[g.GroupID] {
-				continue
-			}
-			access := normalizeAccess(g.Access)
-			if access == "" {
-				continue
-			}
-			seen[g.GroupID] = true
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO group_models (group_id, model_id, access) VALUES (?, ?, ?)`,
-				g.GroupID, modelID, access); err != nil {
-				return fmt.Errorf("model: grant group %s: %w", g.GroupID, err)
-			}
-		}
-		return nil
+		return setModelGroups(ctx, tx, modelID, grants)
 	})
+}
+
+// setModelGroups is SetModelGroups inside the caller's transaction, for the
+// writes that save a model and its grants together.
+func setModelGroups(ctx context.Context, tx *database.Tx, modelID string, grants []ModelGroupGrant) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM group_models WHERE model_id = ?`, modelID); err != nil {
+		return fmt.Errorf("model: clear model groups: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, g := range grants {
+		if g.GroupID == "" || seen[g.GroupID] {
+			continue
+		}
+		access, err := normalizeAccess(g.Access)
+		if err != nil {
+			return err
+		}
+		if access == "" {
+			continue
+		}
+		seen[g.GroupID] = true
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO group_models (group_id, model_id, access) VALUES (?, ?, ?)`,
+			g.GroupID, modelID, access); err != nil {
+			return fmt.Errorf("model: grant group %s: %w", g.GroupID, err)
+		}
+	}
+	return nil
 }
 
 // AllModelGrants returns all group grants indexed by model id.
@@ -1072,20 +1373,45 @@ func (s *Store) AllModelGrants(ctx context.Context) (map[string][]ModelGroupGran
 	return out, rows.Err()
 }
 
-func normalizeAccess(access string) string {
+// normalizeAccess maps an administrator's word for a grant onto the stored
+// level. "none" and "" mean no grant. Anything else that is not a level is
+// refused rather than read as full use: a typo such as "viwe" used to grant
+// far more than was asked for, and nothing reported it.
+func normalizeAccess(access string) (string, error) {
 	switch strings.TrimSpace(strings.ToLower(access)) {
 	case AccessView:
-		return AccessView
+		return AccessView, nil
 	case AccessUse:
-		return AccessUse
+		return AccessUse, nil
 	case "none", "":
-		return ""
+		return "", nil
 	default:
-		return AccessUse
+		return "", ErrInvalidAccess
 	}
 }
 
+// CheckAccess reports whether an access word is one the grant tables accept.
+// Handlers call it before saving so an unknown word is answered before any
+// write. The grants share the model's transaction, so a refused word would roll
+// the row back on its own.
+func CheckAccess(access string) error {
+	_, err := normalizeAccess(access)
+	return err
+}
+
 // --- helpers -------------------------------------------------------------------
+
+// checkReasoningStyle refuses a style the adapters cannot act on. The provider
+// store refused these already; the model store did not, so a typo was saved,
+// replaced the provider's valid style at resolution, and the OpenAI switch has
+// no branch for it, which turned reasoning off without a word.
+func checkReasoningStyle(style adapter.ReasoningStyle) error {
+	trimmed := adapter.ReasoningStyle(strings.TrimSpace(string(style)))
+	if trimmed == "" || trimmed.Valid() {
+		return nil
+	}
+	return ErrInvalidReasoningStyle
+}
 
 func validate(record Model) (Model, error) {
 	record.ModelID = strings.TrimSpace(record.ModelID)
@@ -1133,8 +1459,10 @@ func validate(record Model) (Model, error) {
 	if record.RequestOverride == "" {
 		record.RequestOverride = "{}"
 	} else {
+		// "null" decodes without error into a nil map, so the nil check is what
+		// keeps a non-object out of the column.
 		var obj map[string]any
-		if err := json.Unmarshal([]byte(record.RequestOverride), &obj); err != nil {
+		if err := json.Unmarshal([]byte(record.RequestOverride), &obj); err != nil || obj == nil {
 			return Model{}, ErrInvalidRequestOverride
 		}
 	}

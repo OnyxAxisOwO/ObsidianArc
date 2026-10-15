@@ -24,6 +24,7 @@ import { useElementSize } from '@vueuse/core';
 import { Code, Monitor, Smartphone, Tablet, Trash2, Upload } from 'lucide-vue-next';
 import { adminApi } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaOverlay from '@/components/OaOverlay.vue';
 import { t, type StringKey } from '@/composables/useI18n';
@@ -121,6 +122,15 @@ const busy = ref(false);
 const dragging = ref(false);
 const editing = ref(false);
 const draft = ref('');
+// The text the draft was last taken from: the stored page, or what was saved.
+// A draft that still equals it has nothing to lose, so reopening reads the page
+// again; any other draft is somebody's unsaved work and survives closing.
+let seed = '';
+// The variant the draft was typed for. A draft is one variant's work: opened
+// under another screen or scheme it is not kept, because Save would upload it
+// as that other variant.
+let draftKey = '';
+let pageRequest = 0;
 
 function detectFileType(file: File): string {
   const type = file.type.toLowerCase();
@@ -188,25 +198,49 @@ function onDrop(event: DragEvent): void {
 
 async function openEditor(): Promise<void> {
   editing.value = true;
+  // Unsaved work is not replaced: closing the sheet with Escape or a click
+  // outside it must not throw away what was typed.
+  if (draftKey === key.value && draft.value !== seed) return;
+  draftKey = key.value;
   draft.value = '';
+  seed = '';
+  // Taken before the variant's page is checked: a fetch still in flight from an
+  // earlier open must be dropped even when this variant has no page now, or it
+  // would write the removed page into the draft, and Save would upload it.
+  const ticket = ++pageRequest;
   const bg = current.value;
   if (!bg?.html) return;
-  // The stored page, so editing starts from it rather than from nothing.
+  // The stored page, so editing starts from it rather than from nothing. An
+  // answer that arrives after the operator has typed, or after another open, is
+  // dropped: it must not overwrite what is on screen.
   try {
     const res = await fetch(bg.url, { credentials: 'omit' });
-    if (res.ok && editing.value) draft.value = await res.text();
+    if (!res.ok) return;
+    const text = await res.text();
+    if (ticket !== pageRequest || !editing.value || draft.value !== '') return;
+    draft.value = text;
+    seed = text;
   } catch {
     // An empty editor is still an editor; saving replaces what was there.
   }
 }
 
+// Cancel is the one way to throw the draft away on purpose: it goes back to
+// what the editor was last given, and the sheet closes.
+function cancelEditor(): void {
+  draft.value = seed;
+  editing.value = false;
+}
+
 async function saveHTML(): Promise<void> {
   const target = key.value;
+  const saved = draft.value;
   busy.value = true;
   try {
-    const res = await adminApi.uploadBackgroundHTML(target, draft.value);
+    const res = await adminApi.uploadBackgroundHTML(target, saved);
     emit('changed', target, { url: res.url, html: true });
     emit('status', t('bgHtmlSaved'), true);
+    seed = saved;
     editing.value = false;
   } catch (failure) {
     fail(failure);
@@ -216,10 +250,18 @@ async function saveHTML(): Promise<void> {
 }
 
 async function clear(): Promise<void> {
+  // A page fetch still in flight is for the page being removed.
+  ++pageRequest;
   const target = key.value;
   busy.value = true;
   try {
     await adminApi.deleteLoginBackground(target);
+    // The draft was written for the page just removed. Kept, reopening the
+    // editor for this variant would offer that text back, and Save would
+    // upload it as the next page.
+    draft.value = '';
+    seed = '';
+    draftKey = '';
     emit('changed', target, null);
     emit('status', t('loginBgDeleted'), true);
   } catch (failure) {
@@ -317,14 +359,25 @@ async function clear(): Promise<void> {
         <button type="button" class="oa-btn small" :disabled="busy" @click="openEditor">
           <Code :size="13" />{{ t('bgHtmlEdit') }}
         </button>
-        <OaIconButton v-if="current" class="oa-icon-btn" :label="t('remove')" :disabled="busy" @click="clear">
+        <!-- Removing a background also discards an HTML source the operator
+             may have written, so it takes the same two clicks as every other
+             destructive control here. -->
+        <OaConfirmButton
+          v-if="current"
+          class="oa-icon-btn danger"
+          :armed-label="t('confirmWord')"
+          :armed-title="t('loginBgRemoveConfirm', { name: t(LABELS[variant]!) })"
+          :resting-title="t('remove')"
+          :disabled="busy"
+          @confirm="clear"
+        >
           <Trash2 :size="14" />
-        </OaIconButton>
+        </OaConfirmButton>
       </div>
     </div>
   </div>
 
-  <OaOverlay v-if="editing" overlay-class="oa-modal-overlay" @close="editing = false">
+  <OaOverlay v-if="editing" overlay-class="oa-modal-overlay" :label="t('bgHtmlTitle')" @close="editing = false">
     <div class="oa-auth-card oa-modal-card oa-bg-html-editor">
       <OaIconButton class="oa-icon-btn oa-modal-close" :label="t('close')" @click="editing = false">
         <IconClose :size="16" />
@@ -340,7 +393,7 @@ async function clear(): Promise<void> {
         placeholder="<!doctype html>&#10;<style>&#10;  body { margin: 0; background: linear-gradient(135deg, #6C4CD6, #00696E); }&#10;</style>"
       />
       <div class="oa-bg-html-actions">
-        <button type="button" class="oa-btn" @click="editing = false">{{ t('cancel') }}</button>
+        <button type="button" class="oa-btn" @click="cancelEditor">{{ t('cancel') }}</button>
         <button type="button" class="oa-btn primary" :disabled="!draft.trim() || busy" @click="saveHTML">
           {{ t('save') }}
         </button>

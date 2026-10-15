@@ -5,8 +5,11 @@
 // never used an authenticator app, and the order matters: an app before a
 // picture to scan, a code from it before anything changes, and the recovery
 // codes last — the only moment they exist in plain text. Nothing on the
-// account changes until the third step succeeds, so abandoning the wizard at
-// any point before it leaves the account exactly as it was.
+// account changes until the third step succeeds, so abandoning the wizard
+// before then leaves the account exactly as it was. The third step is the
+// point of no return: it turns two-step verification on, and the codes it
+// returns are shown only on the fourth. Leaving after that loses them, which
+// is why the page asks before it goes.
 //
 // The same component is drawn in three places — the security settings, the
 // screen the policy holds an account at, and the backoffice's gate — so it
@@ -14,7 +17,7 @@
 // only on the last step: adopting it earlier would let a gate that is watching
 // the account disappear with the recovery codes still unsaved.
 
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
@@ -184,6 +187,19 @@ function finish(): void {
   if (!saved.value || !enabledAccount) return;
   emit('done', enabledAccount);
 }
+
+// Closing or reloading the tab on the last step leaves two-step verification
+// on with codes nobody has seen, and they cannot be shown again. The browser's
+// prompt is the only thing that can hold the reader there, so it is asked for
+// until the codes are acknowledged.
+function warnBeforeLeaving(event: BeforeUnloadEvent): void {
+  if (step.value !== 'save' || saved.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+onMounted(() => window.addEventListener('beforeunload', warnBeforeLeaving));
+onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeaving));
 </script>
 
 <template>

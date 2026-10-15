@@ -118,6 +118,14 @@ function write(key: string, value: string): void {
   }
 }
 
+function remove(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Storage disabled: there is nothing stored to remove.
+  }
+}
+
 // --- theme -----------------------------------------------------------------
 
 // --- the instance's theme ----------------------------------------------------
@@ -232,7 +240,7 @@ export function pickBackground(
   for (const tone of tones) {
     for (const shape of SHAPES[screen]) {
       const found = set[`${prefix}${shape}_${tone}`];
-      if (found && typeof found.url === 'string' && found.url.startsWith('/') && !found.url.startsWith('//')) return found;
+      if (found && typeof found.url === 'string' && isSameOriginPath(found.url)) return found;
     }
   }
   return null;
@@ -462,33 +470,61 @@ export function ownWallpaper(): Wallpaper | null {
 }
 
 export function setWallpaper(next: Wallpaper | null): void {
-  write(WALLPAPER_KEY, next ? JSON.stringify(next) : '');
+  // Removed rather than stored as '', so the store holds no empty entry.
+  // ownWallpaper reads both the same way, so this changes nothing a reader sees.
+  if (next) write(WALLPAPER_KEY, JSON.stringify(next));
+  else remove(WALLPAPER_KEY);
   applyWallpaper();
   notify();
+}
+
+/**
+ * Paints a wallpaper the reader is still adjusting: no storage write and no
+ * notice to the listeners. A slider moves many times a second, and each notice
+ * re-derives every chart ramp and re-renders every theme reader; setWallpaper
+ * makes the final value stick once the slider is let go.
+ */
+export function previewWallpaper(next: Wallpaper): void {
+  applyWallpaper({ ...next, html: false });
 }
 
 // Only a same-origin path or an inline image. A stored absolute URL would let
 // anything that could write localStorage turn every page load into a request
 // to a server of its choosing.
 function safeWallpaperURL(url: string): boolean {
-  if (url.startsWith('/')) return !url.startsWith('//');
+  if (url.startsWith('/')) return isSameOriginPath(url);
   return /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[A-Za-z0-9+/]+=*$/.test(url);
+}
+
+// A prefix test is not enough: a browser reads `/\host` as `//host`, and the
+// URL parser also drops tabs and newlines, so `/\t/host` is protocol-relative
+// too. Letting the parser resolve the value is the only check that matches
+// what a request for it would do.
+function isSameOriginPath(url: string): boolean {
+  if (!url.startsWith('/')) return false;
+  try {
+    return new URL(url, window.location.origin).origin === window.location.origin;
+  } catch {
+    return false;
+  }
 }
 
 // Which wallpaper is on screen, so a change of scheme or orientation that
 // picks a different instance variant knows to tell the listeners.
 let lastWallpaper = '';
 
-function applyWallpaper(): void {
+// Takes the picture to paint rather than reading the stored one, so a preview
+// can paint a value that is not stored yet.
+function applyWallpaper(current: PaintedWallpaper | null = wallpaper()): void {
   const root = document.documentElement;
   const style = root.style;
-  const current = wallpaper();
   root.classList.toggle('has-wallpaper', current !== null);
   if (!current) {
     lastWallpaper = '';
     style.removeProperty('--ai-wallpaper');
     style.removeProperty('--ai-wallpaper-dim');
     style.removeProperty('--ai-wallpaper-blur');
+    style.removeProperty('--ai-wallpaper-filter');
     style.removeProperty('--ai-surface-opacity');
     style.removeProperty('--ai-surface-filter');
     return;
@@ -500,6 +536,9 @@ function applyWallpaper(): void {
   else style.setProperty('--ai-wallpaper', `url("${cssEscape(current.url)}")`);
   style.setProperty('--ai-wallpaper-dim', String(current.dim / 100));
   style.setProperty('--ai-wallpaper-blur', `${current.blur}px`);
+  // A whole filter, as --ai-surface-filter is: at zero blur the wallpaper layers
+  // would otherwise carry blur(0px), which promotes a full-viewport layer for no effect.
+  style.setProperty('--ai-wallpaper-filter', current.blur > 0 ? `blur(${current.blur}px)` : 'none');
   // Opacity rather than translucency, as a percentage the stylesheet can
   // hand straight to color-mix: the setting reads "how far through", the
   // paint needs "how much is left".

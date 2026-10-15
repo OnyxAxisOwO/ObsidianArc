@@ -127,6 +127,32 @@ func TestTruncateWithANonPositiveLimitKeepsNothing(t *testing.T) {
 	}
 }
 
+// A cut that lands on invalid bytes still comes back as the U+FFFD the rune
+// conversion always gave, now that only the kept prefix is converted.
+func TestTruncateReplacesInvalidBytesInTheKeptPrefix(t *testing.T) {
+	if got, want := Truncate("a\xffbc", 2), "a�"; got != want {
+		t.Fatalf("Truncate with invalid bytes = %q, want %q", got, want)
+	}
+}
+
+var truncateSink string
+
+// A message is cut to its limit on every import and every chat append, so the
+// cut must not allocate for the text it throws away. Converting the whole value
+// to runes did, four bytes a character.
+func TestTruncateDoesNotConvertTheValueItCuts(t *testing.T) {
+	value := strings.Repeat("字", 1<<18)
+	allocs := testing.AllocsPerRun(10, func() {
+		truncateSink = Truncate(value, 100)
+	})
+	if allocs != 0 {
+		t.Fatalf("Truncate allocated %v times cutting a long value, want none", allocs)
+	}
+	if got := Truncate(value, 100); len([]rune(got)) != 100 {
+		t.Fatalf("Truncate kept %d runes, want 100", len([]rune(got)))
+	}
+}
+
 // Clean is what lets a client-supplied string reach PostgreSQL. Each case
 // states the bytes a client could send and what has to be stored instead.
 func TestCleanMakesAStringStorableByPostgres(t *testing.T) {

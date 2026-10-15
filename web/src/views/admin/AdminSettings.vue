@@ -15,7 +15,7 @@ import OaOverlay from '@/components/OaOverlay.vue';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminWorkbench from './AdminWorkbench.vue';
 import type { WorkbenchGroup } from './workbench';
-import { useSettingsDraft } from './settingsDraft';
+import { SETTING_MAX_BYTES, overlongSetting, useSettingsDraft } from './settingsDraft';
 import { IconHome, IconSpark, IconFile, IconKey, IconInfo, IconBell, IconMessage, IconSliders, IconTrash, IconImage, IconClose } from '@/icons';
 import OaRangeField from '@/components/OaRangeField.vue';
 import BackgroundStage from './BackgroundStage.vue';
@@ -36,7 +36,7 @@ import { useAdminView } from './adminView';
 import { refreshSite, site } from '@/stores/session';
 
 const view = useAdminView();
-view.setTitle(t('adminSettingsTitle'), t('controlSettingsSubtitle'));
+view.setTitle(() => t('adminSettingsTitle'), () => t('controlSettingsSubtitle'));
 
 const SEARCH_GROUPS = {
   secIdentity: [
@@ -73,6 +73,7 @@ const SEARCH_GROUPS = {
   ],
   secChat: [
     'secChat', 'instanceSystemPrompt', 'instanceSystemPromptHint', 'turnsResent', 'turnsResentHint',
+    'chatAllowArchive', 'chatAllowArchiveHint',
   ],
   secLimits: [
     'secLimits', 'adminsIgnoreLimits', 'adminsIgnoreLimitsHint', 'maxConcurrentPerUser', 'maxConcurrentPerUserHint',
@@ -195,6 +196,7 @@ const form = ref({
   trialModel: '',
   systemPrompt: '',
   maxTurns: 40 as number | null,
+  allowArchive: true,
   adminBypass: false,
   maxConcurrent: 4 as number | null,
   usageDisplay: 'absolute',
@@ -263,6 +265,7 @@ function collect(): Record<string, string> {
     'quota.usage_display': form.value.usageDisplay,
     'chat.default_system_prompt': form.value.systemPrompt.trim(),
     'chat.max_turns': String(form.value.maxTurns ?? 40),
+    'chat.allow_archive': String(form.value.allowArchive),
     'api.enabled': String(form.value.apiEnabled),
     'attachments.max_mb': String(form.value.attachmentMaxMB ?? 6),
     'attachments.retain': String(form.value.attachmentRetain),
@@ -290,6 +293,13 @@ async function save(): Promise<void> {
   // back a value another administrator may have changed since the page loaded.
   const values = changes();
   if (Object.keys(values).length === 0) return;
+  // One value past the server's limit refuses the whole save, every other
+  // change with it. Refusing here keeps those changes and says why.
+  if (overlongSetting(values)) {
+    flashOK.value = false;
+    flash.value = t('settingTooLong');
+    return;
+  }
   busy.value = true;
   saveLabel.value = t('saving');
   flash.value = '';
@@ -335,7 +345,9 @@ function exportSettings(): void {
 }
 
 function importSettings(): void {
-  void pickJSONFile(1024 * 1024)
+  // The same limit the import endpoint reads, so a file it would refuse is
+  // refused here with a message that says so.
+  void pickJSONFile(256 * 1024)
     .then((document) => {
       if (document === null) return null;
       if (!document || typeof document !== 'object' || Array.isArray(document)) {
@@ -419,7 +431,11 @@ function detectLogoType(file: File): string {
   return '';
 }
 
+// One logo change at a time. The preview accepts clicks and drops even while
+// an upload is in flight, and the response that arrives last decides which
+// image the page shows, which need not be the one the server kept.
 async function uploadLogoFile(file: File): Promise<void> {
+  if (uploadingLogo.value) return;
   const mime = detectLogoType(file);
   if (!mime) {
     flashOK.value = false;
@@ -466,6 +482,7 @@ async function uploadLogoFile(file: File): Promise<void> {
 }
 
 function chooseAndUploadLogo(): void {
+  if (uploadingLogo.value) return;
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/png,image/jpeg,image/webp,image/svg+xml,image/x-icon,image/avif,image/gif,.jpg,.jpeg,.png,.webp,.svg,.ico,.avif,.gif';
@@ -487,6 +504,7 @@ async function onDropLogo(event: DragEvent): Promise<void> {
 }
 
 async function clearSiteLogo(): Promise<void> {
+  if (uploadingLogo.value) return;
   uploadingLogo.value = true;
   flash.value = '';
   try {
@@ -528,6 +546,11 @@ function cancelDisableSoftwareInfo(): void {
 }
 
 async function load(): Promise<void> {
+  // Only a retry after a failed load lacks a baseline: the form holds defaults
+  // until one arrives, so Save and the status chip wait for it. A reload after
+  // an import keeps the form mounted, so the workbench keeps its category and
+  // search.
+  if (error.value) loaded.value = false;
   error.value = '';
   try {
     // The models come along because one of these settings is which model
@@ -566,6 +589,7 @@ async function load(): Promise<void> {
       trialModel: values['landing.trial_model'] ?? '',
       systemPrompt: values['chat.default_system_prompt'] ?? '',
       maxTurns: Number(values['chat.max_turns'] ?? 40),
+      allowArchive: values['chat.allow_archive'] !== 'false',
       adminBypass: values['quota.admins_bypass'] === 'true',
       maxConcurrent: values['quota.max_concurrent'] !== undefined ? Number(values['quota.max_concurrent']) : 4,
       usageDisplay: values['quota.usage_display'] ?? 'absolute',
@@ -831,6 +855,7 @@ onMounted(load);
           :label="t('instanceSystemPrompt')"
           :rows="4"
           :hint="t('instanceSystemPromptHint')"
+          :max-bytes="SETTING_MAX_BYTES"
         />
         <OaNumberField
           v-model="form.maxTurns"
@@ -838,6 +863,11 @@ onMounted(load);
           :min="2"
           :max="200"
           :hint="t('turnsResentHint')"
+        />
+        <OaSwitchField
+          v-model="form.allowArchive"
+          :label="t('chatAllowArchive')"
+          :hint="t('chatAllowArchiveHint')"
         />
       </AdminControlCard>
       <AdminControlCard id="secAttachments" v-show="visible('secAttachments')" :title="t('secAttachments')" :icon="IconFile" :hint="t('attachmentsHint')">
@@ -882,6 +912,7 @@ onMounted(load);
           :label="t('landingIntroHTML')"
           :rows="8"
           :hint="t('landingIntroHTMLHint')"
+          :max-bytes="SETTING_MAX_BYTES"
         />
         <OaSwitchField
           v-if="showTrialSwitch"
@@ -1007,6 +1038,7 @@ onMounted(load);
   <OaOverlay
     v-if="showConfirmDisableModal"
     overlay-class="oa-modal-overlay"
+    :label="t('aboutDisableModalTitle')"
     @close="cancelDisableSoftwareInfo"
   >
     <div class="oa-auth-card oa-modal-card">

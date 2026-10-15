@@ -41,7 +41,8 @@ func (c *Ctx) Setting(key string) (string, error) {
 }
 
 // PublicURL is the address the instance is configured to be reached at, or
-// "" when none is.
+// "" when none is. A failed lookup also reads as "": the call has no error to
+// return, so check the instance's own settings if "" is a surprise.
 func (c *Ctx) PublicURL() string {
 	raw, err := hostCall("client.public_url", nil)
 	if err != nil {

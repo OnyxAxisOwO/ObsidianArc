@@ -43,6 +43,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -257,6 +258,11 @@ func (e *GuestError) Error() string {
 // past its limit. What it printed on the way down is in the message.
 var ErrTrap = errors.New("wasm: the plugin's backend crashed")
 
+// ErrResponseTooLarge is a reply longer than MaxMessage. The reply carries any
+// body base64-encoded in its JSON, so the largest body that fits is about three
+// quarters of it: a caller that serves bodies should expect this, not a crash.
+var ErrResponseTooLarge = errors.New("wasm: the response is too large")
+
 // Backend is one plugin's backend: its WebAssembly, and — while it is in use —
 // the native code compiled from it.
 //
@@ -302,8 +308,13 @@ func (e *Engine) Load(name string, wasm []byte, host HostFunc) *Backend {
 	return &Backend{name: name, engine: e, host: host, wasm: wasm}
 }
 
-// build compiles the module. It holds no lock: it takes most of a second.
-func (b *Backend) build() (*warm, error) {
+// build compiles module. It holds no lock: it takes most of a second, and the
+// bytes are the caller's copy, since Close may clear the field meanwhile.
+//
+// Whatever is made before a failure is closed here, panics included: nothing
+// holds the runtime until a warm exists to hold it, and Close cannot reach one
+// that was never returned.
+func (b *Backend) build(module []byte) (w *warm, err error) {
 	ctx := context.Background()
 	// The host's real clocks (read-only) and real randomness are given to each
 	// call's instance below; what is configured here is the runtime.
@@ -322,33 +333,88 @@ func (b *Backend) build() (*warm, error) {
 		}
 	}
 	rt := wazero.NewRuntimeWithConfig(ctx, cfg)
-	fail := func(err error) (*warm, error) {
-		_ = rt.Close(ctx)
-		if dirCache != nil {
-			_ = dirCache.Close(ctx)
+	defer func() {
+		if w == nil {
+			_ = rt.Close(ctx)
+			if dirCache != nil {
+				_ = dirCache.Close(ctx)
+			}
 		}
-		return nil, err
+	}()
+	if runtimeHook != nil {
+		runtimeHook(rt)
 	}
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
-		return fail(fmt.Errorf("wasm: %w", err))
+		return nil, fmt.Errorf("wasm: %w", err)
 	}
 	if _, err := rt.NewHostModuleBuilder("arc").
 		NewFunctionBuilder().WithFunc(b.hostCall).Export("host").
 		NewFunctionBuilder().WithFunc(b.hostRead).Export("host_read").
 		Instantiate(ctx); err != nil {
-		return fail(fmt.Errorf("wasm: %w", err))
+		return nil, fmt.Errorf("wasm: %w", err)
 	}
-	compiled, err := rt.CompileModule(ctx, b.wasm)
+	compiled, err := rt.CompileModule(ctx, module)
 	if err != nil {
-		return fail(fmt.Errorf("wasm: the backend does not compile: %w", err))
+		return nil, fmt.Errorf("wasm: the backend does not compile: %w", err)
 	}
 	exports := compiled.ExportedFunctions()
 	for _, name := range []string{"_initialize", "arc_alloc", "arc_call"} {
 		if _, ok := exports[name]; !ok {
-			return fail(fmt.Errorf("wasm: the backend does not export %s — it is not built against the plugin SDK", name))
+			return nil, fmt.Errorf("wasm: the backend does not export %s — it is not built against the plugin SDK", name)
 		}
 	}
+	// Checked here rather than per call: Invoke reads the guest's memory and the
+	// results of these functions without a nil or length check, so a module that
+	// lacks them would panic there, outside any recover. The check cannot sit at
+	// the call either: wazero's Memory() returns a typed nil for a module with no
+	// memory, so a nil comparison at the call would never fire.
+	if _, ok := compiled.ExportedMemories()["memory"]; !ok {
+		return nil, errors.New("wasm: the backend does not export its memory — it is not built against the plugin SDK")
+	}
+	if !hasSignature(exports["_initialize"], nil, nil) ||
+		!hasSignature(exports["arc_alloc"], []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}) ||
+		!hasSignature(exports["arc_call"], []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{api.ValueTypeI64}) {
+		return nil, errors.New("wasm: the backend's exports do not have the plugin SDK's signatures — it is not built against the plugin SDK")
+	}
 	return &warm{rt: rt, compiled: compiled, cache: dirCache}, nil
+}
+
+// hasSignature is whether f takes params and returns results of exactly these
+// types. Invoke reads results[0] and passes raw i32 pointers, so a wrong shape
+// is a panic or a misread, not an error.
+func hasSignature(f api.FunctionDefinition, params, results []api.ValueType) bool {
+	return slices.Equal(f.ParamTypes(), params) && slices.Equal(f.ResultTypes(), results)
+}
+
+// compileHook, set only by tests, runs at the start of every compile so a test
+// can make the compiler fail on purpose.
+var compileHook func()
+
+// runtimeHook, set only by tests, runs as soon as build has made the runtime,
+// so a test can make the compile panic while the runtime is in hand and check
+// that it was closed anyway.
+var runtimeHook func(wazero.Runtime)
+
+// buildRecovering is build with a panic turned into the compile's failure. Left
+// to unwind, it would skip the handoff in acquire: every caller waiting on this
+// compile would wait until its own context ended.
+//
+// A panicking compile is recorded as the backend's failure, the same as a module
+// that does not compile, so the backend refuses calls until it is closed and
+// loaded again. A panic is probably deterministic, so retrying would hit it
+// again. The panic's value is logged and not returned: it can carry anything the
+// compiler or the module put in it, and the error reaches the install dialog.
+func (b *Backend) buildRecovering(module []byte) (w *warm, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("plugin backend compile panicked", "plugin", b.name, "panic", r)
+			w, err = nil, errors.New("wasm: the backend's compile panicked; the server log has the detail")
+		}
+	}()
+	if compileHook != nil {
+		compileHook()
+	}
+	return b.build(module)
 }
 
 // acquire returns the compiled code, compiling it first if there is none, and
@@ -385,8 +451,11 @@ func (b *Backend) acquire(ctx context.Context) (*warm, error) {
 		default:
 			done := make(chan struct{})
 			b.compiling = done
+			// Read under the lock: Close clears the field, and this compile runs
+			// without it.
+			module := b.wasm
 			b.mu.Unlock()
-			w, err := b.build()
+			w, err := b.buildRecovering(module)
 			b.mu.Lock()
 			b.compiling = nil
 			close(done)
@@ -571,7 +640,7 @@ func (b *Backend) Invoke(ctx context.Context, info CallInfo, kind string, arg, o
 	}
 	respPtr, respLen := uint32(res[0]>>32), uint32(res[0])
 	if int64(respLen) > int64(b.engine.limits.MaxMessage) {
-		return errors.New("wasm: the response is too large")
+		return ErrResponseTooLarge
 	}
 	body, ok := mod.Memory().Read(respPtr, respLen)
 	if !ok {

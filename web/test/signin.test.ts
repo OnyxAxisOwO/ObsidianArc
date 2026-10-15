@@ -4,6 +4,7 @@ import * as authApi from '../src/api/auth';
 import type { Account } from '../src/api/auth';
 import * as consentApi from '../src/api/consent';
 import * as oauthApi from '../src/api/oauth';
+import * as powLib from '../src/lib/pow';
 import { signInURL } from '../src/api/oauth';
 import * as backupApi from '../src/api/backup';
 import { ApiError } from '../src/api/client';
@@ -190,6 +191,16 @@ describe('signing in with an account from elsewhere', () => {
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthAddressTaken'));
     // And out of the address bar, so a reload does not raise it again.
     expect(replace).toHaveBeenCalledWith({ path: '/login', query: {} });
+  });
+
+  // A refused sign-in that was headed somewhere keeps that destination in the
+  // address bar, so the next try can carry the visitor on to it.
+  it('keeps the page a refused sign-in was for when it clears the refusal', async () => {
+    offer([{ id: 'github', name: 'GitHub' }]);
+    route.query = { oauth_error: 'denied', next: '/oauth/consent?request=abc' };
+    await mount(AuthView, { mode: 'login' });
+
+    expect(replace).toHaveBeenCalledWith({ path: '/login', query: { next: '/oauth/consent?request=abc' } });
   });
 
   it('explains when third-party signup was refused because oidc is required', async () => {
@@ -854,6 +865,27 @@ describe('letting another site sign somebody in', () => {
     expect(host.querySelector('.oa-consent-scopes')).toBeNull();
   });
 
+  // A stale request and a server that is down are different problems. Telling
+  // the reader that a request which is fine is "not valid any more" sends them
+  // to start again for no reason.
+  it('says the server is unavailable, not that the request is stale, when the server fails', async () => {
+    route.query = { request: 'a-signed-ticket' };
+    vi.spyOn(consentApi, 'fetchConsent').mockRejectedValue(new ApiError(503, 'unavailable', 'database is down'));
+    await mount(ConsentView);
+
+    expect(host.textContent).toContain(t('consentUnavailable'));
+    expect(host.textContent).not.toContain(t('consentFailed'));
+  });
+
+  it('says the request is no longer valid when the server says it is stale', async () => {
+    route.query = { request: 'a-signed-ticket' };
+    vi.spyOn(consentApi, 'fetchConsent').mockRejectedValue(new ApiError(400, 'request_stale', 'The request is stale.'));
+    await mount(ConsentView);
+
+    expect(host.textContent).toContain(t('consentFailed'));
+    expect(host.textContent).not.toContain(t('consentUnavailable'));
+  });
+
   it('says the request failed when the refusal is a name every object inherits', async () => {
     route.query = { error: 'constructor' };
     await mount(ConsentView);
@@ -1093,6 +1125,55 @@ describe('finishing a sign-up the provider could not', () => {
     expect(host.textContent).toContain(t('signupCompleteGoneTitle'));
     expect(host.querySelector('input')).toBeNull();
   });
+
+  it('offers to try again rather than calling the sign-in over when the server cannot be reached', async () => {
+    const { ApiError } = await import('../src/api/client');
+    const fetchPending = vi.spyOn(oauthApi, 'fetchPendingSignup')
+      .mockRejectedValueOnce(new ApiError(0, 'network', 'Could not reach the server: Failed to fetch'))
+      .mockResolvedValueOnce(pending);
+    await mount(CompleteSignupView);
+
+    expect(host.textContent).not.toContain(t('signupCompleteGoneTitle'));
+    expect(host.querySelector('.oa-auth-error')?.textContent).toBe(t('connectionFailed'));
+
+    button(host, t('retry')).click();
+    await settle();
+
+    expect(fetchPending).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain(t('signupCompleteTitle'));
+  });
+});
+
+describe('signing up with a rule the form can check', () => {
+  beforeEach(() => {
+    route.path = '/register';
+  });
+
+  it('names a password that is too short, without asking the server', async () => {
+    const regSpy = vi.spyOn(authApi, 'register');
+    await mount(AuthView, { mode: 'register' });
+
+    type(fieldInput(t('username')), 'alice');
+    type(fieldInput(t('password')), 'short');
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(regSpy).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-auth-error')?.textContent).toBe(t('passwordTooShort'));
+  });
+
+  it('names a username the server would refuse, without asking the server', async () => {
+    const regSpy = vi.spyOn(authApi, 'register');
+    await mount(AuthView, { mode: 'register' });
+
+    type(fieldInput(t('username')), 'no spaces allowed');
+    type(fieldInput(t('password')), 'super-secret-password');
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(regSpy).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-auth-error')?.textContent).toBe(t('usernameInvalid'));
+  });
 });
 
 describe('auth card layout position', () => {
@@ -1277,6 +1358,27 @@ describe('registering with proof-of-work (PoW)', () => {
     }
   });
 
+  it('solves a proof again on submit when the one it holds has run out', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true };
+    const now = Math.floor(Date.now() / 1000);
+    const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge')
+      .mockResolvedValueOnce(await challengeWithAnswer(now - 10, 'stale-sig'))
+      .mockResolvedValueOnce(await challengeWithAnswer(now + 300, 'fresh-sig'));
+    const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({ user: NEW_ACCOUNT });
+    await mount(AuthView, { mode: 'register' });
+    await settle();
+
+    type(fieldInput(t('username')), 'alice');
+    type(fieldInput(t('password')), 'super-secret-password');
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(regSpy).toHaveBeenCalledWith(expect.objectContaining({
+      pow: expect.objectContaining({ signature: 'fresh-sig' }),
+    }));
+  });
+
   it('takes one click at a time, so one proof is never sent twice', async () => {
     site.value = { ...siteInfo.value, pow_on_signup: true, oauth: [{ id: 'github', name: 'GitHub' }] };
     vi.spyOn(authApi, 'fetchPoWChallenge')
@@ -1344,5 +1446,72 @@ describe('binding the OpenID Connect identity an account must hold', () => {
 
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('currentPasswordWrong'));
     expect(fieldInput(t('currentPassword'))).not.toBeNull();
+  });
+});
+
+// A sign-up that is left for a sign-in while its proof of work is still being
+// solved. The reader has changed form, so nothing started for the old one may
+// go on, and the form must not be left busy on the solving label.
+describe('leaving a sign-up while its proof of work is being solved', () => {
+  // The solve is stubbed, so the challenge only has to be one the page can ask for.
+  const CHALLENGE = { challenge: 'c', salt: 's', maxNumber: 10, expires: Math.floor(Date.now() / 1000) + 300, signature: 'g' };
+
+  beforeEach(() => {
+    route.path = '/register';
+    site.value = { ...siteInfo.value, pow_on_signup: true };
+  });
+
+  // The sign-in link is a route change, which the router stub does not make, so
+  // the mode is switched the way a route does it: by the prop the page is given.
+  async function mountSwitchable(): Promise<(next: 'login' | 'register') => Promise<void>> {
+    const mode = shallowRef<'login' | 'register'>('register');
+    app = createApp({
+      setup() {
+        providePanelHost(shallowRef(panels));
+        return () => h(AuthView, { mode: mode.value });
+      },
+    });
+    app.mount(host);
+    await settle();
+    return async (next) => {
+      mode.value = next;
+      await settle();
+    };
+  }
+
+  it('does not start solving a challenge that arrives after the form has moved on', async () => {
+    let arrive!: (value: typeof CHALLENGE) => void;
+    vi.spyOn(authApi, 'fetchPoWChallenge').mockReturnValue(new Promise((resolve) => { arrive = resolve; }));
+    const solve = vi.spyOn(powLib, 'solvePoW');
+    const setMode = await mountSwitchable();
+
+    await setMode('login');
+    arrive(CHALLENGE);
+    await settle();
+
+    expect(solve).not.toHaveBeenCalled();
+  });
+
+  it('lets a submit go when the proof it waits on is abandoned, without sending the sign-up', async () => {
+    vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue(CHALLENGE);
+    // A solve that never finishes, as a worker terminated by cancel() never does.
+    const cancel = vi.fn();
+    vi.spyOn(powLib, 'solvePoW').mockReturnValue({ promise: new Promise(() => {}), cancel });
+    const register = vi.spyOn(authApi, 'register');
+    const setMode = await mountSwitchable();
+
+    type(fieldInput(t('username')), 'alice');
+    type(fieldInput(t('password')), 'super-secret-password');
+    button(host, t('createAccount')).click();
+    await settle();
+    expect(host.textContent).toContain(t('powSolving'));
+
+    await setMode('login');
+
+    expect(cancel).toHaveBeenCalled();
+    expect(register).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain(t('powSolving'));
+    const primary = host.querySelector<HTMLButtonElement>('button.oa-btn.primary.oa-btn-block:not(.oa-auth-provider)');
+    expect(primary?.disabled).toBe(false);
   });
 });

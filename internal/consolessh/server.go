@@ -17,7 +17,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,12 +28,13 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 // Config is what New needs to start the listener. The zero value is not
-// valid: Console and Authenticate have no safe default, so New refuses it
+// valid: Console, Authenticate and Reauthorize have no safe default, so New refuses it
 // rather than silently running a console nobody can reach or one that lets
 // anybody in.
 type Config struct {
@@ -56,7 +59,11 @@ type Config struct {
 	// about who is let in. Asked at the handshake and again before every
 	// command. Nil admits administrators only, which is what this transport
 	// did before the terminal was offered to every account.
-	Permitted func(ctx context.Context, account user.User) bool
+	//
+	// An error means the rule could not be evaluated, which is not the same as
+	// a refusal. The handshake treats it as one, but a session already open ends
+	// with the retry message rather than the revocation notice.
+	Permitted func(ctx context.Context, account user.User) (bool, error)
 
 	// Reauthorize re-reads the account behind a live session.
 	//
@@ -70,7 +77,9 @@ type Config struct {
 	// narrowed, disabled or deleted administrator keeps everything they had
 	// until they happen to disconnect.
 	//
-	// Called before every command. An error ends the session.
+	// Required; New refuses nil. user.ErrNotFound or database.IsNotFound ends
+	// the session as revoked. Any other error ends it with the retry message.
+	// Called before every command.
 	Reauthorize func(ctx context.Context, userID string) (user.User, error)
 
 	// Credential fingerprints the account's password, and must change whenever
@@ -178,6 +187,11 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Authenticate == nil {
 		return nil, errors.New("consolessh: Config.Authenticate is required")
+	}
+	// Without it a session keeps the grants it had at the handshake for as long
+	// as it lasts, and nothing reports that the re-check was dropped.
+	if cfg.Reauthorize == nil {
+		return nil, errors.New("consolessh: Config.Reauthorize is required")
 	}
 	if cfg.HostKeyPath == "" {
 		return nil, errors.New("consolessh: Config.HostKeyPath is required")
@@ -294,7 +308,18 @@ func (s *Server) serve(listener net.Listener) error {
 		// next and unrelated failure would resume the old schedule, possibly at
 		// the one-second cap, instead of starting again at 5ms.
 		retryDelay = 0
+		// Checked and counted under the same lock Shutdown takes to set closed.
+		// Without it, an accept that lands just as Shutdown starts would call
+		// Add while Shutdown is already in Wait, which WaitGroup forbids, and
+		// its connection would be in no snapshot for Shutdown to close.
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			_ = conn.Close()
+			return nil
+		}
 		s.wg.Add(1)
+		s.mu.Unlock()
 		go func() {
 			defer s.wg.Done()
 			s.handleConn(conn)
@@ -394,14 +419,23 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 	// that rehashes the stored hash gets the fingerprint of the hash it checked,
 	// so its own connection ends at its first command; that happens once per
 	// account per parameter change and is accepted.
-	account, credential, err := s.cfg.Authenticate(context.Background(), conn.User(), string(password), ip)
+	ctx, cancel := handshakeContext()
+	defer cancel()
+	account, credential, err := s.cfg.Authenticate(ctx, conn.User(), string(password), ip)
 	if err != nil {
 		return nil, errAuthFailed
 	}
 	// Checked here, not inside Authenticate: collapsing it into the same
 	// error a wrong password gets is what stops this prompt from being
 	// usable to enumerate which accounts have a console.
-	if !s.permitted(context.Background(), account) {
+	permitted, err := s.permitted(ctx, account)
+	if err != nil {
+		// Still the refusal a wrong password gets; the log is where a database
+		// outage at sign-in shows up.
+		slog.Error("console could not check its permission at sign-in", "error", err)
+		return nil, errAuthFailed
+	}
+	if !permitted {
 		return nil, errAuthFailed
 	}
 
@@ -419,7 +453,11 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 				if err != nil || len(answers) != 1 {
 					return nil, errAuthFailed
 				}
-				if err := s.cfg.SecondFactor(context.Background(), account, answers[0], ip); err != nil {
+				// The prompt is answered later in the same handshake, so the password
+				// step's context has been cancelled by then; the code gets its own.
+				codeCtx, codeCancel := handshakeContext()
+				defer codeCancel()
+				if err := s.cfg.SecondFactor(codeCtx, account, answers[0], ip); err != nil {
 					return nil, errAuthFailed
 				}
 				return actorPermissions(account, credential)
@@ -463,7 +501,12 @@ func actorFromPermissions(perm *ssh.Permissions) (user.User, bool) {
 }
 
 func (s *Server) handleConn(conn net.Conn) {
-	s.addConn(conn)
+	defer recoverHandshake(conn)
+	if !s.addConn(conn) {
+		// Shutdown has already taken its snapshot, so nothing else will close it.
+		_ = conn.Close()
+		return
+	}
 	defer s.removeConn(conn)
 
 	// A peer that connects and then says nothing would otherwise hold a
@@ -484,8 +527,13 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.cfg.Logf(context.Background(), "consolessh: too many unauthenticated connections", "remote", conn.RemoteAddr().String())
 		return
 	}
-	sconn, chans, reqs, err := ssh.NewServerConn(conn, s.sshConfig)
-	s.releasePreauth(slot)
+	// Released by defer rather than after the call: passwordCallback runs inside
+	// NewServerConn, and a panic there is recovered by recoverHandshake, which
+	// would skip a plain release and hold this slot for good.
+	sconn, chans, reqs, err := func() (*ssh.ServerConn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
+		defer s.releasePreauth(slot)
+		return ssh.NewServerConn(conn, s.sshConfig)
+	}()
 	if err != nil {
 		// A failed handshake is routine on the public internet (scanners,
 		// mistyped passwords) and not worth more than a debug-level trace;
@@ -507,11 +555,11 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	defer s.releaseAccountConn(actor.ID)
 
-	// Set for a connection that signs in and never opens a session: such a
-	// connection is in no slot, so nothing else would ever end it. Stopped by
-	// the first session admitted, after which the session's own timers govern.
-	noSession := time.AfterFunc(sessionStartTimeout, func() { _ = sconn.Close() })
-	defer noSession.Stop()
+	// A connection with no live session is in no slot, so nothing else would
+	// end it: one that signs in and opens nothing, or that ran a one-shot exec
+	// and went quiet, would otherwise stay open for as long as its client liked.
+	idle := newConnIdle(sessionStartTimeout, s.cfg.IdleTimeout, func() { _ = sconn.Close() })
+	defer idle.stop()
 
 	credential := credentialFromPermissions(sconn.Permissions)
 	base := context.Background()
@@ -544,25 +592,42 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.releaseAccountSlot(actor.ID)
 			continue
 		}
-		noSession.Stop()
 
 		sess := newSSHSession(s, sconn, channel, actor, ip, credential)
 		sess.base = base
-		s.addSession(sess)
+		if !s.addSession(sess) {
+			// Shutdown has taken its snapshot of the sessions, so this one would
+			// outlive it. Refuse it, and the connection goes with the handler.
+			_ = channel.Close()
+			s.releaseSlot()
+			s.releaseAccountSlot(actor.ID)
+			return
+		}
+		idle.sessionAdmitted()
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
 			defer s.releaseSlot()
 			defer s.releaseAccountSlot(actor.ID)
 			defer s.removeSession(sess)
+			defer idle.sessionEnded()
+			defer recoverSession(sess)
 			sess.serve(requests)
 		}()
 	}
 }
 
 // handshakeTimeout bounds the unauthenticated part of a connection: from
-// accept to a completed SSH handshake.
-const handshakeTimeout = 30 * time.Second
+// accept to a completed SSH handshake. A variable so a test can make it short.
+var handshakeTimeout = 30 * time.Second
+
+// handshakeContext bounds one callback the handshake makes into the database.
+// The connection deadline reaches the socket, not a query that is blocked
+// inside Authenticate, so without this a stalled database pins a preauth slot
+// for as long as it stalls, and up to MaxUnauthenticated of them.
+func handshakeContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), handshakeTimeout)
+}
 
 // sessionStartTimeout bounds how long a signed-in connection may go without a
 // session, and how long an opened session may go without a shell or an exec.
@@ -577,13 +642,81 @@ var writeStallTimeout = 30 * time.Second
 // once, whether or not they have opened a session.
 const maxConnectionsPerAccount = 8
 
-func (s *Server) addConn(conn net.Conn) {
+// addConn registers a connection with Shutdown. It reports false once Shutdown
+// has begun: the snapshot has been taken, so a connection registered after it
+// would never be closed by Shutdown and would hold Wait until its own idle
+// timeout.
+func (s *Server) addConn(conn net.Conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
 	if s.conns == nil {
 		s.conns = make(map[net.Conn]struct{})
 	}
 	s.conns[conn] = struct{}{}
+	return true
+}
+
+// connIdle ends a connection that has no live session. It starts on the
+// session-start timeout, so a client that signs in and opens nothing is cut
+// off. Admitting a session stops it; when the last live session ends it is
+// re-armed with the idle timeout, which is the bound that governs a connection
+// once it has had a session at all.
+type connIdle struct {
+	mu        sync.Mutex
+	live      int
+	timer     *time.Timer
+	done      bool
+	idle      time.Duration
+	closeConn func()
+}
+
+func newConnIdle(start, idle time.Duration, closeConn func()) *connIdle {
+	c := &connIdle{idle: idle, closeConn: closeConn}
+	c.timer = time.AfterFunc(start, c.expire)
+	return c
+}
+
+func (c *connIdle) sessionAdmitted() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.live++
+	if c.timer != nil {
+		c.timer.Stop()
+		c.timer = nil
+	}
+}
+
+func (c *connIdle) sessionEnded() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.live--
+	if c.live == 0 && !c.done {
+		c.timer = time.AfterFunc(c.idle, c.expire)
+	}
+}
+
+// expire holds the lock across the close so that a session admitted in the
+// same instant cannot be cut off by a timer that had already decided to fire.
+// closeConn never calls back into connIdle, so that cannot deadlock.
+func (c *connIdle) expire() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.live == 0 && !c.done {
+		c.closeConn()
+	}
+}
+
+func (c *connIdle) stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.done = true
+	if c.timer != nil {
+		c.timer.Stop()
+		c.timer = nil
+	}
 }
 
 func (s *Server) removeConn(conn net.Conn) {
@@ -703,10 +836,16 @@ func (s *Server) releasePreauth(key string) {
 	s.preauthIP[key]--
 }
 
-func (s *Server) addSession(sess *sshSession) {
+// addSession registers a session for Shutdown to close. It reports false once
+// Shutdown has begun, for the same reason addConn does.
+func (s *Server) addSession(sess *sshSession) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
 	s.sessions[sess] = struct{}{}
-	s.mu.Unlock()
+	return true
 }
 
 func (s *Server) removeSession(sess *sshSession) {
@@ -752,13 +891,22 @@ type sshSession struct {
 	// connection's channels, gone when it hangs up.
 	base context.Context
 
-	mu     sync.Mutex
-	width  int
-	lang   string
+	mu    sync.Mutex
+	width int
+	lang  string
+	// json is what `format` leaves set. Like lang it has to outlive the line
+	// that changed it: snapshot builds a fresh Session for every line, so
+	// keepSettings copies both back after each command.
+	json   bool
 	hasPty bool
 	cancel context.CancelFunc // set while a command is running
 
 	closeOnce sync.Once
+	// dead is closed by abort. A loop waiting on the session's events can then
+	// see that it ended even when the goroutine that would have reported it
+	// panicked and sent nothing.
+	dead     chan struct{}
+	deadOnce sync.Once
 }
 
 func newSSHSession(server *Server, conn ssh.Conn, channel ssh.Channel, actor user.User, ip, credential string) *sshSession {
@@ -769,6 +917,7 @@ func newSSHSession(server *Server, conn ssh.Conn, channel ssh.Channel, actor use
 		actor:      actor,
 		ip:         ip,
 		credential: credential,
+		dead:       make(chan struct{}),
 		base:       context.Background(),
 		width:      100, // console.Session.Width: 0 means unknown, assume 100 — pick it up front rather than repeat the fallback at every render.
 		lang:       "en",
@@ -813,25 +962,28 @@ var errAccountNoLongerAdmin = errors.New("consolessh: the account no longer has 
 // signing in again is what they can do about it.
 var errCredentialChanged = errors.New("consolessh: the account's password changed")
 
-func (s *Server) permitted(ctx context.Context, account user.User) bool {
+func (s *Server) permitted(ctx context.Context, account user.User) (bool, error) {
 	if s.cfg.Permitted == nil {
-		return account.IsAdmin()
+		return account.IsAdmin(), nil
 	}
 	return s.cfg.Permitted(ctx, account)
 }
 
-const revokedMessage = "\r\nThis account no longer has console access. Closing.\r\n"
+// errReauthorizeFailed is a lookup that could not be completed. It is not a
+// decision about the account, so the session ends with a retry line rather
+// than the revocation notice.
+var errReauthorizeFailed = errors.New("consolessh: could not re-read the account")
 
-// credentialChangedMessage names the one reason a person can act on: the
-// password they signed in with is no longer the account's.
-const credentialChangedMessage = "\r\nThe password for this account changed. Sign in again.\r\n"
-
-// endNotice is what a connection says when its next command is refused.
-func endNotice(err error) string {
-	if errors.Is(err, errCredentialChanged) {
-		return credentialChangedMessage
+// endNotice is what a connection says when its next command is refused, in the
+// session's language.
+func endNotice(lang string, err error) string {
+	switch {
+	case errors.Is(err, errCredentialChanged):
+		return noticeCredentialChanged.in(lang)
+	case errors.Is(err, errReauthorizeFailed):
+		return noticeRetry.in(lang)
 	}
-	return revokedMessage
+	return noticeRevoked.in(lang)
 }
 
 func (sess *sshSession) close() {
@@ -850,6 +1002,39 @@ func (sess *sshSession) abort() {
 		cancel()
 	}
 	_ = sess.conn.Close()
+	sess.deadOnce.Do(func() { close(sess.dead) })
+}
+
+// recoverSession is deferred by every goroutine that runs for a connection.
+// The HTTP side is covered by httpx.Recover. Nothing covers these goroutines,
+// and an unrecovered panic on any goroutine ends the whole process, the HTTP
+// listener with it. Recovering here ends that one session instead.
+func recoverSession(sess *sshSession) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	slog.Error("console session panicked", "panic", r, "stack", string(debug.Stack()))
+	func() {
+		// Telling the client must not be able to take the process down either.
+		defer func() { _ = recover() }()
+		_ = sess.stalled(func() error {
+			_, err := sess.channel.Write([]byte(noticeInternalError.in(sess.language())))
+			return err
+		})
+	}()
+	sess.abort()
+}
+
+// recoverHandshake is the same for the goroutine that negotiates a connection
+// before any session exists. The password check runs there.
+func recoverHandshake(conn net.Conn) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	slog.Error("console handshake panicked", "panic", r, "stack", string(debug.Stack()))
+	_ = conn.Close()
 }
 
 type ptyRequestPayload struct {
@@ -879,6 +1064,10 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 	// left blocked on Read after this function returns — see sess.close's
 	// doc comment for why Channel.Close alone would not do that promptly.
 	defer sess.close()
+	// Deferred after close, so it runs first: a panic on this goroutine, such as
+	// one in runInteractive's loop, still gets its notice to the client, which
+	// close would otherwise have shut before the write.
+	defer recoverSession(sess)
 
 	// A session that never asks for a shell or an exec holds its slots, the
 	// global one and the account's, and nothing else would give them back until
@@ -902,14 +1091,7 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 			sess.reply(req, ok)
 
 		case "window-change":
-			var payload windowChangePayload
-			ok := ssh.Unmarshal(req.Payload, &payload) == nil
-			if ok && payload.Width > 0 {
-				sess.mu.Lock()
-				sess.width = int(payload.Width)
-				sess.mu.Unlock()
-			}
-			sess.reply(req, ok)
+			sess.windowChange(req)
 
 		case "env":
 			var payload envPayload
@@ -922,6 +1104,11 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 		case "shell":
 			sess.reply(req, true)
 			started.Stop()
+			// runInteractive blocks, and the requests that keep arriving while it
+			// runs need answering too. x/crypto queues each one in a 16-slot buffer
+			// read by the connection's single mux loop, so the seventeenth unread
+			// request would stop every packet behind it, keystrokes included.
+			go sess.followRequests(requests)
 			sess.runInteractive()
 			return
 
@@ -949,6 +1136,33 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 	}
 }
 
+// windowChange records a resize. Both the shell and the one-shot loop need
+// it, and the shell's copy of the request loop is followRequests.
+func (sess *sshSession) windowChange(req *ssh.Request) {
+	var payload windowChangePayload
+	ok := ssh.Unmarshal(req.Payload, &payload) == nil
+	if ok && payload.Width > 0 {
+		sess.mu.Lock()
+		sess.width = int(payload.Width)
+		sess.mu.Unlock()
+	}
+	sess.reply(req, ok)
+}
+
+// followRequests answers the channel's requests for as long as the shell runs.
+// A resize is still recorded, so commands see the terminal's current width,
+// and everything else is refused as it is by serve.
+func (sess *sshSession) followRequests(requests <-chan *ssh.Request) {
+	defer recoverSession(sess)
+	for req := range requests {
+		if req.Type == "window-change" {
+			sess.windowChange(req)
+			continue
+		}
+		sess.reply(req, false)
+	}
+}
+
 // serveExec runs one command while still answering the channel's requests.
 //
 // The command runs on its own goroutine rather than inline because this loop
@@ -967,6 +1181,7 @@ func (sess *sshSession) serveExec(requests <-chan *ssh.Request, line string) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer recoverSession(sess)
 		sess.runExec(ctx, cancel, line)
 	}()
 
@@ -1105,9 +1320,6 @@ func (sess *sshSession) applyEnv(name, value string) {
 // A failure ends the session: the account is gone, disabled, or no longer an
 // administrator, and none of those should keep a console open.
 func (sess *sshSession) currentSession(ctx context.Context, transport string) (*console.Session, error) {
-	if sess.server.cfg.Reauthorize == nil {
-		return sess.snapshot(transport), nil
-	}
 	if _, err := sess.reauthorize(ctx); err != nil {
 		return nil, err
 	}
@@ -1121,15 +1333,34 @@ func (sess *sshSession) currentSession(ctx context.Context, transport string) (*
 func (sess *sshSession) reauthorize(ctx context.Context) (user.User, error) {
 	account, err := sess.server.cfg.Reauthorize(ctx, sess.actorID())
 	if err != nil {
-		return user.User{}, err
+		// Only a row that is not there means the account is gone. A database
+		// error, or a cancelled context, says nothing about the account, and
+		// reporting it as a revocation would tell an administrator that access
+		// was taken away when it was not.
+		if errors.Is(err, user.ErrNotFound) || database.IsNotFound(err) {
+			return user.User{}, errAccountNoLongerAdmin
+		}
+		slog.Error("console could not re-read its account", "error", err)
+		return user.User{}, errReauthorizeFailed
 	}
-	if !account.IsActive() || !sess.server.permitted(ctx, account) {
+	if !account.IsActive() {
+		return user.User{}, errAccountNoLongerAdmin
+	}
+	// A rule that cannot be evaluated says nothing about the account. Only a
+	// rule that answers no ends the session as a revocation.
+	permitted, err := sess.server.permitted(ctx, account)
+	if err != nil {
+		slog.Error("console could not re-read its permission", "error", err)
+		return user.User{}, errReauthorizeFailed
+	}
+	if !permitted {
 		return user.User{}, errAccountNoLongerAdmin
 	}
 	if sess.server.cfg.Credential != nil {
 		current, err := sess.server.cfg.Credential(ctx, account.ID)
 		if err != nil {
-			return user.User{}, err
+			slog.Error("console could not re-read its credential", "error", err)
+			return user.User{}, errReauthorizeFailed
 		}
 		if current != sess.credential {
 			return user.User{}, errCredentialChanged
@@ -1148,6 +1379,14 @@ func (sess *sshSession) actorID() string {
 	return sess.actor.ID
 }
 
+// language is the session's language for the notices this package writes. It is
+// read under the same lock applyEnv writes it under.
+func (sess *sshSession) language() string {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.lang
+}
+
 func (sess *sshSession) snapshot(transport string) *console.Session {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
@@ -1158,7 +1397,19 @@ func (sess *sshSession) snapshot(transport string) *console.Session {
 		Width:     sess.width,
 		Colour:    sess.hasPty,
 		Lang:      sess.lang,
+		JSON:      sess.json,
 	}
+}
+
+// keepSettings carries what `format` and `lang` left on the command's session
+// back onto this channel's session, so the next line's snapshot sees them. A
+// session is made per channel, so another channel on the same connection starts
+// from the defaults. Only those two settings are the command's to change.
+func (sess *sshSession) keepSettings(current *console.Session) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.json = current.JSON
+	sess.lang = current.Lang
 }
 
 // runExec is `ssh admin@host 'user list --json'`: one line, no pty, the
@@ -1171,7 +1422,7 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 
 	consoleSession, err := sess.currentSession(ctx, "ssh")
 	if err != nil {
-		_, _ = sess.output().Write([]byte(endNotice(err)))
+		_, _ = sess.output().Write([]byte(endNotice(sess.language(), err)))
 		sess.exitStatus(1)
 		return
 	}
@@ -1187,7 +1438,7 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		status = 1
-		_, _ = fmt.Fprintf(sess.errOutput(), "command stopped after %s\n", sess.server.cfg.ExecTimeout)
+		_, _ = fmt.Fprintf(sess.errOutput(), noticeCommandStopped.in(sess.language()), sess.server.cfg.ExecTimeout)
 	}
 	sess.exitStatus(status)
 }
@@ -1205,6 +1456,7 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 // signal.
 func (sess *sshSession) runInteractive() {
 	engine := sess.server.cfg.Console
+	lang := sess.language()
 	_, _ = sess.output().Write([]byte(engine.Banner(sess.snapshot("ssh"))))
 
 	complete := func(line string, pos int) (int, []editorCompletion) {
@@ -1216,6 +1468,7 @@ func (sess *sshSession) runInteractive() {
 		return c.From, items
 	}
 	editor := newLineEditor(sess.channel, sess.output(), "> ", complete, newHistory())
+	editor.lang = lang
 	editor.Start()
 
 	type readEvent struct {
@@ -1230,6 +1483,7 @@ func (sess *sshSession) runInteractive() {
 	quit := make(chan struct{})
 	defer close(quit)
 	go func() {
+		defer recoverSession(sess)
 		for {
 			r, err := editor.NextRune()
 			select {
@@ -1247,18 +1501,113 @@ func (sess *sshSession) runInteractive() {
 	results := make(chan execEvent, 1)
 
 	var cancel context.CancelFunc
+	// Every return path must end a command still running. Once the loop is gone
+	// nothing reads what the command prints, and the session's slots are released
+	// when serve returns, so a command left to finish would outlive them.
+	defer func() {
+		if cancel != nil {
+			cancel()
+		}
+	}()
 	running := false
+	// Keys typed while a command runs wait here and are fed to the editor when
+	// it returns. A paste of several lines would otherwise lose every line after
+	// the first, and whether a later line survived depended on how long the
+	// command took.
+	var typeAhead []rune
+	typeAheadFull := false
+	// typeAheadLost is set when a key was discarded because the queue was full.
+	// The discarded keys continue whatever line the queue ends in, so that line
+	// must be refused on Enter, not run as the truncated prefix it now is.
+	typeAheadLost := false
 	idle := sess.server.cfg.IdleTimeout
 	idleTimer := time.NewTimer(idle)
 	defer idleTimer.Stop()
+	// restartIdle is safe whether or not the timer has fired. The idle case
+	// does not drain the channel when a command is running, so a blocking
+	// drain here would wait on a value that was already taken.
+	restartIdle := func() {
+		if !idleTimer.Stop() {
+			select {
+			case <-idleTimer.C:
+			default:
+			}
+		}
+		idleTimer.Reset(idle)
+	}
+
+	startCommand := func(line string) {
+		runCtx, runCancel := context.WithCancel(sess.base)
+		cancel = runCancel
+		// abort can only reach a command through sess.cancel. Without this a session
+		// that dies mid-command releases its slots while the command keeps running.
+		sess.mu.Lock()
+		sess.cancel = runCancel
+		sess.mu.Unlock()
+		running = true
+		// Shutdown waits for the command too. The session's own goroutine is
+		// counted in s.wg and still running here, so this Add cannot race a Wait.
+		sess.server.wg.Add(1)
+		go func(line string) {
+			defer sess.server.wg.Done()
+			defer recoverSession(sess)
+			current, authErr := sess.currentSession(runCtx, "ssh")
+			if authErr != nil {
+				_, _ = sess.output().Write([]byte(endNotice(lang, authErr)))
+				results <- execEvent{result: console.Result{Exit: true}}
+				return
+			}
+			result := engine.Execute(runCtx, current, sess.output(), line)
+			// Before the send: the loop takes its next snapshot only after it
+			// receives this result, so the next line is guaranteed to see it.
+			sess.keepSettings(current)
+			results <- execEvent{result}
+		}(line)
+	}
+
+	// feedEditor gives one key to the line editor. It reports true when the
+	// session is over, which is Ctrl-D on an empty line.
+	feedEditor := func(r rune) (exit bool) {
+		line, done, eof := editor.Feed(r)
+		if eof {
+			return true
+		}
+		if !done {
+			return false
+		}
+		if strings.TrimSpace(line) == "" {
+			editor.Start()
+			return false
+		}
+		startCommand(line)
+		return false
+	}
+
+	// drainTypeAhead feeds the keys typed during the last command until one of
+	// them submits a line, which starts the next command. The rest keep waiting.
+	drainTypeAhead := func() (exit bool) {
+		for len(typeAhead) > 0 && !running {
+			r := typeAhead[0]
+			typeAhead = typeAhead[1:]
+			if feedEditor(r) {
+				return true
+			}
+		}
+		// Only once the queue is empty and nothing is running is the editor's
+		// line the one the discarded keys belong to. If a command started
+		// instead, the discarded keys are in the line after it, and the next
+		// drain or the next results event refuses that one.
+		if len(typeAhead) == 0 && !running && typeAheadLost {
+			typeAheadLost = false
+			editor.refuseOnEnter()
+		}
+		return false
+	}
 
 	for {
 		select {
 		case ev := <-reads:
-			if !idleTimer.Stop() {
-				<-idleTimer.C
-			}
-			idleTimer.Reset(idle)
+			restartIdle()
 
 			if ev.err != nil {
 				// io.EOF (Ctrl-D on an empty line) or the channel closing
@@ -1270,42 +1619,34 @@ func (sess *sshSession) runInteractive() {
 			}
 
 			if running {
-				// A command is running: the editor is not consuming input,
-				// so the only rune worth acting on is Ctrl-C, which cancels
-				// that command without ending the session. Everything else
-				// is discarded rather than queued, matching a real shell
-				// ignoring keystrokes typed while a foreground job is busy.
-				if ev.r == 0x03 && cancel != nil {
-					cancel()
+				// A command is running: the editor is not consuming input.
+				// Ctrl-C cancels that command without ending the session and
+				// drops what was typed ahead of it. Everything else waits, up
+				// to the same bound a line has, so that one paste cannot grow
+				// the queue without limit.
+				if ev.r == 0x03 {
+					if cancel != nil {
+						cancel()
+					}
+					typeAhead = nil
+					typeAheadLost = false
+					continue
+				}
+				if len(typeAhead) < maxLineRunes {
+					typeAhead = append(typeAhead, ev.r)
+				} else {
+					typeAheadLost = true
+					if !typeAheadFull {
+						typeAheadFull = true
+						_, _ = sess.output().Write([]byte(noticeTypeAhead.in(lang)))
+					}
 				}
 				continue
 			}
 
-			line, done, eof := editor.Feed(ev.r)
-			if eof {
+			if feedEditor(ev.r) {
 				return
 			}
-			if !done {
-				continue
-			}
-			if strings.TrimSpace(line) == "" {
-				editor.Start()
-				continue
-			}
-
-			runCtx, runCancel := context.WithCancel(sess.base)
-			cancel = runCancel
-			running = true
-			go func(line string) {
-				current, authErr := sess.currentSession(runCtx, "ssh")
-				if authErr != nil {
-					_, _ = sess.output().Write([]byte(endNotice(authErr)))
-					results <- execEvent{result: console.Result{Exit: true}}
-					return
-				}
-				result := engine.Execute(runCtx, current, sess.output(), line)
-				results <- execEvent{result}
-			}(line)
 
 		case ev := <-results:
 			running = false
@@ -1313,16 +1654,31 @@ func (sess *sshSession) runInteractive() {
 				cancel()
 				cancel = nil
 			}
+			typeAheadFull = false
 			if ev.result.Exit {
 				return
 			}
 			editor.Start()
+			// The idle clock starts when the command ends, not when the last key
+			// before it was typed.
+			restartIdle()
+			if drainTypeAhead() {
+				return
+			}
 
 		case <-idleTimer.C:
-			_, _ = sess.output().Write([]byte("\r\nidle timeout; closing.\r\n"))
-			if cancel != nil {
-				cancel()
+			// A command still working is not an idle session. Its output is
+			// the client's activity, and cutting it off here killed long
+			// imports started from the shell.
+			if running {
+				continue
 			}
+			_, _ = sess.output().Write([]byte(noticeIdle.in(lang)))
+			return
+
+		case <-sess.dead:
+			// The session was ended from elsewhere, such as a goroutine that
+			// panicked. Its reader may never send the event that would say so.
 			return
 		}
 	}

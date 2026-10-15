@@ -91,12 +91,14 @@ func (h *Handlers) pruneLogs(w http.ResponseWriter, r *http.Request) error {
 	// Recorded before the delete and in the security log, which is never pruned,
 	// so the record of the prune outlives the rows it removes. If the record
 	// cannot be written nothing is deleted: a prune nobody can see is refused.
+	// It says what was asked for, not what happened, because the delete may
+	// still fail; the outcome is recorded after it succeeds.
 	if h.security != nil {
 		if err := h.security.Record(r.Context(), nil, securityevents.Event{
 			Event: eventLogPrune, Severity: securityevents.SeverityWarning,
 			ActorID: actor.ID, ActorUsername: actor.Username,
 			Source: "admin", Decision: "prune",
-			Reason: fmt.Sprintf("request log older than %d days removed", body.Days),
+			Reason: fmt.Sprintf("prune requested for request log entries older than %d days", body.Days),
 		}); err != nil {
 			return httpx.Internal(err)
 		}
@@ -105,6 +107,22 @@ func (h *Handlers) pruneLogs(w http.ResponseWriter, r *http.Request) error {
 	removed, err := h.requests.Prune(r.Context(), window)
 	if err != nil {
 		return httpx.Internal(err)
+	}
+	// The count is known only now, so it is a second entry. The rows are
+	// already gone, so a write that fails here is logged rather than turned
+	// into an error for the administrator. The outcome is written on a detached
+	// context, so a disconnect after the rows are gone cannot lose it. The
+	// request entry is not detached on purpose: a disconnect before the delete
+	// aborts the prune.
+	if h.security != nil {
+		if err := h.recordDetached(r.Context(), securityevents.Event{
+			Event: eventLogPrune, Severity: securityevents.SeverityWarning,
+			ActorID: actor.ID, ActorUsername: actor.Username,
+			Source: "admin", Decision: "pruned",
+			Reason: fmt.Sprintf("request log entries older than %d days removed: %d", body.Days, removed),
+		}); err != nil {
+			slog.ErrorContext(r.Context(), "could not record a completed request-log prune", "error", err)
+		}
 	}
 	slog.WarnContext(r.Context(), "administrator pruned the request log", "actor", actor.ID, "days", body.Days, "removed", removed)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"removed": removed})
@@ -115,9 +133,16 @@ func logFilterFrom(r *http.Request) (reqlog.Filter, error) {
 	filter := reqlog.Filter{
 		Channel:   strings.TrimSpace(query.Get("channel")),
 		Method:    strings.TrimSpace(query.Get("method")),
-		Outcome:   strings.TrimSpace(query.Get("outcome")),
+		Outcome:   strings.ToLower(strings.TrimSpace(query.Get("outcome"))),
 		Path:      strings.TrimSpace(query.Get("path")),
 		ErrorCode: strings.TrimSpace(query.Get("error_code")),
+	}
+	// An outcome the store does not know would add no condition, and the log
+	// would come back unfiltered under a filter the operator believes is in force.
+	switch filter.Outcome {
+	case "", reqlog.OutcomeOK, reqlog.OutcomeFailed:
+	default:
+		return filter, httpx.BadRequest("Outcome must be ok or failed.")
 	}
 
 	if value := strings.TrimSpace(query.Get("user_id")); value != "" {

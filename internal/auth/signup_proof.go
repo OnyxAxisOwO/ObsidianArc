@@ -8,11 +8,16 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 )
 
-// requiredPoWMax is the difficulty this address has to solve at right now: the
+// RequiredPoWMax is the difficulty this address has to solve at right now: the
 // tier the challenge endpoint would hand it. A solution issued at an easier
 // tier is refused, so a challenge taken before activity raised the difficulty
-// does not keep its base-tier price for the rest of its five minutes.
-func (s *Service) requiredPoWMax(ip string) int64 {
+// does not keep its base-tier price for the rest of its five minutes. Every
+// gate that accepts a proof of work asks this, so none of them can be the one
+// that still takes base-tier work.
+func (s *Service) RequiredPoWMax(ip string) int64 {
+	if s.PoW == nil {
+		return 0
+	}
 	return s.PoW.Tracker().DetermineMaxNumber(ip,
 		s.settings.PoWBaseMaxNumber(), s.settings.PoWElevatedMaxNumber(), s.settings.PoWThreshold(), time.Now())
 }
@@ -31,7 +36,7 @@ func (s *Service) verifyProof(ctx context.Context, ip, username string, solution
 		}
 		return pow.ErrMissingSolution
 	}
-	if err := s.PoW.VerifyAt(ctx, solution, s.requiredPoWMax(ip)); err != nil {
+	if err := s.PoW.VerifyAt(ctx, solution, s.RequiredPoWMax(ip)); err != nil {
 		reason := "PoW 校验失败"
 		switch {
 		case errors.Is(err, pow.ErrExpired):

@@ -122,6 +122,13 @@ type AutoReset func(ctx context.Context, q database.Queryer, needed Window) (win
 //     against.
 //  4. The account's usage_counters rows, one window kind at a time, in the order
 //     of counterKinds. A transaction takes at most one row of each kind.
+//  5. The account's usage_cards rows, which a reset card spends. Their place is not
+//     this list's: a reservation spends its card after the windows it walked, and a
+//     manual use spends it before clearing them. That is safe because both spend
+//     under the global reset row (1), and settlements and releases take no card
+//     row, so a turn that is ending never waits on one. A plugin's claw-back
+//     deletes unspent cards without row 1, under the acting administrator's row;
+//     no path that holds a card row waits for that row, so it cannot close a cycle.
 //
 // The administrator resets are the exception to the last rule: they delete many
 // rows of one kind. They hold the global reset row, so no two of them meet, and
@@ -254,7 +261,7 @@ func (s *Service) reserveFallback(
 	if err != nil {
 		return Reservation{}, err
 	}
-	res := Reservation{at: now, funding: &funding{holds: holds}}
+	res := Reservation{at: now, funding: &funding{holds: holds}, guard: &releaseGuard{}}
 	if policy.tokenRateOn() {
 		res.covered = estimate.Tokens
 	}
@@ -335,7 +342,7 @@ func (s *Service) reserveOnce(
 		// replacement reservation did not consume the card.
 		return Reservation{}, err
 	}
-	res := Reservation{at: now, estimate: charged, taken: !whole, anchor: anchor}
+	res := Reservation{at: now, estimate: charged, taken: !whole, anchor: anchor, guard: &releaseGuard{}}
 	if policy.tokenRateOn() {
 		res.covered = estimate.Tokens - charged.Tokens
 	}
@@ -583,6 +590,22 @@ type Reservation struct {
 	// reservation and settling the turn — which happen in either order, on
 	// copies of this value — see each other.
 	funding *funding
+	// A pointer for the same reason: every copy of the reservation shares one
+	// guard, so giving it back twice refunds it once.
+	guard *releaseGuard
+}
+
+// releaseGuard records that a reservation has been given back. Release holds
+// its lock across the refund, so two releases of one reservation cannot both
+// pass the check and both subtract.
+//
+// The mutex is process-local on purpose; a database row lock is not needed here.
+// A Reservation lives only in the closure of the request that made it and is
+// never persisted or handed to another instance, so no row exists for a second
+// process to lock.
+type releaseGuard struct {
+	mu       sync.Mutex
+	released bool
 }
 
 // Settle corrects a finished turn to what it actually cost. It runs after the
@@ -616,27 +639,38 @@ func (s *Service) settleWindowsMinute(ctx context.Context, account user.User, to
 		return nil
 	}
 	now := time.Now()
-	key := scopeKey(account.ID)
 	anchor, err := allowanceAnchor(ctx, s.db, account.CreatedAt)
 	if err != nil {
 		return err
 	}
 
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
-		// The bars' share of the minute goes in first, so this transaction takes
-		// the minute row before any window, as the lock order above requires.
-		if minuteOnly != 0 {
-			if _, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, now, 0), 0, minuteOnly, 0); err != nil {
-				return err
-			}
-		}
-		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
-			if _, err := bump(ctx, tx, key, window, bucketStart(window, now, anchor), 0, tokens, credits); err != nil {
-				return err
-			}
-		}
-		return nil
+		return settleCounters(ctx, tx, account.ID, now, anchor, tokens, credits, minuteOnly)
 	})
+}
+
+// settleCounters writes one settlement's share into the counters. It takes a
+// Queryer so SettleTurn can put it in the same transaction as the bars it was
+// partly paid from: a bar that is charged while the windows are not is a
+// settlement that cost the account nothing.
+func settleCounters(
+	ctx context.Context, q database.Queryer, userID string, now time.Time, anchor int64,
+	tokens int64, credits float64, minuteOnly int64,
+) error {
+	key := scopeKey(userID)
+	// The bars' share of the minute goes in first, so this takes the minute row
+	// before any window, as the lock order above requires.
+	if minuteOnly != 0 {
+		if _, err := bump(ctx, q, key, WindowTPM, bucketStart(WindowTPM, now, 0), 0, minuteOnly, 0); err != nil {
+			return err
+		}
+	}
+	for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
+		if _, err := bump(ctx, q, key, window, bucketStart(window, now, anchor), 0, tokens, credits); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SettleTurn is Settle for a turn whose reservation may have been paid for,
@@ -653,24 +687,36 @@ func (s *Service) SettleTurn(ctx context.Context, account user.User, actual Esti
 	released := f.released
 	f.mu.Unlock()
 
-	var covered float64
-	if err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		var err error
-		covered, err = s.bonus.Settle(ctx, tx, f.holds, actual.Credits, released)
-		return err
-	}); err != nil {
+	// The bars and the windows are charged in one transaction. Split in two, a
+	// failure of the second left the bars charged and the windows never told,
+	// and the turn was free. The anchor is read before the transaction, as
+	// settleWindowsMinute reads it, so the reset lock is not taken here.
+	now := time.Now()
+	anchor, err := allowanceAnchor(ctx, s.db, account.CreatedAt)
+	if err != nil {
 		return err
 	}
-	// The rest of the cost, and the same share of the tokens. A turn that cost
-	// nothing in credits was not paid for by a bar and counts in full. The
-	// tokens a bar paid for still count toward the per-minute limit, which is
-	// what the reservation charged it.
-	share := 1.0
-	if actual.Credits > 1e-9 {
-		share = math.Max(0, 1-covered/actual.Credits)
-	}
-	carried := int64(math.Round(float64(actual.Tokens) * share))
-	return s.settleWindowsMinute(ctx, account, carried, math.Max(0, actual.Credits-covered), actual.Tokens-carried)
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		covered, err := s.bonus.Settle(ctx, tx, f.holds, actual.Credits, released)
+		if err != nil {
+			return err
+		}
+		// The rest of the cost, and the same share of the tokens. A turn that cost
+		// nothing in credits was not paid for by a bar and counts in full. The
+		// tokens a bar paid for still count toward the per-minute limit, which is
+		// what the reservation charged it.
+		share := 1.0
+		if actual.Credits > 1e-9 {
+			share = math.Max(0, 1-covered/actual.Credits)
+		}
+		carried := int64(math.Round(float64(actual.Tokens) * share))
+		credits := math.Max(0, actual.Credits-covered)
+		minuteOnly := actual.Tokens - carried
+		if carried == 0 && credits == 0 && minuteOnly == 0 {
+			return nil
+		}
+		return settleCounters(ctx, tx, account.ID, now, anchor, carried, credits, minuteOnly)
+	})
 }
 
 // Release gives a reservation back — for a turn that never ran, and for the
@@ -685,6 +731,16 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 	windows := reserved.taken && !reserved.estimate.empty()
 	if !windows && reserved.covered == 0 && f == nil {
 		return nil
+	}
+	// Held until the refund commits, so a second release waits for the first
+	// and then finds it done. A failed release leaves the guard open, which is
+	// what lets the caller try again.
+	if g := reserved.guard; g != nil {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if g.released {
+			return nil
+		}
 	}
 	key := scopeKey(userID)
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -715,6 +771,9 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 		f.mu.Lock()
 		f.released = true
 		f.mu.Unlock()
+	}
+	if err == nil && reserved.guard != nil {
+		reserved.guard.released = true
 	}
 	return err
 }
@@ -856,11 +915,73 @@ func windowUsage(window Window, limits Limits, used counter, now time.Time, anch
 	}
 }
 
-// SummariesFor is SummaryFor for a whole list of accounts, in three queries
-// instead of a few per account: the policies, the global reset, and every
-// live counter. It is what an administrator's overview of everyone's
-// allowance reads, where one query per account per window would make the
-// page's cost grow with the instance.
+// counterSlot is one row of usage_counters, by its primary key.
+type counterSlot struct {
+	scope  string
+	window Window
+	start  int64
+}
+
+// summaryKeyChunk bounds how many accounts one counter query names. It keeps
+// the placeholder count well under what either engine accepts.
+const summaryKeyChunk = 500
+
+// summaryFloor is how far back the current bucket of each allowance window can
+// start. A bucket begins at or before now and within one period of it, so a
+// row older than this is never the bucket any account is charged in. A month
+// is at most 31 days, and 32 leaves a day of slack.
+var summaryFloor = map[Window]time.Duration{
+	Window5H:    5 * time.Hour,
+	WindowWeek:  7 * 24 * time.Hour,
+	WindowMonth: 32 * 24 * time.Hour,
+}
+
+// readCurrentCounters loads the current bucket of each allowance window for a
+// chunk of accounts into counters. Naming the accounts' scope keys is what
+// bounds the read: scope_key leads the primary key, so the lookup uses it
+// rather than scanning every account's history. The per-window floor bounds the
+// read to rows that could be an account's current bucket. For the month window
+// it can include the previous month's bucket too, which SummariesFor never
+// looks up.
+func readCurrentCounters(
+	ctx context.Context, db *database.DB, accounts []user.User, now time.Time, counters map[counterSlot]counter,
+) error {
+	args := make([]any, 0, len(accounts)+2*len(AllowanceWindows))
+	keys := make([]string, len(accounts))
+	for i, account := range accounts {
+		keys[i] = "?"
+		args = append(args, scopeKey(account.ID))
+	}
+	kinds := make([]string, 0, len(AllowanceWindows))
+	for _, window := range AllowanceWindows {
+		kinds = append(kinds, `(window_kind = ? AND window_start >= ?)`)
+		args = append(args, window, now.Add(-summaryFloor[window]).UnixMilli())
+	}
+
+	rows, err := db.Query(ctx,
+		`SELECT scope_key, window_kind, window_start, requests, tokens, credits FROM usage_counters
+		 WHERE scope_key IN (`+strings.Join(keys, ", ")+`) AND (`+strings.Join(kinds, " OR ")+`)`,
+		args...)
+	if err != nil {
+		return fmt.Errorf("quota: read counters: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key counterSlot
+		var used counter
+		if err := rows.Scan(&key.scope, &key.window, &key.start, &used.Requests, &used.Tokens, &used.Credits); err != nil {
+			return fmt.Errorf("quota: scan counter: %w", err)
+		}
+		counters[key] = used
+	}
+	return rows.Err()
+}
+
+// SummariesFor is SummaryFor for a whole list of accounts, in a few queries
+// instead of a few per account: the policies, the global reset, and the
+// current counters of each chunk of accounts. It is what an administrator's
+// overview of everyone's allowance reads, where one query per account per
+// window would make the page's cost grow with the instance.
 //
 // The answers are the ones SummaryFor gives each account — the resolution and
 // the bucket arithmetic are the same code — and a counter for a window that
@@ -889,33 +1010,13 @@ func (s *Service) SummariesFor(ctx context.Context, accounts []user.User) (map[s
 		return nil, err
 	}
 
-	// Bounded by the same two months PruneCounters keeps, which is longer than
-	// any allowance window lives.
 	now := time.Now()
-	type slot struct {
-		scope  string
-		window Window
-		start  int64
-	}
-	counters := map[slot]counter{}
-	rows, err := s.db.Query(ctx,
-		`SELECT scope_key, window_kind, window_start, requests, tokens, credits FROM usage_counters
-		 WHERE window_kind IN (?, ?, ?) AND window_start >= ?`,
-		Window5H, WindowWeek, WindowMonth, now.AddDate(0, -2, 0).UnixMilli())
-	if err != nil {
-		return nil, fmt.Errorf("quota: read counters: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var key slot
-		var used counter
-		if err := rows.Scan(&key.scope, &key.window, &key.start, &used.Requests, &used.Tokens, &used.Credits); err != nil {
-			return nil, fmt.Errorf("quota: scan counter: %w", err)
+	counters := map[counterSlot]counter{}
+	for from := 0; from < len(accounts); from += summaryKeyChunk {
+		to := min(from+summaryKeyChunk, len(accounts))
+		if err := readCurrentCounters(ctx, s.db, accounts[from:to], now, counters); err != nil {
+			return nil, err
 		}
-		counters[key] = used
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	display := s.settings.UsageDisplay()
@@ -932,7 +1033,7 @@ func (s *Service) SummariesFor(ctx context.Context, accounts []user.User) (map[s
 		anchor := anchorFor(account.CreatedAt, resetAt)
 		summary := Summary{Unlimited: policy.Unlimited(), Display: display, Windows: make([]WindowUsage, 0, len(AllowanceWindows))}
 		for _, window := range AllowanceWindows {
-			used := counters[slot{scopeKey(account.ID), window, bucketStart(window, now, anchor)}]
+			used := counters[counterSlot{scopeKey(account.ID), window, bucketStart(window, now, anchor)}]
 			summary.Windows = append(summary.Windows, windowUsage(window, policy.Windows[window], used, now, anchor))
 		}
 		out[account.ID] = summary
@@ -966,6 +1067,13 @@ func (s *Service) PruneCounters(ctx context.Context) (int64, error) {
 // so a chunk that comes back short has reached the end of the stale rows.
 const pruneChunkRows = 1000
 
+// The chunk deletes rows of every account and kind in scan order, not in
+// counterKinds order. That is safe because every row it can reach starts before
+// the cutoff, and no reservation or settlement locks a row that old. Each locks
+// the current bucket of a window, and the longest of those, the month, starts less
+// than a month back. A release refunds into the bucket its reservation came out
+// of, which is a turn's length back. Resets cannot meet it on these rows either,
+// as they take the same global row first.
 func (s *Service) pruneChunk(ctx context.Context, cutoff int64) (int64, error) {
 	var removed int64
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -1046,6 +1154,13 @@ func lockAllowanceBoundary(ctx context.Context, tx database.Queryer) error {
 	return nil
 }
 
+// LockAllowanceBoundary is lockAllowanceBoundary for a caller outside this
+// package. The card package spends a card inside a transaction, and must take
+// this row before the card row, as every reservation that may spend a card does.
+func LockAllowanceBoundary(ctx context.Context, tx database.Queryer) error {
+	return lockAllowanceBoundary(ctx, tx)
+}
+
 func lockedAllowanceAnchor(ctx context.Context, tx database.Queryer, createdAt int64) (int64, error) {
 	// A reset and a reservation must agree which side of the boundary the
 	// allowance check belongs to, so the reservation reads the anchor under the
@@ -1116,7 +1231,13 @@ func (s *Service) ResetGroup(ctx context.Context, groupID string) error {
 
 // ResetWindows clears usage counters for specific windows on named accounts.
 // An empty window list or one containing "full" clears every window.
-func (s *Service) ResetWindows(ctx context.Context, userIDs []string, windows []string) error {
+//
+// q is nil to clear in one transaction per batch, or the caller's transaction
+// when the clear has to stand or fall with something else. A card's reset is
+// the case: the card is marked spent in that transaction, and a clear that
+// committed on its own could restore an allowance for a card whose spend then
+// failed, or leave a marked card with its allowance unrestored.
+func (s *Service) ResetWindows(ctx context.Context, q database.Queryer, userIDs []string, windows []string) error {
 	const batch = 200
 	for start := 0; start < len(userIDs); start += batch {
 		end := min(start+batch, len(userIDs))
@@ -1130,12 +1251,18 @@ func (s *Service) ResetWindows(ctx context.Context, userIDs []string, windows []
 		}
 		scope := `scope_key IN (` + strings.Join(placeholders, ", ") + `)`
 
-		err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		reset := func(tx database.Queryer) error {
 			if err := lockAllowanceBoundary(ctx, tx); err != nil {
 				return err
 			}
 			return deleteCounters(ctx, tx, windows, scope, args...)
-		})
+		}
+		var err error
+		if q == nil {
+			err = s.db.Tx(ctx, func(tx *database.Tx) error { return reset(tx) })
+		} else {
+			err = reset(q)
+		}
 		if err != nil {
 			return fmt.Errorf("quota: reset windows: %w", err)
 		}
@@ -1148,7 +1275,7 @@ func (s *Service) ResetWindows(ctx context.Context, userIDs []string, windows []
 // upstream provider from bursts, so no card may lift them. An empty list or one
 // that names "full" means every allowance window, and a minute window named in
 // the list is ignored.
-func (s *Service) ResetCardWindows(ctx context.Context, userIDs []string, windows []string) error {
+func (s *Service) ResetCardWindows(ctx context.Context, q database.Queryer, userIDs []string, windows []string) error {
 	var allowance []string
 	for _, window := range AllowanceWindows {
 		if resetsWindow(windows, window) {
@@ -1158,7 +1285,7 @@ func (s *Service) ResetCardWindows(ctx context.Context, userIDs []string, window
 	if len(allowance) == 0 {
 		return nil
 	}
-	return s.ResetWindows(ctx, userIDs, allowance)
+	return s.ResetWindows(ctx, q, userIDs, allowance)
 }
 
 // Reset does the same for named accounts across all windows.
@@ -1166,7 +1293,7 @@ func (s *Service) ResetCardWindows(ctx context.Context, userIDs []string, window
 // In batches, because the caller may hand it every member of a group and one
 // statement with ten thousand placeholders is a statement no database wants.
 func (s *Service) Reset(ctx context.Context, userIDs []string) error {
-	return s.ResetWindows(ctx, userIDs, nil)
+	return s.ResetWindows(ctx, nil, userIDs, nil)
 }
 
 // Windows are fixed and aligned rather than rolling, so "when does this

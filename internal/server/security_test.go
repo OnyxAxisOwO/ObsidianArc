@@ -691,6 +691,52 @@ func TestKeyCannotBePinnedToAnUnavailableModel(t *testing.T) {
 	}
 }
 
+// A model switched off after a key was pinned to it is a state the operator
+// reaches on purpose, so refusing the edit is a client answer. It used to fall
+// through to the server's 500, which read as a fault in the server.
+func TestKeyCannotBePinnedToADisabledModel(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("keyholder", "a-good-password")
+	if res := in.do(http.MethodPut, "/api/admin/settings",
+		map[string]string{"api.enabled": "true"}, admin); res.Code != http.StatusOK {
+		t.Fatalf("enable the API: %d %s", res.Code, res.Body.String())
+	}
+
+	provider := decode[map[string]any](t, in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "Upstream", "kind": "openai",
+		"base_url": "https://api.example.com/v1", "api_key": "sk-test-key-0123",
+	}, admin))["provider"].(map[string]any)["id"].(string)
+	created := in.do(http.MethodPost, "/api/admin/models", map[string]any{
+		"provider_id": provider, "model_id": "vendor/pinned", "display_name": "Pinned", "enabled": true,
+	}, admin)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create the model: %d %s", created.Code, created.Body.String())
+	}
+	catalogueID := decode[map[string]any](t, created)["model"].(map[string]any)["id"].(string)
+
+	key := decode[map[string]any](t, in.do(http.MethodPost, "/api/keys",
+		map[string]any{"name": "pinned", "model_id": catalogueID}, admin))
+	keyID := key["key"].(map[string]any)["id"].(string)
+
+	if res := in.do(http.MethodPatch, "/api/admin/models/"+catalogueID,
+		map[string]any{"enabled": false}, admin); res.Code != http.StatusOK {
+		t.Fatalf("disable the model: %d %s", res.Code, res.Body.String())
+	}
+
+	edited := in.do(http.MethodPatch, "/api/keys/"+keyID,
+		map[string]any{"model_ids": []string{catalogueID}}, admin)
+	if edited.Code != http.StatusForbidden {
+		t.Fatalf("editing a key pinned to a disabled model gave %d %s, want 403",
+			edited.Code, edited.Body.String())
+	}
+	reissued := in.do(http.MethodPost, "/api/keys",
+		map[string]any{"name": "again", "model_id": catalogueID}, admin)
+	if reissued.Code != http.StatusForbidden {
+		t.Fatalf("pinning a new key to a disabled model gave %d %s, want 403",
+			reissued.Code, reissued.Body.String())
+	}
+}
+
 func TestAdministratorCanRestrictAndRestoreAnAccountsAPI(t *testing.T) {
 	in := newInstance(t)
 	administrator := in.register("founder", "a-good-password")

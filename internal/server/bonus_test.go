@@ -80,6 +80,58 @@ func TestAnAdministratorMakesABarGrantsIntoItAndTheAccountSeesIt(t *testing.T) {
 
 func containsKind(body, kind string) bool { return strings.Contains(body, `"`+kind+`"`) }
 
+// A bar that is switched off takes no grants from the administrator either.
+// The grant is refused as a conflict, and nobody is told about a bonus they
+// cannot see or spend.
+func TestAGrantIntoASwitchedOffBarIsRefusedAndAnnouncedToNobody(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("bonus-admin", "a-good-password")
+	reader := in.register("bonus-reader", "a-good-password")
+	bar := decode[struct {
+		Bar struct{ ID string } `json:"bar"`
+	}](t, in.do(http.MethodPost, "/api/admin/bonus/bars", map[string]any{
+		"name": "shut", "toggle_mode": "on", "show_total": false,
+	}, admin)).Bar
+	if res := in.do(http.MethodPut, "/api/admin/bonus/bars/"+bar.ID, map[string]any{
+		"name": "shut", "toggle_mode": "on", "show_total": false, "active": false,
+	}, admin); res.Code != http.StatusOK {
+		t.Fatalf("switch off: %d %s", res.Code, res.Body.String())
+	}
+
+	granted := in.do(http.MethodPost, "/api/admin/bonus/bars/"+bar.ID+"/grants", map[string]any{
+		"all": true, "amount": 10,
+	}, admin)
+	if granted.Code != http.StatusConflict {
+		t.Fatalf("grant into a switched-off bar: %d %s", granted.Code, granted.Body.String())
+	}
+	feed := in.do(http.MethodGet, "/api/notifications", nil, reader)
+	if containsKind(feed.Body.String(), "bonus_granted") {
+		t.Fatalf("an account was told about a grant that was refused: %s", feed.Body.String())
+	}
+}
+
+// A name nobody holds is reported as the name, not as a bonus that does not
+// exist, which is what an administrator who mistyped it needs to hear.
+func TestAGrantToANameNobodyHoldsSaysSo(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("bonus-admin", "a-good-password")
+	bar := decode[struct {
+		Bar struct{ ID string } `json:"bar"`
+	}](t, in.do(http.MethodPost, "/api/admin/bonus/bars", map[string]any{
+		"name": "gift", "toggle_mode": "on", "show_total": false,
+	}, admin)).Bar
+
+	res := in.do(http.MethodPost, "/api/admin/bonus/bars/"+bar.ID+"/grants", map[string]any{
+		"usernames": []string{"nobody"}, "amount": 5, "days": 30,
+	}, admin)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "No account has that name or ID.") {
+		t.Fatalf("grant to an unknown name: %d %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), `"bonus_no_account"`) {
+		t.Fatalf("grant to an unknown name lacks its code: %s", res.Body.String())
+	}
+}
+
 func TestABarCannotBeSwitchedByAnAccountWhenItIsForced(t *testing.T) {
 	in := newInstance(t)
 	admin := in.register("bonus-admin", "a-good-password")

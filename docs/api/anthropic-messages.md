@@ -39,7 +39,7 @@ curl https://ai.example.com/v1/messages \
 
 开启 `stream` 后返回 Anthropic 事件结构，如 `message_start`、`content_block_start`、`content_block_delta` 和 `message_stop`。
 
-工具请求以 `tool_use` 返回。客户端执行工具后，在下一次消息历史中附上匹配 `tool_use_id` 的 `tool_result`。不要只发送工具结果而省略对应的调用消息。
+工具请求以 `tool_use` 返回。客户端执行工具后，在下一次消息历史中附上匹配 `tool_use_id` 的 `tool_result`。不要只发送工具结果而省略对应的调用消息。`tool_result` 的内容只能是文本。其中的图片会被拒绝，而不是被静默丢弃；请把图片放在用户消息中发送。
 
 网关转换工具结构，但不会在服务端执行工具。厂商专用的缓存、签名或其他扩展不保证保留。
 

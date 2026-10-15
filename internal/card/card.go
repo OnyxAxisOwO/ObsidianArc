@@ -52,6 +52,7 @@ var (
 	ErrInvalidExpiry = errors.New("card: expiry must be in the future")
 	ErrInvalidWindow = errors.New("card: invalid quota window")
 	ErrNamedBatch    = errors.New("card: a batch is generated, so it cannot be given a code of its own")
+	ErrBatchTooLarge = errors.New("card: a batch holds at most MaxBatch codes")
 )
 
 // ValidWindows are the quota allowance windows that a card can target.
@@ -69,6 +70,11 @@ func validateWindows(windows []string) error {
 	}
 	return nil
 }
+
+// CheckWindows reports whether every window named is one a card can reset. It
+// is exported so a reward naming a window that does not exist is refused when
+// its configuration is saved, rather than on each grant that would fail.
+func CheckWindows(windows []string) error { return validateWindows(windows) }
 
 func normalizeWindows(windows []string) string {
 	if len(windows) == 0 {
@@ -223,15 +229,32 @@ func (s *Store) Held(ctx context.Context, userID string) (Holding, error) {
 // two tabs pressing the same button at once would otherwise both see an
 // unused card and both reset the account, spending two cards for one reset.
 func (s *Store) Spend(ctx context.Context, userID, cardID string) error {
-	_, err := s.SpendCard(ctx, userID, cardID)
+	_, err := s.SpendCard(ctx, nil, userID, cardID)
 	return err
 }
 
 // SpendCard marks one card used and returns the spent Card so the caller knows
 // which quota windows to reset.
-func (s *Store) SpendCard(ctx context.Context, userID, cardID string) (Card, error) {
+//
+// q is nil to spend on its own, or the caller's transaction when the spend has
+// to stand or fall with the reset it pays for: a card marked used whose reset
+// then fails must not stay marked.
+func (s *Store) SpendCard(ctx context.Context, q database.Queryer, userID, cardID string) (Card, error) {
+	if q == nil {
+		var spent Card
+		err := s.db.Tx(ctx, func(tx *database.Tx) error {
+			var err error
+			spent, err = s.spendCard(ctx, tx, userID, cardID)
+			return err
+		})
+		return spent, err
+	}
+	return s.spendCard(ctx, q, userID, cardID)
+}
+
+func (s *Store) spendCard(ctx context.Context, q database.Queryer, userID, cardID string) (Card, error) {
 	now := time.Now().UnixMilli()
-	result, err := s.db.Exec(ctx,
+	result, err := q.Exec(ctx,
 		`UPDATE usage_cards SET used_at = ?
 		 WHERE id = ? AND user_id = ? AND used_at = ? AND expires_at > ?`,
 		now, cardID, userID, 0, now)
@@ -241,7 +264,7 @@ func (s *Store) SpendCard(ctx context.Context, userID, cardID string) (Card, err
 	if affected, _ := result.RowsAffected(); affected == 1 {
 		var c Card
 		var rawWins string
-		err := s.db.QueryRow(ctx,
+		err := q.QueryRow(ctx,
 			`SELECT id, name, windows, source, expires_at, used_at, created_at
 			 FROM usage_cards WHERE id = ? AND user_id = ?`,
 			cardID, userID).Scan(&c.ID, &c.Name, &rawWins, &c.Source, &c.ExpiresAt, &c.UsedAt, &c.CreatedAt)
@@ -255,7 +278,7 @@ func (s *Store) SpendCard(ctx context.Context, userID, cardID string) (Card, err
 	// Nothing changed. Say which of the three reasons it was, because "that
 	// card is gone" and "that card was never yours" want different answers.
 	var used, expires int64
-	err = s.db.QueryRow(ctx,
+	err = q.QueryRow(ctx,
 		`SELECT used_at, expires_at FROM usage_cards WHERE id = ? AND user_id = ?`,
 		cardID, userID).Scan(&used, &expires)
 	if err != nil {
@@ -301,35 +324,46 @@ func (s *Store) spendNextLocked(ctx context.Context, q database.Queryer, userID 
 
 	query += ` ORDER BY expires_at, id LIMIT 1`
 
-	var (
-		c       Card
-		rawWins string
-	)
-	err := q.QueryRow(ctx, query, args...).Scan(
-		&c.ID, &c.Name, &rawWins, &c.Source, &c.ExpiresAt, &c.CreatedAt,
-	)
-	if err != nil {
-		if database.IsNotFound(err) {
-			return Card{}, ErrNotFound
+	// The card read here can be spent by a manual use before the conditional
+	// UPDATE runs, because that path does not take the account's row lock. Only
+	// the UPDATE decides, so when it loses the next card is read and tried,
+	// rather than answering that the account has none left.
+	for range spendNextAttempts {
+		var (
+			c       Card
+			rawWins string
+		)
+		err := q.QueryRow(ctx, query, args...).Scan(
+			&c.ID, &c.Name, &rawWins, &c.Source, &c.ExpiresAt, &c.CreatedAt,
+		)
+		if err != nil {
+			if database.IsNotFound(err) {
+				return Card{}, ErrNotFound
+			}
+			return Card{}, fmt.Errorf("card: spend next query: %w", err)
 		}
-		return Card{}, fmt.Errorf("card: spend next query: %w", err)
-	}
 
-	result, err := q.Exec(ctx,
-		`UPDATE usage_cards SET used_at = ?
-		 WHERE id = ? AND user_id = ? AND used_at = ? AND expires_at > ?`,
-		now, c.ID, userID, 0, now)
-	if err != nil {
-		return Card{}, fmt.Errorf("card: spend next update: %w", err)
+		result, err := q.Exec(ctx,
+			`UPDATE usage_cards SET used_at = ?
+			 WHERE id = ? AND user_id = ? AND used_at = ? AND expires_at > ?`,
+			now, c.ID, userID, 0, now)
+		if err != nil {
+			return Card{}, fmt.Errorf("card: spend next update: %w", err)
+		}
+		if affected, _ := result.RowsAffected(); affected == 1 {
+			c.UsedAt = now
+			c.Windows = parseWindows(rawWins)
+			return c, nil
+		}
 	}
-	if affected, _ := result.RowsAffected(); affected != 1 {
-		return Card{}, ErrNotFound
-	}
-
-	c.UsedAt = now
-	c.Windows = parseWindows(rawWins)
-	return c, nil
+	return Card{}, ErrNotFound
 }
+
+// spendNextAttempts bounds how many cards one automatic reset tries after losing
+// a race to a manual spend. Losing more than once takes a burst of spends on one
+// account, so a small bound is enough, and it keeps one request from re-reading
+// the table in a loop.
+const spendNextAttempts = 3
 
 // SpendNext marks the available card that expires first, regardless of window.
 func (s *Store) SpendNext(ctx context.Context, q database.Queryer, userID string) error {
@@ -443,8 +477,12 @@ func (s *Store) grant(ctx context.Context, q database.Queryer, userID string, co
 		}
 		return nil
 	}
+	// Only a transaction the caller opened is joined. The database handle is a
+	// Queryer too, and writing through it would commit each card by itself: a
+	// failure part way would leave the earlier cards granted for a retry to
+	// grant again.
 	var err error
-	if q != nil {
+	if _, inTx := q.(*database.Tx); inTx {
 		err = insert(q)
 	} else {
 		err = s.db.Tx(ctx, func(tx *database.Tx) error { return insert(tx) })
@@ -574,6 +612,11 @@ type CodeInput struct {
 // separate codes, each carrying its own cards, because "here is a code, it
 // works ten times" and "here are ten codes" are different things to hand out
 // and only the second can be given to ten people separately.
+//
+// The batch is one transaction. The response is the only place the generated
+// codes are ever shown, so a batch that stopped half way would leave codes that
+// work and were never seen, and the error that reports it invites a retry that
+// mints a second set.
 func (s *Store) CreateCodes(ctx context.Context, in CodeInput, count int) ([]Code, error) {
 	if err := validateWindows(in.Windows); err != nil {
 		return nil, err
@@ -581,29 +624,46 @@ func (s *Store) CreateCodes(ctx context.Context, in CodeInput, count int) ([]Cod
 	if count < 1 {
 		count = 1
 	}
-	count = min(count, MaxBatch)
+	// Refused rather than cut to the limit: a request for five hundred that came
+	// back as two hundred and a success would send the operator looking for the
+	// other three hundred.
+	if count > MaxBatch {
+		return nil, ErrBatchTooLarge
+	}
 	if count > 1 && strings.TrimSpace(in.Code) != "" {
 		return nil, ErrNamedBatch
 	}
 
-	out := make([]Code, 0, count)
-	for range count {
-		attempt := in
-		if strings.TrimSpace(attempt.Code) == "" {
-			generated, err := generateCode()
-			if err != nil {
-				return nil, err
+	var out []Code
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		out = make([]Code, 0, count)
+		for range count {
+			attempt := in
+			if strings.TrimSpace(attempt.Code) == "" {
+				generated, err := randomCode()
+				if err != nil {
+					return err
+				}
+				attempt.Code = generated
 			}
-			attempt.Code = generated
+			record, err := s.createCode(ctx, tx, attempt)
+			if err != nil {
+				return err
+			}
+			out = append(out, record)
 		}
-		record, err := s.CreateCode(ctx, attempt)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, record)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
+
+// randomCode draws the code a batch hands out for each row without one. A
+// variable so a test can force a drawn code to collide with one already stored.
+// A database error also fails a batch part way through.
+var randomCode = generateCode
 
 // generateCode returns something a person can read off a screen and type
 // without asking which character that was: no O against 0, no I or L against
@@ -666,7 +726,14 @@ func drawSymbols(reader io.Reader, count, width int) ([]byte, error) {
 	return picked, nil
 }
 
+// CreateCode is retained for callers outside the tree; batches go through
+// CreateCodes.
 func (s *Store) CreateCode(ctx context.Context, in CodeInput) (Code, error) {
+	return s.createCode(ctx, s.db, in)
+}
+
+// createCode writes one code inside q, so that a batch can be one transaction.
+func (s *Store) createCode(ctx context.Context, q database.Queryer, in CodeInput) (Code, error) {
 	if err := validateWindows(in.Windows); err != nil {
 		return Code{}, err
 	}
@@ -688,9 +755,16 @@ func (s *Store) CreateCode(ctx context.Context, in CodeInput) (Code, error) {
 	if record.Cards < 1 {
 		return Code{}, ErrInvalidCount
 	}
+	// Checked here, where every code is written, and not only by the admin
+	// handler. A code already past its expiry is refused by each redemption with
+	// the same answer as a typo, and nobody who minted it is ever told why.
+	if record.ExpiresAt != 0 && (record.ExpiresAt <= record.CreatedAt ||
+		record.ExpiresAt > record.CreatedAt+int64(MaxDays)*24*3600*1000) {
+		return Code{}, ErrInvalidExpiry
+	}
 	record.Cards = min(record.Cards, MaxCards)
 
-	_, err := s.db.Exec(ctx,
+	_, err := q.Exec(ctx,
 		`INSERT INTO redemption_codes
 		 (id, code, name, windows, cards, claimed, card_days, expires_at, note, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -791,9 +865,20 @@ func (s *Store) Redeem(ctx context.Context, userID, code string) (Card, error) {
 			cardDays int
 			expires  int64
 		)
-		err := tx.QueryRow(ctx,
-			`SELECT id, name, windows, cards, claimed, card_days, expires_at FROM redemption_codes WHERE code = ?`,
-			code).Scan(&codeID, &name, &rawWins, &cards, &claimed, &cardDays, &expires)
+		const lookup = `SELECT id, name, windows, cards, claimed, card_days, expires_at FROM redemption_codes WHERE code = ?`
+		err := tx.QueryRow(ctx, lookup, code).
+			Scan(&codeID, &name, &rawWins, &cards, &claimed, &cardDays, &expires)
+		// The code as typed is tried first, so a named code is matched exactly as
+		// it was made. A miss is then tried in the form generated codes are written
+		// in, which also matches a named code already stored in that form: a code
+		// read off a printed card often arrives in lower case or without its
+		// hyphens, and a miss counts against the account's guesses.
+		if database.IsNotFound(err) {
+			if written := canonicalCode(code); written != code {
+				err = tx.QueryRow(ctx, lookup, written).
+					Scan(&codeID, &name, &rawWins, &cards, &claimed, &cardDays, &expires)
+			}
+		}
 		if err != nil {
 			if database.IsNotFound(err) {
 				return ErrCodeUnknown
@@ -845,6 +930,26 @@ func (s *Store) Redeem(ctx context.Context, userID, code string) (Card, error) {
 	return card, nil
 }
 
+// canonicalCode writes a typed code the way generateCode writes its codes:
+// capitals, in groups of four with hyphens between. It is only ever compared
+// with stored codes, so a string that is not of that shape matches nothing it
+// would not have matched anyway.
+func canonicalCode(code string) string {
+	bare := strings.ToUpper(strings.NewReplacer("-", "", " ", "").Replace(code))
+	// By rune, not byte: a hyphen wedged between the bytes of a multi-byte
+	// character would hand the database invalid UTF-8.
+	var out strings.Builder
+	symbols := 0
+	for _, r := range bare {
+		if symbols > 0 && symbols%4 == 0 {
+			out.WriteByte('-')
+		}
+		out.WriteRune(r)
+		symbols++
+	}
+	return out.String()
+}
+
 func clampDays(days int) int {
 	if days < 1 {
 		return 30
@@ -852,8 +957,10 @@ func clampDays(days int) int {
 	return min(days, MaxDays)
 }
 
+// isUnique is true only for a unique clash. A CHECK, NOT NULL or foreign-key
+// failure says "constraint" too, and reporting it as a duplicate tells the
+// account it has already redeemed a code when the real failure is elsewhere.
 func isUnique(err error) bool {
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate") ||
-		strings.Contains(message, "constraint")
+	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate")
 }

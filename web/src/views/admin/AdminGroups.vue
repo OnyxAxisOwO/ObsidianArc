@@ -33,6 +33,7 @@ import { t, tn } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { maskProvider } from '@/admin/safeMode';
+import { windowFigure } from '@/admin/quota';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import GroupMembers from './GroupMembers.vue';
@@ -41,7 +42,7 @@ import { useAdminView } from './adminView';
 const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
 
 const view = useAdminView();
-view.setTitle(t('groupsTitle'), t('groupsSubtitle'));
+view.setTitle(() => t('groupsTitle'), () => t('groupsSubtitle'));
 
 const groups = ref<Group[]>([]);
 const policies = ref<QuotaPolicy[]>([]);
@@ -108,10 +109,16 @@ function limitBadges(policy: QuotaPolicy): string[] {
   const parts: string[] = [];
   if (policy.rpm) parts.push(t('perMinute', { count: policy.rpm }));
   for (const kind of WINDOWS) {
-    const window = policy.windows[kind];
-    if (!window?.enabled) continue;
-    const figure = window.credits ?? window.tokens ?? window.requests;
-    parts.push(figure === null || figure === undefined ? kind : `${kind}: ${figure}`);
+    const limits = policy.windows[kind];
+    if (!limits?.enabled) continue;
+    // A window can carry requests and tokens at once, and each figure the
+    // operator set is its own badge; one badge would hide the rest.
+    const figures: string[] = [];
+    if (limits.requests !== null && limits.requests !== undefined) figures.push(t('boardRequests', { count: limits.requests }));
+    if (limits.tokens !== null && limits.tokens !== undefined) figures.push(t('boardTokens', { count: limits.tokens }));
+    if (limits.credits !== null && limits.credits !== undefined) figures.push(String(limits.credits));
+    if (!figures.length) parts.push(kind);
+    for (const figure of figures) parts.push(`${kind}: ${figure}`);
   }
   if (!parts.length) parts.push(t('inherits'));
   return parts;
@@ -191,8 +198,33 @@ function bulkRemove(): Promise<void> {
 }
 
 async function save(): Promise<void> {
+  // rpm, tpm, requests and tokens reach the server as int64s, and a fraction or
+  // a negative figure is refused only after the group exists, which leaves a
+  // group with no policy and a retry that cannot finish it, so both are checked
+  // before anything is sent. Credits are a float64, so they take fractions and
+  // are checked only for sign.
+  const counts: Array<number | null> = [form.value.rpm, form.value.tpm];
+  const credits: Array<number | null> = [];
+  for (const kind of WINDOWS) {
+    const window = form.value.windows[kind];
+    counts.push(window.requests, window.tokens);
+    credits.push(window.credits);
+  }
+  if (!counts.every((figure) => figure === null || Number.isSafeInteger(figure))) {
+    panelError.value = t('groupQuotaNotWhole');
+    return;
+  }
+  if (
+    !counts.every((figure) => figure === null || figure >= 0)
+    || !credits.every((figure) => figure === null || (Number.isFinite(figure) && figure >= 0))
+  ) {
+    panelError.value = t('groupQuotaNegative');
+    return;
+  }
+
   busy.value = true;
   panelError.value = '';
+  const wasCreating = creating.value;
   try {
     const modelGrants = form.value.allowAll
       ? []
@@ -216,9 +248,13 @@ async function save(): Promise<void> {
       model_grants: modelGrants,
     };
 
-    const saved = creating.value
+    const saved = wasCreating
       ? (await adminApi.createGroup(payload)).group
       : (await adminApi.updateGroup(existing.value!.id, payload)).group;
+    // Once created, a retry must update this group. Creating it again would
+    // be refused by the unique name index, and the group would be left with
+    // no quota policy and no way back to it from this panel.
+    if (wasCreating) existing.value = saved;
 
     await adminApi.savePolicy({
       scope: 'group',
@@ -227,9 +263,9 @@ async function save(): Promise<void> {
       tpm: form.value.tpm,
       windows: Object.fromEntries(WINDOWS.map((kind) => [kind, {
         enabled: form.value.windows[kind].enabled ? true : null,
-        requests: form.value.windows[kind].requests,
-        tokens: form.value.windows[kind].tokens,
-        credits: form.value.windows[kind].credits,
+        requests: windowFigure(form.value.windows[kind].requests),
+        tokens: windowFigure(form.value.windows[kind].tokens),
+        credits: windowFigure(form.value.windows[kind].credits),
       }])),
     });
 
@@ -237,6 +273,9 @@ async function save(): Promise<void> {
   } catch (failure) {
     busy.value = false;
     panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    // A group created before the policy failed is in the table now, and the
+    // list should show it rather than wait for the panel to close.
+    if (wasCreating && existing.value) void load();
   }
 }
 
@@ -365,7 +404,7 @@ onMounted(load);
     <OaSwitchField v-model="form.isDefault" :label="t('isDefault')" :hint="t('isDefaultHint')" />
     <OaNumberField v-model="form.sortOrder" :label="t('sortOrder')" />
 
-    <OaFormSection :title="t('secModelAccess')" />
+    <OaFormSection id="secModelAccess" :title="t('secModelAccess')" />
     <OaSwitchField
       v-model="form.allowAll"
       :label="t('allowAllModels')"
@@ -387,7 +426,7 @@ onMounted(load);
       :hint="t('groupApiAccessHint')"
     />
 
-    <OaFormSection :title="t('secGroupAbilities')" />
+    <OaFormSection id="secGroupAbilities" :title="t('secGroupAbilities')" />
     <OaSwitchField
       v-model="form.allowStats"
       :label="t('groupAllowStats')"
@@ -409,7 +448,7 @@ onMounted(load);
       :hint="t('groupShowExpiryHint')"
     />
 
-    <OaFormSection :title="t('secAllowance')" :hint="t('allowanceHint')" />
+    <OaFormSection id="secAllowance" :title="t('secAllowance')" :hint="t('allowanceHint')" />
     <OaNumberField
       v-model="form.rpm"
       :label="t('requestsPerMinute')"

@@ -19,7 +19,7 @@
 //     data:, bare relative paths that mean nothing here — renders as its own
 //     literal text.
 
-import { t } from '../i18n';
+import { t } from '@/composables/useI18n';
 import { IconCheck, IconCopy, IconDownload, iconElement, type OaIcon } from '../icons';
 import { describeCode, type CodeLanguage } from './code';
 
@@ -51,8 +51,15 @@ function mathRenderer(): MathRenderer | null {
     // A chunk that did not arrive leaves the formula as its own source text,
     // which is readable. Clearing the handle either way is what lets the next
     // formula ask again, instead of one failed fetch deciding for the rest of
-    // the page's life.
-    .catch(() => undefined)
+    // the page's life. Elements still in the document stay recorded, because a
+    // later attempt that succeeds is what repaints them; only detached ones are
+    // let go, so their message subtrees are not kept alive for the life of the
+    // page.
+    .catch(() => {
+      for (const element of [...awaitingMath.keys()]) {
+        if (!element.isConnected) awaitingMath.delete(element);
+      }
+    })
     .finally(() => {
       arriving = null;
     });
@@ -221,8 +228,12 @@ export function parseInline(text: string): Inline[] {
       }
     }
 
-    if (char === '\\' && ESCAPABLE.includes(source[index + 1] ?? '')) {
-      buffer += source[index + 1];
+    // A backslash at the very end of a block has nothing after it to escape.
+    // An undefined next character must not reach ESCAPABLE.includes, which is
+    // true for the empty string, or the branch appends `undefined` to the text.
+    const escaped = source[index + 1];
+    if (char === '\\' && escaped !== undefined && ESCAPABLE.includes(escaped)) {
+      buffer += escaped;
       index += 2;
       continue;
     }
@@ -829,4 +840,10 @@ export function renderInto(element: Element, text: string): Element {
   if (drewPlaceholder) awaitingMath.set(element, text);
   else awaitingMath.delete(element);
   return element;
+}
+
+// Read by the tests: once a load attempt has settled, nothing should still be
+// held waiting for it.
+export function pendingMathCount(): number {
+  return awaitingMath.size;
 }

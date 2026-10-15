@@ -155,6 +155,43 @@ describe('registration mode and rewards', () => {
     expect(save).toHaveBeenCalledWith({ 'invites.user_enabled': 'true' });
   });
 
+  // A cleared number used to be saved as the default the page would have
+  // shown, so an operator who emptied the field got a value they never typed.
+  it('will not save a cleared number field, and says that a field is empty', async () => {
+    stubBase({ settings: { 'invites.user_enabled': 'true' } });
+    stubPartners();
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    await mount(AdminInvites);
+
+    input(fieldFor(host, t('userInviteLimit')).querySelector<HTMLInputElement>('input')!, '');
+    await settle();
+
+    expect(button(actions, t('save')).disabled).toBe(true);
+    expect(host.textContent).toContain(t('settingNumberRequired'));
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  // Switching personal invites off hides the cleared field, so the page is valid
+  // again. The cleared limit must not be written as its default on the way out.
+  it('does not write a cleared limit as its default when personal invites are switched off', async () => {
+    stubBase({ settings: { 'invites.user_enabled': 'true', 'invites.user_limit': '20' } });
+    stubPartners();
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    await mount(AdminInvites);
+
+    input(fieldFor(host, t('userInviteLimit')).querySelector<HTMLInputElement>('input')!, '');
+    await settle();
+    switchFor(host, t('userInvitesEnabled')).click();
+    await settle();
+
+    button(actions, t('save')).click();
+    await settle();
+
+    expect(save).toHaveBeenCalledWith({ 'invites.user_enabled': 'false' });
+  });
+
   it('reads the reward rule as one sentence, and explains a zero reward rather than stating it', async () => {
     stubBase({ settings: { 'invites.user_enabled': 'true', 'invites.reward_every': '5', 'invites.reward_cards': '2' } });
     stubPartners();
@@ -165,6 +202,38 @@ describe('registration mode and rewards', () => {
     input(fieldFor(host, t('inviteRewardCards')).querySelector<HTMLInputElement>('input')!, '0');
     await settle();
     expect(host.textContent).toContain(t('inviteRewardRuleNone', { every: 5 }));
+  });
+
+  // A closed instance that still requires a code: loading it must not record
+  // invites.required as 'false', or opening it would send nothing for the flag.
+  it('opens sign-ups from closed and clears the code requirement the server still holds', async () => {
+    stubBase({ settings: { 'registration.enabled': 'false', 'invites.required': 'true' } });
+    stubPartners();
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    await mount(AdminInvites);
+
+    await choose(fieldFor(host, t('registrationMode')).querySelector<HTMLButtonElement>('.oa-select')!, t('registrationModeOpen'));
+    button(actions, t('save')).click();
+    await settle();
+
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+      'registration.enabled': 'true',
+      'invites.required': 'false',
+    }));
+  });
+
+  it('leaves a closed instance\'s code requirement alone when only personal invites change', async () => {
+    stubBase({ settings: { 'registration.enabled': 'false', 'invites.required': 'true' } });
+    stubPartners();
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    await mount(AdminInvites);
+
+    switchFor(host, t('userInvitesEnabled')).click();
+    await settle();
+    button(actions, t('save')).click();
+    await settle();
+
+    expect(save).toHaveBeenCalledWith({ 'invites.user_enabled': 'true' });
   });
 });
 
@@ -340,6 +409,25 @@ describe('partner codes', () => {
     expect(row.textContent).toContain('4');
   });
 
+  it('asks for the server\'s full page of partner codes and says how many it is not showing', async () => {
+    stubBase();
+    const partner = (index: number): InviteCode => ({
+      id: `p${index}`, code: `PARTNER${index}X`, owner_id: '', owner_username: '', owner_nickname: '',
+      kind: 'partner', name: `Partner ${index}`, allow_existing: true,
+      group_id: '', group_name: '', group_days: 0, group_days_max: 0,
+      max_uses: 0, uses: 0, expires_at: 0, revoked_at: 0, note: '', created_by: 'op',
+      created_at: Date.now(), status: 'active', claims: 0,
+    });
+    const partners = vi.spyOn(adminApi, 'invites').mockImplementation(async (query: string) => (query.includes('kind=partner')
+      ? { codes: [partner(1), partner(2)], total: 75 }
+      : { codes: [], total: 0 }));
+    await mount(AdminInvites);
+
+    expect(partners).toHaveBeenCalledWith('?kind=partner&limit=200&offset=0');
+    expect(host.querySelector('#secInvitePartners')!.textContent)
+      .toContain(t('partnerCodesCapped', { shown: 2, total: 75 }));
+  });
+
   // A partner's code is a word somebody chose. Eight letters long, it used to
   // be split like a generated one, and PARTNERX read as PART-NERX.
   it('shows an eight-letter partner code as it was typed, not split in two', async () => {
@@ -386,12 +474,12 @@ describe('an existing code', () => {
     { user_id: 'u3', username: 'carol', nickname: '', group_days: 3, created_at: Date.now(), rewarded_at: 0, reward_cards: 0, reward_skipped: '', via: 'claim' },
   ];
 
-  async function openRow(): Promise<void> {
+  async function openRow(total = uses.length): Promise<void> {
     stubBase();
     vi.spyOn(adminApi, 'invites').mockImplementation(async (query: string) => (query.includes('kind=partner')
       ? { codes: [], total: 0 }
       : { codes: [code], total: 1 }));
-    vi.spyOn(adminApi, 'inviteUses').mockResolvedValue({ uses });
+    vi.spyOn(adminApi, 'inviteUses').mockResolvedValue({ uses, total });
     await mount(AdminInvites);
     // The partner card's own table is empty in this stub, so the main list
     // is the only one with a row to click.
@@ -406,6 +494,16 @@ describe('an existing code', () => {
     expect(panels.textContent).toContain(t('inviteRewardedBadge'));
     expect(panels.textContent).toContain(t('inviteSkippedSameIP'));
     expect(panels.textContent).toContain(t('inviteViaClaim'));
+  });
+
+  it('says when the list is only the newest page of every use', async () => {
+    await openRow(250);
+    expect(panels.textContent).toContain(t('inviteUsesCapped', { shown: uses.length, total: 250 }));
+  });
+
+  it('says nothing about truncation when the list holds every use', async () => {
+    await openRow();
+    expect(panels.textContent).not.toContain(t('inviteUsesCapped', { shown: uses.length, total: uses.length }));
   });
 
   it('revokes on the second press, and then offers nothing more to revoke', async () => {

@@ -5,45 +5,61 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
 // parseHeaders turns "X-Foo=bar,X-Bar=baz" into the map[string]string
-// POST/PATCH /api/admin/providers takes for headers.
-func parseHeaders(raw string) map[string]string {
+// POST/PATCH /api/admin/providers takes for headers. An entry without '='
+// is refused, not skipped: on an edit the map replaces the stored set, so a
+// dropped typo would clear every other header and still report success.
+// Values cannot contain commas, since the list is split on them.
+func parseHeaders(rt *Runtime, raw string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, entry := range splitCSV(raw) {
 		k, v, ok := strings.Cut(entry, "=")
-		if !ok {
-			continue
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			if rt.Session.Lang == "zh" {
+				return nil, rt.Errorf("--headers 要写成 名称=值，得到 %q", entry)
+			}
+			return nil, rt.Errorf("--headers takes name=value, got %q", entry)
 		}
-		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		out[k] = strings.TrimSpace(v)
 	}
-	return out
+	return out, nil
 }
 
 // parseTiers turns "id:name:budget,id2:name2:budget2" into the
 // []{id,name,budget} shape POST/PATCH /api/admin/models takes for
-// reasoning_tiers.
-func parseTiers(raw string) []map[string]any {
-	var out []map[string]any
+// reasoning_tiers. The id never contains a colon, the budget is the last
+// field, and everything between is the name, so a name may contain colons.
+// An empty value is an empty list, not nil: nil marshals as null, which the
+// server reads as "not given", so a clear would report success and keep every
+// tier.
+func parseTiers(rt *Runtime, raw string) ([]map[string]any, error) {
+	out := []map[string]any{}
 	for _, entry := range splitCSV(raw) {
-		parts := strings.SplitN(entry, ":", 3)
-		tier := map[string]any{}
-		if len(parts) > 0 {
-			tier["id"] = strings.TrimSpace(parts[0])
-		}
-		if len(parts) > 1 {
+		parts := strings.Split(entry, ":")
+		tier := map[string]any{"id": strings.TrimSpace(parts[0])}
+		if n := len(parts); n == 2 {
 			tier["name"] = strings.TrimSpace(parts[1])
-		}
-		if len(parts) > 2 {
-			var budget int
-			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &budget)
+		} else if n > 2 {
+			tier["name"] = strings.TrimSpace(strings.Join(parts[1:n-1], ":"))
+			// A budget that did not parse would otherwise be stored as 0, which
+			// reads as a tier that has no budget at all.
+			budget, err := strconv.Atoi(strings.TrimSpace(parts[n-1]))
+			if err != nil {
+				if rt.Session.Lang == "zh" {
+					return nil, rt.Errorf("--tiers 的预算必须是整数：%q", entry)
+				}
+				return nil, rt.Errorf("--tiers entry %q: the budget must be a whole number", entry)
+			}
 			tier["budget"] = budget
 		}
 		out = append(out, tier)
 	}
-	return out
+	return out, nil
 }
 
 func init() {
@@ -65,7 +81,7 @@ func init() {
 				p := asMap(raw)
 				rows = append(rows, []string{
 					asStr(p["id"]), asStr(p["name"]), asStr(p["kind"]), asStr(p["base_url"]),
-					yesNo(asBoolVal(p["enabled"])), fmt.Sprint(asNum(p["model_count"])), asStr(p["api_key_hint"]),
+					yesNo(asBoolVal(p["enabled"])), formatNumber(asNum(p["model_count"])), asStr(p["api_key_hint"]),
 				})
 			}
 			return rt.Table([]string{"id", "name", "kind", "base_url", "enabled", "models", "key"}, rows)
@@ -112,13 +128,13 @@ func init() {
 			for k, v := range asMap(p["headers"]) {
 				headers = append(headers, k+"="+asStr(v))
 			}
-			if err := rt.Fields([][2]string{
+			if err := rt.FieldsOf(p, [][2]string{
 				{"id", asStr(p["id"])}, {"name", asStr(p["name"])}, {"kind", asStr(p["kind"])},
 				{"base_url", asStr(p["base_url"])}, {"allow_insecure", yesNo(asBoolVal(p["allow_insecure"]))},
 				{"api_key_hint", asStr(p["api_key_hint"])}, {"headers", strings.Join(headers, ", ")},
-				{"reasoning_style", asStr(p["reasoning_style"])}, {"timeout_seconds", fmt.Sprint(asNum(p["timeout_seconds"]))},
-				{"enabled", yesNo(asBoolVal(p["enabled"]))}, {"sort_order", fmt.Sprint(asNum(p["sort_order"]))},
-				{"model_count", fmt.Sprint(asNum(p["model_count"]))}, {"created_at", formatMS(p["created_at"])},
+				{"reasoning_style", asStr(p["reasoning_style"])}, {"timeout_seconds", formatNumber(asNum(p["timeout_seconds"]))},
+				{"enabled", yesNo(asBoolVal(p["enabled"]))}, {"sort_order", formatNumber(asNum(p["sort_order"]))},
+				{"model_count", formatNumber(asNum(p["model_count"]))}, {"created_at", formatMS(p["created_at"])},
 			}); err != nil {
 				return err
 			}
@@ -180,6 +196,15 @@ func init() {
 					return rt.Errorf("--%s is required", req)
 				}
 			}
+			// Refused here, before any lookup or request: with both flags the typed
+			// key would win and the copy would vanish without a word, and with
+			// neither the server refuses only after the round trip.
+			if rt.Present("api-key") == rt.Present("copy-key-from") {
+				if rt.Session.Lang == "zh" {
+					return rt.Errorf("请只给出 --api-key 或 --copy-key-from 之一")
+				}
+				return rt.Errorf("give exactly one of --api-key or --copy-key-from")
+			}
 			body := bodyBuilder{
 				"name":     rt.String("name"),
 				"kind":     rt.String("kind"),
@@ -188,7 +213,7 @@ func init() {
 			body.boolv(rt, "allow-insecure", "allow_insecure")
 			if rt.Present("api-key") {
 				body["api_key"] = rt.String("api-key")
-			} else if rt.Present("copy-key-from") {
+			} else {
 				pid, err := resolveProviderRef(rt, rt.String("copy-key-from"))
 				if err != nil {
 					return err
@@ -196,7 +221,11 @@ func init() {
 				body["copy_key_from"] = pid
 			}
 			if rt.Present("headers") {
-				body["headers"] = parseHeaders(rt.String("headers"))
+				headers, err := parseHeaders(rt, rt.String("headers"))
+				if err != nil {
+					return err
+				}
+				body["headers"] = headers
 			}
 			body.str(rt, "anthropic-version", "anthropic_version")
 			body.str(rt, "reasoning-style", "reasoning_style")
@@ -256,7 +285,11 @@ func init() {
 			body.boolv(rt, "allow-insecure", "allow_insecure")
 			body.str(rt, "api-key", "api_key")
 			if rt.Present("headers") {
-				body["headers"] = parseHeaders(rt.String("headers"))
+				headers, err := parseHeaders(rt, rt.String("headers"))
+				if err != nil {
+					return err
+				}
+				body["headers"] = headers
 			}
 			body.str(rt, "anthropic-version", "anthropic_version")
 			body.str(rt, "reasoning-style", "reasoning_style")
@@ -306,6 +339,9 @@ func init() {
 			}
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/providers/"+url.PathEscape(pid), nil); err != nil {
 				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
 			if rt.Session.Lang == "zh" {
 				rt.Printf("已删除。\n")
@@ -427,17 +463,17 @@ func init() {
 				return rt.Errorf("no such model.")
 			}
 			jsonMode := rt.effectiveJSON()
-			if err := rt.Fields([][2]string{
+			if err := rt.FieldsOf(m, [][2]string{
 				{"id", asStr(m["id"])}, {"provider", asStr(m["provider_name"])}, {"model_id", asStr(m["model_id"])},
 				{"api_name", asStr(m["api_name"])}, {"display_name", asStr(m["display_name"])},
 				{"enabled", yesNo(asBoolVal(m["enabled"]))}, {"hidden", yesNo(asBoolVal(m["hidden"]))},
 				{"auto_disabled", yesNo(asBoolVal(m["auto_disabled"]))}, {"route_to_id", asStr(m["route_to_id"])},
-				{"reasoning_style", asStr(m["reasoning_style"])}, {"context_window", fmt.Sprint(asNum(m["context_window"]))},
-				{"max_output_tokens", fmt.Sprint(asNum(m["max_output_tokens"]))},
-				{"request_weight", fmt.Sprint(asNum(m["request_weight"]))},
-				{"input_token_weight", fmt.Sprint(asNum(m["input_token_weight"]))},
-				{"output_token_weight", fmt.Sprint(asNum(m["output_token_weight"]))},
-				{"reasoning_token_weight", fmt.Sprint(asNum(m["reasoning_token_weight"]))},
+				{"reasoning_style", asStr(m["reasoning_style"])}, {"context_window", formatNumber(asNum(m["context_window"]))},
+				{"max_output_tokens", formatNumber(asNum(m["max_output_tokens"]))},
+				{"request_weight", formatNumber(asNum(m["request_weight"]))},
+				{"input_token_weight", formatNumber(asNum(m["input_token_weight"]))},
+				{"output_token_weight", formatNumber(asNum(m["output_token_weight"]))},
+				{"reasoning_token_weight", formatNumber(asNum(m["reasoning_token_weight"]))},
 				{"supports_reasoning", yesNo(asBoolVal(m["supports_reasoning"]))},
 				{"supports_images", yesNo(asBoolVal(m["supports_images"]))},
 				{"supports_vision", yesNo(asBoolVal(m["supports_vision"]))},
@@ -447,7 +483,7 @@ func init() {
 				{"supports_chat_image_gen", yesNo(asBoolVal(m["supports_chat_image_gen"]))},
 				{"emulate_tools", yesNo(asBoolVal(m["emulate_tools"]))},
 				{"request_override", asStr(m["request_override"])},
-				{"sort_order", fmt.Sprint(asNum(m["sort_order"]))}, {"created_at", formatMS(m["created_at"])},
+				{"sort_order", formatNumber(asNum(m["sort_order"]))}, {"created_at", formatMS(m["created_at"])},
 			}); err != nil {
 				return err
 			}
@@ -527,7 +563,11 @@ func init() {
 		}
 		body.str(rt, "reasoning-style", "reasoning_style")
 		if rt.Present("tiers") {
-			body["reasoning_tiers"] = parseTiers(rt.String("tiers"))
+			tiers, err := parseTiers(rt, rt.String("tiers"))
+			if err != nil {
+				return nil, err
+			}
+			body["reasoning_tiers"] = tiers
 		}
 		if rt.Present("groups") {
 			grants, err := parseGroupGrants(rt, rt.String("groups"))
@@ -658,6 +698,9 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/models/"+url.PathEscape(mid), nil); err != nil {
 				return err
 			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
+			}
 			if rt.Session.Lang == "zh" {
 				rt.Printf("已删除。\n")
 			} else {
@@ -678,7 +721,7 @@ func init() {
 			ZH: "按希望的展示顺序列出模型；位置即写入 sort_order。未列出的模型保留原有 sort_order，" +
 				"可能因此与列出的模型顺序冲突。",
 		},
-		Args:       []Arg{{Name: "refs...", Hint: Text{EN: "model refs, in the new order", ZH: "模型引用，按新顺序排列"}, Required: true}},
+		Args:       []Arg{{Name: "refs...", Hint: Text{EN: "model refs, in the new order", ZH: "模型引用，按新顺序排列"}, Required: true, Rest: true}},
 		Examples:   []string{"model order gpt-4o gpt-4o-mini claude", "model order 01H8X… 01H8Y…"},
 		Permission: "models",
 		Endpoints:  []string{"PUT /api/admin/models/order"},
@@ -699,6 +742,9 @@ func init() {
 			}
 			if _, _, err := rt.Call(http.MethodPut, "/api/admin/models/order", map[string]any{"ids": ids}); err != nil {
 				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
 			if rt.Session.Lang == "zh" {
 				rt.Printf("已更新排序。\n")
@@ -723,7 +769,7 @@ func init() {
 				"作为一个带引号的参数粘贴；网页终端中可先用 Shift+Enter 分行输入。" +
 				"其中一条有问题不会中止其余条目，请查看返回结果的 skipped 列表。",
 		},
-		Args:       []Arg{{Name: "json", Hint: Text{EN: "the import document", ZH: "导入文档"}, Required: true}},
+		Args:       []Arg{{Name: "json", Hint: Text{EN: "the import document", ZH: "导入文档"}, Required: true, Rest: true}},
 		Examples:   []string{`model import '{"models":[{"provider":"OpenAI","model_id":"gpt-4o","display_name":"GPT-4o"}]}'`, "model import --json '{...}'"},
 		Permission: "models",
 		Endpoints:  []string{"POST /api/admin/models/import"},
@@ -748,7 +794,7 @@ func init() {
 				skipped = append(skipped, asStr(s))
 			}
 			return rt.Fields([][2]string{
-				{"created", fmt.Sprint(asNum(m["created"]))}, {"updated", fmt.Sprint(asNum(m["updated"]))},
+				{"created", formatNumber(asNum(m["created"]))}, {"updated", formatNumber(asNum(m["updated"]))},
 				{"skipped", strings.Join(skipped, "; ")},
 			})
 		},
@@ -759,7 +805,8 @@ func init() {
 // []{group_id,access} shape POST/PATCH /api/admin/models takes for
 // group_grants, resolving each left-hand side through resolveGroupRef.
 func parseGroupGrants(rt *Runtime, raw string) ([]map[string]any, error) {
-	var out []map[string]any
+	// Never nil: an empty --groups must reach the server as [] (see parseTiers).
+	out := []map[string]any{}
 	for _, entry := range splitCSV(raw) {
 		ref, access, ok := strings.Cut(entry, ":")
 		if !ok {

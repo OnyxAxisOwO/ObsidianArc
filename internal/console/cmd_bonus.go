@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,10 +14,15 @@ import (
 // own is under "credit" beside its allowance. The rules are in
 // docs/architecture/bonus-and-checkin.md.
 
-// numberString prints a number the console's decoder handed over, exactly.
+// numberString prints a count or amount the decoder handed over. Every number
+// arrives as a float64, and fmt prints one of a million or more in exponent
+// form, so a 1000000-token limit would read as 1e+06.
 func numberString(v any) string {
 	if v == nil {
 		return ""
+	}
+	if f, ok := v.(float64); ok {
+		return formatNumber(f)
 	}
 	return fmt.Sprint(v)
 }
@@ -60,7 +66,7 @@ func findBar(rt *Runtime, ref string) (map[string]any, error) {
 	return match, nil
 }
 
-func barBody(rt *Runtime, base map[string]any) map[string]any {
+func barBody(rt *Runtime, base map[string]any) (map[string]any, error) {
 	body := map[string]any{}
 	for _, key := range []string{"name", "description", "kind", "toggle_mode", "default_on", "show_total", "model_ids", "default_expires_at", "active"} {
 		if v, ok := base[key]; ok {
@@ -77,9 +83,20 @@ func barBody(rt *Runtime, base map[string]any) map[string]any {
 	bb.boolv(rt, "active", "active")
 	bb.int64v(rt, "expires-at", "default_expires_at")
 	if rt.Present("models") {
-		body["model_ids"] = splitCSV(rt.String("models"))
+		// A bar stores the internal model ids it covers, which is what the server
+		// compares against the model a request is charged to. A name stored as
+		// given matches nothing, and the bar then covers no model at all.
+		ids := []string{}
+		for _, ref := range splitCSV(rt.String("models")) {
+			mid, err := resolveModelRef(rt, ref)
+			if err != nil {
+				return nil, err
+			}
+			ids = append(ids, mid)
+		}
+		body["model_ids"] = ids
 	}
-	return body
+	return body, nil
 }
 
 var barFlags = []Flag{
@@ -132,7 +149,10 @@ func init() {
 			if name == "" {
 				return rt.Errorf("a name is required")
 			}
-			body := barBody(rt, map[string]any{"name": name})
+			body, err := barBody(rt, map[string]any{"name": name})
+			if err != nil {
+				return err
+			}
 			data, _, err := rt.Call(http.MethodPost, "/api/admin/bonus/bars", body)
 			if err != nil {
 				return err
@@ -158,7 +178,11 @@ func init() {
 			if err != nil {
 				return err
 			}
-			data, _, err := rt.Call(http.MethodPut, "/api/admin/bonus/bars/"+url.PathEscape(asStr(bar["id"])), barBody(rt, bar))
+			body, err := barBody(rt, bar)
+			if err != nil {
+				return err
+			}
+			data, _, err := rt.Call(http.MethodPut, "/api/admin/bonus/bars/"+url.PathEscape(asStr(bar["id"])), body)
 			if err != nil {
 				return err
 			}
@@ -227,7 +251,13 @@ func init() {
 			body := bodyBuilder{}
 			body.floatv(rt, "amount", "amount")
 			body.str(rt, "note", "note")
-			body.str(rt, "group", "group_id")
+			if rt.Present("group") && rt.String("group") != "" {
+				gid, err := resolveGroupRef(rt, rt.String("group"))
+				if err != nil {
+					return err
+				}
+				body["group_id"] = gid
+			}
 			body.intv(rt, "days", "days")
 			body.int64v(rt, "expires-at", "expires_at")
 			// Bool, not Present: "--all false" is given, and must not grant to every account.
@@ -240,6 +270,9 @@ func init() {
 			data, _, err := rt.Call(http.MethodPost, "/api/admin/bonus/bars/"+url.PathEscape(asStr(bar["id"]))+"/grants", map[string]any(body))
 			if err != nil {
 				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
 			m := asMap(data)
 			rt.Printf("granted %s credits to %s account(s); expires %s\n", numberString(m["amount"]), numberString(m["granted"]), formatMS(m["expires_at"]))
@@ -301,6 +334,9 @@ func init() {
 			if err != nil {
 				return err
 			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
+			}
 			rt.Printf("took back %s credits\n", numberString(asMap(data)["revoked"]))
 			return nil
 		},
@@ -323,7 +359,12 @@ func init() {
 			var rows [][]string
 			for _, raw := range asSlice(asMap(data)["bars"]) {
 				b := asMap(raw)
-				left := fmt.Sprintf("%v%%", b["percent"])
+				// Rounded to a tenth: a share of a bar is often one third, and the raw
+				// float prints as 33.333333333333336%.
+				left := "-"
+				if p, ok := b["percent"].(float64); ok {
+					left = formatNumber(math.Round(p*10)/10) + "%"
+				}
 				if b["remaining"] != nil {
 					left = numberString(b["remaining"]) + " / " + numberString(b["total"])
 				}

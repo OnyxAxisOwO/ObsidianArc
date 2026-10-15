@@ -114,13 +114,13 @@ func TestAUserOverrideCanBeStricterThanItsGroup(t *testing.T) {
 	service, _ := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeGroup, ScopeID: "shared",
 		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(10), nil, nil)},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeUser, ScopeID: "watched",
 		Windows: map[Window]Limits{Window5H: {Requests: ptrInt(2)}},
 	}); err != nil {
@@ -161,7 +161,7 @@ func TestANumberAloneDoesNotTurnAWindowOn(t *testing.T) {
 	service, _ := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeGroup, ScopeID: "no-five-hour",
 		// Deliberately not limits(...): the window is left unset, which is how
 		// a group that only caps the week is stored.
@@ -169,7 +169,7 @@ func TestANumberAloneDoesNotTurnAWindowOn(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeUser, ScopeID: "typed-a-number",
 		Windows: map[Window]Limits{Window5H: {Requests: ptrInt(1)}},
 	}); err != nil {
@@ -188,7 +188,7 @@ func TestANumberAloneDoesNotTurnAWindowOn(t *testing.T) {
 	// were measured the whole time — the usage screen shows them — so a cap
 	// set part-way through a window is measured against what the account has
 	// actually used, and an account already past it is refused at once.
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeUser, ScopeID: "typed-a-number",
 		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(1), nil, nil)},
 	}); err != nil {
@@ -206,7 +206,7 @@ func TestReserveStopsAtTheRequestLimit(t *testing.T) {
 	service, _ := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(3), nil, nil)},
 	}); err != nil {
@@ -246,7 +246,7 @@ func TestConcurrentAutomaticResetSpendsOneCard(t *testing.T) {
 		userID, userID, userID, "x", user.RoleUser, user.StatusActive, 1, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(10), nil, nil)},
 	}); err != nil {
@@ -296,7 +296,7 @@ func TestConcurrentAutomaticResetSpendsOneCard(t *testing.T) {
 func TestAutomaticResetDoesNotSpendForMinuteRateLimit(t *testing.T) {
 	service, _ := newService(t)
 	ctx := context.Background()
-	if _, err := service.Policies().Save(ctx, Policy{Scope: ScopeGlobal, RPM: ptrInt(1)}); err != nil {
+	if _, err := service.Policies().Save(ctx, nil, Policy{Scope: ScopeGlobal, RPM: ptrInt(1)}); err != nil {
 		t.Fatal(err)
 	}
 	person := account("rate-limited", "")
@@ -328,7 +328,7 @@ func TestAutoResetTargetingWindowVariantClearsOnlyTargetedWindow(t *testing.T) {
 		userID, userID, userID, "x", user.RoleUser, user.StatusActive, 1, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeGlobal,
 		Windows: map[Window]Limits{
 			Window5H:   limits(true, ptrInt(2), nil, nil),
@@ -422,7 +422,7 @@ func TestAutoResetTargetingWindowVariantClearsOnlyTargetedWindow(t *testing.T) {
 func TestResetRetryCountsEachWindowOnce(t *testing.T) {
 	service, db := newService(t)
 	ctx := context.Background()
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{WindowWeek: limits(true, nil, ptrInt(200), nil)},
 	}); err != nil {
@@ -472,7 +472,7 @@ func TestResetRetryCountsEachWindowOnce(t *testing.T) {
 func TestResetRetryChargesTheMinuteOnce(t *testing.T) {
 	service, db := newService(t)
 	ctx := context.Background()
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		RPM:     ptrInt(100),
 		TPM:     ptrInt(100000),
@@ -532,7 +532,7 @@ func TestLimitsAreScopedToTheAccount(t *testing.T) {
 	service, _ := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(1), nil, nil)},
 	}); err != nil {
@@ -553,7 +553,7 @@ func TestRejectedReservationRollsBack(t *testing.T) {
 	service, db := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeGlobal,
 		Windows: map[Window]Limits{
 			Window5H:    limits(true, ptrInt(1), nil, nil),
@@ -592,7 +592,7 @@ func TestConcurrentReservationsCannotOverspend(t *testing.T) {
 	ctx := context.Background()
 
 	const limit = 20
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(limit), nil, nil)},
 	}); err != nil {
@@ -629,7 +629,7 @@ func TestTokenCeilingRefusesOnceSpent(t *testing.T) {
 	service, _ := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{WindowMonth: limits(true, nil, ptrInt(1000), nil)},
 	}); err != nil {
@@ -661,7 +661,7 @@ func TestCreditCeiling(t *testing.T) {
 	service, _ := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{WindowWeek: limits(true, nil, nil, ptrFloat(5))},
 	}); err != nil {
@@ -689,7 +689,7 @@ func TestAdministratorsBypassByDefault(t *testing.T) {
 	service, _ := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(1), nil, nil)},
 	}); err != nil {
@@ -710,7 +710,7 @@ func TestSummaryReportsEveryWindow(t *testing.T) {
 	service, _ := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{Window5H: limits(true, ptrInt(50), nil, nil)},
 	}); err != nil {
@@ -903,7 +903,7 @@ func TestConcurrentTurnsCannotOverspendTokens(t *testing.T) {
 
 	const limit = 10000
 	const perTurn = 4000
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{Window5H: limits(true, nil, ptrInt(limit), nil)},
 	}); err != nil {
@@ -944,7 +944,7 @@ func TestReleaseGivesBackTheReservation(t *testing.T) {
 	service, db := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{Window5H: limits(true, nil, ptrInt(10000), nil)},
 	}); err != nil {
@@ -993,7 +993,7 @@ func TestAnUnenforcedWindowMeasuresTheTurn(t *testing.T) {
 	ctx := context.Background()
 
 	// A rate limit and no allowance window switched on.
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeGlobal,
 		RPM:   ptrInt(60),
 	}); err != nil {
@@ -1041,7 +1041,7 @@ func TestAResetRetryCountsAnUnenforcedWindowOnce(t *testing.T) {
 	// The week is enforced at one request. The five-hour window is only
 	// measured, and it is the one a retry would count twice if it were charged
 	// inside the attempt that the week refused.
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{WindowWeek: limits(true, ptrInt(1), nil, nil)},
 	}); err != nil {
@@ -1082,7 +1082,7 @@ func TestCountersNeverGoNegative(t *testing.T) {
 	service, db := newService(t)
 	ctx := context.Background()
 
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope:   ScopeGlobal,
 		Windows: map[Window]Limits{Window5H: limits(true, nil, ptrInt(100000), nil)},
 	}); err != nil {

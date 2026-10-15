@@ -295,7 +295,7 @@ func parseTokens(c *Console, tokens []string) error {
 	if len(tokens) == 0 {
 		return fmt.Errorf("no command given")
 	}
-	name, rest, found := c.match(tokens)
+	_, name, rest, found := c.resolve(tokens)
 	if !found {
 		return fmt.Errorf("no command named %q", name)
 	}

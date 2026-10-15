@@ -33,6 +33,15 @@ function list(key: string): string[] {
   return Array.isArray(value) ? value : [];
 }
 
+// The hidden file input of each images control, by key, so the button that
+// opens it can call its click(). Read only from event handlers, so a plain
+// object does not need to be reactive.
+const pickers: Record<string, HTMLInputElement | null> = {};
+
+function setPicker(key: string, el: unknown): void {
+  pickers[key] = el instanceof HTMLInputElement ? el : null;
+}
+
 function toggle(control: Extract<UserFormControl, { kind: 'checks' }>, option: string): void {
   const have = list(control.key);
   if (have.includes(option)) {
@@ -72,7 +81,15 @@ async function pick(control: Extract<UserFormControl, { kind: 'images' }>, event
       return;
     }
   }
-  const next = [...have, ...added];
+  // Read again now that the pictures are decoded: a removal or another pick made
+  // meanwhile has changed the list, and building on the copy taken above would
+  // bring a removed picture back or drop the other pick.
+  const current = list(control.key);
+  if (current.length + added.length > control.max) {
+    emit('error', t('pluginImagesTooMany', { count: control.max }));
+    return;
+  }
+  const next = [...current, ...added];
   if (next.reduce((sum, url) => sum + url.length, 0) > MAX_IMAGE_BYTES) {
     emit('error', t('pluginImagesTooLarge'));
     return;
@@ -105,13 +122,14 @@ async function pick(control: Extract<UserFormControl, { kind: 'images' }>, event
 
     <div v-else-if="control.kind === 'choice'" class="oa-field">
       <span class="oa-field-label">{{ control.label() }}<span v-if="control.required" class="oa-plugin-required">*</span></span>
-      <div class="oa-segmented">
+      <div class="oa-segmented" role="group" :aria-label="control.label()">
         <button
           v-for="option in control.options"
           :key="option.value"
           type="button"
           class="oa-segmented-option"
           :class="{ active: text(control.key) === option.value }"
+          :aria-pressed="text(control.key) === option.value"
           @click="emit('set', control.key, option.value)"
         >{{ option.label() }}</button>
       </div>
@@ -208,20 +226,46 @@ async function pick(control: Extract<UserFormControl, { kind: 'images' }>, event
       <span class="oa-field-label">{{ control.label() }}</span>
       <div class="oa-plugin-images">
         <span v-for="(url, index) in list(control.key)" :key="index" class="oa-plugin-image">
-          <img :src="url" alt="" @click="emit('view', url)">
+          <!-- A picture a keyboard or switch user can open, as a button is, not a
+               bare image that only a pointer can reach. -->
+          <img
+            :src="url"
+            :alt="t('zoomImage')"
+            role="button"
+            tabindex="0"
+            :aria-label="t('zoomImage')"
+            @click="emit('view', url)"
+            @keydown.enter.prevent="emit('view', url)"
+            @keydown.space.prevent="emit('view', url)"
+          >
           <button
             type="button"
             class="oa-icon-btn"
             :title="t('pluginImagesRemove')"
+            :aria-label="t('pluginImagesRemove')"
             @click="emit('set', control.key, list(control.key).filter((_, at) => at !== index))"
           >
             <IconClose :size="12" />
           </button>
         </span>
-        <label v-if="list(control.key).length < control.max" class="oa-btn">
+        <!-- A label cannot take focus, so the picker is opened from a button; the
+             file input stays hidden, as the image lab's does. -->
+        <button
+          v-if="list(control.key).length < control.max"
+          type="button"
+          class="oa-btn"
+          @click="pickers[control.key]?.click()"
+        >
           {{ t('pluginImagesAdd') }}
-          <input type="file" accept="image/*" multiple hidden @change="pick(control, $event)">
-        </label>
+        </button>
+        <input
+          :ref="(el) => setPicker(control.key, el)"
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          @change="pick(control, $event)"
+        >
       </div>
       <span v-if="control.hint" class="oa-field-hint">{{ control.hint() }}</span>
     </div>

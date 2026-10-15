@@ -154,3 +154,98 @@ func TestWatchRefusesARunThatTheAccountIsNoLongerGranted(t *testing.T) {
 		t.Errorf("the refused run was not shown as refused:\n%s", out.String())
 	}
 }
+
+// A repeat runs its command again with the --yes typed once, so a write would
+// happen on every tick. Without a stated --count it is refused before the first
+// run: invite create and key create are not destructive, so only their write
+// endpoints give them away. A stated count is consent to that many writes, and
+// it is run.
+func TestWatchRefusesToRepeatACommandThatWritesWithoutACount(t *testing.T) {
+	for _, line := range []string{
+		"watch --interval 1s -- invite create",
+		"watch --interval 1s -- key create",
+		"watch --interval 1s --count 0 -- bonus grant",
+	} {
+		t.Run(line, func(t *testing.T) {
+			recorder := &watchRecorder{}
+			c := New(Options{Dispatch: recorder.dispatch})
+			session := &Session{Actor: watchAdmin("desk"), Transport: "web", Lang: "en", Width: 100}
+
+			var out bytes.Buffer
+			result := c.Execute(context.Background(), session, &out, line)
+
+			if result.OK {
+				t.Errorf("watch accepted a writing command without a count:\n%s", out.String())
+			}
+			if got := recorder.calls(); len(got) != 0 {
+				t.Errorf("a refused watch still dispatched %d runs", len(got))
+			}
+			if !strings.Contains(out.String(), "--count") {
+				t.Errorf("the refusal does not say what to add:\n%s", out.String())
+			}
+		})
+	}
+}
+
+func TestWatchRunsAWriteOnlyAsOftenAsItsCountSays(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		posts int
+	)
+	c := New(Options{Dispatch: func(_ context.Context, _ user.User, method, _ string, _ any) (Response, error) {
+		if method == "POST" {
+			mu.Lock()
+			posts++
+			mu.Unlock()
+		}
+		return Response{Status: 200, Body: []byte(`{}`)}, nil
+	}})
+	// invite create needs the invites grant, which watchAdmin does not hold.
+	root := user.User{ID: id.New(), Username: "root", Role: user.RoleSuperAdmin, Status: user.StatusActive}
+	session := &Session{Actor: root, Transport: "web", Lang: "en", Width: 100}
+
+	var out bytes.Buffer
+	// Three runs, not one: a loop that wrote once whatever the count said would
+	// pass a count of one.
+	c.Execute(context.Background(), session, &out, "watch --interval 1s --count 3 -- invite create")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != 3 {
+		t.Errorf("sent %d writes, want 3", posts)
+	}
+	if !strings.Contains(out.String(), "run 3 of 3") {
+		t.Errorf("the run is not labelled with its place in the count:\n%s", out.String())
+	}
+}
+
+// Under --json the watch's header would land before the command's one JSON
+// document, so a script reading stdout would fail on the first line.
+func TestWatchUnderJSONPrintsNoRunHeader(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		posts int
+	)
+	c := New(Options{Dispatch: func(_ context.Context, _ user.User, method, _ string, _ any) (Response, error) {
+		if method == "POST" {
+			mu.Lock()
+			posts++
+			mu.Unlock()
+		}
+		return Response{Status: 200, Body: []byte(`{}`)}, nil
+	}})
+	root := user.User{ID: id.New(), Username: "root", Role: user.RoleSuperAdmin, Status: user.StatusActive}
+	session := &Session{Actor: root, Transport: "web", Lang: "en", Width: 100}
+
+	var out bytes.Buffer
+	c.Execute(context.Background(), session, &out, "watch --interval 1s --count 1 -- invite create --json")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != 1 {
+		t.Errorf("sent %d writes, want 1", posts)
+	}
+	if strings.Contains(out.String(), "run 1 of 1") {
+		t.Errorf("a --json watch printed the run header:\n%s", out.String())
+	}
+}

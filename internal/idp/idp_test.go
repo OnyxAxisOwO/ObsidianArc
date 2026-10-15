@@ -142,6 +142,13 @@ func TestCallbacksAreCheckedWhenTheyAreRegistered(t *testing.T) {
 		"https://wiki.example.com/callback#/oidc",
 		"javascript:alert(1)",
 		"data:text/html,x",
+		// A second callback typed without its scheme is not a callback. Read
+		// as one, the join would be registered with the typo in its path.
+		"https://wiki.example.com/callback,localhost:3000/callback",
+		"https://wiki.example.com/callback,wiki.example.com/other",
+		// A comma in a path is never a callback boundary, so it is refused
+		// rather than folded into the path.
+		"https://wiki.example.com/a,b",
 	}
 	for _, candidate := range bad {
 		if _, err := ParseRedirectURIs(candidate); err == nil {
@@ -348,6 +355,11 @@ func TestACodeRedeemedAfterANarrowingCarriesOnlyWhatIsStillAllowed(t *testing.T)
 	granted := []string{ScopeOpenID, ScopeProfile, ScopeEmail}
 	record, _ := f.app(t, CreateAppInput{Scopes: granted})
 
+	// A code is only ever issued after the consent it rests on is recorded, so
+	// the grant the approval would have written is part of the setup.
+	if err := f.store.RecordGrant(ctx, nil, record.ID, f.account.ID, granted); err != nil {
+		t.Fatalf("record consent: %v", err)
+	}
 	if err := f.store.SaveCode(ctx, "a-code", Code{
 		AppID: record.ID, UserID: f.account.ID, RedirectURI: callback, Scopes: granted,
 	}); err != nil {
@@ -774,3 +786,34 @@ func asRedirectable(err error, into **RedirectableError) bool {
 func boolPtr(value bool) *bool { return &value }
 
 func strPtr(value string) *string { return &value }
+
+// A comma separates callbacks only where the next one begins. A callback with
+// a comma in its own query string is one callback, and the registration match
+// is exact, so a split there would leave no way to register it.
+func TestACommaInsideACallbackDoesNotSplitIt(t *testing.T) {
+	parsed, err := ParseRedirectURIs("https://a.example/cb?x=1,2")
+	if err != nil || len(parsed) != 1 || parsed[0] != "https://a.example/cb?x=1,2" {
+		t.Fatalf("one callback with a comma = %v (%v), want it kept whole", parsed, err)
+	}
+
+	parsed, err = ParseRedirectURIs("https://a.example/cb,https://b.example/cb, https://c.example/cb?x=1,2")
+	if err != nil {
+		t.Fatalf("three callbacks = %v", err)
+	}
+	want := []string{"https://a.example/cb", "https://b.example/cb", "https://c.example/cb?x=1,2"}
+	if len(parsed) != len(want) {
+		t.Fatalf("three callbacks = %v, want %v", parsed, want)
+	}
+	for i := range want {
+		if parsed[i] != want[i] {
+			t.Errorf("callback %d = %q, want %q", i, parsed[i], want[i])
+		}
+	}
+
+	// The scheme is case-insensitive, and checkRedirectURI accepts HTTPS://,
+	// so a comma before one must still begin a callback.
+	parsed, err = ParseRedirectURIs("https://a.example/cb,HTTPS://b.example/cb")
+	if err != nil || len(parsed) != 2 || parsed[0] != "https://a.example/cb" || parsed[1] != "HTTPS://b.example/cb" {
+		t.Fatalf("an upper-case scheme after a comma = %v (%v), want two callbacks", parsed, err)
+	}
+}

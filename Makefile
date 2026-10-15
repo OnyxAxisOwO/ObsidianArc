@@ -160,7 +160,12 @@ test: vet
 	npm --prefix web run test
 
 ## test-full: CI gate, including the slower Vue template typecheck
+##
+## The plugin's concurrency tests only prove their point under the race
+## detector: a plain run passes whatever the code does. CI runs them here,
+## not in test, so the local gate stays fast.
 test-full: test
+	go test -race -count=1 ./internal/plugin/...
 	npm --prefix web run typecheck
 
 vet:

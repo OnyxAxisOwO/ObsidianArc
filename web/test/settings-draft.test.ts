@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { reactive } from 'vue';
-import { useSettingsDraft } from '../src/views/admin/settingsDraft';
+import { overlongSetting, SETTING_MAX_BYTES, useSettingsDraft } from '../src/views/admin/settingsDraft';
 
 describe('settings draft', () => {
   it('reports only the keys that differ from what the page loaded', () => {
@@ -59,5 +59,20 @@ describe('settings draft', () => {
     draft.accept(draft.changes());
     expect(draft.dirty.value).toBe(false);
     expect(draft.changes()).toEqual({});
+  });
+});
+
+describe('overlong setting gate', () => {
+  it('takes a value of exactly the byte limit and refuses one byte past it', () => {
+    // A euro sign is three bytes, so 2730 of them is 8190 bytes and 2731 is
+    // 8193: the limit is counted in bytes, not characters.
+    expect(SETTING_MAX_BYTES).toBe(8192);
+    expect(overlongSetting({ 'site.notice': '€'.repeat(2730) })).toBe(false);
+    expect(overlongSetting({ 'site.notice': '€'.repeat(2731) })).toBe(true);
+  });
+
+  it('refuses the whole save when any one value is overlong', () => {
+    expect(overlongSetting({ 'site.name': 'Arc', 'site.notice': 'x'.repeat(SETTING_MAX_BYTES + 1) })).toBe(true);
+    expect(overlongSetting({ 'site.name': 'Arc', 'site.notice': 'x'.repeat(SETTING_MAX_BYTES) })).toBe(false);
   });
 });

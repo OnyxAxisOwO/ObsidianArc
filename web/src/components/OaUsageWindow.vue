@@ -80,10 +80,20 @@ const warn = computed(() => (pressure.value ?? 0) >= 0.9);
 
 // Thousands as "1.2k": one of these rows has no space for six digits, and the
 // exact figure is not what anyone reads here.
+// The unit is chosen on the figure as it prints: 999,960 rounds to 1000.0k,
+// which has to read as 1M, not as a thousands figure no unit can hold.
+// This is not lib/format.ts compactNumber, which keeps two decimals below 1000
+// where this keeps one, and the usage tests pin that. The unit thresholds have
+// to stay in step with compactNumber's, so a change to one is a change to both.
 function compact(amount: number): string {
-  if (amount < 1000) return String(Math.round(amount * 10) / 10);
-  if (amount < 1_000_000) return `${Math.round(amount / 100) / 10}k`;
-  return `${Math.round(amount / 100_000) / 10}M`;
+  const plain = Math.round(amount * 10) / 10;
+  if (plain < 1000) return String(plain);
+  const thousands = Math.round(amount / 100) / 10;
+  if (thousands < 1000) return `${thousands}k`;
+  // Billions take over the same way: 999,950,000 rounds to 1000.0M, which has to read as 1B.
+  const millions = Math.round(amount / 100_000) / 10;
+  if (millions < 1000) return `${millions}M`;
+  return `${Math.round(amount / 100_000_000) / 10}B`;
 }
 
 const resets = computed(() => {

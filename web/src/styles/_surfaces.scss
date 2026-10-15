@@ -192,11 +192,11 @@
    immediately see where the jump landed on the destination screen. */
 @keyframes oa-target-pulse {
   0% {
-    outline: 2px solid var(--ai-accent);
+    outline: 2px solid var(--ai-primary);
     background-color: var(--ai-state-hover);
   }
   60% {
-    outline: 2px solid var(--ai-accent);
+    outline: 2px solid var(--ai-primary);
     background-color: var(--ai-state-hover);
   }
   100% {
@@ -750,22 +750,6 @@
   margin-top: 8px;
 }
 
-.oa-card-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.oa-card-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: var(--ai-surface-container-low);
-}
-
 .oa-card-title {
   display: block;
   font-size: 13px;
@@ -1090,6 +1074,67 @@
 
 .oa-drawer-foot-spacer {
   flex: 1;
+}
+
+/* A panel that is one of several in the row folds to a strip, like a minimised
+   window: its contents stay mounted (a half-written form keeps its text) and
+   are only not drawn. Under the overlay breakpoint panels stack over each
+   other instead, so there is nothing to fold. */
+@media (min-width: 1101px) {
+  .oa-panel {
+    transition: margin-right 0.34s cubic-bezier(0.16, 1, 0.3, 1),
+                transform 0.34s cubic-bezier(0.16, 1, 0.3, 1),
+                width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                min-width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                opacity 0.22s ease;
+  }
+
+  .oa-panel.collapsed {
+    width: 44px;
+    min-width: 44px;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+
+  .oa-panel.collapsed > :not(.oa-panel-strip) {
+    display: none;
+  }
+}
+
+.oa-panel-strip {
+  display: none;
+}
+
+.oa-panel.collapsed > .oa-panel-strip {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ai-text-secondary, inherit);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.oa-panel.collapsed > .oa-panel-strip:hover {
+  background: var(--ai-field-bg);
+}
+
+.oa-panel-strip span {
+  overflow: hidden;
+  writing-mode: vertical-rl;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-panel-strip svg {
+  flex-shrink: 0;
+  transform: rotate(90deg);
 }
 
 /* Below three-column width it becomes an overlay, the same fallback the
@@ -1456,7 +1501,6 @@
   .oa-admin-main.enter-forward,
   .oa-admin-main.enter-back,
   .oa-auth-card,
-  .oa-panel,
   .oa-panel.open,
   .oa-panel.replacing > .oa-panel-head,
   .oa-panel.replacing > .oa-panel-body-wrap,
@@ -1466,6 +1510,11 @@
     transition: none !important;
   }
 }
+
+/* A closed panel keeps its transform here. On narrow screens it is parked off
+   the right edge by translateX(100%); forcing that to none left it at the edge
+   of the page, transparent but still taking taps. Reduced motion only needs
+   the movement gone, and the transition rule for .oa-panel already does that. */
 
 /* --- user settings -------------------------------------------------------- */
 
@@ -2255,7 +2304,10 @@
               box-shadow 0.2s ease,
               opacity 0.25s ease;
   animation: oaKeyRowFadeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-  animation-delay: calc(var(--item-idx, 0) * 40ms);
+  /* Capped: `backwards` holds each row at its opacity-0 start for its whole
+     delay, so an uncapped stagger left the last rows of a long page invisible
+     for seconds. */
+  animation-delay: min(calc(var(--item-idx, 0) * 40ms), 240ms);
 }
 
 .oa-key-row:hover {
@@ -2851,6 +2903,17 @@
   }
 }
 
+/* On a phone the request column is a few dozen pixels, too narrow for the
+   method label and the path side by side: the label ran over the duration
+   column. The label goes above the path, which truncates as it always did. */
+@container logs (max-width: 400px) {
+  .oa-log-request {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+}
+
 .oa-log-pager {
   display: flex;
   align-items: center;
@@ -2940,6 +3003,9 @@
 
 .oa-card-row {
   display: flex;
+  /* Level with the action on the right, however many lines of text sit
+     beside it. */
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
   padding: 8px 12px;
@@ -3514,7 +3580,7 @@
 }
 
 .oa-reference-dropzone:hover:not(.disabled) {
-  border-color: var(--ai-border-hover);
+  border-color: var(--ai-text-secondary);
   background: var(--ai-field-bg-hover);
   color: var(--ai-text);
 }
@@ -3556,7 +3622,7 @@
 
 .oa-reference-dropzone-text span {
   font-size: 11px;
-  color: var(--ai-text-tertiary);
+  color: var(--ai-text-secondary);
 }
 
 /* Non-blocking drop overlay that covers the thumbnail list while dragging. */
@@ -3599,7 +3665,7 @@
 .oa-reference-count {
   font-size: 11px;
   font-weight: normal;
-  color: var(--ai-text-tertiary);
+  color: var(--ai-text-secondary);
   margin-left: 6px;
 }
 
@@ -3662,7 +3728,7 @@
 }
 
 .oa-reference-add-tile:hover:not(:disabled) {
-  border-color: var(--ai-border-hover);
+  border-color: var(--ai-text-secondary);
   background: var(--ai-field-bg-hover);
   color: var(--ai-text);
 }
@@ -3759,6 +3825,17 @@
       color: var(--ai-primary);
       font-weight: 600;
     }
+  }
+
+  /* The tile drops its outline, so focus is the ring the other controls here
+     use. The selected tile keeps its accent ring inside that focus ring, or the
+     focus ring would replace it and the selection would vanish while focused. */
+  &:focus-visible {
+    box-shadow: 0 0 0 2px var(--ai-focus-shadow);
+  }
+
+  &.active:focus-visible {
+    box-shadow: 0 0 0 1px var(--ai-primary), 0 0 0 3px var(--ai-focus-shadow);
   }
 }
 
@@ -4074,7 +4151,7 @@
     transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 
   &:hover:not(:disabled) {
-    background: var(--ai-surface-container-highest);
+    background: var(--ai-field-bg-hover);
     color: var(--ai-text);
   }
 
@@ -4326,6 +4403,10 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  /* The leaderboard panel and the admin preview put the name in as bare text,
+     with no span to clip, so the box clips it and keeps it on one line. */
+  overflow: hidden;
+  white-space: nowrap;
   font-size: 13px;
   color: var(--ai-text);
 
@@ -5020,7 +5101,7 @@
   cursor: pointer;
   transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   animation: oaKeyRowFadeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-  animation-delay: calc(var(--item-idx, 0) * 40ms);
+  animation-delay: min(calc(var(--item-idx, 0) * 40ms), 240ms);
 }
 
 .oa-feedback-card:hover {
@@ -5165,6 +5246,17 @@
   height: 100%;
   object-fit: cover;
   cursor: zoom-in;
+}
+
+/* The wrapper clips to its radius, which would cut an outline on the picture
+   off, so the wrapper draws the focus ring instead. A shadow is not clipped by
+   the element's own overflow, and it follows the 11px radius. */
+.oa-plugin-image img:focus-visible {
+  outline: none;
+}
+
+.oa-plugin-image:has(> img:focus-visible) {
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 .oa-plugin-image .oa-icon-btn {
@@ -6194,7 +6286,11 @@
     max-width: none;
   }
 
+  /* Absolutely positioned, so with auto width and no insets it would shrink to
+     its text as it leaves. The insets pin it to the stack's width instead. */
   .oa-toast-leave-active {
+    left: 0;
+    right: 0;
     width: auto;
     max-width: none;
   }

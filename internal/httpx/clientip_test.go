@@ -99,6 +99,21 @@ func TestUnparseableEntryStopsTheWalk(t *testing.T) {
 	}
 }
 
+// The X-Real-Ip fallback is for a chain that was entirely trusted proxies. A
+// garbled entry makes the chain untrustworthy, so the header a proxy would
+// have written is not consulted either.
+func TestUnparseableEntryDoesNotFallBackToXRealIP(t *testing.T) {
+	trust, err := NewProxyTrust(true, []string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := request("10.0.0.1:5000", "1.2.3.4, not-an-address, 10.0.0.2")
+	r.Header.Set("X-Real-Ip", "198.51.100.7")
+	if got := ClientIP(r, trust); got != "10.0.0.1" {
+		t.Errorf("ClientIP = %q, want the peer; X-Real-Ip must not rescue a broken chain", got)
+	}
+}
+
 // The bare flag is still a real restriction: a request off the public
 // internet is not forwarded by anything we put there.
 func TestBareFlagTrustsOnlyPrivatePeers(t *testing.T) {

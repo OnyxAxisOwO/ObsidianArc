@@ -42,7 +42,7 @@ textarea:placeholder-shown::selection {
   background-image: var(--ai-wallpaper);
   background-size: cover;
   background-position: center;
-  filter: blur(var(--ai-wallpaper-blur, 0px));
+  filter: var(--ai-wallpaper-filter, none);
 }
 
 .has-wallpaper body::after {
@@ -66,7 +66,7 @@ textarea:placeholder-shown::selection {
   inset: calc(-2 * var(--ai-wallpaper-blur, 0px));
   width: calc(100% + 4 * var(--ai-wallpaper-blur, 0px));
   height: calc(100% + 4 * var(--ai-wallpaper-blur, 0px));
-  filter: blur(var(--ai-wallpaper-blur, 0px));
+  filter: var(--ai-wallpaper-filter, none);
 }
 
 /* The surfaces sit on the wallpaper rather than hiding it. */

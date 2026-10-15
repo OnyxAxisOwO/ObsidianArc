@@ -9,12 +9,17 @@
 
 import { computed, ref, useId, watch } from 'vue';
 import { currentLanguage } from '@/composables/useI18n';
-import { niceScale, smoothPath, timeTicks } from './scale';
+import { niceScale, smoothPath, tickFormat, timeTicks } from './scale';
 import type { PlotPoint } from './shape';
 
 const props = withDefaults(defineProps<{
   points: readonly PlotPoint[];
   bucketMs: number;
+  /**
+   * The offset the series was cut on: what the server's buckets are aligned
+   * to, and so what the axis and the bubble must read the clock by.
+   */
+  offsetMs: number;
   format: (value: number) => string;
   /** Read out for the whole chart, and prefixed to each point for keyboard readers. */
   label: string;
@@ -57,13 +62,14 @@ const area = computed(() => coords.value.length > 1
  */
 const axis = computed(() => {
   if (!props.points.length) return [];
-  const daily = props.bucketMs >= 86_400_000 || span.value > 2 * 86_400_000;
-  return timeTicks(props.points.map((point) => point.at), props.bucketMs).map((index) => {
+  const ticks = timeTicks(props.points.map((point) => point.at), props.bucketMs, props.offsetMs);
+  const format = tickFormat(ticks.step, span.value);
+  return ticks.indices.map((index) => {
     const at = props.points[index]!.at;
     const left = xOf(index) * 100;
-    const text = daily
-      ? new Date(at).toLocaleDateString(locale.value, { month: 'numeric', day: 'numeric' })
-      : new Date(at).toLocaleTimeString(locale.value, { hour: '2-digit', minute: '2-digit' });
+    // Formatted in UTC on the shifted instant: that prints the wall clock the
+    // grid was cut on, whatever the browser's zone says for this instant.
+    const text = new Date(at + props.offsetMs).toLocaleString(locale.value, { ...format, timeZone: 'UTC' });
     return { key: `${index}-${at}`, left, text, edge: left < 4 ? 'start' : left > 96 ? 'end' : '' };
   });
 });
@@ -72,11 +78,13 @@ const selected = computed(() => props.active === null ? null : props.points[prop
 
 /** The bucket as a span of time: "9月16日 18:00 – 24:00", or a day. */
 function describe(at: number): string {
+  const wall = (instant: number, options: Intl.DateTimeFormatOptions): string =>
+    new Date(instant + props.offsetMs).toLocaleString(locale.value, { ...options, timeZone: 'UTC' });
   if (props.bucketMs >= 86_400_000) {
-    return new Date(at).toLocaleDateString(locale.value, { month: 'short', day: 'numeric', weekday: 'short' });
+    return wall(at, { month: 'short', day: 'numeric', weekday: 'short' });
   }
-  const from = new Date(at).toLocaleString(locale.value, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const to = new Date(at + props.bucketMs).toLocaleTimeString(locale.value, { hour: '2-digit', minute: '2-digit' });
+  const from = wall(at, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const to = wall(at + props.bucketMs, { hour: '2-digit', minute: '2-digit' });
   return `${from} – ${to}`;
 }
 

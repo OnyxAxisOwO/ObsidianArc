@@ -22,6 +22,7 @@ func TestOnlyASuperAdministratorPointsTheSignInProviderAnywhere(t *testing.T) {
 	for _, key := range []string{
 		"oauth.oidc_issuer", "oauth.oidc_auth_url", "oauth.oidc_token_url", "oauth.oidc_userinfo_url",
 		"oauth.oidc_client_id", "oauth.oidc_client_secret", "oauth.oidc_trust_email", "oauth.link_by_email",
+		"oauth.github_client_id", "oauth.github_client_secret", "oauth.google_client_id", "oauth.google_client_secret",
 	} {
 		response := in.do(http.MethodPut, "/api/admin/settings", map[string]string{key: "https://evil.example"}, operator)
 		if response.Code != http.StatusForbidden {

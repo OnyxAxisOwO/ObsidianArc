@@ -130,7 +130,7 @@ describe('the leaderboard panel', () => {
     expect(warn.mock.calls.flat().join('\n')).not.toContain('Duplicate keys found during update');
   });
 
-  it('asks the server when the window changes, but re-sorts locally without network when measure changes', async () => {
+  it('asks the server for each window and each measure, since the board is ranked and cut short per measure', async () => {
     const initialBoard = board({
       accounts: [
         { rank: 1, name: 'Otter', avatar: '', value: 5000, requests: 40, tokens: 5000, models: 2 },
@@ -141,47 +141,126 @@ describe('the leaderboard panel', () => {
         { rank: 2, name: 'Haiku', value: 1000, users: 1, requests: 50, tokens: 1000 },
       ],
     });
-    const get = vi.spyOn(api, 'get').mockResolvedValue(initialBoard);
+    // Listed against the measure on purpose: Otter (40) before Member (90), and
+    // Sonnet (30) before Haiku (50). A client that re-sorted would put Member and
+    // Haiku first, so these rows show the order the server sent is the one drawn.
+    const requestsBoard = board({
+      metric: 'requests',
+      accounts: [
+        { rank: 1, name: 'Otter', avatar: '', value: 40, requests: 40, tokens: 5000, models: 2 },
+        { rank: 2, name: 'Member', avatar: '', value: 90, requests: 90, tokens: 1200, models: 1, self: true },
+      ],
+      models: [
+        { rank: 1, name: 'Sonnet', value: 30, users: 2, requests: 30, tokens: 4000 },
+        { rank: 2, name: 'Haiku', value: 50, users: 1, requests: 50, tokens: 1000 },
+      ],
+    });
+    const get = vi.spyOn(api, 'get').mockImplementation(async (url) =>
+      url.includes('metric=requests') ? requestsBoard : initialBoard);
     await mountPanel();
     get.mockClear();
 
     const segments = panelHost.querySelectorAll('.oa-segment');
     // Switching period to month asks the server again with AbortSignal
     segments[0]!.querySelectorAll('button')[2]!.click();
-    await nextTick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await nextTick();
     expect(get).toHaveBeenCalledTimes(1);
     expect(get).toHaveBeenCalledWith('/api/leaderboard?period=month&metric=tokens', expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
-    // Switching metric to requests does NOT call the server again
+    // Switching metric to requests asks for the requests board, not a re-sort of the tokens one
     get.mockClear();
     segments[1]!.querySelectorAll('button')[1]!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await nextTick();
-    await nextTick();
-    expect(get).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith('/api/leaderboard?period=month&metric=requests', expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
-    // Accounts are re-sorted locally by requests descending (Member 90 > Otter 40)
+    // The rows follow the array the server sent, not a client re-sort by requests.
     const accountRows = panelHost.querySelectorAll('.oa-board-list')[0]!.querySelectorAll('.oa-board-row');
-    expect(accountRows[0]!.querySelector('.oa-board-name')?.textContent).toContain('Member');
-    expect(accountRows[0]!.querySelector('.oa-board-value')?.textContent).toBe('90');
-    expect(accountRows[1]!.querySelector('.oa-board-name')?.textContent).toContain('Otter');
-    expect(accountRows[1]!.querySelector('.oa-board-value')?.textContent).toBe('40');
+    expect(accountRows[0]!.querySelector('.oa-board-name')?.textContent).toContain('Otter');
+    expect(accountRows[0]!.querySelector('.oa-board-value')?.textContent).toBe('40');
+    expect(accountRows[1]!.querySelector('.oa-board-name')?.textContent).toContain('Member');
+    expect(accountRows[1]!.querySelector('.oa-board-value')?.textContent).toBe('90');
 
-    // Models are re-sorted locally by requests descending (Haiku 50 > Sonnet 30)
+    // Models follow the same rule: Sonnet is listed first and is drawn first.
     const modelRows = panelHost.querySelectorAll('.oa-board-list')[1]!.querySelectorAll('.oa-board-row');
-    expect(modelRows[0]!.querySelector('.oa-board-name')?.textContent).toContain('Haiku');
-    expect(modelRows[1]!.querySelector('.oa-board-name')?.textContent).toContain('Sonnet');
-    // Switching metric back to tokens re-sorts back locally without network
+    expect(modelRows[0]!.querySelector('.oa-board-name')?.textContent).toContain('Sonnet');
+    expect(modelRows[1]!.querySelector('.oa-board-name')?.textContent).toContain('Haiku');
+
+    // Switching back to tokens asks again, and the list comes back in tokens order
     get.mockClear();
     segments[1]!.querySelectorAll('button')[0]!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await nextTick();
-    await nextTick();
-    expect(get).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith('/api/leaderboard?period=month&metric=tokens', expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
     // Accounts back to Otter (5000) > Member (1200)
     const accountRowsBack = panelHost.querySelectorAll('.oa-board-list')[0]!.querySelectorAll('.oa-board-row');
     expect(accountRowsBack[0]!.querySelector('.oa-board-name')?.textContent).toContain('Otter');
     expect(accountRowsBack[0]!.querySelector('.oa-board-value')?.textContent).toBe('5k');
+  });
+
+  it('pins the reader\'s standing for the measure in view when they are outside the visible list', async () => {
+    // Outside the top of the tokens list: the reader is 30th by tokens and
+    // 9th by requests, and only the requests board lists Rival.
+    const tokensBoard = board({
+      accounts: [{ rank: 1, name: 'Otter', avatar: '', value: 5000, requests: 40, tokens: 5000, models: 2 }],
+      me: { rank: 30, value: 1200, gap: 3800, participants: 40 },
+    });
+    const requestsBoard = board({
+      metric: 'requests',
+      accounts: [
+        { rank: 1, name: 'Rival', avatar: '', value: 120, requests: 120, tokens: 300, models: 1 },
+        { rank: 2, name: 'Otter', avatar: '', value: 40, requests: 40, tokens: 5000, models: 2 },
+      ],
+      me: { rank: 9, value: 9, gap: 31, participants: 40 },
+    });
+    vi.spyOn(api, 'get').mockImplementation(async (url) =>
+      url.includes('metric=requests') ? requestsBoard : tokensBoard);
+    await mountPanel();
+
+    panelHost.querySelectorAll('.oa-segment')[1]!.querySelectorAll('button')[1]!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextTick();
+
+    // The pinned card carries the requests place and its own count, not the
+    // tokens place relabelled as requests.
+    expect(panelHost.querySelector('.oa-board-me-rank')?.textContent?.trim()).toBe('#9');
+    expect(panelHost.querySelector('.oa-board-me .oa-field-hint')?.textContent).toContain(t('boardRequests', { count: '9' }));
+    expect(panelHost.querySelectorAll('.oa-board-list')[0]!.textContent).toContain('Rival');
+  });
+
+  it('keeps the unit of the board on screen while the other measure is loading', async () => {
+    let resolveRequests!: (value: Leaderboard) => void;
+    const requestsPending = new Promise<Leaderboard>((resolve) => { resolveRequests = resolve; });
+    vi.spyOn(api, 'get').mockImplementation(async (url) =>
+      url.includes('metric=requests') ? requestsPending : board());
+    await mountPanel();
+
+    panelHost.querySelectorAll('.oa-segment')[1]!.querySelectorAll('button')[1]!.click();
+    await nextTick();
+
+    // The tokens board is still what is shown, so its 1.2k is tokens, not requests.
+    expect(panelHost.querySelector('.oa-board-me .oa-field-hint')?.textContent).toContain(t('boardTokens', { count: '1.2k' }));
+
+    // The server's requests board: its values are requests, which is what the
+    // pinned figure must show. The client no longer derives them.
+    resolveRequests(board({
+      metric: 'requests',
+      accounts: [
+        { rank: 1, name: 'Otter', avatar: '', value: 40, requests: 40, tokens: 5000, models: 2 },
+        { rank: 2, name: 'Member', avatar: '', value: 9, requests: 9, tokens: 1200, models: 1, self: true },
+      ],
+      me: { rank: 2, value: 9, gap: 31, participants: 2 },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextTick();
+
+    // Once the requests board lands, the pinned figure is the reader's requests
+    // (9, from the self row), not the tokens 1.2k that the placeholder carried.
+    expect(panelHost.querySelector('.oa-board-me .oa-field-hint')?.textContent).toContain(t('boardRequests', { count: '9' }));
   });
 
   it('aborts the previous request when period changes quickly', async () => {

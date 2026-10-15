@@ -24,19 +24,27 @@
   margin-right: 0 !important;
   transform: none !important;
   transition: none !important;
-  will-change: transform;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
+  // Nothing on this panel animates, so the base panel's will-change would
+  // hold a page-sized compositing layer for the whole session for nothing.
+  will-change: auto;
 }
 
 // When opened in the chat layout, the terminal replaces the chat main window
 // across the available width rather than being a constrained 720px side drawer.
 .ai-chat-wide .oa-panel.oa-terminal-panel {
   flex: 1 1 0%;
-  width: auto;
   min-width: 0;
   margin-right: 0;
   opacity: 1;
+}
+
+// Only the three-column row lets the panel take the width that is left. Below
+// that breakpoint it is a fixed overlay, and width: auto would shrink it to
+// fit its content instead of the overlay's own width (_surfaces.scss).
+@media (min-width: 1101px) {
+  .ai-chat-wide .oa-panel.oa-terminal-panel {
+    width: auto;
+  }
 }
 
 .ai-chat-wide .oa-panel.oa-terminal-panel > .oa-resizer {
@@ -98,27 +106,38 @@
      this automatically; nothing to restate here. */
 }
 
-.oa-terminal-tab {
+/* The pill. The fill, the hover and the active state live on the group rather
+   than on the tab, because role=tab may hold nothing but its label, and the ×
+   button sits in the same pill. The layout rules that shrink a tab stay here
+   for the same reason: this is the flex item the strip actually lays out. */
+.oa-terminal-tab-group {
   display: flex;
   align-items: center;
   flex: 0 1 150px;
   min-width: 64px;
   gap: 5px;
   height: 26px;
-  padding: 0 4px 0 11px;
+  padding: 0 4px 0 0;
   border-radius: 999px;
   background: var(--ai-surface-container-low);
   color: var(--ai-text-secondary);
   font-size: 12px;
-  cursor: pointer;
   transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-.oa-terminal-tab:hover {
+.oa-terminal-tab-group:hover {
   background: var(--ai-state-hover);
 }
 
-.oa-terminal-tab.active {
+/* The ring marks the tab's own keyboard focus, drawn on the pill because the
+   tab is only the label inside it. :has() rather than :focus-within: a mouse
+   click focuses a tab too, and focus-within would leave the ring on whichever
+   tab was clicked, which the old focus-visible rule never did. */
+.oa-terminal-tab-group:has(.oa-terminal-tab:focus-visible) {
+  box-shadow: 0 0 0 2px var(--ai-focus-shadow);
+}
+
+.oa-terminal-tab-group.active {
   /* The fill the rail marks its current section with, rather than the ring
      this used to wear: every tab is already a filled pill, so a ring was the
      one outlined control on the page, and the rail had already settled how
@@ -127,6 +146,25 @@
   background: var(--ai-badge-bg);
   color: var(--ai-badge-text);
   font-weight: 600;
+}
+
+/* The label is the whole tab: the click, the keys and the focus. The pill's
+   left inset belongs to it, so the pill stays clickable up to the × button. */
+.oa-terminal-tab {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  flex: 1;
+  min-width: 0;
+  gap: 5px;
+  padding-left: 11px;
+  cursor: pointer;
+}
+
+/* Focus is drawn by the pill (see .oa-terminal-tab-group:has above), so the
+   tab's own UA outline is the one thing to take away. */
+.oa-terminal-tab:focus-visible {
+  outline: none;
 }
 
 .oa-terminal-tab-dot {
@@ -146,9 +184,12 @@
   white-space: nowrap;
 }
 
+/* Takes the label's place in the pill, so it carries the same left inset the
+   tab does. */
 .oa-terminal-tab-rename {
   flex: 1;
   min-width: 0;
+  padding-left: 11px;
 }
 
 .oa-terminal-tab-rename input {
@@ -422,11 +463,11 @@
   font-variant-ligatures: var(--oa-term-ligatures);
   overflow-y: auto;
   scrollbar-width: none;
-  /* caret-shape has no "underline" keyword (CSS calls it "underscore"), so
-     that one cursor style silently keeps the platform's default bar caret —
-     a real gap, noted rather than papered over with a hand-drawn cursor
-     this file has no room for. Blink cannot be touched from CSS at all: a
-     native caret's blink is the platform's, not an animatable property. */
+  /* The underline choice arrives here as caret-shape's "underscore" keyword:
+     terminalCSSVariables() in terminal/prefs.ts does the mapping, because
+     caret-shape has no "underline". Engines without caret-shape keep the
+     platform caret. Blink cannot be touched from CSS at all: a native
+     caret's blink is the platform's, not an animatable property. */
   caret-color: var(--ai-primary);
   caret-shape: var(--oa-term-cursor-style);
 }

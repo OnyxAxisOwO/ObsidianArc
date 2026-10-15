@@ -37,19 +37,17 @@ func (h *Handlers) storage(ctx context.Context) (storageTotals, error) {
 		return *h.storageCache, nil
 	}
 
-	var fresh storageTotals
-	var err error
-	fresh.heldCount, fresh.heldBytes, err = h.conversations.Held(ctx)
+	// One scan for all three figures: the table has no index on discarded_at,
+	// so each separate read was a full pass over it.
+	totals, err := h.conversations.Storage(ctx)
 	if err != nil {
 		return storageTotals{}, err
 	}
-	fresh.discarded, err = h.conversations.Discarded(ctx)
-	if err != nil {
-		return storageTotals{}, err
-	}
-	fresh.byUser, err = h.conversations.HeldByUser(ctx, 0)
-	if err != nil {
-		return storageTotals{}, err
+	fresh := storageTotals{
+		heldCount: totals.HeldCount,
+		heldBytes: totals.HeldBytes,
+		discarded: totals.Discarded,
+		byUser:    totals.ByUser,
 	}
 	fresh.at = time.Now()
 	h.storageCache = &fresh

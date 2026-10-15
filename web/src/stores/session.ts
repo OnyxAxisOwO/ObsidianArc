@@ -10,8 +10,11 @@
 
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
 import { ApiError } from '@/api/client';
+import { SESSION_ENDED, SESSION_LOST } from '@/api/session-ended';
 import { fetchMe, fetchSite, savePreferences, type Account, type Preferences, type SiteInfo } from '@/api/auth';
 import { loadPlugins } from '@/plugins/registry';
+import { changeLanguage, currentLanguage } from '@/composables/useI18n';
+import { within } from '@/lib/deadline';
 import {
   accentPreference,
   setAccentPreference,
@@ -100,7 +103,7 @@ export function adopt(next: Account, prefs: Preferences = {}): void {
   account.value = next;
   preferences.value = prefs;
   setSignedIn(true);
-  applyServerPreferences(prefs);
+  void applyServerPreferences(prefs);
 }
 
 // Every store that holds one account's state registers how to clear it, and
@@ -114,11 +117,33 @@ export function onSignOut(reset: () => void): void {
   signOutResets.push(reset);
 }
 
+// The server ends a session at its expiry, and an open tab learns of it only
+// from a refused request. Left signed in, the page would keep its account screen
+// and show the server's sentence on each action. Only a tab that believes
+// somebody is signed in is signed out: an anonymous visitor's refusal is the
+// answer they were always going to get.
+//
+// Signing out here is not enough on its own: nothing watches currentUser for a
+// route, so the tab would stay on a protected page with no account behind it.
+// SESSION_LOST tells the router to send it to sign-in, the way the two explicit
+// sign-out paths already do with router.replace after forget().
+if (typeof window !== 'undefined') {
+  window.addEventListener(SESSION_ENDED, () => {
+    if (account.value === null) return;
+    forget();
+    window.dispatchEvent(new Event(SESSION_LOST));
+  });
+}
+
 export function forget(): void {
   pendingSecondFactor.value = false;
   account.value = null;
   preferences.value = {};
   setSignedIn(false);
+  // The wallpaper belongs to the account and is kept here only so the first
+  // paint can use it. Left behind, it keeps painting the last account's picture
+  // on screens that have no account to draw it for.
+  setWallpaper(null);
   forgetTerminalHistory();
   for (const reset of signOutResets) reset();
 }
@@ -143,17 +168,22 @@ function forgetTerminalHistory(): void {
   }
 }
 
+// Long enough for a dictionary chunk on a slow link, short enough that a stalled
+// one does not keep the page on its spinner.
+const ACCOUNT_LANGUAGE_DEADLINE_MS = 3_000;
+
 // Resolves the session and the instance's public settings in one round trip
 // pair at startup. A 401 is the expected answer for a signed-out visitor, not
 // an error worth surfacing.
 export async function startSession(): Promise<void> {
   const [me, info] = await Promise.allSettled([fetchMe(), fetchSite()]);
+  let languageReady: Promise<void> = Promise.resolve();
 
   if (me.status === 'fulfilled') {
     account.value = me.value.user;
     preferences.value = me.value.preferences ?? {};
     setSignedIn(true);
-    applyServerPreferences(preferences.value);
+    languageReady = applyServerPreferences(preferences.value);
   } else if (me.reason instanceof ApiError && me.reason.code === 'two_factor_pending') {
     // Halfway through signing in — a provider sign-in lands here by
     // redirect. The sign-in page asks for the rest.
@@ -169,7 +199,17 @@ export async function startSession(): Promise<void> {
     // Before the first render, so a sign-up card that a plugin adds a field
     // to is drawn with the field rather than growing one a moment later.
     await loadPlugins(info.value.plugins);
+  } else {
+    // A failed /api/site answer still counts as an answer: no plugins are
+    // coming, and the plugin screens must read "missing", not keep loading.
+    await loadPlugins(undefined);
   }
+  // Awaited last, so the first paint is in the account's language rather than
+  // flashing the browser's before switching. Bounded, because boot awaits this
+  // before mounting: a dictionary request that is accepted and never answers
+  // would otherwise hold the whole page. The late dictionary still lands, and
+  // changeLanguage redraws then.
+  await within(languageReady, ACCOUNT_LANGUAGE_DEADLINE_MS).catch(() => undefined);
 }
 
 // Reads /api/site again and loads the plugins it now names — after the
@@ -182,11 +222,16 @@ export async function refreshSite(): Promise<void> {
   await loadPlugins(info.plugins);
 }
 
-// The account's stored theme and accent win over whatever this browser had,
-// so signing in on a new device brings the interface with it. Applied only
-// when the server actually has a value: a fresh account should not reset a
-// choice made before signing in.
-function applyServerPreferences(prefs: Preferences): void {
+// The account's stored theme, accent and language win over whatever this
+// browser had, so signing in on a new device brings the interface with it.
+// Applied only when the server actually has a value: a fresh account should
+// not reset a choice made before signing in.
+//
+// The language is the one step that can wait: its dictionary may have to be
+// fetched. The promise never rejects, but it stays pending while a request
+// stalls, which is why startSession bounds its wait on it; the page then
+// stays in the language it was drawn in until the dictionary lands.
+function applyServerPreferences(prefs: Preferences): Promise<void> {
   if (typeof prefs['background_accent'] === 'string') setBackgroundAccent(prefs['background_accent'] as AccentName | '');
   const theme = prefs['theme'];
   if (theme === 'light' || theme === 'dark' || theme === 'auto') {
@@ -217,6 +262,17 @@ function applyServerPreferences(prefs: Preferences): void {
       panelBlur: value.panelBlur ?? 0,
     });
   }
+
+  const language = prefs['language'];
+  if ((language === 'en' || language === 'zh') && language !== currentLanguage()) {
+    // The same limit primeLanguage gives the browser's language. startSession
+    // bounds its own wait on this, but an accepted dictionary that never
+    // answers would otherwise leave this promise pending for ever.
+    return within(changeLanguage(language), 10_000).catch((failure: unknown) => {
+      console.warn('account language did not load; the page stays in the browser language', failure);
+    });
+  }
+  return Promise.resolve();
 }
 
 // Mirrors a local preference change back to the account. Fire and forget:

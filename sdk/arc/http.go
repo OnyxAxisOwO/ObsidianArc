@@ -116,7 +116,9 @@ func serveHTTP(c *Ctx, raw json.RawMessage) (any, error) {
 }
 
 // FetchRequest is an outgoing HTTP request. It needs the "network"
-// permission.
+// permission, and it is not allowed inside a transaction: it may wait on a
+// server elsewhere, and the transaction would hold its connection for that
+// long.
 type FetchRequest struct {
 	Method string
 	URL    string
@@ -136,6 +138,11 @@ type FetchResponse struct {
 
 // Fetch makes an HTTP request from the server.
 func (c *Ctx) Fetch(req FetchRequest) (*FetchResponse, error) {
+	// Refused here, as VerifyChallenge refuses: the server would say the same,
+	// but a route that only meets it as a 500 gives the author no hint why.
+	if c.inTx {
+		return nil, &HostError{Code: "tx_open", Message: "a request cannot be made while a transaction is open"}
+	}
 	arg := map[string]any{
 		"method": req.Method, "url": req.URL, "header": req.Header,
 		"timeout_ms": req.Timeout.Milliseconds(),

@@ -52,6 +52,7 @@ const dismissLabel = computed(() => (waiting.value
   <OaOverlay
     v-slot="{ close }"
     overlay-class="oa-announce-overlay"
+    :label="props.announcement.title"
     :dismissible="!waiting"
     @close="emit('dismiss')"
   >

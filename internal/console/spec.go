@@ -62,8 +62,9 @@ func (c *Console) Spec(s *Session) Spec {
 		permissions = []string{}
 	}
 
+	version, _ := c.visibleVersion(s.Actor)
 	return Spec{
-		Version: c.opts.Version,
+		Version: version,
 		You: SpecYou{
 			Username:    s.Actor.Username,
 			Role:        string(s.Actor.Role),

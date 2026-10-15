@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import type { Conversation } from '@/api/chat';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaMenu from '@/components/OaMenu.vue';
 import OaMenuItem from '@/components/OaMenuItem.vue';
@@ -17,6 +18,7 @@ import {
   conversations, openConversation, pendingID, removeConversation, rename,
   startNewConversation,
 } from './useChat';
+import { useArmedItem } from './useArmedItem';
 
 // The rail's width drives its own collapsed margin as well as its size, so
 // the handle writes the custom property on the row rather than a width here.
@@ -31,6 +33,27 @@ const filteredConversations = computed(() => conversations.value.filter((entry) 
   matchesSearch(query.value, entry.title || t('newChat'))));
 
 const openUpMap = ref<Record<string, boolean>>({});
+
+const { armed: armedDelete, press: pressDelete } = useArmedItem();
+
+// The first press leaves the menu open, so the second press is still there to
+// be made. Only a press that carries the delete out closes it.
+function deleteFromMenu(conversation: Conversation, close: () => void): void {
+  if (!pressDelete(conversation.id)) return;
+  close();
+  void removeConversation(conversation);
+}
+
+// The transcript takes file drops and the rail does not, but the browser's own
+// default for a dropped file is to open it in this tab, which throws the chat
+// and the draft away. Cancelling it here is what keeps a drop on the rail from
+// doing that.
+function cancelFileDrop(event: DragEvent): void {
+  const types = event.dataTransfer?.types;
+  if (!types || Array.prototype.indexOf.call(types, 'Files') === -1) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+}
 
 // Roughly three rows and their padding; the menu is measured against the list
 // it hangs in, not the window, because that list clips it.
@@ -95,7 +118,7 @@ function onNewChat(): void {
 </script>
 
 <template>
-  <div class="ai-chat-sidebar">
+  <div class="ai-chat-sidebar" @dragover="cancelFileDrop" @drop="cancelFileDrop">
     <div class="ai-chat-sidebar-head">
       <!-- Replaces the old static "History" label: the tab a reader is on
            already says what the list below is, so the label and the switch
@@ -189,7 +212,11 @@ function onNewChat(): void {
               <OaMenuItem v-if="canArchive" :title="t('archive')" @click.stop="close(); archiveConversation(conversation)">
                 <template #leading><IconArchive :size="13" /></template>
               </OaMenuItem>
-              <OaMenuItem v-if="canDelete" :title="t('deleteChat')" @click.stop="close(); removeConversation(conversation)">
+              <OaMenuItem
+                v-if="canDelete"
+                :title="armedDelete === conversation.id ? t('confirmDelete') : t('deleteChat')"
+                @click.stop="deleteFromMenu(conversation, close)"
+              >
                 <template #leading><IconTrash :size="13" /></template>
               </OaMenuItem>
             </template>

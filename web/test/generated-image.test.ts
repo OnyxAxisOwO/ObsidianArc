@@ -67,3 +67,24 @@ describe('the alt text of a generated image', () => {
     expect(mountGeneratedImage('a red fox in snow').alt).toBe('a red fox in snow');
   });
 });
+
+// A picture that opens a larger view has to be reachable without a pointer:
+// the picture itself was a bare click handler, with no focus and no role.
+describe('zooming a generated image from the keyboard', () => {
+  it('is a focusable button with a translated name', async () => {
+    await changeLanguage('en');
+    const image = mountGeneratedImage('a red fox in snow');
+    expect(image.getAttribute('role')).toBe('button');
+    expect(image.getAttribute('tabindex')).toBe('0');
+    expect(image.getAttribute('aria-label')).toBe(t('zoomImage'));
+  });
+
+  it.each(['Enter', ' '])('opens the lightbox on the %j key', async (key) => {
+    await changeLanguage('en');
+    const image = mountGeneratedImage('a red fox in snow');
+
+    image.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    await nextTick();
+    expect(document.querySelector('.oa-lightbox-img')).not.toBeNull();
+  });
+});

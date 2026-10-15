@@ -6,7 +6,7 @@
 // oversized picture multiplies its cost on every message after the one that
 // attached it, as well as filling the server's database.
 
-import { t } from '../i18n';
+import { t } from '@/composables/useI18n';
 
 export interface PreparedImage {
   mime: string;
@@ -51,31 +51,38 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
   if (!file.type.startsWith('image/')) {
     throw new ImageError('unsupported', t('imageNotAnImage'));
   }
+  // Refused before the decode: a format this list does not name is not worth
+  // the memory of decoding it first, and the decode is the expensive step.
+  if (!isSupportedImageType(file.type)) {
+    throw new ImageError('unsupported', t('imageFormats'));
+  }
 
   const bitmap = await decode(file);
 
-  // GIF is passed through untouched: a re-encode would lose the animation,
-  // and the providers accept it as-is.
+  // A GIF that fits is passed through untouched: a re-encode would lose the
+  // animation, and the providers accept it as-is. Its bytes are capped because
+  // nothing downscales it, or a large animation would be re-sent at full cost
+  // on every later turn. A GIF beyond the dimension ceiling is sent as its
+  // first frame instead, so the picture is not lost to the user.
   if (file.type === 'image/gif') {
     if (file.size > MAX_OUTPUT_BYTES) {
       bitmap.close?.();
       throw new ImageError('too-large', t('imageTooLarge'));
     }
-    const data = await toBase64(file);
-    bitmap.close?.();
-    return {
-      mime: 'image/gif',
-      data,
-      width: bitmap.width,
-      height: bitmap.height,
-      bytes: file.size,
-      previewURL: URL.createObjectURL(file),
-    };
-  }
-
-  if (!isSupportedImageType(file.type)) {
-    bitmap.close?.();
-    throw new ImageError('unsupported', t('imageFormats'));
+    if (Math.max(bitmap.width, bitmap.height) <= MAX_DIMENSION) {
+      // Read before close(): a closed bitmap no longer reports its size.
+      const { width, height } = bitmap;
+      const data = await toBase64(file);
+      bitmap.close?.();
+      return {
+        mime: 'image/gif',
+        data,
+        width,
+        height,
+        bytes: file.size,
+        previewURL: URL.createObjectURL(file),
+      };
+    }
   }
 
   const longEdge = Math.max(bitmap.width, bitmap.height);
@@ -91,6 +98,11 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
     bitmap.close?.();
     throw new ImageError('unreadable', t('imageFailed'));
   }
+  // The canvas starts transparent and the output is JPEG, which has no alpha:
+  // without a backing colour every transparent pixel of a PNG or WebP
+  // becomes black, including in the composer's preview.
+  context.fillStyle = '#fff';
+  context.fillRect(0, 0, width, height);
   context.drawImage(bitmap, 0, 0, width, height);
   bitmap.close?.();
 

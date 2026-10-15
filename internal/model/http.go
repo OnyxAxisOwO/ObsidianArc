@@ -141,6 +141,16 @@ func TranslateError(err error) error {
 		return httpx.BadRequest("Display name must be 1-80 characters.")
 	case errors.Is(err, ErrInvalidRequestOverride):
 		return httpx.BadRequest("Request override must be a valid JSON object.")
+	case errors.Is(err, ErrRouted):
+		return httpx.Conflict("model_routed", "Another model routes to this one. Clear that route first.")
+	case errors.Is(err, ErrInvalidAccess):
+		return httpx.BadRequest("Access must be use, view or none.")
+	case errors.Is(err, ErrInvalidReasoningStyle):
+		return httpx.BadRequest("Unknown reasoning style.")
+	case errors.Is(err, ErrRouteChain):
+		return httpx.BadRequest("A route is one hop: that model is already routed, or another model routes to it.")
+	case errors.Is(err, ErrRouteTargetMissing):
+		return httpx.BadRequest("Route target does not exist.")
 	default:
 		return httpx.Internal(err)
 	}

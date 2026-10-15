@@ -57,22 +57,30 @@ func TestOnlyOriginsFromAPackageReachThePagePolicy(t *testing.T) {
 		return a.in.Do(http.MethodGet, "/", nil, nil).Header().Get("Content-Security-Policy")
 	}
 
+	// The description is refreshed in the background after a settings save, so
+	// the policy follows each save a moment later rather than at once. Left
+	// alone, the policy from the save before would already satisfy the check, so
+	// each wildcard save is preceded by a marker origin: the wildcard is only
+	// looked at once the marker is gone, which is what the save's own refresh
+	// removes. A wildcard must never appear; the literal blob: stays with every
+	// answer.
+	const marker = "https://marker.example.com:8443"
 	for _, upstream := range []string{"https://*.example.com", "http://*", "https://*"} {
+		a.setSettings(map[string]string{"demo.upstream": marker})
+		eventually(t, "the marker origin was not carried before "+upstream, func() bool {
+			return strings.Contains(scriptSources(csp()), marker)
+		})
 		a.setSettings(map[string]string{"demo.upstream": upstream})
-		got := csp()
-		if strings.Contains(got, "*") {
-			t.Errorf("%s: a wildcard reached the policy: %s", upstream, got)
-		}
-		// The literal blob: that comes with it is allowed, and stays.
-		if !strings.Contains(scriptSources(got), " blob:") {
-			t.Errorf("%s: blob: was dropped with the origin: %s", upstream, got)
-		}
+		eventually(t, upstream+": the policy did not settle on an answer that keeps blob: and no wildcard", func() bool {
+			got := csp()
+			return !strings.Contains(scriptSources(got), marker) && !strings.Contains(got, "*") && strings.Contains(scriptSources(got), " blob:")
+		})
 	}
 
 	a.setSettings(map[string]string{"demo.upstream": "https://good.example.com:8443"})
-	if got := scriptSources(csp()); !strings.Contains(got, " https://good.example.com:8443 blob:") {
-		t.Errorf("a plain origin was not carried: %s", got)
-	}
+	eventually(t, "a plain origin was not carried", func() bool {
+		return strings.Contains(scriptSources(csp()), " https://good.example.com:8443 blob:")
+	})
 }
 
 // scriptSources is the script-src directive alone. Read as a directive

@@ -69,6 +69,11 @@ var (
 	// registration row lock. Leave the transaction and screen that second
 	// account's address before retrying, so it cannot slip past the check.
 	errNeedsEmailScreening = errors.New("auth: email screening must run before the transaction")
+	// A first account was committed between this request's count and its
+	// transaction. The challenges were skipped on the strength of that count, and
+	// they cannot be run inside the transaction, so the visitor is asked to send
+	// the sign-up again and the next attempt runs them.
+	errSignupRetry = errors.New("auth: the sign-up must be sent again so its challenges run")
 	// The password check is an Argon2 verification, which does not belong
 	// inside a transaction; UpdateProfile learns inside the lock that the
 	// address is moving, leaves, checks, and comes back.
@@ -108,6 +113,10 @@ type Service struct {
 	// challenge rather than a broken one.
 	Challenge      turnstile.Gate
 	LoginChallenge turnstile.Gate
+	// How many third-party sign-ins the card is offering right now. Set by the
+	// wiring, which is the package that knows what is configured: internal/oauth
+	// imports this one. Nil is none.
+	SignInProviderCount func() int
 	// A plugin's checks, in front of the same two doors — see AddGuard —
 	// and how sign-up treats each plugin account field — see SetFieldRule.
 	// Written at setup, and again when a plugin is installed or removed
@@ -181,8 +190,11 @@ type Service struct {
 	// server.go, the same seam ReviewSignup and OnNewDevice use.
 	//
 	// ConsumeInvite spends one use inside the caller's transaction — see
-	// invite.Store.Consume. RecordInviteUse writes the row Consume's spend
-	// is remembered by, in the same transaction, once the new account's id
+	// invite.Store.Consume. A rejected code answers ErrInviteInvalid and any
+	// other failure is returned as itself, so only a rejection is charged to
+	// the guesser; the translation from the invite package's own sentinel
+	// happens in server.go. RecordInviteUse writes the row Consume's spend is
+	// remembered by, in the same transaction, once the new account's id
 	// is known. RewardInvite is told about an account that may now qualify
 	// for its inviter's reward — after Register commits, and again from
 	// Verify — and resolves and logs for itself; it has nothing to hand back
@@ -200,10 +212,21 @@ type Service struct {
 	// returns must survive: the check passes against the hash that was read, and
 	// the fingerprint has to describe that same hash. Nil outside tests.
 	afterCredentialRead func()
+	// Called by Register between its first count and its transaction, where a
+	// concurrent first account can land. Nil outside tests.
+	afterPreflight func()
 	// Called by a password or address change once it has verified the current
 	// password and before it takes the account's row lock to write. A reset that
 	// lands in that window is the case the write must refuse. Nil outside tests.
 	beforeChangeWrite func()
+	// Called by EnableTwoFactor once it has checked the password and before it
+	// takes the account's row lock to switch the second step on. Nil outside
+	// tests.
+	beforeEnableWrite func()
+	// Called by EnableTwoFactor inside its transaction, once it holds the
+	// account's row lock. A password reset started here must wait for the
+	// enrolment to decide. Nil outside tests.
+	afterEnableLock func()
 }
 
 func NewService(
@@ -319,7 +342,16 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	if err != nil {
 		return user.User{}, "", err
 	}
+	// Whether the challenges below run. A request that sees an empty instance
+	// skips them, and that can stop being true before its transaction opens.
+	challenged := total > 0
+	if s.afterPreflight != nil {
+		s.afterPreflight()
+	}
 	review := SignupReview{Decision: SignupAllow}
+	// Set when a plugin guard's middle answer is what closed the account, so the
+	// restriction is recorded as the guard's and not as the AI reviewer's.
+	guardRestricted := false
 	// The place this request holds in the invite guessing budget, when it carries
 	// a code. It is kept until the request returns, so the paid review and the
 	// hash below only run while the place is held; see ReserveInviteGuess.
@@ -453,6 +485,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		if guarded.Restrict && review.Decision == SignupAllow {
 			review.Decision = SignupRestrict
 			review.Reason = guarded.Reason
+			review.RestrictedUntil = s.SignupRestrictedUntil()
+			guardRestricted = true
 		}
 	}
 	screened := false
@@ -471,6 +505,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	var (
 		created      user.User
 		verification string
+		token        string
 	)
 	for {
 		err = s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -493,6 +528,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			}
 			first := total == 0
 
+			if !first && !challenged && s.challengesApply() {
+				return errSignupRetry
+			}
 			if !first && !s.settings.Bool(settings.RegistrationEnabled) {
 				return ErrRegistrationClosed
 			}
@@ -596,7 +634,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 				SignupUserAgent:      in.UA,
 				APIRestricted:        review.Decision == SignupRestrict,
 				APIRestrictedUntil:   review.RestrictedUntil,
-				APIRestrictionSource: restrictionSource(review.Decision),
+				APIRestrictionSource: restrictionSource(review.Decision, guardRestricted),
 			})
 			if err != nil {
 				return err
@@ -611,6 +649,13 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 				if err != nil {
 					return err
 				}
+			}
+			// The first session commits with the account. Created after commit, a
+			// failure there left an account the visitor was told had failed, and the
+			// retry was refused as a taken username.
+			token, _, err = s.sessions.createIn(ctx, tx, created.ID, s.cfg.TTL, in.IP, in.UA)
+			if err != nil {
+				return err
 			}
 			// Record while the registration lock is still held. Putting this
 			// after commit leaves a scheduling gap in which the next queued
@@ -643,21 +688,64 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		s.RewardInvite(ctx, created.ID, s.VerificationRequired())
 	}
 
-	token, _, err := s.sessions.Create(ctx, created.ID, s.cfg.TTL, in.IP, in.UA)
-	if err != nil {
-		return user.User{}, "", err
-	}
 	now := time.Now().UnixMilli()
-	_ = s.users.MarkLogin(ctx, created.ID, now)
+	if err := s.users.MarkLogin(ctx, created.ID, now); err != nil {
+		slog.WarnContext(ctx, "could not record the first sign-in", "user", created.ID, "error", err)
+	}
 	created.LastLoginAt = now
 	return created, token, nil
 }
 
-func restrictionSource(decision SignupDecision) string {
-	if decision == SignupRestrict {
-		return "signup_review"
+// challengesApply reports whether the challenges a first account skips would
+// refuse a sign-up that arrived without answers to them. A sign-up that raced
+// the first account is sent back only then. On an instance with none of them
+// configured it is opened exactly as before the race was known.
+func (s *Service) challengesApply() bool {
+	mode := s.settings.RegistrationCaptchaMode()
+	if mode == settings.CaptchaModePoW || mode == settings.CaptchaModeBoth {
+		return true
 	}
-	return ""
+	if (mode == settings.CaptchaModeTurnstile || mode == settings.CaptchaModeBoth) &&
+		s.Challenge.Enabled != nil && s.Challenge.Enabled() {
+		return true
+	}
+	// ReviewSignup is always wired and answers allow while the review is off,
+	// so only the review being live (the same condition server.go checks) is a
+	// challenge a racing sign-up could fail.
+	if s.settings.Bool(settings.SignupReview) && s.settings.Get(settings.SignupReviewModel) != "" {
+		return true
+	}
+	for _, g := range s.guardsFor(GuardRegister) {
+		if s.gate.Allows(g.Plugin) {
+			return true
+		}
+	}
+	return false
+}
+
+// restrictionSource names what closed an account's API access. The screening
+// cohort counts only the AI reviewer's restrictions toward a batch of bot
+// sign-ups, so a guard's restriction must not be labelled as the reviewer's.
+func restrictionSource(decision SignupDecision, guarded bool) string {
+	if decision != SignupRestrict {
+		return ""
+	}
+	if guarded {
+		return "guard"
+	}
+	return "signup_review"
+}
+
+// SignupRestrictedUntil is when a sign-up restriction lapses: the operator's
+// restrict-hours from now, the same lifetime the AI reviewer's restriction has.
+// Zero means indefinitely, which only an administrator can lift, so it is the
+// operator's explicit choice when the hours are set to zero and never a default.
+func (s *Service) SignupRestrictedUntil() int64 {
+	hours := s.settings.Int(settings.SignupReviewRestrictHours, 24)
+	if hours <= 0 {
+		return 0
+	}
+	return time.Now().Add(time.Duration(hours) * time.Hour).UnixMilli()
 }
 
 func (s *Service) recordSignupReview(
@@ -936,10 +1024,12 @@ func (s *Service) registrationGroup(ctx context.Context, q database.Queryer) (st
 // An empty code is not itself an error unless InvitesRequired says it must
 // not be: open mode's code is optional, and this is the one place that
 // distinction is made, so Register and Provision do not have to agree on it
-// twice. Every failure from the hook collapses to ErrInviteInvalid — see
-// invite.Store.Consume for why one answer covers all of them — and a nil
-// hook with a non-empty code is treated the same way, since a caller handed
-// a code this instance has no invite package wired in to check.
+// twice. The hook answers every rejected code with ErrInviteInvalid — the one
+// answer that hides which rejection happened — and any other error is a failure
+// of the store, returned as itself: spendInvite charges a guess only for
+// ErrInviteInvalid, so an outage is not counted against the guesser. A nil hook
+// with a non-empty code is refused, since a caller handed a code this instance
+// has no invite package wired in to check.
 func (s *Service) consumeInvite(ctx context.Context, tx *database.Tx, code string) (*InviteGrant, error) {
 	code = strings.TrimSpace(code)
 	if code == "" {
@@ -953,7 +1043,7 @@ func (s *Service) consumeInvite(ctx context.Context, tx *database.Tx, code strin
 	}
 	grant, err := s.ConsumeInvite(ctx, tx, code)
 	if err != nil {
-		return nil, ErrInviteInvalid
+		return nil, err
 	}
 	return grant, nil
 }
@@ -992,6 +1082,13 @@ func (s *Service) spendInvite(ctx context.Context, tx *database.Tx, code, ip str
 	return grant, err
 }
 
+// HashPassword hashes a password for ProvisionInput.PasswordHash. It is the
+// caller's to run before it opens the transaction Provision will write in, so
+// the slow hash does not hold the instance lock.
+func (s *Service) HashPassword(ctx context.Context, password string) (string, error) {
+	return s.hasher.Hash(ctx, password)
+}
+
 // ReserveInviteGuess takes the address's place in the invite guessing budget for
 // one request, and refuses when the address has used it up. The place is held
 // until the caller finishes with it: Failed when the code it was taken for is
@@ -1001,13 +1098,13 @@ func (s *Service) spendInvite(ctx context.Context, tx *database.Tx, code, ip str
 // guesses from one address cannot all get past the budget before any of them has
 // been counted.
 func (s *Service) ReserveInviteGuess(ip string) (*Attempt, error) {
-	return s.invites.Begin(inviteBudgetKey(ip), "")
+	return s.invites.Begin(addressBudgetKey(ip), "")
 }
 
-// inviteBudgetKey is the address a guess is counted against. An address the
-// server could not read is one shared budget rather than none: a limit that an
-// empty address switched off would be a way round the limit.
-func inviteBudgetKey(ip string) string {
+// addressBudgetKey is the address a guess or a sign-in is counted against. An
+// address the server could not read is one shared budget rather than none: a
+// limit that an empty address switched off would be a way round the limit.
+func addressBudgetKey(ip string) string {
 	if ip == "" {
 		return "unknown"
 	}
@@ -1073,7 +1170,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 		return user.User{}, "", err
 	}
 
-	attempt, err := s.limiter.Begin(in.IP, in.Identifier)
+	attempt, err := s.limiter.Begin(addressBudgetKey(in.IP), in.Identifier)
 	if err != nil {
 		return user.User{}, "", err
 	}
@@ -1158,7 +1255,7 @@ func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip
 		return user.User{}, "", err
 	}
 
-	attempt, err := s.limiter.Begin(ip, identifier)
+	attempt, err := s.limiter.Begin(addressBudgetKey(ip), identifier)
 	if err != nil {
 		return user.User{}, "", err
 	}
@@ -1637,8 +1734,9 @@ func (s *Service) isThirdPartyOnlySignup() bool {
 	return s.settings.Bool(settings.OAuthThirdPartyOnlySignup) || s.settings.Bool(settings.OAuthOIDCOnlySignup)
 }
 
+// hasOAuthProviders asks the question the sign-in card asks. A provider that is
+// switched on without its credentials has no button, and refusing every sign-up
+// because of it would leave the page with no way in.
 func (s *Service) hasOAuthProviders() bool {
-	return s.settings.Bool(settings.OAuthGitHubEnabled) ||
-		s.settings.Bool(settings.OAuthGoogleEnabled) ||
-		s.settings.Bool(settings.OAuthOIDCEnabled)
+	return s.SignInProviderCount != nil && s.SignInProviderCount() > 0
 }

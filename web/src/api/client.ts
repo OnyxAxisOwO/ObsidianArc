@@ -6,6 +6,7 @@
 // move.
 
 import { t } from '@/composables/useI18n';
+import { SESSION_ENDED } from './session-ended';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -58,13 +59,7 @@ async function request<T>(method: string, path: string, options: RequestOptions 
     init.body = JSON.stringify(options.body);
   }
 
-  let response: Response;
-  try {
-    response = await fetch(path, init);
-  } catch (error) {
-    if (options.signal?.aborted) throw error;
-    throw new ApiError(0, 'network', networkMessage(error));
-  }
+  const response = await fetchApi(path, init);
 
   if (response.status === 204) return undefined as T;
 
@@ -81,16 +76,12 @@ async function request<T>(method: string, path: string, options: RequestOptions 
   if (!response.ok) {
     const body = (payload ?? {}) as ErrorBody;
     const { code, message, ...details } = body.error ?? {};
-    // The backoffice's visit ran out while a page was open. Every page would
-    // otherwise draw its own error; the shell listens for this instead and
-    // puts the place to type a code where the page was.
-    if (code === 'two_factor_backoffice_verify' && typeof window !== 'undefined') {
-      window.dispatchEvent(new Event(BACKOFFICE_LOCKED));
-    }
+    noteBackofficeRefusal(code);
+    noteSessionEnded(code);
     throw new ApiError(
       response.status,
       code ?? 'error',
-      message ?? `Request failed with HTTP ${response.status}.`,
+      message ?? t('failed'),
       details,
     );
   }
@@ -98,9 +89,52 @@ async function request<T>(method: string, path: string, options: RequestOptions 
   return payload as T;
 }
 
-function networkMessage(error: unknown): string {
-  const detail = error instanceof Error ? error.message : String(error);
-  return `Could not reach the server: ${detail}`;
+/**
+ * The backoffice's visit ran out while a page was open. Every page would
+ * otherwise draw its own error; the shell listens for this instead and puts
+ * the place to type a code where the page was.
+ *
+ * Exported for the streams that call fetch directly (they never reach
+ * `request`), which would otherwise leave an operator with a refusal and no
+ * way to unlock.
+ */
+export function noteBackofficeRefusal(code: string | undefined): void {
+  if (code === 'two_factor_backoffice_verify' && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(BACKOFFICE_LOCKED));
+  }
+}
+
+/**
+ * The server answers a request that carries no live session with this code.
+ * The other 401s — a wrong password, a second factor still due — have codes of
+ * their own, and must not sign the tab out.
+ */
+export function noteSessionEnded(code: string | undefined): void {
+  if (code === 'session_required' && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(SESSION_ENDED));
+  }
+}
+
+/**
+ * fetch for every call this client makes, including the streamed ones that read
+ * their own body. A connection that fails before any response arrives becomes
+ * the same ApiError(0, 'network') a plain request gets, so a reader sees the
+ * translated line rather than the engine's "Failed to fetch". An abort is the
+ * caller's own doing and passes through unchanged.
+ */
+export async function fetchApi(path: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(path, init);
+  } catch (error) {
+    if (init.signal?.aborted) throw error;
+    // The browser's own wording is engine text, not a sentence for a reader,
+    // so it travels in details for anyone debugging.
+    throw new ApiError(0, 'network', t('connectionFailed'), { detail: networkDetail(error) });
+  }
+}
+
+function networkDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export const api = {

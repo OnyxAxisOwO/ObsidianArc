@@ -210,6 +210,12 @@ func TestAnErrorQuotingSomeonesTextCannotDriveTheTerminalEither(t *testing.T) {
 	var out bytes.Buffer
 	RenderError(&out, true, false, &CallError{Status: 400, Code: "bad", Message: "no such user \x1b[2Jmallory"})
 	assertNoControlFromData(t, strings.ReplaceAll(out.String(), "\n", ""))
+
+	// The code is printed in text mode too, so an escape in it is no safer
+	// than one in the message.
+	out.Reset()
+	RenderError(&out, true, false, &CallError{Status: 400, Code: "bad\x1b[2J", Message: "refused"})
+	assertNoControlFromData(t, strings.ReplaceAll(out.String(), "\n", ""))
 }
 
 func TestTheBannerCannotBeDrivenByANickname(t *testing.T) {

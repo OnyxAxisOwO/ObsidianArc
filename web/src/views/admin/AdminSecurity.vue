@@ -21,7 +21,7 @@ import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminWorkbench from './AdminWorkbench.vue';
 import type { WorkbenchGroup } from './workbench';
-import { useSettingsDraft } from './settingsDraft';
+import { SETTING_MAX_BYTES, overlongSetting, useSettingsDraft } from './settingsDraft';
 import { IconUsers, IconLock, IconSpark, IconFile, IconSliders, IconKey, IconGithub, IconGoogle, IconCopy, IconCheck, IconShield, IconMessage, IconClose } from '@/icons';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
@@ -47,7 +47,7 @@ import { plugins, pluginSecurityEvent, pluginSecurityReason } from '@/plugins/re
 import { useAdminView } from './adminView';
 
 const view = useAdminView();
-view.setTitle(t('navSecurity'), t('securitySubtitle'));
+view.setTitle(() => t('navSecurity'), () => t('securitySubtitle'));
 
 // The settings screen's security tab, drawn beside this page rather than in the
 // chat: the page's own address, with the panel named in it (usePanelExit).
@@ -318,6 +318,10 @@ function registerApplication(): void {
       return loadApplications();
     })
     .catch((failure: unknown) => {
+      if (failure instanceof ApiError && failure.code === 'too_many_applications') {
+        appFlash.value = t('applicationsFull');
+        return;
+      }
       appFlash.value = failure instanceof ApiError ? failure.message : String(failure);
     })
     .finally(() => { appBusy.value = false; });
@@ -511,6 +515,12 @@ async function save(): Promise<void> {
   if (!loaded.value || error.value || busy.value) return;
   const values = collect();
   if (Object.keys(changes(values)).length === 0) return;
+  // Refused here, before the code prompt opens: the server would refuse the
+  // save after the operator had typed a code for it.
+  if (overlongSetting(changes(values))) {
+    flash.value = t('settingTooLong');
+    return;
+  }
   const promptChanged = values['security.signup_review_prompt'] !== initialReviewPrompt.value;
   if (promptChanged) {
     if (selfWithout.value) {
@@ -561,6 +571,8 @@ async function performSave(codeParam?: string): Promise<void> {
     void loadAdoption();
   } catch (failure) {
     if (failure instanceof ApiError && failure.code === 'two_factor_code_required') {
+      // Cancelling the prompt does not save, so the label must not keep saying so.
+      saveLabel.value = '';
       showTwoFactorModal.value = true;
       twoFactorCode.value = '';
       twoFactorError.value = '';
@@ -652,6 +664,8 @@ function reviewDecision(decision: string): string {
   if (decision === 'reset') return t('securityDecisionReset');
   if (decision === 'recovery_used') return t('securityDecisionRecoveryUsed');
   if (decision === 'recovery_regenerated') return t('securityDecisionRecoveryRegenerated');
+  if (decision === 'prune') return t('securityDecisionPrune');
+  if (decision === 'pruned') return t('securityDecisionPruned');
   if (decision === 'restrict') return t('securityDecisionRestrict');
   // A decision this screen has no words for — a console command's outcome
   // code, say — is shown as it was recorded rather than as a restriction it
@@ -670,6 +684,9 @@ function eventLabel(event: string): string {
   if (event === 'plugin') return t('securityEventPlugin');
   if (event === 'pow_challenge') return t('securityEventPoWChallenge');
   if (event === 'turnstile_challenge') return t('securityEventTurnstileChallenge');
+  if (event === 'password_reset') return t('securityEventPasswordReset');
+  if (event === 'account_deleted') return t('securityEventAccountDeleted');
+  if (event === 'log_prune') return t('securityEventLogPrune');
   return pluginSecurityEvent(event) ?? event;
 }
 
@@ -792,7 +809,8 @@ async function loadUserCheck(): Promise<void> {
     savedUserCheck.value = settings;
     userCheckForm.value = {
       enabled: settings.enabled,
-      exempt_domains: settings.exempt_domains.join('\n'),
+      // The server sends null for an empty list; the form still needs a string.
+      exempt_domains: (settings.exempt_domains ?? []).join('\n'),
       failure_mode: settings.failure_mode,
       api_key_set: settings.api_key_set,
       api_key: '',
@@ -841,7 +859,8 @@ async function saveUserCheck(): Promise<void> {
     savedUserCheck.value = settings;
     userCheckForm.value = {
       enabled: settings.enabled,
-      exempt_domains: settings.exempt_domains.join('\n'),
+      // The server sends null for an empty list; the form still needs a string.
+      exempt_domains: (settings.exempt_domains ?? []).join('\n'),
       failure_mode: settings.failure_mode,
       api_key_set: settings.api_key_set,
       api_key: '',
@@ -900,6 +919,10 @@ async function sendUserCheckTest(): Promise<void> {
 }
 
 async function load(): Promise<void> {
+  // Same as AdminSettings: only a retry after a failed load lacks a baseline,
+  // and Save must stay off until one is back, or every field would read as
+  // edited against an empty baseline.
+  if (error.value) loaded.value = false;
   error.value = '';
   try {
     // The models come along because one of these settings is which model
@@ -1151,6 +1174,7 @@ onMounted(load);
           :rows="8"
           :placeholder="t('signupReviewPromptPlaceholder')"
           :hint="t('signupReviewPromptHint')"
+          :max-bytes="SETTING_MAX_BYTES"
         />
         <div v-if="defaultReviewPrompt" class="oa-control-actions">
           <button type="button" class="oa-btn" :disabled="reviewPromptIsDefault" @click="restoreReviewPrompt">
@@ -1163,6 +1187,7 @@ onMounted(load);
           :rows="3"
           :placeholder="t('signupReviewRefusalPlaceholder')"
           :hint="t('signupReviewRefusalHint')"
+          :max-bytes="SETTING_MAX_BYTES"
         />
       </AdminControlCard>
       <AdminControlCard id="secTwoFactorPolicy" v-show="visible('secTwoFactorPolicy')" :title="t('secTwoFactorPolicy')" :icon="IconShield" :hint="t('twoFactorPolicyHint')">
@@ -1698,9 +1723,16 @@ onMounted(load);
               <button type="button" class="oa-btn" :disabled="appBusy || lockedApplication(app)" @click="toggleApplication(app, !app.disabled)">
                 {{ app.disabled ? t('enable') : t('disable') }}
               </button>
-              <button v-if="app.confidential" type="button" class="oa-btn" :disabled="appBusy || lockedApplication(app)" @click="rotateApplication(app)">
-                {{ t('applicationRotate') }}
-              </button>
+              <OaConfirmButton
+                v-if="app.confidential"
+                class="oa-btn"
+                :label="t('applicationRotate')"
+                :armed-label="t('confirmWord')"
+                :armed-title="t('applicationRotateConfirm', { application: app.name })"
+                :resting-title="t('applicationRotate')"
+                :disabled="appBusy || lockedApplication(app)"
+                @confirm="rotateApplication(app)"
+              />
               <OaConfirmButton
                 class="oa-btn"
                 :label="t('deleteLabel')"
@@ -1786,7 +1818,7 @@ onMounted(load);
   </AdminWorkbench>
   <p v-if="flash" class="oa-drawer-flash visible oa-control-flash" role="status">{{ flash }}</p>
 
-  <OaOverlay v-if="showTwoFactorModal" overlay-class="oa-modal-overlay" @close="cancelTwoFactor">
+  <OaOverlay v-if="showTwoFactorModal" overlay-class="oa-modal-overlay" :label="t('signupReviewPrompt2FATitle')" @close="cancelTwoFactor">
     <div class="oa-auth-card oa-modal-card oa-2fa-unlock">
       <OaIconButton class="oa-icon-btn oa-modal-close" :label="t('close')" @click="cancelTwoFactor">
         <IconClose :size="16" />

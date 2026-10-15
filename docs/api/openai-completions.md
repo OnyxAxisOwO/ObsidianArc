@@ -53,7 +53,7 @@ curl -N https://ai.example.com/v1/chat/completions \
 
 通过 `tools` 声明函数后，模型可以返回 `tool_calls`。工具由客户端执行，网关不会替客户端运行命令或函数。
 
-下一次请求需要包含模型的工具调用消息，以及带有匹配 `tool_call_id` 的 `role: tool` 结果消息。
+下一次请求需要包含模型的工具调用消息，以及带有匹配 `tool_call_id` 的 `role: tool` 结果消息。`role: tool` 消息只能包含文本；其中的图片会被拒绝，请改在用户消息中发送。
 
 模型和上游必须支持工具调用。跨协议转换不能保证保留厂商特有的工具扩展。
 

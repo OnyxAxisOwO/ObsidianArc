@@ -9,8 +9,8 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import { describeNotification } from '../src/lib/notification-text';
 import { refusalText } from '../src/lib/refusal';
 import {
-  installPlugins, loadPlugins, pinnedProvider, pluginHost, pluginInviteeNote, pluginOAuthError, pluginRefusal,
-  pluginStrings, plugins, setModuleImporter,
+  installPlugins, loadPlugins, pinnedProvider, pluginHost, pluginInviteeNote, pluginNotification, pluginOAuthError,
+  pluginRefusal, pluginStrings, plugins, setModuleImporter,
 } from '../src/plugins/registry';
 import type { ArcPlugin } from '../src/plugins/types';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
@@ -385,5 +385,20 @@ describe('a plugin\'s list and actions in the backoffice', () => {
     expect(post).toHaveBeenCalledWith('/api/admin/users/u1/process', { mode: 'disable', note: '' });
     expect(done).toHaveBeenCalledWith(false);
     expect(host.textContent).toContain('2 due, 1 taken back');
+  });
+});
+
+// A plugin's own tables are read by key, and only its own keys count: a name
+// every object inherits must not be taken for a notice or a pinned provider.
+describe("a plugin's tables are read by its own keys", () => {
+  it('finds no notice and no pin for an inherited name', () => {
+    installPlugins([{
+      name: 'demo',
+      notifications: { demo_kind: () => ({ title: () => 'Demo', body: () => 'Demo body', icon: () => null }) },
+    } as unknown as ArcPlugin]);
+    expect(pluginNotification('constructor', {})).toBeNull();
+    expect(pluginNotification('__proto__', {})).toBeNull();
+    expect(pluginNotification('demo_kind', {})).not.toBeNull();
+    expect(pinnedProvider('constructor')).toBeNull();
   });
 });

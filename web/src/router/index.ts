@@ -24,9 +24,10 @@
 // will, and its emulator, history and ANSI decoder would otherwise be on the
 // first paint of everyone who only came to chat.
 
-import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
+import { createRouter, createWebHistory, type RouteLocationRaw, type RouteRecordRaw } from 'vue-router';
 import { safeNext, serverOwned } from '@/lib/next';
 import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
+import { SESSION_LOST } from '@/api/session-ended';
 import { currentUser, isAdmin, pendingSecondFactor, siteInfo } from '@/stores/session';
 import AboutPanel from '@/views/AboutPanel.vue';
 import ArchivePanel from '@/views/ArchivePanel.vue';
@@ -126,6 +127,25 @@ export const router = createRouter({
   scrollBehavior: () => false,
 });
 
+// The session store signs a tab out in memory when its session ends, and that
+// leaves the route alone: the guard above runs on navigation, not on sign-out.
+// Sending the reader to sign-in here, with where they were as `next`, is the
+// same move the account menu makes after an explicit sign-out.
+if (typeof window !== 'undefined') {
+  window.addEventListener(SESSION_LOST, () => {
+    if (router.currentRoute.value.path === '/login') return;
+    void router.replace({ path: '/login', query: { next: router.currentRoute.value.fullPath } });
+  });
+}
+
+// The destination a signed-in visitor is sent to. As a string location the
+// query and hash of a deep link survive (/settings?tab=keys keeps its tab); an
+// object with a path is re-parsed with the query dropped.
+function arrive(next: string): RouteLocationRaw {
+  const target = router.resolve(next || '/');
+  return { path: target.path, query: target.query, hash: target.hash, replace: true };
+}
+
 router.beforeEach((to) => {
   const signedIn = !!currentUser.value;
   const needsSession = to.matched.some((record) => record.meta['auth']);
@@ -157,14 +177,15 @@ router.beforeEach((to) => {
       window.location.assign(next);
       return false;
     }
-    return { path: next || '/', replace: true };
+    return arrive(next);
   }
 
   // The operator's OIDC policy wants every account to link an identity
-  // before it does anything else. After the two-step check above, so an
-  // account owing both is sent to enrol its factor first — see oauth.
-  // Service.BindingGate for why the server holds the same order.
-  if (signedIn && currentUser.value?.oidc_binding_required && to.path !== '/bind-oidc') {
+  // before it does anything else. An account still owing a factor is left to
+  // the two-step redirect above: this one must not claim it, or the two would
+  // send each other back and forth. See oauth.Service.BindingGate for why the
+  // server holds the same order.
+  if (signedIn && currentUser.value?.oidc_binding_required && !currentUser.value?.two_factor_enrol && to.path !== '/bind-oidc') {
     const next = to.path === '/' ? undefined : to.fullPath;
     return { path: '/bind-oidc', query: next ? { next } : {}, replace: true };
   }
@@ -174,7 +195,7 @@ router.beforeEach((to) => {
       window.location.assign(next);
       return false;
     }
-    return { path: next || '/', replace: true };
+    return arrive(next);
   }
 
   // The address itself. Signed in it is the chat; signed out it is whatever
@@ -203,7 +224,11 @@ router.beforeEach((to) => {
   // made rather than a page they wandered onto.
   if (signedIn && (to.path === '/login' || to.path === '/register')) {
     const next = safeNext(to.query['next']);
-    return { path: next || '/', replace: true };
+    if (next && serverOwned(next)) {
+      window.location.assign(next);
+      return false;
+    }
+    return arrive(next);
   }
 
   // The terminal is offered by group. The server refuses the account either

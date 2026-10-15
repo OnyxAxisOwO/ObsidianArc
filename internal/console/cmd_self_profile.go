@@ -73,7 +73,7 @@ func init() {
 		Flags: []Flag{
 			{Name: "--nickname", Hint: Text{EN: "display nickname, ≤32 chars", ZH: "昵称，≤32 字符"}, Value: "TEXT"},
 			{Name: "--email", Hint: Text{EN: "email address", ZH: "邮箱地址"}, Value: "EMAIL"},
-			{Name: "--bio", Hint: Text{EN: "bio, ≤500 chars", ZH: "简介，≤500 字符"}, Value: "TEXT"},
+			{Name: "--bio", Hint: Text{EN: "bio, ≤500 chars", ZH: "简介，≤500 字符"}, Value: "TEXT", Sensitive: true},
 			{Name: "--avatar", Hint: Text{EN: "avatar URL or data, ≤8192 chars", ZH: "头像 URL 或数据，≤8192 字符"}, Value: "TEXT"},
 			{Name: "--current-password", Hint: Text{EN: "your current password; needed to change --email", ZH: "当前密码；修改 --email 时需要"}, Value: "PASSWORD", Sensitive: true},
 		},

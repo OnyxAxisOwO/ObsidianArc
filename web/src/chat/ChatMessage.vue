@@ -11,12 +11,13 @@ import { updateMessage, attachmentURL, type Message, type MessageStats } from '@
 import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import { t } from '@/composables/useI18n';
+import { storedErrorText } from '@/lib/api-error';
 import { copyToClipboard } from '@/chat/markdown';
 import { IconDownload } from '@/icons';
 import ChatAttachments from './ChatAttachments.vue';
 import ChatThinking from './ChatThinking.vue';
 import {
-  MAX_MESSAGE_CHARS, activeID, busy, editingID, justSentID, messages,
+  MAX_MESSAGE_CHARS, activeID, busy, editingID, failureText, justSentID, messages,
   recentReasoningID, runTurn, setFlash, statsWanted,
 } from './useChat';
 import { hasFlown, isFlying } from './useSendAnimation';
@@ -29,6 +30,9 @@ const saving = ref(false);
 const zoomedImage = ref<{ url: string; alt?: string } | null>(null);
 
 const editing = computed(() => editingID.value === props.message.id);
+// A stored failure is shown in the reader's language by its code. Its sentence
+// is the English fallback, which is all a row written before the code has.
+const errorText = computed(() => storedErrorText(props.message.error_code ?? '', props.message.error ?? ''));
 const images = computed(() => props.message.attachments ?? []);
 const isHiddenInFlight = computed(() => {
   return isFlying(props.message.id) || (props.message.id === justSentID.value && !hasFlown(props.message.id));
@@ -49,13 +53,33 @@ function cancelEdit(): void {
  * was an answer to a question that no longer exists.
  */
 function resend(): void {
+  // A turn that is already running would refuse this, and the edit would go
+  // with the editor. Keeping the editor open keeps the edit.
+  if (busy.value) return;
+
   const text = draft.value.trim();
+  const live = images.value.filter((image) => !image.discarded);
+  const discarded = live.length < images.value.length;
+  // Nothing to send would still rewind the transcript, and the question would
+  // be deleted with no text left to resend it.
+  if (!text && !live.length) {
+    if (discarded) setFlash(t('imageDiscarded'));
+    return;
+  }
+
   editingID.value = '';
   void runTurn({
     content: text,
     truncateFrom: props.message.id,
-    attachmentIDs: images.value.map((image) => image.id),
+    attachmentIDs: live.map((image) => image.id),
+    sentAttachments: live,
   });
+  // Set after the call: runTurn clears the flash before it does anything else.
+  if (discarded) setFlash(t('imageDiscarded'));
+}
+
+function zoom(id: string): void {
+  zoomedImage.value = { url: attachmentURL(id), alt: props.message.content || t('generatedImage') };
 }
 
 /** Editing an answer only corrects the record; nothing is re-generated. */
@@ -69,7 +93,7 @@ async function saveAnswer(): Promise<void> {
       (entry.id === props.message.id ? { ...entry, content: text } : entry));
     editingID.value = '';
   } catch (error) {
-    setFlash(error instanceof Error ? error.message : t('failed'));
+    setFlash(failureText(error));
   } finally {
     saving.value = false;
   }
@@ -166,7 +190,7 @@ function describe(value: MessageStats): string {
           {{ props.message.content }}
         </div>
         <div class="ai-msg-actions">
-          <button type="button" class="ai-chat-mini-btn" @click="beginEdit">{{ t('edit') }}</button>
+          <button v-if="!busy" type="button" class="ai-chat-mini-btn" @click="beginEdit">{{ t('edit') }}</button>
           <button type="button" class="ai-chat-mini-btn" @click="copy">{{ t('copy') }}</button>
         </div>
       </template>
@@ -174,8 +198,11 @@ function describe(value: MessageStats): string {
 
     <template v-else>
       <div v-if="props.message.error" class="ai-chat-error">
-        <span class="ai-chat-error-text">{{ props.message.error }}</span>
+        <span class="ai-chat-error-text">{{ errorText }}</span>
+        <!-- Hidden while a turn runs: runTurn refuses a second one, so the press
+             would do nothing and look broken. -->
         <button
+          v-if="!busy"
           type="button"
           class="ai-chat-mini-btn"
           @click="runTurn({ truncateFrom: props.message.id })"
@@ -212,11 +239,18 @@ function describe(value: MessageStats): string {
         <template v-else>
           <div v-if="images.length" class="ai-chat-generated-images">
             <div v-for="img in images" :key="img.id" class="ai-chat-generated-card">
+              <!-- An image is not focusable and has no role, so keyboard and
+                   switch users had no way to enlarge it. -->
               <img
                 :src="attachmentURL(img.id)"
                 class="ai-chat-generated-img"
+                role="button"
+                tabindex="0"
+                :aria-label="t('zoomImage')"
                 :alt="props.message.content || t('generatedImage')"
-                @click="zoomedImage = { url: attachmentURL(img.id), alt: props.message.content || t('generatedImage') }"
+                @click="zoom(img.id)"
+                @keydown.enter.prevent="zoom(img.id)"
+                @keydown.space.prevent="zoom(img.id)"
               />
               <div class="ai-chat-generated-bar">
                 <a
@@ -239,6 +273,7 @@ function describe(value: MessageStats): string {
               {{ t('edit') }}
             </button>
             <button
+              v-if="!busy"
               type="button"
               class="ai-chat-mini-btn"
               @click="runTurn({ truncateFrom: props.message.id })"

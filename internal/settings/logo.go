@@ -89,6 +89,8 @@ func (s *Service) SetSiteLogo(ctx context.Context, mime string, data []byte) (in
 	mime = detectedMime
 
 	at := time.Now().UnixMilli()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err = s.db.Exec(ctx,
 		`INSERT INTO site_logo (id, mime, data, updated_at)
 		 VALUES ('default', ?, ?, ?)
@@ -122,6 +124,8 @@ func (s *Service) GetSiteLogo(ctx context.Context) (mime string, data []byte, at
 
 // DeleteSiteLogo removes the custom site logo.
 func (s *Service) DeleteSiteLogo(ctx context.Context) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err := s.db.Exec(ctx, `DELETE FROM site_logo WHERE id = 'default'`)
 	if err != nil {
 		return fmt.Errorf("settings: delete site logo: %w", err)

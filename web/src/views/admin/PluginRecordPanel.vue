@@ -36,7 +36,7 @@ const viewing = ref('');
 const fields = computed(() => props.detail.fields.map((field) => ({
   ...field,
   value: field.mask ? maskUser(field.value) : field.value,
-  href: field.link && /^https?:\/\//i.test(field.value) ? field.value : '',
+  href: field.link && !field.mask && /^https?:\/\//i.test(field.value) ? field.value : '',
 })));
 
 function set(action: string, key: string, value: string): void {
@@ -97,21 +97,23 @@ async function run(action: RecordAction): Promise<void> {
         @set="(key, value) => set(action.id, key, value)"
       />
       <div class="oa-card-actions">
+        <!-- A destructive action is asked in place even when the plugin wrote no
+             question for it: the core draws the danger, so it confirms too. -->
         <OaConfirmButton
-          v-if="action.confirm"
+          v-if="action.confirm || action.danger"
           class="oa-btn"
-          :class="action.danger ? 'danger' : 'primary'"
+          :class="action.danger ? 'oa-btn-danger' : 'primary'"
           :disabled="!!busy || missingRequired(visibleControls(action.controls ?? [], drafts[action.id] ?? {}), drafts[action.id] ?? {})"
           :label="busy === action.id ? t('loading') : action.label"
           :armed-label="action.label"
-          :armed-title="action.confirm(drafts[action.id] ?? {})"
+          :armed-title="action.confirm ? action.confirm(drafts[action.id] ?? {}) : action.label"
           @confirm="run(action)"
         />
         <button
           v-else
           type="button"
           class="oa-btn"
-          :class="action.danger ? 'danger' : 'primary'"
+          :class="action.danger ? 'oa-btn-danger' : 'primary'"
           :disabled="!!busy || missingRequired(visibleControls(action.controls ?? [], drafts[action.id] ?? {}), drafts[action.id] ?? {})"
           @click="run(action)"
         >{{ busy === action.id ? t('loading') : action.label }}</button>

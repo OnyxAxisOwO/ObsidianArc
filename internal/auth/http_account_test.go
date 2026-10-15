@@ -122,3 +122,29 @@ func TestChangePasswordHandsTheBrowserItsNewCookie(t *testing.T) {
 		t.Errorf("the session of an in-process change survived it: %v", err)
 	}
 }
+
+// A wrong current password is a coded 400, the answer the profile and
+// two-factor paths give for the same refusal. It was a bare 401: the page could
+// not translate it, and a 401 reads as a lost session to anything that treats
+// it as one.
+func TestChangePasswordRefusesAWrongCurrentPasswordWithACode(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	_, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &Handlers{service: f.auth}
+	request := httptest.NewRequest(http.MethodPost, "/api/profile/password",
+		strings.NewReader(`{"current_password":"not-the-password","new_password":"a-better-password"}`))
+	request.AddCookie(&http.Cookie{Name: f.auth.CookieName(), Value: token})
+	response := httptest.NewRecorder()
+	f.auth.Attach()(RequireUser(httpx.Wrap(handler.changePassword))).ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("wrong current password = %d %s, want 400", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"current_password_wrong"`) {
+		t.Fatalf("wrong current password carries no code: %s", response.Body.String())
+	}
+}

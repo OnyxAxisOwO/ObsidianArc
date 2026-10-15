@@ -136,7 +136,7 @@ func init() {
 			ZH: "在这条反馈的对话里追加你的回复，和面板里的回复框一样。走的是同一个接口，所以站点如果开了提交反馈的人机验证，这条命令也会被拒绝：那时请到面板里回复。",
 		},
 		Args:       []Arg{{Name: "feedback-id", Hint: Text{EN: "from feedback mine", ZH: "来自 feedback mine"}, Required: true}},
-		Flags:      []Flag{{Name: "--body", Hint: Text{EN: "what you want to add, required", ZH: "要补充的内容，必填"}, Value: "TEXT"}},
+		Flags:      []Flag{{Name: "--body", Hint: Text{EN: "what you want to add, required", ZH: "要补充的内容，必填"}, Value: "TEXT", Sensitive: true}},
 		Examples:   []string{`feedback answer 01H9Z… --body "It happens on Firefox too."`, `feedback answer 01H9Z… --body "Fixed, thanks."`},
 		SeeAlso:    []string{"feedback thread"},
 		Permission: Anyone,

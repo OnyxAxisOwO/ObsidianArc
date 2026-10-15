@@ -63,6 +63,26 @@ async function mountSettings(onError?: (error: unknown) => void): Promise<void> 
   app.mount(host);
   await settle();
 }
+/** A drop onto the logo preview, carrying one file, as the browser would deliver it. */
+function dropFile(target: HTMLElement, file: File): void {
+  const event = new Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'dataTransfer', { value: { files: [file] } });
+  target.dispatchEvent(event);
+}
+/** Captures the file input the next picker creates, so the test can choose a file in it. */
+function captureInput(): () => HTMLInputElement {
+  const real = document.createElement.bind(document);
+  let input: HTMLInputElement | null = null;
+  vi.spyOn(document, 'createElement').mockImplementation((tag: string, options?: ElementCreationOptions) => {
+    const element = real(tag, options);
+    if (tag === 'input') input = element as HTMLInputElement;
+    return element;
+  });
+  return () => {
+    if (!input) throw new Error('no picker was created');
+    return input;
+  };
+}
 
 describe('admin settings payload', () => {
   it('submits only the key it changed when enabling API keys', async () => {
@@ -116,6 +136,29 @@ describe('admin settings payload', () => {
     expect(save).toHaveBeenCalledWith({ 'chat.max_turns': expected });
     expectSaveState(false);
     expect(button(actions, t('saved')).disabled).toBe(false);
+  });
+
+  it('submits the archive switch when an administrator turns it off', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture, 'chat.allow_archive': 'false' } });
+    await mountSettings();
+    expectSaveState(false);
+
+    await selectCategory(t('controlChat'));
+    const field = [...host.querySelectorAll<HTMLElement>('#secChat .oa-switch-field')].find((node) => node.textContent?.includes(t('chatAllowArchive')));
+    const archive = field?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    if (!archive) throw new Error('Missing archive switch');
+    expect(archive.checked).toBe(true);
+    archive.click();
+    await nextTick();
+    expect(archive.checked).toBe(false);
+    expectSaveState(true);
+
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith({ 'chat.allow_archive': 'false' });
+    expectSaveState(false);
   });
 
   it('updates auth card position setting', async () => {
@@ -223,5 +266,109 @@ describe('the site theme card', () => {
     const card = host.querySelector<HTMLElement>('#secSiteTheme');
     expect(card?.querySelectorAll('.oa-site-tints .oa-background-choice')).toHaveLength(6);
     expect(card?.textContent).not.toContain('native code');
+  });
+});
+
+describe('a retry after a failed first load', () => {
+  // The baseline is what makes Save meaningful. Until the reload lands there is
+  // none, so every default would read as an edit and be written back.
+  it('keeps Save disabled until the reload has a baseline', async () => {
+    let finishReload: (value: { settings: Record<string, string> }) => void = () => {};
+    const reloaded = new Promise<{ settings: Record<string, string> }>((resolve) => { finishReload = resolve; });
+    vi.spyOn(adminApi, 'settings')
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockReturnValueOnce(reloaded);
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture } });
+    await mountSettings();
+    expect(host.textContent).toContain(t('couldNotLoad'));
+
+    button(host, t('tryAgain')).click();
+    await settle();
+    expect(button(actions, t('save')).disabled).toBe(true);
+    expect(actions.querySelector('.oa-control-save-state')).toBeNull();
+
+    finishReload({ settings: { ...settingsFixture } });
+    await settle();
+    expect(button(actions, t('save')).disabled).toBe(false);
+    expectSaveState(false);
+    expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe('a value past the server limit', () => {
+  // The server refuses the whole save over one value this long, so the other
+  // changes on the form would fail with it. The form says so and does not send.
+  it('shows the overrun and refuses to save it', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture, 'landing.mode': 'intro' } });
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture } });
+    await mountSettings();
+    expectSaveState(false);
+
+    const intro = [...host.querySelectorAll<HTMLLabelElement>('#secLanding label.oa-field')]
+      .find((label) => label.querySelector('.oa-field-label')?.textContent === t('landingIntroHTML'));
+    const area = intro?.querySelector<HTMLTextAreaElement>('textarea');
+    expect(area).toBeTruthy();
+    // Three bytes a character: 9,000 bytes, past the 8 KiB the server takes.
+    area!.value = '\u3042'.repeat(3000);
+    area!.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+
+    expect(intro!.textContent).toContain(t('fieldByteCountOver', { used: 9000, limit: 8192 }));
+    expect(area!.getAttribute('aria-invalid')).toBe('true');
+
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-control-flash')?.textContent).toBe(t('settingTooLong'));
+  });
+});
+
+describe('the site logo', () => {
+  // The preview takes clicks and drops while an upload is still in flight. A
+  // second upload then races the first, and whichever response arrives last
+  // decides the image on the page, which need not be the one the server kept.
+  it('does not start a second upload while one is in flight', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    let finishUpload: (value: { url: string; updated_at: number }) => void = () => {};
+    const upload = vi.spyOn(adminApi, 'uploadSiteLogo').mockReturnValue(
+      new Promise((resolve) => { finishUpload = resolve; }),
+    );
+    await mountSettings();
+
+    const preview = host.querySelector<HTMLElement>('.oa-logo-preview')!;
+    dropFile(preview, new File(['first'], 'first.png', { type: 'image/png' }));
+    dropFile(preview, new File(['second'], 'second.png', { type: 'image/png' }));
+    // The first drop reads its file asynchronously, and that read has to finish
+    // before the uploads are counted. The second drop returns at the guard
+    // without reading anything.
+    await vi.waitFor(() => expect(upload).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(1000);
+    await nextTick();
+    expect(upload).toHaveBeenCalledTimes(1);
+
+    finishUpload({ url: '/logo-first.png', updated_at: 1 });
+    await settle();
+    expect(preview.querySelector('img')?.getAttribute('src')).toBe('/logo-first.png');
+    expect(button(host, t('siteLogoReplace')).disabled).toBe(false);
+  });
+});
+
+describe('importing a settings file', () => {
+  // The import endpoint reads at most 256 KiB. The picker used to accept four
+  // times that and send the file anyway, where it came back as a generic
+  // decode failure; now it refuses it with the message a too-large file gets.
+  it('refuses a file the endpoint would not read', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    const importer = vi.spyOn(adminApi, 'importSettings').mockResolvedValue({ settings: {}, applied: 0, skipped: [] });
+    await mountSettings();
+
+    const picker = captureInput();
+    button(host, t('importSettings')).click();
+    const file = new File([JSON.stringify({ 'site.name': 'a'.repeat(300 * 1024) })], 'settings.json', { type: 'application/json' });
+    Object.defineProperty(picker(), 'files', { value: [file], configurable: true });
+    picker().dispatchEvent(new Event('change'));
+
+    await vi.waitFor(() => expect(host.querySelector('.oa-control-flash')?.textContent).toBe(t('importFileTooLarge')));
+    expect(importer).not.toHaveBeenCalled();
   });
 });

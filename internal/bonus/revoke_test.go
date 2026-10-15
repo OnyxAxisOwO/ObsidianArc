@@ -99,25 +99,28 @@ func TestRevokeReportsWhatItRemovedWhenASpendCommitsMidRevoke(t *testing.T) {
 // way of finishing may turn the revoked grant back into credit an account can
 // spend, because the revoke is what took that credit away.
 func TestAHoldFinishingAfterARevokeReopensNothing(t *testing.T) {
+	// Each finish reports how much of the cost the grant covered. For a revoked
+	// grant that is nothing, whichever of the two happens first: the cost goes to
+	// the windows, and the grant is not charged past what it was cut to.
 	finishes := []struct {
 		name   string
-		finish func(f *fixture, holds []Hold) error
+		finish func(f *fixture, holds []Hold) (covered float64, err error)
 	}{
-		{"refund", func(f *fixture, holds []Hold) error {
-			return f.store.Refund(context.Background(), f.db, holds)
+		{"refund", func(f *fixture, holds []Hold) (float64, error) {
+			return 0, f.store.Refund(context.Background(), f.db, holds)
 		}},
-		{"settle, then refund", func(f *fixture, holds []Hold) error {
-			if _, err := f.store.Settle(context.Background(), f.db, holds, 1, false); err != nil {
-				return err
+		{"settle, then refund", func(f *fixture, holds []Hold) (float64, error) {
+			covered, err := f.store.Settle(context.Background(), f.db, holds, 1, false)
+			if err != nil {
+				return 0, err
 			}
-			return f.store.Refund(context.Background(), f.db, holds)
+			return covered, f.store.Refund(context.Background(), f.db, holds)
 		}},
-		{"refund, then settle", func(f *fixture, holds []Hold) error {
+		{"refund, then settle", func(f *fixture, holds []Hold) (float64, error) {
 			if err := f.store.Refund(context.Background(), f.db, holds); err != nil {
-				return err
+				return 0, err
 			}
-			_, err := f.store.Settle(context.Background(), f.db, holds, 1, true)
-			return err
+			return f.store.Settle(context.Background(), f.db, holds, 1, true)
 		}},
 	}
 	for _, c := range finishes {
@@ -140,8 +143,19 @@ func TestAHoldFinishingAfterARevokeReopensNothing(t *testing.T) {
 				t.Fatalf("revoke removed %v (%v), want the 8 that were not held", revoked, err)
 			}
 
-			if err := c.finish(f, holds); err != nil {
+			covered, err := c.finish(f, holds)
+			if err != nil {
 				t.Fatalf("finishing the turn: %v", err)
+			}
+			if !near(covered, 0) {
+				t.Fatalf("the revoked grant covered %v of the cost, want nothing", covered)
+			}
+			var amount, used float64
+			if err := f.db.QueryRow(ctx, `SELECT amount, used FROM bonus_grants WHERE id = ?`, rows[0].ID).Scan(&amount, &used); err != nil {
+				t.Fatal(err)
+			}
+			if used > amount+1e-9 {
+				t.Fatalf("revoked grant is used %v past its amount %v", used, amount)
 			}
 			spent, err := f.take(t, a.ID, "m", 5, Priority)
 			if err != nil {

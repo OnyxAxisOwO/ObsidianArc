@@ -43,10 +43,31 @@ func hasPermission(account user.User, permissions string) bool {
 // alone judged such a key by the default grant instead of the one its package
 // declared.
 func settingPermission(s *settings.Service, key string) string {
-	if d, ok := s.LookupDefinition(key); ok && d.Permission != "" {
+	d, ok := s.LookupDefinition(key)
+	if ok && d.Permission != "" {
 		return d.Permission
 	}
-	return corePermission(key)
+	core := corePermission(key)
+	// A package installed at run time may name a key with a core prefix, such as
+	// health., and the prefix would hand it to a core grant that was never meant
+	// to reach a package's settings. Without a declared grant it is the super
+	// administrator's. Compiled-in plugins keep the prefix rule their definitions
+	// are documented to follow.
+	if ok && core != "settings" && !compiledIn(key) {
+		return "super_admin"
+	}
+	return core
+}
+
+// compiledIn reports whether key was defined by a plugin compiled into the
+// binary, as opposed to one installed while the server runs.
+func compiledIn(key string) bool {
+	for _, d := range settings.AllDefinitions() {
+		if d.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // CanWriteSetting is whether account may read and write one setting, by the
@@ -67,6 +88,11 @@ func (h *Handlers) settingPermission(key string) string {
 // with them an issuer of its holder's own choosing could vouch for anybody's
 // address — so they were one sign-in from anybody's account — and the
 // stored client secret would be posted to wherever the token URL pointed.
+//
+// The GitHub and Google client credentials are here for the same reason as the
+// OIDC ones: a delegate who could swap them in signs people in to an OAuth app
+// the delegate owns. Their endpoints are fixed in code, so only the identity
+// of the app is at stake, which is why they are not listed with the URLs.
 var superAdminSettings = map[string]bool{
 	settings.OAuthOIDCIssuer:       true,
 	settings.OAuthOIDCClientID:     true,
@@ -76,6 +102,10 @@ var superAdminSettings = map[string]bool{
 	settings.OAuthOIDCUserInfoURL:  true,
 	settings.OAuthOIDCTrustEmail:   true,
 	settings.OAuthLinkByEmail:      true,
+	settings.OAuthGitHubID:         true,
+	settings.OAuthGitHubSecret:     true,
+	settings.OAuthGoogleID:         true,
+	settings.OAuthGoogleSecret:     true,
 }
 
 func corePermission(key string) string {

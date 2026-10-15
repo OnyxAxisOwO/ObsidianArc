@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -52,6 +54,7 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 		if err := h.quota.ResetAll(r.Context()); err != nil {
 			return httpx.Internal(err)
 		}
+		h.forgetAllowanceRankings()
 		h.notifyQuotaReset(r.Context(), notify.Notification{Audience: notify.AudienceAll})
 		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": total})
 
@@ -73,6 +76,7 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 		if err := h.quota.ResetGroup(r.Context(), body.ID); err != nil {
 			return httpx.Internal(err)
 		}
+		h.forgetAllowanceRankings()
 		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": total})
 
 	case "user":
@@ -85,6 +89,7 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 		if err := h.quota.Reset(r.Context(), []string{body.ID}); err != nil {
 			return httpx.Internal(err)
 		}
+		h.forgetAllowanceRankings()
 		h.notifyQuotaReset(r.Context(), notify.Notification{Audience: notify.AudienceUser, UserID: body.ID})
 		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": 1})
 	}
@@ -118,6 +123,12 @@ func (h *Handlers) getSummaryCache(key string) map[string]any {
 func (h *Handlers) setSummaryCache(key string, data map[string]any) {
 	h.usageCacheMu.Lock()
 	defer h.usageCacheMu.Unlock()
+	h.putSummaryLocked(key, data)
+}
+
+// putSummaryLocked is setSummaryCache for a caller that already holds
+// usageCacheMu, so a check and the insert it guards can share one lock.
+func (h *Handlers) putSummaryLocked(key string, data map[string]any) {
 	if h.usageSummaryCache == nil {
 		h.usageSummaryCache = make(map[string]*cachedUsageSummary)
 	}
@@ -129,6 +140,7 @@ func (h *Handlers) setSummaryCache(key string, data map[string]any) {
 			}
 		}
 	}
+	h.capAllowanceRankingsLocked(key)
 	h.usageSummaryCache[key] = &cachedUsageSummary{
 		createdAt: now,
 		data:      data,
@@ -552,13 +564,13 @@ func (h *Handlers) listPolicies(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 	actor := auth.MustUser(r.Context())
+	admins, err := h.users.AdminAccounts(r.Context(), nil)
+	if err != nil {
+		return httpx.Internal(err)
+	}
 	visible := policies[:0]
 	for _, policy := range policies {
-		ok, err := h.policyVisible(r, actor, policy)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-		if ok {
+		if policyVisible(actor, policy, admins) {
 			visible = append(visible, policy)
 		}
 	}
@@ -568,23 +580,19 @@ func (h *Handlers) listPolicies(w http.ResponseWriter, r *http.Request) error {
 // policyVisible is whether the actor may see one limit in a list. canPolicy
 // only says which scopes a grant covers. A users grant does not see the limit
 // on an administrator it may not manage, as the account's own panel does not
-// show it that account's quota (see authorisePolicyScope for writes).
-func (h *Handlers) policyVisible(r *http.Request, actor user.User, policy quota.Policy) (bool, error) {
+// show it that account's quota (see authorisePolicyScope for writes). admins
+// is the list's administrator accounts, read once for the whole list: a limit
+// that names no administrator, including one a deleted account left behind,
+// is visible as it always was.
+func policyVisible(actor user.User, policy quota.Policy, admins map[string]user.User) bool {
 	if !canPolicy(actor, policy.Scope) {
-		return false, nil
+		return false
 	}
 	if policy.Scope != quota.ScopeUser || actor.CanAdmin("usage") {
-		return true, nil
+		return true
 	}
-	target, err := h.users.ByID(r.Context(), nil, policy.ScopeID)
-	if errors.Is(err, user.ErrNotFound) {
-		// A limit left behind by a deleted account names nobody to protect.
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return !target.IsAdmin() || actor.CanManageAdmin(target), nil
+	target, isAdmin := admins[policy.ScopeID]
+	return !isAdmin || actor.CanManageAdmin(target)
 }
 
 // authorisePolicyScope applies the rule every other delegated write to an
@@ -618,6 +626,34 @@ type policyRequest struct {
 	Windows map[quota.Window]quota.Limits `json:"windows"`
 }
 
+// checkPolicyFigures refuses numbers that a limit cannot mean. A negative figure
+// is not a small limit: enforcement reads it as no limit, and at a narrower level
+// it replaces the cap an enclosing level set. Zero is the documented "no limit" for
+// the per-minute override, so it stays valid there. A window at zero would show
+// its figure in the badge and enforce nothing, so a window figure must be positive
+// or left blank.
+func checkPolicyFigures(rpm, tpm *int64, windows map[quota.Window]quota.Limits) error {
+	if rpm != nil && *rpm < 0 {
+		return httpx.BadRequest("The requests-per-minute limit cannot be negative.")
+	}
+	if tpm != nil && *tpm < 0 {
+		return httpx.BadRequest("The tokens-per-minute limit cannot be negative.")
+	}
+	for _, window := range quota.AllowanceWindows {
+		limits := windows[window]
+		if limits.Requests != nil && *limits.Requests <= 0 {
+			return httpx.BadRequest("The %s request limit must be greater than zero, or blank for none.", string(window))
+		}
+		if limits.Tokens != nil && *limits.Tokens <= 0 {
+			return httpx.BadRequest("The %s token limit must be greater than zero, or blank for none.", string(window))
+		}
+		if limits.Credits != nil && *limits.Credits <= 0 {
+			return httpx.BadRequest("The %s credit limit must be greater than zero, or blank for none.", string(window))
+		}
+	}
+	return nil
+}
+
 // savePolicy writes the limits at one scope. A policy is replaced wholesale
 // rather than patched: the form always submits every field, and a partial
 // update of a structure whose whole meaning is "which fields are set" would
@@ -649,20 +685,45 @@ func (h *Handlers) savePolicy(w http.ResponseWriter, r *http.Request) error {
 			return httpx.BadRequest("Unknown window %q.", string(window))
 		}
 	}
+	if err := checkPolicyFigures(body.RPM, body.TPM, body.Windows); err != nil {
+		return err
+	}
 
 	if err := h.authorisePolicyScope(r, body.Scope, body.ScopeID, false); err != nil {
 		return err
 	}
-	saved, err := h.quota.Policies().Save(r.Context(), quota.Policy{
-		Scope:   body.Scope,
-		ScopeID: body.ScopeID,
-		RPM:     body.RPM,
-		TPM:     body.TPM,
-		Windows: body.Windows,
+	// A limit on a group that was never created, or has been deleted, is never
+	// resolved for anybody and would sit on the groups page with nothing to
+	// belong to. The check and the write share a transaction under the instance
+	// lock that deleteGroup holds, so a delete cannot land between them and leave
+	// the policy pointing at a group that is gone.
+	var saved quota.Policy
+	err := h.db.Tx(r.Context(), func(tx *database.Tx) error {
+		if body.Scope == quota.ScopeGroup {
+			if err := settings.Lock(r.Context(), tx); err != nil {
+				return err
+			}
+			if _, err := h.groups.ByID(r.Context(), tx, body.ScopeID); err != nil {
+				return translateGroupError(err)
+			}
+		}
+		policy, err := h.quota.Policies().Save(r.Context(), tx, quota.Policy{
+			Scope:   body.Scope,
+			ScopeID: body.ScopeID,
+			RPM:     body.RPM,
+			TPM:     body.TPM,
+			Windows: body.Windows,
+		})
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		saved = policy
+		return nil
 	})
 	if err != nil {
-		return httpx.Internal(err)
+		return err
 	}
+	h.forgetAllowanceRankings()
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"policy": saved})
 }
 
@@ -690,6 +751,7 @@ func (h *Handlers) deletePolicy(w http.ResponseWriter, r *http.Request) error {
 	if err := h.quota.Policies().Delete(r.Context(), scope, scopeID); err != nil {
 		return httpx.Internal(err)
 	}
+	h.forgetAllowanceRankings()
 	return httpx.NoContent(w)
 }
 

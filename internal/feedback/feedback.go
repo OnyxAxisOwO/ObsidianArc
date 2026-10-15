@@ -26,6 +26,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
 // Kind is what the reader is telling us: something is broken, or something
@@ -225,12 +226,14 @@ type Input struct {
 	Body     string
 }
 
+// The text is cleaned before it is counted or stored: PostgreSQL refuses a NUL
+// byte, and the insert would fail as a 500 with the author's words lost.
 func validate(in Input) (Input, error) {
-	in.Title = strings.TrimSpace(in.Title)
+	in.Title = strings.TrimSpace(text.Clean(in.Title))
 	if in.Title == "" || utf8.RuneCountInString(in.Title) > MaxTitleChars {
 		return Input{}, ErrInvalidTitle
 	}
-	in.Body = strings.TrimSpace(in.Body)
+	in.Body = strings.TrimSpace(text.Clean(in.Body))
 	if in.Body == "" || utf8.RuneCountInString(in.Body) > MaxBodyChars {
 		return Input{}, ErrInvalidBody
 	}
@@ -359,9 +362,11 @@ func (f Filter) where() (string, []any) {
 	}
 	if search := strings.TrimSpace(f.Search); search != "" {
 		// LOWER(...) LIKE rather than ILIKE: one of the two engines here has
-		// never heard of ILIKE, and the migration lint says so.
-		pattern := "%" + strings.ToLower(search) + "%"
-		clauses = append(clauses, "(LOWER(f.title) LIKE ? OR LOWER(f.body) LIKE ? OR LOWER(u.username) LIKE ?)")
+		// never heard of ILIKE, and the migration lint says so. The typed text
+		// is a literal, so its wildcards are escaped: a search for "_" must
+		// not match every title, and the count has to agree with the list.
+		pattern := "%" + database.EscapeLike(strings.ToLower(search)) + "%"
+		clauses = append(clauses, `(LOWER(f.title) LIKE ? ESCAPE '\' OR LOWER(f.body) LIKE ? ESCAPE '\' OR LOWER(u.username) LIKE ? ESCAPE '\')`)
 		args = append(args, pattern, pattern, pattern)
 	}
 	if len(clauses) == 0 {
@@ -415,10 +420,18 @@ func (s *Store) List(ctx context.Context, q database.Queryer, filter Filter) (re
 // ListFor is what an author sees: their own reports and their standing, so
 // sending one twice because the first appeared to vanish is not a thing that
 // happens.
+//
+// The newest fifty, plus every report still holding an answer the author has
+// not opened. The account-menu dot counts all of those, and the only way to
+// open one is to pick it from this list, so one older than the fifty would
+// keep the dot lit with no way to clear it.
 func (s *Store) ListFor(ctx context.Context, q database.Queryer, userID string) ([]Feedback, error) {
 	rows, err := s.pick(q).Query(ctx,
-		`SELECT `+columns+` FROM feedback f WHERE f.user_id = ? ORDER BY f.created_at DESC LIMIT 50`,
-		userID)
+		`SELECT `+columns+` FROM feedback f
+		 WHERE f.user_id = ? AND (f.author_unread = ? OR f.id IN (
+		   SELECT id FROM feedback WHERE user_id = ? ORDER BY created_at DESC LIMIT 50))
+		 ORDER BY f.created_at DESC`,
+		userID, true, userID)
 	if err != nil {
 		return nil, fmt.Errorf("feedback: list for author: %w", err)
 	}
@@ -472,19 +485,17 @@ type ReplyInput struct {
 // against the same failure: two replies arriving together, both seeing the
 // last free slot.
 func (s *Store) AddReply(ctx context.Context, in ReplyInput) (Reply, error) {
-	body := strings.TrimSpace(in.Body)
+	body := strings.TrimSpace(text.Clean(in.Body))
 	if body == "" || utf8.RuneCountInString(body) > MaxBodyChars {
 		return Reply{}, ErrInvalidBody
 	}
 
-	now := time.Now().UnixMilli()
 	record := Reply{
 		ID:         id.New(),
 		FeedbackID: in.FeedbackID,
 		UserID:     in.UserID,
 		FromStaff:  in.FromStaff,
 		Body:       body,
-		CreatedAt:  now,
 	}
 
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -516,14 +527,26 @@ func (s *Store) AddReply(ctx context.Context, in ReplyInput) (Reply, error) {
 		}
 
 		var count int
+		var latest int64
 		if err := tx.QueryRow(ctx,
-			`SELECT COUNT(*) FROM feedback_replies WHERE feedback_id = ?`, in.FeedbackID).Scan(&count); err != nil {
+			`SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM feedback_replies WHERE feedback_id = ?`,
+			in.FeedbackID).Scan(&count, &latest); err != nil {
 			return fmt.Errorf("feedback: count replies: %w", err)
 		}
 		if count >= MaxRepliesPerThread {
 			return ErrThreadFull
 		}
 
+		// Stamped once the row lock is held, and never at or before the
+		// thread's latest turn: two turns in one millisecond would otherwise
+		// tie, and a tie has no order the conversation can be read back in.
+		// Stamped before the lock, a turn that queued behind another could
+		// also commit with an older time than the one that committed first.
+		now := time.Now().UnixMilli()
+		if now <= latest {
+			now = latest + 1
+		}
+		record.CreatedAt = now
 		if _, err := tx.Exec(ctx, `INSERT INTO feedback_replies
 			(id, feedback_id, user_id, from_staff, body, created_at)
 			VALUES (?, ?, ?, ?, ?, ?)`,
@@ -567,7 +590,7 @@ func (s *Store) Replies(ctx context.Context, q database.Queryer, feedbackID stri
 	rows, err := s.pick(q).Query(ctx,
 		`SELECT `+replyColumns+`, u.username, u.nickname
 		 FROM feedback_replies p JOIN users u ON u.id = p.user_id
-		 WHERE p.feedback_id = ? ORDER BY p.created_at`, feedbackID)
+		 WHERE p.feedback_id = ? ORDER BY p.created_at, p.id`, feedbackID)
 	if err != nil {
 		return nil, fmt.Errorf("feedback: replies: %w", err)
 	}
@@ -605,20 +628,53 @@ func (s *Store) Thread(ctx context.Context, q database.Queryer, feedbackID, owne
 	return Thread{Feedback: record, Replies: replies}, nil
 }
 
-// MarkSeen clears one side's unread flag, which is what opening a thread
-// means. Idempotent, and it never touches the other side's.
-func (s *Store) MarkSeen(ctx context.Context, feedbackID string, staff bool) error {
-	column := "author_unread"
-	if staff {
-		column = "operator_unread"
+// OpenThread reads one thread and clears the unread flag of the side reading
+// it, in one transaction. As two statements, a reply that committed between the
+// read and the clear set its flag and was then cleared without the reader ever
+// receiving it. The thread row lock is the one AddReply takes, so a reply either
+// commits before the read and is in the response, or after the clear and leaves
+// its flag set. staff selects the operator's flag; ownerID scopes the read as
+// Thread does, and "" is the operator's unscoped view.
+func (s *Store) OpenThread(ctx context.Context, feedbackID, ownerID string, staff bool) (Thread, error) {
+	var thread Thread
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		locked, err := tx.Exec(ctx,
+			`UPDATE feedback SET updated_at = updated_at WHERE id = ?`, feedbackID)
+		if err != nil {
+			return fmt.Errorf("feedback: lock thread: %w", err)
+		}
+		if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
+			return ErrNotFound
+		}
+
+		thread, err = s.Thread(ctx, tx, feedbackID, ownerID)
+		if err != nil {
+			return err
+		}
+		unread, column := thread.Feedback.AuthorUnread, "author_unread"
+		if staff {
+			unread, column = thread.Feedback.OperatorUnread, "operator_unread"
+		}
+		if !unread {
+			return nil
+		}
+		// updated_at stays as it is: reading is not a change, and the operator's
+		// list shows that column.
+		if _, err := tx.Exec(ctx,
+			`UPDATE feedback SET `+column+` = ? WHERE id = ?`, false, feedbackID); err != nil {
+			return fmt.Errorf("feedback: mark seen: %w", err)
+		}
+		if staff {
+			thread.Feedback.OperatorUnread = false
+		} else {
+			thread.Feedback.AuthorUnread = false
+		}
+		return nil
+	})
+	if err != nil {
+		return Thread{}, err
 	}
-	// updated_at is deliberately left alone: reading something is not a
-	// change to it, and the operator's list shows that column.
-	if _, err := s.db.Exec(ctx,
-		`UPDATE feedback SET `+column+` = ? WHERE id = ?`, false, feedbackID); err != nil {
-		return fmt.Errorf("feedback: mark seen: %w", err)
-	}
-	return nil
+	return thread, nil
 }
 
 // UnreadFor is the dot on one reader's account menu: how many of their own
@@ -636,16 +692,69 @@ func (s *Store) UnreadFor(ctx context.Context, q database.Queryer, userID string
 
 // DeleteReply removes one turn. For spam inside an otherwise real thread —
 // deleting the whole report is the other, blunter answer.
+//
+// The unread flags describe the newest turn, so only deleting that turn moves
+// them. Deleting an older one leaves the conversation's last word where it was.
 func (s *Store) DeleteReply(ctx context.Context, feedbackID, replyID string) error {
-	result, err := s.db.Exec(ctx,
-		`DELETE FROM feedback_replies WHERE id = ? AND feedback_id = ?`, replyID, feedbackID)
-	if err != nil {
-		return fmt.Errorf("feedback: delete reply: %w", err)
-	}
-	if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		locked, err := tx.Exec(ctx,
+			`UPDATE feedback SET updated_at = updated_at WHERE id = ?`, feedbackID)
+		if err != nil {
+			return fmt.Errorf("feedback: lock thread: %w", err)
+		}
+		if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
+			return ErrNotFound
+		}
+
+		var newestID string
+		var newestStaff bool
+		if err := tx.QueryRow(ctx,
+			`SELECT id, from_staff FROM feedback_replies WHERE feedback_id = ?
+			 ORDER BY created_at DESC, id DESC LIMIT 1`, feedbackID).Scan(&newestID, &newestStaff); err != nil {
+			if database.IsNotFound(err) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("feedback: read newest reply: %w", err)
+		}
+
+		result, err := tx.Exec(ctx,
+			`DELETE FROM feedback_replies WHERE id = ? AND feedback_id = ?`, replyID, feedbackID)
+		if err != nil {
+			return fmt.Errorf("feedback: delete reply: %w", err)
+		}
+		if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected == 0 {
+			return ErrNotFound
+		}
+		if newestID != replyID {
+			return nil
+		}
+
+		// Whoever wrote the deleted turn had read everything before it, as
+		// AddReply assumes of its writer. If the turn now last was written by
+		// the same side, the other side is owed a look at it, which is what
+		// AddReply would have set. If it was written by the other side, the
+		// deleted turn's writer has read it and nothing is owed to either
+		// side. A report with no turns left has both flags clear, as Create
+		// leaves it.
+		var lastStaff bool
+		author, operator := false, false
+		err = tx.QueryRow(ctx,
+			`SELECT from_staff FROM feedback_replies WHERE feedback_id = ?
+			 ORDER BY created_at DESC, id DESC LIMIT 1`, feedbackID).Scan(&lastStaff)
+		switch {
+		case err == nil && lastStaff == newestStaff:
+			author, operator = newestStaff, !newestStaff
+		case err != nil && !database.IsNotFound(err):
+			return fmt.Errorf("feedback: read last reply: %w", err)
+		}
+
+		if _, err := tx.Exec(ctx,
+			`UPDATE feedback SET author_unread = ?, operator_unread = ?, updated_at = ? WHERE id = ?`,
+			author, operator, time.Now().UnixMilli(), feedbackID); err != nil {
+			return fmt.Errorf("feedback: recompute unread: %w", err)
+		}
+		return nil
+	})
 }
 
 // SetStatus is the whole of what an operator can change. The report itself

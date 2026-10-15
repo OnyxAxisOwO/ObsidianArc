@@ -36,6 +36,19 @@ import (
 // not go on describing a device forever.
 const deviceCookieDays = 400
 
+// A password holder can clear cookies and sign in again, and each sign-in is a
+// device this account has not seen: without a cap, that is one mail and one
+// security event per sign-in, for as long as they like. Past the cap the row is
+// still written, with first_seen set to now, so it counts toward the window it
+// arrived in and a sustained flood stays suppressed for as long as it lasts.
+// The account's own first device counts too while it is recent, so a brand-new
+// account gets one notice fewer in its first hour; a separate column to exclude
+// it would be a migration for that alone.
+const (
+	newDeviceNoticesPerWindow = 5
+	newDeviceNoticeWindow     = time.Hour
+)
+
 // DeviceCookieName is the session cookie's name with a suffix, the way the
 // remembered-browser cookie is: one cookie jar, three related names, and no
 // risk of a collision with anything an operator names a session cookie.
@@ -157,6 +170,19 @@ func (s *Service) recordDevice(
 		// The account's very first device is not "new" — there was nothing
 		// on record yet for it to differ from.
 		newDevice = !learn && priorDevices > 0 && alreadyKnown == 0
+		if newDevice {
+			// Counted under the account's lock, so two sign-ins at once cannot
+			// both see the window one short.
+			var recent int64
+			if err := tx.QueryRow(ctx,
+				`SELECT COUNT(*) FROM user_devices WHERE user_id = ? AND first_seen > ?`,
+				account.ID, now-newDeviceNoticeWindow.Milliseconds()).Scan(&recent); err != nil {
+				return fmt.Errorf("auth: count recent devices: %w", err)
+			}
+			if recent >= newDeviceNoticesPerWindow {
+				newDevice = false
+			}
+		}
 
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO user_devices (user_id, device_id, first_seen, last_seen, last_ip, user_agent)

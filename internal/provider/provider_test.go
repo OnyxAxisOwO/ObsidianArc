@@ -369,7 +369,7 @@ func resolvedKeys(t *testing.T, store *Store, providerID string, calls int) map[
 // repeat, and sequential rotation takes them in turn.
 func TestSeveralKeysAreTakenInTurn(t *testing.T) {
 	store := newStore(t)
-	record := newKeyed(t, store, "sk-first-1111\n  sk-second-2222 \r\n\nsk-third-3333\nsk-first-1111", RotateSequential)
+	record := newKeyed(t, store, "sk-test-key-first-1111\n  sk-test-key-second-2222 \r\n\nsk-test-key-third-3333\nsk-test-key-first-1111", RotateSequential)
 
 	if want := []string{"••••1111", "••••2222", "••••3333"}; !slices.Equal(record.APIKeyHints, want) {
 		t.Fatalf("hints = %v, want %v", record.APIKeyHints, want)
@@ -390,7 +390,7 @@ func TestSeveralKeysAreTakenInTurn(t *testing.T) {
 		}
 		order = append(order, resolved.APIKey)
 	}
-	want := []string{"sk-first-1111", "sk-second-2222", "sk-third-3333", "sk-first-1111", "sk-second-2222", "sk-third-3333"}
+	want := []string{"sk-test-key-first-1111", "sk-test-key-second-2222", "sk-test-key-third-3333", "sk-test-key-first-1111", "sk-test-key-second-2222", "sk-test-key-third-3333"}
 	if !slices.Equal(order, want) {
 		t.Fatalf("keys taken = %v, want %v", order, want)
 	}
@@ -400,7 +400,7 @@ func TestSeveralKeysAreTakenInTurn(t *testing.T) {
 // exactly as often as the others, however the calls interleave.
 func TestSequentialRotationIsEvenUnderConcurrentCalls(t *testing.T) {
 	store := newStore(t)
-	record := newKeyed(t, store, "sk-a-1111\nsk-b-2222\nsk-c-3333", RotateSequential)
+	record := newKeyed(t, store, "sk-test-key-a-1111\nsk-test-key-b-2222\nsk-test-key-c-3333", RotateSequential)
 	sealed := sealedOf(t, store, record.ID)
 
 	var (
@@ -425,7 +425,7 @@ func TestSequentialRotationIsEvenUnderConcurrentCalls(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	for _, key := range []string{"sk-a-1111", "sk-b-2222", "sk-c-3333"} {
+	for _, key := range []string{"sk-test-key-a-1111", "sk-test-key-b-2222", "sk-test-key-c-3333"} {
 		if seen[key] != 100 {
 			t.Fatalf("calls per key = %v, want 100 each", seen)
 		}
@@ -444,9 +444,9 @@ func sealedOf(t *testing.T, store *Store, providerID string) []byte {
 
 func TestRandomRotationOnlyDrawsStoredKeys(t *testing.T) {
 	store := newStore(t)
-	record := newKeyed(t, store, "sk-a-1111\nsk-b-2222", RotateRandom)
+	record := newKeyed(t, store, "sk-test-key-a-1111\nsk-test-key-b-2222", RotateRandom)
 	seen := resolvedKeys(t, store, record.ID, 200)
-	if len(seen) != 2 || seen["sk-a-1111"] == 0 || seen["sk-b-2222"] == 0 {
+	if len(seen) != 2 || seen["sk-test-key-a-1111"] == 0 || seen["sk-test-key-b-2222"] == 0 {
 		t.Fatalf("random draws = %v", seen)
 	}
 }
@@ -456,11 +456,11 @@ func TestRandomRotationOnlyDrawsStoredKeys(t *testing.T) {
 func TestAnEditKeepsSomeKeysAndAddsOthers(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()
-	record := newKeyed(t, store, "sk-a-1111\nsk-b-2222\nsk-c-3333", RotateSequential)
+	record := newKeyed(t, store, "sk-test-key-a-1111\nsk-test-key-b-2222\nsk-test-key-c-3333", RotateSequential)
 
 	positions := []int{0, 2}
 	updated, err := store.Update(ctx, record.ID, Update{
-		KeepKeys: &positions, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-d-4444"},
+		KeepKeys: &positions, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-test-key-d-4444"},
 	}, false)
 	if err != nil {
 		t.Fatalf("keep two, add one: %v", err)
@@ -469,7 +469,7 @@ func TestAnEditKeepsSomeKeysAndAddsOthers(t *testing.T) {
 		t.Fatalf("hints = %v, want %v", updated.APIKeyHints, want)
 	}
 	seen := resolvedKeys(t, store, record.ID, 3)
-	if len(seen) != 3 || seen["sk-b-2222"] != 0 {
+	if len(seen) != 3 || seen["sk-test-key-b-2222"] != 0 {
 		t.Fatalf("keys in use = %v", seen)
 	}
 
@@ -489,7 +489,7 @@ func TestAnEditKeepsSomeKeysAndAddsOthers(t *testing.T) {
 	}
 
 	// Adding with no keep list keeps every key there is.
-	added, err := store.Update(ctx, record.ID, Update{AddKeys: []string{"sk-e-5555"}}, false)
+	added, err := store.Update(ctx, record.ID, Update{AddKeys: []string{"sk-test-key-e-5555"}}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,22 +513,22 @@ func TestAnEditKeepsSomeKeysAndAddsOthers(t *testing.T) {
 func TestKeptKeysDoNotFollowANewBaseURL(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()
-	record := newKeyed(t, store, "sk-a-1111\nsk-b-2222", RotateSequential)
+	record := newKeyed(t, store, "sk-test-key-a-1111\nsk-test-key-b-2222", RotateSequential)
 
 	moved := "https://elsewhere.example.com/v1"
 	first := []int{0}
 	if _, err := store.Update(ctx, record.ID, Update{
-		BaseURL: &moved, KeepKeys: &first, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-new-9999"},
+		BaseURL: &moved, KeepKeys: &first, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-test-key-new-9999"},
 	}, true); !errors.Is(err, ErrKeyNeededForMove) {
 		t.Fatalf("move keeping a key: err = %v, want ErrKeyNeededForMove", err)
 	}
-	if _, err := store.Update(ctx, record.ID, Update{BaseURL: &moved, AddKeys: []string{"sk-new-9999"}}, true); !errors.Is(err, ErrKeyNeededForMove) {
+	if _, err := store.Update(ctx, record.ID, Update{BaseURL: &moved, AddKeys: []string{"sk-test-key-new-9999"}}, true); !errors.Is(err, ErrKeyNeededForMove) {
 		t.Fatalf("move keeping every key: err = %v, want ErrKeyNeededForMove", err)
 	}
 
 	none := []int{}
 	updated, err := store.Update(ctx, record.ID, Update{
-		BaseURL: &moved, KeepKeys: &none, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-new-9999"},
+		BaseURL: &moved, KeepKeys: &none, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-test-key-new-9999"},
 	}, true)
 	if err != nil {
 		t.Fatalf("move with only typed keys: %v", err)
@@ -543,7 +543,7 @@ func TestKeptKeysDoNotFollowANewBaseURL(t *testing.T) {
 func TestADuplicateTakesTheKeysItKept(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()
-	source := newKeyed(t, store, "sk-a-1111\nsk-b-2222\nsk-c-3333", RotateRandom)
+	source := newKeyed(t, store, "sk-test-key-a-1111\nsk-test-key-b-2222\nsk-test-key-c-3333", RotateRandom)
 
 	second := []int{1}
 	copied, err := store.Create(ctx, CreateInput{
@@ -553,7 +553,7 @@ func TestADuplicateTakesTheKeysItKept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("duplicate keeping one key: %v", err)
 	}
-	if seen := resolvedKeys(t, store, copied.ID, 3); seen["sk-b-2222"] != 3 {
+	if seen := resolvedKeys(t, store, copied.ID, 3); seen["sk-test-key-b-2222"] != 3 {
 		t.Fatalf("the duplicate resolved %v", seen)
 	}
 
@@ -630,5 +630,24 @@ func TestAStoredConnectionLevelHeaderIsNotSentAfterAll(t *testing.T) {
 	want := map[string]string{"X-Title": "Arc"}
 	if !reflect.DeepEqual(resolved.Headers, want) {
 		t.Fatalf("headers sent = %v, want %v", resolved.Headers, want)
+	}
+}
+
+// The adapter's base-URL sentences are the only validation failures the admin
+// layer shows as they are, so the store has to mark them, and only them.
+func TestABaseURLRefusalIsMarkedAsOne(t *testing.T) {
+	store := newStore(t)
+	_, err := store.Create(context.Background(), CreateInput{
+		Name:    "plain",
+		Kind:    adapter.KindOpenAI,
+		BaseURL: "http://198.51.100.7:8000/v1",
+		APIKey:  "sk-test-key-1234",
+		Enabled: true,
+	}, true)
+	if !errors.Is(err, ErrInvalidBaseURL) {
+		t.Fatalf("plain http to a public address: %v, want ErrInvalidBaseURL", err)
+	}
+	if got := err.Error(); got != "provider: base URL must use https (plain http needs the provider's own opt-in, and is always allowed for localhost)" {
+		t.Errorf("the message changed: %q", got)
 	}
 }

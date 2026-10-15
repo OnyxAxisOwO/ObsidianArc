@@ -2,9 +2,12 @@ package quota
 
 import (
 	"context"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -113,5 +116,103 @@ func TestAnExemptAccountKeepsItsReading(t *testing.T) {
 	}
 	if credits < 1.999 || credits > 2.001 {
 		t.Errorf("credits = %v after two turns of 1, want 2", credits)
+	}
+}
+
+// A reservation is given back once. Release is called from a deferred closure
+// and from the turn that ran it, so nothing stops a second call; a second
+// refund subtracts the reservation again and leaves the window with less than
+// the turn it belongs to.
+func TestAReservationIsGivenBackOnce(t *testing.T) {
+	service, _ := newService(t)
+	ctx := context.Background()
+	person := account("user-1", "")
+	if _, err := service.Policies().Save(ctx, nil, Policy{Scope: ScopeGlobal, Windows: map[Window]Limits{
+		Window5H: limits(true, nil, nil, ptrFloat(1000)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A turn that has already been settled, so the window holds something a
+	// double refund could take below.
+	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 100, Credits: 1}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := service.Reserve(ctx, person, Estimate{Tokens: 4000, Credits: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.taken {
+		t.Fatal("the enforced window took no reservation to give back")
+	}
+
+	for range 2 {
+		if err := service.Release(ctx, person.ID, res); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tokens, credits := counterAt(t, service, person.ID, Window5H, time.Now(), person.CreatedAt)
+	if tokens != 100 {
+		t.Errorf("tokens = %d after one reservation released twice, want the 100 that was spent", tokens)
+	}
+	if credits < 0.999 || credits > 1.001 {
+		t.Errorf("credits = %v after one reservation released twice, want 1", credits)
+	}
+}
+
+// The same reservation given back by several goroutines at once. The sequential
+// test above only ever has the second call arrive after the first has committed,
+// so it does not exercise two refunds that both pass the check before either one
+// lands. Here they start together, and without the guard every refund subtracts
+// the same estimate and the window floors at zero.
+func TestConcurrentReleasesOfOneReservationGiveItBackOnce(t *testing.T) {
+	service, _ := newServiceOn(t, dbtest.Either(t, filepath.Join(t.TempDir(), "quota.db")))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	person := account("user-1", "")
+	if _, err := service.Policies().Save(ctx, nil, Policy{Scope: ScopeGlobal, Windows: map[Window]Limits{
+		Window5H: limits(true, nil, nil, ptrFloat(1000)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 100, Credits: 1}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := service.Reserve(ctx, person, Estimate{Tokens: 4000, Credits: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.taken {
+		t.Fatal("the enforced window took no reservation to give back")
+	}
+
+	const releases = 16
+	start := make(chan struct{})
+	errs := make(chan error, releases)
+	var wait sync.WaitGroup
+	for range releases {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			if err := service.Release(ctx, person.ID, res); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("release: %v", err)
+	}
+
+	tokens, credits := counterAt(t, service, person.ID, Window5H, time.Now(), person.CreatedAt)
+	if tokens != 100 {
+		t.Errorf("tokens = %d after %d concurrent releases of one reservation, want the 100 that was spent", tokens, releases)
+	}
+	if credits < 0.999 || credits > 1.001 {
+		t.Errorf("credits = %v after %d concurrent releases of one reservation, want 1", credits, releases)
 	}
 }

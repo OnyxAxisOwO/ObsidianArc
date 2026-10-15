@@ -83,9 +83,10 @@ func (h *Handlers) history(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	// Both queries read the raw ledger, and any signed-in account can ask for
-	// this as often as it likes. They share the cap the analytics pages take,
-	// or a burst of them would starve the connections chat turns need.
+	// Both queries run on every visit to this page, and any signed-in account can
+	// ask for it as often as it likes. The totals come from the hourly rollup and
+	// the list from the ledger; they share the cap the analytics pages take, or a
+	// burst of them would starve the connections chat turns need.
 	release, err := httpx.AcquireAggregationSlot(r.Context())
 	if err != nil {
 		return err
@@ -96,7 +97,7 @@ func (h *Handlers) history(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	records, _, err := h.store.List(r.Context(), Filter{UserID: account.ID, Limit: limit})
+	records, err := h.store.Recent(r.Context(), Filter{UserID: account.ID, Limit: limit})
 	if err != nil {
 		return httpx.Internal(err)
 	}

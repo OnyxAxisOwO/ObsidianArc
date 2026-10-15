@@ -866,3 +866,101 @@ func TestATypedBadgeCannotReplaceTheSubjectTheProviderProved(t *testing.T) {
 		t.Errorf("the typed number was written to an account: %v", err)
 	}
 }
+
+// A consent request from another site is what a signed-out visitor is sent here
+// with, and it is longer than the 256 bytes the destination used to be capped
+// at. The provider approves, and the callback still has to know where to go.
+func TestALongDestinationSurvivesTheRoundTrip(t *testing.T) {
+	next := "/oauth/authorize?response_type=code&client_id=partner-app&redirect_uri=" +
+		url.QueryEscape("https://partner.example/callback") +
+		"&scope=" + strings.Repeat("profile+", 20) + "&state=" + strings.Repeat("x", 120)
+	if len(next) <= 256 {
+		t.Fatalf("the destination is %d bytes; the test must exceed the old cap", len(next))
+	}
+
+	f := newFixture(t)
+	f.configure(t, "github")
+	stub(t, "github", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"a-token"}`))
+	}, Identity{Subject: "4218", Login: "octocat"})
+	_, mux := handlers(t, f)
+
+	start := get(mux, "/api/auth/oauth/start/github?next="+url.QueryEscape(next), nil, nil)
+	if start.Code != http.StatusFound {
+		t.Fatalf("start = %d %s", start.Code, start.Body.String())
+	}
+	target, err := url.Parse(start.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect: %v", err)
+	}
+	back := get(mux, "/api/auth/oauth/callback/github?code=the-code&state="+target.Query().Get("state"),
+		start.Result().Cookies(), nil)
+	if location := back.Header().Get("Location"); location != next {
+		t.Fatalf("callback = %q, want the consent request the sign-in began with", location)
+	}
+}
+
+// A sign-in refused before it reaches the provider keeps the page it was meant
+// to reach, as one refused at the callback does. A sign-up that fails its
+// challenge goes back to the register page with that page, and a sign-in that
+// is switched off goes back to the login page with it.
+func TestAStartThatFailsKeepsTheDestinationItWasFor(t *testing.T) {
+	next := "/oauth/authorize?client_id=partner-app&scope=profile"
+	f := newFixture(t)
+	f.configure(t, "github")
+	h, mux := handlers(t, f)
+	h.SignupChallenge = (&signupSwitch{on: true}).gate()
+
+	refused := get(mux, "/api/auth/oauth/start/github?register=1&turnstile=bad&next="+url.QueryEscape(next), nil, nil)
+	if want, location := "/register?next="+url.QueryEscape(next)+"&oauth_error=challenge_failed",
+		refused.Header().Get("Location"); location != want {
+		t.Errorf("challenge failure = %q, want %q", location, want)
+	}
+	if cookieNamed(refused, stateCookie) != nil {
+		t.Error("a sign-in was started for a challenge that was not passed")
+	}
+
+	// Google is not configured in this instance, so it is off.
+	off := get(mux, "/api/auth/oauth/start/google?next="+url.QueryEscape(next), nil, nil)
+	if want, location := "/login?next="+url.QueryEscape(next)+"&oauth_error=unavailable",
+		off.Header().Get("Location"); location != want {
+		t.Errorf("provider off = %q, want %q", location, want)
+	}
+}
+
+// Connecting a provider whose subject another account already carries as its
+// badge is refused with the reason, so the settings screen can say what to do
+// rather than that something went wrong.
+func TestAConnectionRefusedForAnAddressAnotherAccountHoldsSaysSo(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	f.configure(t, "oidc")
+
+	server := stub(t, "oidc", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"a-token"}`))
+	}, Identity{Provider: "oidc", Subject: "12345678", Login: "qq_12345678"})
+	if err := f.settings.SetMany(context.Background(), map[string]string{
+		settings.OAuthOIDCAuthURL:     server.URL + "/authorize",
+		settings.OAuthOIDCTokenURL:    server.URL + "/token",
+		settings.OAuthOIDCUserInfoURL: server.URL + "/userinfo",
+	}); err != nil {
+		t.Fatalf("set endpoints: %v", err)
+	}
+	_, mux := handlers(t, f)
+
+	member, memberToken, err := f.auth.Register(context.Background(), auth.RegisterInput{
+		Username: "member", Password: "another-password",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	connect := connectAs(t, f, mux, "oidc", memberToken, map[string]string{"password": "another-password"})
+	if connect.Code != http.StatusOK {
+		t.Fatalf("connect = %d %s", connect.Code, connect.Body.String())
+	}
+	back := get(mux, "/api/auth/oauth/callback/oidc?code=c&state="+redirectState(t, connect),
+		[]*http.Cookie{cookieNamed(connect, stateCookie)}, &member)
+	if location := back.Header().Get("Location"); location != "/settings?oauth_error=address_taken" {
+		t.Fatalf("callback = %q, want the refusal named", location)
+	}
+}

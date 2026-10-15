@@ -111,8 +111,8 @@ func (s *Store) IssueModels(ctx context.Context, userID, name string, modelIDs [
 		return Key{}, "", err
 	}
 	now := time.Now()
-	if expiresAt < 0 || (expiresAt > 0 && expiresAt <= now.UnixMilli()) {
-		return Key{}, "", ErrPastExpiry
+	if err := checkExpiry(expiresAt, now); err != nil {
+		return Key{}, "", err
 	}
 
 	modelIDs = normalizeModelIDs(modelIDs)
@@ -178,15 +178,32 @@ func (s *Store) IssueModels(ctx context.Context, userID, name string, modelIDs [
 	return record, token, nil
 }
 
+// CheckRoom refuses an owner who is already at the key ceiling, without taking
+// the owner's row lock. IssueModels repeats the count under that lock, which
+// is what holds the cap against parallel requests; this only spares a request
+// that cannot succeed the single-use human verification token.
+func (s *Store) CheckRoom(ctx context.Context, userID string) error {
+	var count int
+	if err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM api_keys WHERE user_id = ?`, userID).Scan(&count); err != nil {
+		return fmt.Errorf("apikey: count: %w", err)
+	}
+	if count >= MaxPerUser {
+		return ErrTooMany
+	}
+	return nil
+}
+
 // Digest maps a presented token to its row key.
 func Digest(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }
 
-// Resolve looks a presented token up. An expired key is reported as absent:
-// the caller has no use for the difference, and neither does the client.
-// A paused key returns ErrPaused so callers can distinguish it.
+// Resolve looks a presented token up. A paused key that has not expired returns
+// its record with ErrPaused, so a caller can name the owner it refused. An
+// expired key is absent whether or not it is also paused: the caller has no use
+// for the difference, and neither does the client.
 //
 // It does not touch last_used_at. Recording that on the read path would turn
 // every API request into a write; Touch is called separately, and only when
@@ -201,11 +218,14 @@ func (s *Store) Resolve(ctx context.Context, token string) (Key, error) {
 	if err != nil {
 		return Key{}, err
 	}
-	if record.Disabled {
-		return Key{}, ErrPaused
-	}
+	// Expiry is checked before the pause: resuming an expired key cannot make it
+	// work, so it is reported as absent rather than as a pause the owner could
+	// clear and still get nowhere.
 	if record.Expired(time.Now()) {
 		return Key{}, ErrNotFound
+	}
+	if record.Disabled {
+		return record, ErrPaused
 	}
 	if record.ModelID == "" {
 		// An empty legacy restriction is the unrestricted case; the join table
@@ -253,11 +273,41 @@ func (s *Store) List(ctx context.Context, userID string) ([]Key, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("apikey: list: %w", err)
 	}
+	if len(out) == 0 {
+		return out, nil
+	}
+	models, err := s.modelsFor(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
 	for i := range out {
-		out[i], err = s.withModels(ctx, out[i])
-		if err != nil {
-			return nil, err
+		out[i] = withModelList(out[i], models[out[i].ID])
+	}
+	return out, nil
+}
+
+// modelsFor reads the model restrictions of every key an account owns in one
+// query, so listing costs the same however many keys there are.
+func (s *Store) modelsFor(ctx context.Context, userID string) (map[string][]string, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT m.api_key_id, m.model_id FROM api_key_models m
+		 JOIN api_keys k ON k.id = m.api_key_id
+		 WHERE k.user_id = ? ORDER BY m.api_key_id, m.model_id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("apikey: read models: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string][]string{}
+	for rows.Next() {
+		var keyID, modelID string
+		if err := rows.Scan(&keyID, &modelID); err != nil {
+			return nil, fmt.Errorf("apikey: scan model: %w", err)
 		}
+		out[keyID] = append(out[keyID], modelID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("apikey: read models: %w", err)
 	}
 	return out, nil
 }
@@ -413,14 +463,19 @@ func (s *Store) withModels(ctx context.Context, record Key) (Key, error) {
 	if err := rows.Err(); err != nil {
 		return Key{}, fmt.Errorf("apikey: read models: %w", err)
 	}
+	return withModelList(record, modelIDs), nil
+}
+
+// withModelList sets a key's restriction from its join rows. A key with none
+// falls back to the legacy single model column: this keeps a row readable
+// during an upgrade from a database created before the join table existed.
+func withModelList(record Key, modelIDs []string) Key {
 	if len(modelIDs) == 0 && record.ModelID != "" {
-		// This fallback keeps a row readable during an upgrade from a database
-		// created before the join table existed.
 		modelIDs = []string{record.ModelID}
 	}
 	record.ModelIDs = normalizeModelIDs(modelIDs)
 	record.ModelID = firstModelID(record.ModelIDs)
-	return record, nil
+	return record
 }
 
 func normalizeModelIDs(values []string) []string {
@@ -445,6 +500,24 @@ func firstModelID(modelIDs []string) string {
 		return ""
 	}
 	return modelIDs[0]
+}
+
+// CheckNew refuses a name or an expiry that IssueModels would refuse, and
+// writes nothing. The HTTP handler calls it before spending a single-use human
+// verification token on a request that could never succeed. IssueModels still
+// checks both itself, so this is an early answer, not the authority.
+func CheckNew(name string, expiresAt int64) error {
+	if _, err := checkName(name); err != nil {
+		return err
+	}
+	return checkExpiry(expiresAt, time.Now())
+}
+
+func checkExpiry(expiresAt int64, now time.Time) error {
+	if expiresAt < 0 || (expiresAt > 0 && expiresAt <= now.UnixMilli()) {
+		return ErrPastExpiry
+	}
+	return nil
 }
 
 func checkName(value string) (string, error) {

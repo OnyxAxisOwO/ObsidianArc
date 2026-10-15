@@ -77,7 +77,10 @@ function avatarLetter(entry: LeaderboardEntry): string {
 }
 
 function figure(value: number): string {
-  return metric.value === 'requests'
+  // The selector moves before the next board arrives, and the rows still on
+  // screen are the previous measure's: the unit must come from the board.
+  const measure = data.value?.metric ?? metric.value;
+  return measure === 'requests'
     ? t('boardRequests', { count: compactNumber(value) })
     : t('boardTokens', { count: compactNumber(value) });
 }
@@ -96,32 +99,12 @@ function isAbortError(err: unknown): boolean {
   );
 }
 
-function applyMetricSort(board: Leaderboard, currentMetric: LeaderboardMetric): void {
+// The rows are shown in the order the server ranked them. The server ranks and
+// cuts each measure on its own, so a client re-sort would place the top of one
+// measure in the order of another, and the reader's place would not be the
+// server's.
+function applyMetric(board: Leaderboard, currentMetric: LeaderboardMetric): void {
   board.metric = currentMetric;
-
-  if (board.accounts && Array.isArray(board.accounts)) {
-    board.accounts.sort((a, b) => {
-      const valA = currentMetric === 'requests' ? (a.requests ?? 0) : (a.tokens ?? 0);
-      const valB = currentMetric === 'requests' ? (b.requests ?? 0) : (b.tokens ?? 0);
-      if (valB !== valA) return valB - valA;
-      const tieA = currentMetric === 'requests' ? (a.tokens ?? 0) : (a.requests ?? 0);
-      const tieB = currentMetric === 'requests' ? (b.tokens ?? 0) : (b.requests ?? 0);
-      if (tieB !== tieA) return tieB - tieA;
-      return (a.name ?? '').localeCompare(b.name ?? '');
-    });
-
-    for (let i = 0; i < board.accounts.length; i++) {
-      const a = board.accounts[i];
-      if (!a) continue;
-      a.value = currentMetric === 'requests' ? (a.requests ?? 0) : (a.tokens ?? 0);
-      const prev = i > 0 ? board.accounts[i - 1] : undefined;
-      if (prev && a.value === prev.value) {
-        a.rank = prev.rank;
-      } else {
-        a.rank = i + 1;
-      }
-    }
-  }
 
   if (board.me && board.accounts && Array.isArray(board.accounts)) {
     const selfEntry = board.accounts.find((a) => a.self);
@@ -138,28 +121,6 @@ function applyMetricSort(board: Leaderboard, currentMetric: LeaderboardMetric): 
         }
       }
       board.me.gap = gap;
-    }
-  }
-
-  if (board.models && board.models.length > 0) {
-    board.models.sort((a, b) => {
-      const valA = currentMetric === 'requests' ? (a.requests ?? 0) : (a.tokens ?? 0);
-      const valB = currentMetric === 'requests' ? (b.requests ?? 0) : (b.tokens ?? 0);
-      if (valB !== valA) return valB - valA;
-      if (b.users !== a.users) return b.users - a.users;
-      return (a.name ?? '').localeCompare(b.name ?? '');
-    });
-
-    for (let i = 0; i < board.models.length; i++) {
-      const m = board.models[i];
-      if (!m) continue;
-      m.value = currentMetric === 'requests' ? (m.requests ?? 0) : (m.tokens ?? 0);
-      const prev = i > 0 ? board.models[i - 1] : undefined;
-      if (prev && m.value === prev.value && m.users === prev.users) {
-        m.rank = prev.rank;
-      } else {
-        m.rank = i + 1;
-      }
     }
   }
 }
@@ -180,7 +141,7 @@ async function load(): Promise<void> {
     const result = await fetchLeaderboard(period.value, metric.value, controller.signal);
     if (controller.signal.aborted) return;
     result.period = period.value;
-    applyMetricSort(result, metric.value);
+    applyMetric(result, metric.value);
     data.value = result;
   } catch (failure) {
     if (controller.signal.aborted || isAbortError(failure)) return;
@@ -193,24 +154,12 @@ async function load(): Promise<void> {
   }
 }
 
-// Switching the period asks the server for the new window, aborting any
-// prior in-flight request. Switching the metric re-sorts the existing
-// aggregate locally on the client without a new network round-trip.
+// Both the window and the measure are part of the request. The server ranks
+// and truncates the board per measure, so a list re-sorted on the client holds
+// only the top of the measure it was fetched for, and cannot place the reader
+// or the other leaders in the one now shown.
 watch(period, () => void load());
-
-watch(metric, (nextMetric) => {
-  if (data.value && data.value.period === period.value) {
-    applyMetricSort(data.value, nextMetric);
-    data.value = {
-      ...data.value,
-      accounts: [...data.value.accounts],
-      ...(data.value.models ? { models: [...data.value.models] } : {}),
-      me: { ...data.value.me },
-    };
-  } else {
-    void load();
-  }
-});
+watch(metric, () => void load());
 
 onMounted(load);
 

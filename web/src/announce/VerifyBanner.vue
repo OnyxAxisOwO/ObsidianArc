@@ -37,11 +37,14 @@ async function verifyCode(): Promise<void> {
     await verifyEmailCode(code.value);
     try {
       const session = await fetchMe();
+      // Adopting the verified account removes this banner, so there is no
+      // success line to draw on this path: the banner going away says it.
       adopt(session.user, session.preferences);
     } catch {
-      // The code is already accepted; a session refresh can be retried by reloading.
+      // The code is accepted, but the banner still reads the unconfirmed account.
+      // Say so, rather than leaving it up beside a success line.
+      label.value = 'verifyCodeAcceptedReload';
     }
-    label.value = 'verifyCodeSuccess';
   } catch (error) {
     label.value = verificationErrorKey(error);
   } finally {

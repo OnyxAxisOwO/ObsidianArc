@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -17,10 +19,16 @@ import (
 // internal/admin.
 type Handlers struct {
 	store *Store
-	// Performs the reset a spent card pays for. Wired in server.go, because
-	// the counters belong to internal/quota and this package has no business
-	// knowing they exist.
-	OnSpend func(context.Context, user.User, Card) error
+	// Takes the allowance lock before the card row is touched. A reservation
+	// that may spend a card takes that lock first and the card row after it, so
+	// a spend that took the card first could wait on a reservation that already
+	// holds the lock while that reservation waits on the card. Wired in
+	// server.go, because the lock belongs to internal/quota.
+	LockReset func(context.Context, database.Queryer) error
+	// Performs the reset a spent card pays for, inside the transaction that
+	// spends the card. Wired in server.go, because the counters belong to
+	// internal/quota and this package has no business knowing they exist.
+	OnSpend func(context.Context, database.Queryer, user.User, Card) error
 	// Resolves who is calling, for the guessing limit below. Optional; nil
 	// keys the limit on the account alone.
 	ClientIP func(*http.Request) string
@@ -55,14 +63,16 @@ func (h *Handlers) mine(w http.ResponseWriter, r *http.Request) error {
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"cards": cards})
 }
 
-// use spends a card and performs the reset it pays for.
+// use spends a card and performs the reset it pays for, in one transaction.
 //
-// The card is marked first. If the reset then fails the card is gone and the
-// allowance is not back, which is the wrong way round — but the other order
-// is worse: a reset that succeeds and a card that is not marked is a card
-// that resets the account again, and again, for as long as somebody keeps
-// pressing. Losing one card to a database error is recoverable by an
-// administrator; an unbounded reset is not.
+// The mark and the reset commit together or not at all. A card marked used
+// with no reset, or a reset with the card still unspent, would each be a way
+// to lose a card or to reset an account again on the next press.
+//
+// The order inside is the reservation path's: the allowance lock, then the card
+// row, then the counters. The transaction runs on a context that outlives the
+// request, so a browser that disconnects part way cannot decide the outcome
+// after the fact; the server finishes what it started.
 func (h *Handlers) use(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
 	cardID := r.PathValue("id")
@@ -70,17 +80,28 @@ func (h *Handlers) use(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("A card is required.")
 	}
 
-	card, err := h.store.SpendCard(r.Context(), account.ID, cardID)
+	// Refused before the card is touched: a handler with no reset wired would
+	// otherwise spend the card and answer 204 with nothing restored.
+	if h.LockReset == nil || h.OnSpend == nil {
+		return httpx.Internal(errors.New("card: no reset hook is wired"))
+	}
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+	defer cancel()
+	err := h.store.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := h.LockReset(ctx, tx); err != nil {
+			return err
+		}
+		card, err := h.store.SpendCard(ctx, tx, account.ID, cardID)
+		if err != nil {
+			return err
+		}
+		return h.OnSpend(ctx, tx, account, card)
+	})
 	if err != nil {
 		return translate(err)
 	}
-	if h.OnSpend != nil {
-		if err := h.OnSpend(r.Context(), account, card); err != nil {
-			return httpx.Internal(err)
-		}
-	}
 	return httpx.NoContent(w)
-
 }
 
 func (h *Handlers) redeem(w http.ResponseWriter, r *http.Request) error {
@@ -103,9 +124,8 @@ func (h *Handlers) redeem(w http.ResponseWriter, r *http.Request) error {
 	if h.ClientIP != nil {
 		ip = h.ClientIP(r)
 	}
-	if err := h.Challenge.Check(r.Context(), body.Turnstile, ip); err != nil {
-		return redeemChallengeError(err)
-	}
+	// Taken before the outbound verification, not after it: a request the
+	// limiter would refuse must not cost a round trip to the challenge service.
 	attempt, err := h.guesses.Begin(ip, account.ID)
 	if err != nil {
 		var limited *auth.RateLimitError
@@ -118,6 +138,16 @@ func (h *Handlers) redeem(w http.ResponseWriter, r *http.Request) error {
 	// Releases the reservation on every path out. A redemption that worked
 	// does not clear the count: only time does.
 	defer attempt.Cancelled()
+
+	if err := h.Challenge.Check(r.Context(), body.Turnstile, ip); err != nil {
+		// A refused challenge is a failed attempt, or a caller who never solves
+		// one could make verification calls without limit. An unavailable service
+		// is not the caller's failure, so it is not counted.
+		if errors.Is(err, turnstile.ErrFailed) {
+			attempt.Failed()
+		}
+		return redeemChallengeError(err)
+	}
 
 	record, err := h.store.Redeem(r.Context(), account.ID, body.Code)
 	if err != nil {
@@ -170,6 +200,8 @@ func translate(err error) error {
 		return httpx.BadRequest("A code is required.")
 	case errors.Is(err, ErrNamedBatch):
 		return httpx.BadRequest("Leave the code empty when generating more than one.")
+	case errors.Is(err, ErrBatchTooLarge):
+		return httpx.BadRequestCode("card_batch_too_large", "A batch makes at most %d codes at a time.", MaxBatch)
 	case errors.Is(err, ErrInvalidCount):
 		return httpx.BadRequest("At least one card is required.")
 	case errors.Is(err, ErrInvalidExpiry):

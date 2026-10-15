@@ -41,6 +41,11 @@ const (
 	// connection an operator would reasonably run.
 	importBodyTimeout = 2 * time.Minute
 
+	// What an import may spend writing once its body is in. Set for the largest
+	// file it accepts, which is two thousand transactions, and not for a
+	// request that has been abandoned.
+	importWriteTimeout = 10 * time.Minute
+
 	// Imports one account may start at once, and then one every importRefill.
 	importBurst  = 5
 	importRefill = 10 * time.Second
@@ -238,7 +243,14 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 
-	result, err := h.service.Import(r.Context(), account, document)
+	// An import is a save, and each conversation in it commits on its own.
+	// Stopping it when the browser goes away would leave the file part way in,
+	// with nobody left to be told where it stopped. Finishing it keeps the file
+	// whole; the deadline stops a database that has stopped answering from
+	// holding one of the four slots for ever.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), importWriteTimeout)
+	defer cancel()
+	result, err := h.service.Import(ctx, account, document)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrWrongFormat):
@@ -249,6 +261,13 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 				MaxConversations, MaxMessagesPerImport)
 		case errors.Is(err, ErrNULCharacter):
 			return httpx.BadRequest("That export contains a NUL character (U+0000), which this server does not store.")
+		case errors.Is(err, user.ErrPreferencesTooLarge):
+			// Nothing has been written when the preferences are merged first, so
+			// the message can say so. 409 for the same reason as storage_full: the
+			// file is fine, and it will only fit once the account's own preferences
+			// have shrunk.
+			return httpx.Conflict("preferences_too_large",
+				"This account's saved preferences are too large to take this file's preferences as well. Nothing was imported.")
 		case errors.Is(err, ErrStorageFull):
 			// 409 rather than 400: the document is fine and sending it again
 			// will not help. Something has to be deleted first.
@@ -261,16 +280,27 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 			// and get a second copy of whatever did land.
 			return httpx.Conflict("storage_full",
 				"This account is already storing as many messages as it may. Delete some conversations and try again.").
-				WithDetails(map[string]any{
-					"conversations": result.Conversations,
-					"messages":      result.Messages,
-					"skipped":       result.Skipped,
-					"preferences":   result.Preferences,
-				})
+				WithDetails(importCounts(result))
 		}
-		return httpx.Internal(err)
+		// Any other failure can come after conversations have committed, a
+		// database error at the thousandth of two thousand among them, so it
+		// answers with the same counts as the storage case does. The status
+		// stays a 500: the cause is not the client's to fix.
+		return httpx.Internal(err).WithDetails(importCounts(result))
 	}
 	return httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+// importCounts is what an import wrote before it stopped, in the answer a
+// failure carries. A reader told plainly that nothing was imported would send
+// the same file again and get a second copy of whatever did land.
+func importCounts(result Result) map[string]any {
+	return map[string]any{
+		"conversations": result.Conversations,
+		"messages":      result.Messages,
+		"skipped":       result.Skipped,
+		"preferences":   result.Preferences,
+	}
 }
 
 // safeName keeps a username usable as a filename on every platform without

@@ -127,6 +127,10 @@ func init() {
 			}
 			m := asMap(data)
 			if !asBoolVal(m["enabled"]) {
+				// Under --json the answer is the response itself, not a sentence.
+				if rt.effectiveJSON() {
+					return rt.Fields(nil)
+				}
 				rt.Printf("check-in is not switched on\n")
 				return nil
 			}
@@ -168,6 +172,9 @@ func init() {
 			if err != nil {
 				return err
 			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
+			}
 			m := asMap(data)
 			rt.Printf("checked in %s; streak %s; reward: %s\n", asStr(m["day"]), numberString(m["streak"]), rewardText(m["reward"]))
 			return nil
@@ -191,6 +198,9 @@ func init() {
 			data, _, err := rt.Call(http.MethodPost, "/api/checkin/claims/"+url.PathEscape(id), nil)
 			if err != nil {
 				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
 			rt.Printf("claimed: %s\n", rewardText(asMap(data)["reward"]))
 			return nil

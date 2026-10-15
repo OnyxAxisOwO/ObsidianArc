@@ -136,7 +136,7 @@ ssh 用户名@你的域名 -p 2222
 ssh 用户名@你的域名 -p 2222 'key list --json' | jq '.keys[].name'
 ```
 
-所有命令都支持 `--json`，输出的是 API 的原始载荷。
+能产生结果的命令都支持 `--json`。`help`（列表、说明与搜索）、`history`、`echo`、`help ssh` 与 `help keys` 只输出文本；`clear`、`exit`、`quit`、`lang` 与 `format` 接受这个参数，但在 `--json` 下不输出任何结果。多数命令输出的是 API 的原始载荷，`version` 输出 `{"version": ...}`；`setting get`、`app show`、`group show`、`provider show`、`model show` 只输出所显示的那一条记录，`health probe` 输出一个由 `{event, data}` 组成的数组。
 
 主机密钥在首次启动时生成并保存在数据目录（`ssh_host_ed25519_key`，权限 0600），指纹会打印在启动日志里，也可以用 `help ssh` 查看——首次连接时请核对。数据目录丢失会导致指纹变化，客户端的 known_hosts 校验会因此报警。
 

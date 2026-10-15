@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
@@ -517,6 +518,11 @@ var pluginCaptchaModes = map[string]string{}
 // one setting owns which challenge a sign-up needs, and a second switch for
 // the same thing would be a second source of truth. Called from init.
 func AddCaptchaMode(plugin, value string) {
+	// An unowned mode would be valid whatever plugin is switched off: the gate
+	// allows the empty name, so it would be a core mode that nobody added.
+	if plugin == "" {
+		panic("settings: captcha mode " + value + " has no owner")
+	}
 	if _, taken := pluginCaptchaModes[value]; taken || coreCaptchaMode(value) {
 		panic("settings: captcha mode " + value + " already exists")
 	}
@@ -678,7 +684,11 @@ func ValidPWAIconURL(value string) bool {
 	if value == "" {
 		return true
 	}
-	if strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") {
+	// A browser reads a backslash as a slash and drops tabs and newlines, so
+	// "/\host" and "/\t/host" arrive at the browser as "//host", the very
+	// reference the "//" case refuses.
+	if strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") &&
+		!strings.ContainsFunc(value, func(r rune) bool { return r == '\\' || unicode.IsControl(r) }) {
 		return true
 	}
 	return pwaIconRE.MatchString(value)
@@ -956,6 +966,12 @@ func Define(d Definition) {
 	if d.Key == "" {
 		panic("settings: Define with an empty key")
 	}
+	// The gate allows the empty owner, so an unowned setting would be core,
+	// always known and always writable, which is what owning one is meant to
+	// prevent.
+	if d.Plugin == "" {
+		panic("settings: " + d.Key + " has no owner")
+	}
 	if _, taken := Defaults[d.Key]; taken {
 		panic("settings: " + d.Key + " is already defined")
 	}
@@ -1045,6 +1061,23 @@ type Service struct {
 	values           map[string]string
 	loginBackgrounds map[string]Background
 	siteLogoAt       int64
+
+	// Orders each save's cache update with the database write it follows. Two
+	// writers to one key can commit A then B and update the cache B then A,
+	// which leaves the cache holding a value the database no longer has. This
+	// is ordering for the cache, not a check-then-write invariant, so a mutex is
+	// right here; it is never held while a listener runs, since listeners may
+	// write settings themselves. A plugin install or removal commits outside it,
+	// because its transaction runs the plugin's own migrations and must not hold
+	// saves up, and nothing inside such a transaction may take writeMu (see
+	// Lock). Remember and Forget therefore re-read the rows they changed under
+	// writeMu: whichever order the two interleave in, the last cache update
+	// reads what the database holds.
+	writeMu sync.Mutex
+
+	// Tests set this to pause a save between its database write and its cache
+	// update, which is the window writeMu exists to close. Nil in production.
+	afterWrite func(key string)
 }
 
 func New(db *database.DB) *Service {
@@ -1072,24 +1105,32 @@ func (s *Service) Load(ctx context.Context) error {
 		return fmt.Errorf("settings: load: %w", err)
 	}
 
+	// A failed read here must stop the boot. Swallowing it leaves the login
+	// backgrounds and the logo absent for the life of the process, with nothing
+	// in the log to say why.
 	bgRows, err := s.db.Query(ctx, `SELECT variant, mime, updated_at FROM login_backgrounds`)
+	if err != nil {
+		return fmt.Errorf("settings: load login backgrounds: %w", err)
+	}
+	defer bgRows.Close()
 	bgs := map[string]Background{}
-	if err == nil {
-		defer bgRows.Close()
-		for bgRows.Next() {
-			var v, mime string
-			var at int64
-			if err := bgRows.Scan(&v, &mime, &at); err == nil {
-				bgs[v] = Background{UpdatedAt: at, HTML: mime == HTMLBackgroundMime}
-			}
+	for bgRows.Next() {
+		var v, mime string
+		var at int64
+		if err := bgRows.Scan(&v, &mime, &at); err != nil {
+			return fmt.Errorf("settings: scan login background: %w", err)
 		}
+		bgs[v] = Background{UpdatedAt: at, HTML: mime == HTMLBackgroundMime}
+	}
+	if err := bgRows.Err(); err != nil {
+		return fmt.Errorf("settings: load login backgrounds: %w", err)
 	}
 
+	// No row is the normal state of a site without a logo, and leaves logoAt 0.
 	var logoAt int64
 	logoErr := s.db.QueryRow(ctx, `SELECT updated_at FROM site_logo WHERE id = 'default'`).Scan(&logoAt)
 	if logoErr != nil && !database.IsNotFound(logoErr) {
-		// table may not exist in minimal tests or is unmigrated; ignore not found
-		logoAt = 0
+		return fmt.Errorf("settings: load site logo: %w", logoErr)
 	}
 
 	s.mu.Lock()
@@ -1184,26 +1225,68 @@ func (s *Service) All() map[string]string {
 }
 
 func (s *Service) Set(ctx context.Context, key, value string) error {
+	s.writeMu.Lock()
 	_, err := s.db.Exec(ctx,
 		`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
 		 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
 		key, value, time.Now().UnixMilli())
+	if err == nil {
+		if s.afterWrite != nil {
+			s.afterWrite(key)
+		}
+		s.mu.Lock()
+		s.values[key] = value
+		s.mu.Unlock()
+	}
+	s.writeMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("settings: set %s: %w", key, err)
 	}
-	s.mu.Lock()
-	s.values[key] = value
-	s.mu.Unlock()
 	s.changed([]string{key})
 	return nil
 }
 
 func (s *Service) SetMany(ctx context.Context, values map[string]string) error {
-	err := s.db.Tx(ctx, func(tx *database.Tx) error { return s.WriteMany(ctx, tx, values) })
+	return s.setMany(ctx, values, nil)
+}
+
+// SetManyChecked is SetMany with a check that runs inside the write's
+// transaction, under the instance lock. A check that depends on state the write
+// commits over — whether the saver's own second step is still on, say — has to
+// read that state there: a snapshot taken when the request began can predate a
+// change another request committed in the meantime.
+func (s *Service) SetManyChecked(ctx context.Context, values map[string]string, check func(q database.Queryer) error) error {
+	return s.setMany(ctx, values, check)
+}
+
+// setMany holds writeMu for every save, plain ones too, so each cache update
+// lands in the order of the write it follows. Only a check takes the instance
+// row lock: a plain SetMany is not an instance-wide check-then-write, and
+// taking the row for it would queue every settings save behind registrations
+// and demotions at the database. It still waits for a checked save in progress
+// in this process, because that one holds writeMu.
+func (s *Service) setMany(ctx context.Context, values map[string]string, check func(q database.Queryer) error) error {
+	s.writeMu.Lock()
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if check != nil {
+			if err := Lock(ctx, tx); err != nil {
+				return err
+			}
+			if err := check(tx); err != nil {
+				return err
+			}
+		}
+		return s.WriteMany(ctx, tx, values)
+	})
+	var keys []string
+	if err == nil {
+		keys = s.putLocked(values)
+	}
+	s.writeMu.Unlock()
 	if err != nil {
 		return err
 	}
-	s.Remember(values)
+	s.changed(keys)
 	return nil
 }
 
@@ -1235,26 +1318,90 @@ func (s *Service) DeleteMany(ctx context.Context, q database.Queryer, keys []str
 	return nil
 }
 
-// Remember puts committed values into the cache.
+// Remember brings the cache up to date with values a transaction has just
+// committed. The cache takes each key's stored row, not the value the caller
+// wrote: a plugin install commits outside writeMu, so an administrator's save
+// can commit after it and update the cache first, and writing the install's
+// value back would leave the cache on the older one.
 func (s *Service) Remember(values map[string]string) {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	s.resync(keys, values)
+}
+
+// putLocked puts values into the cache and returns their keys. The caller holds
+// writeMu, so the cache lands in the same order as the writes it follows.
+func (s *Service) putLocked(values map[string]string) []string {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	keys := make([]string, 0, len(values))
 	for key, value := range values {
 		s.values[key] = value
 		keys = append(keys, key)
 	}
+	return keys
+}
+
+// Forget brings the cache up to date with keys a transaction has just deleted.
+// A key that has a row again was written after the deletion, by a save whose
+// cache update is already in place, so the cache keeps that row's value.
+func (s *Service) Forget(keys []string) {
+	s.resync(keys, nil)
+}
+
+// resync sets each of keys in the cache to the value the database holds for
+// it. A key with no row takes fallback's value if there is one and is dropped
+// otherwise. Holding writeMu for the read is what makes the result the newest
+// state: every save takes writeMu across its write and its cache update, so
+// none is half done while the rows are read.
+func (s *Service) resync(keys []string, fallback map[string]string) {
+	s.writeMu.Lock()
+	stored, err := s.storedLocked(keys)
+	if err != nil {
+		// The write this follows has already committed and there is no caller
+		// to return an error to, so every key falls back as if it had no row.
+		stored = nil
+	}
+	s.mu.Lock()
+	for _, key := range keys {
+		if value, ok := stored[key]; ok {
+			s.values[key] = value
+		} else if value, ok := fallback[key]; ok {
+			s.values[key] = value
+		} else {
+			delete(s.values, key)
+		}
+	}
 	s.mu.Unlock()
+	s.writeMu.Unlock()
 	s.changed(keys)
 }
 
-// Forget drops committed deletions from the cache.
-func (s *Service) Forget(keys []string) {
-	s.mu.Lock()
-	for _, key := range keys {
-		delete(s.values, key)
+// storedLocked reads the rows of keys that exist, leaving out the rest. The
+// caller holds writeMu. A Service without a database, which the tests build
+// for the cache alone, has no rows to read.
+func (s *Service) storedLocked(keys []string) (map[string]string, error) {
+	if s.db == nil {
+		return nil, nil
 	}
-	s.mu.Unlock()
-	s.changed(keys)
+	// The commit has already happened, so a cancelled request must not leave
+	// the cache behind the database.
+	ctx := context.Background()
+	out := make(map[string]string, len(keys))
+	for _, key := range keys {
+		var value string
+		err := s.db.QueryRow(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+		if database.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("settings: read %s: %w", key, err)
+		}
+		out[key] = value
+	}
+	return out, nil
 }
 
 // Stored reports whether any of keys has a row of its own, as opposed to

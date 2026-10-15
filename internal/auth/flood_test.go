@@ -59,8 +59,9 @@ func TestInventedNamesAreNeverProtectedOnEitherSignInPath(t *testing.T) {
 	const ceiling = 4
 	f.auth.limiter.ceiling = ceiling
 
-	// No address, so nothing but the names is counted, and several times the
-	// ceiling so the map has to reclaim on every pass.
+	// No address, so every attempt shares the one unknown-address budget and the
+	// names are counted on their own. Several times the ceiling, so the map has
+	// to reclaim on every pass.
 	for i := 0; i < 3*ceiling; i++ {
 		name := fmt.Sprintf("nobody-%d", i)
 		if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: name, Password: "whatever"}); !errors.Is(err, ErrInvalidCredentials) {

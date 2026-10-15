@@ -130,6 +130,12 @@ type Arg struct {
 	// argument it also covers every extra token after it, which is how a
 	// value with spaces in it reaches a command that joins them.
 	Sensitive bool
+	// Rest on the last declared argument says the command reads every token
+	// after it, joined with spaces, so more positionals than declared is what
+	// it asked for. Without it, a command that writes and is given extra
+	// positionals is refused, rather than acting on the first and dropping the
+	// rest.
+	Rest bool
 }
 
 // Flag is one named flag. Value is the placeholder shown in help and the
@@ -214,7 +220,21 @@ func registerCommand(cmd Command) {
 // and adds its commands from its own init the same way a cmd_*.go file does.
 // Commands for a plugin's routes belong with the plugin: the route-parity
 // test here reads admin.go alone, and a plugin's routes are not in it.
-func Register(cmd Command) { registerCommand(cmd) }
+//
+// cmd.Plugin must name the plugin. An empty owner is core, which the gate
+// always allows, so a plugin command that forgot it would keep running after
+// the plugin is switched off. RegisterCore is the spelling for commands the
+// core owns.
+func Register(cmd Command) {
+	if cmd.Plugin == "" {
+		panic("console: " + cmd.Name + " was registered with no Plugin; a plugin's command must name its owner, or it is core and stays on when the plugin is off")
+	}
+	registerCommand(cmd)
+}
+
+// RegisterCore registers a command the core owns, such as the plugin manager's
+// own `plugin` commands, which must exist whatever plugins are installed.
+func RegisterCore(cmd Command) { registerCommand(cmd) }
 
 // ResolveUser is how a plugin's command reads an account argument: an id as
 // it stands, or a username looked up through the same admin list the core
@@ -259,6 +279,22 @@ func (r *registry) lookup(name string) (*Command, bool) {
 		return nil, false
 	}
 	return cmd, true
+}
+
+// writes reports whether running the command can change anything: it is
+// destructive, or one of its requests is not a GET. Commands that only create
+// (invite create, key create) are not marked destructive, so the request
+// method is what says so.
+func (cmd *Command) writes() bool {
+	if cmd.Destructive {
+		return true
+	}
+	for _, endpoint := range cmd.Endpoints {
+		if !strings.HasPrefix(endpoint, "GET ") {
+			return true
+		}
+	}
+	return false
 }
 
 // CommandsOf lists the commands plugin registered, for its manifest.
@@ -323,6 +359,12 @@ func (r *registry) add(plugin string, cmds []Command) error {
 }
 
 // check is add without adding. The caller holds the lock.
+//
+// A name that shares whole words with another owner's name is refused as well
+// as an exact duplicate. match takes the longest name a line starts with, so a
+// package's "user list export" would run in place of the core's "user list",
+// under the package's own grant, and a bare "user" would take every "user ..."
+// line the core does not claim.
 func (r *registry) check(plugin string, cmds []Command) error {
 	for _, cmd := range cmds {
 		if cmd.Name == "" || cmd.Run == nil {
@@ -331,8 +373,20 @@ func (r *registry) check(plugin string, cmds []Command) error {
 		if existing, dup := r.commands[cmd.Name]; dup && existing.Plugin != plugin {
 			return fmt.Errorf("console: %s is already a command", cmd.Name)
 		}
+		for name, existing := range r.commands {
+			if existing.Plugin != plugin && sharesWords(name, cmd.Name) {
+				return fmt.Errorf("console: %s would take the words of %s", cmd.Name, name)
+			}
+		}
 	}
 	return nil
+}
+
+// sharesWords reports whether one command name is the other, or extends it by
+// whole words. "user list" and "user list export" share words; "user lister"
+// does not share them with "user list".
+func sharesWords(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+" ") || strings.HasPrefix(b, a+" ")
 }
 
 // remove drops everything plugin registered.
@@ -417,7 +471,7 @@ func hasPermission(actor user.User, permissions string) bool {
 }
 
 // CallError is what Runtime.Call returns for an HTTP-level failure (status
-// >= 400). It carries the admin API's own error code so the renderer can
+// >= 300, see Call). It carries the admin API's own error code so the renderer can
 // show it dim beside the message, exactly as section 1.5 of the contract
 // asks: "error: <message>" plus the code, HTTP status only when there is no
 // message.
@@ -555,7 +609,7 @@ func normalizeFlagName(name string) string { return strings.TrimLeft(name, "-") 
 // produces: map[string]any, []any, string, float64, bool, or nil).
 //
 // A non-nil error is either a transport failure (should not happen for an
-// in-process call) or, for a status >= 400, a *CallError carrying the admin
+// in-process call) or, for a status >= 300, a *CallError carrying the admin
 // API's own code and message — return it from Run as-is and the engine
 // renders it exactly the way a failed dispatch is supposed to look.
 func (rt *Runtime) Call(method, path string, body any) (any, int, error) {
@@ -565,13 +619,18 @@ func (rt *Runtime) Call(method, path string, body any) (any, int, error) {
 	}
 	rt.rawJSON = resp.Body
 
+	// The body is decoded whatever the status, but a decode failure is reported
+	// only for a success status: a ServeMux 404 or 405 is text/plain, and a
+	// decode error there would hide the status the caller needs. A 3xx is a
+	// failure too: no admin route redirects, so one from the in-process mux
+	// means the path was rewritten and nothing ran.
 	var decoded any
 	if len(resp.Body) > 0 {
-		if jsonErr := json.Unmarshal(resp.Body, &decoded); jsonErr != nil {
+		if jsonErr := json.Unmarshal(resp.Body, &decoded); jsonErr != nil && resp.Status < 300 {
 			return nil, resp.Status, fmt.Errorf("console: decode response: %w", jsonErr)
 		}
 	}
-	if resp.Status >= 400 {
+	if resp.Status >= 300 {
 		failure := newCallError(resp.Status, decoded)
 		if hint := twoFactorHint(failure.Code, rt.Session.Lang); hint != "" {
 			failure.Message = hint
@@ -579,6 +638,15 @@ func (rt *Runtime) Call(method, path string, body any) (any, int, error) {
 		return decoded, resp.Status, failure
 	}
 	return decoded, resp.Status, nil
+}
+
+// MayCall reports whether a request this command makes with method may go
+// out. A read is always allowed. Anything else needs a command that writes:
+// the refusals that keep a read-only command from changing things (the
+// partial-name refusal, watch --count) are keyed on what it declares, so a
+// package that declared only reads must not reach a write through console.call.
+func (rt *Runtime) MayCall(method string) bool {
+	return method == "GET" || (rt.cmd != nil && rt.cmd.writes())
 }
 
 // twoFactorHint turns the backoffice's two refusals into the command that
@@ -613,7 +681,9 @@ func (rt *Runtime) CallRaw(method, path string, body any) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	rt.rawJSON = resp.Body
-	if resp.Status >= 400 {
+	// A 3xx is refused as Call refuses it: no admin route redirects, so one
+	// here means the path was rewritten and the body is not the export.
+	if resp.Status >= 300 {
 		var decoded any
 		if len(resp.Body) > 0 {
 			_ = json.Unmarshal(resp.Body, &decoded)
@@ -670,6 +740,28 @@ func (rt *Runtime) Fields(pairs [][2]string) error {
 			return RenderJSON(rt.Out, rt.rawJSON)
 		}
 		return renderPairsAsJSON(rt.Out, pairs)
+	}
+	RenderFields(rt.Out, rt.Session.Colour, pairs)
+	return nil
+}
+
+// FieldsOf is Fields for a "show" command that listed a collection and
+// picked one record out of it. The most recent Call is that list, so the
+// passthrough would print every row under --json; here the picked record is
+// the JSON, and the text view is the same block Fields draws.
+//
+// This is the one exception to RenderJSON's rule that --json shows the server's
+// bytes: the record is encoded again from the value it was decoded into, so its
+// keys come out sorted, its strings escaped the way Go escapes them, and its
+// numbers through float64. Cutting the record out of the raw response would keep
+// all of that, but no caller needs it badly enough to carry the code.
+func (rt *Runtime) FieldsOf(record any, pairs [][2]string) error {
+	if rt.effectiveJSON() {
+		raw, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		return RenderJSON(rt.Out, raw)
 	}
 	RenderFields(rt.Out, rt.Session.Colour, pairs)
 	return nil

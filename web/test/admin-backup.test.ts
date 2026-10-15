@@ -194,6 +194,21 @@ describe('admin instance backup', () => {
     expect(host.textContent).toContain(t('backupStatusSuccess'));
   });
 
+  it('keeps the Run label while a storage test is pending, since no backup has started', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
+    let finishTest!: (value: { ok: true }) => void;
+    vi.spyOn(adminApi, 'testBackup').mockReturnValue(new Promise((resolve) => { finishTest = resolve; }));
+    await mountBackup();
+
+    button(host, t('backupTest')).click();
+    await settle();
+
+    // button() looks the label up exactly, so a Running label here fails it.
+    expect(button(host, t('backupRun')).disabled).toBe(true);
+    finishTest({ ok: true });
+    await settle();
+  });
+
   it('only shows save hint when configuration is dirty, clearing it on save', async () => {
     vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
     vi.spyOn(adminApi, 'saveBackup').mockResolvedValue(undefined);

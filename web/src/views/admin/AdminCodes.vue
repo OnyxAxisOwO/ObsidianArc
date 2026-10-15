@@ -31,7 +31,7 @@ import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 
 const view = useAdminView();
-view.setTitle(t('codesTitle'), t('codesSubtitle'));
+view.setTitle(() => t('codesTitle'), () => t('codesSubtitle'));
 
 const codes = ref<RedemptionCode[]>([]);
 const error = ref('');
@@ -277,8 +277,11 @@ onMounted(load);
     @select="open($event)"
   >
     <template #cell-code="{ row }">
+      <!-- The column's own text is masked too, but a slot replaces it, so the
+           mask has to be applied where the code is drawn. Copy and export stay
+           raw: they are what the operator asked for. -->
       <OaCellStack
-        :title="row.code"
+        :title="maskCredential(row.code)"
         :sub="Array.from(new Set([row.name || undefined, formatCodeScope(row.windows), row.note || undefined].filter(Boolean))).join(' · ')"
         monospace
       />

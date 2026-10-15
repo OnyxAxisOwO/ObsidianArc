@@ -13,18 +13,27 @@
 // instance-wide ceilings behind it are what hold when a client throws the
 // token away. Losing this file entirely would cost the operator nothing.
 
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { ApiError } from '@/api/client';
 import { streamTrial } from '@/api/trial';
 import HomeNotice from '@/announce/HomeNotice.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import { t } from '@/composables/useI18n';
+import { apiFailureText } from '@/lib/api-error-text';
 import { IconSend, IconSpark } from '@/icons';
 import { siteInfo } from '@/stores/session';
 import SafeIntro from './SafeIntro.vue';
+
+/** The trial's refusals are codes, so each one gets its line in the reader's language. */
+function trialErrorText(failure: unknown): string {
+  return apiFailureText(failure, 'trialFailed', {
+    trial_busy: 'trialBusy',
+    trial_exhausted: 'trialExhausted',
+    trial_finished: 'trialEndedSignUp',
+  });
+}
 
 interface Turn {
   role: 'user' | 'assistant';
@@ -64,6 +73,11 @@ function toEnd(): void {
   });
 }
 
+// The answer in flight. Leaving the page ends it: the provider is paid per
+// token, and nobody is left to read what it would still write.
+let stream: AbortController | null = null;
+onBeforeUnmount(() => stream?.abort());
+
 async function ask(): Promise<void> {
   const text = question.value.trim();
   if (!text || busy.value) return;
@@ -72,11 +86,24 @@ async function ask(): Promise<void> {
   turns.value = [...turns.value, { role: 'user', content: text }, { role: 'assistant', content: '' }];
   const index = turns.value.length - 1;
   busy.value = true;
+  const controller = new AbortController();
+  stream = controller;
   toEnd();
 
   // Everything but the empty assistant turn just pushed to render into. The
-  // question itself is already the last entry.
-  const sending = turns.value.slice(0, -1).map((entry) => ({ role: entry.role, content: entry.content }));
+  // question itself is already the last entry. A refused exchange is left out
+  // with its error text: the server never counted it, and the model did not
+  // say it.
+  const sending: { role: Turn['role']; content: string }[] = [];
+  const history = turns.value.slice(0, -1);
+  for (let at = 0; at < history.length; at++) {
+    const entry = history[at]!;
+    if (entry.role === 'user' && history[at + 1]?.failed) {
+      at++;
+      continue;
+    }
+    sending.push({ role: entry.role, content: entry.content });
+  }
 
   try {
     const result = await streamTrial(sending, continuation.value, (delta) => {
@@ -85,14 +112,18 @@ async function ask(): Promise<void> {
       turns.value = turns.value.map((entry, at) =>
         (at === index ? { ...entry, content: entry.content + delta } : entry));
       toEnd();
-    });
+    }, controller.signal);
     continuation.value = result.continuation;
     left.value = result.turnsLeft;
   } catch (error) {
-    turns.value = turns.value.map((entry, at) => (at === index
-      ? { role: 'assistant', content: error instanceof ApiError ? error.message : t('trialFailed'), failed: true }
-      : entry));
+    // Nothing to show for an answer the reader walked away from.
+    if (!controller.signal.aborted) {
+      turns.value = turns.value.map((entry, at) => (at === index
+        ? { role: 'assistant', content: trialErrorText(error), failed: true }
+        : entry));
+    }
   } finally {
+    if (stream === controller) stream = null;
     busy.value = false;
   }
 }

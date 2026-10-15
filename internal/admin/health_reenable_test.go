@@ -44,7 +44,8 @@ func TestAModelThatCouldNotBeReenabledIsNamed(t *testing.T) {
 		if id == offTwo {
 			return model.Model{}, errors.New("write refused")
 		}
-		return model.Model{ID: id}, nil
+		// What the store hands back after a write that switched the model on.
+		return model.Model{ID: id, Enabled: true}, nil
 	}
 
 	reenabled, refused := reenableAutoDisabled(context.Background(), rows, update)
@@ -66,7 +67,7 @@ func TestAModelThatCouldNotBeReenabledIsNamed(t *testing.T) {
 func TestAResetThatReenablesEverythingNamesNothing(t *testing.T) {
 	rows := []model.Model{{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", AutoDisabled: true}}
 	update := func(_ context.Context, id string, _ model.Update) (model.Model, error) {
-		return model.Model{ID: id}, nil
+		return model.Model{ID: id, Enabled: true}, nil
 	}
 
 	reenabled, refused := reenableAutoDisabled(context.Background(), rows, update)
@@ -139,5 +140,69 @@ func TestAResetLeavesAModelAnOperatorSwitchedOff(t *testing.T) {
 	}
 	if stored.Enabled {
 		t.Error("a health reset switched on a model an operator had switched off")
+	}
+}
+
+// A model of a switched-off provider stays off through a reset, and the reset
+// must say so rather than count it. The store keeps the model off whatever the
+// reset asks, so the write succeeds and the model is still disabled; the count
+// that reads only the write's error would report a re-enable that did not
+// happen. The checker's flag stays too, because the refused enable changed
+// nothing.
+func TestAResetNamesAModelWhoseProviderIsOff(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, config.Database{
+		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "health-provider-off.db"),
+		MaxOpenConns: 4, MaxIdleConns: 2,
+	})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	box, err := secret.New([]byte("a-test-instance-secret-value"), secret.PurposeProviderKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providers := provider.NewStore(db, box)
+	models := model.NewStore(db, providers)
+	upstream, err := providers.Create(ctx, provider.CreateInput{
+		Name: "Upstream", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test-0123", Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := models.Create(ctx, model.CreateInput{
+		ProviderID: upstream.ID, ModelID: "vendor/one", DisplayName: "One", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flipped, err := models.DisableIfEnabled(ctx, record.ID); err != nil || !flipped {
+		t.Fatalf("the checker's disable: flipped=%v, err=%v", flipped, err)
+	}
+	off := false
+	if _, err := providers.Update(ctx, upstream.ID, provider.Update{Enabled: &off}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := models.ListAll(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reenabled, refused := reenableAutoDisabled(ctx, rows, models.Update)
+	if reenabled != 0 || len(refused) != 1 || refused[0] != record.ID {
+		t.Errorf("reenabled = %d, refused = %v, want none re-enabled and %s named", reenabled, refused, record.ID)
+	}
+	stored, err := models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Enabled || !stored.AutoDisabled {
+		t.Errorf("stored = enabled %v auto_disabled %v, want off with the checker's flag kept", stored.Enabled, stored.AutoDisabled)
 	}
 }

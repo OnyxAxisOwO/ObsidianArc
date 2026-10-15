@@ -184,9 +184,20 @@ export function tokenizeAnsiChunk(
     if (finalByte === 'm') {
       flushText(); // text already seen keeps the old classes
       const parts = params.length ? params.split(';') : ['0'];
-      for (const part of parts) {
-        const n = part === '' ? 0 : Number(part);
-        if (Number.isFinite(n)) applySgrParam(sgr, n);
+      for (let k = 0; k < parts.length; k += 1) {
+        const n = parts[k] === '' ? 0 : Number(parts[k]);
+        if (!Number.isFinite(n)) continue;
+        // 38 and 48 open an extended colour: `5;n` (256-colour) or `2;r;g;b`
+        // (truecolor). Those arguments are values, not SGR codes, so they are
+        // read past here. Without this, `38;5;7` switched inverse on and
+        // `38;2;30;30;30` switched dim on and picked a foreground.
+        if (n === 38 || n === 48) {
+          const mode = Number(parts[k + 1]);
+          if (mode === 5) k += 2;
+          else if (mode === 2) k += 4;
+          continue;
+        }
+        applySgrParam(sgr, n);
       }
     } else if ((finalByte === 'J' && (params === '2' || params === '3')) || (finalByte === 'H' && params === '')) {
       flushText();

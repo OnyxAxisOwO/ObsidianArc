@@ -18,8 +18,8 @@ import ChatMessage from './ChatMessage.vue';
 import ChatPending from './ChatPending.vue';
 import ChatSidebar from './ChatSidebar.vue';
 import {
-  active, addImages, busy, chatChallenge, dragging, draft, flash, historyOpen, isEmpty, justSentID, messages, pending,
-  scrollTick, showPending, startNewConversation, status, submit, suggestions, switchTick,
+  active, addImages, addTextFiles, busy, chatChallenge, dragging, draft, flash, historyOpen, isEmpty, justSentID,
+  messages, pending, scrollTick, showPending, startNewConversation, status, submit, suggestions, switchTick,
 } from './useChat';
 import {
   cancelAllFlights, captureComposerRect, lastComposerRect, markFlying, playSendAnimation,
@@ -98,15 +98,27 @@ watch(switchTick, () => {
   });
 });
 
-function carriesFiles(event: DragEvent): boolean {
-  if (!status.value.vision) return false;
+function isFileDrag(event: DragEvent): boolean {
   const types = event.dataTransfer?.types;
   return !!types && Array.prototype.indexOf.call(types, 'Files') !== -1;
 }
 
+// Whether a drop would be taken right now. Text files are taken whatever the
+// model, so this is about the conversation, not the model's vision.
+function acceptsDrop(): boolean {
+  return status.value.configured && !busy.value;
+}
+
+// A file dropped anywhere on the chat is cancelled here whether or not it is
+// taken: left alone, the browser opens the file in this tab and the draft is
+// gone. Only the hint depends on whether the drop would be accepted.
 function onDragOver(event: DragEvent): void {
-  if (!carriesFiles(event)) return;
+  if (!isFileDrag(event)) return;
   event.preventDefault();
+  if (!acceptsDrop()) {
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+    return;
+  }
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
   dragging.value = true;
 }
@@ -119,10 +131,13 @@ function onDragLeave(event: DragEvent): void {
 }
 
 function onDrop(event: DragEvent): void {
-  if (!carriesFiles(event)) return;
+  if (!isFileDrag(event)) return;
   event.preventDefault();
   dragging.value = false;
-  void addImages(event.dataTransfer?.files ?? null);
+  if (!acceptsDrop()) return;
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  void addImages(files.filter((file) => file.type.startsWith('image/')));
+  void addTextFiles(files.filter((file) => !file.type.startsWith('image/')));
 }
 
 function ask(key: (typeof suggestions.value)[number]): void {

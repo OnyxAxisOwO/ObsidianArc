@@ -470,3 +470,24 @@ func TestParallelProvisionsMakeOneAdministrator(t *testing.T) {
 		t.Errorf("administrators = %d, want exactly one", admins)
 	}
 }
+
+// A password hashed before the transaction opened is the account's password. It
+// is stored as given and the account signs in with it, so the caller can move the
+// slow hash out of the instance lock without changing what gets stored.
+func TestProvisionStoresAPasswordHashedBeforeItsTransaction(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	hash, err := f.auth.HashPassword(ctx, "a-good-password")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+
+	if _, err := provision(t, f, ProvisionInput{Username: "octocat", PasswordHash: hash}); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{
+		Identifier: "octocat", Password: "a-good-password",
+	}); err != nil {
+		t.Fatalf("sign in with the password hashed before the transaction: %v", err)
+	}
+}

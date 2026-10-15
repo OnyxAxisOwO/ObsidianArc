@@ -187,3 +187,40 @@ func TestPluginOriginsCannotInjectADirective(t *testing.T) {
 		t.Errorf("an origin with a separator reached the header: %s", granted)
 	}
 }
+
+// A browser sends Sec-Fetch-Site on every write, so an origin the operator
+// listed in ALLOWED_ORIGINS would never be reached if the header were checked
+// first. The list is the operator's explicit exception; it has to win.
+func TestAnAllowedOriginPassesEvenWhenTheBrowserCallsItCrossSite(t *testing.T) {
+	const allowed = "https://other.example"
+	reached := false
+	handler := SameOrigin([]string{allowed})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached = true
+	}))
+
+	post := func(origin, site string) int {
+		request := httptest.NewRequest(http.MethodPost, "https://app.example/api/x", nil)
+		request.Header.Set("Origin", origin)
+		request.Header.Set("Sec-Fetch-Site", site)
+		recorder := httptest.NewRecorder()
+		reached = false
+		handler.ServeHTTP(recorder, request)
+		if reached {
+			return http.StatusOK
+		}
+		return recorder.Code
+	}
+
+	if got := post(allowed, "cross-site"); got != http.StatusOK {
+		t.Fatalf("allowlisted cross-site origin: status %d, want 200", got)
+	}
+	if got := post(allowed+"/", "same-site"); got != http.StatusOK {
+		t.Fatalf("allowlisted same-site origin with trailing slash: status %d, want 200", got)
+	}
+	if got := post("https://evil.example", "cross-site"); got != http.StatusForbidden {
+		t.Fatalf("unlisted cross-site origin: status %d, want 403", got)
+	}
+	if got := post("", "cross-site"); got != http.StatusForbidden {
+		t.Fatalf("cross-site request with no Origin: status %d, want 403", got)
+	}
+}

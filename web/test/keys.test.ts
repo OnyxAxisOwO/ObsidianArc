@@ -192,7 +192,7 @@ describe('API key CC Switch import', () => {
     await choose(0, t('keyCCSwitchCodex'));
     await choose(1, 'Second model');
     panelHost.querySelector<HTMLButtonElement>('.oa-key-import-btn')!.click();
-    expect(ccSwitch.openCCSwitch).toHaveBeenCalledWith(expect.objectContaining({ app: 'c' + 'odex', model: 'model-2' }));
+    expect(ccSwitch.openCCSwitch).toHaveBeenCalledWith(expect.objectContaining({ app: 'codex', model: 'model-2' }));
   });
 
   it.each([['model_ids', ['model-2']], ['model_id', 'model-2']] as const)(
@@ -255,5 +255,36 @@ describe('API key CC Switch import', () => {
     await mount();
     expect(panelHost.querySelector('.oa-key-import')).toBeNull();
     expect(panelHost.querySelector('.oa-key-token-input')).toBeNull();
+  });
+});
+
+describe('the key panel keeps to its own data', () => {
+  it('reads the model catalogue once when it opens, not again after each change', async () => {
+    const get = vi.spyOn(api, 'get');
+    await mount();
+    await create();
+
+    expect(get.mock.calls.filter((call: unknown[]) => call[0] === '/api/models')).toHaveLength(1);
+    expect(keysAPI.listKeys).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks for the model catalogue again on the next refresh after it failed to load', async () => {
+    const get = vi.spyOn(api, 'get').mockRejectedValueOnce(new Error('network down'));
+    await mount();
+    await create();
+
+    expect(get.mock.calls.filter((call: unknown[]) => call[0] === '/api/models')).toHaveLength(2);
+  });
+
+  it('clears a revoke that is still armed when the panel is left', async () => {
+    await mount();
+    const timers = vi.spyOn(window, 'setTimeout');
+    panelHost.querySelector<HTMLButtonElement>('button[aria-label="Revoke"]')!.click();
+    const armed = timers.mock.results.at(-1)!.value;
+    const clear = vi.spyOn(window, 'clearTimeout');
+
+    app.unmount();
+
+    expect(clear).toHaveBeenCalledWith(armed);
   });
 });

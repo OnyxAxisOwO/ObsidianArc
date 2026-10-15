@@ -16,6 +16,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
@@ -94,6 +95,22 @@ type CreateInput struct {
 
 func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) (Group, error) {
 	if q == nil {
+		// Making a default is two statements, and run alone each autocommits.
+		// Two such creates can then each clear the other's default and leave
+		// none. The admin path takes the instance lock and passes its own
+		// transaction; a standalone caller gets the same lock and transaction.
+		if in.IsDefault {
+			var record Group
+			err := s.db.Tx(ctx, func(tx *database.Tx) error {
+				if err := settings.Lock(ctx, tx); err != nil {
+					return err
+				}
+				var err error
+				record, err = s.Create(ctx, tx, in)
+				return err
+			})
+			return record, err
+		}
 		q = s.db
 	}
 	name, err := checkName(in.Name)
@@ -208,6 +225,25 @@ type Update struct {
 
 func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, in Update) (Group, error) {
 	if q == nil {
+		// Moving or clearing the default is a check and then a write, and run
+		// alone each statement autocommits. Two standalone updates can clear
+		// each other's new default and leave none. A clear that found its group
+		// not the default can also land after a concurrent make-default of that
+		// group and undo it, so clearing is locked too, not only moving. The
+		// instance lock and a single transaction close both windows, as they do
+		// for Create.
+		if in.IsDefault != nil {
+			var record Group
+			err := s.db.Tx(ctx, func(tx *database.Tx) error {
+				if err := settings.Lock(ctx, tx); err != nil {
+					return err
+				}
+				var err error
+				record, err = s.Update(ctx, tx, groupID, in)
+				return err
+			})
+			return record, err
+		}
 		q = s.db
 	}
 	sets := []string{}
@@ -277,11 +313,20 @@ func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, 
 	sets = append(sets, "updated_at = ?")
 	args = append(args, time.Now().UnixMilli(), groupID)
 
-	if _, err := q.Exec(ctx, `UPDATE user_groups SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
+	result, err := q.Exec(ctx, `UPDATE user_groups SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
+	if err != nil {
 		if isUnique(err) {
 			return Group{}, ErrNameTaken
 		}
 		return Group{}, fmt.Errorf("group: update: %w", err)
+	}
+	// A group deleted between the caller's read and this write matches no row.
+	// Refusing here keeps the default-clear below from unsetting the real
+	// default on behalf of a group that is not there.
+	if affected, err := result.RowsAffected(); err != nil {
+		return Group{}, fmt.Errorf("group: update: %w", err)
+	} else if affected == 0 {
+		return Group{}, ErrNotFound
 	}
 	if in.IsDefault != nil && *in.IsDefault {
 		if err := s.clearOtherDefaults(ctx, q, groupID); err != nil {

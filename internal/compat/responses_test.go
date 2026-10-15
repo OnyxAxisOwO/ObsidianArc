@@ -231,8 +231,9 @@ func TestResponsesDropsReplayedReasoningItems(t *testing.T) {
 	}
 }
 
-// Both mean the server is keeping the conversation, and this one keeps
-// nothing. Answering as though it had would silently drop every earlier turn.
+// Each of these means the server is keeping the conversation, or a response
+// to fetch later, and this one keeps neither. Answering as though it had would
+// silently drop every earlier turn, or hand back an id that a GET cannot find.
 func TestResponsesRefusesStatefulRequests(t *testing.T) {
 	f := newFixture(t)
 	f.upstream.reply(answer)
@@ -240,6 +241,9 @@ func TestResponsesRefusesStatefulRequests(t *testing.T) {
 	for _, body := range []string{
 		`{"model":"` + f.model.ID + `","store":true,"input":"hi"}`,
 		`{"model":"` + f.model.ID + `","store":false,"previous_response_id":"resp_x","input":"hi"}`,
+		`{"model":"` + f.model.ID + `","store":false,"conversation":"conv_x","input":"hi"}`,
+		`{"model":"` + f.model.ID + `","store":false,"conversation":{"id":"conv_x"},"input":"hi"}`,
+		`{"model":"` + f.model.ID + `","store":false,"background":true,"input":"hi"}`,
 	} {
 		w := f.do(t, http.MethodPost, "/v1/responses", f.token, body)
 		if w.Code != http.StatusBadRequest {
@@ -414,6 +418,42 @@ func TestResponsesStreamsThinkingAsItsOwnItem(t *testing.T) {
 	}
 	if !strings.Contains(raw, `"type":"reasoning"`) {
 		t.Errorf("no reasoning item in the stream:\n%s", raw)
+	}
+}
+
+// A provider that answers in one piece can think, call a tool and say nothing
+// else. The thinking is not tied to the text beside it: the stream has to
+// carry it, as an item that closes before the call it led to.
+const reasonedToolReply = `{"choices":[{"message":{"content":null,` +
+	`"reasoning_content":"I should read the file first.","tool_calls":[` +
+	`{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"main.go\"}"}}]},` +
+	`"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":40,"completion_tokens":9}}`
+
+func TestResponsesStreamsThinkingOfAToolOnlyTurn(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(reasonedToolReply)
+
+	w := f.do(t, http.MethodPost, "/v1/responses", f.token,
+		`{"model":"`+f.model.ID+`","stream":true,"store":false,`+
+			`"tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}],`+
+			`"input":"what is in main.go?"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	raw := w.Body.String()
+
+	if !strings.Contains(raw, `"type":"reasoning"`) || !strings.Contains(raw, `"text":"I should read the file first."`) {
+		t.Fatalf("the thinking of a tool-only turn never reached the stream:\n%s", raw)
+	}
+	if !strings.Contains(raw, `"type":"function_call"`) {
+		t.Fatalf("the tool call never reached the stream:\n%s", raw)
+	}
+
+	// Closed before the call opens, so the thinking sits above the call.
+	closed := strings.Index(raw, "event: response.reasoning_summary_text.done")
+	called := strings.Index(raw, `"type":"function_call"`)
+	if closed < 0 || called < 0 || closed > called {
+		t.Errorf("the thinking did not close before the call began:\n%s", raw)
 	}
 }
 

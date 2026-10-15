@@ -83,5 +83,8 @@ func (h *Handlers) assignGroupMembers(w http.ResponseWriter, r *http.Request) er
 	if err != nil {
 		return err
 	}
+	// Each account now has a different group's limits, which the cached ranking
+	// reads; see forgetAllowanceRankings.
+	h.forgetAllowanceRankings()
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"updated": len(body.UserIDs)})
 }

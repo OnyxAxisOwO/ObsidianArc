@@ -171,7 +171,10 @@ func TranslateTwoFactorError(w http.ResponseWriter, err error) error {
 		// is still good, when all that is asked is a fresh sign-in.
 		return httpx.ForbiddenCode("reauth_required", "Sign in again to make this change.")
 	case errors.Is(err, ErrSessionNotFound):
-		return httpx.Unauthorized("Sign in to continue.")
+		// The session that asked ended mid-request. The session code makes an open
+		// page sign itself out, where the generic 401 would leave it on a screen
+		// that no longer has an account behind it.
+		return httpx.UnauthorizedCode("session_required", "Sign in to continue.")
 	case errors.Is(err, ErrCurrentPasswordWrong):
 		return httpx.BadRequestCode("current_password_wrong", "That password is not correct.")
 	case errors.Is(err, ErrNoPendingSignIn):

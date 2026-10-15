@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -96,9 +98,67 @@ func isStripped(r rune) bool { return isControl(r) || isFormatCharacter(r) }
 // zero-width characters and the byte-order mark. None of them is drawn itself,
 // so they are not control characters, but an override in a stranger's text
 // would show an administrator a line that reads differently from what is stored.
+// The word joiners, the Mongolian vowel separator, the interlinear annotation
+// marks and the language tag block (U+E0001 and U+E0020-E007F, which spell ASCII
+// invisibly) are the same kind of character, and hide or reorder text the same
+// way. The cost is in the table and field output: a flag sequence such as the
+// England subdivision, whose tags are what make it a flag, loses them and shows
+// its base emoji instead. --json keeps them, as \u escapes that decode to the
+// same characters.
 func isFormatCharacter(r rune) bool {
-	return r == 0x061c || (r >= 0x200b && r <= 0x200f) || (r >= 0x202a && r <= 0x202e) ||
-		(r >= 0x2066 && r <= 0x2069) || r == 0xfeff
+	return r == 0x061c || r == 0x180e || (r >= 0x200b && r <= 0x200f) || (r >= 0x202a && r <= 0x202e) ||
+		(r >= 0x2060 && r <= 0x2069) || r == 0xfeff || (r >= 0xfff9 && r <= 0xfffb) ||
+		r == 0xe0001 || (r >= 0xe0020 && r <= 0xe007f)
+}
+
+// cellWidth is how many terminal cells s occupies. A rune count is not that: a
+// Chinese nickname is one rune and two cells, so a row widened by one shifted
+// every column after it. Everything that lays text out measures with this.
+func cellWidth(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeCells(r)
+	}
+	return n
+}
+
+// runeCells is the width of one rune in cells: 2 for an East Asian Wide or
+// Fullwidth character, 0 for a combining or format character, 1 otherwise. The
+// ranges are the ones an administrator's text is made of, not all of Unicode,
+// and they are written out here because the project takes no dependency for a
+// width table.
+func runeCells(r rune) int {
+	if isFormatCharacter(r) || unicode.Is(unicode.Mn, r) {
+		return 0
+	}
+	for _, span := range wideSpans {
+		if r < span[0] {
+			break
+		}
+		if r <= span[1] {
+			return 2
+		}
+	}
+	return 1
+}
+
+// wideSpans are the wide ranges as sorted [first, last] pairs, so runeCells can
+// stop at the first span that starts past r.
+var wideSpans = [][2]rune{
+	{0x1100, 0x115f},   // Hangul Jamo
+	{0x2e80, 0x303e},   // CJK radicals, symbols and punctuation
+	{0x3041, 0x33ff},   // kana and CJK compatibility
+	{0x3400, 0x4dbf},   // CJK extension A
+	{0x4e00, 0x9fff},   // CJK unified ideographs
+	{0xa000, 0xa4cf},   // Yi
+	{0xac00, 0xd7a3},   // Hangul syllables
+	{0xf900, 0xfaff},   // CJK compatibility ideographs
+	{0xfe30, 0xfe4f},   // CJK compatibility forms
+	{0xff00, 0xff60},   // fullwidth forms
+	{0xffe0, 0xffe6},   // fullwidth signs
+	{0x1f300, 0x1f64f}, // emoji and pictographs
+	{0x1f900, 0x1f9ff}, // supplemental symbols
+	{0x20000, 0x3fffd}, // CJK extensions B and later
 }
 
 // minColumnWidth is the floor RenderTable shrinks a column to before it
@@ -109,8 +169,8 @@ const minColumnWidth = 3
 // RenderTable writes headers and rows as an aligned, two-space-gapped grid,
 // clipped to width (columns below 20 are treated as "unknown", per
 // Session.Width's own contract, and default to 100). A cell longer than its
-// column is truncated with an ellipsis, by rune, so a Chinese nickname
-// clips as cleanly as an ASCII one.
+// column is truncated with an ellipsis, by terminal cell, so a Chinese nickname
+// clips and lines up as an ASCII one does.
 func RenderTable(w io.Writer, width int, colour bool, headers []string, rows [][]string) {
 	n := len(headers)
 	if n == 0 {
@@ -131,11 +191,11 @@ func RenderTable(w io.Writer, width int, colour bool, headers []string, rows [][
 
 	widths := make([]int, n)
 	for i, h := range headers {
-		widths[i] = utf8.RuneCountInString(h)
+		widths[i] = cellWidth(h)
 	}
 	for _, row := range rows {
 		for i := 0; i < n && i < len(row); i++ {
-			if l := utf8.RuneCountInString(row[i]); l > widths[i] {
+			if l := cellWidth(row[i]); l > widths[i] {
 				widths[i] = l
 			}
 		}
@@ -171,7 +231,7 @@ func RenderTable(w io.Writer, width int, colour bool, headers []string, rows [][
 				cell = cells[i]
 			}
 			cell = clipToWidth(cell, widths[i])
-			pad := widths[i] - utf8.RuneCountInString(cell)
+			pad := widths[i] - cellWidth(cell)
 			if header && colour {
 				io.WriteString(w, ansiDim)
 				io.WriteString(w, ansiUnderline)
@@ -205,14 +265,27 @@ func clipToWidth(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	if utf8.RuneCountInString(s) <= width {
+	if cellWidth(s) <= width {
 		return s
 	}
 	if width == 1 {
-		return string([]rune(s)[:1])
+		return takeCells(s, 1)
 	}
-	r := []rune(s)
-	return string(r[:width-1]) + "…"
+	return takeCells(s, width-1) + "…"
+}
+
+// takeCells is the longest prefix of s that fits in cells. A wide character that
+// would straddle the edge is dropped rather than split, because half of one
+// cannot be drawn.
+func takeCells(s string, cells int) string {
+	used := 0
+	for i, r := range s {
+		used += runeCells(r)
+		if used > cells {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // RenderFields writes a key: value block — the "show" counterpart to
@@ -220,13 +293,13 @@ func clipToWidth(s string, width int) string {
 func RenderFields(w io.Writer, colour bool, pairs [][2]string) {
 	width := 0
 	for _, p := range pairs {
-		if l := utf8.RuneCountInString(sanitize(p[0])); l > width {
+		if l := cellWidth(sanitize(p[0])); l > width {
 			width = l
 		}
 	}
 	for _, p := range pairs {
 		p[0], p[1] = sanitize(p[0]), sanitize(p[1])
-		pad := width - utf8.RuneCountInString(p[0])
+		pad := width - cellWidth(p[0])
 		if colour {
 			fmt.Fprintf(w, "%s%s%s:%s", ansiDim, p[0], strings.Repeat(" ", pad), ansiReset)
 		} else {
@@ -256,10 +329,11 @@ func RenderJSON(w io.Writer, raw []byte) error {
 	return err
 }
 
-// escapeJSONControls rewrites the characters encoding/json leaves raw — DEL
-// and the C1 range, which a terminal may act on — as \u escapes, so the text
-// still decodes to the same value and no longer drives a screen. The C0
-// controls need no help: JSON cannot carry them unescaped.
+// escapeJSONControls rewrites the characters encoding/json leaves raw — DEL,
+// the C1 range, and the format characters a stranger's text can reorder or hide
+// text with — as \u escapes, so the text still decodes to the same value and no
+// longer reaches a screen as itself. The C0 controls need no help: JSON cannot
+// carry them unescaped.
 func escapeJSONControls(doc []byte) []byte {
 	plain := true
 	for _, b := range doc {
@@ -277,14 +351,25 @@ func escapeJSONControls(doc []byte) []byte {
 		switch {
 		case r == utf8.RuneError && size == 1:
 			out = append(out, `�`...)
-		case r == 0x7f || (r >= 0x80 && r <= 0x9f):
-			out = append(out, fmt.Sprintf(`\u%04x`, r)...)
+		case r == 0x7f || (r >= 0x80 && r <= 0x9f) || isFormatCharacter(r):
+			out = append(out, jsonEscapeRune(r)...)
 		default:
 			out = append(out, doc[i:i+size]...)
 		}
 		i += size
 	}
 	return out
+}
+
+// jsonEscapeRune spells r as \u escapes, as a surrogate pair above U+FFFF: the
+// tag characters are past the Basic Multilingual Plane, and a four-digit escape
+// of one would not be valid JSON.
+func jsonEscapeRune(r rune) string {
+	if r <= 0xffff {
+		return fmt.Sprintf(`\u%04x`, r)
+	}
+	hi, lo := utf16.EncodeRune(r)
+	return fmt.Sprintf(`\u%04x\u%04x`, hi, lo)
 }
 
 // renderRowsAsJSON and renderPairsAsJSON are RenderJSON's fallback for a
@@ -349,7 +434,10 @@ func RenderError(w io.Writer, colour, jsonMode bool, err error) string {
 	var callErr *CallError
 	code := ""
 	if errors.As(err, &callErr) {
-		code = callErr.Code
+		// The code is the server's word for a plugin package's error, and a
+		// package's error text is not vetted, so the code is data too: the text
+		// output prints it raw, and it is also what the audit records.
+		code = sanitize(callErr.Code)
 	}
 	// A refusal can quote what the caller typed or what a row holds, and it
 	// reaches the screen like any other data.

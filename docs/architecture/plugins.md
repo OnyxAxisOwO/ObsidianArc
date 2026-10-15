@@ -32,7 +32,7 @@ go build ./cmd/server                      # 不带任何构建标签 = 只要�
 
 每个插件对应一个构建标签 `plugin_<名字>`。Docker 镜像同样接受 `--build-arg PLUGINS="…"`，默认值和 Makefile 一致。
 
-`make version` 会顺带打印这次构建带了哪些插件，`make release` 也会把它写进 `dist/PLUGINS`。`make deploy` 在服务器上发现上一次部署带着的插件这一次没带时会拒绝继续，因为这样会让一个正在用它的实例悄悄失去功能；确实要去掉时，先在后台卸载它，再加 `DROP_PLUGINS=1`。
+`make version` 会顺带打印这次构建带了哪些插件，`make release` 也会把它写进 `dist/PLUGIN_LIST`。`make deploy` 在服务器上发现上一次部署带着的插件这一次没带时会拒绝继续，因为这样会让一个正在用它的实例悄悄失去功能；确实要去掉时，先在后台卸载它，再加 `DROP_PLUGINS=1`。服务器上的记录叫 `PLUGIN_LIST`，放在它 compose 目录下。新列表只在 `docker compose up` 成功后写入；若服务器上还没有这个文件，部署开始时先把旧记录复制过去，内容不变。
 
 ## 在后台管理插件
 

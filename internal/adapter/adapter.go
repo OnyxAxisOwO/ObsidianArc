@@ -430,9 +430,10 @@ func NewRegistry(cfg config.Upstream) *Registry {
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
-			// No client-level Timeout: it would cut a long streamed answer
-			// off mid-sentence. The request context is the deadline, and it
-			// is cancelled when the browser goes away.
+			// Timeout is an operator's explicit choice (UPSTREAM_REQUEST_TIMEOUT,
+			// zero by default). Set, it cuts a long streamed answer off
+			// mid-sentence, so by default the request context is the only
+			// deadline, and it is cancelled when the browser goes away.
 			Timeout: cfg.RequestTimeout,
 		},
 		adapters: map[Kind]Adapter{

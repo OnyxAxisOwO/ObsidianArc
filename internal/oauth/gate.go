@@ -30,6 +30,13 @@ func oidcBindingAllowed(r *http.Request) bool {
 		// The connect call itself, which asks for the account's proof and answers
 		// with the provider's address. Only for OIDC, see below.
 		"POST /api/auth/oauth/connections/oidc",
+		// The second-factor enrolment endpoints. EnrolmentGate runs first and
+		// lets these through for an account it is holding, so an account owing
+		// both steps reaches them here as well: without them it could never
+		// enrol a factor, and so could never connect the identity this gate
+		// asks for.
+		"GET /api/profile/two-factor", "POST /api/profile/two-factor/setup",
+		"POST /api/profile/two-factor/enable",
 		"GET /api/preferences", "PATCH /api/preferences", "GET /api/preferences/wallpaper":
 		return true
 	}

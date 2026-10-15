@@ -13,10 +13,22 @@ import type { Choice } from '@/components/choice';
 import { t } from '@/composables/useI18n';
 import { currentPreferences, currentUser, syncPreferences } from '@/stores/session';
 
+// The labels are computed from what was loaded rather than written into a
+// list once. A list built here would keep the language it was built in: this
+// panel stays mounted while the language changes, and nothing would rebuild
+// it.
+const models = ref<Array<{ id: string; display_name: string }> | null>(null);
+const loadFailed = ref(false);
 // The empty value is a real choice, not a prompt to pick one: it means
 // whichever model the account can reach first, which is what a new account
 // already gets.
-const choices = ref<Array<Choice<string>>>([{ value: '', label: t('firstAvailableModel') }]);
+const choices = computed<Array<Choice<string>>>(() => {
+  if (loadFailed.value) return [{ value: '', label: t('couldNotLoadModels') }];
+  return [
+    { value: '', label: t('firstAvailableModel') },
+    ...(models.value ?? []).map((entry) => ({ value: entry.id, label: entry.display_name })),
+  ];
+});
 const model = ref('');
 const effort = ref((currentPreferences.value['reasoning_effort'] as string) ?? 'medium');
 const stats = ref(currentPreferences.value['show_stats'] === true);
@@ -30,10 +42,7 @@ onMounted(() => {
   void api.get<{ models: Array<{ id: string; display_name: string; usable?: boolean }> }>('/api/models')
     .then(({ models: list }) => {
       const usable = list.filter((entry) => entry.usable !== false);
-      choices.value = [
-        { value: '', label: t('firstAvailableModel') },
-        ...usable.map((entry) => ({ value: entry.id, label: entry.display_name })),
-      ];
+      models.value = usable.map((entry) => ({ id: entry.id, display_name: entry.display_name }));
       // Only if it is still on the list: a model that has since been withdrawn
       // would otherwise leave the control naming nothing.
       const stored = currentPreferences.value['default_model_id'];
@@ -42,7 +51,7 @@ onMounted(() => {
       }
     })
     .catch(() => {
-      choices.value = [{ value: '', label: t('couldNotLoadModels') }];
+      loadFailed.value = true;
     });
 });
 </script>

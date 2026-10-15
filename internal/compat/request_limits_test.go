@@ -253,39 +253,90 @@ func TestNestedToolResultsAreRefusedOnBothPaths(t *testing.T) {
 	}
 }
 
-// The refusal is about what nests, not about results: a tool that answers with
-// text and a picture is still answered on both paths.
-func TestToolResultWithTextAndImageIsStillAccepted(t *testing.T) {
-	f := newFixture(t)
-	f.upstream.reply(answer)
+// A picture cannot travel inside a tool result: the provider takes a result as
+// text. The picture used to be decoded, checked and then dropped, so the model
+// answered as if nothing had been attached. Each surface refuses it instead,
+// and the provider never sees the request. A text-only result still goes
+// through, so the refusal is about the picture and not the result.
+func TestAPictureInsideAToolResultIsRefusedNotDropped(t *testing.T) {
+	anthropicResult := func(modelID, picture string) string {
+		return `{"model":"` + modelID + `","max_tokens":16,"messages":[` +
+			`{"role":"user","content":"what is on screen?"},` +
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_x","name":"screenshot","input":{}}]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":[` +
+			`{"type":"text","text":"screen captured"}` + picture + `]}]}]}`
+	}
+	anthropicPicture := `,{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + testPNG + `"}}`
 
-	body := `{"model":"` + f.model.ID + `","max_tokens":16,"messages":[` +
-		`{"role":"user","content":"what is on screen?"},` +
-		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_x","name":"screenshot","input":{}}]},` +
-		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":[` +
-		`{"type":"text","text":"screen captured"},` +
-		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + testPNG + `"}}]}]}]}`
+	cases := []struct {
+		name string
+		path string
+		body func(modelID string) string
+	}{
+		{"anthropic tool_result", "/v1/messages", func(id string) string {
+			return anthropicResult(id, anthropicPicture)
+		}},
+		{"chat tool message", "/v1/chat/completions", func(id string) string {
+			return `{"model":"` + id + `","stream":false,"messages":[` +
+				`{"role":"user","content":"what is on screen?"},` +
+				`{"role":"assistant","tool_calls":[{"id":"call_x","type":"function","function":{"name":"screenshot","arguments":"{}"}}]},` +
+				`{"role":"tool","tool_call_id":"call_x","content":[` +
+				`{"type":"text","text":"screen captured"},` +
+				`{"type":"image_url","image_url":{"url":"data:image/png;base64,` + testPNG + `"}}]}]}`
+		}},
+		{"responses function_call_output", "/v1/responses", func(id string) string {
+			return `{"model":"` + id + `","store":false,"input":[` +
+				`{"type":"message","role":"user","content":"what is on screen?"},` +
+				`{"type":"function_call_output","call_id":"call_x","output":[` +
+				`{"type":"input_text","text":"screen captured"},` +
+				`{"type":"input_image","image_url":"data:image/png;base64,` + testPNG + `"}]}]}`
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.upstream.reply(answer)
 
-	w := f.do(t, http.MethodPost, "/v1/messages", f.token, body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
-	}
-	sent, _ := f.upstream.received()["messages"].([]any)
-	if len(sent) != 3 {
-		t.Fatalf("provider received %v, want three messages", f.upstream.received()["messages"])
-	}
-	result, _ := sent[2].(map[string]any)
-	if result["role"] != "tool" || result["content"] != "screen captured" {
-		t.Errorf("result reached the provider as %v", result)
+			w := f.do(t, http.MethodPost, c.path, f.token, c.body(f.model.ID))
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "image") {
+				t.Errorf("refusal does not say why: %s", w.Body.String())
+			}
+			if f.upstream.received() != nil {
+				t.Error("a request with a picture inside a result reached the provider")
+			}
+		})
 	}
 
-	count := f.do(t, http.MethodPost, "/v1/messages/count_tokens", f.token, body)
-	if count.Code != http.StatusOK {
-		t.Fatalf("count_tokens status = %d: %s", count.Code, count.Body.String())
-	}
-	if tokens, _ := decodeJSON(t, count)["input_tokens"].(float64); tokens <= 0 {
-		t.Errorf("count_tokens input_tokens = %v", decodeJSON(t, count)["input_tokens"])
-	}
+	t.Run("a text-only result is still answered", func(t *testing.T) {
+		f := newFixture(t)
+		f.upstream.reply(answer)
+
+		w := f.do(t, http.MethodPost, "/v1/messages", f.token, anthropicResult(f.model.ID, ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		sent, _ := f.upstream.received()["messages"].([]any)
+		if len(sent) != 3 {
+			t.Fatalf("provider received %v, want three messages", f.upstream.received()["messages"])
+		}
+		result, _ := sent[2].(map[string]any)
+		if result["role"] != "tool" || result["content"] != "screen captured" {
+			t.Errorf("result reached the provider as %v", result)
+		}
+
+		// count_tokens takes the same body and must not refuse what the
+		// answer path accepted.
+		count := f.do(t, http.MethodPost, "/v1/messages/count_tokens", f.token, anthropicResult(f.model.ID, ""))
+		if count.Code != http.StatusOK {
+			t.Fatalf("count_tokens status = %d: %s", count.Code, count.Body.String())
+		}
+		if tokens, _ := decodeJSON(t, count)["input_tokens"].(float64); tokens <= 0 {
+			t.Errorf("count_tokens input_tokens = %v", decodeJSON(t, count)["input_tokens"])
+		}
+	})
 }
 
 // resultChain is a tool_result nested depth levels deep, with the payload at the

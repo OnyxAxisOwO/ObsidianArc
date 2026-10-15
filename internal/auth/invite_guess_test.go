@@ -18,11 +18,12 @@ import (
 
 // wireInvites stands a one-code invite hook in front of the service the way
 // server.go wires invite.Store: the code "RIGHT2" spends a use, any other code
-// is refused.
+// is refused with ErrInviteInvalid, which server.go translates from the invite
+// package's own rejection.
 func wireInvites(f *fixture) {
 	f.auth.ConsumeInvite = func(_ context.Context, _ *database.Tx, code string) (*InviteGrant, error) {
 		if code != "RIGHT2" {
-			return nil, errors.New("invite: that code is not valid")
+			return nil, ErrInviteInvalid
 		}
 		return &InviteGrant{CodeID: "code-1"}, nil
 	}
@@ -274,5 +275,39 @@ func TestABurstOfWrongCodesFromOneAddressIsCountedOnce(t *testing.T) {
 	}
 	if checked.Load()+limited.Load() != burst {
 		t.Errorf("checked %d + limited %d != burst %d", checked.Load(), limited.Load(), burst)
+	}
+}
+
+// A failure of the store while a valid code is being spent is not the guesser's
+// fault. It must come back as itself rather than as a wrong code, and it must
+// not spend the address's invite budget.
+func TestAnInviteStoreFailureIsNotCountedAsAGuess(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"}); err != nil {
+		t.Fatal(err)
+	}
+	outage := errors.New("invite: read code: database is locked")
+	f.auth.ConsumeInvite = func(context.Context, *database.Tx, string) (*InviteGrant, error) {
+		return nil, outage
+	}
+
+	const address = "198.51.100.22"
+	for i := range 2 * addressFreeAttempts {
+		_, _, err := f.auth.Register(ctx, RegisterInput{
+			Username: "outage" + strconv.Itoa(i), Password: "a-good-password",
+			IP: address, InviteCode: "RIGHT2",
+		})
+		if !errors.Is(err, outage) {
+			t.Fatalf("registration %d: err = %v, want the store failure itself", i, err)
+		}
+	}
+
+	wireInvites(f)
+	_, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "wrongcode", Password: "a-good-password", IP: address, InviteCode: "WRONG",
+	})
+	if !errors.Is(err, ErrInviteInvalid) {
+		t.Fatalf("a wrong code after the outages: err = %v, want ErrInviteInvalid, not a rate limit", err)
 	}
 }

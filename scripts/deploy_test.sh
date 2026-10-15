@@ -28,17 +28,25 @@ case $(uname -m) in
   *) echo arm64 >"$work/dist/ARCH" ;;
 esac
 printf '#!/bin/sh\nshift\nexec sh -c "$1"\n' >"$tmp/bin/ssh"
-printf '#!/bin/sh\necho "docker $*"\n' >"$tmp/bin/docker"
+# The docker stand-in fails the step named by DOCKER_FAIL ("build" or "compose
+# up"), so a deploy that stops part way can be exercised.
+printf '#!/bin/sh\necho "docker $*"\ncase "$*" in *"${DOCKER_FAIL:-@}"*) exit 1 ;; esac\n' >"$tmp/bin/docker"
 chmod +x "$tmp/bin/ssh" "$tmp/bin/docker"
 
 # deploy <what the server has> <what the build carries> [DROP_PLUGINS] [the
-# file the server keeps its list in]
+# file the server keeps its list in, under $server] [docker step to fail]
 deploy() {
-  rm -f "$server/dist/PLUGINS" "$server/dist/PLUGIN_LIST"
-  if [ -n "$1" ]; then echo "$1" >"$server/dist/${4:-PLUGIN_LIST}"; fi
+  rm -f "$server/PLUGIN_LIST" "$server/dist/PLUGINS" "$server/dist/PLUGIN_LIST"
+  if [ -n "$1" ]; then echo "$1" >"$server/${4:-PLUGIN_LIST}"; fi
   echo "$2" >"$work/dist/PLUGIN_LIST"
+  run_deploy "${3:-}" "${5:-}"
+}
+
+# run_deploy <DROP_PLUGINS> <docker step to fail>: deploys whatever the server
+# and the build hold now, without setting either up again.
+run_deploy() {
   (cd "$work" && PATH="$tmp/bin:$PATH" DEPLOY_SSH="$tmp/bin/ssh" DEPLOY_HOST=host \
-    DEPLOY_DIR="$server" DROP_PLUGINS="${3:-}" sh "$script") >"$tmp/out" 2>&1
+    DEPLOY_DIR="$server" DROP_PLUGINS="$1" DOCKER_FAIL="$2" sh "$script") >"$tmp/out" 2>&1
 }
 
 fail() { echo "FAIL: $1" >&2; cat "$tmp/out" >&2; exit 1; }
@@ -49,14 +57,53 @@ grep -q "docker" "$tmp/out" && fail "the container was touched before the refusa
 
 deploy "alpha beta" "alpha" 1 || fail "DROP_PLUGINS=1 did not let the plugin go"
 deploy "alpha beta" "beta gamma alpha" || fail "a build carrying everything, and more, was refused"
+grep -qx "beta gamma alpha" "$server/PLUGIN_LIST" || fail "a successful deploy did not record what it runs"
 deploy "" "alpha" || fail "a first deploy, with no list on the server, was refused"
 deploy " " "alpha" || fail "a server whose list is empty was refused"
 
 # A server last deployed before the list was renamed still has the old file,
 # and a build that drops what it names is refused all the same.
-if deploy "alpha beta" "alpha" "" PLUGINS; then fail "the old list file was not read"; fi
+if deploy "alpha beta" "alpha" "" dist/PLUGINS; then fail "the old list file was not read"; fi
 grep -q "carries beta" "$tmp/out" || fail "the refusal from the old list file does not name the plugin"
-deploy "alpha beta" "alpha beta" "" PLUGINS || fail "a build carrying everything the old list names was refused"
+deploy "alpha beta" "alpha beta" "" dist/PLUGINS || fail "a build carrying everything the old list names was refused"
+
+# A deploy that stops part way must not move the record. The build's own list
+# is in dist/ by then, and the next deploy, without DROP_PLUGINS=1, must still
+# be refused for the plugin the running server carries.
+for failing in build "compose up"; do
+  if deploy "alpha beta" "alpha" 1 PLUGIN_LIST "$failing"; then fail "a deploy whose $failing step failed was reported as deployed"; fi
+  if run_deploy "" ""; then fail "a deploy after a failed $failing let the plugin go"; fi
+  grep -q "carries beta" "$tmp/out" || fail "the refusal after a failed $failing does not name the plugin"
+done
+
+# The same holds for a server still keeping its list under dist/. The failed
+# attempt's rm -rf dist takes that file, and the build's own dist/PLUGIN_LIST
+# then holds only what the new build carries.
+for failing in build "compose up"; do
+  if deploy "alpha beta" "alpha" 1 dist/PLUGINS "$failing"; then fail "a legacy deploy whose $failing step failed was reported as deployed"; fi
+  if run_deploy "" ""; then fail "a deploy after a failed $failing, from a server with its list under dist/, let the plugin go"; fi
+  grep -q "carries beta" "$tmp/out" || fail "the refusal after a failed $failing, from a server with its list under dist/, does not name the plugin"
+done
+
+# A first deploy that fails in docker build leaves the build's own list in
+# dist/. A server that runs no plugins must not have that list read back as
+# what it runs: the deploy writes the record before the build replaces dist/.
+if deploy "" "alpha" "" "" build; then fail "a build failed by docker was reported as deployed"; fi
+echo >"$work/dist/PLUGIN_LIST"
+run_deploy "" "" || fail "a failed attempt's build list was read as what the server runs"
+
+# ssh reads a host that begins with a dash as one of its options, so the deploy
+# has to stop before the transport is reached: the stand-in ssh would otherwise
+# run the remote half and echo docker's line.
+host_proof=$tmp/host-proof
+if (cd "$work" && PATH="$tmp/bin:$PATH" DEPLOY_SSH="$tmp/bin/ssh" DEPLOY_HOST="-oProxyCommand=touch '$host_proof'" \
+  DEPLOY_DIR="$server" sh "$script") >"$tmp/out" 2>&1; then
+  fail "a DEPLOY_HOST that begins with a dash was accepted"
+fi
+grep -q "DEPLOY_HOST is refused" "$tmp/out" || fail "the DEPLOY_HOST refusal does not say why"
+grep -q docker "$tmp/out" && fail "the transport ran for a DEPLOY_HOST that was refused"
+[ -e "$host_proof" ] && fail "a DEPLOY_HOST ran as an ssh option"
+echo "deploy.sh host guard: ok"
 
 # A tag name reaches the server's shell through dist/VERSION. A quote in it runs
 # its payload there, so the deploy has to stop before ssh is reached, and no
@@ -146,6 +193,10 @@ echo "Makefile plugin name guard: ok"
 # for another reason.
 probe=$tmp/make-probe
 mkdir -p "$probe"
+# Run from a make that was given VERSION= on its command line (an overlay
+# build's does), the inherited MAKEFLAGS would hand that value to every make
+# below, and a command-line value outranks the environment one being tested.
+unset MAKEFLAGS MAKEOVERRIDES MFLAGS
 nl='
 '
 # make_refuses <the file a payload would create> <make arguments...>

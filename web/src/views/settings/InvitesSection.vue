@@ -125,7 +125,14 @@ onMounted(() => {
   // find it again is the alternative. Never submitted on its own: claiming
   // changes the account's group, and that is a decision to make on purpose.
   const carried = route.query['claim'];
-  if (typeof carried === 'string' && carried) claimCode.value = carried;
+  if (typeof carried === 'string' && carried) {
+    claimCode.value = carried;
+    // Taken out of the address bar as well: a code left in the URL stays in
+    // the history and on screen, and shows on anyone watching the screen.
+    const query = { ...route.query };
+    delete query['claim'];
+    void router.replace({ path: route.path, query, hash: route.hash });
+  }
 });
 
 function claimErrorText(failure: unknown): string {

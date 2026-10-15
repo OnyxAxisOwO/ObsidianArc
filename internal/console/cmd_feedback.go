@@ -2,7 +2,6 @@ package console
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -68,10 +67,10 @@ func init() {
 			summary := asMap(m["summary"])
 			if rt.Session.Lang == "zh" {
 				rt.Printf("\n共 %v 条，未处理 %v 条（其中高优先级 %v 条）；本页 %d 条。\n",
-					asNum(m["total"]), asNum(summary["open"]), asNum(summary["high_open"]), len(rows))
+					formatNumber(asNum(m["total"])), formatNumber(asNum(summary["open"])), formatNumber(asNum(summary["high_open"])), len(rows))
 			} else {
 				rt.Printf("\n%v matching, %v still open (%v of them high priority); %d on this page.\n",
-					asNum(m["total"]), asNum(summary["open"]), asNum(summary["high_open"]), len(rows))
+					formatNumber(asNum(m["total"])), formatNumber(asNum(summary["open"])), formatNumber(asNum(summary["high_open"])), len(rows))
 			}
 			return nil
 		},
@@ -111,7 +110,7 @@ func init() {
 				{"from", asStr(found["username"])},
 				{"user_id", asStr(found["user_id"])},
 				{"title", asStr(found["title"])},
-				{"replies", fmt.Sprint(asNum(found["replies"]))},
+				{"replies", formatNumber(asNum(found["replies"]))},
 				{"created_at", formatMS(found["created_at"])},
 				{"updated_at", formatMS(found["updated_at"])},
 			}); err != nil {
@@ -248,6 +247,9 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, path, nil); err != nil {
 				return err
 			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
+			}
 			if rt.Session.Lang == "zh" {
 				rt.Printf("已删除回复 %s。\n", rt.Arg(1))
 			} else {
@@ -279,6 +281,9 @@ func init() {
 			}
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/feedback/"+url.PathEscape(ref), nil); err != nil {
 				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
 			if rt.Session.Lang == "zh" {
 				rt.Printf("已删除 %s。\n", ref)

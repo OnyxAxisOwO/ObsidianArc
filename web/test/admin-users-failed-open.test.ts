@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, type Account } from '../src/admin/api';
+import type { ApiKey } from '../src/api/keys';
+import { t } from '../src/composables/useI18n';
+import { installPlugins } from '../src/plugins/registry';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
@@ -34,6 +37,12 @@ const detailOf = (row: Account): Detail => ({
   policy: {} as Detail['policy'],
   cards: { available: 0, expired: 0, used: 0, total: 0, cards: [] } as unknown as Detail['cards'],
 });
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+};
 
 describe('AdminUsers, when an account detail fails to load', () => {
   let app: App | undefined;
@@ -80,6 +89,7 @@ describe('AdminUsers, when an account detail fails to load', () => {
     app = undefined;
     host.remove();
     panels.remove();
+    installPlugins([]);
     vi.restoreAllMocks();
   });
 
@@ -105,5 +115,117 @@ describe('AdminUsers, when an account detail fails to load', () => {
     expect(panels.textContent).toContain('detail unavailable');
     expect(footerSave()).toBeNull();
     expect(adminApi.updateUser).not.toHaveBeenCalled();
+  });
+  const fieldFor = (label: string) => [...panels.querySelectorAll<HTMLElement>('.oa-field')]
+    .find((node) => node.querySelector('.oa-field-label')?.textContent?.trim() === label)!
+    .querySelector<HTMLInputElement>('input')!;
+  const buttonNamed = (label: string) => [...panels.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === label)!;
+
+  // The keys and devices are a second request after the detail. Opening
+  // another account before they arrive must not put this one's under the other.
+  it('does not show the keys or devices of an account that was left while they loaded', async () => {
+    await mount([account('a'), account('b')], '');
+    const keys = deferred<{ keys: ApiKey[] }>();
+    const sessions = deferred<{ sessions: Array<{ id: string; created_at: number; last_seen_at: number; ip: string; user_agent: string }> }>();
+    vi.mocked(adminApi.userKeys).mockImplementation((id: string) =>
+      (id === 'a' ? keys.promise : Promise.resolve({ keys: [] })));
+    vi.mocked(adminApi.userSessions).mockImplementation((id: string) =>
+      (id === 'a' ? sessions.promise : Promise.resolve({ sessions: [] })));
+
+    rowOf('a').click();
+    await settle();
+    rowOf('b').click();
+    await settle();
+    keys.resolve({ keys: [{ id: 'k1', prefix: 'sk-alpha', name: 'Alpha key' } as unknown as ApiKey] });
+    sessions.resolve({ sessions: [{ id: 's1', created_at: 1, last_seen_at: 1, ip: '203.0.113.9', user_agent: 'Alpha browser' }] });
+    await settle();
+
+    expect(panels.textContent).not.toContain('sk-alpha');
+    expect(panels.textContent).not.toContain('203.0.113.9');
+  });
+
+  // The grant has happened when the card list is re-read. A failed re-read is
+  // not a failed grant: the result stays, and the button is free again.
+  it('keeps the grant result and a usable Grant button when only the card re-read fails', async () => {
+    await mount([account('a')], '');
+    rowOf('a').click();
+    await settle();
+    vi.spyOn(adminApi, 'grantCards').mockResolvedValue(undefined);
+    vi.mocked(adminApi.user).mockRejectedValueOnce(new Error('reread failed'));
+
+    buttonNamed(t('grantCards')).click();
+    await settle();
+
+    expect(panels.textContent).toContain(t('granted', { count: 1 }));
+    expect(panels.textContent).not.toContain('reread failed');
+    expect(buttonNamed(t('grantCards')).disabled).toBe(false);
+  });
+
+  // A plugin action that keeps the panel open re-reads the figures; it must not
+  // rebuild the form from the server and discard what the operator typed.
+  it('keeps unsaved edits when a plugin action finishes and the panel stays open', async () => {
+    installPlugins([{ name: 'ops', userActions: [{
+      id: 'quota',
+      title: () => 'Quota',
+      buttons: [{ label: () => 'Reset quota', confirm: () => 'Reset quota?', run: async () => 'Quota reset' }],
+    }] }]);
+    await mount([account('a')], '');
+    rowOf('a').click();
+    await settle();
+    const nickname = fieldFor(t('nickname'));
+    nickname.value = 'Edited';
+    nickname.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+
+    const action = buttonNamed('Reset quota');
+    action.click();
+    await nextTick();
+    action.click();
+    await settle();
+
+    expect(panels.textContent).toContain('Quota reset');
+    expect(fieldFor(t('nickname')).value).toBe('Edited');
+  });
+  // The moved count is a result, not the button's own label: once the cards are
+  // re-read the button offers the reschedule again, with the count it has now.
+  it('reads the movable count on the reschedule button again after a reschedule', async () => {
+    await mount([account('a')], '');
+    // The server's view of the unused cards changes when the reschedule lands,
+    // so the re-read must come back with a different count. A count that was
+    // never re-read would still say 2 and fail the assertions below.
+    let available = 2;
+    vi.mocked(adminApi.user).mockImplementation(async (id: string) => ({
+      ...detailOf(account(id)),
+      cards: { available, expired: 0, used: 0, total: 2, cards: [] },
+    }) as never);
+    rowOf('a').click();
+    await settle();
+    vi.spyOn(adminApi, 'rescheduleCards').mockImplementation(async () => {
+      available = 1;
+      return { moved: 2 } as never;
+    });
+
+    buttonNamed(t('rescheduleCards', { count: 2 })).click();
+    await settle();
+
+    expect(panels.textContent).toContain(t('cardsMoved', { count: 2 }));
+    expect(buttonNamed(t('rescheduleCards', { count: 1 }))).toBeDefined();
+    expect(buttonNamed(t('rescheduleCards', { count: 2 }))).toBeUndefined();
+  });
+
+  // A list that failed to come back is not a list still loading: the loading
+  // line under the error would say the opposite of what happened.
+  it('does not keep the loading line under the error when the conversations fail', async () => {
+    await mount([account('a')], '');
+    rowOf('a').click();
+    await settle();
+    vi.spyOn(adminApi, 'userConversations').mockRejectedValue(new Error('conversations unavailable'));
+
+    buttonNamed(t('viewConversations')).click();
+    await settle();
+
+    expect(panels.textContent).toContain('conversations unavailable');
+    expect(panels.textContent).not.toContain(t('loading'));
   });
 });

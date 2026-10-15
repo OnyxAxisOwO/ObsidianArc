@@ -37,6 +37,8 @@ import {
   IconSpark,
   IconTrash,
 } from '@/icons';
+import { apiErrorText } from '@/lib/api-error';
+import { GUARD_DEADLINE_MS, GuardTimeout, withDeadline } from '@/lib/deadline';
 import { relativeTime } from '@/lib/format';
 import { solvePoW } from '@/lib/pow';
 import { guards } from '@/plugins/registry';
@@ -75,8 +77,17 @@ const activeGuards = computed(() =>
 watch(activeGuards, (list) => {
   for (const { guard, config } of list) guard.prepare?.('images', config);
 }, { immediate: true });
-const history = ref<ImageGenerationItem[]>([]);
-const zoomedImage = ref<{ url: string; alt?: string } | null>(null);
+// A result as the lab shows it. Its download name is worked out once, when the
+// picture arrives: the template is drawn again on every change, and a name built
+// from the clock there would be a different one each time.
+interface LabResult extends ImageGenerationItem {
+  download: string;
+}
+const history = ref<LabResult[]>([]);
+// The lightbox's download name travels with the picture it was opened on: the
+// gallery and the results name their files differently, and a lightbox without
+// one would fall back to .png for a JPEG.
+const zoomedImage = ref<{ url: string; alt?: string; download?: string } | null>(null);
 
 const MAX_REFERENCE_IMAGES = 5;
 
@@ -111,6 +122,12 @@ function clearReferences(): void {
 const draggingRef = ref(false);
 const preparing = ref(false);
 let dragDepth = 0;
+// Set when the panel closes: a picture still being downscaled then has no list
+// to join, and its blob: URL would outlive clearReferences.
+let unmounted = false;
+// Slots promised to pictures still being downscaled. Counted with the pictures
+// already in the list, so two additions in flight cannot both claim the same room.
+let pendingReferences = 0;
 
 async function addReferenceFiles(list: FileList | File[] | null | undefined): Promise<void> {
   const allFiles = Array.from(list ?? []);
@@ -122,7 +139,12 @@ async function addReferenceFiles(list: FileList | File[] | null | undefined): Pr
     return;
   }
 
-  const remaining = MAX_REFERENCE_IMAGES - references.value.length;
+  // Cleared once per addition, so a refusal from an earlier batch does not outlive
+  // a later one, but not inside the loop: a success there would wipe the message
+  // for a picture that failed earlier in the same batch.
+  error.value = '';
+
+  const remaining = MAX_REFERENCE_IMAGES - references.value.length - pendingReferences;
   if (remaining <= 0) {
     error.value = t('referenceImageLimit', { count: MAX_REFERENCE_IMAGES });
     return;
@@ -132,26 +154,38 @@ async function addReferenceFiles(list: FileList | File[] | null | undefined): Pr
     error.value = t('referenceImageLimit', { count: MAX_REFERENCE_IMAGES });
   }
 
+  // The whole batch's slots are reserved before the first await, so a second
+  // addition started meanwhile sees them as taken.
   const toProcess = imageFiles.slice(0, remaining);
+  pendingReferences += toProcess.length;
+  let reserved = toProcess.length;
   preparing.value = true;
   try {
     for (const file of toProcess) {
       try {
         const prepared = await prepareImage(file);
+        if (unmounted) {
+          URL.revokeObjectURL(prepared.previewURL);
+          return;
+        }
         references.value.push({
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           data: prepared.data,
           preview: prepared.previewURL,
         });
-        if (imageFiles.length <= remaining) {
-          error.value = '';
-        }
       } catch (err) {
         error.value = err instanceof ImageError ? err.message : t('imageFailed');
+      } finally {
+        pendingReferences -= 1;
+        reserved -= 1;
       }
     }
   } finally {
-    preparing.value = false;
+    // Only what an early return left unprepared; the rest was given back above.
+    pendingReferences -= reserved;
+    // Another batch may still be preparing its pictures; clearing the flag
+    // here would let generate() run without them.
+    preparing.value = pendingReferences > 0;
   }
 }
 
@@ -219,7 +253,10 @@ function onPaste(event: ClipboardEvent): void {
 
 // A blob: URL is held by the document until it is released, so leaving the
 // panel with pictures in it would leak the whole downscaled images.
-onUnmounted(clearReferences);
+onUnmounted(() => {
+  unmounted = true;
+  clearReferences();
+});
 
 const imageCapableModels = computed(() =>
   models.value.filter((m) => m.usable !== false && m.supports_image_gen),
@@ -303,11 +340,13 @@ function toggleFullscreen(): void {
   fullscreen.value = panel.value?.toggleFullscreen() ?? false;
 }
 
-async function loadGallery(before?: number): Promise<void> {
+async function loadGallery(before?: number, beforeId?: string): Promise<void> {
   if (loadingGallery.value) return;
   loadingGallery.value = true;
   try {
-    const res = await listImageGenerations(before ? { limit: 20, before } : { limit: 20 });
+    const res = await listImageGenerations(
+      before ? { limit: 20, before, beforeId } : { limit: 20 },
+    );
     if (before) {
       gallery.value.push(...res.generations);
     } else {
@@ -315,7 +354,7 @@ async function loadGallery(before?: number): Promise<void> {
     }
     galleryHasMore.value = res.generations.length === 20;
   } catch (err) {
-    error.value = err instanceof Error ? err.message : t('failed');
+    error.value = err instanceof ApiError ? apiErrorText(err) : t('failed');
   } finally {
     loadingGallery.value = false;
   }
@@ -326,7 +365,7 @@ async function handleDelete(id: string): Promise<void> {
     await deleteImageGeneration(id);
     gallery.value = gallery.value.filter((item) => item.id !== id);
   } catch (err) {
-    error.value = err instanceof Error ? err.message : t('failed');
+    error.value = err instanceof ApiError ? apiErrorText(err) : t('failed');
   }
 }
 
@@ -342,22 +381,6 @@ function usePrompt(item: ImageGenerationRecord): void {
     selectedModelID.value = item.model_id;
   }
   activeTab.value = 'generate';
-}
-
-// A guard's SDK can take a while and has no deadline of its own, so a check
-// that never answers would leave the button spinning for good.
-const GUARD_DEADLINE_MS = 60_000;
-
-class GuardTimeout extends Error {}
-
-function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new GuardTimeout()), ms);
-    work.then(
-      (value) => { window.clearTimeout(timer); resolve(value); },
-      (failure: unknown) => { window.clearTimeout(timer); reject(failure); },
-    );
-  });
 }
 
 async function generate(): Promise<void> {
@@ -395,6 +418,8 @@ async function generate(): Promise<void> {
     }
     stage.value = '';
 
+    // Only `images`: the server reads that list in preference to `image`, so
+    // sending the first picture under both uploads it twice.
     const images = references.value.map((r) => r.data);
     const res = await generateImages({
       model_id: selectedModelID.value,
@@ -402,21 +427,26 @@ async function generate(): Promise<void> {
       style: selectedStyle.value,
       size: selectedSize.value,
       n: 1,
-      ...(images.length > 0 ? { images, image: images[0] } : {}),
+      ...(images.length > 0 ? { images } : {}),
       ...(turnstileToken ? { turnstile: turnstileToken } : {}),
       ...(pow ? { pow } : {}),
       ...(Object.keys(guardTokens).length ? { guards: guardTokens } : {}),
     });
 
     if (res.images && res.images.length) {
-      history.value = [...res.images, ...history.value];
+      const arrived = Date.now();
+      const fresh = res.images.map((img, n): LabResult => ({
+        ...img,
+        download: `image-${arrived}-${n}.${imageExtension(img.mime)}`,
+      }));
+      history.value = [...fresh, ...history.value];
       void loadGallery();
     }
   } catch (err) {
     const code = err instanceof ApiError ? err.code : '';
     if (code === 'challenge_failed' || code.startsWith('pow_')) error.value = t('challengeFailed');
     else if (code === 'challenge_unavailable') error.value = t('challengeUnavailable');
-    else error.value = err instanceof Error ? err.message : t('failed');
+    else error.value = err instanceof ApiError ? apiErrorText(err) : t('failed');
   } finally {
     stage.value = '';
     busy.value = false;
@@ -429,6 +459,27 @@ function imageSource(img: ImageGenerationItem): string {
   if (img.url) return img.url;
   if (img.b64_json) return `data:${img.mime || 'image/png'};base64,${img.b64_json}`;
   return '';
+}
+
+// The extension follows the bytes the provider sent: a JPEG saved as .png is
+// mislabelled for whatever opens it. Anything unlisted keeps the name it always had.
+function imageExtension(mime: string | undefined): string {
+  switch (mime) {
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    default:
+      return 'png';
+  }
+}
+
+// A gallery picture is named by its row, not by when it arrived: the same
+// picture has the same name on every visit to the gallery.
+function galleryDownloadName(item: ImageGenerationRecord): string {
+  return `image-${item.id}.${imageExtension(item.mime)}`;
 }
 </script>
 
@@ -640,8 +691,13 @@ function imageSource(img: ImageGenerationItem): string {
             <img
               :src="imageSource(img)"
               class="oa-image-lab-img"
+              role="button"
+              tabindex="0"
+              :aria-label="t('zoomImage')"
               :alt="img.revised_prompt || prompt"
-              @click="zoomedImage = { url: imageSource(img), alt: img.revised_prompt || prompt }"
+              @click="zoomedImage = { url: imageSource(img), alt: img.revised_prompt || prompt, download: img.download }"
+              @keydown.enter.prevent="zoomedImage = { url: imageSource(img), alt: img.revised_prompt || prompt, download: img.download }"
+              @keydown.space.prevent="zoomedImage = { url: imageSource(img), alt: img.revised_prompt || prompt, download: img.download }"
             />
             <p v-if="img.revised_prompt" class="oa-field-hint" style="margin-top: 8px;">
               {{ img.revised_prompt }}
@@ -649,7 +705,7 @@ function imageSource(img: ImageGenerationItem): string {
             <div class="oa-image-lab-actions">
               <a
                 :href="imageSource(img)"
-                :download="`image-${Date.now()}-${idx}.png`"
+                :download="img.download"
                 target="_blank"
                 rel="noopener"
                 class="oa-btn primary"
@@ -678,7 +734,12 @@ function imageSource(img: ImageGenerationItem): string {
         <div v-for="item in gallery" :key="item.id" class="oa-gallery-card">
           <div
             class="oa-gallery-img-wrap"
-            @click="zoomedImage = { url: item.url, alt: item.revised_prompt || item.prompt }"
+            role="button"
+            tabindex="0"
+            :aria-label="t('zoomImage')"
+            @click="zoomedImage = { url: item.url, alt: item.revised_prompt || item.prompt, download: galleryDownloadName(item) }"
+            @keydown.enter.prevent="zoomedImage = { url: item.url, alt: item.revised_prompt || item.prompt, download: galleryDownloadName(item) }"
+            @keydown.space.prevent="zoomedImage = { url: item.url, alt: item.revised_prompt || item.prompt, download: galleryDownloadName(item) }"
           >
             <img
               class="oa-gallery-img"
@@ -707,7 +768,7 @@ function imageSource(img: ImageGenerationItem): string {
               </button>
               <a
                 :href="item.url"
-                :download="`image-${item.id}.png`"
+                :download="galleryDownloadName(item)"
                 target="_blank"
                 rel="noopener"
                 class="oa-gallery-btn"
@@ -736,7 +797,7 @@ function imageSource(img: ImageGenerationItem): string {
           type="button"
           class="oa-btn"
           :disabled="loadingGallery"
-          @click="loadGallery(gallery[gallery.length - 1]?.created_at)"
+          @click="loadGallery(gallery[gallery.length - 1]?.created_at, gallery[gallery.length - 1]?.id)"
         >
           {{ loadingGallery ? t('thinking') : t('loadMoreImages') }}
         </button>
@@ -747,6 +808,7 @@ function imageSource(img: ImageGenerationItem): string {
       v-if="zoomedImage"
       :src="zoomedImage.url"
       :alt="zoomedImage.alt"
+      :download-name="zoomedImage.download"
       @close="zoomedImage = null"
     />
   </OaPanel>

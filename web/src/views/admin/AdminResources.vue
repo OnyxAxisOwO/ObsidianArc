@@ -26,7 +26,7 @@ import { useAdminView } from './adminView';
 const REFRESH_MS = 5000;
 
 const view = useAdminView();
-view.setTitle(t('navResources'), t('controlResourceHint'));
+view.setTitle(() => t('navResources'), () => t('controlResourceHint'));
 
 const snapshot = ref<Resources | null>(null);
 const error = ref('');
@@ -86,9 +86,13 @@ const columns = computed<Array<Column<UserStorage>>>(() => [
 
 /** Seconds of CPU as hours, minutes and seconds — it is a total, not a clock. */
 function duration(seconds: number): string {
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
+  // Judged at the precision it is printed to: 59.96 would read "60.0s".
+  if (Math.round(seconds * 10) / 10 < 60) return `${seconds.toFixed(1)}s`;
+  // Rounded once, then split. Rounding the seconds part on its own printed
+  // 119.6 as "1m 60s".
+  const total = Math.round(seconds);
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes}m ${total % 60}s`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 

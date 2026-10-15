@@ -2,7 +2,9 @@ package user
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -57,4 +59,24 @@ func TestAPluginCannotNameAFieldAfterALoginOrCounterColumn(t *testing.T) {
 			t.Errorf("%s is a field after being refused", key)
 		}
 	}
+}
+
+// A field with no owner reads as core and is selected on every account query
+// even while its migration has not run, so the registry refuses it outright.
+func TestDefineFieldRefusesAFieldWithNoOwner(t *testing.T) {
+	// An earlier test in this binary may have frozen the registry by reading
+	// the accounts table; the owner check is the thing under test here.
+	prev := fieldsFrozen.Load()
+	fieldsFrozen.Store(false)
+	defer fieldsFrozen.Store(prev)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("a field with no owning plugin was defined")
+		}
+		if !strings.Contains(fmt.Sprint(r), "no owning plugin") {
+			t.Fatalf("panic = %v, want the owner check", r)
+		}
+	}()
+	DefineField(Field{Key: "orphan_field"})
 }

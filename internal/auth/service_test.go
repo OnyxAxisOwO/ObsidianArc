@@ -1143,6 +1143,7 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "true"); err != nil {
 		t.Fatal(err)
 	}
+	f.auth.SignInProviderCount = onSwitches(f)
 
 	admin, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"})
 	if err != nil {
@@ -1194,6 +1195,22 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 	}
 }
 
+// onSwitches stands in for the sign-in card's question in the tests that are
+// about the switches: a provider counts once its switch is on, as if it were
+// configured. Whether a switch on with no credentials counts is tested on its
+// own below.
+func onSwitches(f *fixture) func() int {
+	return func() int {
+		n := 0
+		for _, key := range []string{settings.OAuthGitHubEnabled, settings.OAuthGoogleEnabled, settings.OAuthOIDCEnabled} {
+			if f.settings.Bool(key) {
+				n++
+			}
+		}
+		return n
+	}
+}
+
 func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -1205,6 +1222,7 @@ func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
 		t.Fatal(err)
 	}
+	f.auth.SignInProviderCount = onSwitches(f)
 
 	admin, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"})
 	if err != nil {
@@ -1260,6 +1278,29 @@ func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 // revocation that fails leaves the old password and every session in place,
 // and one that works is asked about the account that changed, for both the
 // change and the administrator's reset.
+// A switch that is on with no credentials has no button on the sign-in card,
+// so the card offers no third-party route. Refusing every sign-up because of
+// that switch alone would leave an instance with no way in at all.
+func TestThirdPartyOnlySignupIgnoresAProviderTheCardDoesNotOffer(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"}); err != nil {
+		t.Fatalf("first account should succeed: %v", err)
+	}
+	if err := f.settings.Set(ctx, settings.OAuthGitHubEnabled, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+	f.auth.SignInProviderCount = func() int { return 0 }
+
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"}); err != nil {
+		t.Fatalf("with no provider on the card, a password sign-up must be allowed, got %v", err)
+	}
+}
+
 func TestAPasswordWriteRevokesWhatWasIssuedInTheSameTransaction(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -1302,5 +1343,78 @@ func TestAPasswordWriteRevokesWhatWasIssuedInTheSameTransaction(t *testing.T) {
 		if userID != account.ID {
 			t.Errorf("revocation %d named %q, want the account that changed", i, userID)
 		}
+	}
+}
+
+// A plugin guard's restriction is the reviewer's middle answer without the
+// reviewer's judgement, so it lapses on the same clock and is recorded as the
+// guard's own. Labelled as the reviewer's, one guard's "not sure" would count
+// toward a batch of bot sign-ups.
+func TestAGuardsRestrictionLapsesAndIsNotTheReviewersOwn(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.auth.AddGuard(GuardRegister, Guard{
+		Name: "risk", Plugin: "risk", Event: "signup_restricted",
+		Check: func(context.Context, GuardRequest) (Verdict, error) {
+			return Verdict{Restrict: true, Reason: "unsure"}, nil
+		},
+	})
+	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+		return SignupReview{Ran: true, Decision: SignupAllow}, nil
+	}
+
+	created, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "guarded", Password: "another-password",
+	})
+	if err != nil {
+		t.Fatalf("guarded registration: %v", err)
+	}
+	if !created.APIRestricted || created.APIRestrictionSource != "guard" {
+		t.Fatalf("restriction = %+v, want the guard's restriction", created)
+	}
+	const day = int64(24 * time.Hour / time.Millisecond)
+	const slack = int64(time.Hour / time.Millisecond)
+	if left := created.APIRestrictedUntil - time.Now().UnixMilli(); left < day-slack || left > day+slack {
+		t.Errorf("restricted until %d, want about a day from now", created.APIRestrictedUntil)
+	}
+}
+
+// The account and its first session commit together or not at all. A failure
+// writing the session must not leave an account behind, or the retry would be
+// refused as a taken username.
+func TestASessionFailureLeavesNoAccountBehind(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.db.Exec(ctx,
+		`CREATE TRIGGER refuse_sessions BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'sessions are down'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "newcomer", Password: "another-password",
+	}); err == nil {
+		t.Fatal("a registration whose session could not be written reported success")
+	}
+	if total, err := f.users.Count(ctx, nil); err != nil || total != 1 {
+		t.Fatalf("accounts after the failed registration = %d (err %v), want only the founder", total, err)
+	}
+
+	if _, err := f.db.Exec(ctx, `DROP TRIGGER refuse_sessions`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "newcomer", Password: "another-password",
+	}); err != nil {
+		t.Fatalf("retry after the session store recovered: %v", err)
 	}
 }

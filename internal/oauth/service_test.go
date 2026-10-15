@@ -30,6 +30,14 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWith(t, mail.Config{}, nil)
+}
+
+// newFixtureWith is newFixture with the mail server and the instance secret
+// chosen by the caller. Email verification needs both: the secret derives the
+// link's key, and a configured sender says links can be sent at all.
+func newFixtureWith(t *testing.T, mailCfg mail.Config, secret []byte) *fixture {
+	t.Helper()
 	ctx := context.Background()
 
 	db, err := database.Open(ctx, config.Database{
@@ -65,9 +73,10 @@ func newFixture(t *testing.T) *fixture {
 			Memory: 8 * 1024, Iterations: 1, Parallelism: 1,
 			SaltLength: 16, KeyLength: 32, MaxParallel: 4,
 		},
-		Session: config.Session{TTL: time.Hour, CookieName: "obsidian_session", TouchInterval: time.Hour},
+		Session:   config.Session{TTL: time.Hour, CookieName: "obsidian_session", TouchInterval: time.Hour},
+		SecretKey: secret,
 	}
-	authService := auth.NewService(db, users, groups, set, mail.New(mail.Config{}), cfg)
+	authService := auth.NewService(db, users, groups, set, mail.New(mailCfg), cfg)
 	authService.SetFieldRule(badge, func() string {
 		if rule := set.Get(badgeRule); rule != "" {
 			return rule
@@ -94,6 +103,23 @@ func (f *fixture) configure(t *testing.T, providerID string) {
 	}); err != nil {
 		t.Fatalf("configure %s: %v", providerID, err)
 	}
+}
+
+// newMailedFixture is an instance that requires verification and can send
+// links. Its sender points at a port nothing listens on, so every send fails;
+// the verification row a resend writes is what shows that it was attempted.
+func newMailedFixture(t *testing.T) *fixture {
+	t.Helper()
+	f := newFixtureWith(t, mail.Config{
+		Host: "127.0.0.1", Port: 1, From: "arc@example.com", PublicURL: "https://arc.example.com",
+	}, []byte("an-instance-secret-for-the-oauth-tests"))
+	if err := f.settings.Set(context.Background(), settings.VerifyEmail, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.auth.VerificationRequired() {
+		t.Fatal("verification is not required although links can be sent")
+	}
+	return f
 }
 
 func identity(subject, login, email string) Identity {
@@ -585,6 +611,26 @@ func TestTheLastWayInCannotBeRemoved(t *testing.T) {
 	}
 }
 
+// Removing a provider the account never connected removes nothing, so it is
+// reported as not connected. The account has no password and one connection,
+// so the last-way-in rule would otherwise answer first and send the user to
+// set a password for a removal that did not happen.
+func TestDisconnectingAProviderNotHeldIsReportedAsSo(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", "")
+	if err != nil {
+		t.Fatalf("sign in: %v", err)
+	}
+	if err := f.service.Disconnect(ctx, account.ID, "google"); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("disconnect a provider never connected = %v, want ErrNotConnected", err)
+	}
+	if linked, err := f.store.HasProvider(ctx, nil, account.ID, "github"); err != nil || !linked {
+		t.Errorf("github connection after the refused disconnect: linked=%v err=%v, want it kept", linked, err)
+	}
+}
+
 // Two disconnects at once, one per provider, on an account with no password.
 // Each sees the other still there, so without the row lock both are allowed
 // and the account is left with no way in — which is precisely the state the
@@ -971,5 +1017,222 @@ func TestALinkedProviderVouchingForTheAddressProvesIt(t *testing.T) {
 	}
 	if again, _ := f.users.ByID(ctx, nil, created.ID); again.EmailProvenAt != 0 {
 		t.Error("the proof survived a change of address")
+	}
+}
+
+// A provider's display name can be longer than a nickname may be. The account
+// opens with the name clipped: the completion form has no field for a nickname,
+// so refusing the name would leave the person no way to open the account.
+func TestALongProviderNameStillOpensTheAccount(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	openInstance(t, f)
+	if err := f.settings.Set(ctx, settings.OAuthAllowSignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	id := Identity{
+		Provider: "github", Subject: "5001", Login: "thornbury",
+		Name: "Maximilian Alexander Bartholomew Thornbury",
+	}
+	created, err := f.service.SignIn(ctx, id, cleared, "", "")
+	if err != nil {
+		t.Fatalf("sign-in with a 42-character name: %v", err)
+	}
+	if n := len([]rune(created.Nickname)); n == 0 || n > user.MaxNicknameChars {
+		t.Errorf("nickname has %d characters, want it clipped to at most %d", n, user.MaxNicknameChars)
+	}
+}
+
+// The challenge is a cheap refusal and the address lookup is a paid one. A
+// sign-up the challenge turns away is turned away before any lookup is spent on
+// its address.
+func TestAChallengedProviderSignUpIsRefusedBeforeItsAddressIsLookedUp(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	openInstance(t, f)
+	if err := f.settings.Set(ctx, settings.OAuthAllowSignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+	var lookups atomic.Int32
+	f.auth.ScreenEmail = func(context.Context, string) error {
+		lookups.Add(1)
+		return nil
+	}
+
+	_, err := f.service.SignIn(ctx, identity("5100", "newcomer", "newcomer@example.com"),
+		Admission{SignUpCleared: false}, "", "")
+	if !errors.Is(err, ErrSignupChallengeRequired) {
+		t.Fatalf("SignIn = %v, want the challenge to refuse the sign-up", err)
+	}
+	if lookups.Load() != 0 {
+		t.Fatalf("paid lookups = %d, want none for a sign-up the challenge refused", lookups.Load())
+	}
+}
+
+// An address this instance already holds, typed into the completion form, is
+// refused before the paid lookup a retry would otherwise spend on it. Even a
+// lookup that fails must not change the answer.
+func TestATypedAddressAlreadyHereIsRefusedWithoutALookup(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	openInstance(t, f)
+	if err := f.settings.Set(ctx, settings.OAuthAllowSignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+	var lookups atomic.Int32
+	f.auth.ScreenEmail = func(context.Context, string) error {
+		lookups.Add(1)
+		return errors.New("the screening service is down")
+	}
+
+	_, err := f.service.Complete(ctx,
+		Identity{Provider: "github", Subject: "5200", Login: "typed", Name: "Typed"},
+		Details{Username: "typed", Email: "operator@example.com"}, cleared, "", "")
+	if !errors.Is(err, user.ErrEmailTaken) {
+		t.Fatalf("Complete = %v, want the typed address refused as taken", err)
+	}
+	if lookups.Load() != 0 {
+		t.Fatalf("paid lookups = %d, want none for an address this instance holds", lookups.Load())
+	}
+}
+
+// A provider that vouches for the address an account holds has proved it, and
+// proof is what a followed link is: the account is confirmed as well, rather
+// than proved and still reported unconfirmed.
+func TestAProviderProofConfirmsTheAccountsAddress(t *testing.T) {
+	f := newMailedFixture(t)
+	ctx := context.Background()
+	openInstance(t, f)
+	if err := f.settings.Set(ctx, settings.OAuthAllowSignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+	// The address was typed, so the account holds it unconfirmed and unproved.
+	created, err := f.service.Complete(ctx, identity("5300", "proven", ""),
+		Details{Username: "proven", Email: "proven@example.com"}, cleared, "", "")
+	if err != nil {
+		t.Fatalf("first sign-in: %v", err)
+	}
+	if again, _ := f.users.ByID(ctx, nil, created.ID); again.EmailVerified || again.EmailProvenAt != 0 {
+		t.Fatal("a typed address counted as confirmed or proved")
+	}
+
+	if _, err := f.service.SignIn(ctx, identity("5300", "proven", "proven@example.com"), cleared, "", ""); err != nil {
+		t.Fatalf("second sign-in: %v", err)
+	}
+	again, err := f.users.ByID(ctx, nil, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.EmailProvenAt == 0 || !again.EmailVerified {
+		t.Errorf("proved = %v, verified = %v; want the provider's proof to confirm the address",
+			again.EmailProvenAt != 0, again.EmailVerified)
+	}
+}
+
+// Resend writes a verification row before it tries to send, and deletes the row
+// again when the send fails, so the send cannot be seen afterwards. The row
+// being written is what a test can count, through a trigger that keeps a tally.
+func trackVerificationWrites(t *testing.T, f *fixture) {
+	t.Helper()
+	ctx := context.Background()
+	for _, statement := range []string{
+		`CREATE TABLE verification_writes (n INTEGER NOT NULL)`,
+		`CREATE TRIGGER track_verification_writes AFTER INSERT ON email_verifications
+		 BEGIN INSERT INTO verification_writes (n) VALUES (1); END`,
+	} {
+		if _, err := f.db.Exec(ctx, statement); err != nil {
+			t.Fatalf("track verification writes: %v", err)
+		}
+	}
+}
+
+func verificationWrites(t *testing.T, f *fixture) int {
+	t.Helper()
+	var count int
+	if err := f.db.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM verification_writes`).Scan(&count); err != nil {
+		t.Fatalf("count verification writes: %v", err)
+	}
+	return count
+}
+
+// A returning provider sign-in is not a request to confirm an address again.
+// Only the account a sign-in opens is asked to confirm the address it was given.
+func TestAReturningProviderSignInDoesNotMailAnUnconfirmedAddress(t *testing.T) {
+	f := newMailedFixture(t)
+	ctx := context.Background()
+	openInstance(t, f)
+	if err := f.settings.Set(ctx, settings.OAuthAllowSignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+	// An account whose typed address is still unconfirmed: the case a resend
+	// would mail on every provider sign-in.
+	if _, err := f.service.Complete(ctx, identity("5400", "returning", ""),
+		Details{Username: "returning", Email: "returning@example.com"}, cleared, "", ""); err != nil {
+		t.Fatalf("first sign-in: %v", err)
+	}
+
+	trackVerificationWrites(t, f)
+	if _, err := f.service.SignIn(ctx, identity("5400", "returning", ""), cleared, "", ""); err != nil {
+		t.Fatalf("returning sign-in: %v", err)
+	}
+	if n := verificationWrites(t, f); n != 0 {
+		t.Fatalf("a returning sign-in wrote %d verification links, want none", n)
+	}
+}
+
+// The address somebody typed for an account this sign-in opens is the one the
+// instance asked for, so that account is sent its link.
+func TestANewAccountWithATypedAddressIsSentItsLink(t *testing.T) {
+	f := newMailedFixture(t)
+	ctx := context.Background()
+	openInstance(t, f)
+	if err := f.settings.Set(ctx, settings.OAuthAllowSignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	trackVerificationWrites(t, f)
+	if _, err := f.service.Complete(ctx,
+		Identity{Provider: "github", Subject: "5500", Login: "typer", Name: "Typer"},
+		Details{Username: "typer", Email: "typer@example.com"}, cleared, "", ""); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if n := verificationWrites(t, f); n != 1 {
+		t.Fatalf("verification links written = %d, want one for the new account", n)
+	}
+}
+
+// A subject bound to an account field proves that value only when the provider
+// vouched for it. A value another account already carries was typed, so Connect
+// refuses the link on it, as sign-up does, instead of linking and leaving the
+// holder's copy in place.
+func TestConnectRefusesABoundValueAnotherAccountHolds(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	holder, _, err := f.auth.Register(ctx, auth.RegisterInput{
+		Username: "squatter", Password: "a-good-password",
+	})
+	if err != nil {
+		t.Fatalf("register holder: %v", err)
+	}
+	if _, err := f.users.UpdateProfile(ctx, nil, holder.ID, user.ProfileUpdate{Fields: badgeOf("987654321")}); err != nil {
+		t.Fatalf("typed badge on the holder: %v", err)
+	}
+	member, _, err := f.auth.Register(ctx, auth.RegisterInput{
+		Username: "member", Password: "another-password",
+	})
+	if err != nil {
+		t.Fatalf("register member: %v", err)
+	}
+
+	if err := f.service.Connect(ctx, member.ID, Identity{Provider: "oidc", Subject: "987654321", Login: "member"}); !errors.Is(err, ErrAddressTaken) {
+		t.Fatalf("Connect = %v, want the held value refused", err)
+	}
+	if linked, err := f.store.HasProvider(ctx, nil, member.ID, "oidc"); err != nil || linked {
+		t.Fatalf("member linked = %v, %v; want the refused connection not to be written", linked, err)
+	}
+	if again, _ := f.users.ByID(ctx, nil, holder.ID); again.Fields[badge] != "987654321" {
+		t.Errorf("holder's badge = %q, want it left as it was", again.Fields[badge])
 	}
 }

@@ -179,7 +179,7 @@ func TestListForUserRespectsGroupGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.models.SetGroupModelIDs(ctx, restricted.ID, []string{allowed.ID}); err != nil {
+	if err := f.models.SetGroupModelIDs(ctx, nil, restricted.ID, []string{allowed.ID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -212,7 +212,7 @@ func TestAuthorizeRefusesModelsOutsideTheGroup(t *testing.T) {
 	forbidden := f.model(t, upstream.ID, "forbidden-model")
 
 	restricted, _ := f.groups.Create(ctx, nil, group.CreateInput{Name: "Restricted"})
-	if err := f.models.SetGroupModelIDs(ctx, restricted.ID, []string{allowed.ID}); err != nil {
+	if err := f.models.SetGroupModelIDs(ctx, nil, restricted.ID, []string{allowed.ID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -492,6 +492,36 @@ func TestAnEnableRefusedByTheProviderKeepsTheFlag(t *testing.T) {
 	}
 }
 
+// A health reset sends the clear of the checker's flag along with the enable.
+// When the provider is off the enable is refused, and the flag must survive
+// that refusal too, or the model is left off with no record of why.
+func TestAResetsRefusedEnableKeepsTheFlag(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+	record := f.model(t, upstream.ID, "flaky-model")
+
+	if flipped, err := f.models.DisableIfEnabled(ctx, record.ID); err != nil || !flipped {
+		t.Fatalf("the checker's disable: flipped=%v, err=%v", flipped, err)
+	}
+	disabled := false
+	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	on, off := true, false
+	if _, err := f.models.Update(ctx, record.ID, Update{Enabled: &on, AutoDisabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Enabled || !stored.AutoDisabled {
+		t.Fatalf("a refused reset enable changed the model: %+v, want it off with the checker's flag", stored)
+	}
+}
+
 // Authorize returns everything a turn needs, including the decrypted
 // credential, in one query.
 func TestAuthorizeResolvesTheProvider(t *testing.T) {
@@ -526,7 +556,7 @@ func TestDeletingProviderCascades(t *testing.T) {
 	upstream := f.provider(t, "Example")
 	record := f.model(t, upstream.ID, "some-model")
 	open, _ := f.groups.Create(ctx, nil, group.CreateInput{Name: "Open"})
-	if err := f.models.SetGroupModelIDs(ctx, open.ID, []string{record.ID}); err != nil {
+	if err := f.models.SetGroupModelIDs(ctx, nil, open.ID, []string{record.ID}); err != nil {
 		t.Fatal(err)
 	}
 

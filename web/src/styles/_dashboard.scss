@@ -127,7 +127,6 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
-    will-change: grid-template-rows, opacity;
     transition:
       grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1),
       opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1),
@@ -152,7 +151,6 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 
   .oa-dashboard-table-wrap {
     margin-top: 10px;
-    will-change: transform;
     transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
     transform: translateY(-8px);
   }
@@ -223,9 +221,15 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 .oa-dashboard-notice.is-warning { background: color-mix(in srgb, var(--ai-danger) 12%, var(--ai-surface-card)); }
 .oa-dashboard-notice.is-warning > svg { color: var(--ai-danger); }
 .oa-dashboard-notice > .oa-dashboard-link { flex-shrink: 0; }
-.oa-dashboard-loading { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; max-width: 1480px; margin: 0 auto; }
+/* The skeleton is a sibling of `.oa-dashboard`, not a child, so the container
+   below is its own: it has the same width as the loaded page, and the
+   placeholders can follow the same column count the metrics do. */
+.oa-dashboard-loading { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; max-width: 1480px; margin: 0 auto; container: dashboard / inline-size; }
 .oa-dashboard-loading > span { grid-column: 1 / -1; color: var(--ai-text-secondary); font-size: 12px; }
 .oa-dashboard-loading > div { height: 150px; border-radius: 18px; background: var(--ai-surface-card); }
+@container dashboard (max-width: 1040px) {
+  .oa-dashboard-loading > div { grid-column: span 2; }
+}
 .oa-dashboard :is(button, a, summary, [tabindex]):focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
 
 /* Container width also follows the resizable admin rail, unlike a viewport breakpoint. */

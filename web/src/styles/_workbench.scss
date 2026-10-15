@@ -121,7 +121,10 @@
 .oa-backup-log-section { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .oa-backup-log-head { display: flex; align-items: center; justify-content: space-between; }
 .oa-backup-log-head .oa-field-label { font-size: 12px; font-weight: 550; }
-.oa-backup-log-live { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ai-warning); }
+/* No colour of its own. The warning token it named was never defined, so the
+   label has always inherited the text colour; a hue here would need a token,
+   and the theme tokens do not hardcode one. */
+.oa-backup-log-live { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
 .oa-backup-log-body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.6; padding: 12px 14px; border-radius: 11px; background: var(--ai-field-bg); color: var(--ai-text-secondary); white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow-y: auto; margin: 0; }
 /* Clean status strip below the workbench: pure text without the card background or shadow outline. */
 .oa-control-flash { margin: 16px auto 0; max-width: 1432px; padding: 4px 2px; font-size: 13px; line-height: 1.6; background: transparent; box-shadow: none; border: none; }
@@ -168,9 +171,13 @@
 /* Tab strip inside Plugins screen for switching between Plugin Management and individual plugin pages. */
 .oa-plugin-tabstrip { display: flex; align-items: center; flex-shrink: 0; gap: 8px; width: 100%; max-width: 1040px; margin: 0 auto 20px; }
 .oa-plugin-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.oa-plugin-tab { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px; border-radius: 999px; background: var(--ai-field-bg); color: var(--ai-text-secondary); font-size: 12.5px; font-weight: 500; border: none; outline: none; cursor: pointer; transition: background-color .15s ease, color .15s ease; font: inherit; }
+/* font-family and line-height only: a font shorthand here would reset the size and weight
+   declared above it to the parent's, since it would come later in the rule. */
+.oa-plugin-tab { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px; border-radius: 999px; background: var(--ai-field-bg); color: var(--ai-text-secondary); font-size: 12.5px; font-weight: 500; border: none; outline: none; cursor: pointer; transition: background-color .15s ease, color .15s ease; font-family: inherit; line-height: inherit; }
 .oa-plugin-tab:hover { background: var(--ai-field-bg-hover); color: var(--ai-text); }
 .oa-plugin-tab.active { background: var(--ai-badge-bg); color: var(--ai-badge-text); font-weight: 600; }
+/* outline is off for the tab, so the ring is what marks keyboard focus here. */
+.oa-plugin-tab:focus-visible { box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
 /* Plugin details drawer: hero header, structured metadata tiles, and categorized capability chips. */
 .oa-plugin-detail { display: flex; flex-direction: column; gap: 18px; }
 .oa-plugin-detail-hero { display: flex; align-items: flex-start; gap: 14px; padding: 16px; border-radius: 14px; background: var(--ai-surface-container); }

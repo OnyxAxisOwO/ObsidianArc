@@ -138,7 +138,12 @@ func (h *Handlers) create(w http.ResponseWriter, r *http.Request) error {
 // dot on somebody's menu for good.
 func (h *Handlers) thread(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
-	thread, err := h.store.Thread(r.Context(), nil, r.PathValue("id"), account.ID)
+	// Detached, like every other write that happens after the answer is
+	// decided: the reader has read it either way, and a tab closed in the
+	// same breath must not undo that. The read and the clear are one step, so a
+	// reply that lands meanwhile is either in this response or still flags the
+	// dot.
+	thread, err := h.store.OpenThread(context.WithoutCancel(r.Context()), r.PathValue("id"), account.ID, false)
 	if err != nil {
 		return TranslateError(err)
 	}
@@ -151,15 +156,6 @@ func (h *Handlers) thread(w http.ResponseWriter, r *http.Request) error {
 				thread.Replies[i].UserID = ""
 			}
 		}
-	}
-	if thread.Feedback.AuthorUnread {
-		// Detached, like every other write that happens after the answer is
-		// decided: the reader has read it either way, and a tab closed in the
-		// same breath must not undo that.
-		if err := h.store.MarkSeen(context.WithoutCancel(r.Context()), thread.Feedback.ID, false); err != nil {
-			return httpx.Internal(err)
-		}
-		thread.Feedback.AuthorUnread = false
 	}
 	return httpx.WriteJSON(w, http.StatusOK, thread)
 }

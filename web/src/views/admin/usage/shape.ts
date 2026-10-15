@@ -10,7 +10,18 @@ export interface PlotPoint {
 
 /** What a board ranks by. `users` is popularity: how many people, not how much. */
 export type BoardMetric = 'users' | 'requests' | 'tokens' | 'credits';
-export type BoardKind = 'model' | 'user' | 'group' | 'provider';
+// `status` is the outcome of a request, not a provider: its rows are labels
+// like "Failed", which the provider category must not mask.
+export type BoardKind = 'model' | 'user' | 'group' | 'provider' | 'status';
+
+/**
+ * The widest audience among the rows. A reduce, not Math.max over a spread:
+ * the spread passes every row as an argument, and a large instance has enough
+ * rows for the call to overflow the stack.
+ */
+export function largestUsers(rows: readonly Pick<UsageBreakdown, 'users'>[]): number {
+  return rows.reduce((max, row) => Math.max(max, row.users ?? 0), 0);
+}
 
 export function metricOf(row: UsageBreakdown, metric: BoardMetric): number {
   if (metric === 'users') return row.users ?? 0;

@@ -13,6 +13,13 @@
 set -eu
 
 host=${DEPLOY_HOST:?set DEPLOY_HOST, e.g. make deploy DEPLOY_HOST=root@203.0.113.7}
+# ssh reads a host that begins with a dash as one of its own options, so
+# -oProxyCommand=... would run a command in place of connecting.
+case "$host" in
+  -*)
+    echo "DEPLOY_HOST is refused: \"$host\" begins with a dash, which ssh reads as an option" >&2
+    exit 1 ;;
+esac
 dir=${DEPLOY_DIR:-/data/obsidian-arc}
 # The transport, overridable so the remote half can be exercised without a
 # server. Anything that takes a host and then a command will do.
@@ -88,17 +95,21 @@ COPYFILE_DISABLE=1 tar -czf - -C dist . | $ssh_command "$host" "set -e
     exit 1
   fi
   cd '$dir'
-  # The last deploy left its plugin list beside its binary. A plugin the
-  # running server carries and this build does not would be switched off
-  # under the people using it — a registration field gone, a sign-up check
-  # no longer standing in front of the form — with nothing on the way
-  # saying so. The person deploying has to have decided that.
-  # The list is not called PLUGINS: dist/plugins holds the bundled packages,
-  # and on a case-insensitive file system (a Mac's, where this is built) the
-  # two are the same name. A server last deployed before the rename still has
-  # the old file, which is read once more.
+  # The last successful deploy left its plugin list here. A plugin the running
+  # server carries and this build does not would be switched off under the
+  # people using it — a registration field gone, a sign-up check no longer
+  # standing in front of the form — with nothing on the way saying so. The
+  # person deploying has to have decided that.
+  # The new list is written only after compose up succeeds. A server with no
+  # list yet is the one exception: it is seeded with the record of what it runs
+  # before dist/ is replaced, see below, so a failed build still leaves the
+  # record of what is running and never the new build's list. The list sits
+  # beside the compose file rather than in dist/, which is replaced on every
+  # attempt. A server deployed before this file existed still has the list under
+  # dist/, read once more; the old name, PLUGINS, is read last.
   previous=
-  if [ -f dist/PLUGIN_LIST ]; then previous=\$(cat dist/PLUGIN_LIST)
+  if [ -f PLUGIN_LIST ]; then previous=\$(cat PLUGIN_LIST)
+  elif [ -f dist/PLUGIN_LIST ]; then previous=\$(cat dist/PLUGIN_LIST)
   elif [ -f dist/PLUGINS ]; then previous=\$(cat dist/PLUGINS); fi
   if [ -n \"\$previous\" ] && [ -z '$drop' ]; then
     lost=
@@ -114,6 +125,13 @@ COPYFILE_DISABLE=1 tar -czf - -C dist . | $ssh_command "$host" "set -e
       exit 1
     fi
   fi
+  # A server deployed before the list moved out of dist/ keeps it there, and the
+  # rm -rf below takes it with the build it describes. It is moved first, while it
+  # still names what is running, so a failed attempt cannot leave the new build's
+  # own list to be read back as the old one. An empty list is written as a blank
+  # line for the same reason: with no file, a server that runs nothing would
+  # have its failed attempt's build list read back as what it runs.
+  if [ ! -f PLUGIN_LIST ]; then printf '%s\n' \"\$previous\" >PLUGIN_LIST; fi
   # dist/ because both the server's .gitignore and .dockerignore already
   # leave it out: a checkout there stays clean, and a later source build
   # does not drag the binary into its context.
@@ -124,6 +142,9 @@ COPYFILE_DISABLE=1 tar -czf - -C dist . | $ssh_command "$host" "set -e
   # is still there to go back to: docker tag obsidian-arc:<version> obsidian-arc:latest
   docker build -q -t 'obsidian-arc:$version' -t obsidian-arc:latest dist
   docker compose up -d --no-build server
+  # Recorded only now that the server runs this build, so a failed attempt
+  # above leaves the record of what is actually running.
+  printf '%s\n' '$plugins' >PLUGIN_LIST
   docker compose ps server"
 
 echo "deployed $version to $host:$dir"

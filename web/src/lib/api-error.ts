@@ -1,0 +1,108 @@
+// The text to show a reader for a failed request.
+//
+// The server answers with a stable code and an English sentence. The code is
+// what gets translated; the sentence is only the fallback for a code nobody has
+// written a reader's version of, so a Chinese screen is not left showing
+// English where the code alone already says what happened.
+//
+// A server failure (a 5xx, the 'internal' code, or no answer at all) is the one
+// case where the sentence is not shown even without a translation: it was
+// written for logs and API clients. The reader gets the screen's generic line.
+// The code is still looked up first, because provider outages arrive as 5xx
+// responses whose codes have their own reader's sentence.
+
+import { ApiError } from '@/api/client';
+import { t, type StringKey } from '@/composables/useI18n';
+
+const CODE_KEYS: Record<string, StringKey> = {
+  too_many_pending_images: 'errTooManyPendingImages',
+  attachment_quota_full: 'errAttachmentQuotaFull',
+  storage_full: 'errStorageFull',
+  // The trial screen already has these two sentences, so the chat uses the same
+  // wording rather than a second, drifting copy.
+  trial_exhausted: 'trialExhausted',
+  trial_finished: 'trialEndedSignUp',
+  probe_cooldown: 'errProbeCooldown',
+  email_unverified: 'errEmailUnverified',
+  current_session: 'errCurrentSession',
+  bonus_bar_off: 'errBonusBarOff',
+  bonus_no_account: 'errBonusNoAccount',
+  bonus_models_unreadable: 'errBonusModelsUnreadable',
+  preferences_too_large: 'errPreferencesTooLarge',
+  attachment_unavailable: 'errAttachmentUnavailable',
+  reward_unavailable: 'errRewardUnavailable',
+  card_batch_too_large: 'errCardBatchTooLarge',
+  provider_rate_limited: 'errProviderRateLimited',
+  provider_unreachable: 'errProviderUnreachable',
+  provider_error: 'errProviderError',
+  provider_auth: 'errProviderAuth',
+  bonus_bar_in_checkin: 'errBonusBarInCheckin',
+  provider_disabled: 'errProviderDisabled',
+  model_routed: 'errModelRouted',
+  plugin_timeout: 'errPluginTimeout',
+  // A connection that never reached the server is already worded by the client
+  // in the reader's language. The status rule below would replace that with the
+  // generic sentence, which says less about what went wrong.
+  network: 'connectionFailed',
+  // A failed request can be the one that signs the tab out, and its flash can
+  // land after the redirect to sign-in, so the reader gets the sentence here
+  // rather than the server's English.
+  session_required: 'errSessionEnded',
+  // images_unsupported, refusal and provider_rejected have no entry on purpose:
+  // their server sentence names what the provider or model said, and a shared
+  // translation would erase that. chat.Describe documents the same choice.
+};
+
+// Which window tripped is the part a reader can act on, so each window has its
+// own sentence. The keys are the server's own window names.
+const QUOTA_KEYS: Record<string, StringKey> = {
+  rpm: 'errQuotaRPM',
+  tpm: 'errQuotaTPM',
+  '5h': 'errQuota5H',
+  '1w': 'errQuotaWeek',
+  '1m': 'errQuotaMonth',
+};
+
+// The reader's sentence for a code the interface has one for, or undefined. A
+// stream's error event carries the same code, so it is translated through here
+// too rather than shown as the server's English.
+export function codeText(code: string): string | undefined {
+  // The index is typed as possibly undefined under noUncheckedIndexedAccess,
+  // so the lookup is narrowed before it is handed to t().
+  const key = Object.hasOwn(CODE_KEYS, code) ? CODE_KEYS[code] : undefined;
+  return key ? t(key) : undefined;
+}
+
+// The sentence for a failed turn as the conversation stored it. The row keeps
+// the server's code beside its English sentence, so the reader's language is
+// chosen by the code, as it is for a live error. A row with no code was written
+// before the code was kept, and shows the sentence it was written with. An
+// 'internal' failure is one the server never meant a reader to see, so it gets
+// the screen's generic line, the same as apiErrorText gives.
+export function storedErrorText(code: string, sentence: string): string {
+  if (code === 'internal') return t('failed');
+  return codeText(code) ?? sentence;
+}
+
+export function apiErrorText(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    // A network or engine failure reads as `TypeError: Failed to fetch`, which
+    // is for whoever reads the console, not the reader. The original goes to
+    // the console so it is not lost.
+    console.warn('request failed', error);
+    return t('failed');
+  }
+  if (error.code === 'quota_exceeded') {
+    // The window name comes from the server, so a value like "constructor" must
+    // not find a prototype member and be handed to t().
+    const windowName = String(error.details['window']);
+    return t((Object.hasOwn(QUOTA_KEYS, windowName) ? QUOTA_KEYS[windowName] : undefined) ?? 'errQuotaGeneric');
+  }
+  const text = codeText(error.code);
+  if (text) return text;
+  // A server failure's sentence is English and was written for logs and API
+  // clients, so a reader on a Chinese screen gets the screen's own fallback, as
+  // apiFailureText gives. Mirrors that rule so the two helpers do not disagree.
+  if (error.status === 0 || error.status >= 500 || error.code === 'internal') return t('failed');
+  return error.message;
+}

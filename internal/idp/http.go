@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -75,12 +76,17 @@ func (h *Handlers) discovery(w http.ResponseWriter, r *http.Request) {
 	// Public and unchanging, so it may be cached — unlike everything under
 	// /api, which the security headers mark no-store.
 	w.Header().Set("Cache-Control", "public, max-age=300")
+	// The issuer is built from the Host header when no public URL is set, so a
+	// shared cache has to key on Host or it serves one host's endpoints to
+	// another.
+	w.Header().Add("Vary", "Host")
 	writeJSON(w, http.StatusOK, Discovery(h.issuer(r)))
 }
 
 func (h *Handlers) jwks(w http.ResponseWriter, r *http.Request) {
 	keys, err := h.service.keys.JWKS(r.Context())
 	if err != nil {
+		slog.ErrorContext(r.Context(), "idp: load signing keys", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "server_error"})
 		return
 	}
@@ -115,6 +121,9 @@ func (h *Handlers) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		// The person sees a generic failure, so the cause has to go to the log
+		// or an outage looks like a bad request.
+		slog.ErrorContext(r.Context(), "idp: read authorisation request", "error", err)
 		h.showProblem(w, r, "failed")
 		return
 	}
@@ -132,14 +141,18 @@ func (h *Handlers) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The person sees the same generic failure on each of these exits, so the
+	// step is what tells an outage in one place from another in the logs.
 	needed, err := h.service.NeedsConsent(r.Context(), request, account.ID)
 	if err != nil {
+		slog.ErrorContext(r.Context(), "idp: authorize", "step", "consent", "error", err)
 		h.showProblem(w, r, "failed")
 		return
 	}
 	if !needed {
 		target, err := h.service.Approve(r.Context(), request, account.ID)
 		if err != nil {
+			slog.ErrorContext(r.Context(), "idp: authorize", "step", "approve", "error", err)
 			h.showProblem(w, r, "failed")
 			return
 		}
@@ -153,6 +166,7 @@ func (h *Handlers) authorize(w http.ResponseWriter, r *http.Request) {
 	// believed because this process signed it.
 	ticket, err := h.stamp.issue(request, account.ID)
 	if err != nil {
+		slog.ErrorContext(r.Context(), "idp: authorize", "step", "ticket", "error", err)
 		h.showProblem(w, r, "failed")
 		return
 	}
@@ -243,7 +257,9 @@ func (h *Handlers) withdraw(w http.ResponseWriter, r *http.Request) error {
 // narrowed — while somebody was reading the consent screen must not be let
 // through on the strength of a signature made before the change.
 func (h *Handlers) restore(r *http.Request, value string) (Request, error) {
-	stale := httpx.BadRequest(
+	// A code the consent screen can translate. The English sentence is only
+	// the fallback for API clients: a Chinese reader must not see it.
+	stale := httpx.BadRequestCode("request_stale",
 		"That sign-in request is no longer valid. Start again from the application.")
 
 	account := auth.MustUser(r.Context())
@@ -253,7 +269,15 @@ func (h *Handlers) restore(r *http.Request, value string) (Request, error) {
 	}
 
 	app, err := h.service.store.AppByClientID(r.Context(), nil, held.ClientID)
-	if err != nil || app.Disabled || !app.Allows(held.RedirectURI) {
+	if err != nil {
+		// Only a missing application makes the request stale. A database that
+		// cannot be read is the server failing, and says so.
+		if errors.Is(err, ErrNotFound) {
+			return Request{}, stale
+		}
+		return Request{}, httpx.Internal(err)
+	}
+	if app.Disabled || !app.Allows(held.RedirectURI) {
 		return Request{}, stale
 	}
 	scopes := ParseScopes(strings.Join(held.Scopes, " "))
@@ -282,11 +306,7 @@ func (h *Handlers) token(w http.ResponseWriter, r *http.Request) {
 
 	app, err := h.authenticateClient(r)
 	if err != nil {
-		// 401 with the challenge header, because that is what a client
-		// library checks before deciding its credentials are wrong.
-		w.Header().Set("WWW-Authenticate", `Basic realm="oauth"`)
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client",
-			"the application could not be authenticated")
+		clientAuthFailed(w, r, err)
 		return
 	}
 
@@ -309,6 +329,7 @@ func (h *Handlers) token(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrBadCode), errors.Is(err, ErrBadToken):
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "that grant cannot be used")
 		default:
+			slog.ErrorContext(r.Context(), "idp: token", "error", err)
 			writeOAuthError(w, http.StatusInternalServerError, "server_error", "")
 		}
 		return
@@ -318,6 +339,23 @@ func (h *Handlers) token(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, http.StatusOK, tokens)
+}
+
+// clientAuthFailed answers a request whose application could not be
+// authenticated. Only a credential the server rejected gets the 401: a database
+// that cannot be read is the server failing, and a 401 would tell a good client
+// that its secret is wrong, so it may throw the secret away.
+func clientAuthFailed(w http.ResponseWriter, r *http.Request, err error) {
+	if !errors.Is(err, ErrClientAuth) {
+		slog.ErrorContext(r.Context(), "idp: authenticate application", "error", err)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "")
+		return
+	}
+	// 401 with the challenge header, because that is what a client
+	// library checks before deciding its credentials are wrong.
+	w.Header().Set("WWW-Authenticate", `Basic realm="oauth"`)
+	writeOAuthError(w, http.StatusUnauthorized, "invalid_client",
+		"the application could not be authenticated")
 }
 
 // authenticateClient reads the two ways an application may identify itself.
@@ -347,6 +385,9 @@ func (h *Handlers) authenticateClient(r *http.Request) (App, error) {
 }
 
 func (h *Handlers) userinfo(w http.ResponseWriter, r *http.Request) {
+	// Account details, so never cached. The security headers only cover the
+	// /api and /v1 prefixes, and this endpoint is outside both.
+	w.Header().Set("Cache-Control", "no-store")
 	token := bearer(w, r)
 	if token == "" {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="oauth"`)
@@ -360,6 +401,7 @@ func (h *Handlers) userinfo(w http.ResponseWriter, r *http.Request) {
 			writeOAuthError(w, http.StatusUnauthorized, "invalid_token", "that token cannot be used")
 			return
 		}
+		slog.ErrorContext(r.Context(), "idp: userinfo", "error", err)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -368,9 +410,10 @@ func (h *Handlers) userinfo(w http.ResponseWriter, r *http.Request) {
 
 // revoke takes a token back.
 //
-// It answers 200 whatever happened, including for a token that was never
-// issued: the specification says so, and the reason is that a different
-// answer would make this a way to ask whether a string is somebody's token.
+// It answers 200 for any token, including one that was never issued: the
+// specification says so, and the reason is that a different answer would make
+// this a way to ask whether a string is somebody's token. A failure to write
+// the revocation is not that case, and is answered as a server error.
 func (h *Handlers) revoke(w http.ResponseWriter, r *http.Request) {
 	if err := parseForm(w, r); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "the request body could not be read")
@@ -378,13 +421,17 @@ func (h *Handlers) revoke(w http.ResponseWriter, r *http.Request) {
 	}
 	app, err := h.authenticateClient(r)
 	if err != nil {
-		w.Header().Set("WWW-Authenticate", `Basic realm="oauth"`)
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client",
-			"the application could not be authenticated")
+		clientAuthFailed(w, r, err)
 		return
 	}
 	if token := r.PostForm.Get("token"); token != "" {
-		_ = h.service.store.Revoke(r.Context(), app.ID, token)
+		if err := h.service.store.Revoke(r.Context(), app.ID, token); err != nil {
+			// Answering 200 here would tell the client its token is gone while it
+			// still works.
+			slog.ErrorContext(r.Context(), "idp: revoke", "error", err)
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "")
+			return
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 }

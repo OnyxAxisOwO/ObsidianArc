@@ -2,12 +2,15 @@ package consolessh
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -67,6 +70,38 @@ func fakeAuthenticate(accounts map[string]testAccount) func(context.Context, str
 	}
 }
 
+// noReauthorize is for tests that build a Server directly and never open a
+// session: New requires a Reauthorize, and none is ever called.
+func noReauthorize(context.Context, string) (user.User, error) {
+	return user.User{}, user.ErrNotFound
+}
+
+// rememberSignIns gives a test server the re-read that production wires to the
+// database, with no database behind it. The account it returns is the one the
+// handshake accepted, which is what the test's own account row would say, so
+// the per-command check passes for exactly the accounts the handshake let in.
+// Tests that need a different re-read set Reauthorize themselves.
+func rememberSignIns(authenticate func(context.Context, string, string, string) (user.User, string, error)) (func(context.Context, string, string, string) (user.User, string, error), func(context.Context, string) (user.User, error)) {
+	if authenticate == nil {
+		// New refuses a config with no Authenticate; leave it that way.
+		return nil, nil
+	}
+	var signedIn sync.Map // user ID -> user.User
+	return func(ctx context.Context, username, password, ip string) (user.User, string, error) {
+			account, credential, err := authenticate(ctx, username, password, ip)
+			if err == nil {
+				signedIn.Store(account.ID, account)
+			}
+			return account, credential, err
+		}, func(_ context.Context, id string) (user.User, error) {
+			account, ok := signedIn.Load(id)
+			if !ok {
+				return user.User{}, user.ErrNotFound
+			}
+			return account.(user.User), nil
+		}
+}
+
 // startTestServer starts a Server on 127.0.0.1:0, waits for it to be
 // listening, and registers cleanup that shuts it down and checks
 // ListenAndServe's contract: it must return nil after Shutdown, exactly
@@ -79,6 +114,9 @@ func startTestServer(t *testing.T, cfg Config) *Server {
 	}
 	if cfg.HostKeyPath == "" {
 		cfg.HostKeyPath = filepath.Join(t.TempDir(), "ssh_host_ed25519_key")
+	}
+	if cfg.Reauthorize == nil {
+		cfg.Authenticate, cfg.Reauthorize = rememberSignIns(cfg.Authenticate)
 	}
 
 	srv, err := New(cfg)
@@ -151,6 +189,19 @@ func TestNewRejectsAConfigWithoutAuthenticate(t *testing.T) {
 	}
 }
 
+// Without a re-read a session would keep its handshake-time grants for as long
+// as it lasted, so the server refuses to start rather than run that way.
+func TestNewRefusesMissingReauthorize(t *testing.T) {
+	_, err := New(Config{
+		HostKeyPath:  filepath.Join(t.TempDir(), "key"),
+		Console:      newTestConsole(t),
+		Authenticate: fakeAuthenticate(nil),
+	})
+	if err == nil {
+		t.Fatal("want an error when Config.Reauthorize is nil")
+	}
+}
+
 func TestNewRejectsAConfigWithoutHostKeyPath(t *testing.T) {
 	_, err := New(Config{
 		Console:      newTestConsole(t),
@@ -206,6 +257,7 @@ func TestServerFingerprintMatchesTheGeneratedHostKey(t *testing.T) {
 		HostKeyPath:  path,
 		Console:      newTestConsole(t),
 		Authenticate: fakeAuthenticate(nil),
+		Reauthorize:  noReauthorize,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -288,7 +340,9 @@ func TestPasswordCallbackAsksPermittedWhoMayHaveAConsole(t *testing.T) {
 	}
 	srv := &Server{cfg: Config{
 		Authenticate: fakeAuthenticate(accounts),
-		Permitted:    func(_ context.Context, account user.User) bool { return account.Username == "member" },
+		Permitted: func(_ context.Context, account user.User) (bool, error) {
+			return account.Username == "member", nil
+		},
 	}}
 
 	perm, err := srv.passwordCallback(fakeConnMetadata{user: "member"}, []byte("correct-horse"))
@@ -564,6 +618,181 @@ func TestSSHEnvLangSetsChineseSessionLanguage(t *testing.T) {
 	// sess.lang, which snapshot() then hands to the console engine.
 	if err := session.Setenv("LANG", "zh_CN.UTF-8"); err != nil {
 		t.Fatalf("Setenv: %v", err)
+	}
+}
+
+// openPtySession starts an interactive session on client with a pty and returns its
+// stdin and the buffer its output is copied into.
+func openPtySession(t *testing.T, client *ssh.Client) (io.WriteCloser, *syncBuffer, *ssh.Session) {
+	t.Helper()
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	if err := session.RequestPty("xterm", 24, 80, ssh.TerminalModes{}); err != nil {
+		t.Fatalf("RequestPty: %v", err)
+	}
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		t.Fatalf("StdinPipe: %v", err)
+	}
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	if err := session.Shell(); err != nil {
+		t.Fatalf("Shell: %v", err)
+	}
+	out := &syncBuffer{}
+	go func() { _, _ = io.Copy(out, stdout) }()
+	return stdin, out, session
+}
+
+// endsAtPrompt reports whether the editor's output has reached its prompt. The
+// prompt is followed by an erase-to-end-of-line that is not part of the text,
+// so it is taken off before the check; the returned text is the output without
+// it.
+func endsAtPrompt(s string) (string, bool) {
+	s = strings.TrimSuffix(s, "\x1b[K")
+	return s, strings.HasSuffix(s, "> ")
+}
+
+// sshAwaitPrompt waits until the line editor is idle at its prompt. Each line
+// starts from there, so the prompt that closed the previous answer cannot be
+// mistaken for the answer to a line not yet typed.
+func sshAwaitPrompt(t *testing.T, out *syncBuffer) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, ok := endsAtPrompt(out.String()); ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no prompt within 3s; output so far %q", out.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// sshLine types one line and returns what the console printed for it: the text
+// between the echoed line and the prompt that follows it.
+func sshLine(t *testing.T, stdin io.Writer, out *syncBuffer, line string) string {
+	t.Helper()
+	sshAwaitPrompt(t, out)
+	mark := out.Len()
+	if _, err := io.WriteString(stdin, line+"\r"); err != nil {
+		t.Fatalf("type %q: %v", line, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		reply := out.String()[mark:]
+		if _, answer, found := strings.Cut(reply, line); found {
+			if body, ok := endsAtPrompt(answer); ok {
+				return strings.TrimSpace(strings.TrimSuffix(body, "> "))
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no answer to %q within 3s; output %q", line, reply)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// sshEnd ends an interactive session the way a person does: Ctrl-D on an
+// empty prompt.
+func sshEnd(t *testing.T, stdin io.Writer, out *syncBuffer, session *ssh.Session) {
+	t.Helper()
+	sshAwaitPrompt(t, out)
+	if _, err := stdin.Write([]byte{0x04}); err != nil {
+		t.Fatalf("write Ctrl-D: %v", err)
+	}
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- session.Wait() }()
+	select {
+	case <-waitErr:
+	case <-time.After(3 * time.Second):
+		t.Fatal("session did not end after Ctrl-D on an empty line")
+	}
+}
+
+func TestSSHFormatJSONPersistsAcrossLines(t *testing.T) {
+	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
+	srv := startTestServer(t, Config{
+		Console:      newTestConsole(t),
+		Authenticate: fakeAuthenticate(accounts),
+	})
+	stdin, out, session := openPtySession(t, dialInsecure(t, srv, "admin", "s3cret-pass"))
+
+	sshLine(t, stdin, out, "format json")
+	got := sshLine(t, stdin, out, "whoami")
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(got), &doc); err != nil {
+		t.Fatalf("whoami after format json is not a JSON document (%v): %q", err, got)
+	}
+	if doc["username"] != "admin" {
+		t.Errorf("whoami JSON username = %v, want admin", doc["username"])
+	}
+	sshEnd(t, stdin, out, session)
+}
+
+func TestSSHLangPersistsAcrossLines(t *testing.T) {
+	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
+	srv := startTestServer(t, Config{
+		Console:      newTestConsole(t),
+		Authenticate: fakeAuthenticate(accounts),
+	})
+	stdin, out, session := openPtySession(t, dialInsecure(t, srv, "admin", "s3cret-pass"))
+
+	sshLine(t, stdin, out, "lang zh")
+	if got := sshLine(t, stdin, out, "whoami"); !strings.Contains(got, "全部（超级管理员）") {
+		t.Errorf("whoami after lang zh = %q, want the Chinese permissions line", got)
+	}
+	got := sshLine(t, stdin, out, "help user create")
+	if !strings.Contains(got, "新建账户") || strings.Contains(got, "Create an account") {
+		t.Errorf("help user create after lang zh = %q, want the Chinese summary only", got)
+	}
+	sshEnd(t, stdin, out, session)
+}
+
+// A setting changed on one connection is that connection's own: a second
+// connection opened afterwards starts from the defaults.
+func TestSSHSettingsDoNotLeakIntoANewConnection(t *testing.T) {
+	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
+	srv := startTestServer(t, Config{
+		Console:      newTestConsole(t),
+		Authenticate: fakeAuthenticate(accounts),
+	})
+
+	first, firstOut, _ := openPtySession(t, dialInsecure(t, srv, "admin", "s3cret-pass"))
+	sshLine(t, first, firstOut, "format json")
+	sshLine(t, first, firstOut, "lang zh")
+
+	second, secondOut, session := openPtySession(t, dialInsecure(t, srv, "admin", "s3cret-pass"))
+	got := sshLine(t, second, secondOut, "whoami")
+	var doc map[string]any
+	if json.Unmarshal([]byte(got), &doc) == nil {
+		t.Errorf("new connection answered in JSON, want its own table default: %q", got)
+	}
+	if !strings.Contains(got, "all (super admin)") {
+		t.Errorf("new connection answered %q, want the English permissions line", got)
+	}
+	sshEnd(t, second, secondOut, session)
+}
+
+func TestKeepSettingsCarriesFormatAndLangToTheNextLine(t *testing.T) {
+	sess := newSSHSession(nil, nil, nil, adminUser("admin"), "192.0.2.1", "")
+	s := sess.snapshot("ssh")
+	s.JSON = true
+	s.Lang = "zh"
+	sess.keepSettings(s)
+
+	got := sess.snapshot("ssh")
+	if !got.JSON {
+		t.Error("snapshot after keepSettings has JSON false, want true")
+	}
+	if got.Lang != "zh" {
+		t.Errorf("snapshot after keepSettings has Lang %q, want zh", got.Lang)
 	}
 }
 

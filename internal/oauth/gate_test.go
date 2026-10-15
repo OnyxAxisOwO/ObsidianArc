@@ -138,10 +138,21 @@ func TestBindingGateHoldsAnAccountToTheConnectFlow(t *testing.T) {
 		{http.MethodGet, "/api/auth/oauth/connections"},
 		{http.MethodPost, "/api/auth/oauth/connections/oidc"},
 		{http.MethodGet, "/api/auth/oauth/callback/oidc?code=c&state=x"},
+		// An account owing both steps is sent to enrol first, and this gate is
+		// the one that must not refuse those calls on the way.
+		{http.MethodGet, "/api/profile/two-factor"},
+		{http.MethodPost, "/api/profile/two-factor/setup"},
+		{http.MethodPost, "/api/profile/two-factor/enable"},
 	} {
 		if w := request(allowed.method, allowed.path); !reached {
 			t.Fatalf("%s %s was held by the gate: %d %s", allowed.method, allowed.path, w.Code, w.Body.String())
 		}
+	}
+
+	// Only the enrolment calls are admitted, not the rest of the two-step
+	// surface: turning a factor off is not part of getting the account bound.
+	if w := request(http.MethodPost, "/api/profile/two-factor/disable"); reached {
+		t.Fatalf("disable reached past the binding gate: %d %s", w.Code, w.Body.String())
 	}
 
 	// A GitHub connection would not satisfy this policy, and must not be let
@@ -164,6 +175,60 @@ func TestBindingGateHoldsAnAccountToTheConnectFlow(t *testing.T) {
 
 	if w := request(http.MethodGet, "/api/conversations"); !reached || w.Code != http.StatusOK {
 		t.Fatalf("a connected account is still held: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The server chains EnrolmentGate in front of BindingGate, and each gate's own
+// tests run it alone. Neither can see a path that one gate admits and the
+// other refuses, which is the only way an account owing both steps gets stuck.
+func TestAnAccountOwingBothStepsEnrolsBeforeBinding(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	f.configure(t, "oidc")
+	if err := f.settings.SetMany(ctx, map[string]string{
+		settings.OAuthOIDCIssuer:        "https://auth.example.com",
+		settings.OAuthOIDCRequireForAll: "true",
+	}); err != nil {
+		t.Fatalf("turn on the binding policy: %v", err)
+	}
+	member, _, err := f.auth.Register(ctx, auth.RegisterInput{
+		Username: "member", Password: "another-password",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := f.settings.Set(ctx, settings.TwoFactorPolicy, settings.TwoFactorEveryone); err != nil {
+		t.Fatalf("turn on two-step sign-in for everyone: %v", err)
+	}
+
+	reached := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+	gated := f.auth.EnrolmentGate()(f.service.BindingGate()(next))
+
+	request := func(method, path string) *httptest.ResponseRecorder {
+		reached = false
+		req := httptest.NewRequest(method, path, nil)
+		req = req.WithContext(auth.WithUser(req.Context(), member))
+		w := httptest.NewRecorder()
+		gated.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := request(http.MethodGet, "/api/conversations"); reached || w.Code != http.StatusForbidden ||
+		!strings.Contains(w.Body.String(), "two_factor_enrolment_required") {
+		t.Fatalf("an account owing two-step sign-in reached the API: %d %s", w.Code, w.Body.String())
+	}
+	for _, enrol := range []struct{ method, path string }{
+		{http.MethodPost, "/api/profile/two-factor/setup"},
+		{http.MethodPost, "/api/profile/two-factor/enable"},
+	} {
+		if w := request(enrol.method, enrol.path); !reached {
+			t.Fatalf("%s %s was held by the combined gates: %d %s", enrol.method, enrol.path, w.Code, w.Body.String())
+		}
 	}
 }
 

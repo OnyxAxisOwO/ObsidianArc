@@ -74,7 +74,7 @@ func (p Provider) Masked() Provider {
 	}
 	masked := make(map[string]string, len(p.Headers))
 	for name, value := range p.Headers {
-		masked[name] = secret.Hint(value)
+		masked[name] = headerHint(value)
 	}
 	p.Headers = masked
 	return p
@@ -92,7 +92,7 @@ func (p Provider) Masked() Provider {
 func keepEchoedHeaders(sent, stored map[string]string) (map[string]string, error) {
 	out := make(map[string]string, len(sent))
 	for name, value := range sent {
-		if original, ok := stored[name]; ok && value == secret.Hint(original) {
+		if original, ok := stored[name]; ok && value == headerHint(original) {
 			value = original
 		} else if isHint(value) {
 			return nil, ErrHiddenHeader
@@ -100,6 +100,20 @@ func keepEchoedHeaders(sent, stored map[string]string) (map[string]string, error
 		out[name] = value
 	}
 	return out, nil
+}
+
+// headerHint is the form a header value is shown in. Masked and
+// keepEchoedHeaders both go through it, so a value shown this way still
+// matches when it is sent back. Below sixteen characters a header shows none
+// of its own: four characters of a short token are most of it. This rule is
+// local to headers. Keys keep their last four characters (secret.Hint), since
+// an administrator compares keys by that tail and would lose the means to
+// tell two short keys apart.
+func headerHint(value string) string {
+	if utf8.RuneCountInString(value) < 16 {
+		return "••••"
+	}
+	return secret.Hint(value)
 }
 
 // isHint reports whether value has the shape secret.Hint gives: the mask, with
@@ -130,6 +144,18 @@ var (
 	// A header value the list showed as a hint is not a value. Stored as one,
 	// the mask would travel upstream in place of the secret, so it is refused.
 	ErrHiddenHeader = errors.New("provider: a header value shown as a hint cannot be saved; enter the value")
+	// A name that is not an HTTP token is refused at save. net/http would reject
+	// it on every upstream call, and the operator would hear about it only at chat
+	// time, with an error that does not name the header.
+	ErrInvalidHeaderName = errors.New("provider: a header name may use only letters, digits and the characters !#$%&'*+-.^_`|~")
+	// Two names that differ only in surrounding space or letter case are one
+	// header on the wire, and the value that survived would depend on the order
+	// the map was read in.
+	ErrDuplicateHeader = errors.New("provider: two header names are the same once spaces are trimmed and letter case is ignored")
+	// Models on other providers route into this one's models. Deleting it
+	// would clear those routes, so the sources would be served by their own
+	// providers without anybody having chosen that.
+	ErrRouted = errors.New("provider: models on other providers route into this one")
 	// The key is sent wherever the base URL points, so it only goes to a
 	// new address when whoever pointed it there typed it again. Otherwise the
 	// write-only key was one edit and one "detect models" away from anybody
@@ -141,15 +167,26 @@ var (
 	// being moved. Typing the key again does not make it safe: whoever picks
 	// the address chooses the key as well.
 	ErrBaseURLNeedsSuperAdmin = errors.New("provider: only a super administrator can set or change a provider's base URL")
-	ErrTooManyHeaders         = errors.New("provider: at most 20 extra headers")
-	ErrTooManyKeys            = errors.New("provider: at most 100 API keys")
-	ErrKeyTooLong             = errors.New("provider: an API key is at most 4096 characters")
-	ErrInvalidRotation        = errors.New("provider: key rotation must be sequential or random")
+	// The adapter's sentences about a base URL are written for the person who
+	// typed it, and the admin layer shows them. Recognised by this marker, not
+	// by searching the text, so an internal error that happens to contain the
+	// word "https" is still a server fault.
+	ErrInvalidBaseURL  = errors.New("provider: invalid base URL")
+	ErrTooManyHeaders  = errors.New("provider: at most 20 extra headers")
+	ErrTooManyKeys     = errors.New("provider: at most 100 API keys")
+	ErrKeyTooLong      = errors.New("provider: an API key is at most 4096 characters")
+	ErrInvalidRotation = errors.New("provider: key rotation must be sequential or random")
 	// Kept keys are named by position, which means something only against the
 	// list the form was drawn from. Another administrator's edit in between
 	// would otherwise have it keep a key it never showed.
 	ErrKeysChanged = errors.New("provider: the API keys were changed meanwhile")
 )
+
+// baseURLError keeps the adapter's sentence as its message, so the text a
+// person sees does not change, and marks it as ErrInvalidBaseURL.
+type baseURLError struct{ error }
+
+func (e baseURLError) Is(target error) bool { return target == ErrInvalidBaseURL }
 
 const (
 	MaxNameChars   = 60
@@ -617,12 +654,38 @@ func (s *Store) List(ctx context.Context) ([]Provider, error) {
 	return out, rows.Err()
 }
 
+// Delete removes a provider and, through the cascade, its models and their
+// group permissions. A model on another provider that routes into one of
+// these models is refused: the cascade would clear that route and the source
+// would be served by its own provider, the one the operator routed away from.
 func (s *Store) Delete(ctx context.Context, providerID string) error {
-	// Models cascade; so do the group permissions that pointed at them.
-	if _, err := s.db.Exec(ctx, `DELETE FROM providers WHERE id = ?`, providerID); err != nil {
-		return fmt.Errorf("provider: delete: %w", err)
-	}
-	return nil
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`UPDATE providers SET updated_at = updated_at WHERE id = ?`, providerID); err != nil {
+			return fmt.Errorf("provider: lock provider: %w", err)
+		}
+		// Each model is locked as a route write locks its target, so a route
+		// set on one of them concurrently waits here instead of being cleared
+		// by the cascade after the check below has passed.
+		if _, err := tx.Exec(ctx,
+			`UPDATE models SET updated_at = updated_at WHERE provider_id = ?`, providerID); err != nil {
+			return fmt.Errorf("provider: lock models: %w", err)
+		}
+		var routed int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM models src
+			JOIN models dst ON dst.id = src.route_to_id
+			WHERE dst.provider_id = ? AND src.provider_id <> ?`, providerID, providerID).Scan(&routed); err != nil {
+			return fmt.Errorf("provider: count routes: %w", err)
+		}
+		if routed > 0 {
+			return ErrRouted
+		}
+		// Models cascade; so do the group permissions that pointed at them.
+		if _, err := tx.Exec(ctx, `DELETE FROM providers WHERE id = ?`, providerID); err != nil {
+			return fmt.Errorf("provider: delete: %w", err)
+		}
+		return nil
+	})
 }
 
 // Resolve returns the provider with one of its keys decrypted, ready to hand
@@ -807,7 +870,7 @@ func validate(record Provider) (Provider, error) {
 
 	normalized, err := adapter.NormalizeBaseURL(record.BaseURL, record.AllowInsecure)
 	if err != nil {
-		return Provider{}, fmt.Errorf("provider: %w", err)
+		return Provider{}, fmt.Errorf("provider: %w", baseURLError{err})
 	}
 	record.BaseURL = normalized
 
@@ -864,11 +927,29 @@ func sanitizeHeaders(in map[string]string) (map[string]string, error) {
 	}
 
 	out := make(map[string]string, len(in))
+	seen := make(map[string]bool, len(in))
 	for name, value := range in {
 		trimmed := strings.TrimSpace(name)
 		if trimmed == "" || reservedHeaders[strings.ToLower(trimmed)] {
 			continue
 		}
+		// The name is in the error because validate runs on every save, so a
+		// legacy header that no longer passes blocks all of them, and the
+		// operator has to be told which row to fix. That includes a save that
+		// only disables the provider: Update validates the stored headers too,
+		// so the way out is to fix or remove the row and save again.
+		if !validHeaderName(trimmed) {
+			return nil, fmt.Errorf("%w: %q", ErrInvalidHeaderName, trimmed)
+		}
+		// Net/http canonicalises names, so "X-Auth" and "x-auth" are one header
+		// on the wire and the value sent would depend on map order. The name is
+		// in the error for the reason above: the operator has to find the row
+		// that collides with another.
+		key := strings.ToLower(trimmed)
+		if seen[key] {
+			return nil, fmt.Errorf("%w: %q", ErrDuplicateHeader, trimmed)
+		}
+		seen[key] = true
 		// A newline in a header value is request splitting. Both are stripped
 		// rather than rejected: the operator typed a value, not an attack.
 		clean := strings.NewReplacer("\r", "", "\n", "").Replace(value)
@@ -879,6 +960,22 @@ func sanitizeHeaders(in map[string]string) (map[string]string, error) {
 		out[trimmed] = text.Truncate(clean, MaxHeaderChars)
 	}
 	return out, nil
+}
+
+// validHeaderName is the RFC 9110 token grammar: the characters a header name may
+// use. Written out rather than taken from a package, because the check is a few
+// lines and the set does not change.
+func validHeaderName(name string) bool {
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return name != ""
 }
 
 func decodeHeaders(raw string) map[string]string {

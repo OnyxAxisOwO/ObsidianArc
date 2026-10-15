@@ -13,6 +13,18 @@ describe('positional passwords are kept out of the history', () => {
     'user passwd alice',
     'watch user passwd alice hunter2',
     'watch --count 2 -- user passwd alice hunter2',
+    // The second positional of `user create` is the password; the console declares only the name.
+    'user create bob hunter22',
+    'me passwd oldpass newpass',
+    // Quotes do not change what the console reads, so they must not change this either.
+    "user create bob '--password' hunter22",
+    "'user passwd' bob hunter22",
+    'user create bob "--password=hunter22"',
+    // A quoted dash-led password: stripping the quotes makes it a flag-looking token, so only the raw line matches.
+    'user create bob "-hunter2"',
+    "user create bob '-hunter2'",
+    // A quoted command word: only the stripped line matches.
+    '"user" create bob hunter2',
   ])('keeps %s out', (line) => {
     expect(isSensitiveTerminalLine(line)).toBe(true);
   });
@@ -21,6 +33,8 @@ describe('positional passwords are kept out of the history', () => {
     'user list --q passwd',
     'user passwdx alice',
     'user edit alice --nickname Bob',
+    'user create bob',
+    'user create bob --email bob@example.com',
     // Watching an ordinary command is not a secret, whatever it repeats.
     'watch usage rpm',
     'watch --interval 10s --count 6 health status',

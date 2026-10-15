@@ -68,13 +68,15 @@ func (s *Service) CheckPluginDefinitions(plugin string, defs []Definition, modes
 // coreOwnedKeys are dotted settings the core reads and writes without a
 // Define, so they are not in Defaults and the check below cannot see them
 // there. quota keeps its allowance anchor under quota.global_reset_at and the
-// backup scheduler its lock under system_backup.lock (internal/quota and
-// internal/systembackup hold the names unexported). A package that declared
-// one would be handed the value the core reads back, and an install writes
-// the value it was given. Keep this list in step with those packages.
+// backup scheduler its lock and failure count under system_backup.lock and
+// system_backup.consecutive_failures (internal/quota and internal/systembackup
+// hold the names unexported). A package that declared one would be handed the
+// value the core reads back, and an install writes the value it was given.
+// Keep this list in step with those packages.
 var coreOwnedKeys = map[string]bool{
-	"quota.global_reset_at": true,
-	"system_backup.lock":    true,
+	"quota.global_reset_at":              true,
+	"system_backup.lock":                 true,
+	"system_backup.consecutive_failures": true,
 }
 
 // checkPluginDefinitions: the caller holds dyn.mu.

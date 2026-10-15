@@ -24,6 +24,9 @@ const rows = computed(() => {
   if (limit === null || limit <= 0) return [];
   return top.value.map((entry) => {
     const cost = worstCase(entry);
+    // Nothing reserved means no number of turns to count, and dividing by zero
+    // would print "Infinity turns".
+    if (cost <= 0) return t('creditsRowFree', { name: entry.display_name });
     const args = { name: entry.display_name, cost: round(cost), turns: Math.floor(limit / cost) };
     return args.turns > 0 ? t('creditsRow', args) : t('creditsRowShort', args);
   });

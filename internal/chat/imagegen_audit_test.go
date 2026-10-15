@@ -12,9 +12,10 @@ import (
 // provider is asked for anything.
 func TestAnImageRequestWithAnOversizedFieldIsRefusedBeforeTheProviderIsCalled(t *testing.T) {
 	cases := map[string]string{
-		"prompt": `{"prompt":"` + strings.Repeat("x", 32001) + `"}`,
-		"size":   `{"prompt":"a sunset","size":"` + strings.Repeat("9", 65) + `"}`,
-		"style":  `{"prompt":"a sunset","style":"` + strings.Repeat("s", 65) + `"}`,
+		"prompt":  `{"prompt":"` + strings.Repeat("x", 32001) + `"}`,
+		"size":    `{"prompt":"a sunset","size":"` + strings.Repeat("9", 65) + `"}`,
+		"style":   `{"prompt":"a sunset","style":"` + strings.Repeat("s", 65) + `"}`,
+		"quality": `{"prompt":"a sunset","quality":"` + strings.Repeat("q", 65) + `"}`,
 	}
 	for name, fields := range cases {
 		t.Run(name, func(t *testing.T) {

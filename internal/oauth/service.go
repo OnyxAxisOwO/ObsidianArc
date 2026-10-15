@@ -399,6 +399,13 @@ func (s *Service) resolve(
 					}
 					shouldOpen = !populated || s.settings.Bool(settings.OAuthAllowSignup)
 					if populated && shouldOpen {
+						// The challenge is a cheap refusal and the lookup is a paid
+						// one, so the challenge goes first, as Register orders them.
+						// The transaction below checks it again for the race where
+						// the instance becomes populated after this read.
+						if !adm.SignUpCleared {
+							return user.User{}, ErrSignupChallengeRequired
+						}
 						screeningErr = s.auth.CheckRegistrationEmail(ctx, email)
 						screened = true
 						if ctx.Err() != nil {
@@ -424,9 +431,28 @@ func (s *Service) resolve(
 	guarded := false
 	var verdict auth.Verdict
 
+	// A completion password is hashed before any transaction opens, as Register
+	// hashes its own. Argon2 under the instance lock would hold every other writer
+	// for as long as the hash waited for a slot. Only a password the transaction
+	// below will accept is hashed; that transaction makes the same checks and
+	// refuses the rest, so nothing is accepted here that it would not accept.
+	var passwordHash string
+	if pw := strings.TrimSpace(details.Password); pw != "" &&
+		s.settings.Bool(settings.OAuthAllowPassword) && auth.ValidatePassword(pw) == nil {
+		hash, err := s.auth.HashPassword(ctx, pw)
+		if err != nil {
+			return user.User{}, err
+		}
+		passwordHash = hash
+	}
+
 	var account user.User
+	// Whether this call opened the account. Only then is an address somebody
+	// typed one this instance asked for; a returning sign-in never is.
+	opened := false
 	for {
 		account = user.User{}
+		opened = false
 		err := s.db.Tx(ctx, func(tx *database.Tx) error {
 			// The common path, and the cheap one: somebody signing in again.
 			found, err := s.store.Account(ctx, tx, identity.Provider, identity.Subject)
@@ -600,6 +626,14 @@ func (s *Service) resolve(
 					// account won the race before this transaction took the settings
 					// row lock, so roll back, screen outside the transaction, then
 					// repeat the authoritative identity/address checks.
+					// An address this instance already holds is refused here, before the paid
+					// lookup the retry would spend on it. Provision refuses it too, with the
+					// same answer, so the check only moves the refusal earlier.
+					if _, err := s.users.ByEmail(ctx, tx, email); err == nil {
+						return user.ErrEmailTaken
+					} else if !errors.Is(err, user.ErrNotFound) {
+						return err
+					}
 					return errNeedsEmailScreening
 				}
 				if screeningErr != nil {
@@ -641,10 +675,11 @@ func (s *Service) resolve(
 				Username:         desiredUsername,
 				ExplicitUsername: explicitUsername,
 				Password:         password,
+				PasswordHash:     passwordHash,
 				Email:            address,
 				EmailVerified:    identity.Email != "",
 				Fields:           fields,
-				Nickname:         strings.TrimSpace(identity.Name),
+				Nickname:         nicknameFrom(identity.Name),
 				IP:               ip,
 				UA:               ua,
 				InviteCode:       strings.TrimSpace(details.Invite),
@@ -654,10 +689,12 @@ func (s *Service) resolve(
 				return err
 			}
 			// A guard that let the sign-up through without being sure of it keeps the
-			// account's API access closed, the outcome a sign-up review restriction
-			// has when Register opens the account.
+			// account's API access closed, for the lifetime and under the operator
+			// setting a sign-up review restriction has when Register opens the
+			// account. It is recorded as the guard's own, which the screening cohort
+			// does not count as the reviewer's.
 			if verdict.Restrict {
-				created, err = s.users.UpdateAPIRestriction(ctx, tx, created.ID, true, 0, "signup_review")
+				created, err = s.users.UpdateAPIRestriction(ctx, tx, created.ID, true, s.auth.SignupRestrictedUntil(), "guard")
 				if err != nil {
 					return err
 				}
@@ -666,6 +703,7 @@ func (s *Service) resolve(
 				return err
 			}
 			account = created
+			opened = true
 			return nil
 		})
 		if errors.Is(err, errNeedsSignupGuards) {
@@ -698,11 +736,13 @@ func (s *Service) resolve(
 		s.auth.RewardInvite(ctx, account.ID, s.auth.VerificationRequired())
 	}
 
-	// An address somebody typed is unconfirmed, and this is the instance that
-	// asked for it — so the link goes out the way it does for the sign-up
-	// form. Best effort: the account exists either way, and there is a resend
-	// button behind the banner.
-	if !account.EmailVerified && account.Email != "" {
+	// An address somebody typed for an account this sign-in just opened is
+	// unconfirmed, and this is the instance that asked for it — so the link goes
+	// out the way it does for the sign-up form. Best effort: the account exists
+	// either way, and there is a resend button behind the banner. A returning
+	// sign-in is not mailed here: the link would be sent inside the callback for
+	// an account nobody asked to confirm again.
+	if opened && !account.EmailVerified && account.Email != "" {
 		_ = s.auth.Resend(ctx, s.settings.Get(settings.SiteName), account.ID)
 	}
 	return account, nil
@@ -732,12 +772,26 @@ func (s *Service) emailDomains() []string {
 
 func (s *Service) verificationRequired() bool { return s.auth.VerificationRequired() }
 
+// nicknameFrom is the provider's display name as a nickname. A name longer than
+// a nickname may hold is clipped rather than refused: the completion form never
+// asks for a nickname, so a refusal here would leave the person no way to open
+// the account at all.
+func nicknameFrom(name string) string {
+	runes := []rune(strings.TrimSpace(name))
+	if len(runes) > user.MaxNicknameChars {
+		runes = runes[:user.MaxNicknameChars]
+	}
+	return strings.TrimSpace(string(runes))
+}
+
 // Connect adds a provider to an account that is already signed in.
 //
 // Connecting a provider whose subject is bound to an account field (see
 // BindSubject) also writes that value onto the account when it has none — the
 // settings screen binds the account the same way a sign-in would. A value
-// another account already carries is left alone rather than stolen.
+// another account already carries refuses the connection with
+// ErrAddressTaken, as sign-up does: that copy was typed, and the link must not
+// ride on it.
 func (s *Service) Connect(ctx context.Context, userID string, identity Identity) error {
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		// The account's own row, because what follows is a check — is this
@@ -769,13 +823,20 @@ func (s *Service) Connect(ctx context.Context, userID string, identity Identity)
 				return err
 			}
 			if current.Fields[field] == "" {
-				if _, err := s.users.ByField(ctx, tx, field, value); errors.Is(err, user.ErrNotFound) {
+				// Another account holding the value is the case sign-up refuses
+				// as well: its copy was typed, not proved, so this link is not
+				// allowed to ride on it. Refused rather than linked and left
+				// unwritten, so the two paths answer alike.
+				switch _, err := s.users.ByField(ctx, tx, field, value); {
+				case err == nil:
+					return ErrAddressTaken
+				case errors.Is(err, user.ErrNotFound):
 					if _, err := s.users.UpdateProfile(ctx, tx, userID, user.ProfileUpdate{
 						Fields: map[string]string{field: value},
 					}); err != nil {
 						return err
 					}
-				} else if err != nil {
+				default:
 					return err
 				}
 			}
@@ -817,6 +878,16 @@ func (s *Service) Disconnect(ctx context.Context, userID, provider string) error
 		if _, err := tx.Exec(ctx,
 			`UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
 			return err
+		}
+		// Asked before the last-way-in rule: a provider the account never held
+		// removes nothing, so the account must not be told to set a password
+		// first for a disconnect that did not happen.
+		held, err := s.store.HasProvider(ctx, tx, userID, provider)
+		if err != nil {
+			return err
+		}
+		if !held {
+			return ErrNotConnected
 		}
 		hash, err := s.users.PasswordHash(ctx, tx, userID)
 		if err != nil {

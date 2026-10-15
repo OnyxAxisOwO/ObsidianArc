@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
+import { createApp, h, nextTick, reactive, type App } from 'vue';
 import { adminApi } from '../src/admin/api';
+import { ApiError } from '../src/api/client';
 import AdminDetectModels, { type DetectedModel } from '../src/views/admin/AdminDetectModels.vue';
 
 const settle = async () => {
@@ -88,6 +89,57 @@ describe('detected models', () => {
     expect(options()[2]!.disabled).toBe(true);
     // Nothing ticked any more, so nothing to commit.
     expect(host.querySelector('.oa-btn.primary')).toBeNull();
+  });
+
+  it('keeps only the rows that failed ticked, so a retry does not create the ones that worked', async () => {
+    const created = vi.spyOn(adminApi, 'createModel')
+      .mockResolvedValueOnce({} as never)
+      .mockRejectedValueOnce(new ApiError(500, 'internal', 'boom'));
+    mount({ mode: 'add', canAdd: true });
+    await detect();
+
+    options()[0]!.click();
+    options()[2]!.click();
+    await nextTick();
+    [...host.querySelectorAll<HTMLButtonElement>('.oa-btn.primary')].at(-1)!.click();
+    await settle();
+
+    expect(options()[0]!.querySelector('.oa-detect-known')).not.toBeNull();
+    expect(options()[2]!.getAttribute('aria-selected')).toBe('true');
+    // The client always throws ApiError, so the failure reads as its bare
+    // message. A plain Error takes the String(error) branch and shows
+    // "Error: boom", which no real request produces.
+    expect(host.querySelector('.oa-group-row-meta')?.textContent).toBe('boom');
+    expect(host.textContent).not.toContain('Error: boom');
+
+    created.mockClear();
+    // Once the two queued answers are used, spyOn falls back to the real
+    // request, so the retry gets its own answer here.
+    created.mockResolvedValue({} as never);
+    [...host.querySelectorAll<HTMLButtonElement>('.oa-btn.primary')].at(-1)!.click();
+    await settle();
+    expect(created.mock.calls.map(([body]) => body['model_id'])).toEqual(['qwen3.6-27b']);
+  });
+
+  it('drops a detection that comes back for a provider the editor has since left', async () => {
+    let release: () => void = () => {};
+    vi.spyOn(adminApi, 'detect').mockImplementation(() => new Promise((resolve) => {
+      release = () => resolve(catalogue());
+    }));
+    const state = reactive({ providerId: 'p1' });
+    app = createApp({
+      render: () => h(AdminDetectModels, { providerId: state.providerId, mode: 'add', canAdd: true } as never),
+    });
+    app.mount(host);
+
+    await detect();
+    state.providerId = 'p2';
+    await settle();
+    release();
+    await settle();
+
+    expect(options()).toHaveLength(0);
+    expect(host.querySelector('.oa-detect-options')).toBeNull();
   });
 
   it('ticks several rows in the model editor, the configured ones too, and hands them all back', async () => {

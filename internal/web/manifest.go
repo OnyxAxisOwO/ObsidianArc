@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -101,11 +102,11 @@ func ManifestHandler(get func() Manifest) http.HandlerFunc {
 // measured size: the built-in mark is a vector, and a custom one is asked for
 // by URL rather than upload, so nothing here has ever decoded it to know its
 // real dimensions.
-func icon(url string) map[string]any {
-	if url == "" {
+func icon(src string) map[string]any {
+	if src == "" {
 		return map[string]any{"src": defaultIcon, "sizes": "any", "type": "image/svg+xml", "purpose": "any"}
 	}
-	return map[string]any{"src": url, "sizes": "any", "type": iconMediaType(url), "purpose": "any"}
+	return map[string]any{"src": src, "sizes": "any", "type": iconMediaType(src), "purpose": "any"}
 }
 
 // iconMediaType guesses a manifest icon's declared type from a data URI's own
@@ -113,21 +114,31 @@ func icon(url string) map[string]any {
 // this project does not read the bytes behind a URL it was only ever handed
 // a reference to, and a browser that receives the wrong declared type simply
 // probes the file itself rather than refusing it outright.
-func iconMediaType(url string) string {
-	if strings.HasPrefix(url, "data:") {
-		if end := strings.IndexAny(url, ";,"); end > len("data:") {
-			return url[len("data:"):end]
+func iconMediaType(src string) string {
+	if strings.HasPrefix(src, "data:") {
+		if end := strings.IndexAny(src, ";,"); end > len("data:") {
+			return src[len("data:"):end]
 		}
 	}
+	// The extension is read from the path alone: an operator's cache-busting
+	// query (/logo.svg?v=3) is not part of the file's name, and matching the
+	// raw string would declare it image/png.
+	name := src
+	if u, err := url.Parse(src); err == nil {
+		name = u.Path
+	}
+	name = strings.ToLower(name)
 	switch {
-	case strings.HasSuffix(url, ".svg"):
+	case strings.HasSuffix(name, ".svg"):
 		return "image/svg+xml"
-	case strings.HasSuffix(url, ".webp"):
+	case strings.HasSuffix(name, ".webp"):
 		return "image/webp"
-	case strings.HasSuffix(url, ".jpg"), strings.HasSuffix(url, ".jpeg"):
+	case strings.HasSuffix(name, ".jpg"), strings.HasSuffix(name, ".jpeg"):
 		return "image/jpeg"
-	case strings.HasSuffix(url, ".gif"):
+	case strings.HasSuffix(name, ".gif"):
 		return "image/gif"
+	case strings.HasSuffix(name, ".ico"):
+		return "image/x-icon"
 	default:
 		return "image/png"
 	}

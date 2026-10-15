@@ -624,3 +624,106 @@ func TestConcurrentAttemptsNeverExceedTheCeiling(t *testing.T) {
 		t.Errorf("the protected count is %d, but %d buckets are protected", l.protected, matched)
 	}
 }
+
+// expireBlocks moves the buckets for these keys out of their block, as if the
+// wait had run out, without sleeping through it.
+func expireBlocks(l *Limiter, ip, identifier string) {
+	for _, key := range keys(ip, identifier) {
+		if entry := l.buckets[key]; entry != nil {
+			entry.blockedUntil = time.Now().Add(-time.Second)
+		}
+	}
+}
+
+// Once a block has run out the next sequential attempt must be admitted, and a
+// success clears the account. Settled failures must not refuse on their own, or a
+// legitimate owner stays locked out for as long as the bucket lives.
+func TestAnExpiredBlockAdmitsTheNextAttempt(t *testing.T) {
+	l := NewLimiter()
+	const ip, id = "203.0.113.7", "alice"
+	for range freeAttempts + 1 {
+		failAttempt(t, l, ip, id)
+	}
+	if _, err := l.Begin(ip, id); !isLimited(err) {
+		t.Fatalf("attempt during the block: err = %v, want a rate limit", err)
+	}
+
+	expireBlocks(l, ip, id)
+	attempt, err := l.Begin(ip, id)
+	if err != nil {
+		t.Fatalf("attempt after the block ran out: %v", err)
+	}
+	attempt.finish(attemptSucceeded)
+
+	if _, err := l.Begin(ip, id); err != nil {
+		t.Fatalf("attempt after a success: %v", err)
+	}
+}
+
+// A wrong answer after the block has run out must lengthen the wait, which is
+// the escalating backoff the limiter promises.
+func TestAFailureAfterAnExpiredBlockLengthensTheWait(t *testing.T) {
+	l := NewLimiter()
+	const ip, id = "203.0.113.8", "bob"
+	for range freeAttempts + 1 {
+		failAttempt(t, l, ip, id)
+	}
+	expireBlocks(l, ip, id)
+
+	attempt, err := l.Begin(ip, id)
+	if err != nil {
+		t.Fatalf("attempt after the block ran out: %v", err)
+	}
+	attempt.finish(attemptFailed)
+
+	_, err = l.Begin(ip, id)
+	var limited *RateLimitError
+	if !errors.As(err, &limited) {
+		t.Fatalf("attempt after a second wrong answer: err = %v, want a rate limit", err)
+	}
+	if limited.RetryAfter <= time.Second {
+		t.Fatalf("RetryAfter = %s, want the backoff to grow past one second", limited.RetryAfter)
+	}
+}
+
+// The in-flight cap still applies after a block has run out: a second attempt
+// running alongside the admitted one for the same account is refused.
+func TestAnAttemptRunningNowStillCapsTheAccount(t *testing.T) {
+	l := NewLimiter()
+	const ip, id = "203.0.113.9", "carol"
+	for range freeAttempts + 1 {
+		failAttempt(t, l, ip, id)
+	}
+	expireBlocks(l, ip, id)
+
+	first, err := l.Begin(ip, id)
+	if err != nil {
+		t.Fatalf("first attempt after the block ran out: %v", err)
+	}
+	defer first.Cancelled()
+
+	if _, err := l.Begin(ip, id); !isLimited(err) {
+		t.Fatalf("concurrent attempt: err = %v, want a rate limit", err)
+	}
+}
+
+// An address that has failed past its allowance is blocked for the backoff
+// and then admitted, the same as an account. Distinct names keep each account
+// bucket under its own allowance, so only the address is over.
+func TestAnExpiredAddressBlockAdmitsTheNextAttempt(t *testing.T) {
+	l := NewLimiter()
+	const ip = "198.51.100.20"
+	for i := range addressFreeAttempts + 1 {
+		failUnknown(t, l, ip, fmt.Sprintf("name-%d", i))
+	}
+	if _, err := l.Begin(ip, "someone"); !isLimited(err) {
+		t.Fatalf("attempt during the address block: err = %v, want a rate limit", err)
+	}
+
+	expireBlocks(l, ip, "")
+	attempt, err := l.Begin(ip, "someone")
+	if err != nil {
+		t.Fatalf("attempt after the address block ran out: %v", err)
+	}
+	attempt.finish(attemptCancelled)
+}

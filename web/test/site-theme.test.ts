@@ -118,6 +118,21 @@ it('ignores a background URL that is not a path on this server', () => {
   expect(wallpaper()).toBeNull();
 });
 
+it('refuses a path that a browser reads as another host, in the instance set and the reader\'s own wallpaper', () => {
+  // `/\host` is protocol-relative once a browser has read the backslash as a
+  // slash, so a prefix test that only looks for `//` lets it through.
+  const elsewhere = '/\\evil.example/x.png';
+  const set = { app_landscape_dark: { url: elsewhere, html: false }, app_portrait_dark: { url: '/\t/evil.example/y.png', html: false } };
+  expect(pickBackground(set, 'app_', 'desktop', true)).toBeNull();
+  expect(pickBackground({ app_landscape_dark: { url: elsewhere, html: false } }, 'app_', 'desktop', true)).toBeNull();
+
+  localStorage.setItem('obsidian-arc-wallpaper', JSON.stringify({ url: elsewhere, dim: 0, blur: 0, translucency: 0, panelBlur: 0 }));
+  expect(ownWallpaper()).toBeNull();
+  setSiteAppearance(SITE, { app_landscape_dark: { url: elsewhere, html: false } });
+  setSignedIn(true);
+  expect(wallpaper()).toBeNull();
+});
+
 it('gives a tablet its own variant, and the nearest shape when it has none', () => {
   const bg = (name: string) => ({ url: `/api/site/login-background/${name}?v=1`, html: false });
   const set = { landscape_dark: bg('landscape_dark'), portrait_dark: bg('portrait_dark'), tablet_light: bg('tablet_light') };

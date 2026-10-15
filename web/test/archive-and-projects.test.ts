@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApp, h, ref, nextTick, type App } from 'vue';
 import ChatSidebar from '../src/chat/ChatSidebar.vue';
 import ChatThinking from '../src/chat/ChatThinking.vue';
@@ -6,6 +6,7 @@ import OaPagination from '../src/components/OaPagination.vue';
 import OaSelect from '../src/components/OaSelect.vue';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { currentUser } from '../src/stores/session';
+import { t } from '../src/composables/useI18n';
 import * as chatModule from '../src/chat/useChat';
 
 let app: App | null = null;
@@ -17,6 +18,9 @@ beforeEach(() => {
   document.body.appendChild(host);
   chatModule.conversations.value = [];
   chatModule.activeID.value = '';
+  // The menu brings a short list's row into view after its opening transition;
+  // jsdom has no layout to scroll, and the timer would fire into a later test.
+  if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 });
 
 afterEach(() => {
@@ -279,6 +283,60 @@ describe('OaPagination mobile keyboard prevention', () => {
       expect(document.activeElement).not.toBe(input);
     } finally {
       window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  // Deleting is permanent and the menu is two clicks away, so the first click
+  // only asks. Only the second one reaches the server.
+  it('asks once before a conversation is deleted from its menu', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      chatModule.conversations.value = [
+        {
+          id: 'c1',
+          title: 'Conversation One',
+          model_id: 'm1',
+          pinned: false,
+          message_count: 1,
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ];
+
+      app = createApp({
+        setup() {
+          providePanelHost(ref(host));
+          return () => h(ChatSidebar);
+        },
+      });
+      app.mount(host);
+      await nextTick();
+
+      host.querySelector<HTMLButtonElement>('.ai-chat-list-more')?.click();
+      await settle();
+
+      const deleteItem = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.ai-chat-context-menu .oa-menu-item'))
+        .find((item) => item.textContent?.includes(t('deleteChat')) || item.textContent?.includes(t('confirmDelete')));
+      expect(deleteItem()).toBeDefined();
+
+      deleteItem()!.click();
+      await settle();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(deleteItem()?.textContent).toContain(t('confirmDelete'));
+      expect(host.querySelector('.ai-chat-context-menu')).not.toBeNull();
+
+      deleteItem()!.click();
+      await settle();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toContain('/api/conversations/c1');
+      expect(init.method).toBe('DELETE');
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

@@ -897,3 +897,51 @@ func TestRewardPendingContinuesOnSingleFailure(t *testing.T) {
 		t.Fatalf("cards = %d, want 1", cards)
 	}
 }
+
+// A backlog of uses that do not qualify yet filled each pass's page with the
+// same oldest rows, so an invitee who had come to qualify behind them was
+// never reached while they stayed in the window.
+func TestRewardPendingReachesAQualifierBehindABacklog(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.store.settings.SetMany(ctx, map[string]string{
+		settings.InvitesUserEnabled: "true", settings.InvitesRewardCards: "1", settings.InvitesUserLimit: "0",
+	}); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+	inviter := f.account(t, "backlog-inviter")
+	now := time.Now().UnixMilli()
+
+	const backlog = 205
+	var newest string
+	for i := 0; i <= backlog; i++ {
+		invitee := f.account(t, "backlog-invitee-"+strconv.Itoa(i))
+		if i < backlog {
+			if _, err := f.users.UpdateAPIRestriction(ctx, nil, invitee.ID, true, 0, "ai"); err != nil {
+				t.Fatalf("restrict %d: %v", i, err)
+			}
+		}
+		// Ascending created_at: the last invitee is the newest use, and the
+		// only one that qualifies.
+		createdAt := now - int64(backlog+1-i)*1000
+		if _, err := f.db.Exec(ctx,
+			`INSERT INTO invite_uses (user_id, code_id, inviter_id, group_days, created_at, rewarded_at, reward_cards, reward_skipped)
+			 VALUES (?, ?, ?, 0, ?, 0, 0, '')`,
+			invitee.ID, "backlog", inviter.ID, createdAt); err != nil {
+			t.Fatalf("seed use %d: %v", i, err)
+		}
+		newest = invitee.ID
+	}
+
+	if err := f.store.RewardPending(ctx, false); err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	var rewardedAt int64
+	if err := f.db.QueryRow(ctx, `SELECT rewarded_at FROM invite_uses WHERE user_id = ?`, newest).
+		Scan(&rewardedAt); err != nil {
+		t.Fatal(err)
+	}
+	if rewardedAt == 0 {
+		t.Fatal("the qualifying invitee behind 205 unqualified uses was never reached")
+	}
+}

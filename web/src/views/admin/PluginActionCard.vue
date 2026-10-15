@@ -77,21 +77,23 @@ async function runAction(): Promise<void> {
       </div>
 
       <div class="oa-card-actions">
+        <!-- A destructive button is asked in place even when the plugin wrote no
+             question for it: the core draws the danger, so it confirms too. -->
         <OaConfirmButton
-          v-if="card.button.confirm"
+          v-if="card.button.confirm || card.button.danger"
           class="oa-btn"
-          :class="card.button.danger ? 'danger' : 'primary'"
+          :class="card.button.danger ? 'oa-btn-danger' : 'primary'"
           :disabled="busy || !valid"
           :label="busy ? t('loading') : card.button.label()"
           :armed-label="card.button.armedLabel ? card.button.armedLabel() : card.button.label()"
-          :armed-title="card.button.confirm(draft)"
+          :armed-title="card.button.confirm ? card.button.confirm(draft) : card.button.label()"
           @confirm="runAction"
         />
         <button
           v-else
           type="button"
           class="oa-btn"
-          :class="card.button.danger ? 'danger' : 'primary'"
+          :class="card.button.danger ? 'oa-btn-danger' : 'primary'"
           :disabled="busy || !valid"
           @click="runAction"
         >

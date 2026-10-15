@@ -2,6 +2,7 @@ package admin
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
@@ -143,6 +144,12 @@ func applicationError(err error) error {
 	}
 	if errors.Is(err, idp.ErrCallbacksNeedSuperAdmin) {
 		return callbacksRefused()
+	}
+	// A refusal with a code, so the screen can say it in the reader's language
+	// rather than showing this English sentence.
+	if errors.Is(err, idp.ErrTooManyApplications) {
+		return httpx.Conflict("too_many_applications",
+			fmt.Sprintf("This instance already has the maximum of %d applications.", idp.MaxApps))
 	}
 	if message, known := idp.TranslateError(err); known {
 		return httpx.BadRequest("%s", message)

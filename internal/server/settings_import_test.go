@@ -1,8 +1,12 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"testing"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
 // A settings export names the models it points at by ULID, and a ULID from
@@ -111,5 +115,79 @@ func TestImportingTheMaskKeepsTheSecret(t *testing.T) {
 	}
 	if got := in.server.settings.Get("turnstile.secret_key"); got != "the-real-secret" {
 		t.Errorf("secret after importing the mask = %q", got)
+	}
+}
+
+// An administrator holds a grant for one section of the settings, and an
+// export spans all of them. The key they may not change is named and left
+// alone, and the key they may change still lands. Refusing the whole file for
+// the first one was the old behaviour, and it left the grant nothing to apply.
+func TestImportingSettingsOutsideAGrantSkipsOnlyThoseKeys(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	if response := in.do(http.MethodPatch, "/api/admin/users/"+operator.userID,
+		map[string]any{"role": "admin", "admin_permissions": []string{"settings"}}, founder); response.Code != http.StatusOK {
+		t.Fatalf("grant: %d %s", response.Code, response.Body.String())
+	}
+	before := in.server.settings.Get(settings.RegistrationEnabled)
+
+	response := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
+		settings.RegistrationEnabled: "false",
+		settings.SiteName:            "Carried Over",
+	}, operator)
+	if response.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", response.Code, response.Body.String())
+	}
+	result := decode[struct {
+		Applied int      `json:"applied"`
+		Skipped []string `json:"skipped"`
+	}](t, response)
+	if result.Applied != 1 || len(result.Skipped) != 1 || result.Skipped[0] != settings.RegistrationEnabled {
+		t.Fatalf("applied %d, skipped %v; want one applied and only %s skipped",
+			result.Applied, result.Skipped, settings.RegistrationEnabled)
+	}
+	if got := in.server.settings.Get(settings.RegistrationEnabled); got != before {
+		t.Errorf("%s = %q after a key the grant does not cover, want %q", settings.RegistrationEnabled, got, before)
+	}
+	if got := in.server.settings.Get(settings.SiteName); got != "Carried Over" {
+		t.Errorf("site.name = %q, want the imported value", got)
+	}
+}
+
+// An export carries chat.allow_archive, so the file it writes must bring the
+// switch back. Before the key was writable the import reported it skipped and
+// the setting could never be changed by anyone.
+func TestImportingSettingsAppliesAllowArchive(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("founder", "a-good-password")
+	member := in.register("member", "a-good-password")
+	ctx := context.Background()
+
+	memberChat, err := conversation.NewStore(in.db).Create(ctx, nil, member.userID, conversation.NewConversation{Title: "Member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := in.do(http.MethodPost, "/api/admin/settings/import",
+		map[string]string{settings.AllowArchive: "false"}, admin)
+	if response.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", response.Code, response.Body.String())
+	}
+	if skipped, _ := decode[map[string]any](t, response)["skipped"].([]any); len(skipped) != 0 {
+		t.Fatalf("import skipped %v, want nothing skipped", skipped)
+	}
+
+	saved := decode[struct {
+		Settings map[string]string `json:"settings"`
+	}](t, in.do(http.MethodGet, "/api/admin/settings", nil, admin)).Settings
+	if saved[settings.AllowArchive] != "false" {
+		t.Errorf("GET %s = %q, want false", settings.AllowArchive, saved[settings.AllowArchive])
+	}
+
+	refused := in.do(http.MethodPatch, "/api/conversations/"+memberChat.ID,
+		map[string]any{"archived": true}, member)
+	if refused.Code != http.StatusForbidden || errCode(t, refused) != "archive_not_permitted" {
+		t.Fatalf("member archive after import: %d %s", refused.Code, refused.Body.String())
 	}
 }

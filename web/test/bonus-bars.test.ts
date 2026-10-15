@@ -270,6 +270,36 @@ describe('OaBonusBars', () => {
     expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
   });
 
+  it('says a refused switch in Chinese by its code, not in the server\'s English sentence', async () => {
+    await changeLanguage('zh');
+    serve([bar({ enabled: true })]);
+    const { ApiError } = await import('@/api/client');
+    put.mockRejectedValue(new ApiError(409, 'bonus_not_choosable', 'This bonus is not yours to switch on or off.'));
+    await mount();
+
+    host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
+    await settle();
+
+    expect(host.textContent).toContain(t('bonusNotChoosable'));
+    expect(host.textContent).not.toContain('not yours to switch');
+    await changeLanguage('en');
+  });
+
+  it('says a server fault in Chinese with the screen\'s own line, never the server sentence', async () => {
+    await changeLanguage('zh');
+    serve([bar({ enabled: true })]);
+    const { ApiError } = await import('@/api/client');
+    put.mockRejectedValue(new ApiError(500, 'internal', 'Something went wrong on our side.'));
+    await mount();
+
+    host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
+    await settle();
+
+    expect(host.textContent).toContain(t('bonusChoiceFailed'));
+    expect(host.textContent).not.toContain('Something went wrong');
+    await changeLanguage('en');
+  });
+
   it('shows what the description says as text, never as markup', async () => {
     serve([bar({ description: '<img src=x onerror=alert(1)>' })]);
     await mount();
@@ -297,5 +327,89 @@ describe('OaBonusBars', () => {
     get.mockRejectedValue(new Error('offline'));
     await mount();
     expect(host.textContent).toContain(t('bonusLoadFailed'));
+  });
+});
+
+describe('OaBonusBars while switches and reads overlap', () => {
+  it('keeps a second bar disabled while its own switch is out, when the first one lands', async () => {
+    serve([bar({ bar_id: 'a', name: 'A', enabled: true }), bar({ bar_id: 'b', name: 'B', enabled: false })]);
+    const finish: Array<() => void> = [];
+    put.mockImplementation(() => new Promise<void>((resolve) => { finish.push(resolve); }));
+    await mount();
+
+    const switches = () => [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+    switches()[0]!.click();
+    switches()[1]!.click();
+    await settle();
+    expect(finish).toHaveLength(2);
+
+    finish[0]!();
+    await settle();
+    expect(switches()[1]!.disabled).toBe(true);
+
+    finish[1]!();
+    await settle();
+    expect(switches()[1]!.disabled).toBe(false);
+  });
+
+  it('does not put back the state a read had before a switch that landed while it was out', async () => {
+    let reads = 0;
+    let finishStale: (value: unknown) => void = () => {};
+    get.mockImplementation(async (url: string) => {
+      if (url !== '/api/bonus') throw new Error(`unexpected ${url}`);
+      reads += 1;
+      if (reads === 1) return { bars: [bar({ bar_id: 'a', name: 'A', enabled: false })] };
+      // The quiet refresh, read before the switch committed.
+      if (reads === 2) return new Promise((resolve) => { finishStale = resolve; });
+      // The read the switch starts once it lands: the server has the bar on now.
+      return { bars: [bar({ bar_id: 'a', name: 'A', enabled: true })] };
+    });
+    put.mockResolvedValue(undefined);
+    const { refresh } = await mount();
+
+    // A quiet refresh goes out, and the reader switches on before it comes back.
+    const refreshing = refresh();
+    await nextTick();
+    host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
+    await settle();
+    expect(host.querySelector('.oa-bonus-bar')!.textContent).toContain(t('bonusBeforeAllowance'));
+
+    // The refresh was read before the switch committed, so it carries the old state.
+    finishStale({ bars: [bar({ bar_id: 'a', name: 'A', enabled: false })] });
+    await refreshing;
+    await settle();
+    expect(host.querySelector('.oa-bonus-bar')!.textContent).toContain(t('bonusBeforeAllowance'));
+    expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+  });
+
+  it('reads again after a switch lands, so a refresh overtaken by it does not leave its figures behind', async () => {
+    let reads = 0;
+    let finishStale: (value: unknown) => void = () => {};
+    get.mockImplementation(async (url: string) => {
+      if (url !== '/api/bonus') throw new Error(`unexpected ${url}`);
+      reads += 1;
+      if (reads === 1) return { bars: [bar({ enabled: false, remaining: 640, percent: 64 })] };
+      // The quiet refresh, read before the switch; it is dropped once the switch lands.
+      if (reads === 2) return new Promise((resolve) => { finishStale = resolve; });
+      return { bars: [bar({ enabled: true, remaining: 500, percent: 50 })] };
+    });
+    put.mockResolvedValue(undefined);
+    const { refresh } = await mount();
+
+    const refreshing = refresh();
+    await nextTick();
+    host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
+    await settle();
+
+    expect(host.textContent).toContain(t('bonusLeft', { left: '500', total: '1000' }));
+    expect(host.textContent).not.toContain(t('bonusLeft', { left: '640', total: '1000' }));
+    expect(meter()).toBe(50);
+
+    // The stale refresh comes back last with the figures from before the switch, and does not draw.
+    finishStale({ bars: [bar({ enabled: false, remaining: 300, percent: 30 })] });
+    await refreshing;
+    await settle();
+    expect(host.textContent).toContain(t('bonusLeft', { left: '500', total: '1000' }));
+    expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
   });
 });

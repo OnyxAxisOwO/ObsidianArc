@@ -41,6 +41,11 @@ func init() {
 			}); err != nil {
 				return err
 			}
+			// Under --json the Fields call above has printed the whole response.
+			// The table below would print it a second time.
+			if rt.effectiveJSON() {
+				return nil
+			}
 			var rows [][]string
 			for _, raw := range asSlice(a["admins_without"]) {
 				m := asMap(raw)

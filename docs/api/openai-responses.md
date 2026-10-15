@@ -68,7 +68,9 @@ curl https://ai.example.com/v1/responses \
 
 ## 不支持的能力
 
-`store: true` 和非空 `previous_response_id` 会被拒绝。不能依赖服务端通过上次响应 ID 恢复上下文。
+`store: true`、非空 `previous_response_id`、非空 `conversation` 和 `background: true` 都会被拒绝。不能依赖服务端通过上次响应 ID 或会话 ID 恢复上下文。
+
+`function_call_output` 的输出只能包含文本。其中的图片会被拒绝，而不是被静默丢弃；请把图片放在用户消息中发送。
 
 当前没有后台任务、响应查询或删除接口，也没有内置网页搜索、文件检索或代码执行服务。客户端额外发送字段，不代表对应能力已实现。
 

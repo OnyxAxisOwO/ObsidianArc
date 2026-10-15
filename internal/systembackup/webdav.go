@@ -37,6 +37,10 @@ func NewWebDAVClient(cfg Config) (*WebDAVClient, error) {
 	}, nil
 }
 
+// errWebDAVURLCredentials is shown when the URL carries userinfo. The password
+// belongs in its own field, where it is sealed with the instance key.
+const errWebDAVURLCredentials = "WebDAV URL must not contain a username or password. Enter them in the username and password fields."
+
 func validateWebDAVConfig(cfg Config) error {
 	raw := strings.TrimSpace(cfg.WebDAVURL)
 	if raw == "" {
@@ -48,6 +52,21 @@ func validateWebDAVConfig(cfg Config) error {
 	}
 	if u.Scheme != "https" && !isLoopbackHTTP(u) {
 		return invalidConfig("WebDAV URL must use HTTPS.")
+	}
+	if u.User != nil {
+		return invalidConfig(errWebDAVURLCredentials)
+	}
+	// Every object path is appended to this URL, so a query or a fragment here
+	// would turn the rest of each path into one.
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return invalidConfig("WebDAV URL must not contain a query or a fragment.")
+	}
+	// A dot segment is resolved by the server, not by this client, so one in the
+	// prefix would let an upload leave the folder the operator chose.
+	for _, segment := range strings.Split(strings.Trim(cfg.Prefix, "/"), "/") {
+		if segment == "." || segment == ".." {
+			return invalidConfig("Prefix cannot contain dot path segments.")
+		}
 	}
 	if strings.TrimSpace(cfg.WebDAVUsername) == "" {
 		return invalidConfig("WebDAV username is required.")
@@ -262,11 +281,18 @@ func (c *WebDAVClient) setAuth(req *http.Request) {
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(auth)))
 }
 
+// Each segment is escaped on its own. Joined raw, a '#' or '?' in the prefix
+// starts a fragment or a query, and the upload lands on a different file from
+// the one the listing and the deletes name.
 func (c *WebDAVClient) itemURL(key string) string {
 	base := strings.TrimRight(c.baseURL.String(), "/")
 	cleanKey := strings.Trim(key, "/")
 	if cleanKey == "" {
 		return base
 	}
-	return base + "/" + cleanKey
+	segments := strings.Split(cleanKey, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return base + "/" + strings.Join(segments, "/")
 }

@@ -58,6 +58,12 @@ func build(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The packer needs a manifest, and the compile below is the slow part of a
+	// build. Without this check a directory missing one is compiled in full
+	// before the packer says so.
+	if _, err := os.Lstat(filepath.Join(dir, "manifest.json")); err != nil {
+		return fmt.Errorf("a plugin directory needs a manifest.json: %w", err)
+	}
 	work, err := os.MkdirTemp("", "arcpack")
 	if err != nil {
 		return err
@@ -122,6 +128,8 @@ func copyTree(from, to string) error {
 		return err
 	}
 	for _, e := range entries {
+		// Dot-entries are left out of the package by arcx.Pack as well, so the
+		// stage holds what the package will.
 		if strings.HasPrefix(e.Name(), ".") {
 			continue
 		}

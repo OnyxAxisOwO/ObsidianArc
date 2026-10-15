@@ -47,8 +47,17 @@ func Compress() Middleware {
 
 // Reused across requests: a gzip.Writer carries its window and hash tables,
 // which is a few hundred kilobytes to allocate and throw away per response.
+//
+// The level is BestCompression, not the default. Go's default (level 6) runs
+// its fast matcher and sends about 4% more than zlib's default on the
+// frontend bundle, and these are the bytes a visitor waits for. Levels 7-9
+// run the lazy matcher zlib uses. The cost is CPU per uncached response.
+// The level is a constant, so NewWriterLevel cannot return its error here.
 var gzipPool = sync.Pool{
-	New: func() any { return gzip.NewWriter(io.Discard) },
+	New: func() any {
+		w, _ := gzip.NewWriterLevel(io.Discard, gzip.BestCompression)
+		return w
+	},
 }
 
 // The types worth compressing, and the only ones that will be. Everything
@@ -128,6 +137,12 @@ func (w *gzipWriter) Write(b []byte) (int, error) {
 // Accept-Encoding, whatever type comes back, so this is the flush the chat
 // and the API both depend on.
 func (w *gzipWriter) Flush() {
+	// A flush before any status sends the headers, so the compression decision
+	// has to be made first: once they are on the wire, Content-Encoding can no
+	// longer be added and a gzip body would reach the client unlabelled.
+	if !w.decided {
+		w.WriteHeader(http.StatusOK)
+	}
 	if w.on {
 		_ = w.gz.Flush()
 	}

@@ -409,6 +409,93 @@ func TestANamedBatchIsRefused(t *testing.T) {
 	}
 }
 
+// A batch larger than the limit is refused. Handing back fewer codes than were
+// asked for, with a success, sends the operator looking for the rest.
+func TestABatchOverTheLimitIsRefusedNotCut(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	_, err := f.store.CreateCodes(ctx, CodeInput{Cards: 1, CardDays: 30}, MaxBatch+1)
+	if !errors.Is(err, ErrBatchTooLarge) {
+		t.Fatalf("a batch of %d gave %v, want ErrBatchTooLarge", MaxBatch+1, err)
+	}
+	if codes, _ := f.store.ListCodes(ctx); len(codes) != 0 {
+		t.Errorf("a refused batch left %d codes behind", len(codes))
+	}
+}
+
+// The codes of a batch are shown once, in its response, and a batch is written
+// whole or not at all. Here the third code drawn is one already stored, so the
+// batch fails with the first two drawn and not yet written; none may survive.
+func TestABatchThatFailsHalfWayLeavesNoCodeBehind(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, err := f.store.CreateCode(ctx, CodeInput{Code: "DDDD-EEEE-FFFF", Cards: 1, CardDays: 30}); err != nil {
+		t.Fatal(err)
+	}
+	drawn := []string{"AAAA-AAAA-AAAA", "BBBB-BBBB-BBBB", "DDDD-EEEE-FFFF"}
+	saved := randomCode
+	randomCode = func() (string, error) {
+		next := drawn[0]
+		drawn = drawn[1:]
+		return next, nil
+	}
+	t.Cleanup(func() { randomCode = saved })
+
+	_, err := f.store.CreateCodes(ctx, CodeInput{Cards: 1, CardDays: 30}, 3)
+	if !errors.Is(err, ErrCodeTaken) {
+		t.Fatalf("batch with a colliding code gave %v, want ErrCodeTaken", err)
+	}
+	codes, err := f.store.ListCodes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(codes) != 1 || codes[0].Code != "DDDD-EEEE-FFFF" {
+		t.Errorf("stored %+v, want only the code that was there before the batch", codes)
+	}
+}
+
+// A code read off a printed card is often typed in lower case or without its
+// hyphens. That is the same code, and a miss on it counts as a failed guess, so
+// it has to match.
+func TestATypedCodeMatchesWhateverItsCaseOrHyphens(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	minted, err := f.store.CreateCodes(ctx, CodeInput{Cards: 3, CardDays: 30}, 1)
+	if err != nil || len(minted) != 1 {
+		t.Fatalf("mint: %v", err)
+	}
+	code := minted[0].Code
+
+	typings := []string{strings.ToLower(code), strings.ReplaceAll(code, "-", ""), " " + code + " "}
+	for i, typed := range typings {
+		if _, err := f.store.Redeem(ctx, f.reader(t, fmt.Sprintf("typed-%d", i)).ID, typed); err != nil {
+			t.Errorf("redeeming %q: %v, want the code", typed, err)
+		}
+	}
+	if _, err := f.store.Redeem(ctx, f.reader(t, "wrong").ID, "ZZZZ-ZZZZ-ZZZZ"); !errors.Is(err, ErrCodeUnknown) {
+		t.Errorf("a code that does not exist gave %v, want ErrCodeUnknown", err)
+	}
+}
+
+// A named code is matched as it was made. A typed form that is not that exact
+// text is retried in canonical form, and a name already stored in canonical
+// form matches that retry, so it redeems when typed loosely. Without this
+// test the retry could be narrowed to generated codes and nothing would fail.
+func TestANamedCodeAlreadyInCanonicalFormRedeemsWhenTypedLoosely(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, err := f.store.CreateCodes(ctx, CodeInput{Code: "ABCD-EFGH", Cards: 3, CardDays: 30}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Redeem(ctx, f.reader(t, "loose-typist").ID, "abcd efgh"); err != nil {
+		t.Errorf("redeeming %q: %v, want the named code", "abcd efgh", err)
+	}
+}
+
 // The panel needs the counts, not just the list. "None left" and "never had
 // any" are different answers to why somebody cannot reset, and the available
 // list alone reads the same for both.
@@ -729,7 +816,7 @@ func TestNamedCardsAndWindowVariants(t *testing.T) {
 	}
 
 	// 5. SpendCard returns the card with its windows.
-	spent, err := f.store.SpendCard(ctx, person.ID, redeemedCard.ID)
+	spent, err := f.store.SpendCard(ctx, nil, person.ID, redeemedCard.ID)
 	if err != nil {
 		t.Fatalf("spend: %v", err)
 	}
@@ -836,5 +923,33 @@ func TestInvalidWindowsRejected(t *testing.T) {
 	}, 5)
 	if !errors.Is(err, ErrInvalidWindow) {
 		t.Errorf("expected ErrInvalidWindow, got: %v", err)
+	}
+}
+
+// A grant of several cards is one unit whichever handle it is given. Handed the
+// database rather than a transaction, it used to commit each card on its own,
+// so a failure part way left the first cards granted and a retry granted them
+// again. The refusal is a SQLite trigger, so the test is SQLite-only.
+func TestAGrantOutsideATransactionIsAllOrNothing(t *testing.T) {
+	f := newFixture(t)
+	if f.db.DriverName() != "sqlite" {
+		t.Skip("the refusal is written as a SQLite trigger")
+	}
+	ctx := context.Background()
+	reader := f.reader(t, "granted")
+	if _, err := f.db.Exec(ctx, `CREATE TRIGGER refuse_third BEFORE INSERT ON usage_cards
+		WHEN (SELECT COUNT(*) FROM usage_cards) >= 2 BEGIN SELECT RAISE(ABORT, 'full'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.store.GrantNamed(ctx, f.db, reader.ID, 3, 30, "", nil); err == nil {
+		t.Fatal("a grant that could not finish reported success")
+	}
+	var stored int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM usage_cards WHERE user_id = ?`, reader.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 0 {
+		t.Fatalf("%d cards were granted by a grant that failed", stored)
 	}
 }

@@ -248,7 +248,9 @@ func (s *Service) KeepBackofficeOpen(ctx context.Context, account user.User) {
 		if session.BackofficeAt == 0 || now.Sub(time.UnixMilli(session.BackofficeAt)) < 30*time.Second {
 			return
 		}
-		if err := s.sessions.SetBackofficeAt(ctx, session.ID, now.UnixMilli()); err != nil {
+		// The row decides, not the snapshot above: it may have been left, or
+		// slid by a parallel request, since Attach read it.
+		if err := s.sessions.ExtendBackofficeVisit(ctx, session.ID, now.UnixMilli(), now.Add(-30*time.Second).UnixMilli()); err != nil {
 			slog.WarnContext(ctx, "could not extend a backoffice visit", "error", err)
 		}
 		return
@@ -494,14 +496,19 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID, password, code, k
 	if !s.TwoFactorAvailable() {
 		return nil, user.User{}, ErrTwoFactorUnavailable
 	}
-	// Before the transaction, because it is an Argon2 verification.
-	if err := s.ConfirmNewSignIn(ctx, userID, password, keepSessionID); err != nil {
+	// Before the transaction, because it is an Argon2 verification. The hash it
+	// checked against is read again under the row lock below.
+	checkedHash, err := s.confirmNewSignIn(ctx, userID, password, keepSessionID)
+	if err != nil {
 		return nil, user.User{}, err
 	}
 	codes := totp.RecoveryCodes()
 	digests, err := s.recoveryDigests(codes)
 	if err != nil {
 		return nil, user.User{}, err
+	}
+	if s.beforeEnableWrite != nil {
+		s.beforeEnableWrite()
 	}
 
 	var updated user.User
@@ -510,12 +517,32 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID, password, code, k
 		if err := lockAccount(ctx, tx, userID); err != nil {
 			return err
 		}
+		if s.afterEnableLock != nil {
+			s.afterEnableLock()
+		}
 		account, err := s.users.ByID(ctx, tx, userID)
 		if err != nil {
 			return err
 		}
 		if account.TwoFactorEnabled() {
 			return ErrTwoFactorEnabled
+		}
+		// The password was checked before this transaction began. Under the row
+		// lock the stored hash must still be the one it was checked against, or a
+		// change that committed in between would be sealed over by an enrolment
+		// its owner never proved. An account with no password was judged by a
+		// sign-in made recently, which is read under the lock as well.
+		current, err := s.users.PasswordHash(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		if current != checkedHash {
+			return ErrCurrentPasswordWrong
+		}
+		if checkedHash == "" {
+			if err := s.requireRecentSignIn(ctx, tx, userID, keepSessionID); err != nil {
+				return err
+			}
 		}
 		row, found, err := s.readTwoFactor(ctx, tx, userID)
 		if err != nil {
@@ -777,7 +804,15 @@ func (s *Service) DisableTwoFactor(ctx context.Context, account user.User, code,
 	if err := s.spendCode(ctx, account, code, ip); err != nil {
 		return user.User{}, err
 	}
-	updated, err := s.clearTwoFactor(ctx, account.ID, nil)
+	// The check above reads the caller's snapshot, which can predate a
+	// promotion or a policy change. The same test is repeated on the row read
+	// under the account lock, inside the transaction that deletes the factor.
+	updated, err := s.clearTwoFactor(ctx, account.ID, func(_ database.Queryer, fresh user.User) error {
+		if s.TwoFactorMandatory(fresh) {
+			return ErrTwoFactorMandatory
+		}
+		return nil
+	})
 	if err != nil {
 		return user.User{}, err
 	}

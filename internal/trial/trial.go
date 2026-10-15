@@ -18,6 +18,12 @@
 // Every trial turn is spent from the operator's own provider credit by
 // someone who has not identified themselves, which is why this file has a
 // per-address budget of its own and why the feature is off by default.
+//
+// Both budgets live in this process's memory (see budget for why). With N
+// instances on one database each keeps its own, so the instance ceiling bounds
+// N times the provider credit it names. The trial is meant to run on a single
+// instance. The check-then-write is held by a mutex rather than a database row
+// lock, as the login limiter's is, and that is a decision, not an oversight.
 package trial
 
 import (
@@ -41,12 +47,14 @@ const (
 	burstPerAddress = 20
 	budgetWindow    = time.Hour
 
-	// The whole front door's spend per window, across every address.
+	// The whole front door's spend per window, across every address this
+	// process serves.
 	//
 	// The per-address budget assumes an address means something. Behind a
 	// misconfigured proxy, or against a botnet, it does not — so this is the
 	// number that actually bounds what the front door can cost, and it holds
-	// however many addresses show up.
+	// however many addresses show up. It is per process: see the package
+	// comment on running the trial on one instance.
 	burstPerInstance = 240
 
 	// Concurrent generations the trial may hold open at once. Not a cost
@@ -98,9 +106,9 @@ func newBudget() *budget {
 	}
 }
 
-// take records one turn against an address and reports whether it was within
-// budget, plus how long until the window rolls over.
-func (b *budget) take(address string) (bool, time.Duration) {
+// budgetKey is the window a turn is charged to. Charge and refund both go
+// through it, so they cannot disagree about which window they touched.
+func budgetKey(address string) string {
 	key := strings.TrimSpace(address)
 	if key == "" {
 		// An address the proxy configuration did not give us. Counting these
@@ -109,7 +117,13 @@ func (b *budget) take(address string) (bool, time.Duration) {
 	}
 
 	// One /64 is one visitor, however many addresses inside it they hold.
-	key = httpx.RateKey(key)
+	return httpx.RateKey(key)
+}
+
+// take records one turn against an address and reports whether it was within
+// budget, plus how long until the window rolls over.
+func (b *budget) take(address string) (bool, time.Duration) {
+	key := budgetKey(address)
 
 	now := time.Now()
 	b.mu.Lock()
@@ -150,6 +164,26 @@ func (b *budget) take(address string) (bool, time.Duration) {
 	return true, 0
 }
 
+// refund gives back a turn take charged, for a request that never reached the
+// provider. Both counters share one caveat: if a window rolled over between the
+// charge and the refund, the refund lands on whichever window holds the address
+// or the instance now, and so can credit a turn that window never charged. Each
+// charge is not recorded against its window, because a record per turn would be
+// paid on every trial request to correct an error of about one turn an hour.
+func (b *budget) refund(address string) {
+	key := budgetKey(address)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if entry, ok := b.windows[key]; ok && entry.spent > 0 {
+		entry.spent--
+	}
+	if b.instance.spent > 0 {
+		b.instance.spent--
+	}
+}
+
 func (b *budget) sweepLocked(now time.Time) {
 	for candidate, entry := range b.windows {
 		if now.Sub(entry.startAt) > budgetWindow {
@@ -176,4 +210,29 @@ func (b *budget) enter() (func(), bool) {
 			b.mu.Unlock()
 		})
 	}, true
+}
+
+// refusal says why admit turned a turn away.
+type refusal int
+
+const (
+	admitted refusal = iota
+	refusedBusy
+	refusedExhausted
+)
+
+// admit claims a concurrent slot, then charges the address. The order is the
+// point: a turn turned away for want of a slot never reaches the provider, so
+// it must not spend the address's or the instance's allowance, or a burst that
+// overflows the slots would drain the hourly ceiling for every visitor.
+func (b *budget) admit(address string) (func(), time.Duration, refusal) {
+	release, ok := b.enter()
+	if !ok {
+		return nil, 0, refusedBusy
+	}
+	if ok, retryAfter := b.take(address); !ok {
+		release()
+		return nil, retryAfter, refusedExhausted
+	}
+	return release, 0, admitted
 }

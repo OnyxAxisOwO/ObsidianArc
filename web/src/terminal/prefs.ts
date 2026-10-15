@@ -15,7 +15,6 @@ export interface TerminalPrefs {
   lineHeight: number;
   letterSpacing: number;
   cursorStyle: TerminalCursorStyle;
-  cursorBlink: boolean;
   scrollback: TerminalScrollbackSize;
   /** A dim time next to each echoed command. */
   timestamps: boolean;
@@ -52,8 +51,10 @@ const LINE_HEIGHT_MIN = 1.2;
 const LINE_HEIGHT_MAX = 2.0;
 const LETTER_SPACING_MIN = 0;
 const LETTER_SPACING_MAX = 2;
-/** A hand-edited localStorage value is never HTML, but it is spliced straight into an inline style; a length cap is enough to stop a font-family field from becoming a multi-kilobyte string. */
-const FONT_FAMILY_MAX_LENGTH = 300;
+/**
+ * A hand-edited localStorage value is never HTML, but it is spliced straight into an inline style; a length cap is enough to stop a font-family field from becoming a multi-kilobyte string. The settings field enforces the same cap as it is typed. It never commits a blank stack, and a blank one that arrives anyway renders with the default monospace stack, live and after a reload, rather than inheriting the UI's proportional font.
+ */
+export const FONT_FAMILY_MAX_LENGTH = 300;
 
 export const TERMINAL_PREFS_DEFAULTS: Readonly<TerminalPrefs> = Object.freeze({
   fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
@@ -61,13 +62,16 @@ export const TERMINAL_PREFS_DEFAULTS: Readonly<TerminalPrefs> = Object.freeze({
   lineHeight: 1.5,
   letterSpacing: 0,
   cursorStyle: 'bar',
-  cursorBlink: true,
   scrollback: 2000,
   timestamps: false,
   ligatures: false,
 });
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  // Number(null) and Number('') are 0, which is finite, so an absent or blank
+  // stored value would clamp to the minimum instead of the default. Only a
+  // number, or a string that is not blank, is read as one at all.
+  if (typeof value !== 'number' && (typeof value !== 'string' || value.trim() === '')) return fallback;
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, n));
@@ -116,7 +120,6 @@ export function loadTerminalPrefs(): TerminalPrefs {
     lineHeight: clampNumber(parsed.lineHeight, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, defaults.lineHeight),
     letterSpacing: clampNumber(parsed.letterSpacing, LETTER_SPACING_MIN, LETTER_SPACING_MAX, defaults.letterSpacing),
     cursorStyle: clampEnum(parsed.cursorStyle, TERMINAL_CURSOR_STYLES, defaults.cursorStyle),
-    cursorBlink: clampBoolean(parsed.cursorBlink, defaults.cursorBlink),
     scrollback: clampScrollback(parsed.scrollback, defaults.scrollback),
     timestamps: clampBoolean(parsed.timestamps, defaults.timestamps),
     ligatures: clampBoolean(parsed.ligatures, defaults.ligatures),
@@ -140,12 +143,13 @@ export function saveTerminalPrefs(prefs: TerminalPrefs): void {
  */
 export function terminalCSSVariables(prefs: TerminalPrefs): Record<string, string> {
   return {
-    '--oa-term-font-family': prefs.fontFamily,
+    '--oa-term-font-family': prefs.fontFamily.trim() ? prefs.fontFamily : DEFAULT_TERMINAL_FONT_FAMILY,
     '--oa-term-font-size': `${prefs.fontSize}px`,
     '--oa-term-line-height': String(prefs.lineHeight),
     '--oa-term-letter-spacing': `${prefs.letterSpacing}px`,
-    '--oa-term-cursor-style': prefs.cursorStyle,
-    '--oa-term-cursor-blink': prefs.cursorBlink ? '1' : '0',
+    // caret-shape spells the underline caret `underscore`; the stored value
+    // keeps the name the settings page offers, so only the CSS side maps it.
+    '--oa-term-cursor-style': prefs.cursorStyle === 'underline' ? 'underscore' : prefs.cursorStyle,
     '--oa-term-ligatures': prefs.ligatures ? 'normal' : 'none',
   };
 }

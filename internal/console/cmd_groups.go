@@ -51,9 +51,9 @@ func init() {
 			for _, raw := range asSlice(asMap(data)["groups"]) {
 				g := asMap(raw)
 				rows = append(rows, []string{
-					asStr(g["id"]), asStr(g["name"]), fmt.Sprint(asNum(g["members"])),
+					asStr(g["id"]), asStr(g["name"]), formatNumber(asNum(g["members"])),
 					yesNo(asBoolVal(g["is_default"])), yesNo(asBoolVal(g["allow_all_models"])),
-					yesNo(asBoolVal(g["api_access"])), fmt.Sprint(asNum(g["sort_order"])),
+					yesNo(asBoolVal(g["api_access"])), formatNumber(asNum(g["sort_order"])),
 				})
 			}
 			return rt.Table([]string{"id", "name", "members", "default", "all_models", "api_access", "sort"}, rows)
@@ -96,13 +96,13 @@ func init() {
 				return rt.Errorf("no such group.")
 			}
 			jsonMode := rt.effectiveJSON()
-			if err := rt.Fields([][2]string{
+			if err := rt.FieldsOf(g, [][2]string{
 				{"id", asStr(g["id"])}, {"name", asStr(g["name"])}, {"description", asStr(g["description"])},
 				{"is_default", yesNo(asBoolVal(g["is_default"]))}, {"allow_all_models", yesNo(asBoolVal(g["allow_all_models"]))},
 				{"api_access", yesNo(asBoolVal(g["api_access"]))}, {"allow_stats", yesNo(asBoolVal(g["allow_stats"]))},
 				{"allow_delete_conversations", yesNo(asBoolVal(g["allow_delete_conversations"]))},
 				{"allow_terminal", yesNo(asBoolVal(g["allow_terminal"]))},
-				{"sort_order", fmt.Sprint(asNum(g["sort_order"]))}, {"members", fmt.Sprint(asNum(g["members"]))},
+				{"sort_order", formatNumber(asNum(g["sort_order"]))}, {"members", formatNumber(asNum(g["members"]))},
 				{"created_at", formatMS(g["created_at"])}, {"updated_at", formatMS(g["updated_at"])},
 			}); err != nil {
 				return err
@@ -130,6 +130,15 @@ func init() {
 				mrows = append(mrows, []string{asStr(u["id"]), asStr(u["username"]), asStr(u["nickname"]), formatMS(u["group_expires_at"])})
 			}
 			RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour, []string{"id", "username", "nickname", "expires"}, mrows)
+			// The page holds 200 rows and the group can hold more. Saying so keeps the
+			// table from reading as the whole membership under a larger count above.
+			if total := int(asNum(asMap(members)["total"])); total > len(mrows) {
+				if rt.Session.Lang == "zh" {
+					rt.Printf("仅显示前 %d 位，共 %d 位成员。\n", len(mrows), total)
+				} else {
+					rt.Printf("showing %d of %d members.\n", len(mrows), total)
+				}
+			}
 			return nil
 		},
 	})
@@ -316,6 +325,9 @@ func init() {
 				return err
 			}
 			movedTo := asStr(asMap(data)["moved_to"])
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
+			}
 			if rt.Session.Lang == "zh" {
 				rt.Printf("已删除，成员已移入分组 %s。\n", movedTo)
 			} else {
@@ -419,10 +431,13 @@ func init() {
 			if err != nil {
 				return err
 			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
+			}
 			if rt.Session.Lang == "zh" {
-				rt.Printf("已更新 %v 个账户。\n", asNum(asMap(data)["updated"]))
+				rt.Printf("已更新 %v 个账户。\n", formatNumber(asNum(asMap(data)["updated"])))
 			} else {
-				rt.Printf("updated %v accounts.\n", asNum(asMap(data)["updated"]))
+				rt.Printf("updated %v accounts.\n", formatNumber(asNum(asMap(data)["updated"])))
 			}
 			return nil
 		},

@@ -170,22 +170,28 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Whether this sign-in began on the register page. Every failure before the
+	// provider is reached goes back to the page it was started from, carrying the
+	// page it was meant to reach, as a failure at the callback does: a visitor
+	// refused at the door of a sign-up for a consent request keeps that request.
+	signingUp := r.URL.Query().Get("register") == "1"
+	back := signInBack(signingUp, r.URL.Query().Get("next"))
+
 	if !h.service.Enabled(provider.ID) {
-		h.fail(w, r, "", "unavailable")
+		h.fail(w, r, back, "unavailable")
 		return
 	}
 
 	// Whether this sign-in passed the sign-up challenge at this door. Only a
 	// pass counts: a sign-up started while the challenge was off is held to it
-	// if the operator turns it on before the provider comes back.
-	signingUp := r.URL.Query().Get("register") == "1"
-	// Set only once a check has actually run here: a challenge that is off
-	// at this moment passes nothing.
+	// if the operator turns it on before the provider comes back. Set only once
+	// a check has actually run here: a challenge that is off at this moment
+	// passes nothing.
 	checked := false
 	gate := h.gateFor(signingUp)
 	if gate.Enabled != nil && gate.Enabled() {
 		if err := gate.Check(r.Context(), r.URL.Query().Get("turnstile"), h.address(r)); err != nil {
-			h.fail(w, r, "", "challenge_failed")
+			h.fail(w, r, back, "challenge_failed")
 			return
 		}
 		checked = true
@@ -193,7 +199,7 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	if signingUp && h.proofRequired() {
 		proof := proofFrom(r.URL.Query().Get("pow"))
 		if err := h.service.auth.CheckSignupProof(r.Context(), h.address(r), proof); err != nil {
-			h.fail(w, r, "", "challenge_failed")
+			h.fail(w, r, back, "challenge_failed")
 			return
 		}
 		checked = true
@@ -202,7 +208,7 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 
 	creds, err := h.service.ResolveCredentials(r.Context(), h.Client, provider.ID)
 	if err != nil {
-		h.fail(w, r, "", "unavailable")
+		h.fail(w, r, back, "unavailable")
 		return
 	}
 
@@ -211,14 +217,15 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		Nonce:    token(),
 		Next:     safeNext(r.URL.Query().Get("next")),
 		SignUp:   passedSignUp,
+		Register: signingUp,
 		Expiry:   time.Now().Add(stateTTL).UnixMilli(),
 	})
 	switch {
 	case errors.Is(err, ErrNotConfigured):
-		h.fail(w, r, "", "unavailable")
+		h.fail(w, r, back, "unavailable")
 		return
 	case err != nil:
-		h.fail(w, r, "", "failed")
+		h.fail(w, r, back, "failed")
 		return
 	}
 	http.Redirect(w, r, target, http.StatusFound)
@@ -310,7 +317,9 @@ func connectError(w http.ResponseWriter, err error) error {
 	case errors.Is(err, auth.ErrReauthRequired):
 		return httpx.ForbiddenCode("reauth_required", "Sign in again to connect a provider.")
 	case errors.Is(err, auth.ErrSessionNotFound):
-		return httpx.Unauthorized("Sign in to continue.")
+		// Same session code as the other account screens: a page whose session
+		// ended signs itself out instead of showing the sentence on a dead session.
+		return httpx.UnauthorizedCode("session_required", "Sign in to continue.")
 	}
 	return auth.TranslateTwoFactorError(w, err)
 }
@@ -342,6 +351,8 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 	back := ""
 	if linking {
 		back = linkBack(value.Next)
+	} else {
+		back = signInBack(value.Register, value.Next)
 	}
 
 	query := r.URL.Query()
@@ -416,7 +427,7 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 	// judges is only known once the provider has answered, and before SignIn,
 	// which is where an account may be written.
 	if err := h.service.auth.CheckGuards(r.Context(), auth.GuardLogin, nil, h.address(r), identity.Login); err != nil {
-		h.fail(w, r, "", "login_refused")
+		h.fail(w, r, back, "login_refused")
 		return
 	}
 
@@ -427,15 +438,15 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 		// account is opened when it comes back.
 		var more *MoreDetailsNeeded
 		if errors.As(err, &more) {
-			h.askForDetails(w, r, more.Identity, value.Next, value.SignUp)
+			h.askForDetails(w, r, more.Identity, value.Next, value.SignUp, back)
 			return
 		}
 		var disabledErr *auth.AccountDisabledError
 		if errors.As(err, &disabledErr) && disabledErr.Reason != "" {
-			h.failWithReason(w, r, "", "disabled", disabledErr.Reason)
+			h.failWithReason(w, r, back, "disabled", disabledErr.Reason)
 			return
 		}
-		h.fail(w, r, "", signInFailure(err))
+		h.fail(w, r, back, signInFailure(err))
 		return
 	}
 	next := value.Next
@@ -454,7 +465,7 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		h.fail(w, r, "", "failed")
+		h.fail(w, r, back, "failed")
 		return
 	}
 	h.service.auth.SetCookie(w, token)
@@ -465,9 +476,11 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, next, http.StatusFound)
 }
 
-// askForDetails parks the sign-in and sends the browser to the form.
+// askForDetails parks the sign-in and sends the browser to the form. A ticket
+// that cannot be issued fails back to the page the sign-in began from, the same
+// as any other failure at the callback.
 func (h *Handlers) askForDetails(
-	w http.ResponseWriter, r *http.Request, identity Identity, next string, passedSignUp bool,
+	w http.ResponseWriter, r *http.Request, identity Identity, next string, passedSignUp bool, back string,
 ) {
 	ticket, err := h.pending.issuePending(pending{
 		Provider: identity.Provider,
@@ -477,10 +490,11 @@ func (h *Handlers) askForDetails(
 		Email:    identity.Email,
 		Next:     safeNext(next),
 		SignUp:   passedSignUp,
+		Nonce:    token(),
 		Expiry:   time.Now().Add(pendingTTL).UnixMilli(),
 	})
 	if err != nil {
-		h.fail(w, r, "", "failed")
+		h.fail(w, r, back, "failed")
 		return
 	}
 	h.setPending(w, ticket)
@@ -537,6 +551,9 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return err
 	}
+	if held.Nonce == "" {
+		return staleSignup()
+	}
 
 	var body struct {
 		Username string            `json:"username"`
@@ -582,6 +599,17 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 		return completionError(err)
 	}
 
+	// Spent by the completion that gets as far as a session, so the same ticket
+	// presented again opens nothing. It is spent here rather than before Complete,
+	// because a form refused for one field has to stay correctable.
+	spent, err := h.service.store.SpendState(r.Context(), nil, "signup:"+held.Nonce, held.Expiry)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	if !spent {
+		return staleSignup()
+	}
+
 	next := held.Next
 	if next == "" {
 		next = "/"
@@ -608,18 +636,29 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"redirect": next})
 }
 
+// staleSignup is the answer to a sign-up ticket that cannot be used: one that
+// has expired, was never issued, or has already opened its account.
+func staleSignup() error {
+	return httpx.BadRequest("That sign-in is no longer in progress. Start again from the sign-in page.")
+}
+
 // heldSignup reads the cookie the callback left behind. An absent or expired
 // one is the ordinary case of somebody opening the page later, not an error
 // worth a stack trace.
 func (h *Handlers) heldSignup(r *http.Request) (pending, error) {
-	stale := httpx.BadRequest("That sign-in is no longer in progress. Start again from the sign-in page.")
 	cookie, err := r.Cookie(h.cookieName(pendingCookie))
 	if err != nil {
-		return pending{}, stale
+		return pending{}, staleSignup()
 	}
 	held, err := h.pending.readPending(cookie.Value)
 	if err != nil {
-		return pending{}, stale
+		return pending{}, staleSignup()
+	}
+	// The ticket lives for twenty minutes, and an operator who switches the
+	// provider off in that time must not still get an account through it. The
+	// callback checks this too, but only on the way in.
+	if !h.service.Enabled(held.Provider) {
+		return pending{}, httpx.UnavailableCode("unavailable", "This server is not offering that sign-in right now.")
 	}
 	return held, nil
 }
@@ -642,6 +681,12 @@ func (h *Handlers) finishLink(w http.ResponseWriter, r *http.Request, value stat
 			h.fail(w, r, back, "already_linked")
 			return
 		}
+		// The bound value belongs to another account, and the person has to be
+		// told why: a generic failure here leaves them with nothing to act on.
+		if errors.Is(err, ErrAddressTaken) {
+			h.fail(w, r, back, "address_taken")
+			return
+		}
 		h.fail(w, r, back, "failed")
 		return
 	}
@@ -659,8 +704,10 @@ func (h *Handlers) finishLink(w http.ResponseWriter, r *http.Request, value stat
 // path carries one: the server has no idea what language the reader has the
 // interface in.
 //
-// back is the page a link returns to, and empty for a sign-in, which goes to
-// its own card or to the sign-up form.
+// back is the page a link returns to, or the sign-in page it was started from
+// (see signInBack). Empty means nothing about the flow is known yet, as when the
+// state cookie has gone missing: the failure then goes to the login card, or to
+// the register page when the request itself began there (register=1).
 func (h *Handlers) fail(w http.ResponseWriter, r *http.Request, back, code string) {
 	h.failWithReason(w, r, back, code, "")
 }
@@ -677,6 +724,21 @@ func (h *Handlers) failWithReason(w http.ResponseWriter, r *http.Request, back, 
 		u = withQuery(u, "ban_reason", reason)
 	}
 	http.Redirect(w, r, u, http.StatusFound)
+}
+
+// signInBack is the page a sign-in that failed returns to: the page it was
+// started from, with the page it was meant to reach carried along, so that the
+// card can take the visitor there once they have tried again. The provider's
+// redirect has no query of its own, so the state is the only record of either.
+func signInBack(register bool, next string) string {
+	page := "/login"
+	if register {
+		page = "/register"
+	}
+	if next = safeNext(next); next != "" {
+		return withQuery(page, "next", next)
+	}
+	return page
 }
 
 // linkBack is the page a link returns to, whether it worked or not: the page it

@@ -10,6 +10,7 @@
 
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { ApiError } from '@/api/client';
 import { completeSignup, fetchPendingSignup, type PendingSignup } from '@/api/oauth';
 import OaAccountFields from '@/components/OaAccountFields.vue';
 import OaField from '@/components/OaField.vue';
@@ -68,7 +69,12 @@ const emailHint = computed(() => {
   return parts.length ? parts.join(' ') : undefined;
 });
 
-onMounted(() => {
+// The sign-in is loaded again on a retry, so a page that could not reach the
+// server is not left on a screen that can never finish.
+const loadError = ref('');
+
+function loadPending(): void {
+  loadError.value = '';
   void fetchPendingSignup()
     .then((result) => {
       pending.value = result;
@@ -81,7 +87,19 @@ onMounted(() => {
         username.value = result.login;
       }
     })
-    .catch(() => { gone.value = t('signupCompleteGone'); });
+    .catch((failure: unknown) => {
+      // Only the server's answer for a cookie that has run out says the sign-in
+      // is over. Anything else says nothing about it, so the reader can try again.
+      if (failure instanceof ApiError && failure.status === 400) {
+        gone.value = t('signupCompleteGone');
+        return;
+      }
+      loadError.value = refusalText(failure);
+    });
+}
+
+onMounted(() => {
+  loadPending();
   const invite = route.query['invite'];
   if (typeof invite === 'string' && invite) {
     inviteCode.value = invite;
@@ -182,7 +200,11 @@ async function submit(): Promise<void> {
       </template>
 
       <template v-else-if="!pending">
-        <p class="oa-auth-sub">{{ t('loading') }}</p>
+        <template v-if="loadError">
+          <p class="oa-auth-error" role="alert">{{ loadError }}</p>
+          <button type="button" class="oa-btn oa-btn-block" @click="loadPending">{{ t('retry') }}</button>
+        </template>
+        <p v-else class="oa-auth-sub">{{ t('loading') }}</p>
       </template>
 
       <template v-else>

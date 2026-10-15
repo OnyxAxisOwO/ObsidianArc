@@ -446,7 +446,7 @@
 }
 
 .oa-modal-close:hover {
-  color: var(--ai-text-primary);
+  color: var(--ai-text);
 }
 
 /* --- account menu ----------------------------------------------------------- */
@@ -1193,8 +1193,14 @@ body.oa-resizing * {
   font-size: 13px;
 }
 
+/* The field has no border or fill of its own, so the pill is what shows where
+   focus is; the ring follows its 999px radius. */
 .oa-landing-composer input:focus {
   outline: none;
+}
+
+.oa-landing-composer:focus-within {
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 .oa-landing-finished,
@@ -1472,7 +1478,7 @@ button.oa-home-notice-main:focus-visible {
     padding: 6px 8px;
     cursor: pointer;
     user-select: none;
-    border-radius: var(--ai-radius-sm, 8px);
+    border-radius: 8px;
     transition: background-color 120ms ease;
 
     &:hover {
@@ -1549,7 +1555,7 @@ button.oa-home-notice-main:focus-visible {
     align-items: center;
     gap: 10px;
     padding: 7px 8px;
-    border-radius: var(--ai-radius-sm, 8px);
+    border-radius: 8px;
     border: none;
     background: transparent;
     color: var(--ai-text);
@@ -1729,7 +1735,9 @@ body.has-auth-page .oa-app-page,
   }
 }
 
-/* Hardware-accelerated sliding layers during transition */
+/* Hardware-accelerated sliding layers during transition. Not clipped here: the
+   depth shadow sits 28px past the layer's left edge, and .oa-app-viewport already
+   clips both layers to the screen. */
 .page-slide-left-enter-active,
 .page-slide-left-leave-active,
 .page-slide-right-enter-active,
@@ -1741,7 +1749,6 @@ body.has-auth-page .oa-app-page,
   bottom: 0;
   width: 100%;
   height: 100%;
-  overflow: hidden;
   will-change: transform, opacity;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;

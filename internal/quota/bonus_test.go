@@ -35,7 +35,7 @@ func newBonusFixture(t *testing.T, windowCredits float64) *bonusFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Policies().Save(ctx, Policy{Scope: ScopeGlobal, Windows: map[Window]Limits{
+	if _, err := svc.Policies().Save(ctx, nil, Policy{Scope: ScopeGlobal, Windows: map[Window]Limits{
 		Window5H: limits(true, nil, nil, ptrFloat(windowCredits)),
 	}}); err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func within(a, b float64) bool { d := a - b; return d < 1e-6 && d > -1e-6 }
 // the tests that hold a bar to them.
 func (f *bonusFixture) rates(t *testing.T, rpm, tpm *int64, windowCredits float64) {
 	t.Helper()
-	if _, err := f.svc.Policies().Save(context.Background(), Policy{Scope: ScopeGlobal, RPM: rpm, TPM: tpm, Windows: map[Window]Limits{
+	if _, err := f.svc.Policies().Save(context.Background(), nil, Policy{Scope: ScopeGlobal, RPM: rpm, TPM: tpm, Windows: map[Window]Limits{
 		Window5H: limits(true, nil, nil, ptrFloat(windowCredits)),
 	}}); err != nil {
 		t.Fatal(err)
@@ -298,7 +298,7 @@ func TestAnAccountWithNoLimitsSpendsNoBar(t *testing.T) {
 	f := newBonusFixture(t, 10)
 	a := f.person(t, "alice")
 	bar := f.bar(t, "gift", bonus.KindBonus, bonus.ModeOn, 100, a)
-	if _, err := f.svc.Policies().Save(context.Background(), Policy{Scope: ScopeUser, ScopeID: a.ID,
+	if _, err := f.svc.Policies().Save(context.Background(), nil, Policy{Scope: ScopeUser, ScopeID: a.ID,
 		Windows: map[Window]Limits{Window5H: {Enabled: ptrBool(false)}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -519,5 +519,39 @@ func TestReleasingABarPaidRequestWritesNothingWhereNoTokenLimitApplies(t *testin
 	}
 	if rows != 0 {
 		t.Fatalf("a per-minute row was written for an account with no token limit: %d", rows)
+	}
+}
+
+// The bars and the windows are charged in one transaction. When the window
+// write fails, the bar's charge must go with it; charging the bar first and
+// then failing the windows left the turn paid for by the bar and never counted
+// anywhere the account could be limited by.
+func TestASettlementWhoseWindowWriteFailsChargesNoBar(t *testing.T) {
+	f := newBonusFixture(t, 10)
+	if f.db.DriverName() != string(database.SQLite) {
+		t.Skip("the window write is made to fail with a SQLite trigger, which Postgres does not read")
+	}
+	a := f.person(t, "alice")
+	bar := f.bar(t, "gift", bonus.KindBonus, bonus.ModeOn, 100, a)
+	ctx := WithLedger(context.Background())
+
+	// Whole and paid by the bar, so the reservation itself touches no window.
+	if _, err := f.svc.ReserveFor(ctx, a, "m", Estimate{Tokens: 300, Credits: 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`CREATE TRIGGER fail_counter_insert BEFORE INSERT ON usage_counters BEGIN SELECT RAISE(ABORT, 'counters unavailable'); END`,
+		`CREATE TRIGGER fail_counter_update BEFORE UPDATE ON usage_counters BEGIN SELECT RAISE(ABORT, 'counters unavailable'); END`,
+	} {
+		if _, err := f.db.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := f.svc.SettleTurn(ctx, a, Estimate{Tokens: 300, Credits: 0.5}); err == nil {
+		t.Fatal("the settlement succeeded although its window write was refused")
+	}
+	if !within(f.barUsed(t, bar), 1) {
+		t.Fatalf("the bar holds %v after a failed settlement, want the 1 reserved and nothing charged", f.barUsed(t, bar))
 	}
 }

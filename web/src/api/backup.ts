@@ -4,6 +4,7 @@
 // It is fetched rather than streamed because the browser has to hold it all
 // anyway to save it as a file.
 
+import { t } from '@/composables/useI18n';
 import { ApiError, api } from './client';
 
 export interface BackupTurn {
@@ -67,6 +68,12 @@ export function saveAsFile(name: string, contents: string, type = 'application/j
  *
  * Resolves with null when the picker is dismissed, which is not an error and
  * should not be reported as one.
+ *
+ * The limit is on the body that is sent, which is the compact encoding of the
+ * document: that is what the server counts. A file saved with indentation is
+ * larger than its body, and an old indented export can be several times as
+ * large, so the file itself is capped at eight times the limit. That bounds
+ * what reading it whole costs without refusing a file the server would take.
  */
 export function pickJSONFile(maxBytes = 32 * 1024 * 1024): Promise<unknown | null> {
   return new Promise((resolve, reject) => {
@@ -74,25 +81,35 @@ export function pickJSONFile(maxBytes = 32 * 1024 * 1024): Promise<unknown | nul
     input.type = 'file';
     input.accept = 'application/json,.json';
 
+    // Browsers that support it fire cancel when the picker is dismissed and
+    // no change at all; without this the promise would hang forever.
+    input.addEventListener('cancel', () => resolve(null), { once: true });
     input.addEventListener('change', () => {
       const file = input.files?.[0];
       if (!file) {
         resolve(null);
         return;
       }
-      if (file.size > maxBytes) {
-        reject(new ApiError(0, 'too_large', 'That file is too large to import.'));
+      if (file.size > maxBytes * 8) {
+        reject(new ApiError(0, 'too_large', t('importFileTooLarge')));
         return;
       }
 
       const reader = new FileReader();
-      reader.onerror = () => reject(new ApiError(0, 'unreadable', 'That file could not be read.'));
+      reader.onerror = () => reject(new ApiError(0, 'unreadable', t('importFileUnreadable')));
       reader.onload = () => {
+        let parsed: unknown;
         try {
-          resolve(JSON.parse(String(reader.result)));
+          parsed = JSON.parse(String(reader.result));
         } catch {
-          reject(new ApiError(0, 'malformed', 'That file is not valid JSON.'));
+          reject(new ApiError(0, 'malformed', t('importFileNotJSON')));
+          return;
         }
+        if (new Blob([JSON.stringify(parsed)]).size > maxBytes) {
+          reject(new ApiError(0, 'too_large', t('importFileTooLarge')));
+          return;
+        }
+        resolve(parsed);
       };
       reader.readAsText(file);
     });

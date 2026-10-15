@@ -104,6 +104,7 @@ func newAcceptTestServer(t *testing.T) (*Server, *acceptLog) {
 	srv, err := New(Config{
 		Console:      newTestConsole(t),
 		Authenticate: fakeAuthenticate(nil),
+		Reauthorize:  noReauthorize,
 		HostKeyPath:  filepath.Join(t.TempDir(), "ssh_host_ed25519_key"),
 		Logf:         logged.logf,
 	})

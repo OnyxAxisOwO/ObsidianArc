@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -113,9 +114,19 @@ func (c signupCohort) description() string {
 	if c.firstAt > 0 && c.lastAt > c.firstAt {
 		span = fmt.Sprintf(" across %d minutes", (c.lastAt-c.firstAt)/60000)
 	}
+	// Cut from what the registrant typed, so bounded here: the caller writes
+	// this line in full, and an unbounded value would reach the prompt uncapped.
 	return fmt.Sprintf("Recent same-domain accounts: %d; both numeric templates match: %d%s; matching accounts disabled: %d, active signup-review API restrictions: %d. Templates: %s / %s@%s.",
-		c.sameDomain, c.matching, span, c.disabled, c.restricted, c.usernamePattern, c.localPattern, c.domain)
+		c.sameDomain, c.matching, span, c.disabled, c.restricted,
+		text.Truncate(c.usernamePattern, maxCohortTemplateChars),
+		text.Truncate(c.localPattern, maxCohortTemplateChars),
+		text.Truncate(c.domain, maxCohortTemplateChars))
 }
+
+// Bounds each template. description() is written into the prompt uncapped and
+// the templates come from what the registrant typed, so without a cap the
+// prompt would grow with the input.
+const maxCohortTemplateChars = 64
 
 // Refusal requires a dense batch plus two distinct past interventions. A
 // shared domain, generated-looking name, or a few disabled peers can each
@@ -136,8 +147,8 @@ func (c signupCohort) protect(verdict Verdict) Verdict {
 // are refused on registration and the model's reason is preserved. A
 // confirmed abuse cohort still upgrades weaker verdicts to refusal.
 func (c signupCohort) protectModel(verdict Verdict) Verdict {
-	if c.confirmed() {
-		return c.protect(verdict)
+	if verdict.Decision == DecisionRefuse {
+		return verdict
 	}
-	return verdict
+	return c.protect(verdict)
 }

@@ -71,8 +71,21 @@ func (a anthropicAdapter) buildBody(p Provider, req ChatRequest) (map[string]any
 		"messages": messages,
 	}
 
-	thinking := req.Reasoning.Enabled && req.Model.SupportsReasoning &&
+	// wantsThinking is what the caller asked for, and it holds on every turn of a
+	// tool loop. The forced-choice rule keys on it, not on the per-turn flag, so
+	// a forced choice is dropped for the whole loop: sent on a continuation,
+	// where thinking is off, it would make the model call a tool again after
+	// every result.
+	wantsThinking := req.Reasoning.Enabled && req.Model.SupportsReasoning &&
 		resolveReasoningStyle(p) == ReasoningAnthropic
+
+	// Once the turn being answered holds a tool call or result, thinking is
+	// off. The API wants the signed thinking block that produced a replayed
+	// tool_use sent back with it, and the transcript keeps no such block, so a
+	// continuation with thinking on is refused. A new question after a finished
+	// tool loop is a turn of its own with no tool call to replay, and keeps its
+	// reasoning.
+	thinking := wantsThinking && !carriesToolTurns(req.Messages)
 
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
@@ -115,11 +128,12 @@ func (a anthropicAdapter) buildBody(p Provider, req ChatRequest) (map[string]any
 
 	if len(req.Tools) > 0 {
 		body["tools"] = anthropicTools(req.Tools)
-		// While thinking is on the API accepts only auto and none, so a
-		// forced choice is dropped rather than made into a failed turn —
-		// the same trade as the temperature above.
+		// While reasoning is requested the API accepts only auto and none, so a
+		// forced choice is dropped rather than made into a failed turn — the
+		// same trade as the temperature above. It is dropped on continuations
+		// too, where thinking itself is off: see wantsThinking.
 		if choice, ok := anthropicToolChoice(req.ToolChoice); ok &&
-			(!thinking || req.ToolChoice.Mode == ToolChoiceNone) {
+			(!wantsThinking || req.ToolChoice.Mode == ToolChoiceNone) {
 			body["tool_choice"] = choice
 		}
 	}
@@ -128,6 +142,25 @@ func (a anthropicAdapter) buildBody(p Provider, req ChatRequest) (map[string]any
 		body[key] = value
 	}
 	return body, carriedImages
+}
+
+// carriesToolTurns reports whether the turn being answered holds a tool call or
+// a tool result, which is what makes a request a continuation of a tool loop.
+// That turn is everything since the last user message: a loop that finished
+// before the user asked something new is history, and its calls need no
+// signed block now.
+func carriesToolTurns(messages []Message) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		for _, part := range messages[i].Parts {
+			if part.Kind == PartToolCall || part.Kind == PartToolResult {
+				return true
+			}
+		}
+		if messages[i].Role == RoleUser {
+			return false
+		}
+	}
+	return false
 }
 
 func anthropicTools(tools []Tool) []map[string]any {
@@ -173,6 +206,31 @@ func toolInput(arguments string) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return json.RawMessage(trimmed)
+}
+
+// ClampThinkingBudget fits a thinking budget under an output ceiling, for a
+// budget that came from a caller rather than from an operator's tier. buildBody
+// raises max_tokens to budget plus headroom when that exceeds the request's own
+// limit, so a budget above ceiling minus headroom would lift the answer past
+// the ceiling the operator set. It reports false when the ceiling leaves no
+// room for the smallest budget the API accepts, which means thinking should
+// be left off. A zero ceiling means none is set.
+func ClampThinkingBudget(budget, ceiling int) (int, bool) {
+	if budget <= 0 {
+		// The same default buildBody applies when no budget is named.
+		budget = reasoningBudget(EffortMedium)
+	}
+	if ceiling <= 0 {
+		return budget, true
+	}
+	room := ceiling - budgetHeadroom
+	if room < budgetMin {
+		return 0, false
+	}
+	if budget > room {
+		budget = room
+	}
+	return budget, true
 }
 
 func reasoningBudget(effort Effort) int {
@@ -265,8 +323,28 @@ func (anthropicAdapter) buildMessages(req ChatRequest) ([]anthropicMessage, bool
 		out = append(out, anthropicMessage{Role: role, Content: blocks})
 	}
 
-	for len(out) > 0 && out[0].Role != "user" {
-		out = out[1:]
+	// Trimming the head can strand the results of the calls it held: a user
+	// turn that opens with a tool_result whose tool_use is gone is refused.
+	// Nothing precedes the head, so every result left there is orphaned, and
+	// a turn emptied by that goes too.
+	for len(out) > 0 {
+		if out[0].Role != "user" {
+			out = out[1:]
+			continue
+		}
+		content := out[0].Content.([]any)
+		kept := content[:0]
+		for _, block := range content {
+			if _, orphaned := block.(anthropicToolResultBlock); !orphaned {
+				kept = append(kept, block)
+			}
+		}
+		if len(kept) == 0 {
+			out = out[1:]
+			continue
+		}
+		out[0].Content = kept
+		break
 	}
 	return out, carriedImages
 }
@@ -422,6 +500,13 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 		arguments strings.Builder
 	}
 	pending := map[int]*pendingCall{}
+	// message_stop is the provider's own word that the answer is complete. A
+	// body can end cleanly without it, when something between us and the
+	// provider closes the connection after cutting the generation short, and
+	// that must not read as a finished answer. The stop_reason that precedes
+	// message_stop says the same, and is accepted alone: a compatible provider
+	// that sends it and then closes is not cut short.
+	sawStop := false
 
 	err := readEventStream(response.Body, func(data []byte) error {
 		var event anthropicStreamEvent
@@ -457,6 +542,8 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 		}
 
 		switch event.Type {
+		case "message_stop":
+			sawStop = true
 		case "content_block_start":
 			if event.ContentBlock.Type == "tool_use" && event.ContentBlock.Name != "" {
 				pending[event.Index] = &pendingCall{call: ToolCall{
@@ -470,7 +557,14 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 			}
 			delete(pending, event.Index)
 			call := open.call
-			call.Arguments = toolArguments(open.arguments.String())
+			raw := open.arguments.String()
+			if !wellFormedArguments(raw) {
+				// A stream cut off at max_tokens leaves this half-written. It ends
+				// the turn as the OpenAI stream does, rather than running the tool
+				// with arguments the model never finished.
+				return malformedArguments()
+			}
+			call.Arguments = toolArguments(raw)
 			result.ToolCalls = append(result.ToolCalls, call)
 			if err := sink(Event{Type: EventToolCall, ToolCall: call}); err != nil {
 				sinkErr = err
@@ -526,6 +620,11 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 			return result, adapterErr
 		}
 		return result, networkError(ctx, err)
+	}
+	if !sawStop && result.FinishReason == "" {
+		// The partial answer is kept, so the caller can still charge for
+		// what was generated.
+		return result, &Error{Kind: ErrorUpstream, Message: "The answer stopped before it finished."}
 	}
 	return result, nil
 }

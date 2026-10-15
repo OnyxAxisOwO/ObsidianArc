@@ -73,7 +73,7 @@ func TestResetAllRestartsAllowanceWindowsFromNow(t *testing.T) {
 	ctx := context.Background()
 	person := account("user-1", "")
 	person.CreatedAt = time.Now().Add(-48 * time.Hour).UnixMilli()
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeGlobal,
 		Windows: map[Window]Limits{
 			Window5H:   limits(true, ptrInt(10), nil, nil),
@@ -262,7 +262,7 @@ func TestResetWindowsClearsSpecificWindowsOnly(t *testing.T) {
 	}
 
 	// Reset only 5h.
-	if err := service.ResetWindows(ctx, []string{spender.ID}, []string{"5h"}); err != nil {
+	if err := service.ResetWindows(ctx, nil, []string{spender.ID}, []string{"5h"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -277,7 +277,7 @@ func TestResetWindowsClearsSpecificWindowsOnly(t *testing.T) {
 	}
 
 	// Reset combined 1w and 1m.
-	if err := service.ResetWindows(ctx, []string{spender.ID}, []string{"1w", "1m"}); err != nil {
+	if err := service.ResetWindows(ctx, nil, []string{spender.ID}, []string{"1w", "1m"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := spentInWindow(t, service, spender.ID, WindowWeek); got != 0 {

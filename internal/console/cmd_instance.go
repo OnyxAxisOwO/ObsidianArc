@@ -77,7 +77,9 @@ func init() {
 				}
 				return rt.Errorf("no such key, or you do not have permission to read it.")
 			}
-			return rt.Fields([][2]string{{key, asStr(v)}})
+			// The settings envelope is the last Call's body; under --json the
+			// picked key is the answer, not the whole map.
+			return rt.FieldsOf(map[string]any{key: v}, [][2]string{{key, asStr(v)}})
 		},
 	})
 
@@ -99,7 +101,7 @@ func init() {
 		},
 		Args: []Arg{
 			{Name: "key", Hint: Text{EN: "the setting key", ZH: "设置键"}, Required: true},
-			{Name: "value", Hint: Text{EN: "the new value, as a string", ZH: "新值，以字符串形式给出"}, Required: true},
+			{Name: "value", Hint: Text{EN: "the new value, as a string", ZH: "新值，以字符串形式给出"}, Required: true, Rest: true},
 		},
 		Examples:   []string{"setting set site.name 'Obsidian Arc'", "setting set attachments.max_mb 12"},
 		SeeAlso:    []string{"setting list", "setting import"},
@@ -153,7 +155,7 @@ func init() {
 		},
 		// The whole document is masked: it is a settings export, and one
 		// that was pasted back carries the credentials in it.
-		Args:        []Arg{{Name: "json", Hint: Text{EN: "the import document", ZH: "导入文档"}, Required: true, Sensitive: true}},
+		Args:        []Arg{{Name: "json", Hint: Text{EN: "the import document", ZH: "导入文档"}, Required: true, Sensitive: true, Rest: true}},
 		Examples:    []string{`setting import '{"site.name":"Obsidian Arc"}' --yes`, "setting import '{...}' -y"},
 		Permission:  "settings",
 		Destructive: true,
@@ -178,7 +180,7 @@ func init() {
 			for _, s := range asSlice(m["skipped"]) {
 				skipped = append(skipped, asStr(s))
 			}
-			return rt.Fields([][2]string{{"applied", fmt.Sprint(asNum(m["applied"]))}, {"skipped", strings.Join(skipped, "; ")}})
+			return rt.Fields([][2]string{{"applied", formatNumber(asNum(m["applied"]))}, {"skipped", strings.Join(skipped, "; ")}})
 		},
 	})
 
@@ -206,7 +208,7 @@ func init() {
 			m := asMap(data)
 			att := asMap(m["attachments"])
 			return rt.Fields([][2]string{
-				{"purged", fmt.Sprint(asNum(m["purged"]))}, {"held", fmt.Sprint(asNum(att["held"]))}, {"bytes", fmt.Sprint(asNum(att["bytes"]))},
+				{"purged", formatNumber(asNum(m["purged"]))}, {"held", formatNumber(asNum(att["held"]))}, {"bytes", formatNumber(asNum(att["bytes"]))},
 			})
 		},
 	})
@@ -373,6 +375,9 @@ func init() {
 			}
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/announcements/"+url.PathEscape(ref), nil); err != nil {
 				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
 			if rt.Session.Lang == "zh" {
 				rt.Printf("已删除。\n")
@@ -643,12 +648,15 @@ func init() {
 				return err
 			}
 
-			respData, _, err := rt.Call(http.MethodPut, "/api/admin/login-background/"+variant, map[string]string{
+			respData, _, err := rt.Call(http.MethodPut, "/api/admin/login-background/"+url.PathEscape(variant), map[string]string{
 				"mime": mime,
 				"data": data,
 			})
 			if err != nil {
 				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
 			urlStr := asStr(asMap(respData)["url"])
 			if rt.Session.Lang == "zh" {
@@ -681,9 +689,12 @@ func init() {
 			if err != nil {
 				return err
 			}
-			_, _, err = rt.Call(http.MethodDelete, "/api/admin/login-background/"+variant, nil)
+			_, _, err = rt.Call(http.MethodDelete, "/api/admin/login-background/"+url.PathEscape(variant), nil)
 			if err != nil {
 				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
 			if rt.Session.Lang == "zh" {
 				rt.Printf("已清除变种 %s 的登录背景图。\n", variant)
@@ -728,6 +739,9 @@ func init() {
 			if err != nil {
 				return err
 			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
+			}
 			urlStr := asStr(asMap(respData)["url"])
 			if rt.Session.Lang == "zh" {
 				rt.Printf("站点 Logo 已更新：%s\n", urlStr)
@@ -755,6 +769,9 @@ func init() {
 			_, _, err := rt.Call(http.MethodDelete, "/api/admin/logo", nil)
 			if err != nil {
 				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
 			if rt.Session.Lang == "zh" {
 				rt.Printf("已清除站点 Logo，恢复为默认图标。\n")

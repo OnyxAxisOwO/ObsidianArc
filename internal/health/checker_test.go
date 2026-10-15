@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -335,5 +336,186 @@ func TestResetAndTimeline(t *testing.T) {
 	}
 	if len(samples) != 0 {
 		t.Errorf("expected 0 samples after reset, got %d", len(samples))
+	}
+}
+
+// scriptedResolver stands in for the provider store. Every probe fails without
+// touching the network, so the tests here decide only what the checker does
+// with a failed probe, and onCall lets a test act during a pass.
+type scriptedResolver struct {
+	calls  int
+	onCall func()
+}
+
+func (r *scriptedResolver) Resolve(context.Context, string) (adapter.Provider, error) {
+	r.calls++
+	if r.onCall != nil {
+		r.onCall()
+	}
+	return adapter.Provider{}, errors.New("unavailable in this test")
+}
+
+// A model the checker switched off gets no reader traffic, so with probing off
+// the probe is the only thing that can ever bring it back. Skipping it would
+// leave it off for good.
+func TestAnAutoDisabledModelIsAskedEvenWithProbingOff(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	ctx := context.Background()
+	checker.Providers = &scriptedResolver{}
+
+	off, on := false, true
+	if _, err := models.Update(ctx, record.ID, model.Update{Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.Update(ctx, record.ID, model.Update{AutoDisabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+
+	checker.Run(ctx, Policy{Probe: false, Window: time.Hour})
+
+	var probes int
+	if err := checker.Store.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM model_probes WHERE model_id = ?`, record.ID).Scan(&probes); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 1 {
+		t.Errorf("auto-disabled model received %d probes with probing off, want 1", probes)
+	}
+}
+
+// The control for the test above: an administrator's switch-off is not asked,
+// whatever the checker would do with the answer.
+func TestAModelSwitchedOffByHandIsNotProbedWithProbingOff(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	ctx := context.Background()
+	resolver := &scriptedResolver{}
+	checker.Providers = resolver
+
+	off := false
+	if _, err := models.Update(ctx, record.ID, model.Update{Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+
+	checker.Run(ctx, Policy{Probe: false, Window: time.Hour})
+	if resolver.calls != 0 {
+		t.Errorf("a model an administrator disabled was probed %d times", resolver.calls)
+	}
+}
+
+// Once the sweep's deadline has passed, each remaining probe would fail at
+// once with the context error and be stored as that model's verdict. The pass
+// has to stop instead, and leave the models it did not reach for the next one.
+func TestAPassStopsWhenItsDeadlinePasses(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if _, err := models.Create(ctx, model.CreateInput{
+		ProviderID: record.ProviderID, ModelID: "vendor/two", DisplayName: "Two", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := &scriptedResolver{onCall: cancel}
+	checker.Providers = resolver
+	checker.Run(ctx, Policy{Probe: true, Window: time.Hour})
+
+	if resolver.calls != 1 {
+		t.Errorf("the pass reached %d models after its deadline, want it to stop after the first", resolver.calls-1)
+	}
+}
+
+// Retention is housekeeping that sits at the end of the pass. A pass that has
+// overrun its deadline still has to drop the rows that aged out, or they pile
+// up on exactly the instances whose sweeps keep running long.
+func TestRetentionStillRunsAfterAPassOverrunsItsDeadline(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := time.Now().UnixMilli()
+
+	if _, err := models.Create(ctx, model.CreateInput{
+		ProviderID: record.ProviderID, ModelID: "vendor/two", DisplayName: "Two", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	probeAt(t, checker, record.ID, now-(3*time.Hour).Milliseconds(), false)
+
+	checker.Providers = &scriptedResolver{onCall: cancel}
+	checker.Run(ctx, Policy{Probe: true, Window: time.Hour, Retain: time.Hour})
+
+	var stale int
+	if err := checker.Store.db.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM model_probes WHERE at < ?`, now-time.Hour.Milliseconds()).Scan(&stale); err != nil {
+		t.Fatal(err)
+	}
+	if stale != 0 {
+		t.Errorf("%d probe rows past the retention window survived a pass that overran its deadline", stale)
+	}
+}
+
+// The checker decides from a snapshot taken before its probes. An operator who
+// switches the model on and off again in that window has the last word, and
+// the checker's stale claim must not switch the model back on.
+func TestAnOperatorSwitchOffDuringAPassIsNotUndone(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	ctx := context.Background()
+	policy := Policy{DisableAfter: 2}
+
+	off, on := false, true
+	if _, err := models.Update(ctx, record.ID, model.Update{Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.Update(ctx, record.ID, model.Update{AutoDisabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := reload(t, models, record.ID)
+
+	if _, err := models.Update(ctx, record.ID, model.Update{Enabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.Update(ctx, record.ID, model.Update{Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+
+	checker.apply(ctx, snapshot, Summarise(record.ID, []Sample{pass(300, "system")}), policy)
+	if after := reload(t, models, record.ID); after.Enabled {
+		t.Error("a stale snapshot switched on a model the operator had just switched off")
+	}
+}
+
+// A model whose provider is off stays off when it answers, and keeps the
+// checker's claim, so the next pass can restore it once the provider is back.
+func TestAnAutoDisabledModelStaysOffWhileItsProviderIsOff(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	ctx := context.Background()
+	policy := Policy{DisableAfter: 2}
+
+	off, on := false, true
+	if _, err := models.Update(ctx, record.ID, model.Update{Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.Update(ctx, record.ID, model.Update{AutoDisabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := reload(t, models, record.ID)
+
+	if _, err := checker.Store.db.Exec(ctx,
+		`UPDATE providers SET enabled = ? WHERE id = ?`, false, record.ProviderID); err != nil {
+		t.Fatal(err)
+	}
+	checker.apply(ctx, snapshot, Summarise(record.ID, []Sample{pass(400, "system")}), policy)
+	held := reload(t, models, record.ID)
+	if held.Enabled || !held.AutoDisabled {
+		t.Fatalf("model came on while its provider was off, or lost the checker's claim: %+v", held)
+	}
+
+	if _, err := checker.Store.db.Exec(ctx,
+		`UPDATE providers SET enabled = ? WHERE id = ?`, true, record.ProviderID); err != nil {
+		t.Fatal(err)
+	}
+	checker.apply(ctx, held, Summarise(record.ID, []Sample{pass(500, "system")}), policy)
+	if back := reload(t, models, record.ID); !back.Enabled || back.AutoDisabled {
+		t.Errorf("model did not come back once its provider was on: %+v", back)
 	}
 }

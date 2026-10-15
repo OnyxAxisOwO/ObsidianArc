@@ -5,7 +5,14 @@
 // key, in either direction beyond writing a new one. The server never sends
 // one back, and there is no field on these types that could carry it.
 
-import { api, ApiError, type RequestOptions } from '../api/client';
+import {
+  api,
+  ApiError,
+  fetchApi,
+  noteBackofficeRefusal,
+  noteSessionEnded,
+  type RequestOptions,
+} from '../api/client';
 import type { ApiKey } from '../api/keys';
 import type { SiteBackground } from '../theme/theme';
 import type { UsageDisplay, UsageSummary, UsageWindow } from '../api/usage';
@@ -363,7 +370,14 @@ export interface AllowanceRow {
 
 export interface AllowanceList {
   rows: AllowanceRow[];
+  /** The real number of accounts behind the list (with a state filter past the cap, only those loaded). */
   total: number;
+  /** How many rows the paging can reach; below total when capped. */
+  listed: number;
+  /** How many accounts the ranking was built from; the most that can be listed when capped. */
+  loaded: number;
+  /** True when the instance has more accounts than the server loads, so rows and counts are partial. */
+  capped: boolean;
   display: UsageDisplay;
   /** How many accounts are at 80% or more of a window, and how many at all of it. */
   low: number;
@@ -665,6 +679,8 @@ export interface ProbeProgress {
   total: number;
   succeeded: number;
   failed: number;
+  /** Models whose provider is switched off; nothing was sent to them. */
+  skipped: number;
 }
 
 /** What one account is holding in reset cards. */
@@ -1058,8 +1074,9 @@ export const adminApi = {
     api.post<{ codes: InviteCode[] }>('/api/admin/invites', body),
   revokeInvite: (id: string) =>
     api.delete<{ code: InviteCode }>(`/api/admin/invites/${encodeURIComponent(id)}`),
+  // `total` counts every use, while `uses` is only the newest page of them.
   inviteUses: (id: string) =>
-    api.get<{ uses: InviteUse[] }>(`/api/admin/invites/${encodeURIComponent(id)}/uses`),
+    api.get<{ uses: InviteUse[]; total: number }>(`/api/admin/invites/${encodeURIComponent(id)}/uses`),
   inviteStats: () => api.get<InviteStats>('/api/admin/invites/stats'),
   grantCards: (userID: string, body: { name?: string; windows?: string[]; cards: number; expires_at: number }) =>
     api.post<void>(`/api/admin/users/${userID}/cards`, body),
@@ -1175,7 +1192,7 @@ export const adminApi = {
 async function streamProbeAllModels(
   onProgress: (progress: ProbeProgress) => void,
 ): Promise<ProbeProgress> {
-  const response = await fetch('/api/admin/health/probe', {
+  const response = await fetchApi('/api/admin/health/probe', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { Accept: 'text/event-stream' },
@@ -1184,6 +1201,8 @@ async function streamProbeAllModels(
     const body = (await response.json().catch(() => null)) as
       | { error?: { code?: string; message?: string } }
       | null;
+    noteBackofficeRefusal(body?.error?.code);
+    noteSessionEnded(body?.error?.code);
     throw new ApiError(
       response.status,
       body?.error?.code ?? 'probe',

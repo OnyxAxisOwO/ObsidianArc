@@ -1,6 +1,9 @@
 package notify
 
 import (
+	"bufio"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -122,8 +125,18 @@ func (h *Handlers) poll(w http.ResponseWriter, r *http.Request) error {
 func (h *Handlers) read(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
 	var body readRequest
-	if err := httpx.DecodeJSON(w, r, &body, maxReadBody); err != nil {
-		return err
+	// Content-Length cannot tell an empty body from a chunked one, which reports
+	// -1 whatever it carries, so the body is asked directly. Only io.EOF means
+	// absent: any other read error goes to DecodeJSON and is answered as a bad
+	// request, rather than quietly marking everything read.
+	br := bufio.NewReader(r.Body)
+	if _, err := br.Peek(1); !errors.Is(err, io.EOF) {
+		// Peek leaves the byte buffered in br, so wrapping br hands DecodeJSON
+		// the whole body and not one that is missing its first character.
+		r.Body = io.NopCloser(br)
+		if err := httpx.DecodeJSON(w, r, &body, maxReadBody); err != nil {
+			return err
+		}
 	}
 	if err := h.store.MarkRead(r.Context(), account.ID, body.UpTo); err != nil {
 		return httpx.Internal(err)

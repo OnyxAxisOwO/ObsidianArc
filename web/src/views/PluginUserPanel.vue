@@ -21,7 +21,7 @@ import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { solvePoW } from '@/lib/pow';
-import { pluginRefusal, userPanels } from '@/plugins/registry';
+import { pluginRefusal, pluginsSettled, userPanels } from '@/plugins/registry';
 import type {
   ChallengeProof, UserEntry, UserEntryView, UserFormControl, UserFormValues, UserRecord,
 } from '@/plugins/types';
@@ -55,7 +55,9 @@ const controls = computed<readonly UserFormControl[]>(() =>
   (opened.value ? view.value?.controls : spec.value?.controls) ?? []);
 
 const title = computed(() => {
-  if (!spec.value) return t('loading');
+  // The title is the one line a missing panel shows: "Loading" is for a panel
+  // that may still arrive, not for one no loaded plugin offers.
+  if (!spec.value) return pluginsSettled() ? t('pluginPanelMissing') : t('loading');
   if (opened.value) return view.value?.title ?? t('loading');
   return spec.value.title();
 });
@@ -114,27 +116,45 @@ function sendable(): UserFormValues {
   return out;
 }
 
+// The newest request wins. The component is reused between the list and an
+// entry, and between plugins, so an answer can arrive for a list or an entry
+// the reader has already left, and must not be drawn over the one shown now.
+let ticket = 0;
+
 async function refresh(): Promise<void> {
   const panel = spec.value;
   if (!panel) return;
+  const request = ++ticket;
   try {
-    if (panel.entries && !opened.value) entries.value = await panel.entries.load();
-    if (panel.mine && !opened.value) mine.value = await panel.mine.load();
+    if (panel.entries && !opened.value) {
+      const next = await panel.entries.load();
+      if (request !== ticket) return;
+      entries.value = next;
+    }
+    if (panel.mine && !opened.value) {
+      const next = await panel.mine.load();
+      if (request !== ticket) return;
+      mine.value = next;
+    }
   } catch (failure) {
-    error.value = say(failure);
+    if (request === ticket) error.value = say(failure);
   } finally {
-    loaded.value = true;
+    if (request === ticket) loaded.value = true;
   }
 }
 
 async function open(): Promise<void> {
   const panel = spec.value;
-  if (!panel?.entries || !opened.value) return;
+  const entry = opened.value;
+  if (!panel?.entries || !entry) return;
+  const request = ++ticket;
   try {
-    view.value = await panel.entries.open(opened.value);
+    const next = await panel.entries.open(entry);
+    if (request !== ticket || opened.value !== entry) return;
+    view.value = next;
     reset();
   } catch (failure) {
-    error.value = say(failure);
+    if (request === ticket) error.value = say(failure);
   }
 }
 
@@ -167,13 +187,21 @@ async function submit(): Promise<void> {
   }
   busy.value = true;
   error.value = '';
+  // The reader can leave this entry while the proof is solved or the request
+  // is in flight. The form is read now, before the first await, because the
+  // entry being opened next refills it; the answer and any error then belong
+  // to the entry the button was pressed on.
+  const entry = opened.value;
   try {
     if (opened.value) {
       const submitter = view.value?.submit;
       if (!submitter) return;
+      const payload = sendable();
       const proof = await prove();
       if (!proof) return;
-      sent.value = await submitter.run(sendable(), proof);
+      const result = await submitter.run(payload, proof);
+      if (opened.value !== entry) return;
+      sent.value = result;
       await open();
     } else if (panel.submit) {
       sent.value = await panel.submit.run(sendable());
@@ -181,12 +209,17 @@ async function submit(): Promise<void> {
       await refresh();
     }
   } catch (failure) {
-    error.value = say(failure);
+    if (opened.value === entry) error.value = say(failure);
   } finally {
-    stage.value = '';
-    busy.value = false;
-    // Spent whether or not it passed.
-    turnstile.value?.reset();
+    // Busy, the stage and the widget are the page's, so a send that finishes
+    // after the reader has moved on must not touch what the next entry's send
+    // is using. The route watch has already released them for the entry left.
+    if (opened.value === entry) {
+      stage.value = '';
+      busy.value = false;
+      // Spent whether or not it passed.
+      turnstile.value?.reset();
+    }
   }
 }
 
@@ -205,7 +238,14 @@ function close(): void {
 // The same component is reused when one plugin panel is opened from another,
 // and when an entry is opened from the list or the list from an entry.
 watch([spec, opened], ([panel], [before, wasOpen]) => {
-  if (!panel || (panel === before && opened.value === wasOpen)) return;
+  if (panel === before && opened.value === wasOpen) return;
+  // Whatever is still in flight was asked for the list or entry being left.
+  ticket += 1;
+  // A send still out belongs to the entry being left, and its finally no longer
+  // clears these once the reader has moved on, so they are released here.
+  busy.value = false;
+  stage.value = '';
+  if (!panel) return;
   error.value = '';
   sent.value = '';
   view.value = null;
@@ -242,7 +282,8 @@ onMounted(() => {
     @back="close"
     @confirm="submit"
   >
-    <p v-if="!spec" class="oa-menu-empty">{{ t('pluginPanelMissing') }}</p>
+    <!-- The title carries the missing-panel message, so the body has nothing to show. -->
+    <template v-if="!spec"></template>
 
     <template v-else-if="opened">
       <p v-if="!view" class="oa-menu-empty">{{ t('loading') }}</p>
@@ -299,7 +340,8 @@ onMounted(() => {
         <p v-else-if="!entries.length" class="oa-menu-empty">{{ spec.entries.empty() }}</p>
         <ul v-else class="oa-feedback-list">
           <li v-for="item in entries" :key="item.id">
-            <button type="button" class="oa-feedback-item" @click="panels.open(`/x/${slug}/${item.id}`)">
+            <!-- Encoded, so an id with a slash or a question mark names its own entry. -->
+            <button type="button" class="oa-feedback-item" @click="panels.open(`/x/${encodeURIComponent(slug)}/${encodeURIComponent(item.id)}`)">
               <span class="oa-feedback-item-head">
                 <span class="oa-feedback-item-title">{{ item.title }}</span>
                 <OaBadge v-if="item.badge" :tone="item.badge.tone">{{ item.badge.label }}</OaBadge>

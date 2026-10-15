@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -133,7 +134,18 @@ func identifyOIDC(ctx context.Context, client *http.Client, creds Credentials, t
 		if err := checkEndpoint("userinfo endpoint", creds.UserInfoURL); err != nil {
 			return Identity{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
-		if err := getJSON(ctx, client, creds.UserInfoURL, tokens.AccessToken, &userinfo); err == nil {
+		// Decoded into a local and copied across only on success: json.Unmarshal
+		// fills the fields that precede a value it rejects, so decoding straight
+		// into userinfo would keep a half-read document after it was refused.
+		var fetched oidcClaims
+		if err := getJSON(ctx, client, creds.UserInfoURL, tokens.AccessToken, &fetched); err != nil {
+			// The identity then comes from the ID token alone, which changes what
+			// is trusted, so an operator should be able to see why. Only the class
+			// is logged: the error text carries the endpoint's address.
+			slog.WarnContext(ctx, "oidc userinfo lookup failed; identity taken from the id_token",
+				"denied", errors.Is(err, ErrDenied))
+		} else {
+			userinfo = fetched
 			userinfoFound = true
 		}
 	}
@@ -154,9 +166,17 @@ func identifyOIDC(ctx context.Context, client *http.Client, creds Credentials, t
 		return Identity{}, fmt.Errorf("%w: could not read identity from userinfo endpoint or id_token", ErrUnavailable)
 	}
 
-	sub := strings.TrimSpace(userinfo.Subject)
+	// The subject keys the account link. OIDC Core 5.3.2 requires the userinfo
+	// subject to be the ID token's; when they differ, one document is not about
+	// the person the other vouched for, and neither is trusted.
+	userSub := strings.TrimSpace(userinfo.Subject)
+	idSub := strings.TrimSpace(idClaims.Subject)
+	if userSub != "" && idSub != "" && userSub != idSub {
+		return Identity{}, fmt.Errorf("%w: the userinfo subject does not match the id_token subject", ErrUnavailable)
+	}
+	sub := userSub
 	if sub == "" {
-		sub = strings.TrimSpace(idClaims.Subject)
+		sub = idSub
 	}
 	if sub == "" {
 		return Identity{}, fmt.Errorf("%w: the oidc provider named no subject (sub)", ErrUnavailable)
@@ -194,13 +214,17 @@ func identifyOIDC(ctx context.Context, client *http.Client, creds Credentials, t
 	if email == "" {
 		email = idEmail
 	}
-	emailVerified := creds.TrustEmail
+	// attested is the provider's own word that this address is verified. It,
+	// and not the operator's trust setting, decides whether the address may
+	// name the person: a login taken from an unverified address would let a
+	// self-registered stranger claim someone else's username.
+	attested := false
 	if email != "" {
 		if email == userEmail && bool(userinfo.EmailVerified) {
-			emailVerified = true
+			attested = true
 		}
 		if email == idEmail && bool(idClaims.EmailVerified) {
-			emailVerified = true
+			attested = true
 		}
 	}
 
@@ -210,13 +234,13 @@ func identifyOIDC(ctx context.Context, client *http.Client, creds Credentials, t
 		Name:     name,
 	}
 
-	if email != "" && emailVerified {
+	if email != "" && (attested || creds.TrustEmail) {
 		identity.Email = email
 	}
 
 	if preferredUsername != "" {
 		identity.Login = preferredUsername
-	} else if at := strings.Index(email, "@"); at > 0 {
+	} else if at := strings.Index(email, "@"); at > 0 && attested {
 		identity.Login = email[:at]
 	} else {
 		identity.Login = name
@@ -282,6 +306,13 @@ func (s *Service) discover(ctx context.Context, client *http.Client, issuer stri
 		return doc, nil
 	}
 	s.discoveryMu.Unlock()
+
+	// The caller's context is a browser navigation, which has no deadline of
+	// its own, and Authenticate's deadline only starts after this. Without this
+	// bound an issuer that accepts the connection and never answers holds the
+	// sign-in open indefinitely.
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	discoveryURL := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)

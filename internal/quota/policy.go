@@ -184,8 +184,14 @@ func (s *Store) List(ctx context.Context) ([]Policy, error) {
 	return out, rows.Err()
 }
 
-// Save writes a policy, replacing whatever was at that scope.
-func (s *Store) Save(ctx context.Context, policy Policy) (Policy, error) {
+// Save writes a policy, replacing whatever was at that scope. It takes the
+// caller's transaction when there is one, because a scope's owner is often
+// checked just before the write, and the check is only good if the write commits
+// with it.
+func (s *Store) Save(ctx context.Context, q database.Queryer, policy Policy) (Policy, error) {
+	if q == nil {
+		q = s.db
+	}
 	if policy.Scope != ScopeGlobal && policy.Scope != ScopeGroup && policy.Scope != ScopeUser {
 		return Policy{}, fmt.Errorf("quota: unknown scope %q", policy.Scope)
 	}
@@ -204,7 +210,7 @@ func (s *Store) Save(ctx context.Context, policy Policy) (Policy, error) {
 	week := policy.Windows[WindowWeek]
 	month := policy.Windows[WindowMonth]
 
-	_, err := s.db.Exec(ctx, `INSERT INTO quota_policies (`+policyColumns+`)
+	_, err := q.Exec(ctx, `INSERT INTO quota_policies (`+policyColumns+`)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (scope, scope_id) DO UPDATE SET
 			rpm = excluded.rpm, tpm = excluded.tpm,
@@ -229,7 +235,7 @@ func (s *Store) Save(ctx context.Context, policy Policy) (Policy, error) {
 	if err != nil {
 		return Policy{}, fmt.Errorf("quota: save policy: %w", err)
 	}
-	return s.Get(ctx, nil, policy.Scope, policy.ScopeID)
+	return s.Get(ctx, q, policy.Scope, policy.ScopeID)
 }
 
 func (s *Store) Delete(ctx context.Context, scope Scope, scopeID string) error {

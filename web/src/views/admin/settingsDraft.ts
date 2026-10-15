@@ -1,6 +1,18 @@
 import { computed, ref } from 'vue';
 
 /**
+ * The most one setting value may take, in UTF-8 bytes. The server refuses any
+ * value past it and refuses the whole save with it, so a form that could send
+ * one must say so before it sends.
+ */
+export const SETTING_MAX_BYTES = 8 * 1024;
+
+/** Whether any value in a save is past what the server will take. */
+export function overlongSetting(values: Record<string, string>): boolean {
+  return Object.values(values).some((value) => new TextEncoder().encode(value).length > SETTING_MAX_BYTES);
+}
+
+/**
  * A settings page's draft: what the page last saw for each key, and what it has
  * changed since. A save sends only the changed keys, never the whole form.
  *

@@ -23,10 +23,10 @@ import { ApiError } from '@/api/client';
 import { connectProvider } from '@/api/oauth';
 import OaField from '@/components/OaField.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
-import { t } from '@/composables/useI18n';
+import { t, type StringKey } from '@/composables/useI18n';
 import { IconSpark } from '@/icons';
 import { connectRefusalText } from '@/lib/refusal';
-import { safeNext } from '@/lib/next';
+import { safeNext, serverOwned } from '@/lib/next';
 import { adopt, currentUser, forget, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
 import OaBackdrop from '@/components/OaBackdrop.vue';
@@ -86,12 +86,30 @@ function sendConnect(proof: string): void {
     .finally(() => { busy.value = false; });
 }
 
+// Codes the connect callback can send back in oauth_error. Anything else is
+// the general sentence: the raw code means nothing to the person reading it.
+const CONNECT_REFUSALS: Record<string, StringKey> = {
+  denied: 'oauthDenied',
+  state: 'oauthState',
+  already_linked: 'oauthAlreadyLinked',
+  address_taken: 'oauthConnectAddressTaken',
+  unavailable: 'oauthUnavailable',
+  provider: 'oauthProviderFailed',
+};
+
 // The connect flow leaves this page and comes back to it, so its outcome
 // arrives in the query rather than in a response — the same contract the
 // settings screen's own connections panel reads.
 onMounted(async () => {
+  // Taken before the query is stripped: the strip is not awaited, so by the
+  // time the link is confirmed route.query no longer carries next.
+  const destination = next.value;
   const done = route.query['oauth'];
   const failure = route.query['oauth_error'];
+  if (typeof failure === 'string' && failure) {
+    const known = Object.hasOwn(CONNECT_REFUSALS, failure) ? CONNECT_REFUSALS[failure] : undefined;
+    flash.value = t(known ?? 'oauthFailed');
+  }
   if (done || failure) void router.replace({ path: route.path, query: {} });
   if (done !== 'connected') return;
   // The callback just linked the identity; refresh the account so the field
@@ -99,8 +117,12 @@ onMounted(async () => {
   try {
     const session = await fetchMe();
     adopt(session.user, session.preferences);
-    const destination = next.value;
-    if (destination !== '/bind-oidc') await router.replace(destination);
+    if (destination !== '/bind-oidc') {
+      // The router has no screen for the server's own pages, such as the
+      // authorisation request another site sent the visitor here with.
+      if (serverOwned(destination)) window.location.assign(destination);
+      else await router.replace(destination);
+    }
   } catch {
     // The connection is written either way; refreshing the cookie-backed
     // view is best effort.

@@ -80,3 +80,394 @@ describe('stylesheet invariants', () => {
     expect(rule![1]).toMatch(/border-radius:11px/);
   });
 });
+
+// Read from the source rather than the build, so it holds without `make web`.
+describe('hidden rows in the shipped stylesheet', () => {
+  it('hides a flex input row that carries the hidden attribute', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../src/styles/_workspace.scss'), 'utf8');
+    const rule = /\.oa-input-row\[hidden\]\s*\{[^}]*\}/.exec(source)?.[0] ?? '';
+
+    expect(rule, 'the redeem row would stay on screen when it closes').toMatch(/display:\s*none/);
+  });
+});
+
+// Source-level checks for the cascade details jsdom cannot see. Each one
+// fails on the rule as it was written, so a later edit that brings the
+// problem back is caught without a build.
+describe('component rules in the stylesheet source', () => {
+  const source = (name: string) => fs.readFileSync(path.resolve(__dirname, '../src/styles', name), 'utf8');
+
+  it('does not reset a plugin tab size and weight with a font shorthand', () => {
+    // `font:` after `font-size` in the same rule resets both to the parent's
+    // values. `font-family:` and `line-height:` are the only parts a button
+    // needs inherited.
+    const rule = /\.oa-plugin-tab \{([^}]*)\}/.exec(source('_workbench.scss'))?.[1] ?? '';
+
+    expect(rule).toMatch(/font-size:\s*12\.5px/);
+    expect(rule).not.toMatch(/(^|[;\s])font\s*:/);
+  });
+
+  it('keeps the inherited line height on plugin tabs', () => {
+    // The shorthand this replaced also carried line-height, so a tab would
+    // otherwise fall back to `normal` while the text around it keeps 1.5.
+    const rule = /\.oa-plugin-tab \{([^}]*)\}/.exec(source('_workbench.scss'))?.[1] ?? '';
+
+    expect(rule).toMatch(/line-height:\s*inherit/);
+  });
+
+  it('keeps a focus ring on plugin tabs, which have no outline', () => {
+    expect(source('_workbench.scss')).toMatch(
+      /\.oa-plugin-tab:focus-visible \{[^}]*box-shadow:\s*0 0 0 3px var\(--ai-focus-shadow\)/,
+    );
+  });
+
+  it('keeps the field hover fill and focus ring off the range sliders', () => {
+    // OaRangeField wraps the slider in a .oa-field, so the field's hover and
+    // focus rules match it at the same specificity and come later. The
+    // slider needs rules that out-rank them, and the field rules must stay
+    // as they are for every other input.
+    const workspace = source('_workspace.scss');
+    const override = /\.oa-range-field input\[type="range"\]:hover,\s*\.oa-range-field input\[type="range"\]:focus \{([^}]*)\}/
+      .exec(workspace)?.[1] ?? '';
+    const slider = /\.oa-range-field input\[type="range"\] \{([^}]*)\}/.exec(workspace)?.[1] ?? '';
+
+    expect(override).toMatch(/background-color:\s*transparent/);
+    expect(override).toMatch(/box-shadow:\s*none/);
+    expect(slider).toMatch(/outline:\s*none/);
+    expect(workspace).toMatch(/\.oa-field input:hover,/);
+    expect(workspace).toMatch(/\.oa-field input:focus,/);
+  });
+
+  it('gives the terminal its own width only in the three-column layout', () => {
+    // Below 1101px the panel is a fixed overlay sized by _surfaces.scss; a
+    // bare width: auto here would shrink it to fit its content.
+    const terminal = source('_terminal.scss');
+
+    expect(terminal).toMatch(/@media \(min-width: 1101px\) \{\s*\.ai-chat-wide \.oa-panel\.oa-terminal-panel \{\s*width: auto;/);
+    expect(terminal).not.toMatch(/\.ai-chat-wide \.oa-panel\.oa-terminal-panel \{\s*flex: 1 1 0%;\s*width: auto/);
+  });
+
+  it('does not hold a compositing layer for the terminal panel', () => {
+    const terminal = source('_terminal.scss');
+
+    expect(terminal).toMatch(/\.oa-panel\.oa-terminal-panel \{[^}]*will-change:\s*auto;/);
+    expect(terminal).not.toMatch(/backface-visibility\s*:/);
+  });
+});
+
+// The leaderboards render the usage report's board class names, and
+// _surfaces.scss, which loads first, defines their rows. A bare rule in
+// _analytics.scss wins over it on every shared property, so each rule that
+// names one of these classes has to stay under the frame the usage report
+// always wraps.
+describe('ranked board rules in the stylesheet source', () => {
+  const analytics = fs
+    .readFileSync(path.resolve(__dirname, '../src/styles/_analytics.scss'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const shared = /^(button\.)?\.oa-board-(row|rank|main|name|notes|value|track)(?![\w-])/;
+
+  it('scopes every rule that shares a leaderboard class name under the usage frame', () => {
+    const bare = [...analytics.matchAll(/([^{}]+)\{/g)]
+      .map((m) => m[1]!.split(';').pop()!)
+      .flatMap((prelude) => prelude.split(','))
+      .map((selector) => selector.trim())
+      .filter((selector) => shared.test(selector));
+
+    expect(bare).toEqual([]);
+  });
+
+  it('still styles the usage report rows under the frame', () => {
+    expect(analytics).toMatch(/\.oa-board-frame \.oa-board-row \{/);
+  });
+
+  it('clips a leaderboard name on one line where the frame does not wrap it', () => {
+    // The leaderboard panel and the admin preview take this rule with the
+    // name as bare text, so the box itself has to clip it. The nested span
+    // rule comes out first, since its own overflow would satisfy the check.
+    const surfaces = fs
+      .readFileSync(path.resolve(__dirname, '../src/styles/_surfaces.scss'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const name = /^\.oa-board-name \{([\s\S]*?)^\}/m.exec(surfaces)?.[1] ?? '';
+    const box = name.replace(/>\s*span:first-child\s*\{[^}]*\}/, '');
+
+    expect(box).toMatch(/overflow:\s*hidden/);
+    expect(box).toMatch(/white-space:\s*nowrap/);
+  });
+});
+
+// Phone-width and state rules for the chat, the front page and the dashboard.
+// jsdom has no layout, so each of these is checked in the source: a rule that
+// a narrow screen or an idle page would break, written as it should be.
+describe('phone and state rules in the stylesheet source', () => {
+  // Comments are stripped so a rule that is only described in a comment
+  // cannot satisfy the check.
+  const sheet = (name: string): string => fs
+    .readFileSync(path.resolve(__dirname, '../src/styles', name), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+
+  /** The declarations of every flat rule whose selector list names `selector`. */
+  function bodies(css: string, selector: string): string[] {
+    return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter((m) => m[1]!.split(',').some((part) => part.trim() === selector))
+      .map((m) => m[2]!);
+  }
+
+  /** The inside of every block whose prelude starts with `query`, e.g. a media query. */
+  function blocks(css: string, query: string): string {
+    const inside: string[] = [];
+    for (let at = css.indexOf(query); at !== -1; at = css.indexOf(query, at + query.length)) {
+      const open = css.indexOf('{', at);
+      let depth = 0;
+      for (let i = open; i < css.length; i += 1) {
+        if (css[i] === '{') depth += 1;
+        if (css[i] === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            inside.push(css.slice(open + 1, i));
+            break;
+          }
+        }
+      }
+    }
+    return inside.join('\n');
+  }
+
+  it('keeps the empty-history footer hidden', () => {
+    // The footer is `display: flex`, which beats the user agent's [hidden] rule,
+    // so the attribute needs a rule of its own or the button shows on an
+    // empty history.
+    expect(bodies(sheet('_chat.scss'), '.ai-chat-sidebar-foot[hidden]').join('')).toMatch(/display:\s*none/);
+  });
+
+  it('drops the desktop rail feather on the phone overlay', () => {
+    // A persisted rail collapse carries the desktop mask into the overlay,
+    // which fades the overlay's right edge and clips its shadow.
+    const overlay = bodies(
+      blocks(sheet('_chat.scss'), '@media (max-width: 900px)'),
+      '.ai-chat-wide .ai-chat-sidebar',
+    ).join('');
+
+    expect(overlay).toMatch(/(^|[;\s])mask-image:\s*none/);
+  });
+
+  it('names only tokens the theme defines', () => {
+    // Nothing writes `--ai-accent`, so each use resolved to nothing: the
+    // archive hover lost its colour and the target pulse lost its outline.
+    const offenders = fs.readdirSync(path.resolve(__dirname, '../src/styles'))
+      .filter((name) => name.endsWith('.scss'))
+      .filter((name) => /var\(--ai-accent[,)]/.test(sheet(name)));
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('reads only custom properties that something defines, in the surfaces sheet', () => {
+    // A read with no fallback has nothing to fall back on: an undeclared name
+    // makes the whole declaration invalid, so the uptime button's hover fill
+    // went transparent and the dropzone borders took the text colour.
+    const declared = new Set<string>();
+    const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true })
+      .flatMap((entry) => (entry.isDirectory()
+        ? walk(path.join(dir, entry.name))
+        : [path.join(dir, entry.name)]));
+    for (const file of walk(path.resolve(__dirname, '../src'))) {
+      if (!/\.(ts|vue|scss)$/.test(file)) continue;
+      const text = fs.readFileSync(file, 'utf8');
+      // The theme writes its tables with quoted names; a stylesheet declares them.
+      for (const m of text.matchAll(/['"](--ai-[\w-]+)['"]/g)) declared.add(m[1]!);
+      for (const m of text.matchAll(/(?:^|[\s{;])(--ai-[\w-]+)\s*:/gm)) declared.add(m[1]!);
+    }
+    const read = new Set([...sheet('_surfaces.scss').matchAll(/var\((--ai-[\w-]+)\)/g)].map((m) => m[1]!));
+
+    expect([...read].filter((name) => !declared.has(name))).toEqual([]);
+  });
+
+  it('gives a closed side panel no transform override under reduced motion', () => {
+    // On narrow screens a closed panel is parked off the right edge by its
+    // transform. Zeroing that under reduced motion left it at the edge,
+    // transparent and taking the taps meant for the page.
+    const reduced = blocks(sheet('_surfaces.scss'), '@media (prefers-reduced-motion: reduce)');
+
+    expect(bodies(reduced, '.oa-panel').join('')).not.toMatch(/transform:\s*none/);
+  });
+
+  it('declares each card list and card row once, so no later rule silently wins', () => {
+    // Two rules for the same selector at the same specificity: the later one
+    // won every property it set, and the earlier one's padding and radius
+    // never applied anywhere.
+    const surfaces = sheet('_surfaces.scss');
+
+    expect(bodies(surfaces, '.oa-card-row')).toHaveLength(1);
+    expect(bodies(surfaces, '.oa-card-list')).toHaveLength(1);
+  });
+
+  it('keeps a focus ring on the aspect ratio tiles, which have no outline', () => {
+    // The selected tile keeps its accent ring inside the focus ring; a bare
+    // focus shadow would replace it while the tile has focus.
+    const tile = /^\.oa-ratio-tile \{([\s\S]*?)^\}/m.exec(sheet('_surfaces.scss'))?.[1] ?? '';
+
+    expect(tile).toMatch(/&:focus-visible \{\s*box-shadow:\s*0 0 0 2px var\(--ai-focus-shadow\)/);
+    expect(tile).toMatch(
+      /&\.active:focus-visible \{\s*box-shadow:\s*0 0 0 1px var\(--ai-primary\),\s*0 0 0 3px var\(--ai-focus-shadow\)/,
+    );
+  });
+
+  it('caps the row stagger so a long page does not hold its last rows hidden', () => {
+    // `backwards` fill keeps each row at opacity 0 for its whole delay, so an
+    // uncapped index-based delay hid row 199 for about eight seconds.
+    const surfaces = sheet('_surfaces.scss');
+
+    expect(surfaces).not.toMatch(/animation-delay:\s*calc\(var\(--item-idx/);
+    expect(surfaces.match(/animation-delay:\s*min\(calc\(var\(--item-idx, 0\) \* 40ms\), 240ms\)/g)).toHaveLength(2);
+  });
+
+  it('stacks the method above the path where the request column is narrow', () => {
+    // At a phone's width the request column is a few dozen pixels; side by
+    // side, the method label ran over the duration column.
+    const narrow = blocks(sheet('_surfaces.scss'), '@container logs (max-width: 400px)');
+
+    expect(bodies(narrow, '.oa-log-request').join('')).toMatch(/flex-direction:\s*column/);
+  });
+
+  it('pins a leaving toast to the stack width on a phone', () => {
+    // Absolutely positioned with auto width and no insets, it shrinks to its
+    // text as it leaves; the insets hold it to the stack's width.
+    const phone = blocks(sheet('_surfaces.scss'), '@media (max-width: 640px)');
+    const leaving = bodies(phone, '.oa-toast-leave-active').join('');
+
+    expect(leaving).toMatch(/left:\s*0;/);
+    expect(leaving).toMatch(/right:\s*0;/);
+  });
+
+  it('keeps the conversation menu reachable without a pointer', () => {
+    // A touch screen has no hover to reveal the trigger, and rename, archive
+    // and delete live behind it.
+    const touch = bodies(
+      blocks(sheet('_chat.scss'), '@media (hover: none)'),
+      '.ai-chat-list-more',
+    ).join('');
+
+    expect(touch).toMatch(/opacity:\s*(0\.[1-9]|1\b)/);
+  });
+
+  it('lets the front page grids shrink below their nominal track width', () => {
+    // A bare 340px or 290px minimum is wider than the content box of a phone
+    // under about 376px, and the page clips the overflow rather than scrolling.
+    const front = sheet('_front.scss');
+
+    expect(bodies(front, '.oa-front-panes').join('')).toMatch(/minmax\(min\(340px,\s*100%\),\s*1fr\)/);
+    expect(bodies(front, '.oa-front-cards').join('')).toMatch(/minmax\(min\(290px,\s*100%\),\s*1fr\)/);
+  });
+
+  it('lets the front page header wrap on a phone', () => {
+    expect(
+      bodies(blocks(sheet('_front.scss'), '@media (max-width: 600px)'), '.oa-front-head').join(''),
+    ).toMatch(/flex-wrap:\s*wrap/);
+  });
+
+  it('prefixes the frosted front header for Safari before 18', () => {
+    expect(bodies(sheet('_front.scss'), '.oa-front-head.lifted').join('')).toMatch(/-webkit-backdrop-filter:/);
+  });
+
+  it('lets the scroll cue leave, which its nudge animation would otherwise prevent', () => {
+    expect(bodies(sheet('_front.scss'), '.oa-front-scroll.gone').join('')).toMatch(/animation:\s*none/);
+  });
+
+  it('starts terminal output hidden, so its fade has something to fade from', () => {
+    const front = sheet('_front.scss');
+
+    expect(bodies(front, '.oa-front-term-out').join('')).toMatch(/(^|[;\s])opacity:\s*0/);
+    // Reduced motion and the still page switch the animation off, so they must
+    // also restore the lines, or those readers see an empty terminal.
+    expect(bodies(front, '.oa-front-term-out').some((body) => /opacity:\s*1\b/.test(body))).toBe(true);
+    expect(bodies(front, '.oa-front.still .oa-front-term-out').join('')).toMatch(/opacity:\s*1\b/);
+  });
+
+  it('pauses the hero and the flow wherever the observers can reach them', () => {
+    const front = sheet('_front.scss');
+
+    expect(bodies(front, '.oa-front-hero.idle .oa-front-scroll').join('')).toMatch(/animation-play-state:\s*paused/);
+    expect(bodies(front, '.oa-front-hero.idle .oa-front-line.accent > span').join(''))
+      .toMatch(/animation-play-state:\s*paused/);
+    expect(bodies(front, '.oa-front-flow.idle .oa-front-wire').join('')).toMatch(/animation-play-state:\s*paused/);
+    expect(bodies(front, '.oa-front-flow.idle .oa-front-core-ring').join(''))
+      .toMatch(/animation-play-state:\s*paused/);
+  });
+
+  it('lets the loading skeleton follow the loaded metrics into two columns', () => {
+    // The skeleton sits outside `.oa-dashboard`, so it is its own size
+    // container. Its placeholders span two of its four tracks at the width
+    // where the loaded metrics switch to two, so the grid does not jump.
+    const dashboard = sheet('_dashboard.scss');
+
+    expect(bodies(dashboard, '.oa-dashboard-loading').join('')).toMatch(/container:\s*dashboard\s*\/\s*inline-size/);
+    expect(
+      bodies(blocks(dashboard, '@container dashboard (max-width: 1040px)'), '.oa-dashboard-loading > div').join(''),
+    ).toMatch(/grid-column:\s*span 2/);
+  });
+});
+
+// Focus, width and cascade details in the shipped stylesheet source. Each one
+// was true of the rule as written: a focus that no ring replaced, a width cap
+// that a table cell ignores, a narrow override that an equal-specificity rule
+// later in the file undid. The checks read the source so they hold without a
+// build.
+describe('focus, width and cascade rules in the stylesheet source', () => {
+  const sheet = (name: string): string => fs
+    .readFileSync(path.resolve(__dirname, '../src/styles', name), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+
+  /** The declarations of every flat rule whose selector list names `selector`. */
+  function bodies(css: string, selector: string): string {
+    return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter((m) => m[1]!.split(';').pop()!.split(',').some((part) => part.trim() === selector))
+      .map((m) => m[2]!)
+      .join('');
+  }
+
+  it('rings the landing composer, because its field has no outline of its own', () => {
+    expect(bodies(sheet('_app.scss'), '.oa-landing-composer:focus-within'))
+      .toMatch(/box-shadow:\s*0 0 0 3px var\(--ai-focus-shadow\)/);
+  });
+
+  it('rings a board whose scroller takes focus, and keeps the native outline off it', () => {
+    const analytics = sheet('_analytics.scss');
+
+    expect(analytics).toMatch(/\.oa-board-wrap:has\(> \.oa-board-scroll:focus-visible\) \{[^}]*var\(--ai-focus-shadow\)/);
+    expect(bodies(analytics, '.oa-board-scroll:focus-visible')).toMatch(/outline:\s*none/);
+  });
+
+  it('caps the model header itself, since a table cell ignores max-width', () => {
+    const analytics = sheet('_analytics.scss');
+
+    expect(bodies(analytics, '.oa-matrix-head')).toMatch(/max-width:\s*128px/);
+    expect(bodies(analytics, '.oa-matrix thead th')).not.toMatch(/max-width/);
+  });
+
+  it('declares the allowance row base gap before the narrow-width block that overrides it', () => {
+    const analytics = sheet('_analytics.scss');
+    const base = analytics.search(/^\.oa-allow-none \{/m);
+    const narrow = analytics.search(/@container allow \(max-width: 560px\)/);
+
+    expect(base).toBeGreaterThan(-1);
+    expect(narrow).toBeGreaterThan(base);
+    expect(analytics.slice(narrow)).toMatch(/\.oa-allow-none \{\s*flex-direction:\s*column;\s*gap:\s*1px;/);
+  });
+
+  it('declares every theme token it reads without a fallback', () => {
+    // A var() whose token nothing declares makes the declaration invalid, which
+    // computes as unset: a colour inherits, a background or border takes its
+    // initial value, and nothing reports an error, so the rule looks right and
+    // does nothing. Uses with an explicit fallback are deliberate and are left
+    // out.
+    const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return walk(full);
+      return /\.(scss|ts|vue)$/.test(entry.name) ? [fs.readFileSync(full, 'utf8')] : [];
+    });
+    const all = walk(path.resolve(__dirname, '../src')).join('\n');
+    const used = new Set([...all.matchAll(/var\(\s*(--ai-[\w-]+)\s*\)/g)].map((m) => m[1]!));
+    const declared = (token: string) => new RegExp(`${token}\\s*:|['"\`]${token}['"\`]`).test(all);
+
+    expect([...used].filter((token) => !declared(token))).toEqual([]);
+  });
+});

@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -120,8 +122,9 @@ func (s *Store) Record(ctx context.Context, modelID string, ok bool, code, messa
 	return nil
 }
 
-// Samples reads every piece of evidence about one model since a moment, newest
-// first, from both sources at once.
+// Samples reads the newest evidence about one model since a moment, up to
+// limit rows, from both sources at once. It is a capped slice of the window:
+// a count or a rate over the whole window is Rates' job, not this one's.
 //
 // A UNION rather than two queries and a merge in Go: the two tables answer the
 // same question in the same shape, and the ordering has to be across both of
@@ -319,29 +322,89 @@ func Code(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return "cancelled"
 	}
+	// A transport timeout is recognised by its type. The text of a net error
+	// is the operating system's wording, which is not stable across platforms.
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return "timeout"
+	}
+
+	// The typed kind and status are what the provider said, so they decide.
+	// Matching the rendered text got this wrong both ways: an adapter error
+	// renders as "kind: message" with no status, so a 401 whose body said
+	// "Incorrect API key" matched nothing, and a 400 quoting "5000 tokens"
+	// matched "500".
+	var upstream *adapter.Error
+	if errors.As(err, &upstream) {
+		return codeOfAdapterError(upstream)
+	}
 
 	message := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(message, "401"), strings.Contains(message, "unauthorized"),
+	case hasNumber(message, "401"), strings.Contains(message, "unauthorized"),
 		strings.Contains(message, "invalid api key"):
 		return "unauthorized"
-	case strings.Contains(message, "403"), strings.Contains(message, "forbidden"):
+	case hasNumber(message, "403"), strings.Contains(message, "forbidden"):
 		return "forbidden"
-	case strings.Contains(message, "404"), strings.Contains(message, "not found"):
+	case hasNumber(message, "404"), strings.Contains(message, "not found"):
 		return "model_not_found"
-	case strings.Contains(message, "429"), strings.Contains(message, "rate limit"):
+	case hasNumber(message, "429"), strings.Contains(message, "rate limit"):
 		return "rate_limited"
 	case strings.Contains(message, "timeout"), strings.Contains(message, "deadline"):
 		return "timeout"
 	case strings.Contains(message, "no such host"), strings.Contains(message, "connection refused"),
 		strings.Contains(message, "dial "):
 		return "unreachable"
-	case strings.Contains(message, "500"), strings.Contains(message, "502"),
-		strings.Contains(message, "503"), strings.Contains(message, "504"):
+	case hasNumber(message, "500"), hasNumber(message, "502"),
+		hasNumber(message, "503"), hasNumber(message, "504"):
 		return "upstream_error"
 	default:
 		return "error"
 	}
+}
+
+// statusPatterns holds one pattern per status code that Code asks for, compiled
+// once: Code runs on every failed probe, and compiling a pattern per call cost
+// more than the match. A code missing from this list is a bug in Code.
+var statusPatterns = func() map[string]*regexp.Regexp {
+	codes := []string{"401", "403", "404", "429", "500", "502", "503", "504"}
+	patterns := make(map[string]*regexp.Regexp, len(codes))
+	for _, code := range codes {
+		patterns[code] = regexp.MustCompile(`(?:^|\D)` + code + `(?:\D|$)`)
+	}
+	return patterns
+}()
+
+// hasNumber reports whether a status code appears as a number of its own. A
+// plain substring match read "4290" as a 429 and "5000" as a 500, which is how
+// a message quoting a token count was filed as a rate limit.
+func hasNumber(message, number string) bool {
+	return statusPatterns[number].MatchString(message)
+}
+
+// codeOfAdapterError maps the provider failure the adapter already classified.
+// An auth error with a 403 is a key for another service, which the operator
+// reads differently from a wrong key, so the status is consulted there.
+func codeOfAdapterError(e *adapter.Error) string {
+	switch e.Kind {
+	case adapter.ErrorAuth:
+		if e.Status == http.StatusForbidden {
+			return "forbidden"
+		}
+		return "unauthorized"
+	case adapter.ErrorRateLimit:
+		return "rate_limited"
+	case adapter.ErrorNetwork:
+		return "unreachable"
+	case adapter.ErrorUpstream:
+		return "upstream_error"
+	case adapter.ErrorCancelled:
+		return "cancelled"
+	}
+	if e.Status == http.StatusNotFound {
+		return "model_not_found"
+	}
+	return "error"
 }
 
 // truncate bounds one stored message, with the cut delegated to text.Truncate
@@ -350,8 +413,11 @@ func Code(err error) string {
 // message, a quoted response body. Cutting one of those mid-character produced
 // bytes PostgreSQL refuses, so the INSERT failed and the probe sample was
 // dropped: the evidence disappeared exactly when a model was failing loudly.
+//
+// The same refusal applies to a NUL byte or a byte that is not UTF-8, which an
+// upstream body can carry. text.Truncate keeps those, so Clean runs first.
 func truncate(value string, limit int) string {
-	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(text.Clean(value))
 	cut := text.Truncate(value, limit)
 	// text.Truncate returns its input untouched when it already fits, which is
 	// what distinguishes "this was cut" from "this was the whole message".
@@ -461,18 +527,26 @@ func (s *Store) Timeline(ctx context.Context, since int64, resetAt int64, bucket
 		evidenceSince = resetAt
 	}
 
+	// The bucket is computed and counted by the database. Reading every row of
+	// the window to bucket it in Go made each uptime request cost one row per
+	// request the whole fleet served in the last 24 hours. The bucket is the
+	// same integer division as before, and the index is clamped in Go below so
+	// the expression needs no CASE or MIN, which the two engines spell apart.
 	rows, err := s.db.Query(ctx, `
-		SELECT model_id, at, ok FROM (
-			SELECT model_id, started_at AS at,
-			       CASE WHEN status = ? THEN 1 ELSE 0 END AS ok
-			FROM usage_records
-			WHERE started_at >= ? AND status IN (?, ?)
-			UNION ALL
-			SELECT model_id, at, CASE WHEN ok THEN 1 ELSE 0 END AS ok
-			FROM model_probes
-			WHERE at >= ?
-		) AS evidence
-		ORDER BY at ASC`,
+		SELECT model_id, idx, COUNT(*), SUM(ok) FROM (
+			SELECT model_id, (at - ?) / ? AS idx, ok FROM (
+				SELECT model_id, started_at AS at,
+				       CASE WHEN status = ? THEN 1 ELSE 0 END AS ok
+				FROM usage_records
+				WHERE started_at >= ? AND status IN (?, ?)
+				UNION ALL
+				SELECT model_id, at, CASE WHEN ok THEN 1 ELSE 0 END AS ok
+				FROM model_probes
+				WHERE at >= ?
+			) AS evidence
+		) AS buckets
+		GROUP BY model_id, idx`,
+		since, bucketSpan,
 		statusOK, evidenceSince, statusOK, statusError,
 		evidenceSince)
 	if err != nil {
@@ -488,9 +562,8 @@ func (s *Store) Timeline(ctx context.Context, since int64, resetAt int64, bucket
 
 	for rows.Next() {
 		var modelID string
-		var at int64
-		var ok int
-		if err := rows.Scan(&modelID, &at, &ok); err != nil {
+		var idx, total, ok int64
+		if err := rows.Scan(&modelID, &idx, &total, &ok); err != nil {
 			return nil, fmt.Errorf("health: timeline: %w", err)
 		}
 		list, exists := byModel[modelID]
@@ -498,17 +571,17 @@ func (s *Store) Timeline(ctx context.Context, since int64, resetAt int64, bucket
 			list = make([]count, buckets)
 			byModel[modelID] = list
 		}
-		idx := int((at - since) / bucketSpan)
+		// Evidence is never before since, so the low clamp is a guard; the high
+		// one folds the rounding remainder and any row stamped after now into
+		// the last bucket, as it always was.
 		if idx < 0 {
 			idx = 0
 		}
-		if idx >= buckets {
-			idx = buckets - 1
+		if idx >= int64(buckets) {
+			idx = int64(buckets - 1)
 		}
-		list[idx].total++
-		if ok == 1 {
-			list[idx].ok++
-		}
+		list[idx].total += int(total)
+		list[idx].ok += int(ok)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("health: timeline: %w", err)

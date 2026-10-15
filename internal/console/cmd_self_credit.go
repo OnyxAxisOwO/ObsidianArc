@@ -74,8 +74,8 @@ func init() {
 				windows = append(windows, window{
 					cells: []string{
 						asStr(w["kind"]), yesNo(asBoolVal(w["enforced"])),
-						fmt.Sprint(asNum(w["used_requests"])), limitStr(w["limit_requests"]),
-						fmt.Sprint(asNum(w["used_tokens"])), limitStr(w["limit_tokens"]),
+						formatNumber(asNum(w["used_requests"])), limitStr(w["limit_requests"]),
+						formatNumber(asNum(w["used_tokens"])), limitStr(w["limit_tokens"]),
 						fmt.Sprintf("%.2f", asNum(w["used_credits"])), limitStr(w["limit_credits"]),
 						pct, formatMS(w["resets_at"]),
 					},
@@ -135,8 +135,9 @@ func init() {
 			m := asMap(data)
 			if !rt.effectiveJSON() {
 				totals := asMap(m["totals"])
-				fmt.Fprintf(rt.Out, "total: %v requests, %v tokens, %.2f credits, %v errors\n\n",
-					asNum(totals["requests"]), asNum(totals["total_tokens"]), asNum(totals["credits"]), asNum(totals["errors"]))
+				fmt.Fprintf(rt.Out, "total: %s requests, %s tokens, %.2f credits, %s errors\n\n",
+					formatNumber(asNum(totals["requests"])), formatNumber(asNum(totals["total_tokens"])),
+					asNum(totals["credits"]), formatNumber(asNum(totals["errors"])))
 			}
 			turns := asSlice(m["turns"])
 			rows := make([][]string, 0, len(turns))
@@ -144,7 +145,7 @@ func init() {
 				turn := asMap(v)
 				rows = append(rows, []string{
 					asStr(turn["id"]), asStr(turn["model_name"]), asStr(turn["status"]),
-					fmt.Sprint(asNum(turn["input_tokens"])), fmt.Sprint(asNum(turn["output_tokens"])),
+					formatNumber(asNum(turn["input_tokens"])), formatNumber(asNum(turn["output_tokens"])),
 					fmt.Sprintf("%.2f", asNum(turn["credits"])), formatMS(turn["started_at"]),
 				})
 			}

@@ -8,8 +8,14 @@
 import { inject, provide, type InjectionKey } from 'vue';
 
 export interface AdminView {
-  /** Left of the actions strip. The subtitle is optional and often absent. */
-  setTitle(title: string, subtitle?: string): void;
+  /**
+   * Left of the actions strip. The subtitle is optional and often absent.
+   *
+   * Getters, not strings: the shell calls them while it draws, so a language
+   * switch redraws the heading with the rest of the page. A string taken here
+   * would stay in the language it was taken in until the page was left.
+   */
+  setTitle(title: () => string, subtitle?: () => string): void;
   /** Re-runs the current page, after a save. */
   reload(): void;
   /** Everything after /admin/<slug>/, for a nested selection. */

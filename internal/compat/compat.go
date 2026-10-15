@@ -163,8 +163,14 @@ func (h *Handlers) serve(next handler) http.HandlerFunc {
 // them changes.
 func (h *Handlers) serveAs(render func(http.ResponseWriter, error), next handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Before authenticate, so a refused request is still a row marked as an
+		// API call. The account is added by authenticate once it is known.
+		reqlog.Annotate(r.Context(), reqlog.Annotation{Channel: reqlog.ChannelAPI})
+
 		who, err := h.authenticate(r)
 		if err != nil {
+			annotateFailure(r, err)
+			logFailure(r, err)
 			render(w, err)
 			return
 		}
@@ -190,13 +196,43 @@ func (h *Handlers) serveAs(render func(http.ResponseWriter, error), next handler
 		})
 
 		if err := next(w, r, who); err != nil {
-			var rendered apiError
-			if asAPIError(err, &rendered) {
-				reqlog.Annotate(r.Context(), reqlog.Annotation{ErrorCode: rendered.code})
-			}
+			annotateFailure(r, err)
+			logFailure(r, err)
 			render(w, err)
 		}
 	}
+}
+
+// annotateFailure puts the error code of an answer on its request-log row. A
+// refusal from authenticate and a failure from a handler both go through it,
+// so the log reads the same whichever of the two answered the request.
+func annotateFailure(r *http.Request, err error) {
+	var rendered apiError
+	if asAPIError(err, &rendered) {
+		reqlog.Annotate(r.Context(), reqlog.Annotation{ErrorCode: rendered.code})
+	}
+}
+
+// logFailure writes the cause of a server-side failure to the log. The envelope
+// withholds it on purpose, and the request log has only the status and the
+// path, so without this a database error answered as a 500 leaves no trace of
+// what failed. Client errors are not logged here: they are the caller's doing.
+func logFailure(r *http.Request, err error) {
+	var rendered apiError
+	if !asAPIError(err, &rendered) {
+		rendered = internalError(err)
+	}
+	if rendered.status < http.StatusInternalServerError {
+		return
+	}
+	// A caller who hung up cancels whatever it was waiting on, and the lookup
+	// that was interrupted is not a fault on this side. Logged, every disconnect
+	// during sign-in would read as an error.
+	if r.Context().Err() != nil && errors.Is(err, context.Canceled) {
+		return
+	}
+	slog.ErrorContext(r.Context(), "API request failed",
+		"code", rendered.code, "error", rendered.cause)
 }
 
 // authenticate resolves the bearer token to an account and checks every
@@ -224,9 +260,18 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 		return caller{}, unauthorized("No API key provided. Send it as: Authorization: Bearer <key>.")
 	}
 
+	// Only a lookup that found nothing is a bad key. A database failure here
+	// answered as one would send the client to replace a working key, and it
+	// would never reach the log.
 	key, err := h.keys.Resolve(r.Context(), token)
 	if err != nil {
 		if errors.Is(err, apikey.ErrPaused) {
+			// Named like the refusals below, so the request log says whose key was
+			// paused. A failed lookup only leaves the row unnamed; the answer is
+			// the same either way.
+			if account, lookupErr := h.users.ByID(r.Context(), nil, key.UserID); lookupErr == nil {
+				reqlog.Annotate(r.Context(), reqlog.Annotation{UserID: account.ID, Username: account.Username})
+			}
 			return caller{}, apiError{
 				status:  http.StatusUnauthorized,
 				kind:    "invalid_request_error",
@@ -234,13 +279,23 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 				message: "This API key has been paused. Resume it in your account settings to continue.",
 			}
 		}
+		if !errors.Is(err, apikey.ErrNotFound) {
+			return caller{}, internalError(err)
+		}
 		return caller{}, invalidKey()
 	}
 
 	account, err := h.users.ByID(r.Context(), nil, key.UserID)
 	if err != nil {
+		if !errors.Is(err, user.ErrNotFound) {
+			return caller{}, internalError(err)
+		}
 		return caller{}, invalidKey()
 	}
+	// Named before any refusal below, so the request log says whose key was
+	// refused and why. Only an unknown key is logged without a name: there is
+	// no account to put on the row.
+	reqlog.Annotate(r.Context(), reqlog.Annotation{UserID: account.ID, Username: account.Username})
 	if account.Status == user.StatusDisabled {
 		return caller{}, banned(account.BanReason)
 	}
@@ -269,7 +324,13 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 	// other group restriction — but not the instance-wide switch above.
 	if !account.IsAdmin() {
 		membership, err := h.groups.ByID(r.Context(), nil, account.GroupID)
-		if err != nil || !membership.APIAccess {
+		if err != nil {
+			if !errors.Is(err, group.ErrNotFound) {
+				return caller{}, internalError(err)
+			}
+			return caller{}, invalidKey()
+		}
+		if !membership.APIAccess {
 			return caller{}, invalidKey()
 		}
 	}
@@ -294,9 +355,8 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 			// The browser's binding gate lets the account through on this same
 			// error. Here it refuses instead: letting a held key through on a
 			// failed lookup is the one thing the hold exists to prevent, and the
-			// client can simply ask again.
-			slog.ErrorContext(r.Context(), "could not check the OIDC binding requirement for an API key",
-				"error", err)
+			// client can simply ask again. The caller of authenticate logs the
+			// failure once, with its cause.
 			return caller{}, internalError(err)
 		}
 		if must {
@@ -364,10 +424,8 @@ func (h *Handlers) getModel(w http.ResponseWriter, r *http.Request, who caller) 
 	}
 	wanted := r.PathValue("id")
 	refs := publicRefs(available)
-	for _, record := range available {
-		if matchesRef(record, refs[record.ID], wanted) {
-			return writeJSON(w, http.StatusOK, describeModel(record, refs[record.ID]))
-		}
+	if record, ok := findListed(available, refs, wanted); ok {
+		return writeJSON(w, http.StatusOK, describeModel(record, refs[record.ID]))
 	}
 	return unknownModel(wanted)
 }
@@ -456,13 +514,36 @@ func tail(rowID string) string {
 	return lowered[len(lowered)-6:]
 }
 
-// The three spellings every endpoint accepts for one model. `ref` is what the
-// listing gave out — the API name where one is set, and only that: the
-// upstream id is not a fourth spelling.
-func matchesRef(record model.Model, ref, wanted string) bool {
-	return record.ID == wanted ||
-		strings.EqualFold(ref, wanted) ||
-		strings.EqualFold(record.DisplayName, wanted)
+// findListed resolves a model id against the listing in the order
+// model.FindAPIModel does: the row id, then the name the listing gave out, then
+// the display name. A pass per tier, not one pass in sort order, because a
+// display name at sort 0 would otherwise answer for a model whose advertised
+// id is that same string — the listing and this lookup would name different
+// models. `refs` is what the listing gave out — the API name where one is set,
+// and only that: the upstream id is not a fourth spelling.
+func findListed(available []model.Model, refs map[string]string, wanted string) (model.Model, bool) {
+	tiers := []func(model.Model) bool{
+		func(record model.Model) bool { return record.ID == wanted },
+		func(record model.Model) bool { return strings.EqualFold(refs[record.ID], wanted) },
+		// An unnamed row's display name defaults to its upstream id. Where
+		// several rows share that id the bare id is not offered by the listing,
+		// so it must not resolve here either; GET and POST have to agree on it.
+		// A row shares its id exactly when refs qualified it, so this reads refs
+		// rather than counting the claims a second time.
+		func(record model.Model) bool {
+			sharedBare := record.APIName == "" && refs[record.ID] != record.ModelID &&
+				strings.EqualFold(record.DisplayName, record.ModelID)
+			return !sharedBare && strings.EqualFold(record.DisplayName, wanted)
+		},
+	}
+	for _, matches := range tiers {
+		for _, record := range available {
+			if matches(record) {
+				return record, true
+			}
+		}
+	}
+	return model.Model{}, false
 }
 
 // available is what this caller may actually send to: the same listing the

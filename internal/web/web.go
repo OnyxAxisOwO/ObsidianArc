@@ -85,6 +85,14 @@ func Handler(opts Options) (http.Handler, error) {
 
 		file, err := assets.Open(clean)
 		if err != nil {
+			// A fingerprinted bundle that is not on disk belongs to another
+			// build. A tab still running the previous release asks for it and
+			// gets the shell back as text/html, which the module loader rejects
+			// with a MIME error; a 404 is what it can recover from by reloading.
+			if strings.HasPrefix(clean, "assets/") {
+				http.NotFound(w, r)
+				return
+			}
 			// Not a file on disk: an application route. The SPA router
 			// resolves it client-side, so it gets the shell.
 			serveIndex(w, r, index, opts)

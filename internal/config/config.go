@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -208,6 +209,17 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	argonMemory := envInt("ARGON_MEMORY_KIB", 19456)
+	argonIterations := envInt("ARGON_ITERATIONS", 2)
+	argonParallelism := envInt("ARGON_PARALLELISM", 1)
+	if err := checkArgon2(argonMemory, argonIterations, argonParallelism); err != nil {
+		return Config{}, err
+	}
+
+	// The default is also what a MaxParallel that cannot be used falls back to,
+	// so the two cannot drift apart.
+	maxParallel := min(4, runtime.NumCPU())
+
 	cfg := Config{
 		Addr:            env("ADDR", ":8080"),
 		DataDir:         dataDir,
@@ -254,12 +266,12 @@ func Load() (Config, error) {
 			PublicURL:   env("PUBLIC_URL", ""),
 		},
 		Password: Password{
-			Memory:      uint32(envInt("ARGON_MEMORY_KIB", 19456)),
-			Iterations:  uint32(envInt("ARGON_ITERATIONS", 2)),
-			Parallelism: uint8(envInt("ARGON_PARALLELISM", 1)),
+			Memory:      uint32(argonMemory),
+			Iterations:  uint32(argonIterations),
+			Parallelism: uint8(argonParallelism),
 			SaltLength:  16,
 			KeyLength:   32,
-			MaxParallel: envInt("ARGON_MAX_PARALLEL", min(4, runtime.NumCPU())),
+			MaxParallel: envInt("ARGON_MAX_PARALLEL", maxParallel),
 		},
 		Upstream: Upstream{
 			DialTimeout:           envDuration("UPSTREAM_DIAL_TIMEOUT", 10*time.Second),
@@ -282,7 +294,21 @@ func Load() (Config, error) {
 	}
 
 	if cfg.Password.MaxParallel < 1 {
-		cfg.Password.MaxParallel = 1
+		unusable("ARGON_MAX_PARALLEL", cfg.Password.MaxParallel, maxParallel)
+		cfg.Password.MaxParallel = maxParallel
+	}
+	// database/sql reads a pool of zero as no limit at all, and the idle clamp
+	// below would then cap idle at zero, so every query dials a new connection.
+	// A value that cannot be used falls back to its default, as an unparseable
+	// one does, and says so.
+	if cfg.Database.MaxOpenConns < 1 {
+		unusable("DB_MAX_CONNS", cfg.Database.MaxOpenConns, maxConns)
+		cfg.Database.MaxOpenConns = maxConns
+	}
+	// Zero makes every request look stale, so every request writes last_seen_at.
+	if cfg.Session.TouchInterval <= 0 {
+		unusable("SESSION_TOUCH_INTERVAL", cfg.Session.TouchInterval, time.Hour)
+		cfg.Session.TouchInterval = time.Hour
 	}
 	if cfg.Database.MaxIdleConns > cfg.Database.MaxOpenConns {
 		cfg.Database.MaxIdleConns = cfg.Database.MaxOpenConns
@@ -555,6 +581,21 @@ func envList(key string) []string {
 	return out
 }
 
+// A value that will not parse keeps its default, as it always has: a typo in a
+// tuning knob should not take the server down. It is logged, though, because a
+// silent fallback is how OBSIDIAN_TRUST_PROXY=yes goes unnoticed while every
+// client behind the proxy is keyed to the proxy's own address.
+func unparseable(key, raw string, fallback any) {
+	slog.Warn("setting is not a valid value, so its default is used",
+		"setting", envPrefix+key, "value", raw, "default", fallback)
+}
+
+// unusable is the same report for a value that parses but cannot be used.
+func unusable(key string, value, fallback any) {
+	slog.Warn("setting is out of range, so its default is used",
+		"setting", envPrefix+key, "value", value, "default", fallback)
+}
+
 func envInt(key string, fallback int) int {
 	raw := env(key, "")
 	if raw == "" {
@@ -562,9 +603,37 @@ func envInt(key string, fallback int) int {
 	}
 	value, err := strconv.Atoi(raw)
 	if err != nil {
+		unparseable(key, raw, fallback)
 		return fallback
 	}
 	return value
+}
+
+// checkArgon2 refuses the cost settings that cannot hash. The library panics on
+// a zero pass count or lane count, and the conversions to the library's types
+// wrap silently: 256 lanes become 0 and -1 KiB becomes four terabytes. Neither
+// fails at boot, so the first hash is the bootstrap administrator's password,
+// during startup, where nothing recovers the panic.
+func checkArgon2(memoryKiB, iterations, parallelism int) error {
+	if iterations < 1 {
+		return fmt.Errorf("%sARGON_ITERATIONS must be at least 1, not %d", envPrefix, iterations)
+	}
+	if int64(iterations) > math.MaxUint32 {
+		return fmt.Errorf("%sARGON_ITERATIONS must be at most %d, not %d",
+			envPrefix, uint64(math.MaxUint32), iterations)
+	}
+	if parallelism < 1 || parallelism > math.MaxUint8 {
+		return fmt.Errorf("%sARGON_PARALLELISM must be from 1 to %d, not %d",
+			envPrefix, math.MaxUint8, parallelism)
+	}
+	// Less than eight KiB per lane is not refused: the library raises it to
+	// that floor itself, so such a setting has always booted and hashed, and
+	// refusing it would stop a deployment that runs today.
+	if memoryKiB < 0 || int64(memoryKiB) > math.MaxUint32 {
+		return fmt.Errorf("%sARGON_MEMORY_KIB must be from 0 to %d, not %d",
+			envPrefix, uint64(math.MaxUint32), memoryKiB)
+	}
+	return nil
 }
 
 func envBool(key string, fallback bool) bool {
@@ -574,6 +643,7 @@ func envBool(key string, fallback bool) bool {
 	}
 	value, err := strconv.ParseBool(raw)
 	if err != nil {
+		unparseable(key, raw, fallback)
 		return fallback
 	}
 	return value
@@ -586,6 +656,7 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	}
 	value, err := time.ParseDuration(raw)
 	if err != nil {
+		unparseable(key, raw, fallback)
 		return fallback
 	}
 	return value

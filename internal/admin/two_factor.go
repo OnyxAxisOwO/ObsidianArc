@@ -82,7 +82,7 @@ func (h *Handlers) resetTwoFactor(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	if h.security != nil {
-		if err := h.security.Record(r.Context(), nil, securityevents.Event{
+		if err := h.recordDetached(r.Context(), securityevents.Event{
 			Event: securityevents.EventTwoFactor, Severity: securityevents.SeverityWarning,
 			UserID: target.ID, Username: target.Username,
 			ActorID: actor.ID, ActorUsername: actor.Username,

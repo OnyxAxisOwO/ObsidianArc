@@ -230,3 +230,124 @@ func TestStoredMessagesAreCutOnACharacterBoundary(t *testing.T) {
 		t.Errorf("a message of exactly the limit was changed: %d runes", len([]rune(got)))
 	}
 }
+
+// Provider failures arrive as typed adapter errors. The kind and the status
+// are what the operator acts on, so they decide the code, and the provider's
+// own wording is not searched.
+func TestProviderFailuresAreClassifiedByTypeNotText(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"wrong key in the provider's words", &adapter.Error{Kind: adapter.ErrorAuth, Status: 401, Message: "Incorrect API key provided"}, "unauthorized"},
+		{"key for another service", &adapter.Error{Kind: adapter.ErrorAuth, Status: 403, Message: "wrong service"}, "forbidden"},
+		{"a 400 quoting a 500-looking number", &adapter.Error{Kind: adapter.ErrorInvalidRequest, Status: 400, Message: "maximum context length is 5000 tokens"}, "error"},
+		{"provider outage", &adapter.Error{Kind: adapter.ErrorUpstream, Status: 503, Message: "Service Unavailable"}, "upstream_error"},
+		{"model no longer offered", &adapter.Error{Kind: adapter.ErrorInvalidRequest, Status: 404, Message: "no such model"}, "model_not_found"},
+		{"throttled", &adapter.Error{Kind: adapter.ErrorRateLimit, Status: 429, Message: "slow down"}, "rate_limited"},
+		{"no route to the provider", &adapter.Error{Kind: adapter.ErrorNetwork, Message: "Could not reach the provider."}, "unreachable"},
+	}
+	for _, c := range cases {
+		if got := Code(c.err); got != c.want {
+			t.Errorf("%s: Code = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+type transportTimeout struct{}
+
+func (transportTimeout) Error() string { return "read tcp: operation was slow" }
+func (transportTimeout) Timeout() bool { return true }
+
+// A transport timeout is recognised by its type. Its text is whatever the
+// operating system wrote, which the old match never saw.
+func TestATransportTimeoutIsATimeoutWhateverItSays(t *testing.T) {
+	if got := Code(transportTimeout{}); got != "timeout" {
+		t.Errorf("Code(transport timeout) = %q, want timeout", got)
+	}
+}
+
+// An upstream body can carry a NUL byte or bytes that are not UTF-8. PostgreSQL
+// refuses that value, and the probe row would be lost with it, so the message
+// is cleaned before it is cut and stored.
+func TestStoredMessagesAreCleanedOfWhatPostgresRefuses(t *testing.T) {
+	message := "upstream said: \x00bad\xffbody"
+	if got := truncate(message, 400); strings.ContainsRune(got, 0) || !utf8.ValidString(got) {
+		t.Fatalf("truncate kept a value PostgreSQL refuses: %q", got)
+	}
+
+	checker, _, record := checkerFixture(t)
+	ctx := context.Background()
+	if err := checker.Store.Record(ctx, record.ID, false, "upstream_error", message, 0); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	var stored string
+	if err := checker.Store.db.QueryRow(ctx,
+		`SELECT message FROM model_probes WHERE model_id = ?`, record.ID).Scan(&stored); err != nil {
+		t.Fatalf("the probe row was not stored: %v", err)
+	}
+	if strings.ContainsRune(stored, 0) || !utf8.ValidString(stored) {
+		t.Errorf("stored message kept bytes PostgreSQL refuses: %q", stored)
+	}
+}
+
+// The counting moved into the database, so this pins where evidence lands: the
+// middle of a bucket, the same bucket for two results, and a result stamped
+// after now, which the last bucket absorbs as it always has.
+func TestTimelineBucketsEvidenceByItsTime(t *testing.T) {
+	checker, _, record := checkerFixture(t)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+	since := now - 2*time.Hour.Milliseconds()
+	span := 5 * time.Minute.Milliseconds()
+	middleOf := func(bucket int64) int64 { return since + bucket*span + span/2 }
+
+	probeAt(t, checker, record.ID, middleOf(0), true)
+	probeAt(t, checker, record.ID, middleOf(0), false)
+	probeAt(t, checker, record.ID, middleOf(23), true)
+	probeAt(t, checker, record.ID, now+time.Hour.Milliseconds(), false)
+
+	timeline, err := checker.Store.Timeline(ctx, since, 0, 24)
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	pts := timeline[record.ID]
+	if len(pts) != 24 {
+		t.Fatalf("got %d points, want 24", len(pts))
+	}
+	for i, pt := range pts {
+		want := 0
+		if i == 0 || i == 23 {
+			want = 2
+		}
+		if pt.Total != want {
+			t.Errorf("bucket %d total = %d, want %d", i, pt.Total, want)
+		}
+	}
+	for _, i := range []int{0, 23} {
+		if pts[i].Uptime == nil || *pts[i].Uptime != 0.5 {
+			t.Errorf("bucket %d uptime = %v, want 0.5", i, pts[i].Uptime)
+		}
+	}
+	if pts[5].Uptime != nil {
+		t.Errorf("an empty bucket reported an uptime: %v", *pts[5].Uptime)
+	}
+}
+
+// A status is matched as a number of its own. A message that quotes a token
+// count or a request total must not be filed under a status its digits happen
+// to contain.
+func TestAStatusIsNotReadOutOfAnUnrelatedNumber(t *testing.T) {
+	cases := map[string]string{
+		"maximum context length is 128000 tokens, you requested 4290": "error",
+		"quota of 5000 requests exhausted":                            "error",
+		"upstream said 503":                                           "upstream_error",
+		"HTTP 429 from the gateway":                                   "rate_limited",
+	}
+	for message, want := range cases {
+		if got := Code(errors.New(message)); got != want {
+			t.Errorf("Code(%q) = %q, want %q", message, got, want)
+		}
+	}
+}

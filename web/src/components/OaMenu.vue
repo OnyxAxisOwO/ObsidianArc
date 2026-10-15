@@ -11,7 +11,7 @@
 // holding a stale list.
 
 import { nextTick, onBeforeUnmount, ref } from 'vue';
-import { onClickOutside, onKeyStroke } from '@vueuse/core';
+import { onClickOutside, useEventListener } from '@vueuse/core';
 
 const props = defineProps<{
   /** Extra class on the positioning wrapper, for alignment overrides. */
@@ -172,9 +172,18 @@ function toggle(): void {
 }
 
 onClickOutside(group, () => close());
-onKeyStroke('Escape', () => close());
+// Capture, and the default prevented, so a panel open beneath the menu does not
+// close with it: the panel yields to a key that has already been handled.
+useEventListener(document, 'keydown', (event: KeyboardEvent) => {
+  if (event.key !== 'Escape' || !open.value) return;
+  event.preventDefault();
+  close();
+}, { capture: true });
 
 onBeforeUnmount(() => {
+  // A show() still waiting on nextTick checks this before it attaches the
+  // observer and the resize listener, which nothing would then remove.
+  open.value = false;
   window.removeEventListener('resize', onResize);
   resizeObserver?.disconnect();
   resizeObserver = null;

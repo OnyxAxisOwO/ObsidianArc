@@ -11,13 +11,18 @@
 // trade the terminal makes: every instance may show it, few do — the default
 // front door is the sign-in card — and a signed-in account never sees it at
 // all. Its stylesheet is not split, because this project ships one.
+//
+// The operator's intro page and the trial are the same trade: an instance
+// chooses one, and only a signed-out visitor to that instance draws it. The
+// trial client it carries is therefore fetched by those visitors, not by every
+// first paint — the default front door never reaches this component.
 
 import { defineAsyncComponent } from 'vue';
 import { currentUser, siteInfo } from '@/stores/session';
 import ChatLayout from '@/layouts/ChatLayout.vue';
-import LandingView from './LandingView.vue';
 
 const FrontPage = defineAsyncComponent(() => import('./FrontPage.vue'));
+const LandingView = defineAsyncComponent(() => import('./LandingView.vue'));
 </script>
 
 <template>

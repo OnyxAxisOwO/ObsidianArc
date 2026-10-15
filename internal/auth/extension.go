@@ -75,17 +75,36 @@ type GuardRefusal struct {
 	Reason string
 }
 
-func (r *GuardRefusal) Error() string { return r.Err.Error() }
+// A plugin may leave Err empty, and formatting the refusal (a log line, say)
+// must not panic over it.
+func (r *GuardRefusal) Error() string {
+	switch {
+	case r.Err != nil:
+		return r.Err.Error()
+	case r.Reason != "":
+		return r.Reason
+	default:
+		return "auth: guard refused"
+	}
+}
+
 func (r *GuardRefusal) Unwrap() error { return r.Err }
 
 // AddGuard stands g in front of action. Called from a plugin's Setup, before
 // the server takes its first request; guards run in the order they were
 // added.
+//
+// A guard must name its plugin. The gate is what switches a plugin's guard off,
+// and a guard with no owner would be on for every instance, whatever its plugin
+// state, and could never be removed at runtime.
 func (s *Service) AddGuard(action string, g Guard) {
 	s.extMu.Lock()
 	defer s.extMu.Unlock()
 	if !validGuardAction(action) {
 		panic("auth: no such guard action " + action)
+	}
+	if g.Plugin == "" {
+		panic("auth: guard " + g.Name + " for " + action + " has no plugin")
 	}
 	if s.guards == nil {
 		s.guards = map[string][]Guard{}
@@ -231,14 +250,18 @@ func (h *Handlers) Extend(name string, fn func(firstAccount bool) map[string]any
 }
 
 // Advertise is Extend with nothing to say, and it never replaces a block a
-// plugin has already registered.
+// plugin has already registered. The check and the write share one lock: with
+// two, an Extend landing between them would be overwritten with nil.
 func (h *Handlers) Advertise(name string) {
-	h.extMu.RLock()
-	_, ok := h.extensions[name]
-	h.extMu.RUnlock()
-	if !ok {
-		h.Extend(name, nil)
+	h.extMu.Lock()
+	defer h.extMu.Unlock()
+	if _, ok := h.extensions[name]; ok {
+		return
 	}
+	if h.extensions == nil {
+		h.extensions = map[string]func(bool) map[string]any{}
+	}
+	h.extensions[name] = nil
 }
 
 // Unextend takes a plugin's block away, for one being removed while the

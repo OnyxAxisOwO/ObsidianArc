@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
@@ -28,7 +29,8 @@ import (
 type DisplayMode string
 
 const (
-	// Pops up on every visit. For something that stays true and stays
+	// Pops up on every visit, unless an unread "once" notice takes that
+	// visit's popup first. For something that stays true and stays
 	// important — "this instance is read-only until Friday".
 	DisplayAlways DisplayMode = "always"
 	// Pops up until this reader has seen it, then only lives in the list.
@@ -91,6 +93,13 @@ func NewStore(db *database.DB) *Store { return &Store{db: db} }
 const columns = `a.id, a.title, a.body, a.display_mode, a.dismiss_after_seconds,
 	a.published, a.pinned, a.created_at, a.updated_at`
 
+// summaryColumns is what a reader's list carries: everything but the body. The
+// bell fetches the whole list on every page load, and a body can be 32 KiB, so
+// the list does not read them. The popup gets its body from ByID, and a row the
+// reader opens gets its body from GET /api/announcements/{id}.
+const summaryColumns = `a.id, a.title, '' AS body, a.display_mode, a.dismiss_after_seconds,
+	a.published, a.pinned, a.created_at, a.updated_at`
+
 // Newest first, but anything pinned floats above it.
 const ordering = ` ORDER BY a.pinned DESC, a.created_at DESC`
 
@@ -108,7 +117,9 @@ func validate(in Input) (Input, error) {
 	if in.Title == "" || len([]rune(in.Title)) > MaxTitleChars {
 		return Input{}, ErrInvalidTitle
 	}
-	if len(in.Body) > MaxBodyChars {
+	// Counted in characters like the home notice, chat messages and feedback.
+	// Bytes would admit a third as much Chinese text as the name promises.
+	if utf8.RuneCountInString(in.Body) > MaxBodyChars {
 		return Input{}, ErrInvalidBody
 	}
 	if in.DisplayMode == "" {
@@ -168,26 +179,38 @@ func (s *Store) Update(ctx context.Context, announcementID string, in Input) (An
 
 	// Read before the write so publishing can be told apart from an edit to
 	// something already published — the notice is for "there is something
-	// new to read", not for every touch-up of the wording afterwards.
-	previous, err := s.ByID(ctx, announcementID)
-	if err != nil {
-		return Announcement{}, err
-	}
+	// new to read", not for every touch-up of the wording afterwards. The read
+	// and the write share a transaction behind a row lock, so two saves that
+	// both publish cannot both see the draft as unpublished and both ring.
+	var previous, updated Announcement
+	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		locked, err := tx.Exec(ctx, `UPDATE announcements SET updated_at = updated_at WHERE id = ?`, announcementID)
+		if err != nil {
+			return fmt.Errorf("announcement: lock: %w", err)
+		}
+		if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
+			return ErrNotFound
+		}
+		if previous, err = load(ctx, tx, announcementID); err != nil {
+			return err
+		}
 
-	now := time.Now().UnixMilli()
-	result, err := s.db.Exec(ctx, `UPDATE announcements SET
-		title = ?, body = ?, display_mode = ?, dismiss_after_seconds = ?,
-		published = ?, pinned = ?, updated_at = ?
-		WHERE id = ?`,
-		in.Title, in.Body, in.DisplayMode, in.DismissAfterSeconds,
-		in.Published, in.Pinned, now, announcementID)
-	if err != nil {
-		return Announcement{}, fmt.Errorf("announcement: update: %w", err)
-	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
-		return Announcement{}, ErrNotFound
-	}
-	updated, err := s.ByID(ctx, announcementID)
+		now := time.Now().UnixMilli()
+		result, err := tx.Exec(ctx, `UPDATE announcements SET
+			title = ?, body = ?, display_mode = ?, dismiss_after_seconds = ?,
+			published = ?, pinned = ?, updated_at = ?
+			WHERE id = ?`,
+			in.Title, in.Body, in.DisplayMode, in.DismissAfterSeconds,
+			in.Published, in.Pinned, now, announcementID)
+		if err != nil {
+			return fmt.Errorf("announcement: update: %w", err)
+		}
+		if affected, _ := result.RowsAffected(); affected == 0 {
+			return ErrNotFound
+		}
+		updated, err = load(ctx, tx, announcementID)
+		return err
+	})
 	if err != nil {
 		return Announcement{}, err
 	}
@@ -206,13 +229,19 @@ func (s *Store) Update(ctx context.Context, announcementID string, in Input) (An
 
 // notifyPublished tells every account there is something new to read.
 //
-// Not inside a transaction — this store writes without one — so it runs
-// detached afterwards on its own short timeout rather than hold the
-// operator's save open, and a failure here is logged rather than turning a
-// successful publish into a failed request: the announcement is saved either
-// way, and a missed bell is a smaller loss than losing the edit.
+// A silent announcement never asks for attention, so it gets no push: it
+// reaches the list and the bell's dot through the unread count, and a push
+// would be a toast the operator said should never appear.
+//
+// Never inside the save's transaction: by the time this runs the save has
+// committed. The push runs on its own 5 second timeout, detached from the
+// request's cancellation, so a client that gives up does not cancel it. The
+// save does wait for it, bounded by that timeout. A failure here is logged
+// rather than turning a successful publish into a failed request: the
+// announcement is saved either way, and a missed bell is a smaller loss than
+// losing the edit.
 func (s *Store) notifyPublished(ctx context.Context, record Announcement) {
-	if s.Notify == nil {
+	if s.Notify == nil || record.DisplayMode == DisplaySilent {
 		return
 	}
 	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -222,6 +251,24 @@ func (s *Store) notifyPublished(ctx context.Context, record Announcement) {
 		Params: map[string]any{"title": record.Title}, Link: "/",
 	}); err != nil {
 		slog.ErrorContext(ctx, "announcement: notify publish", "error", err, "id", record.ID)
+		return
+	}
+	// The push lands after the save has committed, so a delete or an unpublish
+	// that committed meanwhile may already have run its retract before this
+	// push existed. Either that change commits after this check, and its own
+	// retract then runs after the push and removes it, or it committed before,
+	// and the check sees it here.
+	current, err := s.ByID(pushCtx, record.ID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		slog.ErrorContext(ctx, "announcement: recheck after notify", "error", err, "id", record.ID)
+		// Without knowing whether it is still published, the push is taken back:
+		// an unneeded retract only removes a live bell entry, while a stale one
+		// outlives an unpublish.
+		s.retract(ctx, record.ID)
+		return
+	}
+	if errors.Is(err, ErrNotFound) || !current.Published {
+		s.retract(ctx, record.ID)
 	}
 }
 
@@ -229,9 +276,10 @@ func (s *Store) notifyPublished(ctx context.Context, record Announcement) {
 // retracted or deleted announcement stops repeating its headline in every
 // account's bell for the rest of the retention window.
 //
-// Detached for the same reason notifyPublished is: this store writes without
-// a transaction, so a slow retract runs on its own short timeout afterwards
-// rather than turn a successful delete or edit into a failed request.
+// Detached the same way notifyPublished is: it runs on its own 5 second
+// timeout, so a client that gives up does not cancel it, and a failure is
+// logged rather than turning a successful delete or edit into a failed request.
+// The save does wait for it, bounded by that timeout.
 func (s *Store) retract(ctx context.Context, announcementID string) {
 	if s.Notify == nil {
 		return
@@ -252,7 +300,11 @@ func (s *Store) Delete(ctx context.Context, announcementID string) error {
 }
 
 func (s *Store) ByID(ctx context.Context, announcementID string) (Announcement, error) {
-	return scan(s.db.QueryRow(ctx,
+	return load(ctx, s.db, announcementID)
+}
+
+func load(ctx context.Context, q database.Queryer, announcementID string) (Announcement, error) {
+	return scan(q.QueryRow(ctx,
 		`SELECT `+columns+` FROM announcements a WHERE a.id = ?`, announcementID))
 }
 
@@ -267,10 +319,11 @@ func (s *Store) ListAll(ctx context.Context) ([]Announcement, error) {
 }
 
 // ListFor is what a signed-in reader sees: published rows, each carrying
-// whether this reader has opened it.
+// whether this reader has opened it. The bodies are left empty; see
+// summaryColumns.
 func (s *Store) ListFor(ctx context.Context, userID string) ([]Announcement, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT `+columns+`,
+		`SELECT `+summaryColumns+`,
 		 CASE WHEN r.user_id IS NULL THEN false ELSE true END
 		 FROM announcements a
 		 LEFT JOIN announcement_reads r ON r.announcement_id = a.id AND r.user_id = ?
@@ -294,19 +347,77 @@ func (s *Store) ListFor(ctx context.Context, userID string) ([]Announcement, err
 
 // MarkRead is idempotent: opening the same announcement twice is not an
 // error, and the first read is the one worth keeping.
+//
+// A draft is refused here, not only in the handler: a read row written for one
+// would stop its popup for good once it is published. The published check and
+// the insert share a transaction behind the row lock Update takes, so an
+// unpublish committing in between waits for this read instead of slipping past
+// it. An unknown id and a draft both return ErrNotFound.
 func (s *Store) MarkRead(ctx context.Context, userID, announcementID string) error {
-	_, err := s.db.Exec(ctx,
-		`INSERT INTO announcement_reads (announcement_id, user_id, read_at)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT (announcement_id, user_id) DO NOTHING`,
-		announcementID, userID, time.Now().UnixMilli())
-	if err != nil {
-		return fmt.Errorf("announcement: mark read: %w", err)
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		locked, err := tx.Exec(ctx,
+			`UPDATE announcements SET updated_at = updated_at WHERE id = ? AND published = ?`,
+			announcementID, true)
+		if err != nil {
+			return fmt.Errorf("announcement: lock: %w", err)
+		}
+		affected, err := locked.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("announcement: lock: %w", err)
+		}
+		if affected == 0 {
+			return ErrNotFound
+		}
+
+		_, err = tx.Exec(ctx,
+			`INSERT INTO announcement_reads (announcement_id, user_id, read_at)
+			 VALUES (?, ?, ?)
+			 ON CONFLICT (announcement_id, user_id) DO NOTHING`,
+			announcementID, userID, time.Now().UnixMilli())
+		if err != nil {
+			return fmt.Errorf("announcement: mark read: %w", err)
+		}
+		return nil
+	})
+}
+
+// markSeenBatch keeps each statement under PostgreSQL's limit of 65,535 bound
+// parameters. It serves direct callers of the store and any list over 500 ids,
+// which the handler does send. It is not set by the HTTP body cap: that cap
+// alone keeps a request under the parameter limit. Each batch is idempotent,
+// so a failure part way leaves nothing a retry does not finish.
+const markSeenBatch = 500
+
+// MarkSeen records that the reader has seen the announcements in the list the
+// bell rendered, and nothing else. A row published after that list was
+// fetched was never shown, so it stays unread and its popup still comes.
+// Drafts are skipped even if their ids are sent.
+func (s *Store) MarkSeen(ctx context.Context, userID string, announcementIDs []string) error {
+	readAt := time.Now().UnixMilli()
+	for start := 0; start < len(announcementIDs); start += markSeenBatch {
+		batch := announcementIDs[start:min(start+markSeenBatch, len(announcementIDs))]
+		args := []any{userID, readAt, true}
+		placeholders := make([]string, 0, len(batch))
+		for _, announcementID := range batch {
+			placeholders = append(placeholders, "?")
+			args = append(args, announcementID)
+		}
+		_, err := s.db.Exec(ctx,
+			`INSERT INTO announcement_reads (announcement_id, user_id, read_at)
+			 SELECT a.id, ?, ? FROM announcements a
+			 WHERE a.published = ? AND a.id IN (`+strings.Join(placeholders, ", ")+`)
+			 ON CONFLICT (announcement_id, user_id) DO NOTHING`,
+			args...)
+		if err != nil {
+			return fmt.Errorf("announcement: mark seen: %w", err)
+		}
 	}
 	return nil
 }
 
-// MarkAllRead clears the bell in one go.
+// MarkAllRead marks every published row, including any the reader was never
+// sent, which is why the bell no longer uses it. It stays for callers outside
+// this tree; see MarkSeen.
 func (s *Store) MarkAllRead(ctx context.Context, userID string) error {
 	_, err := s.db.Exec(ctx,
 		`INSERT INTO announcement_reads (announcement_id, user_id, read_at)

@@ -18,10 +18,12 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -254,19 +256,42 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 		}()
 	}
 
-	if err := emit(EventStart, StartPayload{
+	// Once the user's message is committed, every way out has to leave a record
+	// of the turn: an error row when something failed, an aborted usage row when
+	// the reader went away. Returning bare left neither.
+	var clientGone bool
+	watched := func(event string, payload any) error {
+		if err := emit(event, payload); err != nil {
+			clientGone = true
+			return err
+		}
+		return nil
+	}
+	abandon := func(err error) error {
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		return s.finishFailed(saveCtx, ctx, finished{
+			requestID: requestID,
+			request:   req,
+			resolved:  resolved,
+			prepared:  prepared,
+			startedAt: startedAt,
+		}, err, emit, clientGone)
+	}
+
+	if err := watched(EventStart, StartPayload{
 		ConversationID: prepared.conversationID,
 		Title:          prepared.title,
 		UserMessageID:  prepared.userMessageID,
 		ModelID:        resolved.Model.ID,
 		ModelName:      resolved.Model.DisplayName,
 	}); err != nil {
-		return err
+		return abandon(err)
 	}
 
 	chatRequest, err := s.buildRequest(ctx, req, resolved, prepared)
 	if err != nil {
-		return err
+		return abandon(err)
 	}
 
 	var (
@@ -283,16 +308,16 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 				firstToken = time.Now()
 			}
 			answer.WriteString(event.Text)
-			return emit(EventDelta, TextPayload{Text: event.Text})
+			return watched(EventDelta, TextPayload{Text: event.Text})
 		case adapter.EventReasoning:
 			if firstToken.IsZero() {
 				firstToken = time.Now()
 			}
 			reasoning.WriteString(event.Text)
-			return emit(EventReasoning, TextPayload{Text: event.Text})
+			return watched(EventReasoning, TextPayload{Text: event.Text})
 		case adapter.EventUsage:
 			usage = usage.Merge(event.Usage)
-			return emit(EventUsage, UsagePayload{
+			return watched(EventUsage, UsagePayload{
 				InputTokens:     usage.InputTokens,
 				OutputTokens:    usage.OutputTokens,
 				ReasoningTokens: usage.ReasoningTokens,
@@ -325,7 +350,7 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 	}
 
 	if chatErr != nil {
-		return s.finishFailed(saveCtx, ctx, finish, chatErr, emit)
+		return s.finishFailed(saveCtx, ctx, finish, chatErr, emit, clientGone)
 	}
 	if result.Text != "" && answer.Len() == 0 {
 		// A non-streaming adapter path that did not go through the sink.
@@ -382,6 +407,12 @@ func (s *Service) openTurn(ctx context.Context, req TurnRequest) (prepared, erro
 		}
 
 		if req.TruncateFromMessageID != "" {
+			// Pictures the edit re-sends are lifted off the messages about to be
+			// deleted first. Otherwise the delete takes them, and the claim below
+			// finds nothing and quietly sends the message without them.
+			if err := s.conversations.DetachPictures(ctx, tx, req.User.ID, conversationID, req.TruncateFromMessageID, req.AttachmentIDs); err != nil {
+				return err
+			}
 			if err := s.conversations.TruncateFrom(ctx, tx, req.User.ID, conversationID, req.TruncateFromMessageID); err != nil {
 				return err
 			}
@@ -471,8 +502,10 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 	}
 
 	// The same picture referenced across several turns is sent once: image
-	// identity is its bytes, and a duplicate would be billed twice.
-	seen := map[string]bool{}
+	// identity is its bytes, and a duplicate would be billed twice. The
+	// fingerprint only narrows the candidates; a match is confirmed byte for
+	// byte, because two different pictures can share a fingerprint.
+	seen := map[string][][]byte{}
 
 	out := make([]adapter.Message, 0, len(usable))
 	for _, message := range usable {
@@ -487,10 +520,10 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 		}
 		for _, image := range images[message.ID] {
 			key := fingerprint(image.Data)
-			if seen[key] {
+			if slices.ContainsFunc(seen[key], func(prior []byte) bool { return bytes.Equal(prior, image.Data) }) {
 				continue
 			}
-			seen[key] = true
+			seen[key] = append(seen[key], image.Data)
 			parts = append(parts, adapter.Part{
 				Kind:      adapter.PartImage,
 				MediaType: image.Mime,
@@ -588,13 +621,19 @@ func (s *Service) finishOK(ctx context.Context, f finished, emit Emit) error {
 	})
 }
 
-// finishFailed covers three outcomes that all arrive as an error from the
-// adapter: the user stopped, the client disappeared, or the provider failed.
+// finishFailed covers the ways a turn ends after its user message is saved:
+// the user stopped, the client disappeared, or the turn failed. A failure may
+// come from the provider, a write to the browser, or the history read before
+// the provider call.
 //
 // requestCtx is the original (possibly cancelled) context — the only way to
 // tell "the user pressed Stop" from "the provider broke".
-func (s *Service) finishFailed(ctx, requestCtx context.Context, f finished, chatErr error, emit Emit) error {
-	stopped := requestCtx.Err() != nil || isCancelled(chatErr)
+//
+// clientGone is set when a write to the browser failed. A stalled reader hits
+// the write deadline without cancelling the request, and its error comes back
+// through the adapter looking like a provider failure, so it is named here.
+func (s *Service) finishFailed(ctx, requestCtx context.Context, f finished, chatErr error, emit Emit, clientGone bool) error {
+	stopped := clientGone || requestCtx.Err() != nil || Cancelled(chatErr)
 
 	if stopped {
 		// Whatever happened before the stop is kept: it is what the user read
@@ -644,7 +683,10 @@ func (s *Service) finishFailed(ctx, requestCtx context.Context, f finished, chat
 		// No Content or Reasoning: an error row renders instead of the
 		// answer rather than beside it, so a half-written reply stored here
 		// would be text the interface never shows.
-		Error:      friendly,
+		Error: friendly,
+		// The code lets the reader's screen translate the failure. The sentence
+		// stays as the fallback for rows written before codes were stored.
+		ErrorCode:  code,
 		ModelID:    f.resolved.Model.ID,
 		ModelName:  f.resolved.Model.DisplayName,
 		ProviderID: f.resolved.Provider.ID,
@@ -723,7 +765,10 @@ func buildStats(f finished) *conversation.Stats {
 	return stats
 }
 
-func isCancelled(err error) bool {
+// Cancelled reports whether a failure is the turn being stopped rather than
+// the provider failing. Exported because the API surface writes the same
+// ledger entries, and a stopped turn must read the same on both.
+func Cancelled(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return true
 	}
@@ -746,6 +791,11 @@ func Describe(err error) (code, message string) {
 	if !errors.As(err, &upstream) {
 		return "internal", "Something went wrong on our side."
 	}
+	// images_unsupported, refusal and provider_rejected keep the upstream
+	// sentence rather than a reader's translation of the code: it names what the
+	// provider or model said, which a shared sentence would erase on every
+	// screen, English included. The frontend has no reader's sentence for them
+	// on purpose, so it shows this text.
 	switch upstream.Kind {
 	case adapter.ErrorAuth:
 		// The user cannot fix a misconfigured key, and the detail names an

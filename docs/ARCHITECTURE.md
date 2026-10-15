@@ -219,10 +219,23 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 26.43 MB (22.72 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 243.11 kB to open the chat (200.79 JS + 42.32 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 26.86 MB (23.16 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 247.76 kB to open the chat (205.74 JS + 42.02 CSS), sent by the server at gzip's best level; the build's gzip column reads 249.15 kB (206.38 JS + 42.77 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-15 (UTC), from this release's source with Go 1.27.2. The first
+paint is measured as the server sends it: the bytes of the two entry files
+through the same compressor, read back from the built binary with
+`Accept-Encoding: gzip`. Go's default compression level sent 258.70 kB for those
+two files, 4.6% more, because the default runs the fast matcher and level 9 runs
+the lazy one zlib uses; the server now uses level 9. The build's gzip column is
+zlib's default level and is kept as the build's estimate, not as a transfer
+size. The lazy chunks sent (gzip at level 9): Chinese dictionary 50.97 kB,
+backoffice 130.11 kB, terminal 8.25 kB, math 3.69 kB, front page 4.12 kB, landing
+page 3.31 kB. The binary is 26.86 MB (23.16 MB without SQLite). The
+2026-10-12 figures predate this release's changes to the frontend and to
+the server, which is why the binary and the bundle both moved.
 
 Remeasured on 2026-10-12 (UTC), after the second audit's fixes were merged:
 the dictionary carries the new refusals and the settings controls show their
@@ -641,9 +654,10 @@ is whether this project's own code grows, not whether the framework does. It
 moved from 130 to 135 kB when the measured bundle reached 131.05 kB rather
 than leaving a target the shipped usage controls no longer met.
 
-The five pieces most people never need are split off: the administration
-backoffice, the terminal, the Chinese dictionary, the LaTeX renderer, and the
-public front page.
+The six pieces most people never need are split off: the administration
+backoffice, the terminal, the Chinese dictionary, the LaTeX renderer, the
+public front page, and the landing page (the intro or trial a signed-out
+visitor sees on an instance that chose one).
 What each reader actually downloads:
 
 | | gzipped |
@@ -654,6 +668,7 @@ What each reader actually downloads:
 | Chinese administrator, backoffice open | 345.12 kB |
 | Anybody, once they open the terminal | +7.22 kB |
 | A visitor to an instance whose front door is the front page | +3.96 kB |
+| A signed-out visitor to an instance whose front door is the intro or trial | +3.31 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice and the terminal: /settings, /keys, /usage and
@@ -726,8 +741,9 @@ models               id, provider_id→providers, model_id, display_name,
 conversations        id, user_id, title, model_id, pinned,
                      created_at, updated_at, deleted_at
 messages             id, conversation_id, user_id, seq, role, content,
-                     reasoning, error, model_id, provider_id,
-                     stats_json, created_at       UNIQUE(conversation_id, seq)
+                     reasoning, error, error_code, model_id, model_name,
+                     provider_id, stats_json, created_at
+                     UNIQUE(conversation_id, seq)
 attachments          id, user_id, message_id, kind, mime, width, height,
                      size, data (BLOB), created_at
 usage_records        id, user_id, group_id, provider_id, model_id, model_ref,
@@ -991,7 +1007,7 @@ will not be.
 | Provider keys | AES-256-GCM at rest, key derived by HKDF from `OBSIDIAN_SECRET_KEY`. Never serialised into any response — the admin UI sees `••••1234`. Never logged. |
 | Log redaction | A `redact()` helper for anything key-shaped; request bodies are never logged. |
 | Input validation | Every handler decodes into a typed struct with explicit bounds; `MaxBytesReader` on all bodies. |
-| Rate limiting | Per-IP on `/api/auth/*` (in-memory token bucket), per-user via quota everywhere else. The login, second-step, current-password and invite-code guess budgets are held in each process's memory, so N processes sharing one database give each budget N times its size; the instance-wide sign-up limit is counted in the database. |
+| Rate limiting | Per-IP on `/api/auth/*` (in-memory token bucket), per-user via quota everywhere else. The login, second-step, current-password and invite-code guess budgets are held in each process's memory, so N processes sharing one database give each budget N times its size; the instance-wide sign-up limit is counted in the database. The trial's per-address and instance-wide hourly budgets are in process memory for the same reason, so the trial runs on one instance. |
 | Abuse review | Sign-up review produces `allow`, timed `restrict`, or `refuse`; restrictions gate all programmatic API keys at the account level. Browser chat bursts use a database-backed per-account counter and an on-demand Turnstile challenge. |
 | Security audit | Access decisions are persisted in `security_events`, separately from the ordinary HTTP request log. |
 
@@ -1063,7 +1079,8 @@ POST   /api/attachments             GET  /api/attachments/{id}
 POST   /api/images/generate
 GET    /api/usage/me                → current windows, limits, resets_at
 GET    /api/uptime                  → system & model availability
-GET    /api/announcements           POST /api/announcements/read
+GET    /api/announcements           POST /api/announcements/read  {ids}
+GET    /api/announcements/{id}
 GET    /api/preferences             PATCH /api/preferences
 PATCH  /api/profile
 GET/POST/PATCH/DELETE /api/admin/{users,groups,providers,models}/…

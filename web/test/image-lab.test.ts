@@ -352,3 +352,164 @@ describe('Image Lab challenges', () => {
     expect(panels.textContent).toContain(t('challengeRequired'));
   });
 });
+
+describe('Image Lab reference pictures on the wire', () => {
+  it('sends each reference picture once, as images, and not again as image', async () => {
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+    await mountImageLab();
+    panels.querySelector('.oa-image-lab-generate')!.dispatchEvent(
+      createDragEvent('drop', [createFile('photo.png', 'image/png')]),
+    );
+    await settle();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a sunset';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+
+    expect(generate).toHaveBeenCalledOnce();
+    const sent = generate.mock.calls[0]![0];
+    expect(sent.images).toEqual(['base64-photo.png']);
+    expect(sent).not.toHaveProperty('image');
+  });
+});
+
+describe('Image Lab pictures as they arrive', () => {
+  function drop(files: File[]): void {
+    const container = panels.querySelector('.oa-image-lab-generate') as HTMLElement;
+    container.dispatchEvent(createDragEvent('drop', files));
+  }
+
+  it('keeps the refusal for a picture that failed when a later one in the same drop is kept', async () => {
+    await mountImageLab();
+    vi.mocked(chatImage.prepareImage).mockImplementationOnce(async () => {
+      throw new chatImage.ImageError('unsupported', 'That picture is too large.');
+    });
+
+    drop([createFile('huge.png', 'image/png'), createFile('small.png', 'image/png')]);
+    await settle();
+
+    expect(panels.querySelectorAll('.oa-reference')).toHaveLength(1);
+    expect(panels.querySelector('.oa-drawer-flash')?.textContent).toContain('That picture is too large.');
+  });
+
+  it('never keeps more pictures than the limit when two drops overlap', async () => {
+    await mountImageLab();
+
+    drop(['a', 'b', 'c', 'd'].map((name) => createFile(`${name}.png`, 'image/png')));
+    drop(['e', 'f', 'g', 'h'].map((name) => createFile(`${name}.png`, 'image/png')));
+    await settle();
+
+    expect(panels.querySelectorAll('.oa-reference')).toHaveLength(5);
+  });
+
+  it('revokes a picture that finishes preparing after the panel has closed', async () => {
+    await mountImageLab();
+    let finish!: (value: unknown) => void;
+    vi.mocked(chatImage.prepareImage).mockImplementationOnce(
+      () => new Promise((resolve) => { finish = resolve; }) as never,
+    );
+    const original = URL.revokeObjectURL;
+    const revoke = vi.fn();
+    Object.assign(URL, { revokeObjectURL: revoke });
+    try {
+      drop([createFile('late.png', 'image/png')]);
+      await settle();
+      app!.unmount();
+      app = undefined;
+
+      finish({ mime: 'image/png', data: 'late', width: 1, height: 1, bytes: 4, previewURL: 'blob:mock/late.png' });
+      await settle();
+
+      expect(revoke).toHaveBeenCalledWith('blob:mock/late.png');
+    } finally {
+      Object.assign(URL, { revokeObjectURL: original });
+    }
+  });
+
+  it('names a download by the type the picture came back as, and keeps that name', async () => {
+    vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({
+      created: 1, images: [{ b64_json: 'AAAA', mime: 'image/jpeg' }],
+    });
+    await mountImageLab();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a sunset';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+
+    const link = (): HTMLAnchorElement => panels.querySelector<HTMLAnchorElement>('.oa-image-lab-actions a')!;
+    const name = link().getAttribute('download');
+    expect(name).toMatch(/^image-\d+-0\.jpg$/);
+
+    field.value = 'a sunset, again';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    expect(link().getAttribute('download')).toBe(name);
+
+    // The lightbox opened from the result is named the same way, not .png.
+    panels.querySelector<HTMLElement>('.oa-image-lab-img')!.click();
+    await settle();
+    expect(document.querySelector('.oa-lightbox-actions a')?.getAttribute('download')).toBe(name);
+  });
+});
+
+describe('Image Lab gallery paging', () => {
+  it('asks for the next page by the last picture id as well as its time', async () => {
+    // A full page, so the panel offers another. Every picture shares one
+    // millisecond, which is the case a time-only cursor cannot page through.
+    const rows: any[] = Array.from({ length: 20 }, (_, i) => ({
+      id: `gen-${String(i).padStart(2, '0')}`,
+      user_id: 'me',
+      attachment_id: `att-${i}`,
+      url: `/api/attachments/att-${i}`,
+      model_id: 'mock-painter',
+      prompt: `prompt ${i}`,
+      revised_prompt: '',
+      size: '',
+      style: '',
+      created_at: 1000,
+    }));
+    const list = vi
+      .spyOn(imagesApi, 'listImageGenerations')
+      .mockResolvedValueOnce({ generations: rows })
+      .mockResolvedValueOnce({ generations: [] });
+
+    await mountImageLab();
+    const historyTab = [...document.querySelectorAll<HTMLButtonElement>('.oa-image-lab-tab')].find(
+      (button) => button.textContent?.trim() === t('imageLabTabGallery'),
+    );
+    historyTab!.click();
+    await settle();
+    document.querySelector<HTMLButtonElement>('.oa-gallery-load-more button')!.click();
+    await settle();
+
+    expect(list).toHaveBeenLastCalledWith({ limit: 20, before: 1000, beforeId: 'gen-19' });
+  });
+});
+
+describe('Image Lab gallery names', () => {
+  it('names a JPEG gallery card and its lightbox download .jpg, not .png', async () => {
+    vi.spyOn(imagesApi, 'listImageGenerations').mockResolvedValue({
+      generations: [{
+        id: 'gen-1', user_id: 'me', attachment_id: 'att-1', url: '/api/attachments/att-1',
+        model_id: 'mock-painter', prompt: 'a lamp', revised_prompt: '', size: '', style: '',
+        created_at: 1000, mime: 'image/jpeg',
+      }] as any,
+    });
+    await mountImageLab();
+    const historyTab = [...document.querySelectorAll<HTMLButtonElement>('.oa-image-lab-tab')].find(
+      (button) => button.textContent?.trim() === t('imageLabTabGallery'),
+    );
+    historyTab!.click();
+    await settle();
+
+    expect(document.querySelector('.oa-gallery-actions a')?.getAttribute('download')).toBe('image-gen-1.jpg');
+
+    document.querySelector<HTMLElement>('.oa-gallery-img-wrap')!.click();
+    await settle();
+    expect(document.querySelector('.oa-lightbox-actions a')?.getAttribute('download')).toBe('image-gen-1.jpg');
+  });
+});

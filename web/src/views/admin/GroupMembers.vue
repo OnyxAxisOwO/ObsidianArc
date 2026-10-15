@@ -69,6 +69,9 @@ watch([search, scope], () => {
   ++request;
   loading.value = true;
   offset.value = 0;
+  // Ticks survive paging, but not a new search: the ones made under the old
+  // search are off the screen, and Save would otherwise assign them unseen.
+  selected.value = [];
   window.clearTimeout(timer);
   timer = window.setTimeout(() => void load(), 200);
 });

@@ -37,15 +37,6 @@ import (
 // separated by a commit boundary.
 var errLastAdmin = errors.New("admin: that is the last administrator")
 
-// Account actions the security log keeps. The request log records them too,
-// but it is the table a prune removes from, and the security log is not
-// pruned. These are events in the security log's own vocabulary, so the
-// log's readers see them beside the rest of the account's history.
-const (
-	eventPasswordReset  = "password_reset"
-	eventAccountDeleted = "account_deleted"
-)
-
 // recordAccountAction writes one account action to the security log. It runs
 // after the action has happened, so a failure here is logged rather than
 // reported: the password is already changed or the account already gone.
@@ -53,7 +44,7 @@ func (h *Handlers) recordAccountAction(r *http.Request, event string, actor, tar
 	if h.security == nil {
 		return
 	}
-	if err := h.security.Record(r.Context(), nil, securityevents.Event{
+	if err := h.recordDetached(r.Context(), securityevents.Event{
 		Event: event, Severity: securityevents.SeverityWarning,
 		UserID: target.ID, Username: target.Username,
 		ActorID: actor.ID, ActorUsername: actor.Username,
@@ -61,6 +52,17 @@ func (h *Handlers) recordAccountAction(r *http.Request, event string, actor, tar
 	}); err != nil {
 		slog.ErrorContext(r.Context(), "could not record an account action", "event", event, "error", err)
 	}
+}
+
+// recordDetached writes a security-log row for a change that has already
+// committed. It runs on a context that outlives the request: a client that
+// hung up after the commit must not leave a reset or a deletion with no row
+// saying who made it. The write is bounded the way push is, so a stalled
+// database delays the response by five seconds at most.
+func (h *Handlers) recordDetached(ctx context.Context, event securityevents.Event) error {
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return h.security.Record(recordCtx, nil, event)
 }
 
 // lockAdminPopulation takes the row lock every change to the set of active
@@ -84,12 +86,13 @@ func (h *Handlers) listUsers(w http.ResponseWriter, r *http.Request) error {
 	query := r.URL.Query()
 
 	filter := user.ListFilter{
-		Search:  query.Get("q"),
-		Role:    user.Role(query.Get("role")),
-		Status:  user.Status(query.Get("status")),
-		GroupID: query.Get("group_id"),
-		Limit:   intParam(query.Get("limit"), 50),
-		Offset:  intParam(query.Get("offset"), 0),
+		Search:   query.Get("q"),
+		Username: query.Get("username"),
+		Role:     user.Role(query.Get("role")),
+		Status:   user.Status(query.Get("status")),
+		GroupID:  query.Get("group_id"),
+		Limit:    intParam(query.Get("limit"), 50),
+		Offset:   intParam(query.Get("offset"), 0),
 	}
 	if filter.GroupID != "" && !isValidID(filter.GroupID) {
 		return httpx.BadRequest("Malformed group id.")
@@ -140,10 +143,8 @@ func (h *Handlers) showUser(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	// Which models this account reaches for, over its whole life. Bounded by
-	// how many models the instance has ever had rather than by the ledger,
-	// and it is the question an operator asks next after "how much": on
-	// what.
+	// Which models this account reaches for, over its whole life, and it is
+	// the question an operator asks next after "how much": on what.
 	models, err := h.usage.GroupBy(r.Context(), "model", usage.MetricTokens, usage.Filter{UserID: userID})
 	if err != nil {
 		return httpx.Internal(err)
@@ -257,8 +258,8 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 	}
 	// An account with no password cannot be signed into with one. That is a
 	// legitimate shape here — a service account that only ever arrives through
-	// a provider — so it is allowed, but never by accident: it takes an
-	// explicit empty string rather than a missing field.
+	// a provider — so it is allowed. A missing field and an empty one both mean
+	// no password.
 	if body.Password != "" {
 		if err := auth.ValidatePassword(body.Password); err != nil {
 			return httpx.BadRequest("%s", err.Error())
@@ -349,6 +350,17 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 	slog.InfoContext(r.Context(), "administrator created an account",
 		"actor", actor.ID, "created", created.ID, "role", created.Role)
 	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"user": created})
+}
+
+// loggedValue is what a request field reads as in the log. A pointer prints as
+// an address under the text handler and as its value under the JSON one, so
+// the same audit line would say different things depending on the handler.
+// An absent field is "", which is also what the audit line means by unchanged.
+func loggedValue[T ~string](v *T) string {
+	if v == nil {
+		return ""
+	}
+	return string(*v)
 }
 
 func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
@@ -587,8 +599,15 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		return translateUserError(err)
 	}
 
+	// A move, an expiry or a ban changes which accounts the allowances list
+	// and which policies they are read against, so a ranking cached before it
+	// is stale. A role or profile edit changes neither.
+	if body.GroupID != nil || body.GroupExpiresAt != nil || body.Status != nil {
+		h.forgetAllowanceRankings()
+	}
+
 	slog.InfoContext(r.Context(), "administrator changed an account",
-		"actor", actor.ID, "target", userID, "role", body.Role, "status", body.Status)
+		"actor", actor.ID, "target", userID, "role", loggedValue(body.Role), "status", loggedValue(body.Status))
 
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": updated})
 }
@@ -642,7 +661,7 @@ func (h *Handlers) resetPassword(w http.ResponseWriter, r *http.Request) error {
 
 	// Recorded in the security log as well as the process log: the request log
 	// that shows this action can be pruned, and this one must outlive it.
-	h.recordAccountAction(r, eventPasswordReset, actor, target, "password reset by an administrator")
+	h.recordAccountAction(r, securityevents.EventPasswordReset, actor, target, "password reset by an administrator")
 
 	slog.InfoContext(r.Context(), "administrator reset a password", "actor", actor.ID, "target", userID)
 	return httpx.NoContent(w)
@@ -700,7 +719,8 @@ func (h *Handlers) deleteUser(w http.ResponseWriter, r *http.Request) error {
 		}
 		return translateUserError(err)
 	}
-	h.recordAccountAction(r, eventAccountDeleted, actor, removed, "account deleted by an administrator")
+	h.forgetAllowanceRankings()
+	h.recordAccountAction(r, securityevents.EventAccountDeleted, actor, removed, "account deleted by an administrator")
 	slog.WarnContext(r.Context(), "administrator deleted an account", "actor", actor.ID, "target", userID)
 	return httpx.NoContent(w)
 }
@@ -784,15 +804,27 @@ func (h *Handlers) listGroups(w http.ResponseWriter, r *http.Request) error {
 		ModelIDs    []string           `json:"model_ids"`
 		ModelGrants []model.GroupGrant `json:"model_grants"`
 	}
+	// Expired memberships go before the counts, as a user listing would have
+	// sent them, so a lapsed member is counted in the group they now belong to.
+	// Every count and every grant set is then read in one query each, rather
+	// than a membership sweep and two reads per group.
+	if err := h.users.ExpireMemberships(r.Context(), nil, time.Now()); err != nil {
+		return httpx.Internal(err)
+	}
+	counts, err := h.users.CountByGroup(r.Context(), nil)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	grantsByGroup, err := h.models.AllGroupGrants(r.Context(), nil)
+	if err != nil {
+		return httpx.Internal(err)
+	}
 	out := make([]row, 0, len(groups))
 	for _, record := range groups {
-		_, count, err := h.users.List(r.Context(), user.ListFilter{GroupID: record.ID, Limit: 1})
-		if err != nil {
-			return httpx.Internal(err)
-		}
-		modelGrants, err := h.models.GroupModelGrants(r.Context(), record.ID)
-		if err != nil {
-			return httpx.Internal(err)
+		count := counts[record.ID]
+		modelGrants := grantsByGroup[record.ID]
+		if modelGrants == nil {
+			modelGrants = []model.GroupGrant{}
 		}
 		modelIDs := make([]string, 0, len(modelGrants))
 		for _, g := range modelGrants {
@@ -811,13 +843,13 @@ func (h *Handlers) listGroups(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
+	admins, err := h.users.AdminAccounts(r.Context(), nil)
+	if err != nil {
+		return httpx.Internal(err)
+	}
 	policies := all[:0]
 	for _, policy := range all {
-		ok, err := h.policyVisible(r, actor, policy)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-		if ok {
+		if policyVisible(actor, policy, admins) {
 			policies = append(policies, policy)
 		}
 	}
@@ -841,6 +873,27 @@ type groupRequest struct {
 	ModelGrants *[]model.GroupGrant `json:"model_grants"`
 }
 
+// checkGroupModelAccess is checkModelGroupAccess for the group side. The grants
+// share the group's transaction, so a refused word would roll the group back on
+// its own. This check exists so the word is answered as a 400 rather than the
+// 500 translateGroupError gives an unexpected write error.
+func checkGroupModelAccess(grants *[]model.GroupGrant) error {
+	if grants == nil {
+		return nil
+	}
+	for _, grant := range *grants {
+		// The store drops a grant with no model before it reads the access word,
+		// so a word on one is not a refusal here either.
+		if grant.ModelID == "" {
+			continue
+		}
+		if err := model.CheckAccess(grant.Access); err != nil {
+			return model.TranslateError(err)
+		}
+	}
+	return nil
+}
+
 func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 	var body groupRequest
 	if err := httpx.DecodeJSON(w, r, &body, 32*1024); err != nil {
@@ -848,6 +901,9 @@ func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 	}
 	if body.Name == nil {
 		return httpx.BadRequest("A name is required.")
+	}
+	if err := checkGroupModelAccess(body.ModelGrants); err != nil {
+		return err
 	}
 
 	in := group.CreateInput{Name: *body.Name}
@@ -878,28 +934,37 @@ func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 	// same change deleteGroup and updateGroup make under the instance lock.
 	// Unlocked, two creates at once can each clear the other's default before
 	// either commits, and leave the instance with none.
+	// The grants share the group's transaction: written after it, a grant that
+	// fails leaves a group with no grants, and the retry is then refused as a
+	// duplicate name.
 	var record group.Group
 	err := h.db.Tx(r.Context(), func(tx *database.Tx) error {
 		if err := settings.Lock(r.Context(), tx); err != nil {
 			return err
 		}
 		created, err := h.groups.Create(r.Context(), tx, in)
+		if err != nil {
+			return err
+		}
 		record = created
-		return err
+		return setGroupGrants(r.Context(), h.models, tx, record.ID, body.ModelGrants, body.ModelIDs)
 	})
 	if err != nil {
 		return translateGroupError(err)
 	}
-	if body.ModelGrants != nil {
-		if err := h.models.SetGroupModels(r.Context(), record.ID, *body.ModelGrants); err != nil {
-			return httpx.Internal(err)
-		}
-	} else if body.ModelIDs != nil {
-		if err := h.models.SetGroupModelIDs(r.Context(), record.ID, *body.ModelIDs); err != nil {
-			return httpx.Internal(err)
-		}
-	}
 	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"group": record})
+}
+
+// setGroupGrants writes whichever grant list the request carried, inside the
+// caller's transaction. Neither list present leaves the grants as they are.
+func setGroupGrants(ctx context.Context, models *model.Store, tx *database.Tx, groupID string, grants *[]model.GroupGrant, modelIDs *[]string) error {
+	if grants != nil {
+		return models.SetGroupModels(ctx, tx, groupID, *grants)
+	}
+	if modelIDs != nil {
+		return models.SetGroupModelIDs(ctx, tx, groupID, *modelIDs)
+	}
+	return nil
 }
 
 func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
@@ -912,11 +977,16 @@ func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &body, 32*1024); err != nil {
 		return err
 	}
+	if err := checkGroupModelAccess(body.ModelGrants); err != nil {
+		return err
+	}
 
 	// The default group is an instance-wide invariant, so a change to it holds
 	// the same lock deleteGroup does. Without it, a delete that has checked
 	// this group is not the default can race a change that makes it one, and
 	// leave the instance with no default at all.
+	// Same transaction as the rename and the default change: a grant that fails
+	// must not leave the rest of the edit applied.
 	var record group.Group
 	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
 		if err := settings.Lock(r.Context(), tx); err != nil {
@@ -934,19 +1004,13 @@ func (h *Handlers) updateGroup(w http.ResponseWriter, r *http.Request) error {
 			ShowExpiry:               body.ShowExpiry,
 			SortOrder:                body.SortOrder,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return setGroupGrants(r.Context(), h.models, tx, groupID, body.ModelGrants, body.ModelIDs)
 	})
 	if err != nil {
 		return translateGroupError(err)
-	}
-	if body.ModelGrants != nil {
-		if err := h.models.SetGroupModels(r.Context(), groupID, *body.ModelGrants); err != nil {
-			return httpx.Internal(err)
-		}
-	} else if body.ModelIDs != nil {
-		if err := h.models.SetGroupModelIDs(r.Context(), groupID, *body.ModelIDs); err != nil {
-			return httpx.Internal(err)
-		}
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"group": record})
 }
@@ -996,8 +1060,15 @@ func (h *Handlers) deleteGroup(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return translateGroupError(err)
 	}
-	// The group's own quota policy has no scope to belong to any more.
-	_ = h.quota.Policies().Delete(r.Context(), quota.ScopeGroup, groupID)
+	// The group is already gone, so a failure here cannot be returned; it is
+	// logged, since a leftover policy otherwise surfaces with no trace of why.
+	if err := h.quota.Policies().Delete(r.Context(), quota.ScopeGroup, groupID); err != nil {
+		slog.ErrorContext(r.Context(), "could not remove a deleted group's quota policy", "group", groupID, "error", err)
+	}
+	// The members have moved and the policy is gone, so a ranking cached against
+	// either is stale. This runs after the policy delete, so a rebuild cannot
+	// read the old policy back.
+	h.forgetAllowanceRankings()
 
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"moved_to": fallbackID})
 }
@@ -1015,7 +1086,8 @@ func translateUserError(err error) error {
 		return httpx.Conflict("email_taken", "That email address is already registered.")
 	case errors.Is(err, user.ErrUsernameTaken):
 		return httpx.Conflict("username_taken", "That username is already taken.")
-	case errors.Is(err, user.ErrInvalidEmail),
+	case errors.Is(err, user.ErrInvalidUsername),
+		errors.Is(err, user.ErrInvalidEmail),
 		errors.Is(err, user.ErrNicknameTooLong),
 		errors.Is(err, user.ErrBioTooLong),
 		errors.Is(err, user.ErrAvatarTooLong):
@@ -1041,6 +1113,8 @@ func translateGroupError(err error) error {
 		return httpx.Conflict("default_group", "Make another group the default first.")
 	case errors.Is(err, group.ErrDeleteLast):
 		return httpx.Conflict("last_group", "The last group cannot be deleted.")
+	case errors.Is(err, model.ErrGrantModelMissing):
+		return httpx.BadRequestCode("model_missing", "A grant names a model that does not exist.")
 	default:
 		return httpx.Internal(err)
 	}

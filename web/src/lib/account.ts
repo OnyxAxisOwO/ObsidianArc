@@ -1,6 +1,7 @@
 // How an account is named and pictured.
 
 import type { Account } from '@/api/auth';
+import { safeNext } from '@/lib/next';
 
 export function displayName(account: Account): string {
   return account.nickname || account.username;
@@ -14,7 +15,11 @@ export function displayName(account: Account): string {
 export function safeAvatar(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return trimmed;
+  // The rule a sign-in destination is held to. A browser reads a backslash as
+  // a slash and drops a tab or newline, so "/\host" or "/<TAB>/host" would
+  // fetch from another site, and this is the check that catches both.
+  const path = safeNext(trimmed);
+  if (path) return path;
   if (/^data:image\/(?:png|jpeg|webp|gif|avif);base64,[A-Za-z0-9+/]+=*$/.test(trimmed)) return trimmed;
   return null;
 }
