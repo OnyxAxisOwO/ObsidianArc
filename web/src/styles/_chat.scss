@@ -489,6 +489,11 @@
     opacity 0.26s cubic-bezier(0.16, 1, 0.3, 1),
     visibility 0.34s;
   overflow: hidden;
+  /* overflow: hidden drops this item's automatic minimum height to zero, so
+     once the list is taller than its column — a phone, or many projects — the
+     flex column shrinks an open project to nothing: chevron turned, nothing
+     beneath it to tap. */
+  flex-shrink: 0;
 
   &.open {
     grid-template-rows: 1fr;
