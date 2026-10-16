@@ -2795,4 +2795,8 @@ export const zh: Record<StringKey, string> = {
   checkinRewardCardCount: '张数',
   checkinSave: '保存签到设置',
   checkinSaved: '已保存。',
+  // The administrators' audit trail; the page's own words are in
+  // views/admin/audit-text.ts.
+  navAudit: '审计日志',
+  auditSubtitle: '管理员在后台做过的每一件事，以及每一次查看他人对话。',
 };

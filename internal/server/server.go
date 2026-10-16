@@ -24,6 +24,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/admin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/backup"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
@@ -91,6 +92,7 @@ type Server struct {
 	idp            *idp.Store
 	oauth          *oauth.Store
 	notify         *notify.Store
+	audit          *audit.Store
 	bonus          *bonus.Store
 	invites        *invite.Store
 	instanceBackup *systembackup.Service
@@ -164,6 +166,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	usageStore := usage.NewStore(db)
 	requestLog := reqlog.NewStore(db)
 	securityLog := securityevents.NewStore(db)
+	auditTrail := audit.NewStore(db)
 
 	// Which compiled-in plugins are installed and switched on. Loaded before
 	// anything below reads a setting or an account, since both lists depend
@@ -1125,6 +1128,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	adminHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
 	adminHandlers.Notify = notifyStore
 	adminHandlers.Bonus = bonusStore
+	adminHandlers.Audit = auditTrail
 	adminHandlers.Checkin = checkinService
 	adminHandlers.SystemBackup = instanceBackup
 	adminHandlers.Updates = update.New(deps.Version, deps.UpdateFeed)
@@ -1506,6 +1510,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		idp:            idpStore,
 		oauth:          oauthStore,
 		notify:         notifyStore,
+		audit:          auditTrail,
 		bonus:          bonusStore,
 		invites:        invites,
 		instanceBackup: instanceBackup,
@@ -1713,6 +1718,15 @@ func (s *Server) sweep(ctx context.Context) {
 	if s.notify != nil {
 		if _, err := s.notify.Prune(sweepCtx, time.Now().Add(-30*24*time.Hour)); err != nil {
 			slog.ErrorContext(sweepCtx, "could not prune notifications", "error", err)
+		}
+	}
+	// The audit trail is kept for as long as the super administrator chose,
+	// and never less than the floor the setting enforces.
+	if s.audit != nil {
+		days := s.settings.Int(settings.AuditRetentionDays, audit.DefaultRetentionDays)
+		days = min(max(days, audit.MinRetentionDays), audit.MaxRetentionDays)
+		if _, err := s.audit.Prune(sweepCtx, time.Now().Add(-time.Duration(days)*24*time.Hour)); err != nil {
+			slog.ErrorContext(sweepCtx, "could not prune the audit trail", "error", err)
 		}
 	}
 	// Bonus a person is about to lose is worth a line in the bell, once.

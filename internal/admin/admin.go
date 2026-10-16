@@ -24,6 +24,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
@@ -95,6 +96,9 @@ type Handlers struct {
 	Notify *notify.Store
 	// The bonus bars; nil on a server built without them, which answers 404.
 	Bonus *bonus.Store
+	// The administrators' audit trail. Set by the wiring; nil records
+	// nothing and leaves the trail's own routes unmounted.
+	Audit *audit.Store
 	// The check-in rewards, edited from the backoffice.
 	Checkin *checkin.Service
 	// SystemBackup covers the complete instance and is restricted to the
@@ -238,11 +242,12 @@ func NewHandlers(
 
 // Protect wraps handler in the backoffice's checks: a signed-in administrator,
 // the two-step policy, and permission — a grant list as the table in Routes
-// spells it, or "super_admin". Routes applies it to every endpoint it
-// mounts, and it is exported for the plugins that are installed while the
+// spells it, or "super_admin". Every write it is asked for, done or refused,
+// goes into the audit trail on the way. Routes applies it to every endpoint
+// it mounts, and it is exported for the plugins that are installed while the
 // server runs, whose routes cannot be in that table.
 func (h *Handlers) Protect(permission string, handler httpx.Handler) http.Handler {
-	return auth.RequireAdmin(httpx.Wrap(func(w http.ResponseWriter, r *http.Request) error {
+	return auth.RequireAdmin(h.audited(httpx.Wrap(func(w http.ResponseWriter, r *http.Request) error {
 		actor := auth.MustUser(r.Context())
 		if h.auth.BackofficeNeedsTwoFactor(actor) {
 			return backofficeNeedsTwoFactor()
@@ -259,7 +264,7 @@ func (h *Handlers) Protect(permission string, handler httpx.Handler) http.Handle
 		}
 		h.auth.KeepBackofficeOpen(r.Context(), actor)
 		return handler(w, r)
-	}))
+	})))
 }
 
 // SetFallback installs the answer to "does a plugin installed while the
@@ -410,6 +415,12 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/backup/test", protected("super_admin", h.testSystemBackup))
 	mux.Handle("POST /api/admin/backup/run", protected("super_admin", h.runSystemBackup))
 	mux.Handle("GET /api/admin/update", protected("super_admin", h.updateStatus))
+	// Read-only on purpose: nothing deletes from the trail but the retention.
+	if h.Audit != nil {
+		mux.Handle("GET /api/admin/audit", protected("audit", h.listAudit))
+		mux.Handle("GET /api/admin/audit/facets", protected("audit", h.auditFacets))
+		mux.Handle("GET /api/admin/audit/{id}", protected("audit", h.showAudit))
+	}
 
 	for _, route := range h.extra {
 		inner := protected(route.Permission, route.Handler)

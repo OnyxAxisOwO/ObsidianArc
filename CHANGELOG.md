@@ -14,6 +14,9 @@
 - 被封禁账号的 API Key 调用 `/v1` 时返回 403 `account_banned`，消息里带封禁理由，不再和无效密钥一样回 401。
 - 公告列表不再附带正文。读者打开一条公告时通过 `GET /api/announcements/{id}` 取正文；弹窗的那一条仍随列表返回正文。
 - 弹窗的选择顺序：未读的 `once` 公告优先于 `always` 公告；此前按列表顺序取第一条。
+- 后台新增“审计日志”页面，记录管理员的每一次写操作（包括被拒绝的尝试）和对他人对话的查看，含操作人、对象、来源、打码后的请求内容，
+  以及设置和账号修改前后的值。查看需要新权限 `audit`；保留时长 `audit.retention_days` 默认 180 天，只有超级管理员能改，最短 30 天。
+  新增接口 `GET /api/admin/audit`、`/api/admin/audit/facets`、`/api/admin/audit/{id}` 和控制台命令 `audit list`、`audit show`、`audit actions`。
 - SMTP 服务器可以填写 IPv6 地址（如 `2001:db8::1`，不带方括号和端口），后台保存时也接受。此前后台保存会拒绝 IPv6 地址。
 
 ### 升级须知

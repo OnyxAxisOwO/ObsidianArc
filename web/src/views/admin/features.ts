@@ -526,7 +526,17 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     pageSlug: 'logs',
     titleKey: 'navLogs',
     searchKeys: ['logHolding', 'logWhen', 'logDuration', 'logIP'],
-    keywords: ['系统审计日志', '实时请求日志', '客户端IP', '响应耗时', 'audit logs', 'live stream'],
+    keywords: ['实时请求日志', '客户端IP', '响应耗时', 'request log', 'live stream'],
+  },
+  {
+    id: 'auditTrail',
+    pageSlug: 'audit',
+    titleKey: 'navAudit',
+    searchKeys: ['auditSubtitle'],
+    keywords: [
+      '审计日志', '管理员操作记录', '操作历史', '改动记录', '谁改的', '操作人', '保留天数', '网页终端', 'SSH',
+      'audit log', 'admin history', 'change history', 'who did it', 'retention',
+    ],
   },
 
   // --- Security

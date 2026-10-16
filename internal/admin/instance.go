@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -228,6 +229,7 @@ var writableSettings = map[string]bool{
 	settings.AboutBody:                  true,
 	settings.AboutShowSoftwareInfo:      true,
 	settings.UpdateCheck:                true,
+	settings.AuditRetentionDays:         true,
 	settings.HomeNotice:                 true,
 	settings.HomeNoticeDismissible:      true,
 	settings.HomeNoticeBody:             true,
@@ -390,6 +392,7 @@ var numericBounds = map[string][2]int{
 	settings.PoWBaseMaxNumber:     {1, 10000000},
 	settings.PoWElevatedMaxNumber: {1, 10000000},
 	settings.PoWThreshold:         {1, 1000},
+	settings.AuditRetentionDays:   {audit.MinRetentionDays, audit.MaxRetentionDays},
 	settings.QuotaMaxConcurrent:   {0, 100},
 	settings.ConversationMaxTurns: {2, 200},
 	settings.TrialTurns:           {1, 20},
@@ -595,6 +598,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 		return checkTwoFactorSettings(fresh, body)
 	}
+	before := h.currentValues(body)
 	var save error
 	if twoFactorRecheckNeeded(body) {
 		save = h.settings.SetManyChecked(r.Context(), body, recheck)
@@ -608,6 +612,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 		return httpx.Internal(save)
 	}
+	h.noteSettings(r.Context(), before, body)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"settings": h.visibleSettings(auth.MustUser(r.Context()))})
 }
 
@@ -809,6 +814,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 		return nil
 	}
+	before := h.currentValues(applied)
 	var save error
 	if twoFactorRecheckNeeded(applied) {
 		save = h.settings.SetManyChecked(r.Context(), applied, recheck)
@@ -822,6 +828,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 		return httpx.Internal(save)
 	}
+	h.noteSettings(r.Context(), before, applied)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"settings": h.visibleSettings(auth.MustUser(r.Context())),
 		"applied":  len(applied),

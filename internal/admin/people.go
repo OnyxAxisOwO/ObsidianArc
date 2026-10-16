@@ -417,7 +417,7 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	var updated user.User
+	var updated, previous user.User
 	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
 		// Profile edits also need this lock now: their target may be promoted
 		// while a delegated operator is waiting to change its login address.
@@ -434,6 +434,7 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
+		previous = target
 
 		// Re-read the actor while holding the population lock: a concurrent
 		// revocation must win before another grant can be delegated.
@@ -606,6 +607,7 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		h.forgetAllowanceRankings()
 	}
 
+	noteAccount(r.Context(), previous, updated)
 	slog.InfoContext(r.Context(), "administrator changed an account",
 		"actor", actor.ID, "target", userID, "role", loggedValue(body.Role), "status", loggedValue(body.Status))
 

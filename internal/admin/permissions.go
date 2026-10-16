@@ -109,7 +109,7 @@ var superAdminSettings = map[string]bool{
 }
 
 func corePermission(key string) string {
-	if superAdminSettings[key] {
+	if superAdminSettings[key] || strings.HasPrefix(key, "audit.") {
 		return "super_admin"
 	}
 	switch {

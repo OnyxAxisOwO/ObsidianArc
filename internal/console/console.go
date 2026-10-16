@@ -27,6 +27,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -190,6 +191,8 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	// every nested run a watch makes, then reaches the dispatcher with the
 	// address of the person typing it.
 	ctx = withCaller(ctx, s.IP)
+	// The audit trail would otherwise record a typed command as a click.
+	ctx = audit.WithVia(ctx, "console:"+s.Transport)
 
 	// A refusal is written before ParseFlags has read the line, so whether the
 	// caller asked for JSON is read from the tokens here as well as from the

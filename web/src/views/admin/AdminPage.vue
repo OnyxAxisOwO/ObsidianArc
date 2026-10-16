@@ -18,7 +18,7 @@ import { t } from '@/composables/useI18n';
 import {
   IconArchive, IconChart, IconChevron, IconCpu, IconFile, IconGift, IconHome, IconKey, IconLayers, IconLock,
   IconMenu, IconMessage, IconPulse, IconSend, IconServer, IconSliders, IconSpark,
-  IconPuzzle, IconTrophy,
+  IconPuzzle, IconShield, IconTrophy,
   IconUsers,
 } from '@/icons';
 import AppShell from '@/layouts/AppShell.vue';
@@ -51,6 +51,7 @@ import AdminResources from './AdminResources.vue';
 import AdminCodes from './AdminCodes.vue';
 import AdminInvites from './AdminInvites.vue';
 import AdminLogs from './AdminLogs.vue';
+import AdminAudit from './AdminAudit.vue';
 import AdminSecurity from './AdminSecurity.vue';
 import AdminSettings from './AdminSettings.vue';
 import AdminAnnouncements from './AdminAnnouncements.vue';
@@ -77,6 +78,10 @@ const PAGES: AdminPageSpec[] = [
   { slug: 'codes', label: 'navCodes', icon: IconKey, component: markRaw(AdminCodes) },
   { slug: 'invites', label: 'navInvites', icon: IconSend, component: markRaw(AdminInvites) },
   { slug: 'logs', label: 'navLogs', icon: IconFile, component: markRaw(AdminLogs) },
+  {
+    slug: 'audit', label: 'navAudit', icon: IconShield, component: markRaw(AdminAudit),
+    keywords: ['审计', '操作记录', '管理员操作', 'audit', 'admin actions', 'who changed'],
+  },
   { slug: 'security', label: 'navSecurity', icon: IconLock, component: markRaw(AdminSecurity) },
   { slug: 'backup', label: 'navBackup', icon: IconArchive, component: markRaw(AdminBackup), permission: '*' },
   { slug: 'settings', label: 'navSettings', icon: IconSliders, component: markRaw(AdminSettings) },

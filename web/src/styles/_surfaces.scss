@@ -2883,6 +2883,321 @@
   overflow-wrap: anywhere;
 }
 
+/* --- the audit trail --------------------------------------------------------
+
+   A diary rather than a table: the day as a heading, then one sentence per
+   action — who, did what, to whom — with the moment on the right. Where it
+   came from and how it ended sit under the sentence, quiet unless they are
+   the news. The record behind each row opens in a panel. */
+
+.oa-audit-days {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  transition: opacity 0.15s ease;
+}
+
+.oa-audit-days.busy {
+  opacity: 0.55;
+}
+
+.oa-audit-day-label {
+  margin: 0 0 6px;
+  padding: 0 2px;
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.oa-audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 -10px;
+  padding: 0;
+  list-style: none;
+}
+
+.oa-audit-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 46px;
+  padding: 7px 12px 7px 14px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ai-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.13s ease;
+}
+
+/* A removal, a reset or a look at somebody's conversations is marked down
+   the left so it shows while scrolling, without a badge. A short bar of its
+   own rather than the security log's inset edge: on a rounded row that edge
+   bent with the corners into a bracket. */
+.oa-audit-row::before {
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  width: 3px;
+  height: 18px;
+  border-radius: 999px;
+  background: transparent;
+  content: '';
+  transform: translateY(-50%);
+}
+
+.oa-audit-row:hover {
+  background: var(--ai-state-hover);
+}
+
+.oa-audit-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-audit-row.is-notable::before {
+  background: color-mix(in srgb, var(--ai-primary) 55%, transparent);
+}
+
+.oa-audit-row.is-failed::before {
+  background: color-mix(in srgb, var(--ai-danger) 60%, transparent);
+}
+
+/* The initial rather than the account's picture: the trail is read for who,
+   and a letter in the accent is enough to tell a handful of people apart
+   without a request per row. */
+.oa-audit-avatar {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ai-primary) 16%, transparent);
+  color: var(--ai-primary);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.oa-audit-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.oa-audit-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 7px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.oa-audit-actor {
+  font-weight: 600;
+}
+
+.oa-audit-action {
+  color: var(--ai-text);
+}
+
+/* A badge here holds a name — an account, a group, a model — and a name is
+   spelled as its owner spelled it, not in the capitals a status gets. */
+.oa-audit-line .oa-badge,
+.oa-audit-summary .oa-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
+}
+
+/* The address and the moment share the right edge, so a row is one line:
+   the address is read across rows ("all from the same place?"), which a
+   second line under each sentence made a long way to scan. */
+.oa-audit-side {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.oa-audit-time {
+  flex: none;
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.oa-audit-ip {
+  color: var(--ai-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+/* A badge that is also a control: the refusals count, which filters to
+   them, and the target filter, which a click removes. */
+.oa-audit-badge-btn {
+  gap: 4px;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.oa-audit-badge-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.oa-audit-summary {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 12px;
+}
+
+.oa-audit-keep {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oa-audit-keep .oa-filter-select {
+  min-width: 92px;
+}
+
+.oa-audit-detail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.oa-audit-detail > .oa-log-facts {
+  align-self: stretch;
+}
+
+.oa-audit-section {
+  align-self: stretch;
+}
+
+.oa-audit-section h4 {
+  margin: 0 0 8px;
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.oa-audit-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.oa-audit-changes li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 11px;
+  border-radius: 11px;
+  background: var(--ai-surface-container-low);
+}
+
+.oa-audit-field {
+  color: var(--ai-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.oa-audit-diff {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.oa-audit-diff del {
+  color: var(--ai-text-secondary);
+  text-decoration-color: color-mix(in srgb, var(--ai-danger) 60%, transparent);
+}
+
+.oa-audit-diff ins {
+  color: var(--ai-text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.oa-audit-diff .empty {
+  font-style: italic;
+  font-weight: 400;
+  text-decoration: none;
+  opacity: 0.7;
+}
+
+.oa-audit-arrow {
+  color: var(--ai-text-secondary);
+}
+
+.oa-audit-secret {
+  color: var(--ai-text-secondary);
+  font-size: 12.5px;
+  font-style: italic;
+}
+
+/* The request as it was masked, kept to its own scrolling box: a settings
+   import is pages long, and the facts above must stay where they are. */
+.oa-audit-request {
+  max-height: 320px;
+  margin: 0 0 6px;
+  padding: 11px 12px;
+  border-radius: 11px;
+  background: var(--ai-surface-container-low);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow: auto;
+  scrollbar-width: thin;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.oa-audit-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@container logs (max-width: 520px) {
+  .oa-audit-avatar,
+  .oa-audit-ip {
+    display: none;
+  }
+
+  /* Four choices that wrapped turned the pill into a two-line lozenge; on a
+     phone they share the row instead, each a quarter of it. */
+    .oa-audit-summary {
+    justify-content: flex-start;
+    width: 100%;
+    margin-left: 0;
+  }
+}
+
 @container logs (max-width: 900px) {
   .oa-log-filter-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

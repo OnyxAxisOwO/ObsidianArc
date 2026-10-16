@@ -142,6 +142,11 @@ const (
 	PoWElevatedMaxNumber = "security.pow_elevated_max_number"
 	PoWThreshold         = "security.pow_threshold"
 
+	// How many days the administrators' audit trail is kept. The super
+	// administrator's alone: a delegated operator who could shorten it could
+	// erase their own last week.
+	AuditRetentionDays = "audit.retention_days"
+
 	// Signing in with an account somebody already holds somewhere else. Each
 	// provider is a switch and a pair of credentials from its own console;
 	// the secret is write-only, the way the Turnstile one is.
@@ -790,6 +795,7 @@ var Defaults = map[string]string{
 	PoWBaseMaxNumber:        "50000",
 	PoWElevatedMaxNumber:    "500000",
 	PoWThreshold:            "10",
+	AuditRetentionDays:      "180",
 	FeedbackShowStaffName:   "true",
 	// Off, and off even once the credentials are filled in, for the reason
 	// the challenge switches above are: pasting a key is not the same as

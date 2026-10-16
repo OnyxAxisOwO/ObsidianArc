@@ -557,6 +557,46 @@ export interface LogOption {
   count: number;
 }
 
+/** One action an administrator took, as the audit trail recorded it. */
+export interface AuditEntry {
+  id: string;
+  at: number;
+  actor_id: string;
+  actor_username: string;
+  actor_role: string;
+  method: string;
+  /** The route pattern, `/api/admin/users/{id}`; `path` is what was asked for. */
+  route: string;
+  path: string;
+  target_id: string;
+  target_label: string;
+  status: number;
+  duration_ms: number;
+  /** `web`, `console:web` or `console:ssh`. */
+  via: string;
+  ip: string;
+  user_agent: string;
+  /** Only on a single entry: the masked request body, and what moved. */
+  request?: string;
+  changes?: AuditChange[];
+}
+
+export interface AuditChange {
+  field: string;
+  from: string;
+  to: string;
+  secret?: boolean;
+}
+
+export interface AuditFacets {
+  actors: LogOption[];
+  /** `value` is the method and the route together, as the `action` filter takes it. */
+  routes: LogOption[];
+  total: number;
+  failed: number;
+  retention_days: number;
+}
+
 /** One access decision, kept separately from the request log. */
 export interface SecurityEvent {
   id: string;
@@ -1102,6 +1142,14 @@ export const adminApi = {
   logFacets: (query: string) => api.get<LogFacets>(`/api/admin/logs/facets${query}`),
   pruneLogs: (days: number) =>
     api.post<{ removed: number }>('/api/admin/logs/prune', { days }),
+
+  audit: (query: string) =>
+    api.get<{ entries: AuditEntry[]; total: number; limit: number; offset: number }>(
+      `/api/admin/audit${query}`,
+    ),
+  auditFacets: (query: string) => api.get<AuditFacets>(`/api/admin/audit/facets${query}`),
+  auditEntry: (id: string) =>
+    api.get<{ entry: AuditEntry }>(`/api/admin/audit/${encodeURIComponent(id)}`),
 
   usage: (query: string, options?: RequestOptions) =>
     api.get<UsageReport>(`/api/admin/usage${query}`, options),

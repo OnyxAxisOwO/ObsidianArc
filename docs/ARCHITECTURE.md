@@ -219,10 +219,19 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 26.86 MB (23.16 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 247.76 kB to open the chat (205.74 JS + 42.02 CSS), sent by the server at gzip's best level; the build's gzip column reads 249.15 kB (206.38 JS + 42.77 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 27.00 MB (23.29 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 248.44 kB to open the chat (205.80 JS + 42.64 CSS), sent by the server at gzip's best level; the build's gzip column reads 249.83 kB (206.44 JS + 43.40 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-16 (UTC), with the administrators' audit trail added. Its
+styles are in the shared stylesheet; its words, all but the page's name, load
+with the backoffice (views/admin/audit-text.ts), because in the English
+dictionary they took the build's estimate to 251.14 kB, over the 250 kB the
+bundle test holds it to. 248.44 kB to open the chat (205.80 JS + 42.64 CSS), up
+0.68 kB; the build's estimate is 249.83 kB, 0.17 kB under that budget. Chinese
+dictionary 51.03 kB, backoffice 137.60 kB, the other lazy chunks unchanged. The binary is 27.00 MB (23.29 MB without SQLite), built
+the same way as below.
 
 Remeasured on 2026-10-15 (UTC), from this release's source with Go 1.27.2. The first
 paint is measured as the server sends it: the bytes of the two entry files

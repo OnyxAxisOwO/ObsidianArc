@@ -39,7 +39,7 @@ group edit Default --terminal false
 | 邀请码 (Invites) | `invite list` `create`（含 `--partner`）`revoke` `uses` `stats` | 管理员 (`invites`) |
 | 服务商与模型 (Catalogue) | `provider list` `show` `create` `edit` `delete` `detect` · `model list` `show` `create` `edit` `delete` `order` `import` | 管理员 (`providers`/`models`) |
 | 运维 (Operations) | `dash` `res` · `health status` `probe` `reset` · `usage summary` `breakdown` `rpm` `records` `reset` · `quota list` `set` `delete` · `code list` `create` `redemptions` `delete` · `log list` `facets` `prune` | 管理员 (`dashboard`/`resources`/`availability`/`usage`/`codes`/`logs`) |
-| 实例 (Instance) | `setting list` `get` `set` `import` · `notice list` `create` `edit` `delete` · `security events` `review` `two-factor` · `attachment purge` · `meta` `refs` `member-options` | 管理员 (`settings`/`announcements`/`security`) |
+| 实例 (Instance) | `setting list` `get` `set` `import` · `notice list` `create` `edit` `delete` · `security events` `review` `two-factor` · `audit list` `show` `actions` · `attachment purge` · `meta` `refs` `member-options` | 管理员 (`settings`/`announcements`/`security`/`audit`) |
 | 用户反馈 (Feedback) | 处理别人的反馈：`feedback list` `show` `reply` `resolve` `reopen` `delete` | 管理员 (`feedback`) |
 | | 自己的反馈：`feedback send` `mine` `thread` `answer` `unread` | 所有用户 |
 | 会话 (Session) | `help` `clear` `exit` `whoami` `version` `history` `watch` `lang` `format` `echo` | 所有用户 |
@@ -149,6 +149,8 @@ ssh 用户名@你的域名 -p 2222 'key list --json' | jq '.keys[].name'
 纯查询类的会话命令（`help`、`whoami`、`version` 等）不记录。
 
 在[安全](../admin/overview)页或用 `security events --event console_command` 查看。
+
+命令调用的后台接口还会写入[管理员审计日志](../admin/logs-and-auditing#管理员审计日志)，来源标为 `console:web` 或 `console:ssh`，可用 `audit list` 查看。
 
 ## help
 

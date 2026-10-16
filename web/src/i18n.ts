@@ -2850,6 +2850,10 @@ const en = {
   checkinRewardCardCount: 'Cards',
   checkinSave: 'Save check-in settings',
   checkinSaved: 'Saved.',
+  // The administrators' audit trail; the page's own words are in
+  // views/admin/audit-text.ts.
+  navAudit: 'Audit trail',
+  auditSubtitle: 'Everything administrators did here, and every look at somebody else’s conversations.',
 } as const;
 
 export type StringKey = keyof typeof en;
