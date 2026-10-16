@@ -368,6 +368,12 @@ func (s *Store) DeleteAll(ctx context.Context, userID string) (int64, error) {
 const messageColumns = `m.id, m.seq, m.role, m.content, m.reasoning, m.error, m.error_code,
 	m.model_id, m.model_name, m.stats_json, m.created_at`
 
+// requestColumns is what a provider request is built from. The reasoning a
+// model showed is never sent back to it, and it runs to tens of kilobytes a
+// message: reading it for the forty messages a turn replays cost megabytes of
+// reads and decompression per turn, all of it dropped.
+const requestColumns = `m.id, m.seq, m.role, m.content, m.created_at`
+
 // Messages returns a conversation's transcript in order, with attachments
 // attached. Two queries rather than a join with fan-out, so a conversation
 // with many images does not multiply every message row by its pictures.
@@ -492,7 +498,7 @@ func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conv
 	if q == nil {
 		q = s.db
 	}
-	query := `SELECT ` + messageColumns + `
+	query := `SELECT ` + requestColumns + `
 		 FROM messages m
 		 WHERE m.conversation_id = ? AND m.user_id = ?
 		   AND NOT (m.role = ? AND (m.error <> '' OR m.content = ''))
@@ -510,9 +516,9 @@ func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conv
 
 	messages := []Message{}
 	for rows.Next() {
-		record, err := scanMessage(rows)
-		if err != nil {
-			return nil, err
+		var record Message
+		if err := rows.Scan(&record.ID, &record.Seq, &record.Role, &record.Content, &record.CreatedAt); err != nil {
+			return nil, fmt.Errorf("conversation: message scan: %w", err)
 		}
 		messages = append(messages, record)
 	}

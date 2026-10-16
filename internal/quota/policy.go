@@ -153,8 +153,47 @@ func (s *Store) Get(ctx context.Context, q database.Queryer, scope Scope, scopeI
 		scope, scopeID))
 }
 
-// GetOrEmpty is what the resolver uses: a level with no row simply
-// contributes nothing.
+// layersFor reads the policies that apply to one account in one query, in the
+// order Resolve layers them. Every chat and API turn resolves its account's
+// policy, and three lookups were three round trips before the turn could
+// start. A level with no row contributes nothing, so it is simply absent.
+func (s *Store) layersFor(ctx context.Context, q database.Queryer, groupID, userID string) ([]Policy, error) {
+	if q == nil {
+		q = s.db
+	}
+	rows, err := q.Query(ctx,
+		`SELECT `+policyColumns+` FROM quota_policies
+		 WHERE (scope = ? AND scope_id = '') OR (scope = ? AND scope_id = ?) OR (scope = ? AND scope_id = ?)`,
+		ScopeGlobal, ScopeGroup, groupID, ScopeUser, userID)
+	if err != nil {
+		return nil, fmt.Errorf("quota: policies for account: %w", err)
+	}
+	defer rows.Close()
+
+	byScope := map[Scope]Policy{}
+	for rows.Next() {
+		policy, err := scanPolicy(rows)
+		if err != nil {
+			return nil, err
+		}
+		byScope[policy.Scope] = policy
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	layers := make([]Policy, 0, 3)
+	for _, scope := range []Scope{ScopeGlobal, ScopeGroup, ScopeUser} {
+		// An account with no group must not pick up a group row whose id is
+		// empty, which the query above would otherwise match.
+		if policy, ok := byScope[scope]; ok && (scope != ScopeGroup || groupID != "") {
+			layers = append(layers, policy)
+		}
+	}
+	return layers, nil
+}
+
+// GetOrEmpty reads one level, as an empty policy where it has no row, which is
+// what an editor starts from.
 func (s *Store) GetOrEmpty(ctx context.Context, q database.Queryer, scope Scope, scopeID string) (Policy, error) {
 	policy, err := s.Get(ctx, q, scope, scopeID)
 	if err != nil {

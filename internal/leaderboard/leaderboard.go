@@ -265,11 +265,15 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 				topUserKeys[requestsSorted[i].Key] = struct{}{}
 			}
 
-			userInfos := make(map[string]user.User, len(topUserKeys))
+			// One query for up to two hundred profiles; reading them one at a time
+			// was two hundred round trips on every rebuild.
+			ids := make([]string, 0, len(topUserKeys))
 			for uid := range topUserKeys {
-				if person, err := h.users.ByID(queryCtx, nil, uid); err == nil {
-					userInfos[uid] = person
-				}
+				ids = append(ids, uid)
+			}
+			userInfos, err := h.users.ProfilesByID(queryCtx, nil, ids)
+			if err != nil {
+				return nil, err
 			}
 
 			var modelRows []usage.Breakdown

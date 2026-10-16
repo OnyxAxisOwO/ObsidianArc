@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -148,6 +149,45 @@ func TestAUserOverrideCanBeStricterThanItsGroup(t *testing.T) {
 		if _, err := service.Reserve(ctx, ordinary, Estimate{}); err != nil {
 			t.Fatalf("another member of the same group was refused at %d: %v", attempt, err)
 		}
+	}
+}
+
+// PolicyFor reads every level in one query, so that query is all that decides
+// which rows apply: another group's or another account's must not, and the
+// levels must still layer global, then group, then user.
+func TestPolicyForLayersOnlyTheAccountsOwnLevels(t *testing.T) {
+	service, _ := newService(t)
+	ctx := context.Background()
+
+	for _, policy := range []Policy{
+		{Scope: ScopeGlobal, RPM: ptrInt(5), Windows: map[Window]Limits{WindowWeek: limits(true, ptrInt(100), nil, nil)}},
+		{Scope: ScopeGroup, ScopeID: "mine", RPM: ptrInt(7)},
+		{Scope: ScopeGroup, ScopeID: "theirs", RPM: ptrInt(2), TPM: ptrInt(2)},
+		{Scope: ScopeUser, ScopeID: "me", TPM: ptrInt(9)},
+		{Scope: ScopeUser, ScopeID: "someone", RPM: ptrInt(1)},
+	} {
+		if _, err := service.Policies().Save(ctx, nil, policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := service.PolicyFor(ctx, nil, account("me", "mine"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RPM == nil || *got.RPM != 7 || got.TPM == nil || *got.TPM != 9 {
+		t.Fatalf("rpm %v tpm %v, want the group's 7 and the account's 9", got.RPM, got.TPM)
+	}
+	if week := got.Windows[WindowWeek]; week.Requests == nil || *week.Requests != 100 || !week.isOn() {
+		t.Fatalf("the global week window did not reach the account: %+v", week)
+	}
+
+	alone, err := service.PolicyFor(ctx, nil, account("loner", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alone.RPM == nil || *alone.RPM != 5 || alone.TPM != nil {
+		t.Fatalf("an account with no group or override: rpm %v tpm %v, want global's 5 and none", alone.RPM, alone.TPM)
 	}
 }
 
@@ -889,6 +929,52 @@ func TestPruneRemovesRolledOverBuckets(t *testing.T) {
 	}
 	if removed == 0 {
 		t.Error("no stale buckets were pruned")
+	}
+}
+
+// Each kind of counter is kept for its own window, not the month's: a minute's
+// rate bucket is gone a day later, while a month bucket from forty days ago,
+// which may still be an account's current one, stays.
+func TestPruneKeepsEachKindForItsOwnWindow(t *testing.T) {
+	service, db := newService(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	rows := []struct {
+		kind  Window
+		age   time.Duration
+		keeps bool
+	}{
+		{WindowRPM, 2 * time.Minute, true},
+		{WindowRPM, 2 * 24 * time.Hour, false},
+		{WindowTPM, 2 * 24 * time.Hour, false},
+		{Window5H, 24 * time.Hour, true},
+		{Window5H, 3 * 24 * time.Hour, false},
+		{WindowWeek, 20 * 24 * time.Hour, true},
+		{WindowMonth, 40 * 24 * time.Hour, true},
+		{WindowMonth, 90 * 24 * time.Hour, false},
+	}
+	for i, row := range rows {
+		if _, err := db.Exec(ctx,
+			`INSERT INTO usage_counters (scope_key, window_kind, window_start, requests, tokens, credits)
+			 VALUES (?, ?, ?, 1, 1, 0)`,
+			scopeKey(fmt.Sprintf("account-%d", i)), row.kind, now.Add(-row.age).UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := service.PruneCounters(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range rows {
+		var left int
+		if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM usage_counters WHERE scope_key = ?`,
+			scopeKey(fmt.Sprintf("account-%d", i))).Scan(&left); err != nil {
+			t.Fatal(err)
+		}
+		if (left == 1) != row.keeps {
+			t.Errorf("%s bucket %v old: kept = %v, want %v", row.kind, row.age, left == 1, row.keeps)
+		}
 	}
 }
 

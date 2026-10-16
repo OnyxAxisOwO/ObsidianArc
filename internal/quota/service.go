@@ -60,24 +60,11 @@ func (s *Service) PolicyFor(ctx context.Context, q database.Queryer, account use
 		return newPolicy(ScopeUser, account.ID), nil
 	}
 
-	global, err := s.policies.GetOrEmpty(ctx, q, ScopeGlobal, "")
+	layers, err := s.policies.layersFor(ctx, q, account.GroupID, account.ID)
 	if err != nil {
 		return Policy{}, err
 	}
-
-	layers := []Policy{global}
-	if account.GroupID != "" {
-		groupPolicy, err := s.policies.GetOrEmpty(ctx, q, ScopeGroup, account.GroupID)
-		if err != nil {
-			return Policy{}, err
-		}
-		layers = append(layers, groupPolicy)
-	}
-	userPolicy, err := s.policies.GetOrEmpty(ctx, q, ScopeUser, account.ID)
-	if err != nil {
-		return Policy{}, err
-	}
-	return Resolve(append(layers, userPolicy)...), nil
+	return Resolve(layers...), nil
 }
 
 // Administrators are exempt by default, because an operator locked out of
@@ -1041,18 +1028,20 @@ func (s *Service) SummariesFor(ctx context.Context, accounts []user.User) (map[s
 	return out, nil
 }
 
-// PruneCounters drops buckets that have rolled over. Monthly buckets are the
-// longest-lived, so anything older than two months is certainly dead.
+// PruneCounters drops buckets that have rolled over, each kind on its own
+// horizon. Keeping every kind for the month window's two months kept a row per
+// account per minute for the rate limits, millions of rows that nothing reads
+// once their minute has passed.
 //
 // Each chunk takes the global reset row before its first delete, as the lock order
 // requires. Without that the prune could meet an administrator's reset, which
 // deletes these rows one kind at a time, and PostgreSQL would abort one of them.
 // The chunks keep the row held briefly, because every reservation waits on it.
 func (s *Service) PruneCounters(ctx context.Context) (int64, error) {
-	cutoff := time.Now().AddDate(0, -2, 0).UnixMilli()
+	now := time.Now()
 	var removed int64
 	for {
-		n, err := s.pruneChunk(ctx, cutoff)
+		n, err := s.pruneChunk(ctx, now)
 		removed += n
 		if err != nil {
 			return removed, fmt.Errorf("quota: prune counters: %w", err)
@@ -1063,18 +1052,40 @@ func (s *Service) PruneCounters(ctx context.Context) (int64, error) {
 	}
 }
 
+// counterRetention is how long a bucket of each kind is kept after it starts.
+// Each is far past the last moment anything writes to that bucket: a release
+// refunds into the bucket its reservation was taken from, which is one turn
+// back, and a month bucket starts at most 31 days back. The margin is what
+// keeps the prune's lock-order argument below true.
+var counterRetention = map[Window]time.Duration{
+	WindowRPM:   24 * time.Hour,
+	WindowTPM:   24 * time.Hour,
+	Window5H:    2 * 24 * time.Hour,
+	WindowWeek:  60 * 24 * time.Hour,
+	WindowMonth: 60 * 24 * time.Hour,
+}
+
 // pruneChunkRows bounds one prune transaction. The rows are taken oldest first,
 // so a chunk that comes back short has reached the end of the stale rows.
 const pruneChunkRows = 1000
 
 // The chunk deletes rows of every account and kind in scan order, not in
 // counterKinds order. That is safe because every row it can reach starts before
-// the cutoff, and no reservation or settlement locks a row that old. Each locks
-// the current bucket of a window, and the longest of those, the month, starts less
-// than a month back. A release refunds into the bucket its reservation came out
-// of, which is a turn's length back. Resets cannot meet it on these rows either,
+// its kind's horizon, and no reservation or settlement locks a row that old. Each
+// locks the current bucket of a window, which starts at most one window back: a
+// minute, five hours, a week, a month, each well inside its horizon. A release
+// refunds into the bucket its reservation came out of, which is a turn's length
+// back. Resets cannot meet it on these rows either,
 // as they take the same global row first.
-func (s *Service) pruneChunk(ctx context.Context, cutoff int64) (int64, error) {
+func (s *Service) pruneChunk(ctx context.Context, now time.Time) (int64, error) {
+	stale := make([]string, 0, len(counterKinds))
+	args := make([]any, 0, 2*len(counterKinds)+1)
+	for _, kind := range counterKinds {
+		stale = append(stale, `(window_kind = ? AND window_start < ?)`)
+		args = append(args, kind, now.Add(-counterRetention[kind]).UnixMilli())
+	}
+	args = append(args, pruneChunkRows)
+
 	var removed int64
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
 		if err := lockAllowanceBoundary(ctx, tx); err != nil {
@@ -1084,8 +1095,8 @@ func (s *Service) pruneChunk(ctx context.Context, cutoff int64) (int64, error) {
 		result, err := tx.Exec(ctx,
 			`DELETE FROM usage_counters WHERE (scope_key, window_kind, window_start) IN (
 			   SELECT scope_key, window_kind, window_start FROM usage_counters
-			   WHERE window_start < ? ORDER BY window_start LIMIT ?)`,
-			cutoff, pruneChunkRows)
+			   WHERE `+strings.Join(stale, " OR ")+` ORDER BY window_start LIMIT ?)`,
+			args...)
 		if err != nil {
 			return err
 		}

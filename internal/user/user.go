@@ -955,6 +955,48 @@ func (s *Store) CountByGroup(ctx context.Context, q database.Queryer) (map[strin
 	return out, rows.Err()
 }
 
+// ProfilesByID reads many accounts by id, keyed by id, a batch at a time.
+// Their membership is not resolved, unlike ByID: this is for showing who an
+// account is (its names and picture), not for deciding what it may do. An id
+// with no account is simply absent.
+func (s *Store) ProfilesByID(ctx context.Context, q database.Queryer, ids []string) (map[string]User, error) {
+	if q == nil {
+		q = s.db
+	}
+	out := make(map[string]User, len(ids))
+	for start := 0; start < len(ids); start += profileBatch {
+		batch := ids[start:min(start+profileBatch, len(ids))]
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		rows, err := q.Query(ctx,
+			`SELECT `+s.columns()+` FROM users WHERE id IN (`+strings.TrimSuffix(strings.Repeat("?, ", len(batch)), ", ")+`)`,
+			args...)
+		if err != nil {
+			return nil, fmt.Errorf("user: profiles by id: %w", err)
+		}
+		for rows.Next() {
+			record, err := s.scan(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[record.ID] = record
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// profileBatch keeps one statement's placeholders far under what either
+// engine accepts.
+const profileBatch = 500
+
 // AdminAccounts is every account that holds an administrator role, keyed by id,
 // in one query. A list of limits asks, for each account-scoped one, whether it
 // names an administrator; asking per limit read the same few rows over and over.
