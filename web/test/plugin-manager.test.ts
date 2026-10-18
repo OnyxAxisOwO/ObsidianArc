@@ -1,19 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { nextTick, type Component } from 'vue';
 import { adminApi, type AdminPlugin, type PluginChange, type PluginPreview } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
 import type { SiteInfo } from '../src/api/auth';
 import { api, ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { installPlugins } from '../src/plugins/registry';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import AdminPlugins from '../src/views/admin/AdminPlugins.vue';
 import PluginAdminPage from '../src/views/admin/PluginAdminPage.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
 import example from './fixtures/example.plugin';
-import { settle, lastButton } from './helpers';
+import { catchAllRouter, adminShell, mountComponent, settle, lastButton } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 // The core ships no plugin, so there is no module for the install panel to
@@ -53,22 +50,16 @@ const EXAMPLE_KEYS = [
   'example.requirement', 'example.webhook_token', 'example.mode',
 ];
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 let panels: HTMLElement;
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
   // The plugins screen keeps its tab in the query, so it needs the app router.
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
-    return () => h(component, props);
-  } });
-  app.use(router);
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(component, props, {
+    host, panels, adminView: adminShell(actions), router: await catchAllRouter(),
+  });
 }
 
 function card(name: string): HTMLElement {
@@ -97,8 +88,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   installPlugins([]);
   forget();

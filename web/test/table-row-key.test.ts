@@ -19,6 +19,7 @@ afterEach(() => {
   app = undefined;
 });
 
+// Not mountComponent: a test changes a prop after mounting, and mountComponent's props are fixed.
 function mount(rows: Ref<Item[]>, columns: Column<Item>[], extra: Record<string, unknown> = {}): HTMLElement {
   const host = document.createElement('div');
   document.body.appendChild(host);

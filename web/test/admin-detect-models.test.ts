@@ -34,6 +34,7 @@ describe('detected models', () => {
     vi.restoreAllMocks();
   });
 
+  // Not mountComponent: the tests use the screen the moment it is mounted, without awaiting, and read its first render.
   function mount(props: Record<string, unknown>) {
     app = createApp({ render: () => h(AdminDetectModels, { providerId: 'p1', mode: 'add', ...props }) });
     app.mount(host);

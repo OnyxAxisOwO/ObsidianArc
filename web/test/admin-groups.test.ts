@@ -1,14 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App } from 'vue';
 import AdminGroups from '../src/views/admin/AdminGroups.vue';
 import { adminApi, emptyPolicy, type Group, type QuotaPolicy } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { settle } from './helpers';
+import { adminShell, mountComponent, settle } from './helpers';
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -24,20 +21,14 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
 });
 
 
 async function mount(): Promise<void> {
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-    return () => h(AdminGroups);
-  } });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(AdminGroups, {}, { host, panels, adminView: adminShell(actions) });
 }
 
 function fieldFor(root: ParentNode, label: string): HTMLElement {

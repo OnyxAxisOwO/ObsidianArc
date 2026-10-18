@@ -10,12 +10,13 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import FeedbackPanel from '../src/views/FeedbackPanel.vue';
 import AdminFeedback from '../src/views/admin/AdminFeedback.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
-import { settle, button } from './helpers';
+import { adminShell, mountComponent, settle, button } from './helpers';
 import { queriesSent } from './admin-query';
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -29,6 +30,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  unmount?.();
+  unmount = undefined;
   app?.unmount();
   app = undefined;
   vi.restoreAllMocks();
@@ -36,16 +39,8 @@ afterEach(() => {
 });
 
 
-async function mount(component: Component): Promise<void> {
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-      return () => h(component);
-    },
-  });
-  app.mount(host);
-  await settle();
+async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
+  unmount = await mountComponent(component, props, { host, panels, adminView: adminShell(actions) });
 }
 
 function type(node: HTMLInputElement | HTMLTextAreaElement, value: string): void {

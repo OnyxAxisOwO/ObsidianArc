@@ -4,12 +4,11 @@
 // press goes to the right endpoint and tells the host to read again.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, defineComponent, h, type App } from 'vue';
 import { api } from '@/api/client';
 import type { CheckinStatus } from '@/api/checkin';
 import OaCheckin from '@/components/OaCheckin.vue';
 import { changeLanguage, t } from '@/composables/useI18n';
-import { settle, button } from './helpers';
+import { mountComponent, settle, button } from './helpers';
 
 vi.mock('@/api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -28,7 +27,7 @@ vi.mock('@/api/client', () => ({
 const get = vi.mocked(api.get);
 const post = vi.mocked(api.post);
 
-let app: App | null = null;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let changed = 0;
 
@@ -41,8 +40,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = null;
+  unmount?.();
+  unmount = undefined;
   vi.clearAllMocks();
 });
 
@@ -56,9 +55,8 @@ function status(over: Partial<CheckinStatus> = {}): CheckinStatus {
 
 
 async function mount(): Promise<void> {
-  app = createApp(defineComponent({ render: () => h(OaCheckin, { onChanged: () => { changed += 1; } }) }));
-  app.mount(host);
-  await settle();
+  // No panel host: the card opens no panel, so one starting to would fail here.
+  unmount = await mountComponent(OaCheckin, { onChanged: () => { changed += 1; } }, { host, panels: null });
 }
 
 function serve(...answers: CheckinStatus[]): void {
@@ -120,8 +118,8 @@ describe('OaCheckin', () => {
     expect(toggle.contains(press)).toBe(false);
 
     serve(status({ streak: 0 }));
-    app?.unmount();
-    app = null;
+    unmount?.();
+    unmount = undefined;
     host.textContent = '';
     await mount();
     expect(host.querySelector('.oa-card-total')).toBeNull();
@@ -132,8 +130,8 @@ describe('OaCheckin', () => {
     serve(status({ rules: [{ ...rule, claimable: true }] }));
     await mount();
     expect(host.querySelector('.oa-collapsible-head')!.textContent).toContain(t('checkinClaimable'));
-    app?.unmount();
-    app = null;
+    unmount?.();
+    unmount = undefined;
     host.textContent = '';
 
     serve(status({ rules: [{ ...rule, claimable: false }] }));

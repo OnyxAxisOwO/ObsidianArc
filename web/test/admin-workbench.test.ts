@@ -30,6 +30,7 @@ afterEach(() => {
   host.remove();
 });
 
+// Not mountComponent: the workbench is given a default slot, which mountComponent's props cannot carry.
 async function mount(path: string): Promise<void> {
   const router = createRouter({
     history: createMemoryHistory(),

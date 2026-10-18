@@ -8,7 +8,7 @@ import { changeLanguage, t, tn } from '../src/composables/useI18n';
 import { absoluteTime } from '../src/lib/format';
 import * as markdown from '../src/chat/markdown';
 import InvitesSection from '../src/views/settings/InvitesSection.vue';
-import { settle, button } from './helpers';
+import { mountComponent, settle, button } from './helpers';
 
 // The "Invites" settings card: claiming somebody else's code (always
 // present), and — when personal invites are on — an account's own code, its
@@ -39,6 +39,7 @@ const ON: ProfileInvites = {
 };
 
 let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 beforeEach(async () => {
@@ -50,6 +51,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  unmount?.();
+  unmount = undefined;
   app?.unmount();
   app = undefined;
   vi.restoreAllMocks();
@@ -58,16 +61,7 @@ afterEach(() => {
 
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  const panels = document.createElement('div');
-  document.body.append(panels);
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      return () => h(component, props);
-    },
-  });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(component, props, { host });
 }
 
 function claimInput(): HTMLInputElement {
@@ -190,7 +184,7 @@ describe('the invites card', () => {
     await mount(InvitesSection);
     expect(host.textContent).toContain(t('inviteUsageLimited', { used: 1, limit: 10 }));
 
-    app?.unmount();
+    unmount?.();
     host.textContent = '';
     vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue({ ...ON, limit: 0 });
     await mount(InvitesSection);
@@ -241,7 +235,7 @@ describe('the invites card', () => {
       await settle();
 
       expect(host.textContent).toContain(expected);
-      app?.unmount();
+      unmount?.();
       host.textContent = '';
     }
   });
@@ -255,7 +249,7 @@ describe('the invites card', () => {
     );
     expect(host.querySelector('.oa-meter')).not.toBeNull();
 
-    app?.unmount();
+    unmount?.();
     host.textContent = '';
     vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue({ ...ON, reward_cards: 0, next_reward_in: 0 });
     await mount(InvitesSection);

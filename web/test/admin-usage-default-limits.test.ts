@@ -45,6 +45,7 @@ let host: HTMLElement;
 let actions: HTMLElement;
 let panels: HTMLElement;
 
+// Not mountComponent: the test checks nothing was saved before the page's first answers arrive, so it must not settle.
 function mount(policies: () => Promise<unknown>, reload: () => void = () => {}): void {
   vi.spyOn(adminApi, 'policies').mockImplementation(policies as typeof adminApi.policies);
   const savePolicy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: emptyPolicy('global', '') });

@@ -10,6 +10,7 @@ function setStats(show: boolean): void {
   currentPreferences.value = { ...currentPreferences.value, show_stats: show };
 }
 
+// Not mountComponent: each test hands in its own render, slots and all, rather than one component and its props.
 function mount(render: () => ReturnType<typeof h>): HTMLElement {
   const host = document.createElement('div');
   document.body.appendChild(host);

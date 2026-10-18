@@ -37,6 +37,7 @@ interface Mounted {
   changes: string[];
 }
 
+// Not mountComponent: a test changes a prop after mounting, and mountComponent's props are fixed.
 function mount(choices = COLOURS, initial = 'red', searchable = false): Mounted {
   const value = ref(initial);
   const changes: string[] = [];

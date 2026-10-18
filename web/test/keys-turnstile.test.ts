@@ -7,15 +7,14 @@
 // have.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { nextTick } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import * as keysAPI from '../src/api/keys';
 import { ApiError, api } from '../src/api/client';
 import { changeLanguage } from '../src/composables/useI18n';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { site, siteInfo } from '../src/stores/session';
 import KeysPanel from '../src/views/KeysPanel.vue';
-import { settle } from './helpers';
+import { mountComponent, settle } from './helpers';
 
 // What the stubbed widget currently holds: a solve sets it, a reset clears it.
 const widget = vi.hoisted(() => ({ token: '' }));
@@ -34,22 +33,17 @@ vi.mock('../src/components/OaTurnstile.vue', () => ({
 
 const KEY = { id: 'key-1', name: 'laptop', prefix: 'sk-test', disabled: false } as keysAPI.ApiKey;
 
-let app: App | null = null;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panelHost: HTMLElement;
 
 async function mount(): Promise<void> {
+  // The keys panel is the route itself here rather than a screen beside a
+  // catch-all, so it gets a router of its own.
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: KeysPanel }] });
   await router.push('/');
   await router.isReady();
-  app = createApp({
-    setup() {
-      providePanelHost(ref(panelHost));
-      return () => h(KeysPanel);
-    },
-  });
-  app.use(router).mount(host);
-  await settle();
+  unmount = await mountComponent(KeysPanel, {}, { host, panels: panelHost, router });
 }
 
 async function press(name: string): Promise<void> {
@@ -73,8 +67,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = null;
+  unmount?.();
+  unmount = undefined;
   site.value = null;
   host.remove();
   panelHost.remove();

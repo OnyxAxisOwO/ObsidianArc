@@ -7,19 +7,16 @@
 // two lists has one record open, not one per list.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App, type Component } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { h, nextTick, type Component } from 'vue';
 import { changeLanguage, t } from '../src/composables/useI18n';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { installPlugins, userPanels } from '../src/plugins/registry';
 import type { AdminListSpec, ArcPlugin, RecordDetail, UserFormValues, UserPanelSpec } from '../src/plugins/types';
 import PluginUserPanel from '../src/views/PluginUserPanel.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
 import { provideOpenRecord } from '../src/views/admin/openRecord';
 import PluginList from '../src/views/admin/PluginList.vue';
 import PluginActionCard from '../src/views/admin/PluginActionCard.vue';
 import { safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
-import { PAST_PANEL_ZOOM_MS, settle, wait, button } from './helpers';
+import { catchAllRouter, adminShell, mountComponent, PAST_PANEL_ZOOM_MS, settle, wait, button } from './helpers';
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -27,25 +24,14 @@ const deferred = <T,>() => {
   return { promise, resolve };
 };
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panelHost: HTMLElement;
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }],
+  unmount = await mountComponent(component, props, {
+    host, panels: panelHost, adminView: adminShell(), router: await catchAllRouter('/'),
   });
-  await router.push('/');
-  await router.isReady();
-  app = createApp({ setup() {
-    providePanelHost(ref(panelHost));
-    provideAdminView({ actionsHost: document.createElement('div'), setTitle() {}, reload() {}, params: [] });
-    return () => h(component, props);
-  } });
-  app.use(router);
-  app.mount(host);
-  await settle();
 }
 
 function input(root: ParentNode, label: string): HTMLInputElement | HTMLTextAreaElement {
@@ -69,8 +55,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   host.remove();
   panelHost.remove();
   installPlugins([]);

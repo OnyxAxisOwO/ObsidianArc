@@ -31,6 +31,7 @@ function row(key: string, requests: number): UsageBreakdown {
 
 const rows = [row('alpha', 50), row('beta', 40), row('gamma', 30), row('delta', 20), row('epsilon', 10)];
 
+// Not mountComponent: the tests use the screen the moment it is mounted, without awaiting, and read its first render.
 function mount(over: { selectable: boolean; rows?: UsageBreakdown[]; limit?: number }): HTMLElement {
   app = createApp({
     render: () => h(UsageBoard, {

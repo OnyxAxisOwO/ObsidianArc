@@ -30,6 +30,7 @@ describe('OaChart selection', () => {
     app = null;
   });
 
+  // Not mountComponent: the tests use the screen the moment it is mounted, without awaiting, and read its first render.
   function mount(selectable: boolean, picked: string[]): HTMLElement {
     const host = document.createElement('div');
     document.body.appendChild(host);

@@ -16,6 +16,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// Not mountComponent: a test changes a prop after mounting, and mountComponent's props are fixed.
 function mount(text: { value: string }): HTMLElement {
   const root = document.createElement('div');
   document.body.append(root);

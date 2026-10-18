@@ -14,6 +14,7 @@ afterEach(() => {
   app = undefined;
 });
 
+// Not mountComponent: the tests use the screen the moment it is mounted, without awaiting, and read its first render.
 function mount(src: string): void {
   const host = document.createElement('div');
   document.body.append(host);

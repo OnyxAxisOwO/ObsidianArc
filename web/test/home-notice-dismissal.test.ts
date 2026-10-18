@@ -3,11 +3,10 @@
 // are joined must not let one notice's dismissal hide a different notice.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createApp, h, type App } from 'vue';
 import HomeNotice from '@/announce/HomeNotice.vue';
 import { changeLanguage } from '@/composables/useI18n';
 import { site, siteInfo } from '@/stores/session';
-import { settle } from './helpers';
+import { mountComponent, settle } from './helpers';
 
 const DISMISSED_KEY = 'obsidian-arc-home-notice-dismissed';
 
@@ -33,13 +32,12 @@ function say(notice: Partial<Notice>): void {
 }
 
 
-let app: App | null = null;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 async function mount(): Promise<void> {
-  app = createApp({ render: () => h(HomeNotice) });
-  app.mount(host);
-  await settle();
+  // No panel host: the notice opens no panel, so one starting to would fail here.
+  unmount = await mountComponent(HomeNotice, {}, { host, panels: null });
 }
 
 const strip = (): HTMLElement | null => host.querySelector<HTMLElement>('.oa-home-notice');
@@ -53,8 +51,8 @@ beforeEach(async () => {
 
 afterEach(() => {
   site.value = null;
-  app?.unmount();
-  app = null;
+  unmount?.();
+  unmount = undefined;
 });
 
 describe('HomeNotice dismissal', () => {
@@ -76,8 +74,8 @@ describe('HomeNotice dismissal', () => {
     await mount();
     host.querySelector<HTMLElement>('.oa-home-notice-close')!.click();
     await settle();
-    app?.unmount();
-    app = null;
+    unmount?.();
+    unmount = undefined;
 
     host = document.createElement('div');
     document.body.appendChild(host);

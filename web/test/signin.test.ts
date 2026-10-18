@@ -20,7 +20,7 @@ import VerifyView from '../src/views/VerifyView.vue';
 import AccountSection from '../src/views/settings/AccountSection.vue';
 import { installPlugins } from '../src/plugins/registry';
 import example, { type ExampleCheck } from './fixtures/example.plugin';
-import { settle, stubLocation, button } from './helpers';
+import { mountComponent, settle, stubLocation, button } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 // A plugin's account field, as the forms label and refuse it.
@@ -43,6 +43,7 @@ vi.mock('vue-router', () => ({
 }));
 
 let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 
@@ -57,6 +58,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  unmount?.();
+  unmount = undefined;
   app?.unmount();
   app = undefined;
   vi.restoreAllMocks();
@@ -71,14 +74,7 @@ function type(node: HTMLInputElement, value: string): void {
 }
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      return () => h(component, props);
-    },
-  });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(component, props, { host, panels });
 }
 
 function offer(providers: { id: string; name: string }[]): void {

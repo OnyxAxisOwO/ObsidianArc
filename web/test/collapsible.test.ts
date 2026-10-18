@@ -29,6 +29,7 @@ afterEach(() => {
 interface Handle { reveal(): void; toggle(): void; expanded: boolean }
 
 /** Mounts one or more sections; returns the first one's exposed handle. */
+// Not mountComponent: the test holds a template ref to the component and hands it slots, which props cannot carry.
 async function mount(options: { id?: string; open?: boolean; extra?: boolean } = {}): Promise<{ handle: () => Handle; clicks: () => number }> {
   const inner = ref<Handle | null>(null);
   let clicks = 0;

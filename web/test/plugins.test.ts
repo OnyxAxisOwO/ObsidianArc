@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App, type Component } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { h, nextTick, type Component } from 'vue';
 import { adminApi, type AdminMailSettings, type AdminUserCheckSettings } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
 import { api, ApiError } from '../src/api/client';
@@ -15,11 +14,10 @@ import type { ArcPlugin } from '../src/plugins/types';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import AuthView from '../src/views/AuthView.vue';
 import AdminSecurity from '../src/views/admin/AdminSecurity.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
 import PluginList from '../src/views/admin/PluginList.vue';
 import PluginUserActions from '../src/views/admin/PluginUserActions.vue';
 import example from './fixtures/example.plugin';
-import { settle, button } from './helpers';
+import { catchAllRouter, adminShell, mountComponent, settle, button } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 // The plugin framework's browser half: which plugins load, how the core
@@ -32,25 +30,16 @@ const ADMIN = makeAccount({
   last_login_at: 1,
 });
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }],
+  // No panel host: the forms and pages here open no panel, so one starting to would fail here.
+  unmount = await mountComponent(component, props, {
+    host, panels: null, adminView: adminShell(actions), router: await catchAllRouter('/'),
   });
-  await router.push('/');
-  await router.isReady();
-  app = createApp({ setup() {
-    provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
-    return () => h(component, props);
-  } });
-  app.use(router);
-  app.mount(host);
-  await settle();
 }
 
 function field(root: ParentNode, label: string): HTMLInputElement {
@@ -74,8 +63,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   installPlugins([]);
   setModuleImporter(null);
@@ -194,8 +183,8 @@ describe('a plugin account field on the sign-up form', () => {
     site.value = { ...siteInfo.value, fields: { ref: 'off' } };
     await mount(AuthView, { mode: 'register' });
     expect(() => field(host, example.fields!['ref']!.label())).toThrow();
-    app!.unmount();
-    app = undefined;
+    unmount!();
+    unmount = undefined;
 
     site.value = { ...siteInfo.value, fields: { ref: 'required' } };
     await mount(AuthView, { mode: 'register' });

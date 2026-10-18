@@ -55,6 +55,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+// Not mountComponent: the bell is the app's root here and waits one round rather than settle's four; moving it would change both under these tests.
 async function mount(): Promise<void> {
   app = createApp(AnnounceBell);
   app.use(router);

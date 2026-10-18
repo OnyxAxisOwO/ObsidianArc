@@ -5,13 +5,12 @@
 // wording — an operator who changes the notice is saying something new.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, type App } from 'vue';
 import HomeNotice from '@/announce/HomeNotice.vue';
 import { changeLanguage, t } from '@/composables/useI18n';
 import { site, siteInfo } from '@/stores/session';
-import { settle } from './helpers';
+import { mountComponent, settle } from './helpers';
 
-let app: App | null = null;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 type Notice = NonNullable<typeof siteInfo.value.home_notice>;
@@ -25,9 +24,8 @@ function say(notice: Partial<Notice>): void {
 
 
 async function mount(props: Record<string, unknown> = {}): Promise<void> {
-  app = createApp({ render: () => h(HomeNotice, props) });
-  app.mount(host);
-  await settle();
+  // No panel host: the notice opens no panel, so one starting to would fail here.
+  unmount = await mountComponent(HomeNotice, props, { host, panels: null });
 }
 
 const strip = (): HTMLElement | null => host.querySelector<HTMLElement>('.oa-home-notice');
@@ -42,8 +40,8 @@ beforeEach(async () => {
 
 afterEach(() => {
   site.value = null;
-  app?.unmount();
-  app = null;
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -112,8 +110,8 @@ describe('HomeNotice', () => {
     say({ text: 'Notice', tone: 'warning' });
     await mount();
     expect(strip()!.classList.contains('tone-warning')).toBe(true);
-    app?.unmount();
-    app = null;
+    unmount?.();
+    unmount = undefined;
     host.textContent = '';
 
     // A server that predates tones, or a row it would never have accepted.
@@ -136,8 +134,8 @@ describe('HomeNotice', () => {
     await settle();
     expect(strip()).toBeNull();
 
-    app?.unmount();
-    app = null;
+    unmount?.();
+    unmount = undefined;
     host.textContent = '';
     await mount();
     expect(strip()).toBeNull();

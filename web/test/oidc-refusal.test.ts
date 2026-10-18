@@ -1,14 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { nextTick } from 'vue';
 import { adminApi, type AdminMailSettings, type AdminUserCheckSettings } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { settingsRefusalText } from '../src/lib/refusal';
 import { adopt, forget } from '../src/stores/session';
 import AdminSecurity from '../src/views/admin/AdminSecurity.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { settle, button } from './helpers';
+import { catchAllRouter, adminShell, mountComponent, settle, button } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 const ADMIN = makeAccount({
@@ -24,7 +22,7 @@ const USER_CHECK: AdminUserCheckSettings = {
   enabled: false, exempt_domains: ['gmail.com', 'outlook.com'], failure_mode: 'reject', api_key_set: true,
 };
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 
@@ -43,19 +41,10 @@ function fieldInput(root: ParentNode, label: string): HTMLInputElement {
 }
 
 async function mount(): Promise<void> {
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }],
+  // No panel host: the security page opens no panel, so one starting to would fail here.
+  unmount = await mountComponent(AdminSecurity, {}, {
+    host, panels: null, adminView: adminShell(actions), router: await catchAllRouter('/'),
   });
-  await router.push('/');
-  await router.isReady();
-  app = createApp({ setup() {
-    provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
-    return () => h(AdminSecurity);
-  } });
-  app.use(router);
-  app.mount(host);
-  await settle();
 }
 
 beforeEach(async () => {
@@ -66,8 +55,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   forget();
 });

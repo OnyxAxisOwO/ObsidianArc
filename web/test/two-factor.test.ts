@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App, type Component } from 'vue';
+import { type Component } from 'vue';
 import * as authApi from '../src/api/auth';
 import { ApiError } from '../src/api/client';
 import * as twoFactorApi from '../src/api/twofactor';
 import type { TwoFactorStatus } from '../src/api/twofactor';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { serverOwned } from '../src/lib/next';
 import {
@@ -13,7 +12,7 @@ import {
 import AuthView from '../src/views/AuthView.vue';
 import SecuritySection from '../src/views/settings/SecuritySection.vue';
 import TwoFactorWizard from '../src/views/settings/TwoFactorWizard.vue';
-import { settle, stubLocation, button } from './helpers';
+import { mountComponent, settle, stubLocation, button } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 // Two-step verification from the browser's side: the code step of signing in,
@@ -38,7 +37,7 @@ const SETUP = {
 
 const CODES = ['abcde-fghjk', 'mnpqr-stvwx', '01234-56789'];
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 beforeEach(async () => {
@@ -51,24 +50,15 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   site.value = null;
   forget();
 });
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  const panels = document.createElement('div');
-  document.body.append(panels);
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      return () => h(component, props);
-    },
-  });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(component, props, { host });
 }
 
 function type(node: HTMLInputElement, value: string): void {
@@ -159,7 +149,7 @@ describe('the code step of signing in', () => {
     pendingSecondFactor.value = true;
     await mount(AuthView, { mode: 'login' });
     expect(host.querySelector('input[type="checkbox"]')).toBeNull();
-    app?.unmount();
+    unmount?.();
 
     site.value = { ...siteInfo.value, two_factor_remember_days: 30 };
     const finish = vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT });
@@ -499,8 +489,8 @@ describe('leaving with regenerated codes unsaved', () => {
     host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     await settle();
 
-    app?.unmount();
-    app = undefined;
+    unmount?.();
+    unmount = undefined;
     await mount(SecuritySection);
 
     expect([...host.querySelectorAll('.oa-2fa-codes li')].map((node) => node.textContent)).toEqual(CODES);
@@ -517,8 +507,8 @@ describe('leaving with regenerated codes unsaved', () => {
     host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     await settle();
 
-    app?.unmount();
-    app = undefined;
+    unmount?.();
+    unmount = undefined;
     forget();
     adopt({ ...ACCOUNT, id: '01ARZ3NDEKTSV4RRFFQ69G5FAW', two_factor_at: 1 });
     await mount(SecuritySection);

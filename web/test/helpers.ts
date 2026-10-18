@@ -10,7 +10,10 @@
 // Those keep their own, with the reason beside them.
 
 import { vi } from 'vitest';
-import { nextTick } from 'vue';
+import { createApp, h, nextTick, shallowRef, type Component } from 'vue';
+import { createMemoryHistory, createRouter, type Router } from 'vue-router';
+import { providePanelHost } from '../src/composables/usePanelHost';
+import { provideAdminView, type AdminView } from '../src/views/admin/adminView';
 
 /** Wall-clock time, for a component's own timer that a test lets run out. */
 export const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -129,4 +132,79 @@ export function lastButton(root: ParentNode, label: string): HTMLButtonElement {
   const found = buttonsNamed(root, label).at(-1);
   if (!found) throw new Error(`Button not found: ${label}`);
   return found;
+}
+
+/**
+ * A router that matches every path, for a screen that reads the route or
+ * links somewhere but is not itself under test as a route. Given a path, it
+ * has already arrived there, so the screen's first render reads that route
+ * rather than the start state a router reports before its first navigation.
+ */
+export async function catchAllRouter(path?: string): Promise<Router> {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }],
+  });
+  if (path !== undefined) {
+    await router.push(path);
+    await router.isReady();
+  }
+  return router;
+}
+
+/** An administration shell that does nothing, for a page mounted on its own. */
+export function adminShell(actionsHost: HTMLElement = document.createElement('div'), view: Partial<AdminView> = {}): AdminView {
+  return { actionsHost, setTitle() {}, reload() {}, params: [], ...view };
+}
+
+export interface MountOptions {
+  /** Where the component is mounted. Absent, a fresh element on the body, removed again on unmount. */
+  host?: HTMLElement;
+  /**
+   * The element OaPanel teleports into. Absent, a fresh one on the body,
+   * removed on unmount; null provides no panel host at all, which is how the
+   * screen is mounted in the app when nothing above it provides one.
+   */
+  panels?: HTMLElement | null;
+  /** Provided as the administration shell, for a backoffice page. */
+  adminView?: AdminView;
+  router?: Router;
+  /** False for a test that looks at the first render, before any answer has been drawn. */
+  settle?: boolean;
+}
+
+/**
+ * Mounts one component with its props in the environment the options name,
+ * lets it settle, and returns what takes it down again. Each test file used
+ * to build this app by hand, and the copies differed in what they provided
+ * without any of them saying why.
+ */
+export async function mountComponent(
+  component: Component,
+  props: Record<string, unknown> = {},
+  options: MountOptions = {},
+): Promise<() => void> {
+  const made: HTMLElement[] = [];
+  const fresh = (): HTMLElement => {
+    const node = document.createElement('div');
+    document.body.append(node);
+    made.push(node);
+    return node;
+  };
+  const host = options.host ?? fresh();
+  const panels = options.panels === undefined ? fresh() : options.panels;
+  const app = createApp({
+    setup() {
+      if (panels) providePanelHost(shallowRef(panels));
+      if (options.adminView) provideAdminView(options.adminView);
+      return () => h(component, props);
+    },
+  });
+  if (options.router) app.use(options.router);
+  app.mount(host);
+  if (options.settle !== false) await settle();
+  return () => {
+    app.unmount();
+    for (const node of made) node.remove();
+  };
 }

@@ -1,23 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App, type Component } from 'vue';
+import { type Component } from 'vue';
 import AdminCodes from '../src/views/admin/AdminCodes.vue';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import GroupMembers from '../src/views/admin/GroupMembers.vue';
 import { adminApi, adminQueryParams, emptyPolicy, type Group, type RedemptionCode } from '../src/admin/api';
 import type { Account } from '../src/api/auth';
 import { saveAsFile } from '../src/api/backup';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { MASK_PLACEHOLDER, safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
 import { adopt, forget } from '../src/stores/session';
-import { settle, button } from './helpers';
+import { adminShell, mountComponent, settle, button } from './helpers';
 import { queriesSent } from './admin-query';
 import { makeAccount } from './fixtures/account';
 
 vi.mock('../src/api/backup', () => ({ saveAsFile: vi.fn() }));
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -31,22 +29,16 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   forget();
   vi.mocked(saveAsFile).mockClear();
 });
 
 
-async function mount(component: Component, props = {}): Promise<void> {
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-    return () => h(component, props);
-  } });
-  app.mount(host);
-  await settle();
+async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
+  unmount = await mountComponent(component, props, { host, panels, adminView: adminShell(actions) });
 }
 
 function input(node: HTMLInputElement, value: string): void {

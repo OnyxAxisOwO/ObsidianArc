@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App, type Component } from 'vue';
+import { type Component } from 'vue';
 import * as sessionsApi from '../src/api/sessions';
 import type { DeviceSession } from '../src/api/sessions';
 import * as twoFactorApi from '../src/api/twofactor';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import SecuritySection from '../src/views/settings/SecuritySection.vue';
-import { settle, button } from './helpers';
+import { mountComponent, settle, button } from './helpers';
 
 // The "Signed-in devices" card: listing, signing a single device out, "sign
 // out other devices", and the "this device" badge.
@@ -28,7 +27,7 @@ const OTHER_DEVICE: DeviceSession = {
   current: false,
 };
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 beforeEach(async () => {
@@ -39,22 +38,13 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
 });
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  const panels = document.createElement('div');
-  document.body.append(panels);
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      return () => h(component, props);
-    },
-  });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(component, props, { host });
 }
 
 describe('the signed-in devices card', () => {

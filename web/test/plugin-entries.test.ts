@@ -17,7 +17,7 @@ import type { ActionCardSpec, ChallengeProof, UserEntryView, UserFormValues, Use
 import PluginUserPanel from '../src/views/PluginUserPanel.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import PluginActionCard from '../src/views/admin/PluginActionCard.vue';
-import { settle, button } from './helpers';
+import { catchAllRouter, adminShell, mountComponent, settle, button } from './helpers';
 
 vi.mock('../src/lib/pow', () => ({
   solvePoW: vi.fn(() => ({ promise: Promise.resolve({ salt: 's', nonce: 7 }), cancel() {} })),
@@ -28,24 +28,14 @@ vi.mock('../src/api/auth', async (importOriginal) => ({
 }));
 
 let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panelHost: HTMLElement;
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }],
+  unmount = await mountComponent(component, props, {
+    host, panels: panelHost, adminView: adminShell(), router: await catchAllRouter('/'),
   });
-  await router.push('/');
-  await router.isReady();
-  app = createApp({ setup() {
-    providePanelHost(ref(panelHost));
-    provideAdminView({ actionsHost: document.createElement('div'), setTitle() {}, reload() {}, params: [] });
-    return () => h(component, props);
-  } });
-  app.use(router);
-  app.mount(host);
-  await settle();
 }
 
 function label(root: ParentNode, text: string): HTMLElement | undefined {
@@ -61,6 +51,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  unmount?.();
+  unmount = undefined;
   app?.unmount();
   app = undefined;
   host.remove();
@@ -107,7 +99,7 @@ describe('a panel of entries an operator wrote', () => {
     expect(panelHost.textContent).toContain('Spring survey');
     expect(panelHost.textContent).toContain('Ends soon');
 
-    app?.unmount();
+    unmount?.();
     await mount(PluginUserPanel, { slug: 'events', entry: 'e1' });
     expect(panelHost.querySelector('.oa-plugin-entry-body')?.textContent).toBe('Tell us how we did.\nTwo questions.');
     expect(panelHost.textContent).toContain('5 credits');

@@ -17,6 +17,7 @@ afterEach(() => {
  * component calls. `captured` is exposed because more than one of the ways a
  * drag ends depends on whether the capture is still held when it does.
  */
+// Not mountComponent: the tests use the screen the moment it is mounted, without awaiting, and read its first render.
 function mount(): { handle: HTMLElement; captured: () => boolean; drop: () => void } {
   const host = document.createElement('div');
   document.body.append(host);

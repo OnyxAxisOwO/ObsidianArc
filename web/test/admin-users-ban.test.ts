@@ -1,15 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { nextTick } from 'vue';
 import { adminApi, emptyPolicy, type Account } from '../src/admin/api';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { currentUser, site, siteInfo } from '../src/stores/session';
 import { installPlugins } from '../src/plugins/registry';
 import { t } from '../src/composables/useI18n';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
 import example from './fixtures/example.plugin';
-import { PAST_SEARCH_DEBOUNCE_MS, settle, wait } from './helpers';
+import { adminShell, catchAllRouter, mountComponent, PAST_SEARCH_DEBOUNCE_MS, settle, wait } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 const deferred = <T,>() => {
@@ -38,7 +35,7 @@ const detailOf = (row: Account): Detail => ({
 });
 
 describe('AdminUsers, banning with a reason', () => {
-  let app: App | undefined;
+  let unmount: (() => void) | undefined;
   let host: HTMLElement;
   let panels: HTMLElement;
   let catalogue: Account[];
@@ -60,17 +57,9 @@ describe('AdminUsers, banning with a reason', () => {
       return { user: next };
     });
 
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
-    app = createApp({
-      setup() {
-        providePanelHost(shallowRef(panels));
-        provideAdminView({ actionsHost: document.createElement('div'), setTitle() {}, reload() {}, params: [] });
-        return () => h(AdminUsers);
-      },
+    unmount = await mountComponent(AdminUsers, {}, {
+      host, panels, adminView: adminShell(), router: await catchAllRouter(),
     });
-    app.use(router);
-    app.mount(host);
-    await settle();
   }
 
   const rowBox = (index: number) => host.querySelectorAll<HTMLInputElement>('tbody input[type="checkbox"]')[index]!;
@@ -94,8 +83,8 @@ describe('AdminUsers, banning with a reason', () => {
   });
 
   afterEach(() => {
-    app?.unmount();
-    app = undefined;
+    unmount?.();
+    unmount = undefined;
     host.remove();
     panels.remove();
     currentUser.value = null;
@@ -376,8 +365,8 @@ describe('AdminUsers, banning with a reason', () => {
     typeInto(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'alp');
     await nextTick();
 
-    app!.unmount();
-    app = undefined;
+    unmount!();
+    unmount = undefined;
     await wait(PAST_SEARCH_DEBOUNCE_MS);
     expect(searches()).toBe(before);
   });

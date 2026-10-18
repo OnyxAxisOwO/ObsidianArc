@@ -14,7 +14,7 @@ import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { adopt, forget } from '../src/stores/session';
 import AccountSection from '../src/views/settings/AccountSection.vue';
-import { settle, button } from './helpers';
+import { mountComponent, settle, button } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 const route = { path: '/settings', fullPath: '/settings', query: {} as Record<string, string>, hash: '', meta: {} };
@@ -30,6 +30,7 @@ const ACCOUNT = makeAccount({
 });
 
 let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 beforeEach(async () => {
@@ -43,6 +44,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  unmount?.();
+  unmount = undefined;
   app?.unmount();
   app = undefined;
   vi.restoreAllMocks();
@@ -50,16 +53,7 @@ afterEach(() => {
 });
 
 async function mount(component: Component): Promise<void> {
-  const panels = document.createElement('div');
-  document.body.append(panels);
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      return () => h(component, { query: '', active: true });
-    },
-  });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(component, { query: '', active: true }, { host });
 }
 
 /** Every password field on the panel: the current password an address change asks for, and the password group's. */

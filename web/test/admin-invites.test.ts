@@ -1,18 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App, type Component } from 'vue';
+import { type Component } from 'vue';
 import AdminInvites from '../src/views/admin/AdminInvites.vue';
 import { adminApi, adminQueryParams, type InviteCode, type InviteStats, type InviteUse } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
 import { ApiError } from '../src/api/client';
 import * as markdown from '../src/chat/markdown';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { siteInfo } from '../src/stores/session';
-import { settle, button } from './helpers';
+import { adminShell, mountComponent, settle, button } from './helpers';
 import { queriesSent } from './admin-query';
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -26,20 +24,14 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
 });
 
 
-async function mount(component: Component): Promise<void> {
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-    return () => h(component);
-  } });
-  app.mount(host);
-  await settle();
+async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
+  unmount = await mountComponent(component, props, { host, panels, adminView: adminShell(actions) });
 }
 
 function fieldFor(root: ParentNode, label: string): HTMLElement {

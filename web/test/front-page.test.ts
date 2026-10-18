@@ -110,6 +110,7 @@ afterEach(() => {
   forget();
 });
 
+// Not mountComponent: the view is the app's root with nothing above it, and it waits one tick then one timer round, which is when these tests look for the async page.
 async function mount(component: Parameters<typeof createApp>[0]): Promise<void> {
   app = createApp(component);
   app.mount(host);

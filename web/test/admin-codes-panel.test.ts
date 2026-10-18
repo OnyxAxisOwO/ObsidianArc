@@ -2,16 +2,13 @@
 // button tells the operator when a copy was refused.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App } from 'vue';
 import AdminCodes from '../src/views/admin/AdminCodes.vue';
 import { adminApi, type RedemptionCode } from '../src/admin/api';
 import * as markdown from '../src/chat/markdown';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { settle, button } from './helpers';
+import { adminShell, mountComponent, settle, button } from './helpers';
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -26,20 +23,14 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
 });
 
 
 async function mount(): Promise<void> {
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-    return () => h(AdminCodes);
-  } });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(AdminCodes, {}, { host, panels, adminView: adminShell(actions) });
 }
 
 function fieldFor(root: ParentNode, label: string): HTMLElement {

@@ -2,38 +2,32 @@
 // language. Only a refusal without a code keeps the server's own sentence.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { nextTick } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import KeysPanel from '../src/views/KeysPanel.vue';
 import { ApiError, api } from '../src/api/client';
 import * as keysAPI from '../src/api/keys';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
-import { settle } from './helpers';
+import { mountComponent, settle } from './helpers';
 
 const KEY: keysAPI.ApiKey = {
   id: 'key-1', name: 'My laptop', prefix: 'sk-test', disabled: false,
   expires_at: 0, last_used_at: 0, created_at: 1, updated_at: 1,
 };
 
-let app: App | null = null;
+let unmount: (() => void) | undefined;
 let panelHost: HTMLElement;
 
 
 async function mount(): Promise<void> {
   const host = document.createElement('div');
   panelHost.append(host);
+  // The keys panel is the route itself here rather than a screen beside a
+  // catch-all, so it gets a router of its own.
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: KeysPanel }] });
   await router.push('/');
   await router.isReady();
-  app = createApp({
-    setup() {
-      providePanelHost(ref(panelHost));
-      return () => h(KeysPanel);
-    },
-  });
-  app.use(router).mount(host);
-  await settle();
+  unmount = await mountComponent(KeysPanel, {}, { host, panels: panelHost, router });
 }
 
 async function submitName(name: string): Promise<void> {
@@ -54,8 +48,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  app?.unmount();
-  app = null;
+  unmount?.();
+  unmount = undefined;
   panelHost.remove();
   vi.restoreAllMocks();
   await changeLanguage('en');

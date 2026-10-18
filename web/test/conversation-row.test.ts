@@ -31,6 +31,7 @@ let host: HTMLElement;
 let row: Conversation;
 let removed = 0;
 
+// Not mountComponent: the row's menu comes from a composable that has to run in the same setup that draws the row.
 function mount(): void {
   host = document.createElement('div');
   document.body.appendChild(host);
