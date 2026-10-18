@@ -499,13 +499,8 @@ func (s *Store) AddReply(ctx context.Context, in ReplyInput) (Reply, error) {
 	}
 
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		locked, err := tx.Exec(ctx,
-			`UPDATE feedback SET updated_at = updated_at WHERE id = ?`, in.FeedbackID)
-		if err != nil {
-			return fmt.Errorf("feedback: lock thread: %w", err)
-		}
-		if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
-			return ErrNotFound
+		if err := lockThread(ctx, tx, in.FeedbackID); err != nil {
+			return err
 		}
 
 		// Ownership is read inside the lock rather than before it, so a
@@ -558,7 +553,7 @@ func (s *Store) AddReply(ctx context.Context, in ReplyInput) (Reply, error) {
 		// Whoever just wrote has by definition read everything before it, so
 		// one statement sets both flags: the other side is now owed a look,
 		// and this side is not.
-		_, err = tx.Exec(ctx,
+		_, err := tx.Exec(ctx,
 			`UPDATE feedback SET author_unread = ?, operator_unread = ?, updated_at = ? WHERE id = ?`,
 			in.FromStaff, !in.FromStaff, now, in.FeedbackID)
 		if err != nil {
@@ -638,15 +633,11 @@ func (s *Store) Thread(ctx context.Context, q database.Queryer, feedbackID, owne
 func (s *Store) OpenThread(ctx context.Context, feedbackID, ownerID string, staff bool) (Thread, error) {
 	var thread Thread
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		locked, err := tx.Exec(ctx,
-			`UPDATE feedback SET updated_at = updated_at WHERE id = ?`, feedbackID)
-		if err != nil {
-			return fmt.Errorf("feedback: lock thread: %w", err)
-		}
-		if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
-			return ErrNotFound
+		if err := lockThread(ctx, tx, feedbackID); err != nil {
+			return err
 		}
 
+		var err error
 		thread, err = s.Thread(ctx, tx, feedbackID, ownerID)
 		if err != nil {
 			return err
@@ -690,6 +681,23 @@ func (s *Store) UnreadFor(ctx context.Context, q database.Queryer, userID string
 	return count, nil
 }
 
+// lockThread takes the thread's row lock with a no-op UPDATE, the portable
+// spelling the repository settles on, so every read-then-write on one thread
+// (a reply, a reader clearing its flag, a deletion moving the flags back)
+// runs one after another across instances. A thread that is gone locks no
+// row and reads as ErrNotFound.
+func lockThread(ctx context.Context, tx *database.Tx, feedbackID string) error {
+	locked, err := tx.Exec(ctx,
+		`UPDATE feedback SET updated_at = updated_at WHERE id = ?`, feedbackID)
+	if err != nil {
+		return fmt.Errorf("feedback: lock thread: %w", err)
+	}
+	if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteReply removes one turn. For spam inside an otherwise real thread —
 // deleting the whole report is the other, blunter answer.
 //
@@ -697,13 +705,8 @@ func (s *Store) UnreadFor(ctx context.Context, q database.Queryer, userID string
 // them. Deleting an older one leaves the conversation's last word where it was.
 func (s *Store) DeleteReply(ctx context.Context, feedbackID, replyID string) error {
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
-		locked, err := tx.Exec(ctx,
-			`UPDATE feedback SET updated_at = updated_at WHERE id = ?`, feedbackID)
-		if err != nil {
-			return fmt.Errorf("feedback: lock thread: %w", err)
-		}
-		if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
-			return ErrNotFound
+		if err := lockThread(ctx, tx, feedbackID); err != nil {
+			return err
 		}
 
 		var newestID string

@@ -20,22 +20,11 @@ import (
 // VerifyArchiveKey lets the offline command reject a missing or wrong master
 // key before it creates or migrates a destination database.
 func VerifyArchiveKey(path string, masterKey []byte) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("system backup: open restore file: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("system backup: inspect restore file: %w", err)
-	}
-	if info.Size() < 1 || info.Size() > MaxArchiveBytes {
-		return fmt.Errorf("system backup: archive must be between 1 byte and %d bytes", MaxArchiveBytes)
-	}
-	_, manifest, err := readManifest(file, info.Size())
+	file, _, manifest, err := openArchive(path)
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 	return verifyKeyCheck(manifest, masterKey)
 }
 
@@ -51,22 +40,11 @@ func VerifyArchiveKey(path string, masterKey []byte) error {
 // instance that removed a plugin's data or never installed it does not get its
 // tables back and fail the schema check on them.
 func PrepareRestore(ctx context.Context, db *database.DB, path string, masterKey []byte, extra ...fs.FS) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("system backup: open restore file: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("system backup: inspect restore file: %w", err)
-	}
-	if info.Size() < 1 || info.Size() > MaxArchiveBytes {
-		return fmt.Errorf("system backup: archive must be between 1 byte and %d bytes", MaxArchiveBytes)
-	}
-	archive, manifest, err := readManifest(file, info.Size())
+	file, archive, manifest, err := openArchive(path)
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 	if manifest.Dialect != db.Dialect() {
 		return fmt.Errorf("system backup: archive uses %s but destination uses %s; restore with the same database engine", manifest.Dialect, db.Dialect())
 	}
@@ -132,22 +110,11 @@ func archivedPackages(ctx context.Context, archive *zip.Reader, manifest archive
 // archive. The caller owns the offline requirement; this function still
 // rechecks emptiness inside the same transaction as the imports.
 func RestoreArchive(ctx context.Context, db *database.DB, path string, masterKey []byte) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("system backup: open restore file: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("system backup: inspect restore file: %w", err)
-	}
-	if info.Size() < 1 || info.Size() > MaxArchiveBytes {
-		return fmt.Errorf("system backup: archive must be between 1 byte and %d bytes", MaxArchiveBytes)
-	}
-	archive, manifest, err := readManifest(file, info.Size())
+	file, archive, manifest, err := openArchive(path)
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 	if manifest.Dialect != db.Dialect() {
 		return fmt.Errorf("system backup: archive uses %s but destination uses %s; restore with the same database engine", manifest.Dialect, db.Dialect())
 	}
@@ -210,6 +177,32 @@ func RestoreArchive(ctx context.Context, db *database.DB, path string, masterKey
 		}
 		return nil
 	})
+}
+
+// openArchive is the front door every restore entry shares, so the size
+// ceiling and the manifest checks cannot be tightened on one path and missed
+// on another. The caller closes the file once it is done with the reader,
+// which reads from it lazily.
+func openArchive(path string) (*os.File, *zip.Reader, archiveManifest, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, archiveManifest{}, fmt.Errorf("system backup: open restore file: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, nil, archiveManifest{}, fmt.Errorf("system backup: inspect restore file: %w", err)
+	}
+	if info.Size() < 1 || info.Size() > MaxArchiveBytes {
+		file.Close()
+		return nil, nil, archiveManifest{}, fmt.Errorf("system backup: archive must be between 1 byte and %d bytes", MaxArchiveBytes)
+	}
+	archive, manifest, err := readManifest(file, info.Size())
+	if err != nil {
+		file.Close()
+		return nil, nil, archiveManifest{}, err
+	}
+	return file, archive, manifest, nil
 }
 
 // A nil key means the operator has declared the original lost and chosen to

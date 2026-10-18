@@ -47,16 +47,15 @@ func (h *Handlers) saveSystemBackup(w http.ResponseWriter, r *http.Request) erro
 	if err := httpx.DecodeJSON(w, r, &input, 16<<10); err != nil {
 		return err
 	}
-	retentionHours := input.RetentionHours
-	if retentionHours == 0 && input.RetentionDays > 0 {
-		retentionHours = input.RetentionDays * 24
-	}
+	// Days are passed through rather than converted here: Store.Save owns
+	// the conversion, so the two spellings cannot drift apart.
 	cfg := systembackup.Config{
 		Type: input.Type, Enabled: input.Enabled, Endpoint: input.Endpoint, Bucket: input.Bucket,
 		Region: input.Region, Prefix: input.Prefix, AccessKeyID: input.AccessKeyID,
 		SecretKey: input.SecretAccessKey, WebDAVURL: input.WebDAVURL,
 		WebDAVUsername: input.WebDAVUsername, WebDAVPassword: input.WebDAVPassword,
-		IntervalHours: input.IntervalHours, RetentionHours: retentionHours,
+		IntervalHours: input.IntervalHours, RetentionHours: input.RetentionHours,
+		RetentionDays: input.RetentionDays,
 	}
 	if err := h.SystemBackup.Save(r.Context(), cfg); err != nil {
 		return backupAPIError(err)

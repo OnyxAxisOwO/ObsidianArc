@@ -14,7 +14,6 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
@@ -175,7 +174,7 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 	}
 	status.IntervalHours = defaultInt(status.IntervalHours, DefaultIntervalHours)
 	status.RetentionHours = defaultInt(status.RetentionHours, DefaultRetentionHours)
-	status.RetentionDays = (status.RetentionHours + 23) / 24
+	status.RetentionDays = retentionDays(status.RetentionHours)
 	if status.Region == "" {
 		status.Region = DefaultRegion
 	}
@@ -211,27 +210,18 @@ func (s *Store) Load(ctx context.Context) (Config, error) {
 	if cfg.Type == "" {
 		cfg.Type = StorageTypeS3
 	}
-	if len(access) > 0 {
-		cfg.AccessKeyID, err = s.box.Open(access)
-		if err != nil {
-			return Config{}, fmt.Errorf("system backup: decrypt access key: %w", err)
-		}
+	if cfg.AccessKeyID, err = s.openSaved(access, "access key"); err != nil {
+		return Config{}, err
 	}
-	if len(secretValue) > 0 {
-		cfg.SecretKey, err = s.box.Open(secretValue)
-		if err != nil {
-			return Config{}, fmt.Errorf("system backup: decrypt secret key: %w", err)
-		}
+	if cfg.SecretKey, err = s.openSaved(secretValue, "secret key"); err != nil {
+		return Config{}, err
 	}
-	if len(webdavPass) > 0 {
-		cfg.WebDAVPassword, err = s.box.Open(webdavPass)
-		if err != nil {
-			return Config{}, fmt.Errorf("system backup: decrypt webdav password: %w", err)
-		}
+	if cfg.WebDAVPassword, err = s.openSaved(webdavPass, "webdav password"); err != nil {
+		return Config{}, err
 	}
 	cfg.IntervalHours = defaultInt(cfg.IntervalHours, DefaultIntervalHours)
 	cfg.RetentionHours = defaultInt(cfg.RetentionHours, DefaultRetentionHours)
-	cfg.RetentionDays = (cfg.RetentionHours + 23) / 24
+	cfg.RetentionDays = retentionDays(cfg.RetentionHours)
 	if cfg.Region == "" {
 		cfg.Region = DefaultRegion
 	}
@@ -246,8 +236,11 @@ func (s *Store) Load(ctx context.Context) (Config, error) {
 // That keeping only holds while the destination the credential was saved for
 // is unchanged; moving the destination without the credentials is refused.
 func (s *Store) Save(ctx context.Context, cfg Config) error {
+	// No default here, unlike effectiveRetentionHours: a save that names no
+	// retention at all is refused by the range check below rather than
+	// quietly given a week.
 	if cfg.RetentionHours == 0 && cfg.RetentionDays > 0 {
-		cfg.RetentionHours = cfg.RetentionDays * 24
+		cfg.RetentionHours = cfg.RetentionDays * hoursPerDay
 	}
 	if cfg.IntervalHours < MinIntervalHours || cfg.IntervalHours > MaxIntervalHours {
 		return invalidConfig(fmt.Sprintf("Interval must be between %d and %d hours.", MinIntervalHours, MaxIntervalHours))
@@ -320,26 +313,23 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 		if (s3Moved && keysNotTyped) || (webdavMoved && passwordNotTyped) {
 			return ErrCredentialsNeededForMove
 		}
+		// The saved value is read only for a field left blank, and only to
+		// validate the merged configuration; it is never sealed again.
 		merged := cfg
-		if merged.AccessKeyID == "" && len(access) > 0 {
-			var err error
-			merged.AccessKeyID, err = s.box.Open(access)
-			if err != nil {
-				return fmt.Errorf("system backup: decrypt saved access key: %w", err)
+		var err error
+		if merged.AccessKeyID == "" {
+			if merged.AccessKeyID, err = s.openSaved(access, "saved access key"); err != nil {
+				return err
 			}
 		}
-		if merged.SecretKey == "" && len(secretValue) > 0 {
-			var err error
-			merged.SecretKey, err = s.box.Open(secretValue)
-			if err != nil {
-				return fmt.Errorf("system backup: decrypt saved secret key: %w", err)
+		if merged.SecretKey == "" {
+			if merged.SecretKey, err = s.openSaved(secretValue, "saved secret key"); err != nil {
+				return err
 			}
 		}
-		if merged.WebDAVPassword == "" && len(webdavPass) > 0 {
-			var err error
-			merged.WebDAVPassword, err = s.box.Open(webdavPass)
-			if err != nil {
-				return fmt.Errorf("system backup: decrypt saved webdav password: %w", err)
+		if merged.WebDAVPassword == "" {
+			if merged.WebDAVPassword, err = s.openSaved(webdavPass, "saved webdav password"); err != nil {
+				return err
 			}
 		}
 		if merged.Enabled {
@@ -347,26 +337,14 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 				return err
 			}
 		}
-		if cfg.AccessKeyID != "" {
-			var err error
-			access, err = s.box.Seal(cfg.AccessKeyID)
-			if err != nil {
-				return fmt.Errorf("system backup: seal access key: %w", err)
-			}
+		if access, err = s.sealTyped(cfg.AccessKeyID, access, "access key"); err != nil {
+			return err
 		}
-		if cfg.SecretKey != "" {
-			var err error
-			secretValue, err = s.box.Seal(cfg.SecretKey)
-			if err != nil {
-				return fmt.Errorf("system backup: seal secret key: %w", err)
-			}
+		if secretValue, err = s.sealTyped(cfg.SecretKey, secretValue, "secret key"); err != nil {
+			return err
 		}
-		if cfg.WebDAVPassword != "" {
-			var err error
-			webdavPass, err = s.box.Seal(cfg.WebDAVPassword)
-			if err != nil {
-				return fmt.Errorf("system backup: seal webdav password: %w", err)
-			}
+		if webdavPass, err = s.sealTyped(cfg.WebDAVPassword, webdavPass, "webdav password"); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE system_backups SET enabled = ?, endpoint = ?, bucket = ?,
 			region = ?, prefix = ?, access_key_id_enc = ?, secret_access_key_enc = ?,
@@ -375,7 +353,7 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 			WHERE id = ?`,
 			cfg.Enabled, cfg.Endpoint, cfg.Bucket, cfg.Region, cfg.Prefix,
 			nilIfEmpty(access), nilIfEmpty(secretValue), cfg.IntervalHours, cfg.RetentionHours,
-			(cfg.RetentionHours+23)/24, cfg.Type, cfg.WebDAVURL, cfg.WebDAVUsername,
+			retentionDays(cfg.RetentionHours), cfg.Type, cfg.WebDAVURL, cfg.WebDAVUsername,
 			nilIfEmpty(webdavPass), singletonID); err != nil {
 			return fmt.Errorf("system backup: save configuration: %w", err)
 		}
@@ -453,13 +431,16 @@ func (s *Store) finish(ctx context.Context, token, status, failure string, now t
 	// would leave the lease held until it expires. Cleaning first keeps the
 	// value storable; truncation is by rune so the cut never splits a character.
 	failure = text.Truncate(text.Clean(failure), 600)
-	// The count is a read-modify-write, so it holds the settings row lock across
-	// both: two instances finishing at once must not each read the same count and
-	// store it plus one. The lease release and the count share a transaction, so
-	// a failure is never stored without its count and the count never drifts from
-	// the status it describes.
+	// The count is a read-modify-write, so it holds the scheduler's own row lock
+	// (lockInstance) across both: two instances finishing at once must not each
+	// read the same count and store it plus one. It is the lock claim reads the
+	// count under and a restore deletes it under; the instance-wide settings
+	// lock guards account invariants and would leave this write unserialised
+	// against those two. The lease release and the count share a transaction,
+	// so a failure is never stored without its count and the count never drifts
+	// from the status it describes.
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
-		if err := settings.Lock(ctx, tx); err != nil {
+		if err := lockInstance(ctx, tx); err != nil {
 			return err
 		}
 		var (
@@ -578,6 +559,54 @@ func defaultInt(value, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+// openSaved decrypts a stored credential; a column that was never set reads
+// as blank rather than as an error, which is what an unconfigured field is.
+func (s *Store) openSaved(sealed []byte, label string) (string, error) {
+	if len(sealed) == 0 {
+		return "", nil
+	}
+	value, err := s.box.Open(sealed)
+	if err != nil {
+		return "", fmt.Errorf("system backup: decrypt %s: %w", label, err)
+	}
+	return value, nil
+}
+
+// sealTyped seals a credential the operator typed and returns the saved
+// ciphertext untouched for one left blank, so keeping a key never needs it
+// decrypted and sealed again.
+func (s *Store) sealTyped(typed string, saved []byte, label string) ([]byte, error) {
+	if typed == "" {
+		return saved, nil
+	}
+	sealed, err := s.box.Seal(typed)
+	if err != nil {
+		return nil, fmt.Errorf("system backup: seal %s: %w", label, err)
+	}
+	return sealed, nil
+}
+
+const hoursPerDay = 24
+
+// effectiveRetentionHours is the retention a run applies. Days are the older
+// spelling of the same setting and are honoured only when hours are unset; a
+// configuration with neither keeps the default rather than pruning everything.
+func effectiveRetentionHours(cfg Config) int {
+	if cfg.RetentionHours > 0 {
+		return cfg.RetentionHours
+	}
+	if cfg.RetentionDays > 0 {
+		return cfg.RetentionDays * hoursPerDay
+	}
+	return DefaultRetentionHours
+}
+
+// retentionDays rounds up, so a retention of a few hours still reads as a day
+// in the retention_days column and on the page rather than as zero.
+func retentionDays(hours int) int {
+	return (hours + hoursPerDay - 1) / hoursPerDay
 }
 
 func nilIfEmpty(value []byte) any {

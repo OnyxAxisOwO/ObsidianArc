@@ -262,14 +262,7 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 				err = backend.PutObject(ctx, objectKey, io.NewSectionReader(file, 0, size), size, digest)
 				if err == nil {
 					uploadedAt = time.Now().UnixMilli()
-					retentionHours := cfg.RetentionHours
-					if retentionHours == 0 && cfg.RetentionDays > 0 {
-						retentionHours = cfg.RetentionDays * 24
-					}
-					if retentionHours == 0 {
-						retentionHours = DefaultRetentionHours
-					}
-					log(fmt.Sprintf("Upload completed. Checking retention policy (%d hours)...", retentionHours))
+					log(fmt.Sprintf("Upload completed. Checking retention policy (%d hours)...", effectiveRetentionHours(cfg)))
 					// The archive is already stored, so a failed prune is a warning on
 					// this run, not a failed run. Reporting it as one would show an
 					// operator a failed backup that exists, and the next run retries.
@@ -321,14 +314,7 @@ func backupObjectKey(cfg Config, instanceID string, now time.Time) string {
 
 func pruneExpired(ctx context.Context, client StorageBackend, cfg Config, instanceID string, now time.Time) (int, error) {
 	ownedPrefix := fmt.Sprintf("%s/%s/", cfg.Prefix, instanceID)
-	retentionHours := cfg.RetentionHours
-	if retentionHours == 0 && cfg.RetentionDays > 0 {
-		retentionHours = cfg.RetentionDays * 24
-	}
-	if retentionHours == 0 {
-		retentionHours = DefaultRetentionHours
-	}
-	cutoff := now.Add(-time.Duration(retentionHours) * time.Hour)
+	cutoff := now.Add(-time.Duration(effectiveRetentionHours(cfg)) * time.Hour)
 	pruned := 0
 	err := client.ListObjects(ctx, ownedPrefix, func(object listedObject) error {
 		at, ok := generatedBackupTime(object.Key, ownedPrefix)

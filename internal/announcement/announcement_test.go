@@ -495,6 +495,77 @@ func TestMarkSeenLeavesWhatTheReaderWasNotShown(t *testing.T) {
 	}
 }
 
+// MarkSeen takes the same row locks as Update, several rows at a time, so
+// readers marking overlapping lists while an operator edits and unpublishes
+// those rows must neither deadlock nor fail, and a row that stayed a draft
+// throughout must never be marked read for anyone.
+func TestMarkSeenRacingEditsNeverMarksADraft(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	live := f.write(t, Input{Title: "Live", Body: "b", Published: true, DisplayMode: DisplayOnce})
+	draft := f.write(t, Input{Title: "Draft", Body: "d"})
+	const readers = 6
+	accounts := make([]user.User, readers)
+	for i := range accounts {
+		accounts[i] = f.reader(t, "reader"+string(rune('a'+i)))
+	}
+
+	start := make(chan struct{})
+	failures := make(chan error, readers*10+20)
+	var workers sync.WaitGroup
+	for i := range readers {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			ids := []string{live.ID, draft.ID}
+			if i%2 == 1 {
+				ids = []string{draft.ID, live.ID}
+			}
+			for range 10 {
+				if err := f.store.MarkSeen(ctx, accounts[i].ID, ids); err != nil {
+					failures <- err
+				}
+			}
+		}()
+	}
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		<-start
+		for n := range 10 {
+			if _, err := f.store.Update(ctx, draft.ID, Input{Title: "Draft", Body: "d"}); err != nil {
+				failures <- err
+			}
+			if _, err := f.store.Update(ctx, live.ID, Input{Title: "Live", Body: "b", DisplayMode: DisplayOnce, Published: n%2 == 0}); err != nil {
+				failures <- err
+			}
+		}
+	}()
+	close(start)
+	workers.Wait()
+	close(failures)
+	for err := range failures {
+		t.Errorf("racing call: %v", err)
+	}
+
+	if _, err := f.store.Update(ctx, draft.ID, Input{Title: "Draft", Body: "d", DisplayMode: DisplayOnce, Published: true}); err != nil {
+		t.Fatalf("publish draft: %v", err)
+	}
+	for _, account := range accounts {
+		mine, err := f.store.ListFor(ctx, account.ID)
+		if err != nil {
+			t.Fatalf("list for reader: %v", err)
+		}
+		for _, record := range mine {
+			if record.ID == draft.ID && record.Read {
+				t.Fatalf("a draft was marked read for %s while it was still a draft", account.Username)
+			}
+		}
+	}
+}
+
 // A long history names more announcements than one statement may bind:
 // PostgreSQL refuses more than 65,535 parameters in a statement. The published
 // rows at both ends of the list must still be marked, so the list is cut into
