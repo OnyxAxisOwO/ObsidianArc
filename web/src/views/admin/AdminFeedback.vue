@@ -132,6 +132,13 @@ async function load(): Promise<void> {
   try {
     const data = await adminApi.feedback(query());
     if (mine !== ticket) return;
+    // A page past the end, because the list shrank under it (a row deleted,
+    // a sliding window moving on), is asked again for its last page rather
+    // than left empty: with one page left the pager shows no way back.
+    if (data.total > 0 && offset.value >= data.total) {
+      offset.value = Math.floor((data.total - 1) / pageSize.value) * pageSize.value;
+      await load(); return;
+    }
     rows.value = data.feedback;
     total.value = data.total;
     summary.value = data.summary;

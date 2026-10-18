@@ -10,7 +10,7 @@
 // Laid out like Availability, which has the same shape: a preview of what
 // readers see, then the policy that governs it.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { ApiError } from '@/api/client';
 import { adminApi } from '@/admin/api';
 import { fetchLeaderboard, type Leaderboard } from '@/api/leaderboard';
@@ -34,6 +34,10 @@ const error = ref('');
 const loaded = ref(false);
 const busy = ref(false);
 const saveLabel = ref('');
+// Kept so a newer label is not cleared by an older timer (a second save
+// inside the 1.5s showed the button blank while it was still saving), and so
+// leaving the page cancels it.
+let saveLabelTimer = 0;
 const flash = ref('');
 const preview = ref<Leaderboard | null>(null);
 
@@ -71,7 +75,8 @@ async function save(): Promise<void> {
     await adminApi.saveSettings(values);
     accept(values);
     saveLabel.value = t('saved');
-    window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    window.clearTimeout(saveLabelTimer);
+    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, 1500);
     try {
       // The preview is the readers' own endpoint, and identity is applied by
       // the server, so it has to be re-asked rather than re-rendered. A refresh
@@ -123,6 +128,7 @@ const categories: WorkbenchGroup[] = [
 ];
 
 onMounted(load);
+onBeforeUnmount(() => window.clearTimeout(saveLabelTimer));
 </script>
 
 <template>

@@ -16,6 +16,7 @@
 import { computed, ref, watch } from 'vue';
 import { adminApi } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
 import OaRow from '@/components/OaRow.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t } from '@/composables/useI18n';
@@ -81,7 +82,9 @@ async function detect(): Promise<void> {
     found.value = models;
   } catch (error) {
     if (asked !== props.providerId) return;
-    failure.value = error instanceof ApiError ? error.message : String(error);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    failure.value = error instanceof ApiError ? codeText(error.code) ?? error.message : String(error);
   } finally {
     detecting.value = false;
   }

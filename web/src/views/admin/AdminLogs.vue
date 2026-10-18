@@ -82,7 +82,6 @@ watch(
 const facets = ref<LogFacets | null>(null);
 const entries = ref<LogEntry[]>([]);
 const total = ref(0);
-const offset = ref(0);
 const error = ref('');
 const listError = ref('');
 const loading = ref(true);
@@ -159,9 +158,15 @@ async function paint(): Promise<void> {
   try {
     const data = await adminApi.logs(listQuery());
     if (ticket !== listRequest) return;
+    // A page past the end, because the list shrank under it (a row deleted,
+    // a sliding window moving on), is asked again for its last page rather
+    // than left empty: with one page left the pager shows no way back.
+    if (data.total > 0 && query.value.offset >= data.total) {
+      query.value.offset = Math.floor((data.total - 1) / pageSize.value) * pageSize.value;
+      await paint(); return;
+    }
     entries.value = data.entries;
     total.value = data.total;
-    offset.value = data.offset;
   } catch (failure) {
     if (ticket !== listRequest) return;
     entries.value = [];

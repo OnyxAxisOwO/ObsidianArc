@@ -51,8 +51,14 @@ const pageSize = ref(rememberedPageSize());
 
 function fromAddress() {
   const read = (name: string) => (typeof route.query[name] === 'string' ? (route.query[name] as string) : '');
+  // All time is the empty value and is written as `?window=`, so only an
+  // absent or unknown window falls back to the default; reading the empty
+  // one as missing put the control back on seven days the moment it was
+  // chosen.
+  const windowed = route.query['window'];
+  const window = typeof windowed === 'string' && WINDOWS.some((entry) => entry.value === windowed) ? windowed : '168';
   return {
-    window: read('window') || '168',
+    window,
     actorID: read('actor_id'),
     action: read('action'),
     targetID: read('target_id'),
@@ -68,11 +74,17 @@ const query = ref(fromAddress());
 // A panel opened beside the page is named in the address too; only the
 // filters are read back from it, so opening one neither resets them nor
 // refetches the trail.
+//
+// The facets are counted over the window alone, so a change to any other
+// filter repaints the list without asking for them again. A page showing a
+// failure, or still without facets, reloads whole so the failure can clear.
 watch(
   () => JSON.stringify(fromAddress()),
-  () => {
+  (next, previous) => {
+    const windowMoved = (JSON.parse(next) as { window: string }).window
+      !== (JSON.parse(previous) as { window: string }).window;
     query.value = fromAddress();
-    void reload();
+    void (windowMoved || error.value || !facets.value ? reload() : paint());
   },
 );
 
@@ -127,6 +139,13 @@ async function paint(): Promise<void> {
   try {
     const data = await adminApi.audit(listQuery());
     if (ticket !== listTicket) return;
+    // A page past the end, because the list shrank under it (a row deleted,
+    // a sliding window moving on), is asked again for its last page rather
+    // than left empty: with one page left the pager shows no way back.
+    if (data.total > 0 && query.value.offset >= data.total) {
+      query.value.offset = Math.floor((data.total - 1) / pageSize.value) * pageSize.value;
+      await paint(); return;
+    }
     entries.value = data.entries;
     total.value = data.total;
   } catch (failure) {

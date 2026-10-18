@@ -31,7 +31,7 @@ import OaTextField from '@/components/OaTextField.vue';
 import type { Column, SortState } from '@/components/table-types';
 import { t, tn } from '@/composables/useI18n';
 import { maskProvider, maskUser } from '@/admin/safeMode';
-import { apiErrorText } from '@/lib/api-error';
+import { apiErrorText, codeText } from '@/lib/api-error';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { IconCheck, IconGift } from '@/icons';
 import AdminControlCard from './AdminControlCard.vue';
@@ -167,7 +167,11 @@ async function saveBar(): Promise<void> {
     panel.value = 'closed';
     await refreshBars();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? poolRefusal(failure.code) ?? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    panelError.value = failure instanceof ApiError
+      ? poolRefusal(failure.code) ?? codeText(failure.code) ?? failure.message
+      : String(failure);
   } finally {
     busy.value = false;
   }

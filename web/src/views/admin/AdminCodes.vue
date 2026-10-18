@@ -8,6 +8,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { adminApi, type CodeRedemption, type RedemptionCode } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
 import { saveAsFile } from '@/api/backup';
 import { copyToClipboard } from '@/chat/markdown';
 import OaBadge from '@/components/OaBadge.vue';
@@ -205,7 +206,9 @@ async function create(): Promise<void> {
     minted.value = created;
     void load();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   } finally {
     busy.value = false;
   }

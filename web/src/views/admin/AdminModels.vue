@@ -15,6 +15,7 @@ import {
 } from '@/admin/api';
 import { pickJSONFile, saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
@@ -504,7 +505,9 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   }
 }
 
@@ -585,6 +588,9 @@ function portable(row: AdminModel): Record<string, unknown> {
     sort_order: row.sort_order,
     reasoning_style: row.reasoning_style,
     reasoning_tiers: row.reasoning_tiers,
+    // The import writes whatever the file says here, an absent key as empty,
+    // so a catalogue taken out and back in without it lost every override.
+    request_override: row.request_override ?? '',
     route_to: target ? { provider: target.provider_name, model_id: target.model_id } : null,
     supports_reasoning: row.supports_reasoning,
     supports_images: row.supports_images,

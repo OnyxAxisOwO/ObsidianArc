@@ -5,9 +5,10 @@
 // thresholds, user-facing uptime visibility, and manual uptime reset into a
 // single screen.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { adminApi, type ModelHealth } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
 import { loadModels } from '@/chat/useModels';
 import OaBadge from '@/components/OaBadge.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
@@ -34,6 +35,13 @@ const models = ref<ModelHealth[]>([]);
 const flash = ref('');
 const flashSuccess = ref('');
 const saveLabel = ref('');
+// Kept so a newer label is not cleared by an older timer (a second save
+// inside the 1.5s showed the button blank while it was still saving), and so
+// leaving the page cancels it.
+let saveLabelTimer = 0;
+// The same for the success line, which two actions share: a reset's 3s timer
+// used to cut short the result of a test run started inside it.
+let flashSuccessTimer = 0;
 const busy = ref(false);
 const resetting = ref(false);
 const probing = ref(false);
@@ -87,7 +95,8 @@ async function save(): Promise<void> {
     await adminApi.saveSettings(values);
     accept(values);
     saveLabel.value = t('saved');
-    window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    window.clearTimeout(saveLabelTimer);
+    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, 1500);
   } catch (failure) {
     flash.value = failure instanceof ApiError ? failure.message : String(failure);
     saveLabel.value = '';
@@ -103,7 +112,8 @@ async function resetUptime(): Promise<void> {
   try {
     await adminApi.resetHealth();
     flashSuccess.value = t('resetUptimeDone');
-    window.setTimeout(() => { flashSuccess.value = ''; }, 3000);
+    window.clearTimeout(flashSuccessTimer);
+    flashSuccessTimer = window.setTimeout(() => { flashSuccess.value = ''; }, 3000);
     await Promise.all([refreshHealth(), loadModels()]);
   } catch (failure) {
     flash.value = failure instanceof ApiError ? failure.message : String(failure);
@@ -129,10 +139,13 @@ async function probeAllModels(): Promise<void> {
       failed: result.failed,
       skipped: result.skipped,
     });
-    window.setTimeout(() => { flashSuccess.value = ''; }, 5000);
+    window.clearTimeout(flashSuccessTimer);
+    flashSuccessTimer = window.setTimeout(() => { flashSuccess.value = ''; }, 5000);
     await Promise.all([refreshHealth(), loadModels()]);
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   } finally {
     probing.value = false;
   }
@@ -181,6 +194,10 @@ const categories: WorkbenchGroup[] = [
 ];
 
 onMounted(load);
+onBeforeUnmount(() => {
+  window.clearTimeout(saveLabelTimer);
+  window.clearTimeout(flashSuccessTimer);
+});
 </script>
 
 <template>

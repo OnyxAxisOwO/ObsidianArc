@@ -11,7 +11,7 @@
 // every account may carry for its own referrals — searchable and filterable
 // in one list.
 
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
 import { adminApi, type Group, type InviteCode, type InviteStats, type InviteUse } from '@/admin/api';
 import { fetchSite } from '@/api/auth';
@@ -66,6 +66,10 @@ const settingsError = ref('');
 const settingsLoaded = ref(false);
 const savingBusy = ref(false);
 const saveLabel = ref('');
+// Kept so a newer label is not cleared by an older timer (a second save
+// inside the 1.5s showed the button blank while it was still saving), and so
+// leaving the page cancels it.
+let saveLabelTimer = 0;
 const saveFlash = ref('');
 const groups = ref<Pick<Group, 'id' | 'name'>[]>([]);
 
@@ -183,7 +187,8 @@ async function saveSettings(): Promise<void> {
       // worth reporting as one.
     }
     saveLabel.value = t('saved');
-    window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    window.clearTimeout(saveLabelTimer);
+    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, 1500);
   } catch (failure) {
     saveFlash.value = failure instanceof ApiError ? failure.message : String(failure);
     saveLabel.value = '';
@@ -229,7 +234,10 @@ const filters = ref({ kind: 'all', status: 'all', q: '' });
 
 function changePage(next: PageState): void { paging.value = next; void list(); }
 function filterList(): void { paging.value.page = 1; void list(); }
-const debouncedList = useDebounceFn(() => void list(), 250);
+// A search typed just before the page is left still fires after it; the
+// flag keeps that last call from asking for a list nobody will see.
+let disposed = false;
+const debouncedList = useDebounceFn(() => { if (!disposed) void list(); }, 250);
 watch(() => filters.value.q, () => { paging.value.page = 1; void debouncedList(); });
 
 async function list(): Promise<void> {
@@ -537,6 +545,10 @@ onMounted(() => {
   void loadStats();
   void list();
   void loadPartners();
+});
+onBeforeUnmount(() => {
+  disposed = true;
+  window.clearTimeout(saveLabelTimer);
 });
 </script>
 
