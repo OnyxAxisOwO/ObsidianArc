@@ -228,7 +228,7 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.98 MB (24.28 MB `-tags nosqlite`, Linux amd64, Go 1.27.2), 0.39 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 169.11 kB to open the chat with brotli (149.65 JS + 19.46 CSS); 201.41 kB with gzip (178.60 JS + 22.81 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out; the build's gzip column reads 201.97 kB (178.83 JS + 23.14 CSS) |
+| Frontend, on the wire | < 135 kB | 169.11 kB to open the chat with brotli (149.65 JS + 19.46 CSS); 201.41 kB with gzip (178.60 JS + 22.81 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
@@ -246,7 +246,10 @@ brotli still receives 169.11 kB. The lazy chunks, gzip then brotli: backoffice
 7.36 kB plus 1.67 / 1.40 kB, math 3.76 / 3.25 kB, front page 4.17 / 3.68 kB
 plus 3.89 / 3.40 kB, landing page 3.12 / 2.75 kB plus 0.62 / 0.51 kB. The
 binary loses the gzip copies and is 27.98 MB (24.28 MB without SQLite), built
-the same way as below. The bundle is unchanged.
+the same way as below. The bundle is unchanged. For the same reason the
+bundle test no longer holds the docs to the build's own gzip column (Node's
+zlib at its default level, 248.63 kB on the Mac against 249.16 kB on CI for
+one build), which had kept CI red since 2026-10-15; it keeps its budget.
 
 Remeasured on 2026-10-18 (UTC), after the review fixes below were merged
 into one tree: the backoffice's refusals by code, the Options API branch

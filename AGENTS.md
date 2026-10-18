@@ -440,7 +440,8 @@ Current: 27.98 MB binary (this repository ships no plugin; 2.8 MB of it is
 the plugin runtime, 0.39 MB the brotli copies of the frontend the
 build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 169.11 kB on the wire
 to a browser that takes brotli and 201.41 kB to one that takes only gzip, which
-is the figure the budget holds (the build's gzip column reads 201.97 kB),
+is the figure the budget holds (the build's own gzip column is not quoted:
+Node's zlib gives a few hundred bytes more or less on another CPU),
 against a target of 135. The target used to be 80 and
 the figure used to be 59.5; adopting Vue moved both, and
 `docs/ARCHITECTURE.md` says so rather than quietly restating a target the

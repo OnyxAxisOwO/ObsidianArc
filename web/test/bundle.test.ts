@@ -423,8 +423,8 @@ describe('code splitting invariants in production bundle', () => {
   });
 
   // What a first paint downloads: the entry script and its stylesheet, gzipped
-  // by zlib at its default level. That is the build's own estimate, the figure
-  // the docs call the build's gzip column, and it is not what a server sends:
+  // by zlib at its default level. That is the build's own estimate, and it is
+  // not what a server sends:
   // the server compresses at a different level, and internal/web/wire_test.go
   // holds the budget on the bytes it sends. This check still matters, because
   // Vite's chunk-size limit only warns, so it is what fails a build which grew
@@ -457,16 +457,12 @@ describe('code splitting invariants in production bundle', () => {
     );
   });
 
-  // The docs quote this figure, and they drifted once while the bundle moved
-  // under them. Naming the documents that quote it means the next change that
-  // moves the bundle has to move them in the same change.
-  it('quotes the built first paint in the README, the architecture notes and AGENTS.md', () => {
-    const kb = (firstPaintGzipBytes() / 1000).toFixed(2);
-    // Not a bare substring: 1248.80 kB would otherwise quote 248.80 kB by accident.
-    const quoted = new RegExp(`(?<![\\d.])${kb.replace('.', '\\.')} kB`);
-    for (const doc of ['README.md', 'docs/ARCHITECTURE.md', 'AGENTS.md']) {
-      const text = fs.readFileSync(path.resolve(__dirname, '../../', doc), 'utf8');
-      expect(quoted.test(text), `${doc} does not quote the first paint as ${kb} kB`).toBe(true);
-    }
-  });
+  // This figure is not quoted in the docs, and no test holds them to it. Node's
+  // zlib picks its matching code by CPU, so the same entry gzips to sizes a few
+  // hundred bytes apart on an ARM laptop and on CI's x86 runner (248.63 against
+  // 249.16 kB once), and a quote taken on either machine failed on the other.
+  // The figure the docs do quote is the one the server sends, held by
+  // internal/web/wire_test.go: Go's gzip and the build's brotli copies give the
+  // same bytes on every machine. The budget above is set with room for the
+  // difference.
 });
