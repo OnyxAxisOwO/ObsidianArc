@@ -263,10 +263,6 @@ func strictNumberedPlaceholder(username string) bool {
 // appended, so the prompt visible to an operator cannot silently remove them.
 func DefaultPrompt() string { return commonInstruction }
 
-func instructionForPrompt(mode Mode, prompt string) string {
-	return instructionFor(mode, prompt)
-}
-
 const responseFormatInstruction = `Choose one decision:
 - allow: the details look like an ordinary person.
 - restrict: the account may be a real person, but there are ambiguous or mildly suspicious signs.
@@ -311,10 +307,10 @@ type Reviewer struct {
 	// both of which would drag most of the server in behind them.
 	Resolve func(ctx context.Context) (adapter.Provider, adapter.ModelSpec, error)
 	// Prompt supplies an optional operator-configured prompt. If nil or returning
-	// empty, the built-in instruction is used.
+	// empty, the built-in instruction is used. This is the only field the
+	// operator's setting goes through: a second one reading the same setting
+	// was wired beside it, and two wirings of one value can drift apart.
 	Prompt func() string
-	// CustomPrompt is an alias for Prompt for compatibility.
-	CustomPrompt func() string
 }
 
 // Review returns how the registration should proceed.
@@ -365,8 +361,6 @@ func (r Reviewer) Review(ctx context.Context, mode Mode, facts Facts) (Verdict, 
 	var customPrompt string
 	if r.Prompt != nil {
 		customPrompt = r.Prompt()
-	} else if r.CustomPrompt != nil {
-		customPrompt = r.CustomPrompt()
 	}
 
 	// The answer comes back on Result. The sink is there because the adapters

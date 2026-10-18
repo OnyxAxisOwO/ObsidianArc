@@ -213,16 +213,10 @@ func (h *Handlers) addressOf(r *http.Request) string {
 // same codes, so one string in the client covers every screen that can draw
 // the widget.
 func challengeError(err error) error {
-	switch {
-	case errors.Is(err, turnstile.ErrFailed):
-		return httpx.ForbiddenCode("challenge_failed",
-			"The verification could not be completed. Try again.")
-	case errors.Is(err, turnstile.ErrUnavailable):
-		return httpx.UnavailableCode("challenge_unavailable",
-			"Verification is unavailable right now. Try again shortly.")
-	default:
-		return httpx.Internal(err)
+	if apiErr := turnstile.HTTPError(err); apiErr != nil {
+		return apiErr
 	}
+	return httpx.Internal(err)
 }
 
 // TranslateError maps this package's sentinels onto responses, so the admin

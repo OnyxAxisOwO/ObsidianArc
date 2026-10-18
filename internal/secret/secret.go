@@ -12,10 +12,14 @@ package secret
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"crypto/sha256"
 	"golang.org/x/crypto/hkdf"
@@ -109,6 +113,46 @@ func (b *Box) Open(sealed []byte) (string, error) {
 		return "", ErrDecrypt
 	}
 	return string(plaintext), nil
+}
+
+// Digest is the hex SHA-256 of value, the form a session, a device or a
+// credential is stored and looked up under. It is unkeyed on purpose: the
+// inputs are already high-entropy (a cookie token, a password hash), and the
+// database is meant to hold the digest rather than the value it stands for.
+func Digest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+// Sign returns body base64url-encoded, a dot, and the HMAC-SHA256 of that
+// encoding under key. It is the form a signed cookie or ticket is sent in.
+// The key must come from DeriveKey with a purpose of its own: two kinds of
+// signed value sharing a key could be presented as one another.
+func Sign(key, body []byte) string {
+	encoded := base64.RawURLEncoding.EncodeToString(body)
+	return encoded + "." + tag(key, encoded)
+}
+
+// Verify reverses Sign. It reports false for anything Sign did not make under
+// key: no dot, a tag that does not match, or a body that is not base64url. The
+// caller answers all of them with the same refusal, so a forgery learns
+// nothing about which part was wrong.
+func Verify(key []byte, value string) ([]byte, bool) {
+	encoded, sig, ok := strings.Cut(strings.TrimSpace(value), ".")
+	if !ok || !hmac.Equal([]byte(sig), []byte(tag(key, encoded))) {
+		return nil, false
+	}
+	body, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, false
+	}
+	return body, true
+}
+
+func tag(key []byte, encoded string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(encoded))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // Hint is the fragment of a credential safe to show an administrator so they

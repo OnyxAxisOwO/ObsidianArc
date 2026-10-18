@@ -207,7 +207,7 @@ func TestEachModeCarriesItsOwnBiasAndTheCommonRules(t *testing.T) {
 
 func TestCustomPromptUsesTheSavedTextAndKeepsModeRules(t *testing.T) {
 	const custom = "Use the operator's extra registration context."
-	got := instructionForPrompt(Normal, custom)
+	got := instructionFor(Normal, custom)
 	if !strings.Contains(got, custom) {
 		t.Error("the saved prompt was not sent to the reviewer")
 	}
@@ -217,7 +217,7 @@ func TestCustomPromptUsesTheSavedTextAndKeepsModeRules(t *testing.T) {
 	if !strings.Contains(got, "You are set to NORMAL.") {
 		t.Error("the server-owned mode rules were removed by the custom prompt")
 	}
-	if instructionForPrompt(Normal, DefaultPrompt()) != instructionFor(Normal) {
+	if instructionFor(Normal, DefaultPrompt()) != instructionFor(Normal) {
 		t.Error("restoring the displayed default does not reproduce the built-in instruction")
 	}
 }

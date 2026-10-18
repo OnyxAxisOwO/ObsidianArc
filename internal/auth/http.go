@@ -695,9 +695,10 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		var limited *RateLimitError
 		if errors.As(err, &limited) {
-			w.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())+1))
+			seconds := int(limited.RetryAfter.Seconds()) + 1
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
 			return httpx.TooManyRequests("too_many_attempts", limited.Error()).
-				WithDetails(map[string]any{"retry_after_seconds": int(limited.RetryAfter.Seconds()) + 1})
+				WithDetails(map[string]any{"retry_after_seconds": seconds})
 		}
 		// Coded, not just worded: the sign-in page says this in the reader's
 		// own language, and the server has no idea what that is.
@@ -717,13 +718,8 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 			}
 			return resp
 		}
-		if errors.Is(err, turnstile.ErrFailed) {
-			return httpx.ForbiddenCode("challenge_failed",
-				"The verification could not be completed. Try again.")
-		}
-		if errors.Is(err, turnstile.ErrUnavailable) {
-			return httpx.UnavailableCode("challenge_unavailable",
-				"Verification is unavailable right now. Try again shortly.")
+		if apiErr := turnstile.HTTPError(err); apiErr != nil {
+			return apiErr
 		}
 		// A plugin guard's refusal is already worded and coded by the
 		// plugin that refused.
@@ -861,9 +857,11 @@ func (h *Handlers) changePassword(w http.ResponseWriter, r *http.Request) error 
 		// caller as a lost session.
 		return httpx.BadRequestCode("current_password_wrong", "That password is not correct.")
 	case errors.Is(err, ErrPasswordUnchanged):
-		return httpx.BadRequest("The new password is the same as the current one.")
-	case errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooLong):
-		return httpx.BadRequest("%s", err.Error())
+		return httpx.BadRequestCode("password_unchanged", "The new password is the same as the current one.")
+	case errors.Is(err, ErrPasswordTooShort):
+		return httpx.BadRequestCode("password_too_short", "Password must be at least %d characters.", MinPasswordChars)
+	case errors.Is(err, ErrPasswordTooLong):
+		return httpx.BadRequestCode("password_too_long", "Password must be at most %d characters.", MaxPasswordChars)
 	case errors.As(err, new(*RateLimitError)):
 		return TranslateTwoFactorError(w, err)
 	default:
@@ -1085,12 +1083,11 @@ func (h *Handlers) registrationError(err error) error {
 		return httpx.BadRequestCode("invite_invalid", "That invite code is not valid.")
 	case errors.Is(err, pow.ErrMissingSolution):
 		return httpx.BadRequestCode("pow_required", "Proof of work challenge solution is required.")
-	case errors.Is(err, pow.ErrExpired):
-		return httpx.BadRequestCode("pow_expired", "Proof of work challenge has expired. Please try again.")
-	// Issued before activity raised the difficulty. The browser answers it the
-	// way it answers an expired one, by fetching a new challenge, so it shares
-	// that code rather than falling through to a server fault.
-	case errors.Is(err, pow.ErrBelowTier):
+	// Expired, or issued before activity raised the difficulty. The browser
+	// answers the second the way it answers the first, by fetching a new
+	// challenge, so both share that code rather than falling through to a
+	// server fault.
+	case errors.Is(err, pow.ErrExpired), errors.Is(err, pow.ErrBelowTier):
 		return httpx.BadRequestCode("pow_expired", "Proof of work challenge has expired. Please try again.")
 	case errors.Is(err, pow.ErrInvalidSignature):
 		return httpx.BadRequestCode("pow_invalid_signature", "Invalid proof of work challenge signature.")
@@ -1100,14 +1097,8 @@ func (h *Handlers) registrationError(err error) error {
 		return httpx.BadRequestCode("pow_invalid_nonce", "Invalid proof of work solution.")
 	case errors.Is(err, pow.ErrReplayed):
 		return httpx.BadRequestCode("pow_replayed", "Proof of work challenge salt has already been used.")
-	case errors.Is(err, turnstile.ErrFailed):
-		return httpx.ForbiddenCode("challenge_failed",
-			"The verification could not be completed. Try again.")
-	case errors.Is(err, turnstile.ErrUnavailable):
-		// Not the visitor's fault, and a different status so a monitor can
-		// tell an outage at Cloudflare from a wave of bots.
-		return httpx.UnavailableCode("challenge_unavailable",
-			"Verification is unavailable right now. Try again shortly.")
+	case errors.Is(err, turnstile.ErrFailed), errors.Is(err, turnstile.ErrUnavailable):
+		return turnstile.HTTPError(err)
 	case errors.As(err, new(*GuardRefusal)):
 		// A plugin guard's refusal is already worded and coded by the plugin
 		// that refused; WriteError finds the *httpx.Error inside it.
@@ -1140,7 +1131,7 @@ func profileError(err error) error {
 	// own language and say what would be acceptable instead.
 	var domain *EmailDomainError
 	if errors.As(err, &domain) {
-		return httpx.BadRequest("%s", domain.Error()).
+		return httpx.BadRequestCode("email_domain", "%s", domain.Error()).
 			WithDetails(map[string]any{"allowed_domains": domain.Allowed})
 	}
 	if fieldErr := FieldHTTPError(err); fieldErr != nil {
@@ -1153,43 +1144,28 @@ func profileError(err error) error {
 	case errors.Is(err, usercheck.ErrUnavailable):
 		return httpx.UnavailableCode("email_screening_unavailable", "Email screening is temporarily unavailable. Try again shortly.")
 	case errors.Is(err, ErrEmailRequired):
-		return httpx.BadRequest("An email address is required on this server.")
-	case errors.Is(err, user.ErrInvalidUsername),
-		errors.Is(err, user.ErrInvalidEmail),
-		errors.Is(err, user.ErrNicknameTooLong),
-		errors.Is(err, user.ErrBioTooLong),
-		errors.Is(err, user.ErrAvatarTooLong),
-		errors.Is(err, ErrPasswordTooShort),
-		errors.Is(err, ErrPasswordTooLong):
-		return httpx.BadRequest("%s", trimPackagePrefix(err.Error()))
+		return httpx.BadRequestCode("email_required", "An email address is required on this server.")
+	case errors.Is(err, user.ErrInvalidUsername):
+		return httpx.BadRequestCode("invalid_username", "Username must be 3-32 characters of letters, digits, dot, dash or underscore.")
+	case errors.Is(err, user.ErrInvalidEmail):
+		return httpx.BadRequestCode("invalid_email", "Email address is not valid.")
+	case errors.Is(err, user.ErrNicknameTooLong):
+		return httpx.BadRequestCode("nickname_too_long", "Nickname must be 32 characters or fewer.")
+	case errors.Is(err, user.ErrBioTooLong):
+		return httpx.BadRequestCode("bio_too_long", "Bio must be 500 characters or fewer.")
+	case errors.Is(err, user.ErrAvatarTooLong):
+		return httpx.BadRequestCode("avatar_too_long", "Avatar is too large.")
+	case errors.Is(err, ErrPasswordTooShort):
+		return httpx.BadRequestCode("password_too_short", "Password must be at least %d characters.", MinPasswordChars)
+	case errors.Is(err, ErrPasswordTooLong):
+		return httpx.BadRequestCode("password_too_long", "Password must be at most %d characters.", MaxPasswordChars)
 	case errors.Is(err, user.ErrEmailTaken):
 		return httpx.Conflict("email_taken", "That email address is already registered.")
 	case errors.Is(err, user.ErrNotFound):
-		return httpx.NotFound("No such account.")
+		return httpx.NotFoundCode("account_not_found", "No such account.")
 	default:
 		return httpx.Internal(err)
 	}
-}
-
-// Sentinel errors are namespaced for the log ("user: ...", "auth: ..."); the
-// browser should see the sentence, not the package it came from.
-func trimPackagePrefix(message string) string {
-	for _, prefix := range []string{"user: ", "auth: ", "group: "} {
-		if len(message) > len(prefix) && message[:len(prefix)] == prefix {
-			return capitalise(message[len(prefix):])
-		}
-	}
-	return capitalise(message)
-}
-
-func capitalise(value string) string {
-	if value == "" {
-		return value
-	}
-	if value[0] >= 'a' && value[0] <= 'z' {
-		return string(value[0]-32) + value[1:]
-	}
-	return value
 }
 
 func (h *Handlers) captchaMode(firstAccount bool) string {

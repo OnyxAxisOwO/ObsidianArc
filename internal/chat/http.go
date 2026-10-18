@@ -483,16 +483,10 @@ func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, toke
 		if state.Attempt <= policy.Requests+2 {
 			record("failed", err.Error(), securityevents.SeverityWarning)
 		}
-		switch {
-		case errors.Is(err, turnstile.ErrFailed):
-			return httpx.ForbiddenCode("challenge_failed",
-				"The verification could not be completed. Try again.")
-		case errors.Is(err, turnstile.ErrUnavailable):
-			return httpx.UnavailableCode("challenge_unavailable",
-				"Verification is unavailable right now. Try again shortly.")
-		default:
-			return httpx.Internal(err)
+		if apiErr := turnstile.HTTPError(err); apiErr != nil {
+			return apiErr
 		}
+		return httpx.Internal(err)
 	}
 	clearance := policy.Clearance
 	if clearance <= 0 {
@@ -531,16 +525,10 @@ func (h *Handlers) requireImageChallenge(r *http.Request, account user.User, bod
 	}
 
 	if err := h.ImageChallenge.Check(r.Context(), body.Turnstile, ip); err != nil {
-		switch {
-		case errors.Is(err, turnstile.ErrFailed):
-			return httpx.ForbiddenCode("challenge_failed",
-				"The verification could not be completed. Try again.")
-		case errors.Is(err, turnstile.ErrUnavailable):
-			return httpx.UnavailableCode("challenge_unavailable",
-				"Verification is unavailable right now. Try again shortly.")
-		default:
-			return httpx.Internal(err)
+		if apiErr := turnstile.HTTPError(err); apiErr != nil {
+			return apiErr
 		}
+		return httpx.Internal(err)
 	}
 
 	if h.ImageGuards != nil {
@@ -568,8 +556,15 @@ func powError(err error) error {
 		return httpx.BadRequestCode("pow_invalid_nonce", "Invalid proof of work solution.")
 	case errors.Is(err, pow.ErrReplayed):
 		return httpx.BadRequestCode("pow_replayed", "Proof of work challenge salt has already been used.")
-	default:
+	case errors.Is(err, pow.ErrMissingSolution):
+		// A solution with a field missing has always been answered as an invalid
+		// one, and clients read that code, so it stays as it was.
 		return httpx.BadRequestCode("pow_invalid", "Proof of work could not be verified.")
+	default:
+		// Not a verdict on the solution. What is left is the salt store failing,
+		// which solving again cannot fix, so it is a server fault. It was answered
+		// as a bad solution, which told an operator the wrong thing.
+		return httpx.Internal(err)
 	}
 }
 

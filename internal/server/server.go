@@ -747,9 +747,6 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// programmatic surface stays closed until the configured time passes.
 	reviewer := screening.Reviewer{
 		Registry: registry,
-		CustomPrompt: func() string {
-			return settingsService.Get(settings.SignupReviewPrompt)
-		},
 		Resolve: func(ctx context.Context) (adapter.Provider, adapter.ModelSpec, error) {
 			record, err := models.ByID(ctx, settingsService.Get(settings.SignupReviewModel))
 			if err != nil {
@@ -1103,6 +1100,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// the account. Set here because internal/idp imports auth, not the other
 	// way round.
 	authService.RevokeIssued = idpStore.RevokeAccount
+	// The last of the sign-in wiring, so every hook the Service needs to run is
+	// set by now. A missing invite hook fails the boot here, not the first
+	// sign-up that carries a code.
+	if err := authService.CheckWired(); err != nil {
+		return nil, err
+	}
 	// The two requirements the web and the API hold at their doors, asked here
 	// too: a refresh token or a code issued before a requirement was switched
 	// on would otherwise carry its account past the door it is now held at.

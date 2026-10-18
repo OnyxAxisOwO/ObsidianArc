@@ -507,8 +507,8 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID, password, code, k
 	if err != nil {
 		return nil, user.User{}, err
 	}
-	if s.beforeEnableWrite != nil {
-		s.beforeEnableWrite()
+	if s.hooks.beforeEnableWrite != nil {
+		s.hooks.beforeEnableWrite()
 	}
 
 	var updated user.User
@@ -517,8 +517,8 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID, password, code, k
 		if err := lockAccount(ctx, tx, userID); err != nil {
 			return err
 		}
-		if s.afterEnableLock != nil {
-			s.afterEnableLock()
+		if s.hooks.afterEnableLock != nil {
+			s.hooks.afterEnableLock()
 		}
 		account, err := s.users.ByID(ctx, tx, userID)
 		if err != nil {
@@ -643,8 +643,8 @@ func (s *Service) checkCode(ctx context.Context, userID, candidate string) (stri
 		if err != nil {
 			return "", fmt.Errorf("auth: spend code: %w", err)
 		}
-		if spent, err := result.RowsAffected(); err != nil || spent != 1 {
-			return "", ErrTwoFactorCode
+		if err := spentOne(result); err != nil {
+			return "", err
 		}
 		return "code", nil
 	}
@@ -766,9 +766,26 @@ func (s *Service) CompleteSignIn(ctx context.Context, token, code, ip, ua string
 		return user.User{}, "", err
 	}
 	now := time.Now().UnixMilli()
-	_ = s.users.MarkLogin(ctx, account.ID, now)
+	if err := s.users.MarkLogin(ctx, account.ID, now); err != nil {
+		slog.WarnContext(ctx, "could not record the sign-in", "user", account.ID, "error", err)
+	}
 	account.LastLoginAt = now
 	return account, full, nil
+}
+
+// spentOne reports whether the conditional write moved exactly one row. A
+// driver that cannot say how many rows it moved is a server fault, so its error
+// is returned as one: read as a wrong code, it would send an operator looking
+// for a user who mistyped when the database is what failed.
+func spentOne(result interface{ RowsAffected() (int64, error) }) error {
+	spent, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: count spent code: %w", err)
+	}
+	if spent != 1 {
+		return ErrTwoFactorCode
+	}
+	return nil
 }
 
 // secondStep decides what a proven first factor buys: the whole session, or
@@ -785,7 +802,9 @@ func (s *Service) secondStep(ctx context.Context, account user.User, remembered,
 	if err != nil {
 		return "", err
 	}
-	_ = s.users.MarkLogin(ctx, account.ID, time.Now().UnixMilli())
+	if err := s.users.MarkLogin(ctx, account.ID, time.Now().UnixMilli()); err != nil {
+		slog.WarnContext(ctx, "could not record the sign-in", "user", account.ID, "error", err)
+	}
 	return token, nil
 }
 

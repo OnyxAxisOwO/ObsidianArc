@@ -1,9 +1,7 @@
 package idp
 
 import (
-	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -14,6 +12,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 )
 
 // The endpoints, in two groups.
@@ -480,20 +479,15 @@ func (s *stamp) issue(request Request, userID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	encoded := base64.RawURLEncoding.EncodeToString(body)
-	return encoded + "." + s.tag(encoded), nil
+	return secret.Sign(s.key, body), nil
 }
 
 // read verifies a ticket. It returns what was signed and nothing more — what
 // is still true about the application is the caller's question, and restore
 // above is where it is asked.
 func (s *stamp) read(value string) (ticket, error) {
-	encoded, tag, ok := strings.Cut(strings.TrimSpace(value), ".")
-	if !ok || !hmac.Equal([]byte(tag), []byte(s.tag(encoded))) {
-		return ticket{}, ErrInvalidRequest
-	}
-	body, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
+	body, ok := secret.Verify(s.key, value)
+	if !ok {
 		return ticket{}, ErrInvalidRequest
 	}
 	var held ticket
@@ -504,12 +498,6 @@ func (s *stamp) read(value string) (ticket, error) {
 		return ticket{}, ErrInvalidRequest
 	}
 	return held, nil
-}
-
-func (s *stamp) tag(body string) string {
-	mac := hmac.New(sha256.New, s.key)
-	mac.Write([]byte(body))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // --- small helpers -------------------------------------------------------------

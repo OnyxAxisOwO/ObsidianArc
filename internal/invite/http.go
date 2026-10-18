@@ -98,14 +98,14 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 // nothing to do with whether this account has a personal code of its own, so
 // reward_every, reward_cards and reward_card_days are always present.
 func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]any, error) {
-	enabled, limit, rewardCards, rewardCardDays, rewardEvery := h.store.Settings()
+	policy := h.store.Settings()
 	out := map[string]any{
-		"enabled": enabled, "code": "", "limit": limit, "used": 0, "counted": 0,
-		"reward_cards": rewardCards, "reward_card_days": rewardCardDays, "reward_every": rewardEvery,
+		"enabled": policy.UserEnabled, "code": "", "limit": policy.Limit, "used": 0, "counted": 0,
+		"reward_cards": policy.RewardCards, "reward_card_days": policy.RewardCardDays, "reward_every": policy.RewardEvery,
 		"next_reward_in": 0,
 		"invitees":       []any{},
 	}
-	if !enabled {
+	if !policy.UserEnabled {
 		return out, nil
 	}
 
@@ -129,7 +129,7 @@ func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]an
 	out["code"] = code.Code
 	out["used"] = totalUses
 	out["counted"] = counted
-	out["next_reward_in"] = nextRewardIn(counted, rewardEvery, rewardCards)
+	out["next_reward_in"] = nextRewardIn(counted, policy.RewardEvery, policy.RewardCards)
 
 	invitees := make([]Invitee, 0, len(uses))
 	for _, use := range uses {
@@ -178,16 +178,13 @@ func (h *Handlers) profile(w http.ResponseWriter, r *http.Request) error {
 
 func (h *Handlers) regenerate(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
-	if enabled, _, _, _, _ := h.store.Settings(); !enabled {
+	if !h.store.Settings().UserEnabled {
 		return httpx.ForbiddenCode("invites_disabled", "Personal invite codes are switched off on this server.")
 	}
 	if _, err := h.store.Regenerate(r.Context(), account.ID); err != nil {
 		var throttled *RegenerateThrottled
 		if errors.As(err, &throttled) {
-			retryAfter := int(throttled.RetryAfter.Seconds()) + 1
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			return httpx.TooManyRequests("too_many_attempts", throttled.Error()).
-				WithDetails(map[string]any{"retry_after_seconds": retryAfter})
+			return tooManyClaims(w, throttled.RetryAfter, throttled.Error())
 		}
 		return httpx.Internal(err)
 	}
@@ -209,7 +206,7 @@ func (h *Handlers) clientIP(r *http.Request) string {
 	return h.ClientIP(r)
 }
 
-// tooManyClaims answers a refused claim with how long to wait. The retry hint
+// tooManyClaims answers a refused claim or regeneration with how long to wait. The retry hint
 // is in whole seconds, rounded up, so a client that waits it out is not told
 // to wait again immediately.
 func tooManyClaims(w http.ResponseWriter, wait time.Duration, message string) error {

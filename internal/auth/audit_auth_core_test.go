@@ -113,7 +113,7 @@ func TestAPasswordChangeCannotOverwriteAResetMadeAfterItWasChecked(t *testing.T)
 		t.Fatal(err)
 	}
 
-	f.auth.beforeChangeWrite = func() {
+	f.auth.hooks.beforeChangeWrite = func() {
 		if err := f.auth.SetPassword(ctx, account.ID, "admin-reset-password"); err != nil {
 			t.Errorf("the reset inside the window: %v", err)
 		}
@@ -121,7 +121,7 @@ func TestAPasswordChangeCannotOverwriteAResetMadeAfterItWasChecked(t *testing.T)
 	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", ""); !errors.Is(err, ErrCurrentPasswordWrong) {
 		t.Fatalf("a change checked against the replaced password = %v, want ErrCurrentPasswordWrong", err)
 	}
-	f.auth.beforeChangeWrite = nil
+	f.auth.hooks.beforeChangeWrite = nil
 
 	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "admin-reset-password", IP: "198.51.100.21"}); err != nil {
 		t.Fatalf("the administrator's password was overwritten: %v", err)
@@ -147,7 +147,7 @@ func TestAnAddressChangeCannotOverwriteAResetMadeAfterItWasChecked(t *testing.T)
 		t.Fatal(err)
 	}
 
-	f.auth.beforeChangeWrite = func() {
+	f.auth.hooks.beforeChangeWrite = func() {
 		if err := f.auth.SetPassword(ctx, account.ID, "admin-reset-password"); err != nil {
 			t.Errorf("the reset inside the window: %v", err)
 		}
@@ -156,7 +156,7 @@ func TestAnAddressChangeCannotOverwriteAResetMadeAfterItWasChecked(t *testing.T)
 	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &moved}, "a-good-password"); !errors.Is(err, ErrCurrentPasswordWrong) {
 		t.Fatalf("moving the address on a replaced password = %v, want ErrCurrentPasswordWrong", err)
 	}
-	f.auth.beforeChangeWrite = nil
+	f.auth.hooks.beforeChangeWrite = nil
 
 	kept, err := f.users.ByID(ctx, nil, account.ID)
 	if err != nil {

@@ -78,7 +78,7 @@ func TestVerifyCredentialReturnsTheFingerprintOfTheHashItChecked(t *testing.T) {
 	// The password is changed between reading the stored hash and checking it.
 	// The check still passes, because it runs against the hash that was read, so
 	// the fingerprint has to be that hash's, not the one a second read would find.
-	f.auth.afterCredentialRead = func() {
+	f.auth.hooks.afterCredentialRead = func() {
 		if err := f.auth.SetPassword(ctx, account.ID, "a-better-password"); err != nil {
 			t.Error(err)
 		}
@@ -171,7 +171,7 @@ func TestARehashNeverPutsBackAPasswordChangedAfterTheCheck(t *testing.T) {
 			}
 
 			reached := false
-			f.auth.beforeRehashWrite = func() {
+			f.auth.hooks.beforeRehashWrite = func() {
 				reached = true
 				if err := f.auth.SetPassword(ctx, account.ID, "a-better-password"); err != nil {
 					t.Errorf("changing the password inside the rehash window: %v", err)

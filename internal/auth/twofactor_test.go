@@ -991,13 +991,13 @@ func TestEnablingTwoStepCannotSealOverAResetMadeAfterItWasChecked(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	f.auth.beforeEnableWrite = func() {
+	f.auth.hooks.beforeEnableWrite = func() {
 		if err := f.auth.SetPassword(ctx, account.ID, "admin-reset-password"); err != nil {
 			t.Errorf("the reset inside the window: %v", err)
 		}
 	}
 	_, _, err = f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", code, session.ID, "", "")
-	f.auth.beforeEnableWrite = nil
+	f.auth.hooks.beforeEnableWrite = nil
 	if !errors.Is(err, ErrCurrentPasswordWrong) {
 		t.Fatalf("enrolling on the replaced password = %v, want ErrCurrentPasswordWrong", err)
 	}
@@ -1032,7 +1032,7 @@ func TestEnablingTwoStepHoldsTheAccountAgainstAReset(t *testing.T) {
 
 	locked := make(chan struct{})
 	release := make(chan struct{})
-	f.auth.afterEnableLock = func() {
+	f.auth.hooks.afterEnableLock = func() {
 		close(locked)
 		<-release
 	}

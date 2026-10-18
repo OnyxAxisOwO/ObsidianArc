@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	mathrand "math/rand/v2"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -288,13 +289,23 @@ func NewStore(db *database.DB, users *user.Store, cards *card.Store, groups *gro
 	return &Store{db: db, users: users, cards: cards, groups: groups, settings: set}
 }
 
-// Settings reads back the invite settings a caller building a response needs
-// without reaching past this package into internal/settings' key names
-// itself — the profile handler is the one call site, and this keeps the
-// key constants from having to be exported knowledge outside this package
-// and internal/admin.
-func (s *Store) Settings() (userEnabled bool, limit, rewardCards, rewardCardDays, rewardEvery int) {
-	rewardEvery = s.settings.Int(settings.InvitesRewardEvery, 1)
+// Policy is the invite scheme as the operator has set it, read in one go. The
+// callers each want some of these values and not others, so a positional
+// return made every one of them name and discard the rest.
+type Policy struct {
+	UserEnabled    bool
+	Limit          int
+	RewardCards    int
+	RewardCardDays int
+	RewardEvery    int
+}
+
+// Settings reads back the invite settings a caller needs without reaching past
+// this package into internal/settings' key names itself. The profile handler
+// and the claim path are the call sites, and this keeps the key constants from
+// having to be exported knowledge outside this package and internal/admin.
+func (s *Store) Settings() Policy {
+	rewardEvery := s.settings.Int(settings.InvitesRewardEvery, settingDefault(settings.InvitesRewardEvery))
 	if rewardEvery < 1 {
 		// A cadence of zero or less would either divide by zero or reward
 		// every invite forever regardless of what an operator typed; 1
@@ -302,11 +313,22 @@ func (s *Store) Settings() (userEnabled bool, limit, rewardCards, rewardCardDays
 		// column's own default.
 		rewardEvery = 1
 	}
-	return s.settings.Bool(settings.InvitesUserEnabled),
-		s.settings.Int(settings.InvitesUserLimit, 10),
-		s.settings.Int(settings.InvitesRewardCards, 0),
-		s.settings.Int(settings.InvitesRewardCardDays, 30),
-		rewardEvery
+	return Policy{
+		UserEnabled:    s.settings.Bool(settings.InvitesUserEnabled),
+		Limit:          s.settings.Int(settings.InvitesUserLimit, settingDefault(settings.InvitesUserLimit)),
+		RewardCards:    s.settings.Int(settings.InvitesRewardCards, settingDefault(settings.InvitesRewardCards)),
+		RewardCardDays: s.settings.Int(settings.InvitesRewardCardDays, settingDefault(settings.InvitesRewardCardDays)),
+		RewardEvery:    rewardEvery,
+	}
+}
+
+// settingDefault is the value a fresh instance has for key. It is the fallback
+// for a stored value that will not parse, so it reads the same table the
+// defaults come from: a second literal here would drift the first time the
+// default moved.
+func settingDefault(key string) int {
+	n, _ := strconv.Atoi(settings.Defaults[key])
+	return n
 }
 
 // nextRewardIn is how many more qualifying invites the inviter needs before
@@ -376,7 +398,7 @@ func (s *Store) Consume(ctx context.Context, q database.Queryer, rawCode string,
 	if ownerID != "" {
 		// Personal codes stop working when the operator switches personal
 		// invites off, not only stop being handed out.
-		userEnabled, _, _, _, _ := s.Settings()
+		userEnabled := s.Settings().UserEnabled
 		if !userEnabled {
 			return nil, ErrInvalid
 		}
@@ -1020,11 +1042,12 @@ func (s *Store) Reward(ctx context.Context, userID string, verificationRequired 
 		if err != nil {
 			return fmt.Errorf("invite: lock inviter: %w", err)
 		}
-		var days int
-		reason, cards, days, counted, every, err = s.evaluateReward(ctx, tx, invitee, inviterID, present == 1)
+		decision, err := s.evaluateReward(ctx, tx, invitee, inviterID, present == 1)
 		if err != nil {
 			return err
 		}
+		reason, cards, counted, every = decision.reason, decision.cards, decision.counted, decision.every
+		days := decision.days
 
 		// The claim: a second caller for the same invitee — registration
 		// and an eager click on the verification link, say — affects no
@@ -1069,7 +1092,7 @@ func (s *Store) Reward(ctx context.Context, userID string, verificationRequired 
 	}
 
 	if s.Notify != nil {
-		_, _, instanceRewardCards, _, _ := s.Settings()
+		instanceRewardCards := s.Settings().RewardCards
 		notifyCtx := context.WithoutCancel(ctx)
 		if err := s.Notify.Push(notifyCtx, nil, notify.Notification{
 			Audience: notify.AudienceUser, UserID: inviterID,
@@ -1165,59 +1188,70 @@ func (s *Store) pendingRewards(ctx context.Context, cutoff int64, after pendingU
 	return page, nil
 }
 
+// rewardDecision is what evaluateReward resolved for one invite. reason is
+// empty when the invite qualifies, and otherwise names why it was skipped; a
+// skipped invite does not read the other fields. counted is the inviter's
+// running total once this invite is included, cards what this invite pays
+// (zero off the milestone), days how long those cards last, and every the
+// milestone spacing.
+type rewardDecision struct {
+	reason  string
+	cards   int
+	days    int
+	counted int
+	every   int
+}
+
 // evaluateReward decides whether the inviter is actually paid, and how much,
 // once the invitee is known to qualify at all. q is Reward's transaction,
 // which already holds the inviter's row: every read here goes through it,
 // since on SQLite a second connection would wait behind that very lock.
 //
-// counted is the inviter's total of qualifying invites once this one is
-// included — every invite that reaches reason == "" is one, whether or not
-// it happened to land on this cadence's milestone — and cards is what this
-// particular invite pays: rewardCards exactly when counted is a multiple of
-// every, zero otherwise. A reason for skipping never counts at all, the same
-// as before this feature: same_ip, limit, disabled and a gone or disabled
-// inviter all leave the running total untouched.
+// cards is rewardCards exactly when counted is a multiple of every, zero
+// otherwise. A reason for skipping never counts at all, the same as before
+// this feature: same_ip, limit, disabled and a gone or disabled inviter all
+// leave the running total untouched.
 func (s *Store) evaluateReward(
 	ctx context.Context, q database.Queryer, invitee user.User, inviterID string, present bool,
-) (reason string, cards, days, counted, every int, err error) {
-	userEnabled, limit, rewardCards, rewardCardDays, rewardEvery := s.Settings()
-	every = rewardEvery
+) (rewardDecision, error) {
+	policy := s.Settings()
+	every := policy.RewardEvery
 
 	// An inviter deleted since the invite has nobody to pay, and one
 	// disabled since has been judged by an operator; either way the use is
 	// resolved rather than left for the cards to fail against forever.
 	if !present {
-		return "inviter_gone", 0, 0, 0, every, nil
+		return rewardDecision{reason: "inviter_gone", every: every}, nil
 	}
 	inviter, err := s.users.ByID(ctx, q, inviterID)
 	if err != nil {
-		return "", 0, 0, 0, every, fmt.Errorf("invite: read inviter: %w", err)
+		return rewardDecision{every: every}, fmt.Errorf("invite: read inviter: %w", err)
 	}
 	if !inviter.IsActive() {
-		return "inviter_disabled", 0, 0, 0, every, nil
+		return rewardDecision{reason: "inviter_disabled", every: every}, nil
 	}
 	// Switching personal invites off stops the payouts too, not only new
 	// codes: the operator turning it off is usually doing so because of how
 	// it was being used.
-	if !userEnabled || rewardCards <= 0 {
-		return "disabled", 0, 0, 0, every, nil
+	if !policy.UserEnabled || policy.RewardCards <= 0 {
+		return rewardDecision{reason: "disabled", every: every}, nil
 	}
 	if sameIP(ctx, q, invitee, inviter) {
-		return "same_ip", 0, 0, 0, every, nil
+		return rewardDecision{reason: "same_ip", every: every}, nil
 	}
 	already, err := countedInvites(ctx, q, inviterID)
 	if err != nil {
-		return "", 0, 0, 0, every, err
+		return rewardDecision{every: every}, err
 	}
-	if limit > 0 && already >= limit {
-		return "limit", 0, 0, already, every, nil
+	if policy.Limit > 0 && already >= policy.Limit {
+		return rewardDecision{reason: "limit", counted: already, every: every}, nil
 	}
 
-	counted = already + 1
-	if counted%every == 0 {
-		cards = rewardCards
+	decision := rewardDecision{counted: already + 1, days: policy.RewardCardDays, every: every}
+	if decision.counted%every == 0 {
+		decision.cards = policy.RewardCards
 	}
-	return "", cards, rewardCardDays, counted, every, nil
+	return decision, nil
 }
 
 // sameIP catches an inviter rewarding themselves: a second account signed up

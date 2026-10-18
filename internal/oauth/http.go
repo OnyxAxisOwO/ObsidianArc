@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -985,12 +986,29 @@ func (h *Handlers) redirectURI(r *http.Request, providerID string) string {
 	return scheme + "://" + r.Host + statePath + "/callback/" + providerID
 }
 
+// address is the caller's address for the per-address limits and the sign-in
+// log. A blank one is exactly what those limits skip, so a blank must never
+// reach them: an unwired resolver, or one that cannot read the request, falls
+// back to the peer the connection came from. Only a request with no peer at all
+// is counted, under one shared key, rather than waved past every limit.
 func (h *Handlers) address(r *http.Request) string {
-	if h.ClientIP == nil {
-		return ""
+	if h.ClientIP != nil {
+		if ip := h.ClientIP(r); strings.TrimSpace(ip) != "" {
+			return ip
+		}
 	}
-	return h.ClientIP(r)
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if strings.TrimSpace(host) == "" {
+		return unknownAddress
+	}
+	return host
 }
+
+// unknownAddress is the one key a request without any address is counted under.
+const unknownAddress = "unknown"
 
 func nonNil(keys []string) []string {
 	if keys == nil {

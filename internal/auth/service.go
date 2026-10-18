@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,7 +46,6 @@ var (
 	ErrAccountDisabled            = errors.New("auth: this account has been disabled")
 	ErrRegistrationClosed         = errors.New("auth: registration is closed on this server")
 	ErrThirdPartyOnlyRegistration = errors.New("auth: registration is only permitted via third-party providers")
-	ErrOIDCOnlyRegistration       = ErrThirdPartyOnlyRegistration
 	ErrSignupIPBlocked            = errors.New("auth: too many accounts have been created from this address")
 	// The review said no. The words a visitor sees are the operator's, set in
 	// the security screen; this only carries the fact.
@@ -203,30 +203,60 @@ type Service struct {
 	RecordInviteUse func(ctx context.Context, tx *database.Tx, grant InviteGrant, userID string) error
 	RewardInvite    func(ctx context.Context, userID string, verificationRequired bool)
 
+	// Points where a concurrency test stops a request to make a race land. They
+	// live in their own struct so the fields above are the ones production
+	// reads; every hook is nil outside tests.
+	hooks testHooks
+}
+
+// testHooks are called at the windows a race test has to pause a request in.
+type testHooks struct {
 	// Called between a sign-in computing its upgraded hash and writing it: the
-	// window a password change has to be able to land in. Nil outside tests,
-	// which set it to make that change at exactly that point.
+	// window a password change has to be able to land in. A test sets it to make
+	// that change at exactly that point.
 	beforeRehashWrite func()
 	// Called by VerifyCredential between reading the stored hash and checking the
 	// password against it. A change landing there is the case the fingerprint it
 	// returns must survive: the check passes against the hash that was read, and
-	// the fingerprint has to describe that same hash. Nil outside tests.
+	// the fingerprint has to describe that same hash.
 	afterCredentialRead func()
 	// Called by Register between its first count and its transaction, where a
-	// concurrent first account can land. Nil outside tests.
+	// concurrent first account can land.
 	afterPreflight func()
 	// Called by a password or address change once it has verified the current
 	// password and before it takes the account's row lock to write. A reset that
-	// lands in that window is the case the write must refuse. Nil outside tests.
+	// lands in that window is the case the write must refuse.
 	beforeChangeWrite func()
 	// Called by EnableTwoFactor once it has checked the password and before it
-	// takes the account's row lock to switch the second step on. Nil outside
-	// tests.
+	// takes the account's row lock to switch the second step on.
 	beforeEnableWrite func()
 	// Called by EnableTwoFactor inside its transaction, once it holds the
 	// account's row lock. A password reset started here must wait for the
-	// enrolment to decide. Nil outside tests.
+	// enrolment to decide.
 	afterEnableLock func()
+}
+
+// CheckWired names the invite hooks a running server cannot do without. A nil
+// one is a value the Service is happily built with, and none of them fails
+// loudly when it is missing: a nil ConsumeInvite refuses every invite code as
+// invalid, a nil RecordInviteUse drops the record the reward is worked out
+// from, and a nil RewardInvite pays nothing. The wiring calls this once every
+// hook is set, so the boot fails instead.
+func (s *Service) CheckWired() error {
+	var missing []string
+	if s.ConsumeInvite == nil {
+		missing = append(missing, "ConsumeInvite")
+	}
+	if s.RecordInviteUse == nil {
+		missing = append(missing, "RecordInviteUse")
+	}
+	if s.RewardInvite == nil {
+		missing = append(missing, "RewardInvite")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("auth: hooks not wired: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func NewService(
@@ -345,8 +375,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	// Whether the challenges below run. A request that sees an empty instance
 	// skips them, and that can stop being true before its transaction opens.
 	challenged := total > 0
-	if s.afterPreflight != nil {
-		s.afterPreflight()
+	if s.hooks.afterPreflight != nil {
+		s.hooks.afterPreflight()
 	}
 	review := SignupReview{Decision: SignupAllow}
 	// Set when a plugin guard's middle answer is what closed the account, so the
@@ -456,6 +486,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			if err != nil {
 				return user.User{}, "", err
 			}
+			// The error is not returned: when the model fails, ReviewSignup still
+			// answers with the mode's fallback decision, so an error here comes with
+			// a usable verdict by design. The wiring logs the failure itself.
 			review, _ = s.ReviewSignup(ctx, in, seen)
 			switch review.Decision {
 			case SignupAllow, SignupRestrict, SignupRefuse:
@@ -669,7 +702,12 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	// for the overwhelming majority of registrations, which used no
 	// personal code at all — see invite.Store.Reward.
 	if s.RewardInvite != nil {
-		s.RewardInvite(ctx, created.ID, s.VerificationRequired())
+		// The account exists by now, so a browser that disconnects must not cancel
+		// the reward. The bound keeps a stuck database from holding the response;
+		// a reward that still fails is picked up by RewardPending.
+		rewardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		s.RewardInvite(rewardCtx, created.ID, s.VerificationRequired())
+		cancel()
 	}
 
 	now := time.Now().UnixMilli()
@@ -938,8 +976,8 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 			}
 			checkedHash = checked
 			passwordChecked = true
-			if s.beforeChangeWrite != nil {
-				s.beforeChangeWrite()
+			if s.hooks.beforeChangeWrite != nil {
+				s.hooks.beforeChangeWrite()
 			}
 			continue
 		}
@@ -1254,8 +1292,8 @@ func (s *Service) VerifyCredential(ctx context.Context, identifier, password, ip
 		}
 		return user.User{}, "", err
 	}
-	if s.afterCredentialRead != nil {
-		s.afterCredentialRead()
+	if s.hooks.afterCredentialRead != nil {
+		s.hooks.afterCredentialRead()
 	}
 
 	ok, needsRehash, err := s.hasher.Verify(ctx, hash, password)
@@ -1300,8 +1338,8 @@ func (s *Service) rehash(ctx context.Context, userID, verified, password string)
 	if err != nil {
 		return
 	}
-	if s.beforeRehashWrite != nil {
-		s.beforeRehashWrite()
+	if s.hooks.beforeRehashWrite != nil {
+		s.hooks.beforeRehashWrite()
 	}
 	_, _ = s.users.ReplacePasswordHash(ctx, nil, userID, verified, upgraded)
 }
@@ -1459,8 +1497,8 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	if err != nil {
 		return "", err
 	}
-	if s.beforeChangeWrite != nil {
-		s.beforeChangeWrite()
+	if s.hooks.beforeChangeWrite != nil {
+		s.hooks.beforeChangeWrite()
 	}
 
 	var token string
@@ -1603,7 +1641,12 @@ func (s *Service) Authenticate(ctx context.Context, token string) (user.User, Se
 	}
 
 	if time.Since(time.UnixMilli(session.LastSeenAt)) > s.cfg.TouchInterval {
-		_ = s.sessions.Touch(ctx, session.ID, s.cfg.TTL)
+		// The request has already been let in. A failed renewal only means the
+		// next request past the interval asks again, but a store that keeps
+		// refusing it would otherwise let sessions lapse with nothing recorded.
+		if err := s.sessions.Touch(ctx, session.ID, s.cfg.TTL); err != nil {
+			slog.WarnContext(ctx, "could not renew the session", "user", account.ID, "error", err)
+		}
 	}
 	return account, session, nil
 }
@@ -1672,6 +1715,25 @@ func (s *Service) TokenFrom(r *http.Request) string {
 	return cookie.Value
 }
 
+// signupIPWindow is how far back the per-address sign-up count looks. Both the
+// limit and the reviewer's context read it, so an hour where the operator has
+// not set one, or has set nonsense, is decided in one place.
+func (s *Service) signupIPWindow() time.Duration {
+	fallback := settingDefault(settings.SignupsIPWindowMin)
+	minutes := s.settings.Int(settings.SignupsIPWindowMin, fallback)
+	if minutes <= 0 {
+		minutes = fallback
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+// settingDefault is the value a fresh instance has for key. The fallbacks here
+// read the same table the defaults come from, so they cannot drift from it.
+func settingDefault(key string) int {
+	n, _ := strconv.Atoi(settings.Defaults[key])
+	return n
+}
+
 // checkSignupIP enforces the per-address registration limit.
 //
 // Zero is off, and stays off: an operator who has not set a number has not
@@ -1683,11 +1745,7 @@ func (s *Service) checkSignupIP(ctx context.Context, q database.Queryer, ip stri
 		return nil
 	}
 
-	minutes := s.settings.Int(settings.SignupsIPWindowMin, 60)
-	if minutes <= 0 {
-		minutes = 60
-	}
-	since := time.Now().Add(-time.Duration(minutes) * time.Minute).UnixMilli()
+	since := time.Now().Add(-s.signupIPWindow()).UnixMilli()
 
 	count, err := s.users.CountFromIP(ctx, q, ip, since)
 	if err != nil {
@@ -1706,11 +1764,7 @@ func (s *Service) checkSignupIP(ctx context.Context, q database.Queryer, ip stri
 // the operator's per-address one, or an hour where they have not set one —
 // the number is context for a judgement, not a limit being enforced.
 func (s *Service) countRecentFromIP(ctx context.Context, ip string) (int, error) {
-	minutes := s.settings.Int(settings.SignupsIPWindowMin, 60)
-	if minutes <= 0 {
-		minutes = 60
-	}
-	since := time.Now().Add(-time.Duration(minutes) * time.Minute).UnixMilli()
+	since := time.Now().Add(-s.signupIPWindow()).UnixMilli()
 	return s.users.CountFromIP(ctx, nil, ip, since)
 }
 
