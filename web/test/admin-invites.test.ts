@@ -3,6 +3,8 @@ import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vu
 import AdminInvites from '../src/views/admin/AdminInvites.vue';
 import { adminApi, type InviteCode, type InviteStats, type InviteUse } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
+import { ApiError } from '../src/api/client';
+import * as markdown from '../src/chat/markdown';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
@@ -519,4 +521,91 @@ describe('an existing code', () => {
     expect(revoke).toHaveBeenCalledWith('inv1');
     expect(() => button(panels, t('revokeLabel'))).toThrow();
   });
+});
+
+describe('a part of the page that fails on its own', () => {
+  // The settings card is the only part that cannot be drawn without its answer.
+  // A failed read there used to replace the statistics, partners and codes too,
+  // although none of them read the settings.
+  it('shows the settings failure in the settings card, and keeps the rest of the page', async () => {
+    stubBase();
+    stubPartners();
+    vi.spyOn(adminApi, 'settings').mockRejectedValue(new ApiError(500, 'internal', 'settings went away'));
+    await mount(AdminInvites);
+
+    expect(host.querySelector('#secInviteSettings')!.textContent).toContain(t('couldNotLoad'));
+    expect(host.querySelector('#secInviteStats')!.textContent).toContain(t('statActiveCodes'));
+    expect(host.querySelector('#secInviteCodes')).not.toBeNull();
+    expect(host.querySelector('#secInvitePartners')).not.toBeNull();
+  });
+
+  // The group list is only read by the generate panel, so its failure must not
+  // hold the settings card, nor be shown where the settings are.
+  it('keeps the settings card when only the group list fails, and reports it in the generate panel', async () => {
+    stubBase();
+    stubPartners();
+    vi.spyOn(adminApi, 'groupOptions').mockRejectedValue(new ApiError(500, 'internal', 'groups went away'));
+    await mount(AdminInvites);
+
+    expect(fieldFor(host, t('registrationMode')).querySelector('.oa-select-label')).not.toBeNull();
+    expect(host.querySelector('#secInviteSettings')!.textContent).not.toContain('groups went away');
+
+    button(actions, t('generateInvites')).click();
+    await settle();
+    expect(panels.textContent).toContain('groups went away');
+  });
+});
+
+describe('generating codes from a cleared number', () => {
+  // A cleared count used to mint one code, and a cleared use limit an unlimited
+  // one, neither of them shown in the panel.
+  it('does not generate from a cleared count, and says that a field is empty', async () => {
+    stubBase();
+    stubPartners();
+    const create = vi.spyOn(adminApi, 'createInvites').mockResolvedValue({ codes: [] });
+    await mount(AdminInvites);
+
+    button(actions, t('generateInvites')).click();
+    await settle();
+    input(fieldFor(panels, t('inviteCount')).querySelector<HTMLInputElement>('input')!, '');
+    await settle();
+    button(panels, t('generateInvites')).click();
+    await settle();
+
+    expect(create).not.toHaveBeenCalled();
+    expect(panels.textContent).toContain(t('settingNumberRequired'));
+  });
+});
+
+describe('copying a minted batch', () => {
+  // The button carries the result, so it has to go back to its own label once
+  // the moment has passed; otherwise a failed copy stayed on it for good.
+  it('says a refused copy on the button, then puts the label back', async () => {
+    stubBase();
+    stubPartners();
+    vi.spyOn(adminApi, 'createInvites').mockResolvedValue({
+      codes: [{
+        id: 'new-0', code: 'CODE00000000', owner_id: '', owner_username: '', owner_nickname: '',
+        kind: 'batch', name: '', allow_existing: false,
+        group_id: '', group_name: '', group_days: 0, group_days_max: 0,
+        max_uses: 1, uses: 0, expires_at: 0, revoked_at: 0,
+        note: '', created_by: 'op', created_at: Date.now(), status: 'active', claims: 0,
+      } satisfies InviteCode],
+    });
+    vi.spyOn(markdown, 'copyToClipboard').mockResolvedValue(false);
+    await mount(AdminInvites);
+
+    button(actions, t('generateInvites')).click();
+    await settle();
+    button(panels, t('generateInvites')).click();
+    await settle();
+    button(panels, t('copyAll')).click();
+    await settle();
+    expect(panels.textContent).toContain(t('copyFailed'));
+
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    await settle();
+    expect(panels.textContent).not.toContain(t('copyFailed'));
+    expect(button(panels, t('copyAll'))).toBeDefined();
+  }, 10_000);
 });

@@ -15,6 +15,7 @@ import {
   type AdminModel, type Group, type QuotaLimits, type QuotaPolicy, type QuotaWindowKind,
 } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
@@ -272,7 +273,7 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
     // A group created before the policy failed is in the table now, and the
     // list should show it rather than wait for the panel to close.
     if (wasCreating && existing.value) void load();
@@ -288,7 +289,7 @@ async function remove(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   }
 }
 

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import AdminLogs from '../src/views/admin/AdminLogs.vue';
-import { adminApi, type LogFacets } from '../src/admin/api';
+import { adminApi, type LogEntry, type LogFacets } from '../src/admin/api';
+import { ApiError } from '../src/api/client';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { provideAdminView } from '../src/views/admin/adminView';
@@ -104,5 +105,34 @@ describe('AdminLogs, the facets of the window on screen', () => {
 
     expect(host.textContent).toContain(t('logHolding', { count: 300 }));
     expect(host.textContent).not.toContain(t('logHolding', { count: 100 }));
+  });
+});
+
+describe('AdminLogs, the facets and the list', () => {
+  const row = {
+    id: 'r1', at: Date.now(), method: 'POST', path: '/api/chat', status: 200, duration_ms: 12,
+    username: 'alice', model_name: 'm', error_code: '', bytes: 0, channel: 'web', ip: '', user_agent: '',
+    request_id: '', outcome: 'ok',
+  } as unknown as LogEntry;
+
+  // The list does not read the facets, so it must not wait for them: the rows
+  // were held back by a whole round trip for nothing.
+  it('asks for the list while the facets are still on their way', async () => {
+    vi.mocked(adminApi.logFacets).mockImplementation(() => new Promise<LogFacets>(() => {}));
+    await mountAt('/admin/logs?window=24');
+
+    expect(adminApi.logs).toHaveBeenCalled();
+  });
+
+  // A failed facets answer used to replace the whole page, the rows with it.
+  // The filter controls are the only part that needs the facets.
+  it('keeps the rows on screen when the facets fail, and shows the failure where the filters are', async () => {
+    vi.mocked(adminApi.logFacets).mockRejectedValue(new ApiError(500, 'internal', 'facets went away'));
+    vi.mocked(adminApi.logs).mockResolvedValue({ entries: [row], total: 1, limit: 50, offset: 0 });
+    await mountAt('/admin/logs?window=24');
+
+    expect(host.querySelector('.oa-log-row')).not.toBeNull();
+    expect(host.querySelector('#logsFilter')).toBeNull();
+    expect(host.textContent).toContain(t('couldNotLoad'));
   });
 });

@@ -98,10 +98,21 @@ async function save(): Promise<void> {
     window.clearTimeout(saveLabelTimer);
     saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, 1500);
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
+  }
+}
+
+// What follows a change the server has already committed. A failed read-back
+// does not undo it, so it is reported as a stale page beside the success line
+// rather than as a failed action, which would contradict that line.
+async function reloadFigures(): Promise<void> {
+  try {
+    await Promise.all([refreshHealth(), loadModels()]);
+  } catch {
+    flash.value = t('couldNotLoad');
   }
 }
 
@@ -114,9 +125,9 @@ async function resetUptime(): Promise<void> {
     flashSuccess.value = t('resetUptimeDone');
     window.clearTimeout(flashSuccessTimer);
     flashSuccessTimer = window.setTimeout(() => { flashSuccess.value = ''; }, 3000);
-    await Promise.all([refreshHealth(), loadModels()]);
+    await reloadFigures();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   } finally {
     resetting.value = false;
   }
@@ -141,7 +152,7 @@ async function probeAllModels(): Promise<void> {
     });
     window.clearTimeout(flashSuccessTimer);
     flashSuccessTimer = window.setTimeout(() => { flashSuccess.value = ''; }, 5000);
-    await Promise.all([refreshHealth(), loadModels()]);
+    await reloadFigures();
   } catch (failure) {
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.

@@ -82,12 +82,16 @@ async function detect(): Promise<void> {
     found.value = models;
   } catch (error) {
     if (asked !== props.providerId) return;
-    // Only a code the interface has a sentence for is translated; any other
-    // keeps the server's sentence, which an administrator may need verbatim.
-    failure.value = error instanceof ApiError ? codeText(error.code) ?? error.message : String(error);
+    failure.value = reasonText(error);
   } finally {
     detecting.value = false;
   }
+}
+
+// Only a code the interface has a sentence for is translated; any other keeps
+// the server's sentence, which an administrator may need verbatim.
+function reasonText(reason: unknown): string {
+  return reason instanceof ApiError ? codeText(reason.code) ?? reason.message : String(reason);
 }
 
 // An upstream model already configured can still be picked in the editor: a
@@ -124,13 +128,13 @@ async function addPicked(): Promise<void> {
     // cleared for the new one; the failed rows are not for it.
     if (forProvider !== props.providerId) return;
     picked.value = failed;
-    const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-    if (rejected) {
-      const reason: unknown = rejected.reason;
-      failure.value = reason instanceof ApiError ? reason.message : String(reason);
-    }
+    // Each refusal names its model. The first alone sends the operator back to
+    // the provider with nothing to look for when several rows did not make it.
+    failure.value = results.flatMap((result, index) => (result.status === 'rejected'
+      ? [`${entries[index]!.model_id}: ${reasonText(result.reason)}`]
+      : [])).join('; ');
   } catch (error) {
-    failure.value = error instanceof ApiError ? error.message : String(error);
+    failure.value = reasonText(error);
   } finally {
     adding.value = false;
   }

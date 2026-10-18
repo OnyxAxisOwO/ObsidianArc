@@ -362,3 +362,44 @@ describe('admin instance backup', () => {
     expect(pre?.textContent).toContain('[12:00:01] Uploading...');
   });
 });
+
+describe('a blank interval or retention on the backup page', () => {
+  function typeInto(label: string, value: string): void {
+    const input = fieldInput(label);
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // A cleared box used to be saved as its default (24 hours, 168 hours) while
+  // the box stayed empty on screen. The save now waits for a number instead.
+  it('keeps the save shut while a box is blank, and writes neither default in its place', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
+    const save = vi.spyOn(adminApi, 'saveBackup').mockResolvedValue(undefined);
+    await mountBackup();
+
+    typeInto(t('backupInterval'), '');
+    await settle();
+
+    expect(button(actions, t('save')).disabled).toBe(true);
+    expect(host.textContent).toContain(t('settingNumberRequired'));
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('saves the number typed in its place, with the other box as it stood', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
+    const save = vi.spyOn(adminApi, 'saveBackup').mockResolvedValue(undefined);
+    await mountBackup();
+
+    typeInto(t('backupRetention'), '');
+    await settle();
+    typeInto(t('backupRetention'), '336');
+    await settle();
+
+    expect(button(actions, t('save')).disabled).toBe(false);
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ interval_hours: 24, retention_hours: 336 }));
+  });
+});

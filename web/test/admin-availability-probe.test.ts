@@ -132,3 +132,22 @@ it('words a refused test run by its code, in the reader\'s language', async () =
     await changeLanguage('en');
   }
 });
+
+// The probe ran and its result is shown. A read-back that then fails must not
+// put a failure line beside that success as though the probe had failed.
+it('keeps the result of a finished probe, and says only that the figures did not reload', async () => {
+  vi.spyOn(adminApi, 'probeAllModels').mockResolvedValue({
+    completed: 2, total: 2, succeeded: 2, failed: 0, skipped: 0,
+  });
+  await mountPage();
+  vi.spyOn(adminApi, 'health').mockRejectedValue(new Error('gone'));
+
+  [...document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === t('probeAllModels'))!.click();
+  await settle();
+
+  expect(document.querySelector('.oa-control-flash.ok')?.textContent).toBe(
+    t('probeAllModelsDone', { succeeded: 2, total: 2, failed: 0, skipped: 0 }),
+  );
+  expect(document.querySelector('.oa-control-flash:not(.ok)')?.textContent).toBe(t('couldNotLoad'));
+});

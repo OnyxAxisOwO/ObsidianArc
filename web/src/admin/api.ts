@@ -949,6 +949,19 @@ export interface PluginPreview {
   warnings: string[];
 }
 
+// The three selectors below all read one document, which carries every list at
+// once. A page that asks for two of them in the same moment (the model editor
+// loads providers and groups together) sends one request between them. Only a
+// call still in flight shares the answer: a call made after a save must read
+// again, because the document may have changed since.
+let referencesInFlight: Promise<unknown> | null = null;
+function references<T>(): Promise<T> {
+  if (!referencesInFlight) {
+    referencesInFlight = api.get<unknown>('/api/admin/references').finally(() => { referencesInFlight = null; });
+  }
+  return referencesInFlight as Promise<T>;
+}
+
 export const adminApi = {
   plugins: () => api.get<{ plugins: AdminPlugin[]; two_factor_required?: boolean }>('/api/admin/plugins'),
   installPlugin: (name: string, enable: boolean, settings: Record<string, string>, code?: string) => {
@@ -978,9 +991,9 @@ export const adminApi = {
   userCheck: () => api.get<AdminUserCheckSettings>('/api/admin/usercheck'),
   saveUserCheck: (body: AdminUserCheckUpdate) => api.put<AdminUserCheckSettings>('/api/admin/usercheck', body),
   testUserCheck: (email: string) => api.post<AdminUserCheckTestResult>('/api/admin/usercheck/test', { email }),
-  groupOptions: () => api.get<{ groups: GroupOption[] }>('/api/admin/references'),
-  modelOptions: () => api.get<{ models: ModelOption[] }>('/api/admin/references'),
-  providerOptions: () => api.get<{ providers: ProviderOption[] }>('/api/admin/references'),
+  groupOptions: () => references<{ groups: GroupOption[] }>(),
+  modelOptions: () => references<{ models: ModelOption[] }>(),
+  providerOptions: () => references<{ providers: ProviderOption[] }>(),
   memberOptions: (query: string) => api.get<{ users: Account[]; total: number }>(`/api/admin/member-options${query}`),
   dashboard: (metric: UsageMetric = 'credits') =>
     api.get<Dashboard>(`/api/admin/dashboard?metric=${metric}&${zoneQuery()}`),

@@ -9,12 +9,13 @@
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { RefreshCw, X } from 'lucide-vue-next';
 import { adminApi, type AuditEntry, type AuditFacets } from '@/admin/api';
 import { AUDIT_ACTIONS, auditWeight } from './audit-actions';
 import { auditText as at, type AuditTextKey } from './audit-text';
 import { maskLog, maskUser } from '@/admin/safeMode';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
+import { IconClose, IconRefresh } from '@/icons';
 import OaBadge from '@/components/OaBadge.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaPagination from '@/components/OaPagination.vue';
@@ -27,6 +28,7 @@ import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { t, type StringKey } from '@/composables/useI18n';
 import { absoluteTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
+import { HOUR_MS } from '@/lib/time';
 import { isSuperAdmin } from '@/stores/session';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
@@ -38,9 +40,12 @@ const WINDOWS: Array<{ value: string; label: StringKey; hours: number }> = [
   { value: '', label: 'allTime', hours: 0 },
 ];
 
+// The longest retention the server keeps (audit.MaxRetentionDays), and the top
+// step of the list below. A longer one is refused on save.
+const MAX_RETENTION_DAYS = 3650;
 // The steps a retention is chosen from. The server takes any number in its
 // bounds; a list keeps the choice to the ones anybody means.
-const RETENTIONS = [30, 90, 180, 365, 730, 1825, 3650];
+const RETENTIONS = [30, 90, 180, 365, 730, 1825, MAX_RETENTION_DAYS];
 
 const view = useAdminView();
 view.setTitle(() => t('navAudit'), () => t('auditSubtitle'));
@@ -84,14 +89,16 @@ watch(
     const windowMoved = (JSON.parse(next) as { window: string }).window
       !== (JSON.parse(previous) as { window: string }).window;
     query.value = fromAddress();
-    void (windowMoved || error.value || !facets.value ? reload() : paint());
+    void (windowMoved || facetsError.value || !facets.value ? reload() : paint());
   },
 );
 
 const facets = ref<AuditFacets | null>(null);
 const entries = ref<AuditEntry[]>([]);
 const total = ref(0);
-const error = ref('');
+// A failed facets answer costs the filter controls, not the trail: the trail
+// does not read the facets, so the two are shown and failed separately.
+const facetsError = ref('');
 const listError = ref('');
 const loading = ref(true);
 let listTicket = 0;
@@ -99,7 +106,7 @@ let facetTicket = 0;
 
 function since(): number {
   const entry = WINDOWS.find((window) => window.value === query.value.window);
-  return entry && entry.hours > 0 ? Date.now() - entry.hours * 3_600_000 : 0;
+  return entry && entry.hours > 0 ? Date.now() - entry.hours * HOUR_MS : 0;
 }
 
 function listQuery(): string {
@@ -116,20 +123,23 @@ function listQuery(): string {
   return `?${params.toString()}`;
 }
 
+// The facets and the trail go out together, as the request log's do: the trail
+// does not read the facets, so waiting for them only held the rows back.
 async function reload(): Promise<void> {
-  error.value = '';
   const ticket = ++facetTicket;
-  try {
-    const at = since();
-    const next = await adminApi.auditFacets(at > 0 ? `?since=${at}` : '');
-    if (ticket !== facetTicket) return;
-    facets.value = next;
-  } catch (failure) {
-    if (ticket !== facetTicket) return;
-    error.value = failure instanceof Error ? failure.message : String(failure);
-    return;
-  }
-  await paint();
+  facetsError.value = '';
+  const at = since();
+  const facetsDone = adminApi.auditFacets(at > 0 ? `?since=${at}` : '').then(
+    (next) => { if (ticket === facetTicket) facets.value = next; },
+    (failure: unknown) => {
+      if (ticket !== facetTicket) return;
+      // Without facets the filter controls cannot be drawn, so they give way to
+      // the failure; the retry asks for both again.
+      facets.value = null;
+      facetsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
+    },
+  );
+  await Promise.all([facetsDone, paint()]);
 }
 
 async function paint(): Promise<void> {
@@ -151,10 +161,16 @@ async function paint(): Promise<void> {
   } catch (failure) {
     if (ticket !== listTicket) return;
     entries.value = [];
-    listError.value = failure instanceof ApiError ? failure.message : t('failed');
+    listError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
   } finally {
     if (ticket === listTicket) loading.value = false;
   }
+}
+
+/** A filter the template changed: back to the first page, and into the address. */
+function filterMoved(): void {
+  query.value.offset = 0;
+  remember();
 }
 
 /** Writes the filters into the address, keeping a panel open beside the page. */
@@ -210,6 +226,8 @@ const VIA: Record<string, AuditTextKey> = {
   'console:web': 'viaConsoleWeb',
   'console:ssh': 'viaConsoleSSH',
 };
+// The filter's choices: anybody, then each channel the table names.
+const VIA_FILTERS = ['', ...Object.keys(VIA)];
 
 function viaLabel(via: string): string {
   const key = VIA[via];
@@ -268,13 +286,23 @@ function dayLabel(at: number): string {
   });
 }
 
+// What a row draws, worked out once per entry: the template would otherwise
+// call the same functions two or three times for each one it draws.
+interface AuditRow {
+  entry: AuditEntry;
+  verdict: ReturnType<typeof outcome>;
+  target: string;
+  when: Date;
+}
+
 const days = computed(() => {
-  const out: Array<{ key: string; label: string; entries: AuditEntry[] }> = [];
+  const out: Array<{ key: string; label: string; entries: AuditRow[] }> = [];
   for (const entry of entries.value) {
     const key = dayKey(entry.at);
+    const row: AuditRow = { entry, verdict: outcome(entry), target: targetShort(entry), when: new Date(entry.at) };
     const last = out[out.length - 1];
-    if (last && last.key === key) last.entries.push(entry);
-    else out.push({ key, label: dayLabel(entry.at), entries: [entry] });
+    if (last && last.key === key) last.entries.push(row);
+    else out.push({ key, label: dayLabel(entry.at), entries: [row] });
   }
   return out;
 });
@@ -315,7 +343,7 @@ async function open(entry: AuditEntry): Promise<void> {
     const { entry: full } = await adminApi.auditEntry(entry.id);
     if (ticket === detailTicket) opened.value = full;
   } catch (failure) {
-    if (ticket === detailTicket) detailError.value = failure instanceof ApiError ? failure.message : t('failed');
+    if (ticket === detailTicket) detailError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
   }
 }
 
@@ -375,7 +403,7 @@ async function saveRetention(value: string): Promise<void> {
     await adminApi.saveSettings({ 'audit.retention_days': value });
     if (facets.value) facets.value = { ...facets.value, retention_days: Number(value) };
   } catch (failure) {
-    retentionError.value = failure instanceof ApiError ? failure.message : t('failed');
+    retentionError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
   }
 }
 
@@ -388,34 +416,32 @@ onMounted(reload);
 <template>
   <Teleport :to="view.actionsHost">
     <OaIconButton class="oa-icon-btn" :label="t('refresh')" :disabled="loading" @click="reload">
-      <RefreshCw :size="15" :class="{ 'is-refreshing': loading }" aria-hidden="true" />
+      <IconRefresh :size="15" :class="{ 'is-refreshing': loading }" aria-hidden="true" />
     </OaIconButton>
   </Teleport>
 
-  <AdminFailure v-if="error" :message="error" @retry="reload" />
-
-  <div v-else class="oa-log-page oa-audit-page">
-    <div v-if="facets" id="auditFilter" class="oa-viz-card oa-log-filters">
+  <div class="oa-log-page">
+    <div v-if="facets" id="auditFilter" class="oa-viz-card">
       <div class="oa-log-filter-grid">
         <OaSelectField
           v-model="query.window"
           :label="t('logWindow')"
           :options="WINDOWS.map((entry) => ({ value: entry.value, label: t(entry.label) }))"
-          @update:model-value="query.offset = 0; remember()"
+          @update:model-value="filterMoved"
         />
         <OaSelectField
           v-model="query.actorID"
           searchable
           :label="at('actor')"
           :options="actorChoices"
-          @update:model-value="query.offset = 0; remember()"
+          @update:model-value="filterMoved"
         />
         <OaSelectField
           v-model="query.action"
           searchable
           :label="at('action')"
           :options="actionChoices"
-          @update:model-value="query.offset = 0; remember()"
+          @update:model-value="filterMoved"
         />
         <OaSelectField
           v-model="query.outcome"
@@ -425,23 +451,23 @@ onMounted(reload);
             { value: 'ok', label: t('logSucceeded') },
             { value: 'failed', label: t('logFailed') },
           ]"
-          @update:model-value="query.offset = 0; remember()"
+          @update:model-value="filterMoved"
         />
       </div>
 
       <div class="oa-log-filter-actions">
         <div class="oa-segment oa-audit-vias" role="group" :aria-label="at('via')">
           <button
-            v-for="via in ['', 'web', 'console:web', 'console:ssh']"
+            v-for="via in VIA_FILTERS"
             :key="via"
             type="button"
             :aria-pressed="query.via === via"
-            @click="query.via = via; query.offset = 0; remember()"
+            @click="query.via = via; filterMoved()"
           >{{ via ? viaLabel(via) : at('anyVia') }}</button>
         </div>
         <button v-if="query.targetID" type="button" class="oa-badge oa-audit-badge-btn" :title="t('logClear')" @click="clearTarget">
           {{ at('onTarget', { name: query.targetName || query.targetID }) }}
-          <X :size="12" aria-hidden="true" />
+          <IconClose :size="12" aria-hidden="true" />
         </button>
         <button type="button" class="oa-btn" @click="clearFilters">{{ t('logClear') }}</button>
         <span class="oa-log-holding oa-audit-summary">
@@ -467,17 +493,18 @@ onMounted(reload);
         </span>
       </div>
     </div>
+    <AdminFailure v-else-if="facetsError" :message="facetsError" @retry="reload" />
 
-    <div id="auditTrail" class="oa-viz-card oa-audit-results">
+    <div id="auditTrail" class="oa-viz-card">
       <p v-if="loading && !entries.length" class="oa-table-empty">{{ t('loading') }}</p>
       <p v-else-if="listError" class="oa-table-empty">{{ listError }}</p>
       <p v-else-if="!entries.length" class="oa-table-empty">{{ at('empty') }}</p>
 
       <div v-else class="oa-audit-days" :aria-busy="loading" :class="{ busy: loading }">
-        <section v-for="day in days" :key="day.key" class="oa-audit-day">
+        <section v-for="day in days" :key="day.key">
           <h3 class="oa-audit-day-label">{{ day.label }}</h3>
           <ol class="oa-audit-list">
-            <li v-for="entry in day.entries" :key="entry.id">
+            <li v-for="{ entry, verdict, target, when } in day.entries" :key="entry.id">
               <button
                 type="button"
                 class="oa-audit-row"
@@ -492,15 +519,15 @@ onMounted(reload);
                   <span class="oa-audit-line">
                     <strong class="oa-audit-actor">{{ maskUser(entry.actor_username) }}</strong>
                     <span class="oa-audit-action">{{ actionLabel(entry) }}</span>
-                    <OaBadge v-if="targetShort(entry)" tone="muted">{{ targetShort(entry) }}</OaBadge>
+                    <OaBadge v-if="target" tone="muted">{{ target }}</OaBadge>
                     <OaBadge v-if="entry.via !== 'web'">{{ viaLabel(entry.via) }}</OaBadge>
-                    <OaBadge v-if="outcome(entry)" :tone="outcome(entry)!.tone">{{ outcome(entry)!.text }}</OaBadge>
+                    <OaBadge v-if="verdict" :tone="verdict.tone">{{ verdict.text }}</OaBadge>
                   </span>
                 </span>
                 <span class="oa-audit-side">
                   <span v-if="entry.ip" class="oa-audit-ip">{{ maskLog(entry.ip) }}</span>
-                  <time class="oa-audit-time" :datetime="new Date(entry.at).toISOString()" :title="absoluteTime(entry.at)">
-                    {{ new Date(entry.at).toLocaleTimeString([], timeFormat) }}
+                  <time class="oa-audit-time" :datetime="when.toISOString()" :title="absoluteTime(entry.at)">
+                    {{ when.toLocaleTimeString([], timeFormat) }}
                   </time>
                 </span>
               </button>

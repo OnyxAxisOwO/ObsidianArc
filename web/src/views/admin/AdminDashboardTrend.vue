@@ -10,6 +10,7 @@ import type { UsagePoint, UsageTotals } from '@/admin/api';
 import { maskBilling } from '@/admin/safeMode';
 import { t } from '@/composables/useI18n';
 import { compactNumber } from '@/lib/format';
+import { DAY_MS, HOUR_MS } from '@/lib/time';
 import UsagePlot from './usage/UsagePlot.vue';
 import { fillBuckets } from './usage/scale';
 
@@ -26,7 +27,7 @@ const offsetMs = -new Date().getTimezoneOffset() * 60_000;
 const points = computed(() => {
   const now = Date.now();
   const filled = fillBuckets(props.series, props.bucketMs, {
-    since: now - 7 * 86_400_000, until: now, offsetMs,
+    since: now - 7 * DAY_MS, until: now, offsetMs,
   }, (at): UsagePoint => ({
     at, requests: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0,
     credits: 0, errors: 0, users: 0, models: 0, duration_ms: 0,
@@ -75,7 +76,7 @@ watch(metric, () => { active.value = null; });
     />
     <p v-else class="oa-dashboard-empty oa-dashboard-trend-empty">{{ t(metric === 'requests' ? 'noRequestsWeek' : 'dashboardNoTokens') }}</p>
     <div class="oa-dashboard-trend-foot">
-      <span><span class="oa-dashboard-dot" />{{ t('dashboardBucket', { hours: props.bucketMs / 3600000 }) }}</span>
+      <span><span class="oa-dashboard-dot" />{{ t('dashboardBucket', { hours: props.bucketMs / HOUR_MS }) }}</span>
       <span>{{ t('dashboardPeak', { value: format(peak) }) }}</span>
     </div>
   </section>

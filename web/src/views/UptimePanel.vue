@@ -219,10 +219,10 @@ onMounted(load);
                   :state="model.state"
                 />
                 <div class="oa-uptime-card-stats">
-                  <span class="oa-uptime-stat-item">
+                  <span>
                     {{ t('statRequests') }}: <strong>{{ model.total ?? 0 }}</strong>
                   </span>
-                  <span v-if="model.uptime !== undefined" class="oa-uptime-stat-item">
+                  <span v-if="model.uptime !== undefined">
                     {{ t('uptimeDayTitle') }}: <strong>{{ (model.uptime * 100).toFixed(1) }}%</strong>
                   </span>
                 </div>

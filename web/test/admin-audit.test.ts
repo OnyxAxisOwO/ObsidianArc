@@ -3,9 +3,11 @@ import { createApp, h, nextTick, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import AdminAudit from '../src/views/admin/AdminAudit.vue';
 import { adminApi, type AuditEntry, type AuditFacets } from '../src/admin/api';
+import { ApiError } from '../src/api/client';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { auditText as at } from '../src/views/admin/audit-text';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -156,5 +158,44 @@ describe('AdminAudit, a page the trail shrank out from under', () => {
 
     expect(lastListQuery().get('offset')).toBe('0');
     expect(host.textContent).toContain('actor14');
+  });
+});
+
+describe('AdminAudit, the facets of the window on screen', () => {
+  // The same race the request log guards against: each window asks for its own
+  // facets, and an answer for an earlier window that lands last must not stand.
+  it('drops a facets answer that lands after a newer window was asked for', async () => {
+    const waiting: Array<(facets: AuditFacets) => void> = [];
+    vi.mocked(adminApi.auditFacets).mockImplementation(() => new Promise<AuditFacets>((resolve) => {
+      waiting.push(resolve);
+    }));
+    const router = await mountAt('/admin/audit?window=24');
+    waiting.shift()!({ ...noFacets, total: 1 });
+    await settle();
+
+    await router.push('/admin/audit?window=168');
+    await router.push('/admin/audit?window=720');
+    await settle();
+    expect(waiting).toHaveLength(2);
+
+    const [older, newer] = waiting;
+    newer!({ ...noFacets, total: 300 });
+    await settle();
+    older!({ ...noFacets, total: 100 });
+    await settle();
+
+    expect(host.textContent).toContain(at('summary', { actors: 0, total: '300' }));
+    expect(host.textContent).not.toContain(at('summary', { actors: 0, total: '100' }));
+  });
+
+  // A failed facets answer used to replace the whole trail with the failure.
+  it('keeps the trail on screen when the facets fail, and shows the failure where the filters are', async () => {
+    vi.mocked(adminApi.auditFacets).mockRejectedValue(new ApiError(500, 'internal', 'facets went away'));
+    vi.mocked(adminApi.audit).mockResolvedValue({ entries: [entry('a', 'kept-actor')], total: 1, limit: 20, offset: 0 });
+    await mountAt('/admin/audit');
+
+    expect(host.textContent).toContain('kept-actor');
+    expect(host.querySelector('#auditFilter')).toBeNull();
+    expect(host.textContent).toContain(t('couldNotLoad'));
   });
 });
