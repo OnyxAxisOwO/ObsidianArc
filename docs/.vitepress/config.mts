@@ -29,7 +29,7 @@ const sidebar = [
     { text: '邀请码', link: '/admin/invites' },
     { text: '可用性管理', link: '/admin/availability' },
     { text: '系统设置', link: '/admin/system-settings' },
-    { text: '请求日志', link: '/admin/logs-and-auditing' },
+    { text: '请求日志与审计日志', link: '/admin/logs-and-auditing' },
     { text: '公告与通知', link: '/admin/announcements' },
     { text: '用户反馈', link: '/admin/feedback' },
     { text: '第三方登录', link: '/admin/sign-in' },
