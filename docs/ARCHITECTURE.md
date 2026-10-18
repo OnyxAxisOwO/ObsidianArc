@@ -81,8 +81,8 @@ them is preserved.
   rows, with a "manage models" footer that jumps to settings.
 - **Settings** — a right-side drawer, 420px, sections separated by uppercase
   subheads, with an accent picker of 10 dots plus a custom hex row.
-- **Motion** — `aiChatSwitch` on conversation change, a caret that blinks at the live end of a streaming answer, a
-  0.34s `cubic-bezier(0.2, 0, 0, 1)` rail slide, and a full
+- **Motion** — `oaRise` on conversation change, a caret that blinks at the live end of a streaming answer, a
+  0.34s `--ai-ease-standard` (`cubic-bezier(0.2, 0, 0, 1)`) rail slide, and a full
   `prefers-reduced-motion` path that turns all of it off.
 - **Theme** — light values on `:root`, dark by `prefers-color-scheme`, forced
   by `[data-theme]`; one accent hue clamped per scheme by `color-utils.js` so
@@ -226,9 +226,19 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 205.46 kB to open the chat (179.18 JS + 26.28 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.17 kB (179.48 JS + 26.69 CSS) |
+| Frontend, on the wire | < 135 kB | 205.41 kB to open the chat (179.16 JS + 26.25 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.10 kB (179.46 JS + 26.65 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after a second round of stylesheet merges:
+the three identical entrance keyframes are one (`oaRise`), the easing curves
+are `--ai-ease-*` tokens, the settings panel no longer restates the field
+rule, and a few dead rules and class names are gone. 205.41 kB to open the
+chat (179.16 JS + 26.25 CSS), down 0.05 kB; the build's estimate is
+206.10 kB, 0.90 kB under the bundle test's 207 kB. Backoffice 170.53 kB plus
+15.22 kB of stylesheet, terminal 8.05 kB plus 1.67 kB, Chinese dictionary
+51.60 kB, the other lazy chunks unchanged. The binary was not rebuilt for
+this; its figure is the one below.
 
 Remeasured on 2026-10-18 (UTC), after a round of stylesheet merges: the
 repeated note box, text column, picture frame, empty line and pill-switch

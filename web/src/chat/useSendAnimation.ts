@@ -296,6 +296,8 @@ export async function playSendAnimation(options: SendAnimationOptions): Promise<
   try {
     anim = clone.animate(keyframes, {
       duration: 380,
+      // A literal, not an --ai-ease-* token: the Web Animations API parses its
+      // easing as a bare timing function and rejects var().
       easing: 'cubic-bezier(0.2, 0.9, 0.1, 1)',
       fill: 'forwards',
     });

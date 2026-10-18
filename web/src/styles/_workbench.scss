@@ -129,7 +129,7 @@
 }
 .oa-detect-option:not(:disabled):hover, .oa-detect-option.picked { background: var(--ai-state-hover); }
 .oa-detect-option:disabled { cursor: default; }
-.oa-detect-option:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
+.oa-detect-option:focus-visible { @include focus-ring; }
 .oa-detect-option-text { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
 .oa-detect-option-id {
   overflow: hidden;
@@ -197,7 +197,6 @@
 /* Run log viewer for instance backups. */
 .oa-backup-log-section { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .oa-backup-log-head { display: flex; align-items: center; justify-content: space-between; }
-.oa-backup-log-head .oa-field-label { font-size: 12px; font-weight: 550; }
 /* No colour of its own. The warning token it named was never defined, so the
    label has always inherited the text colour; a hue here would need a token,
    and the theme tokens do not hardcode one. */
@@ -417,7 +416,6 @@
 .oa-control-card-wide .oa-plugin-controls { max-width: 640px; }
 .oa-plugin-control-item { display: flex; flex-direction: column; gap: 8px; padding-bottom: 16px; border-bottom: 1px solid var(--ai-border); }
 .oa-plugin-control-item:last-child { padding-bottom: 0; border-bottom: 0; }
-.oa-plugin-control-item .oa-switch-field { padding: 0; border-bottom: 0; }
 /* The storage key a control writes, shown above it so an operator approving
    the install sees where the value goes, not only the label the package chose. */
 .oa-plugin-control-key {
@@ -568,7 +566,6 @@
 .oa-plugin-fingerprint { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 11.5px; color: var(--ai-text-secondary); }
 .oa-plugin-fingerprint dt { font-weight: 600; }
 .oa-plugin-fingerprint dd { margin: 0; overflow-wrap: anywhere; }
-.oa-control-actions .oa-switch-field { padding: 0; border-bottom: 0; }
 
 /* What checking in earns, on the bonus page: the reward given for every
    check-in and each milestone's, which is the same editor. A milestone is one

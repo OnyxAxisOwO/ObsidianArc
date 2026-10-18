@@ -41,8 +41,7 @@
 }
 
 .oa-brand:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-brand-logo {
@@ -213,7 +212,7 @@
   opacity: 1;
   transform: scale(1) translateZ(0);
   transition:
-    opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.18s var(--ai-ease-out),
     transform 0.26s cubic-bezier(0.12, 0.9, 0.2, 1);
 }
 
@@ -363,10 +362,7 @@
   padding: 6px;
   box-sizing: border-box;
   scrollbar-width: none;
-}
-
-.oa-select-scroll::-webkit-scrollbar {
-  display: none;
+  @include hidden-scrollbar;
 }
 
 .oa-select-scroll-wrap .oa-overlay-track {
@@ -609,9 +605,7 @@
 .oa-field input:focus,
 .oa-field textarea:focus,
 .oa-field .oa-select:focus-visible {
-  outline: none;
-  background-color: var(--ai-field-bg-hover);
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include field-focus;
 }
 
 .oa-input-row {

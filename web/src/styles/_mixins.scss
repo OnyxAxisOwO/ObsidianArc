@@ -191,9 +191,41 @@ $frosted-filter: blur(20px) saturate(1.6);
   transition: background-color 0.15s ease;
 }
 
-// The ring a filter pill wears when it has focus, shared with the bulk reason.
-@mixin filter-pill-focus {
+// Keyboard focus on any field: the hover fill kept under the shared ring, so a
+// focused field reads as the same control lit up rather than a new shape. The
+// filter pills, the bulk reason and the form fields all take this one state.
+@mixin field-focus {
   outline: none;
   background-color: var(--ai-field-bg-hover);
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+// The red a delete control turns once it is armed (or, on a gallery tile,
+// while it is pointed at): a tint of the danger token rather than a solid
+// fill, so a second press reads as a confirmation and not as a new, louder
+// button. Each caller keeps its own selector, because which state arms it is
+// that control's decision; see _surfaces.scss on why .oa-btn-danger is not
+// one of them.
+@mixin danger-tint {
+  background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
+  color: var(--ai-danger);
+}
+
+// The breathing of a status dot: the live badge on the usage report and a
+// busy terminal tab. One curve, two ranges, so each dot names its own rest
+// and peak opacity (--dot-rest, --dot-peak) where its size and period are.
+// A mixin that emits the @keyframes, not a rule in _surfaces.scss: the two
+// dots arrive with the backoffice and the terminal chunks, and a keyframe in
+// the shared file would put it in every first paint instead. Each chunk
+// includes it once; when both are loaded the two definitions are the same.
+@mixin dot-pulse-keyframes {
+  @keyframes oaDotPulse {
+    0%,
+    100% {
+      opacity: var(--dot-rest);
+    }
+    50% {
+      opacity: var(--dot-peak);
+    }
+  }
 }

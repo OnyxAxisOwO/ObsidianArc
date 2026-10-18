@@ -316,8 +316,7 @@
 }
 
 .oa-plot-area:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-plot-area svg {
@@ -505,8 +504,7 @@
 }
 
 .oa-matrix-wrap:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
   border-radius: 12px;
 }
 
@@ -602,8 +600,7 @@
 
 .oa-matrix-head:focus-visible,
 .oa-matrix-user:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-matrix tbody th {
@@ -699,8 +696,7 @@
 
 .oa-board-frame button.oa-board-row:focus-visible,
 .oa-allow-row:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-board-frame .oa-board-rank {
@@ -795,6 +791,11 @@
   background: var(--ai-surface-container);
 }
 
+/* The overview's ranking draws the same share-of-total bar as this report, so
+   the fill is one rule for both; only the track's height is each one's own
+   (4px on the overview, 3px here). The leaderboard's bar is a share of the
+   leader, not of the total, and keeps its own fill in _surfaces.scss. */
+.oa-dashboard-rank-track > span,
 .oa-board-frame .oa-board-track > span {
   display: block;
   height: 100%;
@@ -803,6 +804,7 @@
   opacity: 0.7;
 }
 
+.oa-dashboard-rank-list li:first-child .oa-dashboard-rank-track > span,
 .oa-board li:first-child .oa-board-track > span {
   opacity: 1;
 }
@@ -1016,6 +1018,8 @@
 }
 
 .oa-live-dot {
+  --dot-rest: 1;
+  --dot-peak: 0.3;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -1024,13 +1028,11 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .oa-live-dot {
-    animation: oaLivePulse 2s ease-in-out infinite;
+    animation: oaDotPulse 2s ease-in-out infinite;
   }
 }
 
-@keyframes oaLivePulse {
-  50% { opacity: 0.3; }
-}
+@include dot-pulse-keyframes;
 
 .oa-report-focus {
   display: flex;

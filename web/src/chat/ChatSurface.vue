@@ -181,6 +181,8 @@ watch(isEmpty, (empty, was) => {
     if (Math.abs(delta) < 2) return;
     node.animate(
       [{ transform: `translateY(${delta}px)` }, { transform: 'none' }],
+      // --ai-ease-standard, spelled out: the Web Animations API parses its
+      // easing as a bare timing function and rejects var().
       { duration: 340, easing: 'cubic-bezier(0.2, 0, 0, 1)' },
     );
   });

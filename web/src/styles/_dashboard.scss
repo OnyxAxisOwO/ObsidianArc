@@ -191,8 +191,7 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 .oa-dashboard-rank-label strong { flex-shrink: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 .oa-dashboard-rank-bottom { display: flex; align-items: center; gap: 12px; margin-top: 7px; }
 .oa-dashboard-rank-track { display: block; flex: 1; height: 4px; border-radius: 999px; background: var(--ai-surface-container); overflow: hidden; }
-.oa-dashboard-rank-track > span { display: block; height: 100%; border-radius: inherit; background: var(--ai-primary); opacity: .7; }
-.oa-dashboard-rank-list li:first-child .oa-dashboard-rank-track > span { opacity: 1; }
+/* The fill inside the track is the usage report's, written once in _analytics.scss. */
 .oa-dashboard-rank-bottom small { width: 40px; text-align: right; color: var(--ai-text-secondary); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .oa-dashboard-rank-reach {
   display: block;
@@ -218,7 +217,7 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
     cursor: pointer;
     list-style: none;
     user-select: none;
-    transition: color 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: color 0.24s var(--ai-ease-out);
 
     &::-webkit-details-marker {
       display: none;
@@ -230,7 +229,7 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 
     .oa-dashboard-details-chevron {
       color: var(--ai-text-secondary);
-      transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: transform 0.28s var(--ai-ease-out);
       will-change: transform;
 
       &.open {
@@ -246,8 +245,8 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
     visibility: hidden;
     pointer-events: none;
     transition:
-      grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-      opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+      grid-template-rows 0.28s var(--ai-ease-out),
+      opacity 0.22s var(--ai-ease-out),
       visibility 0.28s;
 
     &.open {
@@ -256,8 +255,8 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
       visibility: visible;
       pointer-events: auto;
       transition:
-        grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-        opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+        grid-template-rows 0.28s var(--ai-ease-out),
+        opacity 0.28s var(--ai-ease-out),
         visibility 0s;
     }
 
@@ -269,7 +268,7 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 
   .oa-dashboard-table-wrap {
     margin-top: 10px;
-    transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: transform 0.28s var(--ai-ease-out);
     transform: translateY(-8px);
   }
 

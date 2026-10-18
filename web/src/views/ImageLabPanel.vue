@@ -706,7 +706,6 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
           <textarea
             id="image-lab-prompt"
             v-model="prompt"
-            class="oa-field-input"
             :placeholder="t('promptPlaceholder')"
             rows="4"
             :disabled="busy"

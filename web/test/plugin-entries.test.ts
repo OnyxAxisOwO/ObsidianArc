@@ -340,7 +340,7 @@ describe('an action card\'s controls', () => {
 
     button(host, 'Add question').click();
     await nextTick();
-    const cell = host.querySelector<HTMLInputElement>('.oa-plugin-row .oa-field-input')!;
+    const cell = host.querySelector<HTMLInputElement>('.oa-plugin-row .oa-plugin-row-cell > input')!;
     cell.value = 'Favourite model?';
     cell.dispatchEvent(new Event('input', { bubbles: true }));
     await nextTick();

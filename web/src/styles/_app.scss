@@ -443,13 +443,13 @@
 }
 
 /* No animation is set here. The card also carries .oa-auth-card, whose entrance
-   (sectionEnter, in _surfaces.scss) therefore plays on modals too. The
+   (oaRise, set in _surfaces.scss) therefore plays on modals too. The
    transition in this rule is what moves the card in and out. */
 .oa-modal-card {
   position: relative;
   box-shadow: var(--ai-shadow-md), 0 20px 48px rgba(0, 0, 0, 0.25);
   transform: translateY(12px) scale(0.97);
-  transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 0.22s var(--ai-ease-standard);
 }
 
 .oa-modal-overlay.open .oa-modal-card {
@@ -779,7 +779,7 @@
   height: 100%;
   border-radius: 999px;
   background: var(--ai-primary);
-  transition: width 0.24s cubic-bezier(0.2, 0, 0, 1);
+  transition: width 0.24s var(--ai-ease-standard);
 }
 
 .oa-meter-fill.warn {
@@ -949,7 +949,7 @@ body.oa-resizing * {
   background: var(--ai-surface-container);
   box-shadow: var(--ai-shadow-md);
   transform: translateY(8px) scale(0.98);
-  transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 0.22s var(--ai-ease-standard);
 }
 
 .oa-announce-overlay.open .oa-announce {
@@ -1037,8 +1037,7 @@ body.oa-resizing * {
 }
 
 .oa-landing-brand:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-landing-body {
@@ -1344,8 +1343,7 @@ button.oa-home-notice-main:focus-visible {
 }
 
 .oa-verify-code input:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-verify-status {
@@ -1459,18 +1457,17 @@ body.has-auth-page .oa-app-page,
 }
 
 $oa-slide-duration: 0.38s;
-$oa-slide-ease: cubic-bezier(0.16, 1, 0.3, 1);
 
 /* Forward Slide (page-slide-left): new page enters from right, old page leaves to left */
 .page-slide-left-enter-active {
   z-index: 2;
-  transition: transform $oa-slide-duration $oa-slide-ease,
+  transition: transform $oa-slide-duration var(--ai-ease-out),
               opacity ($oa-slide-duration * 0.75) ease;
 }
 
 .page-slide-left-leave-active {
   z-index: 1;
-  transition: transform $oa-slide-duration $oa-slide-ease,
+  transition: transform $oa-slide-duration var(--ai-ease-out),
               opacity $oa-slide-duration ease;
 }
 
@@ -1497,13 +1494,13 @@ $oa-slide-ease: cubic-bezier(0.16, 1, 0.3, 1);
 /* Backward Slide (page-slide-right): old page leaves to right, new page enters from left */
 .page-slide-right-enter-active {
   z-index: 1;
-  transition: transform $oa-slide-duration $oa-slide-ease,
+  transition: transform $oa-slide-duration var(--ai-ease-out),
               opacity $oa-slide-duration ease;
 }
 
 .page-slide-right-leave-active {
   z-index: 2;
-  transition: transform $oa-slide-duration $oa-slide-ease,
+  transition: transform $oa-slide-duration var(--ai-ease-out),
               opacity ($oa-slide-duration * 0.8) ease;
 }
 

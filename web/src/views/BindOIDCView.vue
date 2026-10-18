@@ -146,7 +146,10 @@ function signOut(): void {
       <h1 class="oa-auth-title">{{ t('oidcBindingRequiredTitle') }}</h1>
       <p class="oa-auth-sub">{{ t('oidcBindingRequiredBody', { site: site.name }) }}</p>
 
-      <template v-if="provider">
+      <!-- The same form shell as the sign-in card, so the password field is
+           drawn at the sign-in fields' size and the field, the error and the
+           button are spaced as they are there instead of touching. -->
+      <div v-if="provider" class="oa-auth-form">
         <OaField
           v-if="askPassword"
           :label="t('currentPassword')"
@@ -170,7 +173,7 @@ function signOut(): void {
         >
           {{ t('oidcBindingButton', { provider: provider.name }) }}
         </button>
-      </template>
+      </div>
 
       <p class="oa-auth-switch">
         <span v-if="currentUser">@{{ currentUser.username }} · </span>

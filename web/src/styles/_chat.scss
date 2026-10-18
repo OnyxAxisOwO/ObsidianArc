@@ -39,6 +39,20 @@
   --ai-focus-shadow: rgba(24, 24, 27, 0.22);
   --ai-shadow-md: 0 8px 24px rgba(28, 27, 31, 0.14);
   --ai-danger: #b91c1c;
+  /* The motion vocabulary. Easing is a token for the same reason colour is:
+     one curve per kind of movement, so a panel, a menu and a page that move
+     the same way are written the same way, and one edit retunes all of them.
+     Light and dark share them, so they live here and not in dark-tokens. */
+  /* Something arriving or settling: fast out of the start, a long soft
+     landing. Panels, pages, the key forms and the entrance rises. */
+  --ai-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* The chat's own movement: a rail or column changing width, a drawer or
+     switch moving in place. An even curve, because these move a part of a
+     screen that stays, rather than bringing something new onto it. */
+  --ai-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  /* A loop that never lands: the front page's drifting and breathing, which
+     ease in and out symmetrically so each cycle joins the next. */
+  --ai-ease-loop: cubic-bezier(0.45, 0, 0.55, 1);
 }
 
 // The dark palette is written out twice, and it cannot be one selector. The
@@ -508,8 +522,7 @@
 }
 
 .ai-project-action-btn.danger.armed {
-  background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
-  color: var(--ai-danger);
+  @include mixins.danger-tint;
 }
 
 /* Keyboard focus on the row's edit and delete buttons is the ring, as on the
@@ -550,7 +563,7 @@
   align-items: center;
   flex-shrink: 0;
   color: var(--ai-text-secondary);
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.3s var(--ai-ease-out);
 }
 
 .ai-project-chevron.expanded {
@@ -563,8 +576,8 @@
   opacity: 0;
   visibility: hidden;
   transition:
-    grid-template-rows 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.26s cubic-bezier(0.16, 1, 0.3, 1),
+    grid-template-rows 0.34s var(--ai-ease-out),
+    opacity 0.26s var(--ai-ease-out),
     visibility 0.34s;
   overflow: hidden;
   /* overflow: hidden drops this item's automatic minimum height to zero, so
@@ -654,16 +667,22 @@
    message at once. A short rise says "a different conversation" instead of
    leaving the transcript to flicker into something else within one frame. */
 .ai-chat-scroll.ai-chat-switching {
-  animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
+  animation: oaRise 0.34s var(--ai-ease-standard);
 }
 
-@keyframes aiChatSwitch {
+/* The one entrance rise, 10px up out of nothing: a switched conversation, a
+   settings section, the sign-in card, the key forms and each 2FA step. Their
+   duration, curve and fill-mode stay at each call site, so sharing the frames
+   moves none of them. The end is translateY(0) rather than none because the
+   callers that fill `both` keep it after the rise, and changing it to none
+   would drop the containing block their fixed descendants have today. */
+@keyframes oaRise {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
 .ai-chat-list-item.active.switched .ai-chat-list-title {
-  animation: aiChatRowMark 0.34s cubic-bezier(0.2, 0, 0, 1);
+  animation: aiChatRowMark 0.34s var(--ai-ease-standard);
 }
 
 @keyframes aiChatRowMark {
@@ -1014,7 +1033,7 @@
   content: '▸';
   display: inline-block;
   margin-right: 6px;
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.3s var(--ai-ease-out);
 }
 
 .ai-thinking.open > .ai-thinking-head::before,
@@ -1028,8 +1047,8 @@
   opacity: 0;
   overflow: hidden;
   transition:
-    grid-template-rows 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+    grid-template-rows 0.34s var(--ai-ease-out),
+    opacity 0.26s var(--ai-ease-out);
 }
 
 .ai-thinking.open > .ai-thinking-content,
@@ -1049,7 +1068,7 @@
   white-space: pre-wrap;
   word-break: break-word;
   transform: translateY(-2px);
-  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.34s var(--ai-ease-out);
 }
 
 .ai-thinking.open .ai-thinking-body,
@@ -1161,9 +1180,9 @@
   text-align: left;
   cursor: pointer;
   transition:
-    background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    background-color 0.2s var(--ai-ease-out),
+    transform 0.2s var(--ai-ease-out),
+    box-shadow 0.2s var(--ai-ease-out);
 
   &:hover {
     background: var(--ai-state-hover);
@@ -1473,8 +1492,7 @@
 
 .ai-chat-input:focus {
   border-color: var(--ai-primary);
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .ai-chat-input:disabled {
@@ -1533,7 +1551,7 @@
   /* Slid out by a negative margin rather than collapsed by width: the rail
      keeps its own width the whole way, so its contents never reflow mid
      animation, and the transcript widens smoothly into the space. */
-  transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+  transition: margin-left 0.34s var(--ai-ease-standard), opacity 0.22s ease,
     visibility 0s linear 0s;
 }
 
@@ -1548,7 +1566,7 @@
      on the way back it is gone before the rail is visible enough to notice. */
   -webkit-mask-image: linear-gradient(to left, transparent 0, #000 28px);
   mask-image: linear-gradient(to left, transparent 0, #000 28px);
-  transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+  transition: margin-left 0.34s var(--ai-ease-standard), opacity 0.22s ease,
     visibility 0s linear 0.34s;
 }
 
@@ -1764,7 +1782,7 @@
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
-    transition: transform 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+    transition: transform 0.34s var(--ai-ease-standard), opacity 0.22s ease,
       visibility 0s linear 0.34s;
   }
 
@@ -1773,7 +1791,7 @@
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
-    transition: transform 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+    transition: transform 0.34s var(--ai-ease-standard), opacity 0.22s ease,
       visibility 0s linear 0s;
   }
 
@@ -1945,7 +1963,7 @@
    the popover jumping to its new size. */
 .ai-model-pop-body {
   overflow: hidden;
-  transition: height 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: height 0.28s var(--ai-ease-out);
 }
 
 .ai-pop-face {
@@ -2165,7 +2183,7 @@
      popover's body clips — it animates its own height — and the fill starts
      10px from that edge, so a wider halo is a halo with a flat side. */
   box-shadow: 0 0 9px -3px var(--effort-glow);
-  transition: width 0.18s cubic-bezier(0.2, 0, 0, 1);
+  transition: width 0.18s var(--ai-ease-standard);
 }
 
 /* The top of the range only. Nothing to fade between — a gradient cannot be
@@ -2299,7 +2317,7 @@
     0 2px 5px rgba(0, 0, 0, 0.35),
     0 0 0 1px rgba(0, 0, 0, 0.05);
   transform: translate(-50%, -50%);
-  transition: left 0.18s cubic-bezier(0.2, 0, 0, 1);
+  transition: left 0.18s var(--ai-ease-standard);
   pointer-events: none;
 }
 

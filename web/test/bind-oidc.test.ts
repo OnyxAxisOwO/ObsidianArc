@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, type App } from 'vue';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import type { Account } from '@/api/auth';
-import { api } from '@/api/client';
+import { api, ApiError } from '@/api/client';
 import { changeLanguage, t } from '@/composables/useI18n';
 import { forget, site, siteInfo } from '@/stores/session';
 import BindOIDCView from '@/views/BindOIDCView.vue';
@@ -114,5 +114,20 @@ describe('the bind screen after the connect flow comes back', () => {
 
     expect(host.querySelector('.oa-auth-error')?.textContent).toBe(t('oauthFailed'));
     expect(host.textContent).not.toContain('made_up_code');
+  });
+
+  it('asks for the password in the sign-in form shell, so the field is drawn at its size', async () => {
+    vi.spyOn(api, 'post').mockRejectedValue(new ApiError(403, 'password_required', 'password required'));
+    await mountAt('/bind-oidc');
+
+    host.querySelector<HTMLButtonElement>('.oa-btn-block')!.click();
+    await settle();
+
+    // _app.scss sizes .oa-auth-form .oa-field input; outside the shell the
+    // password stood smaller than every other sign-in field, and the field, the
+    // error and the button had no gap between them.
+    const form = host.querySelector('.oa-auth-form');
+    expect(form?.querySelector('.oa-field input[type="password"]')).not.toBeNull();
+    expect(form?.querySelector('.oa-btn-block')).not.toBeNull();
   });
 });

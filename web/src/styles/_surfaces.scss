@@ -115,7 +115,7 @@
 
 .oa-filters input:focus,
 .oa-filter-select:focus-visible {
-  @include filter-pill-focus;
+  @include field-focus;
 }
 
 /* --- table --------------------------------------------------------------- */
@@ -140,7 +140,7 @@
 .oa-table-wrap::-webkit-scrollbar-thumb { background: var(--ai-outline-variant); border-radius: 999px; }
 .oa-table-wrap::-webkit-scrollbar-track { background: transparent; }
 .oa-table-wrap::-webkit-scrollbar-button { display: none; }
-.oa-table-wrap:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
+.oa-table-wrap:focus-visible { @include focus-ring; }
 
 .oa-table {
   width: 100%;
@@ -514,8 +514,8 @@
   margin-right: calc(-1 * (var(--oa-panel-width) + 14px));
   opacity: 0;
   transform: translate3d(24px, 0, 0);
-  transition: margin-right 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 0.34s cubic-bezier(0.16, 1, 0.3, 1),
+  transition: margin-right 0.34s var(--ai-ease-out),
+              transform 0.34s var(--ai-ease-out),
               opacity 0.22s ease;
   /* Asks the compositor for the layer before a slide starts, so the first
      frame does not stall on creating it. Closed panels carry the hint too;
@@ -552,7 +552,7 @@
   margin-right: 0;
   opacity: 1;
   overflow: hidden;
-  transition: width 0.34s cubic-bezier(0.2, 0, 0, 1);
+  transition: width 0.34s var(--ai-ease-standard);
 }
 
 .oa-panel.fullscreen,
@@ -727,10 +727,10 @@
    other instead, so there is nothing to fold. */
 @media (min-width: 1101px) {
   .oa-panel {
-    transition: margin-right 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-                transform 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-                width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-                min-width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    transition: margin-right 0.34s var(--ai-ease-out),
+                transform 0.34s var(--ai-ease-out),
+                width 0.28s var(--ai-ease-out),
+                min-width 0.28s var(--ai-ease-out),
                 opacity 0.22s ease;
   }
 
@@ -797,7 +797,7 @@
     border-radius: 0;
     box-shadow: var(--ai-shadow-md);
     transform: translateX(100%);
-    transition: transform 0.24s cubic-bezier(0.2, 0, 0, 1), opacity 0.2s ease;
+    transition: transform 0.24s var(--ai-ease-standard), opacity 0.2s ease;
   }
 
   .oa-panel.open {
@@ -902,7 +902,7 @@
      that followed the surface token would disappear into a dark one. */
   background: #fff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
-  transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 0.18s var(--ai-ease-standard);
 }
 
 .oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked,
@@ -998,20 +998,10 @@
 
 /* --- animations ---------------------------------------------------------- */
 
-/* Match ObisidianChat's 10px rise and 18px directional entrance. The fixed
-   header and navigation stay put during section changes, so the movement
-   identifies the content being replaced instead of shifting every control. */
-@keyframes sectionEnter {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
+/* Match ObisidianChat's 10px rise (oaRise, in _chat.scss) and 18px directional
+   entrance. The fixed header and navigation stay put during section changes,
+   so the movement identifies the content being replaced instead of shifting
+   every control. */
 @keyframes paneEnterForward {
   from {
     opacity: 0;
@@ -1036,7 +1026,7 @@
 
 .oa-settings.enter-rise,
 .oa-auth-card {
-  animation: sectionEnter 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: oaRise 0.28s var(--ai-ease-out);
 }
 
 .oa-settings.enter-forward,
@@ -1044,13 +1034,13 @@
 .oa-panel.replacing > .oa-panel-head,
 .oa-panel.replacing > .oa-panel-body-wrap,
 .oa-panel.replacing > .oa-panel-foot {
-  animation: paneEnterForward 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: paneEnterForward 0.32s var(--ai-ease-out);
   will-change: transform, opacity;
 }
 
 .oa-settings.enter-back,
 .oa-admin-main.enter-back {
-  animation: paneEnterBack 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: paneEnterBack 0.32s var(--ai-ease-out);
   will-change: transform, opacity;
 }
 
@@ -1335,11 +1325,14 @@
   flex: none;
 }
 
-.oa-settings-panel .oa-select,
-.oa-settings-panel input[type='text'],
-.oa-settings-panel input[type='email'],
-.oa-settings-panel input[type='password'],
-.oa-settings-panel input[type='number'],
+/* Only a textarea, which a plugin control or OaTextArea may draw here outside
+   an .oa-field. Every input and select in these panels sits in an .oa-field
+   and takes _workspace.scss's field rule. This rule used to restate that one
+   for them with the old 9px padding and the inherited 1.5 line height, which
+   left every settings field 0.75px taller than the same field anywhere else
+   (36.75px against 36px), and the two-factor wizard's code 46.5px against
+   the 44px it is in the enrolment page. That was drift, not a decision: the
+   field rule was evened out to one height and this copy was never told. */
 .oa-settings-panel textarea {
   box-sizing: border-box;
   width: 100%;
@@ -1354,8 +1347,8 @@
 }
 
 /* Only the room for the chevron. The chevron itself is .oa-field .oa-select's,
-   and every select in these panels sits in an .oa-field; the padding above
-   would otherwise take back the space the arrow is drawn in. */
+   and every select in these panels sits in an .oa-field; a padding written
+   for these panels must not take back the space the arrow is drawn in. */
 .oa-settings-panel .oa-select {
   padding-right: 30px;
 }
@@ -1369,9 +1362,7 @@
 .oa-settings-panel input:not([type='range']):focus,
 .oa-settings-panel .oa-select:focus-visible,
 .oa-settings-panel textarea:focus {
-  outline: none;
-  background-color: var(--ai-field-bg-hover);
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include field-focus;
 }
 
 /* --- about ----------------------------------------------------------------- */
@@ -1552,8 +1543,7 @@
 
 .oa-check-row input[type="checkbox"]:focus-visible,
 .oa-table-check input[type="checkbox"]:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-check-row:has(input:checked) {
@@ -1601,12 +1591,12 @@
   border-radius: 12px;
   background: var(--ai-surface-container-low);
   border: 1px solid var(--ai-border);
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+  transition: transform 0.2s var(--ai-ease-out),
               background-color 0.2s ease,
               border-color 0.2s ease,
               box-shadow 0.2s ease,
               opacity 0.25s ease;
-  animation: oaKeyRowFadeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation: oaKeyRowFadeIn 0.32s var(--ai-ease-out) backwards;
   /* Capped: `backwards` holds each row at its opacity-0 start for its whole
      delay, so an uncapped stagger left the last rows of a long page invisible
      for seconds. */
@@ -1704,7 +1694,7 @@
 }
 
 .oa-key-toggle-btn {
-  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), color 0.18s ease, background-color 0.18s ease;
+  transition: transform 0.18s var(--ai-ease-out), color 0.18s ease, background-color 0.18s ease;
 }
 
 .oa-key-toggle-btn:hover {
@@ -1816,7 +1806,7 @@
 }
 
 .oa-key-copy-btn {
-  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), color 0.18s ease;
+  transition: transform 0.18s var(--ai-ease-out), color 0.18s ease;
 }
 
 .oa-key-copy-btn.copied {
@@ -1856,18 +1846,7 @@
 
 .oa-keys-edit-animated,
 .oa-key-issued-animated {
-  animation: oaKeyFormFadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-@keyframes oaKeyFormFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  animation: oaRise 0.28s var(--ai-ease-out) both;
 }
 
 /* After every key rule it resets, since at the same weight the later rule
@@ -2118,8 +2097,7 @@
 }
 
 .oa-gallery-btn.danger:hover {
-  background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
-  color: var(--ai-danger);
+  @include mixins.danger-tint;
 }
 
 .oa-gallery-btn:focus-visible {
@@ -2157,7 +2135,7 @@
   border-radius: 999px;
   background: var(--ai-surface-container-high);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 0.5px 1px rgba(0, 0, 0, 0.04);
-  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.34s var(--ai-ease-out);
   pointer-events: none;
   z-index: 0;
 
@@ -2179,8 +2157,8 @@
   font-weight: 500;
   cursor: pointer;
   transition:
-    color 0.22s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+    color 0.22s var(--ai-ease-out),
+    transform 0.16s var(--ai-ease-out);
 
   &:hover {
     color: var(--ai-text);
@@ -2586,7 +2564,7 @@
   max-width: min(92vw, 1100px);
   max-height: 90vh;
   transform: scale(0.96);
-  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 0.2s var(--ai-ease-standard);
 }
 
 .oa-lightbox-overlay.open .oa-lightbox-card {
@@ -2836,9 +2814,9 @@
   color: var(--ai-text-secondary);
   cursor: pointer;
   transition:
-    background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+    background-color 0.2s var(--ai-ease-out),
+    color 0.2s var(--ai-ease-out),
+    transform 0.15s var(--ai-ease-out);
 
   &:hover:not(:disabled) {
     background: var(--ai-field-bg-hover);
@@ -2895,7 +2873,7 @@
   align-items: center;
   justify-content: center;
   color: var(--ai-text-secondary);
-  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.34s var(--ai-ease-out);
 
   &.open {
     transform: rotate(180deg);
@@ -2906,7 +2884,7 @@
 .oa-uptime-accordion {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: grid-template-rows 0.36s var(--ai-ease-out);
 
   &.open {
     grid-template-rows: 1fr;
@@ -2919,8 +2897,8 @@
   opacity: 0;
   transform: translateY(-4px);
   transition:
-    opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+    opacity 0.28s var(--ai-ease-out),
+    transform 0.36s var(--ai-ease-out);
 }
 
 .oa-uptime-accordion.open .oa-uptime-accordion-body {
@@ -3358,8 +3336,7 @@
   color: var(--ai-primary);
 }
 .oa-background-choice:focus-visible, .oa-theme-choice:focus-visible, .oa-wallpaper-upload:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 .oa-appearance .oa-color-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
 .oa-appearance .oa-color-dot { display: grid; place-items: center; width: 29px; height: 29px; border-radius: 999px; color: var(--ai-primary-text); }
@@ -3985,7 +3962,7 @@
   flex-direction: column;
   gap: 16px;
   margin: 0;
-  animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
+  animation: oaRise 0.34s var(--ai-ease-standard);
 }
 
 .oa-2fa-pane-head {
@@ -4083,7 +4060,7 @@
   align-self: stretch;
   padding-top: 12px;
   border-top: 1px solid var(--ai-border);
-  animation: oaKeyFormFadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: oaRise 0.28s var(--ai-ease-out) both;
 }
 
 .oa-2fa-key .oa-2fa-desc {
@@ -4131,9 +4108,14 @@
   text-align: center;
 }
 
-/* Inside a row the field sits beside its buttons, so it keeps their height. */
+/* Inside a row the field sits beside its buttons, so it keeps their height:
+   .oa-btn's 34px, set here rather than left to the padding and line height.
+   It was meant to match and never did: the settings panel's copy of the field
+   rule stood it at 40.5px, and without that copy it would have been 37px. */
 .oa-2fa-confirm-row input.oa-2fa-code {
-  min-height: 36px;
+  min-height: 34px;
+  padding-top: 0;
+  padding-bottom: 0;
   font-size: 15px;
   letter-spacing: 0.2em;
 }
@@ -4291,7 +4273,7 @@
 .oa-toast-enter-active,
 .oa-toast-leave-active,
 .oa-toast-move {
-  transition: transform 0.25s cubic-bezier(0.2, 0, 0, 1), opacity 0.25s ease;
+  transition: transform 0.25s var(--ai-ease-standard), opacity 0.25s ease;
 }
 
 .oa-toast-enter-from,
@@ -4467,13 +4449,13 @@
 /* Forward Slide (page-slide-left): new container enters from right, old container leaves to left */
 .page-slide-left-enter-active .oa-workspace > .oa-chat-root {
   z-index: 2;
-  transition: transform app.$oa-slide-duration app.$oa-slide-ease,
+  transition: transform app.$oa-slide-duration var(--ai-ease-out),
               opacity (app.$oa-slide-duration * 0.75) ease !important;
 }
 
 .page-slide-left-leave-active .oa-workspace > .oa-chat-root {
   z-index: 1;
-  transition: transform app.$oa-slide-duration app.$oa-slide-ease,
+  transition: transform app.$oa-slide-duration var(--ai-ease-out),
               opacity app.$oa-slide-duration ease !important;
 }
 
@@ -4500,13 +4482,13 @@
 /* Backward Slide (page-slide-right): old container leaves to right, new container enters from left */
 .page-slide-right-enter-active .oa-workspace > .oa-chat-root {
   z-index: 1;
-  transition: transform app.$oa-slide-duration app.$oa-slide-ease,
+  transition: transform app.$oa-slide-duration var(--ai-ease-out),
               opacity app.$oa-slide-duration ease !important;
 }
 
 .page-slide-right-leave-active .oa-workspace > .oa-chat-root {
   z-index: 2;
-  transition: transform app.$oa-slide-duration app.$oa-slide-ease,
+  transition: transform app.$oa-slide-duration var(--ai-ease-out),
               opacity (app.$oa-slide-duration * 0.8) ease !important;
 }
 
@@ -4745,7 +4727,7 @@
   display: inline-flex;
   color: var(--ai-text-secondary);
   transform: rotate(-90deg);
-  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.34s var(--ai-ease-out);
 }
 
 .oa-collapsible.open .oa-collapsible-chevron {
@@ -4755,7 +4737,7 @@
 .oa-collapsible-body {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: grid-template-rows 0.36s var(--ai-ease-out);
 }
 
 .oa-collapsible.open .oa-collapsible-body {
@@ -4767,7 +4749,7 @@
   margin: 0 -6px;
   overflow: hidden;
   opacity: 0;
-  transition: opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.28s var(--ai-ease-out);
 }
 
 .oa-collapsible.open .oa-collapsible-inner {

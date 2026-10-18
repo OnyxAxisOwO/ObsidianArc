@@ -265,8 +265,11 @@ describe('page slide stylesheet specifications', () => {
     const appScssPath = path.resolve(__dirname, '../src/styles/_app.scss');
     const appScss = fs.readFileSync(appScssPath, 'utf8');
 
-    // Smooth non-linear cubic-bezier easing
-    expect(appScss).toContain('cubic-bezier(0.16, 1, 0.3, 1)');
+    // Smooth non-linear cubic-bezier easing, through the shared token so the
+    // slide moves on the same curve as every other arrival.
+    expect(appScss).toContain('transition: transform $oa-slide-duration var(--ai-ease-out)');
+    const chatScss = fs.readFileSync(path.resolve(__dirname, '../src/styles/_chat.scss'), 'utf8');
+    expect(chatScss).toContain('--ai-ease-out: cubic-bezier(0.16, 1, 0.3, 1);');
 
     // Hardware accelerated 3D transforms
     expect(appScss).toContain('translate3d(100%, 0, 0)');
@@ -278,7 +281,7 @@ describe('page slide stylesheet specifications', () => {
     expect(appScss).toContain('.page-slide-left-enter-active::before');
     expect(appScss).toContain('.page-slide-right-leave-active::before');
 
-    // Conflicting vertical sectionEnter animation suppressed during full-page horizontal slide
+    // Conflicting vertical oaRise animation suppressed during full-page horizontal slide
     expect(appScss).toContain('.oa-admin-main.enter-rise');
     expect(appScss).toContain('animation: none !important');
 
@@ -329,10 +332,10 @@ describe('page slide stylesheet specifications', () => {
     // Reduced motion support for inner container
     expect(surfacesScss).toContain('@media (prefers-reduced-motion: reduce)');
 
-    // Vertical twitch (sectionEnter jump) suppressed on workspace elements
+    // Vertical twitch (oaRise jump) suppressed on workspace elements
     expect(surfacesScss).not.toContain('.oa-workspace > .oa-header,\n.oa-workspace > .oa-chat-root');
-    expect(surfacesScss).not.toMatch(/\.oa-workspace\s*>\s*\.oa-header[^{]*sectionEnter/);
-    expect(surfacesScss).not.toMatch(/\.oa-admin-rail[^{]*sectionEnter/);
+    expect(surfacesScss).not.toMatch(/\.oa-workspace\s*>\s*\.oa-header[^{]*oaRise/);
+    expect(surfacesScss).not.toMatch(/\.oa-admin-rail[^{]*oaRise/);
   });
 
   it('hides left chat history rail when opening terminal', async () => {
