@@ -394,7 +394,6 @@ onMounted(() => void refresh());
             :key="entry.value"
             type="button"
             class="oa-segmented-option"
-            :class="{ active: kind === entry.value }"
             :aria-pressed="kind === entry.value"
             @click="kind = entry.value; touched()"
           >{{ t(entry.label) }}</button>
@@ -409,7 +408,6 @@ onMounted(() => void refresh());
             :key="entry.value"
             type="button"
             class="oa-segmented-option"
-            :class="{ active: priority === entry.value }"
             :aria-pressed="priority === entry.value"
             @click="priority = entry.value; touched()"
           >{{ t(entry.label) }}</button>

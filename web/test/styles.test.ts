@@ -471,3 +471,121 @@ describe('focus, width and cascade rules in the stylesheet source', () => {
     expect([...used].filter((token) => !declared(token))).toEqual([]);
   });
 });
+
+// Rules that change what a reader sees in a state jsdom never renders: a
+// disabled button, a touch screen, a jump to a section.
+describe('control states in the stylesheet source', () => {
+  const sheet = (name: string) => fs.readFileSync(path.resolve(__dirname, '../src/styles', name), 'utf8');
+
+  it('dims the new-project button when the list is at its cap', () => {
+    const chat = sheet('_chat.scss');
+
+    expect(chat).toMatch(/\.ai-chat-new:disabled \{[^}]*opacity:\s*0\.5;/);
+    expect(chat).toMatch(/\.ai-chat-new:hover:not\(:disabled\) \{/);
+  });
+
+  it('shows a project row action faintly where there is no hover to reveal it', () => {
+    const block = /@media \(hover: none\) \{\s*\.ai-project-action-btn \{([^}]*)\}/.exec(sheet('_surfaces.scss'));
+
+    expect(block, 'project edit and delete stay invisible on a touch screen').toBeTruthy();
+    expect(block![1]).toMatch(/opacity:\s*0\.45/);
+  });
+
+  it('stops a jump to a dashboard card short of the top, as the other jump targets do', () => {
+    expect(sheet('_dashboard.scss')).toMatch(/\.oa-dashboard-card \{[^}]*scroll-margin-top:\s*14px/);
+  });
+
+  it('draws every armed danger second click from one rule', () => {
+    const surfaces = sheet('_surfaces.scss');
+
+    expect(surfaces).toMatch(/\.oa-btn-danger-solid,\s*\.oa-bulk-bar \.oa-btn\.armed,\s*\.oa-ban-confirm\.armed \{/);
+    expect(surfaces.match(/\.oa-bulk-bar \.oa-btn\.armed\b/g)).toHaveLength(1);
+    expect(surfaces.match(/\.oa-ban-confirm\.armed\b/g)).toHaveLength(1);
+  });
+});
+
+// Rules that only a keyboard or a reduced-motion setting ever reaches: each
+// was missing from one copy of a control that had it in another.
+describe('focus and motion on every copy of a control', () => {
+  const sheet = (name: string) => fs.readFileSync(path.resolve(__dirname, '../src/styles', name), 'utf8');
+  const reducedMotion = (source: string) =>
+    [...source.matchAll(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/g)].map((m) => m[1]!).join('\n');
+
+  it('rings and stills every pill group, and marks the chosen option with aria-pressed alone', () => {
+    const analytics = sheet('_analytics.scss');
+
+    expect(analytics).toMatch(/\.oa-segment button:focus-visible,\s*\.oa-segmented-option:focus-visible,\s*\.oa-settings-tab:focus-visible \{[^}]*box-shadow:\s*0 0 0 3px/);
+    expect(reducedMotion(analytics)).toMatch(/\.oa-segment button,\s*\.oa-settings-tab \{\s*transition: none;/);
+    expect(sheet('_app.scss')).toMatch(/\.oa-segmented-option\[aria-pressed='true'\] \{/);
+    expect(sheet('_app.scss')).not.toMatch(/\.oa-segmented-option\.active/);
+  });
+
+  it('draws the safe-mode switch from the shared switch rules', () => {
+    const surfaces = sheet('_surfaces.scss');
+
+    expect(surfaces).toMatch(/\.oa-menu-safe-mode \.oa-safe-switch input\[type="checkbox"\]:focus-visible \{[^}]*box-shadow/);
+    expect(reducedMotion(surfaces)).toMatch(/\.oa-menu-safe-mode \.oa-safe-switch input\[type="checkbox"\]::after/);
+    expect(sheet('_app.scss')).not.toMatch(/input\[type="checkbox"\]/);
+  });
+
+  it('keeps a menu from growing open under reduced motion', () => {
+    const motion = reducedMotion(sheet('_workspace.scss'));
+
+    expect(motion).toMatch(/\.oa-menu\.open,/);
+    expect(motion).toMatch(/\.ai-model-pop\.open \{\s*transition: none;/);
+  });
+
+  it('rings the model popover rows the way a menu item is ringed', () => {
+    expect(sheet('_chat.scss')).toMatch(/\.ai-pop-model-row:focus-visible \{[^}]*box-shadow:\s*inset 0 0 0 1px var\(--ai-primary\)/);
+  });
+
+  it('stills every scrim and the cards that rise in them', () => {
+    const app = reducedMotion(sheet('_app.scss'));
+
+    for (const name of ['oa-modal-overlay', 'oa-announce-overlay', 'oa-lightbox-overlay', 'oa-modal-card']) {
+      expect(app, name).toMatch(new RegExp(`\\.${name}[,\\s]`));
+    }
+    expect(reducedMotion(sheet('_surfaces.scss'))).toMatch(/\.oa-lightbox-card \{\s*transition: none;/);
+    expect(reducedMotion(sheet('_workbench.scss'))).toMatch(/\.oa-plugin-tab \{ transition: none; \}/);
+  });
+
+  it('mixes danger fills from the token so they follow it into the dark theme', () => {
+    const offenders = fs.readdirSync(path.resolve(__dirname, '../src/styles'))
+      .filter((name) => /rgba\(\s*185,\s*28,\s*28/.test(sheet(name)));
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('keeps an armed clear-all button red under the pointer', () => {
+    // Both rules are one class and one pseudo-class, so the later one wins.
+    // The hover rule came second, and the grey hover fill covered the armed red.
+    const chat = sheet('_chat.scss');
+    const hover = chat.indexOf('.ai-chat-clear-all:hover {');
+
+    expect(hover).toBeGreaterThan(-1);
+    expect(chat.indexOf('.ai-chat-clear-all.armed {')).toBeGreaterThan(hover);
+  });
+
+  it('rings every icon control and link that takes keyboard focus', () => {
+    // These reached focus with only the browser's outline. Each one has to
+    // take the shared mixin, so the ring stays one token and one width.
+    const everything = fs.readdirSync(path.resolve(__dirname, '../src/styles'))
+      .filter((name) => name.endsWith('.scss'))
+      .map((name) => sheet(name))
+      .join('\n');
+    const ringed = [
+      '.oa-icon-btn', '.ai-chat-send', '.ai-chat-plus', '.ai-chat-list-more', '.ai-chat-mini-btn',
+      '.ai-chat-setup-action', '.ai-chat-new', '.ai-chat-clear-all', '.ai-chat-attachment-remove',
+      '.oa-reference-remove', '.oa-gallery-btn', '.oa-thread-remove', '.oa-toast-close',
+      '.oa-menu-head-action', '.oa-admin-nav', '.oa-admin-subnav-item', '.oa-settings-rail-item',
+      '.ai-project-action-btn', '.ai-history-new-btn', '.ai-code-btn', '.oa-btn', '.oa-chip-btn', '.oa-text-btn',
+    ];
+
+    for (const selector of ringed) {
+      const literal = selector.replace(/\./g, '\\.');
+      expect(everything, selector).toMatch(new RegExp(`${literal}:focus-visible[^{]*\\{\\s*@include mixins\\.focus-ring;`));
+    }
+    // The lightbox's close button nests its ring under the class.
+    expect(sheet('_surfaces.scss')).toMatch(/\.oa-lightbox-close \{[\s\S]*?&:focus-visible \{\s*@include mixins\.focus-ring;/);
+  });
+});

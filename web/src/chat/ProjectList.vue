@@ -8,6 +8,7 @@ import type { Project } from '@/api/projects';
 import { ApiError } from '@/api/client';
 import { listConversations, type Conversation } from '@/api/chat';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
+import OaIconButton from '@/components/OaIconButton.vue';
 import OaMenu from '@/components/OaMenu.vue';
 import OaMenuItem from '@/components/OaMenuItem.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
@@ -281,13 +282,11 @@ async function remove(project: Project): Promise<void> {
             </span>
             <span class="ai-project-meta">{{ project.conversations }} {{ t('projectConversations') }}</span>
           </button>
-          <button
-            type="button"
+          <OaIconButton
             class="ai-project-action-btn"
-            :title="t('editProject')"
-            :aria-label="t('editProject')"
+            :label="t('editProject')"
             @click="beginEdit(project)"
-          ><IconGear :size="13" /></button>
+          ><IconGear :size="13" /></OaIconButton>
           <OaConfirmButton
             class="ai-project-action-btn danger"
             :resting-title="t('deleteProject')"
@@ -366,18 +365,16 @@ async function remove(project: Project): Promise<void> {
                   ><span class="ai-chat-spinner" /></span>
                   <OaMenu group-class="ai-chat-item-menu" :menu-class="'ai-chat-context-menu' + (openUpMap[conv.id] ? ' open-up' : '')">
                     <template #trigger="{ open: menuOpen, toggle }">
-                      <button
-                        type="button"
+                      <OaIconButton
                         class="ai-chat-list-more"
                         :class="{ active: menuOpen }"
-                        :title="t('moreOptions')"
-                        :aria-label="t('moreOptions')"
+                        :label="t('moreOptions')"
                         aria-haspopup="menu"
                         :aria-expanded="menuOpen ? 'true' : 'false'"
                         @click.stop="handleMenuTrigger($event, conv.id, toggle)"
                       >
                         <IconMoreVertical :size="13" />
-                      </button>
+                      </OaIconButton>
                     </template>
                     <template #default="{ close }">
                       <OaMenuItem :title="t('rename')" @click.stop="close(); rename(conv)">

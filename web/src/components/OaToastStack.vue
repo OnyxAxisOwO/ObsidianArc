@@ -15,6 +15,7 @@ import { describeNotification } from '@/lib/notification-text';
 import { relativeTime } from '@/lib/format';
 import { t } from '@/composables/useI18n';
 import { IconClose } from '@/icons';
+import OaIconButton from './OaIconButton.vue';
 
 const DISMISS_MS = 6000;
 
@@ -110,14 +111,13 @@ function onClick(toast: Toast): void {
           <span class="oa-toast-text">{{ describeNotification(toast.notification).body }}</span>
           <span class="oa-toast-time">{{ relativeTime(toast.notification.created_at) }}</span>
         </span>
-        <button
-          type="button"
+        <OaIconButton
           class="oa-toast-close"
-          :aria-label="t('close')"
+          :label="t('close')"
           @click.stop="dismissToast(toast.id)"
         >
           <IconClose :size="12" />
-        </button>
+        </OaIconButton>
       </div>
     </TransitionGroup>
   </div>

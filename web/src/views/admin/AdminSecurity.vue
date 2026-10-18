@@ -22,6 +22,7 @@ import { ApiError } from '@/api/client';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaOverlay from '@/components/OaOverlay.vue';
 import OaBadge from '@/components/OaBadge.vue';
+import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminWorkbench from './AdminWorkbench.vue';
 import type { WorkbenchGroup } from './workbench';
@@ -975,11 +976,11 @@ onMounted(load);
           </div>
           <h4 class="oa-2fa-subhead">{{ t('twoFactorAdminsWithout') }}</h4>
           <p v-if="!adoption.admins_without.length" class="oa-field-hint">{{ t('twoFactorAdminsAllSet') }}</p>
-          <div v-else class="oa-badge-row">
+          <OaBadgeRow v-else>
             <OaBadge v-for="member in adoption.admins_without" :key="member.id" tone="warning">
               @{{ maskUser(member.username) }}
             </OaBadge>
-          </div>
+          </OaBadgeRow>
         </template>
         <p v-else class="oa-table-empty">{{ t('loading') }}</p>
       </AdminControlCard>

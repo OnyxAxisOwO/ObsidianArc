@@ -126,8 +126,9 @@
    and the theme tokens do not hardcode one. */
 .oa-backup-log-live { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
 .oa-backup-log-body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.6; padding: 12px 14px; border-radius: 11px; background: var(--ai-field-bg); color: var(--ai-text-secondary); white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow-y: auto; margin: 0; }
-/* Clean status strip below the workbench: pure text without the card background or shadow outline. */
-.oa-control-flash { margin: 16px auto 0; max-width: 1432px; padding: 4px 2px; font-size: 13px; line-height: 1.6; background: transparent; box-shadow: none; border: none; }
+/* A status strip of plain text. transparent is not a no-op: inside a grouped card the strip is a
+   direct child, and .oa-group-card > * would paint it the card's fill. */
+.oa-control-flash { margin: 16px auto 0; max-width: 1432px; padding: 4px 2px; font-size: 13px; line-height: 1.6; background: transparent; }
 .oa-health-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .oa-health-summary > div { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; min-width: 0; padding: 21px; border-radius: 18px; background: var(--ai-surface-container-high); }
 .oa-health-summary > div:first-child { background: var(--ai-primary); color: var(--ai-primary-text); }
@@ -260,7 +261,7 @@
   .oa-control-save-state { font-size: 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .oa-workbench-tab { transition: none; }
+  .oa-workbench-tab, .oa-plugin-tab { transition: none; }
 }
 
 /* Installing a plugin by dragging its package onto the page. The card is the

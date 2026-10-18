@@ -7,6 +7,7 @@
 import { computed } from 'vue';
 import { t } from '@/composables/useI18n';
 import { IconClose, IconDownload } from '@/icons';
+import OaIconButton from './OaIconButton.vue';
 import OaOverlay from './OaOverlay.vue';
 
 const props = defineProps<{
@@ -45,15 +46,13 @@ const source = computed(() => safeSource(props.src));
 <template>
   <OaOverlay v-slot="{ close }" overlay-class="oa-lightbox-overlay" :label="props.alt || t('zoomImage')" @close="emit('close')">
     <div class="oa-lightbox-card">
-      <button
-        type="button"
+      <OaIconButton
         class="oa-lightbox-close"
-        :title="t('close')"
-        :aria-label="t('close')"
+        :label="t('close')"
         @click="close"
       >
         <IconClose :size="20" />
-      </button>
+      </OaIconButton>
       <img v-if="source" :src="source" class="oa-lightbox-img" :alt="props.alt || ''">
       <p v-if="props.alt" class="oa-lightbox-caption">
         {{ props.alt }}
@@ -65,7 +64,6 @@ const source = computed(() => safeSource(props.src));
           target="_blank"
           rel="noopener"
           class="oa-btn primary"
-          style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px;"
         >
           <IconDownload :size="14" />
           <span>{{ t('downloadImage') }}</span>

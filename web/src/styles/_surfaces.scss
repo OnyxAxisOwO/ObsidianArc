@@ -16,6 +16,8 @@
  * like a dashboard bolted to the side of one.
  */
 
+@use 'mixins';
+
 .oa-admin {
   /* The containing block for a full-screen panel. */
   position: relative;
@@ -122,6 +124,15 @@
   background: var(--ai-badge-bg);
   color: var(--ai-badge-text);
   font-weight: 600;
+}
+
+/* These are links and buttons that take focus, and had no ring of their own,
+   so the browser's outline was all a keyboard user saw. The settings rail
+   uses the same pattern and gets the same ring. */
+.oa-admin-nav:focus-visible,
+.oa-admin-subnav-item:focus-visible,
+.oa-settings-rail-item:focus-visible {
+  @include mixins.focus-ring;
 }
 
 /* Search result groups in the administration rail: when searching, matching
@@ -1166,8 +1177,14 @@
   background: color-mix(in srgb, var(--ai-danger) 22%, transparent);
 }
 
-/* The second click, where the tint is no longer enough of a warning. */
-.oa-btn-danger-solid {
+/* The second click, where the tint is no longer enough of a warning. The
+   armed delete in the bulk bar and the armed ban in the account panel are
+   that same second click, listed here rather than restated beside their own
+   rules; they stay scoped because a bare .oa-btn-danger.armed would also turn
+   every other confirm button solid. */
+.oa-btn-danger-solid,
+.oa-bulk-bar .oa-btn.armed,
+.oa-ban-confirm.armed {
   background: var(--ai-danger);
   color: var(--ai-surface-card);
   font-weight: 600;
@@ -1204,7 +1221,8 @@
   order: 1;
 }
 
-.oa-switch-field .oa-checkbox-field input[type="checkbox"] {
+.oa-switch-field .oa-checkbox-field input[type="checkbox"],
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"] {
   order: 2;
   position: relative;
   flex-shrink: 0;
@@ -1217,7 +1235,8 @@
   transition: background-color 0.18s ease;
 }
 
-.oa-switch-field .oa-checkbox-field input[type="checkbox"]::after {
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]::after,
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]::after {
   content: "";
   position: absolute;
   top: 3px;
@@ -1232,11 +1251,27 @@
   transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1);
 }
 
-.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked {
+/* The safe-mode switch sits inside a menu's title row, which is its label,
+   so it is a size down from a form's switch and has no browser margin to
+   push it off the title's line. Same knob and travel, smaller track. */
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"] {
+  width: 36px;
+  height: 20px;
+  margin: 0;
+}
+
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]::after {
+  top: 2px;
+  left: 2px;
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked,
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]:checked {
   background: var(--ai-primary);
 }
 
-.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked::after {
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked::after,
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]:checked::after {
   transform: translateX(16px);
   /* On the accent the knob takes the accent's own text colour. A white knob
      on a white track — which is what the dark scheme's accent is — was a
@@ -1244,14 +1279,17 @@
   background: var(--ai-primary-text);
 }
 
-.oa-switch-field .oa-checkbox-field input[type="checkbox"]:focus-visible {
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:focus-visible,
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .oa-switch-field .oa-checkbox-field input[type="checkbox"],
-  .oa-switch-field .oa-checkbox-field input[type="checkbox"]::after {
+  .oa-switch-field .oa-checkbox-field input[type="checkbox"]::after,
+  .oa-menu-safe-mode .oa-safe-switch input[type="checkbox"],
+  .oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]::after {
     transition: none;
   }
 }
@@ -1669,8 +1707,9 @@
   min-width: 0;
 }
 
-/* Category segmented tab bar for the drawer view, keeping categories prominent
-   and providing an anchor for the sliding transition. */
+/* Category tab bar for the drawer view. It marks where you are, so the chosen
+   tab takes the badge fill the rail uses, not the primary fill of a control
+   that picks a value. */
 .oa-settings-tabs {
   display: flex;
   gap: 4px;
@@ -1768,7 +1807,6 @@
 
 .oa-connection > .oa-btn {
   flex: none;
-  text-decoration: none;
 }
 
 /* --- registered sign-in applications ----------------------------------------
@@ -2977,8 +3015,7 @@
 }
 
 .oa-audit-badge-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-audit-summary {
@@ -3632,25 +3669,33 @@
   color: var(--ai-danger);
 }
 
+.oa-gallery-btn:focus-visible {
+  @include mixins.focus-ring;
+}
+
 .oa-gallery-load-more {
   display: flex;
   justify-content: center;
   margin: 12px 0;
 }
 
-/* Image lab tabs: segmented pill switch with sliding animated base */
-.oa-image-lab-tabs {
+/* Two views of one surface as a pill switch whose base slides under the
+   chosen one: the chat sidebar's history and projects, and the image lab's
+   generate and gallery. One set of rules because they were written as one
+   look and were drifting apart as two copies; what each keeps of its own is
+   only its size, in its own class below. The base is always rendered, so
+   there is no unslid fallback for the chosen tab. */
+.oa-slide-tabs {
   position: relative;
   display: flex;
   gap: 2px;
-  margin-bottom: 4px;
   padding: 3px;
   border-radius: 999px;
   background: var(--ai-surface-container-low);
   user-select: none;
 }
 
-.oa-image-lab-pill {
+.oa-slide-pill {
   position: absolute;
   top: 3px;
   bottom: 3px;
@@ -3663,24 +3708,21 @@
   pointer-events: none;
   z-index: 0;
 
-  &.tab-history {
+  &.second {
     transform: translateX(calc(100% + 2px));
   }
 }
 
-.oa-image-lab-tab {
+.oa-slide-tab {
   position: relative;
   z-index: 1;
   flex: 1 1 0;
   text-align: center;
-  white-space: nowrap;
-  padding: 6px 14px;
   border: none;
   border-radius: 999px;
   background: transparent;
   color: var(--ai-text-secondary);
   font: inherit;
-  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -3706,8 +3748,14 @@
   }
 }
 
-.oa-image-lab-tabs:not(:has(.oa-image-lab-pill)) .oa-image-lab-tab.active {
-  background: var(--ai-surface-container-high);
+.oa-image-lab-tabs {
+  margin-bottom: 4px;
+}
+
+.oa-image-lab-tab {
+  white-space: nowrap;
+  padding: 6px 14px;
+  font-size: 12.5px;
 }
 
 /* Tighten top padding for image lab panel so form starts right under the title. */
@@ -3857,15 +3905,14 @@
   object-fit: cover;
 }
 
+/* The remove control on a thumbnail. The composer's copy of it, in _chat.scss,
+   shares this look and sets only its own size and offset. */
+.ai-chat-attachment-remove,
 .oa-reference-remove {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 20px;
-  height: 20px;
   padding: 0;
   border: none;
   border-radius: 50%;
@@ -3874,8 +3921,21 @@
   cursor: pointer;
 }
 
+.ai-chat-attachment-remove:hover,
 .oa-reference-remove:hover {
   background: rgba(0, 0, 0, 0.75);
+}
+
+.ai-chat-attachment-remove:focus-visible,
+.oa-reference-remove:focus-visible {
+  @include mixins.focus-ring;
+}
+
+.oa-reference-remove {
+  top: 3px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
 }
 
 /* Compact drop tile displayed beside thumbnail cards when more images can be added. */
@@ -4055,22 +4115,10 @@
 
 /* Dark frosted backdrop to inspect generated outputs without viewport bounds. */
 .oa-lightbox-overlay {
-  position: fixed;
-  inset: 0;
   z-index: 90;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 24px;
-  box-sizing: border-box;
   background: rgba(0, 0, 0, 0.82);
   backdrop-filter: blur(8px);
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-.oa-lightbox-overlay.open {
-  opacity: 1;
 }
 
 .oa-lightbox-card {
@@ -4086,6 +4134,12 @@
 
 .oa-lightbox-overlay.open .oa-lightbox-card {
   transform: scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-lightbox-card {
+    transition: none;
+  }
 }
 
 .oa-lightbox-close {
@@ -4106,6 +4160,11 @@
 
   &:hover {
     background: rgba(255, 255, 255, 0.35);
+  }
+
+  /* On the dark scrim the ring is the focus mark, as everywhere else. */
+  &:focus-visible {
+    @include mixins.focus-ring;
   }
 }
 
@@ -4948,21 +5007,6 @@
   margin-left: 4px;
 }
 
-/* The second click of a delete, where the tint is no longer a warning. */
-.oa-bulk-bar .oa-btn.armed {
-  background: var(--ai-danger);
-  color: var(--ai-surface-card);
-  font-weight: 600;
-}
-
-/* The second click of a ban in the account panel: the same solid look as the
-   armed delete above, which only reaches inside the bulk bar. */
-.oa-ban-confirm.armed {
-  background: var(--ai-danger);
-  color: var(--ai-surface-card);
-  font-weight: 600;
-}
-
 /* The reason typed for a bulk ban: the pill the filter fields use, so the bar
    reads as one row of controls. Its own rules because the filter selectors only
    reach inside .oa-filters. */
@@ -5072,73 +5116,11 @@
  * being the reason.
  */
 
-.ai-sidebar-tabs {
-  position: relative;
-  display: flex;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 999px;
-  background: var(--ai-surface-container-low);
-  user-select: none;
-}
-
-.ai-sidebar-pill {
-  position: absolute;
-  top: 3px;
-  bottom: 3px;
-  left: 3px;
-  width: calc((100% - 8px) / 2);
-  border-radius: 999px;
-  background: var(--ai-surface-container-high);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 0.5px 1px rgba(0, 0, 0, 0.04);
-  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
-  pointer-events: none;
-  z-index: 0;
-
-  &.tab-projects {
-    transform: translateX(calc(100% + 2px));
-  }
-}
-
+/* The rest of this switch is .oa-slide-tabs; the rail is narrower than the
+   image lab's panel, so its tabs are the smaller size. */
 .ai-sidebar-tab {
-  position: relative;
-  z-index: 1;
-  flex: 1 1 0;
-  text-align: center;
   padding: 6px 10px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ai-text-secondary);
-  font: inherit;
   font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    color 0.22s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.16s cubic-bezier(0.16, 1, 0.3, 1);
-
-  &:hover {
-    color: var(--ai-text);
-  }
-
-  &:active {
-    transform: scale(0.97);
-  }
-
-  &.active {
-    color: var(--ai-text);
-    font-weight: 600;
-  }
-
-  &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--ai-focus-shadow);
-  }
-}
-
-.ai-sidebar-tabs:not(:has(.ai-sidebar-pill)) .ai-sidebar-tab.active {
-  background: var(--ai-surface-container-high);
 }
 
 .ai-project-panel {
@@ -5154,9 +5136,10 @@
   color: var(--ai-text-secondary);
 }
 
-/* Deliberately its own class rather than a second use of .ai-chat-list-delete:
- * that class turns red on its own :hover, which is right for a delete button
- * and wrong for the edit button sitting next to it.
+/* The same 26px row action as .ai-chat-list-more, kept as its own class
+ * because that one is a menu trigger: the row's context-menu handler finds
+ * it with querySelector('.ai-chat-list-more') and clicks it, so a project's
+ * edit or delete button carrying that class would be the one clicked.
  */
 .ai-project-action-btn {
   display: inline-flex;
@@ -5175,7 +5158,7 @@
   cursor: pointer;
 }
 
-/* Revealed by the row itself, the same way .ai-chat-list-delete is: one hover
+/* Revealed by the row itself, the same way .ai-chat-list-more is: one hover
  * rule on .ai-chat-list-item covers every action button in it.
  */
 .ai-chat-list-item:hover .ai-project-action-btn,
@@ -5195,16 +5178,30 @@
 
 /* Without this, moving the pointer off the row between the arming click and
  * the confirming one would fade the button out from under an answer the
- * reader is mid-way through giving — the same reason .ai-chat-list-delete
- * has its own .armed rule in _chat.scss.
+ * reader is mid-way through giving.
  */
 .ai-project-action-btn.armed {
   opacity: 1;
 }
 
+/* A touch screen has no hover to reveal these, and an opacity-0 button still
+ * takes the tap, so a phone reader would be pressing edit or delete blind.
+ * Kept faint, the way .ai-chat-list-more is under the same query. */
+@media (hover: none) {
+  .ai-project-action-btn {
+    opacity: 0.45;
+  }
+}
+
 .ai-project-action-btn.danger.armed {
   background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
   color: var(--ai-danger);
+}
+
+/* Keyboard focus on the row's edit and delete buttons is the ring, as on the
+ * other icon controls, not the browser's outline. */
+.ai-project-action-btn:focus-visible {
+  @include mixins.focus-ring;
 }
 
 .ai-project-form {
@@ -5755,6 +5752,12 @@
   color: var(--ai-danger);
 }
 
+/* The button is revealed for keyboard focus as well as hover (see the opacity
+   rule above), so the ring is what shows where focus is. */
+.oa-thread-remove:focus-visible {
+  @include mixins.focus-ring;
+}
+
 /* Shorter than the box a whole report is written in: a reply is usually a
    sentence, and a tall empty box asks for an essay nobody has. */
 .oa-feedback-answer textarea {
@@ -5774,9 +5777,14 @@
    The card is the workbench's own surface, so everything inside it — the
    code field, the app tags, the frame around the QR code — can use the
    field fill and still stand apart from it, in the settings column as much as
-   on the sign-in card and in the backoffice's gate. */
+   on the sign-in card and in the backoffice's gate.
 
-.oa-2fa-panel {
+   The usage screen's bonus and check-in cards are drawn as this card on
+   purpose (see .oa-usage-card-row), so they share this rule rather than a
+   copy of it that could drift. */
+
+.oa-2fa-panel,
+.oa-usage-card {
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -6369,8 +6377,9 @@
   opacity: 0.75;
 }
 
-/* Revealed on hover — see AGENTS.md on this being deliberate everywhere a
-   close or delete control sits next to something read by default. */
+/* Hidden until the toast is hovered or has focus inside it. A notice is read,
+   not acted on, so it does not carry a button all the time; focus-within
+   reveals it too, so a keyboard user still finds it. */
 .oa-toast-close {
   flex-shrink: 0;
   display: flex;
@@ -6395,6 +6404,10 @@
 .oa-toast-close:hover {
   background: var(--ai-state-hover);
   color: var(--ai-text);
+}
+
+.oa-toast-close:focus-visible {
+  @include mixins.focus-ring;
 }
 
 .oa-toast-enter-active,
@@ -6835,12 +6848,6 @@
   gap: 6px;
 }
 
-.oa-bg-stage-actions .oa-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
 /* Two columns of sliders under the stage: four full-width rows of one slider
    each read as a form; side by side they read as one set of adjustments. */
 .oa-bg-sliders {
@@ -7243,8 +7250,7 @@
     opacity: 0 !important;
   }
 
-  .ai-sidebar-pill,
-  .oa-image-lab-pill {
+  .oa-slide-pill {
     transition: none !important;
   }
 }
@@ -7255,15 +7261,8 @@
    rows inside divided by a hairline. The allowance windows above are the
    container-low tone, a shade off the panel — enough for a bar, and not enough
    for a section with a button, a calendar and a row per milestone, which read
-   as text lying loose on the panel. */
-.oa-usage-card {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border-radius: 16px;
-  background: var(--ai-surface-card);
-}
-
+   as text lying loose on the panel. The card itself is the .oa-2fa-panel
+   rule; only its rows are spelt out here. */
 .oa-usage-card-row {
   padding: 14px 16px;
 }

@@ -128,7 +128,6 @@ async function pick(control: Extract<UserFormControl, { kind: 'images' }>, event
           :key="option.value"
           type="button"
           class="oa-segmented-option"
-          :class="{ active: text(control.key) === option.value }"
           :aria-pressed="text(control.key) === option.value"
           @click="emit('set', control.key, option.value)"
         >{{ option.label() }}</button>

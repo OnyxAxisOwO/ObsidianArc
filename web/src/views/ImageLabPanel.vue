@@ -549,15 +549,15 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
       </OaIconButton>
     </template>
 
-    <div class="oa-image-lab-tabs" role="tablist">
+    <div class="oa-slide-tabs oa-image-lab-tabs" role="tablist">
       <span
-        class="oa-image-lab-pill"
-        :class="{ 'tab-history': activeTab === 'history' }"
+        class="oa-slide-pill"
+        :class="{ second: activeTab === 'history' }"
         aria-hidden="true"
       />
       <button
         type="button"
-        class="oa-image-lab-tab"
+        class="oa-slide-tab oa-image-lab-tab"
         :class="{ active: activeTab === 'generate' }"
         role="tab"
         :aria-selected="activeTab === 'generate'"
@@ -567,7 +567,7 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
       </button>
       <button
         type="button"
-        class="oa-image-lab-tab"
+        class="oa-slide-tab oa-image-lab-tab"
         :class="{ active: activeTab === 'history' }"
         role="tab"
         :aria-selected="activeTab === 'history'"

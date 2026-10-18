@@ -95,6 +95,16 @@ describe('OaToastStack', () => {
     expect(activeToasts.value).toHaveLength(0);
   });
 
+  it('names the close button in a tooltip as well as for a screen reader', async () => {
+    await mount();
+    push('a');
+    await nextTick();
+
+    const close = host.querySelector<HTMLButtonElement>('.oa-toast-close')!;
+    expect(close.title).toBe(t('close'));
+    expect(close.getAttribute('aria-label')).toBe(t('close'));
+  });
+
   it('auto-dismisses six seconds after it appears', async () => {
     await mount();
     push('a');

@@ -2,6 +2,8 @@
    around src/chat.js. Consumes the same --ai-* custom properties chat.css
    defines, so the two never disagree about palette. */
 
+@use 'mixins';
+
 .oa-workspace {
   display: flex;
   flex-direction: column;
@@ -94,6 +96,12 @@
   cursor: default;
 }
 
+/* Icon controls are circles that take keyboard focus. Without this rule they
+   fell back to the browser's outline, which the pills and fields do not use. */
+.oa-icon-btn:focus-visible {
+  @include mixins.focus-ring;
+}
+
 /* Pills, filled, no outline. A border and a fill are two ways of saying the
    same thing, and the fill is the one that survives being put on a tinted
    surface — which every surface now is.
@@ -152,8 +160,7 @@
 }
 
 .oa-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-btn:disabled {
@@ -183,6 +190,12 @@
   box-shadow: var(--ai-shadow-md);
   /* Grows out of the corner it hangs from rather than appearing whole. */
   transform-origin: top right;
+}
+
+/* The model popover is not an OaMenu, but it opens and closes the same way;
+   one declaration keeps the two from drifting apart in timing. */
+.oa-menu,
+.ai-model-pop {
   opacity: 0;
   transform: scale(0.12) translateZ(0);
   will-change: transform, opacity;
@@ -194,7 +207,8 @@
     transform 0.14s cubic-bezier(0.4, 0, 1, 1);
 }
 
-.oa-menu.open {
+.oa-menu.open,
+.ai-model-pop.open {
   opacity: 1;
   transform: scale(1) translateZ(0);
   transition:
@@ -208,8 +222,14 @@
   transform-origin: top left;
 }
 
+/* The open state is named too: it sets its own transition at a higher
+   specificity, so without it a menu still grew open under reduced motion
+   and only its closing stopped animating. */
 @media (prefers-reduced-motion: reduce) {
-  .oa-menu {
+  .oa-menu,
+  .oa-menu.open,
+  .ai-model-pop,
+  .ai-model-pop.open {
     transition: none;
     transform: none;
   }
@@ -265,7 +285,11 @@
   white-space: nowrap;
 }
 
-.oa-menu-item-sub {
+/* The one line under a menu row's name, wherever the row comes from: an
+   OaMenuItem, the account menu's header, a model in the model popover. */
+.oa-menu-item-sub,
+.oa-menu-head-sub,
+.ai-pop-model-sub {
   font-size: 10.5px;
   color: var(--ai-text-secondary);
   overflow: hidden;
