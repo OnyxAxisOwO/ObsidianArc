@@ -661,30 +661,12 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 			return refuse(claimOutcomeOwnCode)
 		}
 
-		var alreadyClaimed int
-		err = tx.QueryRow(ctx, `SELECT 1 FROM invite_claims WHERE code_id = ? AND user_id = ?`,
-			record.id, userID).Scan(&alreadyClaimed)
-		if err == nil {
+		had, err := spentBy(ctx, tx, record.id, userID)
+		if err != nil {
+			return err
+		}
+		if had {
 			return refuse(claimOutcomeClaimed)
-		}
-		if !database.IsNotFound(err) {
-			return fmt.Errorf("invite: read claim: %w", err)
-		}
-
-		// "One claim per account per code" is a promise about the code, not
-		// about the invite_claims table specifically — an account that
-		// registered through this exact code already spent its one grant
-		// from it, the same as one that already claimed it, so Claim must
-		// refuse here too rather than letting invite_uses and invite_claims
-		// each think the account has never touched this code.
-		var alreadyRegistered int
-		err = tx.QueryRow(ctx, `SELECT 1 FROM invite_uses WHERE code_id = ? AND user_id = ?`,
-			record.id, userID).Scan(&alreadyRegistered)
-		if err == nil {
-			return refuse(claimOutcomeClaimed)
-		}
-		if !database.IsNotFound(err) {
-			return fmt.Errorf("invite: read use: %w", err)
 		}
 
 		if record.groupID != "" {
@@ -744,7 +726,7 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 					if nowMS > base {
 						base = nowMS
 					}
-					newExpiresAt = base + days*86400000
+					newExpiresAt = base + days*dayMS
 				}
 			case account.GroupID == defaultGroupID || account.GroupID == "":
 				// Starting fresh from the group everybody without a code
@@ -754,7 +736,7 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 				// group_expires_at is left 0.
 				newGroupID = record.groupID
 				if days > 0 {
-					newExpiresAt = nowMS + days*86400000
+					newExpiresAt = nowMS + days*dayMS
 				}
 			default:
 				// A member of some other group: never replaced by a claim.
@@ -838,6 +820,34 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 // was new. The conflict is resolved by the statement rather than by catching
 // the error: PostgreSQL aborts the whole transaction on a failed INSERT, so
 // the refund that follows a caught unique violation would itself fail.
+// dayMS is a day of group membership in the epoch milliseconds the columns
+// hold.
+const dayMS = int64(24 * time.Hour / time.Millisecond)
+
+// spentBy reports whether userID already had its one grant from the code.
+// "One claim per account per code" is a promise about the code, not about the
+// invite_claims table specifically — an account that registered through this
+// exact code already spent its one grant from it, the same as one that
+// already claimed it, so both tables are asked rather than letting
+// invite_uses and invite_claims each think the account has never touched
+// this code.
+func spentBy(ctx context.Context, q database.Queryer, codeID, userID string) (bool, error) {
+	for _, check := range []struct{ query, what string }{
+		{`SELECT 1 FROM invite_claims WHERE code_id = ? AND user_id = ?`, "claim"},
+		{`SELECT 1 FROM invite_uses WHERE code_id = ? AND user_id = ?`, "use"},
+	} {
+		var one int
+		err := q.QueryRow(ctx, check.query, codeID, userID).Scan(&one)
+		if err == nil {
+			return true, nil
+		}
+		if !database.IsNotFound(err) {
+			return false, fmt.Errorf("invite: read %s: %w", check.what, err)
+		}
+	}
+	return false, nil
+}
+
 func insertClaim(ctx context.Context, q database.Queryer, codeID, userID string, days, nowMS int64) (bool, error) {
 	res, err := q.Exec(ctx,
 		`INSERT INTO invite_claims (code_id, user_id, group_days, created_at) VALUES (?, ?, ?, ?)

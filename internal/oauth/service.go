@@ -457,24 +457,8 @@ func (s *Service) resolve(
 			// The common path, and the cheap one: somebody signing in again.
 			found, err := s.store.Account(ctx, tx, identity.Provider, identity.Subject)
 			if err == nil {
-				account, err = s.users.ByID(ctx, tx, found)
-				if err != nil {
-					return err
-				}
-				if !account.IsActive() {
-					return &auth.AccountDisabledError{Reason: account.BanReason}
-				}
-				// A provider that checks addresses vouching for the one this
-				// account holds is proof of it, as good as a mailed link — and
-				// the only way an account that predates the record of proof
-				// can come to have one without being asked to confirm again.
-				if identity.Email != "" && account.EmailProvenAt == 0 &&
-					strings.EqualFold(identity.Email, account.Email) {
-					if err := s.users.MarkEmailProven(ctx, tx, account.ID, identity.Email); err != nil {
-						return err
-					}
-				}
-				return s.store.Touch(ctx, tx, identity)
+				account, err = s.returning(ctx, tx, found, identity)
+				return err
 			}
 			if !errors.Is(err, ErrNoIdentity) {
 				return err
@@ -491,14 +475,8 @@ func (s *Service) resolve(
 			// Read again under the lock: the request that was ahead of this one
 			// may have just connected this very identity.
 			if found, err := s.store.Account(ctx, tx, identity.Provider, identity.Subject); err == nil {
-				account, err = s.users.ByID(ctx, tx, found)
-				if err != nil {
-					return err
-				}
-				if !account.IsActive() {
-					return &auth.AccountDisabledError{Reason: account.BanReason}
-				}
-				return s.store.Touch(ctx, tx, identity)
+				account, err = s.returning(ctx, tx, found, identity)
+				return err
 			} else if !errors.Is(err, ErrNoIdentity) {
 				return err
 			}
@@ -746,6 +724,31 @@ func (s *Service) resolve(
 		_ = s.auth.Resend(ctx, s.settings.Get(settings.SiteName), account.ID)
 	}
 	return account, nil
+}
+
+// returning signs in the account an identity is already connected to. Both
+// lookups in resolve end here — the cheap one and the one repeated under the
+// lock after a racing request connected the identity — so the two cannot
+// disagree about what a returning sign-in checks and records.
+func (s *Service) returning(ctx context.Context, tx *database.Tx, userID string, identity Identity) (user.User, error) {
+	account, err := s.users.ByID(ctx, tx, userID)
+	if err != nil {
+		return user.User{}, err
+	}
+	if !account.IsActive() {
+		return user.User{}, &auth.AccountDisabledError{Reason: account.BanReason}
+	}
+	// A provider that checks addresses vouching for the one this account
+	// holds is proof of it, as good as a mailed link — and the only way an
+	// account that predates the record of proof can come to have one without
+	// being asked to confirm again.
+	if identity.Email != "" && account.EmailProvenAt == 0 &&
+		strings.EqualFold(identity.Email, account.Email) {
+		if err := s.users.MarkEmailProven(ctx, tx, account.ID, identity.Email); err != nil {
+			return user.User{}, err
+		}
+	}
+	return account, s.store.Touch(ctx, tx, identity)
 }
 
 // askSignupGuards asks the plugin guards whether this sign-up may open an

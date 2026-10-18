@@ -3,9 +3,11 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -125,7 +127,32 @@ func validGuardAction(action string) bool {
 // guards given, by action, in one step, so an update of a plugin that guards
 // sign-up never leaves the door unguarded between taking the old check away
 // and standing the new one there.
-func (s *Service) ReplaceGuards(plugin string, added map[string][]Guard) {
+//
+// It holds the guards to the rules AddGuard does, but refuses with an error
+// where AddGuard panics: this runs while the server serves, on an install or an
+// update, and a panic there would skip the caller's undo and leave a plugin
+// half attached. Nothing changes when it refuses. An unknown action would
+// otherwise be dropped without a word, and a guard owned by nobody would be on
+// whatever the gate said and beyond the reach of RemoveGuards.
+func (s *Service) ReplaceGuards(plugin string, added map[string][]Guard) error {
+	if plugin == "" {
+		return errors.New("auth: guards replaced for no plugin")
+	}
+	for action, guards := range added {
+		if !validGuardAction(action) {
+			return errors.New("auth: no such guard action " + action)
+		}
+		for _, g := range guards {
+			if g.Plugin != plugin {
+				return fmt.Errorf("auth: guard %s for %s belongs to %q, not %q", g.Name, action, g.Plugin, plugin)
+			}
+		}
+	}
+	s.replaceGuards(plugin, added)
+	return nil
+}
+
+func (s *Service) replaceGuards(plugin string, added map[string][]Guard) {
 	s.extMu.Lock()
 	defer s.extMu.Unlock()
 	next := make(map[string][]Guard, len(GuardActions))
@@ -143,7 +170,7 @@ func (s *Service) ReplaceGuards(plugin string, added map[string][]Guard) {
 
 // RemoveGuards takes every guard plugin stood in front of any door away,
 // for a plugin that is being removed while the server runs.
-func (s *Service) RemoveGuards(plugin string) { s.ReplaceGuards(plugin, nil) }
+func (s *Service) RemoveGuards(plugin string) { s.replaceGuards(plugin, nil) }
 
 // guardsFor is a copy of the guards in front of action, so a guard can run —
 // and take as long as it likes — without the list being held.
@@ -371,6 +398,25 @@ func (s *Service) checkFields(values map[string]string) error {
 // takenError is the error for a field the availability check found held.
 func takenError(key string) error {
 	return &user.FieldError{Key: key, Reason: user.ErrFieldTaken}
+}
+
+// refuseTaken is the availability check every path that names its own
+// username runs, as the error that check means. One spelling, so the order of
+// the answers — username, then address, then field — cannot differ between a
+// form sign-up and a provisioned one.
+func (s *Service) refuseTaken(ctx context.Context, q database.Queryer, username, email string, fields map[string]string) error {
+	usernameTaken, emailTaken, heldField, err := s.users.Exists(ctx, q, username, email, fields)
+	switch {
+	case err != nil:
+		return err
+	case usernameTaken:
+		return user.ErrUsernameTaken
+	case emailTaken:
+		return user.ErrEmailTaken
+	case heldField != "":
+		return takenError(heldField)
+	}
+	return nil
 }
 
 // FieldHTTPError is the response for a field refusal, coded by the field's

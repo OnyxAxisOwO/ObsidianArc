@@ -444,18 +444,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		// This pass only saves paid screening and review calls for an address
 		// already held here. The transaction still repeats the uniqueness
 		// check under the registration lock before writing the account.
-		usernameTaken, emailTaken, heldField, err := s.users.Exists(ctx, nil, in.Username, in.Email, in.Fields)
-		if err != nil {
+		if err := s.refuseTaken(ctx, nil, in.Username, in.Email, in.Fields); err != nil {
 			return user.User{}, "", err
-		}
-		if usernameTaken {
-			return user.User{}, "", user.ErrUsernameTaken
-		}
-		if emailTaken {
-			return user.User{}, "", user.ErrEmailTaken
-		}
-		if heldField != "" {
-			return user.User{}, "", takenError(heldField)
 		}
 
 		// Last of the gates and outside the transaction, for the same two
@@ -507,19 +497,23 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		verification string
 		token        string
 	)
+	// At most two passes. The pre-flight count can say "first account" and
+	// skip email screening, and the count under the lock can then disagree
+	// because another registration landed in between. Screening is a provider
+	// call, so it cannot run inside the transaction: the first pass returns
+	// errNeedsEmailScreening, the screening runs here with no lock held, and
+	// the second pass finds screened set and cannot ask again.
 	for {
 		err = s.db.Tx(ctx, func(tx *database.Tx) error {
 			// Serialise the decision about who is first across processes as well
 			// as goroutines. Under Postgres' default isolation, two fresh-instance
 			// registrations can otherwise both count zero users and both become
-			// administrators. Upserting one known settings row takes the same row
-			// lock on both supported databases without changing its value.
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-			 ON CONFLICT (key) DO UPDATE SET updated_at = settings.updated_at`,
-				settings.RegistrationEnabled, settings.Defaults[settings.RegistrationEnabled],
-				time.Now().UnixMilli()); err != nil {
-				return fmt.Errorf("auth: lock registration: %w", err)
+			// administrators. It is the instance lock the administrator
+			// population and the plugin install take, so it has to be the same
+			// call: a hand-written copy of its key would come apart from theirs
+			// the day the key moves.
+			if err := settings.Lock(ctx, tx); err != nil {
+				return err
 			}
 
 			total, err := s.users.Count(ctx, tx)
@@ -585,18 +579,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 				}
 			}
 
-			usernameTaken, emailTaken, heldField, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.Fields)
-			if err != nil {
+			if err := s.refuseTaken(ctx, tx, in.Username, in.Email, in.Fields); err != nil {
 				return err
-			}
-			if usernameTaken {
-				return user.ErrUsernameTaken
-			}
-			if emailTaken {
-				return user.ErrEmailTaken
-			}
-			if heldField != "" {
-				return takenError(heldField)
 			}
 
 			groupID, err := s.registrationGroup(ctx, tx)

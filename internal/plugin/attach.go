@@ -101,7 +101,9 @@ func (m *Manager) attach(l *loaded) (err error) {
 		undo = append(undo, func() { h.OAuth.UnbindSubject(field) })
 	}
 
-	h.Auth.ReplaceGuards(name, m.guardsOf(l))
+	if err = h.Auth.ReplaceGuards(name, m.guardsOf(l)); err != nil {
+		return err
+	}
 	undo = append(undo, func() { h.Auth.RemoveGuards(name) })
 
 	h.AuthHandlers.Extend(name, m.siteBlock(l))

@@ -177,18 +177,8 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		if err := user.ValidateUsername(in.Username); err != nil {
 			return user.User{}, err
 		}
-		usernameTaken, emailTaken, heldField, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.Fields)
-		if err != nil {
+		if err := s.refuseTaken(ctx, tx, in.Username, in.Email, in.Fields); err != nil {
 			return user.User{}, err
-		}
-		if usernameTaken {
-			return user.User{}, user.ErrUsernameTaken
-		}
-		if emailTaken {
-			return user.User{}, user.ErrEmailTaken
-		}
-		if heldField != "" {
-			return user.User{}, takenError(heldField)
 		}
 		username = in.Username
 	} else {
