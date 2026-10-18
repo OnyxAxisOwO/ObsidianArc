@@ -262,7 +262,8 @@
 /* One click from happening. Loud on purpose: this is the state a stray second
    click acts on, and it disarms itself after a few seconds. */
 .ai-chat-clear-all.armed {
-  background: rgba(185, 28, 28, 0.16);
+  /* From the token, so the dark theme's fill is its own red, not the light one's. */
+  background: color-mix(in srgb, var(--ai-danger) 16%, transparent);
   color: var(--ai-danger);
   opacity: 1;
 }
@@ -404,13 +405,6 @@
   .ai-chat-list-more {
     opacity: 0.45;
   }
-}
-
-.ai-chat-context-menu {
-  min-width: 140px;
-  right: 0;
-  left: auto;
-  padding: 4px;
 }
 
 .ai-chat-context-menu.open-up {
@@ -1105,7 +1099,10 @@
   gap: 8px;
   padding: 9px 12px;
   border-radius: 12px;
-  background: rgba(185, 28, 28, 0.12);
+  /* Mixed from the token rather than written as its light value: the text
+     follows --ai-danger into the dark theme, and a fill that stayed the light
+     theme's red sat under it as a dark smear. */
+  background: color-mix(in srgb, var(--ai-danger) 12%, transparent);
 }
 
 .ai-chat-error-text {
@@ -1849,25 +1846,9 @@
   border-radius: 18px;
   background: var(--ai-surface-container);
   box-shadow: var(--ai-shadow-md);
-  /* Grows out of the chip it hangs from rather than appearing whole. */
+  /* Grows out of the chip it hangs from rather than appearing whole. The
+     growth itself is the menus' own, declared once beside .oa-menu. */
   transform-origin: bottom right;
-  opacity: 0;
-  transform: scale(0.12) translateZ(0);
-  will-change: transform, opacity;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-  isolation: isolate;
-  transition:
-    opacity 0.12s cubic-bezier(0.4, 0, 1, 1),
-    transform 0.14s cubic-bezier(0.4, 0, 1, 1);
-}
-
-.ai-model-pop.open {
-  opacity: 1;
-  transform: scale(1) translateZ(0);
-  transition:
-    opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.26s cubic-bezier(0.12, 0.9, 0.2, 1);
 }
 
 /* The height is animated here, so one face can be swapped for another without
@@ -1983,6 +1964,15 @@
   background: var(--ai-surface-container-high);
 }
 
+/* The popover's rows had no focus rule, so a keyboard user got the browser's
+   outline; this is the ring an .oa-menu-item draws, the menu they sit beside. */
+.ai-pop-model:focus-visible,
+.ai-pop-back:focus-visible,
+.ai-pop-model-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--ai-primary), 0 0 0 3px var(--ai-focus-shadow);
+}
+
 .ai-pop-model-row:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -2039,14 +2029,6 @@
   overflow: hidden;
   display: flex;
   align-items: center;
-}
-
-.ai-pop-model-sub {
-  font-size: 10.5px;
-  color: var(--ai-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* --- the effort slider ----------------------------------------------------------- */
@@ -2285,7 +2267,6 @@
 
   .ai-effort-fill,
   .ai-effort-thumb,
-  .ai-model-pop,
   .ai-model-pop-body {
     transition: none;
   }

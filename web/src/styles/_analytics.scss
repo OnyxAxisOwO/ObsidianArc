@@ -65,9 +65,20 @@
   color: var(--ai-primary-text);
 }
 
-.oa-segment button:focus-visible {
+/* The other two pill groups had no focus rule at all, which left the
+   browser's outline on them: the ring is the one focus mark here. */
+.oa-segment button:focus-visible,
+.oa-segmented-option:focus-visible,
+.oa-settings-tab:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-segment button,
+  .oa-settings-tab {
+    transition: none;
+  }
 }
 
 /* A control that is only words: "clear filters". It has the height of the

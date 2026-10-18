@@ -1210,7 +1210,8 @@
   order: 1;
 }
 
-.oa-switch-field .oa-checkbox-field input[type="checkbox"] {
+.oa-switch-field .oa-checkbox-field input[type="checkbox"],
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"] {
   order: 2;
   position: relative;
   flex-shrink: 0;
@@ -1223,7 +1224,8 @@
   transition: background-color 0.18s ease;
 }
 
-.oa-switch-field .oa-checkbox-field input[type="checkbox"]::after {
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]::after,
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]::after {
   content: "";
   position: absolute;
   top: 3px;
@@ -1238,11 +1240,27 @@
   transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1);
 }
 
-.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked {
+/* The safe-mode switch sits inside a menu's title row, which is its label,
+   so it is a size down from a form's switch and has no browser margin to
+   push it off the title's line. Same knob and travel, smaller track. */
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"] {
+  width: 36px;
+  height: 20px;
+  margin: 0;
+}
+
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]::after {
+  top: 2px;
+  left: 2px;
+}
+
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked,
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]:checked {
   background: var(--ai-primary);
 }
 
-.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked::after {
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked::after,
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]:checked::after {
   transform: translateX(16px);
   /* On the accent the knob takes the accent's own text colour. A white knob
      on a white track — which is what the dark scheme's accent is — was a
@@ -1250,14 +1268,17 @@
   background: var(--ai-primary-text);
 }
 
-.oa-switch-field .oa-checkbox-field input[type="checkbox"]:focus-visible {
+.oa-switch-field .oa-checkbox-field input[type="checkbox"]:focus-visible,
+.oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .oa-switch-field .oa-checkbox-field input[type="checkbox"],
-  .oa-switch-field .oa-checkbox-field input[type="checkbox"]::after {
+  .oa-switch-field .oa-checkbox-field input[type="checkbox"]::after,
+  .oa-menu-safe-mode .oa-safe-switch input[type="checkbox"],
+  .oa-menu-safe-mode .oa-safe-switch input[type="checkbox"]::after {
     transition: none;
   }
 }
@@ -1675,8 +1696,9 @@
   min-width: 0;
 }
 
-/* Category segmented tab bar for the drawer view, keeping categories prominent
-   and providing an anchor for the sliding transition. */
+/* Category tab bar for the drawer view. It marks where you are, so the chosen
+   tab takes the badge fill the rail uses, not the primary fill of a control
+   that picks a value. */
 .oa-settings-tabs {
   display: flex;
   gap: 4px;
@@ -4054,22 +4076,10 @@
 
 /* Dark frosted backdrop to inspect generated outputs without viewport bounds. */
 .oa-lightbox-overlay {
-  position: fixed;
-  inset: 0;
   z-index: 90;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 24px;
-  box-sizing: border-box;
   background: rgba(0, 0, 0, 0.82);
   backdrop-filter: blur(8px);
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-.oa-lightbox-overlay.open {
-  opacity: 1;
 }
 
 .oa-lightbox-card {
@@ -4085,6 +4095,12 @@
 
 .oa-lightbox-overlay.open .oa-lightbox-card {
   transform: scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-lightbox-card {
+    transition: none;
+  }
 }
 
 .oa-lightbox-close {

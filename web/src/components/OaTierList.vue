@@ -54,7 +54,6 @@ function set(value: string, tier: AccessTier): void {
             :key="entry.tier"
             type="button"
             class="oa-segmented-option"
-            :class="{ active: tierOf(item.value) === entry.tier }"
             :aria-pressed="tierOf(item.value) === entry.tier"
             @click="set(item.value, entry.tier)"
           >

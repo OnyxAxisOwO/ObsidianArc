@@ -220,7 +220,7 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.08 MB (23.38 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 247.22 kB to open the chat (205.97 JS + 41.25 CSS), sent by the server at gzip's best level; the build's gzip column reads 248.55 kB (206.61 JS + 41.94 CSS) |
+| Frontend, on the wire | < 135 kB | 247.25 kB to open the chat (205.95 JS + 41.31 CSS), sent by the server at gzip's best level; the build's gzip column reads 248.57 kB (206.58 JS + 42.00 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 

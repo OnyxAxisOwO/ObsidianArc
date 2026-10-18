@@ -183,6 +183,12 @@
   box-shadow: var(--ai-shadow-md);
   /* Grows out of the corner it hangs from rather than appearing whole. */
   transform-origin: top right;
+}
+
+/* The model popover is not an OaMenu, but it opens and closes the same way;
+   one declaration keeps the two from drifting apart in timing. */
+.oa-menu,
+.ai-model-pop {
   opacity: 0;
   transform: scale(0.12) translateZ(0);
   will-change: transform, opacity;
@@ -194,7 +200,8 @@
     transform 0.14s cubic-bezier(0.4, 0, 1, 1);
 }
 
-.oa-menu.open {
+.oa-menu.open,
+.ai-model-pop.open {
   opacity: 1;
   transform: scale(1) translateZ(0);
   transition:
@@ -208,8 +215,14 @@
   transform-origin: top left;
 }
 
+/* The open state is named too: it sets its own transition at a higher
+   specificity, so without it a menu still grew open under reduced motion
+   and only its closing stopped animating. */
 @media (prefers-reduced-motion: reduce) {
-  .oa-menu {
+  .oa-menu,
+  .oa-menu.open,
+  .ai-model-pop,
+  .ai-model-pop.open {
     transition: none;
     transform: none;
   }
@@ -265,7 +278,11 @@
   white-space: nowrap;
 }
 
-.oa-menu-item-sub {
+/* The one line under a menu row's name, wherever the row comes from: an
+   OaMenuItem, the account menu's header, a model in the model popover. */
+.oa-menu-item-sub,
+.oa-menu-head-sub,
+.ai-pop-model-sub {
   font-size: 10.5px;
   color: var(--ai-text-secondary);
   overflow: hidden;

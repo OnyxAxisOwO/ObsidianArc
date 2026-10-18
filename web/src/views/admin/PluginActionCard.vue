@@ -104,7 +104,7 @@ async function runAction(): Promise<void> {
       <p
         v-if="result"
         class="oa-field-hint"
-        :style="{ color: result.isError ? 'var(--ai-danger, #ef4444)' : 'var(--ai-accent, #10b981)' }"
+        :style="{ color: result.isError ? 'var(--ai-danger)' : '#10b981' }"
         role="status"
       >
         {{ result.message }}

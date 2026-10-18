@@ -358,7 +358,10 @@
   margin: 0;
   padding: 9px 12px;
   border-radius: 12px;
-  background: rgba(185, 28, 28, 0.12);
+  /* Mixed from the token rather than written as its light value: the text
+     follows --ai-danger into the dark theme, and a fill that stayed the light
+     theme's red sat under it as a dark smear. */
+  background: color-mix(in srgb, var(--ai-danger) 12%, transparent);
   color: var(--ai-danger);
   font-size: 12px;
   line-height: 1.5;
@@ -403,23 +406,33 @@
 
 /* --- modal overlay for auth / permission dialogs ---------------------------- */
 
-.oa-modal-overlay {
+/* Every scrim OaOverlay draws is the same fixed, centring box with the same
+   fade; three copies of it are how only one of them came to respect reduced
+   motion. Each overlay keeps its own layer, darkness and padding. */
+.oa-modal-overlay,
+.oa-announce-overlay,
+.oa-lightbox-overlay {
   position: fixed;
   inset: 0;
-  z-index: 50;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px 16px;
   box-sizing: border-box;
-  background: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(4px);
   opacity: 0;
   transition: opacity 0.2s ease;
 }
 
-.oa-modal-overlay.open {
+.oa-modal-overlay.open,
+.oa-announce-overlay.open,
+.oa-lightbox-overlay.open {
   opacity: 1;
+}
+
+.oa-modal-overlay {
+  z-index: 50;
+  padding: 24px 16px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
 }
 
 .oa-modal-card {
@@ -552,14 +565,6 @@
 .oa-menu-head-name {
   font-size: 12.5px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oa-menu-head-sub {
-  font-size: 10.5px;
-  color: var(--ai-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -699,7 +704,9 @@
   color: var(--ai-text);
 }
 
-.oa-segmented-option.active {
+/* aria-pressed is the one hook for "chosen", as on .oa-segment: a second
+   class saying the same thing is a second thing that can disagree. */
+.oa-segmented-option[aria-pressed='true'] {
   background: var(--ai-primary);
   color: var(--ai-primary-text);
 }
@@ -931,20 +938,9 @@ body.oa-resizing * {
    has to be dealt with before carrying on. Everything else that could have
    been a dialog is a column instead. */
 .oa-announce-overlay {
-  position: fixed;
-  inset: 0;
   z-index: 40;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 24px;
   background: rgba(0, 0, 0, 0.45);
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-.oa-announce-overlay.open {
-  opacity: 1;
 }
 
 .oa-announce {
@@ -993,8 +989,14 @@ body.oa-resizing * {
   color: var(--ai-text-secondary);
 }
 
+/* All three scrims and the modal card, not only the announcement: the fade
+   and the card's rise were still playing under reduced motion everywhere
+   else. The lightbox's card is in _surfaces.scss, beside its own rule. */
 @media (prefers-reduced-motion: reduce) {
+  .oa-modal-overlay,
   .oa-announce-overlay,
+  .oa-lightbox-overlay,
+  .oa-modal-card,
   .oa-announce {
     transition: none;
   }
@@ -1459,45 +1461,13 @@ button.oa-home-notice-main:focus-visible {
     color: var(--ai-text);
   }
 
+  /* Only the label's layout lives here. The switch inside is the shared one
+     in _surfaces.scss, size and all: a copy here had no focus ring and kept
+     animating under reduced motion. */
   .oa-safe-switch {
     display: inline-flex;
     align-items: center;
     cursor: pointer;
-
-    input[type="checkbox"] {
-      position: relative;
-      flex-shrink: 0;
-      width: 36px;
-      height: 20px;
-      border-radius: 999px;
-      appearance: none;
-      background: var(--ai-outline-variant, #ccc);
-      cursor: pointer;
-      transition: background-color 0.18s ease;
-      margin: 0;
-
-      &::after {
-        content: "";
-        position: absolute;
-        top: 2px;
-        left: 2px;
-        width: 16px;
-        height: 16px;
-        border-radius: 50%;
-        background: #fff;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
-        transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1);
-      }
-
-      &:checked {
-        background: var(--ai-primary);
-
-        &::after {
-          transform: translateX(16px);
-          background: var(--ai-primary-text, #fff);
-        }
-      }
-    }
   }
 
   .oa-safe-mode-desc {

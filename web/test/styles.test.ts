@@ -503,3 +503,56 @@ describe('control states in the stylesheet source', () => {
     expect(surfaces.match(/\.oa-ban-confirm\.armed\b/g)).toHaveLength(1);
   });
 });
+
+// Rules that only a keyboard or a reduced-motion setting ever reaches: each
+// was missing from one copy of a control that had it in another.
+describe('focus and motion on every copy of a control', () => {
+  const sheet = (name: string) => fs.readFileSync(path.resolve(__dirname, '../src/styles', name), 'utf8');
+  const reducedMotion = (source: string) =>
+    [...source.matchAll(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/g)].map((m) => m[1]!).join('\n');
+
+  it('rings and stills every pill group, and marks the chosen option with aria-pressed alone', () => {
+    const analytics = sheet('_analytics.scss');
+
+    expect(analytics).toMatch(/\.oa-segment button:focus-visible,\s*\.oa-segmented-option:focus-visible,\s*\.oa-settings-tab:focus-visible \{[^}]*box-shadow:\s*0 0 0 3px/);
+    expect(reducedMotion(analytics)).toMatch(/\.oa-segment button,\s*\.oa-settings-tab \{\s*transition: none;/);
+    expect(sheet('_app.scss')).toMatch(/\.oa-segmented-option\[aria-pressed='true'\] \{/);
+    expect(sheet('_app.scss')).not.toMatch(/\.oa-segmented-option\.active/);
+  });
+
+  it('draws the safe-mode switch from the shared switch rules', () => {
+    const surfaces = sheet('_surfaces.scss');
+
+    expect(surfaces).toMatch(/\.oa-menu-safe-mode \.oa-safe-switch input\[type="checkbox"\]:focus-visible \{[^}]*box-shadow/);
+    expect(reducedMotion(surfaces)).toMatch(/\.oa-menu-safe-mode \.oa-safe-switch input\[type="checkbox"\]::after/);
+    expect(sheet('_app.scss')).not.toMatch(/input\[type="checkbox"\]/);
+  });
+
+  it('keeps a menu from growing open under reduced motion', () => {
+    const motion = reducedMotion(sheet('_workspace.scss'));
+
+    expect(motion).toMatch(/\.oa-menu\.open,/);
+    expect(motion).toMatch(/\.ai-model-pop\.open \{\s*transition: none;/);
+  });
+
+  it('rings the model popover rows the way a menu item is ringed', () => {
+    expect(sheet('_chat.scss')).toMatch(/\.ai-pop-model-row:focus-visible \{[^}]*box-shadow:\s*inset 0 0 0 1px var\(--ai-primary\)/);
+  });
+
+  it('stills every scrim and the cards that rise in them', () => {
+    const app = reducedMotion(sheet('_app.scss'));
+
+    for (const name of ['oa-modal-overlay', 'oa-announce-overlay', 'oa-lightbox-overlay', 'oa-modal-card']) {
+      expect(app, name).toMatch(new RegExp(`\\.${name}[,\\s]`));
+    }
+    expect(reducedMotion(sheet('_surfaces.scss'))).toMatch(/\.oa-lightbox-card \{\s*transition: none;/);
+    expect(reducedMotion(sheet('_workbench.scss'))).toMatch(/\.oa-plugin-tab \{ transition: none; \}/);
+  });
+
+  it('mixes danger fills from the token so they follow it into the dark theme', () => {
+    const offenders = fs.readdirSync(path.resolve(__dirname, '../src/styles'))
+      .filter((name) => /rgba\(\s*185,\s*28,\s*28/.test(sheet(name)));
+
+    expect(offenders).toEqual([]);
+  });
+});
