@@ -72,7 +72,7 @@
 | `api.enabled` | `false` | 全站 API 开关，也限制管理员 |
 | `quota.admins_bypass` | `true` | 管理员是否绕过额度限制 |
 | `quota.usage_display` | `absolute` | 具体数值、已用比例或剩余比例；额度窗口和赠金条都按它措辞 |
-| `quota.max_concurrent` | `0` | 全站最大并发流式请求数限制；0 表示不限 |
+| `quota.max_concurrent` | `4` | 全站最大并发流式请求数限制；0 表示不限 |
 
 API 开关与额度豁免是两项独立设置。用户组还需要 `api_access` 权限；额度上限在全局、用户组或用户策略中配置。
 
@@ -86,7 +86,7 @@ API 开关与额度豁免是两项独立设置。用户组还需要 `api_access`
 
 | 设置键 | 默认值 | 用途 |
 | --- | --- | --- |
-| `attachments.max_mb` | `6` | 单文件大小上限，最高 64 MB |
+| `attachments.max_mb` | `6` | 单文件大小上限，最高 64 MB；同样适用于 /v1 接口的图片 |
 | `attachments.retain` | `false` | 发送后是否保留上传图片数据 |
 | `attachments.purge_after_days` | `0` | 按年龄清理；0 不启用 |
 | `attachments.purge_daily_at` | 空 | 每日清理时间，格式 `HH:MM` |

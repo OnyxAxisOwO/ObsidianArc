@@ -53,17 +53,22 @@ go run ./cmd/server
 
 ## 分包与检查
 
-主应用产物约束为五个文件：
+主应用产物约束为十个文件（另加每个插件各一个分包）：
 
 ```text
 index-[hash].js
 index-[hash].css
 AdminPage-[hash].js
+AdminPage-[hash].css
+TerminalPanel-[hash].js
+TerminalPanel-[hash].css
 i18n.zh-[hash].js
 math-[hash].js
+FrontPage-[hash].js
+LandingView-[hash].js
 ```
 
-后台、中文字典和数学渲染器独立加载。主入口的静态导入不能意外把它们重新拉进主包。`web/test/bundle.test.ts` 检查实际构建结果，因此测试前需要存在前端产物。
+后台（连同只有后台用的英文词条 `i18n.admin.ts` 和样式 `styles/admin.scss`）、终端（连同 `_terminal.scss`）、中文字典、数学渲染器、官网首页和落地页独立加载。主入口的静态导入不能意外把它们重新拉进主包。`web/test/bundle.test.ts` 检查实际构建结果，因此测试前需要存在前端产物。
 
 ```bash
 npm --prefix web run build

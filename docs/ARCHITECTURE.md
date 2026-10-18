@@ -13,6 +13,11 @@ two designs do the same job, the one with fewer moving parts wins.
 
 ## 1. What is here today
 
+This section describes the standalone build the plan started from, as it was
+then. Its stylesheets and scripts have since become `web/src/styles/_chat.scss`,
+`_workspace.scss` and the Vue components; the table keeps the original names
+because it records where the port began.
+
 | | |
 | --- | --- |
 | Frontend | Vanilla JavaScript, no framework, no bundler, no build step |
@@ -76,8 +81,7 @@ them is preserved.
   rows, with a "manage models" footer that jumps to settings.
 - **Settings** — a right-side drawer, 420px, sections separated by uppercase
   subheads, with an accent picker of 10 dots plus a custom hex row.
-- **Motion** — `aiChatSwitch` on conversation change and on a just-sent
-  message, a caret that blinks at the live end of a streaming answer, a
+- **Motion** — `aiChatSwitch` on conversation change, a caret that blinks at the live end of a streaming answer, a
   0.34s `cubic-bezier(0.2, 0, 0, 1)` rail slide, and a full
   `prefers-reduced-motion` path that turns all of it off.
 - **Theme** — light values on `:root`, dark by `prefers-color-scheme`, forced
@@ -192,7 +196,9 @@ Go, direct:
 | --- | --- | --- |
 | `modernc.org/sqlite` | SQLite driver | Pure Go: no cgo, static binary, trivial cross-compile. Behind a `nosqlite` build tag for Postgres-only builds. |
 | `github.com/jackc/pgx/v5` | Postgres driver | The standard, and its `stdlib` shim keeps everything on `database/sql`. |
-| `golang.org/x/crypto` | argon2id | Official. |
+| `golang.org/x/crypto` | argon2id, the SSH console | Official. |
+| `golang.org/x/sync` | `singleflight` for the backoffice's heavy aggregations | Official, and already linked: pgx's pool imports its `semaphore`. |
+| `github.com/tetratelabs/wazero` | The plugin-package sandbox | Pure Go WebAssembly runtime, so the binary stays static; about 2.8 MB of it. |
 
 That is the whole list. Routing is `net/http`'s `ServeMux` (Go 1.22 method +
 wildcard patterns). Migrations are a 60-line runner over an `embed.FS`. No
@@ -219,10 +225,28 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 27.08 MB (23.38 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 248.31 kB to open the chat (206.88 JS + 41.43 CSS), sent by the server at gzip's best level; the build's gzip column reads 249.74 kB (207.62 JS + 42.12 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 27.09 MB (23.39 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 204.97 kB to open the chat (178.56 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 205.69 kB (178.84 JS + 26.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after a round of review fixes and three
+splits of the entry. The English only the backoffice says (1658 keys) moved out
+of `i18n.ts` into `i18n.admin.ts`, which the backoffice's chunk carries; the
+rules only the backoffice draws moved out of the entry's stylesheet into
+`styles/admin.scss`, emitted as `AdminPage-*.css`; and the terminal's rules
+followed into `TerminalPanel-*.css`. 204.97 kB to open the chat (178.56 JS +
+26.41 CSS), down 42.32 kB from 247.29 kB; the build's estimate is 205.69 kB,
+down from 248.63 kB and 1.31 kB under the bundle test's budget, ratcheted to 207 kB
+behind it. The reader who opens the backoffice pays for that instead: its
+chunk is 170.59 kB plus 15.24 kB of stylesheet (from 140.69 kB with none). The
+terminal is 8.05 kB plus 1.63 kB of stylesheet, the Chinese dictionary
+51.19 kB, math 3.79 kB (formula results are now cached by source), front page
+4.14 kB, landing page 3.12 kB (it shares the chat's stream reader,
+`api/sse.ts`, instead of carrying its own). The build emits ten files besides
+the plugins'. The binary is 27.09 MB (23.39 MB without SQLite), built the same
+way as below. Lazy chunks are measured as the server sends them, through
+`httpx.Compress`.
 
 Remeasured on 2026-10-16 (UTC), with shared quota pools added. Their
 backoffice words load with the backoffice (views/admin/pool-text.ts); what an
@@ -677,29 +701,35 @@ moved from 130 to 135 kB when the measured bundle reached 131.05 kB rather
 than leaving a target the shipped usage controls no longer met.
 
 The six pieces most people never need are split off: the administration
-backoffice, the terminal, the Chinese dictionary, the LaTeX renderer, the
-public front page, and the landing page (the intro or trial a signed-out
-visitor sees on an instance that chose one).
-What each reader actually downloads:
+backoffice (with its own English and its own stylesheet), the terminal (with
+its stylesheet), the Chinese dictionary, the LaTeX renderer, the public front
+page, and the landing page (the intro or trial a signed-out visitor sees on an
+instance that chose one).
+What each reader actually downloads, as the server sends it (2026-10-18):
 
 | | gzipped |
 | --- | --- |
-| English, not an administrator | 211.37 kB |
-| Chinese, not an administrator | 251.67 kB |
-| …and a conversation containing a formula | 255.28 kB |
-| Chinese administrator, backoffice open | 345.12 kB |
-| Anybody, once they open the terminal | +7.22 kB |
-| A visitor to an instance whose front door is the front page | +3.96 kB |
-| A signed-out visitor to an instance whose front door is the intro or trial | +3.31 kB |
+| English, not an administrator | 204.97 kB |
+| Chinese, not an administrator | 256.16 kB |
+| …and a conversation containing a formula | 259.95 kB |
+| Chinese administrator, backoffice open | 441.99 kB |
+| Anybody, once they open the terminal | +9.68 kB |
+| A visitor to an instance whose front door is the front page | +4.14 kB |
+| A signed-out visitor to an instance whose front door is the intro or trial | +3.12 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice and the terminal: /settings, /keys, /usage and
 /about are columns over a chat that is already on screen, so a chunk each buys
 a round trip in the middle of a click to defer bytes the reader was going to
 fetch anyway.
-The stylesheet is not split: `admin.css` carries the shared design system —
-panels, fields, tables, the About screen — and separating the part that is
-genuinely admin-only is a different, more careful job.
+The stylesheet is split by the classes a rule needs, not by file: a rule goes
+to the backoffice's stylesheet (`styles/admin.scss`, emitted as
+`AdminPage-*.css`) only if every selector in it needs a class no other chunk
+renders, and `test/bundle.test.ts` checks every one against the built output.
+`_surfaces.scss` stays in the entry, because it carries the shared design
+system — panels, fields, tables, the About screen. The terminal's rules arrive
+with the terminal in `TerminalPanel-*.css`; the front page's are still in the
+entry.
 
 These are transferred sizes. The server compresses its own responses, because
 the deployment this document assumes has nothing in front of it to do that
@@ -918,7 +948,8 @@ proxy unchanged, and cancellation is just closing the connection.
 The client uses `fetch` + a `ReadableStream` reader rather than `EventSource`,
 because the request is a POST. The SSE frame parser already written in
 `provider.js` (including `\r\n\r\n` framing for proxies that rewrite line
-endings) is reused verbatim.
+endings) became `web/src/api/sse.ts`, which the chat, the terminal and the
+trial share; the backoffice's model probe still reads its own stream.
 
 Timeouts: `ResponseHeaderTimeout` on the upstream client, plus a per-provider
 overall deadline. `WriteTimeout` on our own server is disabled for the SSE

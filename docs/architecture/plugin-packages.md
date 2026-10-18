@@ -35,7 +35,7 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | --- | --- |
 | `arcx` | 必须，`1` |
 | `name` | 必须，2–32 位小写字母和数字，字母开头。它是设置的所有者、路由的命名空间、迁移文件名的前缀 |
-| `version` | 必须，`1.2.0` 这样的版本 |
+| `version` | 必须，`1.2.0` 这样的版本。预发布版本（如 `1.4.0-rc.1`）按 SemVer 排在同号正式版之前，`+` 之后的构建元数据不参与比较 |
 | `title`, `description` | 必须有 `title.en`；`{ "en": "...", "zh": "..." }` |
 | `author`, `homepage`, `license` | 显示用；`homepage` 必须是 `http://` 或 `https://` 地址（后台会把它画成链接，`javascript:` 之类的会被拒绝） |
 | `requires.api` | 必须，插件接口的版本，目前是 `5`；服务器提供的更低则拒绝安装。用到参数的 `rest`、`sensitive` 或标志的 `sensitive` 的包须写 `5` |
@@ -47,7 +47,7 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | `fields` | 账户上的字段：`key`、`unique`、`searchable`、`pattern`。**列本身由插件自己的迁移创建**。`key` 不能是 `users` 表里核心已有的任何一列（包括 `password_hash`、`username_lower`、`email_lower`、`invite_reward_count`）：账户自己改资料时会写这些字段 |
 | `field_rules` | 哪个设置决定注册时这个字段是 `off`、`optional` 还是 `required` |
 | `oauth_bindings` | OIDC 登录的主体号形如 `pattern` 时，就是这个字段的值（自动绑定，且该连接不可解绑） |
-| `guards` | 注册、登录或生图实验室前的检查：`action`（`register`/`login`/`images`；`images` 需要 `requires.api` ≥ 2，管理员也会被问到）、`name`、`event`（拒绝时写进安全日志的事件名） |
+| `guards` | 注册、登录或生图实验室前的检查：`action`（`register`/`login`/`images`；`images` 需要 `requires.api` ≥ 2，管理员也会被问到）、`name`、`event`（拒绝时写进安全日志的事件名；与服务器自己写入的事件同名时，记为 `plugin:<包名>:<event>`，不会冒充核心条目） |
 | `routes` | 后端提供的接口：`pattern`（`POST /api/admin/x/demo/things/{id}`）、`access`（`admin` 走后台的全部检查：会话、两步验证、`permission` 权限；`public` 原样开放，后端自己鉴权） |
 | `console` | 控制台命令：名字、分组、摘要、用法、帮助、参数、标志、权限、是否破坏性。参数的 `rest` 写在最后一个参数上，表示后端会读取其后的全部词（以空格连接）；不写时，破坏性命令多给出的位置参数会被拒绝。参数或标志的 `sensitive` 让审计记录里它的值写成 `***`，导入文档这类可能带凭据的参数须声明；`rest` 写在其他位置的清单无法安装 |
 | `ui.module` | 浏览器端模块，`web/ui.js` |
@@ -65,7 +65,7 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | 权限 | 能做什么 | 主机调用 |
 | --- | --- | --- |
 | `db` | 对实例数据库执行任意 SQL（用 `?` 占位，两种数据库通用）、开事务。`db.begin` 立即取得实例行的锁，直到事务结束（与后台改管理员名单的顺序相同，两者不会互相等死锁）；事务开着时，`tx` 为 `false` 的语句和其他带 `tx` 的主机调用返回 `tx_open` | `db.query`、`db.exec`、`db.begin`、`db.commit`、`db.rollback` |
-| `network` | 向服务器能到达的任意地址发 HTTP(S) 请求（禁止链路本地地址）；**开着事务时不允许** | `http.fetch` |
+| `network` | 向服务器能到达的任意地址发 HTTP(S) 请求（禁止链路本地、组播、未指定地址和云厂商元数据地址；写成 NAT64 或 6to4（`2002::/16`）形式的地址按其中嵌入的 IPv4 判断）；**开着事务时不允许** | `http.fetch` |
 | `users` | 挂起、恢复、删除账户，数活跃管理员。管理员（`admin`、`super_admin`）只有在这次调用由一位在职超级管理员发起时才能动（服务器从会话里取出的那个人，在锁内重新读取；包自己说的不算）；定时任务、Webhook、委派管理员的请求一律拒绝（错误码 `admin_account`），最后一个活跃超级管理员谁也动不了（`last_admin`）。检查和改动在后台改管理员名单时用的同一把行锁下做。停用账户时同时结束它的所有登录。账户不是发起人自己的，还要求发起人持有 `users` 授权（见下） | `users.set_status`、`users.delete`、`users.count_active_admins` |
 | `cards` | 收回账户名下未用的重置卡；账户不是发起人自己的，要求 `users` 授权（见下） | `cards.revoke_available` |
 | `rewards` | 给账户发赠金（发到指定的赠金条）和重置卡；可并入插件的事务。发给别人的账户的赠金要求 `usage` 授权，重置卡要求 `users` 授权（见下）。需要 API 3。没给有效天数时用赠金条的默认到期时间；那个时间已经过了就拒绝（`bonus_bar_expired`），而不是发一笔永不过期的赠金 | `rewards.bonus`、`rewards.cards` |
@@ -73,7 +73,7 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | `notify` | 往账户的收件箱放通知 | `notify.push` |
 | `security_log` | 写安全日志 | `security.record` |
 | `challenge` | 在自己的表单前使用站点的人机验证：问现在该要哪种（随注册页的验证码设置），并校验浏览器交来的证明。密钥不离开服务器。需要 API 3 | `challenge.describe`、`challenge.verify` |
-| `console` | 以当前操作员身份调用后台接口 | `console.call`、`console.resolve_user` |
+| `console` | 以当前操作员身份调用后台接口。一条命令只能调用它在清单 `endpoints` 里声明的接口（方法加路径，`{name}` 匹配一段，查询串不比较），之外的调用以 `bad_argument` 拒绝，所以命令要调的每个后台接口都得列进去 | `console.call`、`console.resolve_user` |
 
 **为别人的账户做事，要发起人持有授权。** 包代表某个请求做事（路由、控制台）时，若操作的账户不是这个请求的发起人自己，发起人必须是在职管理员并持有对应授权：`users`（挂起、删除、收回卡、结束登录、发重置卡）、`usage`（发赠金）。超级管理员总是持有。不持有时调用返回 `permission_denied`，改动不会做。没有发起人的调用（定时任务）不受此限；管理员账户则只能由超级管理员发起的请求改动。
 

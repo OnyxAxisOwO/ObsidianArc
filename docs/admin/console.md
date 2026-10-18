@@ -57,6 +57,7 @@ group edit Default --terminal false
 几个值得一提的：
 
 - `usage breakdown user --model <模型>`：某个模型有哪些人在用；`usage breakdown model --user <用户>`：某个人在用哪些模型；`usage breakdown model --metric users`：按使用人数排出最受欢迎的模型。
+- `quota set`：先读出当前策略再保存；读出之后若有别人改过这条策略，保存会被拒绝（`policy_changed`），重新执行一次即可，不会把对方改的窗口覆盖掉。
 - `chat edit <对话> <序号> --content "…"`：改写对话里的某条消息，序号就是 `chat show` 打印的 `seq`。只改记录，不会重新发给模型。
 - `feedback mine` / `feedback thread <id>`：看自己的反馈和回复，读过之后账户菜单上的小红点就会消失。
 - `invite create --partner NAME --code CODE --group REF --group-days N-M`：生成一个合作方专属码，默认老用户也能领取；`me invite claim <码>` 是任何账户领取这类码（或显式开放了「老用户也能领取」的批量码）的入口，见[邀请码](./invites)。
@@ -94,6 +95,8 @@ permission denied: this command needs the "models" grant
 ## 危险操作
 
 所有不可逆的命令（每一个 `delete`、`user passwd`、`log prune`、`attachment purge`、`health reset`、`usage reset`、`setting import`）都必须显式加 `--yes`（或 `-y`）才会执行。缺少时命令拒绝执行并说明原因，不会有确认弹窗。
+
+`usage reset --scope all` 不接受 `--id`；要重置单个账户请用 `--scope user --id <用户>`。未知的 `--scope` 在发出任何请求之前就会被拒绝。
 
 ## 网页终端
 

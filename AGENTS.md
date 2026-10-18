@@ -38,8 +38,8 @@ agreements explicit instead of guessed.
 database, no sidecars, no cache tier, no broker. When two designs do the same
 job, the one with fewer moving parts wins.
 
-Four direct Go dependencies (`modernc.org/sqlite`, `pgx`, `x/crypto` and
-`github.com/tetratelabs/wazero`) and four on the frontend: `vue`,
+Five direct Go dependencies (`modernc.org/sqlite`, `pgx`, `x/crypto`,
+`x/sync` and `github.com/tetratelabs/wazero`) and four on the frontend: `vue`,
 `vue-router`, `@vueuse/core` and `lucide-vue-next`. Routing on the server is `net/http`. Migrations are
 numbered `.sql` files. There is no ORM, no logging framework and no config
 library on one side, and no component library, no CSS framework and no
@@ -58,8 +58,10 @@ The same goes for wazero, the Go side's fourth: it is what lets a plugin be
 installed from the backoffice without a rebuild, running as WebAssembly in a
 sandbox instead of as code with the server's own hands. It is pure Go, so the
 binary stays static and cross-compiles, and it costs 2.8 MB of that binary,
-also written down in `docs/ARCHITECTURE.md`. A fifth is that conversation
-again.
+also written down in `docs/ARCHITECTURE.md`. `x/sync` is there for
+`singleflight` alone, which keeps the backoffice's heavy aggregations from
+being computed once per waiting request; pgx's pool already links the module
+(`x/sync/semaphore`), so it brings nothing new into the build. A sixth is that conversation again.
 
 ## Plugins: what only some instances want
 
@@ -136,6 +138,10 @@ here hold for it unchanged; what differs is where the code comes from.
 make test     # go vet, gofmt, go test ./..., vue-tsc --noEmit, vitest
 ```
 
+`make test` rebuilds the frontend first when anything under `web/src` is newer
+than the embedded build, so the bundle and first-paint checks never read a
+stale one; it does not reinstall packages.
+
 All of it must pass, and `.github/workflows/ci.yml` runs it again on every
 push — on Linux, against a real PostgreSQL, and building the Docker image. It
 is the only reviewer that reads every agent's output, so it is not optional and
@@ -160,7 +166,12 @@ The stylesheet for everything that is not the chat is
 `web/src/styles/_surfaces.scss`. It was called admin.css; it holds
 `.oa-panel`, `.oa-field`, `.oa-table` and `.oa-icon-btn`, which the settings,
 keys and About screens all use, so do not treat it as the backoffice's private
-file.
+file. What only the backoffice draws is in `web/src/styles/admin.scss` (its
+partials `_admin-controls`, `_admin-surfaces`, `_dashboard`, `_analytics`,
+`_workbench`), imported by `AdminPage.vue` so it arrives with the backoffice's
+chunk; the terminal's is `_terminal.scss`, imported by `TerminalPanel.vue`. A
+rule belongs there only if every selector in it needs a class nothing outside
+that chunk renders, and `test/bundle.test.ts` holds that.
 
 All five partials arrived as the standalone build's stylesheets, renamed and
 not reformatted: the port was meant to be pixel-for-pixel identical, and
@@ -212,9 +223,17 @@ tx.Exec(ctx,
      ON CONFLICT (key) DO UPDATE SET updated_at = settings.updated_at`, ...)
 ```
 
-Live examples: `apikey.Store.Issue`, `conversation.Store.Upload`,
-`auth.Service.Register`, `admin.lockAdminPopulation`. Use one of those two
-spellings rather than inventing a third.
+Live examples: `apikey.Store.IssueModels` and `conversation.Store.Upload`
+lock the owner's row; `settings.Lock` is the instance-wide spelling, and
+`auth.Service.Register` and `admin.lockAdminPopulation` call it rather than
+repeating its key. Use one of those two spellings rather than inventing a
+third.
+
+One exception is written down: the sign-in, second-step, current-password,
+invite-code guess budgets (`internal/auth/limiter.go`) and the trial's hourly
+budgets (`internal/trial`) are counted in each process's memory, so N processes give each budget N times its size.
+`docs/ARCHITECTURE.md` says so in its security table. A new budget does not
+join them without the same entry.
 
 ### A transaction never spans a provider call
 
@@ -270,7 +289,21 @@ English fallback. Never loosen that type to make a build pass.
 
 Deliberately English: API values and enums (`'openai'`, `'5h'`), protocol names
 shown on purpose (`reasoning_effort`, `Base URL`), format placeholders
-(`'sk-…'`), and the language picker's own `English` / `中文`.
+(`'sk-…'`), and the language picker's own `English` / `中文`. Mail the server
+sends (the new-device notice, the address check) is English too: a message has
+no code for a browser to translate, and the server does not know the reader's
+language.
+
+English that only the backoffice says lives in `web/src/i18n.admin.ts`, which
+travels with the backoffice's chunk instead of on everyone's first paint. Its
+keys are still `StringKey`s, so `zh` must still translate them and still read
+through `t()`; a key any other screen uses stays in `i18n.ts`, and
+`test/bundle.test.ts` fails the build when one is in the wrong file. A few
+backoffice pages keep their own words (`views/admin/audit-text.ts`,
+`pool-text.ts`) through `pluginStrings`, with the same guarantees: English is
+the source, a missing `zh` is a type error, and they redraw on a language
+change. A word the core dictionary already has is taken from `t()`, never
+copied.
 
 Module-level label tables evaluate at import time, before the language is
 known. Store `StringKey`s and resolve at render, as `PAGES` in
@@ -364,8 +397,9 @@ installs, updates and removes).
   `wasm.Limits.IdleEvict` idle (three minutes): warm, a package is ~60 MB
   resident, and what they serve is used now and then. So nothing may keep a
   compiled module alive beside the backend — no cache that cannot drop an
-  entry (`wasm.ShareCompiledCode` is for tests, and only `servertest` calls
-  it), no call at boot that compiles what will not be used. An update or a
+  entry (`wasm.ShareCompiledCode` is for tests: `servertest` and the tests of
+  `internal/plugin/wasm` and `internal/plugin` call it, the server never
+  does), no call at boot that compiles what will not be used. An update or a
   removal must give its code back, and a test holds that eviction and calls
   race safely.
 - **What a backend chose to say and what it failed to say are kept apart.**
@@ -400,24 +434,28 @@ installs, updates and removes).
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 27.08 MB binary (this repository ships no plugin; 2.8 MB of it is
-the plugin runtime); 248.31 kB on the wire to open the chat (the build's gzip
-column reads 249.74 kB), against a target of 135. The target used to be 80 and
+Current: 27.09 MB binary (this repository ships no plugin; 2.8 MB of it is
+the plugin runtime); 204.97 kB on the wire to open the chat (the build's gzip
+column reads 205.69 kB), against a target of 135. The target used to be 80 and
 the figure used to be 59.5; adopting Vue moved both, and
 `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.
 
 The backoffice, the terminal, the Chinese dictionary, the LaTeX renderer, the
 public front page and the landing page are separate chunks, fetched only by the
-readers who need them — so a static import reaching into `views/admin/`,
-`views/TerminalPanel.vue`, `terminal/`, `views/FrontPage.vue`,
-`views/LandingView.vue`, `i18n.zh` or `chat/math` from the main graph silently
-undoes one of those splits. `web/src/lib/format.ts` holds
+readers who need them, and the backoffice's English, the backoffice's
+stylesheet and the terminal's stylesheet travel with their chunks — so a static
+import reaching into `views/admin/`, `views/TerminalPanel.vue`, `terminal/`,
+`views/FrontPage.vue`, `views/LandingView.vue`, `i18n.zh`, `i18n.admin`,
+`styles/admin.scss` or `chat/math` from the main graph silently undoes one of
+those splits. `web/src/lib/format.ts` holds
 `formatUptime` for exactly that reason: one import of one four-line helper
 used to pull the whole backoffice back into the main bundle.
 
-`test/bundle.test.ts` asserts the build produces exactly eight files, plus one
-per directory under `web/src/plugins/` — each plugin's own chunk. Route-level
+`test/bundle.test.ts` asserts the build produces exactly ten files (the entry's
+script and stylesheet, the backoffice's and the terminal's script and
+stylesheet, the Chinese dictionary, the maths renderer, the front page and the
+landing page), plus one per directory under `web/src/plugins/` — each plugin's own chunk. Route-level
 lazy loading produces a dozen and is switched off for everything but the
 backoffice, the terminal and the front page; if that count changes, it should be because
 somebody decided it should.
