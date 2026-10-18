@@ -7,7 +7,7 @@
 
 import { ref } from 'vue';
 import { adminApi, type UpdateStatus } from './api';
-import { safeHref } from '@/chat/markdown';
+import { safeHref } from '@/lib/safe-href';
 
 const SKIPPED_KEY = 'obsidian-arc-admin-update-skipped';
 

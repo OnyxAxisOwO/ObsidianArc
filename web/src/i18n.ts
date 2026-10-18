@@ -137,6 +137,7 @@ const en = {
   membersSaved: 'Membership saved for {count} accounts.',
   clearSearch: 'Clear search',
   noSearchResults: 'No matches. Try another keyword.',
+  searchRecentOnly: 'Only your latest {count} conversations are searched.',
   administration: 'Administration',
   account: 'Account',
   signOut: 'Sign out',

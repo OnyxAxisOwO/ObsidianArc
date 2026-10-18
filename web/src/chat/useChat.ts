@@ -36,6 +36,12 @@ import { markFlying, resetFlightState } from './useSendAnimation';
 
 export const MAX_MESSAGE_CHARS = 32000;
 export const MAX_IMAGES = 6;
+/**
+ * How many conversations the rail holds — the server's own default, asked for
+ * by name so the rail can tell when it is full and its search, which only
+ * filters what is held, may be missing older ones.
+ */
+export const RAIL_LIMIT = 60;
 const SUGGESTIONS_SHOWN = 3;
 
 // A text file becomes part of the message rather than an attachment: both
@@ -188,6 +194,7 @@ export const switchTick = ref(0);
 const pendingView = ref(-1);
 
 export const active = computed(() => conversations.value.find((entry) => entry.id === activeID.value) ?? null);
+export const railFull = computed(() => conversations.value.length >= RAIL_LIMIT);
 export const isEmpty = computed(() => messages.value.length === 0 && !busy.value);
 export const stoppable = computed(() => busy.value && controller.value !== null);
 /** The streamed block is rendered by the conversation it is being written into. */
@@ -659,7 +666,7 @@ function upsertConversationStub(id: string, title: string): void {
 export async function refreshList(): Promise<void> {
   const account = generation;
   try {
-    const { conversations: list } = await listConversations();
+    const { conversations: list } = await listConversations({ limit: RAIL_LIMIT });
     if (account === generation) conversations.value = list;
   } catch {
     // The rail is a convenience; a failed refresh leaves the last copy.
@@ -679,13 +686,13 @@ async function reloadActive(): Promise<void> {
     // from, never to whatever happens to be on screen when they arrive.
     if (activeID.value !== id) return;
     messages.value = list;
+    // Mirrored so the project rail marks the project the open thread lives
+    // in. It cannot move the thread: runTurn sends it only on the turn that
+    // opens a conversation, and leaving this screen for a new chat resets it.
     if (conversation) pendingProjectID.value = conversation.project_id || '';
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) {
-      if (activeID.value === id) {
-        activeID.value = '';
-        messages.value = [];
-      }
+      if (activeID.value === id) dropActive();
       return;
     }
     // The transcript is empty after a failure, which reads as a conversation
@@ -744,8 +751,20 @@ export async function openConversation(id: string): Promise<void> {
 }
 
 export function startNewConversation(): void {
+  leaveForNewConversation('');
+}
+
+export function startProjectConversation(projectID: string): void {
+  leaveForNewConversation(projectID);
+}
+
+/**
+ * The one way to an empty composer, so "new chat" and "new chat in a project"
+ * cannot drift apart: they differ only in where the next conversation opens.
+ */
+function leaveForNewConversation(projectID: string): void {
   activeID.value = '';
-  pendingProjectID.value = '';
+  pendingProjectID.value = projectID;
   messages.value = [];
   editingID.value = '';
   justSentID.value = '';
@@ -759,17 +778,18 @@ export function startNewConversation(): void {
   switchTick.value += 1;
 }
 
-export function startProjectConversation(projectID: string): void {
+/**
+ * The open conversation stopped existing for this reader — archived, deleted,
+ * or gone on the server. Not a switch: no rise, and the composer keeps what is
+ * staged in it. But a turn still streaming into that conversation must stop
+ * drawing here, or its block keeps writing over the blank screen until the
+ * turn ends. Detaching the view does that and nothing else; the turn still
+ * finishes, and the server still saves it.
+ */
+function dropActive(): void {
   activeID.value = '';
-  pendingProjectID.value = projectID;
   messages.value = [];
-  editingID.value = '';
-  justSentID.value = '';
-  recentReasoningID.value = '';
-  historyOpen.value = false;
-  resetFlightState();
-  clearAttachments();
-  switchTick.value += 1;
+  if (watching()) pendingView.value = -1;
 }
 
 export async function rename(conversation: Conversation): Promise<void> {
@@ -796,10 +816,7 @@ export async function archiveConversation(conversation: Conversation): Promise<b
     return false;
   }
   conversations.value = conversations.value.filter((entry) => entry.id !== conversation.id);
-  if (activeID.value === conversation.id) {
-    activeID.value = '';
-    messages.value = [];
-  }
+  if (activeID.value === conversation.id) dropActive();
   setFlash(t('archiveSuccess'));
   return true;
 }
@@ -828,10 +845,7 @@ export async function removeConversation(conversation: Conversation): Promise<bo
     return false;
   }
   conversations.value = conversations.value.filter((entry) => entry.id !== conversation.id);
-  if (activeID.value === conversation.id) {
-    activeID.value = '';
-    messages.value = [];
-  }
+  if (activeID.value === conversation.id) dropActive();
   return true;
 }
 

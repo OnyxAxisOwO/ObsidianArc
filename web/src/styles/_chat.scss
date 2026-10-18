@@ -463,6 +463,17 @@
   overflow: hidden;
 }
 
+/* A row's menu is absolutely positioned and not teleported, so the two clips
+   above cut it to the last few pixels of the project's list — rename, archive
+   and delete were out of reach on most rows. The clips are only for the
+   open/close slide, and a menu is opened from a row already showing, so they
+   lift for as long as one is mounted (its fade-out included) and the list it
+   hangs in clips it instead, the way the history tab's does. */
+.ai-project-convs-collapse.open:has(.ai-chat-context-menu),
+.ai-project-convs-collapse.open:has(.ai-chat-context-menu) > .ai-project-convs-inner {
+  overflow: visible;
+}
+
 .ai-project-convs-wrap {
   display: flex;
   flex-direction: column;

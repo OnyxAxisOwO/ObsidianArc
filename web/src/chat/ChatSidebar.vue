@@ -15,10 +15,11 @@ import { IconArchive, IconEdit, IconMoreVertical, IconPlus, IconTrash } from '@/
 import ProjectList from './ProjectList.vue';
 import {
   activeID, archiveConversation, canArchive, canDelete, clearEverything,
-  conversations, openConversation, pendingID, removeConversation, rename,
+  conversations, openConversation, pendingID, RAIL_LIMIT, railFull, removeConversation, rename,
   startNewConversation,
 } from './useChat';
 import { useArmedItem } from './useArmedItem';
+import { useRowMenu } from './useRowMenu';
 
 // The rail's width drives its own collapsed margin as well as its size, so
 // the handle writes the custom property on the row rather than a width here.
@@ -32,7 +33,7 @@ const query = ref('');
 const filteredConversations = computed(() => conversations.value.filter((entry) =>
   matchesSearch(query.value, entry.title || t('newChat'))));
 
-const openUpMap = ref<Record<string, boolean>>({});
+const { openUp: openUpMap, trigger: handleMenuTrigger, contextMenu: onRowContextMenu } = useRowMenu();
 
 const { armed: armedDelete, press: pressDelete } = useArmedItem();
 
@@ -53,38 +54,6 @@ function cancelFileDrop(event: DragEvent): void {
   if (!types || Array.prototype.indexOf.call(types, 'Files') === -1) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
-}
-
-// Roughly three rows and their padding; the menu is measured against the list
-// it hangs in, not the window, because that list clips it.
-const MENU_HEIGHT = 124;
-
-function handleMenuTrigger(event: MouseEvent, id: string, toggle: () => void): void {
-  const target = event.currentTarget as HTMLElement | null;
-  if (target) {
-    const rect = target.getBoundingClientRect();
-    const box = target.closest('.ai-chat-list')?.getBoundingClientRect();
-    const below = (box ? box.bottom : window.innerHeight) - rect.bottom;
-    const above = rect.top - (box ? box.top : 0);
-    openUpMap.value[id] = below < MENU_HEIGHT && above > below;
-    // A short list has room in neither direction, and the menu would sit
-    // half under the list's edge. It does extend the list's scrollable area,
-    // so bring it into view once its opening transition has sized it.
-    if (below < MENU_HEIGHT && above < MENU_HEIGHT) {
-      window.setTimeout(() => {
-        target.closest('.ai-chat-list-item')
-          ?.querySelector('.ai-chat-context-menu')
-          ?.scrollIntoView({ block: 'nearest' });
-      }, 180);
-    }
-  }
-  toggle();
-}
-
-function onRowContextMenu(event: MouseEvent): void {
-  const rowEl = event.currentTarget as HTMLElement | null;
-  const moreBtn = rowEl?.querySelector<HTMLButtonElement>('.ai-chat-list-more');
-  moreBtn?.click();
 }
 
 // A short rise on the row that just became current, so switching reads as a
@@ -222,6 +191,11 @@ function onNewChat(): void {
             </template>
           </OaMenu>
         </div>
+        <!-- The search filters the rail, and a full rail is only the latest
+             conversations; without this an older one reads as not existing. -->
+        <p v-if="railFull && query.trim()" class="ai-chat-list-empty" role="note">
+          {{ t('searchRecentOnly', { count: RAIL_LIMIT }) }}
+        </p>
       </OaScrollArea>
 
       <div class="ai-chat-sidebar-foot" :hidden="conversations.length === 0">

@@ -681,11 +681,34 @@ class Parser {
   }
 }
 
+// A streamed answer is redrawn in full on every frame that brings text, so the
+// formulas in it were lexed and parsed again each time. What is kept is the
+// built tree, and every caller gets a copy of it: a node handed out is attached
+// to the transcript and may be changed there. The limit keeps a long session
+// that writes many different formulas from holding every one of them.
+const MATH_CACHE_LIMIT = 200;
+const built = new Map<string, HTMLElement>();
+
 /**
  * Parses a LaTeX math string into a native MathML DOM element.
  * Safe, zero innerHTML, zero external libraries.
  */
 export function renderMath(latex: string, display = false): HTMLElement {
+  const key = `${display ? 'd' : 'i'}${latex}`;
+  let node = built.get(key);
+  if (!node) {
+    node = buildMath(latex, display);
+    // A Map iterates in insertion order, so the first key is the oldest.
+    if (built.size >= MATH_CACHE_LIMIT) {
+      const oldest = built.keys().next();
+      if (!oldest.done) built.delete(oldest.value);
+    }
+    built.set(key, node);
+  }
+  return node.cloneNode(true) as HTMLElement;
+}
+
+function buildMath(latex: string, display: boolean): HTMLElement {
   const container = document.createElement(display ? 'div' : 'span');
   container.className = display ? 'ai-math ai-math-block' : 'ai-math ai-math-inline';
 

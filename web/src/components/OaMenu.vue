@@ -1,5 +1,7 @@
 <script setup lang="ts">
-// The dropdown the model chip, the bell and the account button all use.
+// The dropdown the bell, the account button, the rail's row menus and the
+// composer's menu use. Not the model chip: its popover changes face and
+// height while open, which this panel does not do, so it has its own.
 //
 // Only one menu is open at a time; opening a second closes the first, which
 // is what stops two overlapping panels when a user clicks straight from one

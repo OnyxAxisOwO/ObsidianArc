@@ -125,6 +125,10 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
   throw new ImageError('too-large', t('imageTooLarge'));
 }
 
+// Decoded at full size, then drawn down on a canvas. The target size is worked
+// out from the picture's own dimensions, which only the decode provides here,
+// and a resize during the decode would encode every upload differently. The
+// full-size bitmap is held for the one draw and closed straight after it.
 async function decode(file: File): Promise<ImageBitmap> {
   try {
     return await createImageBitmap(file);

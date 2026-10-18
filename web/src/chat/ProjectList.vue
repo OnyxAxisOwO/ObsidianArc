@@ -32,6 +32,7 @@ import {
   startProjectConversation,
 } from './useChat';
 import { useArmedItem } from './useArmedItem';
+import { useRowMenu } from './useRowMenu';
 
 onMounted(() => void loadProjects());
 
@@ -44,10 +45,14 @@ function reportFailure(error: unknown): void {
 
 // --- project expansion and conversation list ---------------------------------
 
+// A collapsed project's rows stay mounted, and loaded, until this list goes.
+// The grid slide is what closes a project, and rows unmounted with it would
+// take an open row menu down with them and cut the slide short. Opening again
+// shows the rows already loaded and refreshes them behind.
 const expandedProjects = ref<Record<string, boolean>>({});
 const projectConversations = ref<Record<string, Conversation[]>>({});
 const loadingProjects = ref<Record<string, boolean>>({});
-const openUpMap = ref<Record<string, boolean>>({});
+const { openUp: openUpMap, trigger: handleMenuTrigger, contextMenu: onRowContextMenu } = useRowMenu();
 
 // The watch below refetches on every change to the conversations, so two
 // requests for one project can overlap. Only the newest may write: an older
@@ -59,7 +64,10 @@ async function loadProjectConversations(projectID: string): Promise<void> {
   const load = (latestLoad[projectID] ?? 0) + 1;
   latestLoad[projectID] = load;
   const current = () => latestLoad[projectID] === load;
-  loadingProjects.value[projectID] = true;
+  // The spinner is for a project with nothing to show yet. The watch below
+  // refreshes every open project after each turn, and swapping a list already
+  // on screen for a spinner flashed it — and unmounted any row menu open in it.
+  if (!projectConversations.value[projectID]) loadingProjects.value[projectID] = true;
   try {
     const { conversations: list } = await listConversations({ project_id: projectID, archived: false });
     if (current()) projectConversations.value[projectID] = list;
@@ -119,21 +127,6 @@ function deleteFromMenu(project: Project, conv: Conversation, close: () => void)
   if (!pressDelete(conv.id)) return;
   close();
   void removeProjectConv(project, conv);
-}
-
-function handleMenuTrigger(event: MouseEvent, id: string, toggle: () => void): void {
-  const target = event.currentTarget as HTMLElement | null;
-  if (target) {
-    const rect = target.getBoundingClientRect();
-    openUpMap.value[id] = (window.innerHeight - rect.bottom) < 160;
-  }
-  toggle();
-}
-
-function onRowContextMenu(event: MouseEvent): void {
-  const rowEl = event.currentTarget as HTMLElement | null;
-  const moreBtn = rowEl?.querySelector<HTMLButtonElement>('.ai-chat-list-more');
-  moreBtn?.click();
 }
 
 watch(conversations, () => {

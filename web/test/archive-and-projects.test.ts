@@ -37,6 +37,34 @@ async function settle(): Promise<void> {
 }
 
 describe('ChatSidebar new layout and 3-dots context menu', () => {
+  // The rail holds the latest conversations only and its search filters what
+  // it holds, so a full rail says the search may be missing older ones.
+  for (const [count, shown] of [[chatModule.RAIL_LIMIT, true], [5, false]] as const) {
+    it(`${shown ? 'says' : 'does not say'} the search covers only the latest conversations with ${count} listed`, async () => {
+      chatModule.conversations.value = Array.from({ length: count }, (_, index) => ({
+        id: `c${index}`, title: `Chat ${index}`, model_id: 'm', pinned: false, message_count: 1,
+        created_at: 0, updated_at: 0,
+      }));
+      app = createApp({
+        setup() {
+          providePanelHost(ref(host));
+          return () => h(ChatSidebar);
+        },
+      });
+      app.mount(host);
+      await nextTick();
+      const note = () => [...host.querySelectorAll('[role="note"]')]
+        .some((node) => node.textContent?.trim() === t('searchRecentOnly', { count: chatModule.RAIL_LIMIT }));
+      expect(note()).toBe(false);
+
+      const input = host.querySelector<HTMLInputElement>('.oa-history-search input')!;
+      input.value = 'Chat';
+      input.dispatchEvent(new Event('input'));
+      await nextTick();
+      expect(note()).toBe(shown);
+    });
+  }
+
   it('renders a square new chat button beside the search field', () => {
     app = createApp({
       setup() {
