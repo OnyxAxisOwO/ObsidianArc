@@ -163,7 +163,13 @@ func (m *Manager) dropRetiredSeams(old, next *arcx.Manifest) {
 
 // detach takes everything l attached away. It is what an uninstall and a
 // failed update do, and it never fails: there is nothing to say no to.
-func (m *Manager) detach(l *loaded) {
+func (m *Manager) detach(l *loaded) { m.detachSeams(l, false) }
+
+// detachSeams is detach, leaving the plugin's guards where they are when
+// keepGuards says so: a rollback that is about to put another version's guards
+// in their place replaces them in one step instead, because a door whose check
+// is missing for a moment is open for that moment.
+func (m *Manager) detachSeams(l *loaded, keepGuards bool) {
 	// Console commands are added by AttachConsole whether or not a host is
 	// there, so they come off on the same terms; otherwise a package removed
 	// before the host arrives keeps its commands and the backend they close over.
@@ -181,7 +187,9 @@ func (m *Manager) detach(l *loaded) {
 		for _, b := range man.OAuthBindings {
 			h.OAuth.UnbindSubject(b.Field)
 		}
-		h.Auth.RemoveGuards(l.name)
+		if !keepGuards {
+			h.Auth.RemoveGuards(l.name)
+		}
 		h.AuthHandlers.Unextend(l.name)
 		h.InviteHandlers.RemoveDecorators(l.name)
 	}
@@ -197,10 +205,17 @@ func (m *Manager) detachPackage(l *loaded) {
 }
 
 // closeGrace is how long a backend that has been replaced or removed is kept
-// running for the calls already inside it. A call is over in at most the
-// engine's call timeout, and closing under one would fail a request that had
-// done nothing wrong.
+// running for the calls already inside it. A call inside the backend is over
+// within the engine's call timeout, and closing under one would fail a request
+// that had done nothing wrong. A call still waiting for the backend to compile
+// is not bounded by that timeout, because the compile is not counted in it; one
+// that outlives the grace is refused cleanly, as a removed backend's calls are.
 var closeGrace = 30 * time.Second
+
+// decorateTimeout bounds one plugin's look at an invite list. The list is what
+// the page waits on, so a decorator that is slow is skipped rather than waited
+// for.
+const decorateTimeout = 10 * time.Second
 
 func closeLater(l *loaded) {
 	if l == nil || l.backend == nil {
@@ -219,6 +234,16 @@ func (m *Manager) swapPackages(fn func(map[string]*loaded)) {
 	m.pkgs.Store(&next)
 }
 
+// guardEvent is the event a guard's refusal is filed under. A manifest may name
+// any event, and a refusal filed under one the server writes itself would read
+// as the server's own entry, so such a name is filed under the package's.
+func guardEvent(plugin, event string) string {
+	if name := strings.TrimSpace(event); coreEvents[name] {
+		return "plugin:" + plugin + ":" + name
+	}
+	return event
+}
+
 // guardsOf is the guards the manifest lists, by the door each stands in front
 // of, each asking the backend.
 func (m *Manager) guardsOf(l *loaded) map[string][]auth.Guard {
@@ -226,7 +251,7 @@ func (m *Manager) guardsOf(l *loaded) map[string][]auth.Guard {
 	for _, g := range l.pkg.Manifest.Guards {
 		g := g
 		out[g.Action] = append(out[g.Action], auth.Guard{
-			Name: g.Name, Plugin: l.name, Event: g.Event,
+			Name: g.Name, Plugin: l.name, Event: guardEvent(l.name, g.Event),
 			Check: func(ctx context.Context, req auth.GuardRequest) (auth.Verdict, error) {
 				return m.judge(ctx, l, g.Name, req)
 			},
@@ -243,7 +268,7 @@ func refusingGuards(name string, manifests ...*arcx.Manifest) map[string][]auth.
 	for _, man := range manifests {
 		for _, g := range man.Guards {
 			out[g.Action] = append(out[g.Action], auth.Guard{
-				Name: g.Name, Plugin: name, Event: g.Event,
+				Name: g.Name, Plugin: name, Event: guardEvent(name, g.Event),
 				Check: func(context.Context, auth.GuardRequest) (auth.Verdict, error) {
 					return auth.Verdict{}, unavailableGuard(errPluginFault)
 				},
@@ -350,7 +375,7 @@ func (m *Manager) decorator(l *loaded) invite.InviteeDecorator {
 		var out struct {
 			Invitees []row `json:"invitees"`
 		}
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, decorateTimeout)
 		defer cancel()
 		err := m.invoke(ctx, l, wasm.CallInfo{}, "decorate_invitees",
 			map[string]any{"inviter_id": inviterID, "invitees": in}, &out, nil)
@@ -427,7 +452,7 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 		} `json:"out"`
 	}
 	info := wasm.CallInfo{Lang: rt.Session.Lang, IP: rt.Session.IP, Actor: actorOf(rt.Session.Actor)}
-	st := &callState{console: rt}
+	st := &callState{console: rt, endpoints: c.Endpoints}
 	err := m.invoke(ctx, l, info, "console", arg, &out, st)
 	if err != nil {
 		return commandFailure(err, st.consoleErrs)

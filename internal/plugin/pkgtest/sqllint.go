@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -46,30 +47,52 @@ var runtimeNonPortable = []struct {
 // prose such as "create a user" from being taken for a statement.
 var looksLikeSQL = regexp.MustCompile(`(?is)^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE|PRAGMA|CREATE\s+(TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(TABLE|INDEX|VIEW|TRIGGER))\b`)
 
-// SQLProblems reads the Go sources directly in dir (tests excluded) and
-// returns a line for each statement in them that uses a spelling only one of
-// the two engines has. A string constant is taken to be a statement when it
-// starts like one; constants joined with + are read as the one string they
+// A piece of a statement, most often a condition or clause a backend adds to a
+// query with +, is checked as a statement is, so a spelling that is not portable
+// inside one is found too. Such a piece starts with a clause keyword: after
+// leading whitespace in any case (" and x = ?"), or at the very start in capitals
+// ("WHERE x = ?"). The capitals-only form is what keeps a sentence such as
+// "Set the glob pattern" from being read as SQL.
+var looksLikeFragment = regexp.MustCompile(`^(\s+(?i:` + clauseKeywords + `)|\s*(` + clauseKeywords + `))\b`)
+
+const clauseKeywords = `AND|OR|ON|WHERE|FROM|JOIN|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT|OFFSET|RETURNING|ON\s+CONFLICT|SET|VALUES`
+
+// SQLProblems reads the Go sources under dir (tests excluded, and directories
+// the Go tool skips: hidden, underscore-prefixed and testdata) and returns a
+// line for each statement in them that uses a spelling only one of the two
+// engines has. A string constant is taken to be a statement when it starts like
+// one, or like a clause; constants joined with + are read as the one string they
 // make. It is a lint, not a parser: it cannot know what a query does, but the
 // mistakes it looks for are the ones that cost a deployment.
 func SQLProblems(dir string) ([]string, error) {
-	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
-	if err != nil {
-		return nil, err
-	}
 	var out []string
 	fset := token.NewFileSet()
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
+	err := filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if name != dir && skippedByGoTool(entry.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
 		}
 		src, err := os.ReadFile(name)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		file, err := parser.ParseFile(fset, name, src, 0)
 		if err != nil {
-			return nil, err
+			return err
+		}
+		// Reported relative to dir, since a subdirectory's file can share a
+		// base name with one at the top.
+		rel, err := filepath.Rel(dir, name)
+		if err != nil {
+			return err
 		}
 		ast.Inspect(file, func(n ast.Node) bool {
 			expr, ok := n.(ast.Expr)
@@ -80,22 +103,35 @@ func SQLProblems(dir string) ([]string, error) {
 			if !ok {
 				return true
 			}
-			if !looksLikeSQL.MatchString(stripLineComments(sql)) {
-				// A literal that is one side of a larger concatenation is
-				// visited on its own too, so nothing is lost by moving on.
+			body := stripLineComments(sql)
+			if !looksLikeSQL.MatchString(body) && !looksLikeFragment.MatchString(body) {
+				// One side of a concatenation with a non-constant operand is
+				// visited on its own, and is checked there if it reads as SQL.
+				// A side that reads as neither (a bare name, say) is not checked.
 				return true
 			}
 			position := fset.Position(expr.Pos())
 			for _, problem := range problemsIn(sql) {
-				out = append(out, fmt.Sprintf("%s:%d: %s", filepath.Base(position.Filename), position.Line, problem))
+				out = append(out, fmt.Sprintf("%s:%d: %s", rel, position.Line, problem))
 			}
 			// The pieces of a concatenation are inside this expression; they
 			// have been read as part of it.
 			return false
 		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// skippedByGoTool is the directories the go command does not compile: hidden,
+// underscore-prefixed, and testdata. Their sources are not part of the package,
+// so a statement in one is not one the backend runs.
+func skippedByGoTool(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata"
 }
 
 func problemsIn(sql string) []string {

@@ -193,6 +193,11 @@ func Serve(in []byte) (out []byte) {
 		result any
 		err    error
 	)
+	// A kind with no handler answers by what that kind can safely say without
+	// one. A description and a sweep have such an answer (nothing to say, nothing
+	// to do), so they succeed. A guard or an invitee decorator has none: a
+	// guard that answered success would let the sign-up through, so the missing
+	// handler is an error, which refuses it.
 	switch env.Kind {
 	case "guard":
 		result, err = serveGuard(c, env.Arg)

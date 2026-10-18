@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/tetratelabs/wazero"
 )
 
 var (
@@ -36,6 +38,9 @@ func guest(t *testing.T) []byte {
 			guestErr = err
 			return
 		}
+		// The module is read into memory below, so the directory is not needed
+		// past this build; left behind, every run would leave one in the temp dir.
+		defer os.RemoveAll(dir)
 		out := filepath.Join(dir, "guest.wasm")
 		cmd := exec.Command("go", "build", "-buildmode=c-shared", "-o", out, "./testdata/guest")
 		cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
@@ -317,9 +322,11 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 }
 
 // The compiled code is tens of megabytes a backend and what these backends serve
-// is used now and then, so an idle one gives it back and the next call pays for
-// compiling it again — without the caller seeing anything but the delay.
-func TestAnIdleBackendGivesItsCompiledCodeBackAndTheNextCallCompilesItAgain(t *testing.T) {
+// is used now and then, so an idle one drops it and the next call pays for
+// compiling it again — without the caller seeing anything but the delay. That
+// the runtime behind it is closed is checked by TestAnEvictedBackendClosesItsRuntime;
+// this one checks the backend keeps working after the drop.
+func TestAnIdleBackendDropsItsCompiledCodeAndTheNextCallCompilesItAgain(t *testing.T) {
 	b := load(t, Limits{IdleEvict: 40 * time.Millisecond}, nil)
 	waitUntil(t, "the idle backend is evicted", func() bool { return !b.isWarm() })
 
@@ -331,6 +338,28 @@ func TestAnIdleBackendGivesItsCompiledCodeBackAndTheNextCallCompilesItAgain(t *t
 		t.Fatal("the call did not compile it again")
 	}
 	waitUntil(t, "it is evicted again", func() bool { return !b.isWarm() })
+}
+
+// The field going nil proves nothing about memory: the native code lives in the
+// runtime the backend compiled on, and only closing that runtime gives it back.
+// The shared compilation cache keeps native code after a runtime closes, so
+// this test sets it aside, as TestCompiledCodeIsKeptInTheCacheDirectoryAndReadBack
+// does, and checks the runtime itself.
+func TestAnEvictedBackendClosesItsRuntime(t *testing.T) {
+	old := shared.Swap(nil)
+	t.Cleanup(func() { shared.Store(old) })
+	var made wazero.Runtime
+	runtimeHook = func(rt wazero.Runtime) { made = rt }
+	t.Cleanup(func() { runtimeHook = nil })
+
+	b := load(t, Limits{IdleEvict: 40 * time.Millisecond}, nil)
+	waitUntil(t, "the idle backend is evicted", func() bool { return !b.isWarm() })
+	if made == nil {
+		t.Fatal("the backend compiled without making a runtime")
+	}
+	if _, err := made.CompileModule(t.Context(), guest(t)); err == nil {
+		t.Fatal("the runtime an evicted backend compiled on is still open")
+	}
 }
 
 func TestABackendThatIsNeverEvictedKeepsItsCode(t *testing.T) {

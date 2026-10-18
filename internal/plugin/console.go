@@ -42,9 +42,9 @@ func init() {
 			if err != nil {
 				return err
 			}
-			list, _ := object(data)["plugins"].([]any)
-			rows := make([][]string, 0, len(list))
-			for _, raw := range list {
+			plugins := list(object(data)["plugins"])
+			rows := make([][]string, 0, len(plugins))
+			for _, raw := range plugins {
 				p := object(raw)
 				manifest := object(p["manifest"])
 				state := text(p["state"])
@@ -86,9 +86,9 @@ func init() {
 			manifest := object(p["manifest"])
 			installed := object(p["installed"])
 			c := object(p["contributions"])
-			var settingKeys []string
+			var keys []string
 			for _, raw := range list(c["settings"]) {
-				settingKeys = append(settingKeys, text(object(raw)["key"]))
+				keys = append(keys, text(object(raw)["key"]))
 			}
 			var routes []string
 			for _, raw := range list(c["admin_routes"]) {
@@ -106,7 +106,7 @@ func init() {
 				{"author", text(manifest["author"])},
 				{"license", text(manifest["license"])},
 				{"installed", when(installed["at"]) + " " + text(installed["by"])},
-				{"settings", strings.Join(settingKeys, ", ")},
+				{"settings", strings.Join(keys, ", ")},
 				{"fields", joined(c["fields"])},
 				{"guards", joined(c["guards"])},
 				{"routes", strings.Join(routes, ", ")},

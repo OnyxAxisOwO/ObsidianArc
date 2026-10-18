@@ -341,3 +341,56 @@ func TestASaveWaitsForTheRefreshThatReadsItNotTheOneAlreadyRunning(t *testing.T)
 		t.Fatalf("%d refreshes for two saves; want 2", n)
 	}
 }
+
+// A rollback that puts the previous version back never leaves the package's
+// doors without a check, not even between taking the new version off and
+// putting the old one on: a sign-up that arrives then would go through with
+// nothing to judge it. A reader watches the guards on another goroutine for as
+// long as the rollbacks run.
+func TestARollbackKeepsTheDoorGuardedWhileTheOldVersionGoesBackOn(t *testing.T) {
+	r := newRig(t)
+	m := r.manager
+	h := rigHost()
+	m.host = h
+	guarded := func(version string) *loaded {
+		return &loaded{name: "gadget", pkg: &arcx.Package{Manifest: &arcx.Manifest{
+			Name: "gadget", Version: version, Guards: []arcx.Guard{{Action: "register", Name: "check", Event: "gadget_check"}},
+		}}}
+	}
+	old, next := guarded("1.0.0"), guarded("1.1.0")
+	m.swapPackages(func(p map[string]*loaded) { p["gadget"] = old })
+	if err := m.attach(old); err != nil {
+		t.Fatal(err)
+	}
+
+	var open atomic.Int32
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if len(h.Auth.GuardsOf("gadget")) == 0 {
+				open.Add(1)
+			}
+		}
+	}()
+	for range 2000 {
+		m.swapPackages(func(p map[string]*loaded) { p["gadget"] = next })
+		if err := m.attach(next); err != nil {
+			t.Fatal(err)
+		}
+		m.restoreInstall("gadget", old, next)
+	}
+	close(stop)
+	wg.Wait()
+
+	if n := open.Load(); n > 0 {
+		t.Fatalf("the sign-up door was seen without the package's check %d times during the rollbacks", n)
+	}
+}

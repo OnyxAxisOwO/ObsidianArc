@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -138,25 +139,15 @@ func (r *Rows) Scan(dest ...any) error {
 
 func assign(dest, value any) error {
 	if value == nil {
-		switch d := dest.(type) {
-		case *string:
-			*d = ""
-		case *int:
-			*d = 0
-		case *int64:
-			*d = 0
-		case *bool:
-			*d = false
-		case *float64:
-			*d = 0
-		case *[]byte:
-			*d = nil
-		case *any:
-			*d = nil
+		switch dest.(type) {
+		case *string, *int, *int64, *bool, *float64, *[]byte, *any:
+			// A NULL reads as the type's zero value, which for each of these is
+			// the empty string, 0, false, nil bytes or nil.
+			reflect.ValueOf(dest).Elem().SetZero()
+			return nil
 		default:
 			return fmt.Errorf("cannot scan NULL into %T", dest)
 		}
-		return nil
 	}
 	switch d := dest.(type) {
 	case *any:
@@ -174,18 +165,17 @@ func assign(dest, value any) error {
 		default:
 			*d = fmt.Sprint(v)
 		}
-	case *int64:
+	case *int, *int64:
 		n, err := integer(value)
 		if err != nil {
 			return err
 		}
-		*d = n
-	case *int:
-		n, err := integer(value)
-		if err != nil {
-			return err
+		switch p := d.(type) {
+		case *int:
+			*p = int(n)
+		case *int64:
+			*p = n
 		}
-		*d = int(n)
 	case *bool:
 		switch v := value.(type) {
 		case bool:

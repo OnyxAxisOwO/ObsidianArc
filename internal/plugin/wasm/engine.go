@@ -122,27 +122,29 @@ func ptrTo[T any](v T) *T { return &v }
 // NewEngine returns an engine with limits; a zero field takes its default.
 func NewEngine(limits Limits) *Engine {
 	d := DefaultLimits()
-	if limits.MemoryPages == 0 {
-		limits.MemoryPages = d.MemoryPages
-	}
-	if limits.CallTimeout == 0 {
-		limits.CallTimeout = d.CallTimeout
-	}
-	if limits.MaxMessage == 0 {
-		limits.MaxMessage = d.MaxMessage
-	}
-	if limits.IdleEvict == 0 {
-		limits.IdleEvict = d.IdleEvict
-	}
-	if limits.MaxConcurrent == 0 {
-		limits.MaxConcurrent = d.MaxConcurrent
-	}
+	limits.MemoryPages = orDefault(limits.MemoryPages, d.MemoryPages)
+	limits.CallTimeout = orDefault(limits.CallTimeout, d.CallTimeout)
+	limits.MaxMessage = orDefault(limits.MaxMessage, d.MaxMessage)
+	limits.IdleEvict = orDefault(limits.IdleEvict, d.IdleEvict)
+	limits.MaxConcurrent = orDefault(limits.MaxConcurrent, d.MaxConcurrent)
 	e := &Engine{limits: limits}
 	if limits.MaxConcurrent > 0 {
 		e.slots = make(chan struct{}, limits.MaxConcurrent)
 		e.general = make(chan struct{}, limits.MaxConcurrent-guardReserve(limits.MaxConcurrent))
 	}
 	return e
+}
+
+// orDefault is v, or def when v is zero. Every Limits field follows that rule,
+// so zero is never a limit of its own; a negative value is a setting, not zero,
+// and is kept (IdleEvict and MaxConcurrent both use it to mean "never" and "no
+// bound").
+func orDefault[T comparable](v, def T) T {
+	var zero T
+	if v == zero {
+		return def
+	}
+	return v
 }
 
 // guardReserve is how many of n slots only guards may take: a quarter of them,
@@ -283,7 +285,7 @@ type Backend struct {
 	warm      *warm         // the compiled code, nil while there is none
 	compiling chan struct{} // closed when the compile in progress is over
 	err       error         // a module that does not compile does not start to
-	users     int           // calls inside warm, which is not taken from under them
+	users     int           // calls inside warm; eviction waits for them, Close does not (see Close)
 	idle      *time.Timer
 	closed    bool
 }

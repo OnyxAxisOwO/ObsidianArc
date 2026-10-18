@@ -370,13 +370,9 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 			if opts.Enable {
 				state, decision = StateEnabled, "install_enable"
 			}
-			if _, err := tx.Exec(ctx,
-				`UPDATE plugin_installs SET state = ?, version = ?, installed_at = ?, installed_by = ?,
-				 updated_at = ?, updated_by = ? WHERE name = ?`,
-				string(state), version, now, actor.ID, now, actor.ID, name); err != nil {
-				return fmt.Errorf("plugin: install %s: %w", name, err)
+			if rec, err = writeInstallRow(ctx, tx, name, state, version, now, actor.ID); err != nil {
+				return err
 			}
-			rec = record{State: state, Version: version, InstalledAt: now, InstalledBy: actor.ID, UpdatedAt: now, UpdatedBy: actor.ID}
 		default:
 			if _, err := tx.Exec(ctx,
 				`UPDATE plugin_installs SET version = ?, updated_at = ?, updated_by = ? WHERE name = ?`,
@@ -387,6 +383,13 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 			rec.Version, rec.UpdatedAt, rec.UpdatedBy = version, now, actor.ID
 		}
 
+		// From here until the transaction ends, a request to an update of an
+		// enabled package is already answered by the new version: its routes and
+		// guards are live while the rows that say so are not yet written. That is
+		// the price of attaching inside the transaction, which is what lets a seam
+		// that refuses roll the rows back; attaching after the transaction would
+		// leave a stored version with nothing attached when attaching fails. A
+		// transaction that fails afterwards is undone by restoreInstall.
 		m.swapPackages(func(p map[string]*loaded) { p[name] = nl })
 		attached = true
 		if old != nil {
@@ -422,8 +425,20 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 // the new one holds, such as the single OAuth subject binding, and what only the
 // new version brought must not outlive the rollback. If the old one will not
 // attach, its guards are left as refusals rather than absent (see refusingGuards).
+//
+// When there is an old version its doors stay guarded throughout: the new
+// version's guards give way to refusals in one step, and the old version's
+// replace those in one step when it attaches. Clearing them first would let a
+// sign-up through unchecked while the old version's other seams go back on.
 func (m *Manager) restoreInstall(name string, old, nl *loaded) {
-	m.detach(nl)
+	if old == nil {
+		m.detach(nl)
+	} else {
+		if m.host != nil {
+			m.host.Auth.ReplaceGuards(name, refusingGuards(name, old.pkg.Manifest, nl.pkg.Manifest))
+		}
+		m.detachSeams(nl, true)
+	}
 	if old != nil {
 		m.swapPackages(func(p map[string]*loaded) { p[name] = old })
 		if err := m.attach(old); err != nil {
@@ -694,7 +709,7 @@ func (m *Manager) LoadBundled(ctx context.Context, dir string) error {
 				compareVersions(pkg.Manifest.Version, existing.pkg.Manifest.Version) < 0 {
 				continue
 			}
-		case state == StateAvailable && m.everDecided(name):
+		case state == StateAvailable && m.everDecided(ctx, name):
 			continue
 		}
 		op, err := m.InstallPackage(ctx, system, pkg, SourceBundled, InstallOptions{})
@@ -750,31 +765,28 @@ func BundledMigrations(dir string) []fs.FS {
 }
 
 // everDecided reports whether the operator has a decision on record for name:
-// a row in plugin_installs, which an uninstall leaves as "removed".
-func (m *Manager) everDecided(name string) bool {
+// a row in plugin_installs, which an uninstall leaves as "removed". A query that
+// fails counts as a decision, so a database that cannot answer does not
+// reinstall a package someone may have removed; the next boot asks again.
+func (m *Manager) everDecided(ctx context.Context, name string) bool {
 	var n int
-	if err := m.db.QueryRow(context.Background(),
+	if err := m.db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM plugin_installs WHERE name = ?`, name).Scan(&n); err != nil {
+		slog.Error("plugin: could not read the install record; the bundled package is left alone",
+			"plugin", name, "error", err)
 		return true
 	}
 	return n > 0
 }
 
-// compareVersions orders two versions numerically, component by component: 1.10
-// is after 1.9. What follows a "-" or "+" is ignored.
+// compareVersions orders two package versions by SemVer precedence. The numbers
+// come first, component by component, so 1.10 is after 1.9. Then the
+// pre-release decides: 1.4.0-rc.1 is before 1.4.0, so a release candidate in the
+// bundle does not replace the release it leads up to. Build metadata after "+"
+// takes no part, as SemVer says.
 func compareVersions(a, b string) int {
-	parts := func(v string) []int {
-		if i := strings.IndexAny(v, "-+"); i >= 0 {
-			v = v[:i]
-		}
-		var out []int
-		for _, p := range strings.Split(v, ".") {
-			n, _ := strconv.Atoi(p)
-			out = append(out, n)
-		}
-		return out
-	}
-	x, y := parts(a), parts(b)
+	x, xPre := splitVersion(a)
+	y, yPre := splitVersion(b)
 	for len(x) < len(y) {
 		x = append(x, 0)
 	}
@@ -789,7 +801,86 @@ func compareVersions(a, b string) int {
 			return 1
 		}
 	}
+	return comparePreRelease(xPre, yPre)
+}
+
+// splitVersion is a version's numbers and its pre-release text, which is empty
+// for a release. The manifest's version pattern admits nothing else, so the
+// first "-" after the numbers is the one that starts the pre-release.
+func splitVersion(v string) (numbers []int, pre string) {
+	if i := strings.IndexByte(v, '+'); i >= 0 {
+		v = v[:i]
+	}
+	v, pre, _ = strings.Cut(v, "-")
+	for _, p := range strings.Split(v, ".") {
+		n, _ := strconv.Atoi(p)
+		numbers = append(numbers, n)
+	}
+	return numbers, pre
+}
+
+// comparePreRelease orders two pre-release strings as SemVer does: a release,
+// which has none, is after every pre-release, and otherwise the dot-separated
+// identifiers are compared one at a time. A longer list is after a shorter one
+// it begins with.
+func comparePreRelease(a, b string) int {
+	switch {
+	case a == b:
+		return 0
+	case a == "":
+		return 1
+	case b == "":
+		return -1
+	}
+	x, y := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(x) && i < len(y); i++ {
+		if c := compareIdentifier(x[i], y[i]); c != 0 {
+			return c
+		}
+	}
+	switch {
+	case len(x) < len(y):
+		return -1
+	case len(x) > len(y):
+		return 1
+	}
 	return 0
+}
+
+// compareIdentifier orders one pre-release identifier: a numeric one by value,
+// an alphanumeric one by its bytes, and a numeric one before an alphanumeric one.
+func compareIdentifier(a, b string) int {
+	an, bn := isDigits(a), isDigits(b)
+	switch {
+	case an && bn:
+		// Compared as text once the leading zeros are gone, so an identifier
+		// too long for an int still orders by its value.
+		a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+		if len(a) != len(b) {
+			if len(a) < len(b) {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a, b)
+	case an:
+		return -1
+	case bn:
+		return 1
+	}
+	return strings.Compare(a, b)
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // --- what the operator sees before they say yes ------------------------------
@@ -979,15 +1070,11 @@ func (m *Manager) packageInfo(l *loaded, r record) Info {
 		SHA256:      l.pkg.SHA256, Size: len(l.pkg.Raw), Source: l.source,
 		HasUI: man.UI != nil, Fault: l.faulted(),
 	}
-	c := Contributions{Settings: []SettingInfo{}, Fields: []string{}, Guards: []string{},
-		CaptchaModes: append([]string{}, man.CaptchaModes...), AdminRoutes: []RouteInfo{}, PublicRoutes: []string{},
-		Commands: []string{}, Migrations: []string{}, Purges: l.pkg.HasPurge()}
+	c := newContributions()
+	c.CaptchaModes = append(c.CaptchaModes, man.CaptchaModes...)
+	c.Purges = l.pkg.HasPurge()
 	for _, s := range man.Settings {
-		item := SettingInfo{Key: s.Key, Secret: s.Secret}
-		if !s.Secret {
-			item.Default = s.Default
-		}
-		c.Settings = append(c.Settings, item)
+		c.Settings = append(c.Settings, settingInfo(s.Key, s.Default, s.Secret))
 	}
 	for _, f := range man.Fields {
 		c.Fields = append(c.Fields, f.Key)
@@ -1006,7 +1093,12 @@ func (m *Manager) packageInfo(l *loaded, r record) Info {
 		c.Commands = append(c.Commands, cmd.Name)
 	}
 	if dir := (packagePlugin{l}).Migrations(); dir != nil {
-		if versions, err := database.Versions(dir); err == nil {
+		// The list is for the screen only, so a damaged set of migrations does
+		// not stop the rest of the package from being shown; it is logged, since
+		// a package that gets this far was checked at install.
+		if versions, err := database.Versions(dir); err != nil {
+			slog.Warn("plugin: migrations could not be listed for the screen", "plugin", l.name, "error", err)
+		} else {
 			c.Migrations = versions
 		}
 	}

@@ -58,7 +58,7 @@ func (h *Handlers) logFacets(w http.ResponseWriter, r *http.Request) error {
 
 // eventLogPrune is the security-log entry a prune writes. Kept beside the
 // prune rather than with the account actions because only this handler uses it.
-const eventLogPrune = "log_prune"
+const eventLogPrune = securityevents.EventLogPrune
 
 // pruneLogs deletes entries older than a number of days.
 //
