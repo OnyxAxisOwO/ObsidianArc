@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -17,6 +16,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	bounded "github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -351,7 +351,7 @@ func cleanOrigins(plugin string, origins []string) []string {
 		switch {
 		case !httpx.ValidOrigin(origin):
 			slog.Warn("plugin asked the page policy to trust something that is not an origin; dropped",
-				"plugin", plugin, "origin", truncate(origin, 80))
+				"plugin", plugin, "origin", bounded.Truncate(origin, 80))
 		case len(kept) >= maxOrigins:
 			slog.Warn("plugin asked the page policy to trust too many origins; dropped",
 				"plugin", plugin, "origin", origin)
@@ -360,12 +360,4 @@ func cleanOrigins(plugin string, origins []string) []string {
 		}
 	}
 	return kept
-}
-
-// jsonObject re-decodes raw into a generic object, for the answers that are
-// passed through to a client untouched.
-func jsonObject(raw json.RawMessage) map[string]any {
-	var out map[string]any
-	_ = json.Unmarshal(raw, &out)
-	return out
 }

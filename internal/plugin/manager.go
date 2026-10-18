@@ -310,7 +310,7 @@ func (m *Manager) traces(ctx context.Context, p Plugin) (bool, error) {
 			}
 		}
 	}
-	return m.settings.Stored(settingKeys(p.Name())), nil
+	return m.settings.Stored(m.settingKeys(p.Name())), nil
 }
 
 // read is the table as states: a removed row reads as available.
@@ -441,8 +441,15 @@ func (m *Manager) toggle(ctx context.Context, actor Actor, name string, to State
 	// takes most of a minute to compile again. That happens before the lock is
 	// taken, so the other plugin operations do not wait behind it; the describe
 	// below then runs on code that is already warm.
+	//
+	// A backend that does not compile must refuse the switch. The install
+	// compiled it once, but a core upgrade or a restored backup can leave it
+	// unable to compile, and switching it on must not turn that into an outage
+	// of every guard it stands in front of. The install refuses the same way.
 	if l := m.loadedPackage(name); l != nil && to == StateEnabled && m.State(name) != StateEnabled && l.backend != nil {
-		_ = l.backend.Ready(ctx)
+		if err := l.backend.Ready(ctx); err != nil {
+			return preflight("the backend does not load: %v", err)
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -607,16 +614,10 @@ func (m *Manager) audit(ctx context.Context, q database.Queryer, actor Actor, na
 	})
 }
 
-func settingKeys(name string) []string {
-	var out []string
-	for _, d := range settings.DefinitionsOf(name) {
-		out = append(out, d.Key)
-	}
-	return out
-}
-
 // settingKeys is the keys a plugin owns on this server, compiled in or
-// installed.
+// installed. Every caller goes through the manager's own registry, which holds
+// both kinds; a package cannot take a compiled-in name, so for those the answer
+// is the same.
 func (m *Manager) settingKeys(name string) []string {
 	var out []string
 	for _, d := range m.settings.DefinitionsOf(name) {
@@ -627,10 +628,18 @@ func (m *Manager) settingKeys(name string) []string {
 
 // checkSettings holds an install's first settings to the plugin's own
 // definitions: a key it does not define is refused rather than stored, and
-// each value passes the definition's validator.
+// each value passes the definition's validator. Only a compiled-in plugin is
+// installed through Install, so the process-wide definitions are the plugin's
+// own here; a package's are checked by checkAgainst with the manifest it
+// carries, because the package is not registered yet.
 func checkSettings(name string, values map[string]string) (map[string]string, error) {
 	return checkAgainst(settings.DefinitionsOf(name), values)
 }
+
+// maxSettingValueBytes bounds one plugin setting. Every value is held in memory
+// and read on the requests that need it, so the bound is set well below what a
+// settings row will take.
+const maxSettingValueBytes = 8 * 1024
 
 func checkAgainst(definitions []settings.Definition, values map[string]string) (map[string]string, error) {
 	defined := map[string]settings.Definition{}
@@ -643,7 +652,7 @@ func checkAgainst(definitions []settings.Definition, values map[string]string) (
 		if !ok {
 			return nil, &SettingError{Key: key, Reason: "not a setting of this plugin"}
 		}
-		if len(value) > 8*1024 {
+		if len(value) > maxSettingValueBytes {
 			return nil, &SettingError{Key: key, Reason: "too long"}
 		}
 		if d.Validate != nil {
@@ -820,7 +829,11 @@ func (m *Manager) contributions(p Plugin) Contributions {
 	}
 	sort.Strings(c.CaptchaModes)
 	if dir := migrationsOf(p); dir != nil {
-		if versions, err := database.Versions(dir); err == nil {
+		// Listed for the screen only; a set that does not read is logged rather
+		// than hiding the rest of the plugin's contributions.
+		if versions, err := database.Versions(dir); err != nil {
+			slog.Warn("plugin: migrations could not be listed for the screen", "plugin", p.Name(), "error", err)
+		} else {
 			c.Migrations = versions
 		}
 	}

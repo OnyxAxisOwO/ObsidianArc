@@ -68,6 +68,10 @@ const (
 	// account's history for the same reason. The admin package writes them.
 	EventPasswordReset  = "password_reset"
 	EventAccountDeleted = "account_deleted"
+	// A prune of the request log, written by the admin package. It is named
+	// here, beside the other core events, so that no other writer can be given
+	// the same name by copying a literal.
+	EventLogPrune = "log_prune"
 
 	maxReasonChars = 500
 	MaxPageSize    = 200

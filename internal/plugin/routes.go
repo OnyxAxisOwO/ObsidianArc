@@ -69,16 +69,28 @@ func (m *Manager) rebuildRouter() error {
 	return nil
 }
 
-func (m *Manager) buildRouter(pkgs map[string]*loaded) (table *routeTable, err error) {
-	mux := http.NewServeMux()
+// handle registers a route on mux and turns ServeMux's refusal into an error.
+// ServeMux refuses a pattern it cannot parse, and one that conflicts with a
+// registered pattern, by panicking with an error. Those are the answers this
+// turns into a preflight error. The recover is scoped to this one call, so a
+// panic anywhere else while the table is built stays a crash, not a route that
+// "conflicts with another".
+func handle(mux *http.ServeMux, pattern string, h http.Handler) (err error) {
 	defer func() {
-		// ServeMux.Handle panics on a pattern that conflicts with one already
-		// registered, which is the one thing here that is an answer and not
-		// a bug.
 		if r := recover(); r != nil {
-			table, err = nil, preflight("a route conflicts with another: %v", r)
+			refusal, ok := r.(error)
+			if !ok {
+				panic(r)
+			}
+			err = refusal
 		}
 	}()
+	mux.Handle(pattern, h)
+	return nil
+}
+
+func (m *Manager) buildRouter(pkgs map[string]*loaded) (*routeTable, error) {
+	mux := http.NewServeMux()
 	for _, l := range pkgs {
 		if l.faulted() != "" {
 			continue
@@ -102,7 +114,7 @@ func (m *Manager) buildRouter(pkgs map[string]*loaded) (table *routeTable, err e
 			}
 			gate, name := m.Gate(), l.name
 			inner := h
-			mux.Handle(route.Pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			err := handle(mux, route.Pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Replaces the page's own policy, which is set before the request
 				// gets here: a package's answer is never the page.
 				w.Header().Set("Content-Security-Policy", routePolicy)
@@ -114,6 +126,9 @@ func (m *Manager) buildRouter(pkgs map[string]*loaded) (table *routeTable, err e
 				}
 				inner.ServeHTTP(w, r)
 			}))
+			if err != nil {
+				return nil, preflight("a route cannot be served with the others: %v", err)
+			}
 		}
 	}
 	return &routeTable{mux: mux}, nil

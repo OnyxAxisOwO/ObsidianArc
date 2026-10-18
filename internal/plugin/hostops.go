@@ -31,6 +31,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	bounded "github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -133,6 +134,13 @@ func badArg(format string, args ...any) error {
 	return &wasm.HostError{Code: "bad_argument", Message: fmt.Sprintf(format, args...)}
 }
 
+// noHost refuses a call whose service this server does not run. A Manager with
+// no host is a test rig or a check that runs before the server is up; a call
+// that reaches one must say so, not dereference a nil service.
+func noHost(what string) error {
+	return &wasm.HostError{Code: "unavailable", Message: "this server has no " + what}
+}
+
 // hostFunc is the answer to every call l's backend makes.
 func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 	man := l.pkg.Manifest
@@ -183,7 +191,9 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			case "error":
 				level = slog.LevelError
 			}
-			slog.Log(c.Ctx, level, truncate(a.Msg, 1000), attrs...)
+			// Cut by character, not byte: a message cut mid-character is written as
+			// invalid UTF-8 in the log line.
+			slog.Log(c.Ctx, level, bounded.Truncate(a.Msg, 1000), attrs...)
 			return nil, nil
 
 		case "id.new":
@@ -300,6 +310,13 @@ func (m *Manager) revokeSessionsOp(c *wasm.Call, st *callState, raw json.RawMess
 		return nil, err
 	}
 	return nil, m.granted(c.Ctx, q, c.Info.Actor, a.UserID, "users", func(q database.Queryer) error {
+		// Answering success without a session store would tell the package its
+		// account is signed out when it is not, so the call is refused instead.
+		// It is checked under the grant, so a caller without one is still told
+		// it may not, whatever this server runs.
+		if m.host == nil || m.host.Auth == nil {
+			return noHost("session store")
+		}
 		// Signing an administrator out is the same reach as suspending one,
 		// so it takes the super administrator rule changeAccount applies. The
 		// users grant alone would let a delegate end the owner's sessions. A
@@ -345,6 +362,9 @@ func (m *Manager) notifyOp(c *wasm.Call, st *callState, raw json.RawMessage) (an
 	if a.All && !administrator(c.Info.Actor) {
 		return nil, &wasm.HostError{Code: "permission_denied", Message: "only an administrator's request may notify every account"}
 	}
+	if m.host == nil || m.host.Notify == nil {
+		return nil, noHost("notification store")
+	}
 	if err := st.countAudit(); err != nil {
 		return nil, err
 	}
@@ -379,6 +399,9 @@ func (m *Manager) securityOp(c *wasm.Call, st *callState, plugin string, raw jso
 	if err := json.Unmarshal(raw, &a); err != nil || a.Event == "" {
 		return nil, badArg("security.record needs an event")
 	}
+	if m.host == nil || m.host.Security == nil {
+		return nil, noHost("security log")
+	}
 	// A package names its own events. An entry under one of the core's
 	// names would read as the core's own (a console command that never
 	// ran, say), and a source label cannot say otherwise, so it is refused
@@ -410,7 +433,7 @@ func (m *Manager) securityOp(c *wasm.Call, st *callState, plugin string, raw jso
 		Event: a.Event, Severity: severity, UserID: a.UserID, Username: a.Username,
 		ActorID: actorID, ActorUsername: actorName, IP: a.IP,
 		Source:   securitySource(plugin, a.Source, administrator(c.Info.Actor)),
-		Decision: a.Decision, Reason: truncate(a.Reason, 500),
+		Decision: a.Decision, Reason: bounded.Truncate(a.Reason, 500),
 	})
 }
 
@@ -430,6 +453,9 @@ func (m *Manager) revokeCardsOp(c *wasm.Call, st *callState, raw json.RawMessage
 	}
 	var revoked int
 	err = m.granted(c.Ctx, q, c.Info.Actor, a.UserID, "users", func(q database.Queryer) error {
+		if m.host == nil || m.host.Cards == nil {
+			return noHost("card store")
+		}
 		n, err := m.host.Cards.RevokeAvailable(c.Ctx, q, a.UserID, a.Count)
 		if err != nil {
 			return &wasm.HostError{Code: "cards", Message: err.Error()}
@@ -441,13 +467,6 @@ func (m *Manager) revokeCardsOp(c *wasm.Call, st *callState, raw json.RawMessage
 		return nil, err
 	}
 	return revoked, nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }
 
 // queryer is the database the call is talking to: the open transaction when
@@ -693,7 +712,7 @@ func jsonStringLen(s string) int {
 		switch {
 		case c == utf8.RuneError && size == 1:
 			n += utf8.RuneLen(utf8.RuneError)
-		case c == ' ' || c == ' ':
+		case c == '\u2028' || c == '\u2029':
 			n += 6
 		default:
 			n += size
@@ -703,6 +722,23 @@ func jsonStringLen(s string) int {
 	return n
 }
 
+// A request that names no timeout gets the default, and none may ask for more
+// than the cap, whatever the backend says it needs.
+const (
+	fetchDefaultTimeout = 10 * time.Second
+	fetchMaxTimeout     = 30 * time.Second
+)
+
+// The transport's limits. A dial that has not connected in ten seconds has a
+// host that is not answering; the header wait is how long a server may stay
+// silent before its answer has begun; idle connections are kept a minute so a
+// backend that calls one service again and again reuses them.
+const (
+	fetchDialTimeout   = 10 * time.Second
+	fetchHeaderTimeout = 30 * time.Second
+	fetchIdleTimeout   = 60 * time.Second
+)
+
 // fetchClient is what backends make their outgoing requests with. It refuses
 // the addresses no plugin has a use for and every server has reason to
 // guard: the link-local range where cloud hosts keep their credentials, and
@@ -710,12 +746,12 @@ func jsonStringLen(s string) int {
 var fetchClient = &http.Client{
 	Transport: &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout: 10 * time.Second,
+			Timeout: fetchDialTimeout,
 			Control: refuseFetchAddress,
 		}).DialContext,
 		MaxIdleConns:          16,
-		IdleConnTimeout:       60 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       fetchIdleTimeout,
+		ResponseHeaderTimeout: fetchHeaderTimeout,
 	},
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
@@ -807,9 +843,9 @@ func (m *Manager) fetch(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	timeout := time.Duration(a.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = fetchDefaultTimeout
 	}
-	timeout = min(timeout, 30*time.Second)
+	timeout = min(timeout, fetchMaxTimeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -1312,6 +1348,11 @@ func securitySource(plugin, claimed string, admin bool) string {
 // coreSources are the labels the core writes security events under, apart
 // from "admin", which securitySource handles itself. "web" and "ssh" are the
 // transports a console command is recorded under.
+//
+// These are literals rather than constants because the packages that write
+// them are imported by this one, so they cannot import it back for a shared
+// name. A label the core starts writing has to be added here too: a missing one
+// lets a package file under it, and the entry reads as the core's own.
 var coreSources = map[string]bool{
 	"backoffice": true, "system": true, "user": true, "ai": true, "chat_speed": true,
 	"web": true, "ssh": true,
@@ -1333,5 +1374,5 @@ var coreEvents = map[string]bool{
 	securityevents.EventPlugin:             true,
 	securityevents.EventPasswordReset:      true,
 	securityevents.EventAccountDeleted:     true,
-	"log_prune":                            true,
+	securityevents.EventLogPrune:           true,
 }

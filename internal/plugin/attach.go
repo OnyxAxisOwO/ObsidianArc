@@ -205,10 +205,17 @@ func (m *Manager) detachPackage(l *loaded) {
 }
 
 // closeGrace is how long a backend that has been replaced or removed is kept
-// running for the calls already inside it. A call is over in at most the
-// engine's call timeout, and closing under one would fail a request that had
-// done nothing wrong.
+// running for the calls already inside it. A call inside the backend is over
+// within the engine's call timeout, and closing under one would fail a request
+// that had done nothing wrong. A call still waiting for the backend to compile
+// is not bounded by that timeout, because the compile is not counted in it; one
+// that outlives the grace is refused cleanly, as a removed backend's calls are.
 var closeGrace = 30 * time.Second
+
+// decorateTimeout bounds one plugin's look at an invite list. The list is what
+// the page waits on, so a decorator that is slow is skipped rather than waited
+// for.
+const decorateTimeout = 10 * time.Second
 
 func closeLater(l *loaded) {
 	if l == nil || l.backend == nil {
@@ -227,6 +234,16 @@ func (m *Manager) swapPackages(fn func(map[string]*loaded)) {
 	m.pkgs.Store(&next)
 }
 
+// guardEvent is the event a guard's refusal is filed under. A manifest may name
+// any event, and a refusal filed under one the server writes itself would read
+// as the server's own entry, so such a name is filed under the package's.
+func guardEvent(plugin, event string) string {
+	if name := strings.TrimSpace(event); coreEvents[name] {
+		return "plugin:" + plugin + ":" + name
+	}
+	return event
+}
+
 // guardsOf is the guards the manifest lists, by the door each stands in front
 // of, each asking the backend.
 func (m *Manager) guardsOf(l *loaded) map[string][]auth.Guard {
@@ -234,7 +251,7 @@ func (m *Manager) guardsOf(l *loaded) map[string][]auth.Guard {
 	for _, g := range l.pkg.Manifest.Guards {
 		g := g
 		out[g.Action] = append(out[g.Action], auth.Guard{
-			Name: g.Name, Plugin: l.name, Event: g.Event,
+			Name: g.Name, Plugin: l.name, Event: guardEvent(l.name, g.Event),
 			Check: func(ctx context.Context, req auth.GuardRequest) (auth.Verdict, error) {
 				return m.judge(ctx, l, g.Name, req)
 			},
@@ -251,7 +268,7 @@ func refusingGuards(name string, manifests ...*arcx.Manifest) map[string][]auth.
 	for _, man := range manifests {
 		for _, g := range man.Guards {
 			out[g.Action] = append(out[g.Action], auth.Guard{
-				Name: g.Name, Plugin: name, Event: g.Event,
+				Name: g.Name, Plugin: name, Event: guardEvent(name, g.Event),
 				Check: func(context.Context, auth.GuardRequest) (auth.Verdict, error) {
 					return auth.Verdict{}, unavailableGuard(errPluginFault)
 				},
@@ -358,7 +375,7 @@ func (m *Manager) decorator(l *loaded) invite.InviteeDecorator {
 		var out struct {
 			Invitees []row `json:"invitees"`
 		}
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, decorateTimeout)
 		defer cancel()
 		err := m.invoke(ctx, l, wasm.CallInfo{}, "decorate_invitees",
 			map[string]any{"inviter_id": inviterID, "invitees": in}, &out, nil)
