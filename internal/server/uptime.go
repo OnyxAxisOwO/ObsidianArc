@@ -111,16 +111,8 @@ func uptimeHandler(settingsService *settings.Service, healthStore *health.Store,
 				item.UptimeHour = &share
 				if m.AutoDisabled {
 					item.State = "down"
-				} else if hourRate.OK == 0 {
-					// With recent evidence present, zero answers is an outage rather
-					// than degraded service.
-					item.State = "down"
-				} else if share >= 0.99 {
-					item.State = "up"
-				} else if (warnBelow > 0 && share*100 < float64(warnBelow)) || (warnBelow <= 0 && share < 0.95) {
-					item.State = "degraded"
 				} else {
-					item.State = "up"
+					item.State = uptimeStateOf(hourRate, warnBelow)
 				}
 			}
 
@@ -160,4 +152,28 @@ func uptimeHandler(settingsService *settings.Service, healthStore *health.Store,
 
 		return httpx.WriteJSON(w, http.StatusOK, resp)
 	})
+}
+
+// uptimeHealthyShare is the hourly share at which a model is up whatever the
+// operator's warn_below says: a few failed answers in a busy hour are not a
+// reason to warn anyone.
+const uptimeHealthyShare = 0.99
+
+// uptimeStateOf classifies a model from its answers in the last hour, which
+// must hold at least one answer. Zero answers is an outage rather than
+// degraded service, because the evidence is recent and nothing came back.
+// Below the healthy share a model is degraded only when the operator asked to
+// be warned: a warn_below of 0 means never warn, as the setting's own hint
+// says, so nothing below the healthy share is degraded then.
+func uptimeStateOf(hour health.Rate, warnBelow int) string {
+	switch {
+	case hour.OK == 0:
+		return "down"
+	case hour.Share() >= uptimeHealthyShare:
+		return "up"
+	case warnBelow > 0 && hour.Share()*100 < float64(warnBelow):
+		return "degraded"
+	default:
+		return "up"
+	}
 }

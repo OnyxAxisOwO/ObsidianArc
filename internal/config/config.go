@@ -329,8 +329,8 @@ func (c Config) GeneratedSecret() bool { return c.generatedSecret }
 // old key stops opening, and the symptoms show up later and far from the cause.
 func loadOrCreateSecret(dataDir string) ([]byte, bool, error) {
 	if raw := env("SECRET_KEY", ""); raw != "" {
-		if len(raw) < minSecretLen {
-			return nil, false, fmt.Errorf("%sSECRET_KEY must be at least %d characters", envPrefix, minSecretLen)
+		if len(raw) < MinSecretLen {
+			return nil, false, fmt.Errorf("%sSECRET_KEY must be at least %d characters", envPrefix, MinSecretLen)
 		}
 		warnIfWeakSecret(envPrefix+"SECRET_KEY", raw)
 		return []byte(raw), false, nil
@@ -340,7 +340,7 @@ func loadOrCreateSecret(dataDir string) ([]byte, bool, error) {
 	existing, err := os.ReadFile(path)
 	if err == nil {
 		trimmed := strings.TrimSpace(string(existing))
-		if len(trimmed) < minSecretLen {
+		if len(trimmed) < MinSecretLen {
 			return nil, false, unusableSecretFile(path)
 		}
 		warnIfWeakSecret(path, trimmed)
@@ -485,7 +485,7 @@ func unusableSecretFile(path string) error {
 		"a new key cannot open what was sealed under the original. "+
 		"Restore this file from a backup, or set %sSECRET_KEY to the original key. "+
 		"Delete the file only if nothing was ever sealed with it",
-		path, errUnusableSecretFile, minSecretLen, envPrefix)
+		path, errUnusableSecretFile, MinSecretLen, envPrefix)
 }
 
 // errUnusableSecretFile is the refusal unusableSecretFile wraps. A test asks for
@@ -496,9 +496,9 @@ var errUnusableSecretFile = errors.New("does not hold a usable secret key")
 // test can watch the moment the name appears.
 var linkSecretFile = os.Link
 
-// minSecretLen is the floor for a key from the environment or from the file,
+// MinSecretLen is the floor for a key from the environment or from the file,
 // the same for both. A shorter key is refused, never used.
-const minSecretLen = 16
+const MinSecretLen = 16
 
 // minStrongSecretLen is what the warning asks for. The hard floor stays at 16
 // so a deployment that already runs on a shorter key keeps starting; the key

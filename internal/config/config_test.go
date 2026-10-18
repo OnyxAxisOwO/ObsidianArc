@@ -183,7 +183,7 @@ func TestAnUnusableSecretFileRefusesToStartAndIsLeftAlone(t *testing.T) {
 		"empty":               "",
 		"whitespace only":     " \n\t\n",
 		"short":               "too-short\n",
-		"one under the floor": strings.Repeat("k", minSecretLen-1) + "\n",
+		"one under the floor": strings.Repeat("k", MinSecretLen-1) + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()

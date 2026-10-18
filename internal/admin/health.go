@@ -86,7 +86,7 @@ func (h *Handlers) modelHealth(w http.ResponseWriter, r *http.Request) error {
 		// leaving an operator to guess why everything is "unknown".
 		"policy": map[string]any{
 			"probe":         h.settings.Bool(settings.HealthProbe),
-			"window_mins":   h.settings.Int(settings.HealthWindowMins, 30),
+			"window_mins":   h.settings.Int(settings.HealthWindowMins, settings.DefaultHealthWindowMins),
 			"disable_after": h.settings.Int(settings.HealthDisableAfter, 0),
 			"disable_below": h.settings.Int(settings.HealthDisableBelow, 0),
 			"warn_below":    h.settings.Int(settings.HealthWarnBelow, 90),

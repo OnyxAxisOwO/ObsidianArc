@@ -8,20 +8,19 @@
 // registered) and this, and every instance built here carries it — the same
 // way the release binary would.
 //
-// internal/server's own tests keep their own harness. It predates this one,
-// and they build servers with no plugins, which is the other half of the
-// claim: the core works without any of them. Both take their configuration
-// from testconfig, so the two cannot drift apart in what they build.
+// internal/server's own tests cannot use this package: it imports server, so a
+// test inside package server that imported it would be an import cycle. They
+// keep their own harness, which builds servers with no plugins at all. Both
+// take their configuration from testconfig, so the two cannot drift apart in
+// what they build.
 package servertest
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"io/fs"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -33,6 +32,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testconfig"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testrequest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/totp"
 )
 
@@ -196,38 +196,11 @@ func (in *Instance) DoFrom(ip, method, path string, body any, as *Session) *http
 
 func (in *Instance) do(ip, method, path string, body any, as *Session, header http.Header) *httptest.ResponseRecorder {
 	in.T.Helper()
-
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			in.T.Fatalf("encode body: %v", err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-
-	request := httptest.NewRequest(method, path, reader)
-	if ip != "" {
-		// JoinHostPort brackets an IPv6 address; a bare concatenation leaves
-		// colons that net.SplitHostPort refuses, so per-address code reads the
-		// client wrong.
-		request.RemoteAddr = net.JoinHostPort(ip, "40000")
-	}
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	if method != http.MethodGet && method != http.MethodHead {
-		request.Header.Set("Sec-Fetch-Site", "same-origin")
-	}
-	for key, values := range header {
-		for _, value := range values {
-			request.Header.Add(key, value)
-		}
-	}
+	var cookie *http.Cookie
 	if as != nil {
-		request.AddCookie(as.Cookie)
+		cookie = as.Cookie
 	}
-
+	request := testrequest.New(in.T, method, path, body, cookie, ip, header)
 	recorder := httptest.NewRecorder()
 	in.Handler.ServeHTTP(recorder, request)
 	return recorder
@@ -349,9 +322,13 @@ func (in *Instance) sessionFrom(response *httptest.ResponseRecorder) *Session {
 	var payload struct {
 		User struct{ ID string } `json:"user"`
 	}
-	_ = json.Unmarshal(response.Body.Bytes(), &payload)
+	// A body that is not the JSON this endpoint sends means the response is not
+	// what the test thinks it is. Returning an empty user for it would hide that.
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		in.T.Fatalf("session response %d is not JSON: %v", response.Code, err)
+	}
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == "obsidian_session" && cookie.Value != "" {
+		if cookie.Name == in.config.Session.CookieName && cookie.Value != "" {
 			return &Session{Cookie: cookie, UserID: payload.User.ID}
 		}
 	}
@@ -391,7 +368,10 @@ func (in *Instance) EnrolTwoFactor(as *Session) *TwoFactor {
 		Secret string `json:"secret"`
 	}](in.T, setup).Secret
 	step := totp.Step(time.Now())
-	code, _ := totp.Code(secret, step)
+	code, err := totp.Code(secret, step)
+	if err != nil {
+		in.T.Fatalf("two-factor code for the enrolment: %v", err)
+	}
 	enable := in.Do(http.MethodPost, "/api/profile/two-factor/enable",
 		map[string]string{"code": code, "current_password": as.Password}, as)
 	if enable.Code != http.StatusOK {

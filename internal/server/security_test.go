@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,6 +23,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testconfig"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testrequest"
 )
 
 // The authorization surface, exercised as HTTP rather than as function calls.
@@ -99,27 +99,11 @@ type session struct {
 // carries the same-origin header a browser would.
 func (in *instance) do(method, path string, body any, as *session) *httptest.ResponseRecorder {
 	in.t.Helper()
-
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			in.t.Fatalf("encode body: %v", err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-
-	request := httptest.NewRequest(method, path, reader)
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	if method != http.MethodGet && method != http.MethodHead {
-		request.Header.Set("Sec-Fetch-Site", "same-origin")
-	}
+	var cookie *http.Cookie
 	if as != nil {
-		request.AddCookie(as.cookie)
+		cookie = as.cookie
 	}
-
+	request := testrequest.New(in.t, method, path, body, cookie, "", nil)
 	recorder := httptest.NewRecorder()
 	in.handler.ServeHTTP(recorder, request)
 	return recorder

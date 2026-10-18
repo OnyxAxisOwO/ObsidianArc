@@ -724,6 +724,12 @@ func ValidOIDCURL(value string) bool {
 	return false
 }
 
+// DefaultHealthWindowMins is the look-back the probe sweep, the liveness
+// readers and the admin policy view fall back to when the stored window cannot
+// be read. The Defaults table stores the same value, so a fresh instance and a
+// reader that falls back cannot end up looking at different windows.
+const DefaultHealthWindowMins = 30
+
 // Defaults are what a fresh instance behaves like, and what a deleted row
 // falls back to. Nothing reads a setting without one.
 var Defaults = map[string]string{
@@ -887,7 +893,7 @@ var Defaults = map[string]string{
 	// question the liveness column exists for. Off, a quiet model reads as
 	// "no data" forever, which is the state this feature was built to end.
 	HealthProbe:      "true",
-	HealthWindowMins: "30",
+	HealthWindowMins: strconv.Itoa(DefaultHealthWindowMins),
 	// Off. Turning a model off on the system's own judgement is a decision an
 	// operator has to make deliberately — the failure mode of guessing is an
 	// instance that quietly stops offering the model everyone uses.

@@ -10,8 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/checkin"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -26,8 +24,10 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/backup"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/checkin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/compat"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
@@ -402,7 +402,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 
 		return liveness.get(ctx, healthStore.Revision(), func(ctx context.Context) (map[string]model.Liveness, error) {
-			window := time.Duration(settingsService.Int(settings.HealthWindowMins, 30)) * time.Minute
+			window := time.Duration(settingsService.Int(settings.HealthWindowMins, settings.DefaultHealthWindowMins)) * time.Minute
 			// A reader's window is the day, not the sweep's: "unstable" should
 			// mean the model has been unreliable, not that it missed once in the
 			// last half hour.
@@ -549,9 +549,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 
 	authService.Challenge = challengeGate(settingsService.SignupTurnstileOn)
 	authService.LoginChallenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnLogin) })
-	powKey, err := secret.DeriveKey(cfg.SecretKey, "obsidian-arc/pow-challenge")
+	// Derived under its own purpose, and never replaced by the raw secret when
+	// the derivation fails: the raw secret used as the challenge key would sign
+	// with a key that was never meant for this, so a failure stops the boot.
+	powKey, err := secret.DeriveKey(cfg.SecretKey, secret.PurposePowChallenge)
 	if err != nil {
-		powKey = cfg.SecretKey
+		return nil, fmt.Errorf("derive the proof-of-work key: %w", err)
 	}
 	powManager := pow.NewManager(powKey, pow.NewTracker())
 	powManager.UseSaltStore(pow.NewSaltStore(db))
@@ -657,10 +660,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			Ran: true, Decision: auth.SignupDecision(verdict.Decision), Reason: verdict.Reason,
 		}
 		if verdict.Decision == screening.DecisionRestrict {
-			hours := settingsService.Int(settings.SignupReviewRestrictHours, 24)
-			if hours > 0 {
-				out.RestrictedUntil = time.Now().Add(time.Duration(hours) * time.Hour).UnixMilli()
-			}
+			// Asked of the auth service rather than recomputed here, so the window
+			// and its rule for zero hours live in one place.
+			out.RestrictedUntil = authService.SignupRestrictedUntil()
 		}
 		return out, err
 	}
@@ -857,11 +859,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// restart.
 	signInProviders := func() []auth.SignInProvider {
 		out := []auth.SignInProvider{}
-		for _, provider := range oauth.Providers() {
-			if oauthService.Enabled(provider.ID) {
+		for _, p := range oauth.Providers() {
+			if oauthService.Enabled(p.ID) {
 				out = append(out, auth.SignInProvider{
-					ID:   provider.ID,
-					Name: oauthService.DisplayName(provider.ID),
+					ID:   p.ID,
+					Name: oauthService.DisplayName(p.ID),
 				})
 			}
 		}
@@ -1004,11 +1006,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// the engine. Loading the key is idempotent, so both read the same one.
 	var sshInfo console.SSHInfo
 	if cfg.Console.SSHAddr != "" {
-		print, err := consolessh.HostKeyFingerprint(cfg.Console.SSHHostKey)
+		fingerprint, err := consolessh.HostKeyFingerprint(cfg.Console.SSHHostKey)
 		if err != nil {
 			return nil, err
 		}
-		sshInfo = console.SSHInfo{Enabled: true, Addr: cfg.Console.SSHAddr, Fingerprint: print}
+		sshInfo = console.SSHInfo{Enabled: true, Addr: cfg.Console.SSHAddr, Fingerprint: fingerprint}
 	}
 
 	consoleEngine := console.New(console.Options{
@@ -1155,8 +1157,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			description = settingsService.Get(settings.SiteDescription)
 		}
 		iconURL := settingsService.Get(settings.PWAIconURL)
-		if iconURL == "" && settingsService.SiteLogoUpdatedAt() > 0 {
-			iconURL = fmt.Sprintf("/api/site/logo?v=%d", settingsService.SiteLogoUpdatedAt())
+		if iconURL == "" {
+			iconURL = siteLogoURL(settingsService)
 		}
 		return web.Manifest{
 			Name:            name,
@@ -1173,12 +1175,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		DevServer:  devServerURL(cfg),
 		Title:      settingsService.BrowserTitle,
 		ThemeColor: func() string { return settingsService.Get(settings.PWAThemeColor) },
-		FaviconURL: func() string {
-			if settingsService.SiteLogoUpdatedAt() > 0 {
-				return fmt.Sprintf("/api/site/logo?v=%d", settingsService.SiteLogoUpdatedAt())
-			}
-			return ""
-		},
+		FaviconURL: func() string { return siteLogoURL(settingsService) },
 	})
 	if err != nil {
 		return nil, err
@@ -1187,10 +1184,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 
 	// Who is asking, for every request that could care. The fingerprinted
 	// bundle under /assets/ and the two root files are the same bytes for
-	// every visitor and anonymous-readable by design, but the session cookie
-	// is Path=/, so each of them used to pay for a session-and-account lookup
-	// — and on first load there are a dozen of them. They skip it; nothing
-	// they serve reads the account.
+	// every visitor and anonymous-readable by design. The session cookie is
+	// Path=/, so without this split every one of them would pay for a session
+	// and account lookup, and on first load there are a dozen of them. They
+	// skip it; nothing they serve reads the account.
 	withSession := httpx.Chain(mux,
 		// The session lookup only happens for requests that survived the
 		// origin check, which sits outside this chain.
@@ -1365,9 +1362,6 @@ func archiveAllowed(_ context.Context, set *settings.Service, account user.User)
 		"Archiving conversations is disabled.")
 }
 
-// skipFromLog drops the requests nobody audits: the compiled frontend's own
-// assets. Everything else is recorded, including the ones that never reached
-// a handler.
 // staticAsset is a request for a file that is the same for every visitor:
 // the fingerprinted bundle and the two root files a browser asks for on its
 // own. Only reads — anything else goes the whole way through, so a method
@@ -1376,16 +1370,31 @@ func staticAsset(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	path := r.URL.Path
+	return isStaticPath(r.URL.Path)
+}
+
+// isStaticPath is the path half of staticAsset. The request log's skip list
+// reads the same paths, so the two cannot come to name different files.
+func isStaticPath(path string) bool {
 	return strings.HasPrefix(path, "/assets/") || path == "/favicon.ico" || path == "/robots.txt"
 }
 
+// skipFromLog drops the requests nobody audits: the compiled frontend's own
+// files and the manifest a browser fetches on every load. Everything else is
+// recorded, including the ones that never reached a handler.
 func skipFromLog(r *http.Request) bool {
-	path := r.URL.Path
-	return strings.HasPrefix(path, "/assets/") ||
-		path == "/favicon.ico" ||
-		path == "/robots.txt" ||
-		path == "/manifest.webmanifest"
+	return isStaticPath(r.URL.Path) || r.URL.Path == "/manifest.webmanifest"
+}
+
+// siteLogoURL is where the uploaded logo is served, or "" when there is none.
+// The upload time rides in the query so a replaced logo is not served from a
+// cache that still holds the old one.
+func siteLogoURL(set *settings.Service) string {
+	at := set.SiteLogoUpdatedAt()
+	if at <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("/api/site/logo?v=%d", at)
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
@@ -1451,18 +1460,14 @@ func (s *Server) sweep(ctx context.Context) {
 	s.sweepAttachments(sweepCtx)
 	// Authorisation codes live two minutes and tokens an hour; without this
 	// the two tables grow forever with rows nothing will read again.
-	if s.idp != nil {
-		if _, err := s.idp.Purge(sweepCtx); err != nil {
-			slog.ErrorContext(sweepCtx, "could not purge sign-in grants", "error", err)
-		}
+	if _, err := s.idp.Purge(sweepCtx); err != nil {
+		slog.ErrorContext(sweepCtx, "could not purge sign-in grants", "error", err)
 	}
 	// A spent sign-in state is only a record of a callback that already came
 	// back. Once its expiry has passed the state check refuses it, so the row
 	// is safe to drop.
-	if s.oauth != nil {
-		if _, err := s.oauth.PruneStates(sweepCtx, time.Now().UnixMilli()); err != nil {
-			slog.ErrorContext(sweepCtx, "could not prune sign-in states", "error", err)
-		}
+	if _, err := s.oauth.PruneStates(sweepCtx, time.Now().UnixMilli()); err != nil {
+		slog.ErrorContext(sweepCtx, "could not prune sign-in states", "error", err)
 	}
 	// Counter buckets whose window has long since rolled over. The ledger is
 	// never pruned: it is the audit trail. A failure is logged here because the
@@ -1473,48 +1478,38 @@ func (s *Server) sweep(ctx context.Context) {
 	}
 	// The bell keeps about a month, unlike the security log: a notice is a
 	// nudge to look at something, not a record kept for its own sake.
-	if s.notify != nil {
-		if _, err := s.notify.Prune(sweepCtx, time.Now().Add(-30*24*time.Hour)); err != nil {
-			slog.ErrorContext(sweepCtx, "could not prune notifications", "error", err)
-		}
+	if _, err := s.notify.Prune(sweepCtx, time.Now().Add(-30*24*time.Hour)); err != nil {
+		slog.ErrorContext(sweepCtx, "could not prune notifications", "error", err)
 	}
 	// The audit trail is kept for as long as the super administrator chose,
 	// and never less than the floor the setting enforces.
-	if s.audit != nil {
-		days := s.settings.Int(settings.AuditRetentionDays, audit.DefaultRetentionDays)
-		days = min(max(days, audit.MinRetentionDays), audit.MaxRetentionDays)
-		if _, err := s.audit.Prune(sweepCtx, time.Now().Add(-time.Duration(days)*24*time.Hour)); err != nil {
-			slog.ErrorContext(sweepCtx, "could not prune the audit trail", "error", err)
-		}
+	days := s.settings.Int(settings.AuditRetentionDays, audit.DefaultRetentionDays)
+	days = min(max(days, audit.MinRetentionDays), audit.MaxRetentionDays)
+	if _, err := s.audit.Prune(sweepCtx, time.Now().Add(-time.Duration(days)*24*time.Hour)); err != nil {
+		slog.ErrorContext(sweepCtx, "could not prune the audit trail", "error", err)
 	}
 	// Only today's draw on a pool is held against a limit; a few weeks are kept
 	// for the figures.
-	if s.bonus != nil {
-		if err := s.bonus.PrunePoolUsage(sweepCtx, 35*24*time.Hour); err != nil {
-			slog.ErrorContext(sweepCtx, "could not prune pool usage", "error", err)
-		}
+	if err := s.bonus.PrunePoolUsage(sweepCtx, 35*24*time.Hour); err != nil {
+		slog.ErrorContext(sweepCtx, "could not prune pool usage", "error", err)
 	}
 	// Bonus a person is about to lose is worth a line in the bell, once.
-	if s.notify != nil && s.bonus != nil {
-		expiring, err := s.bonus.TakeExpiring(sweepCtx, 3*24*time.Hour)
-		if err != nil {
-			slog.ErrorContext(sweepCtx, "could not look for expiring bonus", "error", err)
-		}
-		for _, e := range expiring {
-			if err := s.notify.Push(sweepCtx, nil, notify.Notification{
-				Audience: notify.AudienceUser, UserID: e.UserID, Kind: "bonus_expiring", Link: "/usage",
-				Params: map[string]any{"name": e.BarName, "amount": e.Remaining, "expires_at": e.ExpiresAt},
-			}); err != nil {
-				slog.ErrorContext(sweepCtx, "could not tell an account its bonus is expiring", "error", err, "user", e.UserID)
-			}
+	expiring, err := s.bonus.TakeExpiring(sweepCtx, 3*24*time.Hour)
+	if err != nil {
+		slog.ErrorContext(sweepCtx, "could not look for expiring bonus", "error", err)
+	}
+	for _, e := range expiring {
+		if err := s.notify.Push(sweepCtx, nil, notify.Notification{
+			Audience: notify.AudienceUser, UserID: e.UserID, Kind: "bonus_expiring", Link: "/usage",
+			Params: map[string]any{"name": e.BarName, "amount": e.Remaining, "expires_at": e.ExpiresAt},
+		}); err != nil {
+			slog.ErrorContext(sweepCtx, "could not tell an account its bonus is expiring", "error", err, "user", e.UserID)
 		}
 	}
 	// Invite rewards waiting on something no request announces — a signup
 	// restriction running out, say.
-	if s.invites != nil {
-		if err := s.invites.RewardPending(sweepCtx, s.auth.VerificationRequired()); err != nil {
-			slog.ErrorContext(sweepCtx, "could not resolve pending invite rewards", "error", err)
-		}
+	if err := s.invites.RewardPending(sweepCtx, s.auth.VerificationRequired()); err != nil {
+		slog.ErrorContext(sweepCtx, "could not resolve pending invite rewards", "error", err)
 	}
 	s.sweepHealth(ctx)
 	s.SweepPlugins(ctx)
@@ -1526,9 +1521,7 @@ func (s *Server) sweep(ctx context.Context) {
 // slow package must not use up the next one's time. Exported so a test can
 // make the turn come now instead of in ten minutes.
 func (s *Server) SweepPlugins(ctx context.Context) {
-	if s.plugins != nil {
-		s.plugins.Sweep(ctx)
-	}
+	s.plugins.Sweep(ctx)
 }
 
 // sweepHealth asks the models nobody has used lately whether they still work,
@@ -1539,9 +1532,6 @@ func (s *Server) SweepPlugins(ctx context.Context) {
 // for the models after it. The policy is read here rather than captured at
 // boot, so a change in the settings screen lands on the next pass.
 func (s *Server) sweepHealth(ctx context.Context) {
-	if s.health == nil {
-		return
-	}
 	healthCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
@@ -1550,7 +1540,7 @@ func (s *Server) sweepHealth(ctx context.Context) {
 	// screen accepts and nothing enforces.
 	s.health.Run(healthCtx, health.Policy{
 		Probe:        s.settings.Bool(settings.HealthProbe),
-		Window:       time.Duration(s.settings.Int(settings.HealthWindowMins, 30)) * time.Minute,
+		Window:       time.Duration(s.settings.Int(settings.HealthWindowMins, settings.DefaultHealthWindowMins)) * time.Minute,
 		DisableAfter: s.settings.Int(settings.HealthDisableAfter, 0),
 		DisableBelow: s.settings.Int(settings.HealthDisableBelow, 0),
 		Retain:       time.Duration(s.settings.Int(settings.HealthRetainDays, 14)) * 24 * time.Hour,

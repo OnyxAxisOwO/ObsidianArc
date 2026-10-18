@@ -311,14 +311,12 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 		}
 	}
 
-	// No confirmation check here. It used to be a third copy of one — the
-	// gateway's guard has it, and so does the upload path — and it was the
-	// copy that was wrong: it left out whether verification is in force at
-	// all, so an instance with no SMTP server refused every API request from
-	// an account that predated the setting, and refused the resend that would
-	// have fixed it. Guard runs before anything is spent and has the whole
-	// condition; listing what a key may use costs nothing and is the same
-	// thing the browser lets an unconfirmed account do.
+	// No confirmation check here. The gateway's guard and the upload path hold
+	// the rule, and they run before anything is spent with the whole condition
+	// in view. A copy here would have to decide whether verification is in
+	// force at all, and would refuse an account the rest of the site lets
+	// through. Listing what a key may use costs nothing and is what the browser
+	// already lets an unconfirmed account do.
 
 	// Administrators bypass the per-group grant, the way they bypass every
 	// other group restriction — but not the instance-wide switch above.

@@ -94,6 +94,10 @@ func restoreBackup(args []string) error {
 	return systembackup.RestoreArchive(ctx, db, *archivePath, archiveKey)
 }
 
+// config.Load creates and keeps a new secret.key when neither the environment
+// nor the data directory holds one. A restore that reached it without the
+// original key would leave a key behind that cannot open the archive, so this
+// gate only looks at what is there and never creates anything.
 func requireExistingRestoreKey() error {
 	if strings.TrimSpace(os.Getenv("OBSIDIAN_SECRET_KEY")) != "" {
 		return nil
@@ -104,7 +108,7 @@ func requireExistingRestoreKey() error {
 	}
 	keyPath := filepath.Join(dataDir, config.SecretKeyFile)
 	key, err := os.ReadFile(keyPath)
-	if err != nil || len(strings.TrimSpace(string(key))) < 16 {
+	if err != nil || len(strings.TrimSpace(string(key))) < config.MinSecretLen {
 		return errors.New("restore requires the original OBSIDIAN_SECRET_KEY or the original secret.key in the configured data directory")
 	}
 	return nil
@@ -128,7 +132,7 @@ func run() error {
 	)
 	if cfg.GeneratedSecret() {
 		slog.Warn("using a generated secret key from the data directory; set OBSIDIAN_SECRET_KEY to share one across instances",
-			"file", cfg.DataDir+string(os.PathSeparator)+config.SecretKeyFile)
+			"file", filepath.Join(cfg.DataDir, config.SecretKeyFile))
 	}
 
 	// Connecting and migrating get their own short deadline: a database that
