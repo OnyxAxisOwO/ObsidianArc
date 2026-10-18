@@ -240,6 +240,9 @@ func (s *Service) checkReward(ctx context.Context, q database.Queryer, r Reward,
 		if err != nil || !bar.Active {
 			return fmt.Errorf("%w: %s names a bonus bar that does not exist or is switched off", ErrInvalid, what)
 		}
+		if bar.Kind == bonus.KindShared {
+			return fmt.Errorf("%w: %s names a shared pool, which is not granted to accounts", ErrInvalid, what)
+		}
 	case KindCard:
 		if r.Cards < 1 || r.Cards > maxCardCount || r.ValidDays < 1 || r.ValidDays > maxDays {
 			return fmt.Errorf("%w: %s needs a number of cards and the days they last", ErrInvalid, what)

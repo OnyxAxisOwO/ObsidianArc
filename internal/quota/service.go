@@ -105,8 +105,9 @@ type AutoReset func(ctx context.Context, q database.Queryer, needed Window) (win
 //     every reset. Settlements and releases never take it, so a reset does not
 //     hold up a turn that is ending.
 //  2. The account's users row, by a reservation that may spend a reset card.
-//  3. The bonus_grants rows that a request is paid from, refunded to, or settled
-//     against.
+//  3. The bonus_pools rows that a request is paid from, refunded to, or settled
+//     against, each followed by the account's bonus_pool_usage row in it, one pool
+//     at a time in the order they were made; then the bonus_grants rows.
 //  4. The account's usage_counters rows, one window kind at a time, in the order
 //     of counterKinds. A transaction takes at most one row of each kind.
 //  5. The account's usage_cards rows, which a reset card spends. Their place is not
@@ -193,6 +194,17 @@ func (s *Service) reserve(
 	if estimate.Credits < 0 {
 		estimate.Credits = 0
 	}
+	// A model a pool holds alone is paid by the pool or not at all: not the
+	// windows, not the account's own bars, not a reset card.
+	if s.bonus != nil && estimate.Credits > 0 && modelID != "" {
+		only, err := s.bonus.Exclusive(ctx, modelID)
+		if err != nil {
+			return Reservation{}, err
+		}
+		if only {
+			return s.reservePool(ctx, account, modelID, estimate, policy, now)
+		}
+	}
 
 	res, err := s.reserveOnce(ctx, account, modelID, estimate, nil, policy, now)
 	if err == nil {
@@ -236,6 +248,37 @@ func (s *Service) reserveFallback(
 		// A bar that cannot pay whole is decided after the minute, so a request
 		// the minute refuses is still reported as that refusal, the same as when
 		// the minute was checked first.
+		if err := reserveRate(ctx, tx, policy, scopeKey(account.ID), estimate.Tokens, now); err != nil {
+			return err
+		}
+		if takeErr != nil {
+			return takeErr
+		}
+		holds = claimed
+		return nil
+	})
+	if err != nil {
+		return Reservation{}, err
+	}
+	res := Reservation{at: now, funding: &funding{holds: holds}, guard: &releaseGuard{}}
+	if policy.tokenRateOn() {
+		res.covered = estimate.Tokens
+	}
+	return s.noted(ctx, res), nil
+}
+
+// reservePool is reserveFallback for a model only a pool may pay for: the
+// pools pay the whole request or it is refused with what refused it.
+func (s *Service) reservePool(
+	ctx context.Context, account user.User, modelID string, estimate Estimate, policy Policy, now time.Time,
+) (Reservation, error) {
+	var holds []bonus.Hold
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		// The pools before the minute, as reserveFallback takes the bars first.
+		claimed, takeErr := s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Exclusive)
+		if takeErr != nil && !errors.Is(takeErr, bonus.ErrInsufficient) {
+			return takeErr
+		}
 		if err := reserveRate(ctx, tx, policy, scopeKey(account.ID), estimate.Tokens, now); err != nil {
 			return err
 		}

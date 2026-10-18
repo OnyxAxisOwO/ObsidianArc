@@ -222,7 +222,7 @@ describe('signing in with an account from elsewhere', () => {
     route.path = '/register';
     await mount(AuthView, { mode: 'register' });
 
-    expect(host.querySelector('.oa-auth-sub')!.textContent).toBe(t('oidcOnlySignupNotice'));
+    expect(host.querySelector('.oa-auth-sub')!.textContent).toBe(t('oauthThirdPartyOnlyNotice'));
     expect(host.querySelector('input[type="password"]')).toBeNull();
     const oidcButton = host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
     expect(oidcButton).not.toBeNull();

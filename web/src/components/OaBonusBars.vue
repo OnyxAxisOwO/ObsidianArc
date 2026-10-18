@@ -11,6 +11,9 @@
 // says which with the bars, so it arrives with them rather than a moment after.
 // A bar that keeps its amounts to itself is only ever worded as a share.
 //
+// A shared pool is drawn the same way, its balance being everybody's: its badge
+// says so, and the line under it adds the account's own daily share.
+//
 // The panel that hosts this asks it to read again (`refreshKey`) on its own
 // timer and after anything that could have changed a bar, a check-in reward,
 // say. That read is quiet, like the panel's other refreshes: a failure leaves
@@ -117,6 +120,14 @@ function fill(bar: BonusBar): string {
 /** What is true of the bar right now, in a line. */
 function detail(bar: BonusBar): string {
   const parts: string[] = [];
+  const pool = bar.pool;
+  if (pool) {
+    parts.push(pool.only ? t('bonusPoolOnlyLine') : bar.enabled ? t('bonusBeforeAllowance') : t('bonusAfterAllowance'));
+    if (pool.daily_limit > 0) parts.push(t('bonusPoolDaily', { used: credits(pool.daily_used), limit: credits(pool.daily_limit) }));
+    if (pool.resets_at > 0) parts.push(t('quotaResets', { when: absoluteTime(pool.resets_at) }));
+    if (bar.model_ids.length) parts.push(tn(bar.model_ids.length, 'bonusModelsOne', 'bonusModelsOther'));
+    return parts.join(' · ');
+  }
   parts.push(bar.kind === 'reserve' || !bar.enabled ? t('bonusAfterAllowance') : t('bonusBeforeAllowance'));
   parts.push(bar.expires_at > 0 ? t('bonusExpires', { when: absoluteTime(bar.expires_at) }) : t('bonusNoExpiry'));
   if (bar.model_ids.length) parts.push(tn(bar.model_ids.length, 'bonusModelsOne', 'bonusModelsOther'));
@@ -147,6 +158,7 @@ watch(() => props.refreshKey, () => load(true));
           <span class="oa-bonus-name">
             {{ bar.name }}
             <OaBadge v-if="bar.kind === 'reserve'" tone="muted">{{ t('bonusKindReserve') }}</OaBadge>
+            <OaBadge v-else-if="bar.kind === 'shared'" tone="muted">{{ t('bonusKindShared') }}</OaBadge>
           </span>
           <span class="oa-usage-value">{{ figure(bar) }}</span>
         </div>

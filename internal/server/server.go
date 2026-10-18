@@ -195,6 +195,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	bonusStore := bonus.NewStore(db)
 	quotaService.SetBonus(bonusStore)
 	checkinService := checkin.NewService(db, settingsService, bonusStore, cards)
+	// A pool's day is the check-in's day, so the site has one idea of when a
+	// day ends.
+	bonusStore.Location = checkinService.Location
 	projects := project.NewStore(db)
 
 	chatService := chat.NewService(db, conversations, models, registry, settingsService)
@@ -1727,6 +1730,13 @@ func (s *Server) sweep(ctx context.Context) {
 		days = min(max(days, audit.MinRetentionDays), audit.MaxRetentionDays)
 		if _, err := s.audit.Prune(sweepCtx, time.Now().Add(-time.Duration(days)*24*time.Hour)); err != nil {
 			slog.ErrorContext(sweepCtx, "could not prune the audit trail", "error", err)
+		}
+	}
+	// Only today's draw on a pool is held against a limit; a few weeks are kept
+	// for the figures.
+	if s.bonus != nil {
+		if err := s.bonus.PrunePoolUsage(sweepCtx, 35*24*time.Hour); err != nil {
+			slog.ErrorContext(sweepCtx, "could not prune pool usage", "error", err)
 		}
 	}
 	// Bonus a person is about to lose is worth a line in the bell, once.

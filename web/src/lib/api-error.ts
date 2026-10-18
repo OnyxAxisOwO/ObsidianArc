@@ -13,6 +13,7 @@
 
 import { ApiError } from '@/api/client';
 import { t, type StringKey } from '@/composables/useI18n';
+import { absoluteTime } from '@/lib/format';
 
 const CODE_KEYS: Record<string, StringKey> = {
   too_many_pending_images: 'errTooManyPendingImages',
@@ -97,6 +98,12 @@ export function apiErrorText(error: unknown): string {
     // not find a prototype member and be handed to t().
     const windowName = String(error.details['window']);
     return t((Object.hasOwn(QUOTA_KEYS, windowName) ? QUOTA_KEYS[windowName] : undefined) ?? 'errQuotaGeneric');
+  }
+  if (error.code === 'pool_exhausted') {
+    // Which limit it was, and when it lifts, is what the reader can act on.
+    const text = t(error.details['reason'] === 'daily_limit' ? 'errPoolDailyLimit' : 'errPoolEmpty');
+    const resets = Number(error.details['resets_at']) || 0;
+    return resets > 0 ? `${text} ${t('quotaResets', { when: absoluteTime(resets) })}` : text;
   }
   const text = codeText(error.code);
   if (text) return text;

@@ -77,6 +77,14 @@ func TranslateError(err error) error {
 		return httpx.Conflict("bonus_models_unreadable", "This bonus's stored model list cannot be read, so the change was not saved. Delete the bonus and create it again.")
 	case errors.Is(err, ErrNotFound):
 		return httpx.NotFound("There is no such bonus.")
+	case errors.Is(err, ErrSharedNoGrants):
+		return httpx.Conflict("bonus_shared_no_grants", "A shared pool is topped up for everyone; it is not granted to accounts.")
+	case errors.Is(err, ErrNotShared):
+		return httpx.Conflict("bonus_not_shared", "That bonus is not a shared pool.")
+	case errors.Is(err, ErrKindChange):
+		return httpx.Conflict("bonus_kind_change", "A shared pool cannot be turned into another kind of bonus, nor another kind into a pool.")
+	case errors.Is(err, ErrInvalidPool):
+		return httpx.BadRequest("A pool resets never, daily, weekly or monthly, with an amount above zero, and its amounts are at most a million.")
 	case errors.Is(err, ErrNotChoosable):
 		return httpx.Conflict("bonus_not_choosable", "This bonus is not yours to switch on or off.")
 	case errors.Is(err, ErrInvalidBar):

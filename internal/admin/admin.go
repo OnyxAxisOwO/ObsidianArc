@@ -376,6 +376,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 		mux.Handle("POST /api/admin/bonus/bars/{id}/grants", protected("usage", h.grantBonus))
 		mux.Handle("GET /api/admin/bonus/bars/{id}/grants", protected("usage", h.bonusGrants))
 		mux.Handle("DELETE /api/admin/bonus/grants/{id}", protected("usage", h.revokeBonusGrant))
+		mux.Handle("POST /api/admin/bonus/bars/{id}/pool", protected("usage", h.adjustBonusPool))
 	}
 	mux.Handle("GET /api/admin/codes", protected("codes", h.listCodes))
 	mux.Handle("POST /api/admin/codes", protected("codes", h.createCode))

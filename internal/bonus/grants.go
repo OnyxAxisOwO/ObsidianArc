@@ -78,6 +78,9 @@ func (s *Store) Grant(ctx context.Context, barID string, target Target, amount f
 		if !bar.Active {
 			return ErrBarOff
 		}
+		if bar.Kind == KindShared {
+			return ErrSharedNoGrants
+		}
 		ids, err := s.recipients(ctx, tx, target)
 		if err != nil {
 			return err
@@ -122,6 +125,9 @@ func (s *Store) GrantTo(ctx context.Context, q database.Queryer, barID, userID s
 	}
 	if !bar.Active {
 		return Grant{}, ErrBarOff
+	}
+	if bar.Kind == KindShared {
+		return Grant{}, ErrSharedNoGrants
 	}
 	g := Grant{BarID: barID, UserID: userID, Amount: amount, ExpiresAt: expiresAt,
 		Source: source, Note: truncate(strings.TrimSpace(note), maxNote), CreatedAt: now}
@@ -275,11 +281,14 @@ func (s *Store) SetChoice(ctx context.Context, userID, barID string, enabled boo
 	if err != nil {
 		return err
 	}
-	if !bar.Active || bar.Kind != KindBonus || bar.ToggleMode != ModeUser {
+	if !bar.Active || (bar.Kind != KindBonus && bar.Kind != KindShared) || bar.ToggleMode != ModeUser {
 		return ErrNotChoosable
 	}
+	// Everybody holds a share of a pool, so there is no grant to look for.
 	var held int
-	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM bonus_grants WHERE bar_id = ? AND user_id = ?`, barID, userID).Scan(&held); err != nil {
+	if bar.Kind == KindShared {
+		held = 1
+	} else if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM bonus_grants WHERE bar_id = ? AND user_id = ?`, barID, userID).Scan(&held); err != nil {
 		return err
 	}
 	if held == 0 {

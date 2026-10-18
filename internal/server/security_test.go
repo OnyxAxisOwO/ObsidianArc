@@ -235,6 +235,7 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodPost, "/api/admin/bonus/bars/01ARZ3NDEKTSV4RRFFQ69G5FAV/grants", map[string]any{"all": true, "amount": 1}},
 		{http.MethodGet, "/api/admin/bonus/bars/01ARZ3NDEKTSV4RRFFQ69G5FAV/grants", nil},
 		{http.MethodDelete, "/api/admin/bonus/grants/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodPost, "/api/admin/bonus/bars/01ARZ3NDEKTSV4RRFFQ69G5FAV/pool", map[string]any{"amount": 1}},
 		{http.MethodGet, "/api/admin/codes", nil},
 		{http.MethodPost, "/api/admin/codes", map[string]any{"code": "X", "cards": 1}},
 		{http.MethodGet, "/api/admin/codes/01ARZ3NDEKTSV4RRFFQ69G5FAV/redemptions", nil},

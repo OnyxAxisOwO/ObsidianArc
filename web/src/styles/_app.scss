@@ -667,37 +667,6 @@
 
 /* --- model chip additions ---------------------------------------------------- */
 
-/* A quiet dot when extended thinking is on, so the state is legible without
-   opening the menu. */
-.oa-chip.reasoning::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--ai-primary);
-}
-
-.oa-menu-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 6px;
-  padding: 10px 10px 4px;
-}
-
-.oa-menu-section-title {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ai-text-secondary);
-}
-
-.oa-menu-toggle {
-  font-size: 12px;
-}
-
 /* Three-way choice rendered as one control rather than three buttons: the
    same pill shape the composer and the suggestion chips use. */
 .oa-segmented {
@@ -763,7 +732,6 @@
 
 /* Groups are told apart by the space between them; the first one has
    nothing above it to be told apart from. */
-.oa-menu > .oa-menu-section:first-child,
 .oa-menu > .oa-menu-quota:first-child {
   margin-top: 0;
 }
@@ -2020,6 +1988,4 @@ $oa-slide-ease: cubic-bezier(0.16, 1, 0.3, 1);
     transform: none;
   }
 }
-
-
 

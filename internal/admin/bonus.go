@@ -34,6 +34,9 @@ type bonusBarBody struct {
 	ModelIDs         []string `json:"model_ids"`
 	DefaultExpiresAt int64    `json:"default_expires_at"`
 	Active           *bool    `json:"active"`
+	// A shared pool's rules. amount is read on create only: what is in a pool
+	// afterwards is changed by the top-up, not by saving its rules.
+	Pool *bonus.Pool `json:"pool"`
 }
 
 func (b bonusBarBody) bar() bonus.Bar {
@@ -49,6 +52,11 @@ func (b bonusBarBody) bar() bonus.Bar {
 	}
 	if b.Active != nil {
 		bar.Active = *b.Active
+	}
+	if b.Pool != nil {
+		pool := *b.Pool
+		pool.Used, pool.PeriodStart = 0, 0
+		bar.Pool = &pool
 	}
 	return bar
 }
@@ -106,6 +114,9 @@ func (h *Handlers) updateBonusBar(w http.ResponseWriter, r *http.Request) error 
 		if body.Active == nil {
 			bar.Active = stored.Active
 		}
+		if body.Pool == nil {
+			bar.Pool = stored.Pool
+		}
 		// Only the switch-off is refused. A bar that is already off may still be
 		// renamed or re-priced, even while a check-in names it.
 		if stored.Active && !bar.Active {
@@ -124,6 +135,26 @@ func (h *Handlers) updateBonusBar(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"bar": updated})
+}
+
+// adjustBonusPool tops a shared pool up, takes from it, or sets what is left.
+func (h *Handlers) adjustBonusPool(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		// "add" (the default) or "set".
+		Op     string   `json:"op"`
+		Amount *float64 `json:"amount"`
+	}
+	if err := httpx.DecodeJSON(w, r, &body, 1024); err != nil {
+		return err
+	}
+	if body.Amount == nil || (body.Op != "" && body.Op != "add" && body.Op != "set") {
+		return httpx.BadRequest("Say how much, and whether to add it or set what is left to it.")
+	}
+	pool, err := h.Bonus.AdjustPool(r.Context(), r.PathValue("id"), body.Op == "set", *body.Amount)
+	if err != nil {
+		return bonus.TranslateError(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"pool": pool})
 }
 
 func (h *Handlers) deleteBonusBar(w http.ResponseWriter, r *http.Request) error {

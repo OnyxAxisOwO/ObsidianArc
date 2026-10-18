@@ -12,6 +12,7 @@ import {
 } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { poolText as pt } from '../src/views/admin/pool-text';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { MASK_PLACEHOLDER, safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
@@ -791,5 +792,81 @@ describe('a part of the page that fails', () => {
       safeModeEnabled.value = false;
       safeModeCategories.value.providers = categories;
     }
+  });
+});
+
+describe('a shared pool', () => {
+  const pool = (over: Partial<BonusBarRow> = {}): BonusBarRow => bar({
+    id: 'p-1', name: 'Everyone', kind: 'shared', toggle_mode: 'only', granted: 500, used: 120, holders: 7,
+    pool: { amount: 500, used: 120, reset_period: 'day', reset_amount: 500, period_start: 1, per_user_daily: 20 },
+    ...over,
+  });
+
+  it('is made with its refill and daily share, and the switch only a pool has', async () => {
+    stub([]);
+    const save = vi.spyOn(adminApi, 'saveBonusBar').mockResolvedValue({ bar: pool() });
+    await mount();
+    button(actions, t('addBonusBar')).click();
+    await settle();
+
+    await choose(fieldFor(panels, t('bonusKind')), t('bonusKindShared'));
+    // A pool has no grants, so no expiry for them.
+    expect(panels.textContent).not.toContain(t('bonusDefaultExpiry'));
+    await choose(fieldFor(panels, t('bonusMode')), pt('modeOnly'));
+    await choose(fieldFor(panels, pt('reset')), pt('resetDay'));
+    type(inputOf(panels, t('bonusName')), 'Everyone');
+    type(inputOf(panels, pt('resetAmount')), '500');
+    type(inputOf(panels, pt('dailyLimit')), '20');
+    await settle();
+    button(panels, t('save')).click();
+    await settle();
+
+    expect(save).toHaveBeenCalledWith(null, expect.objectContaining({
+      kind: 'shared', toggle_mode: 'only', name: 'Everyone',
+      pool: { reset_period: 'day', reset_amount: 500, per_user_daily: 20, amount: 0 },
+    }));
+  });
+
+  it('shows its balance instead of grants, and tops it up', async () => {
+    stub([pool()]);
+    const adjust = vi.spyOn(adminApi, 'adjustBonusPool').mockResolvedValue({
+      pool: { amount: 600, used: 120, reset_period: 'day', reset_amount: 500, period_start: 1, per_user_daily: 20 },
+    });
+    await mount();
+    expect(rows()[0]!.textContent).toContain(t('bonusKindShared'));
+    expect(rows()[0]!.textContent).toContain(pt('modeOnly'));
+    rows()[0]!.click();
+    await settle();
+
+    expect(adminApi.bonusGrants).not.toHaveBeenCalled();
+    expect(panels.textContent).not.toContain(t('bonusGrantAction'));
+    expect(panels.textContent).toContain(pt('balance', { left: '380', total: '500', count: 7 }));
+    // A pool cannot be turned into a bar, so it is not offered.
+    fieldFor(panels, t('bonusKind')).querySelector<HTMLButtonElement>('.oa-select')!.click();
+    await settle();
+    expect([...document.querySelectorAll('[role="option"]')].map((n) => n.textContent?.trim())).toEqual([t('bonusKindShared')]);
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await settle();
+
+    type(inputOf(panels, pt('adjustAmount')), '100');
+    await settle();
+    button(panels, pt('adjust')).click();
+    await settle();
+    expect(adjust).toHaveBeenCalledWith('p-1', 'add', 100);
+    expect(panels.textContent).toContain(pt('adjusted', { left: '480' }));
+  });
+
+  it('is not offered as somewhere a check-in reward could pay into', async () => {
+    stub([pool(), bar({ id: 'b', name: 'Gift' })], {
+      ...emptyCheckin, daily: { kind: 'bonus', bar_id: 'b', amount: 1, valid_days: 7 },
+    });
+    await mount();
+    const field = [...host.querySelectorAll<HTMLElement>('#secCheckinAdmin .oa-field')]
+      .find((node) => node.textContent?.includes('Gift'));
+    field!.querySelector<HTMLButtonElement>('.oa-select')!.click();
+    await settle();
+    const options = [...document.querySelectorAll('[role="option"]')].map((n) => n.textContent?.trim());
+    expect(options).toContain('Gift');
+    expect(options).not.toContain('Everyone');
   });
 });

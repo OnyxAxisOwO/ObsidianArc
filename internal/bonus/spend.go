@@ -15,16 +15,29 @@ import (
 // nothing left.
 type Phase int
 
+// Exclusive is a request for a model a pool in 'only' mode holds: the pools
+// that cover it pay all of it or the request does not run, and nothing else is
+// asked.
 const (
 	Priority Phase = iota
 	Fallback
+	Exclusive
 )
 
 // Hold is credits taken from one grant. What was taken is given back by
 // Refund, so a request that never ran costs nothing.
 type Hold struct {
-	GrantID string  `json:"grant_id"`
+	GrantID string  `json:"grant_id,omitempty"`
 	Amount  float64 `json:"amount"`
+	// A hold on a shared pool names the pool instead of a grant, with the
+	// account and day its draw counts against and the period of the balance it
+	// came out of. Exclusive is whether the pool was the only thing that could
+	// pay.
+	Pool      string `json:"pool,omitempty"`
+	User      string `json:"user,omitempty"`
+	Day       string `json:"day,omitempty"`
+	Period    int64  `json:"period,omitempty"`
+	Exclusive bool   `json:"exclusive,omitempty"`
 }
 
 func total(holds []Hold) float64 {
@@ -153,13 +166,27 @@ func (s *Store) Take(ctx context.Context, q database.Queryer, userID, modelID st
 	if want <= 0 {
 		return nil, nil
 	}
-	now := time.Now().UnixMilli()
+	at := time.Now()
+	// The pools first: they are drawn on before an account's own grants, and
+	// the lock order puts their rows ahead of any grant's.
+	holds, need, short, err := s.takePools(ctx, q, userID, modelID, want, phase, at)
+	if err != nil {
+		return nil, err
+	}
+	if phase == Exclusive {
+		if need > epsilon {
+			if short == nil {
+				short = &PoolExhaustedError{}
+			}
+			return nil, short
+		}
+		return holds, nil
+	}
+	now := at.UnixMilli()
 	list, err := s.candidates(ctx, q, userID, modelID, phase, now)
 	if err != nil {
 		return nil, err
 	}
-	var holds []Hold
-	need := want
 	for _, c := range list {
 		if need <= epsilon {
 			break
@@ -208,6 +235,12 @@ func (s *Store) Refund(ctx context.Context, q database.Queryer, holds []Hold) er
 		if h.Amount <= 0 {
 			continue
 		}
+		if h.Pool != "" {
+			if err := refundPool(ctx, q, h); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := q.Exec(ctx, `UPDATE bonus_grants SET used =
 			CASE WHEN used - ? < 0 THEN 0 ELSE used - ? END WHERE id = ? AND revoked_at = 0`, h.Amount, h.Amount, h.GrantID); err != nil {
 			return fmt.Errorf("bonus: refund: %w", err)
@@ -232,9 +265,25 @@ func (s *Store) Refund(ctx context.Context, q database.Queryer, holds []Hold) er
 // ends.
 func (s *Store) Settle(ctx context.Context, q database.Queryer, holds []Hold, cost float64, released bool) (float64, error) {
 	left := cost
-	for _, h := range holds {
+	// The last hold on a pool that was the only payer takes whatever the others
+	// could not: the windows were never asked, so nothing else will.
+	last := -1
+	for i, h := range holds {
+		if h.Exclusive {
+			last = i
+		}
+	}
+	for i, h := range holds {
 		if left <= epsilon {
 			break
+		}
+		if h.Pool != "" {
+			charged, err := s.settlePool(ctx, q, h, left, released, i == last)
+			if err != nil {
+				return 0, err
+			}
+			left -= charged
+			continue
 		}
 		// Lock the grant before reading it: a read taken first can see the room
 		// another settlement is about to spend, and on PostgreSQL's READ COMMITTED

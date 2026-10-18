@@ -129,13 +129,6 @@
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
-/* A way out of a panel to the section that says more — "open in usage". It
-   stays the width of its words: a panel body stretches its children, and a
-   full-width pill reads as the panel's main action, which this is not. */
-.oa-panel-link {
-  align-self: flex-start;
-}
-
 /* --- cards ------------------------------------------------------------------ */
 
 .oa-viz-card {

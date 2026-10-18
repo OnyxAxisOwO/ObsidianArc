@@ -68,8 +68,8 @@ func findBar(rt *Runtime, ref string) (map[string]any, error) {
 
 func barBody(rt *Runtime, base map[string]any) (map[string]any, error) {
 	body := map[string]any{}
-	for _, key := range []string{"name", "description", "kind", "toggle_mode", "default_on", "show_total", "model_ids", "default_expires_at", "active"} {
-		if v, ok := base[key]; ok {
+	for _, key := range []string{"name", "description", "kind", "toggle_mode", "default_on", "show_total", "model_ids", "default_expires_at", "active", "pool"} {
+		if v, ok := base[key]; ok && v != nil {
 			body[key] = v
 		}
 	}
@@ -82,6 +82,26 @@ func barBody(rt *Runtime, base map[string]any) (map[string]any, error) {
 	bb.boolv(rt, "show-total", "show_total")
 	bb.boolv(rt, "active", "active")
 	bb.int64v(rt, "expires-at", "default_expires_at")
+	// A pool's rules travel as one object; the flags change the keys they name
+	// and leave the rest as the pool has them.
+	if rt.Present("reset") || rt.Present("reset-amount") || rt.Present("daily-limit") || rt.Present("amount") {
+		pool := map[string]any{}
+		for k, v := range asMap(body["pool"]) {
+			pool[k] = v
+		}
+		pb := bodyBuilder(pool)
+		if rt.Present("reset") {
+			period := rt.String("reset")
+			if period == "none" {
+				period = ""
+			}
+			pool["reset_period"] = period
+		}
+		pb.floatv(rt, "reset-amount", "reset_amount")
+		pb.floatv(rt, "daily-limit", "per_user_daily")
+		pb.floatv(rt, "amount", "amount")
+		body["pool"] = pool
+	}
 	if rt.Present("models") {
 		// A bar stores the internal model ids it covers, which is what the server
 		// compares against the model a request is charged to. A name stored as
@@ -101,8 +121,12 @@ func barBody(rt *Runtime, base map[string]any) (map[string]any, error) {
 
 var barFlags = []Flag{
 	{Name: "--description", Hint: Text{EN: "what it is, shown to accounts", ZH: "说明，会显示给用户"}, Value: "TEXT"},
-	{Name: "--kind", Hint: Text{EN: "bonus (default) or reserve — spent only after everything else", ZH: "bonus（默认）或 reserve——所有额度用完之后才动用"}, Value: "KIND"},
-	{Name: "--mode", Hint: Text{EN: "user (the account chooses), on (spent first), off (spent last)", ZH: "user（用户自选）、on（强制启用）、off（强制关闭）"}, Value: "MODE"},
+	{Name: "--kind", Hint: Text{EN: "bonus (default), reserve — spent only after everything else — or shared, one pool for everyone", ZH: "bonus（默认）、reserve——所有额度用完之后才动用——或 shared，所有人共用的额度池"}, Value: "KIND"},
+	{Name: "--mode", Hint: Text{EN: "user (the account chooses), on (spent first), off (spent last), only (a pool alone pays for its models)", ZH: "user（用户自选）、on（强制启用）、off（强制关闭）、only（只能用共享池）"}, Value: "MODE"},
+	{Name: "--reset", Hint: Text{EN: "a pool's reset: none, day, week or month", ZH: "共享池的重置周期：none、day、week 或 month"}, Value: "PERIOD"},
+	{Name: "--reset-amount", Hint: Text{EN: "what a pool is put back to at each reset", ZH: "共享池每次重置后的额度"}, Value: "F"},
+	{Name: "--daily-limit", Hint: Text{EN: "the most one account may draw from a pool in a day; 0 for no limit", ZH: "每人每天最多从共享池用多少；0 表示不限"}, Value: "F"},
+	{Name: "--amount", Hint: Text{EN: "what a new pool starts with (create only)", ZH: "新建共享池时的初始额度（仅新建时有效）"}, Value: "F"},
 	{Name: "--default-on", Hint: Text{EN: "whether a user-mode bar starts switched on (true/false)", ZH: "用户自选的赠金条默认是否开启（true/false）"}, Value: "BOOL"},
 	{Name: "--show-total", Hint: Text{EN: "whether accounts see the amounts (true/false)", ZH: "用户是否能看到总量（true/false）"}, Value: "BOOL"},
 	{Name: "--models", Hint: Text{EN: "model ids it covers, comma-separated; empty for all", ZH: "适用的模型 id，逗号分隔；留空表示全部"}, Value: "IDS"},
@@ -133,7 +157,7 @@ func init() {
 		Name:    "bonus create",
 		Group:   "bonus",
 		Summary: Text{EN: "Add a bonus bar", ZH: "新建赠金条"},
-		Usage:   "bonus create <name> [--kind K] [--mode M] [--default-on B] [--show-total B] [--models IDS] [--expires-at MS]",
+		Usage:   "bonus create <name> [--kind K] [--mode M] [--default-on B] [--show-total B] [--models IDS] [--expires-at MS] [--reset P --reset-amount F] [--daily-limit F] [--amount F]",
 		Help: Text{
 			EN: "A bar is the rules; amounts are granted into it with `bonus grant`. Spent in credits, before the " +
 				"windows when switched on, and after them when kept back.",
@@ -141,7 +165,7 @@ func init() {
 		},
 		Args:       []Arg{{Name: "name", Hint: Text{EN: "the bar's name", ZH: "赠金条的名称"}, Required: true}},
 		Flags:      barFlags,
-		Examples:   []string{"bonus create 新用户礼包 --mode user --show-total true", "bonus create 备用额度 --kind reserve"},
+		Examples:   []string{"bonus create 新用户礼包 --mode user --show-total true", "bonus create 备用额度 --kind reserve", "bonus create 公共额度 --kind shared --mode only --reset day --reset-amount 500 --daily-limit 20"},
 		Permission: "usage",
 		Endpoints:  []string{"POST /api/admin/bonus/bars"},
 		Run: func(_ context.Context, rt *Runtime) error {
@@ -166,7 +190,7 @@ func init() {
 		Name:       "bonus edit",
 		Group:      "bonus",
 		Summary:    Text{EN: "Change a bonus bar's rules", ZH: "修改赠金条的规则"},
-		Usage:      "bonus edit <id|name> [--name N] [--kind K] [--mode M] [--default-on B] [--show-total B] [--active B] [--models IDS] [--expires-at MS]",
+		Usage:      "bonus edit <id|name> [--name N] [--kind K] [--mode M] [--default-on B] [--show-total B] [--active B] [--models IDS] [--expires-at MS] [--reset P --reset-amount F] [--daily-limit F]",
 		Help:       Text{EN: "A rule change reaches every holder at once; amounts already granted are untouched.", ZH: "规则的改动对所有持有者立即生效；已经发出的数额不变。"},
 		Args:       []Arg{{Name: "id|name", Hint: Text{EN: "the bar", ZH: "赠金条"}, Required: true}},
 		Flags:      append([]Flag{{Name: "--name", Hint: Text{EN: "new name", ZH: "新名称"}, Value: "NAME"}, {Name: "--active", Hint: Text{EN: "false stops it being spent and shown (true/false)", ZH: "false 表示停止动用和显示（true/false）"}, Value: "BOOL"}}, barFlags...),
@@ -311,6 +335,54 @@ func init() {
 					formatMS(g["expires_at"]), asStr(g["source"]), formatMS(g["created_at"])})
 			}
 			return rt.Table([]string{"id", "username", "amount", "used", "expires", "source", "granted"}, rows)
+		},
+	})
+
+	registerCommand(Command{
+		Name:    "bonus pool",
+		Group:   "bonus",
+		Summary: Text{EN: "Top up a shared pool, or set what is left in it", ZH: "给共享池充值，或直接设定剩余额度"},
+		Usage:   "bonus pool <id|name> (--add F | --set F) --yes",
+		Help: Text{
+			EN: "--add puts credits in (negative takes them out, down to nothing left); --set makes what is left exactly that. A reset that is due is applied first.",
+			ZH: "--add 加进去（负数是扣掉，最多扣到剩 0）；--set 把剩余额度直接设成这个数。到了重置时间的会先重置再改。",
+		},
+		Args: []Arg{{Name: "id|name", Hint: Text{EN: "the pool", ZH: "共享池"}, Required: true}},
+		Flags: []Flag{
+			{Name: "--add", Hint: Text{EN: "credits to add", ZH: "要加的积分"}, Value: "F"},
+			{Name: "--set", Hint: Text{EN: "what is left afterwards", ZH: "改完之后剩多少"}, Value: "F"},
+		},
+		Examples:    []string{"bonus pool 公共额度 --add 1000 --yes", "bonus pool 公共额度 --set 0 --yes"},
+		Permission:  "usage",
+		Destructive: true,
+		Endpoints:   []string{"POST /api/admin/bonus/bars/{id}/pool"},
+		Run: func(_ context.Context, rt *Runtime) error {
+			if rt.Present("add") == rt.Present("set") {
+				if rt.Session.Lang == "zh" {
+					return rt.Errorf("需要 --add 或 --set 其中之一")
+				}
+				return rt.Errorf("give one of --add or --set")
+			}
+			bar, err := findBar(rt, rt.Arg(0))
+			if err != nil {
+				return err
+			}
+			body := bodyBuilder{"op": "add"}
+			body.floatv(rt, "add", "amount")
+			if rt.Present("set") {
+				body["op"] = "set"
+				body.floatv(rt, "set", "amount")
+			}
+			data, _, err := rt.Call(http.MethodPost, "/api/admin/bonus/bars/"+url.PathEscape(asStr(bar["id"]))+"/pool", map[string]any(body))
+			if err != nil {
+				return err
+			}
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
+			}
+			pool := asMap(asMap(data)["pool"])
+			rt.Printf("pool now holds %s of %s credits\n", formatNumber(asNum(pool["amount"])-asNum(pool["used"])), numberString(pool["amount"]))
+			return nil
 		},
 	})
 

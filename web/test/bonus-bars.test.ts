@@ -412,4 +412,18 @@ describe('OaBonusBars while switches and reads overlap', () => {
     expect(host.textContent).toContain(t('bonusLeft', { left: '500', total: '1000' }));
     expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
   });
+
+  it('says a pool is everybody’s, and what is left of the account’s own daily share', async () => {
+    serve([bar({
+      bar_id: 'p', name: 'Everyone', kind: 'shared', toggle_mode: 'only', choosable: false,
+      pool: { only: true, daily_limit: 20, daily_used: 4.5, resets_at: 0 },
+    })]);
+    await mount();
+    const text = host.textContent ?? '';
+    expect(text).toContain(t('bonusKindShared'));
+    expect(text).toContain(t('bonusPoolOnlyLine'));
+    expect(text).toContain(t('bonusPoolDaily', { used: '4.5', limit: '20' }));
+    expect(text).not.toContain(t('bonusNoExpiry'));
+    expect(host.querySelector('input[type="checkbox"]')).toBeNull();
+  });
 });

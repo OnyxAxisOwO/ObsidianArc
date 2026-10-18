@@ -27,6 +27,8 @@ const (
 	KindBonus Kind = "bonus"
 	// KindReserve is spent only after everything else is, and has no switch.
 	KindReserve Kind = "reserve"
+	// KindShared is a pool: one balance every account draws on. See pool.go.
+	KindShared Kind = "shared"
 )
 
 type Mode string
@@ -38,6 +40,9 @@ const (
 	ModeOn Mode = "on"
 	// ModeOff keeps the bar for when everything else is spent.
 	ModeOff Mode = "off"
+	// ModeOnly is a pool's alone: its models are paid for by the pool and
+	// nothing else, and refused when it cannot.
+	ModeOnly Mode = "only"
 )
 
 // Bar is the rules; what an account holds in it is Grants.
@@ -56,6 +61,8 @@ type Bar struct {
 	CreatedBy        string `json:"created_by"`
 	CreatedAt        int64  `json:"created_at"`
 	UpdatedAt        int64  `json:"updated_at"`
+	// A shared pool's balance and rules; nil on every other kind.
+	Pool *Pool `json:"pool,omitempty"`
 }
 
 // covers reports whether a request for modelID may spend this bar.
@@ -130,7 +137,12 @@ const (
 	maxNote = 200
 )
 
-type Store struct{ db *database.DB }
+type Store struct {
+	db *database.DB
+	// The zone a pool's day, week and month are counted in; nil is UTC. The
+	// wiring sets it to the check-in's, so "a day" means one thing on the site.
+	Location func() *time.Location
+}
 
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
@@ -215,13 +227,27 @@ func (b *Bar) normalise() error {
 	if b.ToggleMode == "" {
 		b.ToggleMode = ModeUser
 	}
-	if b.Kind != KindBonus && b.Kind != KindReserve {
+	if b.Kind != KindBonus && b.Kind != KindReserve && b.Kind != KindShared {
 		return ErrInvalidBar
 	}
 	switch b.ToggleMode {
 	case ModeUser, ModeOn, ModeOff:
+	case ModeOnly:
+		if b.Kind != KindShared {
+			return ErrInvalidBar
+		}
 	default:
 		return ErrInvalidBar
+	}
+	if b.Kind == KindShared {
+		if b.Pool == nil {
+			b.Pool = &Pool{}
+		}
+		if err := b.Pool.normalise(); err != nil {
+			return err
+		}
+	} else {
+		b.Pool = nil
 	}
 	if b.Kind == KindReserve {
 		// Nothing to choose: it is the last thing spent, and always.
@@ -245,14 +271,24 @@ func (s *Store) CreateBar(ctx context.Context, bar Bar, createdBy string) (Bar, 
 	if err := bar.normalise(); err != nil {
 		return Bar{}, err
 	}
-	now := time.Now().UnixMilli()
+	at := time.Now()
+	now := at.UnixMilli()
 	bar.ID, bar.CreatedBy, bar.CreatedAt, bar.UpdatedAt = id.New(), createdBy, now, now
 	bar.Active = true
-	if _, err := s.db.Exec(ctx, `INSERT INTO bonus_bars (`+barColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		bar.ID, bar.Name, bar.Description, bar.Kind, bar.ToggleMode, bar.DefaultOn, bar.ShowTotal,
-		encodeModels(bar.ModelIDs), bar.DefaultExpiresAt, bar.Active, bar.CreatedBy, bar.CreatedAt, bar.UpdatedAt); err != nil {
-		return Bar{}, fmt.Errorf("bonus: create bar: %w", err)
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO bonus_bars (`+barColumns+`)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			bar.ID, bar.Name, bar.Description, bar.Kind, bar.ToggleMode, bar.DefaultOn, bar.ShowTotal,
+			encodeModels(bar.ModelIDs), bar.DefaultExpiresAt, bar.Active, bar.CreatedBy, bar.CreatedAt, bar.UpdatedAt); err != nil {
+			return fmt.Errorf("bonus: create bar: %w", err)
+		}
+		if bar.Pool != nil {
+			return s.insertPool(ctx, tx, bar.ID, *bar.Pool, at)
+		}
+		return nil
+	})
+	if err != nil {
+		return Bar{}, err
 	}
 	return s.Bar(ctx, nil, bar.ID)
 }
@@ -272,8 +308,11 @@ func (s *Store) UpdateBar(ctx context.Context, q database.Queryer, bar Bar) (Bar
 	// shows a damaged list as no list, which reads as every model, and the form
 	// sends that back: saving over it would make a restricted bar spendable on
 	// every model. Refusing leaves the damage where the operator can see it.
-	var raw string
-	if err := q.QueryRow(ctx, `SELECT model_ids FROM bonus_bars WHERE id = ?`, bar.ID).Scan(&raw); err != nil {
+	var (
+		raw  string
+		kind Kind
+	)
+	if err := q.QueryRow(ctx, `SELECT model_ids, kind FROM bonus_bars WHERE id = ?`, bar.ID).Scan(&raw, &kind); err != nil {
 		if database.IsNotFound(err) {
 			return Bar{}, ErrNotFound
 		}
@@ -281,6 +320,9 @@ func (s *Store) UpdateBar(ctx context.Context, q database.Queryer, bar Bar) (Bar
 	}
 	if _, err := parseModels(raw); err != nil {
 		return Bar{}, fmt.Errorf("%w: %w", ErrModelsUnreadable, err)
+	}
+	if (kind == KindShared) != (bar.Kind == KindShared) {
+		return Bar{}, ErrKindChange
 	}
 	res, err := q.Exec(ctx, `UPDATE bonus_bars SET name = ?, description = ?, kind = ?, toggle_mode = ?,
 		default_on = ?, show_total = ?, model_ids = ?, default_expires_at = ?, active = ?, updated_at = ?
@@ -292,6 +334,11 @@ func (s *Store) UpdateBar(ctx context.Context, q database.Queryer, bar Bar) (Bar
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return Bar{}, ErrNotFound
+	}
+	if bar.Pool != nil {
+		if err := s.updatePoolRules(ctx, q, bar.ID, *bar.Pool, time.Now()); err != nil {
+			return Bar{}, err
+		}
 	}
 	return s.Bar(ctx, q, bar.ID)
 }
@@ -317,7 +364,20 @@ func (s *Store) Bar(ctx context.Context, q database.Queryer, barID string) (Bar,
 	if q == nil {
 		q = s.db
 	}
-	return scanBar(q.QueryRow(ctx, `SELECT `+barColumns+` FROM bonus_bars WHERE id = ?`, barID))
+	bar, err := scanBar(q.QueryRow(ctx, `SELECT `+barColumns+` FROM bonus_bars WHERE id = ?`, barID))
+	if err != nil || bar.Kind != KindShared {
+		return bar, err
+	}
+	p, err := s.pool(ctx, q, barID)
+	if errors.Is(err, ErrNotFound) {
+		p, err = Pool{}, nil
+	}
+	if err != nil {
+		return Bar{}, err
+	}
+	p = p.current(time.Now(), s.loc())
+	bar.Pool = &p
+	return bar, nil
 }
 
 // Bars lists every bar, newest first, with how much has been granted and
@@ -346,7 +406,29 @@ func (s *Store) Bars(ctx context.Context) ([]BarSummary, error) {
 		s.ModelIDs = modelsForScreen(models)
 		out = append(out, s)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// A pool has no grants, so its figures are its balance and how many
+	// accounts drew on it today.
+	pools, err := s.pools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	drawers, err := s.drawersToday(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if out[i].Kind != KindShared {
+			continue
+		}
+		p := pools[out[i].ID]
+		out[i].Pool = &p
+		out[i].Granted, out[i].Used, out[i].Holders = p.Amount, p.Used, drawers[out[i].ID]
+	}
+	return out, nil
 }
 
 // BarSummary is a bar with its totals, for the administrator's list.

@@ -17,6 +17,9 @@
 - 后台新增“审计日志”页面，记录管理员的每一次写操作（包括被拒绝的尝试）和对他人对话的查看，含操作人、对象、来源、打码后的请求内容，
   以及设置和账号修改前后的值。查看需要新权限 `audit`；保留时长 `audit.retention_days` 默认 180 天，只有超级管理员能改，最短 30 天。
   新增接口 `GET /api/admin/audit`、`/api/admin/audit/facets`、`/api/admin/audit/{id}` 和控制台命令 `audit list`、`audit show`、`audit actions`。
+- 新增**共享额度池**：一种所有账户共用一份余额的赠金条（`kind: "shared"`），可限定模型。开关可选「用户自选」「强制启用」
+  （先扣池子，用完改扣个人额度）或新的「只能用额度池」（`toggle_mode: "only"`，这些模型只从池子扣，用完返回 429 `pool_exhausted`）。
+  可以设每人每天上限，以及按天、周、月自动重置。新增接口 `POST /api/admin/bonus/bars/{id}/pool`（充值或设定剩余）和控制台命令 `bonus pool`。
 - SMTP 服务器可以填写 IPv6 地址（如 `2001:db8::1`，不带方括号和端口），后台保存时也接受。此前后台保存会拒绝 IPv6 地址。
 
 ### 升级须知

@@ -224,14 +224,6 @@
 /* The storage key a control writes, shown above it so an operator approving
    the install sees where the value goes, not only the label the package chose. */
 .oa-plugin-control-key { align-self: flex-start; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--ai-text-secondary); }
-.oa-plugin-guide { display: flex; flex-direction: column; gap: 16px; }
-.oa-plugin-guide-banner { display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: 14px; background: var(--ai-surface-container); }
-.oa-plugin-guide-icon { color: var(--ai-primary); flex-shrink: 0; }
-.oa-plugin-guide-text { margin: 0; font-size: 13px; line-height: 1.6; color: var(--ai-text); }
-.oa-plugin-guide-section { display: flex; flex-direction: column; gap: 10px; }
-.oa-plugin-guide-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; line-height: 1.6; color: var(--ai-text-secondary); }
-.oa-plugin-guide-steps li { margin: 0; }
-.oa-plugin-guide-code { display: block; margin-top: 6px; padding: 6px 10px; border-radius: 8px; background: var(--ai-surface-container); color: var(--ai-text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; word-break: break-all; }
 .oa-resource-definition dt { font-size: 12px; }
 .oa-resource-definition dt > small { display: block; margin-top: 6px; font-size: 10px; line-height: 1.7; color: var(--ai-text-secondary); }
 .oa-resource-definition dd { margin: 0; font-size: 18px; font-weight: 550; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -270,10 +262,6 @@
 @media (prefers-reduced-motion: reduce) {
   .oa-workbench-tab { transition: none; }
 }
-
-.oa-plugin-dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 30px; border: 2px dashed var(--ai-border); border-radius: 12px; color: var(--ai-text-secondary); cursor: pointer; transition: background-color 0.2s, border-color 0.2s, color 0.2s; }
-.oa-plugin-dropzone:hover, .oa-plugin-dropzone.dragover { background: var(--ai-surface-container); border-color: var(--ai-primary); color: var(--ai-primary); }
-.oa-plugin-dropzone p { margin: 0; font-size: 12.5px; }
 
 /* Installing a plugin by dragging its package onto the page. The card is the
    discoverable half — a click chooses a file — and the overlay is what the

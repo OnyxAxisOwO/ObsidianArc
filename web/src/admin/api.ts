@@ -188,17 +188,31 @@ export interface BonusBarRow {
   id: string;
   name: string;
   description: string;
-  kind: 'bonus' | 'reserve';
-  toggle_mode: 'user' | 'on' | 'off';
+  kind: 'bonus' | 'reserve' | 'shared';
+  toggle_mode: 'user' | 'on' | 'off' | 'only';
   default_on: boolean;
   show_total: boolean;
   model_ids: string[];
   default_expires_at: number;
   active: boolean;
   created_at: number;
+  /** For a pool, its balance; for every other bar, what was granted in it. */
   granted: number;
   used: number;
+  /** For a pool, how many accounts drew on it today. */
   holders: number;
+  /** A shared pool's balance and rules; absent on every other kind. */
+  pool?: BonusPool;
+}
+
+export interface BonusPool {
+  amount: number;
+  used: number;
+  reset_period: '' | 'day' | 'week' | 'month';
+  reset_amount: number;
+  period_start: number;
+  /** Zero is no limit. */
+  per_user_daily: number;
 }
 
 export interface BonusGrantRow {
@@ -1098,6 +1112,8 @@ export const adminApi = {
   bonusGrants: (id: string, offset = 0) =>
     api.get<{ grants: BonusGrantRow[]; total: number }>(
       `/api/admin/bonus/bars/${encodeURIComponent(id)}/grants?limit=20&offset=${offset}`),
+  adjustBonusPool: (id: string, op: 'add' | 'set', amount: number) =>
+    api.post<{ pool: BonusPool }>(`/api/admin/bonus/bars/${encodeURIComponent(id)}/pool`, { op, amount }),
   revokeBonusGrant: (id: string) =>
     api.delete<{ revoked: number }>(`/api/admin/bonus/grants/${encodeURIComponent(id)}`),
   checkinSettings: () => api.get<CheckinSettings>('/api/admin/checkin'),

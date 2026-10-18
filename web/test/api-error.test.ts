@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/api/client';
 import { changeLanguage, t } from '@/composables/useI18n';
+import { absoluteTime } from '@/lib/format';
 import { apiErrorText, codeText, storedErrorText } from '@/lib/api-error';
 
 const SERVER_SENTENCE = 'The server said this in English.';
@@ -67,6 +68,15 @@ describe('apiErrorText', () => {
 
     expect(apiErrorText(new ApiError(429, 'quota_exceeded', SERVER_SENTENCE)))
       .toBe(t('errQuotaGeneric'));
+  });
+
+  it('words an empty pool apart from a spent daily share, with when it lifts', async () => {
+    await changeLanguage('zh');
+    expect(apiErrorText(new ApiError(429, 'pool_exhausted', SERVER_SENTENCE, { reason: 'empty', resets_at: 0 })))
+      .toBe(t('errPoolEmpty'));
+    const when = Date.UTC(2031, 0, 2);
+    expect(apiErrorText(new ApiError(429, 'pool_exhausted', SERVER_SENTENCE, { reason: 'daily_limit', resets_at: when })))
+      .toBe(`${t('errPoolDailyLimit')} ${t('quotaResets', { when: absoluteTime(when) })}`);
   });
 
   it('keeps the server sentence for a code nobody has translated', () => {

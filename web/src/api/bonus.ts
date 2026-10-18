@@ -11,8 +11,9 @@ export interface BonusBar {
   bar_id: string;
   name: string;
   description: string;
-  kind: 'bonus' | 'reserve';
-  toggle_mode: 'user' | 'on' | 'off';
+  kind: 'bonus' | 'reserve' | 'shared';
+  /** 'only' is a shared pool that is the one way to pay for its models. */
+  toggle_mode: 'user' | 'on' | 'off' | 'only';
   /** Whether the account may switch it. */
   choosable: boolean;
   /** Whether it is being spent before the allowance. */
@@ -28,6 +29,18 @@ export interface BonusBar {
   /** Empty means every model. */
   model_ids: string[];
   exhausted: boolean;
+  /** A shared pool's own figures; absent on every other kind. */
+  pool?: BonusPoolView;
+}
+
+/** What an account is told about a pool everybody draws on. */
+export interface BonusPoolView {
+  only: boolean;
+  /** Zero is no daily limit. */
+  daily_limit: number;
+  daily_used: number;
+  /** When the balance is next put back; zero when it never is. */
+  resets_at: number;
 }
 
 export interface BonusSummary {

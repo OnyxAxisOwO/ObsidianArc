@@ -219,10 +219,23 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 27.00 MB (23.29 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 248.44 kB to open the chat (205.80 JS + 42.64 CSS), sent by the server at gzip's best level; the build's gzip column reads 249.83 kB (206.44 JS + 43.40 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 27.08 MB (23.38 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 247.29 kB to open the chat (205.98 JS + 41.31 CSS), sent by the server at gzip's best level; the build's gzip column reads 248.63 kB (206.61 JS + 42.02 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-16 (UTC), with shared quota pools added. Their
+backoffice words load with the backoffice (views/admin/pool-text.ts); what an
+account sees of a pool is in the English dictionary. That alone took the
+build's estimate to 250.14 kB, so the shared stylesheet was swept for rules no
+template, script or plugin names any more — 97 of them, among them a
+settings drawer, a model detector, a plugin guide and ranking and facts
+layouts that nothing draws — along with five dead dictionary entries and an
+unused component. 247.29 kB to open the chat (205.98 JS + 41.31 CSS), down
+1.15 kB; the build's estimate is 248.63 kB, 1.37 kB under the budget. Chinese
+dictionary 51.01 kB, backoffice 140.69 kB (the pool's screen and words), the
+other lazy chunks unchanged. The binary is 27.08 MB (23.38 MB without SQLite),
+built the same way as below.
 
 Remeasured on 2026-10-16 (UTC), with the administrators' audit trail added. Its
 styles are in the shared stylesheet; its words, all but the page's name, load

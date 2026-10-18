@@ -30,6 +30,19 @@ type View struct {
 	ExpiresAt int64    `json:"expires_at"`
 	ModelIDs  []string `json:"model_ids"`
 	Exhausted bool     `json:"exhausted"`
+	// A shared pool's own figures; nil on every other kind.
+	Pool *PoolView `json:"pool,omitempty"`
+}
+
+// PoolView is what an account is told about a pool beyond its balance.
+type PoolView struct {
+	// Only is a pool that is the one way to pay for its models.
+	Only bool `json:"only"`
+	// Zero is no daily limit.
+	DailyLimit float64 `json:"daily_limit"`
+	DailyUsed  float64 `json:"daily_used"`
+	// When the balance is next put back; zero when it never is.
+	ResetsAt int64 `json:"resets_at"`
 }
 
 // ViewFor is the bars an account holds something unexpired in, for the usage
@@ -97,7 +110,13 @@ func (s *Store) ViewFor(ctx context.Context, userID string) ([]View, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	out := make([]View, 0, len(order))
+	rows.Close()
+	// The pools lead: they are everybody's, and what the account holds itself
+	// follows in the order it was made.
+	out, err := s.poolViews(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
 	for _, barID := range order {
 		a := byBar[barID]
 		v := a.view
@@ -107,6 +126,82 @@ func (s *Store) ViewFor(ctx context.Context, userID string) ([]View, error) {
 		}
 		if v.ShowTotal {
 			total, remaining := round(a.total), round(a.remaining)
+			v.Total, v.Remaining = &total, &remaining
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// poolViews is every switched-on pool, as the account sees it. Everybody may
+// draw on a pool, so every account is shown it, holding a grant or not.
+func (s *Store) poolViews(ctx context.Context, userID string) ([]View, error) {
+	now := time.Now()
+	rows, err := s.db.Query(ctx, `SELECT `+prefixed("b", barColumns)+`, c.enabled
+		FROM bonus_bars b
+		LEFT JOIN bonus_choices c ON c.user_id = ? AND c.bar_id = b.id
+		WHERE b.kind = ? AND b.active = ?
+		ORDER BY b.created_at, b.id`, userID, KindShared, true)
+	if err != nil {
+		return nil, fmt.Errorf("bonus: view pools: %w", err)
+	}
+	defer rows.Close()
+	var bars []Bar
+	choices := map[string]*bool{}
+	for rows.Next() {
+		var (
+			b       Bar
+			models  string
+			enabled *bool
+		)
+		if err := rows.Scan(&b.ID, &b.Name, &b.Description, &b.Kind, &b.ToggleMode, &b.DefaultOn, &b.ShowTotal,
+			&models, &b.DefaultExpiresAt, &b.Active, &b.CreatedBy, &b.CreatedAt, &b.UpdatedAt, &enabled); err != nil {
+			return nil, fmt.Errorf("bonus: scan pool view: %w", err)
+		}
+		b.ModelIDs = modelsForScreen(models)
+		bars = append(bars, b)
+		choices[b.ID] = enabled
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	out := []View{}
+	if len(bars) == 0 {
+		return out, nil
+	}
+	pools, err := s.pools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	drawn, err := s.drawnToday(ctx, userID, now)
+	if err != nil {
+		return nil, err
+	}
+	loc := s.loc()
+	for _, b := range bars {
+		p := pools[b.ID]
+		on := b.ToggleMode == ModeOn || b.ToggleMode == ModeOnly
+		if b.ToggleMode == ModeUser {
+			on = b.DefaultOn
+			if enabled := choices[b.ID]; enabled != nil {
+				on = *enabled
+			}
+		}
+		v := View{
+			BarID: b.ID, Name: b.Name, Description: b.Description, Kind: b.Kind, ToggleMode: b.ToggleMode,
+			Choosable: b.ToggleMode == ModeUser, Enabled: on, ShowTotal: b.ShowTotal, ModelIDs: b.ModelIDs,
+			Exhausted: p.Remaining() <= epsilon,
+			Pool: &PoolView{
+				Only: b.ToggleMode == ModeOnly, DailyLimit: p.PerUserDaily, DailyUsed: round(drawn[b.ID]),
+				ResetsAt: nextPeriod(p.ResetPeriod, p.PeriodStart, loc),
+			},
+		}
+		if p.Amount > 0 {
+			v.Percent = int(math.Round(p.Remaining() / p.Amount * 100))
+		}
+		if v.ShowTotal {
+			total, remaining := round(p.Amount), round(p.Remaining())
 			v.Total, v.Remaining = &total, &remaining
 		}
 		out = append(out, v)

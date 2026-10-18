@@ -63,6 +63,7 @@ export const AUDIT_ACTIONS: Record<string, AuditTextKey> = {
   'DELETE /api/admin/bonus/bars/{id}': 'doBonusDelete',
   'POST /api/admin/bonus/bars/{id}/grants': 'doBonusGrant',
   'DELETE /api/admin/bonus/grants/{id}': 'doBonusRevoke',
+  'POST /api/admin/bonus/bars/{id}/pool': 'doBonusPool',
   'POST /api/admin/codes': 'doCodeCreate',
   'DELETE /api/admin/codes/{id}': 'doCodeDelete',
   'PUT /api/admin/quota/policies': 'doPolicySave',

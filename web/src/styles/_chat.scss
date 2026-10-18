@@ -166,18 +166,6 @@
   gap: 8px;
 }
 
-/* The scrollable parts of the chat keep their scrollbars to themselves: no
-   track, no arrows, a thin thumb only while the pointer is over the list.
-   That treatment is now global — see styles/base.css. */
-
-.ai-chat-sidebar-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ai-text-secondary);
-}
-
 .ai-chat-new {
   display: flex;
   align-items: center;
@@ -265,16 +253,9 @@
 
 /* One click from happening. Loud on purpose: this is the state a stray second
    click acts on, and it disarms itself after a few seconds. */
-.ai-chat-clear-all.armed,
-.ai-chat-list-delete.armed {
+.ai-chat-clear-all.armed {
   background: rgba(185, 28, 28, 0.16);
   color: var(--ai-danger);
-  opacity: 1;
-}
-
-.ai-chat-list-delete.armed {
-  /* The row reveals this on hover; armed, it stays put while the pointer
-     travels back to it. */
   opacity: 1;
 }
 
@@ -371,31 +352,6 @@
   flex: none;
   align-items: center;
   margin-right: 6px;
-}
-
-.ai-chat-list-delete {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  margin-right: 4px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--ai-text-secondary);
-  opacity: 0;
-  cursor: pointer;
-}
-
-.ai-chat-list-item:hover .ai-chat-list-delete,
-.ai-chat-list-delete:focus-visible {
-  opacity: 1;
-}
-
-.ai-chat-list-delete:hover {
-  color: var(--ai-danger);
 }
 
 .ai-chat-item-menu {
@@ -611,10 +567,6 @@
   align-items: flex-end;
 }
 
-.ai-msg-user.ai-msg-sent {
-  animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
-}
-
 .ai-msg-user.ai-msg-flying {
   animation: none !important;
   pointer-events: none !important;
@@ -674,9 +626,6 @@
   .ai-chat-flight-bubble,
   .ai-chat-flight-compound {
     display: none !important;
-  }
-  .ai-msg-user.ai-msg-sent {
-    animation: none;
   }
 }
 
@@ -1340,7 +1289,6 @@
   border-top: 1px solid var(--ai-border);
 }
 
-.ai-chat-attach,
 .ai-chat-plus {
   display: inline-flex;
   align-items: center;
@@ -1356,18 +1304,15 @@
   cursor: pointer;
 }
 
-.ai-chat-attach:hover:not(:disabled),
 .ai-chat-plus:hover:not(:disabled) {
   background: var(--ai-state-hover);
   color: var(--ai-text);
 }
 
-.ai-chat-attach[hidden],
 .ai-chat-plus[hidden] {
   display: none;
 }
 
-.ai-chat-attach:disabled,
 .ai-chat-plus:disabled {
   opacity: 0.5;
   cursor: default;
@@ -1453,30 +1398,6 @@
 .ai-chat-send:disabled {
   opacity: 0.5;
   cursor: default;
-}
-
-/* --- narrow skin: a compact widget, e.g. embedded in a sidebar or popover -------- */
-
-.ai-chat-narrow .ai-chat-sidebar {
-  position: absolute;
-  z-index: 5;
-  top: 34px;
-  right: 0;
-  left: 0;
-  max-height: 260px;
-  padding: 10px;
-  border-radius: 14px;
-  background: var(--ai-surface-card);
-  box-shadow: var(--ai-shadow-md);
-}
-
-.ai-chat-narrow:not(.history-open) .ai-chat-sidebar {
-  display: none;
-}
-
-.ai-chat-narrow .ai-chat-scroll {
-  max-height: 46vh;
-  min-height: 180px;
 }
 
 /* --- wide skin: a whole page, laid out like a chat app --------------------------- */
@@ -1695,13 +1616,11 @@
   box-shadow: none;
 }
 
-.ai-chat-wide .ai-chat-attach,
 .ai-chat-plus {
   border: none;
 }
 
 .ai-chat-wide .ai-chat-send,
-.ai-chat-wide .ai-chat-attach,
 .ai-chat-plus {
   width: 36px;
   height: 36px;

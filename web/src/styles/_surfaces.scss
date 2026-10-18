@@ -124,7 +124,6 @@
   font-weight: 600;
 }
 
-
 /* Search result groups in the administration rail: when searching, matching
    pages and their sub-features are nested under the page heading so operators
    can jump straight to an individual control. */
@@ -331,10 +330,6 @@
   display: none;
   width: 0;
   height: 0;
-}
-
-.oa-admin-section + .oa-admin-section {
-  margin-top: 26px;
 }
 
 .oa-admin-section-title {
@@ -721,21 +716,6 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-/* The same rows, drawn for a screen somebody opened on purpose rather than a
-   menu they are passing through. */
-.oa-card-head,
-.oa-usage-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.oa-card-head .oa-drawer-subhead,
-.oa-usage-head .oa-drawer-subhead {
-  margin: 0;
-  line-height: 18px;
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -1537,14 +1517,6 @@
    scroller is already overflow-x: hidden, so nothing can escape sideways
    anyway. */
 
-/* Whose settings these are. The panel head says "Settings" and has no room
-   for a second line, so the account goes at the top of the body. */
-.oa-settings-account {
-  margin: -4px 0 0;
-  font-size: 11.5px;
-  color: var(--ai-text-secondary);
-}
-
 /* Settings layout: drawer mode vs fullscreen mode */
 .oa-panel-body.oa-settings-body {
   display: flex;
@@ -1668,7 +1640,6 @@
   height: 0;
 }
 
-
 .oa-settings-rail-item {
   padding: 9px 12px;
   border: none;
@@ -1749,15 +1720,6 @@
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-}
-
-/* One row per provider: the mark, who it is, and the one control that
-   applies. Rows rather than a table because there are two of them and a table
-   head would be three words explaining two. */
-.oa-connections {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
 .oa-connection {
@@ -2395,11 +2357,6 @@
   color: var(--ai-text-secondary);
 }
 
-.oa-key-field-hint {
-  margin-top: -2px;
-  margin-bottom: 8px;
-}
-
 .oa-key-actions {
   display: flex;
   align-items: center;
@@ -2560,11 +2517,6 @@
   }
 }
 
-/* A key row whose revoke failed, so the click is not silently swallowed. */
-.oa-key-row-failed {
-  opacity: 0.5;
-}
-
 /* --- charts ---------------------------------------------------------------- */
 
 .oa-chart {
@@ -2631,37 +2583,6 @@
   text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--ai-text-secondary);
-}
-
-.oa-ranking {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.oa-ranking-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.oa-ranking-controls .oa-field {
-  flex: 1;
-  min-width: 130px;
-}
-
-/* Two charts side by side while there is room, stacked when there is not. */
-.oa-ranking-pair {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 20px;
-}
-
-.oa-ranking-column {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
 }
 
 /* --- the request log -------------------------------------------------------- */
@@ -3229,17 +3150,6 @@
   }
 }
 
-.oa-log-pager {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.oa-log-pager .oa-field-hint {
-  flex: 1;
-}
-
 .oa-log-facts {
   display: grid;
   grid-template-columns: minmax(90px, auto) 1fr;
@@ -3301,14 +3211,6 @@
   gap: 14px;
 }
 
-/* The count first and large, because it is the one number an operator came
-   to read; the breakdown under it in the ordinary hint voice. */
-.oa-card-count {
-  margin: 0 0 2px;
-  font-size: 15px;
-  font-weight: 600;
-}
-
 .oa-card-list {
   display: flex;
   flex-direction: column;
@@ -3331,15 +3233,6 @@
 
 .oa-card-expiry {
   color: var(--ai-text-secondary);
-}
-
-/* Small enough that the row still reads as a fact with an action on it rather
-   than as a control: an operator is here to see what somebody holds, and the
-   move is the second thought, not the first. */
-.oa-card-move {
-  min-height: 28px;
-  padding: 0 11px;
-  font-size: 11.5px;
 }
 
 /* Only once it is armed. At rest it is one more thing in a row of eleven
@@ -3372,59 +3265,11 @@
   margin: 2px 0 4px;
 }
 
-/* The facts about a record that are read, not edited: a label on the left and
-   the value on the right, so a column of them scans without the eye tracking
-   two different left edges. */
-.oa-facts {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: -4px 0 4px;
-}
-
-.oa-fact {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
-}
-
-.oa-fact-label {
-  color: var(--ai-text-secondary);
-  flex: none;
-}
-
-.oa-fact-value {
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
-/* An identifier is copied by eye or by selection, and both go wrong in a
-   proportional face. */
-.oa-fact-value.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  user-select: all;
-}
-
-/* A value with its copy button beside it, centred on the value's line. */
-.oa-fact-copy {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
 /* The icon button at the size of a line of small text, for a control that
    sits inside a row of figures rather than in a toolbar. */
 .oa-icon-btn.tiny {
   width: 24px;
   height: 24px;
-}
-
-/* A section's own follow-up — "see the error history" — set off from the
-   hints above it by a line's worth of space rather than an inline style. */
-.oa-section-action {
-  margin-top: 10px;
 }
 
 /* A minted batch, listed once. Monospace and one per line so it can be
@@ -3615,7 +3460,6 @@
     animation: none;
   }
 }
-
 
 /* The line under it. Centred, because the button is. */
 .oa-hold-note {
@@ -4370,15 +4214,6 @@
   grid-auto-flow: row;
   gap: 10px;
   align-items: start;
-}
-
-.oa-uptime-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--ai-surface-container-low);
 }
 
 .oa-uptime-row-main {
@@ -5504,19 +5339,6 @@
   gap: 6px;
 }
 
-/* The report as it was typed: newlines kept, because the blank line between
- * "what I expected" and "what happened" is half of what was said. */
-.oa-feedback-detail-body {
-  margin: 0;
-  padding: 14px 16px;
-  border-radius: 14px;
-  background: var(--ai-surface-container-low);
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
 /* --- the panel somebody writes in --- */
 
 /* Tall by default. The box is the invitation, and a short one asks for a
@@ -6362,13 +6184,6 @@
   color: var(--ai-primary);
 }
 
-.oa-2fa-admin-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-
 /* The backoffice's gate: one card where the page would be, drawn as the
    workbench's own cards are, and no wider than the wizard needs, so it reads
    as one thing to do rather than an empty page. */
@@ -6636,7 +6451,7 @@
    cards — this page just was not using it, which is what left them touching.
    .oa-filters carries a bottom margin for what follows it, never a top one
    for what came before, so the seam between the grid and the code list below
-   still needs its own rule; 26px matches .oa-admin-section's own rhythm. */
+   still needs its own rule; 26px is the gap between two settings sections. */
 .oa-workbench + .oa-invite-codes {
   margin-top: 26px;
 }
@@ -7420,8 +7235,6 @@
     transition: none !important;
   }
 }
-
-
 
 /* Bonus bars and the check-in, on the usage screen. Each is one card, the way the
    settings screen draws two-step verification and the signed-in devices
