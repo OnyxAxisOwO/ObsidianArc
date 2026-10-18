@@ -1,5 +1,5 @@
-// Theme and accent, lifted out of the standalone workspace module so every
-// page — chat, login, admin — is painted by the same code.
+// Theme and accent, shared by every page — chat, login, admin — so they are
+// painted by the same code.
 //
 // Both preferences live in localStorage rather than in a store: they must be
 // readable before the first paint and before any network call, including on
@@ -163,10 +163,6 @@ function normalizeSiteTheme(value: unknown): SiteTheme | null {
     panel_blur: clamp(Number(v.panel_blur ?? 0), 0, 40),
     enforce: v.enforce === true,
   };
-}
-
-export function siteTheme(): SiteTheme | null {
-  return site;
 }
 
 /** Whether the instance has taken the reader's appearance settings over. */

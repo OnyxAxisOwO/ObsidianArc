@@ -391,9 +391,7 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
 };
 
 onMounted(() => {
-  if (typeof document !== 'undefined') {
-    document.body.classList.add('has-auth-page');
-  }
+  document.body.classList.add('has-auth-page');
   const code = route.query['oauth_error'];
   if (typeof code === 'string' && code) {
     const banReason = route.query['ban_reason'];
@@ -423,9 +421,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   resetPoW();
-  if (typeof document !== 'undefined') {
-    document.body.classList.remove('has-auth-page');
-  }
+  document.body.classList.remove('has-auth-page');
 });
 
 // The server's sign-up rules (internal/user and internal/auth), mirrored so a

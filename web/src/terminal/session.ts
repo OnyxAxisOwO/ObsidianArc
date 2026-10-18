@@ -1,4 +1,4 @@
-// One terminal tab's state: CONTRACT.md #5.1/#5.2.
+// One terminal tab's state.
 //
 // A plain factory returning refs, not a store — each tab owns one of these,
 // nothing here is process-wide except the shared command history, and there
@@ -33,8 +33,8 @@ export type RecallDirection = 'up' | 'down';
 
 // --- history: shared across tabs, one module-level store -------------------
 //
-// CONTRACT.md #5.2 is explicit that this persists across tabs while a tab's
-// scrollback does not, so it cannot live inside the per-tab factory below —
+// This persists across tabs while a tab's scrollback does not, so it cannot
+// live inside the per-tab factory below —
 // it is created once, when this module first loads, and every session
 // shares the one ref.
 
@@ -166,7 +166,9 @@ function persistHistory(userId: string | null, lines: readonly string[]): void {
 }
 
 try {
-  // The one list every account on this browser used to share.
+  // Older builds kept one history list for every account on this browser.
+  // Nothing writes it now; this sweep can go once no supported release still
+  // writes it.
   localStorage.removeItem(TERMINAL_HISTORY_KEY_PREFIX);
 } catch {
   // Storage may be unavailable; there is then nothing to sweep either.
@@ -326,7 +328,7 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
     for (const token of tokens) {
       if (token.kind === 'clear') {
         // `watch` redraws a whole frame from nothing each tick, exactly as
-        // running `clear` in a real terminal would — CONTRACT.md #1.7.
+        // running `clear` in a real terminal would.
         scrollback.value = [];
         retainedTokens = 0;
         currentOutputBlock = null;
@@ -355,8 +357,8 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
 
   async function run(line: string): Promise<RunOutcome> {
     if (running.value) {
-      // The transports run one command at a time per session (CONTRACT.md
-      // #1.2); the component is expected to disable submission while
+      // The transports run one command at a time per session; the component is
+      // expected to disable submission while
       // `running` is true, but a stray call must not start a second stream.
       return { ok: false, code: 'busy', exit: false };
     }

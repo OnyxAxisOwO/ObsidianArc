@@ -185,7 +185,7 @@ describe('the admin terminal', () => {
     // stays reachable regardless of how many tabs overflow the scroller.
     expect(scroller.contains(settingsButton)).toBe(false);
     expect(strip.contains(settingsButton)).toBe(true);
-    // "+" lives inside the same scroller as the tabs, per CONTRACT.md #5.2.
+    // "+" lives inside the same scroller as the tabs, so it scrolls with them.
     expect(scroller.contains(stillAddButton)).toBe(true);
 
     // The layout rule that makes tabs shrink instead of pushing the strip

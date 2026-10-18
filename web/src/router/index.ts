@@ -6,9 +6,8 @@
 // The nesting: /settings, /keys, /usage, /feedback and /about are children of
 // `/`, not pages of their own, because that is what they are on screen — a
 // column that opens beside the conversation, with the chat still behind it.
-// The hand-written router had each of those screens call `renderChatPage` first
-// and open a panel over the row it returned; expressing it as nesting is the
-// same result with the chat mounted once instead of rebuilt four times.
+// Nesting keeps the chat mounted once behind all of them. A screen that drew
+// the chat itself would rebuild it on every move between these panels.
 //
 // The guards: which pages need a session is one readable list rather than a
 // check at the top of each screen. The server enforces the same rules on

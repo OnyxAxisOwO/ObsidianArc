@@ -2,7 +2,7 @@
 // remembered for the page's lifetime, so one blip on the network left every
 // later sign-in and feedback form without a challenge until a reload.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadTurnstile } from '../src/composables/useTurnstile';
 
 const scripts = (): HTMLScriptElement[] =>
@@ -41,5 +41,46 @@ describe('loadTurnstile after the script ran without its API', () => {
     expect(second).not.toBe(first);
     scripts()[0]!.dispatchEvent(new Event('error'));
     await expect(second).resolves.toBeNull();
+  });
+});
+
+describe('loadTurnstile when the script never answers', () => {
+  it('gives up after the deadline, removes the tag and lets the next call try again', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = loadTurnstile();
+      expect(scripts()).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect(first).resolves.toBeNull();
+      expect(scripts()).toHaveLength(0);
+
+      const second = loadTurnstile();
+      expect(second).not.toBe(first);
+      expect(scripts()).toHaveLength(1);
+      scripts()[0]!.dispatchEvent(new Event('error'));
+      await expect(second).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let a late load from the abandoned script clear the retry that replaced it', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = loadTurnstile();
+      const abandoned = scripts()[0]!;
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect(first).resolves.toBeNull();
+
+      const second = loadTurnstile();
+      abandoned.dispatchEvent(new Event('load'));
+      expect(scripts()).toHaveLength(1);
+      expect(loadTurnstile()).toBe(second);
+      scripts()[0]!.dispatchEvent(new Event('error'));
+      await expect(second).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

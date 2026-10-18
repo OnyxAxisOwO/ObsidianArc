@@ -1,4 +1,4 @@
-// The terminal's HTTP client: CONTRACT.md #4.
+// The terminal's HTTP client.
 //
 // Three endpoints, one of which streams. `exec` is deliberately the same
 // shape as `sendTurn` in `api/chat.ts` — fetch + ReadableStream, not
@@ -187,9 +187,13 @@ function dispatch({ event, data }: SSEEvent, handlers: ConsoleExecHandlers): voi
   }
 
   switch (event) {
-    case 'out':
-      handlers.onOut?.((payload as { text: string }).text);
+    // Destructuring still throws for a null frame, as reading .text always did:
+    // the terminal's stream test relies on a failing handler closing the stream.
+    case 'out': {
+      const { text } = payload as { text?: unknown };
+      if (typeof text === 'string') handlers.onOut?.(text);
       break;
+    }
     case 'done':
       handlers.onDone?.(payload as ConsoleExecDone);
       break;

@@ -4,6 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
 import { changeLanguage, t } from '@/composables/useI18n';
 import OaToastStack from '@/components/OaToastStack.vue';
 
@@ -13,11 +14,14 @@ vi.mock('@/api/client', () => ({
     post: vi.fn(async () => undefined) as unknown as <T>(url: string, body?: unknown) => Promise<T>,
   },
 }));
-vi.mock('@/router', () => ({ router: { push: vi.fn() } }));
 
 import { api } from '@/api/client';
-import { router } from '@/router';
 import { activeToasts, stopNotifications } from '@/stores/notifications';
+
+// The card navigates through the router it is mounted with. A memory router
+// records the push without moving the page.
+const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:p(.*)*', component: { render: () => null } }] });
+const pushRoute = vi.spyOn(router, 'push').mockResolvedValue(undefined);
 
 const POLL_MS = 30_000;
 
@@ -43,6 +47,7 @@ afterEach(() => {
 
 async function mount(): Promise<void> {
   app = createApp(OaToastStack);
+  app.use(router);
   app.mount(host);
   await vi.advanceTimersByTimeAsync(0); // the store's own initial load
   await nextTick();
@@ -74,7 +79,7 @@ describe('OaToastStack', () => {
     host.querySelector<HTMLElement>('.oa-toast')!.click();
     await nextTick();
 
-    expect(router.push).toHaveBeenCalledWith('/usage');
+    expect(pushRoute).toHaveBeenCalledWith('/usage');
     expect(activeToasts.value).toHaveLength(0);
   });
 
@@ -86,7 +91,7 @@ describe('OaToastStack', () => {
     host.querySelector<HTMLElement>('.oa-toast-close')!.click();
     await nextTick();
 
-    expect(router.push).not.toHaveBeenCalled();
+    expect(pushRoute).not.toHaveBeenCalled();
     expect(activeToasts.value).toHaveLength(0);
   });
 

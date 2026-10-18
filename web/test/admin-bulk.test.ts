@@ -205,6 +205,27 @@ describe('AdminModels, several at once and in place', () => {
     expect(rowBox(1).checked).toBe(true);
   });
 
+  // A server fault's sentence was written for logs. The bulk reason uses the
+  // same wording as a single row's failure, so it is the screen's line instead.
+  it('does not show a server fault sentence as the reason for a partial bulk action', async () => {
+    vi.spyOn(adminApi, 'updateModel').mockImplementation(async (id) => {
+      if (id === 'b') throw new ApiError(500, 'internal', 'database locked at row 7');
+      return { model: model(id) };
+    });
+    await mount([model('a'), model('b')]);
+    rowBox(0).click();
+    await nextTick();
+    rowBox(1).click();
+    await nextTick();
+
+    barButton(t('bulkDisable')).click();
+    await settle();
+
+    const bar = host.querySelector('.oa-bulk-bar')!;
+    expect(bar.textContent).toContain(t('bulkPartial', { failed: 1, total: 2, reason: t('failed') }));
+    expect(bar.textContent).not.toContain('database locked');
+  });
+
   it('deletes only on the second click', async () => {
     const remove = vi.spyOn(adminApi, 'deleteModel').mockImplementation(async (id) => {
       catalogue = catalogue.filter((entry) => entry.id !== id);

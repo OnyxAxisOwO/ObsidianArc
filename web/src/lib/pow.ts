@@ -81,8 +81,10 @@ function sha256(ascii) {
 }
 `;
 
+// Used only where Web Workers and Blobs do not exist at all (the jsdom tests).
+// It is an eval of the same source, which a production page's CSP refuses, so
+// it is deliberately not a fallback for a Worker that fails to start.
 function solveDirectly(challenge: PoWChallenge): number {
-  // Evaluated only where Web Workers are unavailable (e.g. testing environments).
   const fn = new Function('challenge', 'salt', 'maxNumber', `${SHA256_SRC}
     for (var n = 0; n <= maxNumber; n++) {
       if (sha256(salt + n) === challenge) return n;
@@ -108,8 +110,9 @@ export function solvePoW(challenge: PoWChallenge): PoWTask {
   let worker: Worker | null = null;
   let workerUrl: string | null = null;
 
-  const cancel = () => {
-    cancelled = true;
+  // Shared by the answer, the error, the failed start and cancel, so every way
+  // out releases the worker and its blob URL the same way.
+  const cleanup = () => {
     if (worker) {
       worker.terminate();
       worker = null;
@@ -118,6 +121,11 @@ export function solvePoW(challenge: PoWChallenge): PoWTask {
       URL.revokeObjectURL(workerUrl);
       workerUrl = null;
     }
+  };
+
+  const cancel = () => {
+    cancelled = true;
+    cleanup();
   };
 
   const promise = new Promise<PoWSolution>((resolve, reject) => {
@@ -173,26 +181,12 @@ export function solvePoW(challenge: PoWChallenge): PoWTask {
         salt: challenge.salt,
         maxNumber: challenge.maxNumber,
       });
-    } catch {
-      // In case Worker or Blob fails (e.g. strict CSP in unexpected browser), fall back to main thread
+    } catch (failure) {
+      // A Worker that will not start (a CSP that blocks it, say) is not solved
+      // on the page's own thread: that would need eval, which the same policy
+      // refuses, so the failure is reported as the solver's own error.
       cleanup();
-      const nonce = solveDirectly(challenge);
-      if (nonce < 0) {
-        reject(new Error('PoW challenge exhausted without solution'));
-      } else {
-        resolve({ ...challenge, nonce });
-      }
-    }
-
-    function cleanup() {
-      if (worker) {
-        worker.terminate();
-        worker = null;
-      }
-      if (workerUrl) {
-        URL.revokeObjectURL(workerUrl);
-        workerUrl = null;
-      }
+      reject(new Error('PoW worker could not start', { cause: failure }));
     }
   });
 

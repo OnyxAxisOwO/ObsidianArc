@@ -26,6 +26,9 @@ const props = withDefaults(defineProps<{
   /** Slices past this are folded into one "other" entry. */
   max?: number;
   otherLabel?: string;
+  // Off by default, and no caller sets it yet: the dashboard shows the
+  // breakdown without drill-down. It stays so a drill-down needs no new event
+  // shape on the chart, matching the selectable prop on OaTable.
   selectable?: boolean;
 }>(), { max: 8, otherLabel: 'Other', selectable: false });
 

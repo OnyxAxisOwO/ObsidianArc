@@ -7,6 +7,7 @@
 // refresh — so there is nothing to wire from AppShell beyond `v-if`.
 
 import { onBeforeUnmount, onMounted, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   activeToasts, dismissToast, openNotification, startNotifications, stopNotifications, type Toast,
 } from '@/stores/notifications';
@@ -82,8 +83,10 @@ onBeforeUnmount(() => {
   timers.clear();
 });
 
+const router = useRouter();
+
 function onClick(toast: Toast): void {
-  void openNotification(toast.notification);
+  void openNotification(toast.notification, (link) => router.push(link));
 }
 </script>
 

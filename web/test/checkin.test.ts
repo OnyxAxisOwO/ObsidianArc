@@ -239,6 +239,37 @@ describe('OaCheckin', () => {
     expect(changed).toBe(0);
   });
 
+  // The refusal's code is what gets translated. Before this, a Chinese screen
+  // showed the server's English for every refusal the screen did not map itself.
+  it('says a refused check-in in Chinese when the code has a reader\'s sentence', async () => {
+    const { ApiError } = await import('@/api/client');
+    await changeLanguage('zh');
+    serve(status(), status({ checked_in_today: true }));
+    post.mockRejectedValue(new ApiError(409, 'already_checked_in', 'Already checked in today.'));
+    await mount();
+
+    button(t('checkinNow')).click();
+    await settle();
+
+    expect(host.textContent).toContain(t('errAlreadyCheckedIn'));
+    expect(host.textContent).not.toContain('Already checked in today.');
+  });
+
+  // A server fault names no cause a reader can act on, and its sentence is for
+  // logs, so the screen's own line stands in for it.
+  it('shows the screen\'s own line for a server fault on a press, never the server sentence', async () => {
+    const { ApiError } = await import('@/api/client');
+    serve(status(), status());
+    post.mockRejectedValue(new ApiError(500, 'internal', 'Something went wrong on our side.'));
+    await mount();
+
+    button(t('checkinNow')).click();
+    await settle();
+
+    expect(host.textContent).toContain(t('checkinFailed'));
+    expect(host.textContent).not.toContain('Something went wrong');
+  });
+
   it('offers the claim only on a milestone that can be claimed, and claims the one pressed', async () => {
     serve(
       status({

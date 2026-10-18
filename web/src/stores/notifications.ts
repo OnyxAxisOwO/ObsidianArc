@@ -15,8 +15,8 @@ import {
   fetchNotifications, markNotificationsRead, pollNotifications,
   type Notification, type NotificationPoll,
 } from '@/api/notifications';
-import { router } from '@/router';
 import { refreshFeedbackUnread } from '@/stores/feedback';
+import { onSignOut } from '@/stores/session';
 
 const POLL_MS = 30_000;
 // Mirrors internal/notify's pollGraceMillis and pollLimit. The grace window
@@ -173,8 +173,8 @@ async function poll(): Promise<void> {
   });
 }
 
-// A tab nobody can see does not poll. Every open tab used to ask every thirty
-// seconds, hidden or not, and each ask is a session lookup and three queries
+// A tab nobody can see does not poll. Polling every open tab on the same
+// schedule, hidden or not, would make each ask a session lookup and three queries
 // on the server — a reader with a dozen tabs open paid for all of them. The
 // visible tab still polls, and a hidden one catches up the moment it is shown.
 const visibility = useDocumentVisibility();
@@ -197,6 +197,10 @@ export function startNotifications(): void {
   if (active) return;
   active = true;
   generation += 1;
+  // Whatever is still listed belongs to an earlier account: a stop that never
+  // ran (the shell tore down out of order) must not leave its inbox showing.
+  notifications.value = [];
+  unread.value = 0;
   seenIds.clear();
   toasts.value = [];
   cursor = 0;
@@ -205,8 +209,10 @@ export function startNotifications(): void {
   interval.resume();
 }
 
-/** Called on sign-out: the next account's inbox is not this one's. */
-export function stopNotifications(): void {
+// Clears one account's inbox. It runs on sign-out through onSignOut, so the
+// data is gone whether or not the toast stack has unmounted yet; the stop
+// below is kept for the unmount itself, which pauses the poll.
+function forgetAccount(): void {
   active = false;
   generation += 1; // orphans any request already in flight
   inFlight = false;
@@ -217,6 +223,13 @@ export function stopNotifications(): void {
   seenIds.clear();
   cursor = 0;
   loaded = false;
+}
+
+onSignOut(forgetAccount);
+
+/** Called on sign-out: the next account's inbox is not this one's. */
+export function stopNotifications(): void {
+  forgetAccount();
 }
 
 export function dismissToast(id: string): void {
@@ -245,9 +258,11 @@ export async function markAllNotificationsRead(): Promise<void> {
  * opening the newest of several unread emails in a single-threaded inbox
  * would.
  */
-export async function openNotification(n: Notification): Promise<void> {
+// The caller passes the navigation: the store does not import the router, which
+// imports the shell that draws these notifications, so the import would cycle.
+export async function openNotification(n: Notification, go: (link: string) => unknown): Promise<void> {
   dismissToast(n.id);
-  if (n.link) void router.push(n.link);
+  if (n.link) void go(n.link);
   const gen = generation;
   try {
     await markNotificationsRead(n.created_at);

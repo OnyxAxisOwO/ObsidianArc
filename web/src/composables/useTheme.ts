@@ -2,8 +2,8 @@
 //
 // `theme/theme.ts` is unchanged: it still owns localStorage, the pre-paint
 // palette cache and the maths that turns one hue into a whole interface. It
-// already published changes through `onThemeChange`, which existed so the
-// hand-written screens could repaint themselves.
+// already publishes changes through `onThemeChange`, the hook for code that is
+// not reactive and has to repaint itself by hand.
 //
 // That subscription is now a single `ref` the header, the settings panel and
 // the charts all read, so a theme change repaints whatever is on screen

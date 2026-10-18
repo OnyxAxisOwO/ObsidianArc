@@ -1,4 +1,4 @@
-// The terminal's appearance preferences: CONTRACT.md #5.4.
+// The terminal's appearance preferences.
 //
 // Deliberately absent: opacity and blur. Those follow the global wallpaper
 // setting (`--ai-surface-opacity` / `--ai-surface-filter`, set by

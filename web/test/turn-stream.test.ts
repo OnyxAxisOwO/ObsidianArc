@@ -62,6 +62,22 @@ describe('turn stream', () => {
     expect(deltas).toEqual(['partial']);
   });
 
+  it('drops a delta whose text is not a string instead of writing "undefined" into the answer', async () => {
+    answerWith({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          'event: delta\ndata: {}\n\nevent: delta\ndata: {"text":"ok"}\n\nevent: done\ndata: {"message_id":"m1","stopped":false,"streamed":true}\n\n',
+        ));
+        controller.close();
+      },
+    });
+    const deltas: string[] = [];
+
+    await sendTurn(request, { onDelta: (text) => deltas.push(text) }, new AbortController().signal);
+
+    expect(deltas).toEqual(['ok']);
+  });
+
   it('skips a frame whose JSON is null and still reads the done frame after it', async () => {
     answerWith({
       start(controller) {

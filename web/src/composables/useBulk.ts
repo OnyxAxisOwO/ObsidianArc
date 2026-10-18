@@ -8,8 +8,8 @@
 // SQLite file is not worth saving it.
 
 import { computed, ref } from 'vue';
-import { ApiError } from '@/api/client';
 import { t } from '@/composables/useI18n';
+import { apiErrorText } from '@/lib/api-error';
 
 export function useBulk<T>(rows: () => readonly T[], key: (row: T) => string) {
   const selected = ref<string[]>([]);
@@ -48,7 +48,9 @@ export function useBulk<T>(rows: () => readonly T[], key: (row: T) => string) {
         await step(row);
       } catch (failure) {
         failed.push(key(row));
-        reason ||= failure instanceof ApiError ? failure.message : String(failure);
+        // The same wording as a single row's failure, so a bulk action does not
+        // show a server sentence that the one-row action would have translated.
+        reason ||= apiErrorText(failure);
       }
     }
     selected.value = failed;

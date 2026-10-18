@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The web terminal: CONTRACT.md #0/#5.
+// The web terminal.
 //
 // A panel beside the chat, opened from the account menu, for every account
 // whose group allows it. What each account can run is the server's answer,
@@ -103,7 +103,7 @@ function closeTab(id: string): void {
     activeId.value = fallback?.id ?? '';
   }
   // A terminal with no tabs is a broken terminal, not an empty state —
-  // CONTRACT.md #5.2 is explicit that closing the last one opens a fresh one.
+  // Closing the last tab opens a fresh one.
   if (tabs.value.length === 0) createTab();
 }
 
@@ -188,7 +188,7 @@ function letterOf(event: KeyboardEvent): string {
   return event.code.replace(/^Key/, '').toLowerCase();
 }
 
-// Alt, never Ctrl: CONTRACT.md #5.2 asks for tab shortcuts, and Ctrl+T/Ctrl+W
+// Alt, never Ctrl: tab shortcuts are Alt-based, and Ctrl+T/Ctrl+W
 // are the browser's own tab commands — binding them here would either do
 // nothing (the browser wins) or, worse, occasionally win and close the
 // browser tab the terminal is running in.
@@ -304,8 +304,8 @@ onBeforeUnmount(() => {
           </OaIconButton>
         </div>
 
-        <!-- A marker, not a sentence — CONTRACT.md's own `SSH` / `READ-ONLY`
-             precedent for `OaBadge`. Present only once the server confirms the
+        <!-- A marker, not a sentence: drawn as an OaBadge, the way the other short labels are.
+             Present only once the server confirms the
              listener is actually up. -->
         <span
           v-if="spec?.ssh.enabled"

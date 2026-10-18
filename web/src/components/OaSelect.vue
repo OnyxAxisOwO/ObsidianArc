@@ -2,8 +2,8 @@
 // The option list, drawn here instead of by the operating system.
 //
 // A native <select> hands its popup to the platform. That is why every
-// dropdown here used to open a grey OS list with a blue bar through it, in
-// the middle of a rounded translucent panel.
+// dropdown here would open a grey OS list with a blue bar through it, in the
+// middle of a rounded translucent panel, and no theme could restyle it.
 //
 // What makes this harder than an ordinary menu: a select appears inside
 // something that clips, every time. The settings body and the admin body
@@ -18,8 +18,8 @@
 // That teleport is also the cost: a node on <body> has no idea its trigger
 // has moved. So while a list is open one frame callback watches the trigger —
 // it closes when the trigger leaves the document or the window, and re-places
-// when it moves. Unmounting is handled for us now that this is a component,
-// which is the one part the hand-written version had to police by hand.
+// when it moves. Unmounting takes the watcher down with the component, so the
+// frame callback cannot outlive the trigger it was watching.
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useEventListener, useRafFn } from '@vueuse/core';

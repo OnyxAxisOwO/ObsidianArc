@@ -1,9 +1,8 @@
 // The dictionary, made reactive.
 //
-// `i18n.ts` is unchanged from the standalone build and stays the source of
-// truth: one `en` object, `StringKey` derived from it, and a `zh` map the
-// compiler forces to be complete. What it does not have is any notion of a
-// render — it was written for code that redrew a screen by hand.
+// `i18n.ts` is the source of truth: one `en` object, `StringKey` derived from
+// it, and a `zh` map the compiler forces to be complete. It has no notion of a
+// render, which is why the reactive layer lives here rather than in it.
 //
 // This is the whole adaptation: a version counter that every translated
 // string reads. Changing the language bumps it, which invalidates every

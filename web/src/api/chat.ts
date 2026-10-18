@@ -201,12 +201,18 @@ function dispatch({ event, data }: SSEEvent, handlers: TurnHandlers): void {
     case 'start':
       handlers.onStart?.(payload as Parameters<NonNullable<TurnHandlers['onStart']>>[0]);
       break;
-    case 'delta':
-      handlers.onDelta?.((payload as { text: string }).text);
+    // A text frame with no string in it would be joined into the answer as the
+    // literal "undefined", so it is dropped rather than passed on.
+    case 'delta': {
+      const text = (payload as { text?: unknown }).text;
+      if (typeof text === 'string') handlers.onDelta?.(text);
       break;
-    case 'reasoning':
-      handlers.onReasoning?.((payload as { text: string }).text);
+    }
+    case 'reasoning': {
+      const text = (payload as { text?: unknown }).text;
+      if (typeof text === 'string') handlers.onReasoning?.(text);
       break;
+    }
     case 'usage':
       handlers.onUsage?.(payload as Parameters<NonNullable<TurnHandlers['onUsage']>>[0]);
       break;

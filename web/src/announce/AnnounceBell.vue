@@ -18,6 +18,7 @@ const shownThisVisit = new Set<string>();
 // tab and would be pointless to store.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import type { Notification } from '@/api/notifications';
 import {
   fetchAnnouncement,
@@ -68,9 +69,11 @@ const label = computed(() => (totalUnread.value
 // count and show the same arrival twice.
 const notificationRows = computed(() => notificationList.value.filter((record) => record.kind !== 'announcement'));
 
+const router = useRouter();
+
 function onNotificationClick(close: () => void, n: Notification): void {
   close();
-  void openNotification(n);
+  void openNotification(n, (link) => router.push(link));
 }
 
 /**

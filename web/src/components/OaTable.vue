@@ -76,7 +76,35 @@ watch(() => props.rows, () => {
 watch(() => props.sort, () => { local.value.page = 1; });
 
 const chosen = computed(() => new Set(props.selected ?? []));
-const keyOf = (row: T): string => props.rowKey!(row);
+// A selection is kept by key, so it outlives the redraw an action causes. The
+// prop is required with `multi`; a caller that forgets it gets this message
+// rather than a TypeError from somewhere inside the render.
+function keyOf(row: T): string {
+  if (!props.rowKey) throw new Error('OaTable: multi needs a rowKey');
+  return props.rowKey(row);
+}
+
+// Rows are keyed by rowKey wherever it is given, so a control's state (a box
+// half typed in) follows its row through a sort, a filter or a drag instead of
+// staying with the position it was drawn at.
+function rowRenderKey(row: T, index: number): string | number {
+  return props.rowKey ? keyOf(row) : index;
+}
+
+// The table scrolls once its columns no longer fit, so the width they need is
+// worked out before layout. Only a px width says how wide a column is: a rem or
+// % width depends on the table itself, and a column that names none is a guess
+// either way, so each of those is counted at the default.
+const DEFAULT_COLUMN_PX = 140;
+const CHECK_COLUMN_PX = 40;
+
+function columnPx(width: string | undefined): number {
+  const px = /^\s*(\d+(?:\.\d+)?)px\s*$/.exec(width ?? '');
+  return px ? Number(px[1]) : DEFAULT_COLUMN_PX;
+}
+
+const minWidth = computed(() =>
+  (props.multi ? CHECK_COLUMN_PX : 0) + props.columns.reduce((sum, col) => sum + columnPx(col.width), 0));
 
 function toggleRow(row: T, on: boolean): void {
   const key = keyOf(row);
@@ -168,30 +196,30 @@ function onDragStart(event: DragEvent, index: number): void {
 }
 
 function onDragOver(event: DragEvent, index: number): void {
-  index += start.value;
-  if (dragging.value === null || dragging.value === index) return;
+  const at = index + start.value;
+  if (dragging.value === null || dragging.value === at) return;
   // Without preventDefault the browser refuses the drop, which reads as the
   // row springing back for no reason.
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-  dropBefore.value = index < dragging.value ? index : null;
-  dropAfter.value = index > dragging.value ? index : null;
+  dropBefore.value = at < dragging.value ? at : null;
+  dropAfter.value = at > dragging.value ? at : null;
 }
 
 function onDrop(event: DragEvent, index: number): void {
-  index += start.value;
+  const at = index + start.value;
   event.preventDefault();
   const from = dragging.value;
   clearMarks();
   dragging.value = null;
-  if (from === null || from === index) return;
+  if (from === null || from === at) return;
   const next = [...ordered.value];
   const [moved] = next.splice(from, 1);
   // The rows can shrink while a drag is in flight (a filter, a deletion); the
   // position it started from may then hold nothing, and writing that hole back
   // would hand the caller an undefined row.
   if (moved === undefined) return;
-  next.splice(index, 0, moved);
+  next.splice(at, 0, moved);
   emit('reorder', next);
 }
 
@@ -219,97 +247,97 @@ function clearMarks(): void {
 
 <template>
   <div class="oa-table-block" :aria-busy="busy">
-  <div ref="wrap" class="oa-table-wrap" tabindex="0">
-    <p v-if="!props.rows.length" class="oa-table-empty">{{ props.empty }}</p>
-    <!-- A block establishes the actual table width before fixed column layout.
-         A min-width on the table itself can still leave columns compressed.
-         A column that names no width is counted at 140 here, for the point at
-         which the table starts to scroll, but is given no width on its
-         header: in a fixed layout that is the column that takes whatever the
-         sized ones leave — the name, usually — instead of every column being
-         stretched in proportion and the figures drifting apart. -->
+    <div ref="wrap" class="oa-table-wrap" tabindex="0">
+      <p v-if="!props.rows.length" class="oa-table-empty">{{ props.empty }}</p>
+      <!-- A block establishes the actual table width before fixed column layout.
+           A min-width on the table itself can still leave columns compressed.
+           A column with no px width is counted at the default here, for the point
+           at which the table starts to scroll, but is given no width on its
+           header: in a fixed layout that is the column that takes whatever the
+           sized ones leave — the name, usually — instead of every column being
+           stretched in proportion and the figures drifting apart. -->
 
-    <div v-else :style="{ minWidth: `${(props.multi ? 40 : 0) + props.columns.reduce((sum, col) => sum + (Number.parseInt(col.width ?? '') || 140), 0)}px` }">
-    <table class="oa-table">
-      <thead>
-        <tr>
-          <th v-if="props.multi" class="oa-table-check" @click="togglePage(!pageAll)">
-            <input
-              type="checkbox"
-              :checked="pageAll"
-              :indeterminate="pageSome && !pageAll"
-              :aria-label="t('selectPage')"
-              @click.stop
-              @change="togglePage(($event.target as HTMLInputElement).checked)"
+      <div v-else :style="{ minWidth: `${minWidth}px` }">
+        <table class="oa-table">
+          <thead>
+            <tr>
+              <th v-if="props.multi" class="oa-table-check" @click="togglePage(!pageAll)">
+                <input
+                  type="checkbox"
+                  :checked="pageAll"
+                  :indeterminate="pageSome && !pageAll"
+                  :aria-label="t('selectPage')"
+                  @click.stop
+                  @change="togglePage(($event.target as HTMLInputElement).checked)"
+                >
+              </th>
+              <th
+                v-for="(column, index) in props.columns"
+                :key="column.key"
+                :class="[
+                  columnClass(column),
+                  {
+                    sortable: !!column.sort,
+                    asc: props.sort?.column === index && !props.sort.descending,
+                    desc: props.sort?.column === index && props.sort.descending,
+                  },
+                ]"
+                :style="column.width ? { width: column.width } : undefined"
+                :aria-sort="column.sort ? sortState(index) : undefined"
+                :tabindex="column.sort ? 0 : undefined"
+                @click="column.sort && toggleSort(index)"
+                @keydown.enter.prevent="column.sort && toggleSort(index)"
+                @keydown.space.prevent="column.sort && toggleSort(index)"
+              >
+                {{ column.header }}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(row, index) in visible"
+              :key="rowRenderKey(row, index)"
+              :class="{
+                muted: props.muted?.(row),
+                checked: props.multi && chosen.has(keyOf(row)),
+                selectable: props.selectable,
+                draggable: draggable,
+                dragging: dragging === index + start,
+                'drop-before': dropBefore === index + start,
+                'drop-after': dropAfter === index + start,
+              }"
+              :draggable="draggable"
+              :tabindex="props.selectable ? 0 : undefined"
+              @click="props.selectable && onRowClick($event, row)"
+              @keydown.enter="onRowKey($event, row)"
+              @keydown.space="onRowKey($event, row)"
+              @dragstart="draggable && onDragStart($event, index)"
+              @dragover="draggable && onDragOver($event, index)"
+              @drop="draggable && onDrop($event, index)"
+              @dragend="dragging = null; clearMarks()"
             >
-          </th>
-          <th
-            v-for="(column, index) in props.columns"
-            :key="column.key"
-            :class="[
-              columnClass(column),
-              {
-                sortable: !!column.sort,
-                asc: props.sort?.column === index && !props.sort.descending,
-                desc: props.sort?.column === index && props.sort.descending,
-              },
-            ]"
-            :style="column.width ? { width: column.width } : undefined"
-            :aria-sort="column.sort ? sortState(index) : undefined"
-            :tabindex="column.sort ? 0 : undefined"
-            @click="column.sort && toggleSort(index)"
-            @keydown.enter.prevent="column.sort && toggleSort(index)"
-            @keydown.space.prevent="column.sort && toggleSort(index)"
-          >
-            {{ column.header }}
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr
-          v-for="(row, index) in visible"
-          :key="index"
-          :class="{
-            muted: props.muted?.(row),
-            checked: props.multi && chosen.has(keyOf(row)),
-            selectable: props.selectable,
-            draggable: draggable,
-            dragging: dragging === index + start,
-            'drop-before': dropBefore === index + start,
-            'drop-after': dropAfter === index + start,
-          }"
-          :draggable="draggable"
-          :tabindex="props.selectable ? 0 : undefined"
-          @click="props.selectable && onRowClick($event, row)"
-          @keydown.enter="onRowKey($event, row)"
-          @keydown.space="onRowKey($event, row)"
-          @dragstart="draggable && onDragStart($event, index)"
-          @dragover="draggable && onDragOver($event, index)"
-          @drop="draggable && onDrop($event, index)"
-          @dragend="dragging = null; clearMarks()"
-        >
-          <td
-            v-if="props.multi"
-            class="oa-table-check"
-            @click.stop="toggleRow(row, !chosen.has(keyOf(row)))"
-            @keydown.stop
-          >
-            <input
-              type="checkbox"
-              :checked="chosen.has(keyOf(row))"
-              :aria-label="t('selectRow')"
-              @click.stop
-              @change="toggleRow(row, ($event.target as HTMLInputElement).checked)"
-            >
-          </td>
-          <td v-for="column in props.columns" :key="column.key" :class="columnClass(column)">
-            <slot :name="`cell-${column.key}`" :row="row">{{ column.text?.(row) ?? '' }}</slot>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+              <td
+                v-if="props.multi"
+                class="oa-table-check"
+                @click.stop="toggleRow(row, !chosen.has(keyOf(row)))"
+                @keydown.stop
+              >
+                <input
+                  type="checkbox"
+                  :checked="chosen.has(keyOf(row))"
+                  :aria-label="t('selectRow')"
+                  @click.stop
+                  @change="toggleRow(row, ($event.target as HTMLInputElement).checked)"
+                >
+              </td>
+              <td v-for="column in props.columns" :key="column.key" :class="columnClass(column)">
+                <slot :name="`cell-${column.key}`" :row="row">{{ column.text?.(row) ?? '' }}</slot>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
-  </div>
-  <OaPagination v-bind="paging" :busy="busy" @change="changePage" />
+    <OaPagination v-bind="paging" :busy="busy" @change="changePage" />
   </div>
 </template>

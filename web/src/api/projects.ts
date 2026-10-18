@@ -24,10 +24,6 @@ export function listProjects(): Promise<ProjectList> {
   return api.get<ProjectList>('/api/projects');
 }
 
-export function getProject(id: string): Promise<Project> {
-  return api.get<Project>(`/api/projects/${id}`);
-}
-
 export function createProject(name: string, instructions = ''): Promise<Project> {
   return api.post<Project>('/api/projects', { name, instructions });
 }

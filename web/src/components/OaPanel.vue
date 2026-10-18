@@ -172,7 +172,7 @@ onMounted(async () => {
  * than vanishing and snapping the content wider.
  *
  * The caller navigates in that callback — every one of them does — and a
- * navigation replaces the whole screen, which used to take the panel with it
+ * navigation replaces the whole screen, and would take the panel with it
  * before it had moved a pixel.
  */
 function close(): void {
@@ -425,8 +425,8 @@ defineExpose({
         :scroll-class="props.bodyClass ? `oa-panel-body ${props.bodyClass}` : 'oa-panel-body'"
       >
         <slot />
-        <!-- Last in the body, where the hand-written panel appended it: an
-             error is about what the reader just tried, not about the form. -->
+        <!-- Last in the body: an error is about what the reader just tried,
+             not about the form above it. -->
         <p class="oa-drawer-flash" :class="{ visible: !!props.error }">{{ props.error }}</p>
       </OaScrollArea>
 

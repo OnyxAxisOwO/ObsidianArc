@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// One tab's scrollback and prompt line: CONTRACT.md #5.2.
+// One tab's scrollback and prompt line.
 //
 // Only the active tab's pane is mounted (`TerminalPanel.vue` keys it behind
 // a `v-if`) — a background tab's command keeps running because the fetch
@@ -26,14 +26,14 @@ const props = defineProps<{
   timestamps: boolean;
 }>();
 
-/** The measured column count, for `execConsoleLine`'s `cols` — CONTRACT.md #4 says it feeds `render.Table`'s own width maths server-side. */
+/** The measured column count, for `execConsoleLine`'s `cols`: the server lays its tables out to this width. */
 const emit = defineEmits<{ (event: 'measure', cols: number): void }>();
 
 const scrollComp = ref<InstanceType<typeof OaScrollArea> | null>(null);
 const blocksRef = ref<HTMLElement | null>(null);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const completions = ref<ConsoleCompletionItem[]>([]);
-/** False once the reader has scrolled up — CONTRACT.md #5.2's "auto-follow unless scrolled up". */
+/** False once the reader has scrolled up: output stops pulling the view down until they are back at the bottom. */
 const following = ref(true);
 
 const MAX_INPUT_HEIGHT = 160;

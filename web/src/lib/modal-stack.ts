@@ -1,8 +1,8 @@
 // The modal surfaces open now, oldest first: side panels and sheets.
 //
 // Escape goes to the last of them only. A drawer, a sheet opened over it and
-// the account panel beside it all listen on document, and one key used to close
-// all of them: the drawer lost its unsaved input, and a confirmation sheet took
+// the account panel beside it all listen on document, so one key would close
+// all of them: the drawer would lose its unsaved input, and a confirmation sheet would take
 // the panel it was asked from along with it. A surface leaves the stack when it
 // unmounts rather than when it starts to close, so a second Escape during a
 // slide-out does not reach the surface beneath.
