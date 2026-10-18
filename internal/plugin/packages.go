@@ -444,7 +444,9 @@ func (m *Manager) restoreInstall(name string, old, nl *loaded) {
 		if err := m.attach(old); err != nil {
 			slog.Error("plugin: could not put the previous version back", "plugin", name, "error", err)
 			if m.host != nil {
-				m.host.Auth.ReplaceGuards(name, refusingGuards(name, old.pkg.Manifest, nl.pkg.Manifest))
+				if err := m.host.Auth.ReplaceGuards(name, refusingGuards(name, old.pkg.Manifest, nl.pkg.Manifest)); err != nil {
+					slog.Error("plugin: could not stand the refusing guards", "plugin", name, "error", err)
+				}
 			}
 		}
 		return

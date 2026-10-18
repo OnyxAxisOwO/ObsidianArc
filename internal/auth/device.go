@@ -2,8 +2,6 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +12,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -81,11 +80,6 @@ func (s *Service) SetDeviceCookie(w http.ResponseWriter, value string) {
 	})
 }
 
-func hashDevice(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
-}
-
 // NewDeviceEvent is a sign-in worth telling somebody about: not the first
 // device this account has ever used — there is nothing to compare that one
 // against — but one that has joined an account with at least one already on
@@ -132,7 +126,7 @@ func (s *Service) recordDevice(
 		value = id.Secret(32)
 		cookieToSet = value
 	}
-	deviceID := hashDevice(value)
+	deviceID := secret.Digest(value)
 	now := time.Now().UnixMilli()
 	truncatedUA := text.Truncate(ua, MaxUserAgentChars)
 

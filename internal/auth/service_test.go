@@ -1153,9 +1153,9 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 		t.Fatalf("first user role = %q, want admin", admin.Role)
 	}
 
-	// Subsequent normal registrations fail with ErrOIDCOnlyRegistration.
-	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"}); !errors.Is(err, ErrOIDCOnlyRegistration) {
-		t.Fatalf("second registration want ErrOIDCOnlyRegistration, got %v", err)
+	// Subsequent normal registrations fail with ErrThirdPartyOnlyRegistration.
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"}); !errors.Is(err, ErrThirdPartyOnlyRegistration) {
+		t.Fatalf("second registration want ErrThirdPartyOnlyRegistration, got %v", err)
 	}
 
 	// Existing user can still log in with password.

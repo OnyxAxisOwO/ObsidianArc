@@ -23,6 +23,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
 // Where Cloudflare checks a token. A constant rather than a setting: an
@@ -43,6 +45,24 @@ var (
 	// words and different status codes.
 	ErrUnavailable = errors.New("turnstile: the challenge service is unavailable")
 )
+
+// HTTPError is the refusal both failures get on every endpoint that asks for a
+// challenge, so the client words them the same way on every screen. It is nil
+// for any other error, which the caller answers as its own fault.
+//
+// The two statuses are deliberate: an outage at Cloudflare is a 503, so a
+// monitor can tell it from a wave of bots, which is what a 403 means.
+func HTTPError(err error) *httpx.Error {
+	switch {
+	case errors.Is(err, ErrFailed):
+		return httpx.ForbiddenCode("challenge_failed",
+			"The verification could not be completed. Try again.")
+	case errors.Is(err, ErrUnavailable):
+		return httpx.UnavailableCode("challenge_unavailable",
+			"Verification is unavailable right now. Try again shortly.")
+	}
+	return nil
+}
 
 type response struct {
 	Success bool     `json:"success"`

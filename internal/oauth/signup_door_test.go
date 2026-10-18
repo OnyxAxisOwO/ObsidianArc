@@ -2,7 +2,6 @@ package oauth
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 )
@@ -106,8 +106,7 @@ func cookieNamed(recorder *httptest.ResponseRecorder, name string) *http.Cookie 
 // flag: the same key and the same fields, and nothing about the sign-up door.
 func legacyCookie(h *Handlers, nonce string) *http.Cookie {
 	body := fmt.Sprintf(`{"p":"github","n":%q,"e":%d}`, nonce, time.Now().Add(stateTTL).UnixMilli())
-	encoded := base64.RawURLEncoding.EncodeToString([]byte(body))
-	return &http.Cookie{Name: stateCookie, Value: encoded + "." + h.stamp.tag(encoded)}
+	return &http.Cookie{Name: stateCookie, Value: secret.Sign(h.stamp.key, []byte(body))}
 }
 
 // A provider sign-up that never went through the sign-up door is refused at the

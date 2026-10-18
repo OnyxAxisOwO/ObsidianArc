@@ -166,16 +166,15 @@ func (h *Handlers) redeem(w http.ResponseWriter, r *http.Request) error {
 func TranslateError(err error) error { return translate(err) }
 
 func redeemChallengeError(err error) error {
-	switch {
-	case errors.Is(err, turnstile.ErrFailed):
+	// Worded for this screen. The outage and the default are the shared ones.
+	if errors.Is(err, turnstile.ErrFailed) {
 		return httpx.ForbiddenCode("challenge_failed",
 			"Complete the verification before redeeming a code.")
-	case errors.Is(err, turnstile.ErrUnavailable):
-		return httpx.UnavailableCode("challenge_unavailable",
-			"Verification is unavailable right now. Try again shortly.")
-	default:
-		return httpx.Internal(err)
 	}
+	if apiErr := turnstile.HTTPError(err); apiErr != nil {
+		return apiErr
+	}
+	return httpx.Internal(err)
 }
 
 func translate(err error) error {

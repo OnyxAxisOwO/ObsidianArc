@@ -13,8 +13,6 @@ package apikey
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,6 +21,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 )
 
 // Key is a row. It never carries the token: there is no field for it because
@@ -196,8 +195,7 @@ func (s *Store) CheckRoom(ctx context.Context, userID string) error {
 
 // Digest maps a presented token to its row key.
 func Digest(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	return secret.Digest(token)
 }
 
 // Resolve looks a presented token up. A paused key that has not expired returns

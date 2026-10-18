@@ -2,7 +2,6 @@ package oauth
 
 import (
 	"bytes"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 )
 
 // Carrying a sign-in across the trip to the provider and back.
@@ -163,17 +164,12 @@ func (s *stamp) issuePending(value pending) (string, error) {
 	if len(body) > maxPendingJSON {
 		return "", errPendingTooLarge
 	}
-	encoded := base64.RawURLEncoding.EncodeToString(body)
-	return encoded + "." + s.tag(encoded), nil
+	return secret.Sign(s.key, body), nil
 }
 
 func (s *stamp) readPending(cookie string) (pending, error) {
-	encoded, tag, ok := strings.Cut(strings.TrimSpace(cookie), ".")
-	if !ok || !hmac.Equal([]byte(tag), []byte(s.tag(encoded))) {
-		return pending{}, ErrState
-	}
-	body, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
+	body, ok := secret.Verify(s.key, cookie)
+	if !ok {
 		return pending{}, ErrState
 	}
 	var value pending
@@ -195,20 +191,12 @@ func (s *stamp) issue(value state) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	encoded := base64.RawURLEncoding.EncodeToString(body)
-	return encoded + "." + s.tag(encoded), nil
+	return secret.Sign(s.key, body), nil
 }
 
 func (s *stamp) read(cookie string) (state, error) {
-	encoded, tag, ok := strings.Cut(strings.TrimSpace(cookie), ".")
+	body, ok := secret.Verify(s.key, cookie)
 	if !ok {
-		return state{}, ErrState
-	}
-	if !hmac.Equal([]byte(tag), []byte(s.tag(encoded))) {
-		return state{}, ErrState
-	}
-	body, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
 		return state{}, ErrState
 	}
 	var value state
@@ -219,12 +207,6 @@ func (s *stamp) read(cookie string) (state, error) {
 		return state{}, ErrState
 	}
 	return value, nil
-}
-
-func (s *stamp) tag(body string) string {
-	mac := hmac.New(sha256.New, s.key)
-	mac.Write([]byte(body))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // --- the cookie ---------------------------------------------------------------

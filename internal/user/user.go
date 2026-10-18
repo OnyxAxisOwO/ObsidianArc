@@ -117,15 +117,14 @@ func (u User) DisplayName() string {
 }
 
 var (
-	ErrNotFound          = errors.New("user: not found")
-	ErrUsernameTaken     = errors.New("user: username already taken")
-	ErrEmailTaken        = errors.New("user: email already registered")
-	ErrInvalidUsername   = errors.New("user: username must be 3-32 characters of letters, digits, dot, dash or underscore")
-	ErrInvalidEmail      = errors.New("user: email address is not valid")
-	ErrNicknameTooLong   = errors.New("user: nickname must be 32 characters or fewer")
-	ErrBioTooLong        = errors.New("user: bio must be 500 characters or fewer")
-	ErrAvatarTooLong     = errors.New("user: avatar is too large")
-	ErrLastAdminDemotion = errors.New("user: the last administrator cannot be demoted or disabled")
+	ErrNotFound        = errors.New("user: not found")
+	ErrUsernameTaken   = errors.New("user: username already taken")
+	ErrEmailTaken      = errors.New("user: email already registered")
+	ErrInvalidUsername = errors.New("user: username must be 3-32 characters of letters, digits, dot, dash or underscore")
+	ErrInvalidEmail    = errors.New("user: email address is not valid")
+	ErrNicknameTooLong = errors.New("user: nickname must be 32 characters or fewer")
+	ErrBioTooLong      = errors.New("user: bio must be 500 characters or fewer")
+	ErrAvatarTooLong   = errors.New("user: avatar is too large")
 )
 
 const (

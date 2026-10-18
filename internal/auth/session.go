@@ -2,14 +2,13 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -65,8 +64,7 @@ func NewSessionStore(db *database.DB, users *user.Store) *SessionStore {
 
 // HashToken maps a cookie value to its row key.
 func HashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	return secret.Digest(token)
 }
 
 // sessionRefLength is how much of a session's id the "signed-in devices"

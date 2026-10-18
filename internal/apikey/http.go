@@ -252,14 +252,8 @@ func translate(err error) error {
 // challengeError says the same two things the sign-up page says, in the same
 // codes, so one string in the client covers both screens.
 func challengeError(err error) error {
-	switch {
-	case errors.Is(err, turnstile.ErrFailed):
-		return httpx.ForbiddenCode("challenge_failed",
-			"The verification could not be completed. Try again.")
-	case errors.Is(err, turnstile.ErrUnavailable):
-		return httpx.UnavailableCode("challenge_unavailable",
-			"Verification is unavailable right now. Try again shortly.")
-	default:
-		return httpx.Internal(err)
+	if apiErr := turnstile.HTTPError(err); apiErr != nil {
+		return apiErr
 	}
+	return httpx.Internal(err)
 }

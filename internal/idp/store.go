@@ -2,9 +2,7 @@ package idp
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +10,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
@@ -25,8 +24,7 @@ import (
 
 // Digest maps a presented secret to the column that finds its row.
 func Digest(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
+	return secret.Digest(value)
 }
 
 const appColumns = `id, client_id, name, description, redirect_uris, scopes,

@@ -92,7 +92,7 @@ func TestASignUpThatRacedTheFirstAccountIsSentBackNotOpened(t *testing.T) {
 	}
 
 	raced := false
-	f.auth.afterPreflight = func() {
+	f.auth.hooks.afterPreflight = func() {
 		if raced {
 			return
 		}
@@ -132,7 +132,7 @@ func TestASignUpThatRacedTheFirstAccountOpensWhenNoChallengeIsConfigured(t *test
 	}
 
 	raced := false
-	f.auth.afterPreflight = func() {
+	f.auth.hooks.afterPreflight = func() {
 		if raced {
 			return
 		}

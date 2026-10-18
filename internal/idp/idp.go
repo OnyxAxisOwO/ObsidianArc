@@ -43,7 +43,6 @@ var (
 	// unregistered callback is exactly where an attacker wants the code sent.
 	ErrRedirectMismatch = errors.New("idp: that callback is not registered for this application")
 	ErrInvalidRequest   = errors.New("idp: the authorisation request is not valid")
-	ErrUnknownScope     = errors.New("idp: that scope is not one this application may ask for")
 	// The code is unknown, expired, already spent, or belongs to another
 	// application. Same answer to all of them, for the same reason.
 	ErrBadCode  = errors.New("idp: that authorisation code cannot be used")
