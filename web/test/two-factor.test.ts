@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { createApp, h, shallowRef, type App, type Component } from 'vue';
 import * as authApi from '../src/api/auth';
 import type { Account } from '../src/api/auth';
 import { ApiError } from '../src/api/client';
@@ -14,6 +14,7 @@ import {
 import AuthView from '../src/views/AuthView.vue';
 import SecuritySection from '../src/views/settings/SecuritySection.vue';
 import TwoFactorWizard from '../src/views/settings/TwoFactorWizard.vue';
+import { settle, stubLocation } from './helpers';
 
 // Two-step verification from the browser's side: the code step of signing in,
 // the setup wizard, and the security settings that switch it on and off.
@@ -78,13 +79,6 @@ afterEach(() => {
   site.value = null;
   forget();
 });
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
   const panels = document.createElement('div');
@@ -222,8 +216,7 @@ describe('the code step of signing in', () => {
   // Another site sends a visitor through the sign-in with its own request as
   // the destination, and the router has no screen by that name.
   it('follows a destination the server owns with a real navigation', async () => {
-    const assign = vi.fn();
-    Object.defineProperty(window, 'location', { configurable: true, writable: true, value: { assign, href: '' } });
+    const { assign } = stubLocation();
     route.query = { next: '/oauth/authorize?client_id=wiki&state=s' };
     pendingSecondFactor.value = true;
     vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT });

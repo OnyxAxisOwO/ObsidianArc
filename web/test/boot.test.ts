@@ -6,6 +6,7 @@ import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import type { Account } from '../src/api/auth';
 import { conversations } from '../src/chat/useChat';
 import { changeLanguage, t } from '../src/composables/useI18n';
+import { until } from './helpers';
 
 // The whole application, mounted.
 //
@@ -196,8 +197,10 @@ async function mountAt(path: string): Promise<void> {
   app = createApp(App);
   app.use(router);
   app.mount(host);
-  // Long enough for the route component to mount and for whatever it asked
-  // the server for to come back, so nothing is torn down mid-flight.
+  // Two macrotasks and a frame: enough for the route component to mount, for
+  // stubServer's answers to land — they resolve at once, so a stub that makes
+  // a request wait (the probe stream) needs its test to wait for that itself —
+  // and for a panel's first-frame transition, so nothing is torn down mid-flight.
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -892,12 +895,14 @@ describe('what moves, and what does not', () => {
       t('probeAllModelsProgress', { completed: 1, total: 2 }),
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The stub sends the done frame on a timer of its own; wait for what it
+    // draws rather than for a number of milliseconds that has to outlast it.
+    const done = t('probeAllModelsDone', { total: 2, succeeded: 1, failed: 1, skipped: 0 });
+    await until(() => body?.textContent?.includes(done) === true, 'the probe\'s done frame to be drawn');
 
     const calls = vi.mocked(globalThis.fetch).mock.calls;
     expect(calls.some(([input]) => String(input).includes('/api/admin/health/probe'))).toBe(true);
-    expect(body?.textContent).toContain(t('probeAllModelsDone', { total: 2, succeeded: 1, failed: 1, skipped: 0 }));
+    expect(body?.textContent).toContain(done);
     expect(host.querySelector<HTMLInputElement>('#secDegradationPolicy input')?.value).toBe('77');
     expect(host.querySelector('.oa-control-save-state')?.textContent).toContain(t('controlUnsaved'));
     expect(calls.filter(([input, init]) => String(input).endsWith('/api/admin/settings') && init?.method === 'GET')).toHaveLength(1);

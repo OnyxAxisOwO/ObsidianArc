@@ -15,6 +15,7 @@ import { providePanelHost } from '../src/composables/usePanelHost';
 import { installPlugins } from '../src/plugins/registry';
 import type { ArcPlugin, KeyConfirmation } from '../src/plugins/types';
 import KeysPanel from '../src/views/KeysPanel.vue';
+import { settle } from './helpers';
 
 const KEY: keysAPI.ApiKey = {
   id: 'key-1', name: 'My laptop', prefix: 'sk-test', disabled: false,
@@ -35,13 +36,6 @@ const plugin = (keyIssuing: ArcPlugin['keyIssuing']): ArcPlugin => ({ name: 'dem
 let app: App;
 let host: HTMLElement;
 let panelHost: HTMLElement;
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mount(): Promise<void> {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: KeysPanel }] });

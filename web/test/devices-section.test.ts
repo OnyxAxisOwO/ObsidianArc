@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { createApp, h, shallowRef, type App, type Component } from 'vue';
 import * as sessionsApi from '../src/api/sessions';
 import type { DeviceSession } from '../src/api/sessions';
 import * as twoFactorApi from '../src/api/twofactor';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import SecuritySection from '../src/views/settings/SecuritySection.vue';
+import { settle } from './helpers';
 
 // The "Signed-in devices" card: listing, signing a single device out, "sign
 // out other devices", and the "this device" badge.
@@ -43,13 +44,6 @@ afterEach(() => {
   document.body.textContent = '';
   vi.restoreAllMocks();
 });
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
   const panels = document.createElement('div');

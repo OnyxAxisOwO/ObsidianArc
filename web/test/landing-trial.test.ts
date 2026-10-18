@@ -12,19 +12,13 @@ import * as trialApi from '@/api/trial';
 import { changeLanguage, t } from '@/composables/useI18n';
 import { site, siteInfo } from '@/stores/session';
 import LandingView from '@/views/LandingView.vue';
+import { settle } from './helpers';
 
 // The notice is not what this checks, and it reads the announcements API.
 vi.mock('@/announce/HomeNotice.vue', () => ({ default: { render: () => null } }));
 
 let app: App | null = null;
 let host: HTMLElement;
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mount(): Promise<void> {
   const router = createRouter({

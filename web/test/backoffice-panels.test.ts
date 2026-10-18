@@ -7,6 +7,7 @@ import type { Account } from '../src/api/auth';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { installPlugins } from '../src/plugins/registry';
 import type { ArcPlugin } from '../src/plugins/types';
+import { until } from './helpers';
 
 // A panel from the account menu, opened while the backoffice is on screen.
 //
@@ -101,6 +102,10 @@ let host: HTMLElement;
 /** The request that starts a connection to a provider. */
 const CONNECT = /\/api\/auth\/oauth\/connections\//;
 
+// OaPanel's ZOOM_MS is 340: it slides out for that long before it tells the
+// page it has closed, and only then does the address move.
+const PAST_THE_SLIDE_MS = 400;
+
 function pause(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -145,7 +150,7 @@ async function closeWithButton(): Promise<void> {
   const button = host.querySelector<HTMLButtonElement>(`.oa-panel .oa-panel-head [aria-label="${t('close')}"]`);
   if (!button) throw new Error('no panel to close');
   button.click();
-  await pause(400);
+  await pause(PAST_THE_SLIDE_MS);
 }
 
 /** A plugin with one panel of entries, each opening a page of its own. */
@@ -191,11 +196,6 @@ function connectNext(): string | null {
 /** The messages the settings screen shows under its connections. */
 function connectionFlashes(): string[] {
   return [...host.querySelectorAll('.oa-group-flash')].map((node) => node.textContent?.trim() ?? '');
-}
-
-/** Waits for what loads over the network, such as the list of connections. */
-async function until(condition: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 50 && !condition(); attempt += 1) await pause(10);
 }
 
 /** A rail entry, workbench tab or subnav item, found by the label the reader sees. */
@@ -283,7 +283,7 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     expect(host.querySelector('.oa-admin-rail')).toBe(rail);
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    await pause(400);
+    await pause(PAST_THE_SLIDE_MS);
     expect(router.currentRoute.value.fullPath).toBe('/admin/providers?tab=manage');
     expect(host.querySelector('.oa-panel')).toBeNull();
   });
@@ -304,7 +304,7 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     expect(panelTitle()).toBe('Entry 42 in detail');
 
     host.querySelector<HTMLButtonElement>(`.oa-panel .oa-panel-head [aria-label="${t('back')}"]`)!.click();
-    await pause(400);
+    await pause(PAST_THE_SLIDE_MS);
     expect(router.currentRoute.value.query).toEqual({ tab: 'manage', panel: 'x/tips' });
     expect(panelTitle()).toBe('Tips');
 
@@ -329,7 +329,7 @@ describe('a panel from the account menu, opened over the backoffice', () => {
 
     await openFirstEntry();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    await pause(400);
+    await pause(PAST_THE_SLIDE_MS);
     expect(router.currentRoute.value.query).toEqual({ tab: 'manage', panel: 'x/tips' });
     expect(panelTitle()).toBe('Tips');
     expect(await panelIsOpen()).toBe(true);
@@ -375,9 +375,9 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     adopt(ADMIN);
     await mountAt('/admin/providers?keep=1#models');
     await chooseFromAccountMenu(t('settings'));
-    await until(() => !!host.querySelector('.oa-connection button'));
+    await until(() => !!host.querySelector('.oa-connection button'), 'the list of connections');
     host.querySelector<HTMLButtonElement>('.oa-connection button')!.click();
-    await until(() => connectNext() !== null);
+    await until(() => connectNext() !== null, 'the connect request');
 
     expect(connectNext()).toBe('/admin/providers?keep=1&panel=settings#models');
   });
@@ -534,9 +534,9 @@ describe('the same menu from the chat', () => {
   it('brings a connection back to the settings screen, as it always has', async () => {
     adopt(ACCOUNT);
     await mountAt('/settings');
-    await until(() => !!host.querySelector('.oa-connection button'));
+    await until(() => !!host.querySelector('.oa-connection button'), 'the list of connections');
     host.querySelector<HTMLButtonElement>('.oa-connection button')!.click();
-    await until(() => connectNext() !== null);
+    await until(() => connectNext() !== null, 'the connect request');
 
     expect(connectNext()).toBe('/settings');
   });

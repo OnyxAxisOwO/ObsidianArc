@@ -13,6 +13,7 @@ import AdminPlugins from '../src/views/admin/AdminPlugins.vue';
 import PluginAdminPage from '../src/views/admin/PluginAdminPage.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import example from './fixtures/example.plugin';
+import { settle } from './helpers';
 
 // The core ships no plugin, so there is no module for the install panel to
 // find; hand it the made-up one under its own name, and leave everything else
@@ -58,13 +59,6 @@ let app: App | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 let panels: HTMLElement;
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 4; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
   // The plugins screen keeps its tab in the query, so it needs the app router.
@@ -327,7 +321,6 @@ describe('a page a plugin brings', () => {
     expect(saved).toHaveBeenCalledWith({ 'example.webhook_token': 'a-new-token' });
   });
 });
-
 
 // --- packages ---------------------------------------------------------------
 

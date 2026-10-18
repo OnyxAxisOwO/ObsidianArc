@@ -8,6 +8,7 @@ import * as auth from '../src/api/auth';
 import { api } from '../src/api/client';
 import { prepareImage } from '../src/chat/image';
 import { adopt, currentPreferences, forget } from '../src/stores/session';
+import { settle } from './helpers';
 
 vi.mock('../src/chat/image', async (original) => ({
   ...await original<typeof import('../src/chat/image')>(), prepareImage: vi.fn(),
@@ -104,13 +105,6 @@ it('preserves the selected background through wallpaper upload, session restore 
   expect(currentPreferences.value.background_accent).toBe('teal');
   expect(auth.savePreferences).toHaveBeenLastCalledWith({ wallpaper: null });
 });
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 it('sends the custom colour once, when the picker closes, not on every step of the drag', async () => {
   const host = document.createElement('div'); document.body.appendChild(host);

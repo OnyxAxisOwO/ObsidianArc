@@ -15,6 +15,7 @@ import { changeLanguage } from '../src/composables/useI18n';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { site, siteInfo } from '../src/stores/session';
 import KeysPanel from '../src/views/KeysPanel.vue';
+import { settle } from './helpers';
 
 // What the stubbed widget currently holds: a solve sets it, a reset clears it.
 const widget = vi.hoisted(() => ({ token: '' }));
@@ -36,13 +37,6 @@ const KEY = { id: 'key-1', name: 'laptop', prefix: 'sk-test', disabled: false } 
 let app: App | null = null;
 let host: HTMLElement;
 let panelHost: HTMLElement;
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mount(): Promise<void> {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: KeysPanel }] });

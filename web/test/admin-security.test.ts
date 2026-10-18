@@ -7,6 +7,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import AdminSecurity from '../src/views/admin/AdminSecurity.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import settingsFixture from './fixtures/settings.json';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -14,12 +15,6 @@ let actions: HTMLElement;
 
 // Real timers: the page's own delays (a label reset, a confirm arming) are
 // cleared on unmount, and nothing here depends on advancing them.
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 beforeEach(async () => {
   await changeLanguage('en');

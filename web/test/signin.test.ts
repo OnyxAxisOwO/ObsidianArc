@@ -21,6 +21,7 @@ import VerifyView from '../src/views/VerifyView.vue';
 import AccountSection from '../src/views/settings/AccountSection.vue';
 import { installPlugins } from '../src/plugins/registry';
 import example, { type ExampleCheck } from './fixtures/example.plugin';
+import { stubLocation } from './helpers';
 
 // A plugin's account field, as the forms label and refuse it.
 const refField = example.fields!['ref']!;
@@ -88,18 +89,6 @@ async function mount(component: Component, props: Record<string, unknown> = {}):
   });
   app.mount(host);
   await settle();
-}
-
-/** Replaces where the page can go, so a test can see the navigation without making it. */
-function stubLocation(): { assign: ReturnType<typeof vi.fn>; restore: () => void } {
-  const original = window.location;
-  const assign = vi.fn();
-  const stub = { configurable: true, writable: true };
-  Object.defineProperty(window, 'location', { ...stub, value: { assign, href: '' } });
-  return {
-    assign,
-    restore: () => Object.defineProperty(window, 'location', { ...stub, value: original }),
-  };
 }
 
 function offer(providers: { id: string; name: string }[]): void {
@@ -263,10 +252,7 @@ describe('signing in with an account from elsewhere', () => {
     route.path = '/login';
     await mount(AuthView, { mode: 'login' });
 
-    const assign = vi.fn();
-    Object.defineProperty(window, 'location', {
-      configurable: true, writable: true, value: { assign, href: '' },
-    });
+    const { assign } = stubLocation();
 
     const link = host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
     link.click();
@@ -783,9 +769,7 @@ describe('letting another site sign somebody in', () => {
     route.path = '/oauth/consent';
     // jsdom refuses a real navigation, and the whole answer of this screen is
     // where it sends the browser.
-    Object.defineProperty(window, 'location', {
-      configurable: true, writable: true, value: { href: '' },
-    });
+    stubLocation();
   });
 
   const request = {
@@ -921,9 +905,7 @@ describe('finishing a sign-up the provider could not', () => {
   beforeEach(() => {
     installPlugins([example]);
     route.path = '/oauth/complete';
-    Object.defineProperty(window, 'location', {
-      configurable: true, writable: true, value: { href: '' },
-    });
+    stubLocation();
   });
 
   it('asks only for what is missing, and says whose sign-in it is', async () => {

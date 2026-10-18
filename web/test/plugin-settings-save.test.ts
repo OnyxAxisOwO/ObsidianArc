@@ -12,19 +12,13 @@ import { installPlugins } from '../src/plugins/registry';
 import type { AdminPluginPage as PluginPageSpec, ArcPlugin } from '../src/plugins/types';
 import PluginAdminPage from '../src/views/admin/PluginAdminPage.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 };
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 const page: PluginPageSpec = { slug: 'tips', title: () => 'Tips', permission: 'users' };
 

@@ -17,6 +17,7 @@ import type { ActionCardSpec, ChallengeProof, UserEntryView, UserFormValues, Use
 import PluginUserPanel from '../src/views/PluginUserPanel.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import PluginActionCard from '../src/views/admin/PluginActionCard.vue';
+import { settle } from './helpers';
 
 vi.mock('../src/lib/pow', () => ({
   solvePoW: vi.fn(() => ({ promise: Promise.resolve({ salt: 's', nonce: 7 }), cancel() {} })),
@@ -29,13 +30,6 @@ vi.mock('../src/api/auth', async (importOriginal) => ({
 let app: App | undefined;
 let host: HTMLElement;
 let panelHost: HTMLElement;
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 4; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
   const router = createRouter({

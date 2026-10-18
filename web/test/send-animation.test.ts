@@ -19,6 +19,10 @@ import { messages, justSentID } from '../src/chat/useChat';
 
 let app: App | null = null;
 let host: HTMLElement;
+// Put back after every test rather than at the end of the ones that replace
+// it: an assertion that fails first would leave reduced motion switched on
+// for every test after it, and they would fail for a reason not their own.
+const originalMatchMedia = window.matchMedia;
 
 beforeEach(() => {
   document.body.textContent = '';
@@ -30,6 +34,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  window.matchMedia = originalMatchMedia;
   cancelAllFlights();
   app?.unmount();
   app = null;
@@ -194,7 +199,6 @@ describe('Telegram-style message send flight animation', () => {
   });
 
   it('respects prefers-reduced-motion by skipping flight animation and displaying immediately', async () => {
-    const originalMatchMedia = window.matchMedia;
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: query.includes('prefers-reduced-motion: reduce'),
       media: query,
@@ -226,8 +230,6 @@ describe('Telegram-style message send flight animation', () => {
     expect(isFlying('msg-reduced')).toBe(false);
     expect(mockAnimate).not.toHaveBeenCalled();
     expect(mainEl.querySelector('.ai-chat-flight-bubble')).toBeNull();
-
-    window.matchMedia = originalMatchMedia;
   });
 
   it('cancels active flights and cleans up elements when cancelAllFlights is called', async () => {
@@ -587,7 +589,6 @@ describe('Telegram-style message send flight animation', () => {
   });
 
   it('markFlying marks message as flown immediately when prefers-reduced-motion is active', () => {
-    const originalMatchMedia = window.matchMedia;
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: query.includes('prefers-reduced-motion: reduce'),
       media: query,
@@ -602,8 +603,6 @@ describe('Telegram-style message send flight animation', () => {
     markFlying('msg-rm-sync');
     expect(isFlying('msg-rm-sync')).toBe(false);
     expect(hasFlown('msg-rm-sync')).toBe(true);
-
-    window.matchMedia = originalMatchMedia;
   });
 
   it('verifies .ai-chat-spinner styling avoids sub-pixel wobble', async () => {

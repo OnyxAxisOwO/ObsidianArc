@@ -4,7 +4,7 @@
 // is saved in the form the importer will accept.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { createApp, h, shallowRef, type App, type Component } from 'vue';
 import * as authApi from '../src/api/auth';
 import * as backupApi from '../src/api/backup';
 import { ApiError } from '../src/api/client';
@@ -15,6 +15,7 @@ import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { adopt, forget } from '../src/stores/session';
 import AccountSection from '../src/views/settings/AccountSection.vue';
+import { settle } from './helpers';
 
 const route = { path: '/settings', fullPath: '/settings', query: {} as Record<string, string>, hash: '', meta: {} };
 const router = { replace: vi.fn() };
@@ -50,13 +51,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   forget();
 });
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mount(component: Component): Promise<void> {
   const panels = document.createElement('div');

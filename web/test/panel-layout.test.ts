@@ -6,11 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createApp, h, nextTick, ref, type App as VueApp } from 'vue';
 import OaPanel from '../src/components/OaPanel.vue';
 import { providePanelHost } from '../src/composables/usePanelHost';
+import { wait } from './helpers';
 
 const WIDTH_KEY = 'obsidian-arc-panel-width';
 // The zoom animation is 340 ms, with 20 ms over.
 const PAST_THE_ZOOM_MS = 380;
-const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 let app: VueApp | null = null;
 let host: HTMLElement | null = null;

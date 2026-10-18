@@ -19,6 +19,7 @@ import { provideOpenRecord } from '../src/views/admin/openRecord';
 import PluginList from '../src/views/admin/PluginList.vue';
 import PluginActionCard from '../src/views/admin/PluginActionCard.vue';
 import { safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
+import { settle } from './helpers';
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -29,13 +30,6 @@ const deferred = <T,>() => {
 let app: App | undefined;
 let host: HTMLElement;
 let panelHost: HTMLElement;
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
   const router = createRouter({

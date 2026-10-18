@@ -10,13 +10,14 @@
 // the stub's query never changes and cannot show the strip happening.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
+import { createApp, h, type App } from 'vue';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import type { Account } from '@/api/auth';
 import { api } from '@/api/client';
 import { changeLanguage, t } from '@/composables/useI18n';
 import { forget, site, siteInfo } from '@/stores/session';
 import BindOIDCView from '@/views/BindOIDCView.vue';
+import { settle, stubLocation } from './helpers';
 
 const SSO = { id: 'oidc', name: 'Campus SSO' };
 
@@ -53,13 +54,6 @@ function delay(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
-
 async function mountAt(url: string): Promise<Router> {
   const router = createRouter({
     history: createMemoryHistory(),
@@ -72,17 +66,6 @@ async function mountAt(url: string): Promise<Router> {
   app.mount(host);
   await settle();
   return router;
-}
-
-/** Replaces window.location so a hand-off to the server can be seen without navigating jsdom. */
-function stubLocation(): { assign: ReturnType<typeof vi.fn>; restore: () => void } {
-  const original = window.location;
-  const assign = vi.fn();
-  Object.defineProperty(window, 'location', { configurable: true, writable: true, value: { assign, href: '' } });
-  return {
-    assign,
-    restore: () => Object.defineProperty(window, 'location', { configurable: true, writable: true, value: original }),
-  };
 }
 
 describe('the bind screen after the connect flow comes back', () => {

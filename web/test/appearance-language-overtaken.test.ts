@@ -4,11 +4,12 @@
 // would open in Chinese although the page was left in English.
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { createApp, nextTick, type App } from 'vue';
+import { createApp, type App } from 'vue';
 import AppearanceSection from '../src/views/settings/AppearanceSection.vue';
 import * as i18n from '../src/composables/useI18n';
 import * as auth from '../src/api/auth';
 import { adopt, forget } from '../src/stores/session';
+import { settle } from './helpers';
 
 // The Chinese chunk stays on its way until the test releases it.
 const chunk = vi.hoisted(() => {
@@ -39,13 +40,6 @@ afterEach(() => {
   app?.unmount(); app = undefined; document.body.textContent = '';
   localStorage.clear(); forget(); vi.restoreAllMocks();
 });
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 it('does not save Chinese when a later pick took over while its dictionary was loading', async () => {
   // Every pick is recorded so the test can wait for the Chinese one itself,

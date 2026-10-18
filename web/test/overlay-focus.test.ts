@@ -5,9 +5,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, ref, type App as VueApp, type Ref } from 'vue';
 import OaOverlay from '../src/components/OaOverlay.vue';
+import { wait } from './helpers';
 
 const PAST_THE_FADE_MS = 260;
-const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const nextFrame = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => resolve()));
 
 describe('OaOverlay as a modal dialog', () => {

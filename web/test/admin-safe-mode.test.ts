@@ -42,6 +42,7 @@ import AdminSafeMode from '../src/views/admin/AdminSafeMode.vue';
 import { installPlugins } from '../src/plugins/registry';
 import example from './fixtures/example.plugin';
 import { site, siteInfo } from '../src/stores/session';
+import { until } from './helpers';
 
 describe('Admin Safe Mode store & utilities', () => {
   beforeEach(() => {
@@ -275,8 +276,7 @@ describe('Admin Safe Mode live component integration', () => {
     });
     app.use(router);
     app.mount(host);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await nextTick();
+    await until(() => !!host.querySelector('#secBusiestModels button'), 'the dashboard to draw its ranking');
 
     // In ranking table, switch to users
     const rankingSection = host.querySelector('#secBusiestModels')!;

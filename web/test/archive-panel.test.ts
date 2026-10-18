@@ -6,7 +6,7 @@
 // row earlier, or the row that moved up into the gap is skipped for good.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { createApp, h, ref, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import * as chatApi from '@/api/chat';
 import type { Conversation, Message } from '@/api/chat';
@@ -16,6 +16,7 @@ import { changeLanguage, t } from '@/composables/useI18n';
 import { providePanelHost } from '@/composables/usePanelHost';
 import { forget } from '@/stores/session';
 import ArchivePanel from '@/views/ArchivePanel.vue';
+import { settle } from './helpers';
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -62,13 +63,6 @@ function restoreButton(rowElement: HTMLElement): HTMLButtonElement {
 
 function deleteButton(rowElement: HTMLElement): HTMLButtonElement {
   return rowElement.querySelector<HTMLButtonElement>('button.danger')!;
-}
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
 }
 
 async function mountPanel(): Promise<void> {

@@ -9,10 +9,10 @@ import OaMenu from '../src/components/OaMenu.vue';
 import OaOverlay from '../src/components/OaOverlay.vue';
 import OaPanel from '../src/components/OaPanel.vue';
 import { providePanelHost } from '../src/composables/usePanelHost';
+import { wait } from './helpers';
 
 // The sheet's fade is 200 ms before it tells its caller it has closed.
 const PAST_THE_FADE_MS = 260;
-const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('Escape across a panel, a sheet and a menu', () => {
   let app: VueApp | null = null;

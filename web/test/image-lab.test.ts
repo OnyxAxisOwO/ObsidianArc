@@ -12,6 +12,7 @@ import { models } from '@/chat/useModels';
 import { providePanelHost } from '@/composables/usePanelHost';
 import { changeLanguage, t } from '@/composables/useI18n';
 import ImageLabPanel from '@/views/ImageLabPanel.vue';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -61,13 +62,6 @@ afterEach(() => {
   document.body.textContent = '';
   vi.restoreAllMocks();
 });
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mountImageLab(): Promise<void> {
   await router.push('/image-lab');

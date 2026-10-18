@@ -1,14 +1,13 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createApp, h, type App as VueApp } from 'vue';
 import OaOverlay from '../src/components/OaOverlay.vue';
+import { wait } from './helpers';
 
 // A sheet tells its caller about a close only after its 200 ms fade, and the
 // caller's handler usually navigates. A sheet taken away inside that window has
 // to leave nothing behind: the fade timer is cleared, and the caller hears nothing.
 const FADE_MS = 200;
 const PAST_THE_FADE_MS = FADE_MS + 60;
-
-const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('OaOverlay close timer', () => {
   let app: VueApp | null = null;
