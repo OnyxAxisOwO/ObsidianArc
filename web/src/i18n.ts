@@ -185,6 +185,7 @@ const en = {
   clearAllConfirm: 'Delete them all',
   rename: 'Rename',
   renamePrompt: 'Conversation name',
+  renameHint: 'Enter saves, Esc cancels',
   archive: 'Archive',
   unarchive: 'Unarchive',
   archived: 'Archived',

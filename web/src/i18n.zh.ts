@@ -181,6 +181,7 @@ export const zh: Record<CoreKey, string> = {
   clearAllConfirm: '确认清空',
   rename: '重命名',
   renamePrompt: '对话名称',
+  renameHint: '回车保存，Esc 取消',
   archive: '归档',
   unarchive: '取消归档',
   archived: '已归档',

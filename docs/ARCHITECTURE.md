@@ -226,9 +226,18 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.96 MB (24.26 MB `-tags nosqlite`, Linux amd64, Go 1.27.2), 0.86 MB of it the frontend's precompressed copies; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 172.74 kB to open the chat with brotli (150.51 JS + 22.23 CSS); 205.71 kB with gzip (179.19 JS + 26.52 CSS), which the budget holds; both are copies compressed at build time; the build's gzip column reads 206.46 kB (179.61 JS + 26.85 CSS) |
+| Frontend, on the wire | < 135 kB | 173.06 kB to open the chat with brotli (150.83 JS + 22.23 CSS); 206.03 kB with gzip (179.51 JS + 26.52 CSS), which the budget holds; both are copies compressed at build time; the build's gzip column reads 206.79 kB (179.94 JS + 26.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after a conversation's rename moved from
+`window.prompt` to a field in place of its row, on the history tab and in a
+project. To open the chat a browser that takes brotli receives 173.06 kB
+(150.83 JS + 22.23 CSS) and one that takes only gzip 206.03 kB (179.51 JS +
+26.52 CSS), both up 0.32 kB for the field and its hint; the build's gzip
+column reads 206.79 kB (179.94 JS + 26.85 CSS), 0.21 kB under the bundle
+test's 207 kB. The stylesheet did not move: the field reuses the project
+form's classes. The lazy chunks and the binary are as below.
 
 Remeasured on 2026-10-18 (UTC), with the frontend compressed at build time.
 The build writes a brotli copy (best quality) and a gzip copy (level 9) beside

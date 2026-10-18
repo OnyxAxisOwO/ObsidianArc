@@ -792,17 +792,32 @@ function dropActive(): void {
   if (watching()) pendingView.value = -1;
 }
 
-export async function rename(conversation: Conversation): Promise<void> {
-  const next = window.prompt(t('renamePrompt'), conversation.title);
-  if (next === null) return;
+/**
+ * Renames from the rail's inline field — not window.prompt, which some
+ * browsers and the preview pane answer with null before anyone sees it. The
+ * new title shows at once, since the field it was typed into has already
+ * closed; a refusal puts the old one back and says why. An empty or unchanged
+ * name is not a rename, so nothing is sent.
+ */
+export async function rename(conversation: Conversation, title: string): Promise<void> {
+  const next = title.trim();
+  if (!next || next === conversation.title) return;
+  // The rail and the header read their own copies, which are not the objects
+  // a project row was given, so the rail's entry is renamed as well.
+  const listed = conversations.value.find((entry) => entry.id === conversation.id);
+  const before = conversation.title;
+  const listedBefore = listed?.title;
+  conversation.title = next;
+  if (listed) listed.title = next;
   try {
-    const { conversation: updated } = await renameConversation(conversation.id, next.trim());
+    const { conversation: updated } = await renameConversation(conversation.id, next);
     conversation.title = updated.title;
-    // The rail and the header read their own copies, which are not the objects
-    // a project row was given, so the rail's entry is renamed as well.
-    const listed = conversations.value.find((entry) => entry.id === conversation.id);
     if (listed) listed.title = updated.title;
   } catch (error) {
+    // Only undo what this rename wrote: a later rename made while this one
+    // was in flight owns the title now, and its own outcome decides it.
+    if (conversation.title === next) conversation.title = before;
+    if (listed && listedBefore !== undefined && listed.title === next) listed.title = listedBefore;
     setFlash(failureText(error));
   }
 }
