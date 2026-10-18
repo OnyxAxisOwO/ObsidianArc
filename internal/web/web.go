@@ -68,10 +68,13 @@ func Handler(opts Options) (http.Handler, error) {
 	return handler(assets, opts)
 }
 
-// precompressedDir holds the build's brotli and gzip copies of every file
-// under assets/, at the same path with .br or .gz added (see
-// web/vite.config.ts). It is not served by its own path: a copy is only ever
-// the body of a request for the original.
+// precompressedDir holds the build's brotli copy of every file under
+// assets/, at the same path with .br added (see web/vite.config.ts). It is not
+// served by its own path: a copy is only ever the body of a request for the
+// original. Gzip has no copy: Node's zlib compresses the same file to different
+// sizes on different CPUs, so httpx.Compress makes it on the way out, where
+// Go's compressor gives the same bytes on every machine and the first paint
+// the docs quote is one any build reproduces.
 const precompressedDir = "precompressed"
 
 // handler is Handler over any tree laid out as the build lays dist out, so a
@@ -135,8 +138,9 @@ func handler(assets fs.FS, opts Options) (http.Handler, error) {
 			// The fingerprint in the name is the content's identity, so it is
 			// the validator too; embedded files have no modification time to
 			// offer instead. Weak, because these bytes may go out as the
-			// build's brotli or gzip copy and a strong tag would claim the
-			// encodings are byte-identical. FileServer answers If-None-Match from this header.
+			// build's brotli copy or the compressor's gzip, and a strong tag
+			// would claim the encodings are byte-identical. FileServer answers
+			// If-None-Match from this header.
 			w.Header().Set("ETag", `W/"`+path.Base(clean)+`"`)
 			// A range is a range of the original bytes, which a compressed
 			// body does not have; the file server answers those from the
@@ -149,16 +153,16 @@ func handler(assets fs.FS, opts Options) (http.Handler, error) {
 	}), nil
 }
 
-// servePrecompressed answers with the build's brotli or gzip copy of an asset,
-// whichever the client accepts, brotli first: it is the smaller of the two.
-// It reports false when the client takes neither or the build made no copy,
-// and the caller serves the original.
+// servePrecompressed answers with the build's brotli copy of an asset when the
+// client accepts br. It reports false when the client does not or the build
+// made no copy, and the caller serves the original, which the compressor in
+// front gzips for a client that takes that instead.
 //
 // The compressor in front (httpx.Compress) leaves a response that already
 // names its encoding alone, and adds the Vary this answer needs.
 func servePrecompressed(w http.ResponseWriter, r *http.Request, assets fs.FS, clean string) bool {
 	accept := r.Header.Get("Accept-Encoding")
-	for _, encoding := range [...]struct{ name, suffix string }{{"br", ".br"}, {"gzip", ".gz"}} {
+	for _, encoding := range [...]struct{ name, suffix string }{{"br", ".br"}} {
 		if !httpx.AcceptsEncoding(accept, encoding.name) {
 			continue
 		}

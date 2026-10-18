@@ -1,6 +1,8 @@
 package web
 
 import (
+	"compress/gzip"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,17 +12,17 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
-// A tree laid out as the build lays dist out. The copies hold marker bytes
-// rather than real compressed data, so each answer shows which file it came
-// from.
+// A tree laid out as the build lays dist out. The brotli copy holds marker
+// bytes rather than real compressed data, so an answer shows whether it came
+// from the copy. A stray .gz is there to show it is never sent: gzip is made
+// by the compressor, whose bytes do not depend on the machine that built them.
 func precompressedTree() fstest.MapFS {
 	return fstest.MapFS{
-		"index.html":                            {Data: []byte("<!doctype html><title>t</title>")},
-		"assets/index-abc.js":                   {Data: []byte("console.log('original')")},
-		"precompressed/assets/index-abc.js.br":  {Data: []byte("brotli bytes")},
-		"precompressed/assets/index-abc.js.gz":  {Data: []byte("gzip bytes")},
-		"assets/only-raw-def.css":               {Data: []byte("body{}")},
-		"precompressed/assets/index-abc.css.gz": {Data: []byte("unrelated")},
+		"index.html":                           {Data: []byte("<!doctype html><title>t</title>")},
+		"assets/index-abc.js":                  {Data: []byte("console.log('original')")},
+		"precompressed/assets/index-abc.js.br": {Data: []byte("brotli bytes")},
+		"precompressed/assets/index-abc.js.gz": {Data: []byte("stale gzip bytes")},
+		"assets/only-raw-def.css":              {Data: []byte("body{}")},
 	}
 }
 
@@ -41,8 +43,8 @@ func TestAnAssetIsServedFromTheCopyTheClientAccepts(t *testing.T) {
 		name, accept, encoding, body string
 	}{
 		{"brotli first", "gzip, deflate, br", "br", "brotli bytes"},
-		{"gzip without brotli", "gzip", "gzip", "gzip bytes"},
-		{"brotli refused", "br;q=0, gzip", "gzip", "gzip bytes"},
+		{"gzip without brotli, made on the way out", "gzip", "gzip", "console.log('original')"},
+		{"brotli refused", "br;q=0, gzip", "gzip", "console.log('original')"},
 		{"identity", "", "", "console.log('original')"},
 		{"identity when both are refused", "br;q=0, gzip;q=0", "", "console.log('original')"},
 	}
@@ -60,13 +62,25 @@ func TestAnAssetIsServedFromTheCopyTheClientAccepts(t *testing.T) {
 			if got := rec.Header().Get("Content-Encoding"); got != c.encoding {
 				t.Errorf("Content-Encoding = %q, want %q", got, c.encoding)
 			}
-			if got := rec.Body.String(); got != c.body {
-				t.Errorf("body = %q, want %q", got, c.body)
+			body := rec.Body.String()
+			if c.encoding == "gzip" {
+				reader, err := gzip.NewReader(rec.Body)
+				if err != nil {
+					t.Fatalf("gzip body: %v", err)
+				}
+				decoded, err := io.ReadAll(reader)
+				if err != nil {
+					t.Fatalf("gzip body: %v", err)
+				}
+				body = string(decoded)
+			}
+			if body != c.body {
+				t.Errorf("body = %q, want %q", body, c.body)
 			}
 			if got := rec.Header().Get("Content-Type"); got != "text/javascript; charset=utf-8" {
 				t.Errorf("Content-Type = %q, want the original's", got)
 			}
-			if c.encoding != "" {
+			if c.encoding == "br" {
 				if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(len(c.body)) {
 					t.Errorf("Content-Length = %q, want %d", got, len(c.body))
 				}

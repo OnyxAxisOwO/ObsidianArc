@@ -38,22 +38,22 @@ describe('code splitting invariants in production bundle', () => {
   }
 
   // The build's compressed copies live in precompressed/assets/, under each
-  // asset's name with .br or .gz added (vite.config.ts), so assets/ stays the
-  // bundler's output alone and the counts below are about the splits.
-  it('writes a brotli and a gzip copy of every asset, and no others', () => {
+  // asset's name with .br added (vite.config.ts), so assets/ stays the
+  // bundler's output alone and the counts below are about the splits. There is
+  // no gzip copy: Node's gzip differs by CPU, so the server makes it instead.
+  it('writes a brotli copy of every asset, and no others', () => {
     const copiesDir = path.resolve(assetsDir, '../precompressed/assets');
     const originals = builtAssets();
     for (const name of originals) {
       const body = fs.readFileSync(path.join(assetsDir, name));
       const br = fs.readFileSync(path.join(copiesDir, name + '.br'));
-      const gz = fs.readFileSync(path.join(copiesDir, name + '.gz'));
       expect(zlib.brotliDecompressSync(br).equals(body), `${name}.br`).toBe(true);
-      expect(zlib.gunzipSync(gz).equals(body), `${name}.gz`).toBe(true);
     }
     // A copy whose original is gone would be served by nothing and embedded
-    // in the binary all the same.
+    // in the binary all the same; a .gz would be embedded and never sent.
     for (const copy of fs.readdirSync(copiesDir)) {
-      expect(originals, `${copy} has no original`).toContain(copy.replace(/\.(br|gz)$/, ''));
+      expect(copy, `${copy} is not a brotli copy`).toMatch(/\.br$/);
+      expect(originals, `${copy} has no original`).toContain(copy.replace(/\.br$/, ''));
     }
   });
 

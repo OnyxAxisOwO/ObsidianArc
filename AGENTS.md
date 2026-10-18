@@ -436,10 +436,10 @@ installs, updates and removes).
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 28.44 MB binary (this repository ships no plugin; 2.8 MB of it is
-the plugin runtime, 0.86 MB the brotli and gzip copies of the frontend the
+Current: 27.98 MB binary (this repository ships no plugin; 2.8 MB of it is
+the plugin runtime, 0.39 MB the brotli copies of the frontend the
 build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 169.11 kB on the wire
-to a browser that takes brotli and 201.27 kB to one that takes only gzip, which
+to a browser that takes brotli and 201.41 kB to one that takes only gzip, which
 is the figure the budget holds (the build's gzip column reads 201.97 kB),
 against a target of 135. The target used to be 80 and
 the figure used to be 59.5; adopting Vue moved both, and
@@ -473,10 +473,14 @@ somebody decided it should.
 Responses are compressed by `httpx.Compress`, on an allowlist of content
 types. Adding `text/event-stream` to it would buffer streamed answers into
 silence, so the list is the one place to be careful. The fingerprinted assets
-are the exception: the build compresses them once (brotli 11, gzip 9, into
-`dist/precompressed/`), `internal/web` sends the copy the client accepts, and
-the compressor leaves a response that already names its encoding alone. The
-first-paint budget is still counted in gzip, whatever brotli saves.
+are the exception: the build compresses them once with brotli (quality 11,
+into `dist/precompressed/`), `internal/web` sends that copy to a client that
+accepts br, and the compressor leaves a response that already names its
+encoding alone. Gzip is not precompressed: Node's zlib picks its matching code
+by CPU, so a gzip copy built on one machine is not the size of one built on
+another and the quoted first paint could not be reproduced in CI. Go's
+compressor gives the same bytes everywhere, so gzip is made as it goes out.
+The first-paint budget is still counted in gzip, whatever brotli saves.
 
 ## Versions
 

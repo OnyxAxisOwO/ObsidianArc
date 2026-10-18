@@ -227,10 +227,26 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.44 MB (24.74 MB `-tags nosqlite`, Linux amd64, Go 1.27.2), 0.86 MB of it the frontend's precompressed copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 169.11 kB to open the chat with brotli (149.65 JS + 19.46 CSS); 201.27 kB with gzip (178.40 JS + 22.87 CSS), which the budget holds; both are copies compressed at build time; the build's gzip column reads 201.97 kB (178.83 JS + 23.14 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 27.98 MB (24.28 MB `-tags nosqlite`, Linux amd64, Go 1.27.2), 0.39 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 169.11 kB to open the chat with brotli (149.65 JS + 19.46 CSS); 201.41 kB with gzip (178.60 JS + 22.81 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out; the build's gzip column reads 201.97 kB (178.83 JS + 23.14 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-19 (UTC), after the build stopped writing gzip copies.
+Node's zlib picks its matching code by CPU: the same first paint gzipped at
+level 9 came to 201.27 kB on an ARM Mac and 201.89 kB on CI's x86 runner, so
+the figure the docs quote could not be reproduced by the test that holds them
+to it. Brotli's encoder showed no such difference (169.11 kB on both), so the
+build keeps its brotli copies and gzip is left to `httpx.Compress`, whose Go
+encoder at BestCompression gives the same bytes everywhere. A browser that
+takes only gzip receives 201.41 kB (178.60 JS + 22.81 CSS); one that takes
+brotli still receives 169.11 kB. The lazy chunks, gzip then brotli: backoffice
+170.65 / 137.12 kB plus 15.21 / 13.33 kB of stylesheet, Chinese dictionary
+20.35 / 16.92 kB, the backoffice's Chinese 37.25 / 30.87 kB, terminal 8.06 /
+7.36 kB plus 1.67 / 1.40 kB, math 3.76 / 3.25 kB, front page 4.17 / 3.68 kB
+plus 3.89 / 3.40 kB, landing page 3.12 / 2.75 kB plus 0.62 / 0.51 kB. The
+binary loses the gzip copies and is 27.98 MB (24.28 MB without SQLite), built
+the same way as below. The bundle is unchanged.
 
 Remeasured on 2026-10-18 (UTC), after the review fixes below were merged
 into one tree: the backoffice's refusals by code, the Options API branch
@@ -893,16 +909,16 @@ its stylesheet), the Chinese dictionary, the backoffice's Chinese, the LaTeX
 renderer, the public front
 page, and the landing page (the intro or trial a signed-out visitor sees on an
 instance that chose one), each of those last two with its stylesheet.
-What each reader actually downloads, as the server sends it (2026-10-18):
+What each reader actually downloads, as the server sends it (2026-10-19):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 201.27 kB | 169.11 kB |
-| Chinese, not an administrator | 221.33 kB | 186.03 kB |
-| …and a conversation containing a formula | 225.06 kB | 189.29 kB |
-| Chinese administrator, backoffice open | 444.17 kB | 367.23 kB |
-| Anybody, once they open the terminal | +9.74 kB | +8.74 kB |
-| A visitor to an instance whose front door is the front page | +8.05 kB | +7.07 kB |
+| English, not an administrator | 201.41 kB | 169.11 kB |
+| Chinese, not an administrator | 221.76 kB | 186.03 kB |
+| …and a conversation containing a formula | 225.53 kB | 189.29 kB |
+| Chinese administrator, backoffice open | 444.88 kB | 367.36 kB |
+| Anybody, once they open the terminal | +9.73 kB | +8.75 kB |
+| A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
 | A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |
 
 Route-level splitting would shave the first paint further and is deliberately

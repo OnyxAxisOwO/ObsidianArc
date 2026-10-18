@@ -3,7 +3,7 @@ import vue from '@vitejs/plugin-vue';
 import { writeFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { brotliCompressSync, gzipSync, constants as zlibConstants } from 'node:zlib';
+import { brotliCompressSync, constants as zlibConstants } from 'node:zlib';
 
 // The config is ESM (package.json sets "type": "module"), so __dirname does
 // not exist here.
@@ -27,13 +27,20 @@ function keepEmbedDirectory(): Plugin {
   };
 }
 
-// Every fingerprinted asset is compressed once here, at the strongest
-// settings, so the server sends finished bytes instead of compressing each
-// uncached request: brotli at quality 11 is too slow to run per request, and
-// it is what every current browser asks for first. The copies live outside
-// assets/, which stays the bundler's output alone (test/bundle.test.ts counts
-// it), under the same names with .br and .gz added; internal/web picks one by
-// the request's Accept-Encoding and falls back to the original.
+// Every fingerprinted asset is compressed once here with brotli at its
+// strongest setting, so the server sends finished bytes: quality 11 is too slow
+// to run per request, and it is what every current browser asks for first.
+// The copies live outside assets/, which stays the bundler's output alone
+// (test/bundle.test.ts counts it), under the same names with .br added;
+// internal/web sends one when the request accepts br and the original
+// otherwise.
+//
+// There is no gzip copy. Node's zlib picks its matching code by CPU, so the
+// same file gzipped on an ARM laptop and on an x86 runner comes out hundreds of
+// bytes apart, and a first paint quoted from one machine could not be
+// reproduced on the other. Go's compressor gives the same bytes everywhere, so
+// gzip is left to httpx.Compress on the way out. Brotli's encoder has no such
+// variation: both machines produce the same copies.
 function precompressAssets(): Plugin {
   return {
     name: 'obsidian-precompress-assets',
@@ -55,7 +62,6 @@ function precompressAssets(): Plugin {
             [zlibConstants.BROTLI_PARAM_SIZE_HINT]: body.length,
           },
         }));
-        writeFileSync(resolve(to, name + '.gz'), gzipSync(body, { level: 9 }));
       }
     },
   };
