@@ -1,14 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { nextTick } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import KeysPanel from '../src/views/KeysPanel.vue';
 import { ApiError, api } from '../src/api/client';
 import * as keysAPI from '../src/api/keys';
 import type { AvailableModel } from '../src/chat/useModels';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import * as ccSwitch from '../src/lib/cc-switch';
-import { settle } from './helpers';
+import { mountComponent, settle } from './helpers';
 
 const KEY: keysAPI.ApiKey = {
   id: 'key-1', name: 'My laptop', prefix: 'sk-test', disabled: false,
@@ -22,23 +21,18 @@ const MODEL: AvailableModel = {
   supports_image_gen: false, supports_chat_image_gen: false,
   context_window: 0, max_output_tokens: 0,
 };
-let app: App;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panelHost: HTMLElement;
 
 
 async function mount(): Promise<void> {
+  // The keys panel is the route itself here rather than a screen beside a
+  // catch-all, so it gets a router of its own.
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: KeysPanel }] });
   await router.push('/');
   await router.isReady();
-  app = createApp({
-    setup() {
-      providePanelHost(ref(panelHost));
-      return () => h(KeysPanel);
-    },
-  });
-  app.use(router).mount(host);
-  await settle();
+  unmount = await mountComponent(KeysPanel, {}, { host, panels: panelHost, router });
 }
 
 async function create(): Promise<void> {
@@ -72,7 +66,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  app?.unmount();
+  unmount?.();
   host.remove();
   panelHost.remove();
   vi.restoreAllMocks();
@@ -248,7 +242,7 @@ describe('API key CC Switch import', () => {
   it('does not retain the token after unmounting and remounting the panel', async () => {
     await mount();
     await create();
-    app.unmount();
+    unmount!();
     await mount();
     expect(panelHost.querySelector('.oa-key-import')).toBeNull();
     expect(panelHost.querySelector('.oa-key-token-input')).toBeNull();
@@ -280,7 +274,7 @@ describe('the key panel keeps to its own data', () => {
     const armed = timers.mock.results.at(-1)!.value;
     const clear = vi.spyOn(window, 'clearTimeout');
 
-    app.unmount();
+    unmount!();
 
     expect(clear).toHaveBeenCalledWith(armed);
   });

@@ -1,5 +1,6 @@
 // The pieces more than one administration screen needs.
 
+import type { Ref } from 'vue';
 import { adminApi, type AdminModel } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import { t } from '@/composables/useI18n';
@@ -25,6 +26,47 @@ export function failureText(failure: unknown): string {
   if (failure instanceof Error) return failure.message;
   console.warn('request failed', failure);
   return t('failed');
+}
+
+/**
+ * A screen's first read, for the screens whose load is only that: the error is
+ * cleared, a failure is worded by failureText, and the screen counts as loaded
+ * either way so it draws the failure instead of waiting forever. Nothing else
+ * is reset, because what else a screen keeps across a reload is its own.
+ */
+export async function runLoad(
+  task: () => Promise<void>,
+  state: { error: Ref<string>; loaded: Ref<boolean> },
+): Promise<void> {
+  state.error.value = '';
+  try {
+    await task();
+  } catch (failure) {
+    state.error.value = failureText(failure);
+  } finally {
+    state.loaded.value = true;
+  }
+}
+
+/**
+ * Deleting the row a panel is open on. Busy is lowered only on failure: on
+ * success the panel is going away, and the caller's own ending decides when
+ * the next panel's busy is reset (AdminCodes leaves it to open()).
+ */
+export async function runRemove(
+  call: () => Promise<unknown>,
+  state: { busy: Ref<boolean>; error: Ref<string> },
+  onDone: () => void,
+  errorText: (failure: unknown) => string = failureText,
+): Promise<void> {
+  state.busy.value = true;
+  try {
+    await call();
+    onDone();
+  } catch (failure) {
+    state.busy.value = false;
+    state.error.value = errorText(failure);
+  }
 }
 
 /**

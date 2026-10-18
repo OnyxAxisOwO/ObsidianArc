@@ -71,7 +71,6 @@ describe('editing a question and sending it again', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
     resetChat();
   });
 

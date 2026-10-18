@@ -18,7 +18,6 @@ describe('ChatComposer layout and multiline behavior', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
     draft.value = '';
     resetChat();
   });
@@ -95,7 +94,6 @@ describe('pasting a picture', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
     resetChat();
   });
 

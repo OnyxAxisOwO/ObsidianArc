@@ -59,7 +59,6 @@ afterEach(() => {
   app = undefined;
   host.remove();
   panels.remove();
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 
@@ -312,7 +311,7 @@ describe('Image Lab challenges', () => {
         token: () => new Promise<string>(() => {}),
       },
       config: {},
-    }] as any);
+    }]);
     const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
     await mountImageLab();
     const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
@@ -403,7 +402,7 @@ describe('Image Lab gallery refresh', () => {
       .mockResolvedValue({ generations: [] });
     vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({
       created: 1,
-      images: [{ id: 'new', url: '/api/attachments/new', mime: 'image/png' }] as any,
+      images: [{ id: 'new', url: '/api/attachments/new', mime: 'image/png' }],
     });
     await mountImageLab();
 
@@ -568,7 +567,7 @@ describe('Image Lab gallery names', () => {
         id: 'gen-1', user_id: 'me', attachment_id: 'att-1', url: '/api/attachments/att-1',
         model_id: 'mock-painter', prompt: 'a lamp', revised_prompt: '', size: '', style: '',
         created_at: 1000, mime: 'image/jpeg',
-      }] as any,
+      }],
     });
     await mountImageLab();
     const historyTab = [...document.querySelectorAll<HTMLButtonElement>('.oa-image-lab-tab')].find(

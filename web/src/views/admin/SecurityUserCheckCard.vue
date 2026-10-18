@@ -3,7 +3,7 @@
 // the mail card beside it, its own endpoint and its own Save, so it neither
 // waits on the page's settings form nor is reverted by it.
 
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { adminApi, type AdminUserCheckSettings } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
@@ -29,6 +29,12 @@ const saved = ref<AdminUserCheckSettings>({
 const form = ref({
   enabled: false, exempt_domains: '', failure_mode: 'reject' as 'allow' | 'reject', api_key_set: false, api_key: '',
 });
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const failureModeChoices = computed(() => [
+  { value: 'reject' as const, label: t('userCheckFailureReject') },
+  { value: 'allow' as const, label: t('userCheckFailureAllow') },
+]);
 
 const ERRORS: Record<string, StringKey> = {
   usercheck_test_cooldown: 'userCheckTestCooldown',
@@ -188,10 +194,7 @@ onMounted(load);
         v-model="form.failure_mode"
         :label="t('userCheckFailureMode')"
         :hint="t('userCheckFailureModeHint')"
-        :options="[
-          { value: 'reject', label: t('userCheckFailureReject') },
-          { value: 'allow', label: t('userCheckFailureAllow') },
-        ]"
+        :options="failureModeChoices"
       />
       <div class="oa-control-actions">
         <button type="button" class="oa-btn primary" :disabled="busy" @click="save">

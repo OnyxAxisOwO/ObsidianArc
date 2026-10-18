@@ -5,12 +5,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, ref, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
-import type { Account } from '../src/api/auth';
 import AccountMenu from '../src/layouts/AccountMenu.vue';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { installPlugins } from '../src/plugins/registry';
 import { site, siteInfo } from '../src/stores/session';
 import { panelAllowed } from '../src/views/panels';
+import { makeAccount } from './fixtures/account';
 
 vi.mock('../src/stores/feedback', () => ({
   feedbackUnread: ref(0),
@@ -18,13 +18,9 @@ vi.mock('../src/stores/feedback', () => ({
   forgetFeedbackUnread: vi.fn(),
 }));
 
-const reader: Account = {
-  id: 'member', username: 'member', nickname: 'Member', email: '', bio: '', avatar: '',
-  role: 'user', status: 'active', group_id: 'g', group_expires_at: 0, group_name: 'Default',
-  created_at: 0, updated_at: 0, last_login_at: 0, email_verified: true,
-  allow_stats: true, allow_delete_conversations: true,
-  api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-};
+const reader = makeAccount({
+  id: 'member', username: 'member', nickname: 'Member', email: '', group_id: 'g', created_at: 0, updated_at: 0,
+});
 
 let app: App | undefined;
 
@@ -43,7 +39,6 @@ async function menuText(): Promise<string> {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   site.value = null;
   installPlugins([]);
 });

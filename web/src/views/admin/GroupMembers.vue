@@ -10,6 +10,7 @@ import OaSearchField from '@/components/OaSearchField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { absoluteTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser } from '@/admin/safeMode';
@@ -26,6 +27,12 @@ const props = defineProps<{ group: Group; groups: Group[] }>();
 const emit = defineEmits<{ (event: 'saved'): void }>();
 const search = ref('');
 const scope = ref('members');
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const scopeChoices = computed(() => [
+  { value: 'members', label: t('currentMembers') },
+  { value: 'all', label: t('allAccounts') },
+]);
 const offset = ref(0);
 const accounts = ref<Account[]>([]);
 const total = ref(0);
@@ -36,7 +43,7 @@ const busy = ref(false);
 const error = ref('');
 const message = ref('');
 const pageSize = ref(rememberedPageSize());
-let request = 0;
+const request = useLatestRequest();
 let timer = 0;
 
 
@@ -53,27 +60,27 @@ const items = computed(() => accounts.value.map((account) => {
 }));
 
 async function load(): Promise<void> {
-  const current = ++request;
+  const current = request.begin();
   loading.value = true;
   error.value = '';
   const query = new URLSearchParams({ q: search.value, limit: String(pageSize.value), offset: String(offset.value) });
   if (scope.value === 'members') query.set('group_id', props.group.id);
   try {
-    const result = await adminApi.memberOptions(`?${query}`);
-    if (current !== request) return;
+    const result = await adminApi.memberOptions(query);
+    if (!request.isCurrent(current)) return;
     accounts.value = result.users ?? [];
     total.value = result.total;
   } catch (failure) {
-    if (current === request) error.value = failureText(failure);
+    if (request.isCurrent(current)) error.value = failureText(failure);
   } finally {
-    if (current === request) loading.value = false;
+    if (request.isCurrent(current)) loading.value = false;
   }
 }
 
 watch([search, scope], () => {
   // Invalidate during the debounce too, so an earlier response cannot refill
   // the list under the new search term.
-  ++request;
+  request.invalidate();
   loading.value = true;
   offset.value = 0;
   // Ticks survive paging, but not a new search: the ones made under the old
@@ -114,7 +121,7 @@ async function save(): Promise<void> {
 
 void load();
 onBeforeUnmount(() => {
-  ++request;
+  request.invalidate();
   window.clearTimeout(timer);
 });
 </script>
@@ -125,10 +132,7 @@ onBeforeUnmount(() => {
     <OaSelectField
       v-model="scope"
       :label="t('memberScope')"
-      :options="[
-        { value: 'members', label: t('currentMembers') },
-        { value: 'all', label: t('allAccounts') },
-      ]"
+      :options="scopeChoices"
     />
     <OaSearchField v-model="search" :label="t('searchUsers')" />
     <p v-if="loading" class="oa-field-hint">{{ t('loading') }}</p>

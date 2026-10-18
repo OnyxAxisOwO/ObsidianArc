@@ -4,7 +4,10 @@
 // A component of its own rather than a branch inside the transcript, because
 // it is the one thing on screen that changes many times a second: keeping it
 // separate is what confines a delta to re-rendering this subtree instead of
-// the whole conversation.
+// the whole conversation. It reads the pending turn from the store itself
+// rather than taking it as a prop: a prop is read by the parent's render, and
+// the parent here is the transcript's whole list, which then ran again on
+// every frame. The transcript only reads whether to show this at all.
 //
 // The answer is drawn again in full on every frame that brings text (see
 // OaMarkdown), so a selection made in it does not survive the next frame. It is
@@ -14,9 +17,7 @@ import { onBeforeUnmount, ref, watch } from 'vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import { t } from '@/composables/useI18n';
 import ChatThinking from './ChatThinking.vue';
-import { statsWanted, type Pending } from './useChat';
-
-const props = defineProps<{ pending: Pending }>();
+import { pending, statsWanted } from './useChat';
 
 /**
  * The seconds ticking up under an answer that is still being written.
@@ -29,7 +30,10 @@ const props = defineProps<{ pending: Pending }>();
 const elapsed = ref('0.0');
 
 function tick(): void {
-  const ms = Math.max(0, Date.now() - props.pending.startedAt);
+  // The turn's end clears busy and pending one after the other, and a tick can
+  // land between the two, while this is still mounted.
+  if (!pending.value) return;
+  const ms = Math.max(0, Date.now() - pending.value.startedAt);
   elapsed.value = (Math.round(ms / 100) / 10).toFixed(1);
 }
 
@@ -55,12 +59,12 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="ai-msg ai-msg-assistant">
-    <ChatThinking v-if="props.pending.reasoning" :text="props.pending.reasoning" live />
+    <ChatThinking v-if="pending?.reasoning" :text="pending.reasoning" live />
 
     <OaMarkdown
-      v-if="props.pending.answer"
+      v-if="pending?.answer"
       class="ai-answer ai-answer-streaming"
-      :text="props.pending.answer"
+      :text="pending.answer"
     />
     <!-- Still nothing to read, whether or not it is thinking out loud. -->
     <div v-else class="ai-chat-pending">

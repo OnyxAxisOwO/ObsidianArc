@@ -23,11 +23,10 @@ import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
-import { apiErrorText } from '@/lib/api-error';
 import { relativeTime } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
-import { errorLine } from './failure-codes';
+import { failureText, runRemove } from './shared';
 
 type DisplayMode = Announcement['display_mode'];
 
@@ -148,21 +147,14 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = apiErrorText(failure);
+    panelError.value = failureText(failure);
   }
 }
 
 async function remove(): Promise<void> {
   const record = editing.value;
   if (!record) return;
-  busy.value = true;
-  try {
-    await adminApi.deleteAnnouncement(record.id);
-    finish();
-  } catch (failure) {
-    busy.value = false;
-    panelError.value = apiErrorText(failure);
-  }
+  await runRemove(() => adminApi.deleteAnnouncement(record.id), { busy, error: panelError }, finish);
 }
 
 async function load(): Promise<void> {
@@ -173,7 +165,7 @@ async function load(): Promise<void> {
   try {
     ({ announcements: announcements.value } = await adminApi.announcements());
   } catch (failure) {
-    error.value = errorLine(failure);
+    error.value = failureText(failure);
   } finally {
     loaded.value = true;
     if (first) checkDrawerTarget();
@@ -191,6 +183,14 @@ watch(() => route.hash, () => {
     checkDrawerTarget();
   }
 });
+
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const displayModeChoices = computed(() => [
+  { value: 'always' as DisplayMode, label: t('displayAlways') },
+  { value: 'once' as DisplayMode, label: t('displayOnce') },
+  { value: 'silent' as DisplayMode, label: t('displaySilent') },
+]);
 
 onMounted(load);
 </script>
@@ -270,11 +270,7 @@ onMounted(load);
       v-model="form.display_mode"
       :label="t('displayMode')"
       :hint="t('displayModeHint')"
-      :options="[
-        { value: 'always', label: t('displayAlways') },
-        { value: 'once', label: t('displayOnce') },
-        { value: 'silent', label: t('displaySilent') },
-      ]"
+      :options="displayModeChoices"
     />
     <OaNumberField
       v-model="form.dismiss_after_seconds"

@@ -35,7 +35,7 @@ import { currentModel, reasoning } from './useModels';
 import { markFlying, resetFlightState } from './useSendAnimation';
 
 export const MAX_MESSAGE_CHARS = 32000;
-export const MAX_IMAGES = 6;
+const MAX_IMAGES = 6;
 /**
  * How many conversations the rail holds — the server's own default, asked for
  * by name so the rail can tell when it is full and its search, which only
@@ -79,7 +79,7 @@ export interface Pending {
   startedAt: number;
 }
 
-export interface ComposerAttachment {
+interface ComposerAttachment {
   ref: AttachmentRef;
   preview: string;
 }
@@ -88,6 +88,12 @@ export interface ComposerAttachment {
 
 export const conversations = ref<Conversation[]>([]);
 export const activeID = ref('');
+/**
+ * How long a switch's rise stays on, for the transcript and the rail's row.
+ * A little over the 0.34s the rise animations in _chat.scss run, so their last
+ * frame is not cut off by the class going.
+ */
+export const RISE_MS = 400;
 export const messages = ref<Message[]>([]);
 export const busy = ref(false);
 export const editingID = ref('');
@@ -465,7 +471,6 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
   // and this function still has to read its signal afterwards.
   const turnController = new AbortController();
   controller.value = turnController;
-  let failed = false;
   // Set once the server has taken the turn. After that the user message exists
   // on the server, so a failure must not hand the text back to the composer.
   let accepted = false;
@@ -512,7 +517,6 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
           else if (payload.stopped) setFlash(t('stopped'));
         },
         onError: (payload) => {
-          failed = true;
           // An error before `start` can only be the server rolling back its own
           // opening transaction, so nothing was saved and the text can go back
           // to the composer, as a refused request does.
@@ -531,7 +535,6 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
       if (error instanceof ApiError &&
           (error.code === 'chat_challenge_required' || error.code === 'challenge_failed' ||
            error.code === 'challenge_unavailable')) {
-        failed = true;
         // The server rejects before creating a turn. Remove the optimistic
         // copy so solving or cancelling the challenge cannot duplicate text.
         const last = messages.value[messages.value.length - 1];
@@ -541,7 +544,6 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
         chatChallenge.value = { ...turn, conversationID };
         chatChallengeError.value = error.code === 'chat_challenge_required' ? '' : error.message;
       } else {
-        failed = true;
         // The server commits the user's message before it sends `start`, so a
         // dropped connection or an abort in between leaves the message on the
         // server. Only a refusal answered with a status, before the stream
@@ -580,7 +582,6 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
     pending.value = null;
     pendingID.value = '';
   }
-  if (!failed) setFlash(flash.value);
   void refreshList();
   if (chatChallenge.value) return 'challenge';
   if (unsent) {
@@ -792,11 +793,24 @@ function dropActive(): void {
   if (watching()) pendingView.value = -1;
 }
 
-export async function rename(conversation: Conversation): Promise<void> {
-  const next = window.prompt(t('renamePrompt'), conversation.title);
-  if (next === null) return;
+/**
+ * The conversation whose title is being edited in its row. One for both lists,
+ * so starting a rename in one row ends any other, wherever it was begun.
+ */
+export const renamingID = ref('');
+
+/**
+ * Saves the title typed into a row. Ending the edit comes first: the field
+ * goes as it is submitted, and a blur from its going must find nothing left to
+ * submit. An emptied field or an unchanged title is a cancel, not a request.
+ */
+export async function rename(conversation: Conversation, next: string): Promise<void> {
+  if (renamingID.value !== conversation.id) return;
+  renamingID.value = '';
+  const title = next.trim();
+  if (!title || title === conversation.title) return;
   try {
-    const { conversation: updated } = await renameConversation(conversation.id, next.trim());
+    const { conversation: updated } = await renameConversation(conversation.id, title);
     conversation.title = updated.title;
     // The rail and the header read their own copies, which are not the objects
     // a project row was given, so the rail's entry is renamed as well.

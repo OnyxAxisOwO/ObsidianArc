@@ -1000,6 +1000,11 @@ const en = {
   twoFactorPasswordRequired: 'Enter your current password to turn this on.',
   twoFactorPasswordHint: 'Turning this on signs your other devices out, so your password confirms it is you.',
   currentPasswordWrong: 'That password is not correct.',
+  // The account form's refusals that its own checks do not catch first.
+  errPasswordUnchanged: 'That is already your password.',
+  errPasswordTooLong: 'That password is too long.',
+  errEmailRequired: 'This server requires an email address.',
+  errBioTooLong: 'That bio is too long.',
   emailChangePasswordHint: 'Changing your email needs your current password.',
   reauthForPassword: 'Sign in again with your provider first. A first password can only be set right after signing in.',
   reauthForAddress: 'Sign in again first. Changing the email on an account with no password needs a sign-in made just now.',

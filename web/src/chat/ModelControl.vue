@@ -15,6 +15,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useEventListener } from '@vueuse/core';
 import OaMarquee from '@/components/OaMarquee.vue';
 import { t } from '@/composables/useI18n';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
 import { IconCheck, IconChevron, IconChevronRight, IconSpark } from '@/icons';
 import {
   currentModel, models, reasoning, selectModel, setReasoning, stopFor, stopsFor,
@@ -47,7 +48,11 @@ const nearest = computed(() => Math.round(at.value));
 const thinking = computed(() => !!currentModel.value?.supports_reasoning && reasoning.value.enabled);
 const chipEffort = computed(() => (thinking.value ? stops.value[position.value]?.label ?? '' : ''));
 
-let hideTimer = 0;
+// Each owns its own timer, newest call first: a close that is reopened before
+// it unmounts the popover must not unmount it later, and an earlier morph must
+// not clear the height a later one has just set. Both are cancelled on unmount.
+const hideLater = useLatestTimeout();
+const settleMorph = useLatestTimeout();
 
 function toggle(next: boolean): void {
   if (next === open.value) return;
@@ -65,8 +70,7 @@ function toggle(next: boolean): void {
     return;
   }
   shown.value = false;
-  window.clearTimeout(hideTimer);
-  hideTimer = window.setTimeout(() => {
+  hideLater(() => {
     if (!open.value) mounted.value = false;
   }, MORPH_MS);
 }
@@ -93,7 +97,7 @@ async function morph(to: 'effort' | 'models'): Promise<void> {
   node.style.height = `${from}px`;
   void node.offsetHeight;
   node.style.height = `${target}px`;
-  window.setTimeout(() => { node.style.height = ''; }, MORPH_MS);
+  settleMorph(() => { node.style.height = ''; }, MORPH_MS);
 }
 
 // Clicks inside never reach the closer below. Testing containment there would
@@ -214,7 +218,6 @@ watch(position, (next) => {
 });
 
 onBeforeUnmount(() => {
-  window.clearTimeout(hideTimer);
   // A drag the unmount cut short is not a choice the reader made, so it must
   // not reach commit(). Its window listeners would otherwise stay attached and
   // fire on whatever pointerup comes next.

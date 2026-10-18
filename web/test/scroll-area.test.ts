@@ -5,7 +5,6 @@ import OaScrollArea from '../src/components/OaScrollArea.vue';
 let app: App | undefined;
 afterEach(() => {
   app?.unmount();
-  document.body.textContent = '';
   // The drag below writes to <body>; a test that fails partway through must
   // not leave that behind for the next one.
   document.body.style.userSelect = '';

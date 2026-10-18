@@ -1,21 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App, type Component } from 'vue';
+import { type Component } from 'vue';
 import AdminCodes from '../src/views/admin/AdminCodes.vue';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import GroupMembers from '../src/views/admin/GroupMembers.vue';
-import { adminApi, emptyPolicy, type Group, type RedemptionCode } from '../src/admin/api';
+import { adminApi, adminQueryParams, emptyPolicy, type Group, type RedemptionCode } from '../src/admin/api';
 import type { Account } from '../src/api/auth';
 import { saveAsFile } from '../src/api/backup';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { MASK_PLACEHOLDER, safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
 import { adopt, forget } from '../src/stores/session';
-import { settle } from './helpers';
+import { adminShell, mountComponent, settle, button } from './helpers';
+import { queriesSent } from './admin-query';
+import { makeAccount } from './fixtures/account';
 
 vi.mock('../src/api/backup', () => ({ saveAsFile: vi.fn() }));
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -29,23 +29,16 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   forget();
   vi.mocked(saveAsFile).mockClear();
 });
 
 
-async function mount(component: Component, props = {}): Promise<void> {
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-    return () => h(component, props);
-  } });
-  app.mount(host);
-  await settle();
+async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
+  unmount = await mountComponent(component, props, { host, panels, adminView: adminShell(actions) });
 }
 
 function input(node: HTMLInputElement, value: string): void {
@@ -53,24 +46,15 @@ function input(node: HTMLInputElement, value: string): void {
   node.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
-}
-
 function code(value: string, at: string): RedemptionCode {
   return { id: value, code: value, cards: 1, claimed: 0, card_days: 10, expires_at: 0, note: '', created_at: new Date(at).getTime() };
 }
 
 describe('administrator roles on the user detail panel', () => {
-  const member: Account = {
-    id: 'member', username: 'member', nickname: 'Member', email: '', bio: '', avatar: '',
-    role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
-    created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
-    email_verified: true, allow_stats: true, allow_delete_conversations: true,
-    api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-  };
+  const member = makeAccount({
+    id: 'member', username: 'member', nickname: 'Member', email: '', group_id: '', admin_permissions: [],
+    created_at: Date.now(), updated_at: Date.now(), group_name: '',
+  });
 
   async function openMember(permissions: string[]): Promise<void> {
     adopt({ ...member, id: 'operator', role: 'admin', admin_permissions: permissions });
@@ -232,13 +216,10 @@ describe('administrator roles on the user detail panel', () => {
 // be able to mint a new one by pressing the wrong button, and the two must
 // not be able to disagree about which date they read.
 describe('moving the expiry on cards an account already holds', () => {
-  const holder: Account = {
-    id: 'holder', username: 'holder', nickname: 'Holder', email: '', bio: '', avatar: '',
-    role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
-    created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
-    email_verified: true, allow_stats: true, allow_delete_conversations: true,
-    api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-  };
+  const holder = makeAccount({
+    id: 'holder', username: 'holder', nickname: 'Holder', email: '', group_id: '', admin_permissions: [],
+    created_at: Date.now(), updated_at: Date.now(), group_name: '',
+  });
 
   // Two spendable, one already lapsed — the lapsed one is invisible in the
   // list and still has to be counted by the button that would move it.
@@ -491,7 +472,7 @@ const accounts = Array.from({ length: 25 }, (_, index) => ({
 describe('group member selection', () => {
   function users(): ReturnType<typeof vi.spyOn> {
     return vi.spyOn(adminApi, 'memberOptions').mockImplementation(async (query) => {
-      const params = new URLSearchParams(query);
+      const params = adminQueryParams(query);
       const offset = Number(params.get('offset'));
       return { users: accounts.slice(offset, offset + 20), total: accounts.length };
     });
@@ -501,7 +482,7 @@ describe('group member selection', () => {
     const listing = users();
     const assign = vi.spyOn(adminApi, 'assignGroupMembers').mockResolvedValue({ updated: 2 });
     await mount(GroupMembers, { group, groups: [group] });
-    expect(listing).toHaveBeenCalledWith(expect.stringContaining('group_id=premium'));
+    expect(queriesSent(listing).some((query) => query.includes('group_id=premium'))).toBe(true);
     host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
     button(host, t('next')).click();
     await settle();
@@ -525,7 +506,7 @@ describe('group member selection', () => {
     await settle();
     [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.trim() === t('allAccounts'))!.click();
     input(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'far-away-account');
-    await vi.waitFor(() => expect(listing).toHaveBeenLastCalledWith('?q=far-away-account&limit=20&offset=0'));
+    await vi.waitFor(() => expect(queriesSent(listing).at(-1)).toBe('q=far-away-account&limit=20&offset=0'));
     await settle();
     host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
     input(host.querySelector<HTMLInputElement>('input[type="datetime-local"]')!, '2001-01-01T00:00');
@@ -558,7 +539,7 @@ describe('group member selection', () => {
     host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[0]!.click();
     await settle();
     input(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'member7');
-    await vi.waitFor(() => expect(listing).toHaveBeenLastCalledWith(expect.stringContaining('q=member7')));
+    await vi.waitFor(() => expect(queriesSent(listing).at(-1)).toContain('q=member7'));
     await settle();
     expect(host.textContent).toContain(t('membersSelected', { count: 0 }));
 

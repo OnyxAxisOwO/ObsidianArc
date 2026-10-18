@@ -94,7 +94,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.mocked(fetchConsoleSpec).mockReset();
   vi.mocked(completeConsoleLine).mockReset();
   vi.mocked(execConsoleLine).mockReset();

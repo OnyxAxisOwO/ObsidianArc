@@ -29,6 +29,9 @@ import { absoluteTime } from '@/lib/format';
 import { matchesSettings } from './search';
 
 const props = withDefaults(defineProps<{ query?: string }>(), { query: '' });
+// Once per change of the query or the language, not on every render; see
+// AccountSection for why it stays a computed.
+const shown = computed(() => ({ invites: matchesSettings(props.query, 'invites') }));
 const route = useRoute();
 const router = useRouter();
 
@@ -209,7 +212,7 @@ function skipLabel(reason: string): string {
 </script>
 
 <template>
-  <div v-show="matchesSettings(props.query, 'invites')" class="oa-settings-panel">
+  <div v-show="shown.invites" class="oa-settings-panel">
     <h2 class="oa-admin-section-title">{{ t('secInvites') }}</h2>
 
     <!-- Always present: a code from anyone else is worth redeeming whether

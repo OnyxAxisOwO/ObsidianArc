@@ -20,10 +20,10 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.useRealTimers();
 });
 
+// Not mountComponent: the tests use the screen the moment it is mounted, without awaiting, and read its first render.
 function mount(): HTMLButtonElement {
   const host = document.createElement('div');
   document.body.append(host);

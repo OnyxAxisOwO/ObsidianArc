@@ -24,6 +24,7 @@ const control = {
 let app: App | null = null;
 let host: HTMLElement;
 
+// Not mountComponent: it waits a single tick rather than settle's four rounds; moving it would change that under these tests.
 async function mount(values: Record<string, unknown>, handlers: { onView?: (url: string) => void } = {}): Promise<void> {
   app = createApp({
     render: () => h(PluginUserControls, { controls: [control], values: values as never, ...handlers }),

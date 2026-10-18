@@ -6,7 +6,6 @@
 // none of their keys reaches the main bundle. A code that is not in either
 // table, a plugin's among them, keeps the server's own sentence.
 
-import { ApiError } from '@/api/client';
 import type { AdminKey } from '@/i18n.admin';
 import { t } from '@/composables/useI18n';
 import { codeText } from '@/lib/api-error';
@@ -146,24 +145,4 @@ export function adminCodeText(code: string, details: Record<string, unknown> = {
     if (typeof value === 'string' || typeof value === 'number') vars[name] = value;
   }
   return t(key, vars);
-}
-
-/**
- * A refusal's sentence by its code, else the server's own sentence; anything
- * that is not a refusal is shown as String() shows it, as these screens
- * always have.
- */
-export function refusalLine(failure: unknown): string {
-  if (failure instanceof ApiError) return adminCodeText(failure.code, failure.details) ?? failure.message;
-  return String(failure);
-}
-
-/**
- * refusalLine for the screens that show a thrown Error by its message alone
- * rather than with its name in front.
- */
-export function errorLine(failure: unknown): string {
-  if (failure instanceof ApiError) return adminCodeText(failure.code, failure.details) ?? failure.message;
-  if (failure instanceof Error) return failure.message;
-  return String(failure);
 }

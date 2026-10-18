@@ -1,16 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, shallowRef, type App } from 'vue';
+import { createApp, h, nextTick, ref, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, type AdminModel, type Announcement } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
 import OaTable from '../src/components/OaTable.vue';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { t } from '../src/composables/useI18n';
 import AdminAnnouncements from '../src/views/admin/AdminAnnouncements.vue';
 import { pickJSONFile, saveAsFile } from '../src/api/backup';
 import AdminModels from '../src/views/admin/AdminModels.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
-import { PAST_PANEL_ZOOM_MS, settle, wait } from './helpers';
+import { adminShell, catchAllRouter, mountComponent, PAST_PANEL_ZOOM_MS, settle, wait } from './helpers';
 
 // The import reads a file from the operator's disk; the test hands it a JSON
 // body directly. Everything else in the backup module stays real.
@@ -39,6 +38,7 @@ describe('OaTable multi-select', () => {
 
   const columns = [{ key: 'name', header: 'Name', text: (row: unknown) => (row as { id: string }).id }];
 
+  // Not mountComponent: a test changes a prop after mounting, and mountComponent's props are fixed.
   function mount(initial: Array<{ id: string }>, extra: Record<string, unknown> = {}) {
     const rows = ref(initial);
     const selected = ref<string[]>([]);
@@ -103,7 +103,7 @@ describe('OaTable multi-select', () => {
 });
 
 describe('AdminModels, several at once and in place', () => {
-  let app: App | undefined;
+  let unmount: (() => void) | undefined;
   let host: HTMLElement;
   let panels: HTMLElement;
   const reload = vi.fn();
@@ -132,17 +132,9 @@ describe('AdminModels, several at once and in place', () => {
     vi.spyOn(adminApi, 'meta').mockResolvedValue({ provider_kinds: ['openai'], reasoning_styles: ['auto'] });
     vi.spyOn(adminApi, 'health').mockResolvedValue({ hours: 24, models: [], policy: { probe: true, window_mins: 30, disable_after: 0 } });
 
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
-    app = createApp({
-      setup() {
-        providePanelHost(shallowRef(panels));
-        provideAdminView({ actionsHost: actions, setTitle() {}, reload, params: [] });
-        return () => h(AdminModels);
-      },
+    unmount = await mountComponent(AdminModels, {}, {
+      host, panels, adminView: adminShell(actions, { reload }), router: await catchAllRouter(),
     });
-    app.use(router);
-    app.mount(host);
-    await settle();
   }
 
   const rowBox = (index: number) => host.querySelectorAll<HTMLInputElement>('tbody input[type="checkbox"]')[index]!;
@@ -157,8 +149,8 @@ describe('AdminModels, several at once and in place', () => {
   });
 
   afterEach(() => {
-    app?.unmount();
-    app = undefined;
+    unmount?.();
+    unmount = undefined;
     host.remove();
     panels.remove();
     vi.restoreAllMocks();
@@ -388,7 +380,7 @@ describe('AdminModels, several at once and in place', () => {
 });
 
 describe('AdminModels, what the filter hides', () => {
-  let app: App | undefined;
+  let unmount: (() => void) | undefined;
   let host: HTMLElement;
   let panels: HTMLElement;
   let actions: HTMLElement;
@@ -411,17 +403,9 @@ describe('AdminModels, what the filter hides', () => {
     vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
     vi.spyOn(adminApi, 'meta').mockResolvedValue({ provider_kinds: ['openai'], reasoning_styles: ['auto'] });
     vi.spyOn(adminApi, 'health').mockResolvedValue({ hours: 24, models: [], policy: { probe: true, window_mins: 30, disable_after: 0 } });
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
-    app = createApp({
-      setup() {
-        providePanelHost(shallowRef(panels));
-        provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
-        return () => h(AdminModels);
-      },
+    unmount = await mountComponent(AdminModels, {}, {
+      host, panels, adminView: adminShell(actions), router: await catchAllRouter(),
     });
-    app.use(router);
-    app.mount(host);
-    await settle();
   }
 
   const rowBox = (index: number) => host.querySelectorAll<HTMLInputElement>('tbody input[type="checkbox"]')[index]!;
@@ -441,8 +425,8 @@ describe('AdminModels, what the filter hides', () => {
   afterEach(async () => {
     // The filter is kept for the page's lifetime, so it must not leak into the next test.
     if (search()) await typeSearch('');
-    app?.unmount();
-    app = undefined;
+    unmount?.();
+    unmount = undefined;
     host.remove();
     panels.remove();
     vi.restoreAllMocks();

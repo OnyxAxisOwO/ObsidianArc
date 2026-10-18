@@ -9,13 +9,14 @@ import { useRouter } from 'vue-router';
 import { deleteConversation, listConversations, type Conversation } from '@/api/chat';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
+import OaFullscreenButton from '@/components/OaFullscreenButton.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
-import { IconArchive, IconCheck, IconCollapse, IconExpand, IconTrash } from '@/icons';
+import { IconArchive, IconCheck, IconTrash } from '@/icons';
 import { relativeTime } from '@/lib/format';
 import { matchesSearch } from '@/lib/search';
 import { activeID, canDelete, failureText, messages, openConversation, setFlash, unarchiveConversation } from '@/chat/useChat';
@@ -131,14 +132,7 @@ onMounted(() => {
     @close="panels.close('replace')"
   >
     <template #actions>
-      <OaIconButton
-        class="oa-icon-btn"
-        :label="t(fullscreen ? 'exitFullscreen' : 'fullscreen')"
-        @click="toggleFullscreen"
-      >
-        <IconCollapse v-if="fullscreen" :size="16" />
-        <IconExpand v-else :size="16" />
-      </OaIconButton>
+      <OaFullscreenButton :fullscreen="fullscreen" @toggle="toggleFullscreen" />
     </template>
 
     <div class="oa-archive-search-bar">
@@ -167,16 +161,14 @@ onMounted(() => {
             </button>
 
             <div class="oa-archive-item-actions">
-              <button
-                type="button"
+              <OaIconButton
                 class="oa-icon-btn"
-                :title="t('unarchive')"
-                :aria-label="t('unarchive')"
+                :label="t('unarchive')"
                 :disabled="loading"
                 @click.stop="restore(conv)"
               >
                 <IconArchive :size="15" />
-              </button>
+              </OaIconButton>
               <OaConfirmButton
                 v-if="canDelete"
                 class="oa-icon-btn danger"

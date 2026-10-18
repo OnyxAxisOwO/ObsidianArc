@@ -12,9 +12,9 @@ let app: App | undefined;
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
 });
 
+// Not mountComponent: the tests use the screen the moment it is mounted, without awaiting, and read its first render.
 function mount(src: string): void {
   const host = document.createElement('div');
   document.body.append(host);

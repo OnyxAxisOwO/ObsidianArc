@@ -13,12 +13,13 @@ import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Choice } from '@/components/choice';
 import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconArchive, IconServer } from '@/icons';
 import { absoluteTime } from '@/lib/format';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
-import { refusalLine } from './failure-codes';
+import { failureText } from './shared';
 
 interface BackupForm {
   type: StorageType;
@@ -129,7 +130,7 @@ const nextRunLabel = computed(() => {
 
 const visibility = useDocumentVisibility();
 let inFlightCount = 0;
-let refreshSeq = 0;
+const refreshSeq = useLatestRequest();
 const statusPollInterval = computed(() => snapshot.value?.running ? 5000 : 30000);
 const { pause: pauseStatusPoll, resume: resumeStatusPoll } = useIntervalFn(() => {
   if (visibility.value === 'visible') void refreshStatus();
@@ -160,7 +161,7 @@ watch(
 // A server sentence is kept unless its code has a reader's translation: a 503
 // from the storage is the operator's only clue, and it arrives untranslated.
 function message(failure: unknown): string {
-  return refusalLine(failure);
+  return failureText(failure);
 }
 
 // Matched by code so the refusal reads in the operator's language; the server's
@@ -215,14 +216,14 @@ async function load(): Promise<void> {
 async function refreshStatus(fromAction = false): Promise<void> {
   if (inFlightCount > 0 && !fromAction) return;
   inFlightCount++;
-  const seq = ++refreshSeq;
+  const seq = refreshSeq.begin();
   try {
     const data = await adminApi.backup();
-    if (seq === refreshSeq) {
+    if (refreshSeq.isCurrent(seq)) {
       snapshot.value = data;
     }
   } catch (failure) {
-    if (fromAction && seq === refreshSeq) {
+    if (fromAction && refreshSeq.isCurrent(seq)) {
       actionError.value = message(failure);
     }
   } finally {

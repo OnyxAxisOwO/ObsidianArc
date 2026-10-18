@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, type Component, nextTick, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, emptyPolicy, type AdminModel, type Provider } from '../src/admin/api';
-import type { Account } from '../src/api/auth';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { t } from '../src/composables/useI18n';
@@ -46,6 +45,7 @@ import { installPlugins } from '../src/plugins/registry';
 import example from './fixtures/example.plugin';
 import { site, siteInfo } from '../src/stores/session';
 import { until } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 describe('Admin Safe Mode store & utilities', () => {
   beforeEach(() => {
@@ -219,12 +219,10 @@ describe('AdminSafeMode component', () => {
     triggerBtn.click();
     await nextTick();
 
-    // Menu content is present
     const menu = host.querySelector('.oa-menu-safe-mode')!;
     expect(menu).not.toBeNull();
     expect(menu.textContent).toContain('******');
 
-    // Toggle master switch
     const masterSwitch = menu.querySelector<HTMLInputElement>('.oa-safe-switch input')!;
     expect(masterSwitch.checked).toBe(false);
     masterSwitch.click();
@@ -233,7 +231,6 @@ describe('AdminSafeMode component', () => {
     expect(safeModeEnabled.value).toBe(true);
     expect(triggerBtn.classList.contains('is-active')).toBe(true);
 
-    // Category rows can be toggled
     const categoryRows = menu.querySelectorAll<HTMLButtonElement>('.oa-safe-mode-row');
     expect(categoryRows.length).toBe(SAFE_CATEGORIES.length);
 
@@ -697,13 +694,10 @@ describe('editable fields blur under safe mode instead of being replaced', () =>
   let host: HTMLElement;
   let panels: HTMLElement;
 
-  const member: Account = {
-    id: 'member', username: 'member', nickname: 'Member', email: 'member@example.com', fields: { ref: '10001' }, bio: '', avatar: '',
-    role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
-    created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
-    email_verified: true, allow_stats: true, allow_delete_conversations: true,
-    api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-  };
+  const member = makeAccount({
+    id: 'member', username: 'member', nickname: 'Member', email: 'member@example.com', fields: { ref: '10001' },
+    group_id: '', admin_permissions: [], created_at: Date.now(), updated_at: Date.now(), group_name: '',
+  });
 
   const provider: Provider = {
     id: 'prov-1', name: 'OpenRouter', kind: 'openai', base_url: 'https://openrouter.ai/api/v1',
@@ -866,9 +860,9 @@ describe('UptimePanel safe mode masking', () => {
               history: [],
             },
           ],
-        } as any;
+        };
       }
-      return null as any;
+      throw new Error(`unexpected GET ${path}`);
     });
 
     const router = createRouter({

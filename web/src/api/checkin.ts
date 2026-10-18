@@ -37,7 +37,7 @@ export interface CheckinStatus {
   rules: CheckinRule[];
 }
 
-export interface CheckinResult {
+interface CheckinResult {
   day: string;
   streak: number;
   reward: CheckinReward;

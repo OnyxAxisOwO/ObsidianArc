@@ -11,7 +11,7 @@ import type { StringKey } from '@/i18n';
 import { t } from '@/composables/useI18n';
 import { currentPreferences, onSignOut, syncPreferences } from '@/stores/session';
 
-export interface ModelCapabilities {
+interface ModelCapabilities {
   supports_reasoning: boolean;
   supports_images: boolean;
   supports_vision: boolean;
@@ -60,9 +60,9 @@ export interface AvailableModel extends ModelCapabilities {
  * define its own tiers, so what is valid here is decided per model — by the
  * list the reader was offered, which the gateway checks the value against.
  */
-export type Effort = string;
+type Effort = string;
 
-export interface ReasoningState {
+interface ReasoningState {
   enabled: boolean;
   effort: Effort;
 }

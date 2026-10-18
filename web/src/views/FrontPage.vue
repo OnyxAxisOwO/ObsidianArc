@@ -30,7 +30,7 @@ import { SOURCE_URL } from '@/lib/source';
 // a colour — and that is kept deliberately: a hue hardcoded here would be the
 // one surface in the product that ignored the accent (AGENTS.md).
 
-import { onMounted, onBeforeUnmount, ref, computed } from 'vue';
+import { onMounted, onBeforeUnmount, ref, computed, h } from 'vue';
 import { useRouter } from 'vue-router';
 import { useEventListener, usePreferredReducedMotion } from '@vueuse/core';
 import HomeNotice from '@/announce/HomeNotice.vue';
@@ -46,6 +46,17 @@ const DOCS_URL = 'https://obsidianarc.pages.dev';
 
 const router = useRouter();
 const site = computed(() => siteInfo.value);
+
+// The sign-up call to action, the same button under the headline and on the
+// closing card. The header's is lighter on purpose and stays in the template.
+function SignUpCta() {
+  return site.value.registration_enabled
+    ? h('button', { type: 'button', class: 'oa-btn primary oa-front-cta', onClick: () => router.push('/register') }, [
+        t('frontCreateAccount'),
+        h(IconChevronRight, { size: 15 }),
+      ])
+    : null;
+}
 const reducedMotion = usePreferredReducedMotion();
 const still = computed(() => reducedMotion.value === 'reduce');
 
@@ -140,7 +151,7 @@ const step = ref(0);
 const typedLine = ref<HTMLElement | null>(null);
 let typed = '';
 const typing = ref(true);
-const current = computed(() => SESSION[step.value] ?? SESSION[0]!);
+const current = computed(() => SESSION[step.value] ?? SESSION[0]);
 // The output belongs to the command that finished typing, so it appears only
 // once the line is whole. Typing `model list` above a usage table for half a
 // second reads as the terminal answering the wrong question.
@@ -279,7 +290,7 @@ onMounted(() => {
   if (still.value || typeof IntersectionObserver === 'undefined') {
     node.querySelectorAll('.oa-front-reveal').forEach((el) => el.classList.add('shown'));
     counted.value = FACTS.map((fact) => fact.value);
-    showTyped(SESSION[0]!.command);
+    showTyped(SESSION[0].command);
     typing.value = false;
     return;
   }
@@ -408,14 +419,7 @@ useEventListener(page, 'scroll', onScroll, { passive: true });
         </h1>
         <p class="oa-front-lede">{{ t('frontHeroBody') }}</p>
         <div class="oa-front-actions">
-          <button
-            v-if="site.registration_enabled"
-            type="button"
-            class="oa-btn primary oa-front-cta"
-            @click="router.push('/register')"
-          >
-            {{ t('frontCreateAccount') }}<IconChevronRight :size="15" />
-          </button>
+          <SignUpCta />
           <button type="button" class="oa-btn oa-front-cta" @click="router.push('/login')">
             {{ t('frontOpenChat') }}
           </button>
@@ -566,14 +570,7 @@ useEventListener(page, 'scroll', onScroll, { passive: true });
         <h2>{{ t('frontCtaTitle') }}</h2>
         <p>{{ t('frontCtaBody') }}</p>
         <div class="oa-front-actions">
-          <button
-            v-if="site.registration_enabled"
-            type="button"
-            class="oa-btn primary oa-front-cta"
-            @click="router.push('/register')"
-          >
-            {{ t('frontCreateAccount') }}<IconChevronRight :size="15" />
-          </button>
+          <SignUpCta />
           <button type="button" class="oa-btn oa-front-cta" @click="router.push('/login')">
             {{ t('frontSignIn') }}
           </button>

@@ -97,7 +97,6 @@ afterEach(() => {
   app?.unmount();
   app = null;
   forget();
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 

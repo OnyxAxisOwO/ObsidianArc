@@ -20,7 +20,6 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
 });
 
 describe('Non-linear animation & expand/collapse transitions', () => {
@@ -313,6 +312,38 @@ describe('Non-linear animation & expand/collapse transitions', () => {
 
     expect(panel.style.right).toBe('-76px');
     // Vertical origin must be bottom for upward opening menu
+    expect(panel.style.transformOrigin).toBe('186px bottom');
+  });
+
+  // A row menu places itself upwards with its own class, which OaMenu does
+  // not know; the caller says so through the prop instead.
+  it('OaMenu anchors transformOrigin to bottom when the caller says it opens up', async () => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
+
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
+    app = createApp({
+      render() {
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; }, menuClass: 'row-menu', up: true }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'up-btn', onClick: toggle }, 'Up'),
+          default: () => h('div', { class: 'menu-content' }, 'Content'),
+        });
+      },
+    });
+    app.mount(host);
+    await nextTick();
+
+    const group = host.querySelector<HTMLElement>('.oa-chip-group')!;
+    vi.spyOn(group, 'getBoundingClientRect').mockReturnValue({
+      left: 176, right: 212, top: 500, bottom: 536, width: 36, height: 36, x: 176, y: 500, toJSON: () => {},
+    });
+
+    host.querySelector<HTMLButtonElement>('.up-btn')!.click();
+    await nextTick();
+
+    const panel = host.querySelector<HTMLElement>('.oa-menu')!;
+    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
+    menuRef.value!.fit();
+
     expect(panel.style.transformOrigin).toBe('186px bottom');
   });
 

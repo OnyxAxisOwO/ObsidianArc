@@ -22,7 +22,7 @@ describe('loadPluginModule deadline', () => {
   });
 
   it('keeps a half that answers in time', async () => {
-    const half = { name: 'demo' } as never as ArcPlugin;
+    const half = { name: 'demo' } as ArcPlugin;
 
     await expect(loadPluginModule('demo', async () => ({ default: half }))).resolves.toBe(half);
   });

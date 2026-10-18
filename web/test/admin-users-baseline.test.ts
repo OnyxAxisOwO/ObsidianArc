@@ -5,17 +5,14 @@
 // failure does not say that it did.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { nextTick } from 'vue';
 import { adminApi, type Account } from '../src/admin/api';
 import { safeModeEnabled } from '../src/admin/safeMode';
 import { ApiError } from '../src/api/client';
 import { t } from '../src/composables/useI18n';
 import { installPlugins } from '../src/plugins/registry';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { settle } from './helpers';
+import { adminShell, catchAllRouter, mountComponent, settle } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 ;
@@ -44,7 +41,7 @@ const deferred = <T,>() => {
 };
 
 describe('AdminUsers, the account panel after a change', () => {
-  let app: App | undefined;
+  let unmount: (() => void) | undefined;
   let host: HTMLElement;
   let panels: HTMLElement;
 
@@ -54,19 +51,11 @@ describe('AdminUsers, the account panel after a change', () => {
     vi.spyOn(adminApi, 'user').mockImplementation(async (id: string) => detailOf(rows.find((row) => row.id === id)!));
     vi.spyOn(adminApi, 'userKeys').mockResolvedValue({ keys: [] });
     vi.spyOn(adminApi, 'userSessions').mockResolvedValue({ sessions: [] });
-    vi.spyOn(adminApi, 'updateUser').mockImplementation(async () => ({ user: rows[0]! }) as never);
+    vi.spyOn(adminApi, 'updateUser').mockImplementation(async () => ({ user: rows[0]! }));
 
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
-    app = createApp({
-      setup() {
-        providePanelHost(shallowRef(panels));
-        provideAdminView({ actionsHost: document.createElement('div'), setTitle() {}, reload() {}, params: [] });
-        return () => h(AdminUsers);
-      },
+    unmount = await mountComponent(AdminUsers, {}, {
+      host, panels, adminView: adminShell(), router: await catchAllRouter(),
     });
-    app.use(router);
-    app.mount(host);
-    await settle();
   }
 
   const rowOf = (id: string) => [...host.querySelectorAll<HTMLTableRowElement>('tbody tr')]
@@ -90,8 +79,8 @@ describe('AdminUsers, the account panel after a change', () => {
   });
 
   afterEach(() => {
-    app?.unmount();
-    app = undefined;
+    unmount?.();
+    unmount = undefined;
     host.remove();
     panels.remove();
     installPlugins([]);
@@ -106,7 +95,7 @@ describe('AdminUsers, the account panel after a change', () => {
     rowOf('a').click();
     await settle();
     const save = deferred<{ user: Account }>();
-    vi.mocked(adminApi.updateUser).mockImplementation(() => save.promise as never);
+    vi.mocked(adminApi.updateUser).mockImplementation(() => save.promise);
     typeIn(fieldFor(t('nickname')), 'Changed');
     await nextTick();
 

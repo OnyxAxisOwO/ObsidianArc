@@ -57,7 +57,7 @@ async function mountStage(): Promise<void> {
 
 describe('removing a login background', () => {
   it('removes it only on the second click, and the first click sends nothing', async () => {
-    const remove = vi.spyOn(adminApi, 'deleteLoginBackground').mockResolvedValue(undefined as never);
+    const remove = vi.spyOn(adminApi, 'deleteLoginBackground').mockResolvedValue(undefined);
     await mountStage();
 
     const trash = host.querySelector<HTMLButtonElement>('.oa-bg-stage-actions button.oa-icon-btn')!;
@@ -73,7 +73,7 @@ describe('removing a login background', () => {
   });
 
   it('opens an empty editor after a removal, not the draft typed for the page that was removed', async () => {
-    vi.spyOn(adminApi, 'deleteLoginBackground').mockResolvedValue(undefined as never);
+    vi.spyOn(adminApi, 'deleteLoginBackground').mockResolvedValue(undefined);
     await mountStage();
 
     const edit = () => [...host.querySelectorAll<HTMLButtonElement>('.oa-bg-stage-actions button')]

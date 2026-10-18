@@ -7,19 +7,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, type App } from 'vue';
 import * as authApi from '@/api/auth';
-import type { Account } from '@/api/auth';
 import VerifyBanner from '@/announce/VerifyBanner.vue';
 import { changeLanguage, t } from '@/composables/useI18n';
 import { adopt, forget, site, siteInfo } from '@/stores/session';
 import { settle } from './helpers';
+import { makeAccount } from './fixtures/account';
 
-const ACCOUNT: Account = {
-  id: 'u1', username: 'ada', email: 'ada@example.com', nickname: 'Ada', avatar: '', bio: '',
-  role: 'user', group_id: 'g1', group_expires_at: 0, group_name: 'Default', status: 'active',
-  created_at: 1, updated_at: 1, last_login_at: 1, email_verified: false,
-  allow_stats: true, allow_delete_conversations: true, api_restricted: false,
-  api_restricted_until: 0, api_restriction_source: '',
-};
+const ACCOUNT = makeAccount({ id: 'u1', last_login_at: 1, email_verified: false });
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -48,7 +42,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   forget();
   site.value = null;

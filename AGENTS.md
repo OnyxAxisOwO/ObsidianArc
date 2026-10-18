@@ -124,7 +124,10 @@ here hold for it unchanged; what differs is where the code comes from.
   plugin module imports only what the entry already has — `@/api/client`,
   `@/icons`, `@/lib/*`, and `pluginStrings` from `plugins/registry.ts` — never
   `views/admin/`, or the bundler splits a shared chunk out and the file count
-  in `test/bundle.test.ts` catches it.
+  in `test/bundle.test.ts` catches it. A plugin component uses the Composition
+  API: the core is built with the Options API compiled out (`optionsAPI: false`
+  in `web/vite.config.ts`), so `data` and `methods` would be ignored without
+  any error.
 - **A plugin's strings are its own**, in `pluginStrings(en, zh)`, typed the way
   `i18n.ts` is. They never go into the core dictionaries.
 - **Tests come with it**, in the plugin's own package: `servertest` builds a
@@ -299,12 +302,10 @@ English that only the backoffice says lives in `web/src/i18n.admin.ts`, which
 travels with the backoffice's chunk instead of on everyone's first paint. Its
 keys are still `StringKey`s, so `zh` must still translate them and still read
 through `t()`; a key any other screen uses stays in `i18n.ts`, and
-`test/bundle.test.ts` fails the build when one is in the wrong file. A few
-backoffice pages keep their own words (`views/admin/audit-text.ts`,
-`pool-text.ts`) through `pluginStrings`, with the same guarantees: English is
-the source, a missing `zh` is a type error, and they redraw on a language
-change. A word the core dictionary already has is taken from `t()`, never
-copied.
+`test/bundle.test.ts` fails the build when one is in the wrong file. A
+backoffice page's own words go there too, never into a dictionary of the
+page's own: `pluginStrings` is for plugins. A word the core dictionary already
+has is taken from `t()`, never copied.
 
 Module-level label tables evaluate at import time, before the language is
 known. Store `StringKey`s and resolve at render, as `PAGES` in
@@ -440,8 +441,8 @@ the plugin runtime, 0.86 MB the build's brotli and gzip copies of the
 assets); 205.67 kB on the wire to open the chat, as gzip (the build's gzip
 column reads 206.43 kB; a browser that takes brotli receives 172.70 kB), against a target of 135. The target used to be 80 and
 the figure used to be 59.5; adopting Vue moved both, and
-`docs/ARCHITECTURE.md` says so rather than
-quietly restating a target the build cannot meet.
+`docs/ARCHITECTURE.md` says so rather than quietly restating a target the
+build cannot meet.
 
 The backoffice, the terminal, the Chinese dictionary, the LaTeX renderer, the
 public front page and the landing page are separate chunks, fetched only by the
@@ -454,13 +455,13 @@ those splits. `web/src/lib/format.ts` holds
 `formatUptime` for exactly that reason: one import of one four-line helper
 used to pull the whole backoffice back into the main bundle.
 
-`test/bundle.test.ts` asserts the build produces exactly ten files (the entry's
-script and stylesheet, the backoffice's and the terminal's script and
+`test/bundle.test.ts` asserts the build produces exactly ten files (the
+entry's script and stylesheet, the backoffice's and the terminal's script and
 stylesheet, the Chinese dictionary, the maths renderer, the front page and the
-landing page), plus one per directory under `web/src/plugins/` — each plugin's own chunk. Route-level
-lazy loading produces a dozen and is switched off for everything but the
-backoffice, the terminal and the front page; if that count changes, it should be because
-somebody decided it should.
+landing page), plus one per directory under `web/src/plugins/` — each plugin's
+own chunk. Route-level lazy loading produces a dozen and is switched off for
+everything but the backoffice, the terminal and the front page; if that count
+changes, it should be because somebody decided it should.
 
 Responses are compressed by `httpx.Compress`, on an allowlist of content
 types. Adding `text/event-stream` to it would buffer streamed answers into

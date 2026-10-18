@@ -26,7 +26,6 @@ describe('ComposerMenu usage reading', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
   });
 
   // The trigger toggles the menu, so every second click closes it again.

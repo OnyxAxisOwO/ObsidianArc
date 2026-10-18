@@ -60,7 +60,7 @@ function keyInput(): HTMLInputElement {
 }
 
 async function save(): Promise<Record<string, unknown>> {
-  const update = vi.spyOn(adminApi, 'updateProvider').mockResolvedValue({ provider } as never);
+  const update = vi.spyOn(adminApi, 'updateProvider').mockResolvedValue({ provider });
   [...panels.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === t('save'))!.click();
   await settle();
   return update.mock.calls[0]![1] as Record<string, unknown>;

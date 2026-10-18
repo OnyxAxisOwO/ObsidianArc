@@ -1,14 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App } from 'vue';
 import AdminGroups from '../src/views/admin/AdminGroups.vue';
-import { adminApi, type Group, type QuotaPolicy } from '../src/admin/api';
+import { adminApi, emptyPolicy, type Group, type QuotaPolicy } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { settle } from './helpers';
+import { adminShell, mountComponent, settle } from './helpers';
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -24,21 +21,14 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
 });
 
 
 async function mount(): Promise<void> {
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-    return () => h(AdminGroups);
-  } });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(AdminGroups, {}, { host, panels, adminView: adminShell(actions) });
 }
 
 function fieldFor(root: ParentNode, label: string): HTMLElement {
@@ -76,7 +66,7 @@ describe('AdminGroups, creating a group with a quota policy', () => {
     const update = vi.spyOn(adminApi, 'updateGroup').mockResolvedValue({ group: created });
     const policy = vi.spyOn(adminApi, 'savePolicy')
       .mockRejectedValueOnce(new ApiError(500, 'internal', 'The policy store is busy.'))
-      .mockResolvedValue({ policy: {} as never });
+      .mockResolvedValue({ policy: emptyPolicy('group', '') });
     await mount();
     await startNewGroup('Pro');
 
@@ -96,7 +86,7 @@ describe('AdminGroups, creating a group with a quota policy', () => {
   // after the group exists. The figure is checked before anything is written.
   it('refuses a fractional quota before creating anything', async () => {
     const create = vi.spyOn(adminApi, 'createGroup').mockResolvedValue({ group: created });
-    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: {} as never });
+    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: emptyPolicy('group', '') });
     await mount();
     await startNewGroup('Pro');
     input(fieldFor(panels, t('requestsPerMinute')).querySelector<HTMLInputElement>('input')!, '2.5');
@@ -114,7 +104,7 @@ describe('AdminGroups, creating a group with a quota policy', () => {
   // same way a fraction is, so it is refused here before anything is written.
   it('refuses a negative request limit before creating anything', async () => {
     const create = vi.spyOn(adminApi, 'createGroup').mockResolvedValue({ group: created });
-    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: {} as never });
+    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: emptyPolicy('group', '') });
     await mount();
     await startNewGroup('Pro');
     input(fieldFor(panels, t('requestsPerMinute')).querySelector<HTMLInputElement>('input')!, '-2');
@@ -146,7 +136,7 @@ describe('AdminGroups, creating a group with a quota policy', () => {
   // fraction there is an ordinary value. Refusing it would block the save.
   it('sends a fractional credits limit on a window without refusing it', async () => {
     const create = vi.spyOn(adminApi, 'createGroup').mockResolvedValue({ group: created });
-    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: {} as never });
+    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: emptyPolicy('group', '') });
     await mount();
     await startNewGroup('Pro');
     input(fieldFor(panels, t('limitCredits')).querySelector<HTMLInputElement>('input')!, '2.5');
@@ -166,7 +156,7 @@ describe('AdminGroups, creating a group with a quota policy', () => {
   // whole save, which is what windowFigure does. The zero is not a refusal.
   it('sends a zero window figure as no limit instead of refusing the save', async () => {
     const create = vi.spyOn(adminApi, 'createGroup').mockResolvedValue({ group: created });
-    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: {} as never });
+    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: emptyPolicy('group', '') });
     await mount();
     await startNewGroup('Pro');
     input(fieldFor(panels, t('limitRequests')).querySelector<HTMLInputElement>('input')!, '0');

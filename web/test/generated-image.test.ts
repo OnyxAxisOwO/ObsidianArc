@@ -16,7 +16,6 @@ beforeEach(() => {
 afterEach(async () => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   // The dictionary is module state: a test that left Chinese loaded would
   // change what the next one reads.
   await changeLanguage('en');

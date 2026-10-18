@@ -344,8 +344,9 @@ describe('code splitting invariants in production bundle', () => {
     // about 29 kB off the entry; ratcheted down then, so the room it made is
     // not quietly spent. 225 kB until the backoffice's stylesheet followed it
     // and took about 13.5 kB more, and 210 kB until the terminal's stylesheet
-    // and the backoffice's last controls took about 1.6 kB more.
-    const FIRST_PAINT_GZIP_BUDGET = 207_000;
+    // and the backoffice's last controls took about 1.6 kB more. 207 kB until
+    // Vue's Options API branch was compiled out, which took about 1.6 kB more.
+    const FIRST_PAINT_GZIP_BUDGET = 206_000;
     const gzipped = firstPaintGzipBytes();
     expect(gzipped, `first paint is ${gzipped} bytes gzipped, budget ${FIRST_PAINT_GZIP_BUDGET}`).toBeLessThanOrEqual(
       FIRST_PAINT_GZIP_BUDGET,

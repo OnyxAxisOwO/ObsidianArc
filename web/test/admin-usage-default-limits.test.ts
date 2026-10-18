@@ -5,12 +5,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, shallowRef, type App } from 'vue';
-import { adminApi } from '../src/admin/api';
+import { adminApi, emptyPolicy } from '../src/admin/api';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import AdminUsage from '../src/views/admin/AdminUsage.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { settle } from './helpers';
+import { queriesSent } from './admin-query';
 
 vi.mock('@/api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -44,14 +45,15 @@ let host: HTMLElement;
 let actions: HTMLElement;
 let panels: HTMLElement;
 
+// Not mountComponent: the test checks nothing was saved before the page's first answers arrive, so it must not settle.
 function mount(policies: () => Promise<unknown>, reload: () => void = () => {}): void {
   vi.spyOn(adminApi, 'policies').mockImplementation(policies as typeof adminApi.policies);
-  const savePolicy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: {} as never });
+  const savePolicy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: emptyPolicy('global', '') });
   vi.spyOn(adminApi, 'usage').mockResolvedValue(usagePayload as never);
-  vi.spyOn(adminApi, 'usageRecords').mockResolvedValue({ records: [], total: 0 } as never);
-  vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] } as never);
+  vi.spyOn(adminApi, 'usageRecords').mockResolvedValue({ records: [], total: 0 });
+  vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
   // The policy form's credit field prices models with this when it opens.
-  vi.spyOn(adminApi, 'models').mockResolvedValue({ models: [] } as never);
+  vi.spyOn(adminApi, 'models').mockResolvedValue({ models: [] });
   app = createApp({
     setup() {
       providePanelHost(shallowRef(panels));
@@ -80,7 +82,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 
@@ -143,7 +144,7 @@ describe('AdminUsage default allowance', () => {
 
       expect(adminApi.savePolicy).toHaveBeenCalledTimes(1);
       expect(reload).not.toHaveBeenCalled();
-      const lastUsage = vi.mocked(adminApi.usage).mock.calls.at(-1)?.[0] ?? '';
+      const lastUsage = queriesSent(vi.mocked(adminApi.usage)).at(-1) ?? '';
       expect(lastUsage).toContain(`model_id=${modelId}`);
     } finally {
       window.history.replaceState(null, '', '/');

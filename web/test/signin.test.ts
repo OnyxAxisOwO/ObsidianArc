@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, shallowRef, type App, type Component } from 'vue';
 import * as authApi from '../src/api/auth';
-import type { Account } from '../src/api/auth';
 import * as consentApi from '../src/api/consent';
 import * as oauthApi from '../src/api/oauth';
 import * as powLib from '../src/lib/pow';
@@ -21,7 +20,7 @@ import VerifyView from '../src/views/VerifyView.vue';
 import AccountSection from '../src/views/settings/AccountSection.vue';
 import { installPlugins } from '../src/plugins/registry';
 import example, { type ExampleCheck } from './fixtures/example.plugin';
-import { settle, stubLocation } from './helpers';
+import { mountComponent, settle, stubLocation, button } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 // A plugin's account field, as the forms label and refuse it.
@@ -44,6 +43,7 @@ vi.mock('vue-router', () => ({
 }));
 
 let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 
@@ -58,21 +58,15 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  unmount?.();
+  unmount = undefined;
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   site.value = null;
   installPlugins([]);
   forget();
 });
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
-}
 
 function type(node: HTMLInputElement, value: string): void {
   node.value = value;
@@ -80,14 +74,7 @@ function type(node: HTMLInputElement, value: string): void {
 }
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      return () => h(component, props);
-    },
-  });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(component, props, { host, panels });
 }
 
 function offer(providers: { id: string; name: string }[]): void {
@@ -101,13 +88,10 @@ function fieldInput(label: string): HTMLInputElement {
   return field.querySelector('input')!;
 }
 
-const NEW_ACCOUNT: Account = {
-  id: 'u2', username: 'newperson', email: '', nickname: '', avatar: '', bio: '',
-  role: 'user', group_id: '', group_expires_at: 0, group_name: '',
-  status: 'active', created_at: 0, updated_at: 0, last_login_at: 0,
-  email_verified: true, allow_stats: true, allow_delete_conversations: true,
-  api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-};
+const NEW_ACCOUNT = makeAccount({
+  id: 'u2', username: 'newperson', email: '', nickname: '', group_id: '', group_name: '', created_at: 0,
+  updated_at: 0,
+});
 
 
 // A provider sign-in that carries a token or a proof leaves as a form post.
@@ -585,13 +569,9 @@ describe('finishing a sign-up with an invite code', () => {
 });
 
 describe('the connections an account holds', () => {
-  const account = {
-    id: 'u1', username: 'reader', email: '', nickname: '', avatar: '', bio: '',
-    role: 'user' as const, group_id: '', group_expires_at: 0, group_name: '',
-    status: 'active' as const, created_at: 0, updated_at: 0, last_login_at: 0,
-    email_verified: true, allow_stats: true, allow_delete_conversations: true,
-    api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-  };
+  const account = makeAccount({
+    id: 'u1', username: 'reader', email: '', nickname: '', group_id: '', group_name: '', created_at: 0, updated_at: 0,
+  });
 
   beforeEach(() => {
     adopt(account);
@@ -612,7 +592,7 @@ describe('the connections an account holds', () => {
       ],
       has_password: true,
     });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     const rows = [...host.querySelectorAll('.oa-connection')];
     expect(rows).toHaveLength(2);
@@ -634,7 +614,7 @@ describe('the connections an account holds', () => {
     const connect = vi.spyOn(oauthApi, 'connectProvider').mockRejectedValue(
       new ApiError(400, 'password_required', 'Enter your current password to do this.', {}),
     );
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     host.querySelector<HTMLButtonElement>('.oa-connection button')!.click();
     await settle();
@@ -657,7 +637,7 @@ describe('the connections an account holds', () => {
       ],
       has_password: true,
     });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     const rows = [...host.querySelectorAll('.oa-connection')];
     expect(rows).toHaveLength(1);
@@ -671,7 +651,7 @@ describe('the connections an account holds', () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [], providers: [], has_password: true,
     });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     expect(host.querySelector('.oa-group-flash')!.textContent).toBe(t('oauthFailed'));
   });
@@ -688,7 +668,7 @@ describe('the connections an account holds', () => {
     vi.spyOn(oauthApi, 'disconnectProvider').mockRejectedValue(
       new ApiError(409, 'last_way_in', 'nope', {}),
     );
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     const remove = host.querySelector<HTMLButtonElement>('.oa-connection button')!;
     remove.click();
@@ -705,7 +685,7 @@ describe('the connections an account holds', () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [], providers: [], has_password: false,
     });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     expect(host.textContent).toContain(t('setPassword'));
     expect(host.textContent).not.toContain(t('currentPassword'));
@@ -715,7 +695,7 @@ describe('the connections an account holds', () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [], providers: [], has_password: true,
     });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     expect(host.textContent).toContain(t('currentPassword'));
     expect(host.textContent).not.toContain(t('setPasswordHint'));
@@ -729,7 +709,7 @@ describe('the connections an account holds', () => {
     });
     const save = vi.spyOn(authApi, 'updateProfile')
       .mockResolvedValue({ user: { ...account, email: 'new@example.com' } });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
     expect(host.textContent).not.toContain(t('emailChangePasswordHint'));
 
     type(fieldInput(t('email')), 'new@example.com');
@@ -753,7 +733,7 @@ describe('the connections an account holds', () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [], providers: [], has_password: false,
     });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     type(fieldInput(t('email')), 'new@example.com');
     await settle();
@@ -771,7 +751,7 @@ describe('the connections an account holds', () => {
       }],
     });
     const withdraw = vi.spyOn(consentApi, 'withdrawAuthorization').mockResolvedValue();
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     expect(host.textContent).toContain('The Wiki');
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')]

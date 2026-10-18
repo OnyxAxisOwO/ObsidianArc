@@ -7,7 +7,7 @@ import AdminDashboardTrend from '../src/views/admin/AdminDashboardTrend.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { changeLanguage, t, tn } from '../src/composables/useI18n';
 import { dashboardFixture, emptyTotals } from './fixtures/dashboard';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -18,12 +18,7 @@ beforeEach(async () => {
   actions = document.createElement('div');
   document.body.append(host, actions);
 });
-afterEach(() => { app?.unmount(); app = undefined; document.body.textContent = ''; vi.restoreAllMocks(); });
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label || node.getAttribute('aria-label') === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
-}
+afterEach(() => { app?.unmount(); app = undefined; vi.restoreAllMocks(); });
 async function mountDashboard(): Promise<void> {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
   app = createApp({ setup() {

@@ -45,7 +45,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.clearAllMocks();
 });
 
@@ -60,6 +59,7 @@ function bar(over: Partial<BonusBar> = {}): BonusBar {
 
 
 /** Mounts the bars under a host that can bump the refresh key, as the panel does. */
+// Not mountComponent: a test changes a prop after mounting, and mountComponent's props are fixed.
 async function mount(): Promise<{ refresh: () => Promise<void> }> {
   const key = ref(0);
   app = createApp(defineComponent({ render: () => h(OaBonusBars, { refreshKey: key.value }) }));

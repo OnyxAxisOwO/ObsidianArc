@@ -4,16 +4,13 @@
 // values onto another.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { nextTick } from 'vue';
 import { adminApi, type Account } from '../src/admin/api';
 import type { ApiKey } from '../src/api/keys';
 import { t } from '../src/composables/useI18n';
 import { installPlugins } from '../src/plugins/registry';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { settle } from './helpers';
+import { adminShell, catchAllRouter, mountComponent, settle } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 ;
@@ -41,7 +38,7 @@ const deferred = <T,>() => {
 };
 
 describe('AdminUsers, when an account detail fails to load', () => {
-  let app: App | undefined;
+  let unmount: (() => void) | undefined;
   let host: HTMLElement;
   let panels: HTMLElement;
 
@@ -62,17 +59,9 @@ describe('AdminUsers, when an account detail fails to load', () => {
     vi.spyOn(adminApi, 'userSessions').mockResolvedValue({ sessions: [] });
     const update = vi.spyOn(adminApi, 'updateUser').mockResolvedValue({ user: rows[0]! });
 
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
-    app = createApp({
-      setup() {
-        providePanelHost(shallowRef(panels));
-        provideAdminView({ actionsHost: document.createElement('div'), setTitle() {}, reload() {}, params: [] });
-        return () => h(AdminUsers);
-      },
+    unmount = await mountComponent(AdminUsers, {}, {
+      host, panels, adminView: adminShell(), router: await catchAllRouter(),
     });
-    app.use(router);
-    app.mount(host);
-    await settle();
     expect(update).not.toHaveBeenCalled();
   }
 
@@ -87,8 +76,8 @@ describe('AdminUsers, when an account detail fails to load', () => {
   });
 
   afterEach(() => {
-    app?.unmount();
-    app = undefined;
+    unmount?.();
+    unmount = undefined;
     host.remove();
     panels.remove();
     installPlugins([]);
@@ -200,7 +189,7 @@ describe('AdminUsers, when an account detail fails to load', () => {
     vi.mocked(adminApi.user).mockImplementation(async (id: string) => ({
       ...detailOf(account(id)),
       cards: { available, expired: 0, used: 0, total: 2, cards: [] },
-    }) as never);
+    }));
     vi.mocked(adminApi.userCards).mockImplementation(async () => ({
       cards: { available, expired: 0, used: 0, total: 2, cards: [] },
     }) as never);
@@ -208,7 +197,7 @@ describe('AdminUsers, when an account detail fails to load', () => {
     await settle();
     vi.spyOn(adminApi, 'rescheduleCards').mockImplementation(async () => {
       available = 1;
-      return { moved: 2 } as never;
+      return { moved: 2 };
     });
 
     buttonNamed(t('rescheduleCards', { count: 2 })).click();

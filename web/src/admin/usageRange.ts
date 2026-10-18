@@ -1,4 +1,4 @@
-const HOUR_MS = 3_600_000;
+import { HOUR_MS } from '@/lib/time';
 
 /**
  * The until bound for a custom range whose last millisecond is pickedEnd. The

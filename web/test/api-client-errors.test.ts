@@ -90,4 +90,33 @@ describe('api client error text', () => {
     expect(error).not.toBeInstanceOf(ApiError);
     expect((error as Error).name).toBe('AbortError');
   });
+
+  it('maps a body that breaks off after the headers to the network error', async () => {
+    await changeLanguage('zh');
+    const broken = new Response('{}', { status: 200 });
+    vi.spyOn(broken, 'text').mockRejectedValue(new TypeError('network error'));
+    vi.stubGlobal('fetch', vi.fn(async () => broken));
+
+    const error = await api.get('/api/health').catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe('network');
+    expect((error as ApiError).message).toBe(t('connectionFailed'));
+    expect((error as ApiError).details).toEqual({ detail: 'network error' });
+  });
+
+  it('lets a body read cut short by an abort reject with the abort itself', async () => {
+    const controller = new AbortController();
+    const broken = new Response('{}', { status: 200 });
+    vi.spyOn(broken, 'text').mockImplementation(async () => {
+      controller.abort();
+      throw new DOMException('The operation was aborted.', 'AbortError');
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => broken));
+
+    const error = await api.get('/api/health', { signal: controller.signal }).catch((reason: unknown) => reason);
+
+    expect(error).not.toBeInstanceOf(ApiError);
+    expect((error as Error).name).toBe('AbortError');
+  });
 });

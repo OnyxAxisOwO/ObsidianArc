@@ -39,12 +39,12 @@ afterEach(() => {
   app?.unmount();
   app = null;
   host.remove();
-  document.body.textContent = '';
   stopNotifications();
   vi.clearAllMocks();
   vi.useRealTimers();
 });
 
+// Not mountComponent: the stack is the app's root here, and under fake timers it advances them once for the store's first load where settle would advance four rounds.
 async function mount(): Promise<void> {
   app = createApp(OaToastStack);
   app.use(router);

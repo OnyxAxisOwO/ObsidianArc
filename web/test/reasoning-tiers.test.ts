@@ -29,7 +29,7 @@ describe('the reasoning tier budget', () => {
     host = document.createElement('div');
     document.body.append(host);
     app = createApp({
-      render: () => h(ReasoningTiers as never, {
+      render: () => h(ReasoningTiers, {
         modelValue: [],
         'onUpdate:modelValue': (value: ReasoningTier[]) => emitted.push(value),
       }),

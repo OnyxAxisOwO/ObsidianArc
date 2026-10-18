@@ -1,17 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App, type Component } from 'vue';
+import { type Component } from 'vue';
 import AdminInvites from '../src/views/admin/AdminInvites.vue';
-import { adminApi, type InviteCode, type InviteStats, type InviteUse } from '../src/admin/api';
+import { adminApi, adminQueryParams, type InviteCode, type InviteStats, type InviteUse } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
 import { ApiError } from '../src/api/client';
 import * as markdown from '../src/chat/markdown';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { siteInfo } from '../src/stores/session';
-import { settle } from './helpers';
+import { adminShell, mountComponent, settle, button } from './helpers';
+import { queriesSent } from './admin-query';
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -25,27 +24,14 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
 });
 
 
-async function mount(component: Component): Promise<void> {
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-    return () => h(component);
-  } });
-  app.mount(host);
-  await settle();
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
+async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
+  unmount = await mountComponent(component, props, { host, panels, adminView: adminShell(actions) });
 }
 
 function fieldFor(root: ParentNode, label: string): HTMLElement {
@@ -105,8 +91,8 @@ function stubBase(overrides: { settings?: Record<string, string> } = {}): void {
 /** Most tests care about the main list only; the partner card fetches on its
  *  own, so it gets a quiet empty stub unless a test says otherwise. */
 function stubPartners(codes: InviteCode[] = []): void {
-  vi.spyOn(adminApi, 'invites').mockImplementation(async (query: string) =>
-    query.includes('kind=partner') ? { codes, total: codes.length } : { codes: [], total: 0 });
+  vi.spyOn(adminApi, 'invites').mockImplementation(async (query) =>
+    adminQueryParams(query).get('kind') === 'partner' ? { codes, total: codes.length } : { codes: [], total: 0 });
 }
 
 describe('registration mode and rewards', () => {
@@ -241,17 +227,17 @@ describe('the code list', () => {
     stubBase();
     const list = vi.spyOn(adminApi, 'invites').mockResolvedValue({ codes: [], total: 0 });
     await mount(AdminInvites);
-    expect(list).toHaveBeenCalledWith('?limit=20&offset=0');
+    expect(queriesSent(list)).toContain('limit=20&offset=0');
 
     const [kind, status] = [...host.querySelectorAll<HTMLButtonElement>('.oa-filter-select')];
     await choose(kind!, t('inviteKindPartner'));
-    expect(list).toHaveBeenLastCalledWith('?limit=20&offset=0&kind=partner');
+    expect(queriesSent(list).at(-1)).toBe('limit=20&offset=0&kind=partner');
 
     await choose(status!, t('inviteStatusRevoked'));
-    expect(list).toHaveBeenLastCalledWith('?limit=20&offset=0&kind=partner&status=revoked');
+    expect(queriesSent(list).at(-1)).toBe('limit=20&offset=0&kind=partner&status=revoked');
 
     input(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'partner');
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith('?limit=20&offset=0&kind=partner&status=revoked&q=partner'));
+    await vi.waitFor(() => expect(queriesSent(list).at(-1)).toBe('limit=20&offset=0&kind=partner&status=revoked&q=partner'));
   });
 });
 
@@ -387,7 +373,7 @@ describe('partner codes', () => {
 
   it('lists partner codes in their own card, with registrations split from claims', async () => {
     stubBase();
-    vi.spyOn(adminApi, 'invites').mockImplementation(async (query: string) => (query.includes('kind=partner')
+    vi.spyOn(adminApi, 'invites').mockImplementation(async (query) => (adminQueryParams(query).get('kind') === 'partner'
       ? {
         codes: [{
           id: 'p1', code: 'ACMEPARTNER', owner_id: '', owner_username: '', owner_nickname: '',
@@ -417,12 +403,12 @@ describe('partner codes', () => {
       max_uses: 0, uses: 0, expires_at: 0, revoked_at: 0, note: '', created_by: 'op',
       created_at: Date.now(), status: 'active', claims: 0,
     });
-    const partners = vi.spyOn(adminApi, 'invites').mockImplementation(async (query: string) => (query.includes('kind=partner')
+    const partners = vi.spyOn(adminApi, 'invites').mockImplementation(async (query) => (adminQueryParams(query).get('kind') === 'partner'
       ? { codes: [partner(1), partner(2)], total: 75 }
       : { codes: [], total: 0 }));
     await mount(AdminInvites);
 
-    expect(partners).toHaveBeenCalledWith('?kind=partner&limit=200&offset=0');
+    expect(queriesSent(partners)).toContain('kind=partner&limit=200&offset=0');
     expect(host.querySelector('#secInvitePartners')!.textContent)
       .toContain(t('partnerCodesCapped', { shown: 2, total: 75 }));
   });
@@ -475,7 +461,7 @@ describe('an existing code', () => {
 
   async function openRow(total = uses.length): Promise<void> {
     stubBase();
-    vi.spyOn(adminApi, 'invites').mockImplementation(async (query: string) => (query.includes('kind=partner')
+    vi.spyOn(adminApi, 'invites').mockImplementation(async (query) => (adminQueryParams(query).get('kind') === 'partner'
       ? { codes: [], total: 0 }
       : { codes: [code], total: 1 }));
     vi.spyOn(adminApi, 'inviteUses').mockResolvedValue({ uses, total });

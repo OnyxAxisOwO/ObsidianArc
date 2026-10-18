@@ -11,6 +11,7 @@ import {
   adminApi, emptyPolicy,
   type Account, type AdminSession, type ApiKey, type CardHolding, type Conversation,
   type Group, type Message, type QuotaWindowKind, type Role, type UsageBreakdown,
+  type AdminUserPatch,
 } from '@/admin/api';
 import type { UsageSummary } from '@/api/usage';
 import { ADMIN_PERMISSIONS } from '@/admin/permissions';
@@ -37,9 +38,10 @@ import type { Stat } from '@/components/stat';
 import { t, tn } from '@/composables/useI18n';
 import { cardTitle, formatCardScope, windowChoices } from '@/lib/card-scope';
 import { DAY, HOUR } from './usage/scale';
-import { toDateTimeLocal } from './shared';
+import { toDateTimeLocal, failureText } from './shared';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconTrash } from '@/icons';
 import { absoluteTime, compactNumber, localeTag, relativeTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
@@ -51,12 +53,11 @@ import { fieldSpec, plugins } from '@/plugins/registry';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginUserActions from './PluginUserActions.vue';
 import { isMasked, maskUser, maskLog, maskBilling, maskCredential } from '@/admin/safeMode';
-import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
+import { QUOTA_WINDOWS as WINDOWS, scopePresetChoices, windowFigure } from '@/admin/quota';
 import CreditsField from './CreditsField.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import UsageBoard from './usage/UsageBoard.vue';
 import { useAdminView } from './adminView';
-import { errorLine, refusalLine } from './failure-codes';
 
 const view = useAdminView();
 // Null until the first list lands, so the heading shows no count before then.
@@ -70,7 +71,7 @@ const groups = ref<Pick<Group, 'id' | 'name'>[]>([]);
 const users = ref<Account[]>([]);
 const total = ref(0);
 const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
-let request = 0;
+const request = useLatestRequest();
 function changePage(next: PageState): void { paging.value = next; void list(); }
 function filterList(): void { paging.value.page = 1; void list(); }
 const listError = ref('');
@@ -104,10 +105,10 @@ onBeforeUnmount(() => { disposed = true; });
 // Typing filters after a pause rather than on each keystroke: one request per
 // word, not one per letter.
 const debouncedList = useDebounceFn(() => { if (!disposed) void list(); }, 250);
-watch(() => filters.value.q, () => { paging.value.page = 1; ++request; void debouncedList(); });
+watch(() => filters.value.q, () => { paging.value.page = 1; request.invalidate(); void debouncedList(); });
 
 async function list(): Promise<void> {
-  const ticket = ++request;
+  const ticket = request.begin();
   Object.assign(state, filters.value);
   listing.value = true;
   listError.value = '';
@@ -119,8 +120,8 @@ async function list(): Promise<void> {
   if (filters.value.group) query.set('group_id', filters.value.group);
 
   try {
-    const result = await adminApi.users(query.toString() ? `?${query}` : '');
-    if (ticket !== request || disposed) return;
+    const result = await adminApi.users(query);
+    if (!request.isCurrent(ticket) || disposed) return;
     if (result.total > 0 && (paging.value.page - 1) * paging.value.pageSize >= result.total) {
       paging.value.page = Math.ceil(result.total / paging.value.pageSize);
       await list(); return;
@@ -129,10 +130,10 @@ async function list(): Promise<void> {
     total.value = result.total;
     listedTotal.value = result.total;
   } catch (failure) {
-    if (ticket !== request) return;
+    if (!request.isCurrent(ticket)) return;
     listError.value = failureText(failure);
   } finally {
-    if (ticket === request) listing.value = false;
+    if (request.isCurrent(ticket)) listing.value = false;
   }
 }
 
@@ -158,10 +159,6 @@ function panelFailure(row: Account, failure: unknown): void {
   else failedForAccount(row, failure);
 }
 
-function failureText(failure: unknown): string {
-  return refusalLine(failure);
-}
-
 // --- the account panel ------------------------------------------------------------
 
 type PanelMode = 'account' | 'conversations' | 'transcript';
@@ -171,7 +168,7 @@ const loadingDetail = ref(false);
 // Whether the form below holds this account. Until it does the panel shows
 // nothing editable: an empty form saved by mistake would clear real fields.
 const detailReady = ref(false);
-let opening = 0;
+const opening = useLatestRequest();
 const mode = ref<PanelMode>('account');
 const busy = ref(false);
 const panelError = ref('');
@@ -339,6 +336,13 @@ const unlimitedQuota = computed({
 });
 
 const self = computed(() => currentUser.value?.id === account.value?.id);
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const roleChoices = computed(() => [
+  { value: 'user' as const, label: t('roleUser') },
+  { value: 'admin' as const, label: t('roleAdmin') },
+  ...(isSuperAdmin.value ? [{ value: 'super_admin' as const, label: t('superAdmin') }] : []),
+]);
 const twoFactorFlash = ref('');
 
 function apiRestrictionActive(row: Account): boolean {
@@ -421,7 +425,7 @@ async function open(id: string): Promise<void> {
   // total, nothing moved in the meantime, and a failure was written above
   // the list — out of sight of a reader scrolled down to the row — so the
   // click looked like it had done nothing at all.
-  const ticket = ++opening;
+  const ticket = opening.begin();
   const listed = users.value.find((candidate) => candidate.id === id);
   account.value = listed ?? null;
   baseline.value = null;
@@ -444,7 +448,7 @@ async function open(id: string): Promise<void> {
   try {
     detail = await adminApi.user(id);
   } catch (failure) {
-    if (ticket !== opening) return;
+    if (!opening.isCurrent(ticket)) return;
     loadingDetail.value = false;
     panelError.value = failureText(failure);
     // Without a row to show there is no panel to put the error in.
@@ -453,7 +457,7 @@ async function open(id: string): Promise<void> {
   }
   // A second click while the first was loading wins; the late answer about
   // the first account must not overwrite the panel now showing another.
-  if (ticket !== opening) return;
+  if (!opening.isCurrent(ticket)) return;
   loadingDetail.value = false;
 
   const row = detail.user;
@@ -596,7 +600,7 @@ async function save(): Promise<void> {
     // Only what the operator changed is sent. The panel can stay open while
     // another administrator edits this account, and resending every field would
     // write this form's older copy of their edit back over it.
-    const patch: Record<string, unknown> = {};
+    const patch: AdminUserPatch = {};
     if (draft.nickname.trim() !== row.nickname) patch.nickname = draft.nickname.trim();
     if (draft.email.trim() !== row.email) patch.email = draft.email.trim();
     if (draft.bio.trim() !== row.bio) patch.bio = draft.bio.trim();
@@ -999,7 +1003,10 @@ async function openConversations(): Promise<void> {
   conversations.value = null;
   panelError.value = '';
   try {
-    const result = await adminApi.userConversations(row.id, `?limit=${conversationPage.value.pageSize}&offset=${(conversationPage.value.page - 1) * conversationPage.value.pageSize}`);
+    const result = await adminApi.userConversations(row.id, {
+      limit: conversationPage.value.pageSize,
+      offset: (conversationPage.value.page - 1) * conversationPage.value.pageSize,
+    });
     if (!panelShows(row.id)) return;
     conversations.value = result.conversations;
     conversationTotal.value = result.total;
@@ -1050,7 +1057,7 @@ async function load(): Promise<void> {
   try {
     ({ groups: groups.value } = await adminApi.groupOptions());
   } catch (failure) {
-    namesFailure = errorLine(failure);
+    namesFailure = failureText(failure);
   }
   loaded.value = true;
   await list();
@@ -1322,13 +1329,7 @@ const state = { q: '', role: '', status: '', group: '' };
           v-model="grantScopePreset"
           :label="t('cardResetScope')"
           :hint="t('cardResetScopeHint')"
-          :options="[
-            { value: 'full', label: t('cardResetFull') },
-            { value: '5h', label: t('cardReset5H') },
-            { value: '1w', label: t('cardReset1W') },
-            { value: '1m', label: t('cardReset1M') },
-            { value: 'custom', label: t('cardResetCustom') },
-          ]"
+          :options="scopePresetChoices()"
         />
         <OaCheckList
           v-if="grantScopePreset === 'custom'"
@@ -1394,11 +1395,7 @@ const state = { q: '', role: '', status: '', group: '' };
           v-model="form.role"
           :label="t('role')"
           :hint="self ? t('cannotDemoteSelf') : undefined"
-          :options="[
-            { value: 'user', label: t('roleUser') },
-            { value: 'admin', label: t('roleAdmin') },
-            ...(isSuperAdmin ? [{ value: 'super_admin' as const, label: t('superAdmin') }] : []),
-          ]"
+          :options="roleChoices"
         />
         <OaCheckList
           v-if="canAdmin('administrators') && form.role === 'admin'"

@@ -54,7 +54,6 @@ describe('dropping files on the chat', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
     resetChat();
   });
 
@@ -91,7 +90,6 @@ describe('dropping files on the history rail', () => {
   afterEach(() => {
     railApp?.unmount();
     railApp = null;
-    document.body.textContent = '';
   });
 
   it('cancels the browser default, so a dropped file does not replace the chat', () => {

@@ -5,11 +5,16 @@
 // depending on which tab it was in.
 
 import { ref } from 'vue';
+import { useArmedItem } from './useArmedItem';
 
 // Roughly three rows and their padding; the menu is measured against the list
 // it hangs in, not the window, because that list clips it.
 const MENU_HEIGHT = 124;
 
+/**
+ * Must be called during setup: the armed delete's timer is cleared when the
+ * list unmounts, and that cleanup is registered on the calling component.
+ */
 export function useRowMenu() {
   /** Rows whose menu opens upwards, by conversation id. */
   const openUp = ref<Record<string, boolean>>({});
@@ -43,5 +48,17 @@ export function useRowMenu() {
     rowEl?.querySelector<HTMLButtonElement>('.ai-chat-list-more')?.click();
   }
 
-  return { openUp, trigger, contextMenu };
+  const { armed, press } = useArmedItem();
+
+  // The first press leaves the menu open, so the second press is still there to
+  // be made. Only a press that carries the delete out closes it.
+  function deleteFromMenu(id: string, close: () => void, remove: () => void): void {
+    if (!press(id)) return;
+    close();
+    remove();
+  }
+
+  return { openUp, trigger, contextMenu, armed, deleteFromMenu };
 }
+
+export type RowMenu = ReturnType<typeof useRowMenu>;

@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, type App } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
 import { ApiError } from '../src/api/client';
 import * as twoFactorApi from '../src/api/twofactor';
 import { changeLanguage } from '../src/composables/useI18n';
 import AdminUnlock from '../src/views/admin/AdminUnlock.vue';
-import { settle } from './helpers';
+import { catchAllRouter, mountComponent, settle } from './helpers';
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 beforeEach(async () => {
@@ -17,23 +15,16 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   host.remove();
   vi.restoreAllMocks();
 });
 
 async function mount(listeners: Record<string, unknown> = {}): Promise<void> {
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: [{ path: '/:rest(.*)*', component: { render: () => null } }],
-  });
-  await router.push('/admin');
-  await router.isReady();
-  app = createApp({ render: () => h(AdminUnlock, listeners) });
-  app.use(router);
-  app.mount(host);
-  await settle();
+  // No panel host and no administration view: the unlock screen uses neither,
+  // so one starting to would fail here.
+  unmount = await mountComponent(AdminUnlock, listeners, { host, panels: null, router: await catchAllRouter('/admin') });
 }
 
 function codeField(): HTMLInputElement {

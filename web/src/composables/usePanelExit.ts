@@ -18,7 +18,7 @@ import { useRouter } from 'vue-router';
 /** The query parameter that names a panel drawn over the backoffice. */
 export const BACKOFFICE_PANEL_PARAM = 'panel';
 
-export interface BackofficePanels {
+interface BackofficePanels {
   /**
    * Draws the named panel beside the page. It is a history entry of its own,
    * so the browser's Back button takes the panel away again.
@@ -28,7 +28,7 @@ export interface BackofficePanels {
   hide(): void;
 }
 
-export interface PanelExit {
+interface PanelExit {
   /** Opens another panel, by its address in the chat: `/usage`, `/x/tips/1`. */
   open(path: string): void;
   /**

@@ -8,7 +8,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import AdminSettings from '../src/views/admin/AdminSettings.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import settingsFixture from './fixtures/settings.json';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -25,16 +25,10 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label || node.getAttribute('aria-label') === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
-}
 async function selectCategory(label: string): Promise<void> {
   const found = [...host.querySelectorAll<HTMLButtonElement>('.oa-workbench-tab')].find((node) => node.querySelector('strong')?.textContent === label);
   if (!found) throw new Error(`Missing category: ${label}`);
@@ -231,7 +225,7 @@ describe('admin settings payload', () => {
     await nextTick();
 
     // Modal is dismissed, setting remains true, form is not dirty
-    expect(document.body.querySelector('.oa-modal-card')).toBeNull();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(checkbox!.checked).toBe(true);
     expectSaveState(false);
 
@@ -249,7 +243,7 @@ describe('admin settings payload', () => {
     await nextTick();
 
     // Modal is dismissed, setting is now false, form is dirty
-    expect(document.body.querySelector('.oa-modal-card')).toBeNull();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(checkbox!.checked).toBe(false);
     expectSaveState(true);
   });

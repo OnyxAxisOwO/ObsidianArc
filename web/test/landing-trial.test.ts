@@ -5,31 +5,23 @@
 // been said, and the questions that did go through must still be there.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { nextTick } from 'vue';
 import { ApiError } from '@/api/client';
 import * as trialApi from '@/api/trial';
 import { changeLanguage, t } from '@/composables/useI18n';
 import { site, siteInfo } from '@/stores/session';
 import LandingView from '@/views/LandingView.vue';
-import { settle } from './helpers';
+import { catchAllRouter, mountComponent, settle } from './helpers';
 
 // The notice is not what this checks, and it reads the announcements API.
 vi.mock('@/announce/HomeNotice.vue', () => ({ default: { render: () => null } }));
 
-let app: App | null = null;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 async function mount(): Promise<void> {
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: [{ path: '/:p(.*)*', component: { render: () => null } }],
-  });
-  await router.push('/');
-  await router.isReady();
-  app = createApp({ render: () => h(LandingView) });
-  app.use(router).mount(host);
-  await settle();
+  // No panel host: the landing page opens no panel, so one starting to would fail here.
+  unmount = await mountComponent(LandingView, {}, { host, panels: null, router: await catchAllRouter('/') });
 }
 
 async function ask(text: string): Promise<void> {
@@ -54,8 +46,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = null;
+  unmount?.();
+  unmount = undefined;
   site.value = null;
   host.remove();
   vi.restoreAllMocks();
@@ -138,8 +130,8 @@ describe('the trial when the visitor leaves mid-answer', () => {
     expect(signal).toBeDefined();
     expect(signal!.aborted).toBe(false);
 
-    app!.unmount();
-    app = null;
+    unmount!();
+    unmount = undefined;
     expect(signal!.aborted).toBe(true);
   });
 });

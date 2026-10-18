@@ -15,8 +15,6 @@ import { createApp, h, nextTick, ref, type App } from 'vue';
 import { ApiError, api } from '@/api/client';
 import { providePanelHost } from '@/composables/usePanelHost';
 import UsagePanel from '@/views/UsagePanel.vue';
-import AdminUsage from '@/views/admin/AdminUsage.vue';
-import { provideAdminView } from '@/views/admin/adminView';
 import { toggleCategory, toggleSafeMode } from '@/admin/safeMode';
 import { t } from '@/composables/useI18n';
 
@@ -24,7 +22,12 @@ import { t } from '@/composables/useI18n';
 // importing it from either view.
 const REFRESH_MS = 15000;
 
-vi.mock('@/api/client', () => ({
+// The client's mock is built once, outside the factory. Each admin mount
+// resets the module registry (see freshAdminUsage), which runs the factory
+// again; a class or a vi.fn made inside it would then be a different one from
+// the `get` and `ApiError` this file holds, so a route set before the mount
+// would never be called and `instanceof ApiError` in the page would be false.
+const client = vi.hoisted(() => ({
   ApiError: class ApiError extends Error {
     readonly status: number;
     readonly code: string;
@@ -37,9 +40,15 @@ vi.mock('@/api/client', () => ({
       this.details = details;
     }
   },
+  get: vi.fn(),
+  post: vi.fn(),
+}));
+
+vi.mock('@/api/client', () => ({
+  ApiError: client.ApiError,
   api: {
-    get: vi.fn() as unknown as <T>(url: string) => Promise<T>,
-    post: vi.fn() as unknown as <T>(url: string, body?: unknown) => Promise<T>,
+    get: client.get as unknown as <T>(url: string) => Promise<T>,
+    post: client.post as unknown as <T>(url: string, body?: unknown) => Promise<T>,
   },
 }));
 
@@ -62,7 +71,6 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.clearAllMocks();
   vi.useRealTimers();
 });
@@ -217,7 +225,7 @@ describe('UsagePanel', () => {
       }
       return panelRoutes({ totals: totals(0), turns: [] })(url);
     });
-    vi.mocked(api.post).mockResolvedValue(undefined as never);
+    vi.mocked(api.post).mockResolvedValue(undefined);
 
     mountPanel();
     await advance(0);
@@ -238,8 +246,29 @@ describe('UsagePanel', () => {
   });
 });
 
+/**
+ * The admin page and the view context it reads, from a module registry of
+ * their own. AdminUsage remembers the range, filters and tabs an operator left
+ * it on in module-level variables, so a page imported once for the whole file
+ * would start each test where the previous one left it, and a test's outcome
+ * would depend on the order it ran in. adminView comes from the same registry,
+ * since its injection key is a module-level Symbol. The backoffice's English
+ * is added to the new registry's dictionary as test/setup.ts adds it to the
+ * first one, or the page would draw its keys.
+ */
+async function freshAdminUsage() {
+  vi.resetModules();
+  await import('@/i18n.admin');
+  const [{ default: AdminUsage }, { provideAdminView }] = await Promise.all([
+    import('@/views/admin/AdminUsage.vue'),
+    import('@/views/admin/adminView'),
+  ]);
+  return { AdminUsage, provideAdminView };
+}
+
 /** Enough of the admin shell for a page that only names itself and renders. */
-function mountAdmin(): void {
+async function mountAdmin(): Promise<void> {
+  const { AdminUsage, provideAdminView } = await freshAdminUsage();
   const actionsHost = document.createElement('div');
   document.body.appendChild(actionsHost);
   app = createApp({
@@ -280,7 +309,7 @@ describe('AdminUsage', () => {
     let requests = 1;
     get.mockImplementation(async (url) => adminRoutes(adminPayload(requests))(url));
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(document.body.textContent).toContain('1');
 
@@ -300,7 +329,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     await advance(REFRESH_MS);
 
@@ -318,7 +347,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(document.body.textContent).toContain('boom');
 
@@ -340,7 +369,7 @@ describe('AdminUsage', () => {
     let state: DocumentVisibilityState = 'hidden';
     const visibility = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state);
     try {
-      mountAdmin();
+      await mountAdmin();
       await advance(0);
       await advance(REFRESH_MS * 3);
       expect(reads).toBe(1);
@@ -368,7 +397,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(usageSignals).toHaveLength(1);
     expect(usageSignals[0]?.aborted).toBe(false);
@@ -398,7 +427,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(activeSignal).toBeDefined();
     expect(activeSignal?.aborted).toBe(false);
@@ -425,7 +454,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(recordsSignals).toHaveLength(1);
     expect(recordsSignals[0]?.aborted).toBe(false);
@@ -457,7 +486,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
 
     // Switch range preset to abort initial request
@@ -477,7 +506,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     await advance(REFRESH_MS);
 
@@ -494,7 +523,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
 
     expect(document.body.textContent).toContain('42');
@@ -514,7 +543,7 @@ describe('AdminUsage', () => {
       return adminRoutes(adminPayload(1))(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     await advance(REFRESH_MS * 2);
 
@@ -540,7 +569,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(recordSignal?.aborted).toBe(false);
 
@@ -574,7 +603,7 @@ describe('AdminUsage windows and filters', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     // The 24-hour preset is the second button in the range row.
     document.querySelectorAll<HTMLButtonElement>('.oa-range button')[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -603,7 +632,7 @@ describe('AdminUsage windows and filters', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     await advance(10_000);
 
@@ -622,7 +651,7 @@ describe('AdminUsage windows and filters', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     const trigger = document.querySelector<HTMLElement>('.oa-filter-select .oa-select') ?? document.querySelector<HTMLElement>('.oa-filter-select');
     expect(trigger).not.toBeNull();
@@ -657,7 +686,7 @@ describe('AdminUsage windows and filters', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
 
     const banner = document.querySelector<HTMLElement>('.oa-report-focus');
@@ -686,7 +715,7 @@ describe('AdminUsage windows and filters', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     const optionText = (): string => [...document.querySelectorAll<HTMLElement>('[role="option"]')].map((node) => node.textContent ?? '').join(' | ');
 
@@ -722,7 +751,7 @@ describe('AdminUsage windows and filters', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     const outcomes = [...document.querySelectorAll<HTMLButtonElement>('#secSpread .oa-segment button')]
       .find((button) => button.textContent?.trim() === t('spreadOutcomes'));
@@ -743,7 +772,11 @@ describe('AdminUsage ledger and custom range', () => {
   }
 
   /** The custom range dialog is an OaPanel, which needs a panel host as the layout provides one. */
-  function mountAdminWithPanel(): void {
+  async function mountAdminWithPanel(): Promise<void> {
+    const { AdminUsage, provideAdminView } = await freshAdminUsage();
+    // The panel host's injection key is module-level too, so it has to come
+    // from the registry the page was just imported from.
+    const { providePanelHost } = await import('@/composables/usePanelHost');
     const actionsHost = document.createElement('div');
     const panelHost = document.createElement('div');
     document.body.append(actionsHost, panelHost);
@@ -767,7 +800,7 @@ describe('AdminUsage ledger and custom range', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
 
     const notices = document.querySelectorAll('.oa-notice-body');
@@ -790,7 +823,7 @@ describe('AdminUsage ledger and custom range', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdminWithPanel();
+    await mountAdminWithPanel();
     await advance(0);
     clickButtonLabelled('.oa-range button', t('rangeCustomShort'));
     await advance(0);
@@ -822,7 +855,7 @@ describe('AdminUsage all-time preset', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     const all = [...document.querySelectorAll<HTMLButtonElement>('.oa-range button')]
       .find((button) => button.textContent?.trim() === t('rangeAllShort'));

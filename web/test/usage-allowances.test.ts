@@ -4,6 +4,7 @@ import UsageAllowances from '../src/views/admin/usage/UsageAllowances.vue';
 import { adminApi, type AllowanceList, type AllowanceRow } from '../src/admin/api';
 import { t } from '../src/composables/useI18n';
 import { settle } from './helpers';
+import { queriesSent } from './admin-query';
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -54,18 +55,18 @@ describe('UsageAllowances', () => {
     const free = host.querySelectorAll('.oa-allow-row')[1]!;
     expect(free.querySelectorAll('.oa-allow-none').length).toBe(3);
     expect(free.querySelector('.oa-meter')).toBeNull();
-    expect(ask.mock.calls[0]![0]).toBe('limit=50&offset=0');
+    expect(queriesSent(ask)[0]).toBe('limit=50&offset=0');
 
     const chips = [...host.querySelectorAll<HTMLButtonElement>('.oa-segment button')];
     expect(chips.length).toBe(3);
     chips[2]!.click();
     await settle();
-    expect(ask.mock.calls[1]![0]).toContain('state=exhausted');
+    expect(queriesSent(ask)[1]).toContain('state=exhausted');
     expect(host.querySelectorAll('.oa-allow-row').length).toBe(1);
   });
 
   it('says when the list is only the newest accounts, and gives the real total', async () => {
-    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] } as never);
+    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
     vi.spyOn(adminApi, 'usageAllowances').mockResolvedValueOnce({
       ...answer([row('a', 1), row('b', 0.5)]), total: 7000, listed: 2, loaded: 2, capped: true,
     });
@@ -84,7 +85,7 @@ describe('UsageAllowances', () => {
   // note must not present that count as the population, and must say how many
   // accounts it was drawn from.
   it('words a filtered count past the cap as matches among the loaded accounts', async () => {
-    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] } as never);
+    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
     const ask = vi.spyOn(adminApi, 'usageAllowances')
       .mockResolvedValueOnce({ ...answer([row('a', 1)]), total: 7000, listed: 1, loaded: 5000, capped: true })
       .mockResolvedValueOnce({ ...answer([row('a', 1)]), total: 1, listed: 1, loaded: 5000, capped: true });
@@ -96,7 +97,7 @@ describe('UsageAllowances', () => {
     const chips = [...host.querySelectorAll<HTMLButtonElement>('.oa-segment button')];
     chips[2]!.click();
     await settle();
-    expect(ask.mock.calls[1]![0]).toContain('state=exhausted');
+    expect(queriesSent(ask)[1]).toContain('state=exhausted');
     const note = host.querySelector('.oa-board-count')?.textContent ?? '';
     expect(note).toBe(t('allowanceCappedMatching', { count: 1, loaded: 5000 }));
     expect(note).not.toContain(t('allowanceCapped', { count: 1, total: 1 }));
@@ -106,7 +107,7 @@ describe('UsageAllowances', () => {
   // used to ask for the same page again, so the reader gets a retry instead,
   // and scrolling waits for it.
   it('stops asking for a next page that failed until the reader retries it', async () => {
-    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] } as never);
+    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
     const page = (prefix: string) => Array.from({ length: 50 }, (_, index) => row(`${prefix}${index}`, 0.5));
     const ask = vi.spyOn(adminApi, 'usageAllowances')
       .mockResolvedValueOnce({ ...answer(page('a')), total: 120, listed: 120 })
@@ -123,7 +124,7 @@ describe('UsageAllowances', () => {
     scroller().dispatchEvent(new Event('scroll'));
     await settle();
     expect(ask).toHaveBeenCalledTimes(2);
-    expect(ask.mock.calls[1]![0]).toBe('limit=50&offset=50');
+    expect(queriesSent(ask)[1]).toBe('limit=50&offset=50');
     expect(host.querySelectorAll('.oa-allow-row').length).toBe(50);
     expect(host.textContent).toContain(t('couldNotLoad'));
 

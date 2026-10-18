@@ -140,7 +140,7 @@ export function plugins(): readonly ArcPlugin[] {
 }
 
 /** What the server said for one plugin, or an empty block. */
-export function pluginConfig(name: string): PluginConfig {
+function pluginConfig(name: string): PluginConfig {
   return configs[name] ?? {};
 }
 

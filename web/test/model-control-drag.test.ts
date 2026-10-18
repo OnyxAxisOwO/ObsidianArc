@@ -53,7 +53,6 @@ describe('ModelControl effort drag', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
   });
 
   it('commits the stop it was released on', async () => {
@@ -124,5 +123,42 @@ describe('ModelControl effort drag', () => {
     expect(seenByPanel).toBe(true);
     await nextTick();
     expect(host.querySelector('.ai-model-chip')!.getAttribute('aria-expanded')).not.toBe('true');
+  });
+
+  // Each face swap pins the height and clears it once the transition is done.
+  // A second swap inside the first one's transition used to be cut short when
+  // the first one's timer cleared the height the second had just set.
+  it('lets a later face swap keep its height when an earlier one finishes', async () => {
+    let target = 300;
+    const offset = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(100);
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => target);
+    app = createApp(ModelControl);
+    app.mount(host);
+    await openSlider();
+    vi.useFakeTimers();
+    try {
+      const pop = host.querySelector<HTMLElement>('.ai-model-pop-body')!;
+      host.querySelector<HTMLButtonElement>('.ai-pop-model')!.click();
+      await nextTick();
+      await nextTick();
+      expect(pop.style.height).toBe('300px');
+
+      vi.advanceTimersByTime(100);
+      target = 150;
+      host.querySelector<HTMLButtonElement>('.ai-pop-back')!.click();
+      await nextTick();
+      await nextTick();
+      expect(pop.style.height).toBe('150px');
+
+      // Past the first swap's deadline, inside the second's.
+      vi.advanceTimersByTime(150);
+      expect(pop.style.height).toBe('150px');
+      vi.advanceTimersByTime(100);
+      expect(pop.style.height).toBe('');
+    } finally {
+      vi.useRealTimers();
+      offset.mockRestore();
+      scroll.mockRestore();
+    }
   });
 });

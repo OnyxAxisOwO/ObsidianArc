@@ -39,7 +39,7 @@ const PANELS: Record<string, PanelEntry> = {
   x: { component: PluginUserPanel, props: ([slug, entry]) => (slug ? { slug, entry } : null) },
 };
 
-export interface SidePanel {
+interface SidePanel {
   /**
    * The first segment. It keys the drawn panel, so moving within one of them
    * (another tab, another entry) keeps the component, as the chat does.

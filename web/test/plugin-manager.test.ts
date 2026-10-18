@@ -1,19 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { nextTick, type Component } from 'vue';
 import { adminApi, type AdminPlugin, type PluginChange, type PluginPreview } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
-import type { Account, SiteInfo } from '../src/api/auth';
+import type { SiteInfo } from '../src/api/auth';
 import { api, ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { installPlugins } from '../src/plugins/registry';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import AdminPlugins from '../src/views/admin/AdminPlugins.vue';
 import PluginAdminPage from '../src/views/admin/PluginAdminPage.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
 import example from './fixtures/example.plugin';
-import { settle } from './helpers';
+import { catchAllRouter, adminShell, mountComponent, settle, lastButton } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 // The core ships no plugin, so there is no module for the install panel to
 // find; hand it the made-up one under its own name, and leave everything else
@@ -28,13 +26,10 @@ vi.mock('../src/plugins/registry', async (importOriginal) => {
 // do to a plugin from the backoffice, what each change sends, and that the
 // session's plugin list follows the change.
 
-const ADMIN: Account = {
-  id: 'admin', username: 'founder', email: '', nickname: '', avatar: '', bio: '',
-  role: 'super_admin', group_id: '', group_expires_at: 0, group_name: '', status: 'active',
-  created_at: 1, updated_at: 1, last_login_at: 1, email_verified: true,
-  allow_stats: true, allow_delete_conversations: true, api_restricted: false,
-  api_restricted_until: 0, api_restriction_source: '',
-};
+const ADMIN = makeAccount({
+  id: 'admin', username: 'founder', email: '', nickname: '', role: 'super_admin', group_id: '', group_name: '',
+  last_login_at: 1,
+});
 
 function plugin(name: string, state: AdminPlugin['state'], purges = false): AdminPlugin {
   return {
@@ -55,31 +50,16 @@ const EXAMPLE_KEYS = [
   'example.requirement', 'example.webhook_token', 'example.mode',
 ];
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 let panels: HTMLElement;
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
   // The plugins screen keeps its tab in the query, so it needs the app router.
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
-    return () => h(component, props);
-  } });
-  app.use(router);
-  app.mount(host);
-  await settle();
-}
-
-// The last match, not the first: OaPanel appends each new panel at the end of
-// its host, so with a second panel open its buttons come after the first's.
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .filter((node) => node.textContent?.trim() === label);
-  if (!found.length) throw new Error(`Missing button: ${label}`);
-  return found[found.length - 1]!;
+  unmount = await mountComponent(component, props, {
+    host, panels, adminView: adminShell(actions), router: await catchAllRouter(),
+  });
 }
 
 function card(name: string): HTMLElement {
@@ -108,9 +88,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   installPlugins([]);
   forget();
@@ -125,11 +104,11 @@ describe('the plugins screen', () => {
     await mount(AdminPlugins);
 
     expect(card('alpha').textContent).toContain(t('pluginStateAvailable'));
-    // button() throws when the label is missing, so calling it is the check.
-    button(card('alpha'), t('pluginInstall'));
+    // lastButton() throws when the label is missing, so calling it is the check.
+    lastButton(card('alpha'), t('pluginInstall'));
     expect(card('beta').textContent).toContain(t('pluginStateEnabled'));
-    button(card('beta'), t('pluginDisable'));
-    button(card('beta'), t('pluginUninstall'));
+    lastButton(card('beta'), t('pluginDisable'));
+    lastButton(card('beta'), t('pluginUninstall'));
     // A row for a plugin this build lacks says so, and offers nothing.
     expect(card('gone').textContent).toContain(t('pluginMissing'));
     expect(card('gone').querySelectorAll('button')).toHaveLength(0);
@@ -145,14 +124,14 @@ describe('the plugins screen', () => {
     } as SiteInfo);
     await mount(AdminPlugins);
 
-    button(card('example'), t('pluginInstall')).click();
+    lastButton(card('example'), t('pluginInstall')).click();
     await settle();
     // The plugin's own settings section, drawn in the panel from its module.
     expect(panels.textContent).toContain(t('pluginEnableNow'));
     expect(panels.textContent).toContain('Example webhook token');
     // The policy is off, so no code is asked for and none is sent.
     expect(panels.textContent).not.toContain(t('pluginTwoFactorCode'));
-    button(panels, t('pluginInstall')).click();
+    lastButton(panels, t('pluginInstall')).click();
     await settle();
 
     // Defaults for the selects and switches, and no untouched secret.
@@ -174,11 +153,11 @@ describe('the plugins screen', () => {
     const installed = vi.spyOn(adminApi, 'installPlugin').mockResolvedValue(change(plugin('example', 'enabled')));
     await mount(AdminPlugins);
 
-    button(card('example'), t('pluginInstall')).click();
+    lastButton(card('example'), t('pluginInstall')).click();
     await settle();
     expect(panels.textContent).toContain('Example group');
     expect(panels.textContent).not.toContain('Default mode');
-    button(panels, t('pluginInstall')).click();
+    lastButton(panels, t('pluginInstall')).click();
     await settle();
 
     expect(installed).toHaveBeenCalledWith('example', true, {
@@ -195,7 +174,7 @@ describe('the plugins screen', () => {
     });
     await mount(AdminPlugins);
 
-    button(card('example'), t('pluginInstall')).click();
+    lastButton(card('example'), t('pluginInstall')).click();
     await settle();
     expect(panels.textContent).toContain('Example check');
     expect(panels.textContent).not.toContain('Example group');
@@ -211,11 +190,11 @@ describe('the plugins screen', () => {
     vi.spyOn(authApi, 'fetchSite').mockResolvedValue({ ...siteInfo.value, plugins: { example: {} } } as SiteInfo);
     await mount(AdminPlugins);
 
-    button(card('example'), t('pluginInstall')).click();
+    lastButton(card('example'), t('pluginInstall')).click();
     await settle();
     // The plugin's own settings are inputs too, so the code is found by its autocomplete hint.
     type(panels.querySelector<HTMLInputElement>('input[autocomplete="one-time-code"]')!, ' 123456 ');
-    button(panels, t('pluginInstall')).click();
+    lastButton(panels, t('pluginInstall')).click();
     await settle();
     expect(installed).toHaveBeenCalledWith('example', true, expect.any(Object), '123456');
     expect(card('example').textContent).toContain(t('pluginStateEnabled'));
@@ -226,11 +205,11 @@ describe('the plugins screen', () => {
     const installed = vi.spyOn(adminApi, 'installPlugin');
     await mount(AdminPlugins);
 
-    button(card('example'), t('pluginInstall')).click();
+    lastButton(card('example'), t('pluginInstall')).click();
     await settle();
     expect(panels.textContent).toContain(t('pluginInstallTwoFactorMissing'));
     expect(panels.querySelector('input[autocomplete="one-time-code"]')).toBeNull();
-    expect(() => button(panels, t('pluginInstall'))).toThrow();
+    expect(() => lastButton(panels, t('pluginInstall'))).toThrow();
     expect(installed).not.toHaveBeenCalled();
   });
 
@@ -239,7 +218,7 @@ describe('the plugins screen', () => {
     const disabled = vi.spyOn(adminApi, 'disablePlugin');
     await mount(AdminPlugins);
 
-    button(card('beta'), t('pluginDisable')).click();
+    lastButton(card('beta'), t('pluginDisable')).click();
     await settle();
     expect(panels.textContent).toContain(t('pluginTwoFactorMissing'));
     expect([...panels.querySelectorAll('button')].some((node) => node.textContent?.trim() === t('pluginDisable'))).toBe(false);
@@ -253,10 +232,10 @@ describe('the plugins screen', () => {
     vi.spyOn(authApi, 'fetchSite').mockResolvedValue({ ...siteInfo.value, plugins: {} } as SiteInfo);
     await mount(AdminPlugins);
 
-    button(card('beta'), t('pluginDisable')).click();
+    lastButton(card('beta'), t('pluginDisable')).click();
     await settle();
     type(panels.querySelector<HTMLInputElement>('input')!, ' 123456 ');
-    button(panels, t('pluginDisable')).click();
+    lastButton(panels, t('pluginDisable')).click();
     await settle();
     expect(disabled).toHaveBeenCalledWith('beta', '123456');
     expect(card('beta').textContent).toContain(t('pluginStateDisabled'));
@@ -269,19 +248,19 @@ describe('the plugins screen', () => {
     vi.spyOn(authApi, 'fetchSite').mockResolvedValue({ ...siteInfo.value, plugins: {} } as SiteInfo);
     await mount(AdminPlugins);
 
-    button(card('alpha'), t('pluginUninstall')).click();
+    lastButton(card('alpha'), t('pluginUninstall')).click();
     await settle();
     expect(panels.textContent).toContain(t('pluginPurgeHint'));
     const purge = panels.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     purge.click();
     await nextTick();
     type(panels.querySelector<HTMLInputElement>('input:not([type="checkbox"])')!, '123456');
-    button(panels, t('pluginUninstall')).click();
+    lastButton(panels, t('pluginUninstall')).click();
     await nextTick();
     // Armed, not run.
     expect(removed).not.toHaveBeenCalled();
     expect(panels.textContent).toContain(t('pluginPurgeConfirm', { name: 'ALPHA' }));
-    button(panels, t('pluginUninstall')).click();
+    lastButton(panels, t('pluginUninstall')).click();
     await settle();
     expect(removed).toHaveBeenCalledWith('alpha', true, '123456');
   });
@@ -290,10 +269,10 @@ describe('the plugins screen', () => {
     adopt({ ...ADMIN, role: 'admin', admin_permissions: ['plugins'] });
     vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [plugin('alpha', 'available'), plugin('beta', 'enabled')] });
     await mount(AdminPlugins);
-    expect(button(card('alpha'), t('pluginInstall')).disabled).toBe(true);
-    expect(button(card('beta'), t('pluginDisable')).disabled).toBe(true);
-    expect(button(card('beta'), t('pluginUninstall')).disabled).toBe(true);
-    expect(button(card('beta'), t('pluginDetails')).disabled).toBe(false);
+    expect(lastButton(card('alpha'), t('pluginInstall')).disabled).toBe(true);
+    expect(lastButton(card('beta'), t('pluginDisable')).disabled).toBe(true);
+    expect(lastButton(card('beta'), t('pluginUninstall')).disabled).toBe(true);
+    expect(lastButton(card('beta'), t('pluginDetails')).disabled).toBe(false);
   });
 });
 
@@ -313,11 +292,11 @@ describe('a page a plugin brings', () => {
     expect(section.textContent).toContain('Optional');
     expect(host.textContent).toContain('No records yet.');
     // Nothing edited yet, so nothing to save.
-    expect(button(actions, t('save')).disabled).toBe(true);
+    expect(lastButton(actions, t('save')).disabled).toBe(true);
 
     type(section.querySelector<HTMLInputElement>('input[type="password"]')!, 'a-new-token');
     await nextTick();
-    button(actions, t('save')).click();
+    lastButton(actions, t('save')).click();
     await settle();
     // Only the secret that was typed: the requirement and mode were loaded and
     // not changed, so a save does not write them back.
@@ -378,8 +357,8 @@ describe('a plugin package', () => {
     expect(enabled).toHaveBeenCalledWith('demo');
     expect(card('demo').querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
     // A package offers Remove where a built-in plugin offers Uninstall, and no Install.
-    button(card('demo'), t('pluginRemove'));
-    expect(() => button(card('demo'), t('pluginUninstall'))).toThrow();
+    lastButton(card('demo'), t('pluginRemove'));
+    expect(() => lastButton(card('demo'), t('pluginUninstall'))).toThrow();
 
     // Switching off asks first: the click alone changes nothing.
     const disabled = vi.spyOn(adminApi, 'disablePlugin').mockResolvedValue(change(pack('demo', 'disabled')));
@@ -403,12 +382,12 @@ describe('a plugin package', () => {
     });
     await mount(AdminPlugins);
 
-    button(card('safe'), t('pluginDetails')).click();
+    lastButton(card('safe'), t('pluginDetails')).click();
     await settle();
     const link = document.body.querySelector<HTMLAnchorElement>('a.oa-plugin-meta-link');
     expect(link?.getAttribute('href')).toBe('https://example.org/safe');
 
-    button(card('script'), t('pluginDetails')).click();
+    lastButton(card('script'), t('pluginDetails')).click();
     await settle();
     // An address that does something when clicked is shown as text, not made a link.
     expect(document.body.querySelector('a[href^="javascript:"]')).toBeNull();
@@ -422,7 +401,7 @@ describe('a plugin package', () => {
     vi.spyOn(authApi, 'fetchSite').mockResolvedValue({ ...siteInfo.value, plugins: {} } as SiteInfo);
     await mount(AdminPlugins);
 
-    button(card('demo'), t('pluginRemove')).click();
+    lastButton(card('demo'), t('pluginRemove')).click();
     await settle();
     // The package's own wording, not the built-in plugin's.
     expect(panels.textContent).toContain(t('pluginRemoveTitle', { name: 'DEMO' }));
@@ -430,11 +409,11 @@ describe('a plugin package', () => {
     panels.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
     await nextTick();
     type(panels.querySelector<HTMLInputElement>('input:not([type="checkbox"])')!, '123456');
-    button(panels, t('pluginRemove')).click();
+    lastButton(panels, t('pluginRemove')).click();
     await nextTick();
     expect(removed).not.toHaveBeenCalled();
     expect(panels.textContent).toContain(t('pluginRemovePurgeConfirm', { name: 'DEMO' }));
-    button(panels, t('pluginRemove')).click();
+    lastButton(panels, t('pluginRemove')).click();
     await settle();
     expect(removed).toHaveBeenCalledWith('demo', true, '123456');
     expect(host.querySelector('#plugin-demo')).toBeNull();
@@ -499,7 +478,7 @@ describe('a plugin package', () => {
     await settle();
 
     type(panels.querySelector<HTMLInputElement>('input[type="password"]')!, 's3cret');
-    button(panels, t('pluginInstall')).click();
+    lastButton(panels, t('pluginInstall')).click();
     await settle();
 
     // Defaults for what was not touched; the secret because it was typed.
@@ -528,7 +507,7 @@ describe('a plugin package', () => {
     expect(panel).toContain(t('pluginPackageUpdateTitle', { name: 'Demo' }));
     expect(panel).toContain(t('pluginPackageUpdateHint', { from: '1.0.0', to: '1.2.0' }));
     expect(panel).toContain(t('pluginPackageDowngrade'));
-    button(panels, t('pluginUpdate')).click();
+    lastButton(panels, t('pluginUpdate')).click();
     await settle();
     expect(installed).toHaveBeenCalled();
     expect(host.textContent).toContain(t('pluginDoneUpdate', { name: 'Demo', version: '1.2.0' }));
@@ -541,7 +520,7 @@ describe('a plugin package', () => {
     dropFile(new File(['zip'], 'demo.arcx'));
     await settle();
     expect(panels.textContent).toContain(t('pluginPackageUnchanged'));
-    expect(() => button(panels, t('pluginUpdate'))).toThrow();
+    expect(() => lastButton(panels, t('pluginUpdate'))).toThrow();
   });
 
   it('turns away a file that is not a package, and shows the server\'s reason when it refuses one', async () => {
@@ -597,7 +576,7 @@ describe('a plugin package', () => {
     vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [plugin('pkg', 'enabled')], two_factor_required: false });
     await mount(AdminPlugins);
 
-    button(card('pkg'), t('pluginDetails')).click();
+    lastButton(card('pkg'), t('pluginDetails')).click();
     await settle();
     expect(panels.textContent).toContain('Example');
   });
@@ -613,9 +592,9 @@ describe('a plugin package', () => {
     dropFile(new File(['zip'], 'example.arcx'));
     await settle();
 
-    button(panels, t('pluginInstall')).click();
+    lastButton(panels, t('pluginInstall')).click();
     await settle();
-    button(card('example'), t('pluginDetails')).click();
+    lastButton(card('example'), t('pluginDetails')).click();
     await settle();
 
     // The fixture's admin page is titled "Example"; the detail lists it only
@@ -637,7 +616,7 @@ describe('a plugin package', () => {
     expect(panels.textContent).toContain(t('pluginTwoFactorCode'));
     const inputs = panels.querySelectorAll<HTMLInputElement>('input:not([type="checkbox"]):not([type="password"])');
     type(inputs[inputs.length - 1]!, ' 123456 ');
-    button(panels, t('pluginInstall')).click();
+    lastButton(panels, t('pluginInstall')).click();
     await settle();
     expect(installed.mock.calls[0]![3]).toBe('123456');
   });
@@ -649,6 +628,6 @@ describe('a plugin package', () => {
     dropFile(new File(['zip'], 'demo.arcx'));
     await settle();
     expect(panels.textContent).toContain(t('pluginTwoFactorMissing'));
-    expect(() => button(panels, t('pluginInstall'))).toThrow();
+    expect(() => lastButton(panels, t('pluginInstall'))).toThrow();
   });
 });

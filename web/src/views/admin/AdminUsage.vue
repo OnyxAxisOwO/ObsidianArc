@@ -29,6 +29,7 @@ import OaTextField from '@/components/OaTextField.vue';
 import type { Column, PageState } from '@/components/table-types';
 import { celebrate } from '@/composables/useConfetti';
 import { t, tn, type StringKey } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconClose } from '@/icons';
 import { compactNumber, localeTag, relativeTime, tokenFigure } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
@@ -36,6 +37,7 @@ import { isAbortError } from '@/lib/abort';
 import { maskUser, maskProvider, maskBilling } from '@/admin/safeMode';
 import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
 import { customUntilBound } from '@/admin/usageRange';
+import { outcomeLabel } from '@/admin/outcome';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import StatusBadge from './StatusBadge.vue';
@@ -45,11 +47,11 @@ import UsageBoard from './usage/UsageBoard.vue';
 import UsageDelta from './usage/UsageDelta.vue';
 import UsageHeatmap from './usage/UsageHeatmap.vue';
 import UsageMatrix from './usage/UsageMatrix.vue';
-import UsagePlot from './usage/UsagePlot.vue';
+import UsageTrend from './usage/UsageTrend.vue';
 import { DAY, HOUR, fillBuckets, formatDuration, percent } from './usage/scale';
 import type { BoardMetric, PlotPoint } from './usage/shape';
-import { toDateTimeLocal } from './shared';
-import { errorLine, refusalLine } from './failure-codes';
+import { toDateTimeLocal, failureText } from './shared';
+import { DAY_MS, HOUR_MS } from '@/lib/time';
 
 interface RangePreset {
   key: string;
@@ -147,11 +149,11 @@ const error = ref('');
 // a message about the defaults must not vanish fifteen seconds after it shows.
 const policyReadError = ref('');
 const loaded = ref(false);
-let recordRequest = 0;
+const recordRequest = useLatestRequest();
 // The summary fetch needs a ticket of its own. A request that outlives a
 // range or filter change must not paint its stale numbers over the newer
 // one's — loadRecords has always done this; this is the other half.
-let summaryRequest = 0;
+const summaryRequest = useLatestRequest();
 let periodSince = 0;
 let periodUntil = 0;
 let offsetMs = 0;
@@ -197,13 +199,14 @@ function sliceQuery(): URLSearchParams {
   return params;
 }
 
-function summaryQuery(): string {
+function summaryQuery(): URLSearchParams {
   const params = sliceQuery();
   // The server ranks every breakdown by this; the boards re-sort on their
   // own, so what it decides here is only which accounts and models make the
   // grid — the ones that spend the most tokens.
   params.set('metric', 'tokens');
-  return `?${params.toString()}&${zoneQuery()}`;
+  new URLSearchParams(zoneQuery()).forEach((value, key) => params.set(key, value));
+  return params;
 }
 
 // Two, because the ledger moves on its own: turning a page of records cancels
@@ -228,24 +231,24 @@ function abortRecords(): void {
 }
 
 async function loadRecords(quiet = false, signal?: AbortSignal): Promise<void> {
-  const ticket = ++recordRequest;
+  const ticket = recordRequest.begin();
   recordsBusy.value = true;
   try {
     const params = sliceQuery();
     params.set('limit', String(recordPage.value.pageSize));
     params.set('offset', String((recordPage.value.page - 1) * recordPage.value.pageSize));
-    const result = await adminApi.usageRecords(`?${params.toString()}`, signal ? { signal } : undefined);
-    if (ticket !== recordRequest || signal?.aborted) return;
+    const result = await adminApi.usageRecords(params, signal ? { signal } : undefined);
+    if (!recordRequest.isCurrent(ticket) || signal?.aborted) return;
     records.value = result.records ?? [];
     recordTotal.value = result.total;
     recordError.value = '';
   } catch (failure) {
     if (signal?.aborted || isAbortError(failure)) return;
-    if (!quiet && ticket === recordRequest) {
-      recordError.value = errorLine(failure);
+    if (!quiet && recordRequest.isCurrent(ticket)) {
+      recordError.value = failureText(failure);
     }
   } finally {
-    if (ticket === recordRequest) recordsBusy.value = false;
+    if (recordRequest.isCurrent(ticket)) recordsBusy.value = false;
     if (recordController?.signal === signal) {
       recordController = null;
     }
@@ -306,7 +309,7 @@ async function load(): Promise<void> {
   offsetMs = -new Date().getTimezoneOffset() * 60_000;
   recordPage.value.page = 1;
 
-  const ticket = ++summaryRequest;
+  const ticket = summaryRequest.begin();
   // The ledger page is not waited for. Nothing in the report depends on it,
   // and over a long range its count is often the slower of the two; it has
   // its own busy state and its own error, and clears its own controller.
@@ -316,11 +319,11 @@ async function load(): Promise<void> {
   void refreshRPM();
   try {
     const summary = await adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal });
-    if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
+    if (!summaryRequest.isCurrent(ticket) || currentSummaryCtrl.signal.aborted) return;
     applyReport(summary);
   } catch (failure) {
     if (currentSummaryCtrl.signal.aborted || isAbortError(failure)) return;
-    if (ticket === summaryRequest) error.value = errorLine(failure);
+    if (summaryRequest.isCurrent(ticket)) error.value = failureText(failure);
   } finally {
     if (summaryController === currentSummaryCtrl) {
       summaryController = null;
@@ -388,10 +391,7 @@ const providerChoices = computed(() => choicesFor('provider', 'filterAllProvider
 
 const outcomeChoices = computed<Array<{ value: Outcome; label: string }>>(() => [
   { value: '', label: t('filterAllOutcomes') },
-  { value: 'ok', label: t('statusOk') },
-  { value: 'error', label: t('statusFailed') },
-  { value: 'aborted', label: t('statusStopped') },
-  { value: 'rejected', label: t('statusRefused') },
+  ...(['ok', 'error', 'aborted', 'rejected'] as const).map((value) => ({ value, label: t(outcomeLabel(value)) })),
 ]);
 
 /** The one model or account the page has been narrowed to, for the banner. */
@@ -456,7 +456,6 @@ const TREND_METRICS: Array<{ value: TrendMetric; label: StringKey }> = [
   { value: 'credits', label: 'statCredits' },
   { value: 'users', label: 'trendUsers' },
 ];
-const activePoint = ref<number | null>(null);
 // Narrowed to one account, "how many accounts" is always one: the options
 // that would only ever say so are left out rather than drawn flat.
 const trendOptions = computed(() => filters.value.user ? TREND_METRICS.filter((option) => option.value !== 'users') : TREND_METRICS);
@@ -497,21 +496,7 @@ const trendFormat = computed(() => {
     : (value: number) => compactNumber(value);
   return spending ? (value: number) => maskBilling(plain(value)) : plain;
 });
-const trendSummary = computed(() => {
-  const point = activePoint.value === null ? null : series.value[activePoint.value];
-  if (point) return figure(point[trendShown.value]);
-  const value = totals.value;
-  // Accounts are counted once for the whole range, not summed per bucket:
-  // somebody active every day is one account, not thirty.
-  return value ? figure(value[trendShown.value]) : 0;
-});
 const trendPeak = computed(() => Math.max(0, ...plotPoints.value.map((point) => point.value)));
-const plot = ref<InstanceType<typeof UsagePlot> | null>(null);
-const trendCaption = computed(() => {
-  const point = activePoint.value === null ? null : series.value[activePoint.value];
-  if (point && plot.value) return plot.value.describe(point.at);
-  return trendShown.value === 'users' ? t('trendDistinct') : t('trendTotal');
-});
 
 // --- the boards and the grid -----------------------------------------------------------------
 
@@ -552,7 +537,7 @@ const showMatrix = computed(() => !filters.value.model && !filters.value.user
   && (report.value?.matrix?.rows?.length ?? 0) > 0 && (report.value?.matrix?.cols?.length ?? 0) > 0);
 
 // One setter per control, each remembering its choice for the next visit.
-function onTrend(next: TrendMetric): void { trendMetric.value = next; selectedTrend = next; activePoint.value = null; }
+function onTrend(next: TrendMetric): void { trendMetric.value = next; selectedTrend = next; }
 function onModelMetric(next: BoardMetric): void { modelMetric.value = next; selectedModelMetric = next; }
 function onUserMetric(next: BoardMetric): void { userMetric.value = next; selectedUserMetric = next; }
 function onCellMetric(next: CellMetric): void { cellMetric.value = next; selectedCellMetric = next; }
@@ -561,8 +546,7 @@ function onSpreadChoice(next: Spread): void { spread.value = next; selectedSprea
 
 const statusRows = computed<UsageBreakdown[]>(() => byStatus.value.map((row) => ({
   ...row,
-  label: row.key === 'ok' ? t('statusOk') : row.key === 'aborted' ? t('statusStopped')
-    : row.key === 'rejected' ? t('statusRefused') : t('statusFailed'),
+  label: t(outcomeLabel(row.key)),
 })));
 const spreadRows = computed(() => spread.value === 'group' ? byGroup.value : spread.value === 'provider' ? byProvider.value : statusRows.value);
 function onSpread(key: string): void {
@@ -606,7 +590,7 @@ async function openPolicy(): Promise<void> {
     // A failed read is not an empty list. The blank form would show no limit
     // anywhere, and Save would write those blanks over the stored instance
     // defaults, so the panel stays shut and the page says what went wrong.
-    policyReadError.value = refusalLine(failure);
+    policyReadError.value = failureText(failure);
     return;
   }
   const windows = {} as typeof policyForm.value.windows;
@@ -651,7 +635,7 @@ async function savePolicy(): Promise<void> {
     policyOpen.value = false;
     refreshAfterChange();
   } catch (failure) {
-    policyError.value = refusalLine(failure);
+    policyError.value = failureText(failure);
   } finally {
     policyBusy.value = false;
   }
@@ -661,6 +645,13 @@ async function savePolicy(): Promise<void> {
 
 const resetOpen = ref(false);
 const resetScope = ref<'all' | 'group' | 'user'>('all');
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const resetScopeChoices = computed(() => [
+  { value: 'all' as const, label: t('resetScopeAll') },
+  { value: 'group' as const, label: t('resetScopeGroup') },
+  { value: 'user' as const, label: t('resetScopeUser') },
+]);
 const resetGroup = ref('');
 const resetAccount = ref('');
 const resetGroups = ref<Pick<Group, 'id' | 'name'>[]>([]);
@@ -702,7 +693,7 @@ async function runReset(): Promise<void> {
     celebrate();
     refreshAfterChange();
   } catch (failure) {
-    resetError.value = refusalLine(failure);
+    resetError.value = failureText(failure);
   }
 }
 
@@ -804,17 +795,16 @@ function setPreset(preset: Preset): void {
 
 // A filter change asks at once while a tick's request may still be out; the
 // older answer is about the old filters and must not land after the newer.
-let rpmRequest = 0;
+const rpmRequest = useLatestRequest();
 
 async function refreshRPM(): Promise<void> {
   if (visibility.value === 'hidden') return;
-  const ticket = ++rpmRequest;
+  const ticket = rpmRequest.begin();
   try {
     // Narrowed by the filters, as every figure beside it is. The server fixes
     // the window at the last minute whatever period is sent.
-    const query = sliceQuery().toString();
-    const res = await adminApi.rpm(query ? `?${query}` : '');
-    if (ticket === rpmRequest) currentRPM.value = res.rpm;
+    const res = await adminApi.rpm(sliceQuery());
+    if (rpmRequest.isCurrent(ticket)) currentRPM.value = res.rpm;
   } catch {
     // Keep existing RPM on transient error
   }
@@ -853,9 +843,9 @@ function refreshQuietly(): void {
   if (!summaryController) {
     const currentSummaryCtrl = new AbortController();
     summaryController = currentSummaryCtrl;
-    const ticket = ++summaryRequest;
+    const ticket = summaryRequest.begin();
     void adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }).then((summary) => {
-      if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
+      if (!summaryRequest.isCurrent(ticket) || currentSummaryCtrl.signal.aborted) return;
       applyReport(summary);
       error.value = '';
     }).catch(() => {
@@ -1022,18 +1012,12 @@ let savedCustomUntil = 0;
             @click="onTrend(option.value)">{{ t(option.label) }}</button>
         </div>
       </header>
-      <div class="oa-viz-summary">
-        <strong>{{ trendFormat(trendSummary) }}</strong>
-        <span>{{ trendCaption }}</span>
-      </div>
-      <UsagePlot
-        v-if="plotPoints.some((point) => point.value > 0)"
-        ref="plot" v-model:active="activePoint" :points="plotPoints" :bucket-ms="report?.bucket_ms ?? 3600000"
-        :offset-ms="offsetMs" :format="trendFormat" :label="t('dashboardChartKeyboard')" :height="190"
+      <UsageTrend
+        :series="series" :points="plotPoints" :totals="totals" :metric="trendShown" :format="trendFormat"
+        :bucket-ms="report?.bucket_ms ?? HOUR_MS" :offset-ms="offsetMs"
       />
-      <p v-else class="oa-viz-empty">{{ t('noRequestsPeriod') }}</p>
       <footer class="oa-viz-foot">
-        <span><span class="oa-dashboard-dot" />{{ (report?.bucket_ms ?? 0) >= 86400000 ? t('trendDaily') : t('trendHourly') }}</span>
+        <span><span class="oa-dashboard-dot" />{{ (report?.bucket_ms ?? 0) >= DAY_MS ? t('trendDaily') : t('trendHourly') }}</span>
         <span>{{ t('dashboardPeak', { value: trendFormat(trendPeak) }) }}</span>
       </footer>
     </section>
@@ -1195,11 +1179,7 @@ let savedCustomUntil = 0;
     <OaSelectField
       v-model="resetScope"
       :label="t('resetScope')"
-      :options="[
-        { value: 'all', label: t('resetScopeAll') },
-        { value: 'group', label: t('resetScopeGroup') },
-        { value: 'user', label: t('resetScopeUser') },
-      ]"
+      :options="resetScopeChoices"
     />
     <OaSelectField
       v-if="resetScope === 'group'"

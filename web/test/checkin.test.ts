@@ -4,12 +4,11 @@
 // press goes to the right endpoint and tells the host to read again.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, defineComponent, h, type App } from 'vue';
 import { api } from '@/api/client';
 import type { CheckinStatus } from '@/api/checkin';
 import OaCheckin from '@/components/OaCheckin.vue';
 import { changeLanguage, t } from '@/composables/useI18n';
-import { settle } from './helpers';
+import { mountComponent, settle, button } from './helpers';
 
 vi.mock('@/api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -28,7 +27,7 @@ vi.mock('@/api/client', () => ({
 const get = vi.mocked(api.get);
 const post = vi.mocked(api.post);
 
-let app: App | null = null;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let changed = 0;
 
@@ -41,9 +40,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = null;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.clearAllMocks();
 });
 
@@ -57,9 +55,8 @@ function status(over: Partial<CheckinStatus> = {}): CheckinStatus {
 
 
 async function mount(): Promise<void> {
-  app = createApp(defineComponent({ render: () => h(OaCheckin, { onChanged: () => { changed += 1; } }) }));
-  app.mount(host);
-  await settle();
+  // No panel host: the card opens no panel, so one starting to would fail here.
+  unmount = await mountComponent(OaCheckin, { onChanged: () => { changed += 1; } }, { host, panels: null });
 }
 
 function serve(...answers: CheckinStatus[]): void {
@@ -68,12 +65,6 @@ function serve(...answers: CheckinStatus[]): void {
     if (url !== '/api/checkin') throw new Error(`unexpected ${url}`);
     return answers[Math.min(next++, answers.length - 1)]!;
   });
-}
-
-function button(label: string): HTMLButtonElement {
-  const found = [...host.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
 }
 
 describe('OaCheckin', () => {
@@ -122,13 +113,13 @@ describe('OaCheckin', () => {
     const head = host.querySelector('.oa-collapsible-head')!;
     expect(head.querySelector('.oa-card-total')?.textContent).toBe(t('checkinStreak', { count: 4 }));
     const toggle = head.querySelector<HTMLButtonElement>('.oa-collapsible-toggle')!;
-    const press = button(t('checkinNow'));
+    const press = button(host, t('checkinNow'));
     expect(head.contains(press)).toBe(true);
     expect(toggle.contains(press)).toBe(false);
 
     serve(status({ streak: 0 }));
-    app?.unmount();
-    app = null;
+    unmount?.();
+    unmount = undefined;
     host.textContent = '';
     await mount();
     expect(host.querySelector('.oa-card-total')).toBeNull();
@@ -139,8 +130,8 @@ describe('OaCheckin', () => {
     serve(status({ rules: [{ ...rule, claimable: true }] }));
     await mount();
     expect(host.querySelector('.oa-collapsible-head')!.textContent).toContain(t('checkinClaimable'));
-    app?.unmount();
-    app = null;
+    unmount?.();
+    unmount = undefined;
     host.textContent = '';
 
     serve(status({ rules: [{ ...rule, claimable: false }] }));
@@ -157,7 +148,7 @@ describe('OaCheckin', () => {
     const toggle = host.querySelector<HTMLButtonElement>('.oa-collapsible-toggle')!;
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
 
-    button(t('checkinNow')).click();
+    button(host, t('checkinNow')).click();
     await settle();
 
     expect(post).toHaveBeenCalledWith('/api/checkin', {});
@@ -183,7 +174,7 @@ describe('OaCheckin', () => {
   it('turns the button off once today is done', async () => {
     serve(status({ checked_in_today: true }));
     await mount();
-    const done = button(t('checkinDone'));
+    const done = button(host, t('checkinDone'));
     expect(done.disabled).toBe(true);
     expect(host.textContent).not.toContain(t('checkinNow'));
   });
@@ -200,13 +191,13 @@ describe('OaCheckin', () => {
     await mount();
     expect(host.textContent).toContain(t('checkinDaily', { reward: t('checkinRewardBonus', { amount: '0.5', days: 7 }) }));
 
-    button(t('checkinNow')).click();
+    button(host, t('checkinNow')).click();
     await settle();
 
     expect(post).toHaveBeenCalledWith('/api/checkin', {});
     expect(host.querySelector('[role="status"]')?.textContent)
       .toContain(t('checkinGot', { streak: 4, reward: t('checkinRewardBonus', { amount: '0.5', days: 7 }) }));
-    expect(button(t('checkinDone')).disabled).toBe(true);
+    expect(button(host, t('checkinDone')).disabled).toBe(true);
     expect(changed).toBe(1);
   });
 
@@ -215,7 +206,7 @@ describe('OaCheckin', () => {
     post.mockResolvedValue({ day: '2030-02-10', streak: 4, reward_failed: true, reward: { kind: 'bonus' } });
     await mount();
 
-    button(t('checkinNow')).click();
+    button(host, t('checkinNow')).click();
     await settle();
 
     expect(host.querySelector('[role="status"]')?.textContent).toBe(t('checkinRewardFailed'));
@@ -227,12 +218,12 @@ describe('OaCheckin', () => {
     post.mockRejectedValue(new ApiError(409, 'already_checked_in', 'Already checked in today.'));
     await mount();
 
-    button(t('checkinNow')).click();
+    button(host, t('checkinNow')).click();
     await settle();
 
     expect(host.textContent).toContain('Already checked in today.');
     expect(get).toHaveBeenCalledTimes(2);
-    expect(button(t('checkinDone')).disabled).toBe(true);
+    expect(button(host, t('checkinDone')).disabled).toBe(true);
     expect(changed).toBe(0);
   });
 
@@ -245,7 +236,7 @@ describe('OaCheckin', () => {
     post.mockRejectedValue(new ApiError(409, 'already_checked_in', 'Already checked in today.'));
     await mount();
 
-    button(t('checkinNow')).click();
+    button(host, t('checkinNow')).click();
     await settle();
 
     expect(host.textContent).toContain(t('errAlreadyCheckedIn'));
@@ -260,7 +251,7 @@ describe('OaCheckin', () => {
     post.mockRejectedValue(new ApiError(500, 'internal', 'Something went wrong on our side.'));
     await mount();
 
-    button(t('checkinNow')).click();
+    button(host, t('checkinNow')).click();
     await settle();
 
     expect(host.textContent).toContain(t('checkinFailed'));

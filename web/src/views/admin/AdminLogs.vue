@@ -15,7 +15,6 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { adminApi, type LogEntry, type LogFacets, type LogOption } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaPagination from '@/components/OaPagination.vue';
 import type { PageState } from '@/components/table-types';
 import OaBadge from '@/components/OaBadge.vue';
@@ -26,13 +25,14 @@ import OaTextField from '@/components/OaTextField.vue';
 import type { Choice } from '@/components/choice';
 import { IconRefresh } from '@/icons';
 import { t, type StringKey } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
 import { HOUR_MS } from '@/lib/time';
 import { maskUser, maskLog } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
-import { adminCodeText } from './failure-codes';
+import { failureText } from './shared';
 
 const pageSize = ref(rememberedPageSize());
 
@@ -70,6 +70,19 @@ function parseRouteQuery() {
 
 const query = ref(parseRouteQuery());
 
+// The selects' choices, computed so a render does not hand each select a new
+// array, and so the labels follow a change of language.
+const outcomeChoices = computed(() => [
+  { value: '', label: t('logAnyOutcome') },
+  { value: 'ok', label: t('logSucceeded') },
+  { value: 'failed', label: t('logFailed') },
+]);
+const channelChoices = computed(() => [
+  { value: '', label: t('logAnyChannel') },
+  { value: 'web', label: t('logChannelWeb') },
+  { value: 'api', label: t('logChannelAPI') },
+]);
+
 // Only the filters are read from the address. A panel opened beside this page
 // is named in the address too, and it must neither reset the filters set here
 // nor make the log be fetched again.
@@ -90,8 +103,8 @@ const facetsError = ref('');
 const listError = ref('');
 const loading = ref(true);
 const opened = ref<LogEntry | null>(null);
-let listRequest = 0;
-let facetRequest = 0;
+const listRequest = useLatestRequest();
+const facetRequest = useLatestRequest();
 
 function since(): number {
   const entry = WINDOWS.find((window) => window.value === query.value.window);
@@ -99,7 +112,7 @@ function since(): number {
   return Date.now() - entry.hours * HOUR_MS;
 }
 
-function listQuery(): string {
+function listQuery(): URLSearchParams {
   const params = new URLSearchParams();
   const at = since();
   if (at > 0) params.set('since', String(at));
@@ -112,7 +125,7 @@ function listQuery(): string {
   if (query.value.path) params.set('path', query.value.path);
   params.set('limit', String(pageSize.value));
   params.set('offset', String(query.value.offset));
-  return `?${params.toString()}`;
+  return params;
 }
 
 function withAny(options: LogOption[], anyLabel: string, fallbackValue?: string, maskFn?: (s: string) => string): Array<Choice<string>> {
@@ -140,31 +153,31 @@ function narrow(): void {
 async function reload(): Promise<void> {
   // Ticketed like paint(): a window changed twice in quick succession sends
   // two requests, and the older answer must not land after the newer one.
-  const ticket = ++facetRequest;
+  const ticket = facetRequest.begin();
   facetsError.value = '';
   // The facets follow the window: which accounts and models appear in the
   // last hour is a different list from the last month's.
   const at = since();
-  const facetsDone = adminApi.logFacets(at > 0 ? `?since=${at}` : '').then(
-    (next) => { if (ticket === facetRequest) facets.value = next; },
+  const facetsDone = adminApi.logFacets(at > 0 ? { since: at } : undefined).then(
+    (next) => { if (facetRequest.isCurrent(ticket)) facets.value = next; },
     (failure: unknown) => {
-      if (ticket !== facetRequest) return;
+      if (!facetRequest.isCurrent(ticket)) return;
       // Without facets the filter controls cannot be drawn, so they give way to
       // the failure; the retry asks for both again.
       facets.value = null;
-      facetsError.value = failure instanceof ApiError ? adminCodeText(failure.code, failure.details) ?? failure.message : t('failed');
+      facetsError.value = failureText(failure);
     },
   );
   await Promise.all([facetsDone, paint()]);
 }
 
 async function paint(): Promise<void> {
-  const ticket = ++listRequest;
+  const ticket = listRequest.begin();
   loading.value = true;
   listError.value = '';
   try {
     const data = await adminApi.logs(listQuery());
-    if (ticket !== listRequest) return;
+    if (!listRequest.isCurrent(ticket)) return;
     // A page past the end, because the list shrank under it (a row deleted,
     // a sliding window moving on), is asked again for its last page rather
     // than left empty: with one page left the pager shows no way back.
@@ -175,11 +188,11 @@ async function paint(): Promise<void> {
     entries.value = data.entries;
     total.value = data.total;
   } catch (failure) {
-    if (ticket !== listRequest) return;
+    if (!listRequest.isCurrent(ticket)) return;
     entries.value = [];
-    listError.value = failure instanceof ApiError ? adminCodeText(failure.code, failure.details) ?? failure.message : t('failed');
+    listError.value = failureText(failure);
   } finally {
-    if (ticket === listRequest) loading.value = false;
+    if (listRequest.isCurrent(ticket)) loading.value = false;
   }
 }
 
@@ -259,11 +272,7 @@ onMounted(reload);
         <OaSelectField
           v-model="query.outcome"
           :label="t('logOutcome')"
-          :options="[
-            { value: '', label: t('logAnyOutcome') },
-            { value: 'ok', label: t('logSucceeded') },
-            { value: 'failed', label: t('logFailed') },
-          ]"
+          :options="outcomeChoices"
           @update:model-value="narrow"
         />
         <OaSelectField
@@ -295,11 +304,7 @@ onMounted(reload);
         <OaSelectField
           v-model="query.channel"
           :label="t('logChannel')"
-          :options="[
-            { value: '', label: t('logAnyChannel') },
-            { value: 'web', label: t('logChannelWeb') },
-            { value: 'api', label: t('logChannelAPI') },
-          ]"
+          :options="channelChoices"
           @update:model-value="narrow"
         />
         <OaTextField v-model="query.path" :label="t('logPath')" placeholder="/api/chat" />

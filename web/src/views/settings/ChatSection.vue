@@ -31,6 +31,14 @@ const choices = computed<Array<Choice<string>>>(() => {
 });
 const model = ref('');
 const effort = ref((currentPreferences.value['reasoning_effort'] as string) ?? 'medium');
+// Computed rather than inline, so a render does not hand the select a new
+// array each time; and not a module constant, so the labels follow the
+// language.
+const effortChoices = computed(() => [
+  { value: 'low', label: t('effortLow') },
+  { value: 'medium', label: t('effortMedium') },
+  { value: 'high', label: t('effortHigh') },
+]);
 const stats = ref(currentPreferences.value['show_stats'] === true);
 
 // Only offered where the group allows it. Hiding it is not the enforcement —
@@ -76,11 +84,7 @@ onMounted(() => {
         v-model="effort"
         :label="t('defaultEffort')"
         :hint="t('defaultEffortHint')"
-        :options="[
-          { value: 'low', label: t('effortLow') },
-          { value: 'medium', label: t('effortMedium') },
-          { value: 'high', label: t('effortHigh') },
-        ]"
+        :options="effortChoices"
         @update:model-value="syncPreferences({ reasoning_effort: $event })"
       />
     </OaRow>

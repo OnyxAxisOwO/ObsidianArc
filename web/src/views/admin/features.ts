@@ -32,7 +32,7 @@ export interface AdminPageSpec {
   permission?: string;
 }
 
-export interface AdminFeatureItem {
+interface AdminFeatureItem {
   /** The anchor ID matching the element ID on the page. */
   id: string;
   /** The admin page slug, empty for the dashboard. */
@@ -45,7 +45,7 @@ export interface AdminFeatureItem {
   keywords?: string[];
 }
 
-export interface SearchGroup {
+interface SearchGroup {
   page: AdminPageSpec;
   matchedSelf: boolean;
   items: AdminFeatureItem[];

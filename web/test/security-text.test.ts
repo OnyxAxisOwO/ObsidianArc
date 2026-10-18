@@ -18,6 +18,12 @@ describe('the words for a stored reason', () => {
     expect(formatEventReason('模型返回内容无法解析')).toBe(t('securityReasonUnparseableAnswer'));
   });
 
+  // The sentence internal/auth/signup_proof.go writes when the difficulty was
+  // raised under a challenge already handed out, full-width comma and all.
+  it('translates the raised proof-of-work tier', () => {
+    expect(formatEventReason('PoW 难度已提高，挑战需重新获取')).toBe(t('securityReasonPoWTierRaised'));
+  });
+
   it('keeps the count in a timed API restriction', () => {
     expect(formatEventReason('administrator restricted API access for 12 hours'))
       .toBe(t('securityReasonAPIHours', { count: 12 }));

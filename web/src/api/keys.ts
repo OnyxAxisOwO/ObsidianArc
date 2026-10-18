@@ -24,7 +24,7 @@ export interface ApiKey {
   updated_at: number;
 }
 
-export interface KeyList {
+interface KeyList {
   keys: ApiKey[];
   /** Whether a key created now would work: the instance switch and the group grant. */
   enabled: boolean;

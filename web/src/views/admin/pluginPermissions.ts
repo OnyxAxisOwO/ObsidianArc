@@ -4,14 +4,14 @@
 
 import type { StringKey } from '@/composables/useI18n';
 
-export interface PermissionSpec {
+interface PermissionSpec {
   id: string;
   label: StringKey;
   /** Reaches everything the server has, or acts as the person granting it. */
   risky: boolean;
 }
 
-export const PERMISSIONS: PermissionSpec[] = [
+const PERMISSIONS: PermissionSpec[] = [
   { id: 'db', label: 'pluginPermDb', risky: true },
   { id: 'network', label: 'pluginPermNetwork', risky: true },
   { id: 'users', label: 'pluginPermUsers', risky: true },

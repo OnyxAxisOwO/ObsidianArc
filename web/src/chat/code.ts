@@ -107,6 +107,10 @@ const RULES: ReadonlyArray<readonly [string, RegExp]> = [
 function isJSON(text: string): boolean {
   const trimmed = text.trim();
   if (!/^[[{]/.test(trimmed) || trimmed.length > 200_000) return false;
+  // Every array and object ends in its closing bracket, so a block that is still
+  // arriving is turned away here instead of being parsed again on every frame.
+  const last = trimmed[trimmed.length - 1];
+  if (last !== ']' && last !== '}') return false;
   try {
     JSON.parse(trimmed);
     return true;

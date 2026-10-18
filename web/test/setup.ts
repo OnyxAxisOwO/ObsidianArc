@@ -18,6 +18,11 @@ import { afterEach } from 'vitest';
 const realLocation = Object.getOwnPropertyDescriptor(window, 'location');
 
 afterEach(() => {
+  // Whatever a test mounted or appended goes with it, so the next test's
+  // queries find only its own nodes. Here rather than in every file, which is
+  // where eighty copies of this line used to be; it runs after the file's own
+  // teardown, so an app is unmounted from a page that still holds it.
+  document.body.textContent = '';
   if (realLocation) Object.defineProperty(window, 'location', realLocation);
   else Reflect.deleteProperty(window, 'location');
 });

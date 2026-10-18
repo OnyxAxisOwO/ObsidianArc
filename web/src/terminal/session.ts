@@ -13,7 +13,7 @@ import { t } from '@/composables/useI18n';
 import { currentUser } from '@/stores/session';
 import { createAnsiTokenizer, initialAnsiState, tokenizeAnsiChunk, type AnsiToken } from './ansi';
 
-export type ScrollbackBlockKind = 'banner' | 'echo' | 'output' | 'error';
+type ScrollbackBlockKind = 'banner' | 'echo' | 'output' | 'error';
 
 /** One line the reader submitted, or one chunk of what came back for it. */
 export interface ScrollbackBlock {
@@ -23,13 +23,13 @@ export interface ScrollbackBlock {
   timestamp: number;
 }
 
-export interface RunOutcome {
+interface RunOutcome {
   ok: boolean;
   code: string;
   exit: boolean;
 }
 
-export type RecallDirection = 'up' | 'down';
+type RecallDirection = 'up' | 'down';
 
 // --- history: shared across tabs, one module-level store -------------------
 //
@@ -187,11 +187,6 @@ watch(
   { immediate: true, flush: 'sync' },
 );
 
-/** Read-only view for anything that wants to list history without a tab (the `history` command's local echo, if a screen ever wants one). */
-export function terminalHistorySnapshot(): readonly string[] {
-  return sharedHistory.value;
-}
-
 /** Appends one submitted line, collapsing an immediate repeat and capping the length — the shape every shell's history file uses, and why two tabs running the same command back to back do not double it. */
 function pushHistory(line: string): void {
   const trimmed = line.trim();
@@ -231,7 +226,7 @@ export interface TerminalSession {
   dispose(): void;
 }
 
-export interface CreateTerminalSessionOptions {
+interface CreateTerminalSessionOptions {
   id: string;
   /** Empty means "no custom title yet" — the component supplies the default (localized) label to show instead; this module never holds an English string. */
   title?: string | undefined;

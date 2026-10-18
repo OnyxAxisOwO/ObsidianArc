@@ -63,7 +63,9 @@ function precompressAssets(): Plugin {
 
 export default defineConfig({
   root: HERE,
-  plugins: [vue(), keepEmbedDirectory(), precompressAssets()],
+  // The Options API branch is compiled out of the bundle. Nothing in the tree
+  // uses it, and the runtime it would keep is on the first paint of everyone.
+  plugins: [vue({ features: { optionsAPI: false } }), keepEmbedDirectory(), precompressAssets()],
   resolve: {
     alias: { '@': resolve(HERE, 'src') },
   },

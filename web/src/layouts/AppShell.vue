@@ -11,6 +11,7 @@
 
 import { ref, type HTMLAttributes } from 'vue';
 import AnnounceBell from '@/announce/AnnounceBell.vue';
+import OaIconButton from '@/components/OaIconButton.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import OaToastStack from '@/components/OaToastStack.vue';
 import { usePanelExit } from '@/composables/usePanelExit';
@@ -77,16 +78,14 @@ defineExpose({ body });
       <!-- Only for somebody who has an account to have announcements read
            against; the sign-in page has its own corner. -->
       <AnnounceBell v-if="currentUser" />
-      <button
+      <OaIconButton
         v-if="currentUser"
-        type="button"
         class="oa-icon-btn"
-        :title="t('imageLab')"
-        :aria-label="t('imageLab')"
+        :label="t('imageLab')"
         @click="panels.open('/image-lab')"
       >
         <IconImage :size="16" />
-      </button>
+      </OaIconButton>
       <OaThemeToggle />
       <AccountMenu v-if="currentUser" :account="currentUser" />
     </div>

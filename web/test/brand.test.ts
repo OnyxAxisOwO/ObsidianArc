@@ -13,6 +13,7 @@ import { t } from '../src/composables/useI18n';
 let app: App | null = null;
 let host: HTMLElement;
 
+// Not mountComponent: the tests use the screen the moment it is mounted, without awaiting, and read its first render.
 function mount(component: Parameters<typeof createApp>[0], props: Record<string, unknown> = {}): void {
   app = createApp({ render: () => h(component, props) });
   app.use(createRouter({

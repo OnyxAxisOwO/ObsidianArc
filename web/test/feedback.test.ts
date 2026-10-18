@@ -10,11 +10,13 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import FeedbackPanel from '../src/views/FeedbackPanel.vue';
 import AdminFeedback from '../src/views/admin/AdminFeedback.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
-import { settle } from './helpers';
+import { adminShell, mountComponent, settle, button } from './helpers';
+import { queriesSent } from './admin-query';
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -28,31 +30,17 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  unmount?.();
+  unmount = undefined;
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   site.value = null;
 });
 
 
-async function mount(component: Component): Promise<void> {
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-      return () => h(component);
-    },
-  });
-  app.mount(host);
-  await settle();
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
+async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
+  unmount = await mountComponent(component, props, { host, panels, adminView: adminShell(actions) });
 }
 
 function type(node: HTMLInputElement | HTMLTextAreaElement, value: string): void {
@@ -217,6 +205,21 @@ describe('the feedback panel somebody writes in', () => {
     expect(panels.textContent).toContain('Already reported');
     expect(panels.textContent).toContain(t('feedbackStatusResolved'));
     expect(panels.textContent).toContain(t('feedbackRemaining', { count: 9 }));
+  });
+
+  // A priority a newer server added used to throw while the list was drawn,
+  // which left the panel empty; the backoffice already read it as medium.
+  it('reads a priority it does not know as medium rather than failing to draw', async () => {
+    const unknown = 'urgent' as Feedback['priority'];
+    vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({
+      feedback: [record({ priority: unknown, title: 'From a newer server' })],
+      remaining: 9, max_per_day: 10,
+    });
+    await mount(FeedbackPanel);
+
+    const meta = panels.querySelector('.oa-feedback-item-meta')!.textContent ?? '';
+    expect(panels.textContent).toContain('From a newer server');
+    expect(meta).toContain(t('feedbackPriorityMedium'));
   });
 
   it('will not take a body longer than the server keeps', async () => {
@@ -502,7 +505,7 @@ describe('the operator’s feedback page', () => {
       .find((item) => item.textContent?.trim() === t('feedbackStatusOpen'))!.click();
     await settle();
 
-    expect(reads).toHaveBeenCalledWith(expect.stringContaining('status=open'));
+    expect(queriesSent(reads).some((query) => query.includes('status=open'))).toBe(true);
   });
 
   function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {

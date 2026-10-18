@@ -39,7 +39,7 @@ import { settingsRefusalText } from '@/lib/refusal';
 import { currentUser, isSuperAdmin, site } from '@/stores/session';
 import { maskUser } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
-import { minutesLabel } from './shared';
+import { minutesLabel, failureText } from './shared';
 import PluginSettingsCard from './PluginSettingsCard.vue';
 import { usePluginSettings } from './pluginSettings';
 import OaAccountFields from '@/components/OaAccountFields.vue';
@@ -51,7 +51,7 @@ import SecurityLogCard from './SecurityLogCard.vue';
 import SecurityMailCard from './SecurityMailCard.vue';
 import SecurityUserCheckCard from './SecurityUserCheckCard.vue';
 import { formatEventReason, reviewDecision } from './security-text';
-import { errorLine, refusalLine } from './failure-codes';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 const view = useAdminView();
 view.setTitle(() => t('navSecurity'), () => t('securitySubtitle'));
@@ -245,6 +245,34 @@ const trial = ref({
 const trialFields = computed(() => allFields(site.value ?? ({ fields: {} } as unknown as SiteInfo)));
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
+
+// The selects' choices, computed so a render does not hand each select a new
+// array, and so the labels follow a change of language.
+const defaultGroupChoices = computed(() => [
+  { value: '', label: t('theDefaultGroup') },
+  ...groups.value.map((group) => ({ value: group.id, label: group.name })),
+]);
+const reviewModelChoices = computed(() => [
+  { value: '', label: t('signupReviewNoModel') },
+  ...enabledModels.value.map((entry) => ({ value: entry.id, label: entry.display_name })),
+]);
+const reviewModeChoices = computed(() => [
+  { value: 'loose', label: t('reviewModeLoose') },
+  { value: 'normal', label: t('reviewModeNormal') },
+  { value: 'strict', label: t('reviewModeStrict') },
+]);
+const twoFactorPolicyChoices = computed(() => [
+  { value: 'optional', label: t('twoFactorPolicyOptional') },
+  { value: 'backoffice', label: t('twoFactorPolicyBackoffice') },
+  { value: 'admins', label: t('twoFactorPolicyAdmins') },
+  { value: 'everyone', label: t('twoFactorPolicyEveryone') },
+]);
+const backofficeModeChoices = computed(() => [
+  { value: 'off', label: t('backofficeVerifyOff') },
+  { value: 'visit', label: t('backofficeVerifyVisit') },
+  { value: 'idle', label: t('backofficeVerifyIdle') },
+  { value: 'interval', label: t('backofficeVerifyInterval') },
+]);
 const reviewPromptIsDefault = computed(() =>
   form.value.reviewPrompt.trim() === defaultReviewPrompt.value.trim());
 
@@ -371,7 +399,7 @@ async function submitTwoFactor(): Promise<void> {
     showTwoFactorModal.value = false;
     twoFactorCode.value = '';
   } catch (failure) {
-    twoFactorError.value = failure instanceof ApiError ? settingsRefusalText(failure) : String(failure);
+    twoFactorError.value = failure instanceof ApiError ? settingsRefusalText(failure) : failureText(failure);
     twoFactorCode.value = '';
     await nextTick();
     twoFactorField.value?.focus();
@@ -436,7 +464,7 @@ async function performSave(codeParam?: string): Promise<void> {
       // not report that write as failed; the next page load will fetch it.
     }
     saveLabel.value = t('saved');
-    window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
     void loadAdoption();
   } catch (failure) {
     if (failure instanceof ApiError && failure.code === 'two_factor_code_required') {
@@ -454,7 +482,7 @@ async function performSave(codeParam?: string): Promise<void> {
     } else if (failure instanceof ApiError && failure.code === 'two_factor_required') {
       flash.value = t('signupReviewPromptNeeds2FA');
     } else {
-      flash.value = failure instanceof ApiError ? settingsRefusalText(failure) : String(failure);
+      flash.value = failure instanceof ApiError ? settingsRefusalText(failure) : failureText(failure);
     }
     saveLabel.value = '';
     throw failure;
@@ -492,7 +520,7 @@ function runTrial(): void {
         { reason });
     })
     .catch((failure: unknown) => {
-      trial.value.answer = refusalLine(failure);
+      trial.value.answer = failureText(failure);
     })
     .finally(() => { trial.value.running = false; });
 }
@@ -596,7 +624,7 @@ async function load(): Promise<void> {
     initialReviewPrompt.value = values['security.signup_review_prompt'] ?? '';
     accept();
   } catch (failure) {
-    error.value = errorLine(failure);
+    error.value = failureText(failure);
   } finally {
     loaded.value = true;
   }
@@ -658,10 +686,7 @@ onMounted(load);
         <OaSelectField
           v-model="form.defaultGroup"
           :label="t('newAccountsJoin')"
-          :options="[
-            { value: '', label: t('theDefaultGroup') },
-            ...groups.map((group) => ({ value: group.id, label: group.name })),
-          ]"
+          :options="defaultGroupChoices"
         />
       </AdminControlCard>
       <AdminControlCard id="secRegistrationLimits" v-show="visible('secRegistrationLimits')" :title="t('controlRegistrationLimits')" :icon="IconSliders" :hint="t('controlRegistrationLimitsHint')">
@@ -729,20 +754,13 @@ onMounted(load);
           v-model="form.reviewModel"
           :label="t('signupReviewModel')"
           :hint="t('signupReviewModelHint')"
-          :options="[
-            { value: '', label: t('signupReviewNoModel') },
-            ...enabledModels.map((entry) => ({ value: entry.id, label: entry.display_name })),
-          ]"
+          :options="reviewModelChoices"
         />
         <OaSelectField
           v-model="form.reviewMode"
           :label="t('signupReviewMode')"
           :hint="t('signupReviewModeHint')"
-          :options="[
-            { value: 'loose', label: t('reviewModeLoose') },
-            { value: 'normal', label: t('reviewModeNormal') },
-            { value: 'strict', label: t('reviewModeStrict') },
-          ]"
+          :options="reviewModeChoices"
         />
         <OaNumberField
           v-model="form.reviewRestrictHours"
@@ -778,12 +796,7 @@ onMounted(load);
           v-model="form.twoFactorPolicy"
           :label="t('twoFactorPolicyLabel')"
           :hint="policyHint"
-          :options="[
-            { value: 'optional', label: t('twoFactorPolicyOptional') },
-            { value: 'backoffice', label: t('twoFactorPolicyBackoffice') },
-            { value: 'admins', label: t('twoFactorPolicyAdmins') },
-            { value: 'everyone', label: t('twoFactorPolicyEveryone') },
-          ]"
+          :options="twoFactorPolicyChoices"
         />
         <!-- Said before the save rather than after it: the server refuses a
              policy that would shut its author out of this screen. -->
@@ -825,12 +838,7 @@ onMounted(load);
           v-model="form.backofficeMode"
           :label="t('backofficeVerifyMode')"
           :hint="backofficeHint"
-          :options="[
-            { value: 'off', label: t('backofficeVerifyOff') },
-            { value: 'visit', label: t('backofficeVerifyVisit') },
-            { value: 'idle', label: t('backofficeVerifyIdle') },
-            { value: 'interval', label: t('backofficeVerifyInterval') },
-          ]"
+          :options="backofficeModeChoices"
         />
         <OaNumberField
           v-if="form.backofficeMode !== 'off'"

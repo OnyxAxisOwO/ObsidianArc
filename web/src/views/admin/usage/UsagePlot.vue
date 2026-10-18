@@ -11,6 +11,7 @@ import { computed, ref, useId, watch } from 'vue';
 import { localeTag } from '@/lib/format';
 import { niceScale, smoothPath, tickFormat, timeTicks } from './scale';
 import type { PlotPoint } from './shape';
+import { DAY_MS } from '@/lib/time';
 
 const props = withDefaults(defineProps<{
   points: readonly PlotPoint[];
@@ -44,9 +45,12 @@ function xOf(index: number): number {
   if (!point) return 0;
   return span.value > 0 ? (point.at - start.value) / span.value : 0.5;
 }
+function yRatio(value: number): number {
+  return 1 - value / scale.value.max;
+}
 function yOf(index: number): number {
   const point = props.points[index];
-  return point ? 1 - point.value / scale.value.max : 1;
+  return point ? yRatio(point.value) : 1;
 }
 
 const coords = computed(() => props.points.map((_, index) => [xOf(index) * WIDTH, yOf(index) * props.height] as const));
@@ -80,7 +84,7 @@ const selected = computed(() => props.active === null ? null : props.points[prop
 function describe(at: number): string {
   const wall = (instant: number, options: Intl.DateTimeFormatOptions): string =>
     new Date(instant + props.offsetMs).toLocaleString(locale.value, { ...options, timeZone: 'UTC' });
-  if (props.bucketMs >= 86_400_000) {
+  if (props.bucketMs >= DAY_MS) {
     return wall(at, { month: 'short', day: 'numeric', weekday: 'short' });
   }
   const from = wall(at, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -122,7 +126,7 @@ watch(buckets, () => { if (!focused.value) emit('update:active', null); });
 <template>
   <div class="oa-plot" :style="{ '--oa-plot-height': `${props.height}px` }">
     <div class="oa-plot-y" aria-hidden="true">
-      <span v-for="tick in scale.ticks" :key="tick" :style="{ top: `${(1 - tick / scale.max) * 100}%` }">{{ props.format(tick) }}</span>
+      <span v-for="tick in scale.ticks" :key="tick" :style="{ top: `${yRatio(tick) * 100}%` }">{{ props.format(tick) }}</span>
     </div>
     <div
       class="oa-plot-area"
@@ -148,7 +152,7 @@ watch(buckets, () => { if (!focused.value) emit('update:active', null); });
         </defs>
         <line
           v-for="tick in scale.ticks" :key="tick" class="oa-plot-grid"
-          x1="0" :x2="WIDTH" :y1="(1 - tick / scale.max) * props.height" :y2="(1 - tick / scale.max) * props.height"
+          x1="0" :x2="WIDTH" :y1="yRatio(tick) * props.height" :y2="yRatio(tick) * props.height"
           vector-effect="non-scaling-stroke"
         />
         <path v-if="area" :d="area" :fill="`url(#${gradient})`" />

@@ -26,8 +26,18 @@ const props = defineProps<{ text: string }>();
 
 const host = ref<HTMLElement | null>(null);
 
+// The streaming caret hangs off the last block, and every paint replaces that
+// block, so its blink would restart on each frame and never get past its first
+// half. Its phase comes from one clock instead, the page's own (performance.now()
+// counts from the same origin for every instance): a new block starts the
+// animation where the old one had reached, and two answers blink together.
+// The period is aiChatCaret's, in _chat.scss.
+const CARET_PERIOD_MS = 1000;
+
 function paint(): void {
-  if (host.value) renderInto(host.value, props.text);
+  if (!host.value) return;
+  renderInto(host.value, props.text);
+  host.value.style.setProperty('--ai-caret-delay', `${-performance.now() % CARET_PERIOD_MS}ms`);
 }
 
 onMounted(paint);

@@ -23,6 +23,7 @@ import BackgroundStage from './BackgroundStage.vue';
 import OaRow from '@/components/OaRow.vue';
 import { Palette } from 'lucide-vue-next';
 import { ACCENT_NAMES, ACCENTS, DEFAULT_ACCENT, accentPalette, normalizeHex, type AccentName } from '@/theme/color-utils';
+import { ACCENT_LABELS, BACKGROUND_TINTS } from '@/theme/accent-labels';
 import { useTheme } from '@/composables/useTheme';
 import type { SiteBackground } from '@/theme/theme';
 import OaNumberField from '@/components/OaNumberField.vue';
@@ -35,7 +36,8 @@ import { formatBytes } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 import { refreshSite, site } from '@/stores/session';
-import { errorLine, refusalLine } from './failure-codes';
+import { failureText } from './shared';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 const view = useAdminView();
 view.setTitle(() => t('adminSettingsTitle'), () => t('controlSettingsSubtitle'));
@@ -94,6 +96,11 @@ const SEARCH_GROUPS = {
     'apiKeys', 'apiEnabled', 'apiEnabledHint',
   ],
 } satisfies Record<string, StringKey[]>;
+// The bound on settings.AttachmentPurgeDays (internal/admin/instance.go). Its
+// own figure rather than a shared one: it happens to equal the card and
+// retention limits, and moving one of those must not move this.
+const MAX_PURGE_DAYS = 3650;
+
 const error = ref('');
 const loaded = ref(false);
 const models = ref<Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>[]>([]);
@@ -111,13 +118,6 @@ const siteLogoUrl = ref('');
 const uploadingLogo = ref(false);
 const dragOverLogo = ref(false);
 
-// The accent pickers offer the presets by name; the empty value is "the
-// built-in one", which is what an instance that never sets this gets.
-const ACCENT_LABELS: Record<AccentName, StringKey> = {
-  violet: 'accentViolet', neutral: 'accentNeutral', red: 'accentRed', pink: 'accentPink',
-  indigo: 'accentIndigo', blue: 'accentBlue', cyan: 'accentCyan', teal: 'accentTeal',
-  green: 'accentGreen', orange: 'accentOrange',
-};
 const CARD_POSITIONS = [
   { value: 'center', label: 'authCardPositionCenter' },
   { value: 'left', label: 'authCardPositionLeft' },
@@ -132,9 +132,7 @@ const THEME_MODES = [
 // after "built-in", which follows the control colour.
 const TINTS: Array<{ value: AccentName | ''; label: StringKey }> = [
   { value: '', label: 'siteThemeDefault' },
-  { value: 'orange', label: 'backgroundVanilla' }, { value: 'teal', label: 'backgroundMint' },
-  { value: 'blue', label: 'backgroundCloud' }, { value: 'violet', label: 'backgroundLilac' },
-  { value: 'pink', label: 'backgroundPeach' },
+  ...BACKGROUND_TINTS,
 ];
 
 const pageTheme = useTheme();
@@ -228,6 +226,28 @@ const form = ref({
 });
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
+
+// The selects' choices, computed so a render does not hand each select a new
+// array, and so the labels follow a change of language.
+const landingModeChoices = computed(() => [
+  { value: 'login', label: t('landingLogin') },
+  { value: 'site', label: t('landingSite') },
+  { value: 'intro', label: t('landingIntro') },
+  { value: 'chat', label: t('landingChat') },
+]);
+const trialModelChoices = computed(() => [
+  { value: '', label: t('trialFirstAvailable') },
+  ...enabledModels.value.map((entry) => ({ value: entry.id, label: entry.display_name })),
+]);
+const noticeToneChoices = computed(() => [
+  { value: 'info', label: t('homeNoticeToneInfo') },
+  { value: 'warning', label: t('homeNoticeToneWarning') },
+]);
+const usageDisplayChoices = computed(() => [
+  { value: 'absolute', label: t('usageDisplayAbsolute') },
+  { value: 'remaining', label: t('usageDisplayRemaining') },
+  { value: 'used', label: t('usageDisplayUsed') },
+]);
 
 // The three landing modes want different fields, and showing all of them at
 // once invites setting a trial on a front door that is a sign-in card.
@@ -337,9 +357,9 @@ async function save(): Promise<void> {
     // just saved rather than waiting for a reload.
     void refreshSite().catch(() => {});
     saveLabel.value = t('saved');
-    window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
   } catch (failure) {
-    flash.value = refusalLine(failure);
+    flash.value = failureText(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
@@ -381,7 +401,7 @@ function importSettings(): void {
     })
     .catch((failure: unknown) => {
       flashOK.value = false;
-      flash.value = refusalLine(failure);
+      flash.value = failureText(failure);
     });
 }
 
@@ -400,7 +420,7 @@ function purge(): void {
     })
     .catch((failure: unknown) => {
       flashOK.value = false;
-      flash.value = refusalLine(failure);
+      flash.value = failureText(failure);
     })
     .finally(() => { purging.value = false; });
 }
@@ -453,7 +473,7 @@ async function uploadLogoFile(file: File): Promise<void> {
   } catch (failure) {
     flashOK.value = false;
     // An Error's own message is the text to show; String() would prefix its class.
-    flash.value = errorLine(failure);
+    flash.value = failureText(failure);
   } finally {
     uploadingLogo.value = false;
     dragOverLogo.value = false;
@@ -491,7 +511,7 @@ async function clearSiteLogo(): Promise<void> {
   } catch (failure) {
     flashOK.value = false;
     // An Error's own message is the text to show; String() would prefix its class.
-    flash.value = errorLine(failure);
+    flash.value = failureText(failure);
   } finally {
     uploadingLogo.value = false;
   }
@@ -583,7 +603,7 @@ async function load(): Promise<void> {
     };
     accept();
   } catch (failure) {
-    error.value = errorLine(failure);
+    error.value = failureText(failure);
   } finally {
     loaded.value = true;
   }
@@ -870,12 +890,7 @@ onMounted(load);
           v-model="form.landingMode"
           :label="t('landingMode')"
           :hint="t('landingModeHint')"
-          :options="[
-            { value: 'login', label: t('landingLogin') },
-            { value: 'site', label: t('landingSite') },
-            { value: 'intro', label: t('landingIntro') },
-            { value: 'chat', label: t('landingChat') },
-          ]"
+          :options="landingModeChoices"
         />
         <OaTextArea
           v-if="showIntro"
@@ -903,10 +918,7 @@ onMounted(load);
           v-if="showTrialDetail"
           v-model="form.trialModel"
           :label="t('trialModel')"
-          :options="[
-            { value: '', label: t('trialFirstAvailable') },
-            ...enabledModels.map((entry) => ({ value: entry.id, label: entry.display_name })),
-          ]"
+          :options="trialModelChoices"
         />
       </AdminControlCard>
       <AdminControlCard id="secHomeNotice" v-show="visible('secHomeNotice')" :title="t('homeNotice')" :icon="IconBell" :hint="t('controlNoticeHint')">
@@ -917,10 +929,7 @@ onMounted(load);
           :label="t('homeNoticeTone')"
           :hint="t('homeNoticeToneHint')"
           :searchable="false"
-          :options="[
-            { value: 'info', label: t('homeNoticeToneInfo') },
-            { value: 'warning', label: t('homeNoticeToneWarning') },
-          ]"
+          :options="noticeToneChoices"
         />
         <OaSwitchField
           v-model="form.homeNoticeDismissible"
@@ -952,11 +961,7 @@ onMounted(load);
           v-model="form.usageDisplay"
           :label="t('usageDisplay')"
           :hint="t('usageDisplayHint')"
-          :options="[
-            { value: 'absolute', label: t('usageDisplayAbsolute') },
-            { value: 'remaining', label: t('usageDisplayRemaining') },
-            { value: 'used', label: t('usageDisplayUsed') },
-          ]"
+          :options="usageDisplayChoices"
         />
       </AdminControlCard>
       <AdminControlCard id="secCleanup" v-show="visible('secCleanup')" :title="t('secCleanup')" :icon="IconTrash" :hint="t('cleanupHint')">
@@ -964,7 +969,7 @@ onMounted(load);
           v-model="form.purgeAfterDays"
           :label="t('attachmentPurgeDays')"
           :min="0"
-          :max="3650"
+          :max="MAX_PURGE_DAYS"
           :hint="t('attachmentPurgeDaysHint')"
         />
         <OaTextField

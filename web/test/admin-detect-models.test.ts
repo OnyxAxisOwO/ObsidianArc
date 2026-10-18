@@ -34,8 +34,9 @@ describe('detected models', () => {
     vi.restoreAllMocks();
   });
 
+  // Not mountComponent: the tests use the screen the moment it is mounted, without awaiting, and read its first render.
   function mount(props: Record<string, unknown>) {
-    app = createApp({ render: () => h(AdminDetectModels, { providerId: 'p1', mode: 'add', ...props } as never) });
+    app = createApp({ render: () => h(AdminDetectModels, { providerId: 'p1', mode: 'add', ...props }) });
     app.mount(host);
   }
 
@@ -146,7 +147,7 @@ describe('detected models', () => {
     }));
     const state = reactive({ providerId: 'p1' });
     app = createApp({
-      render: () => h(AdminDetectModels, { providerId: state.providerId, mode: 'add', canAdd: true } as never),
+      render: () => h(AdminDetectModels, { providerId: state.providerId, mode: 'add', canAdd: true }),
     });
     app.mount(host);
 

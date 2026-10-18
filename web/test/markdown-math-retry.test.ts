@@ -17,14 +17,8 @@ describe('a formula shown as source while the chunk is being retried', () => {
       attempts += 1;
       if (attempts === 1) throw new Error('chunk not found');
       return {
-        renderMathInline: (latex: string) => {
-          const node = document.createElement('span');
-          node.className = 'rendered-math';
-          node.textContent = `[math ${latex}]`;
-          return node;
-        },
-        renderMathBlock: (latex: string) => {
-          const node = document.createElement('div');
+        renderMath: (latex: string, display = false) => {
+          const node = document.createElement(display ? 'div' : 'span');
           node.className = 'rendered-math';
           node.textContent = `[math ${latex}]`;
           return node;

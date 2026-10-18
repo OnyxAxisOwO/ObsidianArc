@@ -8,7 +8,7 @@
 import { computed, ref } from 'vue';
 import { t } from '@/composables/useI18n';
 
-export interface ChartPoint {
+interface ChartPoint {
   at: number;
   uptime: number | null;
   total: number;

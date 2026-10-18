@@ -20,7 +20,8 @@ import { initials } from '@/lib/account';
 import { maskCredential } from '@/admin/safeMode';
 import { isSuperAdmin } from '@/stores/session';
 import AdminControlCard from './AdminControlCard.vue';
-import { refusalLine } from './failure-codes';
+import { failureText } from './shared';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 // The server's own address arrives with this list, and the sign-in providers'
 // callback hints on the page are built from it (see callbackURL there), so
@@ -41,7 +42,7 @@ const draft = ref({ name: '', description: '', redirects: '', public: false, tru
 const copied = ref('');
 
 function failed(failure: unknown): void {
-  flash.value = refusalLine(failure);
+  flash.value = failureText(failure);
 }
 
 function copy(value: string): void {
@@ -50,7 +51,7 @@ function copy(value: string): void {
     copied.value = value;
     window.setTimeout(() => {
       if (copied.value === value) copied.value = '';
-    }, 1500);
+    }, FEEDBACK_FLASH_MS);
   });
 }
 

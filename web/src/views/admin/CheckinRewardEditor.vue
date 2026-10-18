@@ -22,6 +22,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{ 'update:modelValue': [value: CheckinRewardBody] }>();
 
+// checkin.maxDays (internal/checkin/checkin.go): a longer span is refused on
+// save, so the field stops at the same figure.
 const MAX_VALID_DAYS = 3650;
 // A bonus with zero valid days never expires on the server, so a cleared bonus
 // field means the same as the expiry fields' "for ever". A card must last at

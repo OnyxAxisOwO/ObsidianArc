@@ -13,6 +13,7 @@ import { computed, nextTick, onMounted, ref } from 'vue';
 import {
   adminApi, emptyPolicy,
   type AdminModel, type Group, type QuotaLimits, type QuotaPolicy, type QuotaWindowKind,
+  type AdminGroupInput,
 } from '@/admin/api';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
@@ -32,14 +33,13 @@ import { t, tn } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { maskProvider } from '@/admin/safeMode';
-import { windowFigure } from '@/admin/quota';
+import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import GroupMembers from './GroupMembers.vue';
 import { useAdminView } from './adminView';
-import { errorLine, refusalLine } from './failure-codes';
+import { failureText, runLoad, runRemove } from './shared';
 
-const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
 
 const view = useAdminView();
 view.setTitle(() => t('groupsTitle'), () => t('groupsSubtitle'));
@@ -233,7 +233,7 @@ async function save(): Promise<void> {
       ? []
       : Object.entries(form.value.grants).filter(([, access]) => access === 'use').map(([id]) => id);
 
-    const payload: Record<string, unknown> = {
+    const payload: AdminGroupInput = {
       name: form.value.name.trim(),
       description: form.value.description.trim(),
       is_default: form.value.isDefault,
@@ -272,7 +272,7 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = refusalLine(failure);
+    panelError.value = failureText(failure);
     // A group created before the policy failed is in the table now, and the
     // list should show it rather than wait for the panel to close.
     if (wasCreating && existing.value) void load();
@@ -282,29 +282,17 @@ async function save(): Promise<void> {
 async function remove(): Promise<void> {
   const row = existing.value;
   if (!row) return;
-  busy.value = true;
-  try {
-    await adminApi.deleteGroup(row.id);
-    finish();
-  } catch (failure) {
-    busy.value = false;
-    panelError.value = refusalLine(failure);
-  }
+  await runRemove(() => adminApi.deleteGroup(row.id), { busy, error: panelError }, finish);
 }
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [groupsResult, modelsResult] = await Promise.all([adminApi.groups(), adminApi.modelOptions()]);
     groups.value = groupsResult.groups;
     if (existing.value) existing.value = groupsResult.groups.find((entry) => entry.id === existing.value!.id) ?? existing.value;
     policies.value = groupsResult.policies;
     models.value = modelsResult.models;
-  } catch (failure) {
-    error.value = errorLine(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 onMounted(load);

@@ -25,7 +25,8 @@ import AdminWorkbench from './AdminWorkbench.vue';
 import { useAdminView } from './adminView';
 import { useSettingsDraft } from './settingsDraft';
 import type { WorkbenchGroup } from './workbench';
-import { errorLine, refusalLine } from './failure-codes';
+import { failureText, runLoad } from './shared';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 const view = useAdminView();
 view.setTitle(() => t('navLeaderboard'), () => t('leaderboardSubtitle'));
@@ -84,7 +85,7 @@ async function save(): Promise<void> {
     accept(values);
     saveLabel.value = t('saved');
     window.clearTimeout(saveLabelTimer);
-    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
     try {
       // The preview is the readers' own endpoint, and identity is applied by
       // the server, so it has to be re-asked rather than re-rendered. A refresh
@@ -98,7 +99,7 @@ async function save(): Promise<void> {
   } catch (failure) {
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.
-    flash.value = refusalLine(failure);
+    flash.value = failureText(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
@@ -106,8 +107,7 @@ async function save(): Promise<void> {
 }
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [settingsData, board] = await Promise.all([
       adminApi.settings(),
       // The same endpoint readers call. An administrator holding this grant
@@ -126,11 +126,7 @@ async function load(): Promise<void> {
     preview.value = board;
     previewFailed.value = board === null;
     accept();
-  } catch (failure) {
-    error.value = errorLine(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 const categories: WorkbenchGroup[] = [
@@ -138,6 +134,14 @@ const categories: WorkbenchGroup[] = [
   { id: 'privacy', label: 'controlBoardPrivacy', hint: 'controlBoardPrivacyHint', icon: IconLock, sections: ['secBoardVisibility', 'secBoardIdentity'] },
   { id: 'contents', label: 'controlBoardContents', hint: 'controlBoardContentsHint', icon: IconSliders, sections: ['secBoardContents'] },
 ];
+
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const identityChoices = computed(() => [
+  { value: 'nickname' as const, label: t('boardIdentityNickname') },
+  { value: 'anonymous' as const, label: t('boardIdentityAnonymous') },
+  { value: 'handle' as const, label: t('boardIdentityHandle') },
+]);
 
 onMounted(load);
 onBeforeUnmount(() => window.clearTimeout(saveLabelTimer));
@@ -204,11 +208,7 @@ onBeforeUnmount(() => window.clearTimeout(saveLabelTimer));
         :label="t('boardIdentity')"
         :hint="t('boardIdentityHint')"
         :searchable="false"
-        :options="[
-          { value: 'nickname', label: t('boardIdentityNickname') },
-          { value: 'anonymous', label: t('boardIdentityAnonymous') },
-          { value: 'handle', label: t('boardIdentityHandle') },
-        ]"
+        :options="identityChoices"
       />
     </AdminControlCard>
 

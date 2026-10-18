@@ -15,7 +15,7 @@ export interface Notification {
   created_at: number;
 }
 
-export interface NotificationFeed {
+interface NotificationFeed {
   notifications: Notification[];
   unread: number;
   seen_at: number;

@@ -20,7 +20,7 @@ import OaSearchField from '@/components/OaSearchField.vue';
 import { t } from '@/composables/useI18n';
 import { IconCheck, IconRefresh } from '@/icons';
 import { filterDetected } from '@/lib/detect-filter';
-import { refusalLine } from './failure-codes';
+import { failureText } from './shared';
 
 export interface DetectedModel {
   model_id: string;
@@ -90,7 +90,7 @@ async function detect(): Promise<void> {
 // Only a code the interface has a sentence for is translated; any other keeps
 // the server's sentence, which an administrator may need verbatim.
 function reasonText(reason: unknown): string {
-  return refusalLine(reason);
+  return failureText(reason);
 }
 
 // An upstream model already configured can still be picked in the editor: a

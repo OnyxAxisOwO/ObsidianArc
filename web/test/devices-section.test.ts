@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App, type Component } from 'vue';
+import { type Component } from 'vue';
 import * as sessionsApi from '../src/api/sessions';
 import type { DeviceSession } from '../src/api/sessions';
 import * as twoFactorApi from '../src/api/twofactor';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import SecuritySection from '../src/views/settings/SecuritySection.vue';
-import { settle } from './helpers';
+import { mountComponent, settle, button } from './helpers';
 
 // The "Signed-in devices" card: listing, signing a single device out, "sign
 // out other devices", and the "this device" badge.
@@ -28,7 +27,7 @@ const OTHER_DEVICE: DeviceSession = {
   current: false,
 };
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 beforeEach(async () => {
@@ -39,30 +38,13 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
 });
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  const panels = document.createElement('div');
-  document.body.append(panels);
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      return () => h(component, props);
-    },
-  });
-  app.mount(host);
-  await settle();
-}
-
-function button(label: string): HTMLButtonElement {
-  const found = [...host.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
+  unmount = await mountComponent(component, props, { host });
 }
 
 describe('the signed-in devices card', () => {
@@ -89,7 +71,7 @@ describe('the signed-in devices card', () => {
 
     signOutButtons[0]!.click();
     await settle();
-    button(t('confirmWord')).click();
+    button(host, t('confirmWord')).click();
     await settle();
     expect(revoke).toHaveBeenCalledWith(OTHER_DEVICE.id);
     expect(host.textContent).not.toContain('Safari · iOS');
@@ -100,9 +82,9 @@ describe('the signed-in devices card', () => {
     const revokeOthers = vi.spyOn(sessionsApi, 'revokeOtherSessions').mockResolvedValue();
     await mount(SecuritySection);
 
-    button(t('deviceSignOutOthers')).click();
+    button(host, t('deviceSignOutOthers')).click();
     await settle();
-    button(t('confirmWord')).click();
+    button(host, t('confirmWord')).click();
     await settle();
     expect(revokeOthers).toHaveBeenCalled();
     expect(host.textContent).toContain(t('deviceSignOutOthersDone'));
@@ -113,6 +95,6 @@ describe('the signed-in devices card', () => {
   it('offers no "sign out other devices" row with only one device', async () => {
     vi.spyOn(sessionsApi, 'fetchSessions').mockResolvedValue({ sessions: [THIS_DEVICE] });
     await mount(SecuritySection);
-    expect(() => button(t('deviceSignOutOthers'))).toThrow();
+    expect(() => button(host, t('deviceSignOutOthers'))).toThrow();
   });
 });

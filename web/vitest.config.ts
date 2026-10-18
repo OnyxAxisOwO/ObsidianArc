@@ -9,7 +9,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // need browser globals. jsdom runs them in-process with zero browser
 // binaries or external drivers.
 export default defineConfig({
-  plugins: [vue()],
+  // The same flag as vite.config.ts, so the tests run the component code the
+  // build ships.
+  plugins: [vue({ features: { optionsAPI: false } })],
   resolve: {
     alias: { '@': resolve(HERE, 'src') },
   },

@@ -123,7 +123,7 @@ export function attachmentURL(id: string): string {
 
 // --- the streamed turn ---------------------------------------------------------
 
-export interface TurnRequest {
+interface TurnRequest {
   conversation_id?: string;
   model_id: string;
   content?: string;
@@ -197,30 +197,45 @@ function dispatch({ event, data }: SSEEvent, handlers: TurnHandlers): void {
   // read; reading `.text` from it threw inside the read loop and ended the turn.
   if (typeof payload !== 'object' || payload === null) return;
 
-  switch (event) {
+  // The one place the frame's shape is asserted: the server writes each
+  // payload from a struct, so its fields are taken as given, except the text
+  // frames' string, which is checked below.
+  const frame = { event, payload } as TurnFrame;
+  switch (frame.event) {
     case 'start':
-      handlers.onStart?.(payload as Parameters<NonNullable<TurnHandlers['onStart']>>[0]);
+      handlers.onStart?.(frame.payload);
       break;
     // A text frame with no string in it would be joined into the answer as the
     // literal "undefined", so it is dropped rather than passed on.
     case 'delta': {
-      const text = (payload as { text?: unknown }).text;
+      const { text } = frame.payload;
       if (typeof text === 'string') handlers.onDelta?.(text);
       break;
     }
     case 'reasoning': {
-      const text = (payload as { text?: unknown }).text;
+      const { text } = frame.payload;
       if (typeof text === 'string') handlers.onReasoning?.(text);
       break;
     }
     case 'usage':
-      handlers.onUsage?.(payload as Parameters<NonNullable<TurnHandlers['onUsage']>>[0]);
+      handlers.onUsage?.(frame.payload);
       break;
     case 'done':
-      handlers.onDone?.(payload as Parameters<NonNullable<TurnHandlers['onDone']>>[0]);
+      handlers.onDone?.(frame.payload);
       break;
     case 'error':
-      handlers.onError?.(payload as Parameters<NonNullable<TurnHandlers['onError']>>[0]);
+      handlers.onError?.(frame.payload);
       break;
   }
 }
+
+type HandlerPayload<K extends keyof TurnHandlers> = Parameters<NonNullable<TurnHandlers[K]>>[0];
+
+// Each event the turn stream sends, with the payload that event carries.
+type TurnFrame =
+  | { event: 'start'; payload: HandlerPayload<'onStart'> }
+  | { event: 'delta'; payload: { text?: unknown } }
+  | { event: 'reasoning'; payload: { text?: unknown } }
+  | { event: 'usage'; payload: HandlerPayload<'onUsage'> }
+  | { event: 'done'; payload: HandlerPayload<'onDone'> }
+  | { event: 'error'; payload: HandlerPayload<'onError'> };

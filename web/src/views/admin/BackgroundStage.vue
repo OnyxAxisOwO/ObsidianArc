@@ -29,6 +29,7 @@ import OaIconButton from '@/components/OaIconButton.vue';
 import OaOverlay from '@/components/OaOverlay.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { useTheme } from '@/composables/useTheme';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconClose, IconImage, IconMoon, IconSun } from '@/icons';
 import { pickBackground, type ScreenKind, type SiteBackground } from '@/theme/theme';
 import { failureText } from './shared';
@@ -140,7 +141,7 @@ let seed = '';
 // under another screen or scheme it is not kept, because Save would upload it
 // as that other variant.
 let draftKey = '';
-let pageRequest = 0;
+const pageRequest = useLatestRequest();
 
 function fail(failure: unknown): void {
   emit('status', failureText(failure), false);
@@ -188,7 +189,7 @@ async function openEditor(): Promise<void> {
   // Taken before the variant's page is checked: a fetch still in flight from an
   // earlier open must be dropped even when this variant has no page now, or it
   // would write the removed page into the draft, and Save would upload it.
-  const ticket = ++pageRequest;
+  const ticket = pageRequest.begin();
   const bg = current.value;
   if (!bg?.html) return;
   // The stored page, so editing starts from it rather than from nothing. An
@@ -197,7 +198,7 @@ async function openEditor(): Promise<void> {
   // A page that cannot be read leaves the editor shut. Opened empty, it would
   // look like a variant with no page, and Save would replace the stored one.
   const unreadable = (): void => {
-    if (ticket !== pageRequest || !editing.value) return;
+    if (!pageRequest.isCurrent(ticket) || !editing.value) return;
     editing.value = false;
     emit('status', t('failed'), false);
   };
@@ -208,7 +209,7 @@ async function openEditor(): Promise<void> {
       return;
     }
     const text = await res.text();
-    if (ticket !== pageRequest || !editing.value || draft.value !== '') return;
+    if (!pageRequest.isCurrent(ticket) || !editing.value || draft.value !== '') return;
     draft.value = text;
     seed = text;
   } catch {
@@ -242,7 +243,7 @@ async function saveHTML(): Promise<void> {
 
 async function clear(): Promise<void> {
   // A page fetch still in flight is for the page being removed.
-  ++pageRequest;
+  pageRequest.invalidate();
   const target = key.value;
   busy.value = true;
   try {

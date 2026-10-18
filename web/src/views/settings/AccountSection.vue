@@ -5,7 +5,7 @@
 // settings panel, because one would be claiming to commit things it has
 // nothing to do with.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { changePassword, updateProfile } from '@/api/auth';
 import { exportAccount, importAccount, pickJSONFile, saveAsFile } from '@/api/backup';
@@ -35,7 +35,21 @@ import { pinnedProvider, pluginRefusal } from '@/plugins/registry';
 import { adopt, currentPreferences, currentUser, requireUser, siteInfo } from '@/stores/session';
 import { matchesSettings } from './search';
 
-const props = withDefaults(defineProps<{ query?: string }>(), { query: '' });
+// `active` is whether the section is on screen (absent reads as false, as a
+// boolean prop does). It mounts with the panel, for the address below, but
+// reads what it lists only once it is first shown.
+const props = withDefaults(defineProps<{ query?: string; active?: boolean }>(), { query: '' });
+
+// Worked out once per change of the query or the language rather than once
+// per group on every render: matchesSettings translates each group's terms,
+// and t() is what makes this recompute when the language changes.
+const shown = computed(() => ({
+  profile: matchesSettings(props.query, 'profile'),
+  connections: matchesSettings(props.query, 'connections'),
+  authorizations: matchesSettings(props.query, 'authorizations'),
+  password: matchesSettings(props.query, 'password'),
+  data: matchesSettings(props.query, 'data'),
+}));
 
 const account = requireUser();
 const route = useRoute();
@@ -281,9 +295,18 @@ onMounted(() => {
     delete query['oauth_error'];
     void router.replace({ path: route.path, query, hash: route.hash });
   }
+});
+
+// The panel opens on whichever category was asked for, and the two lists are
+// not worth two requests to a reader who never opens this one. A failed read
+// still says so the first time the section is seen, which is when it loads.
+// Once: switching back to the section is not a reason to read them again.
+function readLists(): void {
   void loadConnections();
   void loadAuthorizations();
-});
+}
+if (props.active) readLists();
+else watch(() => props.active, readLists, { once: true });
 
 async function saveProfile(): Promise<void> {
   const fieldError = fieldProblem(fields.value, fieldPlan.value);
@@ -437,7 +460,7 @@ function importData(): void {
 </script>
 
 <template>
-  <OaGroup v-show="matchesSettings(props.query, 'profile')" :title="t('secProfile')">
+  <OaGroup v-show="shown.profile" :title="t('secProfile')">
     <OaRow stacked>
       <OaTextField
         v-model="nickname"
@@ -478,7 +501,7 @@ function importData(): void {
     </OaRow>
   </OaGroup>
 
-  <OaGroup v-show="matchesSettings(props.query, 'connections')" :title="t('secConnections')" :hint="t('connectionsHint')">
+  <OaGroup v-show="shown.connections" :title="t('secConnections')" :hint="t('connectionsHint')">
     <p v-if="!rows.length" class="oa-group-note">{{ t('connectionsNone') }}</p>
     <OaRow
       v-for="provider in rows"
@@ -535,7 +558,7 @@ function importData(): void {
     <p v-if="connectionFlash" class="oa-group-flash" role="alert">{{ connectionFlash }}</p>
   </OaGroup>
 
-  <OaGroup v-show="matchesSettings(props.query, 'authorizations')" :title="t('secAuthorizations')" :hint="t('authorizationsHint')">
+  <OaGroup v-show="shown.authorizations" :title="t('secAuthorizations')" :hint="t('authorizationsHint')">
     <p v-if="!authorizations.length" class="oa-group-note">{{ t('authorizationsNone') }}</p>
     <OaRow
       v-for="grant in authorizations"
@@ -558,7 +581,7 @@ function importData(): void {
   </OaGroup>
 
   <OaGroup
-    v-show="matchesSettings(props.query, 'password')"
+    v-show="shown.password"
     :title="hasPassword === false ? t('setPassword') : t('secPassword')"
     :hint="hasPassword === false ? t('setPasswordHint') : t('passwordSectionHint')"
   >
@@ -579,7 +602,7 @@ function importData(): void {
     </OaRow>
   </OaGroup>
 
-  <OaGroup v-show="matchesSettings(props.query, 'data')" :title="t('secData')" :hint="t('dataHint')">
+  <OaGroup v-show="shown.data" :title="t('secData')" :hint="t('dataHint')">
     <OaRow>
       <button type="button" class="oa-btn" :disabled="exporting" @click="exportData">
         {{ t('exportData') }}

@@ -8,9 +8,8 @@
 // whether the list it is changing is still the one that was shown.
 
 import { computed, nextTick, onMounted, ref } from 'vue';
-import { adminApi, type KeyRotation, type Meta, type Provider, type ProviderKind, type ReasoningStyle } from '@/admin/api';
+import { adminApi, type AdminProviderInput, type KeyRotation, type Meta, type Provider, type ProviderKind, type ReasoningStyle } from '@/admin/api';
 import { ApiError } from '@/api/client';
-import { apiFailureText } from '@/lib/api-error-text';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
@@ -36,7 +35,7 @@ import AdminDetectModels from './AdminDetectModels.vue';
 import AdminFailure from './AdminFailure.vue';
 import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
-import { errorLine } from './failure-codes';
+import { failureText, runLoad, runRemove } from './shared';
 
 const view = useAdminView();
 view.setTitle(() => t('providersTitle'), () => t('providersSubtitle'));
@@ -74,6 +73,12 @@ const form = ref({
 });
 
 const creating = computed(() => existing.value === null);
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const keyRotationChoices = computed(() => [
+  { value: 'sequential' as KeyRotation, label: t('keyRotationSequential') },
+  { value: 'random' as KeyRotation, label: t('keyRotationRandom') },
+]);
 
 // --- keys ---------------------------------------------------------------------------
 
@@ -230,7 +235,7 @@ function bulkRemove(): Promise<void> {
 async function save(): Promise<void> {
   busy.value = true;
   panelError.value = '';
-  const payload: Record<string, unknown> = {
+  const payload: AdminProviderInput = {
     name: form.value.name.trim(),
     kind: form.value.kind,
     base_url: form.value.baseURL.trim(),
@@ -245,12 +250,12 @@ async function save(): Promise<void> {
   const typed = typedKeys();
   const kept = keptPositions.value;
   const everyStored = kept.length === storedHints.value.length;
-  if (typed.length) payload['api_keys'] = typed;
+  if (typed.length) payload.api_keys = typed;
   // Positions are sent only when the list changes: an edit that leaves the
   // keys alone should not fail because someone else changed them meanwhile.
   const sendKept = () => {
-    payload['keep_keys'] = kept;
-    payload['key_hints'] = storedHints.value;
+    payload.keep_keys = kept;
+    payload.key_hints = storedHints.value;
   };
   if (template.value) {
     // Headers have no field in this form, and the keys are not something this
@@ -259,8 +264,8 @@ async function save(): Promise<void> {
     // The headers come back as the hints the list showed. The server reads
     // them as the source's stored values, so the source is named even when no
     // key is kept.
-    payload['headers'] = template.value.headers;
-    payload['copy_key_from'] = template.value.id;
+    payload.headers = template.value.headers;
+    payload.copy_key_from = template.value.id;
     // An empty list is sent too: left out, the copy takes every key the source
     // holds, which is what keeping none is meant to prevent.
     if (!kept.length || !everyStored || typed.length) sendKept();
@@ -274,7 +279,7 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
+    panelError.value = failure instanceof ApiError ? refusalText(failure) : failureText(failure);
   }
 }
 
@@ -295,34 +300,27 @@ function refusalText(failure: ApiError): string {
     case 'header_duplicate':
       return t('providerHeaderDuplicate', { name: String(failure.details['name'] ?? '') });
     case 'header_hidden': return t('providerHeaderHidden');
-    default: return apiFailureText(failure, 'failed');
+    default: return failureText(failure);
   }
 }
 
 async function remove(): Promise<void> {
   const row = existing.value;
   if (!row) return;
-  busy.value = true;
-  try {
-    await adminApi.deleteProvider(row.id);
-    finish();
-  } catch (failure) {
-    busy.value = false;
-    panelError.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
-  }
+  await runRemove(
+    () => adminApi.deleteProvider(row.id),
+    { busy, error: panelError },
+    finish,
+    (failure) => (failure instanceof ApiError ? refusalText(failure) : failureText(failure)),
+  );
 }
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [providersResult, metaResult] = await Promise.all([adminApi.providers(), adminApi.meta()]);
     providers.value = providersResult.providers;
     meta.value = metaResult;
-  } catch (failure) {
-    error.value = errorLine(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 onMounted(load);
@@ -489,10 +487,7 @@ onMounted(load);
         v-model="form.keyRotation"
         :label="t('keyRotation')"
         :hint="t('keyRotationHint')"
-        :options="[
-          { value: 'sequential', label: t('keyRotationSequential') },
-          { value: 'random', label: t('keyRotationRandom') },
-        ]"
+        :options="keyRotationChoices"
       />
     </AdminControlCard>
 

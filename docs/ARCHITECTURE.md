@@ -264,6 +264,74 @@ the entry: backoffice 173.67 kB plus 15.24 kB of stylesheet, Chinese
 dictionary 54.04 kB. The binary is 27.16 MB (23.46 MB without SQLite), built
 the same way as below.
 
+Remeasured on 2026-10-18 (UTC), after the review fixes: the Options API branch
+of Vue is compiled out by both Vite configs, since nothing in the tree uses
+it. 204.73 kB to open the chat (178.31 JS + 26.43 CSS), down 1.58 kB; the
+build's estimate is 205.38 kB, 0.62 kB under the bundle test's 206 kB. The
+lazy chunks are unchanged, and the binary still reads 27.10 MB (23.40 MB
+without SQLite).
+
+Remeasured on 2026-10-18 (UTC), after the account form's refusals were given
+sentences of the page's own. A password change refused as unchanged or too
+long, and a profile refused for its address, bio or avatar, read in the
+reader's language instead of the server's English; the streaming caret takes
+its blink phase from the page clock, so the last block being rebuilt on every
+frame no longer holds it still; the account section of settings reads its
+connections and authorizations the first time it is shown rather than when the
+panel opens; and the five panels' full-screen switches are one component.
+206.31 kB to open the chat (179.89 JS + 26.43 CSS), up 0.20 kB; the build's
+estimate is 206.98 kB, 0.02 kB under the bundle test's 207 kB, which is why
+the sign-in screen's split into smaller parts waits: each part measured as
+more first paint, not less. The Chinese dictionary is 53.46 kB and the public
+front page 4.17 kB; the other lazy chunks are unchanged.
+
+Remeasured on 2026-10-18 (UTC), after a round of interface review fixes. A
+refused request and a refused stream now read their error body through one
+reader in `api/client.ts`, and a refused stream raises the backoffice's code
+prompt as a refused request does; the two policy redirects in the router are
+one ordered table; a report's kind, priority and status are named by
+`lib/feedback.ts` for the reader's panel and the backoffice alike; and the
+settings sections and the selects that offer translated choices work them
+out once per change instead of on every render. 206.11 kB to open the chat
+(179.70 JS + 26.41 CSS), up 0.29 kB; the build's estimate is 206.79 kB, 0.21
+kB under the bundle test's 207 kB. The backoffice is 167.32 kB plus 15.24 kB
+of stylesheet, the terminal 8.06 kB and the LaTeX renderer 3.76 kB, which
+lost two aliases nothing called; the other lazy chunks are unchanged.
+
+Remeasured on 2026-10-18 (UTC), after a round of chat review fixes. A
+conversation is renamed in its row now rather than through the browser's
+prompt, and both lists draw their rows with one shared component, so the
+transcript's list no longer renders again on every streamed frame and
+switching conversations redraws only the two rows that changed. Inline
+emphasis remembers a marker that has no closing instead of scanning for one
+again from every later opener. 205.82 kB to open the chat (179.41 JS + 26.41
+CSS), up 0.16 kB; the build's estimate is 206.59 kB, 0.41 kB under the bundle
+test's 207 kB. The backoffice is 167.26 kB plus 15.24 kB of stylesheet, the
+public front page 4.13 kB and the terminal 8.04 kB; the other lazy chunks are
+unchanged.
+
+Remeasured on 2026-10-18 (UTC), after a second round of backoffice review
+fixes. The accent and background-tint label tables the reader's appearance
+settings and the site theme both show are one shared module now, and the
+project list words a failed read the way the rest of the chat does. 205.66 kB
+to open the chat (179.24 JS + 26.41 CSS), up 0.05 kB; the build's estimate is
+206.38 kB, 0.62 kB under the bundle test's 207 kB. The audit trail's and the
+shared pool's words moved from their own dictionaries into the backoffice's
+English and the Chinese dictionary, so the backoffice is 167.30 kB plus 15.24
+kB of stylesheet and the Chinese dictionary 53.40 kB; the other lazy chunks
+are unchanged.
+
+Remeasured on 2026-10-18 (UTC), after a round of backoffice review fixes. A
+response body that breaks off after its headers is now the same translated
+network error as a connection that never opened, which `api/client.ts` adds
+to the entry; the leaderboard panel's own copy of the abort check gave way
+to `lib/abort.ts`. 205.61 kB to open the chat (179.19 JS + 26.41 CSS), up
+0.02 kB; the build's estimate is still 206.32 kB. The backoffice's error
+wording, load and delete skeletons and model editor were consolidated inside
+its own chunk: 170.86 kB plus 15.24 kB of stylesheet. The Chinese dictionary
+is 51.63 kB with one more security-log reason; the other lazy chunks are
+unchanged.
+
 Remeasured on 2026-10-18 (UTC), after the billing and operations review
 fixes were merged. Refusals from feedback, announcements, backup and import
 now carry codes the interface translates, quoting their limits from the

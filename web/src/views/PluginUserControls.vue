@@ -5,6 +5,7 @@
 // same controls arriving later.
 
 import { prepareImage } from '@/chat/image';
+import OaIconButton from '@/components/OaIconButton.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
@@ -237,15 +238,13 @@ async function pick(control: Extract<UserFormControl, { kind: 'images' }>, event
             @keydown.enter.prevent="emit('view', url)"
             @keydown.space.prevent="emit('view', url)"
           >
-          <button
-            type="button"
+          <OaIconButton
             class="oa-icon-btn"
-            :title="t('pluginImagesRemove')"
-            :aria-label="t('pluginImagesRemove')"
+            :label="t('pluginImagesRemove')"
             @click="emit('set', control.key, list(control.key).filter((_, at) => at !== index))"
           >
             <IconClose :size="12" />
-          </button>
+          </OaIconButton>
         </span>
         <!-- A label cannot take focus, so the picker is opened from a button; the
              file input stays hidden, as the image lab's does. -->

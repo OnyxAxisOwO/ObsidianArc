@@ -1132,7 +1132,11 @@
   border-radius: 1px;
   background: var(--ai-primary);
   vertical-align: text-bottom;
-  animation: aiChatCaret 1s steps(2, start) infinite;
+  /* The delay is the phase. The last block is rebuilt on every paint, so the
+     phase is given by a global clock (OaMarkdown sets it) rather than
+     restarting with each new node, which would hold the caret on its first
+     half and never blink. */
+  animation: aiChatCaret 1s steps(2, start) var(--ai-caret-delay, 0s) infinite;
 }
 
 @keyframes aiChatCaret {

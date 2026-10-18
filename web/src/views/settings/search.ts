@@ -47,7 +47,7 @@ const TERMS = {
   ],
 } satisfies Record<string, StringKey[]>;
 
-export type SettingsGroup = keyof typeof TERMS;
+type SettingsGroup = keyof typeof TERMS;
 
 export function matchesSettings(query: string, group: SettingsGroup): boolean {
   // Translating a group's terms is the expensive part, and every group asks on

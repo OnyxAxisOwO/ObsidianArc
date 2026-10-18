@@ -38,7 +38,6 @@ afterEach(() => {
   cancelAllFlights();
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 
@@ -208,7 +207,7 @@ describe('Telegram-style message send flight animation', () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
-    })) as any;
+    }));
 
     const mainEl = document.createElement('div');
     host.appendChild(mainEl);
@@ -598,7 +597,7 @@ describe('Telegram-style message send flight animation', () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
-    })) as any;
+    }));
 
     markFlying('msg-rm-sync');
     expect(isFlying('msg-rm-sync')).toBe(false);

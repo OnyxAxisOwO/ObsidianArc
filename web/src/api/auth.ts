@@ -78,7 +78,7 @@ export interface Account {
 // What a visitor with no account is shown at the address. The server settles
 // this — an instance still being set up always gets the sign-in card, whatever
 // is configured — so the client only has to draw what it is told.
-export interface Landing {
+interface Landing {
   /** 'site' is the product's own front page, which no operator has to write. */
   mode: 'login' | 'intro' | 'chat' | 'site';
   /** HTML the operator wrote. Only meaningful in 'intro' mode. */
@@ -256,7 +256,7 @@ export function fetchPoWChallenge(): Promise<PoWChallenge> {
   return api.get<PoWChallenge>('/api/auth/pow-challenge');
 }
 
-export interface RegisterInput {
+interface RegisterInput {
   username: string;
   password: string;
   email?: string;
@@ -287,7 +287,7 @@ export function logout(signal?: AbortSignal): Promise<void> {
   return api.post<void>('/api/auth/logout', undefined, signal ? { signal } : undefined);
 }
 
-export interface ProfilePatch {
+interface ProfilePatch {
   nickname?: string;
   avatar?: string;
   bio?: string;

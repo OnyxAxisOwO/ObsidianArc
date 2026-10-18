@@ -4,34 +4,15 @@
 // as `next` so signing in brings the reader back to it.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Account } from '../src/api/auth';
 import { api } from '../src/api/client';
 import { router } from '../src/router';
 import { adopt, currentUser, forget } from '../src/stores/session';
+import { makeAccount } from './fixtures/account';
 
-const ACCOUNT: Account = {
-  id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
-  username: 'ada',
-  email: 'ada@example.com',
-  nickname: 'Ada',
-  avatar: '',
-  bio: '',
-  role: 'user',
-  group_id: 'g1',
-  group_expires_at: 0,
-  group_name: 'Default',
-  status: 'active',
-  created_at: Date.now(),
-  updated_at: Date.now(),
-  last_login_at: Date.now(),
-  email_verified: true,
-  allow_stats: true,
-  allow_delete_conversations: true,
-  api_restricted: false,
-  api_restricted_until: 0,
-  api_restriction_source: '',
+const ACCOUNT = makeAccount({
+  id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', created_at: Date.now(), updated_at: Date.now(), last_login_at: Date.now(),
   signup_user_agent: 'Mozilla/5.0 ObsidianArcTest/1.0',
-};
+});
 
 function refuse(code: string): void {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(

@@ -17,6 +17,7 @@ import { changeLanguage, t } from '@/composables/useI18n';
 import AccountMenu from '@/layouts/AccountMenu.vue';
 import { adopt, forget, site } from '@/stores/session';
 import LeaderboardPanel from '@/views/LeaderboardPanel.vue';
+import { makeAccount } from './fixtures/account';
 
 vi.mock('@/stores/feedback', () => ({
   feedbackUnread: ref(0),
@@ -24,13 +25,9 @@ vi.mock('@/stores/feedback', () => ({
   forgetFeedbackUnread: vi.fn(),
 }));
 
-const ACCOUNT: Account = {
-  id: 'me', username: 'member', nickname: 'Member', email: '', bio: '', avatar: '',
-  role: 'user', status: 'active', group_id: 'g', group_expires_at: 0, group_name: 'Default',
-  created_at: 0, updated_at: 0, last_login_at: 0, email_verified: true,
-  allow_stats: true, allow_delete_conversations: true,
-  api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-};
+const ACCOUNT = makeAccount({
+  id: 'me', username: 'member', nickname: 'Member', email: '', group_id: 'g', created_at: 0, updated_at: 0,
+});
 
 /** A board with two named places, the reader second. */
 function board(extra: Partial<Leaderboard> = {}): Leaderboard {
@@ -64,7 +61,6 @@ afterEach(async () => {
   app = null;
   site.value = null;
   forget();
-  document.body.textContent = '';
   vi.restoreAllMocks();
   await changeLanguage('en');
 });

@@ -23,14 +23,16 @@ import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
 import { formatCardScope, windowChoices } from '@/lib/card-scope';
+import { scopePresetChoices } from '@/admin/quota';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { relativeTime } from '@/lib/format';
-import { DAY_MS } from '@/lib/time';
+import { expiresAtFromDays } from '@/lib/time';
 import { maskCredential, maskUser } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
-import { errorLine, refusalLine } from './failure-codes';
+import { failureText, runLoad, runRemove } from './shared';
+import { flashCopy } from '@/lib/flash';
 
 const view = useAdminView();
 view.setTitle(() => t('codesTitle'), () => t('codesSubtitle'));
@@ -159,7 +161,7 @@ async function loadRedemptions(codeID: string): Promise<void> {
     if (existing.value?.id === codeID) redemptions.value = result.redemptions ?? [];
   } catch (failure) {
     if (existing.value?.id === codeID) {
-      redemptionsError.value = refusalLine(failure);
+      redemptionsError.value = failureText(failure);
     }
   } finally {
     if (existing.value?.id === codeID) redemptionsLoading.value = false;
@@ -193,7 +195,7 @@ async function create(): Promise<void> {
       cards,
       card_days: cardDays,
       // Zero is "never", which is what an empty field means here.
-      expires_at: days && days > 0 ? Date.now() + days * DAY_MS : 0,
+      expires_at: expiresAtFromDays(days),
     });
     // Generated codes exist nowhere else until they are copied off this
     // screen, so the panel turns into the list rather than closing over them.
@@ -202,7 +204,7 @@ async function create(): Promise<void> {
   } catch (failure) {
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.
-    panelError.value = refusalLine(failure);
+    panelError.value = failureText(failure);
   } finally {
     busy.value = false;
   }
@@ -219,43 +221,30 @@ function bulkRemove(): Promise<void> {
 async function remove(): Promise<void> {
   const row = existing.value;
   if (!row) return;
-  busy.value = true;
-  try {
-    await adminApi.deleteCode(row.id);
+  await runRemove(() => adminApi.deleteCode(row.id), { busy, error: panelError }, () => {
     hidePanel();
     void load();
-  } catch (failure) {
-    busy.value = false;
-    panelError.value = refusalLine(failure);
-  }
+  });
 }
 
 // The result is written onto the button and taken off again after a moment, so
 // the next copy starts from the usual label rather than the last result. The
 // timer is kept so a newer result is not cleared early, and cancelled on leave.
-let copyLabelTimer = 0;
-onBeforeUnmount(() => window.clearTimeout(copyLabelTimer));
+let cancelCopyFlash = (): void => {};
+onBeforeUnmount(() => cancelCopyFlash());
 
 function copyAll(): void {
   const lines = (minted.value ?? []).map((entry) => entry.code).join('\n');
-  void copyToClipboard(lines).then((ok) => {
-    // A refused copy says so: the codes are only on this screen until copied,
-    // and a button that stayed silent would read as having copied them.
-    copyLabel.value = ok ? t('copied') : t('copyFailed');
-    window.clearTimeout(copyLabelTimer);
-    copyLabelTimer = window.setTimeout(() => { copyLabel.value = ''; }, 1500);
-  });
+  // A refused copy says so: the codes are only on this screen until copied,
+  // and a button that stayed silent would read as having copied them.
+  cancelCopyFlash();
+  cancelCopyFlash = flashCopy(copyToClipboard(lines), (text) => { copyLabel.value = text; });
 }
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     ({ codes: codes.value } = await adminApi.codes());
-  } catch (failure) {
-    error.value = errorLine(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 onMounted(load);
@@ -413,13 +402,7 @@ onMounted(load);
         v-model="form.scopePreset"
         :label="t('cardResetScope')"
         :hint="t('cardResetScopeHint')"
-        :options="[
-          { value: 'full', label: t('cardResetFull') },
-          { value: '5h', label: t('cardReset5H') },
-          { value: '1w', label: t('cardReset1W') },
-          { value: '1m', label: t('cardReset1M') },
-          { value: 'custom', label: t('cardResetCustom') },
-        ]"
+        :options="scopePresetChoices()"
       />
       <OaCheckList
         v-if="form.scopePreset === 'custom'"

@@ -23,6 +23,13 @@ describe('naming a fenced block', () => {
     expect(unknown.extension).toBe('txt');
   });
 
+  it('does not take an unfinished untagged block for JSON, and does not fail on it', () => {
+    // The shape a streamed answer shows while its block is still arriving.
+    const partial = '{\n  "name": "obsidian",\n  "tags": [1, 2';
+    expect(() => describeCode('', partial)).not.toThrow();
+    expect(describeCode('', partial).label).not.toBe('JSON');
+  });
+
   const samples: ReadonlyArray<readonly [string, string, string]> = [
     ['Go', 'go', 'package main\n\nfunc main() {\n\tprintln("hi")\n}'],
     ['HTML', 'html', '<!doctype html>\n<html lang="en"><body>hi</body></html>'],
