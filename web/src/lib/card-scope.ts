@@ -35,3 +35,8 @@ export function cardTitle(card: { name?: string; windows?: string[] }): string {
   }
   return formatCardScope(card);
 }
+
+/** The three windows as choices, shortest first, labelled the way the quota names them. */
+export function windowChoices(): Array<{ value: string; label: string }> {
+  return CARD_WINDOWS.map((row) => ({ value: row.window, label: t(row.part) }));
+}

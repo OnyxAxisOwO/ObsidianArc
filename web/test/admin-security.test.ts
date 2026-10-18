@@ -200,3 +200,72 @@ describe('rotating an application secret', () => {
     expect(rotate).toHaveBeenCalledWith(application.id);
   });
 });
+
+function fieldFor(root: ParentNode, label: string): HTMLElement {
+  const found = [...root.querySelectorAll<HTMLElement>('.oa-field')]
+    .find((node) => node.querySelector('.oa-field-label')?.textContent === label);
+  if (!found) throw new Error(`Missing field: ${label}`);
+  return found;
+}
+
+// The server falls back to Turnstile for a mode it does not know, an empty one
+// included, whatever the sign-up switch says. The select has to say the same,
+// or it reports a sign-up with no challenge that in fact has one.
+describe('an empty sign-up challenge mode', () => {
+  it('reads as Turnstile, the mode the server applies', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({
+      settings: { ...settingsFixture, 'registration.captcha_mode': '', 'turnstile.on_signup': 'false' },
+    });
+    await mountSecurity();
+
+    const select = fieldFor(host, t('captchaMode')).querySelector('.oa-select-label');
+    expect(select?.textContent).toBe(t('captchaModeTurnstile'));
+  });
+});
+
+// The form is what an operator came for; the cards beside it each have their
+// own loading state, so a slow one must not keep the whole page on "Loading".
+describe('the first load', () => {
+  it('draws the form before the cards that load on their own have answered', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    const never = new Promise<never>(() => {});
+    vi.spyOn(adminApi, 'securityEvents').mockReturnValue(never);
+    vi.spyOn(adminApi, 'applications').mockReturnValue(never);
+    vi.spyOn(adminApi, 'twoFactorAdoption').mockReturnValue(never);
+    vi.spyOn(adminApi, 'mail').mockReturnValue(never);
+    vi.spyOn(adminApi, 'userCheck').mockReturnValue(never);
+    await mountSecurity();
+
+    expect(host.querySelector('#secRegistration')).not.toBeNull();
+    expect(button(actions, t('save')).disabled).toBe(false);
+    // Not "no applications are registered" while the list is still on its way.
+    const applications = host.querySelector<HTMLElement>('#secApplications');
+    expect(applications?.textContent).not.toContain(t('applicationsEmpty'));
+    expect(applications?.textContent).toContain(t('loading'));
+  });
+});
+
+describe('the user-check test', () => {
+  it('waits while a save is still in flight', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    vi.spyOn(adminApi, 'userCheck').mockResolvedValue({
+      enabled: true, exempt_domains: [], failure_mode: 'reject', api_key_set: true,
+    });
+    vi.spyOn(adminApi, 'saveUserCheck').mockReturnValue(new Promise<never>(() => {}));
+    const probe = vi.spyOn(adminApi, 'testUserCheck').mockResolvedValue({ skipped: false, disposable: false });
+    await mountSecurity();
+
+    const card = host.querySelector<HTMLElement>('#secUserCheck')!;
+    const email = fieldFor(card, t('userCheckTestEmail')).querySelector('input')!;
+    email.value = 'someone@example.com';
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    button(card, t('save')).click();
+    await settle();
+
+    const test = button(card, t('userCheckTest'));
+    expect(test.disabled).toBe(true);
+    test.click();
+    await settle();
+    expect(probe).not.toHaveBeenCalled();
+  });
+});

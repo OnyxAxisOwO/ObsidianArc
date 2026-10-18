@@ -456,7 +456,7 @@ onMounted(reload);
       </div>
 
       <div class="oa-log-filter-actions">
-        <div class="oa-segment oa-audit-vias" role="group" :aria-label="at('via')">
+        <div class="oa-segment" role="group" :aria-label="at('via')">
           <button
             v-for="via in VIA_FILTERS"
             :key="via"

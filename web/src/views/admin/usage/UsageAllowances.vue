@@ -17,6 +17,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
 import { adminApi, type AllowanceRow, type GroupOption } from '@/admin/api';
+import { QUOTA_WINDOW_NAME } from '@/admin/quota';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaUsageWindow from '@/components/OaUsageWindow.vue';
 import { t } from '@/composables/useI18n';
@@ -182,7 +183,7 @@ function sub(row: AllowanceRow): string {
                 <template v-for="window in row.windows" :key="window.kind">
                   <OaUsageWindow v-if="window.enforced" :window="window" :display="display" :masked="isMasked('billing')" />
                   <div v-else class="oa-allow-none">
-                    <span>{{ t(window.kind === '5h' ? 'quota5h' : window.kind === '1w' ? 'quotaWeek' : 'quotaMonth') }}</span>
+                    <span>{{ t(QUOTA_WINDOW_NAME[window.kind]) }}</span>
                     <span>{{ t('allowanceNoLimit') }}</span>
                   </div>
                 </template>

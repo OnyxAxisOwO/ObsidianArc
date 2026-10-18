@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, type AdminPlugin, type PluginChange, type PluginPreview } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
 import type { Account, SiteInfo } from '../src/api/auth';
@@ -66,11 +67,14 @@ async function settle(): Promise<void> {
 }
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
+  // The plugins screen keeps its tab in the query, so it needs the app router.
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
   app = createApp({ setup() {
     providePanelHost(shallowRef(panels));
     provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
     return () => h(component, props);
   } });
+  app.use(router);
   app.mount(host);
   await settle();
 }
@@ -472,6 +476,20 @@ describe('a plugin package', () => {
     expect(panel).toContain('Mode');
     expect(panel).toContain('Token');
     expect(panel).not.toContain('demo.hidden');
+  });
+
+  // The icon it used to show named a class with no rule, so nothing turned
+  // while the package was read; the chat's spinner has one.
+  it('turns a spinner while the package is being read', async () => {
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [] });
+    vi.spyOn(adminApi, 'previewPlugin').mockReturnValue(new Promise(() => {}));
+    await mount(AdminPlugins);
+    dropFile(new File(['zip'], 'demo.arcx'));
+    await settle();
+
+    const card = host.querySelector('.oa-plugin-dropcard');
+    expect(card?.textContent).toContain(t('pluginUploadReading'));
+    expect(card?.querySelector('.ai-chat-spinner')).not.toBeNull();
   });
 
   it('installs what was shown, with the settings chosen and the switch as set', async () => {

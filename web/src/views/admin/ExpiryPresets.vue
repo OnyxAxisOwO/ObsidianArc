@@ -7,7 +7,7 @@
 // the same size as each other or as anything else in the panel.
 
 import { t, type StringKey } from '@/composables/useI18n';
-import { addMonths } from './shared';
+import { addMonths, toDateTimeLocal } from './shared';
 
 const props = withDefaults(defineProps<{
   /** Offer "no expiry" too, for a field where empty means for ever. */
@@ -32,7 +32,7 @@ function later(span: Span): string {
   const now = new Date();
   if (span === '1w') now.setDate(now.getDate() + 7);
   const date = span === '1w' ? now : addMonths(now, MONTHS[span]);
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  return toDateTimeLocal(date);
 }
 </script>
 

@@ -40,6 +40,7 @@ import CheckinRewardEditor from './CheckinRewardEditor.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import { poolRefusal, poolText as pt } from './pool-text';
 import { useAdminView } from './adminView';
+import { toDateTimeLocal } from './shared';
 
 const view = useAdminView();
 view.setTitle(() => t('bonusTitle'), () => t('bonusSubtitle'));
@@ -112,9 +113,7 @@ function blankForm(): BarForm {
 
 function toLocalInput(ms: number): string {
   if (!ms) return '';
-  const d = new Date(ms);
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return toDateTimeLocal(ms);
 }
 
 function fromLocalInput(value: string): number {

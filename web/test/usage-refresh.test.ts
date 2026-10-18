@@ -467,6 +467,87 @@ describe('AdminUsage', () => {
 
     expect(document.querySelector('.oa-banner-error')).toBeNull();
   });
+
+  // The summary's live figure can come out of a cache fifteen seconds old; the
+  // poll is the fresh one, and a refresh must not step the header back.
+  it('takes the live rate from its own poll, not from the summary', async () => {
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage/rpm')) return { rpm: 3 };
+      if (url.startsWith('/api/admin/usage?')) return { ...adminPayload(1), current_rpm: 99 };
+      return adminRoutes(null)(url);
+    });
+
+    mountAdmin();
+    await advance(0);
+    await advance(REFRESH_MS);
+
+    const live = document.querySelector('.oa-report-live')?.textContent ?? '';
+    expect(live).toBe(t('liveRPM', { count: '3' }));
+  });
+
+  // The report does not depend on the ledger page, and over a long range the
+  // ledger's count is often the slower of the two.
+  it('draws the figures before the ledger page has answered', async () => {
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage/records')) return new Promise(() => {});
+      if (url.startsWith('/api/admin/usage?')) return adminPayload(42);
+      return adminRoutes(null)(url);
+    });
+
+    mountAdmin();
+    await advance(0);
+
+    expect(document.body.textContent).toContain('42');
+  });
+
+  // A count slower than the interval used to be cancelled and asked again on
+  // every tick, and so never arrived.
+  it('lets a slow ledger request finish rather than restarting it each tick', async () => {
+    const signals: AbortSignal[] = [];
+    let finish!: (value: unknown) => void;
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (url.startsWith('/api/admin/usage/records')) {
+        if (options?.signal) signals.push(options.signal);
+        if (signals.length === 1) return new Promise((resolve) => { finish = resolve; });
+        return { records: [], total: 0 };
+      }
+      return adminRoutes(adminPayload(1))(url);
+    });
+
+    mountAdmin();
+    await advance(0);
+    await advance(REFRESH_MS * 2);
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(false);
+
+    finish({ records: [], total: 0 });
+    await advance(0);
+    await advance(REFRESH_MS);
+    expect(signals).toHaveLength(2);
+  });
+
+  // A summary that fails while the ledger is still out must not drop the
+  // ledger's controller: leaving the page has to cancel that request too.
+  it('still cancels the ledger request on leaving after the summary failed', async () => {
+    let recordSignal: AbortSignal | undefined;
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (url.startsWith('/api/admin/usage/records')) {
+        recordSignal = options?.signal;
+        return new Promise(() => {});
+      }
+      if (url.startsWith('/api/admin/usage?')) throw new ApiError(500, 'internal', 'boom');
+      return adminRoutes(null)(url);
+    });
+
+    mountAdmin();
+    await advance(0);
+    expect(recordSignal?.aborted).toBe(false);
+
+    app?.unmount();
+    app = null;
+    expect(recordSignal?.aborted).toBe(true);
+  });
 });
 
 // A ULID, the only shape the page accepts from a link as a filter.
@@ -508,8 +589,8 @@ describe('AdminUsage windows and filters', () => {
     expect(Math.abs(refreshed - (Date.now() - 24 * 3600_000))).toBeLessThan(REFRESH_MS);
   });
 
-  // The header's live rate is the filtered figure the summary carries. The
-  // poll has to ask under the same filters, or the two alternate every tick.
+  // The header's live rate is narrowed by the filters, as every figure beside
+  // it is, so the poll has to ask under the same ones.
   it('reads the live rate under the same filters as the figures beside it', async () => {
     window.history.replaceState(null, '', `/admin/usage?model=${MODEL_ID}`);
     const rates: string[] = [];

@@ -111,8 +111,12 @@ function step(event: KeyboardEvent): void {
   emit('update:active', next);
 }
 
-// A new series is new buckets; an index into the old one points at nothing.
-watch(() => props.points, () => { if (!focused.value) emit('update:active', null); });
+// Watches the buckets, not the array: the page rebuilds the series on every
+// refresh, and a readout the reader is looking at must not be cleared by one
+// that brings the same buckets back. A different set of buckets is the case
+// where an index into the old series points at nothing.
+const buckets = computed(() => props.points.map((point) => point.at).join());
+watch(buckets, () => { if (!focused.value) emit('update:active', null); });
 </script>
 
 <template>

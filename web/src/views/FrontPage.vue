@@ -560,7 +560,7 @@ useEventListener(page, 'scroll', onScroll, { passive: true });
       </div>
     </section>
 
-    <section class="oa-front-section oa-front-close oa-front-reveal">
+    <section class="oa-front-section oa-front-reveal">
       <div class="oa-front-close-card">
         <span class="oa-front-blob close" aria-hidden="true" />
         <h2>{{ t('frontCtaTitle') }}</h2>

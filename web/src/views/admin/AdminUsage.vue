@@ -33,8 +33,9 @@ import { t, tn, type StringKey } from '@/composables/useI18n';
 import { IconClose } from '@/icons';
 import { compactNumber, localeTag, relativeTime, tokenFigure } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
+import { isAbortError } from '@/lib/abort';
 import { maskUser, maskProvider, maskBilling } from '@/admin/safeMode';
-import { windowFigure } from '@/admin/quota';
+import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
 import { customUntilBound } from '@/admin/usageRange';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
@@ -46,8 +47,9 @@ import UsageDelta from './usage/UsageDelta.vue';
 import UsageHeatmap from './usage/UsageHeatmap.vue';
 import UsageMatrix from './usage/UsageMatrix.vue';
 import UsagePlot from './usage/UsagePlot.vue';
-import { fillBuckets, formatDuration, percent } from './usage/scale';
+import { DAY, HOUR, fillBuckets, formatDuration, percent } from './usage/scale';
 import type { BoardMetric, PlotPoint } from './usage/shape';
+import { toDateTimeLocal } from './shared';
 
 interface RangePreset {
   key: string;
@@ -67,8 +69,6 @@ const RANGE_PRESETS: RangePreset[] = [
   { key: 'all', label: 'rangeAllShort', long: 'rangeAll', hours: 0 },
 ];
 
-const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
-
 type Dimension = 'model' | 'user' | 'group' | 'provider';
 type Outcome = '' | 'ok' | 'error' | 'aborted' | 'rejected';
 type TrendMetric = 'requests' | 'total_tokens' | 'credits' | 'users';
@@ -78,8 +78,10 @@ type Spread = 'group' | 'provider' | 'status';
 const view = useAdminView();
 view.setTitle(() => t('usageTitle'), () => t('usageSubtitle'));
 
+// Written by the ten-second poll alone (refreshRPM). The summary carries the
+// same figure, but out of a cache that can be fifteen seconds old, and letting
+// it write too made the header step back to an older number on every refresh.
 const currentRPM = ref(0);
-const rpmTimer = ref<number | null>(null);
 
 const range = ref<string>(String(selectedRange));
 const customRangeOpen = ref(false);
@@ -90,8 +92,7 @@ let customSince = savedCustomSince;
 let customUntil = savedCustomUntil;
 
 function toLocalISO(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return toDateTimeLocal(date);
 }
 
 const customLabel = computed(() => range.value === 'custom' && customSince && customUntil
@@ -205,14 +206,10 @@ function summaryQuery(): string {
   return `?${params.toString()}&${zoneQuery()}`;
 }
 
-function isAbortError(err: unknown): boolean {
-  return (
-    (err instanceof DOMException && err.name === 'AbortError') ||
-    (err instanceof Error && err.name === 'AbortError') ||
-    (typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError')
-  );
-}
-
+// Two, because the ledger moves on its own: turning a page of records cancels
+// the records request alone, and must leave the summary beside it running.
+// Each is cleared by whoever finishes with it — the request's own finally, by
+// identity, so a newer one is never forgotten in its place.
 let summaryController: AbortController | null = null;
 let recordController: AbortController | null = null;
 
@@ -269,7 +266,6 @@ function sameList(a: UsageBreakdown[], b: UsageBreakdown[]): boolean {
 function applyReport(next: UsageReport): void {
   report.value = next;
   loaded.value = true;
-  if (typeof next.current_rpm === 'number') currentRPM.value = next.current_rpm;
   const lists: Record<Dimension, UsageBreakdown[]> = {
     model: next.by_model ?? [], user: next.by_user ?? [], group: next.by_group ?? [], provider: next.by_provider ?? [],
   };
@@ -292,7 +288,7 @@ function startPeriod(): void {
     return;
   }
   const preset = RANGE_PRESETS.find((p) => p.key === range.value) ?? RANGE_PRESETS[1]!;
-  periodSince = preset.hours > 0 ? Date.now() - preset.hours * 3600_000 : 0;
+  periodSince = preset.hours > 0 ? Date.now() - preset.hours * HOUR : 0;
   periodUntil = 0;
 }
 
@@ -311,11 +307,15 @@ async function load(): Promise<void> {
   recordPage.value.page = 1;
 
   const ticket = ++summaryRequest;
+  // The ledger page is not waited for. Nothing in the report depends on it,
+  // and over a long range its count is often the slower of the two; it has
+  // its own busy state and its own error, and clears its own controller.
+  void loadRecords(false, currentRecordCtrl.signal);
+  // The live rate is asked again under the new slice now, rather than showing
+  // the old filters' figure until the next tick of its poll.
+  void refreshRPM();
   try {
-    const [summary] = await Promise.all([
-      adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }),
-      loadRecords(false, currentRecordCtrl.signal),
-    ]);
+    const summary = await adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal });
     if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
     applyReport(summary);
   } catch (failure) {
@@ -324,9 +324,6 @@ async function load(): Promise<void> {
   } finally {
     if (summaryController === currentSummaryCtrl) {
       summaryController = null;
-    }
-    if (recordController === currentRecordCtrl) {
-      recordController = null;
     }
     if (!currentSummaryCtrl.signal.aborted) {
       loaded.value = true;
@@ -479,10 +476,24 @@ const series = computed<UsagePoint[]>(() => {
 const plotPoints = computed<PlotPoint[]>(() => series.value.map((point) => ({ at: point.at, value: figure(point[trendShown.value]) })));
 // Through safe mode when the line is spending: the axis, the readout and the
 // peak are all figures somebody recording the screen would otherwise get.
+// Credits to the cent, the precision the figures are read at.
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+// Stable across renders: an inline arrow in the template is a new function on
+// every render of this page, and each child it is passed to redraws its rows.
+const matrixFormat = (value: number): string => compactNumber(cellMetric.value === 'credits' ? round2(value) : value);
+const heatFormat = (value: number): string => heatMetric.value === 'requests'
+  ? t('boardRequests', { count: compactNumber(value) })
+  : t('boardTokens', { count: maskBilling(compactNumber(value)) });
+const recordPagination = computed(() => ({ ...recordPage.value, total: recordTotal.value }));
+const isMutedRecord = (row: UsageRecord): boolean => row.status !== 'ok';
+
 const trendFormat = computed(() => {
   const spending = trendShown.value === 'credits' || trendShown.value.endsWith('tokens');
   const plain = trendShown.value === 'credits'
-    ? (value: number) => compactNumber(Math.round(value * 100) / 100)
+    ? (value: number) => compactNumber(round2(value))
     : (value: number) => compactNumber(value);
   return spending ? (value: number) => maskBilling(plain(value)) : plain;
 });
@@ -698,7 +709,7 @@ async function runReset(): Promise<void> {
 // --- a custom range ------------------------------------------------------------------------
 
 function openCustomRange(): void {
-  if (!customStart.value) customStart.value = toLocalISO(new Date(Date.now() - 24 * 3600_000));
+  if (!customStart.value) customStart.value = toLocalISO(new Date(Date.now() - DAY));
   if (!customEnd.value) customEnd.value = toLocalISO(new Date());
   customRangeError.value = '';
   customRangeOpen.value = true;
@@ -778,10 +789,10 @@ function setPreset(preset: Preset): void {
       start.setHours(0, 0, 0, 0);
       break;
     case 'last7d':
-      start.setTime(now.getTime() - 7 * 24 * 3600_000);
+      start.setTime(now.getTime() - 7 * DAY);
       break;
     case 'last30d':
-      start.setTime(now.getTime() - 30 * 24 * 3600_000);
+      start.setTime(now.getTime() - 30 * DAY);
       break;
   }
   customStart.value = toLocalISO(start);
@@ -791,15 +802,19 @@ function setPreset(preset: Preset): void {
 
 // --- keeping it current --------------------------------------------------------------------
 
+// A filter change asks at once while a tick's request may still be out; the
+// older answer is about the old filters and must not land after the newer.
+let rpmRequest = 0;
+
 async function refreshRPM(): Promise<void> {
   if (visibility.value === 'hidden') return;
+  const ticket = ++rpmRequest;
   try {
-    // The summary's live figure is narrowed by the filters, so this poll must
-    // be too, or the header flips between two numbers on every tick. The
-    // server fixes the window at the last minute whatever period is sent.
+    // Narrowed by the filters, as every figure beside it is. The server fixes
+    // the window at the last minute whatever period is sent.
     const query = sliceQuery().toString();
     const res = await adminApi.rpm(query ? `?${query}` : '');
-    currentRPM.value = res.rpm;
+    if (ticket === rpmRequest) currentRPM.value = res.rpm;
   } catch {
     // Keep existing RPM on transient error
   }
@@ -817,56 +832,66 @@ async function refreshRPM(): Promise<void> {
 // unreachable server recovers on its own.
 const REFRESH_MS = 15000;
 
-// Nobody reads a background tab. Each refresh recomputes every aggregate on
-// the page over the whole range — a dozen queries across the ledger — and a
-// tab left open overnight used to run them four times a minute for no one.
-// It catches up the moment it is looked at again.
+// Nobody reads a background tab. Each refresh asks for every aggregate on the
+// page again — a dozen queries, most of them over the hourly rollup, and the
+// ledger page's count over the raw records — and a tab left open overnight
+// used to run them four times a minute for no one. It catches up the moment
+// it is looked at again.
 const visibility = useDocumentVisibility();
 watch(visibility, (now, was) => {
   if (now === 'visible' && was === 'hidden') { refreshQuietly(); void refreshRPM(); }
 });
 
+// A tick that finds a request still out leaves that one alone instead of
+// cancelling it and asking again. It is already the same question — or a
+// newer one, from load() or a page turn — and a ledger count slower than the
+// interval would otherwise be cancelled every tick and never arrive.
 function refreshQuietly(): void {
   if (visibility.value === 'hidden' || !loaded.value) return;
   startPeriod();
-  abortSummary();
-  abortRecords();
-  const currentSummaryCtrl = new AbortController();
-  const currentRecordCtrl = new AbortController();
-  summaryController = currentSummaryCtrl;
-  recordController = currentRecordCtrl;
 
-  const ticket = ++summaryRequest;
-  void adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }).then((summary) => {
-    if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
-    applyReport(summary);
-    error.value = '';
-  }).catch((err) => {
-    if (isAbortError(err)) return;
-  }).finally(() => {
-    if (summaryController === currentSummaryCtrl) {
-      summaryController = null;
-    }
-  });
-  void loadRecords(true, currentRecordCtrl.signal);
+  if (!summaryController) {
+    const currentSummaryCtrl = new AbortController();
+    summaryController = currentSummaryCtrl;
+    const ticket = ++summaryRequest;
+    void adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }).then((summary) => {
+      if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
+      applyReport(summary);
+      error.value = '';
+    }).catch(() => {
+      // Ignored, aborted or not: the last good figures stay on screen (see
+      // above), and the next tick asks again.
+    }).finally(() => {
+      if (summaryController === currentSummaryCtrl) {
+        summaryController = null;
+      }
+    });
+  }
+  if (!recordController) {
+    const currentRecordCtrl = new AbortController();
+    recordController = currentRecordCtrl;
+    void loadRecords(true, currentRecordCtrl.signal);
+  }
 }
 
 useIntervalFn(refreshQuietly, REFRESH_MS);
+useIntervalFn(refreshRPM, 10000);
 
 onMounted(() => {
   void load();
-  const timer = window.setInterval(refreshRPM, 10000);
-  rpmTimer.value = timer;
 });
 
 onBeforeUnmount(() => {
-  if (rpmTimer.value !== null) clearInterval(rpmTimer.value);
   abortSummary();
   abortRecords();
 });
 </script>
 
 <script lang="ts">
+// Module state, not component state: the choices made on this page survive
+// leaving it and coming back, within one load of the app. The setters write
+// these alongside their refs, which is what keeps the copy current; the
+// component starts from them. A reload starts them over.
 let selectedRange = '24h';
 let selectedTrend: 'requests' | 'total_tokens' | 'credits' | 'users' = 'requests';
 let selectedModelMetric: 'users' | 'requests' | 'tokens' | 'credits' = 'users';
@@ -947,10 +972,10 @@ let savedCustomUntil = 0;
       </article>
       <article class="oa-kpi">
         <span class="oa-kpi-label">{{ t('statCredits') }}</span>
-        <strong class="oa-kpi-value" :title="maskBilling(figure(totals?.credits).toLocaleString())">{{ maskBilling(compactNumber(Math.round(figure(totals?.credits) * 100) / 100)) }}</strong>
+        <strong class="oa-kpi-value" :title="maskBilling(figure(totals?.credits).toLocaleString())">{{ maskBilling(compactNumber(round2(figure(totals?.credits)))) }}</strong>
         <span class="oa-kpi-foot">
           <UsageDelta :current="figure(totals?.credits)" :previous="previous?.credits" />
-          <span v-if="totals?.requests">{{ t('kpiPerRequest', { value: maskBilling(compactNumber(Math.round(figure(totals?.credits) / totals.requests * 100) / 100)) }) }}</span>
+          <span v-if="totals?.requests">{{ t('kpiPerRequest', { value: maskBilling(compactNumber(round2(figure(totals?.credits) / totals.requests))) }) }}</span>
         </span>
       </article>
       <!-- One account's page counts its models instead: "active accounts: 1"
@@ -1048,7 +1073,7 @@ let savedCustomUntil = 0;
       </header>
       <UsageMatrix
         :matrix="report.matrix" :users="byUser" :models="byModel" :metric="cellMetric"
-        :format="(value) => compactNumber(cellMetric === 'credits' ? Math.round(value * 100) / 100 : value)"
+        :format="matrixFormat"
         @user="setFilter('user', $event)" @model="setFilter('model', $event)"
       />
     </section>
@@ -1062,7 +1087,7 @@ let savedCustomUntil = 0;
             <button type="button" :aria-pressed="heatMetric === 'total_tokens'" @click="onHeatMetric('total_tokens')">{{ t('statTokens') }}</button>
           </div>
         </header>
-        <UsageHeatmap :slots="report?.heatmap ?? []" :metric="heatMetric" :format="(value) => heatMetric === 'requests' ? t('boardRequests', { count: compactNumber(value) }) : t('boardTokens', { count: maskBilling(compactNumber(value)) })" />
+        <UsageHeatmap :slots="report?.heatmap ?? []" :metric="heatMetric" :format="heatFormat" />
       </section>
       <section id="secSpread" class="oa-viz-card">
         <header class="oa-viz-head">
@@ -1084,12 +1109,12 @@ let savedCustomUntil = 0;
       <AdminFailure v-if="recordError" :message="recordError" @retry="changeRecords(recordPage)" />
       <OaTable
         v-else
-        :pagination="{ ...recordPage, total: recordTotal }"
+        :pagination="recordPagination"
         :busy="recordsBusy"
         :columns="recordColumns"
         :rows="records"
         :empty="t('noRequestsPeriod')"
-        :muted="(row) => row.status !== 'ok'"
+        :muted="isMutedRecord"
         @page="changeRecords"
       >
         <template #cell-user="{ row }">

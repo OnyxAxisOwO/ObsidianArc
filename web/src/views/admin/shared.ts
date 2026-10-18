@@ -86,3 +86,13 @@ export function minutesLabel(minutes: number): string {
   if (minutes > 0 && minutes % 60 === 0) return t('durationHours', { count: minutes / 60 });
   return t('durationMinutes', { count: minutes });
 }
+
+/**
+ * The wall-clock time at an instant, in the form a datetime-local field takes.
+ * Read from the instant's own offset, so a date in summer and one in winter each
+ * come out in the zone's local time at that moment.
+ */
+export function toDateTimeLocal(at: Date | number): string {
+  const date = new Date(at);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}

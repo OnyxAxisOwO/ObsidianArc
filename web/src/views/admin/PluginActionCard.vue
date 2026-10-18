@@ -14,6 +14,7 @@ import type { ActionCardSpec } from '@/plugins/types';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginActionControl from './PluginActionControl.vue';
 import { missingRequired, visibleControls } from './pluginControls';
+import { toDateTimeLocal } from './shared';
 
 const props = defineProps<{
   card: ActionCardSpec;
@@ -30,7 +31,7 @@ const result = ref<{ message: string; isError?: boolean } | null>(null);
 function defaultExpiry(): string {
   const date = new Date();
   date.setDate(date.getDate() + 7);
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  return toDateTimeLocal(date);
 }
 
 // Initialise any unset datetime controls to a sensible default (7 days). A

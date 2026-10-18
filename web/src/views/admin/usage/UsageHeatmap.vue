@@ -9,7 +9,7 @@ import { computed, ref } from 'vue';
 import type { UsageSlot } from '@/admin/api';
 import { t } from '@/composables/useI18n';
 import { localeTag } from '@/lib/format';
-import { intensity } from './scale';
+import { DAY, intensity } from './scale';
 
 const props = defineProps<{
   slots: readonly UsageSlot[];
@@ -42,14 +42,22 @@ const peak = computed(() => {
 function value(weekday: number, hour: number): number {
   return grid.value.get(`${weekday}:${hour}`) ?? 0;
 }
-function fill(weekday: number, hour: number): string | undefined {
-  const level = intensity(value(weekday, hour), peak.value?.value ?? 0);
-  // The emptiest occupied hour still has to read as occupied, so the ramp
-  // starts at a visible tint rather than at nothing.
-  return level > 0 ? `${Math.round(14 + level * 86)}%` : undefined;
+// The emptiest occupied hour still has to read as occupied, so the ramp starts
+// at a visible tint rather than at nothing.
+function heatOf(level: number): string {
+  return `${Math.round(14 + level * 86)}%`;
 }
+// The fill of every slot, worked out when the data changes. Hovering moves the
+// active cell alone, so it must not make the template work every fill out again.
+const days = computed(() => ORDER.map((weekday) => ({
+  weekday,
+  hours: HOURS.map((hour) => {
+    const level = intensity(value(weekday, hour), peak.value?.value ?? 0);
+    return { hour, heat: level > 0 ? heatOf(level) : undefined };
+  }),
+})));
 function dayName(weekday: number): string {
-  return new Date(SUNDAY + weekday * 86_400_000).toLocaleDateString(locale.value, { weekday: 'short', timeZone: 'UTC' });
+  return new Date(SUNDAY + weekday * DAY).toLocaleDateString(locale.value, { weekday: 'short', timeZone: 'UTC' });
 }
 function hourName(hour: number): string {
   return `${String(hour).padStart(2, '0')}:00`;
@@ -72,15 +80,15 @@ const caption = computed(() => {
   <div class="oa-heatmap" role="img" :aria-label="caption" @pointerleave="hovered = null">
     <p class="oa-heatmap-caption" aria-hidden="true">{{ caption }}</p>
     <div class="oa-heatmap-grid">
-      <template v-for="weekday in ORDER" :key="weekday">
-        <span class="oa-heatmap-day">{{ dayName(weekday) }}</span>
+      <template v-for="day in days" :key="day.weekday">
+        <span class="oa-heatmap-day">{{ dayName(day.weekday) }}</span>
         <span
-          v-for="hour in HOURS"
-          :key="hour"
+          v-for="slot in day.hours"
+          :key="slot.hour"
           class="oa-heatmap-cell"
-          :class="{ filled: !!fill(weekday, hour), active: hovered?.weekday === weekday && hovered?.hour === hour }"
-          :style="fill(weekday, hour) ? { '--oa-heat': fill(weekday, hour) } : undefined"
-          @pointerenter="hovered = { weekday, hour }"
+          :class="{ filled: !!slot.heat, active: hovered?.weekday === day.weekday && hovered?.hour === slot.hour }"
+          :style="slot.heat ? { '--oa-heat': slot.heat } : undefined"
+          @pointerenter="hovered = { weekday: day.weekday, hour: slot.hour }"
         />
       </template>
       <span class="oa-heatmap-day" />
@@ -88,7 +96,7 @@ const caption = computed(() => {
     </div>
     <div class="oa-heatmap-legend" aria-hidden="true">
       <span>{{ t('heatmapLess') }}</span>
-      <i v-for="level in [0, 0.25, 0.5, 0.75, 1]" :key="level" :class="{ filled: level > 0 }" :style="level > 0 ? { '--oa-heat': `${Math.round(14 + level * 86)}%` } : undefined" />
+      <i v-for="level in [0, 0.25, 0.5, 0.75, 1]" :key="level" :class="{ filled: level > 0 }" :style="level > 0 ? { '--oa-heat': heatOf(level) } : undefined" />
       <span>{{ t('heatmapMore') }}</span>
     </div>
   </div>

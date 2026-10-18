@@ -36,11 +36,13 @@ import OaUsageWindow from '@/components/OaUsageWindow.vue';
 import type { Column } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
 import { t, tn } from '@/composables/useI18n';
+import { cardTitle, formatCardScope, windowChoices } from '@/lib/card-scope';
+import { DAY, HOUR } from './usage/scale';
+import { toDateTimeLocal } from './shared';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconTrash } from '@/icons';
 import { absoluteTime, compactNumber, localeTag, relativeTime } from '@/lib/format';
-import { cardTitle, formatCardScope } from '@/lib/card-scope';
 import { rememberedPageSize } from '@/lib/page-size';
 import { describeUserAgent } from '@/lib/ua';
 import { currentUser, canAdmin, isSuperAdmin, siteInfo } from '@/stores/session';
@@ -50,14 +52,11 @@ import { fieldSpec, plugins } from '@/plugins/registry';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginUserActions from './PluginUserActions.vue';
 import { isMasked, maskUser, maskLog, maskBilling, maskCredential } from '@/admin/safeMode';
-import { windowFigure } from '@/admin/quota';
-import AdminFailure from './AdminFailure.vue';
+import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
 import CreditsField from './CreditsField.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import UsageBoard from './usage/UsageBoard.vue';
 import { useAdminView } from './adminView';
-
-const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
 
 const view = useAdminView();
 // Null until the first list lands, so the heading shows no count before then.
@@ -74,7 +73,6 @@ const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 let request = 0;
 function changePage(next: PageState): void { paging.value = next; void list(); }
 function filterList(): void { paging.value.page = 1; ++request; void list(); }
-const error = ref('');
 const listError = ref('');
 const loaded = ref(false);
 const listing = ref(false);
@@ -132,7 +130,7 @@ async function list(): Promise<void> {
     listedTotal.value = result.total;
   } catch (failure) {
     if (ticket !== request) return;
-    listError.value = failure instanceof ApiError ? failure.message : String(failure);
+    listError.value = failureText(failure);
   } finally {
     if (ticket === request) listing.value = false;
   }
@@ -146,8 +144,22 @@ async function list(): Promise<void> {
  */
 function failedForAccount(row: Account, failure: unknown): void {
   void list();
-  const message = failure instanceof ApiError ? failure.message : String(failure);
+  const message = failureText(failure);
   listError.value = t('accountChangeFailed', { name: maskUser(row.nickname || row.username), error: message });
+}
+
+/**
+ * A change made to one account that failed: into the panel while it still
+ * shows that account, otherwise to the list as failedForAccount does. Reads
+ * keep their own handling, since a failed read has nothing to route to the list.
+ */
+function panelFailure(row: Account, failure: unknown): void {
+  if (panelShows(row.id)) panelError.value = failureText(failure);
+  else failedForAccount(row, failure);
+}
+
+function failureText(failure: unknown): string {
+  return failure instanceof ApiError ? failure.message : String(failure);
 }
 
 // --- the account panel ------------------------------------------------------------
@@ -181,6 +193,10 @@ const cards = ref<CardHolding | null>(null);
 const models = ref<UsageBreakdown[]>([]);
 const keys = ref<ApiKey[] | null>(null);
 const sessions = ref<AdminSession[] | null>(null);
+// Kept apart from `keys` and `sessions` staying null: null-forever would read as
+// "still loading" and an empty array would read as "none", and a failed read is
+// neither. The same holds for keys, which used to be cleared to [] on failure.
+const keysError = ref('');
 // Kept apart from `sessions` staying null: null-forever would read as "still
 // loading" and an empty array would read as "signed in nowhere", and a 403 on
 // a restricted operator is neither.
@@ -195,18 +211,33 @@ const transcript = ref<Message[] | null>(null);
 const transcriptTitle = ref('');
 const apiRestrictionTouched = ref(false);
 
-const grantCount = ref<number | null>(1);
-const grantName = ref('');
-const grantScopePreset = ref<'full' | '5h' | '1w' | '1m' | 'custom'>('full');
-const grantCustomWindows = ref<string[]>(['5h']);
-const grantExpiresAt = ref(defaultGrantExpiry());
+// What the grant form starts at, for each account the panel opens on. A
+// function, not a constant: the expiry is thirty days from the moment it is
+// asked, and a panel opened tomorrow should not offer yesterday's date.
+function grantDefaults() {
+  return {
+    count: 1 as number | null,
+    name: '',
+    preset: 'full' as 'full' | '5h' | '1w' | '1m' | 'custom',
+    custom: ['5h'],
+    expiresAt: defaultGrantExpiry(),
+  };
+}
+const initialGrant = grantDefaults();
+const grantCount = ref(initialGrant.count);
+const grantName = ref(initialGrant.name);
+const grantScopePreset = ref(initialGrant.preset);
+const grantCustomWindows = ref<string[]>(initialGrant.custom);
+const grantExpiresAt = ref(initialGrant.expiresAt);
 // The result line under the card buttons. Kept apart from the buttons' own
 // state: a button that reads "granted" and stays disabled leaves nothing to
 // click until the panel is reopened.
 const grantLabel = ref('');
 const granting = ref(false);
 const rescheduleLabel = ref('');
-const rescheduling = ref('');
+// Whether a reschedule or a revocation is out. One at a time for the whole
+// card list: either one re-reads the list when it lands.
+const rescheduling = ref(false);
 
 /**
  * Whether the panel still shows this account. An answer to a request sent for
@@ -242,13 +273,8 @@ function cardSubtitle(card: { name?: string; windows?: string[]; source: string;
 // or the operator will read the result as a failure.
 const movableCards = computed(() => (cards.value?.available ?? 0) + (cards.value?.expired ?? 0));
 
-function dateTimeLocal(at: number): string {
-  const date = new Date(at);
-  return new Date(at - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-}
-
 function defaultGrantExpiry(): string {
-  return dateTimeLocal(Date.now() + 30 * 24 * 3_600_000);
+  return toDateTimeLocal(Date.now() + 30 * DAY);
 }
 
 
@@ -375,17 +401,19 @@ async function open(id: string): Promise<void> {
   mode.value = 'account';
   conversationPage.value.page = 1;
   keys.value = null;
+  keysError.value = '';
   sessions.value = null;
   sessionsError.value = '';
   grantLabel.value = '';
   granting.value = false;
   rescheduleLabel.value = '';
-  rescheduling.value = '';
-  grantName.value = '';
-  grantScopePreset.value = 'full';
-  grantCustomWindows.value = ['5h'];
-  grantCount.value = 1;
-  grantExpiresAt.value = defaultGrantExpiry();
+  rescheduling.value = false;
+  const grantForm = grantDefaults();
+  grantName.value = grantForm.name;
+  grantScopePreset.value = grantForm.preset;
+  grantCustomWindows.value = grantForm.custom;
+  grantCount.value = grantForm.count;
+  grantExpiresAt.value = grantForm.expiresAt;
 
   // The panel opens on the click, with the row the list already has, and
   // fills in when the detail arrives. It used to wait for the detail first:
@@ -406,6 +434,11 @@ async function open(id: string): Promise<void> {
   // Saving leaves this set while the panel slides out.
   busy.value = false;
   showPanel();
+  // The keys and devices need only the id, so they start with the detail
+  // instead of after it. That is safe only when the list already has the row:
+  // then the panel shows this account and can match their answers to it. With
+  // no listed row they wait for the detail, which sets the account.
+  if (listed) loadAccess(id);
 
   let detail;
   try {
@@ -413,7 +446,7 @@ async function open(id: string): Promise<void> {
   } catch (failure) {
     if (ticket !== opening) return;
     loadingDetail.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failureText(failure);
     // Without a row to show there is no panel to put the error in.
     if (!account.value) { listError.value = panelError.value; panelOpen.value = false; }
     return;
@@ -447,7 +480,7 @@ async function open(id: string): Promise<void> {
   apiRestrictionTouched.value = false;
   const restrictionActive = apiRestrictionActive(row);
   const restrictionHours = restrictionActive && row.api_restricted_until > 0
-    ? Math.max(1, Math.ceil((row.api_restricted_until - Date.now()) / 3_600_000))
+    ? Math.max(1, Math.ceil((row.api_restricted_until - Date.now()) / HOUR))
     : 0;
   form.value = {
     nickname: row.nickname,
@@ -458,7 +491,7 @@ async function open(id: string): Promise<void> {
     role: row.role,
     permissions: [...(row.admin_permissions ?? [])],
     group: row.group_id,
-    groupExpiresAt: row.group_expires_at ? dateTimeLocal(row.group_expires_at) : '',
+    groupExpiresAt: row.group_expires_at ? toDateTimeLocal(row.group_expires_at) : '',
     apiRestricted: restrictionActive,
     apiRestrictionHours: restrictionActive ? restrictionHours : 24,
     newPassword: '',
@@ -469,7 +502,7 @@ async function open(id: string): Promise<void> {
   limitsEdited = false;
   detailReady.value = true;
 
-  loadAccess(id);
+  if (!listed) loadAccess(id);
 }
 
 /**
@@ -482,8 +515,14 @@ function loadAccess(id: string): void {
   // to show and no endpoint that could produce one. What an operator needs
   // here is to see that a key exists and to be able to revoke it.
   void adminApi.userKeys(id)
-    .then(({ keys: list }) => { if (panelShows(id)) keys.value = list; })
-    .catch(() => { if (panelShows(id)) keys.value = []; });
+    .then(({ keys: list }) => {
+      if (!panelShows(id)) return;
+      keys.value = list;
+      keysError.value = '';
+    })
+    .catch((failure: unknown) => {
+      if (panelShows(id)) keysError.value = failureText(failure);
+    });
   void adminApi.userSessions(id)
     .then(({ sessions: list }) => {
       if (!panelShows(id)) return;
@@ -491,7 +530,7 @@ function loadAccess(id: string): void {
       sessionsError.value = '';
     })
     .catch((failure: unknown) => {
-      if (panelShows(id)) sessionsError.value = failure instanceof ApiError ? failure.message : String(failure);
+      if (panelShows(id)) sessionsError.value = failureText(failure);
     });
 }
 
@@ -577,7 +616,7 @@ async function save(): Promise<void> {
     }
     // Only send a membership change when the operator edited it. A profile
     // panel left open across expiry must not silently renew the old group.
-    const originalExpiry = row.group_expires_at ? dateTimeLocal(row.group_expires_at) : '';
+    const originalExpiry = row.group_expires_at ? toDateTimeLocal(row.group_expires_at) : '';
     if (draft.group !== row.group_id || draft.groupExpiresAt !== originalExpiry) {
       const expiry = draft.groupExpiresAt ? new Date(draft.groupExpiresAt).getTime() : 0;
       if (draft.groupExpiresAt && (!Number.isFinite(expiry) || expiry <= Date.now())) {
@@ -626,7 +665,7 @@ async function save(): Promise<void> {
     // written to the list instead.
     if (!panelShows(row.id)) { failedForAccount(row, failure); return; }
     busy.value = false;
-    const message = failure instanceof ApiError ? failure.message : String(failure);
+    const message = failureText(failure);
     panelError.value = saved ? t('savedBeforeError', { error: message }) : message;
   }
 }
@@ -669,8 +708,7 @@ async function resetTwoFactor(): Promise<void> {
     applyAccount(row.id, user);
     if (panelShows(row.id)) twoFactorFlash.value = t('twoFactorResetDone');
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   }
 }
 
@@ -693,8 +731,7 @@ async function ban(): Promise<void> {
     // the panel shows are none.
     sessions.value = [];
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   } finally {
     banBusy.value = false;
   }
@@ -709,8 +746,7 @@ async function unban(): Promise<void> {
     const { user } = await adminApi.updateUser(row.id, { status: 'active' });
     applyAccount(row.id, user);
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   } finally {
     banBusy.value = false;
   }
@@ -740,7 +776,7 @@ async function remove(): Promise<void> {
   } catch (failure) {
     if (!panelShows(row.id)) { failedForAccount(row, failure); return; }
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failureText(failure);
   }
 }
 
@@ -789,7 +825,7 @@ async function refreshFacts(id: string): Promise<void> {
     models.value = detail.models ?? [];
     cards.value = detail.cards;
   } catch (failure) {
-    if (panelShows(id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(id)) panelError.value = failureText(failure);
   }
 }
 
@@ -802,6 +838,20 @@ function actionFailed(message: string): void {
  * changes, because "why does this person have no allowance left" and "give
  * them another" are one thought.
  */
+/**
+ * The date in the field both a grant and a reschedule use, or null with the
+ * panel saying why: a date already past would hand out cards that are spent
+ * before anyone could use them.
+ */
+function chosenExpiry(): number | null {
+  const expiresAt = new Date(grantExpiresAt.value).getTime();
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    panelError.value = t('grantCardExpiryInvalid');
+    return null;
+  }
+  return expiresAt;
+}
+
 async function grant(): Promise<void> {
   const row = account.value;
   if (!row) return;
@@ -810,11 +860,8 @@ async function grant(): Promise<void> {
     return;
   }
   const count = grantCount.value ?? 1;
-  const expiresAt = new Date(grantExpiresAt.value).getTime();
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    panelError.value = t('grantCardExpiryInvalid');
-    return;
-  }
+  const expiresAt = chosenExpiry();
+  if (expiresAt === null) return;
   granting.value = true;
   grantLabel.value = '';
   try {
@@ -827,8 +874,7 @@ async function grant(): Promise<void> {
     if (panelShows(row.id)) grantLabel.value = t('granted', { count });
     await refreshCards(row.id);
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   } finally {
     if (panelShows(row.id)) granting.value = false;
   }
@@ -841,6 +887,9 @@ async function grant(): Promise<void> {
  * them again.
  */
 async function refreshCards(id: string): Promise<void> {
+  // Once the panel has moved on, no card list on screen can show the answer,
+  // and the detail behind it is the expensive read on the server.
+  if (!panelShows(id)) return;
   try {
     const detail = await adminApi.user(id);
     if (panelShows(id)) cards.value = detail.cards;
@@ -860,13 +909,10 @@ async function refreshCards(id: string): Promise<void> {
 async function reschedule(cardIDs?: string[]): Promise<void> {
   const row = account.value;
   if (!row) return;
-  const expiresAt = new Date(grantExpiresAt.value).getTime();
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    panelError.value = t('grantCardExpiryInvalid');
-    return;
-  }
+  const expiresAt = chosenExpiry();
+  if (expiresAt === null) return;
 
-  rescheduling.value = cardIDs?.length ? cardIDs[0]! : 'all';
+  rescheduling.value = true;
   rescheduleLabel.value = '';
   try {
     const result = await adminApi.rescheduleCards(row.id, {
@@ -878,12 +924,11 @@ async function reschedule(cardIDs?: string[]): Promise<void> {
     // moved forward is spendable again, and the counts above it move with it.
     await refreshCards(row.id);
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   } finally {
     // A request for an account the panel has left must not clear the flag of
     // the one running for the account it shows now.
-    if (panelShows(row.id)) rescheduling.value = '';
+    if (panelShows(row.id)) rescheduling.value = false;
   }
 }
 
@@ -898,7 +943,7 @@ async function reschedule(cardIDs?: string[]): Promise<void> {
 async function revoke(cardID: string): Promise<void> {
   const row = account.value;
   if (!row) return;
-  rescheduling.value = cardID;
+  rescheduling.value = true;
   rescheduleLabel.value = '';
   try {
     // Silent on purpose, like the grant of a card: an operator undoing a
@@ -906,10 +951,9 @@ async function revoke(cardID: string): Promise<void> {
     await adminApi.revokeCard(row.id, cardID);
     await refreshCards(row.id);
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   } finally {
-    if (panelShows(row.id)) rescheduling.value = '';
+    if (panelShows(row.id)) rescheduling.value = false;
   }
 }
 
@@ -919,8 +963,7 @@ function revokeKey(key: ApiKey): void {
   void adminApi.revokeUserKey(row.id, key.id)
     .then(() => { if (panelShows(row.id)) keys.value = (keys.value ?? []).filter((entry) => entry.id !== key.id); })
     .catch((failure: unknown) => {
-      if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-      else failedForAccount(row, failure);
+      panelFailure(row, failure);
     });
 }
 
@@ -931,8 +974,7 @@ function revokeSession(session: AdminSession): void {
   adminApi.revokeUserSession(row.id, session.id)
     .then(() => { if (panelShows(row.id)) sessions.value = (sessions.value ?? []).filter((entry) => entry.id !== session.id); })
     .catch((failure: unknown) => {
-      if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-      else failedForAccount(row, failure);
+      panelFailure(row, failure);
     })
     .finally(() => { revokingSession.value = ''; });
 }
@@ -944,8 +986,7 @@ function signOutEverywhere(): void {
   adminApi.revokeAllUserSessions(row.id)
     .then(() => { if (panelShows(row.id)) sessions.value = []; })
     .catch((failure: unknown) => {
-      if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-      else failedForAccount(row, failure);
+      panelFailure(row, failure);
     })
     .finally(() => { signOutAllBusy.value = false; });
 }
@@ -964,7 +1005,7 @@ async function openConversations(): Promise<void> {
     conversations.value = result.conversations;
     conversationTotal.value = result.total;
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failureText(failure);
   }
 }
 
@@ -981,7 +1022,7 @@ async function openTranscript(conversation: Conversation): Promise<void> {
     // account's title: the answer is shown only while its account is.
     if (panelShows(row.id)) transcript.value = messages;
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failureText(failure);
   }
 }
 
@@ -1003,16 +1044,18 @@ const panelTitle = computed(() => {
 });
 
 async function load(): Promise<void> {
-  error.value = '';
+  // The group names only label rows, so their failure must not stand in for the
+  // whole table. It is reported above the rows, where a list failure goes, and
+  // the rows still load. list() clears listError as it starts, hence the order.
+  let namesFailure = '';
   try {
     ({ groups: groups.value } = await adminApi.groupOptions());
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-    loaded.value = true;
-    return;
+    namesFailure = failure instanceof Error ? failure.message : String(failure);
   }
   loaded.value = true;
   await list();
+  if (namesFailure && !listError.value) listError.value = namesFailure;
 }
 
 onMounted(load);
@@ -1023,8 +1066,7 @@ const state = { q: '', role: '', status: '', group: '' };
 </script>
 
 <template>
-  <AdminFailure v-if="error" :message="error" @retry="load" />
-  <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
+  <p v-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <template v-else>
     <div id="usersList" class="oa-filters">
@@ -1250,7 +1292,7 @@ const state = { q: '', role: '', status: '', group: '' };
             <button
               type="button"
               class="oa-btn small oa-card-reschedule"
-              :disabled="!!rescheduling"
+              :disabled="rescheduling"
               @click="reschedule([card.id])"
             >{{ t('rescheduleOne') }}</button>
             <!-- Never window.confirm: it answers false on its own in some
@@ -1262,7 +1304,7 @@ const state = { q: '', role: '', status: '', group: '' };
               :armed-label="t('revokeCardConfirm')"
               :armed-title="t('revokeCardConfirm')"
               :resting-title="t('revokeCard')"
-              :disabled="!!rescheduling"
+              :disabled="rescheduling"
               @confirm="revoke(card.id)"
             />
           </OaRow>
@@ -1294,11 +1336,7 @@ const state = { q: '', role: '', status: '', group: '' };
           v-model="grantCustomWindows"
           :label="t('cardResetScope')"
           :empty-text="t('nothingYet')"
-          :items="[
-            { value: '5h', label: t('cardScopeLabel5H') },
-            { value: '1w', label: t('cardScopeLabel1W') },
-            { value: '1m', label: t('cardScopeLabel1M') },
-          ]"
+          :items="windowChoices()"
         />
         <OaNumberField
           v-model="grantCount"
@@ -1321,7 +1359,7 @@ const state = { q: '', role: '', status: '', group: '' };
           <button
             type="button"
             class="oa-btn small"
-            :disabled="!movableCards || !!rescheduling"
+            :disabled="!movableCards || rescheduling"
             @click="reschedule()"
           >{{ t('rescheduleCards', { count: movableCards }) }}</button>
           <button type="button" class="oa-btn small primary" :disabled="granting" @click="grant">
@@ -1481,7 +1519,8 @@ const state = { q: '', role: '', status: '', group: '' };
       </AdminControlCard>
 
       <AdminControlCard :title="t('apiKeys')" :hint="t('adminKeysHint')">
-        <OaRow v-if="keys === null" :meta="t('loading')" />
+        <OaRow v-if="keysError" :meta="keysError" />
+        <OaRow v-else-if="keys === null" :meta="t('loading')" />
         <OaRow v-else-if="!keys.length" :meta="t('keysEmpty')" />
         <OaRow v-for="key in keys ?? []" v-else :key="key.id">
           <template #text>

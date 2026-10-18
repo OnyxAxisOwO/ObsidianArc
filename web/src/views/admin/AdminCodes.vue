@@ -24,7 +24,7 @@ import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
-import { formatCardScope } from '@/lib/card-scope';
+import { formatCardScope, windowChoices } from '@/lib/card-scope';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { relativeTime } from '@/lib/format';
@@ -427,11 +427,7 @@ onMounted(load);
         v-model="form.customWindows"
         :label="t('cardResetScope')"
         :empty-text="t('nothingYet')"
-        :items="[
-          { value: '5h', label: t('cardScopeLabel5H') },
-          { value: '1w', label: t('cardScopeLabel1W') },
-          { value: '1m', label: t('cardScopeLabel1M') },
-        ]"
+        :items="windowChoices()"
       />
       <OaNumberField v-model="form.cards" :label="t('codeCards')" :min="1" :hint="t('codeCardsHint')" />
       <OaNumberField
