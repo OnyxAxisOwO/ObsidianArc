@@ -1,9 +1,11 @@
 @use 'mixins' as *;
 
-// The terminal. Imported last from index.scss, after
-// surfaces — nothing else in the app depends on load order here, but this is
-// where a rule that turns out to need overriding one of surfaces' own goes
-// without a specificity fight.
+// The terminal. Imported by views/TerminalPanel.vue, so it loads with the
+// terminal's chunk, after the whole of index.scss — nothing else in the app
+// depends on load order here, but this is where a rule that turns out to
+// need overriding one of surfaces' own goes without a specificity fight.
+// Nothing outside the terminal may need a rule here: a reader who never
+// opens it never loads this file.
 //
 // No rule in this file sets its own opacity or backdrop-filter. The card the
 // terminal is drawn inside — the panel beside the chat — already carries the
@@ -53,7 +55,10 @@
   display: none;
 }
 
-// In terminal mode, ensure chat sidebar stays completely hidden
+// In terminal mode, ensure chat sidebar stays completely hidden. Safe here
+// rather than in the entry although ChatLayout sets is-terminal: it reads the
+// committed route, and the router commits /terminal only once this chunk —
+// and so this stylesheet — has loaded.
 .oa-chat-root.is-terminal .ai-chat-sidebar {
   display: none !important;
 }

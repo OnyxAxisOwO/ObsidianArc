@@ -15,6 +15,10 @@
 // disposing every tab's in-flight fetch when the panel goes away. Command
 // execution, history and ANSI decoding all live one layer down.
 
+// Imported here rather than by index.scss so that Vite emits it as this
+// chunk's stylesheet and loads it before the chunk runs: the terminal never
+// paints unstyled, and a reader who never opens it never downloads it.
+import '@/styles/_terminal.scss';
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, type Raw } from 'vue';
 import { useRouter } from 'vue-router';
 import { useEventListener } from '@vueuse/core';

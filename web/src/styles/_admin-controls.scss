@@ -1,0 +1,276 @@
+@use 'mixins' as *;
+
+/* Controls only the backoffice draws, which were part of _workspace.scss and
+ * _app.scss: the detected-model badge, the reasoning-tier rows, the inert
+ * setting and the safe-mode menu. They load with the backoffice, as the rest
+ * of admin.scss does, instead of with every first paint.
+ *
+ * First in admin.scss, because the files they came from load before
+ * _surfaces.scss: so _admin-surfaces still follows them, and still wins the
+ * ties it won when they were part of the entry. What they now follow and
+ * used not to — _surfaces, _segment and _front — has no rule at the same
+ * specificity on these elements (the switch inside the safe-mode menu is
+ * styled there, but on its input, which nothing here touches), so no tie
+ * changes hands.
+ */
+
+.oa-detect-known {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-size: 10px;
+}
+
+/* Reasoning tiers: a name, the value that goes on the wire, and a budget.
+   Three inputs on one line rather than three stacked fields, because the list
+   is read down its first column — the names — and stacking would bury
+   that under a label for every cell. */
+.oa-thinking-tiers {
+  @include flex-column;
+}
+
+.oa-thinking-tier {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oa-thinking-tier input {
+  min-width: 0;
+}
+
+.oa-thinking-name {
+  flex: 3 1 0;
+}
+
+.oa-thinking-value,
+.oa-thinking-budget {
+  flex: 2 1 0;
+}
+
+/* A setting that is offered but cannot take effect yet. Readable, obviously
+   inactive, and still clickable — the server ignores it either way, and
+   greying it out entirely would hide the hint that says why. */
+.oa-field-inert {
+  opacity: 0.6;
+}
+
+/* --- admin safe mode -------------------------------------------------------- */
+
+.oa-safe-mode-btn {
+  position: relative;
+  transition: color 150ms ease, background-color 150ms ease;
+
+  &.is-active {
+    color: var(--ai-primary);
+
+    &:hover {
+      background: var(--ai-state-hover);
+    }
+  }
+
+  .oa-safe-dot {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ai-primary);
+  }
+}
+
+.oa-menu.oa-menu-safe-mode,
+.oa-menu-safe-mode {
+  min-width: 320px;
+  max-width: 360px;
+  max-height: min(600px, calc(100vh - 72px));
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+
+  .oa-safe-mode-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 8px;
+    transition: background-color 120ms ease;
+
+    &:hover {
+      background: var(--ai-state-hover);
+    }
+  }
+
+  .oa-safe-mode-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ai-text);
+  }
+
+  /* Only the label's layout lives here. The switch inside is the shared one
+     in _surfaces.scss, size and all: a copy here had no focus ring and kept
+     animating under reduced motion. */
+  .oa-safe-switch {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+  }
+
+  .oa-safe-mode-desc {
+    padding: 0 8px 6px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ai-text-secondary);
+    margin-bottom: 4px;
+  }
+
+  .oa-safe-mode-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .oa-safe-mode-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 8px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--ai-text);
+    font: inherit;
+    text-align: left;
+    width: 100%;
+    cursor: pointer;
+    transition: background 120ms ease;
+
+    &:hover:not(:disabled) {
+      background: var(--ai-state-hover);
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    &.is-checked {
+      .oa-safe-mode-check {
+        background: var(--ai-primary);
+        border-color: var(--ai-primary);
+        color: var(--ai-primary-text, #fff);
+      }
+    }
+
+    &.is-dimmed {
+      opacity: 0.72;
+
+      &.is-checked .oa-safe-mode-check {
+        background: var(--ai-outline-variant, #999);
+        border-color: var(--ai-outline-variant, #999);
+        color: #fff;
+      }
+    }
+  }
+
+  .oa-safe-mode-check {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    border-radius: 5px;
+    border: 1.5px solid var(--ai-border);
+    background: var(--ai-surface-container, rgba(128, 128, 128, 0.1));
+    color: transparent;
+    transition: all 120ms ease;
+  }
+
+  .oa-safe-mode-icon {
+    flex-shrink: 0;
+    color: var(--ai-text-secondary);
+  }
+
+  .oa-safe-mode-row-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .oa-safe-mode-row-name {
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ai-text);
+  }
+
+  .oa-safe-mode-row-sub {
+    font-size: 11px;
+    color: var(--ai-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .oa-safe-mode-sample {
+    font-family: monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--ai-surface-container-high, rgba(128, 128, 128, 0.15));
+    color: var(--ai-text-secondary);
+    flex-shrink: 0;
+  }
+
+  .oa-safe-mode-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 6px;
+    padding: 4px 8px 2px;
+    font-size: 12px;
+  }
+
+  .oa-safe-mode-actions {
+    display: flex;
+    gap: 4px;
+  }
+
+  /* The footer's select-all and clear-all carry .oa-menu-head-action as well,
+     which gives them the pill, the type and the hover. Only the side padding
+     differs, and it stays here: this nested rule is the more specific one, so
+     it wins over the shared 9px. */
+  .oa-safe-mode-action-btn {
+    padding: 3px 8px;
+  }
+
+  .oa-safe-mode-status {
+    font-size: 11px;
+    color: var(--ai-text-secondary);
+  }
+}
+
+// A field an operator is actively editing cannot be replaced with ******
+// without breaking the edit, so Safe Mode blurs it instead: readable the
+// moment it has focus, illegible to a screen recording the rest of the time.
+.oa-safe-blur {
+  input:not(:focus),
+  textarea:not(:focus) {
+    filter: blur(5px);
+  }
+}

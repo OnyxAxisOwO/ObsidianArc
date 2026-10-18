@@ -9,24 +9,24 @@
 //
 // The order matters. `_chat` defines the `--ai-*` tokens every other file
 // consumes, `_base` paints the page behind them, and `_surfaces` follows the
-// partials above it because its panels sit over them. `_terminal` and the
-// screen partials after it were written against the same vocabulary and
-// override a little of it where they must, so they come after `_surfaces`.
+// partials above it because its panels sit over them. The screen partials
+// after it were written against the same vocabulary and override a little of
+// it where they must, so they come after `_surfaces`.
 //
 // What only the backoffice draws is in admin.scss, which AdminPage.vue
 // imports, so it reaches a reader with the backoffice chunk and not with the
 // first paint. That stylesheet loads after this one, so each of its rules
-// still comes after everything here, as it did when it was part of it.
+// comes after everything here; the few that came earlier when they were part
+// of it are in _admin-controls.scss, which says why that is safe.
 
 @use 'base';
 @use 'chat';
 @use 'workspace';
 @use 'app';
 @use 'surfaces';
-// Last, and its own file rather than more of `_surfaces`: the console is one
-// screen with four hundred lines of rules that nothing else consumes, where
-// `_surfaces` is the vocabulary every non-chat screen shares.
-@use 'terminal';
+// The console's `_terminal.scss` is not here either: it is one screen with
+// four hundred lines of rules nothing else consumes, so views/TerminalPanel.vue
+// imports it and it arrives with the terminal's chunk, as admin.scss does.
 // The segmented switch: the one piece of the usage report's vocabulary a
 // screen outside the backoffice draws, in the place the report's file had.
 // The backoffice's own partials are not here: see admin.scss.

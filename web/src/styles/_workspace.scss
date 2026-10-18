@@ -647,41 +647,6 @@
   accent-color: var(--ai-primary);
 }
 
-.oa-detect-known {
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: var(--ai-badge-bg);
-  color: var(--ai-badge-text);
-  font-size: 10px;
-}
-
-/* Reasoning tiers: a name, the value that goes on the wire, and a budget.
-   Three inputs on one line rather than three stacked fields, because the list
-   is read down its first column — the names — and stacking would bury
-   that under a label for every cell. */
-.oa-thinking-tiers {
-  @include flex-column;
-}
-
-.oa-thinking-tier {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.oa-thinking-tier input {
-  min-width: 0;
-}
-
-.oa-thinking-name {
-  flex: 3 1 0;
-}
-
-.oa-thinking-value,
-.oa-thinking-budget {
-  flex: 2 1 0;
-}
-
 /* --- accent color picker -------------------------------------------------- */
 
 .oa-color-grid {

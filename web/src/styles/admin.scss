@@ -5,13 +5,17 @@
 // It loads after index.scss, and these partials used to follow everything in
 // it except `_terminal`, `_segment` and `_front`: so each rule here still
 // wins the ties it won before, provided none of those three styles the same
-// element at the same specificity. web/test/styles.test.ts holds the split.
+// element at the same specificity. `_admin-controls` is the exception: it
+// used to come before `_surfaces` as well, and says why moving it is safe.
+// web/test/styles.test.ts holds the split.
 //
 // A rule belongs here only if every selector in it needs a class that only
 // the backoffice renders. One a screen outside it can draw stays in index.scss;
 // moved here, it would go unstyled for every reader who never opens the
 // backoffice.
 
+// First: these came from _workspace and _app, which load before _surfaces.
+@use 'admin-controls';
 @use 'admin-surfaces';
 // The overview has its own layout; its rules stay out of the shared surfaces.
 @use 'dashboard';

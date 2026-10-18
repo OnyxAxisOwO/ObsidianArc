@@ -49,8 +49,8 @@ describe('code splitting invariants in production bundle', () => {
     expect(pluginFiles, `plugin chunks: ${pluginFiles.join(', ')}`).toHaveLength(pluginNames.length);
     const core = files.filter((f) => !pluginFiles.includes(f));
 
-    // Exactly nine besides the plugins', and deliberately exact: the project ships no fonts, no
-    // images and no other chunks, so a tenth file is either a split that
+    // Exactly ten besides the plugins', and deliberately exact: the project ships no fonts, no
+    // images and no other chunks, so an eleventh file is either a split that
     // was not meant to happen or an asset nobody decided to ship. Route-level
     // splitting in particular produces a dozen of these on its own and is
     // switched off for everything but the backoffice and the terminal — see
@@ -59,10 +59,11 @@ describe('code splitting invariants in production bundle', () => {
     // when the landing page moved out of RootView's static imports.
     // Nine since the backoffice's own stylesheet moved out of the entry's:
     // AdminPage-*.css is the only stylesheet besides index-*.css, decided
-    // rather than produced (see src/styles/admin.scss).
+    // rather than produced (see src/styles/admin.scss). Ten since the
+    // terminal's followed it: TerminalPanel-*.css, imported by that view.
     // A chunk shared between two plugins — a helper both import — shows up
-    // here as a tenth file: keep such helpers in the entry instead.
-    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(9);
+    // here as an eleventh file: keep such helpers in the entry instead.
+    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(10);
 
     const indexJs = files.filter((f) => /^index-[^.]+\.js$/.test(f));
     const indexCss = files.filter((f) => /^index-[^.]+\.css$/.test(f));
@@ -71,6 +72,7 @@ describe('code splitting invariants in production bundle', () => {
     const zhJs = files.filter((f) => /^i18n\.zh-[^.]+\.js$/.test(f));
     const mathJs = files.filter((f) => /^math-[^.]+\.js$/.test(f));
     const terminalJs = files.filter((f) => /^TerminalPanel-[^.]+\.js$/.test(f));
+    const terminalCss = files.filter((f) => /^TerminalPanel-[^.]+\.css$/.test(f));
     const frontJs = files.filter((f) => /^FrontPage-[^.]+\.js$/.test(f));
     const landingJs = files.filter((f) => /^LandingView-[^.]+\.js$/.test(f));
 
@@ -81,6 +83,7 @@ describe('code splitting invariants in production bundle', () => {
     expect(zhJs.length).toBe(1);
     expect(mathJs.length).toBe(1);
     expect(terminalJs.length).toBe(1);
+    expect(terminalCss.length).toBe(1);
     expect(frontJs.length).toBe(1);
     expect(landingJs.length).toBe(1);
   });
@@ -150,6 +153,24 @@ describe('code splitting invariants in production bundle', () => {
     expect(indexCss).not.toContain('.oa-dashboard-card');
     expect(indexCss).toContain('.oa-segment');
     expect(indexCss).toMatch(/\.oa-plugin-list\{[^}]*text-align:right/);
+    // The backoffice's controls that lived in the chat's own partials went
+    // with it too.
+    for (const name of ['.oa-safe-mode-btn', '.oa-field-inert', '.oa-thinking-tier', '.oa-detect-known']) {
+      expect(adminCss).toContain(name);
+      expect(indexCss).not.toContain(name);
+    }
+  });
+
+  // The terminal's rules arrive with the terminal: only the readers who open
+  // it fetch them, and none of them is left behind in the entry's sheet.
+  it('gives the terminal its own stylesheet', () => {
+    const files = builtAssets();
+    const read = (re: RegExp) => fs.readFileSync(path.join(assetsDir, files.find((f) => re.test(f))!), 'utf8');
+    const terminalCss = read(/^TerminalPanel-[^.]+\.css$/);
+    const indexCss = read(/^index-[^.]+\.css$/);
+    expect(terminalCss).toContain('.oa-terminal-panel');
+    expect(terminalCss).toContain('.is-terminal');
+    expect(indexCss).not.toMatch(/\.oa-terminal(?!-back)|\.ansi-/);
   });
 
   it('keeps admin, Chinese translation, and math renderer out of the main bundle', () => {
@@ -322,8 +343,9 @@ describe('code splitting invariants in production bundle', () => {
     // 250 kB until the backoffice's English moved into its own chunk and took
     // about 29 kB off the entry; ratcheted down then, so the room it made is
     // not quietly spent. 225 kB until the backoffice's stylesheet followed it
-    // and took about 13.5 kB more.
-    const FIRST_PAINT_GZIP_BUDGET = 210_000;
+    // and took about 13.5 kB more, and 210 kB until the terminal's stylesheet
+    // and the backoffice's last controls took about 1.6 kB more.
+    const FIRST_PAINT_GZIP_BUDGET = 207_000;
     const gzipped = firstPaintGzipBytes();
     expect(gzipped, `first paint is ${gzipped} bytes gzipped, budget ${FIRST_PAINT_GZIP_BUDGET}`).toBeLessThanOrEqual(
       FIRST_PAINT_GZIP_BUDGET,
