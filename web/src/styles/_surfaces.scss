@@ -115,7 +115,7 @@
 
 .oa-filters input:focus,
 .oa-filter-select:focus-visible {
-  @include filter-pill-focus;
+  @include field-focus;
 }
 
 /* --- table --------------------------------------------------------------- */
@@ -140,7 +140,7 @@
 .oa-table-wrap::-webkit-scrollbar-thumb { background: var(--ai-outline-variant); border-radius: 999px; }
 .oa-table-wrap::-webkit-scrollbar-track { background: transparent; }
 .oa-table-wrap::-webkit-scrollbar-button { display: none; }
-.oa-table-wrap:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
+.oa-table-wrap:focus-visible { @include focus-ring; }
 
 .oa-table {
   width: 100%;
@@ -330,16 +330,13 @@
 
 /* An empty list is a shape in the place the list would be, not a sentence
    floating in the page: the same rounded band a row is, taller, so the
-   screen does not look half-drawn while there is nothing to show. */
+   screen does not look half-drawn while there is nothing to show. The band's
+   fill and the colour are the shared empty line's, in _chat.scss. */
 .oa-table-empty {
   margin: 0;
   padding: 44px 16px;
   border-radius: 14px;
-  background: color-mix(in srgb, var(--ai-text) 3%, transparent);
   font-size: 12.5px;
-  line-height: 1.6;
-  text-align: center;
-  color: var(--ai-text-secondary);
 }
 
 /* Secondary columns remain available on phones through the table scroller. */
@@ -517,13 +514,10 @@
   margin-right: calc(-1 * (var(--oa-panel-width) + 14px));
   opacity: 0;
   transform: translate3d(24px, 0, 0);
-  transition: margin-right 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-              opacity 0.22s ease;
   /* Asks the compositor for the layer before a slide starts, so the first
      frame does not stall on creating it. Closed panels carry the hint too;
      a closed panel is unmounted within the zoom time, so it costs nothing. */
-  will-change: margin-right, transform, opacity;
+  will-change: transform, opacity;
 }
 
 .oa-panel.open {
@@ -555,7 +549,7 @@
   margin-right: 0;
   opacity: 1;
   overflow: hidden;
-  transition: width 0.34s cubic-bezier(0.2, 0, 0, 1);
+  transition: width 0.34s var(--ai-ease-standard);
 }
 
 .oa-panel.fullscreen,
@@ -730,10 +724,10 @@
    other instead, so there is nothing to fold. */
 @media (min-width: 1101px) {
   .oa-panel {
-    transition: margin-right 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-                transform 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-                width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-                min-width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    transition: margin-right 0.34s var(--ai-ease-out),
+                transform 0.34s var(--ai-ease-out),
+                width 0.28s var(--ai-ease-out),
+                min-width 0.28s var(--ai-ease-out),
                 opacity 0.22s ease;
   }
 
@@ -786,8 +780,11 @@
 }
 
 /* Below three-column width it becomes an overlay, the same fallback the
-   conversation rail makes. */
-@media (max-width: 1100px) {
+   conversation rail makes. It is the complement of the three-column query
+   rather than max-width: 1100px, because a fractional viewport such as
+   1100.5px is neither at most 1100 nor at least 1101 and would get neither
+   the overlay nor the fold. */
+@media not all and (min-width: 1101px) {
   .oa-panel {
     position: fixed;
     z-index: 30;
@@ -800,7 +797,7 @@
     border-radius: 0;
     box-shadow: var(--ai-shadow-md);
     transform: translateX(100%);
-    transition: transform 0.24s cubic-bezier(0.2, 0, 0, 1), opacity 0.2s ease;
+    transition: transform 0.24s var(--ai-ease-standard), opacity 0.2s ease;
   }
 
   .oa-panel.open {
@@ -905,7 +902,7 @@
      that followed the surface token would disappear into a dark one. */
   background: #fff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
-  transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 0.18s var(--ai-ease-standard);
 }
 
 .oa-switch-field .oa-checkbox-field input[type="checkbox"]:checked,
@@ -1001,20 +998,10 @@
 
 /* --- animations ---------------------------------------------------------- */
 
-/* Match ObisidianChat's 10px rise and 18px directional entrance. The fixed
-   header and navigation stay put during section changes, so the movement
-   identifies the content being replaced instead of shifting every control. */
-@keyframes sectionEnter {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
+/* Match ObisidianChat's 10px rise (oaRise, in _chat.scss) and 18px directional
+   entrance. The fixed header and navigation stay put during section changes,
+   so the movement identifies the content being replaced instead of shifting
+   every control. */
 @keyframes paneEnterForward {
   from {
     opacity: 0;
@@ -1039,7 +1026,7 @@
 
 .oa-settings.enter-rise,
 .oa-auth-card {
-  animation: sectionEnter 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: oaRise 0.28s var(--ai-ease-out);
 }
 
 .oa-settings.enter-forward,
@@ -1047,13 +1034,13 @@
 .oa-panel.replacing > .oa-panel-head,
 .oa-panel.replacing > .oa-panel-body-wrap,
 .oa-panel.replacing > .oa-panel-foot {
-  animation: paneEnterForward 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: paneEnterForward 0.32s var(--ai-ease-out);
   will-change: transform, opacity;
 }
 
 .oa-settings.enter-back,
 .oa-admin-main.enter-back {
-  animation: paneEnterBack 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: paneEnterBack 0.32s var(--ai-ease-out);
   will-change: transform, opacity;
 }
 
@@ -1319,14 +1306,6 @@
   color: var(--ai-text);
 }
 
-.oa-connection-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
-}
-
 .oa-connection-name {
   font-size: 13px;
   font-weight: 600;
@@ -1346,11 +1325,14 @@
   flex: none;
 }
 
-.oa-settings-panel .oa-select,
-.oa-settings-panel input[type='text'],
-.oa-settings-panel input[type='email'],
-.oa-settings-panel input[type='password'],
-.oa-settings-panel input[type='number'],
+/* Only a textarea, which a plugin control or OaTextArea may draw here outside
+   an .oa-field. Every input and select in these panels sits in an .oa-field
+   and takes _workspace.scss's field rule. This rule used to restate that one
+   for them with the old 9px padding and the inherited 1.5 line height, which
+   left every settings field 0.75px taller than the same field anywhere else
+   (36.75px against 36px), and the two-factor wizard's code 46.5px against
+   the 44px it is in the enrolment page. That was drift, not a decision: the
+   field rule was evened out to one height and this copy was never told. */
 .oa-settings-panel textarea {
   box-sizing: border-box;
   width: 100%;
@@ -1365,8 +1347,8 @@
 }
 
 /* Only the room for the chevron. The chevron itself is .oa-field .oa-select's,
-   and every select in these panels sits in an .oa-field; the padding above
-   would otherwise take back the space the arrow is drawn in. */
+   and every select in these panels sits in an .oa-field; a padding written
+   for these panels must not take back the space the arrow is drawn in. */
 .oa-settings-panel .oa-select {
   padding-right: 30px;
 }
@@ -1380,9 +1362,7 @@
 .oa-settings-panel input:not([type='range']):focus,
 .oa-settings-panel .oa-select:focus-visible,
 .oa-settings-panel textarea:focus {
-  outline: none;
-  background-color: var(--ai-field-bg-hover);
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include field-focus;
 }
 
 /* --- about ----------------------------------------------------------------- */
@@ -1563,8 +1543,7 @@
 
 .oa-check-row input[type="checkbox"]:focus-visible,
 .oa-table-check input[type="checkbox"]:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-check-row:has(input:checked) {
@@ -1612,12 +1591,12 @@
   border-radius: 12px;
   background: var(--ai-surface-container-low);
   border: 1px solid var(--ai-border);
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+  transition: transform 0.2s var(--ai-ease-out),
               background-color 0.2s ease,
               border-color 0.2s ease,
               box-shadow 0.2s ease,
               opacity 0.25s ease;
-  animation: oaKeyRowFadeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation: oaKeyRowFadeIn 0.32s var(--ai-ease-out) backwards;
   /* Capped: `backwards` holds each row at its opacity-0 start for its whole
      delay, so an uncapped stagger left the last rows of a long page invisible
      for seconds. */
@@ -1715,7 +1694,7 @@
 }
 
 .oa-key-toggle-btn {
-  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), color 0.18s ease, background-color 0.18s ease;
+  transition: transform 0.18s var(--ai-ease-out), color 0.18s ease, background-color 0.18s ease;
 }
 
 .oa-key-toggle-btn:hover {
@@ -1751,14 +1730,27 @@
   color: var(--ai-danger, #e5484d);
 }
 
+/* The grey note on the field tone: the key panel's warnings, the two-step
+   card's notes and the check-in notice are one box, drawn once here. Each
+   keeps its own margin below; the key warning also keeps its tighter padding,
+   10px corner and full text colour, which are not unified here because
+   changing them would be visible. */
+.oa-usage-note,
+.oa-2fa-note,
 .oa-key-warning {
-  margin: 0;
   font-size: 12px;
   line-height: 1.55;
-  color: var(--ai-text);
+  background: var(--ai-field-bg);
+  border-radius: 11px;
+  padding: 9px 12px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-key-warning {
+  margin: 0;
   padding: 9px 11px;
   border-radius: 10px;
-  background: var(--ai-field-bg);
+  color: var(--ai-text);
 }
 
 /* The warning that is answered by typing (OaTypedConfirm). The word is drawn
@@ -1814,7 +1806,7 @@
 }
 
 .oa-key-copy-btn {
-  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), color 0.18s ease;
+  transition: transform 0.18s var(--ai-ease-out), color 0.18s ease;
 }
 
 .oa-key-copy-btn.copied {
@@ -1854,18 +1846,7 @@
 
 .oa-keys-edit-animated,
 .oa-key-issued-animated {
-  animation: oaKeyFormFadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-@keyframes oaKeyFormFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  animation: oaRise 0.28s var(--ai-ease-out) both;
 }
 
 /* After every key rule it resets, since at the same weight the later rule
@@ -1959,14 +1940,22 @@
   margin-top: 12px;
 }
 
-/* One generated image with its prompt note and download action. */
-.oa-image-lab-card {
-  display: flex;
-  flex-direction: column;
+/* The lab's result, the gallery tile and the image in a chat answer are one
+   picture frame, so it is drawn once here; each keeps only its own layout
+   below (and in _chat.scss). Both files land in the same stylesheet. */
+.oa-image-lab-card,
+.oa-gallery-card,
+.ai-chat-generated-card {
   border-radius: 12px;
   overflow: hidden;
   background: var(--ai-surface-container-low);
   border: 1px solid var(--ai-border);
+}
+
+/* One generated image with its prompt note and download action. */
+.oa-image-lab-card {
+  display: flex;
+  flex-direction: column;
   padding: 12px;
 }
 
@@ -2004,10 +1993,12 @@
 .oa-gallery-spacer { flex: 1; }
 
 /* --- image lab gallery ---------------------------------------------------- */
+/* margin: 0 like every other empty line: without it the paragraph kept the
+   browser's 1em above and below, which no other empty state has. */
 .oa-gallery-empty {
+  margin: 0;
   padding: 48px 16px;
   text-align: center;
-  color: var(--ai-text-secondary);
   font-size: 13px;
 }
 
@@ -2020,10 +2011,6 @@
 .oa-gallery-card {
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
-  background: var(--ai-surface-container-low);
-  overflow: hidden;
-  border: 1px solid var(--ai-border);
   transition: border-color 0.15s ease;
 }
 
@@ -2110,8 +2097,7 @@
 }
 
 .oa-gallery-btn.danger:hover {
-  background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
-  color: var(--ai-danger);
+  @include mixins.danger-tint;
 }
 
 .oa-gallery-btn:focus-visible {
@@ -2149,7 +2135,7 @@
   border-radius: 999px;
   background: var(--ai-surface-container-high);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 0.5px 1px rgba(0, 0, 0, 0.04);
-  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.34s var(--ai-ease-out);
   pointer-events: none;
   z-index: 0;
 
@@ -2171,8 +2157,8 @@
   font-weight: 500;
   cursor: pointer;
   transition:
-    color 0.22s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+    color 0.22s var(--ai-ease-out),
+    transform 0.16s var(--ai-ease-out);
 
   &:hover {
     color: var(--ai-text);
@@ -2187,9 +2173,10 @@
     font-weight: 600;
   }
 
+  /* The shared 3px ring, as every other control wears; this was the one
+     2px copy, with nothing recording why. */
   &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--ai-focus-shadow);
+    @include mixins.focus-ring;
   }
 }
 
@@ -2201,6 +2188,16 @@
   white-space: nowrap;
   padding: 6px 14px;
   font-size: 12.5px;
+}
+
+/* The rest of this switch is .oa-slide-tabs; the rail is narrower than the
+   image lab's panel, so its tabs are the smaller size. It stays in this file,
+   after .oa-slide-tab, while the rest of the rail's project rules live in
+   _chat.scss: .oa-slide-tab's `font: inherit` would otherwise win the tie
+   and reset the size. */
+.ai-sidebar-tab {
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 /* Tighten top padding for image lab panel so form starts right under the title. */
@@ -2414,21 +2411,6 @@
   cursor: default;
 }
 
-.oa-reference-pick:not(.oa-reference-dropzone):not(.oa-reference-add-tile) {
-  display: inline-flex;
-  align-items: center;
-  align-self: flex-start;
-  gap: 7px;
-  padding: 8px 14px;
-  border: none;
-  border-radius: 999px;
-  background: var(--ai-field-bg);
-  color: var(--ai-text-secondary);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
 .oa-reference-pick:hover:not(:disabled) {
   background: var(--ai-field-bg-hover);
   color: var(--ai-text);
@@ -2533,7 +2515,7 @@
   fill: rgba(125, 125, 125, 0.08);
   stroke: var(--ai-text-secondary);
   stroke-width: 1.8;
-  transition: all 0.15s ease;
+  transition: fill 0.15s ease, stroke 0.15s ease, stroke-width 0.15s ease;
 }
 
 .oa-ratio-name {
@@ -2567,7 +2549,7 @@
   max-width: min(92vw, 1100px);
   max-height: 90vh;
   transform: scale(0.96);
-  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 0.2s var(--ai-ease-standard);
 }
 
 .oa-lightbox-overlay.open .oa-lightbox-card {
@@ -2665,6 +2647,16 @@
   box-sizing: border-box;
 }
 
+// The grid a full-screen panel lays its cards out in: as many 340px columns
+// as fit, each card as tall as its own content. The gap is the caller's,
+// because the two pages space their cards differently.
+@mixin fullscreen-grid($gap) {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: $gap;
+  align-items: start;
+}
+
 .oa-panel.fullscreen .oa-uptime-content {
   @include fullscreen-column;
 }
@@ -2730,11 +2722,7 @@
 // When maximized, model cards flow horizontally in multiple rows rather than
 // stretching a single column across the whole widescreen viewport.
 .oa-panel.fullscreen .oa-uptime-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
-  grid-auto-flow: row;
-  gap: 10px;
-  align-items: start;
+  @include fullscreen-grid(10px);
 }
 
 .oa-uptime-row-main {
@@ -2817,9 +2805,9 @@
   color: var(--ai-text-secondary);
   cursor: pointer;
   transition:
-    background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+    background-color 0.2s var(--ai-ease-out),
+    color 0.2s var(--ai-ease-out),
+    transform 0.15s var(--ai-ease-out);
 
   &:hover:not(:disabled) {
     background: var(--ai-field-bg-hover);
@@ -2838,8 +2826,7 @@
   }
 
   &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--ai-primary);
+    @include mixins.focus-ring;
   }
 }
 
@@ -2865,9 +2852,11 @@
     background: var(--ai-surface-container);
   }
 
+  // Inset rather than the outer 3px ring the other controls draw: the card
+  // around this header is overflow: hidden, so an outer ring would be clipped.
   &:focus-visible {
     outline: none;
-    box-shadow: inset 0 0 0 2px var(--ai-primary);
+    box-shadow: inset 0 0 0 3px var(--ai-focus-shadow);
   }
 }
 
@@ -2876,7 +2865,7 @@
   align-items: center;
   justify-content: center;
   color: var(--ai-text-secondary);
-  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.34s var(--ai-ease-out);
 
   &.open {
     transform: rotate(180deg);
@@ -2887,7 +2876,7 @@
 .oa-uptime-accordion {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: grid-template-rows 0.36s var(--ai-ease-out);
 
   &.open {
     grid-template-rows: 1fr;
@@ -2900,8 +2889,8 @@
   opacity: 0;
   transform: translateY(-4px);
   transition:
-    opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+    opacity 0.28s var(--ai-ease-out),
+    transform 0.36s var(--ai-ease-out);
 }
 
 .oa-uptime-accordion.open .oa-uptime-accordion-body {
@@ -3004,11 +2993,9 @@
   list-style: none;
 }
 
+// Uptime's full-screen cards sit 10px apart, these 8px: unifying them is a design call.
 .oa-panel.fullscreen .oa-board-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
-  gap: 8px;
-  align-items: start;
+  @include fullscreen-grid(8px);
 }
 
 .oa-board-row {
@@ -3247,7 +3234,6 @@
 .oa-search-empty {
   margin: 0;
   padding: 18px 8px;
-  color: var(--ai-text-secondary);
   font-size: 12px;
   line-height: 1.6;
   text-align: center;
@@ -3261,13 +3247,6 @@
 
 .oa-settings > .oa-settings-group {
   gap: 26px;
-}
-
-/* A range gets its focus halo on the thumb, never a filled input rectangle. */
-.oa-range-field input[type='range']:focus {
-  outline: none;
-  background: transparent;
-  box-shadow: none;
 }
 
 /* The pager stays outside the horizontal scroller so its controls stay on screen. */
@@ -3340,8 +3319,7 @@
   color: var(--ai-primary);
 }
 .oa-background-choice:focus-visible, .oa-theme-choice:focus-visible, .oa-wallpaper-upload:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 .oa-appearance .oa-color-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
 .oa-appearance .oa-color-dot { display: grid; place-items: center; width: 29px; height: 29px; border-radius: 999px; color: var(--ai-primary-text); }
@@ -3414,112 +3392,6 @@
   /* A 16px input prevents iOS from zooming the page when searching. */
   .oa-select-search input { font-size: 16px; }
   .oa-pagination-actions { width: 100%; justify-content: space-between; }
-}
-
-/* --- chat sidebar: work-surface tabs and the projects list ----------------
- * This is rail material, not backoffice material — it belongs beside
- * .ai-chat-sidebar in _chat.scss, and reuses that file's .ai-chat-list-item,
- * .ai-chat-list-open, .ai-chat-list-empty and .ai-chat-new outright. It
- * lands here anyway because this file was the one free of a concurrent
- * editor this round, and _chat.scss was not. Move it back if that stops
- * being the reason.
- */
-
-/* The rest of this switch is .oa-slide-tabs; the rail is narrower than the
-   image lab's panel, so its tabs are the smaller size. */
-.ai-sidebar-tab {
-  padding: 6px 10px;
-  font-size: 12px;
-}
-
-.ai-project-panel {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-}
-
-.ai-project-meta {
-  font-size: 10.5px;
-  color: var(--ai-text-secondary);
-}
-
-/* The same 26px row action as .ai-chat-list-more, kept as its own class
- * because that one is a menu trigger: the row's context-menu handler finds
- * it with querySelector('.ai-chat-list-more') and clicks it, so a project's
- * edit or delete button carrying that class would be the one clicked.
- */
-.ai-project-action-btn {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  margin-right: 4px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--ai-text-secondary);
-  opacity: 0;
-  cursor: pointer;
-}
-
-/* Revealed by the row itself, the same way .ai-chat-list-more is: one hover
- * rule on .ai-chat-list-item covers every action button in it.
- */
-.ai-chat-list-item:hover .ai-project-action-btn,
-.ai-project-action-btn:focus-visible {
-  opacity: 1;
-}
-
-.ai-project-action-btn:hover {
-  background: var(--ai-state-hover);
-  color: var(--ai-text);
-}
-
-.ai-project-action-btn.danger:hover {
-  background: transparent;
-  color: var(--ai-danger);
-}
-
-/* Without this, moving the pointer off the row between the arming click and
- * the confirming one would fade the button out from under an answer the
- * reader is mid-way through giving.
- */
-.ai-project-action-btn.armed {
-  opacity: 1;
-}
-
-/* A touch screen has no hover to reveal these, and an opacity-0 button still
- * takes the tap, so a phone reader would be pressing edit or delete blind.
- * Kept faint, the way .ai-chat-list-more is under the same query. */
-@media (hover: none) {
-  .ai-project-action-btn {
-    opacity: 0.45;
-  }
-}
-
-.ai-project-action-btn.danger.armed {
-  background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
-  color: var(--ai-danger);
-}
-
-/* Keyboard focus on the row's edit and delete buttons is the ring, as on the
- * other icon controls, not the browser's outline. */
-.ai-project-action-btn:focus-visible {
-  @include mixins.focus-ring;
-}
-
-.ai-project-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 10px;
-  border-radius: 14px;
-  background: var(--ai-surface-container-high);
 }
 
 .oa-feedback-detail-badges {
@@ -3917,14 +3789,9 @@
   line-height: 1.55;
 }
 
+/* The box itself is shared with .oa-key-warning, above. */
 .oa-2fa-note {
   margin: 0 16px 12px;
-  padding: 9px 12px;
-  border-radius: 11px;
-  background: var(--ai-field-bg);
-  color: var(--ai-text-secondary);
-  font-size: 12px;
-  line-height: 1.55;
 }
 
 .oa-2fa-panel-body {
@@ -3941,14 +3808,6 @@
   gap: 12px;
   padding: 12px 16px;
   border-top: 1px solid var(--ai-border);
-}
-
-.oa-2fa-row-text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
 }
 
 .oa-2fa-row-title {
@@ -4086,7 +3945,7 @@
   flex-direction: column;
   gap: 16px;
   margin: 0;
-  animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
+  animation: oaRise 0.34s var(--ai-ease-standard);
 }
 
 .oa-2fa-pane-head {
@@ -4184,7 +4043,7 @@
   align-self: stretch;
   padding-top: 12px;
   border-top: 1px solid var(--ai-border);
-  animation: oaKeyFormFadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: oaRise 0.28s var(--ai-ease-out) both;
 }
 
 .oa-2fa-key .oa-2fa-desc {
@@ -4232,9 +4091,14 @@
   text-align: center;
 }
 
-/* Inside a row the field sits beside its buttons, so it keeps their height. */
+/* Inside a row the field sits beside its buttons, so it keeps their height:
+   .oa-btn's 34px, set here rather than left to the padding and line height.
+   It was meant to match and never did: the settings panel's copy of the field
+   rule stood it at 40.5px, and without that copy it would have been 37px. */
 .oa-2fa-confirm-row input.oa-2fa-code {
-  min-height: 36px;
+  min-height: 34px;
+  padding-top: 0;
+  padding-bottom: 0;
   font-size: 15px;
   letter-spacing: 0.2em;
 }
@@ -4333,14 +4197,6 @@
   color: var(--ai-text-secondary);
 }
 
-.oa-toast-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
-}
-
 .oa-toast-title {
   font-size: 13px;
   font-weight: 700;
@@ -4400,7 +4256,7 @@
 .oa-toast-enter-active,
 .oa-toast-leave-active,
 .oa-toast-move {
-  transition: transform 0.25s cubic-bezier(0.2, 0, 0, 1), opacity 0.25s ease;
+  transition: transform 0.25s var(--ai-ease-standard), opacity 0.25s ease;
 }
 
 .oa-toast-enter-from,
@@ -4538,9 +4394,10 @@
 
 /* Timings and easing for the inner layer are the variables in _app.scss, so
    retuning the slide there moves both layers together. The !important on the
-   rules below is what lets the inner layer slide at all: _app.scss pins
-   .oa-workspace > .oa-chat-root with transform: none !important, and an
-   equal-weight rule has to win over that pin. */
+   rules below was first written to beat a transform: none !important pin on
+   the chat root in _app.scss; that pin is gone, and the weight stays so that
+   only the reduced-motion block at the end of this section, at the same
+   weight, can still the layer. */
 /* Header Cross-fade: keeps header fixed in place while smoothly cross-fading */
 .page-slide-left-enter-active .oa-header,
 .page-slide-right-enter-active .oa-header {
@@ -4575,13 +4432,13 @@
 /* Forward Slide (page-slide-left): new container enters from right, old container leaves to left */
 .page-slide-left-enter-active .oa-workspace > .oa-chat-root {
   z-index: 2;
-  transition: transform app.$oa-slide-duration app.$oa-slide-ease,
+  transition: transform app.$oa-slide-duration var(--ai-ease-out),
               opacity (app.$oa-slide-duration * 0.75) ease !important;
 }
 
 .page-slide-left-leave-active .oa-workspace > .oa-chat-root {
   z-index: 1;
-  transition: transform app.$oa-slide-duration app.$oa-slide-ease,
+  transition: transform app.$oa-slide-duration var(--ai-ease-out),
               opacity app.$oa-slide-duration ease !important;
 }
 
@@ -4608,13 +4465,13 @@
 /* Backward Slide (page-slide-right): old container leaves to right, new container enters from left */
 .page-slide-right-enter-active .oa-workspace > .oa-chat-root {
   z-index: 1;
-  transition: transform app.$oa-slide-duration app.$oa-slide-ease,
+  transition: transform app.$oa-slide-duration var(--ai-ease-out),
               opacity app.$oa-slide-duration ease !important;
 }
 
 .page-slide-right-leave-active .oa-workspace > .oa-chat-root {
   z-index: 2;
-  transition: transform app.$oa-slide-duration app.$oa-slide-ease,
+  transition: transform app.$oa-slide-duration var(--ai-ease-out),
               opacity (app.$oa-slide-duration * 0.8) ease !important;
 }
 
@@ -4757,15 +4614,10 @@
 }
 
 /* What just happened, or what went wrong, above the month: the field tone, so
-   it stands apart from the card the way the two-step card's notes do. */
+   it stands apart from the card the way the two-step card's notes do. The box
+   is shared with .oa-key-warning, above. */
 .oa-usage-note {
   margin: 0 0 12px;
-  padding: 9px 12px;
-  border-radius: 11px;
-  background: var(--ai-field-bg);
-  color: var(--ai-text-secondary);
-  font-size: 12px;
-  line-height: 1.55;
 }
 
 .oa-usage-note.error {
@@ -4858,7 +4710,7 @@
   display: inline-flex;
   color: var(--ai-text-secondary);
   transform: rotate(-90deg);
-  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.34s var(--ai-ease-out);
 }
 
 .oa-collapsible.open .oa-collapsible-chevron {
@@ -4868,7 +4720,7 @@
 .oa-collapsible-body {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: grid-template-rows 0.36s var(--ai-ease-out);
 }
 
 .oa-collapsible.open .oa-collapsible-body {
@@ -4880,7 +4732,7 @@
   margin: 0 -6px;
   overflow: hidden;
   opacity: 0;
-  transition: opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.28s var(--ai-ease-out);
 }
 
 .oa-collapsible.open .oa-collapsible-inner {
@@ -4984,14 +4836,6 @@
   border-radius: 10px;
   background: var(--ai-field-bg);
   color: var(--ai-text);
-}
-
-.oa-group-row-text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
 }
 
 .oa-group-row-title {

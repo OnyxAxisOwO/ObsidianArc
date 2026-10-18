@@ -13,6 +13,10 @@
 // instance-wide ceilings behind it are what hold when a client throws the
 // token away. Losing this file entirely would cost the operator nothing.
 
+// Imported here rather than by index.scss so that Vite emits it as this
+// chunk's stylesheet and loads it before the chunk runs: the page never
+// paints unstyled, and a signed-in reader never downloads it.
+import '@/styles/_landing.scss';
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { streamTrial } from '@/api/trial';

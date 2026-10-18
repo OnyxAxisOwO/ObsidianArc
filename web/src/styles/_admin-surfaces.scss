@@ -38,7 +38,7 @@
      keeps its own width the whole way, so its entries never reflow mid
      animation and the screen beside it widens smoothly into the space. The
      conversation rail moves exactly like this, and for the same reason. */
-  transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+  transition: margin-left 0.34s var(--ai-ease-standard), opacity 0.22s ease,
     visibility 0s linear 0s;
 }
 
@@ -51,7 +51,7 @@
      from under another one does not meet it as a hard vertical line. */
   -webkit-mask-image: linear-gradient(to left, transparent 0, #000 28px);
   mask-image: linear-gradient(to left, transparent 0, #000 28px);
-  transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+  transition: margin-left 0.34s var(--ai-ease-standard), opacity 0.22s ease,
     visibility 0s linear 0.34s;
 }
 
@@ -408,9 +408,6 @@
   .oa-admin-rail {
     flex-direction: row;
     flex-wrap: nowrap;
-    width: auto;
-    padding: 8px;
-    overflow-x: auto;
   }
 
   .oa-admin-rail-title,
@@ -597,7 +594,6 @@
   flex: 0 1 auto;
 }
 
-.oa-app-id,
 .oa-app-secret-value,
 .oa-app-uri {
   /* Every one of these is a long value in a box that may be narrow. */
@@ -823,8 +819,7 @@
 
 .oa-log-row:focus-visible,
 .oa-audit-row:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-log-request {
@@ -1328,8 +1323,7 @@
    near-identical ones, and a red button on every line reads as a warning
    about the list rather than about the press. */
 .oa-card-drop.armed {
-  background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
-  color: var(--ai-danger);
+  @include mixins.danger-tint;
 }
 
 /* Issue and move, side by side under one date picker, because they are two
@@ -1465,8 +1459,8 @@
     0 14px 20px -8px rgba(0, 0, 0, 0.55),
     inset 0 2px 1px rgba(255, 255, 255, 0.34);
   transition:
-    transform 0.09s cubic-bezier(0.2, 0, 0, 1),
-    box-shadow 0.09s cubic-bezier(0.2, 0, 0, 1);
+    transform 0.09s var(--ai-ease-standard),
+    box-shadow 0.09s var(--ai-ease-standard);
 }
 
 .oa-bigbutton-cap:hover {
@@ -1559,10 +1553,7 @@
   overflow-y: auto;
   padding: 3px;
   scrollbar-width: none;
-}
-
-.oa-admin-nav-list::-webkit-scrollbar {
-  display: none;
+  @include hidden-scrollbar;
 }
 
 @media (max-width: 900px) {
@@ -1593,8 +1584,8 @@
     gap: 0;
     overflow: hidden;
     border-radius: 999px;
-    transition: width 0.34s cubic-bezier(0.2, 0, 0, 1),
-      border-radius 0.34s cubic-bezier(0.2, 0, 0, 1),
+    transition: width 0.34s var(--ai-ease-standard),
+      border-radius 0.34s var(--ai-ease-standard),
       background-color 0.15s ease;
   }
 
@@ -1714,7 +1705,7 @@
 }
 
 .oa-bulk-reason:focus {
-  @include filter-pill-focus;
+  @include field-focus;
 }
 
 .oa-bulk-error {
@@ -1784,8 +1775,8 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  animation: oaKeyRowFadeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.2s var(--ai-ease-out);
+  animation: oaKeyRowFadeIn 0.32s var(--ai-ease-out) backwards;
   animation-delay: min(calc(var(--item-idx, 0) * 40ms), 240ms);
 }
 
@@ -1960,8 +1951,7 @@
 
 .oa-thread-remove:hover,
 .oa-thread-remove.armed {
-  background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
-  color: var(--ai-danger);
+  @include mixins.danger-tint;
 }
 
 /* The button is revealed for keyboard focus as well as hover (see the opacity
@@ -2025,7 +2015,7 @@
   height: 100%;
   border-radius: inherit;
   background: var(--ai-primary);
-  transition: width 0.4s cubic-bezier(0.2, 0, 0, 1);
+  transition: width 0.4s var(--ai-ease-standard);
 }
 
 /* The usage meters drop their width animation under reduced motion; this
@@ -2141,7 +2131,7 @@
   border-radius: 999px;
   background: var(--ai-primary);
   transform: translateX(calc(var(--i, 0) * 100%));
-  transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.45s var(--ai-ease-out);
 }
 
 .oa-segment.oa-bg-switch button {
@@ -2162,9 +2152,9 @@
   align-self: center;
   max-width: 100%;
   transition:
-    width 0.55s cubic-bezier(0.16, 1, 0.3, 1),
-    height 0.55s cubic-bezier(0.16, 1, 0.3, 1),
-    border-radius 0.55s cubic-bezier(0.16, 1, 0.3, 1),
+    width 0.55s var(--ai-ease-out),
+    height 0.55s var(--ai-ease-out),
+    border-radius 0.55s var(--ai-ease-out),
     box-shadow 0.15s ease;
   /* The empty stage is the plain page a reader would get, in the scheme
      being looked at — not a dashed drop zone. */
@@ -2196,7 +2186,7 @@
 
 /* Standing in for an unset variant: shown, but plainly not this one. */
 .oa-bg-stage-art {
-  transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1), filter 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.45s var(--ai-ease-out), filter 0.45s var(--ai-ease-out);
 }
 
 .oa-bg-stage.stand-in .oa-bg-stage-art {
@@ -2229,7 +2219,7 @@
 .oa-bg-stage-ghost.app {
   gap: 3%;
   padding: 7%;
-  transition: gap 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: gap 0.55s var(--ai-ease-out);
 }
 
 .oa-bg-stage-ghost.app .rail,
@@ -2242,7 +2232,7 @@
 
 .oa-bg-stage-ghost.app .rail {
   flex: 0 0 24%;
-  transition: flex-basis 0.55s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+  transition: flex-basis 0.55s var(--ai-ease-out), opacity 0.3s ease;
 }
 
 .oa-bg-stage.screen-tablet .oa-bg-stage-ghost.app .rail {
@@ -2320,7 +2310,7 @@
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
-  transition: width 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: width 0.55s var(--ai-ease-out);
 }
 
 .oa-bg-stage.screen-tablet .oa-bg-stage-ghost.login .card {
@@ -2552,8 +2542,7 @@
 }
 
 .oa-bg-html-source:focus {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-bg-html-actions {
@@ -2595,8 +2584,7 @@
   }
 
   &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+    @include mixins.focus-ring;
   }
 }
 
@@ -2642,4 +2630,13 @@
 .oa-provider-key.dropped .oa-group-row-title {
   color: var(--ai-text-secondary);
   text-decoration: line-through;
+}
+
+/* The stacked buttons under the prompt that hides the About page. Only the
+   backoffice opens that prompt, so the rule loads with it instead of adding
+   to every first paint; the doubled class outranks .oa-auth-form's gap
+   whichever of the two stylesheets arrives last. */
+.oa-auth-form.oa-admin-auth-stack {
+  margin-top: 18px;
+  gap: 8px;
 }

@@ -1,3 +1,5 @@
+@use 'mixins' as *;
+
 /* The segmented switch, out of _analytics.scss: the usage report drew it
    first, and the leaderboard draws it too, so it is the one part of that
    file a first paint needs. It sits where _analytics.scss sat in the order,
@@ -15,29 +17,20 @@
   background: var(--ai-field-bg);
 }
 
+/* The option's look is shared with .oa-segmented-option (_mixins.scss). */
 .oa-segment button {
   height: 28px;
   padding: 0 12px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ai-text-secondary);
-  font: inherit;
-  font-size: 11.5px;
+  @include pill-option;
   font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .oa-segment button:hover:not([aria-pressed='true']) {
-  background: var(--ai-state-hover);
-  color: var(--ai-text);
+  @include pill-option-hover;
 }
 
 .oa-segment button[aria-pressed='true'] {
-  background: var(--ai-primary);
-  color: var(--ai-primary-text);
+  @include pill-option-pressed;
 }
 
 /* The other two pill groups had no focus rule at all, which left the
@@ -50,6 +43,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .oa-segmented-option,
   .oa-segment button,
   .oa-settings-tab {
     transition: none;

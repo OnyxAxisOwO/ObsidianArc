@@ -170,7 +170,6 @@ const canRemove = computed(() => props.control.kind === 'rows' && rows.value.len
               />
               <input
                 v-else
-                class="oa-field-input"
                 :type="column.kind === 'number' ? 'number' : 'text'"
                 :min="column.kind === 'number' ? column.min : undefined"
                 :max="column.kind === 'number' ? column.max : undefined"

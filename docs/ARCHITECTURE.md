@@ -81,8 +81,8 @@ them is preserved.
   rows, with a "manage models" footer that jumps to settings.
 - **Settings** — a right-side drawer, 420px, sections separated by uppercase
   subheads, with an accent picker of 10 dots plus a custom hex row.
-- **Motion** — `aiChatSwitch` on conversation change, a caret that blinks at the live end of a streaming answer, a
-  0.34s `cubic-bezier(0.2, 0, 0, 1)` rail slide, and a full
+- **Motion** — `oaRise` on conversation change, a caret that blinks at the live end of a streaming answer, a
+  0.34s `--ai-ease-standard` (`cubic-bezier(0.2, 0, 0, 1)`) rail slide, and a full
   `prefers-reduced-motion` path that turns all of it off.
 - **Theme** — light values on `:root`, dark by `prefers-color-scheme`, forced
   by `[data-theme]`; one accent hue clamped per scheme by `color-utils.js` so
@@ -331,6 +331,46 @@ wording, load and delete skeletons and model editor were consolidated inside
 its own chunk: 170.86 kB plus 15.24 kB of stylesheet. The Chinese dictionary
 is 51.63 kB with one more security-log reason; the other lazy chunks are
 unchanged.
+
+Remeasured on 2026-10-18 (UTC), after a pass over the stylesheets: rules that no
+element matched, declarations a later rule had already overridden, and a second
+copy of the full-screen grid are gone, and the gap between 1100px and 1101px in
+the layout breakpoints is closed, so a fractional viewport such as 1100.5px gets
+the overlay it was missing. 202.02 kB to open the chat (179.23 JS + 22.79 CSS),
+down 0.08 kB; the build's estimate is 202.65 kB, 1.35 kB under the bundle test's
+204 kB budget. The backoffice stylesheet is 15.21 kB on the wire, and the binary
+still rounds to 27.10 MB.
+
+Remeasured on 2026-10-18 (UTC), after the front page's and the landing
+page's stylesheets moved out of the entry: `_front.scss` and the new
+`_landing.scss` are imported by their views, so they arrive as
+`FrontPage-*.css` and `LandingView-*.css` with those chunks. 202.10 kB to open
+the chat (179.23 JS + 22.87 CSS), down 3.31 kB; the build's estimate is
+202.72 kB, and the bundle test's budget is ratcheted from 207 kB to 204 kB.
+The front page is now 4.13 kB plus 3.89 kB of stylesheet, which is
+0.57 kB more in all for its visitors than when the sheet rode in the entry,
+and the landing page 3.12 kB plus 0.62 kB. Everything else unchanged. The
+binary was not rebuilt for this; its figure is the one below.
+
+Remeasured on 2026-10-18 (UTC), after a second round of stylesheet merges:
+the three identical entrance keyframes are one (`oaRise`), the easing curves
+are `--ai-ease-*` tokens, the settings panel no longer restates the field
+rule, and a few dead rules and class names are gone. 205.41 kB to open the
+chat (179.16 JS + 26.25 CSS), down 0.05 kB; the build's estimate is
+206.10 kB, 0.90 kB under the bundle test's 207 kB. Backoffice 170.53 kB plus
+15.22 kB of stylesheet, terminal 8.05 kB plus 1.67 kB, Chinese dictionary
+51.60 kB, the other lazy chunks unchanged. The binary was not rebuilt for
+this; its figure is the one below.
+
+Remeasured on 2026-10-18 (UTC), after a round of stylesheet merges: the
+repeated note box, text column, picture frame, empty line and pill-switch
+option are each written once, the workspace's duplicate page-slide pins and
+two copies of the spinner's turn are gone, and the rail's project rules moved
+back into `_chat.scss`. 205.46 kB to open the chat (179.18 JS + 26.28 CSS),
+down 0.13 kB; the build's estimate is 206.17 kB, 0.83 kB under the bundle
+test's 207 kB. Backoffice 170.54 kB plus 15.23 kB of stylesheet, terminal
+8.05 kB plus 1.65 kB, Chinese dictionary 51.60 kB, the other lazy chunks
+unchanged. The binary was not rebuilt for this; its figure is the one below.
 
 Remeasured on 2026-10-18 (UTC), after the billing and operations review
 fixes were merged. Refusals from feedback, announcements, backup and import
@@ -790,9 +830,11 @@ transport — is also admin-only code, and all 8.35 kB of its frontend landed in
 chunk, which nobody who cannot open it ever fetches. What reached the first
 paint is the two things this project deliberately does not split: its English
 strings, because `en` in `i18n.ts` is the type that makes the Chinese
-dictionary provably complete, and its stylesheet, because there is one. Those
+dictionary provably complete, and its stylesheet, because there was one then. Those
 are 0.97 kB of JS and 0.86 kB of CSS. Splitting either is the careful job named below, not
-something to do while adding a screen.
+something to do while adding a screen. Both have been split since: the
+backoffice's English and its stylesheet now travel in its chunk, and so do the
+terminal's, the front page's and the landing page's stylesheets.
 
 The console had added 1.07 MB, all of it `golang.org/x/crypto/ssh`. That is a
 package of a module `go.mod` already required for Argon2id, so it adds no
@@ -816,18 +858,18 @@ The six pieces most people never need are split off: the administration
 backoffice (with its own English and its own stylesheet), the terminal (with
 its stylesheet), the Chinese dictionary, the LaTeX renderer, the public front
 page, and the landing page (the intro or trial a signed-out visitor sees on an
-instance that chose one).
+instance that chose one), each of those last two with its stylesheet.
 What each reader actually downloads, as the server sends it (2026-10-18):
 
 | | gzipped |
 | --- | --- |
-| English, not an administrator | 204.97 kB |
-| Chinese, not an administrator | 256.16 kB |
-| …and a conversation containing a formula | 259.95 kB |
-| Chinese administrator, backoffice open | 441.99 kB |
-| Anybody, once they open the terminal | +9.68 kB |
-| A visitor to an instance whose front door is the front page | +4.14 kB |
-| A signed-out visitor to an instance whose front door is the intro or trial | +3.12 kB |
+| English, not an administrator | 202.10 kB |
+| Chinese, not an administrator | 253.70 kB |
+| …and a conversation containing a formula | 257.49 kB |
+| Chinese administrator, backoffice open | 439.45 kB |
+| Anybody, once they open the terminal | +9.72 kB |
+| A visitor to an instance whose front door is the front page | +8.02 kB |
+| A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice and the terminal: /settings, /keys, /usage and
@@ -840,8 +882,16 @@ to the backoffice's stylesheet (`styles/admin.scss`, emitted as
 renders, and `test/bundle.test.ts` checks every one against the built output.
 `_surfaces.scss` stays in the entry, because it carries the shared design
 system — panels, fields, tables, the About screen. The terminal's rules arrive
-with the terminal in `TerminalPanel-*.css`; the front page's are still in the
-entry.
+with the terminal in `TerminalPanel-*.css`, the front page's in
+`FrontPage-*.css` and the landing page's in `LandingView-*.css`. Each of those
+three is a stylesheet the browser fetches after the chunk's script is asked
+for and before it runs, so the reader who opens the terminal, or a signed-out
+visitor whose front door is the front page or the intro or trial, waits one
+more serial round trip before that screen draws. That is the trade the
+backoffice made first: the few readers who open such a screen pay a round
+trip so that every first paint stops carrying its rules. The one rule the front page and the
+landing page share, `.oa-landing-brand`, stays in the entry, because neither
+chunk can reach the other's stylesheet.
 
 These are transferred sizes. The server compresses its own responses, because
 the deployment this document assumes has nothing in front of it to do that

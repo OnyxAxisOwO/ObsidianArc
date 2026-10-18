@@ -85,8 +85,8 @@
      that has to stay readable. */
   background: transparent;
   transition:
-    background-color 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    background-color 0.3s var(--ai-ease-out),
+    box-shadow 0.3s var(--ai-ease-out);
 }
 
 /* Prefixed as `_app.scss` prefixes its own: Safari before 18 reads only the
@@ -115,8 +115,8 @@
   font-size: 12.5px;
   cursor: pointer;
   transition:
-    color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    color 0.2s var(--ai-ease-out),
+    background-color 0.2s var(--ai-ease-out);
 }
 
 .oa-front-nav button:hover {
@@ -125,8 +125,7 @@
 }
 
 .oa-front-nav button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include focus-ring;
 }
 
 /* The nav is the first thing to go: the three buttons are shortcuts to
@@ -234,7 +233,7 @@
      compose rather than one replacing the other. The transition is what
      turns a pointer that jumps into a field that follows with some weight. */
   translate: 0 0;
-  transition: translate 0.9s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: translate 0.9s var(--ai-ease-out);
 }
 
 /* Three periods with no common factor, so the three never line up into a
@@ -245,21 +244,21 @@
   top: -18%;
   left: 2%;
   translate: calc((var(--oa-front-px) - 0.5) * 120px) calc((var(--oa-front-py) - 0.5) * 80px);
-  animation: oaFrontDrift 9s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  animation: oaFrontDrift 9s var(--ai-ease-loop) infinite;
 }
 
 .oa-front-blob.two {
   top: 6%;
   right: -4%;
   translate: calc((var(--oa-front-px) - 0.5) * -150px) calc((var(--oa-front-py) - 0.5) * -90px);
-  animation: oaFrontDrift 11s cubic-bezier(0.45, 0, 0.55, 1) -4s infinite reverse;
+  animation: oaFrontDrift 11s var(--ai-ease-loop) -4s infinite reverse;
 }
 
 .oa-front-blob.three {
   bottom: -30%;
   left: 28%;
   translate: calc((var(--oa-front-px) - 0.5) * 80px) calc((var(--oa-front-py) - 0.5) * 130px);
-  animation: oaFrontDrift 13s cubic-bezier(0.45, 0, 0.55, 1) -7s infinite;
+  animation: oaFrontDrift 13s var(--ai-ease-loop) -7s infinite;
 }
 
 /* The grid. Two layers because two different things are happening to it:
@@ -276,7 +275,7 @@
   -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 20%, transparent 78%);
   mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 20%, transparent 78%);
   opacity: 0.7;
-  animation: oaFrontBreathe 8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  animation: oaFrontBreathe 8s var(--ai-ease-loop) infinite;
 }
 
 /* One tile of overscan on every side, travelling exactly one tile diagonally
@@ -332,7 +331,7 @@
   background-size: 180px 220px;
   animation:
     oaFrontRiseFar 34s linear infinite,
-    oaFrontTwinkle 6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+    oaFrontTwinkle 6s var(--ai-ease-loop) infinite;
 }
 
 .oa-front-motes.near {
@@ -368,8 +367,8 @@
   opacity: 0;
   will-change: translate, opacity;
   transition:
-    translate 0.5s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+    translate 0.5s var(--ai-ease-out),
+    opacity 0.6s var(--ai-ease-out);
 }
 
 .oa-front-hero:hover .oa-front-glow {
@@ -438,7 +437,7 @@
 .oa-front-line > span {
   display: block;
   transform: translateY(105%);
-  animation: oaFrontRise 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: oaFrontRise 0.9s var(--ai-ease-out) forwards;
 }
 
 .oa-front-line:nth-child(2) > span {
@@ -464,7 +463,7 @@
   background-clip: text;
   color: transparent;
   animation:
-    oaFrontRise 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.2s forwards,
+    oaFrontRise 0.9s var(--ai-ease-out) 0.2s forwards,
     oaFrontSheen 7s linear 1.2s infinite;
 }
 
@@ -479,7 +478,7 @@
   font-size: 15px;
   line-height: 1.68;
   opacity: 0;
-  animation: oaFrontFade 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.42s forwards;
+  animation: oaFrontFade 0.7s var(--ai-ease-out) 0.42s forwards;
 }
 
 .oa-front-actions {
@@ -489,7 +488,7 @@
   gap: 10px;
   margin-top: 28px;
   opacity: 0;
-  animation: oaFrontFade 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.54s forwards;
+  animation: oaFrontFade 0.7s var(--ai-ease-out) 0.54s forwards;
 }
 
 /* A taller pill than the interface's own, and the only place in the product
@@ -500,9 +499,9 @@
   padding: 0 22px;
   font-size: 13.5px;
   transition:
-    transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1),
-    background-color 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    transform 0.22s var(--ai-ease-out),
+    box-shadow 0.22s var(--ai-ease-out),
+    background-color 0.22s var(--ai-ease-out);
 }
 
 .oa-front-cta:hover {
@@ -515,7 +514,7 @@
 }
 
 .oa-front-cta > svg {
-  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.22s var(--ai-ease-out);
 }
 
 .oa-front-cta:hover > svg {
@@ -531,7 +530,7 @@
   width: min(760px, 100%);
   margin: 44px auto 0;
   opacity: 0;
-  animation: oaFrontFade 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.68s forwards;
+  animation: oaFrontFade 0.7s var(--ai-ease-out) 0.68s forwards;
 }
 
 // The caption a speaker's name and a figure's caption share, written once so
@@ -590,8 +589,8 @@
   font-size: 11px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  animation: oaFrontNudge 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-  transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: oaFrontNudge 2.4s var(--ai-ease-loop) infinite;
+  transition: opacity 0.3s var(--ai-ease-out);
 }
 
 /* The nudge animates `opacity` itself, and an animation beats any normal
@@ -641,8 +640,8 @@
   opacity: 0;
   transform: translateY(26px);
   transition:
-    opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1) var(--oa-front-delay, 0ms),
-    transform 0.7s cubic-bezier(0.16, 1, 0.3, 1) var(--oa-front-delay, 0ms);
+    opacity 0.7s var(--ai-ease-out) var(--oa-front-delay, 0ms),
+    transform 0.7s var(--ai-ease-out) var(--oa-front-delay, 0ms);
 }
 
 .oa-front-reveal.shown {
@@ -682,7 +681,7 @@
     transparent 72%
   );
   opacity: 0;
-  transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.3s var(--ai-ease-out);
   pointer-events: none;
 }
 
@@ -700,9 +699,9 @@
 .oa-front-card,
 .oa-front-card.shown {
   transition:
-    opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1) var(--oa-front-delay, 0ms),
-    transform 0.32s cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+    opacity 0.7s var(--ai-ease-out) var(--oa-front-delay, 0ms),
+    transform 0.32s var(--ai-ease-out),
+    box-shadow 0.32s var(--ai-ease-out);
 }
 
 /* Later than `.oa-front-reveal.shown`, which sets `transform: none` at the
@@ -808,7 +807,8 @@
     color-mix(in srgb, var(--ai-primary-text) 12%, transparent) 40deg,
     transparent 80deg
   );
-  animation: oaFrontSpin 9s linear infinite;
+  /* The chat's turn (_chat.scss), at its own slow speed. */
+  animation: ai-chat-spin 9s linear infinite;
   pointer-events: none;
 }
 
@@ -830,7 +830,7 @@
     linear-gradient(90deg, transparent, var(--ai-primary), transparent) no-repeat,
     var(--ai-outline-variant);
   background-size: 40% 100%;
-  animation: oaFrontPulse 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  animation: oaFrontPulse 2.6s var(--ai-ease-loop) infinite;
 }
 
 .oa-front-wire:nth-child(2) {
@@ -958,7 +958,7 @@
   /* Starts hidden: the keyframes only set the end value, so without this the
      fade's start is the element's own opacity of 1 and nothing fades. */
   opacity: 0;
-  animation: oaFrontFade 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: oaFrontFade 0.3s var(--ai-ease-out) forwards;
 }
 
 /* A blank output line has no text to give it height, and the mock uses one as
@@ -1079,7 +1079,7 @@
   gap: 6px;
   color: var(--ai-text-secondary);
   text-decoration: none;
-  transition: color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: color 0.2s var(--ai-ease-out);
 }
 
 .oa-front-foot a:hover {
@@ -1242,12 +1242,6 @@
   50% {
     transform: translateY(5px);
     opacity: 1;
-  }
-}
-
-@keyframes oaFrontSpin {
-  to {
-    transform: rotate(1turn);
   }
 }
 

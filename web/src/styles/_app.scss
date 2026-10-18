@@ -443,13 +443,13 @@
 }
 
 /* No animation is set here. The card also carries .oa-auth-card, whose entrance
-   (sectionEnter, in _surfaces.scss) therefore plays on modals too. The
+   (oaRise, set in _surfaces.scss) therefore plays on modals too. The
    transition in this rule is what moves the card in and out. */
 .oa-modal-card {
   position: relative;
   box-shadow: var(--ai-shadow-md), 0 20px 48px rgba(0, 0, 0, 0.25);
   transform: translateY(12px) scale(0.97);
-  transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 0.22s var(--ai-ease-standard);
 }
 
 .oa-modal-overlay.open .oa-modal-card {
@@ -693,37 +693,23 @@
 
 .oa-segmented-option {
   flex: 1;
-  /* One word per segment, whatever the language. Three options broken across
-     two lines each is what this control looked like in Chinese, where the
-     labels are short enough to fit and long enough to wrap. */
-  white-space: nowrap;
+  /* One word per segment, whatever the language (the mixin's nowrap). Three
+     options broken across two lines each is what this control looked like in
+     Chinese, where the labels are short enough to fit and long enough to
+     wrap. */
+  @include pill-option;
   padding: 5px 8px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ai-text-secondary);
-  font: inherit;
-  font-size: 11.5px;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .oa-segmented-option:hover {
-  background: var(--ai-state-hover);
-  color: var(--ai-text);
+  @include pill-option-hover;
 }
 
 /* aria-pressed is the one hook for "chosen", as on .oa-segment: a second
-   class saying the same thing is a second thing that can disagree. */
+   class saying the same thing is a second thing that can disagree. Its
+   reduced-motion rule is .oa-segment's, in _segment.scss. */
 .oa-segmented-option[aria-pressed='true'] {
-  background: var(--ai-primary);
-  color: var(--ai-primary-text);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .oa-segmented-option {
-    transition: none;
-  }
+  @include pill-option-pressed;
 }
 
 /* --- composer menu ----------------------------------------------------------- */
@@ -793,7 +779,7 @@
   height: 100%;
   border-radius: 999px;
   background: var(--ai-primary);
-  transition: width 0.24s cubic-bezier(0.2, 0, 0, 1);
+  transition: width 0.24s var(--ai-ease-standard);
 }
 
 .oa-meter-fill.warn {
@@ -963,7 +949,7 @@ body.oa-resizing * {
   background: var(--ai-surface-container);
   box-shadow: var(--ai-shadow-md);
   transform: translateY(8px) scale(0.98);
-  transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 0.22s var(--ai-ease-standard);
 }
 
 .oa-announce-overlay.open .oa-announce {
@@ -1012,23 +998,9 @@ body.oa-resizing * {
 
 /* --- the front door ---------------------------------------------------------- */
 
-.oa-landing {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  height: 100%;
-  min-height: 0;
-  padding: 18px 22px 22px;
-  box-sizing: border-box;
-}
-
-.oa-landing-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
+/* The landing page's own rules are in _landing.scss, which LandingView.vue
+   imports. The brand stays here because the front page draws it too, and
+   the two pages are separate chunks. */
 .oa-landing-brand {
   display: flex;
   align-items: center;
@@ -1051,138 +1023,7 @@ body.oa-resizing * {
 }
 
 .oa-landing-brand:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-}
-
-.oa-landing-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  justify-content: center;
-}
-
-/* The operator's own page. Their markup lands here, so this only sets the
-   measure and the rhythm and leaves the rest alone. */
-.oa-landing-intro {
-  width: min(720px, 100%);
-  overflow-y: auto;
-  font-size: 14px;
-  line-height: 1.65;
-}
-
-.oa-landing-intro h1,
-.oa-landing-intro h2,
-.oa-landing-intro h3 {
-  margin: 1.4em 0 0.5em;
-  letter-spacing: -0.2px;
-}
-
-.oa-landing-intro h1:first-child {
-  margin-top: 0;
-}
-
-.oa-landing-intro a {
-  color: var(--ai-primary);
-}
-
-.oa-landing-intro img {
-  max-width: 100%;
-  border-radius: 14px;
-}
-
-.oa-landing-chat {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  width: min(720px, 100%);
-  min-height: 0;
-}
-
-.oa-landing-title {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 600;
-  letter-spacing: -0.4px;
-  text-align: center;
-}
-
-.oa-landing-sub {
-  margin: 0;
-  font-size: 13px;
-  text-align: center;
-  color: var(--ai-text-secondary);
-}
-
-.oa-landing-thread {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 8px 2px;
-}
-
-.oa-landing-turn {
-  display: flex;
-}
-
-.oa-landing-turn.user {
-  justify-content: flex-end;
-}
-
-.oa-landing-turn.user .ai-user-bubble {
-  max-width: 78%;
-}
-
-.oa-landing-error {
-  color: var(--ai-danger);
-}
-
-.oa-landing-notice {
-  margin: 0;
-  font-size: 11.5px;
-  text-align: center;
-  color: var(--ai-text-secondary);
-}
-
-.oa-landing-composer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-  padding: 6px 6px 6px 16px;
-  border-radius: 999px;
-  background: var(--ai-surface-container);
-}
-
-.oa-landing-composer input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: transparent;
-  color: var(--ai-text);
-  font: inherit;
-  font-size: 13px;
-}
-
-/* The field has no border or fill of its own, so the pill is what shows where
-   focus is; the ring follows its 999px radius. */
-.oa-landing-composer input:focus {
-  outline: none;
-}
-
-.oa-landing-composer:focus-within {
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-}
-
-.oa-landing-finished,
-.oa-landing-entry {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  flex-shrink: 0;
+  @include mixins.focus-ring;
 }
 
 /* An account that has not confirmed its address. Above the chat rather than
@@ -1313,12 +1154,20 @@ button.oa-home-notice-main:focus-visible {
   padding-top: 64px;
 }
 
-.oa-verify-text {
+/* A title over a line of detail beside an icon or an action: the verify
+   banner, a sign-in connection, a two-step or invite row, a toast and OaRow
+   all lay the column out the same way, so it is written once. min-width lets
+   the text shrink and wrap instead of pushing the row's action off it. */
+.oa-verify-text,
+.oa-connection-body,
+.oa-2fa-row-text,
+.oa-toast-body,
+.oa-group-row-text {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  flex: 1;
   min-width: 0;
+  flex: 1;
 }
 
 .oa-verify-text span {
@@ -1350,8 +1199,7 @@ button.oa-home-notice-main:focus-visible {
 }
 
 .oa-verify-code input:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-verify-status {
@@ -1465,18 +1313,17 @@ body.has-auth-page .oa-app-page,
 }
 
 $oa-slide-duration: 0.38s;
-$oa-slide-ease: cubic-bezier(0.16, 1, 0.3, 1);
 
 /* Forward Slide (page-slide-left): new page enters from right, old page leaves to left */
 .page-slide-left-enter-active {
   z-index: 2;
-  transition: transform $oa-slide-duration $oa-slide-ease,
+  transition: transform $oa-slide-duration var(--ai-ease-out),
               opacity ($oa-slide-duration * 0.75) ease;
 }
 
 .page-slide-left-leave-active {
   z-index: 1;
-  transition: transform $oa-slide-duration $oa-slide-ease,
+  transition: transform $oa-slide-duration var(--ai-ease-out),
               opacity $oa-slide-duration ease;
 }
 
@@ -1503,13 +1350,13 @@ $oa-slide-ease: cubic-bezier(0.16, 1, 0.3, 1);
 /* Backward Slide (page-slide-right): old page leaves to right, new page enters from left */
 .page-slide-right-enter-active {
   z-index: 1;
-  transition: transform $oa-slide-duration $oa-slide-ease,
+  transition: transform $oa-slide-duration var(--ai-ease-out),
               opacity $oa-slide-duration ease;
 }
 
 .page-slide-right-leave-active {
   z-index: 2;
-  transition: transform $oa-slide-duration $oa-slide-ease,
+  transition: transform $oa-slide-duration var(--ai-ease-out),
               opacity ($oa-slide-duration * 0.8) ease;
 }
 
@@ -1546,13 +1393,18 @@ $oa-slide-ease: cubic-bezier(0.16, 1, 0.3, 1);
   pointer-events: none;
 }
 
-/* Suppress conflicting vertical entrance animations on children while full-page horizontal slide runs */
+/* Suppress conflicting vertical entrance animations on children while full-page horizontal slide runs.
+   The workspace's header and the transform on its chat root are not here:
+   _surfaces.scss pins the header inside a workspace page and moves the chat
+   root itself, so a reset of either here only ever lost to those rules. */
 .page-slide-left-enter-active,
 .page-slide-right-enter-active,
 .page-slide-left-leave-active,
 .page-slide-right-leave-active {
-  .oa-workspace > .oa-header,
-  .oa-workspace > .oa-chat-root,
+  .oa-workspace > .oa-chat-root {
+    animation: none !important;
+  }
+
   .oa-admin-rail,
   .oa-admin-main.enter-rise {
     animation: none !important;

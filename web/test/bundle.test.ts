@@ -49,8 +49,8 @@ describe('code splitting invariants in production bundle', () => {
     expect(pluginFiles, `plugin chunks: ${pluginFiles.join(', ')}`).toHaveLength(pluginNames.length);
     const core = files.filter((f) => !pluginFiles.includes(f));
 
-    // Exactly ten besides the plugins', and deliberately exact: the project ships no fonts, no
-    // images and no other chunks, so an eleventh file is either a split that
+    // Exactly twelve besides the plugins', and deliberately exact: the project ships no fonts, no
+    // images and no other chunks, so a thirteenth file is either a split that
     // was not meant to happen or an asset nobody decided to ship. Route-level
     // splitting in particular produces a dozen of these on its own and is
     // switched off for everything but the backoffice and the terminal — see
@@ -61,9 +61,11 @@ describe('code splitting invariants in production bundle', () => {
     // AdminPage-*.css is the only stylesheet besides index-*.css, decided
     // rather than produced (see src/styles/admin.scss). Ten since the
     // terminal's followed it: TerminalPanel-*.css, imported by that view.
+    // Eleven since the front page's followed it: FrontPage-*.css. Twelve
+    // since the landing page's did too: LandingView-*.css.
     // A chunk shared between two plugins — a helper both import — shows up
-    // here as an eleventh file: keep such helpers in the entry instead.
-    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(10);
+    // here as a thirteenth file: keep such helpers in the entry instead.
+    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(12);
 
     const indexJs = files.filter((f) => /^index-[^.]+\.js$/.test(f));
     const indexCss = files.filter((f) => /^index-[^.]+\.css$/.test(f));
@@ -74,7 +76,9 @@ describe('code splitting invariants in production bundle', () => {
     const terminalJs = files.filter((f) => /^TerminalPanel-[^.]+\.js$/.test(f));
     const terminalCss = files.filter((f) => /^TerminalPanel-[^.]+\.css$/.test(f));
     const frontJs = files.filter((f) => /^FrontPage-[^.]+\.js$/.test(f));
+    const frontCss = files.filter((f) => /^FrontPage-[^.]+\.css$/.test(f));
     const landingJs = files.filter((f) => /^LandingView-[^.]+\.js$/.test(f));
+    const landingCss = files.filter((f) => /^LandingView-[^.]+\.css$/.test(f));
 
     expect(indexJs.length).toBe(1);
     expect(indexCss.length).toBe(1);
@@ -85,39 +89,40 @@ describe('code splitting invariants in production bundle', () => {
     expect(terminalJs.length).toBe(1);
     expect(terminalCss.length).toBe(1);
     expect(frontJs.length).toBe(1);
+    expect(frontCss.length).toBe(1);
     expect(landingJs.length).toBe(1);
+    expect(landingCss.length).toBe(1);
   });
 
-  // The backoffice's stylesheet is fetched only with the backoffice, so a rule
-  // in it must be one no other screen can draw: every selector needs a class
-  // that no other chunk ever writes. A class that appears in the entry, or in
-  // another lazy chunk, would leave that screen unstyled for every reader who
-  // has not opened the backoffice first.
-  it('gives the backoffice stylesheet only rules no other screen can draw', () => {
+  // A stylesheet that arrives with one chunk is fetched only by the readers
+  // who open that screen, so a rule in it must be one no other screen can
+  // draw: every selector needs a class that no other chunk ever writes. A
+  // class that appears in the entry, or in another lazy chunk, would leave
+  // that screen unstyled for every reader who has not opened this one first.
+  // The owner's own script is left out of "elsewhere", or every class it
+  // writes would count as shared.
+  function rulesDrawnElsewhere(owner: string, reviewed: Set<string>): { selectors: number; shared: string[] } {
     const files = builtAssets();
-    const read = (re: RegExp) => fs.readFileSync(path.join(assetsDir, files.find((f) => re.test(f))!), 'utf8');
-    const adminCss = read(/^AdminPage-[^.]+\.css$/);
-    const indexCss = read(/^index-[^.]+\.css$/);
+    const css = fs.readFileSync(
+      path.join(assetsDir, files.find((f) => new RegExp(`^${owner}-[^.]+\\.css$`).test(f))!),
+      'utf8',
+    );
     const elsewhere = files
-      .filter((f) => /\.js$/.test(f) && !/^AdminPage-/.test(f))
+      .filter((f) => /\.js$/.test(f) && !f.startsWith(`${owner}-`))
       .map((f) => fs.readFileSync(path.join(assetsDir, f), 'utf8'))
       .concat(fs.readFileSync(path.resolve(assetsDir, '../index.html'), 'utf8'))
       .join('\n');
     const drawnElsewhere = (name: string) =>
       new RegExp(`(?<![\\w-])${name.replace(/[-]/g, '\\-')}(?![\\w-])`).test(elsewhere);
 
-    // Each one checked by hand: a modifier only the backoffice adds to a
-    // shared control, and a title only the backoffice fills with markup.
-    const reviewed = new Set(['.oa-filter-select.set', '.oa-group-row-title .oa-badge']);
-
     const selectors: string[] = [];
     let depth = 0;
     let keyframes = -1;
     let start = 0;
-    for (let i = 0; i < adminCss.length; i++) {
-      const c = adminCss[i];
+    for (let i = 0; i < css.length; i++) {
+      const c = css[i];
       if (c === '{') {
-        const prelude = adminCss.slice(start, i).trim();
+        const prelude = css.slice(start, i).trim();
         if (prelude.startsWith('@keyframes')) keyframes = depth;
         else if (!prelude.startsWith('@') && keyframes < 0) selectors.push(prelude);
         depth++;
@@ -130,7 +135,6 @@ describe('code splitting invariants in production bundle', () => {
         start = i + 1;
       }
     }
-    expect(selectors.length).toBeGreaterThan(500);
 
     const shared: string[] = [];
     for (const list of selectors) {
@@ -145,6 +149,20 @@ describe('code splitting invariants in production bundle', () => {
         if (!required.some((name) => !drawnElsewhere(name))) shared.push(selector);
       }
     }
+    return { selectors: selectors.length, shared };
+  }
+
+  it('gives the backoffice stylesheet only rules no other screen can draw', () => {
+    const files = builtAssets();
+    const read = (re: RegExp) => fs.readFileSync(path.join(assetsDir, files.find((f) => re.test(f))!), 'utf8');
+    const adminCss = read(/^AdminPage-[^.]+\.css$/);
+    const indexCss = read(/^index-[^.]+\.css$/);
+
+    // Each one checked by hand: a modifier only the backoffice adds to a
+    // shared control, and a title only the backoffice fills with markup.
+    const reviewed = new Set(['.oa-filter-select.set', '.oa-group-row-title .oa-badge']);
+    const { selectors, shared } = rulesDrawnElsewhere('AdminPage', reviewed);
+    expect(selectors).toBeGreaterThan(500);
     expect(shared, 'rules in the backoffice stylesheet that another screen can draw').toEqual([]);
 
     // And the split happened: the entry no longer carries the overview's
@@ -171,6 +189,32 @@ describe('code splitting invariants in production bundle', () => {
     expect(terminalCss).toContain('.oa-terminal-panel');
     expect(terminalCss).toContain('.is-terminal');
     expect(indexCss).not.toMatch(/\.oa-terminal(?!-back)|\.ansi-/);
+  });
+
+  // The front page and the landing page are drawn only for a signed-out
+  // visitor to an instance that chose one, so their rules arrive with them.
+  // The brand both of them draw is the one rule they share, and it stays in
+  // the entry, since neither chunk can reach the other's stylesheet.
+  it('gives the front page and the landing page stylesheets of their own', () => {
+    const files = builtAssets();
+    const read = (re: RegExp) => fs.readFileSync(path.join(assetsDir, files.find((f) => re.test(f))!), 'utf8');
+    const indexCss = read(/^index-[^.]+\.css$/);
+    const frontCss = read(/^FrontPage-[^.]+\.css$/);
+    const landingCss = read(/^LandingView-[^.]+\.css$/);
+
+    const front = rulesDrawnElsewhere('FrontPage', new Set());
+    expect(front.selectors).toBeGreaterThan(100);
+    expect(front.shared, 'rules in the front page stylesheet that another screen can draw').toEqual([]);
+    const landing = rulesDrawnElsewhere('LandingView', new Set());
+    expect(landing.selectors).toBeGreaterThan(15);
+    expect(landing.shared, 'rules in the landing page stylesheet that another screen can draw').toEqual([]);
+
+    expect(frontCss).toContain('.oa-front-marquee');
+    expect(indexCss).not.toMatch(/\.oa-front(?![\w-]*\))/);
+    expect(landingCss).toContain('.oa-landing-composer');
+    expect(indexCss).not.toMatch(/\.oa-landing(?!-brand)/);
+    expect(indexCss).toContain('.oa-landing-brand');
+    expect(frontCss + landingCss).not.toContain('.oa-landing-brand');
   });
 
   it('keeps admin, Chinese translation, and math renderer out of the main bundle', () => {
@@ -345,8 +389,10 @@ describe('code splitting invariants in production bundle', () => {
     // not quietly spent. 225 kB until the backoffice's stylesheet followed it
     // and took about 13.5 kB more, and 210 kB until the terminal's stylesheet
     // and the backoffice's last controls took about 1.6 kB more. 207 kB until
-    // Vue's Options API branch was compiled out, which took about 1.6 kB more.
-    const FIRST_PAINT_GZIP_BUDGET = 206_000;
+    // Vue's Options API branch was compiled out, and the front page's and the
+    // landing page's stylesheets moved into their own chunks, which took about
+    // 5 kB more.
+    const FIRST_PAINT_GZIP_BUDGET = 204_000;
     const gzipped = firstPaintGzipBytes();
     expect(gzipped, `first paint is ${gzipped} bytes gzipped, budget ${FIRST_PAINT_GZIP_BUDGET}`).toBeLessThanOrEqual(
       FIRST_PAINT_GZIP_BUDGET,

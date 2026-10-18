@@ -1,4 +1,8 @@
 <script setup lang="ts">
+// Imported here rather than by index.scss so that Vite emits it as this
+// chunk's stylesheet and loads it before the chunk runs: the page never
+// paints unstyled, and a reader who never lands on it never downloads it.
+import '@/styles/_front.scss';
 import { SOURCE_URL } from '@/lib/source';
 // The product's own front page.
 //

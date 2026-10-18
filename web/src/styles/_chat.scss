@@ -39,6 +39,20 @@
   --ai-focus-shadow: rgba(24, 24, 27, 0.22);
   --ai-shadow-md: 0 8px 24px rgba(28, 27, 31, 0.14);
   --ai-danger: #b91c1c;
+  /* The motion vocabulary. Easing is a token for the same reason colour is:
+     one curve per kind of movement, so a panel, a menu and a page that move
+     the same way are written the same way, and one edit retunes all of them.
+     Light and dark share them, so they live here and not in dark-tokens. */
+  /* Something arriving or settling: fast out of the start, a long soft
+     landing. Panels, pages, the key forms and the entrance rises. */
+  --ai-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* The chat's own movement: a rail or column changing width, a drawer or
+     switch moving in place. An even curve, because these move a part of a
+     screen that stays, rather than bringing something new onto it. */
+  --ai-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  /* A loop that never lands: the front page's drifting and breathing, which
+     ease in and out symmetrically so each cycle joins the next. */
+  --ai-ease-loop: cubic-bezier(0.45, 0, 0.55, 1);
 }
 
 // The dark palette is written out twice, and it cannot be one selector. The
@@ -310,6 +324,32 @@
   @include hidden-scrollbar;
 }
 
+/* The "nothing here" line, wherever a list, menu, search or gallery comes up
+   empty: one colour for all of them, written once. What differs (a band or
+   a bare line, centred or flush, how much room) stays with each class. The
+   chart and dashboard empties are drawn differently and keep their own. This
+   sits in the earliest stylesheet that draws one of them, and no other rule
+   gives these elements a colour, so where it sits does not change who wins. */
+.ai-chat-list-empty,
+.ai-project-empty-convs,
+.oa-menu-empty,
+.oa-table-empty,
+.oa-search-empty,
+.oa-gallery-empty,
+.oa-board-empty {
+  color: var(--ai-text-secondary);
+}
+
+/* The two empties drawn as a band: a shape where the rows would be, rather
+   than a sentence floating in the page. Their size is their own, below and
+   in _surfaces.scss. */
+.ai-chat-list-empty,
+.oa-table-empty {
+  background: color-mix(in srgb, var(--ai-text) 3%, transparent);
+  line-height: 1.6;
+  text-align: center;
+}
+
 /* An empty list is a quiet band where the rows would be, centred like every
    other empty state, rather than a sentence flush against the rail's edge
    that reads as a line someone forgot to style. */
@@ -317,11 +357,7 @@
   margin: 4px 0;
   padding: 22px 12px;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--ai-text) 3%, transparent);
   font-size: 12px;
-  line-height: 1.6;
-  text-align: center;
-  color: var(--ai-text-secondary);
 }
 
 .ai-chat-list-item {
@@ -411,6 +447,99 @@
   }
 }
 
+/* The projects list in the rail. It reuses .ai-chat-list-item,
+   .ai-chat-list-open, .ai-chat-list-empty and .ai-chat-new outright; the
+   tabs that switch to it are .oa-slide-tabs, in _surfaces.scss. */
+
+.ai-project-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.ai-project-meta {
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+}
+
+/* The same 26px row action as .ai-chat-list-more, kept as its own class
+ * because that one is a menu trigger: the row's context-menu handler finds
+ * it with querySelector('.ai-chat-list-more') and clicks it, so a project's
+ * edit or delete button carrying that class would be the one clicked.
+ */
+.ai-project-action-btn {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* Revealed by the row itself, the same way .ai-chat-list-more is: one hover
+ * rule on .ai-chat-list-item covers every action button in it.
+ */
+.ai-chat-list-item:hover .ai-project-action-btn,
+.ai-project-action-btn:focus-visible {
+  opacity: 1;
+}
+
+.ai-project-action-btn:hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+.ai-project-action-btn.danger:hover {
+  background: transparent;
+  color: var(--ai-danger);
+}
+
+/* Without this, moving the pointer off the row between the arming click and
+ * the confirming one would fade the button out from under an answer the
+ * reader is mid-way through giving.
+ */
+.ai-project-action-btn.armed {
+  opacity: 1;
+}
+
+/* A touch screen has no hover to reveal these, and an opacity-0 button still
+ * takes the tap, so a phone reader would be pressing edit or delete blind.
+ * Kept faint, the way .ai-chat-list-more is under the same query. */
+@media (hover: none) {
+  .ai-project-action-btn {
+    opacity: 0.45;
+  }
+}
+
+.ai-project-action-btn.danger.armed {
+  @include mixins.danger-tint;
+}
+
+/* Keyboard focus on the row's edit and delete buttons is the ring, as on the
+ * other icon controls, not the browser's outline. */
+.ai-project-action-btn:focus-visible {
+  @include mixins.focus-ring;
+}
+
+.ai-project-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-high);
+}
+
 .ai-chat-context-menu.open-up {
   top: auto;
   bottom: calc(100% + 4px);
@@ -434,7 +563,7 @@
   align-items: center;
   flex-shrink: 0;
   color: var(--ai-text-secondary);
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.3s var(--ai-ease-out);
 }
 
 .ai-project-chevron.expanded {
@@ -447,8 +576,8 @@
   opacity: 0;
   visibility: hidden;
   transition:
-    grid-template-rows 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.26s cubic-bezier(0.16, 1, 0.3, 1),
+    grid-template-rows 0.34s var(--ai-ease-out),
+    opacity 0.26s var(--ai-ease-out),
     visibility 0.34s;
   overflow: hidden;
   /* overflow: hidden drops this item's automatic minimum height to zero, so
@@ -509,14 +638,6 @@
   color: var(--ai-text);
 }
 
-/* 12px, the size of the project's own rows and of the shared inline empty
-   line it was copied from; the half pixel less had no reason behind it. */
-.ai-project-empty-convs {
-  margin: 4px 8px;
-  font-size: 12px;
-  color: var(--ai-text-secondary);
-}
-
 .ai-project-conv-item {
   font-size: 12px;
 }
@@ -546,16 +667,22 @@
    message at once. A short rise says "a different conversation" instead of
    leaving the transcript to flicker into something else within one frame. */
 .ai-chat-scroll.ai-chat-switching {
-  animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
+  animation: oaRise 0.34s var(--ai-ease-standard);
 }
 
-@keyframes aiChatSwitch {
+/* The one entrance rise, 10px up out of nothing: a switched conversation, a
+   settings section, the sign-in card, the key forms and each 2FA step. Their
+   duration, curve and fill-mode stay at each call site, so sharing the frames
+   moves none of them. The end is translateY(0) rather than none because the
+   callers that fill `both` keep it after the rise, and changing it to none
+   would drop the containing block their fixed descendants have today. */
+@keyframes oaRise {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
 .ai-chat-list-item.active.switched .ai-chat-list-title {
-  animation: aiChatRowMark 0.34s cubic-bezier(0.2, 0, 0, 1);
+  animation: aiChatRowMark 0.34s var(--ai-ease-standard);
 }
 
 @keyframes aiChatRowMark {
@@ -906,7 +1033,7 @@
   content: '▸';
   display: inline-block;
   margin-right: 6px;
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.3s var(--ai-ease-out);
 }
 
 .ai-thinking.open > .ai-thinking-head::before,
@@ -920,8 +1047,8 @@
   opacity: 0;
   overflow: hidden;
   transition:
-    grid-template-rows 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+    grid-template-rows 0.34s var(--ai-ease-out),
+    opacity 0.26s var(--ai-ease-out);
 }
 
 .ai-thinking.open > .ai-thinking-content,
@@ -941,7 +1068,7 @@
   white-space: pre-wrap;
   word-break: break-word;
   transform: translateY(-2px);
-  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.34s var(--ai-ease-out);
 }
 
 .ai-thinking.open .ai-thinking-body,
@@ -1053,9 +1180,9 @@
   text-align: left;
   cursor: pointer;
   transition:
-    background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    background-color 0.2s var(--ai-ease-out),
+    transform 0.2s var(--ai-ease-out),
+    box-shadow 0.2s var(--ai-ease-out);
 
   &:hover {
     background: var(--ai-state-hover);
@@ -1268,12 +1395,9 @@
   margin-bottom: 8px;
 }
 
+/* Its frame is shared with the image lab's cards, in _surfaces.scss. */
 .ai-chat-generated-card {
   position: relative;
-  overflow: hidden;
-  border-radius: 12px;
-  border: 1px solid var(--ai-border);
-  background: var(--ai-surface-container-low);
 }
 
 .ai-chat-generated-img {
@@ -1372,8 +1496,7 @@
 
 .ai-chat-input:focus {
   border-color: var(--ai-primary);
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .ai-chat-input:disabled {
@@ -1432,7 +1555,7 @@
   /* Slid out by a negative margin rather than collapsed by width: the rail
      keeps its own width the whole way, so its contents never reflow mid
      animation, and the transcript widens smoothly into the space. */
-  transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+  transition: margin-left 0.34s var(--ai-ease-standard), opacity 0.22s ease,
     visibility 0s linear 0s;
 }
 
@@ -1447,7 +1570,7 @@
      on the way back it is gone before the rail is visible enough to notice. */
   -webkit-mask-image: linear-gradient(to left, transparent 0, #000 28px);
   mask-image: linear-gradient(to left, transparent 0, #000 28px);
-  transition: margin-left 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+  transition: margin-left 0.34s var(--ai-ease-standard), opacity 0.22s ease,
     visibility 0s linear 0.34s;
 }
 
@@ -1663,7 +1786,7 @@
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
-    transition: transform 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+    transition: transform 0.34s var(--ai-ease-standard), opacity 0.22s ease,
       visibility 0s linear 0.34s;
   }
 
@@ -1672,7 +1795,7 @@
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
-    transition: transform 0.34s cubic-bezier(0.2, 0, 0, 1), opacity 0.22s ease,
+    transition: transform 0.34s var(--ai-ease-standard), opacity 0.22s ease,
       visibility 0s linear 0s;
   }
 
@@ -1844,7 +1967,7 @@
    the popover jumping to its new size. */
 .ai-model-pop-body {
   overflow: hidden;
-  transition: height 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: height 0.28s var(--ai-ease-out);
 }
 
 .ai-pop-face {
@@ -2064,7 +2187,7 @@
      popover's body clips — it animates its own height — and the fill starts
      10px from that edge, so a wider halo is a halo with a flat side. */
   box-shadow: 0 0 9px -3px var(--effort-glow);
-  transition: width 0.18s cubic-bezier(0.2, 0, 0, 1);
+  transition: width 0.18s var(--ai-ease-standard);
 }
 
 /* The top of the range only. Nothing to fade between — a gradient cannot be
@@ -2198,7 +2321,7 @@
     0 2px 5px rgba(0, 0, 0, 0.35),
     0 0 0 1px rgba(0, 0, 0, 0.05);
   transform: translate(-50%, -50%);
-  transition: left 0.18s cubic-bezier(0.2, 0, 0, 1);
+  transition: left 0.18s var(--ai-ease-standard);
   pointer-events: none;
 }
 
