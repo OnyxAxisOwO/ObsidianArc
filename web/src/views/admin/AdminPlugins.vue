@@ -26,7 +26,7 @@ import OaRow from '@/components/OaRow.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { currentLanguage, t } from '@/composables/useI18n';
-import { IconArrowUpRight, IconDownload, IconInfo, IconPuzzle, IconRefresh } from '@/icons';
+import { IconArrowUpRight, IconDownload, IconInfo, IconPuzzle } from '@/icons';
 import { absoluteTime } from '@/lib/format';
 import { loadPluginModule, plugins } from '@/plugins/registry';
 import type { ArcPlugin } from '@/plugins/types';
@@ -610,7 +610,11 @@ onMounted(load);
         :disabled="reading"
         @click="choosePackage"
       >
-        <IconRefresh v-if="reading" :size="22" class="oa-spin" />
+        <!-- The chat's own spinner, which already turns and already stops for
+             reduced motion: the refresh icon this replaced named a class with no
+             rule, so it stood still. A new rule for it would have been paid for
+             in the first-paint stylesheet by every visitor. -->
+        <span v-if="reading" class="ai-chat-spinner" aria-hidden="true" />
         <IconDownload v-else :size="22" />
         <span class="oa-plugin-dropcard-title">{{ reading ? t('pluginUploadReading') : t('pluginDropTitle') }}</span>
         <span class="oa-plugin-dropcard-hint">{{ t('pluginDropHint') }}</span>

@@ -34,7 +34,7 @@ import { IconClose } from '@/icons';
 import { compactNumber, relativeTime, tokenFigure } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser, maskProvider, maskBilling } from '@/admin/safeMode';
-import { windowFigure } from '@/admin/quota';
+import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
 import { customUntilBound } from '@/admin/usageRange';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
@@ -67,8 +67,6 @@ const RANGE_PRESETS: RangePreset[] = [
   { key: 'all', label: 'rangeAllShort', long: 'rangeAll', hours: 0 },
 ];
 
-const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
-
 type Dimension = 'model' | 'user' | 'group' | 'provider';
 type Outcome = '' | 'ok' | 'error' | 'aborted' | 'rejected';
 type TrendMetric = 'requests' | 'total_tokens' | 'credits' | 'users';
@@ -78,8 +76,10 @@ type Spread = 'group' | 'provider' | 'status';
 const view = useAdminView();
 view.setTitle(() => t('usageTitle'), () => t('usageSubtitle'));
 
+// Written by the ten-second poll alone (refreshRPM). The summary carries the
+// same figure, but out of a cache that can be fifteen seconds old, and letting
+// it write too made the header step back to an older number on every refresh.
 const currentRPM = ref(0);
-const rpmTimer = ref<number | null>(null);
 
 const range = ref<string>(String(selectedRange));
 const customRangeOpen = ref(false);
@@ -205,14 +205,16 @@ function summaryQuery(): string {
   return `?${params.toString()}&${zoneQuery()}`;
 }
 
+// By name rather than by class: a DOMException and an Error both carry it, and
+// so does whatever a mocked or polyfilled fetch rejects with.
 function isAbortError(err: unknown): boolean {
-  return (
-    (err instanceof DOMException && err.name === 'AbortError') ||
-    (err instanceof Error && err.name === 'AbortError') ||
-    (typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError')
-  );
+  return typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError';
 }
 
+// Two, because the ledger moves on its own: turning a page of records cancels
+// the records request alone, and must leave the summary beside it running.
+// Each is cleared by whoever finishes with it — the request's own finally, by
+// identity, so a newer one is never forgotten in its place.
 let summaryController: AbortController | null = null;
 let recordController: AbortController | null = null;
 
@@ -269,7 +271,6 @@ function sameList(a: UsageBreakdown[], b: UsageBreakdown[]): boolean {
 function applyReport(next: UsageReport): void {
   report.value = next;
   loaded.value = true;
-  if (typeof next.current_rpm === 'number') currentRPM.value = next.current_rpm;
   const lists: Record<Dimension, UsageBreakdown[]> = {
     model: next.by_model ?? [], user: next.by_user ?? [], group: next.by_group ?? [], provider: next.by_provider ?? [],
   };
@@ -311,11 +312,15 @@ async function load(): Promise<void> {
   recordPage.value.page = 1;
 
   const ticket = ++summaryRequest;
+  // The ledger page is not waited for. Nothing in the report depends on it,
+  // and over a long range its count is often the slower of the two; it has
+  // its own busy state and its own error, and clears its own controller.
+  void loadRecords(false, currentRecordCtrl.signal);
+  // The live rate is asked again under the new slice now, rather than showing
+  // the old filters' figure until the next tick of its poll.
+  void refreshRPM();
   try {
-    const [summary] = await Promise.all([
-      adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }),
-      loadRecords(false, currentRecordCtrl.signal),
-    ]);
+    const summary = await adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal });
     if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
     applyReport(summary);
   } catch (failure) {
@@ -324,9 +329,6 @@ async function load(): Promise<void> {
   } finally {
     if (summaryController === currentSummaryCtrl) {
       summaryController = null;
-    }
-    if (recordController === currentRecordCtrl) {
-      recordController = null;
     }
     if (!currentSummaryCtrl.signal.aborted) {
       loaded.value = true;
@@ -791,15 +793,19 @@ function setPreset(preset: Preset): void {
 
 // --- keeping it current --------------------------------------------------------------------
 
+// A filter change asks at once while a tick's request may still be out; the
+// older answer is about the old filters and must not land after the newer.
+let rpmRequest = 0;
+
 async function refreshRPM(): Promise<void> {
   if (visibility.value === 'hidden') return;
+  const ticket = ++rpmRequest;
   try {
-    // The summary's live figure is narrowed by the filters, so this poll must
-    // be too, or the header flips between two numbers on every tick. The
-    // server fixes the window at the last minute whatever period is sent.
+    // Narrowed by the filters, as every figure beside it is. The server fixes
+    // the window at the last minute whatever period is sent.
     const query = sliceQuery().toString();
     const res = await adminApi.rpm(query ? `?${query}` : '');
-    currentRPM.value = res.rpm;
+    if (ticket === rpmRequest) currentRPM.value = res.rpm;
   } catch {
     // Keep existing RPM on transient error
   }
@@ -817,50 +823,56 @@ async function refreshRPM(): Promise<void> {
 // unreachable server recovers on its own.
 const REFRESH_MS = 15000;
 
-// Nobody reads a background tab. Each refresh recomputes every aggregate on
-// the page over the whole range — a dozen queries across the ledger — and a
-// tab left open overnight used to run them four times a minute for no one.
-// It catches up the moment it is looked at again.
+// Nobody reads a background tab. Each refresh asks for every aggregate on the
+// page again — a dozen queries, most of them over the hourly rollup, and the
+// ledger page's count over the raw records — and a tab left open overnight
+// used to run them four times a minute for no one. It catches up the moment
+// it is looked at again.
 const visibility = useDocumentVisibility();
 watch(visibility, (now, was) => {
   if (now === 'visible' && was === 'hidden') { refreshQuietly(); void refreshRPM(); }
 });
 
+// A tick that finds a request still out leaves that one alone instead of
+// cancelling it and asking again. It is already the same question — or a
+// newer one, from load() or a page turn — and a ledger count slower than the
+// interval would otherwise be cancelled every tick and never arrive.
 function refreshQuietly(): void {
   if (visibility.value === 'hidden' || !loaded.value) return;
   startPeriod();
-  abortSummary();
-  abortRecords();
-  const currentSummaryCtrl = new AbortController();
-  const currentRecordCtrl = new AbortController();
-  summaryController = currentSummaryCtrl;
-  recordController = currentRecordCtrl;
 
-  const ticket = ++summaryRequest;
-  void adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }).then((summary) => {
-    if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
-    applyReport(summary);
-    error.value = '';
-  }).catch((err) => {
-    if (isAbortError(err)) return;
-  }).finally(() => {
-    if (summaryController === currentSummaryCtrl) {
-      summaryController = null;
-    }
-  });
-  void loadRecords(true, currentRecordCtrl.signal);
+  if (!summaryController) {
+    const currentSummaryCtrl = new AbortController();
+    summaryController = currentSummaryCtrl;
+    const ticket = ++summaryRequest;
+    void adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }).then((summary) => {
+      if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
+      applyReport(summary);
+      error.value = '';
+    }).catch(() => {
+      // Ignored, aborted or not: the last good figures stay on screen (see
+      // above), and the next tick asks again.
+    }).finally(() => {
+      if (summaryController === currentSummaryCtrl) {
+        summaryController = null;
+      }
+    });
+  }
+  if (!recordController) {
+    const currentRecordCtrl = new AbortController();
+    recordController = currentRecordCtrl;
+    void loadRecords(true, currentRecordCtrl.signal);
+  }
 }
 
 useIntervalFn(refreshQuietly, REFRESH_MS);
+useIntervalFn(refreshRPM, 10000);
 
 onMounted(() => {
   void load();
-  const timer = window.setInterval(refreshRPM, 10000);
-  rpmTimer.value = timer;
 });
 
 onBeforeUnmount(() => {
-  if (rpmTimer.value !== null) clearInterval(rpmTimer.value);
   abortSummary();
   abortRecords();
 });

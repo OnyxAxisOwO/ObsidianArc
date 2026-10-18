@@ -474,6 +474,20 @@ describe('a plugin package', () => {
     expect(panel).not.toContain('demo.hidden');
   });
 
+  // The icon it used to show named a class with no rule, so nothing turned
+  // while the package was read; the chat's spinner has one.
+  it('turns a spinner while the package is being read', async () => {
+    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [] });
+    vi.spyOn(adminApi, 'previewPlugin').mockReturnValue(new Promise(() => {}));
+    await mount(AdminPlugins);
+    dropFile(new File(['zip'], 'demo.arcx'));
+    await settle();
+
+    const card = host.querySelector('.oa-plugin-dropcard');
+    expect(card?.textContent).toContain(t('pluginUploadReading'));
+    expect(card?.querySelector('.ai-chat-spinner')).not.toBeNull();
+  });
+
   it('installs what was shown, with the settings chosen and the switch as set', async () => {
     vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [], two_factor_required: false });
     vi.spyOn(adminApi, 'previewPlugin').mockResolvedValue({ preview: preview() });

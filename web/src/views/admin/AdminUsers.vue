@@ -35,7 +35,7 @@ import OaTextField from '@/components/OaTextField.vue';
 import OaUsageWindow from '@/components/OaUsageWindow.vue';
 import type { Column } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
-import { t, tn } from '@/composables/useI18n';
+import { t, tn, type StringKey } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconTrash } from '@/icons';
@@ -49,14 +49,12 @@ import { fieldSpec, plugins } from '@/plugins/registry';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginUserActions from './PluginUserActions.vue';
 import { isMasked, maskUser, maskLog, maskBilling, maskCredential } from '@/admin/safeMode';
-import { windowFigure } from '@/admin/quota';
+import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import UsageBoard from './usage/UsageBoard.vue';
 import { useAdminView } from './adminView';
-
-const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
 
 const view = useAdminView();
 // Null until the first list lands, so the heading shows no count before then.
@@ -194,18 +192,33 @@ const transcript = ref<Message[] | null>(null);
 const transcriptTitle = ref('');
 const apiRestrictionTouched = ref(false);
 
-const grantCount = ref<number | null>(1);
-const grantName = ref('');
-const grantScopePreset = ref<'full' | '5h' | '1w' | '1m' | 'custom'>('full');
-const grantCustomWindows = ref<string[]>(['5h']);
-const grantExpiresAt = ref(defaultGrantExpiry());
+// What the grant form starts at, for each account the panel opens on. A
+// function, not a constant: the expiry is thirty days from the moment it is
+// asked, and a panel opened tomorrow should not offer yesterday's date.
+function grantDefaults() {
+  return {
+    count: 1 as number | null,
+    name: '',
+    preset: 'full' as 'full' | '5h' | '1w' | '1m' | 'custom',
+    custom: ['5h'],
+    expiresAt: defaultGrantExpiry(),
+  };
+}
+const initialGrant = grantDefaults();
+const grantCount = ref(initialGrant.count);
+const grantName = ref(initialGrant.name);
+const grantScopePreset = ref(initialGrant.preset);
+const grantCustomWindows = ref<string[]>(initialGrant.custom);
+const grantExpiresAt = ref(initialGrant.expiresAt);
 // The result line under the card buttons. Kept apart from the buttons' own
 // state: a button that reads "granted" and stays disabled leaves nothing to
 // click until the panel is reopened.
 const grantLabel = ref('');
 const granting = ref(false);
 const rescheduleLabel = ref('');
-const rescheduling = ref('');
+// Whether a reschedule or a revocation is out. One at a time for the whole
+// card list: either one re-reads the list when it lands.
+const rescheduling = ref(false);
 
 /**
  * Whether the panel still shows this account. An answer to a request sent for
@@ -226,24 +239,23 @@ function grantSelectedWindows(): string[] {
   return [grantScopePreset.value];
 }
 
+// Two wordings of each window on purpose: one that stands alone as a card's
+// whole scope ("5-hour reset"), and one that reads inside a list of several
+// ("Reset 5 hours + 1 week").
+const CARD_SCOPE_ALONE: Record<string, StringKey> = { '5h': 'cardScope5H', '1w': 'cardScope1W', '1m': 'cardScope1M' };
+const CARD_SCOPE_PART: Record<string, StringKey> = { '5h': 'cardScopeLabel5H', '1w': 'cardScopeLabel1W', '1m': 'cardScopeLabel1M' };
+
 function formatCardScope(card: { windows?: string[] }): string {
   const wins = card.windows ?? [];
   if (wins.length === 0 || wins.includes('full')) {
     return t('cardFullReset');
   }
-  const order = ['5h', '1w', '1m'];
+  const order: readonly string[] = WINDOWS;
   const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  if (sorted.length === 1) {
-    if (sorted[0] === '5h') return t('cardScope5H');
-    if (sorted[0] === '1w') return t('cardScope1W');
-    if (sorted[0] === '1m') return t('cardScope1M');
-  }
-  const labels = sorted.map((w) => {
-    if (w === '5h') return t('cardScopeLabel5H');
-    if (w === '1w') return t('cardScopeLabel1W');
-    if (w === '1m') return t('cardScopeLabel1M');
-    return w;
-  });
+  const alone = sorted.length === 1 && Object.hasOwn(CARD_SCOPE_ALONE, sorted[0]!) ? CARD_SCOPE_ALONE[sorted[0]!] : undefined;
+  if (alone) return t(alone);
+  // A window this build has no name for is shown as the server spelled it.
+  const labels = sorted.map((w) => (Object.hasOwn(CARD_SCOPE_PART, w) ? t(CARD_SCOPE_PART[w]!) : w));
   return t('cardScopeCombined', { windows: labels.join(' + ') });
 }
 
@@ -407,12 +419,13 @@ async function open(id: string): Promise<void> {
   grantLabel.value = '';
   granting.value = false;
   rescheduleLabel.value = '';
-  rescheduling.value = '';
-  grantName.value = '';
-  grantScopePreset.value = 'full';
-  grantCustomWindows.value = ['5h'];
-  grantCount.value = 1;
-  grantExpiresAt.value = defaultGrantExpiry();
+  rescheduling.value = false;
+  const grantForm = grantDefaults();
+  grantName.value = grantForm.name;
+  grantScopePreset.value = grantForm.preset;
+  grantCustomWindows.value = grantForm.custom;
+  grantCount.value = grantForm.count;
+  grantExpiresAt.value = grantForm.expiresAt;
 
   // The panel opens on the click, with the row the list already has, and
   // fills in when the detail arrives. It used to wait for the detail first:
@@ -829,6 +842,20 @@ function actionFailed(message: string): void {
  * changes, because "why does this person have no allowance left" and "give
  * them another" are one thought.
  */
+/**
+ * The date in the field both a grant and a reschedule use, or null with the
+ * panel saying why: a date already past would hand out cards that are spent
+ * before anyone could use them.
+ */
+function chosenExpiry(): number | null {
+  const expiresAt = new Date(grantExpiresAt.value).getTime();
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    panelError.value = t('grantCardExpiryInvalid');
+    return null;
+  }
+  return expiresAt;
+}
+
 async function grant(): Promise<void> {
   const row = account.value;
   if (!row) return;
@@ -837,11 +864,8 @@ async function grant(): Promise<void> {
     return;
   }
   const count = grantCount.value ?? 1;
-  const expiresAt = new Date(grantExpiresAt.value).getTime();
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    panelError.value = t('grantCardExpiryInvalid');
-    return;
-  }
+  const expiresAt = chosenExpiry();
+  if (expiresAt === null) return;
   granting.value = true;
   grantLabel.value = '';
   try {
@@ -887,13 +911,10 @@ async function refreshCards(id: string): Promise<void> {
 async function reschedule(cardIDs?: string[]): Promise<void> {
   const row = account.value;
   if (!row) return;
-  const expiresAt = new Date(grantExpiresAt.value).getTime();
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    panelError.value = t('grantCardExpiryInvalid');
-    return;
-  }
+  const expiresAt = chosenExpiry();
+  if (expiresAt === null) return;
 
-  rescheduling.value = cardIDs?.length ? cardIDs[0]! : 'all';
+  rescheduling.value = true;
   rescheduleLabel.value = '';
   try {
     const result = await adminApi.rescheduleCards(row.id, {
@@ -910,7 +931,7 @@ async function reschedule(cardIDs?: string[]): Promise<void> {
   } finally {
     // A request for an account the panel has left must not clear the flag of
     // the one running for the account it shows now.
-    if (panelShows(row.id)) rescheduling.value = '';
+    if (panelShows(row.id)) rescheduling.value = false;
   }
 }
 
@@ -925,7 +946,7 @@ async function reschedule(cardIDs?: string[]): Promise<void> {
 async function revoke(cardID: string): Promise<void> {
   const row = account.value;
   if (!row) return;
-  rescheduling.value = cardID;
+  rescheduling.value = true;
   rescheduleLabel.value = '';
   try {
     // Silent on purpose, like the grant of a card: an operator undoing a
@@ -936,7 +957,7 @@ async function revoke(cardID: string): Promise<void> {
     if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
     else failedForAccount(row, failure);
   } finally {
-    if (panelShows(row.id)) rescheduling.value = '';
+    if (panelShows(row.id)) rescheduling.value = false;
   }
 }
 
@@ -1277,7 +1298,7 @@ const state = { q: '', role: '', status: '', group: '' };
             <button
               type="button"
               class="oa-btn small oa-card-reschedule"
-              :disabled="!!rescheduling"
+              :disabled="rescheduling"
               @click="reschedule([card.id])"
             >{{ t('rescheduleOne') }}</button>
             <!-- Never window.confirm: it answers false on its own in some
@@ -1289,7 +1310,7 @@ const state = { q: '', role: '', status: '', group: '' };
               :armed-label="t('revokeCardConfirm')"
               :armed-title="t('revokeCardConfirm')"
               :resting-title="t('revokeCard')"
-              :disabled="!!rescheduling"
+              :disabled="rescheduling"
               @confirm="revoke(card.id)"
             />
           </OaRow>
@@ -1348,7 +1369,7 @@ const state = { q: '', role: '', status: '', group: '' };
           <button
             type="button"
             class="oa-btn small"
-            :disabled="!movableCards || !!rescheduling"
+            :disabled="!movableCards || rescheduling"
             @click="reschedule()"
           >{{ t('rescheduleCards', { count: movableCards }) }}</button>
           <button type="button" class="oa-btn small primary" :disabled="granting" @click="grant">

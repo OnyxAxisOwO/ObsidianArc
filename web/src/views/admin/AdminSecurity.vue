@@ -3,48 +3,53 @@
 //
 // Split out of the settings screen because these are one subject and it was
 // not: whether registration is open, what a new account must supply, how fast
-// addresses may open them, whether a browser has to prove itself, and whether
-// a model is asked to look at the result. An operator dealing with a wave of
-// junk accounts opens one page, not seven sections of another.
+// addresses may open them, whether a browser has to prove itself, whether a
+// model is asked to look at the result, how people sign in from elsewhere and
+// with a second step, and the log of what all of that decided. An operator
+// dealing with a wave of junk accounts opens one page, not seven sections of
+// another.
+//
+// The settings form and its one Save stay here, because a save sends only the
+// keys that changed across every card at once. The cards that commit through
+// their own endpoints — mail, address screening, applications, the log — are
+// components of their own beside this file.
 
 import { computed, nextTick, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { adminApi, type AdminMailSettings, type AdminModel, type AdminUserCheckSettings, type Group, type SecurityEvent, type SignInApplication, type TwoFactorAdoption } from '@/admin/api';
+import { adminApi, type AdminModel, type Group, type TwoFactorAdoption } from '@/admin/api';
 import { fetchSite, type SiteInfo } from '@/api/auth';
 import { ApiError } from '@/api/client';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaOverlay from '@/components/OaOverlay.vue';
-import OaPagination from '@/components/OaPagination.vue';
-import type { PageState } from '@/components/table-types';
 import OaBadge from '@/components/OaBadge.vue';
-import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminWorkbench from './AdminWorkbench.vue';
 import type { WorkbenchGroup } from './workbench';
 import { SETTING_MAX_BYTES, overlongSetting, useSettingsDraft } from './settingsDraft';
-import { IconUsers, IconLock, IconSpark, IconFile, IconSliders, IconKey, IconGithub, IconGoogle, IconCopy, IconCheck, IconShield, IconMessage, IconClose } from '@/icons';
+import { IconUsers, IconLock, IconSpark, IconFile, IconSliders, IconKey, IconGithub, IconGoogle, IconShield, IconClose } from '@/icons';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
-import { t, type StringKey } from '@/composables/useI18n';
+import { t } from '@/composables/useI18n';
 import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
-import { copyToClipboard } from '@/chat/markdown';
-import { initials } from '@/lib/account';
-import { rememberedPageSize } from '@/lib/page-size';
-import { absoluteTime } from '@/lib/format';
 import { settingsRefusalText } from '@/lib/refusal';
 import { currentUser, isSuperAdmin, site } from '@/stores/session';
-import { maskUser, maskLog, maskCredential } from '@/admin/safeMode';
+import { maskUser } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { minutesLabel } from './shared';
 import PluginSettingsCard from './PluginSettingsCard.vue';
 import { usePluginSettings } from './pluginSettings';
 import OaAccountFields from '@/components/OaAccountFields.vue';
 import { allFields, fieldValues } from '@/lib/account-fields';
-import { plugins, pluginSecurityEvent, pluginSecurityReason } from '@/plugins/registry';
+import { plugins } from '@/plugins/registry';
 import { useAdminView } from './adminView';
+import SecurityApplicationsCard from './SecurityApplicationsCard.vue';
+import SecurityLogCard from './SecurityLogCard.vue';
+import SecurityMailCard from './SecurityMailCard.vue';
+import SecurityUserCheckCard from './SecurityUserCheckCard.vue';
+import { formatEventReason, reviewDecision } from './security-text';
 
 const view = useAdminView();
 view.setTitle(() => t('navSecurity'), () => t('securitySubtitle'));
@@ -66,50 +71,14 @@ const loaded = ref(false);
 // would have the whole save refused.
 const shownKeys = ref<Set<string>>(new Set());
 const defaultReviewPrompt = ref('');
+// Whether mail can be sent, which decides if the switches that need it are
+// live. The settings answer says so first; a save on the mail card updates it.
 const mailConfigured = ref(false);
-const mailLoaded = ref(false);
-const mailLoadError = ref<StringKey | null>(null);
-const mailBusy = ref(false);
-const mailTestBusy = ref(false);
-const mailFlash = ref<StringKey | null>(null);
-const mailFlashOK = ref(false);
-const mailTestTo = ref('');
-const savedMail = ref<AdminMailSettings>({
-  host: '', port: 587, username: '', from: '', implicit_tls: false, public_url: '', password_set: false,
-});
-const mailForm = ref({ ...savedMail.value, password: '' });
-const mailSettingsDirty = computed(() => {
-  const form = mailForm.value;
-  const saved = savedMail.value;
-  return form.host.trim() !== saved.host || (form.port ?? 587) !== saved.port ||
-    form.username.trim() !== saved.username || form.from.trim() !== saved.from ||
-    form.implicit_tls !== saved.implicit_tls || form.public_url.trim() !== saved.public_url ||
-    form.password !== '';
-});
-const userCheckLoaded = ref(false);
-const userCheckLoadError = ref<StringKey | null>(null);
-const userCheckBusy = ref(false);
-const userCheckTestBusy = ref(false);
-const userCheckFlash = ref<StringKey | null>(null);
-const userCheckFlashOK = ref(false);
-const userCheckTestEmail = ref('');
-const savedUserCheck = ref<AdminUserCheckSettings>({
-  enabled: false, exempt_domains: [], failure_mode: 'reject', api_key_set: false,
-});
-const userCheckForm = ref({
-  enabled: false, exempt_domains: '', failure_mode: 'reject' as 'allow' | 'reject', api_key_set: false, api_key: '',
-});
 const groups = ref<Pick<Group, 'id' | 'name'>[]>([]);
 const models = ref<Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>[]>([]);
 const flash = ref('');
 const saveLabel = ref('');
 const busy = ref(false);
-const events = ref<SecurityEvent[]>([]);
-const eventsTotal = ref(0);
-const eventPage = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
-let eventRequest = 0;
-function changeEvents(next: PageState): void { eventPage.value = next; void loadEvents(); }
-const eventsLoading = ref(false);
 
 const form = ref({
   registration: false,
@@ -125,7 +94,6 @@ const form = ref({
   turnstileSecret: '',
   turnstileSecretHint: '',
   turnstileOnLogin: false,
-  turnstileOnSignup: false,
   turnstileOnAPIKey: false,
   turnstileOnRedeem: false,
   turnstileOnFeedback: false,
@@ -244,33 +212,9 @@ function share(part: number, whole: number): string {
   return whole > 0 ? `${Math.round((part / whole) * 100)}%` : '—';
 }
 
-
-
-// --- the applications that may sign people in with an account here -------------
-//
-// Not a settings card: these are rows rather than fields, and they commit on
-// their own buttons. They live on this screen anyway because they are the
-// same subject as everything else on it — who gets in, and how.
-
-const applications = ref<SignInApplication[]>([]);
+// Where the server says this instance lives, handed up by the applications
+// card that reads it; the sign-in providers' callback hints are built from it.
 const issuer = ref('');
-const appFlash = ref('');
-const appBusy = ref(false);
-/** The client secret, for the one moment it exists. */
-const freshSecret = ref('');
-const draft = ref({ name: '', description: '', redirects: '', public: false, trusted: false });
-/** The value that was last copied, so the control can say it landed. */
-const copied = ref('');
-
-function copy(value: string): void {
-  void copyToClipboard(value).then((ok) => {
-    if (!ok) return;
-    copied.value = value;
-    window.setTimeout(() => {
-      if (copied.value === value) copied.value = '';
-    }, 1500);
-  });
-}
 
 /**
  * What to paste into the provider's own console.
@@ -288,86 +232,6 @@ function copy(value: string): void {
  */
 function callbackURL(provider: string): string {
   return `${issuer.value || window.location.origin}/api/auth/oauth/callback/${provider}`;
-}
-
-async function loadApplications(): Promise<void> {
-  try {
-    const result = await adminApi.applications();
-    applications.value = result.applications ?? [];
-    issuer.value = result.issuer;
-  } catch (failure) {
-    appFlash.value = failure instanceof ApiError ? failure.message : String(failure);
-  }
-}
-
-function registerApplication(): void {
-  if (appBusy.value) return;
-  appBusy.value = true;
-  appFlash.value = '';
-  freshSecret.value = '';
-  void adminApi.createApplication({
-    name: draft.value.name.trim(),
-    description: draft.value.description.trim(),
-    redirect_uris: draft.value.redirects,
-    public: draft.value.public,
-    trusted: draft.value.trusted,
-  })
-    .then((result) => {
-      freshSecret.value = result.client_secret;
-      draft.value = { name: '', description: '', redirects: '', public: false, trusted: false };
-      return loadApplications();
-    })
-    .catch((failure: unknown) => {
-      if (failure instanceof ApiError && failure.code === 'too_many_applications') {
-        appFlash.value = t('applicationsFull');
-        return;
-      }
-      appFlash.value = failure instanceof ApiError ? failure.message : String(failure);
-    })
-    .finally(() => { appBusy.value = false; });
-}
-
-function toggleApplication(app: SignInApplication, disabled: boolean): void {
-  appBusy.value = true;
-  appFlash.value = '';
-  void adminApi.updateApplication(app.id, { disabled })
-    .then(loadApplications)
-    .catch((failure: unknown) => {
-      appFlash.value = failure instanceof ApiError ? failure.message : String(failure);
-    })
-    .finally(() => { appBusy.value = false; });
-}
-
-function rotateApplication(app: SignInApplication): void {
-  appBusy.value = true;
-  appFlash.value = '';
-  freshSecret.value = '';
-  void adminApi.rotateApplicationSecret(app.id)
-    .then((result) => { freshSecret.value = result.client_secret; })
-    .catch((failure: unknown) => {
-      appFlash.value = failure instanceof ApiError ? failure.message : String(failure);
-    })
-    .finally(() => { appBusy.value = false; });
-}
-
-function removeApplication(app: SignInApplication): void {
-  appBusy.value = true;
-  appFlash.value = '';
-  void adminApi.deleteApplication(app.id)
-    .then(loadApplications)
-    .catch((failure: unknown) => {
-      appFlash.value = failure instanceof ApiError ? failure.message : String(failure);
-    })
-    .finally(() => { appBusy.value = false; });
-}
-
-/**
- * A trusted application is the super administrator's to change. The server
- * refuses anybody else; the controls are disabled so the refusal is not what
- * a security administrator learns first.
- */
-function lockedApplication(app: SignInApplication): boolean {
-  return app.trusted && !isSuperAdmin.value;
 }
 
 // Trying the reviewer on an account that is not being created.
@@ -450,6 +314,9 @@ function collect(): Record<string, string> {
     'oauth.oidc_token_url': form.value.oidcTokenURL.trim(),
     'oauth.oidc_userinfo_url': form.value.oidcUserInfoURL.trim(),
     'oauth.oidc_trust_email': String(form.value.oidcTrustEmail),
+    // Both names of one switch: the server lets either one restrict sign-up,
+    // so writing only the newer would leave an older true one holding the
+    // restriction on after the operator turned it off.
     'oauth.third_party_only_signup': String(form.value.thirdPartyOnlySignup),
     'oauth.oidc_only_signup': String(form.value.thirdPartyOnlySignup),
     'oauth.oidc_require_for_all': String(form.value.oidcRequireForAll),
@@ -628,296 +495,6 @@ function runTrial(): void {
     .finally(() => { trial.value.running = false; });
 }
 
-function formatEventReason(reason: string): string {
-  if (!reason) return '';
-  if (reason === 'administrator lifted the API restriction') return t('securityReasonAPILifted');
-  if (reason === 'administrator restricted API access permanently') return t('securityReasonAPIPermanent');
-  const hoursMatch = reason.match(/^administrator restricted API access for (\d+) hours$/);
-  if (hoursMatch) {
-    return t('securityReasonAPIHours', { count: Number(hoursMatch[1]) });
-  }
-  if (reason === 'chat submission speed crossed the configured threshold') return t('securityReasonChatSpeed');
-  if (reason === 'no reviewer configured') return t('securityReasonNoReviewer');
-  if (reason === 'model unavailable') return t('securityReasonModelUnavailable');
-  if (reason === 'review failed') return t('securityReasonReviewFailed');
-  if (reason === 'unparseable answer') return t('securityReasonUnparseableAnswer');
-  if (reason === 'review returned no decision') return t('securityReasonNoDecision');
-  if (reason === '缺少 PoW 解答') return t('securityReasonPoWMissing');
-  if (reason === 'PoW 挑战已过期') return t('securityReasonPoWExpired');
-  if (reason === 'PoW 签名无效') return t('securityReasonPoWInvalidSignature');
-  if (reason === 'PoW 步数超出上限') return t('securityReasonPoWMaxExceeded');
-  if (reason === 'PoW 计算结果不匹配') return t('securityReasonPoWInvalidNonce');
-  if (reason === 'PoW 挑战已被使用') return t('securityReasonPoWReplayed');
-  if (reason === 'PoW 校验失败') return t('securityReasonPoWFailed');
-  if (reason === 'Turnstile 人机验证未通过') return t('securityReasonTurnstileFailed');
-  return pluginSecurityReason(reason) ?? reason;
-}
-
-function reviewDecision(decision: string): string {
-  if (decision === 'allow') return t('securityDecisionAllow');
-  if (decision === 'refuse') return t('securityDecisionRefuse');
-  if (decision === 'required') return t('securityDecisionRequired');
-  if (decision === 'passed') return t('securityDecisionPassed');
-  if (decision === 'failed') return t('securityDecisionFailed');
-  if (decision === 'enabled') return t('securityDecisionEnabled');
-  if (decision === 'disabled') return t('securityDecisionDisabled');
-  if (decision === 'reset') return t('securityDecisionReset');
-  if (decision === 'recovery_used') return t('securityDecisionRecoveryUsed');
-  if (decision === 'recovery_regenerated') return t('securityDecisionRecoveryRegenerated');
-  if (decision === 'prune') return t('securityDecisionPrune');
-  if (decision === 'pruned') return t('securityDecisionPruned');
-  if (decision === 'restrict') return t('securityDecisionRestrict');
-  // A decision this screen has no words for — a console command's outcome
-  // code, say — is shown as it was recorded rather than as a restriction it
-  // never was.
-  return decision;
-}
-
-function eventLabel(event: string): string {
-  if (event === 'signup_review') return t('securityEventSignupReview');
-  if (event === 'api_restriction') return t('securityEventAPIRestriction');
-  if (event === 'api_restriction_lifted') return t('securityEventAPIRestrictionLifted');
-  if (event === 'chat_challenge') return t('securityEventChatChallenge');
-  if (event === 'two_factor') return t('securityEventTwoFactor');
-  if (event === 'new_device') return t('securityEventNewDevice');
-  if (event === 'console_command') return t('securityEventConsoleCommand');
-  if (event === 'plugin') return t('securityEventPlugin');
-  if (event === 'pow_challenge') return t('securityEventPoWChallenge');
-  if (event === 'turnstile_challenge') return t('securityEventTurnstileChallenge');
-  if (event === 'password_reset') return t('securityEventPasswordReset');
-  if (event === 'account_deleted') return t('securityEventAccountDeleted');
-  if (event === 'log_prune') return t('securityEventLogPrune');
-  return pluginSecurityEvent(event) ?? event;
-}
-
-async function loadEvents(): Promise<void> {
-  const ticket = ++eventRequest;
-  eventsLoading.value = true;
-  try {
-    const result = await adminApi.securityEvents(`?limit=${eventPage.value.pageSize}&offset=${(eventPage.value.page - 1) * eventPage.value.pageSize}`);
-    if (ticket !== eventRequest) return;
-    events.value = result.events ?? [];
-    eventsTotal.value = result.total;
-  } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
-  } finally {
-    if (ticket === eventRequest) eventsLoading.value = false;
-  }
-}
-
-async function loadMail(): Promise<void> {
-  mailLoadError.value = null;
-  mailLoaded.value = false;
-  try {
-    const settings = await adminApi.mail();
-    savedMail.value = settings;
-    mailForm.value = { ...settings, password: '' };
-    mailLoaded.value = true;
-  } catch (failure) {
-    mailLoadError.value = mailErrorText(failure, 'load');
-  }
-}
-
-function mailErrorText(failure: unknown, action: 'load' | 'save' | 'test'): StringKey {
-  if (!(failure instanceof ApiError)) return 'failed';
-  if (failure.code === 'mail_test_cooldown') return 'mailTestCooldown';
-  if (failure.code === 'mail_unavailable') return 'mailDeliveryUnavailable';
-  if (failure.code === 'mail_password_needed') return 'mailPasswordNeeded';
-  if (failure.status === 400) return action === 'test' ? 'mailTestInvalid' : 'mailSettingsInvalid';
-  return 'failed';
-}
-
-async function saveMail(): Promise<void> {
-  if (!mailLoaded.value || mailBusy.value) return;
-  mailBusy.value = true;
-  mailFlash.value = null;
-  mailFlashOK.value = false;
-  try {
-    const settings = await adminApi.saveMail({
-      host: mailForm.value.host.trim(),
-      port: mailForm.value.port ?? 587,
-      username: mailForm.value.username.trim(),
-      from: mailForm.value.from.trim(),
-      implicit_tls: mailForm.value.implicit_tls,
-      public_url: mailForm.value.public_url.trim(),
-      // Empty keeps the existing credential; only the explicit action below clears it.
-      password: mailForm.value.password,
-      clear_password: false,
-    });
-    savedMail.value = settings;
-    mailForm.value = { ...settings, password: '' };
-    mailConfigured.value = !!(settings.host && settings.port &&
-      (settings.from || settings.username.includes('@')) && settings.public_url);
-    mailFlash.value = 'mailSaved';
-    mailFlashOK.value = true;
-  } catch (failure) {
-    mailFlash.value = mailErrorText(failure, 'save');
-  } finally {
-    mailBusy.value = false;
-  }
-}
-
-async function clearMailPassword(): Promise<void> {
-  if (!mailLoaded.value || mailBusy.value || !savedMail.value.password_set) return;
-  mailBusy.value = true;
-  mailFlash.value = null;
-  mailFlashOK.value = false;
-  try {
-    const settings = await adminApi.saveMail({
-      host: savedMail.value.host,
-      port: savedMail.value.port,
-      username: savedMail.value.username,
-      from: savedMail.value.from,
-      implicit_tls: savedMail.value.implicit_tls,
-      public_url: savedMail.value.public_url,
-      password: '',
-      clear_password: true,
-    });
-    savedMail.value = settings;
-    mailForm.value.password_set = settings.password_set;
-    mailForm.value.password = '';
-    mailFlash.value = 'mailPasswordCleared';
-    mailFlashOK.value = true;
-  } catch (failure) {
-    mailFlash.value = mailErrorText(failure, 'save');
-  } finally {
-    mailBusy.value = false;
-  }
-}
-
-async function sendMailTest(): Promise<void> {
-  if (mailBusy.value || mailTestBusy.value || mailSettingsDirty.value || !mailTestTo.value.trim()) return;
-  mailTestBusy.value = true;
-  mailFlash.value = null;
-  mailFlashOK.value = false;
-  try {
-    await adminApi.testMail(mailTestTo.value.trim());
-    mailFlash.value = 'mailTestSent';
-    mailFlashOK.value = true;
-  } catch (failure) {
-    mailFlash.value = mailErrorText(failure, 'test');
-  } finally {
-    mailTestBusy.value = false;
-  }
-}
-
-async function loadUserCheck(): Promise<void> {
-  userCheckLoadError.value = null;
-  userCheckLoaded.value = false;
-  try {
-    const settings = await adminApi.userCheck();
-    savedUserCheck.value = settings;
-    userCheckForm.value = {
-      enabled: settings.enabled,
-      // The server sends null for an empty list; the form still needs a string.
-      exempt_domains: (settings.exempt_domains ?? []).join('\n'),
-      failure_mode: settings.failure_mode,
-      api_key_set: settings.api_key_set,
-      api_key: '',
-    };
-    userCheckLoaded.value = true;
-  } catch (failure) {
-    userCheckLoadError.value = userCheckErrorText(failure, 'load');
-  }
-}
-
-function userCheckErrorText(failure: unknown, action: 'load' | 'save' | 'test'): StringKey {
-  if (!(failure instanceof ApiError)) return 'failed';
-  if (failure.code === 'usercheck_test_cooldown') return 'userCheckTestCooldown';
-  if (failure.code === 'unavailable' || failure.code === 'email_screening_unavailable') {
-    return 'emailScreeningUnavailable';
-  }
-  if (failure.status === 400) return action === 'test' ? 'userCheckTestInvalid' : 'userCheckSettingsInvalid';
-  return 'failed';
-}
-
-function userCheckDomains(): string[] {
-  return [...new Set(userCheckForm.value.exempt_domains
-    .split(/[\n,]/)
-    .map((domain) => domain.trim().toLowerCase())
-    .filter(Boolean))];
-}
-
-async function saveUserCheck(): Promise<void> {
-  if (!userCheckLoaded.value || userCheckBusy.value) return;
-  if (userCheckForm.value.enabled && !userCheckForm.value.api_key_set && !userCheckForm.value.api_key.trim()) {
-    userCheckFlash.value = 'userCheckAPIKeyRequired';
-    userCheckFlashOK.value = false;
-    return;
-  }
-  userCheckBusy.value = true;
-  userCheckFlash.value = null;
-  userCheckFlashOK.value = false;
-  try {
-    const settings = await adminApi.saveUserCheck({
-      enabled: userCheckForm.value.enabled,
-      exempt_domains: userCheckDomains(),
-      failure_mode: userCheckForm.value.failure_mode,
-      api_key: userCheckForm.value.api_key,
-      clear_api_key: false,
-    });
-    savedUserCheck.value = settings;
-    userCheckForm.value = {
-      enabled: settings.enabled,
-      // The server sends null for an empty list; the form still needs a string.
-      exempt_domains: (settings.exempt_domains ?? []).join('\n'),
-      failure_mode: settings.failure_mode,
-      api_key_set: settings.api_key_set,
-      api_key: '',
-    };
-    userCheckFlash.value = 'userCheckSaved';
-    userCheckFlashOK.value = true;
-  } catch (failure) {
-    userCheckFlash.value = userCheckErrorText(failure, 'save');
-  } finally {
-    userCheckBusy.value = false;
-  }
-}
-
-async function clearUserCheckAPIKey(): Promise<void> {
-  if (!userCheckLoaded.value || userCheckBusy.value || !savedUserCheck.value.api_key_set) return;
-  userCheckBusy.value = true;
-  userCheckFlash.value = null;
-  userCheckFlashOK.value = false;
-  try {
-    const settings = await adminApi.saveUserCheck({
-      exempt_domains: savedUserCheck.value.exempt_domains,
-      failure_mode: savedUserCheck.value.failure_mode,
-      enabled: false,
-      api_key: '',
-      clear_api_key: true,
-    });
-    savedUserCheck.value = settings;
-    userCheckForm.value.enabled = false;
-    userCheckForm.value.api_key_set = false;
-    userCheckForm.value.api_key = '';
-    userCheckFlash.value = 'userCheckAPIKeyCleared';
-    userCheckFlashOK.value = true;
-  } catch (failure) {
-    userCheckFlash.value = userCheckErrorText(failure, 'save');
-  } finally {
-    userCheckBusy.value = false;
-  }
-}
-
-async function sendUserCheckTest(): Promise<void> {
-  if (userCheckTestBusy.value || !userCheckTestEmail.value.trim() || !userCheckForm.value.api_key_set) return;
-  userCheckTestBusy.value = true;
-  userCheckFlash.value = null;
-  userCheckFlashOK.value = false;
-  try {
-    const result = await adminApi.testUserCheck(userCheckTestEmail.value.trim());
-    userCheckFlash.value = result.skipped
-      ? 'userCheckTestSkipped'
-      : result.disposable ? 'userCheckTestDisposable' : 'userCheckTestClean';
-    userCheckFlashOK.value = !result.disposable;
-  } catch (failure) {
-    userCheckFlash.value = userCheckErrorText(failure, 'test');
-  } finally {
-    userCheckTestBusy.value = false;
-  }
-}
-
 async function load(): Promise<void> {
   // Same as AdminSettings: only a retry after a failed load lacks a baseline,
   // and Save must stay off until one is back, or every field would read as
@@ -927,10 +504,12 @@ async function load(): Promise<void> {
   try {
     // The models come along because one of these settings is which model
     // reviews a sign-up, and a select needs its options. The groups arrive
-    // with the settings already.
-    const [data, modelsResult] = await Promise.all([
-      adminApi.settings(), adminApi.modelOptions(), loadEvents(), loadApplications(), loadAdoption(), loadMail(), loadUserCheck(),
-    ]);
+    // with the settings already. Nothing else is waited for: the adoption
+    // figures, the mail and screening cards, the applications and the log each
+    // draw their own loading state, and a slow one of them must not hold the
+    // form back.
+    void loadAdoption();
+    const [data, modelsResult] = await Promise.all([adminApi.settings(), adminApi.modelOptions()]);
     const values = data.settings;
     shownKeys.value = new Set(Object.keys(values));
     defaultReviewPrompt.value = data.signup_review_prompt_default ?? '';
@@ -953,13 +532,15 @@ async function load(): Promise<void> {
       turnstileSecret: '',
       turnstileSecretHint: values['turnstile.secret_key'] ?? '',
       turnstileOnLogin: values['turnstile.on_login'] === 'true',
-      turnstileOnSignup: values['turnstile.on_signup'] === 'true',
       turnstileOnAPIKey: values['turnstile.on_api_key'] === 'true',
       turnstileOnRedeem: values['turnstile.on_redeem'] === 'true',
       turnstileOnFeedback: values['turnstile.on_feedback'] === 'true',
       turnstileOnImages: values['turnstile.on_images'] === 'true',
       powOnImages: values['security.pow_on_images'] === 'true',
-      captchaMode: values['registration.captcha_mode'] || (values['turnstile.on_signup'] === 'true' ? 'turnstile' : 'off'),
+      // An empty mode is no mode the server knows, and the server falls back to
+      // Turnstile for it (settings.RegistrationCaptchaMode) whatever the switch
+      // says, so the select shows what sign-up actually asks for.
+      captchaMode: values['registration.captcha_mode'] || 'turnstile',
       powBaseMaxNumber: Number(values['security.pow_base_max_number'] || 50000),
       powElevatedMaxNumber: Number(values['security.pow_elevated_max_number'] || 500000),
       powThreshold: Number(values['security.pow_threshold'] || 10),
@@ -1354,141 +935,8 @@ onMounted(load);
           :hint="t('powOnImagesHint')"
         />
       </AdminControlCard>
-      <AdminControlCard id="secMail" v-show="visible('secMail')" :title="t('mailSettings')" :icon="IconMessage" :hint="t('mailSettingsHint')">
-        <AdminFailure v-if="mailLoadError" :message="t(mailLoadError)" @retry="loadMail" />
-        <p v-else-if="!mailLoaded" class="oa-table-empty" role="status">{{ t('loading') }}</p>
-        <template v-else>
-          <template v-if="isSuperAdmin">
-            <OaTextField v-model="mailForm.host" :label="t('mailHost')" autocomplete="off" />
-            <OaNumberField v-model="mailForm.port" :label="t('mailPort')" :min="1" :max="65535" />
-            <OaTextField v-model="mailForm.username" :label="t('mailUsername')" autocomplete="username" />
-          </template>
-          <!-- Shown as text rather than hidden, as the public URL below is: the relay mail goes through is the same kind of decision, and a security administrator still sees where it points. -->
-          <p v-else class="oa-field-hint">{{ t('mailTransportLocked', { server: mailForm.host ? mailForm.host + ':' + mailForm.port : '—' }) }}</p>
-          <OaTextField v-model="mailForm.from" :label="t('mailFrom')" autocomplete="email" />
-          <OaSwitchField v-model="mailForm.implicit_tls" :label="t('mailImplicitTLS')" :hint="t('mailImplicitTLSHint')" />
-          <OaTextField
-            v-if="isSuperAdmin"
-            v-model="mailForm.public_url"
-            :label="t('mailPublicURL')"
-            :hint="t('mailPublicURLHint')"
-            autocomplete="url"
-          />
-          <!-- Shown rather than hidden: a security administrator can still see where mailed links point, and the save sends the value back unchanged, which the server accepts. -->
-          <p v-else class="oa-field-hint">{{ t('mailPublicURLLocked', { url: mailForm.public_url || '—' }) }}</p>
-          <OaTextField
-            v-model="mailForm.password"
-            type="password"
-            :label="t('mailPassword')"
-            :placeholder="mailForm.password_set ? t('mailPasswordKeepPlaceholder') : t('mailPasswordPlaceholder')"
-            :hint="mailForm.password_set ? t('mailPasswordSetHint') : t('mailPasswordHint')"
-            autocomplete="new-password"
-          />
-          <div class="oa-control-actions">
-            <OaConfirmButton
-              v-if="mailForm.password_set"
-              class="oa-btn oa-btn-danger"
-              :label="t('mailClearPassword')"
-              :armed-label="t('mailClearPasswordConfirm')"
-              :armed-title="t('mailClearPasswordConfirm')"
-              :disabled="mailBusy"
-              @confirm="clearMailPassword"
-            />
-            <button type="button" class="oa-btn primary" :disabled="mailBusy" @click="saveMail">
-              {{ mailBusy ? t('saving') : t('save') }}
-            </button>
-          </div>
-          <OaTextField
-            v-model="mailTestTo"
-            :label="t('mailTestTo')"
-            :hint="mailSettingsDirty ? t('mailTestSaveFirst') : undefined"
-            type="email"
-            autocomplete="email"
-          />
-          <div class="oa-control-actions">
-            <button type="button" class="oa-btn" :disabled="mailBusy || mailTestBusy || mailSettingsDirty || !mailTestTo.trim()" @click="sendMailTest">
-              {{ mailTestBusy ? t('sending') : t('mailTestSend') }}
-            </button>
-          </div>
-          <p
-            v-if="mailFlash"
-            class="oa-drawer-flash visible oa-control-flash"
-            :class="{ ok: mailFlashOK }"
-            :role="mailFlashOK ? 'status' : 'alert'"
-          >{{ t(mailFlash) }}</p>
-        </template>
-      </AdminControlCard>
-      <AdminControlCard id="secUserCheck" v-show="visible('secUserCheck')" :title="t('userCheckSettings')" :icon="IconShield" :hint="t('userCheckSettingsHint')">
-        <AdminFailure v-if="userCheckLoadError" :message="t(userCheckLoadError)" @retry="loadUserCheck" />
-        <p v-else-if="!userCheckLoaded" class="oa-table-empty" role="status">{{ t('loading') }}</p>
-        <template v-else>
-          <OaSwitchField
-            v-model="userCheckForm.enabled"
-            :label="t('userCheckEnabled')"
-            :hint="t('userCheckEnabledHint')"
-          />
-          <OaTextField
-            v-model="userCheckForm.api_key"
-            type="password"
-            :label="t('userCheckAPIKey')"
-            :placeholder="userCheckForm.api_key_set ? t('userCheckAPIKeyKeepPlaceholder') : t('userCheckAPIKeyPlaceholder')"
-            :hint="userCheckForm.api_key_set ? t('userCheckAPIKeySetHint') : t('userCheckAPIKeyMissingHint')"
-            autocomplete="new-password"
-          />
-          <div v-if="userCheckForm.api_key_set" class="oa-control-actions">
-            <OaConfirmButton
-              class="oa-btn oa-btn-danger"
-              :label="t('userCheckClearAPIKey')"
-              :armed-label="t('userCheckClearAPIKeyConfirm')"
-              :armed-title="t('userCheckClearAPIKeyConfirm')"
-              :disabled="userCheckBusy"
-              @confirm="clearUserCheckAPIKey"
-            />
-          </div>
-          <OaTextArea
-            v-model="userCheckForm.exempt_domains"
-            :label="t('userCheckExemptDomains')"
-            :hint="t('userCheckExemptDomainsHint')"
-            :placeholder="t('userCheckExemptDomainsPlaceholder')"
-            :rows="5"
-          />
-          <OaSelectField
-            v-model="userCheckForm.failure_mode"
-            :label="t('userCheckFailureMode')"
-            :hint="t('userCheckFailureModeHint')"
-            :options="[
-              { value: 'reject', label: t('userCheckFailureReject') },
-              { value: 'allow', label: t('userCheckFailureAllow') },
-            ]"
-          />
-          <div class="oa-control-actions">
-            <button type="button" class="oa-btn primary" :disabled="userCheckBusy" @click="saveUserCheck">
-              {{ userCheckBusy ? t('saving') : t('save') }}
-            </button>
-          </div>
-          <OaTextField
-            v-model="userCheckTestEmail"
-            :label="t('userCheckTestEmail')"
-            type="email"
-            autocomplete="email"
-            :hint="t('userCheckTestHint')"
-          />
-          <div class="oa-control-actions">
-            <button
-              type="button"
-              class="oa-btn"
-              :disabled="userCheckTestBusy || !userCheckTestEmail.trim() || !userCheckForm.api_key_set"
-              @click="sendUserCheckTest"
-            >{{ userCheckTestBusy ? t('checking') : t('userCheckTest') }}</button>
-          </div>
-          <p
-            v-if="userCheckFlash"
-            class="oa-drawer-flash visible oa-control-flash"
-            :class="{ ok: userCheckFlashOK }"
-            :role="userCheckFlashOK ? 'status' : 'alert'"
-          >{{ t(userCheckFlash) }}</p>
-        </template>
-      </AdminControlCard>
+      <SecurityMailCard v-show="visible('secMail')" @configured="(value) => { mailConfigured = value; }" />
+      <SecurityUserCheckCard v-show="visible('secUserCheck')" />
       <AdminControlCard id="secReviewTrial" v-show="visible('secReviewTrial')" :title="t('reviewTry')" :icon="IconSliders" :hint="t('reviewTryHint')">
         <div class="oa-field">
           <OaTextField v-model="trial.username" :label="t('username')" placeholder="123123123123" />
@@ -1690,130 +1138,8 @@ onMounted(load);
           :hint="t('oauthLinkByEmailHint')"
         />
       </AdminControlCard>
-      <AdminControlCard id="secApplications" v-show="visible('secApplications')" :title="t('secApplications')" :icon="IconKey" :hint="t('applicationsHint')" class="oa-control-card-wide">
-        <p class="oa-field-hint">{{ t('applicationsIssuer', { issuer }) }}</p>
-        <p v-if="!isSuperAdmin && applications.some((app) => app.trusted)" class="oa-field-hint">{{ t('applicationTrustedLocked') }}</p>
-
-        <p v-if="!applications.length" class="oa-table-empty">{{ t('applicationsEmpty') }}</p>
-        <div v-else class="oa-apps">
-          <div v-for="app in applications" :key="app.id" class="oa-app" :class="{ off: app.disabled }">
-            <!-- Its initials, the same mark the consent screen draws it with,
-                 so a row here and the card a stranger sees are the same thing. -->
-            <span class="oa-app-mark">{{ initials(app.name) }}</span>
-            <div class="oa-app-body">
-              <div class="oa-app-head">
-                <span class="oa-app-name">{{ app.name }}</span>
-                <OaBadge v-if="app.disabled" tone="danger">{{ t('disabled') }}</OaBadge>
-                <OaBadge v-if="app.trusted" tone="muted">{{ t('applicationTrusted') }}</OaBadge>
-                <OaBadge v-if="!app.confidential" tone="muted">{{ t('applicationPublic') }}</OaBadge>
-              </div>
-              <p v-if="app.description" class="oa-app-desc">{{ app.description }}</p>
-              <!-- The client id is the one value an operator has to move to
-                   another program by hand, so the row is the copy control. -->
-              <button type="button" class="oa-app-id mono" :title="t('copy')" @click="copy(app.client_id)">
-                <span>{{ app.client_id }}</span>
-                <IconCheck v-if="copied === app.client_id" :size="12" />
-                <IconCopy v-else :size="12" />
-              </button>
-              <div class="oa-app-uris">
-                <span v-for="uri in app.redirect_uris" :key="uri" class="oa-app-uri">{{ uri }}</span>
-              </div>
-            </div>
-            <div class="oa-app-actions">
-              <button type="button" class="oa-btn" :disabled="appBusy || lockedApplication(app)" @click="toggleApplication(app, !app.disabled)">
-                {{ app.disabled ? t('enable') : t('disable') }}
-              </button>
-              <OaConfirmButton
-                v-if="app.confidential"
-                class="oa-btn"
-                :label="t('applicationRotate')"
-                :armed-label="t('confirmWord')"
-                :armed-title="t('applicationRotateConfirm', { application: app.name })"
-                :resting-title="t('applicationRotate')"
-                :disabled="appBusy || lockedApplication(app)"
-                @confirm="rotateApplication(app)"
-              />
-              <OaConfirmButton
-                class="oa-btn"
-                :label="t('deleteLabel')"
-                :armed-label="t('confirmWord')"
-                :armed-title="t('applicationDeleteConfirm', { application: app.name })"
-                :resting-title="t('deleteLabel')"
-                :disabled="appBusy || lockedApplication(app)"
-                @confirm="removeApplication(app)"
-              />
-            </div>
-          </div>
-        </div>
-
-        <!-- The one moment this value exists. It gets a surface of its own
-             rather than a line of hint text, because everything else on this
-             screen can be read again tomorrow and this cannot. -->
-        <div v-if="freshSecret" class="oa-app-secret">
-          <span class="oa-app-secret-label">{{ t('applicationSecretOnce') }}</span>
-          <button type="button" class="oa-app-secret-value mono" :title="t('copy')" @click="copy(freshSecret)">
-            <span>{{ maskCredential(freshSecret) }}</span>
-            <IconCheck v-if="copied === freshSecret" :size="13" />
-            <IconCopy v-else :size="13" />
-          </button>
-        </div>
-
-        <h3 class="oa-app-form-title">{{ t('applicationRegister') }}</h3>
-        <OaTextField v-model="draft.name" :label="t('applicationName')" :hint="t('applicationNameHint')" />
-        <OaTextField v-model="draft.description" :label="t('applicationDescription')" :hint="t('applicationDescriptionHint')" />
-        <OaTextArea
-          v-model="draft.redirects"
-          :label="t('applicationRedirects')"
-          :rows="2"
-          placeholder="https://wiki.example.com/oidc/callback"
-          :hint="t('applicationRedirectsHint')"
-        />
-        <OaSwitchField v-model="draft.public" :label="t('applicationPublicField')" :hint="t('applicationPublicHint')" />
-        <OaSwitchField v-if="isSuperAdmin" v-model="draft.trusted" :label="t('applicationTrustedField')" :hint="t('applicationTrustedHint')" />
-        <p v-else class="oa-field-hint">{{ t('applicationTrustedSuperAdminOnly') }}</p>
-        <div class="oa-button-row">
-          <button type="button" class="oa-btn primary" :disabled="appBusy" @click="registerApplication">
-            {{ t('applicationRegister') }}
-          </button>
-        </div>
-        <p class="oa-drawer-flash" :class="{ visible: !!appFlash }">{{ appFlash }}</p>
-      </AdminControlCard>
-      <AdminControlCard id="secSecurityLog" v-show="visible('secSecurityLog')" :title="t('secSecurityLog')" :icon="IconFile" :hint="t('securityLogHint')" class="oa-control-card-wide">
-        <template #actions>
-          <button type="button" class="oa-btn" :disabled="eventsLoading" @click="loadEvents">
-            {{ t('refresh') }}
-          </button>
-        </template>
-        <p v-if="eventsLoading && !events.length" class="oa-table-empty">{{ t('loading') }}</p>
-        <p v-else-if="!events.length" class="oa-table-empty">{{ t('securityLogEmpty') }}</p>
-        <!-- Its own rows, not the request log's: those are a six-column grid,
-             and one block dropped into it lands in the 64px time column and
-             wraps a word to a line. A decision is a sentence, not a table
-             row, so it gets a heading, a line of who and where, and room to
-             say why. -->
-        <ol v-else class="oa-event-list" :class="{ busy: eventsLoading }">
-          <li v-for="event in events" :key="event.id" class="oa-event" :class="`is-${event.severity}`">
-            <div class="oa-event-head">
-              <span class="oa-event-title">{{ eventLabel(event.event) }}</span>
-              <OaBadge
-                v-if="event.decision"
-                :tone="event.severity === 'danger'
-                  ? 'danger' : event.severity === 'warning' ? 'warning' : 'muted'"
-              >{{ reviewDecision(event.decision) }}</OaBadge>
-              <time class="oa-event-time">{{ absoluteTime(event.at) }}</time>
-            </div>
-            <div v-if="event.username || event.ip || event.actor_username" class="oa-event-meta">
-              <span v-if="event.username">@{{ maskUser(event.username) }}</span>
-              <span v-if="event.ip" class="mono">{{ maskLog(event.ip) }}</span>
-              <span v-if="event.actor_username">
-                {{ t('securityLogActor', { name: `@${maskUser(event.actor_username)}` }) }}
-              </span>
-            </div>
-            <p v-if="event.reason" class="oa-event-reason">{{ formatEventReason(event.reason) }}</p>
-          </li>
-        </ol>
-        <OaPagination v-bind="eventPage" :total="eventsTotal" :busy="eventsLoading" @change="changeEvents" />
-      </AdminControlCard>
+      <SecurityApplicationsCard v-show="visible('secApplications')" @issuer="(value) => { issuer = value; }" />
+      <SecurityLogCard v-show="visible('secSecurityLog')" @failed="(message) => { flash = message; }" />
     </template>
   </AdminWorkbench>
   <p v-if="flash" class="oa-drawer-flash visible oa-control-flash" role="status">{{ flash }}</p>
