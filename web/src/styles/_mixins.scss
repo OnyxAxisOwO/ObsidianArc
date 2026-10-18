@@ -86,3 +86,38 @@ $page-width: 1480px;
 // changes it at runtime; the user's own blur setting is --ai-surface-filter,
 // and that one stays a token.
 $frosted-filter: blur(20px) saturate(1.6);
+
+// The line under a chart: a hairline, the bucket note on the left and the peak
+// on the right. The gap belongs to the caller: it only shows when the two
+// notes wrap onto separate lines, and the two charts set it to different values.
+@mixin chart-foot($gap) {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: $gap;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ai-border);
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+
+  > span:first-child {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .oa-dashboard-dot {
+    color: var(--ai-primary);
+  }
+}
+
+// The track and coloured arc of a loading ring. Size, timing and whatever a
+// spinner adds around the ring stay at the call site. The terminal's ring keeps
+// its own copy: it declares its radius before its border, and moving it here
+// would reorder that rule in the compiled stylesheet.
+@mixin spinner-ring {
+  border: 2px solid var(--ai-outline-variant);
+  border-radius: 50%;
+  border-top-color: var(--ai-primary);
+}

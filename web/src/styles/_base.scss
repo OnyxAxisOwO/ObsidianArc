@@ -182,9 +182,7 @@ textarea:placeholder-shown::selection {
 .oa-boot-spinner {
   width: 20px;
   height: 20px;
-  border: 2px solid var(--ai-outline-variant);
-  border-radius: 50%;
-  border-top-color: var(--ai-primary);
+  @include spinner-ring;
   animation: ai-chat-spin 0.8s linear infinite;
 }
 

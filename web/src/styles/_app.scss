@@ -77,8 +77,8 @@
   // taller than the viewport so the header/title is never cut off.
   margin-top: auto;
   margin-bottom: auto;
-  /* The same rise the transcript uses when a conversation is switched, so
-     arriving at this page feels like the rest of the interface. */
+  /* The entrance is sectionEnter from _surfaces.scss, which loads later and
+     wins on this selector, so the animation below never plays. */
   animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
 }
 

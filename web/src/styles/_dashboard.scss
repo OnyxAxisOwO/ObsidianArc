@@ -143,18 +143,8 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 .oa-dashboard-trend { display: flex; flex-direction: column; }
 .oa-dashboard-trend .oa-plot { flex: 1; grid-template-rows: minmax(var(--oa-plot-height), 1fr) auto; }
 .oa-dashboard-trend-foot {
-  display: flex;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--ai-border);
-  color: var(--ai-text-secondary);
-  font-size: 11px;
+  @include chart-foot(10px);
 }
-.oa-dashboard-trend-foot > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
-.oa-dashboard-trend-foot .oa-dashboard-dot { color: var(--ai-primary); }
 
 /* --- where the load goes ------------------------------------------------- */
 .oa-dashboard-rank-caption {

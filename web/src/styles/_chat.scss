@@ -1128,9 +1128,7 @@
   box-sizing: border-box;
   width: 14px;
   height: 14px;
-  border: 2px solid var(--ai-outline-variant);
-  border-radius: 50%;
-  border-top-color: var(--ai-primary);
+  @include spinner-ring;
   transform-origin: center center;
   flex-shrink: 0;
   will-change: transform;
@@ -1139,6 +1137,9 @@
   animation: ai-chat-spin 0.8s linear infinite;
 }
 
+/* The turn for spinners and refresh icons. A new spinner uses it, and a screen
+   that needs another speed sets its duration at the call site rather than
+   copying the turn. */
 @keyframes ai-chat-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
