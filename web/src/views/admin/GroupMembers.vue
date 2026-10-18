@@ -59,7 +59,7 @@ async function load(): Promise<void> {
   const query = new URLSearchParams({ q: search.value, limit: String(pageSize.value), offset: String(offset.value) });
   if (scope.value === 'members') query.set('group_id', props.group.id);
   try {
-    const result = await adminApi.memberOptions(`?${query}`);
+    const result = await adminApi.memberOptions(query);
     if (current !== request) return;
     accounts.value = result.users ?? [];
     total.value = result.total;

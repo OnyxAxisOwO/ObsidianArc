@@ -3,7 +3,7 @@
 // a field added to one direction and forgotten in the other is the bug this
 // shape invites.
 
-import type { AdminModel, Group, ReasoningStyle, ReasoningTier } from '@/admin/api';
+import type { AdminModel, AdminModelInput, Group, ReasoningStyle, ReasoningTier } from '@/admin/api';
 
 export interface ModelForm {
   providerID: string;
@@ -118,7 +118,7 @@ export function isOverrideObject(text: string): boolean {
  * provider and the avatar are the caller's to add: only a new model names its
  * provider, and only a copy carries an avatar this form has no field for.
  */
-export function modelPayload(form: ModelForm, trimmedOverride: string): Record<string, unknown> {
+export function modelPayload(form: ModelForm, trimmedOverride: string): AdminModelInput {
   return {
     route_to_id: form.routeTo,
     reasoning_style: form.reasoningStyle,

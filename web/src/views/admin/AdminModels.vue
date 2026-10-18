@@ -12,6 +12,7 @@ import {
   adminApi,
   type AdminModel, type Group, type Meta, type ModelHealth, type Provider,
   type UsageBreakdown,
+  type AdminModelInput,
 } from '@/admin/api';
 import { pickJSONFile, saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
@@ -283,7 +284,7 @@ async function loadUsers(modelID: string): Promise<void> {
   if (!canAdmin('usage')) return;
   try {
     const since = Date.now() - 30 * DAY_MS;
-    const { rows } = await adminApi.usageBreakdown('user', `model_id=${modelID}&since=${since}&metric=tokens`);
+    const { rows } = await adminApi.usageBreakdown('user', { model_id: modelID, since, metric: 'tokens' });
     if (ticket === usersRequest) users.value = rows;
   } catch {
     // A panel that cannot say who uses the model still edits it.
@@ -344,10 +345,10 @@ async function save(): Promise<void> {
   }
 
   const payload = modelPayload(form.value, trimmedOverride);
-  if (creating.value) payload['provider_id'] = form.value.providerID;
+  if (creating.value) payload.provider_id = form.value.providerID;
   // The avatar has no field in this form, so a copy would silently lose one
   // that had been set through the API.
-  if (template.value) payload['avatar'] = template.value.avatar;
+  if (template.value) payload.avatar = template.value.avatar;
 
   if (many.value) {
     await createMany(payload);
@@ -373,7 +374,7 @@ async function save(): Promise<void> {
  * ones that were made are unticked, so saving again finishes the job rather
  * than making the rest twice.
  */
-async function createMany(shared: Record<string, unknown>): Promise<void> {
+async function createMany(shared: AdminModelInput): Promise<void> {
   const entries = detected.value;
   const results = await Promise.allSettled(entries.map((entry) => adminApi.createModel({
     ...shared,

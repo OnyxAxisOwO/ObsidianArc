@@ -11,7 +11,6 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { adminApi, type AuditEntry, type AuditFacets } from '@/admin/api';
 import { AUDIT_ACTIONS, auditWeight } from './audit-actions';
-import { auditText as at, type AuditTextKey } from './audit-text';
 import { maskLog, maskUser } from '@/admin/safeMode';
 import { IconClose, IconRefresh } from '@/icons';
 import OaBadge from '@/components/OaBadge.vue';
@@ -108,7 +107,7 @@ function since(): number {
   return entry && entry.hours > 0 ? Date.now() - entry.hours * HOUR_MS : 0;
 }
 
-function listQuery(): string {
+function listQuery(): URLSearchParams {
   const params = new URLSearchParams();
   const at = since();
   if (at > 0) params.set('since', String(at));
@@ -119,7 +118,7 @@ function listQuery(): string {
   if (query.value.via) params.set('via', query.value.via);
   params.set('limit', String(pageSize.value));
   params.set('offset', String(query.value.offset));
-  return `?${params.toString()}`;
+  return params;
 }
 
 // The facets and the trail go out together, as the request log's do: the trail
@@ -128,7 +127,7 @@ async function reload(): Promise<void> {
   const ticket = ++facetTicket;
   facetsError.value = '';
   const at = since();
-  const facetsDone = adminApi.auditFacets(at > 0 ? `?since=${at}` : '').then(
+  const facetsDone = adminApi.auditFacets(at > 0 ? { since: at } : undefined).then(
     (next) => { if (ticket === facetTicket) facets.value = next; },
     (failure: unknown) => {
       if (ticket !== facetTicket) return;
@@ -212,25 +211,25 @@ function actionKey(entry: Pick<AuditEntry, 'method' | 'route'>): string {
 
 function actionLabel(entry: Pick<AuditEntry, 'method' | 'route' | 'path'>): string {
   const key = AUDIT_ACTIONS[actionKey(entry)];
-  return key ? at(key) : `${entry.method} ${entry.path}`;
+  return key ? t(key) : `${entry.method} ${entry.path}`;
 }
 
 function actionOptionLabel(value: string): string {
   const key = AUDIT_ACTIONS[value];
-  return key ? at(key) : value;
+  return key ? t(key) : value;
 }
 
-const VIA: Record<string, AuditTextKey> = {
-  web: 'viaWeb',
-  'console:web': 'viaConsoleWeb',
-  'console:ssh': 'viaConsoleSSH',
+const VIA: Record<string, StringKey> = {
+  web: 'auditViaWeb',
+  'console:web': 'auditViaConsoleWeb',
+  'console:ssh': 'auditViaConsoleSSH',
 };
 // The filter's choices: anybody, then each channel the table names.
 const VIA_FILTERS = ['', ...Object.keys(VIA)];
 
 function viaLabel(via: string): string {
   const key = VIA[via];
-  return key ? at(key) : via;
+  return key ? t(key) : via;
 }
 
 // Both from the core dictionary, which already carries the roles for the
@@ -260,8 +259,8 @@ function targetName(entry: AuditEntry): string {
 
 function outcome(entry: AuditEntry): { tone: 'danger' | 'warning'; text: string } | null {
   if (entry.status < 400) return null;
-  if (entry.status === 401 || entry.status === 403) return { tone: 'warning', text: at('refused') };
-  return { tone: 'danger', text: at('failedStatus', { status: entry.status }) };
+  if (entry.status === 401 || entry.status === 403) return { tone: 'warning', text: t('auditRefused') };
+  return { tone: 'danger', text: t('auditFailedStatus', { status: entry.status }) };
 }
 
 function initial(name: string): string {
@@ -326,9 +325,9 @@ function withAny(options: Array<{ value: string; label: string; count: number }>
 }
 
 const actorChoices = computed(() =>
-  withAny(facets.value?.actors ?? [], at('anyActor'), query.value.actorID, (o) => maskUser(o.label)));
+  withAny(facets.value?.actors ?? [], t('auditAnyActor'), query.value.actorID, (o) => maskUser(o.label)));
 const actionChoices = computed(() =>
-  withAny(facets.value?.routes ?? [], at('anyAction'), query.value.action, (o) => actionOptionLabel(o.value)));
+  withAny(facets.value?.routes ?? [], t('auditAnyAction'), query.value.action, (o) => actionOptionLabel(o.value)));
 
 // --- one record ---------------------------------------------------------------
 
@@ -352,16 +351,16 @@ const facts = computed<Array<[string, string]>>(() => {
   const e = opened.value;
   if (!e) return [];
   return [
-    [at('when'), absoluteTime(e.at)],
-    [at('actor'), maskUser(e.actor_username) || '—'],
+    [t('auditWhen'), absoluteTime(e.at)],
+    [t('auditActor'), maskUser(e.actor_username) || '—'],
     [t('role'), roleLabel(e.actor_role)],
-    [at('path'), `${e.method} ${e.path}`],
-    [at('target'), e.target_label ? `${targetName(e)} · ${e.target_id}` : (e.target_id || '—')],
-    [at('status'), String(e.status)],
-    [at('duration'), `${e.duration_ms} ms`],
-    [at('via'), viaLabel(e.via)],
-    [at('iP'), e.ip ? maskLog(e.ip) : '—'],
-    [at('userAgent'), e.user_agent ? maskLog(e.user_agent) : '—'],
+    [t('auditPath'), `${e.method} ${e.path}`],
+    [t('auditTarget'), e.target_label ? `${targetName(e)} · ${e.target_id}` : (e.target_id || '—')],
+    [t('auditStatus'), String(e.status)],
+    [t('auditDuration'), `${e.duration_ms} ms`],
+    [t('auditVia'), viaLabel(e.via)],
+    [t('auditIP'), e.ip ? maskLog(e.ip) : '—'],
+    [t('auditUserAgent'), e.user_agent ? maskLog(e.user_agent) : '—'],
   ];
 });
 
@@ -394,7 +393,7 @@ function clearTarget(): void {
 const retentionChoices = computed<Array<Choice<string>>>(() => {
   const current = facets.value?.retention_days ?? 180;
   const steps = RETENTIONS.includes(current) ? RETENTIONS : [...RETENTIONS, current].sort((a, b) => a - b);
-  return steps.map((days) => ({ value: String(days), label: at('retentionDays', { count: days }) }));
+  return steps.map((days) => ({ value: String(days), label: t('auditRetentionDays', { count: days }) }));
 });
 const retentionError = ref('');
 
@@ -433,14 +432,14 @@ onMounted(reload);
         <OaSelectField
           v-model="query.actorID"
           searchable
-          :label="at('actor')"
+          :label="t('auditActor')"
           :options="actorChoices"
           @update:model-value="filterMoved"
         />
         <OaSelectField
           v-model="query.action"
           searchable
-          :label="at('action')"
+          :label="t('auditAction')"
           :options="actionChoices"
           @update:model-value="filterMoved"
         />
@@ -457,39 +456,39 @@ onMounted(reload);
       </div>
 
       <div class="oa-log-filter-actions">
-        <div class="oa-segment" role="group" :aria-label="at('via')">
+        <div class="oa-segment" role="group" :aria-label="t('auditVia')">
           <button
             v-for="via in VIA_FILTERS"
             :key="via"
             type="button"
             :aria-pressed="query.via === via"
             @click="query.via = via; filterMoved()"
-          >{{ via ? viaLabel(via) : at('anyVia') }}</button>
+          >{{ via ? viaLabel(via) : t('auditAnyVia') }}</button>
         </div>
         <button v-if="query.targetID" type="button" class="oa-badge oa-audit-badge-btn" :title="t('logClear')" @click="clearTarget">
-          {{ at('onTarget', { name: query.targetName || query.targetID }) }}
+          {{ t('auditOnTarget', { name: query.targetName || query.targetID }) }}
           <IconClose :size="12" aria-hidden="true" />
         </button>
         <button type="button" class="oa-btn" @click="clearFilters">{{ t('logClear') }}</button>
         <span class="oa-log-holding oa-audit-summary">
-          <span>{{ at('summary', { total: facets.total.toLocaleString(), actors: facets.actors.length }) }}</span>
+          <span>{{ t('auditSummary', { total: facets.total.toLocaleString(), actors: facets.actors.length }) }}</span>
           <button v-if="facets.failed > 0" type="button" class="oa-badge oa-badge-danger oa-audit-badge-btn" @click="showFailed">
-            {{ at('summaryFailed', { count: facets.failed.toLocaleString() }) }}
+            {{ t('auditSummaryFailed', { count: facets.failed.toLocaleString() }) }}
           </button>
           <!-- The super administrator's alone, so for anybody else it is a
                sentence rather than a control that would only refuse them. -->
-          <label v-if="superAdmin" id="auditRetention" class="oa-audit-keep" :title="at('retentionHint')">
-            {{ at('retentionLabel') }}
+          <label v-if="superAdmin" id="auditRetention" class="oa-audit-keep" :title="t('auditRetentionHint')">
+            {{ t('auditRetentionLabel') }}
             <OaSelect
               class="oa-filter-select"
-              :aria-label="at('retentionLabel')"
+              :aria-label="t('auditRetentionLabel')"
               :model-value="String(facets.retention_days)"
               :choices="retentionChoices"
               :searchable="false"
               @update:model-value="saveRetention"
             />
           </label>
-          <span v-else id="auditRetention">{{ at('retention', { count: facets.retention_days }) }}</span>
+          <span v-else id="auditRetention">{{ t('auditRetention', { count: facets.retention_days }) }}</span>
           <OaBadge v-if="retentionError" tone="danger">{{ retentionError }}</OaBadge>
         </span>
       </div>
@@ -499,7 +498,7 @@ onMounted(reload);
     <div id="auditTrail" class="oa-viz-card">
       <p v-if="loading && !entries.length" class="oa-table-empty">{{ t('loading') }}</p>
       <p v-else-if="listError" class="oa-table-empty">{{ listError }}</p>
-      <p v-else-if="!entries.length" class="oa-table-empty">{{ at('empty') }}</p>
+      <p v-else-if="!entries.length" class="oa-table-empty">{{ t('auditEmpty') }}</p>
 
       <div v-else class="oa-audit-days" :aria-busy="loading" :class="{ busy: loading }">
         <section v-for="day in days" :key="day.key">
@@ -560,32 +559,32 @@ onMounted(reload);
       </dl>
 
       <section v-if="opened.changes?.length" class="oa-audit-section">
-        <h4>{{ at('changes') }}</h4>
+        <h4>{{ t('auditChanges') }}</h4>
         <ul class="oa-audit-changes">
           <li v-for="(change, index) in opened.changes" :key="index">
             <span class="oa-audit-field">{{ change.field }}</span>
-            <span v-if="change.secret" class="oa-audit-secret">{{ at('secretChanged') }}</span>
+            <span v-if="change.secret" class="oa-audit-secret">{{ t('auditSecretChanged') }}</span>
             <span v-else class="oa-audit-diff">
-              <del :class="{ empty: !change.from }">{{ change.from ? changeValue(change.field, change.from) : at('emptyValue') }}</del>
+              <del :class="{ empty: !change.from }">{{ change.from ? changeValue(change.field, change.from) : t('auditEmptyValue') }}</del>
               <span class="oa-audit-arrow" aria-hidden="true">→</span>
-              <ins :class="{ empty: !change.to }">{{ change.to ? changeValue(change.field, change.to) : at('emptyValue') }}</ins>
+              <ins :class="{ empty: !change.to }">{{ change.to ? changeValue(change.field, change.to) : t('auditEmptyValue') }}</ins>
             </span>
           </li>
         </ul>
       </section>
 
       <section v-if="opened.request" class="oa-audit-section">
-        <h4>{{ at('request') }}</h4>
+        <h4>{{ t('auditRequest') }}</h4>
         <pre class="oa-audit-request">{{ opened.request }}</pre>
-        <p class="oa-field-hint">{{ at('requestHint') }}</p>
+        <p class="oa-field-hint">{{ t('auditRequestHint') }}</p>
       </section>
 
       <div class="oa-audit-links">
         <button type="button" class="oa-btn" @click="showActor(opened)">
-          {{ at('byActor', { name: maskUser(opened.actor_username) }) }}
+          {{ t('auditByActor', { name: maskUser(opened.actor_username) }) }}
         </button>
         <button v-if="opened.target_id" type="button" class="oa-btn" @click="showTarget(opened)">
-          {{ at('onTarget', { name: targetName(opened) }) }}
+          {{ t('auditOnTarget', { name: targetName(opened) }) }}
         </button>
       </div>
     </div>

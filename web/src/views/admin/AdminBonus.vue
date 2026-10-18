@@ -14,6 +14,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import {
   adminApi,
   type AdminModel, type BonusBarRow, type BonusGrantRow, type CheckinRuleBody, type CheckinSettings, type Group,
+  type AdminBonusPoolInput,
 } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
@@ -29,7 +30,7 @@ import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column, SortState } from '@/components/table-types';
-import { t, tn } from '@/composables/useI18n';
+import { t, tn, type StringKey } from '@/composables/useI18n';
 import { maskProvider, maskUser } from '@/admin/safeMode';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { IconCheck, IconGift } from '@/icons';
@@ -37,7 +38,6 @@ import AdminControlCard from './AdminControlCard.vue';
 import AdminFailure from './AdminFailure.vue';
 import CheckinRewardEditor from './CheckinRewardEditor.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
-import { poolRefusal, poolText as pt } from './pool-text';
 import { useAdminView } from './adminView';
 import { toDateTimeLocal, failureText } from './shared';
 
@@ -48,6 +48,18 @@ view.setTitle(() => t('bonusTitle'), () => t('bonusSubtitle'));
 // larger figure would be shortened without a word. The field stops at the same
 // figure for that reason.
 const MAX_GRANT_DAYS = 3650;
+
+// The refusals only a pool's panel can meet, in the reader's language. The
+// screen does not offer either move, so these are what a stale page sees.
+const POOL_REFUSALS: Record<string, StringKey> = {
+  bonus_shared_no_grants: 'poolErrSharedNoGrants',
+  bonus_kind_change: 'poolErrKindChange',
+  bonus_not_shared: 'poolErrNotShared',
+};
+
+function poolRefusal(code: string): string | undefined {
+  return Object.hasOwn(POOL_REFUSALS, code) ? t(POOL_REFUSALS[code]!) : undefined;
+}
 
 const bars = ref<BonusBarRow[]>([]);
 const models = ref<AdminModel[]>([]);
@@ -147,7 +159,7 @@ watch(() => form.value.kind, (kind) => {
   if (kind !== 'shared' && form.value.toggle_mode === 'only') form.value.toggle_mode = 'user';
 });
 
-function poolBody(): Record<string, unknown> | undefined {
+function poolBody(): AdminBonusPoolInput | undefined {
   const f = form.value;
   if (f.kind !== 'shared') return undefined;
   return {
@@ -214,7 +226,7 @@ const modeChoices = computed(() => form.value.kind === 'shared'
   ? [
     { value: 'user', label: t('bonusModeUser') },
     { value: 'on', label: t('bonusModeOn') },
-    { value: 'only', label: pt('modeOnly') },
+    { value: 'only', label: t('poolModeOnly') },
   ]
   : [
     { value: 'user', label: t('bonusModeUser') },
@@ -222,13 +234,13 @@ const modeChoices = computed(() => form.value.kind === 'shared'
     { value: 'off', label: t('bonusModeOff') },
   ]);
 const allModes = computed<Record<string, string>>(() => ({
-  user: t('bonusModeUser'), on: t('bonusModeOn'), off: t('bonusModeOff'), only: pt('modeOnly'),
+  user: t('bonusModeUser'), on: t('bonusModeOn'), off: t('bonusModeOff'), only: t('poolModeOnly'),
 }));
 const resetChoices = computed(() => [
-  { value: '', label: pt('resetNever') },
-  { value: 'day', label: pt('resetDay') },
-  { value: 'week', label: pt('resetWeek') },
-  { value: 'month', label: pt('resetMonth') },
+  { value: '', label: t('poolResetNever') },
+  { value: 'day', label: t('poolResetDay') },
+  { value: 'week', label: t('poolResetWeek') },
+  { value: 'month', label: t('poolResetMonth') },
 ]);
 /** Check-in pays into an account's own grants, which a pool has none of. */
 const grantable = computed(() => bars.value.filter((bar) => bar.kind !== 'shared'));
@@ -243,14 +255,14 @@ function modeLabel(row: BonusBarRow): string {
 
 const adjust = ref<{ op: 'add' | 'set'; amount: number | null }>({ op: 'add', amount: null });
 const adjustChoices = computed(() => [
-  { value: 'add', label: pt('add') },
-  { value: 'set', label: pt('set') },
+  { value: 'add', label: t('poolAdd') },
+  { value: 'set', label: t('poolSet') },
 ]);
 
 function poolLine(row: BonusBarRow): string {
   const pool = row.pool;
   if (!pool) return '';
-  return pt('balance', { left: credits(Math.max(pool.amount - pool.used, 0)), total: credits(pool.amount), count: row.holders });
+  return t('poolBalance', { left: credits(Math.max(pool.amount - pool.used, 0)), total: credits(pool.amount), count: row.holders });
 }
 
 async function adjustPool(): Promise<void> {
@@ -271,7 +283,7 @@ async function adjustPool(): Promise<void> {
   }
   // Committed by here: a failed read-back is reported on the page, as after a
   // grant, so the operator is not sent to top up a second time.
-  flash.value = pt('adjusted', { left: credits(left) });
+  flash.value = t('poolAdjusted', { left: credits(left) });
   adjust.value = { op: 'add', amount: null };
   await refreshBars();
   existing.value = bars.value.find((row) => row.id === bar.id) ?? existing.value;
@@ -533,12 +545,12 @@ onMounted(load);
   >
     <OaTextField v-model="form.name" :label="t('bonusName')" :max-length="60" />
     <OaTextField v-model="form.description" :label="t('bonusDescription')" :hint="t('bonusDescriptionHint')" :max-length="500" />
-    <OaSelectField v-model="form.kind" :label="t('bonusKind')" :hint="pt('kindHint')" :options="kindChoices" :searchable="false" />
+    <OaSelectField v-model="form.kind" :label="t('bonusKind')" :hint="t('poolKindHint')" :options="kindChoices" :searchable="false" />
     <OaSelectField
       v-if="form.kind !== 'reserve'"
       v-model="form.toggle_mode"
       :label="t('bonusMode')"
-      :hint="form.kind === 'shared' ? pt('modeHint') : t('bonusModeHint')"
+      :hint="form.kind === 'shared' ? t('poolModeHint') : t('bonusModeHint')"
       :options="modeChoices"
       :searchable="false"
     />
@@ -551,11 +563,11 @@ onMounted(load);
     <OaSwitchField v-model="form.show_total" :label="t('bonusShowTotal')" :hint="t('bonusShowTotalHint')" />
     <OaCheckList v-model="form.model_ids" :label="t('bonusModelsLabel')" :hint="t('bonusModelsHint')" :items="modelItems" :empty-text="t('nothingYet')" />
     <template v-if="form.kind === 'shared'">
-      <OaFormSection :title="pt('heading')" />
-      <OaSelectField v-model="form.reset_period" :label="pt('reset')" :hint="pt('resetHint')" :options="resetChoices" :searchable="false" />
-      <OaNumberField v-if="form.reset_period" v-model="form.reset_amount" :label="pt('resetAmount')" :min="0" :step="1" />
-      <OaNumberField v-if="!existing" v-model="form.initial" :label="pt('initial')" :hint="form.reset_period ? pt('initialHint') : undefined" :min="0" :step="1" />
-      <OaNumberField v-model="form.per_user_daily" :label="pt('dailyLimit')" :hint="pt('dailyLimitHint')" :min="0" :step="0.1" />
+      <OaFormSection :title="t('poolHeading')" />
+      <OaSelectField v-model="form.reset_period" :label="t('poolReset')" :hint="t('poolResetHint')" :options="resetChoices" :searchable="false" />
+      <OaNumberField v-if="form.reset_period" v-model="form.reset_amount" :label="t('poolResetAmount')" :min="0" :step="1" />
+      <OaNumberField v-if="!existing" v-model="form.initial" :label="t('poolInitial')" :hint="form.reset_period ? t('poolInitialHint') : undefined" :min="0" :step="1" />
+      <OaNumberField v-model="form.per_user_daily" :label="t('poolDailyLimit')" :hint="t('poolDailyLimitHint')" :min="0" :step="0.1" />
     </template>
     <template v-else>
       <OaTextField v-model="form.expiry" type="datetime-local" :label="t('bonusDefaultExpiry')" :hint="t('bonusDefaultExpiryHint')" />
@@ -564,12 +576,12 @@ onMounted(load);
     <OaSwitchField v-if="existing" v-model="form.active" :label="t('bonusActive')" :hint="t('bonusActiveHint')" />
 
     <template v-if="existing && existing.kind === 'shared'">
-      <OaFormSection :title="pt('adjust')" />
+      <OaFormSection :title="t('poolAdjust')" />
       <p class="oa-field-hint">{{ poolLine(existing) }}</p>
-      <OaSelectField v-model="adjust.op" :label="pt('adjustOp')" :options="adjustChoices" :searchable="false" />
-      <OaNumberField v-model="adjust.amount" :label="pt('adjustAmount')" :hint="pt('adjustHint')" :step="1" />
+      <OaSelectField v-model="adjust.op" :label="t('poolAdjustOp')" :options="adjustChoices" :searchable="false" />
+      <OaNumberField v-model="adjust.amount" :label="t('poolAdjustAmount')" :hint="t('poolAdjustHint')" :step="1" />
       <div class="oa-card-actions">
-        <button type="button" class="oa-btn" :disabled="busy || adjust.amount === null" @click="adjustPool">{{ pt('adjust') }}</button>
+        <button type="button" class="oa-btn" :disabled="busy || adjust.amount === null" @click="adjustPool">{{ t('poolAdjust') }}</button>
       </div>
       <p v-if="flash" class="oa-field-hint" role="status">{{ flash }}</p>
     </template>

@@ -117,7 +117,7 @@ const stats = computed<Stat[]>(() => {
   ];
 });
 
-function query(): string {
+function query(): URLSearchParams {
   const params = new URLSearchParams();
   if (kind.value) params.set('kind', kind.value);
   if (priority.value) params.set('priority', priority.value);
@@ -125,7 +125,7 @@ function query(): string {
   if (search.value.trim()) params.set('q', search.value.trim());
   params.set('limit', String(pageSize.value));
   params.set('offset', String(offset.value));
-  return `?${params.toString()}`;
+  return params;
 }
 
 async function load(): Promise<void> {

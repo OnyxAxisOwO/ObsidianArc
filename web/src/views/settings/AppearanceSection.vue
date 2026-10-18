@@ -2,10 +2,11 @@
 import { computed, ref, watch } from 'vue';
 import { Palette } from 'lucide-vue-next';
 import OaSelectField from '@/components/OaSelectField.vue';
-import { changeLanguage, currentLanguage, t, type Language, type StringKey } from '@/composables/useI18n';
+import { changeLanguage, currentLanguage, t, type Language } from '@/composables/useI18n';
 import { useTheme } from '@/composables/useTheme';
 import { IconAuto, IconCheck, IconMoon, IconSpark, IconSun } from '@/icons';
 import { ACCENTS, ACCENT_NAMES, accentPalette, baseAccent, normalizeHex, type AccentName } from '@/theme/color-utils';
+import { ACCENT_LABELS, BACKGROUND_TINTS } from '@/theme/accent-labels';
 import { backgroundAccent, setBackgroundAccent, setAccentPreference, type ThemeMode } from '@/theme/theme';
 import { persistTheme, syncPreferences } from '@/stores/session';
 import WallpaperSection from './WallpaperSection.vue';
@@ -18,16 +19,6 @@ const background = computed(() => (void theme.version.value, backgroundAccent())
 const hex = ref(base.value);
 watch(base, (next) => { hex.value = next; });
 
-const labels: Record<AccentName, StringKey> = {
-  violet: 'accentViolet', neutral: 'accentNeutral', red: 'accentRed', pink: 'accentPink',
-  indigo: 'accentIndigo', blue: 'accentBlue', cyan: 'accentCyan', teal: 'accentTeal',
-  green: 'accentGreen', orange: 'accentOrange',
-};
-const backgrounds: Array<{ value: AccentName; label: StringKey }> = [
-  { value: 'orange', label: 'backgroundVanilla' }, { value: 'teal', label: 'backgroundMint' },
-  { value: 'blue', label: 'backgroundCloud' }, { value: 'violet', label: 'backgroundLilac' },
-  { value: 'pink', label: 'backgroundPeach' },
-];
 const modes = [
   { value: 'auto', label: 'themeAuto', icon: IconAuto },
   { value: 'light', label: 'themeLight', icon: IconSun },
@@ -89,7 +80,7 @@ async function onLanguage(next: Language): Promise<void> {
     <section v-if="!theme.enforced()" class="oa-appearance-section">
       <div class="oa-appearance-heading"><h3>{{ t('chatBackground') }}</h3><button type="button" class="oa-btn" @click="chooseBackground('')">{{ t('reset') }}</button></div>
       <div class="oa-background-grid">
-        <button v-for="entry in backgrounds" :key="entry.value" type="button" class="oa-background-choice"
+        <button v-for="entry in BACKGROUND_TINTS" :key="entry.value" type="button" class="oa-background-choice"
           :class="{ active: background === entry.value }"
           :aria-pressed="background === entry.value" @click="chooseBackground(entry.value)">
           <span class="oa-background-swatch" :style="{ background: accentPalette(ACCENTS[entry.value], theme.dark())['--ai-field-bg'] }">
@@ -106,7 +97,7 @@ async function onLanguage(next: Language): Promise<void> {
       <div class="oa-color-grid">
         <button v-for="name in ACCENT_NAMES" :key="name" type="button" class="oa-color-dot"
           :class="{ active: !custom && preference.accent === name }" :style="{ backgroundColor: ACCENTS[name] }"
-          :title="t(labels[name])" :aria-label="t(labels[name])" :aria-pressed="!custom && preference.accent === name" @click="apply(name, preference.customAccent)">
+          :title="t(ACCENT_LABELS[name])" :aria-label="t(ACCENT_LABELS[name])" :aria-pressed="!custom && preference.accent === name" @click="apply(name, preference.customAccent)">
           <IconCheck v-if="!custom && preference.accent === name" :size="16" />
         </button>
         <label class="oa-custom-colour" :class="{ active: custom }" :title="t('customColour')">

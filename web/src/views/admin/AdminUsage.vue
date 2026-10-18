@@ -46,7 +46,7 @@ import UsageBoard from './usage/UsageBoard.vue';
 import UsageDelta from './usage/UsageDelta.vue';
 import UsageHeatmap from './usage/UsageHeatmap.vue';
 import UsageMatrix from './usage/UsageMatrix.vue';
-import UsagePlot from './usage/UsagePlot.vue';
+import UsageTrend from './usage/UsageTrend.vue';
 import { DAY, HOUR, fillBuckets, formatDuration, percent } from './usage/scale';
 import type { BoardMetric, PlotPoint } from './usage/shape';
 import { toDateTimeLocal, failureText } from './shared';
@@ -198,13 +198,14 @@ function sliceQuery(): URLSearchParams {
   return params;
 }
 
-function summaryQuery(): string {
+function summaryQuery(): URLSearchParams {
   const params = sliceQuery();
   // The server ranks every breakdown by this; the boards re-sort on their
   // own, so what it decides here is only which accounts and models make the
   // grid — the ones that spend the most tokens.
   params.set('metric', 'tokens');
-  return `?${params.toString()}&${zoneQuery()}`;
+  new URLSearchParams(zoneQuery()).forEach((value, key) => params.set(key, value));
+  return params;
 }
 
 // Two, because the ledger moves on its own: turning a page of records cancels
@@ -235,7 +236,7 @@ async function loadRecords(quiet = false, signal?: AbortSignal): Promise<void> {
     const params = sliceQuery();
     params.set('limit', String(recordPage.value.pageSize));
     params.set('offset', String((recordPage.value.page - 1) * recordPage.value.pageSize));
-    const result = await adminApi.usageRecords(`?${params.toString()}`, signal ? { signal } : undefined);
+    const result = await adminApi.usageRecords(params, signal ? { signal } : undefined);
     if (ticket !== recordRequest || signal?.aborted) return;
     records.value = result.records ?? [];
     recordTotal.value = result.total;
@@ -454,7 +455,6 @@ const TREND_METRICS: Array<{ value: TrendMetric; label: StringKey }> = [
   { value: 'credits', label: 'statCredits' },
   { value: 'users', label: 'trendUsers' },
 ];
-const activePoint = ref<number | null>(null);
 // Narrowed to one account, "how many accounts" is always one: the options
 // that would only ever say so are left out rather than drawn flat.
 const trendOptions = computed(() => filters.value.user ? TREND_METRICS.filter((option) => option.value !== 'users') : TREND_METRICS);
@@ -495,21 +495,7 @@ const trendFormat = computed(() => {
     : (value: number) => compactNumber(value);
   return spending ? (value: number) => maskBilling(plain(value)) : plain;
 });
-const trendSummary = computed(() => {
-  const point = activePoint.value === null ? null : series.value[activePoint.value];
-  if (point) return figure(point[trendShown.value]);
-  const value = totals.value;
-  // Accounts are counted once for the whole range, not summed per bucket:
-  // somebody active every day is one account, not thirty.
-  return value ? figure(value[trendShown.value]) : 0;
-});
 const trendPeak = computed(() => Math.max(0, ...plotPoints.value.map((point) => point.value)));
-const plot = ref<InstanceType<typeof UsagePlot> | null>(null);
-const trendCaption = computed(() => {
-  const point = activePoint.value === null ? null : series.value[activePoint.value];
-  if (point && plot.value) return plot.value.describe(point.at);
-  return trendShown.value === 'users' ? t('trendDistinct') : t('trendTotal');
-});
 
 // --- the boards and the grid -----------------------------------------------------------------
 
@@ -550,7 +536,7 @@ const showMatrix = computed(() => !filters.value.model && !filters.value.user
   && (report.value?.matrix?.rows?.length ?? 0) > 0 && (report.value?.matrix?.cols?.length ?? 0) > 0);
 
 // One setter per control, each remembering its choice for the next visit.
-function onTrend(next: TrendMetric): void { trendMetric.value = next; selectedTrend = next; activePoint.value = null; }
+function onTrend(next: TrendMetric): void { trendMetric.value = next; selectedTrend = next; }
 function onModelMetric(next: BoardMetric): void { modelMetric.value = next; selectedModelMetric = next; }
 function onUserMetric(next: BoardMetric): void { userMetric.value = next; selectedUserMetric = next; }
 function onCellMetric(next: CellMetric): void { cellMetric.value = next; selectedCellMetric = next; }
@@ -809,8 +795,7 @@ async function refreshRPM(): Promise<void> {
   try {
     // Narrowed by the filters, as every figure beside it is. The server fixes
     // the window at the last minute whatever period is sent.
-    const query = sliceQuery().toString();
-    const res = await adminApi.rpm(query ? `?${query}` : '');
+    const res = await adminApi.rpm(sliceQuery());
     if (ticket === rpmRequest) currentRPM.value = res.rpm;
   } catch {
     // Keep existing RPM on transient error
@@ -1019,16 +1004,10 @@ let savedCustomUntil = 0;
             @click="onTrend(option.value)">{{ t(option.label) }}</button>
         </div>
       </header>
-      <div class="oa-viz-summary">
-        <strong>{{ trendFormat(trendSummary) }}</strong>
-        <span>{{ trendCaption }}</span>
-      </div>
-      <UsagePlot
-        v-if="plotPoints.some((point) => point.value > 0)"
-        ref="plot" v-model:active="activePoint" :points="plotPoints" :bucket-ms="report?.bucket_ms ?? HOUR_MS"
-        :offset-ms="offsetMs" :format="trendFormat" :label="t('dashboardChartKeyboard')" :height="190"
+      <UsageTrend
+        :series="series" :points="plotPoints" :totals="totals" :metric="trendShown" :format="trendFormat"
+        :bucket-ms="report?.bucket_ms ?? HOUR_MS" :offset-ms="offsetMs"
       />
-      <p v-else class="oa-viz-empty">{{ t('noRequestsPeriod') }}</p>
       <footer class="oa-viz-foot">
         <span><span class="oa-dashboard-dot" />{{ (report?.bucket_ms ?? 0) >= DAY_MS ? t('trendDaily') : t('trendHourly') }}</span>
         <span>{{ t('dashboardPeak', { value: trendFormat(trendPeak) }) }}</span>

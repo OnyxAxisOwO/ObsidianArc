@@ -5,6 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { cardTitle, formatCardScope, windowChoices } from '../src/lib/card-scope';
+import { scopePresetChoices } from '../src/admin/quota';
+import '../src/i18n.admin';
 import { isAbortError } from '../src/lib/abort';
 
 describe('card scope wording', () => {
@@ -46,6 +48,13 @@ describe('card scope wording', () => {
     await changeLanguage('en');
     expect(windowChoices().map((choice) => choice.value)).toEqual(['5h', '1w', '1m']);
     expect(windowChoices()[1]!.label).toBe(t('cardScopeLabel1W'));
+  });
+
+  it('offers the reset presets as everything, each window, then a hand-picked set', async () => {
+    await changeLanguage('en');
+    expect(scopePresetChoices().map((choice) => choice.value)).toEqual(['full', '5h', '1w', '1m', 'custom']);
+    expect(scopePresetChoices()[0]!.label).toBe(t('cardResetFull'));
+    expect(scopePresetChoices()[4]!.label).toBe(t('cardResetCustom'));
   });
 });
 

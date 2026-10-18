@@ -11,6 +11,7 @@ import FeedbackPanel from '../src/views/FeedbackPanel.vue';
 import AdminFeedback from '../src/views/admin/AdminFeedback.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { settle } from './helpers';
+import { queriesSent } from './admin-query';
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
@@ -502,7 +503,7 @@ describe('the operator’s feedback page', () => {
       .find((item) => item.textContent?.trim() === t('feedbackStatusOpen'))!.click();
     await settle();
 
-    expect(reads).toHaveBeenCalledWith(expect.stringContaining('status=open'));
+    expect(queriesSent(reads).some((query) => query.includes('status=open'))).toBe(true);
   });
 
   function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {

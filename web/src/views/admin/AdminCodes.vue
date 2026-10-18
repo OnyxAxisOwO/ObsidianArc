@@ -23,6 +23,7 @@ import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
 import { formatCardScope, windowChoices } from '@/lib/card-scope';
+import { scopePresetChoices } from '@/admin/quota';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { relativeTime } from '@/lib/format';
@@ -401,13 +402,7 @@ onMounted(load);
         v-model="form.scopePreset"
         :label="t('cardResetScope')"
         :hint="t('cardResetScopeHint')"
-        :options="[
-          { value: 'full', label: t('cardResetFull') },
-          { value: '5h', label: t('cardReset5H') },
-          { value: '1w', label: t('cardReset1W') },
-          { value: '1m', label: t('cardReset1M') },
-          { value: 'custom', label: t('cardResetCustom') },
-        ]"
+        :options="scopePresetChoices()"
       />
       <OaCheckList
         v-if="form.scopePreset === 'custom'"

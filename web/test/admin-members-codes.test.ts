@@ -3,7 +3,7 @@ import { createApp, h, shallowRef, type App, type Component } from 'vue';
 import AdminCodes from '../src/views/admin/AdminCodes.vue';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import GroupMembers from '../src/views/admin/GroupMembers.vue';
-import { adminApi, emptyPolicy, type Group, type RedemptionCode } from '../src/admin/api';
+import { adminApi, adminQueryParams, emptyPolicy, type Group, type RedemptionCode } from '../src/admin/api';
 import type { Account } from '../src/api/auth';
 import { saveAsFile } from '../src/api/backup';
 import { provideAdminView } from '../src/views/admin/adminView';
@@ -12,6 +12,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import { MASK_PLACEHOLDER, safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
 import { adopt, forget } from '../src/stores/session';
 import { settle } from './helpers';
+import { queriesSent } from './admin-query';
 
 vi.mock('../src/api/backup', () => ({ saveAsFile: vi.fn() }));
 
@@ -490,7 +491,7 @@ const accounts = Array.from({ length: 25 }, (_, index) => ({
 describe('group member selection', () => {
   function users(): ReturnType<typeof vi.spyOn> {
     return vi.spyOn(adminApi, 'memberOptions').mockImplementation(async (query) => {
-      const params = new URLSearchParams(query);
+      const params = adminQueryParams(query);
       const offset = Number(params.get('offset'));
       return { users: accounts.slice(offset, offset + 20), total: accounts.length };
     });
@@ -500,7 +501,7 @@ describe('group member selection', () => {
     const listing = users();
     const assign = vi.spyOn(adminApi, 'assignGroupMembers').mockResolvedValue({ updated: 2 });
     await mount(GroupMembers, { group, groups: [group] });
-    expect(listing).toHaveBeenCalledWith(expect.stringContaining('group_id=premium'));
+    expect(queriesSent(listing).some((query) => query.includes('group_id=premium'))).toBe(true);
     host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
     button(host, t('next')).click();
     await settle();
@@ -524,7 +525,7 @@ describe('group member selection', () => {
     await settle();
     [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.trim() === t('allAccounts'))!.click();
     input(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'far-away-account');
-    await vi.waitFor(() => expect(listing).toHaveBeenLastCalledWith('?q=far-away-account&limit=20&offset=0'));
+    await vi.waitFor(() => expect(queriesSent(listing).at(-1)).toBe('q=far-away-account&limit=20&offset=0'));
     await settle();
     host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
     input(host.querySelector<HTMLInputElement>('input[type="datetime-local"]')!, '2001-01-01T00:00');
@@ -557,7 +558,7 @@ describe('group member selection', () => {
     host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[0]!.click();
     await settle();
     input(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'member7');
-    await vi.waitFor(() => expect(listing).toHaveBeenLastCalledWith(expect.stringContaining('q=member7')));
+    await vi.waitFor(() => expect(queriesSent(listing).at(-1)).toContain('q=member7'));
     await settle();
     expect(host.textContent).toContain(t('membersSelected', { count: 0 }));
 

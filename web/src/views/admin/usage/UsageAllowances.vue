@@ -68,12 +68,12 @@ const { onScroll: fade, reset: resetFade, scrollClass } = useScrollFade(overflow
 let ticket = 0;
 let disposed = false;
 
-function query(offset: number): string {
+function query(offset: number): URLSearchParams {
   const params = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
   if (search.value.trim()) params.set('q', search.value.trim());
   if (props.groupId) params.set('group_id', props.groupId);
   if (state.value) params.set('state', state.value);
-  return params.toString();
+  return params;
 }
 
 async function load(append: boolean): Promise<void> {

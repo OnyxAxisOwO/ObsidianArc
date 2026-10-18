@@ -12,7 +12,6 @@ import {
 } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
 import { provideAdminView } from '../src/views/admin/adminView';
-import { poolText as pt } from '../src/views/admin/pool-text';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { MASK_PLACEHOLDER, safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
@@ -809,11 +808,11 @@ describe('a shared pool', () => {
     await choose(fieldFor(panels, t('bonusKind')), t('bonusKindShared'));
     // A pool has no grants, so no expiry for them.
     expect(panels.textContent).not.toContain(t('bonusDefaultExpiry'));
-    await choose(fieldFor(panels, t('bonusMode')), pt('modeOnly'));
-    await choose(fieldFor(panels, pt('reset')), pt('resetDay'));
+    await choose(fieldFor(panels, t('bonusMode')), t('poolModeOnly'));
+    await choose(fieldFor(panels, t('poolReset')), t('poolResetDay'));
     type(inputOf(panels, t('bonusName')), 'Everyone');
-    type(inputOf(panels, pt('resetAmount')), '500');
-    type(inputOf(panels, pt('dailyLimit')), '20');
+    type(inputOf(panels, t('poolResetAmount')), '500');
+    type(inputOf(panels, t('poolDailyLimit')), '20');
     await settle();
     button(panels, t('save')).click();
     await settle();
@@ -831,13 +830,13 @@ describe('a shared pool', () => {
     });
     await mount();
     expect(rows()[0]!.textContent).toContain(t('bonusKindShared'));
-    expect(rows()[0]!.textContent).toContain(pt('modeOnly'));
+    expect(rows()[0]!.textContent).toContain(t('poolModeOnly'));
     rows()[0]!.click();
     await settle();
 
     expect(adminApi.bonusGrants).not.toHaveBeenCalled();
     expect(panels.textContent).not.toContain(t('bonusGrantAction'));
-    expect(panels.textContent).toContain(pt('balance', { left: '380', total: '500', count: 7 }));
+    expect(panels.textContent).toContain(t('poolBalance', { left: '380', total: '500', count: 7 }));
     // A pool cannot be turned into a bar, so it is not offered.
     fieldFor(panels, t('bonusKind')).querySelector<HTMLButtonElement>('.oa-select')!.click();
     await settle();
@@ -845,12 +844,12 @@ describe('a shared pool', () => {
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     await settle();
 
-    type(inputOf(panels, pt('adjustAmount')), '100');
+    type(inputOf(panels, t('poolAdjustAmount')), '100');
     await settle();
-    button(panels, pt('adjust')).click();
+    button(panels, t('poolAdjust')).click();
     await settle();
     expect(adjust).toHaveBeenCalledWith('p-1', 'add', 100);
-    expect(panels.textContent).toContain(pt('adjusted', { left: '480' }));
+    expect(panels.textContent).toContain(t('poolAdjusted', { left: '480' }));
   });
 
   it('is not offered as somewhere a check-in reward could pay into', async () => {

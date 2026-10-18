@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import AdminLogs from '../src/views/admin/AdminLogs.vue';
-import { adminApi, type LogEntry, type LogFacets } from '../src/admin/api';
+import { adminApi, adminQueryParams, type LogEntry, type LogFacets } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { settle } from './helpers';
+import { queriesSent } from './admin-query';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -61,16 +62,16 @@ describe('AdminLogs, clearing the filters', () => {
   // Clear must leave it where the operator put it.
   it('keeps the chosen window when the filters are cleared', async () => {
     await mountAt('/admin/logs?model_id=m1&window=168');
-    expect(adminApi.logs).toHaveBeenLastCalledWith(expect.stringContaining('model_id=m1'));
+    expect(queriesSent(vi.mocked(adminApi.logs)).at(-1)).toContain('model_id=m1');
 
     const clear = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.trim() === t('logClear'))!;
     clear.click();
     await settle();
 
-    const last = vi.mocked(adminApi.logs).mock.lastCall![0];
-    expect(last).not.toContain('model_id=');
-    const since = Number(new URLSearchParams(last.slice(1)).get('since'));
+    const last = adminQueryParams(vi.mocked(adminApi.logs).mock.lastCall![0]);
+    expect(last.has('model_id')).toBe(false);
+    const since = Number(last.get('since'));
     const weekAgo = Date.now() - 168 * 60 * 60 * 1000;
     expect(Math.abs(since - weekAgo)).toBeLessThan(60_000);
   });

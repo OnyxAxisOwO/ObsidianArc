@@ -226,9 +226,20 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 205.61 kB to open the chat (179.19 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.32 kB (179.48 JS + 26.85 CSS) |
+| Frontend, on the wire | < 135 kB | 205.66 kB to open the chat (179.24 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.38 kB (179.54 JS + 26.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after a second round of backoffice review
+fixes. The accent and background-tint label tables the reader's appearance
+settings and the site theme both show are one shared module now, and the
+project list words a failed read the way the rest of the chat does. 205.66 kB
+to open the chat (179.24 JS + 26.41 CSS), up 0.05 kB; the build's estimate is
+206.38 kB, 0.62 kB under the bundle test's 207 kB. The audit trail's and the
+shared pool's words moved from their own dictionaries into the backoffice's
+English and the Chinese dictionary, so the backoffice is 167.30 kB plus 15.24
+kB of stylesheet and the Chinese dictionary 53.40 kB; the other lazy chunks
+are unchanged.
 
 Remeasured on 2026-10-18 (UTC), after a round of backoffice review fixes. A
 response body that breaks off after its headers is now the same translated

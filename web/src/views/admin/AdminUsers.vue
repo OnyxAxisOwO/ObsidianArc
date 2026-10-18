@@ -11,6 +11,7 @@ import {
   adminApi, emptyPolicy,
   type Account, type AdminSession, type ApiKey, type CardHolding, type Conversation,
   type Group, type Message, type QuotaWindowKind, type Role, type UsageBreakdown,
+  type AdminUserPatch,
 } from '@/admin/api';
 import type { UsageSummary } from '@/api/usage';
 import { ADMIN_PERMISSIONS } from '@/admin/permissions';
@@ -51,7 +52,7 @@ import { fieldSpec, plugins } from '@/plugins/registry';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginUserActions from './PluginUserActions.vue';
 import { isMasked, maskUser, maskLog, maskBilling, maskCredential } from '@/admin/safeMode';
-import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
+import { QUOTA_WINDOWS as WINDOWS, scopePresetChoices, windowFigure } from '@/admin/quota';
 import CreditsField from './CreditsField.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import UsageBoard from './usage/UsageBoard.vue';
@@ -118,7 +119,7 @@ async function list(): Promise<void> {
   if (filters.value.group) query.set('group_id', filters.value.group);
 
   try {
-    const result = await adminApi.users(query.toString() ? `?${query}` : '');
+    const result = await adminApi.users(query);
     if (ticket !== request || disposed) return;
     if (result.total > 0 && (paging.value.page - 1) * paging.value.pageSize >= result.total) {
       paging.value.page = Math.ceil(result.total / paging.value.pageSize);
@@ -591,7 +592,7 @@ async function save(): Promise<void> {
     // Only what the operator changed is sent. The panel can stay open while
     // another administrator edits this account, and resending every field would
     // write this form's older copy of their edit back over it.
-    const patch: Record<string, unknown> = {};
+    const patch: AdminUserPatch = {};
     if (draft.nickname.trim() !== row.nickname) patch.nickname = draft.nickname.trim();
     if (draft.email.trim() !== row.email) patch.email = draft.email.trim();
     if (draft.bio.trim() !== row.bio) patch.bio = draft.bio.trim();
@@ -995,7 +996,10 @@ async function openConversations(): Promise<void> {
   conversations.value = null;
   panelError.value = '';
   try {
-    const result = await adminApi.userConversations(row.id, `?limit=${conversationPage.value.pageSize}&offset=${(conversationPage.value.page - 1) * conversationPage.value.pageSize}`);
+    const result = await adminApi.userConversations(row.id, {
+      limit: conversationPage.value.pageSize,
+      offset: (conversationPage.value.page - 1) * conversationPage.value.pageSize,
+    });
     if (!panelShows(row.id)) return;
     conversations.value = result.conversations;
     conversationTotal.value = result.total;
@@ -1318,13 +1322,7 @@ const state = { q: '', role: '', status: '', group: '' };
           v-model="grantScopePreset"
           :label="t('cardResetScope')"
           :hint="t('cardResetScopeHint')"
-          :options="[
-            { value: 'full', label: t('cardResetFull') },
-            { value: '5h', label: t('cardReset5H') },
-            { value: '1w', label: t('cardReset1W') },
-            { value: '1m', label: t('cardReset1M') },
-            { value: 'custom', label: t('cardResetCustom') },
-          ]"
+          :options="scopePresetChoices()"
         />
         <OaCheckList
           v-if="grantScopePreset === 'custom'"

@@ -23,6 +23,7 @@ import BackgroundStage from './BackgroundStage.vue';
 import OaRow from '@/components/OaRow.vue';
 import { Palette } from 'lucide-vue-next';
 import { ACCENT_NAMES, ACCENTS, DEFAULT_ACCENT, accentPalette, normalizeHex, type AccentName } from '@/theme/color-utils';
+import { ACCENT_LABELS, BACKGROUND_TINTS } from '@/theme/accent-labels';
 import { useTheme } from '@/composables/useTheme';
 import type { SiteBackground } from '@/theme/theme';
 import OaNumberField from '@/components/OaNumberField.vue';
@@ -117,13 +118,6 @@ const siteLogoUrl = ref('');
 const uploadingLogo = ref(false);
 const dragOverLogo = ref(false);
 
-// The accent pickers offer the presets by name; the empty value is "the
-// built-in one", which is what an instance that never sets this gets.
-const ACCENT_LABELS: Record<AccentName, StringKey> = {
-  violet: 'accentViolet', neutral: 'accentNeutral', red: 'accentRed', pink: 'accentPink',
-  indigo: 'accentIndigo', blue: 'accentBlue', cyan: 'accentCyan', teal: 'accentTeal',
-  green: 'accentGreen', orange: 'accentOrange',
-};
 const CARD_POSITIONS = [
   { value: 'center', label: 'authCardPositionCenter' },
   { value: 'left', label: 'authCardPositionLeft' },
@@ -138,9 +132,7 @@ const THEME_MODES = [
 // after "built-in", which follows the control colour.
 const TINTS: Array<{ value: AccentName | ''; label: StringKey }> = [
   { value: '', label: 'siteThemeDefault' },
-  { value: 'orange', label: 'backgroundVanilla' }, { value: 'teal', label: 'backgroundMint' },
-  { value: 'blue', label: 'backgroundCloud' }, { value: 'violet', label: 'backgroundLilac' },
-  { value: 'pink', label: 'backgroundPeach' },
+  ...BACKGROUND_TINTS,
 ];
 
 const pageTheme = useTheme();

@@ -33,7 +33,7 @@ async function load(): Promise<void> {
   const ticket = ++request;
   loading.value = true;
   try {
-    const result = await adminApi.securityEvents(`?limit=${page.value.pageSize}&offset=${(page.value.page - 1) * page.value.pageSize}`);
+    const result = await adminApi.securityEvents({ limit: page.value.pageSize, offset: (page.value.page - 1) * page.value.pageSize });
     if (ticket !== request) return;
     events.value = result.events ?? [];
     total.value = result.total;

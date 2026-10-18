@@ -857,6 +857,189 @@ export interface AdminBackupInput {
   retention_days?: number;
 }
 
+// What the backoffice sends to make or change a record, named after the field
+// the server reads. Typed, so a key spelled wrong is a build failure rather
+// than a field the server ignores without a word. A field left out of a PATCH
+// keeps what the record holds.
+
+export interface AdminReviewTrialInput {
+  username: string;
+  email: string;
+  fields: Record<string, string>;
+  from_this_address: number;
+  user_agent: string;
+}
+
+export interface AdminUserPatch {
+  nickname?: string;
+  email?: string;
+  bio?: string;
+  avatar?: string;
+  fields?: Record<string, string>;
+  role?: Role;
+  admin_permissions?: string[];
+  group_id?: string;
+  group_expires_at?: number;
+  api_restricted?: boolean;
+  api_restriction_hours?: number;
+  status?: AccountStatus;
+  ban_reason?: string;
+}
+
+export interface AdminGroupInput {
+  name: string;
+  description: string;
+  is_default: boolean;
+  allow_all_models: boolean;
+  api_access: boolean;
+  allow_stats: boolean;
+  allow_delete_conversations: boolean;
+  allow_terminal: boolean;
+  show_expiry: boolean;
+  sort_order: number;
+  model_ids: string[];
+  model_grants: GroupModelGrant[];
+}
+
+export interface AdminProviderInput {
+  name?: string;
+  kind?: ProviderKind;
+  base_url?: string;
+  allow_insecure?: boolean;
+  reasoning_style?: ReasoningStyle;
+  timeout_seconds?: number;
+  enabled?: boolean;
+  sort_order?: number;
+  anthropic_version?: string;
+  key_rotation?: KeyRotation;
+  /** Keys typed in this save, appended after the kept ones. */
+  api_keys?: string[];
+  /** Which stored keys stay, by position in `key_hints`. */
+  keep_keys?: number[];
+  key_hints?: string[];
+  headers?: Record<string, string>;
+  /** A duplicate names the provider whose keys it takes, which this page never holds. */
+  copy_key_from?: string;
+}
+
+export interface AdminModelInput {
+  provider_id?: string;
+  model_id?: string;
+  api_name?: string;
+  display_name?: string;
+  description?: string;
+  avatar?: string;
+  system_prompt?: string;
+  route_to_id?: string;
+  reasoning_style?: ReasoningStyle | '';
+  reasoning_tiers?: ReasoningTier[];
+  request_override?: string;
+  enabled?: boolean;
+  hidden?: boolean;
+  sort_order?: number;
+  supports_reasoning?: boolean;
+  supports_images?: boolean;
+  supports_vision?: boolean;
+  supports_streaming?: boolean;
+  supports_system_prompt?: boolean;
+  supports_tools?: boolean;
+  supports_image_gen?: boolean;
+  supports_chat_image_gen?: boolean;
+  emulate_tools?: boolean;
+  context_window?: number;
+  max_output_tokens?: number;
+  request_weight?: number;
+  input_token_weight?: number;
+  output_token_weight?: number;
+  reasoning_token_weight?: number;
+  group_grants?: ModelGroupGrant[];
+}
+
+export interface AdminBonusPoolInput {
+  reset_period: BonusPool['reset_period'];
+  reset_amount: number;
+  per_user_daily: number;
+  /** The starting balance, sent only when the pool is made. */
+  amount?: number;
+}
+
+export interface AdminBonusBarInput {
+  name: string;
+  description: string;
+  kind: BonusBarRow['kind'];
+  toggle_mode: BonusBarRow['toggle_mode'];
+  default_on: boolean;
+  show_total: boolean;
+  model_ids: string[];
+  default_expires_at: number;
+  active: boolean;
+  pool?: AdminBonusPoolInput | undefined;
+}
+
+export interface AdminCodeInput {
+  code: string;
+  name: string;
+  windows: string[];
+  count: number;
+  cards: number;
+  card_days: number;
+  expires_at: number;
+}
+
+export interface AdminInviteInput {
+  count: number;
+  code: string;
+  max_uses: number;
+  expires_at: number;
+  group_id: string;
+  group_days: number;
+  group_days_max: number;
+  note: string;
+  kind?: InviteKind;
+  name?: string;
+  allow_existing?: boolean;
+}
+
+export interface AdminPolicyInput {
+  scope: QuotaPolicy['scope'];
+  scope_id: string;
+  rpm: number | null;
+  tpm: number | null;
+  windows: Partial<Record<QuotaWindowKind, QuotaLimits>>;
+}
+
+export interface AdminAnnouncementInput {
+  title: string;
+  body: string;
+  display_mode: DisplayMode;
+  dismiss_after_seconds: number;
+  published: boolean;
+  pinned: boolean;
+}
+
+/**
+ * A list read's filters, as an object or as the URLSearchParams a page built
+ * them in. The method adds the `?`, and nothing when there is nothing to send:
+ * some of these used to want it from the caller and others added their own,
+ * so every call site had to know which one it was talking to.
+ */
+export type AdminQuery = URLSearchParams | Record<string, string | number | boolean | undefined>;
+
+/** A query as the parameters it sends, for a caller (or a test) that reads one back. */
+export function adminQueryParams(query?: AdminQuery): URLSearchParams {
+  if (query instanceof URLSearchParams) return query;
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value !== undefined) params.set(key, String(value));
+  }
+  return params;
+}
+
+function withQuery(path: string, query?: AdminQuery): string {
+  const text = adminQueryParams(query).toString();
+  return text ? `${path}?${text}` : path;
+}
+
 /** Where a plugin stands on this instance. Only a compiled-in one is ever `available`. */
 export type PluginState = 'available' | 'enabled' | 'disabled';
 
@@ -965,8 +1148,8 @@ function references<T>(): Promise<T> {
 export const adminApi = {
   plugins: () => api.get<{ plugins: AdminPlugin[]; two_factor_required?: boolean }>('/api/admin/plugins'),
   installPlugin: (name: string, enable: boolean, settings: Record<string, string>, code?: string) => {
-    const body: Record<string, unknown> = { enable, settings };
-    if (code) body['two_factor_code'] = code;
+    const body: { enable: boolean; settings: Record<string, string>; two_factor_code?: string } = { enable, settings };
+    if (code) body.two_factor_code = code;
     return api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/install`, body);
   },
   previewPlugin: (file: File) => {
@@ -975,8 +1158,8 @@ export const adminApi = {
     return api.upload<{ preview: PluginPreview }>('/api/admin/plugins/preview', form);
   },
   installPluginPackage: (token: string, enable: boolean, settings: Record<string, string>, code?: string) => {
-    const body: Record<string, unknown> = { token, enable, settings };
-    if (code) body['two_factor_code'] = code;
+    const body: { token: string; enable: boolean; settings: Record<string, string>; two_factor_code?: string } = { token, enable, settings };
+    if (code) body.two_factor_code = code;
     return api.post<PluginChange & { did: 'install' | 'update' | 'adopt' }>('/api/admin/plugins/install-package', body);
   },
   enablePlugin: (name: string) =>
@@ -994,14 +1177,14 @@ export const adminApi = {
   groupOptions: () => references<{ groups: GroupOption[] }>(),
   modelOptions: () => references<{ models: ModelOption[] }>(),
   providerOptions: () => references<{ providers: ProviderOption[] }>(),
-  memberOptions: (query: string) => api.get<{ users: Account[]; total: number }>(`/api/admin/member-options${query}`),
+  memberOptions: (query: AdminQuery) => api.get<{ users: Account[]; total: number }>(withQuery('/api/admin/member-options', query)),
   dashboard: (metric: UsageMetric = 'credits') =>
     api.get<Dashboard>(`/api/admin/dashboard?metric=${metric}&${zoneQuery()}`),
   meta: () => api.get<Meta>('/api/admin/meta'),
   // Super administrators only: the server answers 403 to everyone else, so the
   // caller checks the role first rather than relying on that refusal.
   update: () => api.get<UpdateStatus>('/api/admin/update'),
-  tryReview: (body: Record<string, unknown>) =>
+  tryReview: (body: AdminReviewTrialInput) =>
     api.post<{ ran: boolean; decision: 'allow' | 'restrict' | 'refuse'; reason: string }>(
       '/api/admin/security/review', body),
   // The applications allowed to use this instance as a sign-in. Registering
@@ -1021,9 +1204,9 @@ export const adminApi = {
   deleteApplication: (id: string) =>
     api.delete<void>(`/api/admin/applications/${encodeURIComponent(id)}`),
   twoFactorAdoption: () => api.get<TwoFactorAdoption>('/api/admin/security/two-factor'),
-  securityEvents: (query = '') =>
+  securityEvents: (query?: AdminQuery) =>
     api.get<{ events: SecurityEvent[]; total: number; limit: number; offset: number }>(
-      `/api/admin/security/events${query}`,
+      withQuery('/api/admin/security/events', query),
     ),
   health: (hours = 24) =>
     api.get<{
@@ -1048,7 +1231,7 @@ export const adminApi = {
     ),
   resources: () => api.get<Resources>('/api/admin/resources'),
 
-  users: (query: string) => api.get<{ users: Account[]; total: number }>(`/api/admin/users${query}`),
+  users: (query?: AdminQuery) => api.get<{ users: Account[]; total: number }>(withQuery('/api/admin/users', query)),
   user: (id: string) =>
     api.get<{
       user: Account;
@@ -1059,7 +1242,7 @@ export const adminApi = {
       policy: QuotaPolicy;
       cards: CardHolding;
     }>(`/api/admin/users/${encodeURIComponent(id)}`),
-  updateUser: (id: string, patch: Record<string, unknown>) =>
+  updateUser: (id: string, patch: AdminUserPatch) =>
     api.patch<{ user: Account }>(`/api/admin/users/${encodeURIComponent(id)}`, patch),
   deleteUser: (id: string) => api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}`),
   resetPassword: (id: string, newPassword: string) =>
@@ -1077,8 +1260,8 @@ export const adminApi = {
     api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionID)}`),
   revokeAllUserSessions: (id: string) => api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}/sessions`),
 
-  userConversations: (id: string, query = '') =>
-    api.get<{ conversations: Conversation[]; total: number }>(`/api/admin/users/${encodeURIComponent(id)}/conversations${query}`),
+  userConversations: (id: string, query?: AdminQuery) =>
+    api.get<{ conversations: Conversation[]; total: number }>(withQuery(`/api/admin/users/${encodeURIComponent(id)}/conversations`, query)),
   userTranscript: (id: string, conversationID: string) =>
     api.get<{ conversation: Conversation; messages: Message[] }>(
       `/api/admin/users/${encodeURIComponent(id)}/conversations/${encodeURIComponent(conversationID)}`,
@@ -1087,15 +1270,15 @@ export const adminApi = {
   groups: () => api.get<{ groups: Group[]; policies: QuotaPolicy[] }>('/api/admin/groups'),
   assignGroupMembers: (id: string, user_ids: string[], expires_at: number) =>
     api.post<{ updated: number }>(`/api/admin/groups/${encodeURIComponent(id)}/members`, { user_ids, expires_at }),
-  createGroup: (body: Record<string, unknown>) => api.post<{ group: Group }>('/api/admin/groups', body),
-  updateGroup: (id: string, body: Record<string, unknown>) =>
+  createGroup: (body: AdminGroupInput) => api.post<{ group: Group }>('/api/admin/groups', body),
+  updateGroup: (id: string, body: Partial<AdminGroupInput>) =>
     api.patch<{ group: Group }>(`/api/admin/groups/${encodeURIComponent(id)}`, body),
   deleteGroup: (id: string) => api.delete<{ moved_to: string }>(`/api/admin/groups/${encodeURIComponent(id)}`),
 
   providers: () => api.get<{ providers: Provider[] }>('/api/admin/providers'),
-  createProvider: (body: Record<string, unknown>) =>
+  createProvider: (body: AdminProviderInput) =>
     api.post<{ provider: Provider }>('/api/admin/providers', body),
-  updateProvider: (id: string, body: Record<string, unknown>) =>
+  updateProvider: (id: string, body: AdminProviderInput) =>
     api.patch<{ provider: Provider }>(`/api/admin/providers/${encodeURIComponent(id)}`, body),
   deleteProvider: (id: string) => api.delete<void>(`/api/admin/providers/${encodeURIComponent(id)}`),
   detect: (id: string) =>
@@ -1107,14 +1290,14 @@ export const adminApi = {
     api.get<{ models: AdminModel[] }>(
       `/api/admin/models${providerID ? `?provider_id=${encodeURIComponent(providerID)}` : ''}`,
     ),
-  createModel: (body: Record<string, unknown>) => api.post<{ model: AdminModel }>('/api/admin/models', body),
+  createModel: (body: AdminModelInput) => api.post<{ model: AdminModel }>('/api/admin/models', body),
   importModels: (models: unknown[]) =>
     api.post<{ created: number; updated: number; skipped: string[] }>(
       '/api/admin/models/import', { models }),
-  updateModel: (id: string, body: Record<string, unknown>) =>
+  updateModel: (id: string, body: AdminModelInput) =>
     api.patch<{ model: AdminModel }>(`/api/admin/models/${encodeURIComponent(id)}`, body),
   bonusBars: () => api.get<{ bars: BonusBarRow[] }>('/api/admin/bonus/bars'),
-  saveBonusBar: (id: string | null, body: Record<string, unknown>) =>
+  saveBonusBar: (id: string | null, body: AdminBonusBarInput) =>
     id
       ? api.put<{ bar: BonusBarRow }>(`/api/admin/bonus/bars/${encodeURIComponent(id)}`, body)
       : api.post<{ bar: BonusBarRow }>('/api/admin/bonus/bars', body),
@@ -1132,14 +1315,14 @@ export const adminApi = {
   checkinSettings: () => api.get<CheckinSettings>('/api/admin/checkin'),
   saveCheckinSettings: (body: CheckinSettings) => api.put<CheckinSettings>('/api/admin/checkin', body),
   codes: () => api.get<{ codes: RedemptionCode[] }>('/api/admin/codes'),
-  createCode: (body: Record<string, unknown>) =>
+  createCode: (body: AdminCodeInput) =>
     api.post<{ codes: RedemptionCode[] }>('/api/admin/codes', body),
   codeRedemptions: (id: string) =>
     api.get<{ redemptions: CodeRedemption[] }>(`/api/admin/codes/${encodeURIComponent(id)}/redemptions`),
   deleteCode: (id: string) => api.delete<void>(`/api/admin/codes/${encodeURIComponent(id)}`),
-  invites: (query: string) =>
-    api.get<{ codes: InviteCode[]; total: number }>(`/api/admin/invites${query}`),
-  createInvites: (body: Record<string, unknown>) =>
+  invites: (query?: AdminQuery) =>
+    api.get<{ codes: InviteCode[]; total: number }>(withQuery('/api/admin/invites', query)),
+  createInvites: (body: AdminInviteInput) =>
     api.post<{ codes: InviteCode[] }>('/api/admin/invites', body),
   revokeInvite: (id: string) =>
     api.delete<{ code: InviteCode }>(`/api/admin/invites/${encodeURIComponent(id)}`),
@@ -1164,35 +1347,38 @@ export const adminApi = {
     api.post<{ accounts: number }>('/api/admin/usage/reset', body),
   deleteModel: (id: string) => api.delete<void>(`/api/admin/models/${encodeURIComponent(id)}`),
 
-  logs: (query: string) =>
+  logs: (query?: AdminQuery) =>
     api.get<{ entries: LogEntry[]; total: number; limit: number; offset: number }>(
-      `/api/admin/logs${query}`,
+      withQuery('/api/admin/logs', query),
     ),
-  logFacets: (query: string) => api.get<LogFacets>(`/api/admin/logs/facets${query}`),
+  logFacets: (query?: AdminQuery) => api.get<LogFacets>(withQuery('/api/admin/logs/facets', query)),
 
-  audit: (query: string) =>
+  audit: (query?: AdminQuery) =>
     api.get<{ entries: AuditEntry[]; total: number; limit: number; offset: number }>(
-      `/api/admin/audit${query}`,
+      withQuery('/api/admin/audit', query),
     ),
-  auditFacets: (query: string) => api.get<AuditFacets>(`/api/admin/audit/facets${query}`),
+  auditFacets: (query?: AdminQuery) => api.get<AuditFacets>(withQuery('/api/admin/audit/facets', query)),
   auditEntry: (id: string) =>
     api.get<{ entry: AuditEntry }>(`/api/admin/audit/${encodeURIComponent(id)}`),
 
-  usage: (query: string, options?: RequestOptions) =>
-    api.get<UsageReport>(`/api/admin/usage${query}`, options),
+  usage: (query?: AdminQuery, options?: RequestOptions) =>
+    api.get<UsageReport>(withQuery('/api/admin/usage', query), options),
   // One dimension alone — who used a model, what an account used — for a panel
   // that should not pay for the whole report.
-  usageBreakdown: (dimension: UsageDimension, query = '', options?: RequestOptions) =>
-    api.get<{ rows: UsageBreakdown[] }>(`/api/admin/usage/breakdown?dimension=${dimension}${query ? `&${query}` : ''}`, options),
-  usageRecords: (query: string, options?: RequestOptions) =>
-    api.get<{ records: UsageRecord[]; total: number }>(`/api/admin/usage/records${query}`, options),
-  usageAllowances: (query: string, options?: RequestOptions) =>
-    api.get<AllowanceList>(`/api/admin/usage/allowances?${query}`, options),
-  rpm: (query = '') =>
-    api.get<{ rpm: number }>(`/api/admin/usage/rpm${query}`),
+  usageBreakdown: (dimension: UsageDimension, query?: AdminQuery, options?: RequestOptions) => {
+    const params = new URLSearchParams({ dimension });
+    adminQueryParams(query).forEach((value, key) => params.append(key, value));
+    return api.get<{ rows: UsageBreakdown[] }>(withQuery('/api/admin/usage/breakdown', params), options);
+  },
+  usageRecords: (query?: AdminQuery, options?: RequestOptions) =>
+    api.get<{ records: UsageRecord[]; total: number }>(withQuery('/api/admin/usage/records', query), options),
+  usageAllowances: (query?: AdminQuery, options?: RequestOptions) =>
+    api.get<AllowanceList>(withQuery('/api/admin/usage/allowances', query), options),
+  rpm: (query?: AdminQuery) =>
+    api.get<{ rpm: number }>(withQuery('/api/admin/usage/rpm', query)),
 
   policies: () => api.get<{ policies: QuotaPolicy[] }>('/api/admin/quota/policies'),
-  savePolicy: (policy: Record<string, unknown>) =>
+  savePolicy: (policy: AdminPolicyInput) =>
     api.put<{ policy: QuotaPolicy }>('/api/admin/quota/policies', policy),
 
   settings: () =>
@@ -1235,19 +1421,19 @@ export const adminApi = {
     ),
 
   announcements: () => api.get<{ announcements: Announcement[] }>('/api/admin/announcements'),
-  createAnnouncement: (body: Record<string, unknown>) =>
+  createAnnouncement: (body: AdminAnnouncementInput) =>
     api.post<{ announcement: Announcement }>('/api/admin/announcements', body),
-  updateAnnouncement: (id: string, body: Record<string, unknown>) =>
+  updateAnnouncement: (id: string, body: AdminAnnouncementInput) =>
     api.patch<{ announcement: Announcement }>(`/api/admin/announcements/${encodeURIComponent(id)}`, body),
   deleteAnnouncement: (id: string) => api.delete<void>(`/api/admin/announcements/${encodeURIComponent(id)}`),
 
-  feedback: (query = '') =>
+  feedback: (query?: AdminQuery) =>
     api.get<{
       feedback: Feedback[];
       total: number;
       offset: number;
       summary: FeedbackSummary;
-    }>(`/api/admin/feedback${query}`),
+    }>(withQuery('/api/admin/feedback', query)),
   // Fetching a thread is also what marks it read on the operator's side:
   // there is no other reason to open one.
   feedbackThread: (id: string) => api.get<FeedbackThread>(`/api/admin/feedback/${encodeURIComponent(id)}`),

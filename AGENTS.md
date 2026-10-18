@@ -298,12 +298,10 @@ English that only the backoffice says lives in `web/src/i18n.admin.ts`, which
 travels with the backoffice's chunk instead of on everyone's first paint. Its
 keys are still `StringKey`s, so `zh` must still translate them and still read
 through `t()`; a key any other screen uses stays in `i18n.ts`, and
-`test/bundle.test.ts` fails the build when one is in the wrong file. A few
-backoffice pages keep their own words (`views/admin/audit-text.ts`,
-`pool-text.ts`) through `pluginStrings`, with the same guarantees: English is
-the source, a missing `zh` is a type error, and they redraw on a language
-change. A word the core dictionary already has is taken from `t()`, never
-copied.
+`test/bundle.test.ts` fails the build when one is in the wrong file. A
+backoffice page's own words go there too, never into a dictionary of the
+page's own: `pluginStrings` is for plugins. A word the core dictionary already
+has is taken from `t()`, never copied.
 
 Module-level label tables evaluate at import time, before the language is
 known. Store `StringKey`s and resolve at render, as `PAGES` in
@@ -435,8 +433,8 @@ change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
 Current: 27.10 MB binary (this repository ships no plugin; 2.8 MB of it is
-the plugin runtime); 205.61 kB on the wire to open the chat (the build's gzip
-column reads 206.32 kB), against a target of 135. The target used to be 80 and
+the plugin runtime); 205.66 kB on the wire to open the chat (the build's gzip
+column reads 206.38 kB), against a target of 135. The target used to be 80 and
 the figure used to be 59.5; adopting Vue moved both, and
 `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.

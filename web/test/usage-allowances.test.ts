@@ -4,6 +4,7 @@ import UsageAllowances from '../src/views/admin/usage/UsageAllowances.vue';
 import { adminApi, type AllowanceList, type AllowanceRow } from '../src/admin/api';
 import { t } from '../src/composables/useI18n';
 import { settle } from './helpers';
+import { queriesSent } from './admin-query';
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -54,13 +55,13 @@ describe('UsageAllowances', () => {
     const free = host.querySelectorAll('.oa-allow-row')[1]!;
     expect(free.querySelectorAll('.oa-allow-none').length).toBe(3);
     expect(free.querySelector('.oa-meter')).toBeNull();
-    expect(ask.mock.calls[0]![0]).toBe('limit=50&offset=0');
+    expect(queriesSent(ask)[0]).toBe('limit=50&offset=0');
 
     const chips = [...host.querySelectorAll<HTMLButtonElement>('.oa-segment button')];
     expect(chips.length).toBe(3);
     chips[2]!.click();
     await settle();
-    expect(ask.mock.calls[1]![0]).toContain('state=exhausted');
+    expect(queriesSent(ask)[1]).toContain('state=exhausted');
     expect(host.querySelectorAll('.oa-allow-row').length).toBe(1);
   });
 
@@ -96,7 +97,7 @@ describe('UsageAllowances', () => {
     const chips = [...host.querySelectorAll<HTMLButtonElement>('.oa-segment button')];
     chips[2]!.click();
     await settle();
-    expect(ask.mock.calls[1]![0]).toContain('state=exhausted');
+    expect(queriesSent(ask)[1]).toContain('state=exhausted');
     const note = host.querySelector('.oa-board-count')?.textContent ?? '';
     expect(note).toBe(t('allowanceCappedMatching', { count: 1, loaded: 5000 }));
     expect(note).not.toContain(t('allowanceCapped', { count: 1, total: 1 }));
@@ -123,7 +124,7 @@ describe('UsageAllowances', () => {
     scroller().dispatchEvent(new Event('scroll'));
     await settle();
     expect(ask).toHaveBeenCalledTimes(2);
-    expect(ask.mock.calls[1]![0]).toBe('limit=50&offset=50');
+    expect(queriesSent(ask)[1]).toBe('limit=50&offset=50');
     expect(host.querySelectorAll('.oa-allow-row').length).toBe(50);
     expect(host.textContent).toContain(t('couldNotLoad'));
 

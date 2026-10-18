@@ -56,7 +56,10 @@ const overflows = computed(() => ranked.value.length > props.limit);
 // The scroller takes focus when some row is not, because those rows past the
 // visible ones have no other keyboard path; keyed buttons are reached by Tab,
 // which scrolls them into view.
-const hasPlainRow = computed(() => ranked.value.some((row) => !(props.selectable && row.key)));
+function isSelectable(row: { key: string }): boolean {
+  return props.selectable && !!row.key;
+}
+const hasPlainRow = computed(() => ranked.value.some((row) => !isSelectable(row)));
 
 const { onScroll, reset, scrollClass } = useScrollFade(overflows);
 watch(() => ranked.value.length, reset);
@@ -117,11 +120,11 @@ function notes(row: UsageBreakdown): string[] {
       <ol class="oa-board" :class="`oa-board-${props.kind}`">
         <li v-for="(row, index) in ranked" :key="row.key || `row-${index}`">
           <component
-            :is="props.selectable && row.key ? 'button' : 'div'"
-            :type="props.selectable && row.key ? 'button' : undefined"
+            :is="isSelectable(row) ? 'button' : 'div'"
+            :type="isSelectable(row) ? 'button' : undefined"
             class="oa-board-row"
-            :title="props.selectable && row.key ? t('boardDrill', { name: name(row) }) : undefined"
-            @click="props.selectable && row.key && emit('select', row.key)"
+            :title="isSelectable(row) ? t('boardDrill', { name: name(row) }) : undefined"
+            @click="isSelectable(row) && emit('select', row.key)"
           >
             <span class="oa-board-rank">{{ String(index + 1).padStart(2, '0') }}</span>
             <span class="oa-board-mark" aria-hidden="true">{{ initial(row) }}</span>

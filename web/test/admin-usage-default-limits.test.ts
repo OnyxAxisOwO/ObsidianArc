@@ -11,6 +11,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import AdminUsage from '../src/views/admin/AdminUsage.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { settle } from './helpers';
+import { queriesSent } from './admin-query';
 
 vi.mock('@/api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -143,7 +144,7 @@ describe('AdminUsage default allowance', () => {
 
       expect(adminApi.savePolicy).toHaveBeenCalledTimes(1);
       expect(reload).not.toHaveBeenCalled();
-      const lastUsage = vi.mocked(adminApi.usage).mock.calls.at(-1)?.[0] ?? '';
+      const lastUsage = queriesSent(vi.mocked(adminApi.usage)).at(-1) ?? '';
       expect(lastUsage).toContain(`model_id=${modelId}`);
     } finally {
       window.history.replaceState(null, '', '/');

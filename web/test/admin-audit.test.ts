@@ -2,13 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import AdminAudit from '../src/views/admin/AdminAudit.vue';
-import { adminApi, type AuditEntry, type AuditFacets } from '../src/admin/api';
+import { adminApi, adminQueryParams, type AuditEntry, type AuditFacets } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { provideAdminView } from '../src/views/admin/adminView';
-import { auditText as at } from '../src/views/admin/audit-text';
 import { settle } from './helpers';
+import { queriesSent } from './admin-query';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -62,7 +62,7 @@ async function mountAt(address: string): Promise<Router> {
 }
 
 function lastListQuery(): URLSearchParams {
-  return new URLSearchParams(vi.mocked(adminApi.audit).mock.lastCall![0].slice(1));
+  return adminQueryParams(vi.mocked(adminApi.audit).mock.lastCall![0]);
 }
 
 describe('AdminAudit, the all-time window', () => {
@@ -72,7 +72,7 @@ describe('AdminAudit, the all-time window', () => {
   it('asks for the whole trail when the address says all time', async () => {
     await mountAt('/admin/audit?window=');
     expect(lastListQuery().has('since')).toBe(false);
-    expect(vi.mocked(adminApi.auditFacets).mock.lastCall![0]).toBe('');
+    expect(queriesSent(vi.mocked(adminApi.auditFacets)).at(-1)).toBe('');
   });
 
   it('moves from the default week to all time', async () => {
@@ -144,7 +144,7 @@ describe('AdminAudit, a page the trail shrank out from under', () => {
     await mountAt('/admin/audit');
 
     vi.mocked(adminApi.audit).mockImplementation(async (query) => {
-      const offset = Number(new URLSearchParams(query.slice(1)).get('offset'));
+      const offset = Number(adminQueryParams(query).get('offset'));
       return offset >= 15
         ? { entries: [], total: 15, limit: 20, offset }
         : { entries: rows(15), total: 15, limit: 20, offset };
@@ -181,8 +181,8 @@ describe('AdminAudit, the facets of the window on screen', () => {
     older!({ ...noFacets, total: 100 });
     await settle();
 
-    expect(host.textContent).toContain(at('summary', { actors: 0, total: '300' }));
-    expect(host.textContent).not.toContain(at('summary', { actors: 0, total: '100' }));
+    expect(host.textContent).toContain(t('auditSummary', { actors: 0, total: '300' }));
+    expect(host.textContent).not.toContain(t('auditSummary', { actors: 0, total: '100' }));
   });
 
   // A failed facets answer used to replace the whole trail with the failure.

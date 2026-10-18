@@ -1,5 +1,6 @@
 import type { QuotaWindowKind } from '@/admin/api';
 import type { StringKey } from '@/i18n';
+import { t } from '@/composables/useI18n';
 
 /**
  * The windows a limit is set in, shortest first: the order every form and
@@ -26,4 +27,21 @@ export const QUOTA_WINDOW_NAME: Record<QuotaWindowKind, StringKey> = {
  */
 export function windowFigure(value: number | null): number | null {
   return value === 0 ? null : value;
+}
+
+/**
+ * The reset presets a card is issued with: everything, one window, or a
+ * hand-picked set. Here rather than beside formatCardScope in lib/card-scope.ts
+ * because that module rides in the first paint and these words are the
+ * backoffice's own (i18n.admin.ts): named from the main chunk, they would
+ * render as their keys for a reader who has not opened the backoffice.
+ */
+export function scopePresetChoices(): Array<{ value: string; label: string }> {
+  return [
+    { value: 'full', label: t('cardResetFull') },
+    { value: '5h', label: t('cardReset5H') },
+    { value: '1w', label: t('cardReset1W') },
+    { value: '1m', label: t('cardReset1M') },
+    { value: 'custom', label: t('cardResetCustom') },
+  ];
 }

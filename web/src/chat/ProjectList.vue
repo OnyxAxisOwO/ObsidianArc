@@ -5,7 +5,7 @@
 
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type { Project } from '@/api/projects';
-import { ApiError } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import { listConversations, type Conversation } from '@/api/chat';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -41,7 +41,7 @@ const atMax = computed(() => projectMax.value > 0 && projectList.value.length >=
 const busy = ref(false);
 
 function reportFailure(error: unknown): void {
-  flash.value = error instanceof ApiError ? error.message : t('failed');
+  flash.value = apiErrorText(error);
 }
 
 // --- project expansion and conversation list ---------------------------------

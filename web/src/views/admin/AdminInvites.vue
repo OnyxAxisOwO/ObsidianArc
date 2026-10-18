@@ -274,7 +274,7 @@ async function list(): Promise<void> {
   if (filters.value.status !== 'all') query.set('status', filters.value.status);
   if (filters.value.q.trim()) query.set('q', filters.value.q.trim());
   try {
-    const result = await adminApi.invites(`?${query}`);
+    const result = await adminApi.invites(query);
     if (ticket !== listRequest) return;
     if (result.total > 0 && (paging.value.page - 1) * paging.value.pageSize >= result.total) {
       paging.value.page = Math.ceil(result.total / paging.value.pageSize);
@@ -306,7 +306,7 @@ async function loadPartners(): Promise<void> {
   partnerLoading.value = true;
   partnerListError.value = '';
   try {
-    const result = await adminApi.invites(`?kind=partner&limit=${PARTNER_LIST_LIMIT}&offset=0`);
+    const result = await adminApi.invites({ kind: 'partner', limit: PARTNER_LIST_LIMIT, offset: 0 });
     partnerCodes.value = result.codes ?? [];
     partnerTotal.value = result.total;
   } catch (failure) {

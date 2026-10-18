@@ -98,7 +98,7 @@ function since(): number {
   return Date.now() - entry.hours * HOUR_MS;
 }
 
-function listQuery(): string {
+function listQuery(): URLSearchParams {
   const params = new URLSearchParams();
   const at = since();
   if (at > 0) params.set('since', String(at));
@@ -111,7 +111,7 @@ function listQuery(): string {
   if (query.value.path) params.set('path', query.value.path);
   params.set('limit', String(pageSize.value));
   params.set('offset', String(query.value.offset));
-  return `?${params.toString()}`;
+  return params;
 }
 
 function withAny(options: LogOption[], anyLabel: string, fallbackValue?: string, maskFn?: (s: string) => string): Array<Choice<string>> {
@@ -144,7 +144,7 @@ async function reload(): Promise<void> {
   // The facets follow the window: which accounts and models appear in the
   // last hour is a different list from the last month's.
   const at = since();
-  const facetsDone = adminApi.logFacets(at > 0 ? `?since=${at}` : '').then(
+  const facetsDone = adminApi.logFacets(at > 0 ? { since: at } : undefined).then(
     (next) => { if (ticket === facetRequest) facets.value = next; },
     (failure: unknown) => {
       if (ticket !== facetRequest) return;

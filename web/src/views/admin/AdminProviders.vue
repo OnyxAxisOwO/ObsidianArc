@@ -8,7 +8,7 @@
 // whether the list it is changing is still the one that was shown.
 
 import { computed, nextTick, onMounted, ref } from 'vue';
-import { adminApi, type KeyRotation, type Meta, type Provider, type ProviderKind, type ReasoningStyle } from '@/admin/api';
+import { adminApi, type AdminProviderInput, type KeyRotation, type Meta, type Provider, type ProviderKind, type ReasoningStyle } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
@@ -229,7 +229,7 @@ function bulkRemove(): Promise<void> {
 async function save(): Promise<void> {
   busy.value = true;
   panelError.value = '';
-  const payload: Record<string, unknown> = {
+  const payload: AdminProviderInput = {
     name: form.value.name.trim(),
     kind: form.value.kind,
     base_url: form.value.baseURL.trim(),
@@ -244,12 +244,12 @@ async function save(): Promise<void> {
   const typed = typedKeys();
   const kept = keptPositions.value;
   const everyStored = kept.length === storedHints.value.length;
-  if (typed.length) payload['api_keys'] = typed;
+  if (typed.length) payload.api_keys = typed;
   // Positions are sent only when the list changes: an edit that leaves the
   // keys alone should not fail because someone else changed them meanwhile.
   const sendKept = () => {
-    payload['keep_keys'] = kept;
-    payload['key_hints'] = storedHints.value;
+    payload.keep_keys = kept;
+    payload.key_hints = storedHints.value;
   };
   if (template.value) {
     // Headers have no field in this form, and the keys are not something this
@@ -258,8 +258,8 @@ async function save(): Promise<void> {
     // The headers come back as the hints the list showed. The server reads
     // them as the source's stored values, so the source is named even when no
     // key is kept.
-    payload['headers'] = template.value.headers;
-    payload['copy_key_from'] = template.value.id;
+    payload.headers = template.value.headers;
+    payload.copy_key_from = template.value.id;
     // An empty list is sent too: left out, the copy takes every key the source
     // holds, which is what keeping none is meant to prevent.
     if (!kept.length || !everyStored || typed.length) sendKept();
