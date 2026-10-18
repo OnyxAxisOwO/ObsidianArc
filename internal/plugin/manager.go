@@ -638,8 +638,9 @@ func checkSettings(name string, values map[string]string) (map[string]string, er
 
 // maxSettingValueBytes bounds one plugin setting. Every value is held in memory
 // and read on the requests that need it, so the bound is set well below what a
-// settings row will take.
-const maxSettingValueBytes = 8 * 1024
+// settings row will take. It is the core settings' own bound, so a value the
+// backoffice warns about is the same value either endpoint refuses.
+const maxSettingValueBytes = settings.MaxValueBytes
 
 func checkAgainst(definitions []settings.Definition, values map[string]string) (map[string]string, error) {
 	defined := map[string]settings.Definition{}

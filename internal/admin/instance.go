@@ -579,7 +579,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		if !h.writable(key) {
 			return httpx.BadRequest("Unknown setting %q.", key)
 		}
-		if len(value) > 8*1024 {
+		if len(value) > settings.MaxValueBytes {
 			return httpx.BadRequest("Setting %q is too long.", key)
 		}
 	}
@@ -679,11 +679,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		save = h.settings.SetMany(r.Context(), body)
 	}
 	if save != nil {
-		var response *httpx.Error
-		if errors.As(save, &response) {
-			return response
-		}
-		return httpx.Internal(save)
+		return responseOr(save, internalError)
 	}
 	h.noteSettings(r.Context(), before, body)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"settings": h.visibleSettings(auth.MustUser(r.Context()))})
@@ -720,105 +716,11 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		twoFactorCode = r.Header.Get("X-Two-Factor-Code")
 	}
 
-	applied := map[string]string{}
-	skipped := []string{}
-
-	for key, value := range body {
-		if !hasPermission(auth.MustUser(r.Context()), h.settingPermission(key)) || !h.writable(key) || len(value) > 8*1024 {
-			skipped = append(skipped, key)
-			continue
-		}
-		applied[key] = value
+	applied, skipped := h.importableSettings(r, body)
+	h.dropRefusedImports(r, applied, &skipped, twoFactorCode)
+	if err := h.clearDanglingReferences(r.Context(), applied, &skipped); err != nil {
+		return err
 	}
-
-	// The same rule the form's save keeps: an export shows a secret as the
-	// mask, and importing that file back used to write the row of dots over
-	// the real value — every challenge or provider sign-in behind it then
-	// failing for everybody, with nothing on screen to say why.
-	for _, key := range h.secretKeys() {
-		if value, present := applied[key]; present && (value == "" || value == secretMask) {
-			delete(applied, key)
-		}
-	}
-
-	for _, rule := range valueRules {
-		for _, key := range rule.keys {
-			if value, present := applied[key]; present && rule.check(key, value) != nil {
-				delete(applied, key)
-				skipped = append(skipped, key)
-			}
-		}
-	}
-	for _, key := range themeChecked {
-		if value, present := applied[key]; present && checkThemeSettings(map[string]string{key: value}) != nil {
-			delete(applied, key)
-			skipped = append(skipped, key)
-		}
-	}
-	// Dropped and named, like the rest of this document, rather than failing the
-	// whole import: a file exported before this check existed can carry one.
-	for _, key := range oidcURLKeys {
-		if h.oidcURLRefused(key, applied[key]) {
-			delete(applied, key)
-			skipped = append(skipped, key)
-		}
-	}
-	// Dropped rather than refused, like everything else here — and for the
-	// importer's own sake: a file from an instance that requires the second
-	// step must not shut out an operator who has not switched it on yet.
-	for _, key := range twoFactorKeys {
-		if value, present := applied[key]; present {
-			if checkTwoFactorSettings(auth.MustUser(r.Context()), map[string]string{key: value}) != nil {
-				delete(applied, key)
-				skipped = append(skipped, key)
-			}
-		}
-	}
-	if value, present := applied[settings.SignupReviewPrompt]; present && strings.TrimSpace(value) != strings.TrimSpace(h.settings.Get(settings.SignupReviewPrompt)) {
-		actor := auth.MustUser(r.Context())
-		if !actor.TwoFactorEnabled() || strings.TrimSpace(twoFactorCode) == "" ||
-			h.auth.VerifyTwoFactorCode(r.Context(), actor, strings.TrimSpace(twoFactorCode), h.clientIP(r)) != nil {
-			delete(applied, settings.SignupReviewPrompt)
-			skipped = append(skipped, settings.SignupReviewPrompt)
-		}
-	}
-	for key, bounds := range numericBounds {
-		if raw, present := applied[key]; present {
-			value, err := strconv.Atoi(strings.TrimSpace(raw))
-			if err != nil || value < bounds[0] || value > bounds[1] {
-				delete(applied, key)
-				skipped = append(skipped, key)
-			}
-		}
-	}
-
-	// The save refuses these lengths; the import drops the key and names it, so a
-	// file from elsewhere cannot put a longer notice in front of signed-out visitors.
-	for _, key := range overlongNotice(applied) {
-		delete(applied, key)
-		skipped = append(skipped, key)
-	}
-
-	// A dangling identifier is cleared rather than carried, so the instance
-	// ends up in a state it can describe: "no default group" beats "a default
-	// group that does not exist". A lookup that failed says nothing about the
-	// row, so it fails the import instead: clearing on it used to wipe a
-	// working trial model or registration group whenever the database blinked.
-	for _, key := range referenceKeys {
-		value, present := applied[key]
-		if !present {
-			continue
-		}
-		refusal, err := h.referenceRefused(r.Context(), key, value)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-		if refusal != nil {
-			applied[key] = ""
-			skipped = append(skipped, key)
-		}
-	}
-
 	for key, value := range applied {
 		if d, ok := h.settings.Defined(key); ok && d.Validate != nil && d.Validate(value) != nil {
 			delete(applied, key)
@@ -850,11 +752,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		save = h.settings.SetMany(r.Context(), applied)
 	}
 	if save != nil {
-		var response *httpx.Error
-		if errors.As(save, &response) {
-			return response
-		}
-		return httpx.Internal(save)
+		return responseOr(save, internalError)
 	}
 	h.noteSettings(r.Context(), before, applied)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -862,6 +760,117 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		"applied":  len(applied),
 		"skipped":  skipped,
 	})
+}
+
+// importableSettings is the part of an imported document this administrator
+// may write at all, and the keys left out of it.
+func (h *Handlers) importableSettings(r *http.Request, body map[string]string) (map[string]string, []string) {
+	applied := map[string]string{}
+	skipped := []string{}
+
+	for key, value := range body {
+		if !hasPermission(auth.MustUser(r.Context()), h.settingPermission(key)) || !h.writable(key) || len(value) > settings.MaxValueBytes {
+			skipped = append(skipped, key)
+			continue
+		}
+		applied[key] = value
+	}
+
+	// The same rule the form's save keeps: an export shows a secret as the
+	// mask, and importing that file back used to write the row of dots over
+	// the real value — every challenge or provider sign-in behind it then
+	// failing for everybody, with nothing on screen to say why.
+	for _, key := range h.secretKeys() {
+		if value, present := applied[key]; present && (value == "" || value == secretMask) {
+			delete(applied, key)
+		}
+	}
+	return applied, skipped
+}
+
+// dropRefusedImports drops from applied, and names in skipped, each value the
+// ordinary save would refuse.
+func (h *Handlers) dropRefusedImports(r *http.Request, applied map[string]string, skipped *[]string, twoFactorCode string) {
+	drop := func(key string) {
+		delete(applied, key)
+		*skipped = append(*skipped, key)
+	}
+	for _, rule := range valueRules {
+		for _, key := range rule.keys {
+			if value, present := applied[key]; present && rule.check(key, value) != nil {
+				drop(key)
+			}
+		}
+	}
+	for _, key := range themeChecked {
+		if value, present := applied[key]; present && checkThemeSettings(map[string]string{key: value}) != nil {
+			drop(key)
+		}
+	}
+	// Dropped and named, like the rest of this document, rather than failing the
+	// whole import: a file exported before this check existed can carry one.
+	for _, key := range oidcURLKeys {
+		if h.oidcURLRefused(key, applied[key]) {
+			drop(key)
+		}
+	}
+	// Dropped rather than refused, like everything else here — and for the
+	// importer's own sake: a file from an instance that requires the second
+	// step must not shut out an operator who has not switched it on yet.
+	for _, key := range twoFactorKeys {
+		if value, present := applied[key]; present {
+			if checkTwoFactorSettings(auth.MustUser(r.Context()), map[string]string{key: value}) != nil {
+				drop(key)
+			}
+		}
+	}
+	if value, present := applied[settings.SignupReviewPrompt]; present && strings.TrimSpace(value) != strings.TrimSpace(h.settings.Get(settings.SignupReviewPrompt)) {
+		actor := auth.MustUser(r.Context())
+		if !actor.TwoFactorEnabled() || strings.TrimSpace(twoFactorCode) == "" ||
+			h.auth.VerifyTwoFactorCode(r.Context(), actor, strings.TrimSpace(twoFactorCode), h.clientIP(r)) != nil {
+			drop(settings.SignupReviewPrompt)
+		}
+	}
+	for key, bounds := range numericBounds {
+		if raw, present := applied[key]; present {
+			value, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || value < bounds[0] || value > bounds[1] {
+				drop(key)
+			}
+		}
+	}
+
+	// The save refuses these lengths; the import drops the key and names it, so a
+	// file from elsewhere cannot put a longer notice in front of signed-out visitors.
+	for _, key := range overlongNotice(applied) {
+		drop(key)
+	}
+}
+
+// clearDanglingReferences clears, and names in skipped, each imported row
+// identifier that names nothing here.
+//
+// A dangling identifier is cleared rather than carried, so the instance
+// ends up in a state it can describe: "no default group" beats "a default
+// group that does not exist". A lookup that failed says nothing about the
+// row, so it fails the import instead: clearing on it used to wipe a
+// working trial model or registration group whenever the database blinked.
+func (h *Handlers) clearDanglingReferences(ctx context.Context, applied map[string]string, skipped *[]string) error {
+	for _, key := range referenceKeys {
+		value, present := applied[key]
+		if !present {
+			continue
+		}
+		refusal, err := h.referenceRefused(ctx, key, value)
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		if refusal != nil {
+			applied[key] = ""
+			*skipped = append(*skipped, key)
+		}
+	}
+	return nil
 }
 
 // purgeAttachments drops every stored image immediately.

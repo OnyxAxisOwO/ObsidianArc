@@ -123,6 +123,28 @@ func (h *Handlers) grantCards(w http.ResponseWriter, r *http.Request) error {
 	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"cards": granted})
 }
 
+// userCards is the held-cards half of showUser, for the panel to refresh after
+// it grants, moves or revokes one: those change usage_cards alone, so asking
+// for the whole account again re-reads usage and limits nobody changed.
+//
+// It answers to showUser's rule rather than the route's users grant alone:
+// what an administrator holds is their own allowance, and a delegate who
+// could not open their panel must not read it here instead.
+func (h *Handlers) userCards(w http.ResponseWriter, r *http.Request) error {
+	userID, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+	if err := h.authoriseSessionAction(r, userID); err != nil {
+		return err
+	}
+	held, err := h.cards.Held(r.Context(), userID)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"cards": held})
+}
+
 // rescheduleCards moves the expiry on cards an account already holds.
 //
 // Separate from granting rather than a flag on it: "here is another card" and

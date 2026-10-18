@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -291,9 +292,9 @@ func (h *Handlers) revokeBonusGrant(w http.ResponseWriter, r *http.Request) erro
 	// The usage grant takes money away from the grant's owner, so the owner
 	// decides whether it may: the rule every other delegated action on an
 	// account answers to, not the grant alone.
-	var owner string
-	if err := h.db.QueryRow(r.Context(), `SELECT user_id FROM bonus_grants WHERE id = ?`, grantID).Scan(&owner); err != nil {
-		if database.IsNotFound(err) {
+	owner, err := h.Bonus.GrantOwner(r.Context(), nil, grantID)
+	if err != nil {
+		if errors.Is(err, bonus.ErrNotFound) {
 			return bonus.TranslateError(bonus.ErrNotFound)
 		}
 		return httpx.Internal(err)

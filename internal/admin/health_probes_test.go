@@ -86,6 +86,7 @@ func TestAProviderThatIsOffIsNotProbed(t *testing.T) {
 	f := newImportFixture(t)
 	f.h.health = health.NewStore(f.h.db)
 	f.h.registry = adapter.NewRegistry(config.Upstream{})
+	f.h.probeBudget = unlimitedBudget()
 	off, err := f.providers.Create(f.ctx, provider.CreateInput{
 		Name: "Switched off", Kind: adapter.KindOpenAI,
 		BaseURL: upstream.URL, APIKey: "sk-test-0456", Enabled: false,

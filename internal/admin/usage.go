@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -111,81 +115,192 @@ func usageCacheExpired(createdAt, now time.Time) bool {
 	return now.Sub(createdAt) >= usageCacheTTL
 }
 
-type cachedUsageSummary struct {
-	createdAt time.Time
-	data      map[string]any
+// ttlCache holds answers for usageCacheTTL. It has no lock of its own: the
+// summary and breakdown caches share usageCache.mu with the allowance
+// generation, so a check and the insert it guards can sit under one lock.
+// The zero value is ready to use.
+type ttlCache[V any] struct {
+	entries map[string]ttlEntry[V]
 }
 
-type cachedUsageBreakdown struct {
+type ttlEntry[V any] struct {
 	createdAt time.Time
-	rows      []usage.Breakdown
+	value     V
+}
+
+// get is the entry under key while it is fresh.
+func (c *ttlCache[V]) get(key string, now time.Time) (V, bool) {
+	entry, ok := c.entries[key]
+	if !ok || usageCacheExpired(entry.createdAt, now) {
+		var zero V
+		return zero, false
+	}
+	return entry.value, true
+}
+
+// sweep drops the expired entries once the cache holds more than
+// usageCacheSweepLimit, so it does not grow with every filter tried.
+func (c *ttlCache[V]) sweep(now time.Time) {
+	if len(c.entries) <= usageCacheSweepLimit {
+		return
+	}
+	for k, v := range c.entries {
+		if usageCacheExpired(v.createdAt, now) {
+			delete(c.entries, k)
+		}
+	}
+}
+
+func (c *ttlCache[V]) set(key string, value V, now time.Time) {
+	if c.entries == nil {
+		c.entries = make(map[string]ttlEntry[V])
+	}
+	c.entries[key] = ttlEntry[V]{createdAt: now, value: value}
+}
+
+// deletePrefix drops every entry whose key starts with prefix, whatever its age.
+func (c *ttlCache[V]) deletePrefix(prefix string) {
+	for key := range c.entries {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.entries, key)
+		}
+	}
+}
+
+// makeRoomUnder drops the oldest entry under prefix, whatever its age, when
+// limit of them are cached already. except is the key about to be written: it
+// replaces its own entry rather than adding one, so it does not count.
+func (c *ttlCache[V]) makeRoomUnder(prefix, except string, limit int) {
+	var oldestKey string
+	var oldest time.Time
+	cached := 0
+	for k, entry := range c.entries {
+		if k == except || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		cached++
+		if oldestKey == "" || entry.createdAt.Before(oldest) {
+			oldestKey, oldest = k, entry.createdAt
+		}
+	}
+	if cached >= limit {
+		delete(c.entries, oldestKey)
+	}
+}
+
+func (c *ttlCache[V]) len() int { return len(c.entries) }
+
+// usageCache is the backoffice's short-lived memory of what the ledger said.
+type usageCache struct {
+	mu sync.RWMutex
+	// The summary map also holds the allowance rankings, under
+	// allowanceRankingPrefix; see allowances.go.
+	summary     ttlCache[map[string]any]
+	breakdown   ttlCache[[]usage.Breakdown]
+	summarySF   singleflight.Group
+	breakdownSF singleflight.Group
+	// The allowances ranking is built once per search and group for each
+	// short window, and paged from that copy; see allowances.go.
+	allowanceSF singleflight.Group
+	// Bumped by every write that changes what an account has left, so a ranking
+	// built before the write is neither cached nor handed to a request after
+	// it. Guarded by mu; see forgetAllowanceRankings.
+	allowanceGeneration uint64
 }
 
 func (h *Handlers) getSummaryCache(key string) map[string]any {
-	h.usageCacheMu.RLock()
-	defer h.usageCacheMu.RUnlock()
-	entry, ok := h.usageSummaryCache[key]
-	if !ok || usageCacheExpired(entry.createdAt, time.Now()) {
-		return nil
-	}
-	return entry.data
+	h.usageCache.mu.RLock()
+	defer h.usageCache.mu.RUnlock()
+	data, _ := h.usageCache.summary.get(key, time.Now())
+	return data
 }
 
 func (h *Handlers) setSummaryCache(key string, data map[string]any) {
-	h.usageCacheMu.Lock()
-	defer h.usageCacheMu.Unlock()
+	h.usageCache.mu.Lock()
+	defer h.usageCache.mu.Unlock()
 	h.putSummaryLocked(key, data)
 }
 
 // putSummaryLocked is setSummaryCache for a caller that already holds
-// usageCacheMu, so a check and the insert it guards can share one lock.
+// usageCache.mu, so a check and the insert it guards can share one lock.
 func (h *Handlers) putSummaryLocked(key string, data map[string]any) {
-	if h.usageSummaryCache == nil {
-		h.usageSummaryCache = make(map[string]*cachedUsageSummary)
-	}
 	now := time.Now()
-	if len(h.usageSummaryCache) > usageCacheSweepLimit {
-		for k, v := range h.usageSummaryCache {
-			if usageCacheExpired(v.createdAt, now) {
-				delete(h.usageSummaryCache, k)
-			}
-		}
-	}
+	h.usageCache.summary.sweep(now)
 	h.capAllowanceRankingsLocked(key)
-	h.usageSummaryCache[key] = &cachedUsageSummary{
-		createdAt: now,
-		data:      data,
-	}
+	h.usageCache.summary.set(key, data, now)
 }
 
 func (h *Handlers) getBreakdownCache(key string) []usage.Breakdown {
-	h.usageCacheMu.RLock()
-	defer h.usageCacheMu.RUnlock()
-	entry, ok := h.usageBreakdownCache[key]
-	if !ok || usageCacheExpired(entry.createdAt, time.Now()) {
-		return nil
-	}
-	return entry.rows
+	h.usageCache.mu.RLock()
+	defer h.usageCache.mu.RUnlock()
+	rows, _ := h.usageCache.breakdown.get(key, time.Now())
+	return rows
 }
 
 func (h *Handlers) setBreakdownCache(key string, rows []usage.Breakdown) {
-	h.usageCacheMu.Lock()
-	defer h.usageCacheMu.Unlock()
-	if h.usageBreakdownCache == nil {
-		h.usageBreakdownCache = make(map[string]*cachedUsageBreakdown)
-	}
+	h.usageCache.mu.Lock()
+	defer h.usageCache.mu.Unlock()
 	now := time.Now()
-	if len(h.usageBreakdownCache) > usageCacheSweepLimit {
-		for k, v := range h.usageBreakdownCache {
-			if usageCacheExpired(v.createdAt, now) {
-				delete(h.usageBreakdownCache, k)
-			}
+	h.usageCache.breakdown.sweep(now)
+	h.usageCache.breakdown.set(key, rows, now)
+}
+
+// summaryCacheKey and breakdownCacheKey name every field an answer depends
+// on, so two filters that differ anywhere never share an entry. They start
+// with their own words, which no allowance ranking key does.
+func summaryCacheKey(filter usage.Filter, zone time.Duration, metric string) string {
+	return fmt.Sprintf("summary:%s:%s:%s:%s:%s:%d:%d:%d:%s",
+		filter.UserID, filter.GroupID, filter.ModelID, filter.ProviderID,
+		filter.Status, filter.Since, filter.Until, zone.Milliseconds(), metric)
+}
+
+func breakdownCacheKey(dimension string, filter usage.Filter, metric string) string {
+	return fmt.Sprintf("breakdown:%s:%s:%s:%s:%s:%s:%d:%d:%s",
+		dimension, filter.UserID, filter.GroupID, filter.ModelID, filter.ProviderID,
+		filter.Status, filter.Since, filter.Until, metric)
+}
+
+// cachedAggregate is the shell both cached ledger reads share: the cache, then
+// one build for everyone asking the same key at once, checking the cache again
+// inside in case a build finished while this one queued.
+//
+// The build runs detached from the request with its own five seconds, because
+// it is shared by everyone waiting on it and the viewer who started it leaving
+// must not fail the rest. It holds an aggregation slot until its answer is
+// built and stored, and an *httpx.Error from it is the answer as worded.
+func cachedAggregate[V any](
+	r *http.Request, flight *singleflight.Group, key string,
+	lookup func() (V, bool), store func(V), build func(ctx context.Context) (V, error),
+) (V, error) {
+	if cached, ok := lookup(); ok {
+		return cached, nil
+	}
+	res, err, _ := flight.Do(key, func() (any, error) {
+		if cached, ok := lookup(); ok {
+			return cached, nil
 		}
+
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		defer cancel()
+
+		release, err := httpx.AcquireAggregationSlot(dbCtx)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+
+		value, err := build(dbCtx)
+		if err != nil {
+			return nil, err
+		}
+		store(value)
+		return value, nil
+	})
+	if err != nil {
+		var zero V
+		return zero, responseOr(err, internalError)
 	}
-	h.usageBreakdownCache[key] = &cachedUsageBreakdown{
-		createdAt: now,
-		rows:      rows,
-	}
+	return res.(V), nil
 }
 
 // filterFrom builds a ledger filter from the query string. Every value is
@@ -306,7 +421,7 @@ func (h *Handlers) allowUsageRead(r *http.Request) error {
 	if h.ClientIP != nil {
 		clientIP = h.ClientIP(r)
 	}
-	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(clientIP+":"+auth.MustUser(r.Context()).ID) {
+	if !h.UsageLimiter.Allow(clientIP + ":" + auth.MustUser(r.Context()).ID) {
 		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
 	}
 	return nil
@@ -331,104 +446,89 @@ func (h *Handlers) usageSummary(w http.ResponseWriter, r *http.Request) error {
 	// SQL, so a top fifty is the top fifty of the thing that was asked for.
 	metric := r.URL.Query().Get("metric")
 
-	cacheKey := fmt.Sprintf("summary:%s:%s:%s:%s:%s:%d:%d:%d:%s",
-		filter.UserID, filter.GroupID, filter.ModelID, filter.ProviderID,
-		filter.Status, filter.Since, filter.Until, zone.Milliseconds(), metric)
-
-	if cached := h.getSummaryCache(cacheKey); cached != nil {
-		return httpx.WriteJSON(w, http.StatusOK, cached)
-	}
-
-	res, err, _ := h.usageSummarySF.Do(cacheKey, func() (any, error) {
-		if cached := h.getSummaryCache(cacheKey); cached != nil {
-			return cached, nil
-		}
-
-		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-		defer cancel()
-
-		release, err := httpx.AcquireAggregationSlot(dbCtx)
-		if err != nil {
-			return nil, err
-		}
-		defer release()
-
-		span, bucket := summarySpan(filter, time.Now())
-
-		var (
-			totals   usage.Totals
-			previous *usage.Totals
-			series   []usage.Point
-			heatmap  []usage.Slot
-			rpm      int64
-		)
-		dimensions := []string{"model", "provider", "user", "group", "status"}
-		ranked := make([][]usage.Breakdown, len(dimensions))
-		reads := []func() error{
-			func() (err error) { totals, err = h.usage.Totals(dbCtx, filter); return },
-			func() (err error) { series, err = h.usage.Series(dbCtx, filter, bucket, zone); return },
-			func() (err error) { heatmap, err = h.usage.Heatmap(dbCtx, filter, zone); return },
-			func() (err error) { rpm, err = h.usage.CurrentRPM(dbCtx, filter); return },
-		}
-		for i, dimension := range dimensions {
-			reads = append(reads, func() (err error) {
-				ranked[i], err = h.usage.GroupBy(dbCtx, dimension, metric, filter)
-				return
-			})
-		}
-		// The same length of time immediately before, so a figure can say which
-		// way it moved. Only for a bounded window: "all time" has no before.
-		if filter.Since > 0 {
-			before := filter
-			before.Until = filter.Since
-			before.Since = filter.Since - span.Milliseconds()
-			reads = append(reads, func() error {
-				earlier, err := h.usage.Totals(dbCtx, before)
-				previous = &earlier
-				return err
-			})
-		}
-		if err := together(reads...); err != nil {
-			return nil, err
-		}
-		breakdowns := map[string][]usage.Breakdown{}
-		for i, dimension := range dimensions {
-			breakdowns[dimension] = ranked[i]
-		}
-
-		// After the rest, not beside it: the grid is drawn for the top of the
-		// account and model rankings, so it cannot be asked for before them.
-		matrix := Matrix{Rows: keysOf(breakdowns["user"], matrixUsers), Cols: keysOf(breakdowns["model"], matrixModels)}
-		if matrix.Cells, err = h.usage.Cross(dbCtx, "user", "model", matrix.Rows, matrix.Cols, filter); err != nil {
-			return nil, err
-		}
-
-		payload := map[string]any{
-			"totals":      totals,
-			"previous":    previous,
-			"by_model":    breakdowns["model"],
-			"by_provider": breakdowns["provider"],
-			"by_user":     breakdowns["user"],
-			"by_group":    breakdowns["group"],
-			"by_status":   breakdowns["status"],
-			"series":      series,
-			"bucket_ms":   bucket.Milliseconds(),
-			"heatmap":     heatmap,
-			"matrix":      matrix,
-			"current_rpm": rpm,
-		}
-		h.setSummaryCache(cacheKey, payload)
-		return payload, nil
-	})
+	cacheKey := summaryCacheKey(filter, zone, metric)
+	res, err := cachedAggregate(r, &h.usageCache.summarySF, cacheKey,
+		func() (map[string]any, bool) {
+			cached := h.getSummaryCache(cacheKey)
+			return cached, cached != nil
+		},
+		func(payload map[string]any) { h.setSummaryCache(cacheKey, payload) },
+		func(dbCtx context.Context) (map[string]any, error) {
+			return h.readUsageSummary(dbCtx, filter, zone, metric)
+		})
 	if err != nil {
-		var httpxErr *httpx.Error
-		if errors.As(err, &httpxErr) {
-			return httpxErr
-		}
-		return httpx.Internal(err)
+		return err
+	}
+	return httpx.WriteJSON(w, http.StatusOK, res)
+}
+
+// readUsageSummary is the summary's reads, run inside cachedAggregate.
+func (h *Handlers) readUsageSummary(dbCtx context.Context, filter usage.Filter, zone time.Duration, metric string) (map[string]any, error) {
+	span, bucket := summarySpan(filter, time.Now())
+
+	var (
+		totals   usage.Totals
+		previous *usage.Totals
+		series   []usage.Point
+		heatmap  []usage.Slot
+		rpm      int64
+	)
+	dimensions := []string{"model", "provider", "user", "group", "status"}
+	ranked := make([][]usage.Breakdown, len(dimensions))
+	reads := []func() error{
+		func() (err error) { totals, err = h.usage.Totals(dbCtx, filter); return },
+		func() (err error) { series, err = h.usage.Series(dbCtx, filter, bucket, zone); return },
+		func() (err error) { heatmap, err = h.usage.Heatmap(dbCtx, filter, zone); return },
+		func() (err error) { rpm, err = h.usage.CurrentRPM(dbCtx, filter); return },
+	}
+	for i, dimension := range dimensions {
+		reads = append(reads, func() (err error) {
+			ranked[i], err = h.usage.GroupBy(dbCtx, dimension, metric, filter)
+			return
+		})
+	}
+	// The same length of time immediately before, so a figure can say which
+	// way it moved. Only for a bounded window: "all time" has no before.
+	if filter.Since > 0 {
+		before := filter
+		before.Until = filter.Since
+		before.Since = filter.Since - span.Milliseconds()
+		reads = append(reads, func() error {
+			earlier, err := h.usage.Totals(dbCtx, before)
+			previous = &earlier
+			return err
+		})
+	}
+	if err := together(reads...); err != nil {
+		return nil, err
+	}
+	breakdowns := map[string][]usage.Breakdown{}
+	for i, dimension := range dimensions {
+		breakdowns[dimension] = ranked[i]
 	}
 
-	return httpx.WriteJSON(w, http.StatusOK, res)
+	// After the rest, not beside it: the grid is drawn for the top of the
+	// account and model rankings, so it cannot be asked for before them.
+	matrix := Matrix{Rows: keysOf(breakdowns["user"], matrixUsers), Cols: keysOf(breakdowns["model"], matrixModels)}
+	var err error
+	if matrix.Cells, err = h.usage.Cross(dbCtx, "user", "model", matrix.Rows, matrix.Cols, filter); err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"totals":      totals,
+		"previous":    previous,
+		"by_model":    breakdowns["model"],
+		"by_provider": breakdowns["provider"],
+		"by_user":     breakdowns["user"],
+		"by_group":    breakdowns["group"],
+		"by_status":   breakdowns["status"],
+		"series":      series,
+		"bucket_ms":   bucket.Milliseconds(),
+		"heatmap":     heatmap,
+		"matrix":      matrix,
+		"current_rpm": rpm,
+	}, nil
 }
 
 // summarySpan is how long the window is, which also sizes the comparison
@@ -489,41 +589,18 @@ func (h *Handlers) usageBreakdown(w http.ResponseWriter, r *http.Request) error 
 	}
 	metric := r.URL.Query().Get("metric")
 
-	cacheKey := fmt.Sprintf("breakdown:%s:%s:%s:%s:%s:%s:%d:%d:%s",
-		dimension, filter.UserID, filter.GroupID, filter.ModelID, filter.ProviderID,
-		filter.Status, filter.Since, filter.Until, metric)
-
-	if cached := h.getBreakdownCache(cacheKey); cached != nil {
-		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": cached})
-	}
-
-	res, err, _ := h.usageBreakdownSF.Do(cacheKey, func() (any, error) {
-		if cached := h.getBreakdownCache(cacheKey); cached != nil {
-			return cached, nil
-		}
-
-		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-		defer cancel()
-
-		release, err := httpx.AcquireAggregationSlot(dbCtx)
-		if err != nil {
-			return nil, err
-		}
-		defer release()
-
-		rows, err := h.usage.GroupBy(dbCtx, dimension, metric, filter)
-		if err != nil {
-			return nil, err
-		}
-		h.setBreakdownCache(cacheKey, rows)
-		return rows, nil
-	})
+	cacheKey := breakdownCacheKey(dimension, filter, metric)
+	res, err := cachedAggregate(r, &h.usageCache.breakdownSF, cacheKey,
+		func() ([]usage.Breakdown, bool) {
+			cached := h.getBreakdownCache(cacheKey)
+			return cached, cached != nil
+		},
+		func(rows []usage.Breakdown) { h.setBreakdownCache(cacheKey, rows) },
+		func(dbCtx context.Context) ([]usage.Breakdown, error) {
+			return h.usage.GroupBy(dbCtx, dimension, metric, filter)
+		})
 	if err != nil {
-		var httpxErr *httpx.Error
-		if errors.As(err, &httpxErr) {
-			return httpxErr
-		}
-		return httpx.Internal(err)
+		return err
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"rows": res})
 }
@@ -784,28 +861,6 @@ func (h *Handlers) deletePolicy(w http.ResponseWriter, r *http.Request) error {
 	}
 	h.forgetAllowanceRankings()
 	return httpx.NoContent(w)
-}
-
-func intParam(raw string, fallback int) int {
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value < 0 {
-		return fallback
-	}
-	return value
-}
-
-func int64Param(raw string, fallback int64) int64 {
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || value < 0 {
-		return fallback
-	}
-	return value
 }
 
 // notifyQuotaReset tells whoever the reset was for. n names the audience and

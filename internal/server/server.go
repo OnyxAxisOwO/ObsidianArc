@@ -924,7 +924,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	adminHandlers := admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, securityLog, cards, healthStore, feedbackStore, idpStore, invites)
+	adminHandlers := admin.NewHandlers(admin.Deps{
+		DB: db, Users: users, Groups: groups, Providers: providers, Models: models,
+		Settings: settingsService, Registry: registry, Auth: authService,
+		Usage: usageStore, Quota: quotaService, Conversations: conversations,
+		Announcements: announcements, Keys: keys, Requests: requestLog,
+		Security: securityLog, Cards: cards, Health: healthStore,
+		Feedback: feedbackStore, Apps: idpStore, Invites: invites,
+	})
 	adminHandlers.Mail = mailManager
 	adminHandlers.UserCheck = userCheckManager
 	adminHandlers.TryReview = adminTryReview

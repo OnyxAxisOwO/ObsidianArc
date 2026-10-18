@@ -933,10 +933,12 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 						return fmt.Errorf("auth: read verification: %w", err)
 					}
 
-					if _, err := tx.Exec(ctx,
-						`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
-						false, time.Now().UnixMilli(), userID); err != nil {
-						return fmt.Errorf("auth: withdraw confirmation: %w", err)
+					// The same settlement the confirmed branch and an
+					// administrator's edit write, so the confirmation for a move
+					// is written in one place. The links it drops are replaced
+					// by the one issued next.
+					if err := s.SettleAddressChange(ctx, tx, userID, false); err != nil {
+						return err
 					}
 					token, err := s.issueVerification(ctx, tx, userID, address)
 					if err != nil {

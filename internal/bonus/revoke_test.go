@@ -2,6 +2,7 @@ package bonus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -165,5 +166,28 @@ func TestAHoldFinishingAfterARevokeReopensNothing(t *testing.T) {
 				t.Fatalf("%v credits of the revoked grant became spendable again", got)
 			}
 		})
+	}
+}
+
+// The backoffice asks whose a grant is before it decides whether the actor
+// may revoke it, and an unknown grant is ErrNotFound rather than a database
+// error it would answer with a 500.
+func TestGrantOwnerNamesTheAccountOrNotFound(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	a := f.account(t, "alice")
+	bar := f.bar(t, Bar{Name: "gift", ToggleMode: ModeOn})
+	f.give(t, bar.ID, a.ID, 10, 0)
+	rows, _, err := f.store.GrantsInBar(ctx, bar.ID, 10, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("grants: %d (%v), want the one grant", len(rows), err)
+	}
+
+	owner, err := f.store.GrantOwner(ctx, nil, rows[0].ID)
+	if err != nil || owner != a.ID {
+		t.Errorf("GrantOwner = %q, %v; want %q", owner, err, a.ID)
+	}
+	if _, err := f.store.GrantOwner(ctx, nil, "01ARZ3NDEKTSV4RRFFQ69G5FAV"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GrantOwner of an unknown grant = %v, want ErrNotFound", err)
 	}
 }

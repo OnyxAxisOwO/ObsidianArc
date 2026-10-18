@@ -887,12 +887,11 @@ async function grant(): Promise<void> {
  * them again.
  */
 async function refreshCards(id: string): Promise<void> {
-  // Once the panel has moved on, no card list on screen can show the answer,
-  // and the detail behind it is the expensive read on the server.
+  // Once the panel has moved on, no card list on screen can show the answer.
   if (!panelShows(id)) return;
   try {
-    const detail = await adminApi.user(id);
-    if (panelShows(id)) cards.value = detail.cards;
+    const held = await adminApi.userCards(id);
+    if (panelShows(id)) cards.value = held.cards;
   } catch {
     // See above: there is nothing for the operator to act on.
   }

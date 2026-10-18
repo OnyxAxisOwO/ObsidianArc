@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"strings"
@@ -155,6 +156,108 @@ func TestEveryModelFieldReachesTheStore(t *testing.T) {
 		}
 	}
 	walk("", reflect.ValueOf(body.createInput()))
+}
+
+// fillImport gives every field of an entry a non-zero value and marks every key
+// carried, as a file that spells out the whole model would.
+func fillImport(t *testing.T) modelImport {
+	t.Helper()
+	var entry modelImport
+	var fill func(v reflect.Value)
+	fill = func(v reflect.Value) {
+		for i := range v.NumField() {
+			field := v.Field(i)
+			if !v.Type().Field(i).IsExported() {
+				continue
+			}
+			switch field.Kind() {
+			case reflect.Struct:
+				fill(field)
+			case reflect.String:
+				field.SetString("x")
+			case reflect.Bool:
+				field.SetBool(true)
+			case reflect.Int:
+				field.SetInt(7)
+			case reflect.Float64:
+				field.SetFloat(7)
+			case reflect.Slice:
+				field.Set(reflect.MakeSlice(field.Type(), 1, 1))
+			case reflect.Pointer:
+				// The route: left unset here, because a routed entry's route is
+				// written by the second pass rather than by this update.
+			default:
+				t.Fatalf("fillImport does not know how to fill %s", field.Type())
+			}
+		}
+	}
+	fill(reflect.ValueOf(&entry).Elem())
+
+	entry.carried = map[string]json.RawMessage{}
+	var collect func(t reflect.Type)
+	collect = func(t reflect.Type) {
+		for i := range t.NumField() {
+			field := t.Field(i)
+			if field.Anonymous {
+				collect(field.Type)
+				continue
+			}
+			if tag, _, _ := strings.Cut(field.Tag.Get("json"), ","); tag != "" {
+				entry.carried[tag] = json.RawMessage(`1`)
+			}
+		}
+	}
+	collect(reflect.TypeOf(modelImport{}))
+	return entry
+}
+
+// An import of a model already here is the file's version of it, so every
+// field the entry carries is written. A field model.Update gains and the
+// import's mapping forgets is accepted from the file and never saved; this
+// holds the mapping to the whole of model.Update.
+func TestAnImportEntryReachesEveryUpdateField(t *testing.T) {
+	entry := fillImport(t)
+	grants := []model.ModelGroupGrant{{GroupID: "g", Access: "full"}}
+
+	nilFields := func(update model.Update) map[string]bool {
+		out := map[string]bool{}
+		v := reflect.ValueOf(update)
+		for i := range v.NumField() {
+			name := v.Type().Field(i).Name
+			// Set by the availability checker, never by a file.
+			if name == "AutoDisabled" {
+				continue
+			}
+			if v.Field(i).IsNil() {
+				out[name] = true
+			}
+		}
+		return out
+	}
+
+	if missing := nilFields(updateFromImport(entry, &grants)); len(missing) > 0 {
+		t.Errorf("an entry carrying every field left these unset: %v", missing)
+	}
+
+	// The documented exceptions, and only those, wait for the file to carry
+	// them: the weights (an omitted one would make the model free) and the
+	// request override (the backoffice's export never carries one).
+	entry.carried = map[string]json.RawMessage{}
+	conditional := map[string]bool{
+		"RequestWeight": true, "InputTokenWeight": true, "OutputTokenWeight": true,
+		"ReasoningTokenWeight": true, "RequestOverride": true,
+	}
+	got := nilFields(updateFromImport(entry, &grants))
+	for name := range got {
+		if !conditional[name] {
+			t.Errorf("model.Update.%s is unset although the entry has it and it is not conditional", name)
+		}
+	}
+	for name := range conditional {
+		if !got[name] {
+			t.Errorf("model.Update.%s is written although the file did not carry it", name)
+		}
+	}
 }
 
 // A key the editor sends that a catalogue file cannot carry is lost on every

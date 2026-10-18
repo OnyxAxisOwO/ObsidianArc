@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
@@ -309,11 +311,14 @@ describe('a value past the server limit', () => {
     const area = intro?.querySelector<HTMLTextAreaElement>('textarea');
     expect(area).toBeTruthy();
     // Three bytes a character: 9,000 bytes, past the 8 KiB the server takes.
+    // The limit is read from the file the server's own test holds it to.
+    const { max_value_bytes: limit } = JSON.parse(readFileSync(
+      resolve(__dirname, '../../internal/settings/testdata/limits.json'), 'utf8')) as { max_value_bytes: number };
     area!.value = '\u3042'.repeat(3000);
     area!.dispatchEvent(new Event('input', { bubbles: true }));
     await nextTick();
 
-    expect(intro!.textContent).toContain(t('fieldByteCountOver', { used: 9000, limit: 8192 }));
+    expect(intro!.textContent).toContain(t('fieldByteCountOver', { used: 9000, limit }));
     expect(area!.getAttribute('aria-invalid')).toBe('true');
 
     button(actions, t('save')).click();

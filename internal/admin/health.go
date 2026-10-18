@@ -109,7 +109,7 @@ func (h *Handlers) modelHealth(w http.ResponseWriter, r *http.Request) error {
 // that a model is healthy before the operator decides to enable it again.
 func (h *Handlers) probeAllHealth(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
-	if h.probeBudget != nil && !h.probeBudget.Allow("probe") {
+	if !h.probeBudget.Allow("probe") {
 		return httpx.TooManyRequests("probe_cooldown", "All models can be tested once every thirty seconds.")
 	}
 	records, err := h.models.ListAll(ctx, "")

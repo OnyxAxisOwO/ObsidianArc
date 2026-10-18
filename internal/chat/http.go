@@ -1202,8 +1202,11 @@ func (h *Handlers) deliverImages(
 	saveCtx context.Context, d imageDelivery, data []adapter.GeneratedImage, fetched []fetchedPicture,
 ) (images []imageGenItem, undelivered int, lastFailure error) {
 	for i, img := range data {
+		// No B64JSON from the provider here: inline delivery re-encodes the
+		// bytes actually fetched, and a stored picture is reached by its URL,
+		// so echoing the provider's copy only made the response a second
+		// picture larger for the panel to hold in memory.
 		item := imageGenItem{
-			B64JSON:       img.B64JSON,
 			RevisedPrompt: img.RevisedPrompt,
 		}
 

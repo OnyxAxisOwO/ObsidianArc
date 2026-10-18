@@ -53,7 +53,7 @@ func TestAllowancePagesShareOneRankingForAWhile(t *testing.T) {
 		create(name)
 	}
 
-	h := &Handlers{db: db, users: users, quota: quota.NewService(db, quota.NewStore(db), settings.New(db))}
+	h := &Handlers{db: db, users: users, quota: quota.NewService(db, quota.NewStore(db), settings.New(db)), UsageLimiter: unlimitedBudget()}
 	actor := user.User{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Username: "founder", Role: user.RoleSuperAdmin}
 	fetch := func(query string) map[string]any {
 		t.Helper()
@@ -141,7 +141,7 @@ func TestAResetShowsInTheAllowanceRankingAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &Handlers{db: db, users: users, quota: quotas}
+	h := &Handlers{db: db, users: users, quota: quotas, UsageLimiter: unlimitedBudget()}
 	actor := user.User{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Username: "founder", Role: user.RoleSuperAdmin}
 	type listing struct {
 		Rows []struct {
@@ -250,7 +250,7 @@ func newAllowanceGroupFixture(t *testing.T, name string) allowanceGroupFixture {
 		t.Fatal(err)
 	}
 	return allowanceGroupFixture{
-		h:     &Handlers{db: db, users: users, groups: groups, quota: quotas},
+		h:     &Handlers{db: db, users: users, groups: groups, quota: quotas, UsageLimiter: unlimitedBudget()},
 		actor: user.User{ID: founder.ID, Username: "founder", Role: user.RoleSuperAdmin},
 		home:  home,
 		team:  team,
@@ -357,7 +357,7 @@ func TestDistinctAllowanceSearchesAreCappedInTheUsageCache(t *testing.T) {
 		h.setSummaryCache("allowances::"+strconv.Itoa(i), map[string]any{"ranked": rankedAllowances{}})
 	}
 	cached := 0
-	for key := range h.usageSummaryCache {
+	for key := range h.usageCache.summary.entries {
 		if strings.HasPrefix(key, "allowances:") {
 			cached++
 		}
